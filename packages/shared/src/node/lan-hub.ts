@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getLodyDataDir } from './installation-profile';
+import { LOCAL_USER_ID_PREFIX } from '../platform-kind';
 import {
   LAN_HUB_DEFAULT_NAME,
   LanHubInputError,
@@ -65,6 +66,20 @@ export function deriveLanHubId(token: string): string {
     .update(`lody-lan-hub:workspace:${token}`)
     .digest('hex')
     .slice(0, 32);
+}
+
+/**
+ * The user the members of a LAN act as. Derived from the credential like the
+ * workspace, so every build that knows the credential agrees on it, whichever
+ * other LANs an installation belongs to.
+ */
+export function deriveLanHubUserId(token: string): string {
+  const id = crypto
+    .createHash('sha256')
+    .update(`lody-lan-hub:user:${token}`)
+    .digest('hex')
+    .slice(0, 32);
+  return `${LOCAL_USER_ID_PREFIX}${id}`;
 }
 
 function normalizeMachineNameSetting(value: unknown, source: string): string | null {
@@ -234,6 +249,7 @@ export function summarizeLanHubs(hubs: readonly LanHub[]): LanHubSummary[] {
       url: hub.url,
       slug,
       workspaceId: getLanHubWorkspaceId(hub.id),
+      userId: deriveLanHubUserId(hub.token),
     };
   });
 }
@@ -392,6 +408,11 @@ export function classifyLanHubChange(
       kind: 'restart',
       reason: next.hubs.length === 0 ? 'the last LAN was removed' : 'the first LAN was added',
     };
+  }
+  // A process acts as the user of its first LAN wherever no workspace says
+  // otherwise, and it cannot change who it is while it runs.
+  if (previous.hubs[0]?.id !== next.hubs[0]?.id) {
+    return { kind: 'restart', reason: 'the first LAN of this machine changed' };
   }
   if ((previous.machineName ?? null) !== (next.machineName ?? null)) {
     return { kind: 'restart', reason: 'this machine was renamed' };

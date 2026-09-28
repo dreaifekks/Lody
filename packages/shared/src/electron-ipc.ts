@@ -701,10 +701,12 @@ export type ElectronLocalWorkspace = {
    * leaves this machine. The credential of a LAN stays in the main process.
    */
   lan: { id: string; url: string } | null;
+  /** The user this installation acts as in this workspace. */
+  userId: string;
 };
 
 /** The shape a snapshot had while the local platform held a single workspace. */
-export type ElectronImplicitLocalWorkspace = Omit<ElectronLocalWorkspace, 'lan'>;
+export type ElectronImplicitLocalWorkspace = Omit<ElectronLocalWorkspace, 'lan' | 'userId'>;
 
 /**
  * Atomic renderer bootstrap snapshot for the local platform. Identity and
@@ -727,6 +729,7 @@ export type ElectronLanSummary = {
   url: string;
   slug: string;
   workspaceId: string;
+  userId: string;
 };
 
 export type ElectronLanState = {

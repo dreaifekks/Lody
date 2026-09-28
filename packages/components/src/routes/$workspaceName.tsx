@@ -28,6 +28,7 @@ import {
 import { isLocalAppPlatform } from '@/lib/app-platform';
 import { WorkspaceRouteTargetProvider } from '../providers/workspace-route-target';
 import {
+  getLocalPlatformProvider,
   getLocalWorkspaceSlug,
   resolveLocalWorkspace,
   useLocalPlatformWorkspacesState,
@@ -122,6 +123,12 @@ function LocalWorkspaceGuardRoute() {
     [canonicalSlug, workspace, workspaceName]
   );
   useWorkspaceContextAtoms(workspaceName, access);
+  // The members of a LAN share a user, so the workspace of the route also
+  // decides who this window acts as.
+  const routedWorkspaceId = access?.organizationId;
+  useEffect(() => {
+    if (routedWorkspaceId) void getLocalPlatformProvider().workspaces.setActive(routedWorkspaceId);
+  }, [routedWorkspaceId]);
 
   if (workspacesState.status === 'error') {
     return (

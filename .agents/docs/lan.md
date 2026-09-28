@@ -13,7 +13,7 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | --- | --- | --- |
 | Hub | `apps/cli/src/lib/lan/hub-server.ts` | The single-node Streams server of `@loro-dev/loro-cli` on loopback, behind a bearer-token gate that is the only network entry |
 | Settings | `packages/shared/src/node/lan-hub.ts` | `lan-hub.json` in the data directory: the LANs of this installation and the name of this machine |
-| Contract | `packages/shared/src/lan-hub.ts` | What a renderer may know: ids, slugs, invites, the shared owner. Never a credential |
+| Contract | `packages/shared/src/lan-hub.ts` | What a renderer may know: ids, slugs, invites, users. Never a credential |
 | Membership | `apps/cli/src/lib/lan/lan-membership.ts` | One workspace and one gateway per LAN for the running agent service |
 | Store | `packages/shared/src/node/lan-hub-store.ts` | The settings as the desktop shell holds and edits them |
 | Bridge | `apps/electron/src/main/services/lan-hub-forward.ts` | Forwards `lody-hub://<lan id>` to the hub of that LAN and adds its credential |
@@ -51,14 +51,21 @@ on, unless one was chosen with `lody lan name` or in Settings; a chosen name
 replaces what a workspace stored, a derived one only replaces a stored host
 name that carries a network domain.
 
-## One owner
+## One user per LAN
 
-A process has a single user id, and visibility and authorization compare it:
-the desktop shows a machine whose owner is the current user, and an agent
-service accepts a request of its own user. Members of a LAN therefore act as
-one user, `LAN_SHARED_USER_ID`, exactly like one account signed in on several
-devices. The id is the same for every LAN because one process may belong to
-several. It grants nothing: whoever reaches a hub already holds its credential.
+Visibility and authorization compare user ids: the desktop shows a machine
+whose owner is the current user, and an agent service accepts a request of
+its own user. The members of a LAN therefore act as one user, like one account
+signed in on several devices. That user is derived from the credential, as the
+workspace is, so every build that knows the credential agrees on it and an
+installation can be updated without the others. It grants nothing: whoever
+reaches a hub already holds its credential.
+
+A member of two LANs is two users. Each workspace runs as the user of its own
+LAN: the fleet hands a workspace runtime the port with that identity, the local
+access oracle answers per workspace, and a desktop window acts as the user of
+the workspace its route names. Only what has no workspace uses the user of the
+first LAN, which is why a changed first LAN restarts the agent service.
 
 An installation without a LAN keeps the identity and the implicit workspace it
 always had. `local-identity.json` remembers which workspace that is, because the
@@ -74,7 +81,7 @@ watches it.
 | Change | Agent service | Desktop |
 | --- | --- | --- |
 | LAN joined, left or renamed | Starts or stops that workspace | The switcher follows the next snapshot |
-| First LAN joined, last LAN left | Exits with the restart code | Reloads, because the user id changed |
+| First LAN changed, joined or left | Exits with the restart code | Reloads, because the installation is another user |
 | LAN moved to another address | Exits with the restart code | The bridge resolves the new address per request |
 | Machine renamed | Exits with the restart code | Nothing |
 

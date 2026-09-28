@@ -16,8 +16,18 @@ const validCatalog = {
 }
 
 const lans = [
-  { id: 'a'.repeat(32), url: 'http://100.64.0.1:8788', workspaceId: 'lw_home' },
-  { id: 'b'.repeat(32), url: 'https://hub.example.com', workspaceId: 'lw_office' }
+  {
+    id: 'a'.repeat(32),
+    url: 'http://100.64.0.1:8788',
+    workspaceId: 'lw_home',
+    userId: 'local:home-user'
+  },
+  {
+    id: 'b'.repeat(32),
+    url: 'https://hub.example.com',
+    workspaceId: 'lw_office',
+    userId: 'local:office-user'
+  }
 ]
 
 void test('keeps CLI identity and workspace in one local platform snapshot', () => {
@@ -30,14 +40,14 @@ void test('keeps CLI identity and workspace in one local platform snapshot', () 
   assert.deepEqual(parseLocalPlatformSnapshot(validCatalog), {
     userId: 'local:user-1',
     workspace: expected,
-    workspaces: [{ ...expected, lan: null }]
+    workspaces: [{ ...expected, lan: null, userId: 'local:user-1' }]
   })
 })
 
 void test('lists one workspace per LAN and names the LAN each one syncs through', () => {
   const snapshot = parseLocalPlatformSnapshot(
     {
-      identity: { userId: 'local:lan-owner' },
+      identity: { userId: 'local:home-user' },
       workspaces: [
         workspace('lw_home', 'Home', 'lan-home'),
         workspace('lw_office', 'Office', 'office'),
@@ -47,7 +57,7 @@ void test('lists one workspace per LAN and names the LAN each one syncs through'
     lans
   )
   assert.deepEqual(snapshot, {
-    userId: 'local:lan-owner',
+    userId: 'local:home-user',
     workspace: { workspaceId: 'lw_home', name: 'Home', slug: 'lan-home', role: 'owner' },
     workspaces: [
       {
@@ -55,14 +65,16 @@ void test('lists one workspace per LAN and names the LAN each one syncs through'
         name: 'Home',
         slug: 'lan-home',
         role: 'owner',
-        lan: { id: 'a'.repeat(32), url: 'http://100.64.0.1:8788' }
+        lan: { id: 'a'.repeat(32), url: 'http://100.64.0.1:8788' },
+        userId: 'local:home-user'
       },
       {
         workspaceId: 'lw_office',
         name: 'Office',
         slug: 'office',
         role: 'owner',
-        lan: { id: 'b'.repeat(32), url: 'https://hub.example.com' }
+        lan: { id: 'b'.repeat(32), url: 'https://hub.example.com' },
+        userId: 'local:office-user'
       }
     ]
   })

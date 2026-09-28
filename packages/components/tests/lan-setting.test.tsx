@@ -37,6 +37,7 @@ const lan = (id: string, name: string, url: string): ElectronLanSummary => ({
   url,
   slug: name.toLowerCase(),
   workspaceId: `lw_${id.repeat(32)}`,
+  userId: `local:${id.repeat(32)}`,
 });
 
 const home = lan('a', 'Home', 'http://100.64.0.1:8788');

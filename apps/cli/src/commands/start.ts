@@ -13,8 +13,8 @@ import {
 } from '@/lib/auth';
 import { LodyFleet, syncCliServerTime, type ImplicitLocalWorkspaceMemory } from '@/lib/lody-fleet';
 import { CliType, MachineId } from '@lody/shared';
-import { LAN_SHARED_USER_ID } from '@lody/shared/lan-hub';
 import {
+  deriveLanHubUserId,
   readLanHubSettings,
   resolveMachineName,
   type LanHubSettings,
@@ -389,12 +389,15 @@ export const startCommand = new Command('start')
       // No account exists on the local platform: author everything under the
       // persisted synthetic identity. The empty token is safe because every
       // cloud endpoint env was blanked above, so token consumers are inert.
-      // A LAN replaces the per-install identity with the owner every LAN
-      // member acts as, so their machines and sessions belong to one user.
+      // A LAN replaces the per-install identity with the user its members
+      // share, so their machines and sessions belong to one user. Each
+      // workspace runs as the user of its own LAN; the process itself is the
+      // user of the first.
       token = '';
       localStart = { lanSettings, machineNameExplicit: localMachineName.explicit };
-      if (lanSettings.hubs.length > 0) {
-        userId = LAN_SHARED_USER_ID;
+      const firstLan = lanSettings.hubs[0];
+      if (firstLan) {
+        userId = deriveLanHubUserId(firstLan.token);
         await rememberImplicitLocalWorkspaceBeforeLan({
           catalog: makeLocalWorkspaceCatalog(),
           lanWorkspaceIds: new Set(

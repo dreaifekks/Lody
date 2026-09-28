@@ -1,7 +1,7 @@
 // Platform-neutral contract for self-hosted Streams hubs ("LANs"). Node-only
 // file access and id derivation live in `node/lan-hub.ts`; everything here is
 // safe in a renderer.
-import { LAN_HUB_SCHEME, LOCAL_USER_ID_PREFIX, LOCAL_WORKSPACE_ID_PREFIX } from './platform-kind';
+import { LAN_HUB_SCHEME, LOCAL_WORKSPACE_ID_PREFIX } from './platform-kind';
 import { isReservedWorkspaceSlug } from './workspace-slugs';
 
 export const LAN_HUB_DEFAULT_NAME = 'Lody LAN';
@@ -10,15 +10,6 @@ export const LAN_HUB_NAME_MAX_LENGTH = 40;
 export const LAN_HUB_ID_PATTERN = /^[a-f0-9]{32}$/;
 export const LAN_INVITE_SCHEME = 'lody-lan';
 export const LAN_INVITE_TLS_SCHEME = 'lody-lans';
-
-/**
- * The one owner of every LAN workspace. A LAN is a trust domain: whoever holds
- * its credential may control every machine in it, so its devices act as one
- * user, exactly like one account signed in on several devices. The id is the
- * same for every LAN because a process has a single identity while it may
- * belong to several LANs at once.
- */
-export const LAN_SHARED_USER_ID = `${LOCAL_USER_ID_PREFIX}be8b1a352fc7a753365e852b5b5998e8`;
 
 /** What a renderer may know about a LAN: everything except its credential. */
 export type LanHubSummary = {
@@ -30,6 +21,12 @@ export type LanHubSummary = {
   url: string;
   slug: string;
   workspaceId: string;
+  /**
+   * The user every member of this LAN acts as. A LAN is a trust domain:
+   * whoever holds its credential may control every machine in it, so its
+   * devices are one user, like one account signed in on several devices.
+   */
+  userId: string;
 };
 
 export type LanInvite = {

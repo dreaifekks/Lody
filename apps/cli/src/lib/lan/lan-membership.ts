@@ -23,6 +23,7 @@ export function toLanWorkspaces(hubs: readonly LanHub[]): WorkspaceSummary[] {
     name: hub.name,
     slug: hub.slug,
     role: 'owner',
+    userId: hub.userId,
   }));
 }
 

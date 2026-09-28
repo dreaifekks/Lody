@@ -4,7 +4,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   LAN_HUB_DEFAULT_NAME,
-  LAN_SHARED_USER_ID,
   LanHubInputError,
   formatLanInvite,
   getLanHubRendererOrigin,
@@ -17,6 +16,7 @@ import {
   addLanHub,
   classifyLanHubChange,
   deriveLanHubId,
+  deriveLanHubUserId,
   findLanHub,
   readLanHubSettings,
   removeLanHub,
@@ -30,6 +30,7 @@ import {
 
 const HOME_TOKEN = 'home-token-0123456789';
 const OFFICE_TOKEN = 'office-token-0123456789';
+const EXAMPLE_USER_ID = 'local:eb246c243a7924a5b45831f136c5d740';
 
 let directory: string;
 let filePath: string;
@@ -91,8 +92,15 @@ describe('LAN identity', () => {
     );
   });
 
-  it('gives every LAN member the same owner', () => {
-    expect(LAN_SHARED_USER_ID).toMatch(/^local:[a-f0-9]{32}$/);
+  it('gives the members of a LAN one user, and another LAN another', () => {
+    // Pinned like the workspace: builds that joined a LAN before LANs could
+    // be listed derive this user, and have to keep meeting newer ones.
+    expect(deriveLanHubUserId('example')).toBe(EXAMPLE_USER_ID);
+    expect(deriveLanHubUserId(HOME_TOKEN)).toBe(deriveLanHubUserId(HOME_TOKEN));
+    expect(deriveLanHubUserId(HOME_TOKEN)).not.toBe(deriveLanHubUserId(OFFICE_TOKEN));
+    expect(summarizeLanHubs(join([], 'Home', 'http://10.0.0.1:8788', HOME_TOKEN))[0]?.userId).toBe(
+      deriveLanHubUserId(HOME_TOKEN)
+    );
   });
 });
 
@@ -363,7 +371,12 @@ describe('following a settings change', () => {
     expect(classifyLanHubChange(settings([home]), settings([home, office]))).toEqual({
       kind: 'workspaces',
     });
+    // The process is the user of its first LAN and cannot become another.
     expect(classifyLanHubChange(settings([home, office]), settings([office]))).toEqual({
+      kind: 'restart',
+      reason: 'the first LAN of this machine changed',
+    });
+    expect(classifyLanHubChange(settings([home, office]), settings([home]))).toEqual({
       kind: 'workspaces',
     });
     expect(

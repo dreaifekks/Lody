@@ -41,6 +41,11 @@ export interface WorkspaceSummary {
   name: string;
   slug: string | null;
   role: string;
+  /**
+   * The user this installation acts as in this workspace, when that differs
+   * between its workspaces: the members of a LAN share the user of that LAN.
+   */
+  userId?: string;
 }
 
 export type WorkspacesState =

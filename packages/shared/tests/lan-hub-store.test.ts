@@ -3,7 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseLanInvite } from '../src/lan-hub';
-import { deriveLanHubId, readLanHubSettings, type LanHubSettings } from '../src/node/lan-hub';
+import {
+  deriveLanHubId,
+  deriveLanHubUserId,
+  readLanHubSettings,
+  type LanHubSettings,
+} from '../src/node/lan-hub';
 import { LanHubStore } from '../src/node/lan-hub-store';
 
 const HOME_INVITE = 'lody-lan://home-token@100.64.0.1:8788/Home';
@@ -72,6 +77,7 @@ describe('LanHubStore', () => {
         url: 'http://100.64.0.1:8788',
         slug: 'lan-home',
         workspaceId: `lw_${deriveLanHubId('home-token')}`,
+        userId: deriveLanHubUserId('home-token'),
       },
       {
         id: deriveLanHubId('office-token'),
@@ -79,9 +85,10 @@ describe('LanHubStore', () => {
         url: 'http://10.0.1.1:8788',
         slug: 'work',
         workspaceId: `lw_${deriveLanHubId('office-token')}`,
+        userId: deriveLanHubUserId('office-token'),
       },
     ]);
-    expect(JSON.stringify(store.getState())).not.toContain('token');
+    expect(JSON.stringify(store.getState())).not.toContain('-token');
     expect(readLanHubSettings({ env: {}, filePath }).hubs.map((hub) => hub.token)).toEqual([
       'home-token',
       'office-token',

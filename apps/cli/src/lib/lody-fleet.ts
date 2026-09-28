@@ -119,6 +119,8 @@ type WorkspaceListItem = {
   name: string;
   slug: string | null;
   role: string;
+  /** The user this machine acts as in the workspace, when workspaces differ. */
+  userId?: string;
 };
 
 type AuthorizedWorkspaceList = Extract<CloudAccessSnapshot, { status: 'authorized' }>;
@@ -248,9 +250,13 @@ export class LodyFleet {
     this.localPlatform = this.cloudPort.kind === 'local' && !this.remoteBridge;
     // The local platform has no cloud reconcile: the catalog bootstrap is the
     // only workspace source, so it is unconditionally on.
+    // A LAN member starts from its settings: they answer at once, and unlike
+    // the catalog they say which user each workspace runs as.
+    const lanMember = this.cloudPort.kind === 'local' && this.remoteBridge !== null;
     this.localFirstBootstrap =
       this.localPlatform ||
-      (options.localFirstBootstrap ?? process.env.LODY_LOCAL_FIRST_BOOTSTRAP !== '0');
+      (!lanMember &&
+        (options.localFirstBootstrap ?? process.env.LODY_LOCAL_FIRST_BOOTSTRAP !== '0'));
     this.startupTimeSync = options.startupTimeSync;
     this.onProcessLifecycleAction = options.onProcessLifecycleAction;
     this.localProjectControlService = new LocalProjectControlService(this.logger);
@@ -306,7 +312,7 @@ export class LodyFleet {
               workspace: runtime.workspace,
               auth: {
                 token: this.cliToken,
-                userId: this.userId,
+                userId: this.userIdFor(runtime.workspace.id),
                 userName: '',
                 userEmail: '',
                 machineId: this.machineId,
@@ -705,6 +711,7 @@ export class LodyFleet {
         workspace.name,
         workspace.slug,
         workspace.role,
+        workspace.userId ?? null,
       ]),
     });
     // A valid workspace list means the control plane is reachable again; cancel
@@ -807,11 +814,11 @@ export class LodyFleet {
           workspaceId: workspace.id as WorkspaceId,
           workspaceSlug: workspace.slug ?? undefined,
           token: this.cliToken,
-          userId: this.userId,
+          userId: workspace.userId ?? this.userId,
           machineId: this.machineId,
           machineName: this.machineName,
           machineNameExplicit: this.machineNameExplicit,
-          cloudPort: this.cloudPort,
+          cloudPort: this.cloudPortFor(workspace),
           localWorkspaceCatalog: this.localWorkspaceCatalog,
           memoryPressure: this.memoryPressure,
           machineLifecycleCapability: this.machineLifecycleCapability,
@@ -853,7 +860,7 @@ export class LodyFleet {
         const prPollerWorkspace = createLodyPrPollerWorkspace({
           documentManager: startedLody.documentManager,
           workspaceId: workspace.id,
-          userId: this.userId,
+          userId: workspace.userId ?? this.userId,
           machineId: this.machineId,
           githubTokens: this.cloudPort.githubTokens,
           prAssociation: this.cloudPort.prAssociation,
@@ -867,7 +874,7 @@ export class LodyFleet {
           workspace,
           auth: {
             token: this.cliToken,
-            userId: this.userId,
+            userId: workspace.userId ?? this.userId,
             userName: '',
             userEmail: '',
             machineId: this.machineId,
@@ -1023,6 +1030,32 @@ export class LodyFleet {
     timer.unref?.();
     this.retryTimers.set(workspace.id, timer);
     this.refreshRuntimeState();
+  }
+
+  /** Who this machine is in one workspace: the members of a LAN share a user. */
+  private userIdFor(workspaceId: string): string {
+    return (
+      this.runtimes.get(workspaceId)?.workspace.userId ??
+      this.desiredWorkspaces.get(workspaceId)?.userId ??
+      this.userId
+    );
+  }
+
+  /**
+   * The port as one workspace sees it. Everything below the fleet asks the
+   * port who the owner is, and the owner of a LAN workspace is the user of
+   * that LAN rather than the one the process started as.
+   */
+  private cloudPortFor(workspace: WorkspaceListItem): CloudPort {
+    if (!workspace.userId || workspace.userId === this.cloudPort.identity.userId) {
+      return this.cloudPort;
+    }
+    return {
+      ...this.cloudPort,
+      identity: { ...this.cloudPort.identity, userId: workspace.userId },
+      // The fleet owns the port; a workspace that stops must not dispose it.
+      dispose: () => Promise.resolve(),
+    };
   }
 
   private async stopWorkspace(workspaceId: string): Promise<void> {
@@ -2038,7 +2071,7 @@ export class LodyFleet {
           {
             workspaceId: message.workspaceId,
             machineId: this.machineId,
-            userId: this.userId,
+            userId: this.userIdFor(message.workspaceId),
           },
           message.provider
         );
@@ -2065,7 +2098,7 @@ export class LodyFleet {
           {
             workspaceId: message.workspaceId,
             machineId: this.machineId,
-            userId: this.userId,
+            userId: this.userIdFor(message.workspaceId),
           },
           message.provider
         );
@@ -2093,7 +2126,7 @@ export class LodyFleet {
           {
             workspaceId: message.workspaceId,
             machineId: this.machineId,
-            userId: this.userId,
+            userId: this.userIdFor(message.workspaceId),
           },
           message.provider
         );

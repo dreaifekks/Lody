@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { addLanHub, type LanHub, type LanHubSettings } from '@lody/shared/node/lan-hub';
+import {
+  addLanHub,
+  deriveLanHubUserId,
+  type LanHub,
+  type LanHubSettings,
+} from '@lody/shared/node/lan-hub';
 import { LanMembership, toLanWorkspaces } from './lan-membership';
 import type { Logger } from '@/utils/logger';
 
@@ -79,8 +84,20 @@ describe('LanMembership', () => {
     const [homeWorkspace, officeWorkspace] = toLanWorkspaces([home, office]);
 
     expect(membership.workspaces.get()).toEqual([
-      { id: `lw_${home.id}`, name: 'Home', slug: 'lan-home', role: 'owner' },
-      { id: `lw_${office.id}`, name: 'Office', slug: 'office', role: 'owner' },
+      {
+        id: `lw_${home.id}`,
+        name: 'Home',
+        slug: 'lan-home',
+        role: 'owner',
+        userId: deriveLanHubUserId('home-token'),
+      },
+      {
+        id: `lw_${office.id}`,
+        name: 'Office',
+        slug: 'office',
+        role: 'owner',
+        userId: deriveLanHubUserId('office-token'),
+      },
     ]);
     const homeGateway = gatewayOf(membership, homeWorkspace!.id);
     const officeGateway = gatewayOf(membership, officeWorkspace!.id);
@@ -113,10 +130,10 @@ describe('LanMembership', () => {
     const harness = createMembership(settings([home, office]));
     harness.membership.start();
 
-    harness.change(settings([office]));
+    harness.change(settings([home]));
 
-    expect(harness.seen).toEqual([['Office']]);
-    expect(() => gatewayOf(harness.membership, `lw_${home.id}`)).toThrow(
+    expect(harness.seen).toEqual([['Home']]);
+    expect(() => gatewayOf(harness.membership, `lw_${office.id}`)).toThrow(
       /No LAN carries workspace/
     );
   });
@@ -128,7 +145,13 @@ describe('LanMembership', () => {
     harness.change(settings([{ ...home, name: 'Flat' }]));
 
     expect(harness.membership.workspaces.get()).toEqual([
-      { id: `lw_${home.id}`, name: 'Flat', slug: 'flat', role: 'owner' },
+      {
+        id: `lw_${home.id}`,
+        name: 'Flat',
+        slug: 'flat',
+        role: 'owner',
+        userId: deriveLanHubUserId('home-token'),
+      },
     ]);
     expect(harness.restarts).toEqual([]);
   });

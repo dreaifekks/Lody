@@ -163,6 +163,10 @@ export function createLocalCloudPort(options: LocalCloudPortOptions): CloudPort 
   const workspaces = isWorkspaceStore(options.workspaces)
     ? options.workspaces
     : createStaticStore(options.workspaces);
+  // The owner of one workspace; a workspace that names none has the owner of
+  // the installation.
+  const ownerOf = (workspaceId: string): string =>
+    workspaces.get().find((workspace) => workspace.id === workspaceId)?.userId ?? identity.userId;
   return {
     kind: 'local',
     identity,
@@ -175,13 +179,15 @@ export function createLocalCloudPort(options: LocalCloudPortOptions): CloudPort 
       },
       verifyMachineAccess: (request) =>
         Promise.resolve(
-          request.requesterUserId === identity.userId
+          request.requesterUserId === ownerOf(request.workspaceId)
             ? { allowed: true }
             : { allowed: false, reason: 'requester_not_member' }
         ),
       registerMachineAccess: () => Promise.resolve(),
       resolveWorkspaceUser: (request) =>
-        Promise.resolve(request.userId === identity.userId ? { id: identity.userId } : null),
+        Promise.resolve(
+          request.userId === ownerOf(request.workspaceId) ? { id: request.userId } : null
+        ),
     },
     streamsTokens: options.streamsTokens ?? null,
     notifications: null,

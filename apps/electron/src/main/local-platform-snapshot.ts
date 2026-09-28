@@ -5,7 +5,7 @@ import type {
 } from '@lody/shared/electron-ipc'
 
 /** What the snapshot needs to know about a LAN: never its credential. */
-export type SnapshotLan = { id: string; url: string; workspaceId: string }
+export type SnapshotLan = { id: string; url: string; workspaceId: string; userId: string }
 
 /**
  * Parse the CLI-owned atomic local identity/workspace bootstrap contract.
@@ -55,7 +55,10 @@ export function parseLocalPlatformSnapshot(
       name: workspace.name,
       slug: workspace.slug,
       role: workspace.role,
-      lan: lan ? { id: lan.id, url: lan.url } : null
+      lan: lan ? { id: lan.id, url: lan.url } : null,
+      // The members of a LAN share its user; any other workspace belongs to
+      // the user of the installation.
+      userId: lan?.userId ?? userId
     }
   })
   // The settings and the catalog are written by different processes, so for a

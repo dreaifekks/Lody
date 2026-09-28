@@ -22,12 +22,14 @@ const workspace = (
   slug,
   role: 'owner',
   lan: lan ? { id: lan, url: `http://${name.toLowerCase()}.invalid:8788` } : null,
+  // The members of a LAN share a user; a workspace without one has the installation's.
+  userId: lan ? `local:${name.toLowerCase()}` : 'local:user-1',
 });
 
 const snapshot = (userId: string, workspaces: SnapshotWorkspace[]): ElectronLocalPlatformSnapshot => {
   const [first] = workspaces;
   if (!first) throw new Error('a snapshot lists at least one workspace');
-  const { lan: _lan, ...implicit } = first;
+  const { lan: _lan, userId: _userId, ...implicit } = first;
   return { userId, workspace: implicit, workspaces };
 };
 
@@ -101,14 +103,16 @@ describe('local platform follower', () => {
     });
     expect(harness.workspaces.get()).toEqual({
       status: 'ready',
-      workspaces: [{ id: 'lw_local', name: 'Lody', slug: 'local', role: 'owner' }],
+      workspaces: [
+        { id: 'lw_local', name: 'Lody', slug: 'local', role: 'owner', userId: 'local:user-1' },
+      ],
       activeWorkspaceId: 'lw_local',
     });
     expect(harness.follower.resolveStreams('lw_local')).toBeNull();
   });
 
   it('reaches every LAN workspace through the bridge of its own LAN', async () => {
-    const harness = createFollower(snapshot('local:lan', [home, office]));
+    const harness = createFollower(snapshot('local:home', [home, office]));
 
     await harness.follower.refresh();
 
@@ -125,38 +129,38 @@ describe('local platform follower', () => {
   });
 
   it('follows a LAN that is joined, renamed and left while the window is open', async () => {
-    const harness = createFollower(snapshot('local:lan', [home]));
+    const harness = createFollower(snapshot('local:home', [home]));
     await harness.follower.refresh();
 
-    harness.becomes(snapshot('local:lan', [home, office]));
+    harness.becomes(snapshot('local:home', [home, office]));
     await harness.follower.refresh();
     expect(harness.names()).toEqual(['Home', 'Office']);
 
-    harness.becomes(snapshot('local:lan', [{ ...home, name: 'Flat', slug: 'flat' }, office]));
+    harness.becomes(snapshot('local:home', [{ ...home, name: 'Flat', slug: 'flat' }, office]));
     await harness.follower.refresh();
     expect(harness.names()).toEqual(['Flat', 'Office']);
 
-    harness.becomes(snapshot('local:lan', [office]));
+    harness.becomes(snapshot('local:home', [{ ...home, name: 'Flat', slug: 'flat' }]));
     await harness.follower.refresh();
-    expect(harness.names()).toEqual(['Office']);
-    expect(harness.active()).toBe('lw_office');
-    expect(harness.follower.resolveStreams('lw_home')).toBeNull();
+    expect(harness.names()).toEqual(['Flat']);
+    expect(harness.active()).toBe('lw_home');
+    expect(harness.follower.resolveStreams('lw_office')).toBeNull();
   });
 
   it('publishes nothing while nothing changed', async () => {
-    const harness = createFollower(snapshot('local:lan', [home, office]));
+    const harness = createFollower(snapshot('local:home', [home, office]));
     await harness.follower.refresh();
     const published = harness.published.length;
 
     await harness.follower.refresh();
-    harness.becomes(snapshot('local:lan', [home, office]));
+    harness.becomes(snapshot('local:home', [home, office]));
     await harness.follower.refresh();
 
     expect(harness.published).toHaveLength(published);
   });
 
   it('opens where the user last was, and stays where the user goes', async () => {
-    const harness = createFollower(snapshot('local:lan', [home, office]));
+    const harness = createFollower(snapshot('local:home', [home, office]));
     harness.prefers('office');
     await harness.follower.refresh();
     expect(harness.active()).toBe('lw_office');
@@ -165,17 +169,28 @@ describe('local platform follower', () => {
     expect(harness.active()).toBe('lw_home');
 
     // A later snapshot keeps the choice, and a workspace that is gone cannot be chosen.
-    harness.becomes(snapshot('local:lan', [home, { ...office, name: 'Work' }]));
+    harness.becomes(snapshot('local:home', [home, { ...office, name: 'Work' }]));
     await harness.follower.refresh();
     harness.follower.activate('lw_gone');
     expect(harness.active()).toBe('lw_home');
+  });
+
+  it('acts as the user of the LAN whose workspace is active', async () => {
+    const harness = createFollower(snapshot('local:home', [home, office]));
+    await harness.follower.refresh();
+    expect(harness.session.get()).toMatchObject({ user: { id: 'local:home' } });
+
+    harness.follower.activate('lw_office');
+
+    expect(harness.session.get()).toMatchObject({ user: { id: 'local:office' } });
+    expect(harness.identityChanges).toEqual([]);
   });
 
   it('starts over when the installation acts as another user', async () => {
     const harness = createFollower(snapshot('local:user-1', [local]));
     await harness.follower.refresh();
 
-    harness.becomes(snapshot('local:lan', [home]));
+    harness.becomes(snapshot('local:home', [home]));
     await harness.follower.refresh();
     await harness.follower.refresh();
 
@@ -187,7 +202,7 @@ describe('local platform follower', () => {
   });
 
   it('keeps what it has while the CLI is between two sets of workspaces', async () => {
-    const harness = createFollower(snapshot('local:lan', [home]));
+    const harness = createFollower(snapshot('local:home', [home]));
     await harness.follower.refresh();
 
     harness.becomes(null);
@@ -212,7 +227,7 @@ describe('local platform follower', () => {
   });
 
   it('does not blank a window over a catalog that fails to read once', async () => {
-    const harness = createFollower(snapshot('local:lan', [home]));
+    const harness = createFollower(snapshot('local:home', [home]));
     await harness.follower.refresh();
 
     harness.becomes(new Error('EBUSY'));
@@ -223,7 +238,7 @@ describe('local platform follower', () => {
   });
 
   it('reads once for requests that arrive together', async () => {
-    const harness = createFollower(snapshot('local:lan', [home]));
+    const harness = createFollower(snapshot('local:home', [home]));
 
     await Promise.all([harness.follower.refresh(), harness.follower.refresh()]);
 

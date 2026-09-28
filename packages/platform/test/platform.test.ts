@@ -253,6 +253,40 @@ describe('createLocalCloudPort', () => {
     unsubscribe();
   });
 
+  it('admits the user of a LAN to the workspace of that LAN only', async () => {
+    const port = createLocalCloudPort({
+      identity: { userId: 'local:home-user' },
+      workspaces: [
+        { id: 'lw_home', name: 'Home', slug: 'home', role: 'owner', userId: 'local:home-user' },
+        { id: 'lw_office', name: 'Office', slug: 'office', role: 'owner', userId: 'local:office-user' },
+        { id: 'lw_plain', name: 'Plain', slug: null, role: 'owner' },
+      ],
+    });
+    const verdict = async (workspaceId: string, requesterUserId: string) =>
+      (await port.access.verifyMachineAccess({ workspaceId: workspaceId as WorkspaceId, requesterUserId }))
+        .allowed;
+
+    expect(await verdict('lw_home', 'local:home-user')).toBe(true);
+    expect(await verdict('lw_office', 'local:office-user')).toBe(true);
+    // Holding the credential of one LAN opens no other.
+    expect(await verdict('lw_office', 'local:home-user')).toBe(false);
+    expect(await verdict('lw_home', 'local:office-user')).toBe(false);
+    // A workspace that names no user belongs to the installation.
+    expect(await verdict('lw_plain', 'local:home-user')).toBe(true);
+    await expect(
+      port.access.resolveWorkspaceUser({
+        workspaceId: 'lw_office' as WorkspaceId,
+        userId: 'local:office-user',
+      })
+    ).resolves.toEqual({ id: 'local:office-user' });
+    await expect(
+      port.access.resolveWorkspaceUser({
+        workspaceId: 'lw_office' as WorkspaceId,
+        userId: 'local:home-user',
+      })
+    ).resolves.toBeNull();
+  });
+
   it('reports the workspaces again whenever the LANs of the installation change', () => {
     const home = { id: 'lw_home', name: 'Home', slug: 'lan-home', role: 'owner' };
     const office = { id: 'lw_office', name: 'Office', slug: 'office', role: 'owner' };

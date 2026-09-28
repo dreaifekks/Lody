@@ -62,9 +62,10 @@ export function createLocalPlatformFollower(options: {
   workspaces: MutableStore<WorkspacesState>;
   readPreferredSlug: () => string | null;
   /**
-   * The installation acts as another user now, as it does once it joins its
+   * The installation itself became another user, as it does once it joins its
    * first LAN or leaves its last one. Everything a renderer holds was loaded
-   * for the previous user, so the renderer has to start over.
+   * for the previous user, so the renderer has to start over. Moving between
+   * the workspaces of two LANs is not this: it changes the user in place.
    */
   onIdentityChanged: () => void;
   onError?: (error: unknown) => void;
@@ -76,6 +77,7 @@ export function createLocalPlatformFollower(options: {
   let inFlight: Promise<void> | null = null;
   let lans = new Map<string, string>();
   let summaries: WorkspaceSummary[] = [];
+  let sessionUserId: string | null = null;
 
   const publishWorkspaces = (): void => {
     const preferredSlug = options.readPreferredSlug();
@@ -83,6 +85,13 @@ export function createLocalPlatformFollower(options: {
       summaries.find((workspace) => workspace.id === selectedWorkspaceId) ??
       summaries.find((workspace) => getLocalWorkspaceSlug(workspace) === preferredSlug) ??
       summaries[0];
+    // The user is published before the workspace that makes it current, so
+    // nothing reads the workspace of one LAN as the user of another.
+    const activeUserId = active?.userId ?? userId;
+    if (activeUserId && activeUserId !== sessionUserId) {
+      sessionUserId = activeUserId;
+      options.session.set({ status: 'authenticated', user: { id: activeUserId, name: 'Local' } });
+    }
     options.workspaces.set({
       status: 'ready',
       workspaces: summaries,
@@ -109,14 +118,9 @@ export function createLocalPlatformFollower(options: {
       name: workspace.name,
       slug: workspace.slug,
       role: workspace.role,
+      userId: workspace.userId,
     }));
-    if (userId === null) {
-      userId = snapshot.userId;
-      options.session.set({
-        status: 'authenticated',
-        user: { id: snapshot.userId, name: 'Local' },
-      });
-    }
+    userId = snapshot.userId;
     publishWorkspaces();
   };
 
