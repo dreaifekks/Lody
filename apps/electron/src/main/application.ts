@@ -1,6 +1,8 @@
 import { prepareRendererSendsForExit } from './services/renderer-send-lifecycle'
 import { handleWindowContentReady } from './window-target'
 import { installLocalFileResourceProtocol } from './services/local-file-resource-protocol'
+import { installLanHubProtocol } from './services/lan-hub-protocol'
+import { readLanHubConfig } from '@lody/shared/node/lan-hub'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import dns from 'node:dns'
@@ -161,6 +163,13 @@ export function startApplication(executionHost?: DesktopExecutionHost): void {
   recordE2EBootDiagnostic('waiting-for-app-ready')
   const appReady = app.whenReady().then(async () => {
     installLocalFileResourceProtocol()
+    try {
+      const lanHub = isLocalPlatform() ? readLanHubConfig() : null
+      if (lanHub) installLanHubProtocol(lanHub)
+    } catch (error) {
+      // The CLI refuses to start on the same config and reports it to the user.
+      console.error('[Electron] LAN hub config is invalid; hub bridge not installed', error)
+    }
     // Before any window can reopen the local stores: a reset armed with
     // `lody app reset-cache` is the way back for a user whose renderer is wedged,
     // so it has to run while nothing holds that storage open.

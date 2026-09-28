@@ -78,7 +78,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const localProbeResult = useAtomValue(localProbeResultAtom);
   const localProbeAttempted = useAtomValue(localProbeAttemptedAtom);
   const localAgentEnabled = useAtomValue(localAgentEnabledAtom);
-  const token = useAtomValue(authTokenAtom);
+  const accountToken = useAtomValue(authTokenAtom);
+  // A fixed gateway carries its own credential; there is no account session.
+  const token = platform.sync.streams?.token ?? accountToken;
   const currentUser = useAtomValue(userAtom);
   const previousShutdown = useRef<Promise<void>>(Promise.resolve());
   const runtime = useAtomValue(runtimeAtom);
@@ -94,6 +96,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const setPresenceStates = useSetAtom(setLodyPresenceStatesAtom);
   const setPresenceNowMs = useSetAtom(setLodyPresenceNowMsAtom);
   const setPresenceSyncState = useSetAtom(setLodyPresenceSyncStateAtom);
+  const implicitLocalWorkspace = useImplicitLocalWorkspace();
   const visibleMachineIndex = useVisibleMachineMetas({
     includeMachineFlock: false,
     syncMachineFlock: false,
@@ -102,12 +105,21 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     machineIds: ReadonlySet<MachineId>;
     workspaceId: WorkspaceId;
   } | null>(null);
+  // Behind a fixed gateway every visible machine belongs to the local owner,
+  // so visibility itself is the authorization; there are no access rows.
+  const authorizedWorkspaceId = platform.sync.streams
+    ? ((implicitLocalWorkspace?.id as WorkspaceId | undefined) ?? null)
+    : workspaceId;
   authorizedMachineIdsRef.current =
-    visibleMachineIndex.isLoading || !workspaceId
+    visibleMachineIndex.isLoading || !authorizedWorkspaceId
       ? null
       : {
-          workspaceId,
-          machineIds: new Set(visibleMachineIndex.convexAuthorizedMachineIds),
+          workspaceId: authorizedWorkspaceId,
+          machineIds: new Set(
+            platform.sync.streams
+              ? visibleMachineIndex.machines.keys()
+              : visibleMachineIndex.convexAuthorizedMachineIds
+          ),
         };
 
   // Routed to PostHog via the runtime's onAnalyticsEvent. Kept in a ref so the
@@ -123,10 +135,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
 
   // Local (open-source) platform: the effective workspace id is the CLI's
   // implicit workspace — no cached/server id arbitration, no auth involved.
-  const isLocalPlatform = platform.sync.mode === 'local';
+  // This holds whether or not its rooms also sync through a self-hosted hub.
+  const isLocalPlatform = platform.kind === 'local';
   const accountId = currentUser?.id ?? (isLocalPlatform ? 'local' : null);
   const telemetryEnabled = platform.capabilities.has('telemetry');
-  const implicitLocalWorkspace = useImplicitLocalWorkspace();
   // Start the local Repo and metadata sync while the spare still has no route.
   // A matching claim keeps these effect keys unchanged and retains the runtime.
   const workspaceSlug =
@@ -296,6 +308,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
           // Platform assembly is the only authority for room topology. Do not
           // re-probe Electron or cloud configuration inside the runtime.
           syncMode: platform.sync.mode,
+          streams: platform.sync.streams,
           getAuthorizedMachineIds: () => {
             const snapshot = authorizedMachineIdsRef.current;
             return snapshot?.workspaceId === effectiveWorkspaceId ? snapshot.machineIds : null;
@@ -399,6 +412,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     clearPresenceStates,
     isLocalPlatform,
     platform.sync.mode,
+    platform.sync.streams,
     setControlConnectionState,
     setRuntimeInitializing,
     setRuntime,

@@ -4,6 +4,7 @@ import type { ReadonlyStore } from './store';
 import type { PlatformKind } from '@lody/shared/platform-kind';
 
 export {
+  LAN_HUB_RENDERER_ORIGIN,
   PLATFORM_ENV_VAR,
   PLATFORM_VITE_ENV_VAR,
   resolvePlatformKind,
@@ -85,6 +86,17 @@ export type PlatformSyncMode = 'local' | 'cloud' | 'dual';
 
 export interface PlatformSync {
   mode: PlatformSyncMode;
+  /**
+   * A fixed Streams gateway that needs no token endpoint. Present only when
+   * the assembly already knows the gateway and its credential; absent, the
+   * workspace runtime mints tokens from the hosted endpoint.
+   */
+  streams?: PlatformStreamsGateway;
+}
+
+export interface PlatformStreamsGateway {
+  gatewayBaseUrl: string;
+  token: string;
 }
 
 /**

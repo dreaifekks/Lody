@@ -49,7 +49,11 @@ vi.mock('@/lib/native-platform', () => ({ isNativeAppShell: () => false }));
 vi.mock('@/lib/desktop-window', () => ({ isWarmWindow: () => environment.warm }));
 vi.mock('@lody/platform/react', () => ({
   useCloudQuery: () => undefined,
-  usePlatform: () => ({ sync: { mode: environment.mode }, capabilities: new Set() }),
+  usePlatform: () => ({
+    kind: environment.mode === 'cloud' ? 'cloud' : 'local',
+    sync: { mode: environment.mode },
+    capabilities: new Set(),
+  }),
 }));
 vi.mock('@/hooks/use-visible-machine-metas', () => ({
   useVisibleMachineMetas: () => ({ isLoading: true }),

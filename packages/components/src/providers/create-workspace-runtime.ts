@@ -26,7 +26,7 @@ import { LoroRepo, type RepoRoomSubscription, type RepoWatchHandle } from 'loro-
 import { IndexedDBStorageAdaptor } from 'loro-repo/storage/indexeddb';
 import type { StreamsTransportAdapter } from 'loro-repo/transport/streams';
 import { StreamsCrdt, createLoroDocAdapter } from '@loro-dev/streams-crdt/loro';
-import type { PlatformSyncMode } from '@lody/platform';
+import type { PlatformStreamsGateway, PlatformSyncMode } from '@lody/platform';
 import {
   createLoroStreamsJsonStreamClient,
   LoroStreamsLiveModePolicy,
@@ -38,6 +38,7 @@ import {
 import {
   buildLoroStreamsTokenEndpoint,
   createLoroStreamsTokenProvider,
+  createStaticLoroStreamsTokenProvider,
   getPreviewCommentRoomId,
   createLoroStreamUrl,
   getLoroMetaStreamId,
@@ -209,6 +210,8 @@ type RuntimeDeps = {
    * plane only and performs zero cloud I/O — open-source platform builds.
    */
   syncMode?: PlatformSyncMode;
+  /** A fixed Streams gateway; absent, tokens are minted from the hosted endpoint. */
+  streams?: PlatformStreamsGateway;
   onControlConnectionStateChange?: (state: LodyControlConnectionState) => void;
   onDocMetaPatch?: (roomId: string, patch: unknown) => void;
   onPresenceSnapshot?: (states: LodyPresenceStateMap) => void;
@@ -1624,12 +1627,14 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
 
   const ensureStreamsTokenProvider = (): LoroStreamsTokenProvider => {
     if (!streamsTokenProvider) {
-      streamsTokenProvider = createLoroStreamsTokenProvider({
-        endpoint: buildLoroStreamsTokenEndpoint(import.meta.env.VITE_CONVEX_SITE_URL),
-        workspaceId,
-        authToken: () => authToken,
-        onEvent: logTokenProviderEvent,
-      });
+      streamsTokenProvider = deps.streams
+        ? createStaticLoroStreamsTokenProvider(deps.streams)
+        : createLoroStreamsTokenProvider({
+            endpoint: buildLoroStreamsTokenEndpoint(import.meta.env.VITE_CONVEX_SITE_URL),
+            workspaceId,
+            authToken: () => authToken,
+            onEvent: logTokenProviderEvent,
+          });
       eagerSyncAuthCallback = streamsTokenProvider.createAuthCallback();
     }
     return streamsTokenProvider;

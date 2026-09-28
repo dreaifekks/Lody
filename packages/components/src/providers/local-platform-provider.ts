@@ -1,10 +1,12 @@
 import {
+  LAN_HUB_RENDERER_ORIGIN,
   createLocalPlatformProvider,
   createStore,
   createStaticStore,
   type MutableStore,
   type PlatformProvider,
   type PlatformSessionState,
+  type PlatformStreamsGateway,
   type ReadonlyStore,
   type WorkspaceSummary,
   type WorkspacesState,
@@ -27,6 +29,19 @@ import { getIpcServices } from '@/lib/electron-ipc-client';
 export const LOCAL_WORKSPACE_FALLBACK_SLUG = 'local';
 
 const IMPLICIT_WORKSPACE_POLL_INTERVAL_MS = 500;
+
+/**
+ * The desktop shell forwards this origin to the configured hub and supplies the
+ * real credential itself; the token here only fills the transport's bearer slot.
+ */
+const LAN_HUB_STREAMS: PlatformStreamsGateway = {
+  gatewayBaseUrl: LAN_HUB_RENDERER_ORIGIN,
+  token: 'lan-hub',
+};
+
+function isLanHubConfigured(): boolean {
+  return typeof window !== 'undefined' && window.__LODY_PLATFORM__?.lanHub === true;
+}
 
 let cachedProvider: PlatformProvider | null = null;
 let cachedSessionStore: MutableStore<PlatformSessionState> | null = null;
@@ -128,6 +143,7 @@ export function getLocalPlatformProvider(): PlatformProvider {
     cachedProvider = createLocalPlatformProvider({
       session: sessionStore,
       workspaces: workspacesStore,
+      ...(isLanHubConfigured() ? { streams: LAN_HUB_STREAMS } : {}),
     });
     ensureLocalPlatformSnapshotPolling();
   }

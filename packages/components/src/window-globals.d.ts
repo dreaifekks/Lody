@@ -34,6 +34,8 @@ declare global {
       homeDir: string;
       machineName?: string;
       preferredSystemLanguages?: readonly string[];
+      /** The shell forwards `lody-hub:` to a configured self-hosted Streams hub. */
+      lanHub?: boolean;
     };
     __LODY_BOOT__?: LodyBootController;
     __LODY_LIVE_ACTIVITY__?: LodyLiveActivityBridge;

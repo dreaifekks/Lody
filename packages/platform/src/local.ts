@@ -9,6 +9,7 @@ import type {
   PlatformIdentity,
   PlatformProvider,
   PlatformSessionState,
+  PlatformStreamsGateway,
   PlatformWorkspaces,
   WorkspacesState,
   WorkspaceSummary,
@@ -67,6 +68,11 @@ export interface LocalPlatformProviderOptions {
   session: ReadonlyStore<PlatformSessionState>;
   /** Fed by the renderer's local-CLI connection: loading → ready(single implicit workspace). */
   workspaces: ReadonlyStore<WorkspacesState>;
+  /**
+   * A self-hosted Streams gateway. Present ⇒ rooms dual-home onto it so other
+   * devices on that gateway are reachable; hosted capabilities stay absent.
+   */
+  streams?: PlatformStreamsGateway;
 }
 
 export function createLocalPlatformProvider(
@@ -78,7 +84,7 @@ export function createLocalPlatformProvider(
     workspaces: createLocalWorkspaces(options.workspaces),
     capabilities: LOCAL_PLATFORM_CAPABILITIES,
     cloudApi: null,
-    sync: { mode: 'local' },
+    sync: options.streams ? { mode: 'dual', streams: options.streams } : { mode: 'local' },
   };
 }
 

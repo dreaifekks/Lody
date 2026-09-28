@@ -6,6 +6,7 @@ type LodyPlatformInfo = {
   homeDir: string
   machineName: string
   preferredSystemLanguages?: readonly string[]
+  lanHub?: boolean
 }
 
 type LodyNativeAppInfo = {
