@@ -2053,6 +2053,22 @@ export class LodyFleet {
         };
       }
 
+      if (message.type === 'hosted-config/preview' || message.type === 'hosted-config/import') {
+        const runtime = await this.resolveWorkspaceRuntime(message.workspaceId);
+        const { importHostedConfig, previewHostedImport } =
+          await import('./hosted-config/hosted-config-import');
+        const workspace = {
+          repo: runtime.lody.documentManager.repo,
+          workspaceId: message.workspaceId,
+          machineId: this.machineId,
+          userId: this.userIdFor(message.workspaceId),
+          sync: runtime.lody.documentManager,
+        };
+        return message.type === 'hosted-config/preview'
+          ? { ok: true, type: message.type, result: await previewHostedImport(workspace) }
+          : { ok: true, type: message.type, result: await importHostedConfig(workspace, message) };
+      }
+
       if (isLocalProjectWorktreeConfigRequest(message)) {
         const runtime = await this.resolveWorkspaceRuntime(message.workspaceId);
         await this.resolveWorkspaceProjectRootPath(runtime, message.localProjectId);

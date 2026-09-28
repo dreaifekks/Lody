@@ -120,6 +120,10 @@
       "types": "./src/platform-kind.ts",
       "import": "./src/platform-kind.ts"
     },
+    "./hosted-config": {
+      "types": "./src/hosted-config.ts",
+      "import": "./src/hosted-config.ts"
+    },
     "./lan-hub": {
       "types": "./src/lan-hub.ts",
       "import": "./src/lan-hub.ts"

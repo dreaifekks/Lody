@@ -1,3 +1,8 @@
+import {
+  HostedConfigCategorySchema,
+  HostedConfigImportResultSchema,
+  HostedConfigPreviewSchema,
+} from '../hosted-config';
 import type { LocalProjectControlRequest, LocalProjectControlResponse } from '../message';
 
 export const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
@@ -477,6 +482,19 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     );
   }
 
+  if (value.type === 'hosted-config/preview') {
+    return typeof value.workspaceId === 'string';
+  }
+
+  if (value.type === 'hosted-config/import') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      typeof value.sourceWorkspaceId === 'string' &&
+      Array.isArray(value.categories) &&
+      value.categories.every((category) => HostedConfigCategorySchema.safeParse(category).success)
+    );
+  }
+
   return false;
 }
 
@@ -608,6 +626,14 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'local-project/resolve-history-conflict') {
     return isLocalProjectHistoryConflictResolveResult(value.result);
+  }
+
+  if (value.type === 'hosted-config/preview') {
+    return HostedConfigPreviewSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'hosted-config/import') {
+    return HostedConfigImportResultSchema.safeParse(value.result).success;
   }
 
   return false;

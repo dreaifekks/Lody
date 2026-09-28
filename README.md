@@ -106,6 +106,13 @@ Desktop builds for macOS, Windows and Linux are attached to the
 `lody-lan lan --help` lists the commands that list, rename, move and leave LANs;
 [how LANs work](.agents/docs/lan.md) explains the rest.
 
+Coming from the hosted Lody? **Settings > Import** of the desktop app, or
+`lody-lan hosted import` on a server, reads the agents, MCP servers, Roles and
+projects the hosted Lody configured on that machine and adds them to this one.
+Nothing is sent anywhere and the hosted Lody keeps what it has;
+[importing](.agents/docs/hosted-import.md) explains what is left behind. Both
+desktop apps can run side by side.
+
 ## Use Lody from the CLI
 
 The CLI is more than the process that connects a machine. From a terminal or script, you can register local projects; inspect workspaces, machines, linked repositories, and Agent configs; create and message sessions; read their history and status; or archive and restore them. Commands that support `--json` can also feed Lody workspace data into your own tools.

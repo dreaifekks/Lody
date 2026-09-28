@@ -247,7 +247,9 @@ function resolveLocalProjectControlTimeoutMs(type: LocalProjectControlRequest['t
     type === 'worktree/list-files' ||
     type === 'local-project/sync-history' ||
     type === 'local-project/import-history' ||
-    type === 'local-project/resolve-history-conflict'
+    type === 'local-project/resolve-history-conflict' ||
+    type === 'hosted-config/preview' ||
+    type === 'hosted-config/import'
   ) {
     return LOCAL_PROJECT_CONTROL_LIST_FILES_TIMEOUT_MS
   }

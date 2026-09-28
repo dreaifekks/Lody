@@ -1,4 +1,9 @@
 import type {
+  HostedConfigCategory,
+  HostedConfigImportResult,
+  HostedConfigPreview,
+} from './hosted-config';
+import type {
   MachineId,
   ACPSessionConfig,
   SessionId,
@@ -1106,6 +1111,18 @@ export type LocalProjectControlRequest =
       sessionId: SessionId;
       relativePath: string;
       maxBytes?: number;
+    }
+  | {
+      type: 'hosted-config/preview';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+    }
+  | {
+      type: 'hosted-config/import';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      sourceWorkspaceId: string;
+      categories: HostedConfigCategory[];
     };
 
 export type LocalProjectControlErrorCode =
@@ -1197,6 +1214,8 @@ export type LocalProjectControlResponse =
     >
   | LocalProjectControlOkResponse<'worktree/list-files', LocalProjectFileListResult>
   | LocalProjectControlOkResponse<'worktree/read-file', LocalProjectFileReadResult | null>
+  | LocalProjectControlOkResponse<'hosted-config/preview', HostedConfigPreview>
+  | LocalProjectControlOkResponse<'hosted-config/import', HostedConfigImportResult>
   | LocalProjectControlErrorResponse;
 
 // ============================================

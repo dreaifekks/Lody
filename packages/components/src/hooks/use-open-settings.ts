@@ -112,6 +112,9 @@ export function useOpenSettings() {
         case 'lan':
           void router.navigate({ to: '/$workspaceName/settings/lan', params });
           return;
+        case 'hostedImport':
+          void router.navigate({ to: '/$workspaceName/settings/import', params });
+          return;
         case 'about':
           void router.navigate({ to: '/$workspaceName/settings/about', params });
           return;

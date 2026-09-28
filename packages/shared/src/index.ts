@@ -25,6 +25,7 @@ export type {
   WorkspaceId,
 } from './ids';
 export * from './message';
+export * from './hosted-config';
 export * from './ai';
 export * from './pi-provider-migration';
 export * from './message-text-spans';

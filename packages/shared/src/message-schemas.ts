@@ -1,3 +1,8 @@
+import {
+  HostedConfigCategorySchema,
+  HostedConfigImportResultSchema,
+  HostedConfigPreviewSchema,
+} from './hosted-config';
 import { z } from 'zod';
 import { SubagentTaskPayloadSchema } from './acp/claude-subagent-task';
 import {
@@ -2317,6 +2322,24 @@ export const WorktreeReadFileRequestSchema = z
   })
   .strict();
 
+export const HostedConfigPreviewRequestSchema = z
+  .object({
+    type: z.literal('hosted-config/preview'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+  })
+  .strict();
+
+export const HostedConfigImportRequestSchema = z
+  .object({
+    type: z.literal('hosted-config/import'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    sourceWorkspaceId: z.string().trim().min(1),
+    categories: z.array(HostedConfigCategorySchema).min(1),
+  })
+  .strict();
+
 export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LocalProjectAddRequestSchema,
   LocalProjectPrepareAddRequestSchema,
@@ -2341,6 +2364,8 @@ export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LocalProjectResolveHistoryConflictRequestSchema,
   WorktreeListFilesRequestSchema,
   WorktreeReadFileRequestSchema,
+  HostedConfigPreviewRequestSchema,
+  HostedConfigImportRequestSchema,
 ]);
 
 const LocalProjectFileListResultSchema = z
@@ -2596,6 +2621,8 @@ const LocalProjectControlErrorResponseSchema = z
       'local-project/resolve-history-conflict',
       'worktree/list-files',
       'worktree/read-file',
+      'hosted-config/preview',
+      'hosted-config/import',
     ]),
     error: LocalProjectControlErrorCodeSchema,
     message: z.string(),
@@ -2804,6 +2831,20 @@ export const LocalProjectControlResponseSchema = z.union([
       ok: z.literal(true),
       type: z.literal('worktree/read-file'),
       result: LocalProjectFileReadResultSchema.nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      type: z.literal('hosted-config/preview'),
+      result: HostedConfigPreviewSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      type: z.literal('hosted-config/import'),
+      result: HostedConfigImportResultSchema,
     })
     .strict(),
   LocalProjectControlErrorResponseSchema,
