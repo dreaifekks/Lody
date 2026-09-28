@@ -8,7 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const environment = vi.hoisted(() => ({
   warm: true,
   mode: 'local',
-  workspace: { id: 'local:workspace', slug: 'local' } as { id: string; slug: string } | null,
+  // The first workspace is the one the user was in last.
+  workspaces: [{ id: 'local:workspace', slug: 'local' }] as { id: string; slug: string }[],
+  syncByWorkspace: {} as Record<string, { mode: string; streams?: unknown }>,
 }));
 vi.mock('@/atoms', () => ({
   userAtom: atom({ id: 'local:user' }),
@@ -51,7 +53,10 @@ vi.mock('@lody/platform/react', () => ({
   useCloudQuery: () => undefined,
   usePlatform: () => ({
     kind: environment.mode === 'cloud' ? 'cloud' : 'local',
-    sync: { mode: environment.mode },
+    sync: {
+      mode: environment.mode,
+      resolve: (workspaceId: string) => environment.syncByWorkspace[workspaceId],
+    },
     capabilities: new Set(),
   }),
 }));
@@ -59,7 +64,10 @@ vi.mock('@/hooks/use-visible-machine-metas', () => ({
   useVisibleMachineMetas: () => ({ isLoading: true }),
 }));
 vi.mock('@/providers/local-platform-provider', () => ({
-  useImplicitLocalWorkspace: () => environment.workspace,
+  useLocalWorkspace: (slug: string | null) =>
+    environment.workspaces.find((workspace) => workspace.slug === slug) ??
+    environment.workspaces[0] ??
+    null,
   getLocalWorkspaceSlug: (workspace: { slug: string }) => workspace.slug,
 }));
 vi.mock('../src/components/chat/session-send-recovery', () => ({ SessionSendRecovery: () => null }));
@@ -100,7 +108,8 @@ describe('RuntimeProvider warm workspace preparation', () => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
     environment.warm = true;
     environment.mode = 'local';
-    environment.workspace = { id: 'local:workspace', slug: 'local' };
+    environment.workspaces = [{ id: 'local:workspace', slug: 'local' }];
+    environment.syncByWorkspace = {};
     store = createStore();
     root = createRoot(document.createElement('div'));
     prepared = runtimeFixture();
@@ -144,14 +153,61 @@ describe('RuntimeProvider warm workspace preparation', () => {
   });
 
   it('disposes the prepared runtime when the route changes scope', async () => {
+    environment.workspaces.push({ id: 'local:office', slug: 'office' });
     await render();
     const replacement = runtimeFixture();
     vi.mocked(createWorkspaceRuntime).mockResolvedValue(replacement as never);
     await act(async () => {
-      store.set(currentWorkspaceSlugAtom, 'different');
+      store.set(currentWorkspaceSlugAtom, 'office');
     });
     expect(prepared.disposed).toBe(true);
     expect(store.get(runtimeAtom)).toBe(replacement);
+    expect(vi.mocked(createWorkspaceRuntime).mock.lastCall?.[0]).toMatchObject({
+      workspaceId: 'local:office',
+      workspaceSlug: 'office',
+    });
+  });
+
+  it('starts no runtime under a route that names no workspace', async () => {
+    environment.warm = false;
+    await render();
+    await act(async () => {
+      store.set(currentWorkspaceSlugAtom, 'garage');
+    });
+    expect(store.get(runtimeAtom)).toBeNull();
+    expect(createWorkspaceRuntime).not.toHaveBeenCalled();
+  });
+
+  it('syncs each workspace the way its own LAN says', async () => {
+    environment.warm = false;
+    environment.workspaces = [
+      { id: 'local:home', slug: 'home' },
+      { id: 'local:office', slug: 'office' },
+    ];
+    const homeGateway = { gatewayBaseUrl: 'lody-hub://home', token: 'lan-hub' };
+    const officeGateway = { gatewayBaseUrl: 'lody-hub://office', token: 'lan-hub' };
+    environment.syncByWorkspace = {
+      'local:home': { mode: 'local' },
+      'local:office': { mode: 'local', streams: officeGateway },
+    };
+    await render();
+
+    await act(async () => {
+      store.set(currentWorkspaceSlugAtom, 'office');
+    });
+    expect(vi.mocked(createWorkspaceRuntime).mock.lastCall?.[0]).toMatchObject({
+      workspaceId: 'local:office',
+      streams: officeGateway,
+    });
+
+    environment.syncByWorkspace['local:home'] = { mode: 'local', streams: homeGateway };
+    await act(async () => {
+      store.set(currentWorkspaceSlugAtom, 'home');
+    });
+    expect(vi.mocked(createWorkspaceRuntime).mock.lastCall?.[0]).toMatchObject({
+      workspaceId: 'local:home',
+      streams: homeGateway,
+    });
   });
 
   it.each(['ordinary', 'cloud', 'missing identity'])(
@@ -159,7 +215,7 @@ describe('RuntimeProvider warm workspace preparation', () => {
     async (kind) => {
       if (kind === 'ordinary') environment.warm = false;
       if (kind === 'cloud') environment.mode = 'cloud';
-      if (kind === 'missing identity') environment.workspace = null;
+      if (kind === 'missing identity') environment.workspaces = [];
       await render();
       expect(store.get(runtimeAtom)).toBeNull();
       expect(store.get(currentWorkspaceSlugAtom)).toBeNull();
@@ -167,10 +223,10 @@ describe('RuntimeProvider warm workspace preparation', () => {
   );
 
   it('waits for local identity and disposes when the spare unmounts', async () => {
-    environment.workspace = null;
+    environment.workspaces = [];
     await render();
     expect(store.get(runtimeAtom)).toBeNull();
-    environment.workspace = { id: 'local:workspace', slug: 'local' };
+    environment.workspaces = [{ id: 'local:workspace', slug: 'local' }];
     await render();
     expect(store.get(runtimeAtom)).toBe(prepared);
     await act(async () => {

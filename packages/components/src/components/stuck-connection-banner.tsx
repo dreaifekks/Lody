@@ -1,10 +1,12 @@
-import { atom, useAtom } from 'jotai';
+import { atom, useAtom, useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
+import { resolvePlatformSync } from '@lody/platform';
 import { usePlatform } from '@lody/platform/react';
 import { motion } from 'framer-motion';
 import { X } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { Button } from '@lody/ui/button';
+import { currentWorkspaceIdAtom } from '@/atoms';
 import { useStuckConnectionHint } from '@/hooks/use-stuck-connection';
 import { ClearCacheConfirmDialog, useClearCache } from './settings/clear-cache';
 
@@ -97,11 +99,12 @@ export function StuckConnectionBanner({
 export function StuckConnectionBannerContainer() {
   const { t } = useTranslation();
   const platform = usePlatform();
+  const workspaceId = useAtomValue(currentWorkspaceIdAtom);
   const stuck = useStuckConnectionHint();
   const [dismissed, setDismissed] = useAtom(stuckConnectionBannerDismissedAtom);
   const { dialogOpen, setDialogOpen, isClearing, confirmClear } = useClearCache();
 
-  if (platform.sync.mode === 'local' || !stuck || dismissed) {
+  if (resolvePlatformSync(platform.sync, workspaceId).mode === 'local' || !stuck || dismissed) {
     return null;
   }
 

@@ -7,6 +7,7 @@ import { AppIpc, installNativeThemeWatch } from './services/app-ipc'
 import { AuthIpc } from './services/auth-ipc'
 import { CliIpc } from './services/cli-ipc'
 import { ImageIpc } from './services/image-ipc'
+import { LanIpc } from './services/lan-ipc'
 import { LocalPlatformIpc } from './services/local-platform-ipc'
 import { LocalProjectsIpc } from './services/local-projects-ipc'
 import { LoroIpc } from './services/loro-ipc'
@@ -25,6 +26,7 @@ export const IPC_SERVICE_CONSTRUCTORS = [
   AuthIpc,
   CliIpc,
   ImageIpc,
+  LanIpc,
   LocalPlatformIpc,
   LocalProjectsIpc,
   LoroIpc,

@@ -40,6 +40,7 @@ import { AboutSettingsComponent } from './about-setting';
 import { AgentRolesSetting } from './agent-roles-setting';
 import { PromptShortcutsSetting } from './prompt-shortcuts-setting';
 import { McpSetting } from './mcp-setting';
+import { LanSetting } from './lan-setting';
 import { ShareManagementSetting } from './share-management-setting';
 import { FocusScope, useListKeyboardNavigation } from '@/ui/focus-scope';
 import { productDarkPalette, productLightPalette } from '@/lib/vscode-theme/lody-ui-palette.stylex';
@@ -455,6 +456,8 @@ function SettingsTabContent({ tabId }: { tabId: SettingsTabId }) {
       return <PromptShortcutsSetting />;
     case 'mcp':
       return <McpSetting />;
+    case 'lan':
+      return <LanSetting />;
     case 'shares':
       return <ShareManagementSetting />;
     case 'machines':

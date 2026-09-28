@@ -4,7 +4,6 @@ import type { ReadonlyStore } from './store';
 import type { PlatformKind } from '@lody/shared/platform-kind';
 
 export {
-  LAN_HUB_RENDERER_ORIGIN,
   PLATFORM_ENV_VAR,
   PLATFORM_VITE_ENV_VAR,
   resolvePlatformKind,
@@ -63,8 +62,9 @@ export interface PlatformWorkspaces {
   /** Re-fetch workspace state after a recoverable read failure. */
   retry?(): Promise<void>;
   /**
-   * Local platform: exactly one implicit workspace exists (D-O14); calling
-   * this with its id is a no-op and any other id rejects.
+   * Local platform: an installation without a LAN has exactly one implicit
+   * workspace (D-O14), and a member of LANs has one per LAN. Any listed
+   * workspace can be made active; an id that is not listed rejects.
    */
   setActive(workspaceId: string): Promise<void>;
   /** Repair or replace the route slug for an existing workspace. */
@@ -84,7 +84,8 @@ export interface PlatformWorkspaces {
  */
 export type PlatformSyncMode = 'local' | 'cloud' | 'dual';
 
-export interface PlatformSync {
+/** How one workspace syncs. */
+export interface PlatformWorkspaceSync {
   mode: PlatformSyncMode;
   /**
    * A fixed Streams gateway that needs no token endpoint. Present only when
@@ -94,9 +95,30 @@ export interface PlatformSync {
   streams?: PlatformStreamsGateway;
 }
 
+export interface PlatformSync extends PlatformWorkspaceSync {
+  /**
+   * Present when the workspaces of one assembly sync differently: a workspace
+   * shared through a self-hosted gateway next to one that never leaves the
+   * machine, or workspaces shared through different gateways. `mode` and
+   * `streams` then describe a workspace the assembly knows nothing about.
+   *
+   * The answer for one workspace keeps its identity while nothing changed, so
+   * it can key an effect.
+   */
+  resolve?(workspaceId: string): PlatformWorkspaceSync;
+}
+
 export interface PlatformStreamsGateway {
   gatewayBaseUrl: string;
   token: string;
+}
+
+/** How `workspaceId` syncs; `null` asks about no workspace in particular. */
+export function resolvePlatformSync(
+  sync: PlatformSync,
+  workspaceId: string | null | undefined
+): PlatformWorkspaceSync {
+  return (workspaceId ? sync.resolve?.(workspaceId) : undefined) ?? sync;
 }
 
 /**

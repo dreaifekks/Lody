@@ -11,15 +11,16 @@ import {
   performLogin,
   performLoginWithAuthCredential,
 } from '@/lib/auth';
-import { LodyFleet, syncCliServerTime } from '@/lib/lody-fleet';
-import { CliType, MachineId, createStaticLoroStreamsTokenProvider } from '@lody/shared';
+import { LodyFleet, syncCliServerTime, type ImplicitLocalWorkspaceMemory } from '@/lib/lody-fleet';
+import { CliType, MachineId } from '@lody/shared';
+import { LAN_SHARED_USER_ID } from '@lody/shared/lan-hub';
 import {
-  LAN_HUB_WORKSPACE_NAME,
-  LAN_HUB_WORKSPACE_SLUG,
-  deriveLanHubIdentity,
-  readLanHubConfig,
-  type LanHubConfig,
+  readLanHubSettings,
+  resolveMachineName,
+  type LanHubSettings,
 } from '@lody/shared/node/lan-hub';
+import { LanMembership, toLanWorkspaces } from '@/lib/lan/lan-membership';
+import { makeLocalWorkspaceCatalog } from '@/lib/local-workspace-catalog';
 import { checkClaude, checkCodex } from '@/utils';
 import { CliAvailability, resolveCliTypesSelection } from './start-options';
 import { CliRuntimeStateReporter } from '@/lib/cli-runtime-state';
@@ -36,6 +37,8 @@ import {
   applyLocalPlatformEnv,
   getCliPlatformKind,
   loadOrCreateLocalIdentity,
+  rememberImplicitLocalWorkspace,
+  rememberImplicitLocalWorkspaceBeforeLan,
 } from '@/lib/cli-platform';
 import { normalizeCurrentProcessResourceProfile } from '@/utils/process-resource-profile';
 import { startEventLoopLagMonitor } from '@/utils/event-loop-lag-monitor';
@@ -46,6 +49,7 @@ import { flushTelemetry } from '@/instrument';
 import { getRuntimeDiagnostics } from '@/utils/runtime-diagnostics';
 import {
   EXIT_CODE_AUTH_FAILURE,
+  EXIT_CODE_REMOTE_RESTART,
   EXIT_CODE_RETRYABLE_STARTUP,
   EXIT_CODE_SUPERVISOR_CONTRACT_MISMATCH,
   type MachineProcessLifecycleAction,
@@ -97,6 +101,13 @@ interface StartOptions {
 }
 
 const EXIT_CODE_ALREADY_RUNNING = 3;
+
+/** What only a local-platform start knows; absent on the cloud platform. */
+type LocalStartContext = {
+  lanSettings: LanHubSettings;
+  machineNameExplicit: boolean;
+  implicitLocalWorkspace?: ImplicitLocalWorkspaceMemory;
+};
 
 function logCliDetectionResults(logger: Logger, availability: CliAvailability): void {
   logger.debug('Local agent auth detection results:');
@@ -205,20 +216,22 @@ export const startCommand = new Command('start')
       logger.error(formatErrorMessage(error));
       process.exit(1);
     }
-    let lanHub: LanHubConfig | null = null;
+    let lanSettings: LanHubSettings = { hubs: [], machineName: null, source: 'none' };
     if (platformKind === 'local') {
       // Zero-cloud-I/O invariant (specs/platform-providers.md): blank the
       // cloud endpoints before anything reads them.
       applyLocalPlatformEnv();
       try {
-        lanHub = readLanHubConfig();
+        lanSettings = readLanHubSettings();
       } catch (error) {
         logger.error(formatErrorMessage(error));
         process.exit(1);
       }
       logger.info(
-        lanHub
-          ? `Starting in local platform mode with LAN hub ${lanHub.url} (no account, no cloud services).`
+        lanSettings.hubs.length > 0
+          ? `Starting in local platform mode as a member of ${lanSettings.hubs
+              .map((hub) => `${hub.name} (${hub.url})`)
+              .join(', ')} (no account, no cloud services).`
           : 'Starting in local platform mode (no account, no cloud services).'
       );
     }
@@ -229,7 +242,14 @@ export const startCommand = new Command('start')
         : undefined;
 
     const machineNameOverride = options.machineName?.trim();
-    const defaultMachineName = machineNameOverride || os.hostname();
+    // A LAN identifies a machine by its name, so the local platform names it
+    // after the machine rather than after the network it is on right now.
+    const localMachineName = resolveMachineName({
+      override: machineNameOverride,
+      settings: lanSettings,
+    });
+    const defaultMachineName =
+      platformKind === 'local' ? localMachineName.name : machineNameOverride || os.hostname();
     const authClient = platformKind === 'cloud' ? new AuthClient(logger) : null;
     const requireCloudAuthClient = (): AuthClient => {
       if (!authClient) {
@@ -364,16 +384,32 @@ export const startCommand = new Command('start')
       process.exit(1);
     }
 
+    let localStart: LocalStartContext | null = null;
     if (platformKind === 'local') {
       // No account exists on the local platform: author everything under the
       // persisted synthetic identity. The empty token is safe because every
       // cloud endpoint env was blanked above, so token consumers are inert.
-      // A LAN hub replaces the per-install identity with the one every device
-      // on that hub derives, so their machines and sessions share an owner.
+      // A LAN replaces the per-install identity with the owner every LAN
+      // member acts as, so their machines and sessions belong to one user.
       token = '';
-      userId = lanHub
-        ? deriveLanHubIdentity(lanHub.token).userId
-        : (await loadOrCreateLocalIdentity(logger)).userId;
+      localStart = { lanSettings, machineNameExplicit: localMachineName.explicit };
+      if (lanSettings.hubs.length > 0) {
+        userId = LAN_SHARED_USER_ID;
+        await rememberImplicitLocalWorkspaceBeforeLan({
+          catalog: makeLocalWorkspaceCatalog(),
+          lanWorkspaceIds: new Set(
+            toLanWorkspaces(lanSettings.hubs).map((workspace) => workspace.id)
+          ),
+          logger,
+        });
+      } else {
+        const localIdentity = await loadOrCreateLocalIdentity(logger);
+        userId = localIdentity.userId;
+        localStart.implicitLocalWorkspace = {
+          ...(localIdentity.workspaceId ? { workspaceId: localIdentity.workspaceId } : {}),
+          remember: rememberImplicitLocalWorkspace,
+        };
+      }
       machineId = await getOrCreateStableMachineIdAsync();
       machineName = defaultMachineName;
       authMethod = 'local_platform';
@@ -503,7 +539,7 @@ export const startCommand = new Command('start')
         machineLifecycleCapability,
         unregisterStartupSupervisorControl,
         platformKind,
-        lanHub
+        localStart
       );
     } catch (error) {
       captureAgentServiceEvent('agent_service_startup_failed', {
@@ -544,7 +580,7 @@ async function startAgentService(
   machineLifecycleCapability: ReturnType<typeof resolveMachineLifecycleCapability>,
   unregisterStartupSupervisorControl: () => void,
   platformKind: PlatformKind,
-  lanHub: LanHubConfig | null
+  localStart: LocalStartContext | null
 ): Promise<void> {
   // The startup listener protects authentication/bootstrap. From this point to
   // the graceful controller registration below there is no async yield.
@@ -575,32 +611,22 @@ async function startAgentService(
   let triggerProcessLifecycleAction: ((action: MachineProcessLifecycleAction) => void) | null =
     null;
 
+  let triggerLanSettingsRestart: ((reason: string) => void) | null = null;
+
   let cloudPort: CloudPort;
+  let lanMembership: LanMembership | null = null;
   if (platformKind === 'local') {
+    lanMembership = new LanMembership({
+      settings: localStart?.lanSettings ?? { hubs: [], machineName: null, source: 'none' },
+      logger,
+      onRestartRequired: (reason) => triggerLanSettingsRestart?.(reason),
+    });
+    const streamsTokens = lanMembership.streamsTokens;
     cloudPort = createLocalCloudPort({
       identity: { userId },
-      workspaces: lanHub
-        ? [
-            {
-              id: deriveLanHubIdentity(lanHub.token).workspaceId,
-              name: LAN_HUB_WORKSPACE_NAME,
-              slug: LAN_HUB_WORKSPACE_SLUG,
-              role: 'owner',
-            },
-          ]
-        : [],
+      workspaces: streamsTokens ? lanMembership.workspaces : [],
       runtimeArtifactsBaseUrl: process.env.LODY_RUNTIME_BASE_URL,
-      ...(lanHub
-        ? {
-            streamsTokens: {
-              createTokenProvider: () =>
-                createStaticLoroStreamsTokenProvider({
-                  gatewayBaseUrl: lanHub.url,
-                  token: lanHub.token,
-                }),
-            },
-          }
-        : {}),
+      ...(streamsTokens ? { streamsTokens } : {}),
     });
   } else {
     if (!LODY_AUTH_URL) {
@@ -639,6 +665,10 @@ async function startAgentService(
       userId,
       machineId: machineId as MachineId,
       machineName,
+      machineNameExplicit: localStart?.machineNameExplicit ?? false,
+      ...(localStart?.implicitLocalWorkspace
+        ? { implicitLocalWorkspace: localStart.implicitLocalWorkspace }
+        : {}),
       runtimeStateReporter,
       cloudPort,
       startupTimeSync,
@@ -658,6 +688,7 @@ async function startAgentService(
     await lease?.close();
   };
   registerProcessCleanup(async () => {
+    lanMembership?.close();
     eventLoopLagMonitor.stop();
     await managedRuntimeUpdates.shutdown();
     await fleet.shutdown();
@@ -675,6 +706,7 @@ async function startAgentService(
     shutdown: async () => {
       unregisterSupervisorControl();
       unregisterProcessCleanup();
+      lanMembership?.close();
       stopActivePing();
       eventLoopLagMonitor.stop();
       await managedRuntimeUpdates.shutdown();
@@ -737,7 +769,23 @@ async function startAgentService(
     });
   };
 
+  triggerLanSettingsRestart = (reason) => {
+    if (processLifecycleTriggered || fatalAuthTriggered) return;
+    processLifecycleTriggered = true;
+    if (!supervisorIdentity) {
+      // Nothing starts a foreground service again once it exits.
+      logger.warn('Start the agent service again to apply the new LAN settings.');
+    }
+    void shutdownController.shutdown({
+      exitCode: EXIT_CODE_REMOTE_RESTART,
+      reason: `LAN settings changed: ${reason}`,
+    });
+  };
+
   try {
+    // Watching starts before the fleet does: a LAN joined while workspaces
+    // are still starting would otherwise wait for the next change.
+    lanMembership?.start();
     logger.debug('Subscribing to workspaces and connecting agent runtimes...');
     const connectStartMs = Date.now();
     await fleet.start();
@@ -789,6 +837,7 @@ async function startAgentService(
     });
     shutdownController.unregister();
     unregisterProcessCleanup();
+    lanMembership?.close();
     stopActivePing();
     eventLoopLagMonitor.stop();
     await managedRuntimeUpdates.shutdown();

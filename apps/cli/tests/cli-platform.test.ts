@@ -8,12 +8,16 @@ import {
   ensureImplicitLocalWorkspace,
   getCliPlatformKind,
   loadOrCreateLocalIdentity,
+  readLocalIdentity,
+  rememberImplicitLocalWorkspace,
+  rememberImplicitLocalWorkspaceBeforeLan,
   LOCAL_WORKSPACE_SLUG,
 } from '@/lib/cli-platform';
-import type {
-  LocalWorkspaceCatalogService,
-  LocalWorkspaceCatalogSnapshot,
-  CacheRemoteWorkspacesInput,
+import {
+  makeLocalWorkspaceCatalog,
+  type LocalWorkspaceCatalogService,
+  type LocalWorkspaceCatalogSnapshot,
+  type CacheRemoteWorkspacesInput,
 } from '@/lib/local-workspace-catalog';
 import { getLogger } from '@/utils/logger';
 
@@ -175,5 +179,148 @@ describe('ensureImplicitLocalWorkspace', () => {
       logger,
     });
     expect(workspace.id).not.toBe('lw_stale');
+  });
+});
+
+describe('the implicit workspace of an installation that joins and leaves LANs', () => {
+  const LAN_OWNER = 'local:lan-owner';
+  const lanWorkspace = { id: 'lw_lan', name: 'Home', slug: 'lan-home', role: 'owner' };
+  const machine = { machineId: 'machine-1', machineName: 'test-host' };
+
+  let tempDir: string;
+  let identityPath: string;
+  let catalog: LocalWorkspaceCatalogService;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lody-implicit-workspace-'));
+    identityPath = path.join(tempDir, 'local-identity.json');
+    catalog = makeLocalWorkspaceCatalog({
+      filePath: path.join(tempDir, 'workspace-catalog.json'),
+      lockName: `implicit-workspace-${path.basename(tempDir)}`,
+    });
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const startLocalOnly = async () =>
+    await ensureImplicitLocalWorkspace({
+      catalog,
+      identity: await loadOrCreateLocalIdentity(logger, { filePath: identityPath }),
+      ...machine,
+      logger,
+      remember: (workspaceId) =>
+        rememberImplicitLocalWorkspace(workspaceId, { filePath: identityPath }),
+    });
+
+  const startAsLanMember = async (workspaces = [lanWorkspace]) => {
+    await rememberImplicitLocalWorkspaceBeforeLan({
+      catalog,
+      lanWorkspaceIds: new Set(workspaces.map((workspace) => workspace.id)),
+      logger,
+      identityPath,
+    });
+    await Effect.runPromise(
+      catalog.cacheRemoteWorkspaces({ identity: { userId: LAN_OWNER }, machine, workspaces })
+    );
+  };
+
+  const activeWorkspaceIds = async () =>
+    (await Effect.runPromise(catalog.listActiveWorkspaces())).map(
+      (workspace) => workspace.workspaceId
+    );
+
+  it('comes back when the last LAN is left', async () => {
+    const original = await startLocalOnly();
+    await startAsLanMember();
+    expect(await activeWorkspaceIds()).toEqual(['lw_lan']);
+
+    const restored = await startLocalOnly();
+
+    expect(restored).toEqual(original);
+    expect(await activeWorkspaceIds()).toEqual([original.id]);
+  });
+
+  it('stays the same one however often LANs are joined and left', async () => {
+    const original = await startLocalOnly();
+    for (let round = 0; round < 3; round += 1) {
+      await startAsLanMember();
+      expect((await startLocalOnly()).id).toBe(original.id);
+    }
+    const snapshot = await Effect.runPromise(catalog.read());
+    expect(snapshot.workspaces.map((workspace) => workspace.workspaceId).sort()).toEqual(
+      [original.id, 'lw_lan'].sort()
+    );
+  });
+
+  it('is recognised after a LAN displaced it without recording which one it was', async () => {
+    const original = await startLocalOnly();
+    // What an installation looks like that joined its first LAN with a
+    // release that did not record the implicit workspace yet.
+    const identity = await readLocalIdentity({ filePath: identityPath });
+    await fs.writeFile(
+      identityPath,
+      JSON.stringify({ userId: identity!.userId, createdAt: identity!.createdAt })
+    );
+    await Effect.runPromise(
+      catalog.cacheRemoteWorkspaces({
+        identity: { userId: LAN_OWNER },
+        machine,
+        workspaces: [lanWorkspace],
+      })
+    );
+
+    await startAsLanMember();
+
+    expect((await readLocalIdentity({ filePath: identityPath }))?.workspaceId).toBe(original.id);
+    expect((await startLocalOnly()).id).toBe(original.id);
+  });
+
+  it('is not guessed when more than one workspace could be meant', async () => {
+    const original = await startLocalOnly();
+    const identity = await readLocalIdentity({ filePath: identityPath });
+    await fs.writeFile(
+      identityPath,
+      JSON.stringify({ userId: identity!.userId, createdAt: identity!.createdAt })
+    );
+    const otherLan = { id: 'lw_other', name: 'Office', slug: 'office', role: 'owner' };
+    // An earlier run belonged to two LANs and left one of them. That LAN is
+    // displaced like the implicit workspace, and the two cannot be told apart.
+    for (const workspaces of [[lanWorkspace, otherLan], [lanWorkspace]]) {
+      await Effect.runPromise(
+        catalog.cacheRemoteWorkspaces({ identity: { userId: LAN_OWNER }, machine, workspaces })
+      );
+    }
+
+    await startAsLanMember([lanWorkspace]);
+
+    expect((await readLocalIdentity({ filePath: identityPath }))?.workspaceId).toBeUndefined();
+    const fresh = await startLocalOnly();
+    expect(fresh.id).not.toBe(original.id);
+    expect(fresh.id).not.toBe('lw_other');
+  });
+
+  it('keeps its stored sessions when the catalog was lost', async () => {
+    const original = await startLocalOnly();
+    await fs.rm(path.join(tempDir, 'workspace-catalog.json'));
+    const recreated = makeLocalWorkspaceCatalog({
+      filePath: path.join(tempDir, 'workspace-catalog.json'),
+      lockName: `implicit-workspace-recreated-${path.basename(tempDir)}`,
+    });
+
+    const restored = await ensureImplicitLocalWorkspace({
+      catalog: recreated,
+      identity: await loadOrCreateLocalIdentity(logger, { filePath: identityPath }),
+      ...machine,
+      logger,
+    });
+
+    expect(restored.id).toBe(original.id);
+  });
+
+  it('records nothing for an installation that joined a LAN before it ever ran alone', async () => {
+    await startAsLanMember();
+    expect(await readLocalIdentity({ filePath: identityPath })).toBeNull();
   });
 });

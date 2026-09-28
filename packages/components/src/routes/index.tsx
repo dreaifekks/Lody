@@ -12,6 +12,7 @@ import { LoadingPlaceholder } from '@/components/loading-placeholder';
 import { isLocalAppPlatform } from '@/lib/app-platform';
 import {
   getLocalWorkspaceSlug,
+  resolveLocalWorkspace,
   useLocalPlatformWorkspacesState,
 } from '../providers/local-platform-provider';
 
@@ -24,7 +25,7 @@ export function HomeRoute() {
   // local workspace. Target UI mounts only after the window is claimed.
   if (isWarmWindow()) return null;
   // Local (open-source) platform: no login route exists. Land straight on the
-  // single implicit workspace once the CLI has provisioned it.
+  // workspace the user was in last once the CLI has provisioned it.
   if (isLocalAppPlatform()) {
     return <LocalHomeRoute />;
   }
@@ -34,8 +35,8 @@ export function HomeRoute() {
 function LocalHomeRoute() {
   const { t } = useTranslation();
   const workspacesState = useLocalPlatformWorkspacesState();
-  const workspace =
-    workspacesState.status === 'ready' ? (workspacesState.workspaces[0] ?? null) : null;
+  // The active workspace already is the one the user was in last.
+  const workspace = resolveLocalWorkspace(workspacesState, null);
 
   if (workspacesState.status === 'error') {
     return (

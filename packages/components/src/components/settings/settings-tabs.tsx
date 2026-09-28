@@ -2,7 +2,8 @@ import { useAtomValue } from 'jotai';
 import { promptShortcutsFeatureEnabledAtom } from '@/atoms/settings';
 import type { LucideIcon } from 'lucide-react';
 import type { PlatformCapability } from '@lody/platform';
-import { useAppCapabilityCheck } from '../../lib/app-platform';
+import { isLocalAppPlatform, useAppCapabilityCheck } from '../../lib/app-platform';
+import { isElectronRenderer } from '../../lib/electron';
 import {
   Bot,
   Building2,
@@ -13,6 +14,7 @@ import {
   Info,
   Keyboard,
   Monitor,
+  Network,
   Palette,
   Plug,
   FileText,
@@ -38,6 +40,7 @@ export type SettingsTabId =
   | 'prompt-shortcuts'
   | 'mcp'
   | 'projects'
+  | 'lan'
   | 'github'
   | 'ai-usage'
   | 'billing'
@@ -57,6 +60,7 @@ export type SettingsPath =
   | '/$workspaceName/settings/prompt-shortcuts'
   | '/$workspaceName/settings/mcp'
   | '/$workspaceName/settings/projects'
+  | '/$workspaceName/settings/lan'
   | '/$workspaceName/settings/github'
   | '/$workspaceName/settings/ai-usage'
   | '/$workspaceName/settings/billing'
@@ -74,6 +78,12 @@ export type SettingsTabConfig = {
   multiMemberOnly?: boolean;
   /** Keyboard-centric surfaces are hidden from the mobile settings list. */
   desktopOnly?: boolean;
+  /**
+   * The tab edits something the desktop shell of the local platform holds, so
+   * it exists nowhere else. No capability names it: a capability is what an
+   * account grants, and this is what the absence of one makes possible.
+   */
+  localDesktopOnly?: boolean;
   path: SettingsPath;
 };
 
@@ -175,6 +185,16 @@ export const SETTINGS_TAB_CONFIGS: SettingsTabConfig[] = [
     path: '/$workspaceName/settings/projects',
   },
   {
+    id: 'lan',
+    section: 'workspace',
+    labelKey: 'settings.tabs.lan',
+    descriptionKey: 'settings.categories.lan.description',
+    icon: Network,
+    desktopOnly: true,
+    localDesktopOnly: true,
+    path: '/$workspaceName/settings/lan',
+  },
+  {
     id: 'github',
     section: 'workspace',
     labelKey: 'settings.tabs.github',
@@ -226,11 +246,13 @@ export function useVisibleSettingsTabs(options?: {
   const promptShortcutsEnabled = useAtomValue(promptShortcutsFeatureEnabledAtom);
   const hasCapability = useAppCapabilityCheck();
   const includeMultiMemberOnly = options?.includeMultiMemberOnly ?? true;
+  const localDesktop = isLocalAppPlatform() && isElectronRenderer();
   return SETTINGS_TAB_CONFIGS.filter(
     (tab) =>
       (tab.id !== 'prompt-shortcuts' || promptShortcutsEnabled) &&
       (tab.capability === undefined || hasCapability(tab.capability)) &&
-      (!tab.multiMemberOnly || includeMultiMemberOnly)
+      (!tab.multiMemberOnly || includeMultiMemberOnly) &&
+      (!tab.localDesktopOnly || localDesktop)
   );
 }
 
@@ -253,6 +275,7 @@ export function getActiveSettingsTabId(pathname: string): SettingsTabId | null {
     ['/settings/prompt-shortcuts', 'prompt-shortcuts'],
     ['/settings/mcp', 'mcp'],
     ['/settings/projects', 'projects'],
+    ['/settings/lan', 'lan'],
     ['/settings/github', 'github'],
     ['/settings/ai-usage', 'ai-usage'],
     ['/settings/stats', 'ai-usage'],

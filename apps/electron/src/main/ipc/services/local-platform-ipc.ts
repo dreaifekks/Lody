@@ -1,5 +1,6 @@
 import { IpcMethod, IpcService } from 'electron-ipc-decorator'
 import { isLocalPlatform, readLocalPlatformSnapshot } from '../../platform'
+import { getIpcServiceDeps } from '../ipc-service-deps'
 
 export class LocalPlatformIpc extends IpcService {
   static override readonly groupName = 'localPlatform'
@@ -7,6 +8,6 @@ export class LocalPlatformIpc extends IpcService {
   @IpcMethod()
   async getSnapshot() {
     if (!isLocalPlatform()) return null
-    return await readLocalPlatformSnapshot()
+    return await readLocalPlatformSnapshot(getIpcServiceDeps().lanHubStore?.getState().lans ?? [])
   }
 }

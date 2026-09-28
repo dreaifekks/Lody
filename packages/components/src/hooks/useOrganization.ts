@@ -11,8 +11,9 @@ import {
   getCachedWorkspaceId,
 } from '@/lib/local-storage-cache';
 import { clearLastAppRoutePathIfWorkspaceMatch } from '@/lib/last-app-route';
-import { useSetAtom, useStore } from 'jotai';
+import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import {
+  currentWorkspaceSlugAtom,
   setWorkspaceContextAtRevisionAtom,
   setWorkspaceContextAtom,
   workspaceContextSnapshotAtom,
@@ -25,7 +26,12 @@ import type { LodyAuthClient } from '@/lib/auth';
 import type { PlatformUser, WorkspaceSummary } from '@lody/platform';
 import { usePlatformSession } from '@lody/platform/react';
 import { isLocalAppPlatform } from '@/lib/app-platform';
-import { useImplicitLocalWorkspace } from '../providers/local-platform-provider';
+import {
+  getLocalPlatformProvider,
+  getLocalWorkspaceSlug,
+  resolveLocalWorkspace,
+  useLocalPlatformWorkspacesState,
+} from '../providers/local-platform-provider';
 
 type UseOrganizationOptions = {
   targetSlug?: string;
@@ -123,7 +129,7 @@ export function useOrganization(options?: UseOrganizationOptions) {
   // cloud HTTP from a build that promised zero cloud I/O.
   if (isLocalAppPlatform()) {
     // oxlint-disable-next-line rules-of-hooks
-    return useLocalOrganizationState();
+    return useLocalOrganizationState(options);
   }
   // oxlint-disable-next-line rules-of-hooks
   return useCloudOrganizationState(options);
@@ -135,17 +141,17 @@ type ActiveOrganizationValue = NonNullable<UseOrganizationResult['activeOrganiza
 const LOCAL_ORGANIZATION_EPOCH = new Date(0);
 
 /**
- * Projects the implicit local workspace (D-O14) into the cloud organization
- * shape so shared consumers (sidebar, settings, tasks) keep working unchanged.
+ * Projects a local workspace (D-O14) into the cloud organization shape so
+ * shared consumers (sidebar, settings, tasks) keep working unchanged.
  */
-function buildLocalActiveOrganization(
+function buildLocalOrganization(
   workspace: WorkspaceSummary,
   user: PlatformUser
 ): ActiveOrganizationValue {
   return {
     id: workspace.id,
     name: workspace.name,
-    slug: workspace.slug ?? workspace.id,
+    slug: getLocalWorkspaceSlug(workspace),
     logo: null,
     createdAt: LOCAL_ORGANIZATION_EPOCH,
     metadata: null,
@@ -170,16 +176,31 @@ function buildLocalActiveOrganization(
 const rejectLocalWorkspaceMutation = () =>
   Promise.reject(new Error('Workspace management is not available on the local platform'));
 
-function useLocalOrganizationState(): UseOrganizationResult {
-  const workspace = useImplicitLocalWorkspace();
+const activateLocalWorkspace = (workspaceId: string) =>
+  getLocalPlatformProvider().workspaces.setActive(workspaceId);
+
+/**
+ * The workspaces of this installation: one, or one per LAN it belongs to. The
+ * active one is the workspace the route names, so every window shows the
+ * organization it is in, whichever workspace was opened last.
+ */
+function useLocalOrganizationState(options?: UseOrganizationOptions): UseOrganizationResult {
+  const workspacesState = useLocalPlatformWorkspacesState();
+  const routeSlug = useAtomValue(currentWorkspaceSlugAtom);
   const session = usePlatformSession();
+  const targetSlug = options?.targetSlug ?? routeSlug;
   return useMemo(() => {
     const user = session.status === 'authenticated' ? session.user : null;
+    const workspace = resolveLocalWorkspace(workspacesState, targetSlug);
+    const organizations =
+      user && workspacesState.status === 'ready' && workspacesState.workspaces.length > 0
+        ? workspacesState.workspaces.map((entry) => buildLocalOrganization(entry, user))
+        : undefined;
     const activeOrganization =
-      workspace && user ? buildLocalActiveOrganization(workspace, user) : null;
+      organizations?.find((organization) => organization.id === workspace?.id) ?? null;
     const loading = activeOrganization === null;
     return {
-      organizations: activeOrganization ? [activeOrganization] : undefined,
+      organizations,
       organizationsLoading: loading,
       activeOrganizationLoading: loading,
       refetchOrganizations: () => Promise.resolve(),
@@ -189,14 +210,14 @@ function useLocalOrganizationState(): UseOrganizationResult {
       loading,
       error: null,
       activeOrganization,
-      activateOrganization: () => Promise.resolve(),
-      switchOrganization: () => Promise.resolve(),
+      activateOrganization: activateLocalWorkspace,
+      switchOrganization: activateLocalWorkspace,
       createOrganization: rejectLocalWorkspaceMutation,
       updateOrganization: rejectLocalWorkspaceMutation,
       deleteOrganization: rejectLocalWorkspaceMutation,
       leaveOrganization: rejectLocalWorkspaceMutation,
     } as unknown as UseOrganizationResult;
-  }, [session, workspace]);
+  }, [session, targetSlug, workspacesState]);
 }
 
 function useCloudOrganizationState(options?: UseOrganizationOptions) {

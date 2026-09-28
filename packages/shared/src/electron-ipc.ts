@@ -687,27 +687,106 @@ export type SaveImageFileResult =
  */
 
 /**
- * The single implicit workspace of the open-source local platform, read by the
- * Electron main process from the CLI-provisioned local workspace catalog
- * as part of `localPlatform.getSnapshot`. Null until the CLI has provisioned
- * it — and always null on the cloud platform.
+ * One workspace of the open-source local platform, read by the Electron main
+ * process from the CLI-provisioned local workspace catalog as part of
+ * `localPlatform.getSnapshot`.
  */
-export type ElectronImplicitLocalWorkspace = {
+export type ElectronLocalWorkspace = {
   workspaceId: string;
   name: string;
   slug: string | null;
   role: string;
+  /**
+   * The LAN this workspace syncs through. `null` for the workspace that never
+   * leaves this machine. The credential of a LAN stays in the main process.
+   */
+  lan: { id: string; url: string } | null;
 };
+
+/** The shape a snapshot had while the local platform held a single workspace. */
+export type ElectronImplicitLocalWorkspace = Omit<ElectronLocalWorkspace, 'lan'>;
 
 /**
  * Atomic renderer bootstrap snapshot for the local platform. Identity and
- * workspace come from the same CLI-owned catalog so every local author and
+ * workspaces come from the same CLI-owned catalog so every local author and
  * access check uses the installation's one durable synthetic user.
+ *
+ * An installation without a LAN has exactly one workspace; a member of LANs
+ * has one per LAN.
  */
 export type ElectronLocalPlatformSnapshot = {
   userId: string;
+  /** The first of `workspaces`, for readers that know a single workspace. */
   workspace: ElectronImplicitLocalWorkspace;
+  workspaces: ElectronLocalWorkspace[];
 };
+
+export type ElectronLanSummary = {
+  id: string;
+  name: string;
+  url: string;
+  slug: string;
+  workspaceId: string;
+};
+
+export type ElectronLanState = {
+  /** `false` when the LANs come from the environment and cannot be edited here. */
+  editable: boolean;
+  /** Why the settings could not be read; the LANs read before stay in use. */
+  error: string | null;
+  machineName: { name: string; explicit: boolean };
+  lans: ElectronLanSummary[];
+};
+
+export type ElectronLanFailureCode =
+  | 'invalid_url'
+  | 'invalid_token'
+  | 'invalid_name'
+  | 'invalid_invite'
+  | 'invalid_input'
+  | 'duplicate_name'
+  | 'duplicate_hub'
+  | 'unknown_hub'
+  | 'not_editable'
+  | 'write_failed'
+  | 'unavailable';
+
+export type ElectronLanFailure = { ok: false; code: ElectronLanFailureCode; message: string };
+
+export type ElectronLanResult<T = Record<never, never>> =
+  | ({ ok: true; state: ElectronLanState } & T)
+  | ElectronLanFailure;
+
+export type ElectronLanReachability = 'reachable' | 'unauthorized' | 'unreachable';
+
+const LanIdSchema = z.string().regex(/^[a-f0-9]{32}$/u);
+const LanTextSchema = z.string().max(2_048);
+
+export const ElectronLanJoinInputSchema = z
+  .object({ invite: LanTextSchema, name: LanTextSchema.nullable().optional() })
+  .strict();
+
+export const ElectronLanAddInputSchema = z
+  .object({
+    url: LanTextSchema,
+    token: LanTextSchema,
+    name: LanTextSchema.nullable().optional(),
+  })
+  .strict();
+
+export const ElectronLanUpdateInputSchema = z
+  .object({
+    id: LanIdSchema,
+    name: LanTextSchema.nullable().optional(),
+    url: LanTextSchema.nullable().optional(),
+  })
+  .strict();
+
+export const ElectronLanIdInputSchema = z.object({ id: LanIdSchema }).strict();
+
+export const ElectronLanMachineNameInputSchema = z
+  .object({ name: LanTextSchema.nullable() })
+  .strict();
 
 export type GlobalShortcutId = 'app.focus';
 export const GLOBAL_SHORTCUT_TRIGGERED_CHANNEL = 'app.globalShortcut';

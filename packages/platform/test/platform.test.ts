@@ -15,9 +15,11 @@ import {
   LOCAL_PLATFORM_CAPABILITIES,
   PLATFORM_CAPABILITIES,
   type PlatformSessionState,
+  type WorkspacesState,
   DEFAULT_RUNTIME_ARTIFACTS_BASE_URL,
   resolveRuntimeArtifactsBaseUrl,
   resolvePlatformKind,
+  resolvePlatformSync,
 } from '../src/index';
 
 describe('resolvePlatformKind', () => {
@@ -140,7 +142,72 @@ describe('createLocalPlatformProvider', () => {
     expect(provider.identity.session.get()).toEqual({ status: 'authenticated', user });
     expect(provider.workspaces.create).toBeUndefined();
     await expect(provider.workspaces.setActive(workspace.id)).resolves.toBeUndefined();
-    await expect(provider.workspaces.setActive('lw_other')).rejects.toThrow(/single implicit/);
+    await expect(provider.workspaces.setActive('lw_other')).rejects.toThrow(
+      /no workspace lw_other/
+    );
+    expect(resolvePlatformSync(provider.sync, workspace.id)).toEqual({ mode: 'local' });
+  });
+
+  it('switches between the workspaces of the LANs an installation belongs to', async () => {
+    const home = { id: 'lw_home', name: 'Home', slug: 'lan-home', role: 'owner' };
+    const office = { id: 'lw_office', name: 'Office', slug: 'office', role: 'owner' };
+    const workspaces = createStore<WorkspacesState>({
+      status: 'ready',
+      workspaces: [home, office],
+      activeWorkspaceId: home.id,
+    });
+    const provider = createLocalPlatformProvider({
+      session: createStaticStore({ status: 'authenticated', user } as const),
+      workspaces,
+      activateWorkspace: (workspaceId) =>
+        workspaces.set({
+          status: 'ready',
+          workspaces: [home, office],
+          activeWorkspaceId: workspaceId,
+        }),
+    });
+
+    await provider.workspaces.setActive(office.id);
+
+    expect(workspaces.get()).toMatchObject({ activeWorkspaceId: office.id });
+    await expect(provider.workspaces.setActive('lw_gone')).rejects.toThrow(/no workspace lw_gone/);
+    expect(workspaces.get()).toMatchObject({ activeWorkspaceId: office.id });
+    // Still no capability that needs an account.
+    expect(provider.capabilities.list()).toEqual([]);
+  });
+
+  it('syncs each workspace through the gateway of its own LAN', () => {
+    const gateways: Record<string, { gatewayBaseUrl: string; token: string } | null> = {
+      lw_home: { gatewayBaseUrl: 'lody-hub://home', token: 'lan-hub' },
+      lw_office: { gatewayBaseUrl: 'lody-hub://office', token: 'lan-hub' },
+      lw_local: null,
+    };
+    const provider = createLocalPlatformProvider({
+      session: createStaticStore({ status: 'authenticated', user } as const),
+      workspaces: createStaticStore({ status: 'loading' } as const),
+      // A new object on every call, as a store that was just refreshed returns.
+      resolveStreams: (workspaceId) => {
+        const gateway = gateways[workspaceId];
+        return gateway ? { ...gateway } : null;
+      },
+    });
+
+    const home = resolvePlatformSync(provider.sync, 'lw_home');
+    expect(home).toEqual({
+      mode: 'dual',
+      streams: { gatewayBaseUrl: 'lody-hub://home', token: 'lan-hub' },
+    });
+    expect(resolvePlatformSync(provider.sync, 'lw_office').streams?.gatewayBaseUrl).toBe(
+      'lody-hub://office'
+    );
+    expect(resolvePlatformSync(provider.sync, 'lw_local')).toEqual({ mode: 'local' });
+    expect(resolvePlatformSync(provider.sync, 'lw_unknown')).toEqual({ mode: 'local' });
+    expect(resolvePlatformSync(provider.sync, null)).toMatchObject({ mode: 'local' });
+    // An effect keyed by the answer must not run again for an unchanged workspace.
+    expect(resolvePlatformSync(provider.sync, 'lw_home')).toBe(home);
+
+    gateways.lw_home = { gatewayBaseUrl: 'lody-hub://moved', token: 'lan-hub' };
+    expect(resolvePlatformSync(provider.sync, 'lw_home')).not.toBe(home);
   });
 });
 
@@ -184,6 +251,32 @@ describe('createLocalCloudPort', () => {
     );
     expect(seen).toEqual([{ status: 'authorized', userId: identity.userId, workspaces }]);
     unsubscribe();
+  });
+
+  it('reports the workspaces again whenever the LANs of the installation change', () => {
+    const home = { id: 'lw_home', name: 'Home', slug: 'lan-home', role: 'owner' };
+    const office = { id: 'lw_office', name: 'Office', slug: 'office', role: 'owner' };
+    const live = createStore<readonly (typeof home)[]>([home]);
+    const tokens = { createTokenProvider: () => { throw new Error('not used'); } };
+    const port = createLocalCloudPort({ identity, workspaces: live, streamsTokens: tokens });
+    expect(port.streamsTokens).toBe(tokens);
+
+    const seen: string[][] = [];
+    const unsubscribe = port.access.watchWorkspaceAccess(
+      (snapshot) =>
+        seen.push(
+          snapshot.status === 'authorized' ? snapshot.workspaces.map((entry) => entry.id) : []
+        ),
+      (error) => {
+        throw error;
+      }
+    );
+    live.set([home, office]);
+    live.set([office]);
+    unsubscribe();
+    live.set([]);
+
+    expect(seen).toEqual([['lw_home'], ['lw_home', 'lw_office'], ['lw_office']]);
   });
 });
 

@@ -10,11 +10,12 @@ import type {
   PlatformProvider,
   PlatformSessionState,
   PlatformStreamsGateway,
+  PlatformWorkspaceSync,
   PlatformWorkspaces,
   WorkspacesState,
   WorkspaceSummary,
 } from './provider';
-import type { ReadonlyStore } from './store';
+import { createStaticStore, type ReadonlyStore } from './store';
 import { resolveRuntimeArtifactsBaseUrl } from './runtime-artifacts';
 
 export {
@@ -47,7 +48,11 @@ export function createLocalIdentity(
   };
 }
 
-export function createLocalWorkspaces(state: ReadonlyStore<WorkspacesState>): PlatformWorkspaces {
+export function createLocalWorkspaces(
+  state: ReadonlyStore<WorkspacesState>,
+  /** Makes a listed workspace the active one; absent, the active one is fixed. */
+  activate?: (workspaceId: string) => void
+): PlatformWorkspaces {
   return {
     state,
     setActive: (workspaceId) => {
@@ -55,68 +60,118 @@ export function createLocalWorkspaces(state: ReadonlyStore<WorkspacesState>): Pl
       if (current.status === 'ready' && current.activeWorkspaceId === workspaceId) {
         return Promise.resolve();
       }
-      return Promise.reject(
-        new Error(`Local platform has a single implicit workspace; cannot activate ${workspaceId}`)
-      );
+      const listed =
+        current.status === 'ready' &&
+        current.workspaces.some((workspace) => workspace.id === workspaceId);
+      if (!listed || !activate) {
+        return Promise.reject(
+          new Error(`Local platform has no workspace ${workspaceId} to activate`)
+        );
+      }
+      activate(workspaceId);
+      return Promise.resolve();
     },
-    // No `create`: the implicit workspace is provisioned by the CLI (D-O14).
+    // No `create`: the implicit workspace is provisioned by the CLI (D-O14),
+    // and a LAN workspace appears when the installation joins that LAN.
   };
 }
 
 export interface LocalPlatformProviderOptions {
   /** loading → authenticated once the CLI catalog snapshot is available. */
   session: ReadonlyStore<PlatformSessionState>;
-  /** Fed by the renderer's local-CLI connection: loading → ready(single implicit workspace). */
+  /** Fed by the renderer's local-CLI connection: loading → ready(the workspaces of the catalog). */
   workspaces: ReadonlyStore<WorkspacesState>;
+  /** Makes a listed workspace the active one. */
+  activateWorkspace?: (workspaceId: string) => void;
   /**
-   * A self-hosted Streams gateway. Present ⇒ rooms dual-home onto it so other
-   * devices on that gateway are reachable; hosted capabilities stay absent.
+   * The self-hosted Streams gateway of a workspace that is shared through one
+   * (a LAN). Its rooms dual-home onto the gateway so other devices of that LAN
+   * are reachable; hosted capabilities stay absent. `null` for a workspace
+   * that never leaves this machine.
    */
-  streams?: PlatformStreamsGateway;
+  resolveStreams?: (workspaceId: string) => PlatformStreamsGateway | null;
 }
+
+const LOCAL_ONLY_SYNC: PlatformWorkspaceSync = { mode: 'local' };
 
 export function createLocalPlatformProvider(
   options: LocalPlatformProviderOptions
 ): PlatformProvider {
+  // One answer per gateway, so an unchanged workspace keeps the identity of
+  // its answer across the snapshots that confirm it.
+  const shared = new Map<string, PlatformWorkspaceSync>();
+  const resolveStreams = options.resolveStreams;
   return {
     kind: 'local',
     identity: createLocalIdentity(options.session),
-    workspaces: createLocalWorkspaces(options.workspaces),
+    workspaces: createLocalWorkspaces(options.workspaces, options.activateWorkspace),
     capabilities: LOCAL_PLATFORM_CAPABILITIES,
     cloudApi: null,
-    sync: options.streams ? { mode: 'dual', streams: options.streams } : { mode: 'local' },
+    sync: {
+      ...LOCAL_ONLY_SYNC,
+      ...(resolveStreams
+        ? {
+            resolve: (workspaceId) => {
+              const streams = resolveStreams(workspaceId);
+              if (!streams) return LOCAL_ONLY_SYNC;
+              const key = `${streams.gatewayBaseUrl}\n${streams.token}`;
+              let sync = shared.get(key);
+              if (!sync) {
+                sync = { mode: 'dual', streams };
+                shared.set(key, sync);
+              }
+              return sync;
+            },
+          }
+        : {}),
+    },
   };
 }
 
 export interface LocalCloudPortOptions {
   identity: CloudPortIdentity;
-  /** The implicit local workspace set from the local catalog. */
-  workspaces: readonly WorkspaceSummary[];
+  /**
+   * The implicit local workspace set from the local catalog, or a live set
+   * that follows the LANs this installation belongs to.
+   */
+  workspaces: readonly WorkspaceSummary[] | ReadonlyStore<readonly WorkspaceSummary[]>;
   /** Optional operator mirror; the public artifact channel is the default. */
   runtimeArtifactsBaseUrl?: string;
   /**
-   * A self-hosted Streams gateway. Present ⇒ the data plane attaches it and
-   * `workspaces` is the workspace set shared through that gateway; account,
-   * billing and every other hosted port stay absent.
+   * Self-hosted Streams gateways. Present ⇒ the data plane attaches the
+   * gateway of each workspace and `workspaces` is the set shared through
+   * them; account, billing and every other hosted port stay absent.
    */
   streamsTokens?: CloudStreamsTokenPort;
+}
+
+function isWorkspaceStore(
+  value: LocalCloudPortOptions['workspaces']
+): value is ReadonlyStore<readonly WorkspaceSummary[]> {
+  return !Array.isArray(value);
 }
 
 /**
  * The open-source CLI platform: every hosted port is `null`, the access
  * oracle answers from the injected catalog snapshot, and only the daemon
  * owner is ever allowed. Without `streamsTokens` it guarantees zero network
- * I/O by construction; with it the only remote peer is the configured gateway.
+ * I/O by construction; with it the only remote peers are the configured
+ * gateways.
  */
 export function createLocalCloudPort(options: LocalCloudPortOptions): CloudPort {
-  const { identity, workspaces } = options;
+  const { identity } = options;
+  const workspaces = isWorkspaceStore(options.workspaces)
+    ? options.workspaces
+    : createStaticStore(options.workspaces);
   return {
     kind: 'local',
     identity,
     access: {
       watchWorkspaceAccess: (listener) => {
-        listener({ status: 'authorized', userId: identity.userId, workspaces });
-        return () => {};
+        const emit = () =>
+          listener({ status: 'authorized', userId: identity.userId, workspaces: workspaces.get() });
+        emit();
+        return workspaces.subscribe(emit);
       },
       verifyMachineAccess: (request) =>
         Promise.resolve(

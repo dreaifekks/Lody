@@ -47,6 +47,7 @@ import {
   Link2,
   ListFilter,
   MessageSquareMore,
+  Network,
   ArrowLeft,
   ArrowRight,
   PanelLeft,
@@ -127,6 +128,8 @@ export type LoroSidebarLabels = {
   teamChats: string;
   onlyChats: string;
   switchWorkspace: string;
+  switchLan: string;
+  manageLans: string;
   createWorkspace: string;
   inviteMembers: string;
   connectGithubRepo: string;
@@ -158,6 +161,13 @@ export interface LoroSidebarProps {
    * affordance.
    */
   workspaceSwitcherEnabled?: boolean;
+  /**
+   * What the workspaces of the switcher are. `account` workspaces belong to a
+   * signed-in user, who can create them, invite members and connect
+   * repositories. `lan` workspaces are the LANs this installation belongs to:
+   * they have no plan and no members, and joining one is a setting.
+   */
+  workspaceSwitcherKind?: 'account' | 'lan';
   connectionUiState?: 'online' | 'loading' | 'offline' | 'reconnecting';
   /**
    * The network may already be online while the target workspace runtime and
@@ -256,6 +266,7 @@ export interface LoroSidebarProps {
   onCreateWorkspaceClicked?: () => void;
   onInviteClicked?: () => void;
   onLinkRepoClicked?: () => void;
+  onManageLansClicked?: () => void;
   onHomeClicked?: () => void;
   onArchiveClicked?: () => void;
   /** Shows the Schedules entry; absent where there is nowhere to go. */
@@ -304,6 +315,8 @@ const defaultLabels: LoroSidebarLabels = {
   teamChats: 'All Tasks',
   onlyChats: 'Chats',
   switchWorkspace: 'Switch workspace',
+  switchLan: 'Switch LAN',
+  manageLans: 'Manage LANs',
   createWorkspace: 'Create workspace',
   inviteMembers: 'Invite members',
   connectGithubRepo: 'Connect GitHub repo',
@@ -718,6 +731,7 @@ export const LoroSidebar = memo(function LoroSidebar({
   currentWorkspaceId,
   scrollStateKey,
   workspaceSwitcherEnabled = true,
+  workspaceSwitcherKind = 'account',
   connectionUiState,
   workspaceSyncing = false,
   isElectron = false,
@@ -763,6 +777,7 @@ export const LoroSidebar = memo(function LoroSidebar({
   onCreateWorkspaceClicked,
   onInviteClicked,
   onLinkRepoClicked,
+  onManageLansClicked,
   onHomeClicked,
   onArchiveClicked,
   onSchedulesClicked,
@@ -1003,6 +1018,7 @@ export const LoroSidebar = memo(function LoroSidebar({
   const newWindowHint = t('workspace.openInNewWindowHint', {
     key: isMacOSElectronRenderer() ? '⌘' : 'Ctrl',
   });
+  const accountWorkspaces = workspaceSwitcherKind === 'account';
   const renderWorkspaceControl = (menuSide: 'top' | 'bottom') =>
     workspaceSwitcherEnabled ? (
       <Menu.Root modal={!isMobile}>
@@ -1022,15 +1038,19 @@ export const LoroSidebar = memo(function LoroSidebar({
           />
         </div>
         <Menu.Content align="start" side={menuSide} className="w-64">
-          <Menu.GroupLabel className="normal-case text-xs font-normal tracking-normal">
-            {userEmail}
-          </Menu.GroupLabel>
-          <Menu.Separator />
+          {accountWorkspaces ? (
+            <>
+              <Menu.GroupLabel className="normal-case text-xs font-normal tracking-normal">
+                {userEmail}
+              </Menu.GroupLabel>
+              <Menu.Separator />
+            </>
+          ) : null}
 
           {workspaces.length > 0 ? (
             <>
               <Menu.GroupLabel className="text-xs font-medium">
-                {mergedLabels.switchWorkspace}
+                {accountWorkspaces ? mergedLabels.switchWorkspace : mergedLabels.switchLan}
               </Menu.GroupLabel>
               <Menu.RadioGroup
                 value={currentWorkspaceId}
@@ -1088,7 +1108,7 @@ export const LoroSidebar = memo(function LoroSidebar({
                           }
                         }}
                         endContent={
-                          ws.id === currentWorkspaceId ? (
+                          !accountWorkspaces ? null : ws.id === currentWorkspaceId ? (
                             // The checked row is the current workspace — it
                             // carries the richer plan/members line that used to
                             // need a separate header card.
@@ -1134,27 +1154,39 @@ export const LoroSidebar = memo(function LoroSidebar({
 
           {/* Icon boxes match the radio rows' avatars, so both row kinds
               share one leading column and one text column. */}
-          <Menu.Item
-            className="gap-1.5"
-            icon={<Plus className="h-4 w-4" />}
-            onClick={() => onCreateWorkspaceClicked?.()}
-          >
-            {mergedLabels.createWorkspace}
-          </Menu.Item>
-          <Menu.Item
-            className="gap-1.5"
-            icon={<Users className="h-4 w-4" />}
-            onClick={() => onInviteClicked?.()}
-          >
-            {mergedLabels.inviteMembers}
-          </Menu.Item>
-          <Menu.Item
-            className="gap-1.5"
-            icon={<Link2 className="h-4 w-4" />}
-            onClick={() => onLinkRepoClicked?.()}
-          >
-            {mergedLabels.connectGithubRepo}
-          </Menu.Item>
+          {accountWorkspaces ? (
+            <>
+              <Menu.Item
+                className="gap-1.5"
+                icon={<Plus className="h-4 w-4" />}
+                onClick={() => onCreateWorkspaceClicked?.()}
+              >
+                {mergedLabels.createWorkspace}
+              </Menu.Item>
+              <Menu.Item
+                className="gap-1.5"
+                icon={<Users className="h-4 w-4" />}
+                onClick={() => onInviteClicked?.()}
+              >
+                {mergedLabels.inviteMembers}
+              </Menu.Item>
+              <Menu.Item
+                className="gap-1.5"
+                icon={<Link2 className="h-4 w-4" />}
+                onClick={() => onLinkRepoClicked?.()}
+              >
+                {mergedLabels.connectGithubRepo}
+              </Menu.Item>
+            </>
+          ) : (
+            <Menu.Item
+              className="gap-1.5"
+              icon={<Network className="h-4 w-4" />}
+              onClick={() => onManageLansClicked?.()}
+            >
+              {mergedLabels.manageLans}
+            </Menu.Item>
+          )}
         </Menu.Content>
       </Menu.Root>
     ) : (

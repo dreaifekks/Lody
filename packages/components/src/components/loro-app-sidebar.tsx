@@ -3227,6 +3227,8 @@ export function LoroAppSidebar({
       teamChats: t('sessions.sidebar.team', 'All Tasks'),
       onlyChats: t('sessions.sidebar.noRepo', 'No Repo'),
       switchWorkspace: t('organization.workspaces', 'Switch workspace'),
+      switchLan: t('sidebar.switchLan', 'Switch LAN'),
+      manageLans: t('sidebar.manageLans', 'Manage LANs'),
       createWorkspace: t('organization.createWorkspace', 'Create workspace'),
       inviteMembers: t('organization.inviteMembers', 'Invite members'),
       connectGithubRepo: t('sidebar.connectGithubRepo', 'Connect GitHub repo'),
@@ -3450,6 +3452,12 @@ export function LoroAppSidebar({
     openSettings('github');
   }, [closeMobileDrawer, openSettings, workspaceSlug]);
 
+  const handleManageLans = useCallback(() => {
+    if (!workspaceSlug) return;
+    closeMobileDrawer();
+    openSettings('lan');
+  }, [closeMobileDrawer, openSettings, workspaceSlug]);
+
   // --- Keyboard navigation integration ---
   const keyboardNavLocalSections = useMemo<SidebarNavigationLocalSection[]>(() => {
     const result: SidebarNavigationLocalSection[] = [];
@@ -3646,7 +3654,11 @@ export function LoroAppSidebar({
         workspaces={workspaces}
         currentWorkspaceId={resolvedWorkspaceId}
         scrollStateKey={workspaceSlug}
-        workspaceSwitcherEnabled={multiWorkspaceAvailable}
+        // Without accounts the workspaces are the LANs of this installation;
+        // there is something to switch once it belongs to more than one.
+        workspaceSwitcherEnabled={multiWorkspaceAvailable || workspaces.length > 1}
+        workspaceSwitcherKind={multiWorkspaceAvailable ? 'account' : 'lan'}
+        onManageLansClicked={handleManageLans}
         connectionUiState={connectionUiState}
         workspaceSyncing={sessionsListLoading}
         isElectron={isElectron}

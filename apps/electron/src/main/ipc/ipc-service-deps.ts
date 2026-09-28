@@ -4,6 +4,7 @@ import type { AppUpdaterService } from '../services/app-updater-service'
 import type { AuthService } from '../services/auth-service'
 import type { CliService } from '../services/cli-service'
 import type { GlobalShortcutsService } from '../services/global-shortcuts-service'
+import type { LanHubStore } from '@lody/shared/node/lan-hub-store'
 import type { LoroDataPlaneRelay } from '../services/loro-data-plane-relay'
 import type { NotificationService } from '../services/notification-service'
 import type { PublicBrowserService } from '../services/public-browser-service'
@@ -21,6 +22,8 @@ export type IpcServiceDeps = {
   loroDataPlaneRelay: LoroDataPlaneRelay
   windowBadgeService: WindowBadgeService
   globalShortcutsService: GlobalShortcutsService
+  /** `null` on the cloud platform, which has accounts instead of LANs. */
+  lanHubStore: LanHubStore | null
   getMainWindow: () => BrowserWindow | null
   completeOnboarding: (window: BrowserWindow) => void
   reloadMainWindowForDevbar: (window: BrowserWindow, enabled: boolean) => Promise<void>

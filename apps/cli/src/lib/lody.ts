@@ -38,6 +38,7 @@ interface LodyOptions {
   userId: string;
   machineId: MachineId;
   machineName: string;
+  machineNameExplicit?: boolean;
   localWorkspaceCatalog?: LocalWorkspaceCatalogService;
   memoryPressure: MemoryPressureSnapshotSource;
   machineLifecycleCapability: MachineLifecycleCapability;
@@ -115,6 +116,7 @@ export class Lody {
         userId: this.userId,
         machineId: this.machineId,
         machineName: this.machineName,
+        machineNameExplicit: options.machineNameExplicit ?? false,
         cliVersion: pkg.version,
         machineLifecycleCapability: options.machineLifecycleCapability,
         supportRegistryAgentTypes: this.supportRegistryAgentTypes,

@@ -1,113 +1,53 @@
 import {
-  LAN_HUB_RENDERER_ORIGIN,
   createLocalPlatformProvider,
   createStore,
   createStaticStore,
   type MutableStore,
   type PlatformProvider,
   type PlatformSessionState,
-  type PlatformStreamsGateway,
   type ReadonlyStore,
   type WorkspaceSummary,
   type WorkspacesState,
 } from '@lody/platform';
 import { useStoreValue } from '@lody/platform/react';
 import { isLocalAppPlatform } from '@/lib/app-platform';
+import { reloadApp } from '@/lib/clear-local-cache';
 import { getIpcServices } from '@/lib/electron-ipc-client';
+import { readPreferredWorkspaceSlug } from '@/lib/workspace';
+import {
+  createLocalPlatformFollower,
+  getLocalWorkspaceSlug,
+  LOCAL_WORKSPACE_FALLBACK_SLUG,
+  resolveLocalWorkspace,
+  type LocalPlatformFollower,
+} from './local-platform-follower';
+
+export { getLocalWorkspaceSlug, LOCAL_WORKSPACE_FALLBACK_SLUG, resolveLocalWorkspace };
 
 /**
  * Renderer-side assembly of the open-source local `PlatformProvider`
- * (specs/platform-providers.md). The CLI provisions the single implicit
- * workspace (D-O14) and the Electron main process surfaces it over
- * `getIpcServices()?.localPlatform.getSnapshot()`; this module polls that bridge until
- * the CLI publishes one atomic identity/workspace snapshot. Both provider
- * stores transition together so renderer writes and CLI access checks use the
- * same durable synthetic installation identity.
+ * (specs/platform-providers.md). The CLI provisions the workspaces (D-O14: one
+ * implicit workspace, or one per LAN the installation belongs to) and the
+ * Electron main process surfaces them over
+ * `getIpcServices()?.localPlatform.getSnapshot()`; this module follows that
+ * bridge. Identity and workspaces come from one atomic snapshot, so renderer
+ * writes and CLI access checks use the same durable synthetic identity.
  */
 
-/** Fallback slug for workspace routes while the implicit workspace has none. */
-export const LOCAL_WORKSPACE_FALLBACK_SLUG = 'local';
-
-const IMPLICIT_WORKSPACE_POLL_INTERVAL_MS = 500;
-
-/**
- * The desktop shell forwards this origin to the configured hub and supplies the
- * real credential itself; the token here only fills the transport's bearer slot.
- */
-const LAN_HUB_STREAMS: PlatformStreamsGateway = {
-  gatewayBaseUrl: LAN_HUB_RENDERER_ORIGIN,
-  token: 'lan-hub',
-};
-
-function isLanHubConfigured(): boolean {
-  return typeof window !== 'undefined' && window.__LODY_PLATFORM__?.lanHub === true;
-}
+/** Until the CLI provisioned a workspace, the window has nothing to show. */
+const BOOTSTRAP_POLL_INTERVAL_MS = 500;
+/** Afterwards a change is a LAN joined or left, which is rare. */
+const FOLLOW_POLL_INTERVAL_MS = 2_000;
 
 let cachedProvider: PlatformProvider | null = null;
 let cachedSessionStore: MutableStore<PlatformSessionState> | null = null;
 let cachedWorkspacesStore: MutableStore<WorkspacesState> | null = null;
-let snapshotPollingStarted = false;
+let cachedFollower: LocalPlatformFollower | null = null;
+let followingStarted = false;
 
 const CLOUD_WORKSPACES_STORE: ReadonlyStore<WorkspacesState> = createStaticStore({
   status: 'loading',
 } as WorkspacesState);
-
-function startLocalPlatformSnapshotPolling(
-  sessionStore: MutableStore<PlatformSessionState>,
-  workspacesStore: MutableStore<WorkspacesState>
-): void {
-  let intervalId: ReturnType<typeof setInterval> | null = null;
-  let inFlight = false;
-  let settled = false;
-  const poll = async (): Promise<void> => {
-    if (inFlight || settled) {
-      return;
-    }
-    inFlight = true;
-    try {
-      const snapshot = await getIpcServices()?.localPlatform.getSnapshot();
-      if (!snapshot) {
-        return;
-      }
-      const workspace = snapshot.workspace;
-      const summary: WorkspaceSummary = {
-        id: workspace.workspaceId,
-        name: workspace.name,
-        slug: workspace.slug,
-        role: workspace.role,
-      };
-      sessionStore.set({
-        status: 'authenticated',
-        user: { id: snapshot.userId, name: 'Local' },
-      });
-      workspacesStore.set({
-        status: 'ready',
-        workspaces: [summary],
-        activeWorkspaceId: summary.id,
-      });
-      settled = true;
-      if (intervalId !== null) {
-        clearInterval(intervalId);
-        intervalId = null;
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      workspacesStore.set({ status: 'error', message });
-      settled = true;
-      if (intervalId !== null) {
-        clearInterval(intervalId);
-        intervalId = null;
-      }
-      console.error('local-platform: bootstrap snapshot failed', error);
-    } finally {
-      inFlight = false;
-    }
-  };
-  intervalId = setInterval(() => {
-    void poll();
-  }, IMPLICIT_WORKSPACE_POLL_INTERVAL_MS);
-  void poll();
-}
 
 function getLocalWorkspacesStore(): MutableStore<WorkspacesState> {
   if (!cachedWorkspacesStore) {
@@ -123,54 +63,85 @@ function getLocalSessionStore(): MutableStore<PlatformSessionState> {
   return cachedSessionStore;
 }
 
-function ensureLocalPlatformSnapshotPolling(): void {
-  if (snapshotPollingStarted) return;
-  snapshotPollingStarted = true;
-  const sessionStore = getLocalSessionStore();
-  const workspacesStore = getLocalWorkspacesStore();
-  startLocalPlatformSnapshotPolling(sessionStore, workspacesStore);
+function getLocalPlatformFollower(): LocalPlatformFollower {
+  cachedFollower ??= createLocalPlatformFollower({
+    read: async () => await getIpcServices()?.localPlatform.getSnapshot(),
+    session: getLocalSessionStore(),
+    workspaces: getLocalWorkspacesStore(),
+    readPreferredSlug: readPreferredWorkspaceSlug,
+    onIdentityChanged: reloadApp,
+    onError: (error) => console.error('local-platform: reading the snapshot failed', error),
+  });
+  return cachedFollower;
+}
+
+function ensureLocalPlatformFollowing(): void {
+  if (followingStarted) return;
+  followingStarted = true;
+  const follower = getLocalPlatformFollower();
+  const follow = (): void => {
+    void follower.refresh().finally(() => {
+      setTimeout(
+        follow,
+        follower.isReady() ? FOLLOW_POLL_INTERVAL_MS : BOOTSTRAP_POLL_INTERVAL_MS
+      );
+    });
+  };
+  follow();
+}
+
+/**
+ * Applies a change to the LANs of this installation without waiting for the
+ * next poll. The workspaces only change once the CLI followed the settings.
+ */
+export async function refreshLocalPlatformSnapshot(): Promise<void> {
+  if (!isLocalAppPlatform()) return;
+  await getLocalPlatformFollower().refresh();
 }
 
 /**
  * The one local `PlatformProvider` instance of this renderer. Only call on the
  * local platform (root route mounts `PlatformContext` behind
- * `isLocalAppPlatform()`); the first call starts the implicit-workspace poll.
+ * `isLocalAppPlatform()`); the first call starts following the snapshot.
  */
 export function getLocalPlatformProvider(): PlatformProvider {
   if (!cachedProvider) {
-    const sessionStore = getLocalSessionStore();
-    const workspacesStore = getLocalWorkspacesStore();
+    const follower = getLocalPlatformFollower();
     cachedProvider = createLocalPlatformProvider({
-      session: sessionStore,
-      workspaces: workspacesStore,
-      ...(isLanHubConfigured() ? { streams: LAN_HUB_STREAMS } : {}),
+      session: getLocalSessionStore(),
+      workspaces: getLocalWorkspacesStore(),
+      activateWorkspace: follower.activate,
+      resolveStreams: follower.resolveStreams,
     });
-    ensureLocalPlatformSnapshotPolling();
+    ensureLocalPlatformFollowing();
   }
   return cachedProvider;
-}
-
-/**
- * The implicit local workspace, or null while the CLI has not provisioned it
- * (and always null on the cloud platform, without starting any polling).
- * Usable outside `PlatformContext` — the runtime provider mounts above the
- * route tree that provides the context.
- */
-export function useImplicitLocalWorkspace(): WorkspaceSummary | null {
-  const state = useLocalPlatformWorkspacesState();
-  return state.status === 'ready' ? (state.workspaces[0] ?? null) : null;
 }
 
 /** Bootstrap state for route-level loading/error handling. */
 export function useLocalPlatformWorkspacesState(): WorkspacesState {
   if (isLocalAppPlatform()) {
-    ensureLocalPlatformSnapshotPolling();
+    ensureLocalPlatformFollowing();
   }
   const store = isLocalAppPlatform() ? getLocalWorkspacesStore() : CLOUD_WORKSPACES_STORE;
   return useStoreValue(store);
 }
 
-/** Route slug of the implicit local workspace. */
-export function getLocalWorkspaceSlug(workspace: WorkspaceSummary): string {
-  return workspace.slug ?? LOCAL_WORKSPACE_FALLBACK_SLUG;
+/**
+ * The local workspace the route slug names, or the active one without a slug.
+ * Null while the CLI has not provisioned a workspace (and always null on the
+ * cloud platform, without starting any polling). Usable outside
+ * `PlatformContext` — the runtime provider mounts above the route tree that
+ * provides the context.
+ */
+export function useLocalWorkspace(slug: string | null | undefined): WorkspaceSummary | null {
+  return resolveLocalWorkspace(useLocalPlatformWorkspacesState(), slug);
+}
+
+const NO_WORKSPACES: readonly WorkspaceSummary[] = [];
+
+/** Every workspace of this installation: one, or one per LAN it belongs to. */
+export function useLocalWorkspaces(): readonly WorkspaceSummary[] {
+  const state = useLocalPlatformWorkspacesState();
+  return state.status === 'ready' ? state.workspaces : NO_WORKSPACES;
 }

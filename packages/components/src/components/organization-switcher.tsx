@@ -15,7 +15,7 @@ import { Tooltip } from '@lody/ui/tooltip';
 import { useNavigate } from '@tanstack/react-router';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useAuthSignOut } from '../providers/convex-provider';
-import { useImplicitLocalWorkspace } from '../providers/local-platform-provider';
+import { useLocalWorkspace } from '../providers/local-platform-provider';
 import { useAppCapability } from '@/lib/app-platform';
 import { WorkspaceAvatar } from './workspace-avatar';
 import { resolveWorkspaceIdentityLogo } from '@/lib/workspace-identity';
@@ -25,9 +25,8 @@ import { resolveWorkspaceIdentityLogo } from '@/lib/workspace-identity';
  * 显示当前组织，支持切换和创建新组织
  */
 export function OrganizationSwitcher() {
-  // Without 'multiWorkspace' (open-source local build) there is exactly one
-  // implicit workspace: render its name without switcher / create / sign-out
-  // affordances.
+  // Without 'multiWorkspace' (open-source local build) workspaces are neither
+  // created nor signed out of: render the name of the active one.
   const multiWorkspaceAvailable = useAppCapability('multiWorkspace');
   if (!multiWorkspaceAvailable) {
     return <LocalWorkspaceNameplate />;
@@ -37,7 +36,7 @@ export function OrganizationSwitcher() {
 
 function LocalWorkspaceNameplate() {
   const { t } = useTranslation();
-  const workspace = useImplicitLocalWorkspace();
+  const workspace = useLocalWorkspace(null);
 
   if (!workspace) {
     return (

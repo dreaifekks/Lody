@@ -13,7 +13,12 @@ import {
   type LocalWorkspaceCatalogSnapshot,
 } from '../src/lib/local-workspace-catalog';
 import type { Logger } from '../src/utils/logger';
-import { createLocalCloudPort, type CloudPort } from '@lody/platform';
+import {
+  createLocalCloudPort,
+  createStore,
+  type CloudPort,
+  type WorkspaceSummary,
+} from '@lody/platform';
 
 const createTestCloudPort = (
   watchWorkspaceAccess?: CloudPort['access']['watchWorkspaceAccess']
@@ -414,5 +419,176 @@ describe('LodyFleet local session control streaming', () => {
     ]);
     expect(onResponse).toHaveBeenCalledOnce();
     expect(onResponse).toHaveBeenCalledWith(responses[0]);
+  });
+});
+
+describe('LodyFleet LAN membership', () => {
+  const LAN_OWNER = 'local:lan-owner';
+  const home: WorkspaceSummary = { id: 'lw_home', name: 'Home', slug: 'lan-home', role: 'owner' };
+  const office: WorkspaceSummary = { id: 'lw_office', name: 'Office', slug: 'office', role: 'owner' };
+
+  type FakeRuntime = {
+    workspace: WorkspaceSummary;
+    events: string[];
+    lody: {
+      handleRemoteAccessRevoked: () => Promise<void>;
+      attachRemoteBridge: () => Promise<void>;
+      cleanup: () => Promise<void>;
+      isControlPlaneReady: () => boolean;
+      isControlPlaneRecovering: () => boolean;
+      isRemoteBridgeAttached: () => boolean;
+      getActiveSessionCount: () => number;
+      getConnectedRoomCount: () => number;
+    };
+    schedules: { dispose: () => Promise<void> };
+    prPollerWorkspace: { dispose: () => Promise<void> };
+    unsubscribeTerminalCleanup: () => void;
+  };
+
+  const createLanFleet = (initial: WorkspaceSummary[]) => {
+    const workspaces = createStore<readonly WorkspaceSummary[]>(initial);
+    const catalogWrites: string[][] = [];
+    const catalog: LocalWorkspaceCatalogService = {
+      ...createCatalogStub(() =>
+        Effect.succeed(catalogSnapshot({ identity: { userId: LAN_OWNER } }))
+      ),
+      cacheRemoteWorkspaces: (input) =>
+        Effect.sync(() => {
+          catalogWrites.push(input.workspaces.map((workspace) => workspace.id));
+        }),
+    };
+    // Every observable step wakes the waiter, so a test waits for the state
+    // it asserts instead of for time to pass.
+    const waiters = new Set<() => void>();
+    const notify = () => {
+      for (const waiter of [...waiters]) waiter();
+    };
+    const until = (condition: () => boolean) =>
+      new Promise<void>((resolve) => {
+        const check = () => {
+          if (!condition()) return;
+          waiters.delete(check);
+          resolve();
+        };
+        waiters.add(check);
+        check();
+      });
+    const connectivity: string[] = [];
+    let appliedLists = 0;
+    const runtimeStateReporter = {
+      ...createRuntimeStateReporter(),
+      setStartupStage: vi.fn(),
+      setConnectivity: (value: string) => connectivity.push(value),
+      setConnectedWorkspaces: () => notify(),
+      clearIssue: (code: string) => {
+        if (code === 'workspace_list_apply_failed') appliedLists += 1;
+        notify();
+      },
+    };
+    const fleet = new LodyFleet({
+      logger: createSilentLogger(),
+      builtinAgentConfigCliTypes: [],
+      cliToken: '',
+      userId: LAN_OWNER,
+      machineId: 'machine-1' as MachineId,
+      machineName: 'host',
+      runtimeStateReporter: runtimeStateReporter as never,
+      cloudPort: createLocalCloudPort({
+        identity: { userId: LAN_OWNER },
+        workspaces,
+        streamsTokens: {
+          createTokenProvider: () => {
+            throw new Error('not used by this Fleet unit test');
+          },
+        },
+      }),
+      localWorkspaceCatalog: catalog,
+      machineLifecycleCapability: {
+        launchMode: 'foreground',
+        canRemoteRestart: false,
+        canRemoteUpgrade: false,
+        reason: 'not_daemon',
+      },
+    }) as unknown as {
+      runtimes: Map<string, FakeRuntime>;
+      startWorkspace: (workspace: WorkspaceSummary) => Promise<void>;
+      startWorkspaceSubscription: (options: { waitForInitial: boolean }) => Promise<void>;
+      shutdown: () => Promise<void>;
+    };
+    const runtimes = new Map<string, FakeRuntime>();
+    fleet.startWorkspace = async (workspace) => {
+      const events: string[] = [];
+      const record = (event: string) => {
+        events.push(event);
+        notify();
+      };
+      const runtime: FakeRuntime = {
+        workspace,
+        events,
+        lody: {
+          handleRemoteAccessRevoked: async () => record('revoked'),
+          attachRemoteBridge: async () => record('attached'),
+          cleanup: async () => record('stopped'),
+          isControlPlaneReady: () => true,
+          isControlPlaneRecovering: () => false,
+          isRemoteBridgeAttached: () => true,
+          getActiveSessionCount: () => 0,
+          getConnectedRoomCount: () => 0,
+        },
+        schedules: { dispose: async () => {} },
+        prPollerWorkspace: { dispose: async () => {} },
+        unsubscribeTerminalCleanup: () => {},
+      };
+      runtimes.set(workspace.id, runtime);
+      fleet.runtimes.set(workspace.id, runtime);
+    };
+    const change = async (next: WorkspaceSummary[]) => {
+      // One applied list clears the issue twice: once the workspaces are
+      // started and stopped, and once more after they are attached.
+      const settled = appliedLists + 2;
+      workspaces.set(next);
+      await until(() => appliedLists >= settled);
+    };
+    return { fleet, runtimes, catalogWrites, connectivity, change };
+  };
+
+  it('stops the workspace of a LAN that was left and keeps the others running', async () => {
+    const { fleet, runtimes, catalogWrites, connectivity, change } = createLanFleet([
+      home,
+      office,
+    ]);
+    await fleet.startWorkspaceSubscription({ waitForInitial: true });
+    expect([...fleet.runtimes.keys()]).toEqual(['lw_home', 'lw_office']);
+
+    await change([office]);
+
+    expect([...fleet.runtimes.keys()]).toEqual(['lw_office']);
+    expect(runtimes.get('lw_home')?.events).toEqual(['attached', 'revoked', 'stopped']);
+    expect(runtimes.get('lw_office')?.events).not.toContain('stopped');
+    expect(catalogWrites).toEqual([['lw_home', 'lw_office'], ['lw_office']]);
+    // A machine that left a LAN on purpose is not a machine that lost one.
+    expect(connectivity.at(-1)).toBe('online');
+  });
+
+  it('starts the workspace of a LAN that is joined while the service runs', async () => {
+    const { fleet, runtimes, change } = createLanFleet([home]);
+    await fleet.startWorkspaceSubscription({ waitForInitial: true });
+
+    await change([home, office]);
+
+    expect([...fleet.runtimes.keys()]).toEqual(['lw_home', 'lw_office']);
+    expect(runtimes.get('lw_office')?.events).toEqual(['attached']);
+    expect(runtimes.get('lw_home')?.events).not.toContain('stopped');
+  });
+
+  it('joins the same LAN again after it was left', async () => {
+    const { fleet, runtimes, change } = createLanFleet([home, office]);
+    await fleet.startWorkspaceSubscription({ waitForInitial: true });
+    await change([office]);
+
+    await change([home, office]);
+
+    expect([...fleet.runtimes.keys()].sort()).toEqual(['lw_home', 'lw_office']);
+    expect(runtimes.get('lw_home')?.events).toEqual(['attached']);
   });
 });

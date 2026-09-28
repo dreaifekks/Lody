@@ -9,6 +9,7 @@ import { isLocalSessionControlRequest } from '@lody/shared/node/local-session-co
 import { isLocalProjectControlRequest } from '@lody/shared/node/local-project-control'
 import {
   CLI_EXIT_CODE_AUTH_FAILURE,
+  CLI_EXIT_CODE_REMOTE_RESTART,
   CLI_EXIT_CODE_RETRYABLE_STARTUP,
   CLI_EXIT_CODE_SUPERVISOR_CONTRACT_MISMATCH,
   LOCAL_CLI_SUPERVISOR_CONTRACT_VERSION,
@@ -119,6 +120,15 @@ function decideEmbeddedCliExit(result: CliRunResult): SupervisorExitDecision {
       countFailure: true,
       failureClass: 'v8_oom' as const,
       message: 'Electron-managed CLI exhausted its V8 heap'
+    }
+  }
+  if (result.code === CLI_EXIT_CODE_REMOTE_RESTART) {
+    // The CLI asked to be started again, as it does to follow LAN settings
+    // that a running process cannot apply.
+    return {
+      action: 'retry' as const,
+      countFailure: false,
+      message: 'Electron-managed CLI is restarting to apply new settings'
     }
   }
   return {

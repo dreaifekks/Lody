@@ -203,6 +203,7 @@ import {
   verifyMachineLifecycleRequest,
   writeDaemonUpgradeIntent,
 } from './machine-lifecycle';
+import { resolveRegisteredMachineName } from './machine-name';
 import { formatErrorMessage } from '@/utils/format-error';
 import { startTraceSpan, traceAsync } from '@/utils/trace-span';
 import { getCliHttpFetch } from '@/utils/http-transport';
@@ -558,6 +559,7 @@ export interface MessageHandlerConfig {
   userId: string;
   machineId: string;
   machineName: string;
+  machineNameExplicit?: boolean;
   cliVersion: string;
   machineLifecycleCapability?: MachineLifecycleCapability;
   supportRegistryAgentTypes?: string[];
@@ -736,6 +738,7 @@ export class MessageHandler {
   private workspaceId: WorkspaceId;
   private workspaceSlug?: string;
   private machineName: string;
+  private machineNameExplicit: boolean;
   private cliVersion: string;
   private supportRegistryAgentTypes: string[];
   private closeSessionTerminals?: (sessionId: SessionId) => void;
@@ -2885,6 +2888,7 @@ export class MessageHandler {
     this.workspaceId = config.workspaceId;
     this.workspaceSlug = config.workspaceSlug;
     this.machineName = config.machineName;
+    this.machineNameExplicit = config.machineNameExplicit ?? false;
     this.cliVersion = config.cliVersion;
     this.machineId = config.machineId as MachineId;
     this.sessionActivePresence = new SessionActivePresenceController(
@@ -5827,10 +5831,13 @@ export class MessageHandler {
       const machineMeta = (await this.workspaceDocument.repo.getDocMeta(machineRoomId))?.meta as
         | MachineMeta
         | undefined;
-      const existingName = machineMeta?.name?.trim();
       // The CLI startup name is only a bootstrap default. Settings-page renames own the
       // persisted display name, so reconnect/registration must not overwrite synced edits.
-      const registeredName = existingName || this.machineName;
+      const registeredName = resolveRegisteredMachineName({
+        machineName: this.machineName,
+        explicit: this.machineNameExplicit,
+        storedName: machineMeta?.name,
+      });
       await this.workspaceDocument.registerMachine(this.machineId, {
         id: this.machineId,
         name: registeredName,

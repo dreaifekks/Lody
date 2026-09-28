@@ -123,6 +123,11 @@ type WorkspaceListItem = {
 
 type AuthorizedWorkspaceList = Extract<CloudAccessSnapshot, { status: 'authorized' }>;
 
+export type ImplicitLocalWorkspaceMemory = {
+  workspaceId?: string;
+  remember: (workspaceId: string) => Promise<void>;
+};
+
 type WorkspaceRuntimeState = {
   workspace: WorkspaceListItem;
   lody: Lody;
@@ -140,6 +145,8 @@ export class LodyFleet {
   private readonly userId: string;
   private readonly machineId: MachineId;
   private readonly machineName: string;
+  private readonly machineNameExplicit: boolean;
+  private readonly implicitLocalWorkspace: ImplicitLocalWorkspaceMemory | null;
   private readonly localProjectControlService: LocalProjectControlService;
   private readonly localWorkspaceCatalog: LocalWorkspaceCatalogService;
   private readonly remoteBridge: RemoteBridge | null;
@@ -189,6 +196,13 @@ export class LodyFleet {
     userId: string;
     machineId: MachineId;
     machineName: string;
+    /**
+     * The name was chosen for this machine rather than derived from its host
+     * name, so it replaces the name a workspace stored for it.
+     */
+    machineNameExplicit?: boolean;
+    /** Local-only operation: which workspace is the implicit one, and how to record it. */
+    implicitLocalWorkspace?: ImplicitLocalWorkspaceMemory;
     runtimeStateReporter: CliRuntimeStateReporter;
     localWorkspaceCatalog?: LocalWorkspaceCatalogService;
     cloudPort: CloudPort;
@@ -205,6 +219,8 @@ export class LodyFleet {
     this.userId = options.userId;
     this.machineId = options.machineId;
     this.machineName = options.machineName;
+    this.machineNameExplicit = options.machineNameExplicit ?? false;
+    this.implicitLocalWorkspace = options.implicitLocalWorkspace ?? null;
     this.cloudPort = options.cloudPort;
     if (this.cloudPort.identity.userId !== this.userId) {
       throw new Error(
@@ -351,10 +367,17 @@ export class LodyFleet {
       await traceAsync(this.logger, 'startup.local_workspace_provision', undefined, async () => {
         await ensureImplicitLocalWorkspace({
           catalog: this.localWorkspaceCatalog,
-          identity: { userId: this.userId, createdAt: new Date(getServerNow()).toISOString() },
+          identity: {
+            userId: this.userId,
+            createdAt: new Date(getServerNow()).toISOString(),
+            ...(this.implicitLocalWorkspace?.workspaceId
+              ? { workspaceId: this.implicitLocalWorkspace.workspaceId }
+              : {}),
+          },
           machineId: this.machineId,
           machineName: this.machineName,
           logger: this.logger,
+          remember: this.implicitLocalWorkspace?.remember,
         });
       });
     }
@@ -697,8 +720,13 @@ export class LodyFleet {
       for (const workspace of result.workspaces) {
         this.remoteRevokedWorkspaceIds.delete(workspace.id);
       }
-      for (const workspaceId of revokedRunningWorkspaceIds) {
-        this.remoteRevokedWorkspaceIds.add(workspaceId);
+      // An account can lose a workspace without its user acting, so that
+      // workspace keeps serving what it holds locally. A LAN only leaves the
+      // list because the user removed it here, and its runtime stops with it.
+      if (this.cloudPort.kind !== 'local') {
+        for (const workspaceId of revokedRunningWorkspaceIds) {
+          this.remoteRevokedWorkspaceIds.add(workspaceId);
+        }
       }
       this.lastCachedWorkspaceSignature = signature;
     }
@@ -782,6 +810,7 @@ export class LodyFleet {
           userId: this.userId,
           machineId: this.machineId,
           machineName: this.machineName,
+          machineNameExplicit: this.machineNameExplicit,
           cloudPort: this.cloudPort,
           localWorkspaceCatalog: this.localWorkspaceCatalog,
           memoryPressure: this.memoryPressure,

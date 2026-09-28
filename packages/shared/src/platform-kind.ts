@@ -9,12 +9,11 @@ export const PLATFORM_VITE_ENV_VAR = 'VITE_LODY_PLATFORM';
 export const LOCAL_WORKSPACE_ID_PREFIX = 'lw_';
 export const LOCAL_USER_ID_PREFIX = 'local:';
 /**
- * How a desktop renderer addresses the self-hosted Streams hub. The shell
- * forwards this origin to the configured hub, so the renderer never learns the
- * real address or its credential.
+ * The scheme a desktop renderer addresses self-hosted Streams hubs by. The
+ * shell forwards `lody-hub://<lan id>` to the hub of that LAN, so the renderer
+ * needs neither its real address nor its credential to reach it.
  */
 export const LAN_HUB_SCHEME = 'lody-hub';
-export const LAN_HUB_RENDERER_ORIGIN = `${LAN_HUB_SCHEME}://hub`;
 
 export function isLocalWorkspaceId(id: string): boolean {
   return id.startsWith(LOCAL_WORKSPACE_ID_PREFIX);

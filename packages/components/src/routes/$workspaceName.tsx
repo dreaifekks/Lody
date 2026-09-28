@@ -1,5 +1,5 @@
 import { createFileRoute, Navigate, notFound, Outlet, redirect } from '@tanstack/react-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useOrganization } from '@/hooks/useOrganization';
 import { useStableSession } from '@/hooks/useStableSession';
@@ -29,6 +29,7 @@ import { isLocalAppPlatform } from '@/lib/app-platform';
 import { WorkspaceRouteTargetProvider } from '../providers/workspace-route-target';
 import {
   getLocalWorkspaceSlug,
+  resolveLocalWorkspace,
   useLocalPlatformWorkspacesState,
 } from '../providers/local-platform-provider';
 
@@ -107,15 +108,20 @@ function LocalWorkspaceGuardRoute() {
   const { t } = useTranslation();
   const { workspaceName } = Route.useParams();
   const workspacesState = useLocalPlatformWorkspacesState();
-  const workspace =
-    workspacesState.status === 'ready' ? (workspacesState.workspaces[0] ?? null) : null;
+  const workspace = resolveLocalWorkspace(workspacesState, workspaceName);
+  const canonicalSlug = workspace ? getLocalWorkspaceSlug(workspace) : null;
 
-  // Establish the workspace-context atoms from the implicit workspace: the
-  // runtime provider keys off these atoms, not the router.
-  useWorkspaceContextAtoms(
-    workspaceName,
-    workspace ? { status: 'member', organizationId: workspace.id } : undefined
+  // Establish the workspace-context atoms from the workspace this route names:
+  // the runtime provider keys off these atoms, not the router. A slug that
+  // names no workspace establishes nothing; it is redirected below.
+  const access = useMemo(
+    () =>
+      workspace && canonicalSlug === workspaceName
+        ? { status: 'member', organizationId: workspace.id }
+        : undefined,
+    [canonicalSlug, workspace, workspaceName]
   );
+  useWorkspaceContextAtoms(workspaceName, access);
 
   if (workspacesState.status === 'error') {
     return (
@@ -136,10 +142,10 @@ function LocalWorkspaceGuardRoute() {
     );
   }
 
-  // A stale or hand-typed slug still refers to the only workspace; converge on
-  // its canonical slug instead of rendering under a mismatched URL.
-  const canonicalSlug = getLocalWorkspaceSlug(workspace);
-  if (workspaceName !== canonicalSlug) {
+  // A stale or hand-typed slug, or the slug of a LAN this installation left,
+  // names no workspace: continue in the active one instead of rendering under
+  // a URL that means nothing.
+  if (canonicalSlug !== null && workspaceName !== canonicalSlug) {
     return <Navigate to="/$workspaceName/chat" params={{ workspaceName: canonicalSlug }} replace />;
   }
 

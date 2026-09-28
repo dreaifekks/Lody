@@ -5,29 +5,14 @@ import { setupRenderer } from '@better-auth/electron/preload'
 import os from 'node:os'
 import { readPreferredSystemLanguagesArgument } from '../system-language-argument'
 import { createBootProfiler, type BootProfilerBridge } from './boot-profiler'
-import { resolvePlatformKind } from '@lody/shared/platform-kind'
-import { readLanHubConfig } from '@lody/shared/node/lan-hub'
 
 setupRenderer()
-
-// Only presence is exposed: the shell forwards hub traffic, so the address and
-// credential never enter the renderer. A malformed config reads as absent here
-// because the main process already reported it.
-function isLanHubConfigured(): boolean {
-  if (resolvePlatformKind(import.meta.env.VITE_LODY_PLATFORM) !== 'local') return false
-  try {
-    return readLanHubConfig() !== null
-  } catch {
-    return false
-  }
-}
 
 const platformInfo = {
   os: process.platform,
   homeDir: os.homedir(),
   machineName: os.hostname(),
-  preferredSystemLanguages: readPreferredSystemLanguagesArgument(process.argv),
-  lanHub: isLanHubConfigured()
+  preferredSystemLanguages: readPreferredSystemLanguagesArgument(process.argv)
 }
 
 const bootProfiler = process.env['LODY_E2E_BOOT_PROFILE'] === '1' ? createBootProfiler() : null

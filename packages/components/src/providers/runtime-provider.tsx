@@ -33,12 +33,13 @@ import { createWorkspaceRuntime } from './create-workspace-runtime';
 import { resolveCloudPlatformRuntimePolicy } from './cloud-platform-runtime-policy';
 import type { EagerSyncSurface } from './background-sync-coordinator';
 import { resolveEffectiveWorkspaceId } from './resolve-effective-workspace-id';
-import { getLocalWorkspaceSlug, useImplicitLocalWorkspace } from './local-platform-provider';
+import { getLocalWorkspaceSlug, useLocalWorkspace } from './local-platform-provider';
 import { isWarmWindow } from '@/lib/desktop-window';
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
 import { maybeClearLodyCacheOnBoot } from '@/lib/clear-local-cache';
 import { isElectronRenderer } from '@/lib/electron';
 import { isNativeAppShell } from '@/lib/native-platform';
+import { resolvePlatformSync } from '@lody/platform';
 import { usePlatform, useCloudQuery } from '@lody/platform/react';
 import { cloudOperations } from '@/lib/cloud-api-operations';
 import { sessionMetaCacheAtom, docMetaCacheReadyAtom } from '@/atoms/doc-meta';
@@ -79,8 +80,6 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const localProbeAttempted = useAtomValue(localProbeAttemptedAtom);
   const localAgentEnabled = useAtomValue(localAgentEnabledAtom);
   const accountToken = useAtomValue(authTokenAtom);
-  // A fixed gateway carries its own credential; there is no account session.
-  const token = platform.sync.streams?.token ?? accountToken;
   const currentUser = useAtomValue(userAtom);
   const previousShutdown = useRef<Promise<void>>(Promise.resolve());
   const runtime = useAtomValue(runtimeAtom);
@@ -96,7 +95,12 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const setPresenceStates = useSetAtom(setLodyPresenceStatesAtom);
   const setPresenceNowMs = useSetAtom(setLodyPresenceNowMsAtom);
   const setPresenceSyncState = useSetAtom(setLodyPresenceSyncStateAtom);
-  const implicitLocalWorkspace = useImplicitLocalWorkspace();
+  // The workspace the route names; without a route, the one the user was in last.
+  const localWorkspace = useLocalWorkspace(routeWorkspaceSlug);
+  // A workspace syncs the way its own LAN, or the lack of one, says.
+  const sync = resolvePlatformSync(platform.sync, localWorkspace?.id ?? workspaceId);
+  // A fixed gateway carries its own credential; there is no account session.
+  const token = sync.streams?.token ?? accountToken;
   const visibleMachineIndex = useVisibleMachineMetas({
     includeMachineFlock: false,
     syncMachineFlock: false,
@@ -107,8 +111,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   } | null>(null);
   // Behind a fixed gateway every visible machine belongs to the local owner,
   // so visibility itself is the authorization; there are no access rows.
-  const authorizedWorkspaceId = platform.sync.streams
-    ? ((implicitLocalWorkspace?.id as WorkspaceId | undefined) ?? null)
+  const authorizedWorkspaceId = sync.streams
+    ? ((localWorkspace?.id as WorkspaceId | undefined) ?? null)
     : workspaceId;
   authorizedMachineIdsRef.current =
     visibleMachineIndex.isLoading || !authorizedWorkspaceId
@@ -116,7 +120,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       : {
           workspaceId: authorizedWorkspaceId,
           machineIds: new Set(
-            platform.sync.streams
+            sync.streams
               ? visibleMachineIndex.machines.keys()
               : visibleMachineIndex.convexAuthorizedMachineIds
           ),
@@ -133,9 +137,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const prevWorkspaceSlugRef = useRef<string | null>(null);
   const prevWorkspaceIdRef = useRef<WorkspaceId | null>(null);
 
-  // Local (open-source) platform: the effective workspace id is the CLI's
-  // implicit workspace — no cached/server id arbitration, no auth involved.
-  // This holds whether or not its rooms also sync through a self-hosted hub.
+  // Local (open-source) platform: the effective workspace id is the one the
+  // CLI catalog gives the workspace of this route — no cached/server id
+  // arbitration, no auth involved. This holds whether or not its rooms also
+  // sync through a LAN.
   const isLocalPlatform = platform.kind === 'local';
   const accountId = currentUser?.id ?? (isLocalPlatform ? 'local' : null);
   const telemetryEnabled = platform.capabilities.has('telemetry');
@@ -143,8 +148,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   // A matching claim keeps these effect keys unchanged and retains the runtime.
   const workspaceSlug =
     routeWorkspaceSlug ??
-    (isLocalPlatform && isWarmWindow() && implicitLocalWorkspace
-      ? getLocalWorkspaceSlug(implicitLocalWorkspace)
+    (isLocalPlatform && isWarmWindow() && localWorkspace
+      ? getLocalWorkspaceSlug(localWorkspace)
       : null);
   const { ready: localAgentRuntimeReady } = resolveCloudPlatformRuntimePolicy({
     electron: isElectronRenderer(),
@@ -158,9 +163,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const cachedId = workspaceSlug
     ? (getCachedWorkspaceId(workspaceSlug) as WorkspaceId | null)
     : null;
+  // A route slug that names no workspace resolves to none: the route guard
+  // redirects it, and a runtime must not start under the wrong name meanwhile.
   const effectiveWorkspaceId = isLocalPlatform
-    ? workspaceSlug
-      ? ((implicitLocalWorkspace?.id as WorkspaceId | undefined) ?? null)
+    ? workspaceSlug && localWorkspace && getLocalWorkspaceSlug(localWorkspace) === workspaceSlug
+      ? (localWorkspace.id as WorkspaceId)
       : null
     : resolveEffectiveWorkspaceId({
         workspaceSlug,
@@ -252,7 +259,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     // dual local-first runtime or a cloud-only control runtime. Wait for that
     // first snapshot so a persisted opt-out never opens the local socket even
     // briefly and never flashes a false reconnecting state.
-    if (platform.sync.mode === 'dual' && !localAgentRuntimeReady) {
+    if (sync.mode === 'dual' && !localAgentRuntimeReady) {
       setControlConnectionState('idle');
       return undefined;
     }
@@ -307,8 +314,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
           eagerSyncSurface,
           // Platform assembly is the only authority for room topology. Do not
           // re-probe Electron or cloud configuration inside the runtime.
-          syncMode: platform.sync.mode,
-          streams: platform.sync.streams,
+          syncMode: sync.mode,
+          streams: sync.streams,
           getAuthorizedMachineIds: () => {
             const snapshot = authorizedMachineIdsRef.current;
             return snapshot?.workspaceId === effectiveWorkspaceId ? snapshot.machineIds : null;
@@ -411,8 +418,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     clearDocMetaCache,
     clearPresenceStates,
     isLocalPlatform,
-    platform.sync.mode,
-    platform.sync.streams,
+    sync.mode,
+    sync.streams,
     setControlConnectionState,
     setRuntimeInitializing,
     setRuntime,

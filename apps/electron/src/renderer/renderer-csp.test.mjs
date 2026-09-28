@@ -28,6 +28,12 @@ void test('renderer CSP allows the Codex reset forecast API', () => {
   assert.ok(getDirectiveSources(rendererHtml, 'connect-src').includes('https://codex-resets.com'))
 })
 
+void test('every renderer entry may reach the LANs the shell bridges', () => {
+  for (const html of [rendererHtml, devbarHtml]) {
+    assert.ok(getDirectiveSources(html, 'connect-src').includes('lody-hub:'))
+  }
+})
+
 void test('only the opt-in Devbar entry may load the loopback Hub bootstrap', () => {
   assert.ok(!getDirectiveSources(rendererHtml, 'script-src').includes('http://127.0.0.1:*'))
   assert.ok(getDirectiveSources(devbarHtml, 'script-src').includes('http://127.0.0.1:*'))
