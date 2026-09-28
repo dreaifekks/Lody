@@ -31,7 +31,28 @@ void test('Stable preserves existing desktop paths and local builds reject cloud
   assert.equal(stable.desktopIpcNamespace, 'lody')
   assert.throws(() => resolveDesktopProfile(cloud, 'unknown'))
   assert.throws(() => resolveDesktopProfile(cloud, 'local'))
-  const local = { ...cloud, platform: 'local', namespace: 'lody-oss', desktopProtocol: 'lody-oss' }
+  const local = {
+    ...cloud,
+    platform: 'local',
+    namespace: 'lody-oss',
+    desktopProtocol: 'lody-oss',
+    desktopProductName: 'Lody OSS'
+  }
   assert.equal(resolveDesktopProfile(local).releaseChannel, 'local')
   assert.throws(() => resolveDesktopProfile(local, 'nightly'))
+})
+
+void test('the local desktop shares no desktop state with the hosted one', () => {
+  const local = {
+    ...cloud,
+    platform: 'local',
+    namespace: 'lody-oss',
+    desktopProtocol: 'lody-oss',
+    desktopProductName: 'Lody OSS'
+  }
+  const hosted = resolveDesktopProfile(cloud)
+  const oss = resolveDesktopProfile(local)
+  assert.equal(oss.desktopUserDataName, 'Lody OSS')
+  assert.notEqual(oss.desktopStoreName, hosted.desktopStoreName)
+  assert.equal(hosted.desktopStoreName, 'lody-desktop')
 })

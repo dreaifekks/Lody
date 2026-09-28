@@ -1,5 +1,6 @@
 import { globalShortcut } from 'electron'
 import Conf from 'conf'
+import { desktopInstallationProfile } from '../platform'
 import {
   GLOBAL_SHORTCUT_DEFAULTS,
   bindingToElectronAccelerator,
@@ -54,7 +55,7 @@ const ConfConstructor: typeof Conf = resolvedConf
  */
 export class GlobalShortcutsService {
   private readonly store = new ConfConstructor<GlobalShortcutsSchema>({
-    projectName: 'lody-desktop',
+    projectName: desktopInstallationProfile.desktopStoreName,
     configName: 'global-shortcuts',
     defaults: { overrides: {} },
     schema: {

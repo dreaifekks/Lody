@@ -8,6 +8,8 @@ export type DesktopProfile = Omit<
   desktopProductName: string
   desktopAppId: string
   desktopUserDataName: string | null
+  /** Names the stores kept beside `userData`, which products would otherwise share. */
+  desktopStoreName: string
   desktopIpcNamespace: string
   releaseChannel: 'local' | 'stable' | 'staging' | 'nightly'
 }
@@ -37,7 +39,15 @@ export function resolveDesktopProfile(
           desktopAppId: 'ai.lody.desktop.nightly'
         }
       : {}),
-    desktopUserDataName: nightly ? 'Lody Nightly' : null,
+    // Stable keeps the path Electron derives for it. The local desktop names
+    // its own: the single-instance lock lives in `userData`, so a path shared
+    // with the hosted desktop lets only one of the two run.
+    desktopUserDataName: nightly
+      ? 'Lody Nightly'
+      : installation.platform === 'local'
+        ? installation.desktopProductName
+        : null,
+    desktopStoreName: installation.platform === 'local' ? 'lody-oss-desktop' : 'lody-desktop',
     desktopIpcNamespace: nightly ? 'lody-nightly' : installation.namespace,
     releaseChannel: channel as DesktopProfile['releaseChannel']
   }

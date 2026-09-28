@@ -5,6 +5,7 @@ import {
   type Rectangle
 } from 'electron'
 import Conf from 'conf'
+import { desktopInstallationProfile } from './platform'
 import { DESKTOP_WINDOW_MIN_WIDTH } from '@lody/shared/layout'
 
 const DEFAULT_MAIN_WINDOW_BOUNDS = {
@@ -52,7 +53,7 @@ if (typeof ConfConstructor !== 'function') {
 }
 
 const windowStateStore = new ConfConstructor<WindowStateSchema>({
-  projectName: 'lody-desktop',
+  projectName: desktopInstallationProfile.desktopStoreName,
   configName: 'window-state',
   defaults: {
     mainWindow: {
