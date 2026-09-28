@@ -81,6 +81,31 @@ npx lody daemon start
 
 The command opens a sign-in link, connects the machine to your workspace, and keeps it available for work dispatched from desktop, mobile, web, or CLI.
 
+## Connect machines without an account
+
+This fork adds LANs. A LAN is a hub you host yourself plus the invite that opens it:
+every machine that holds the invite sees the others' projects and runs Agents on
+them, without an account or a hosted service. A machine can belong to several LANs
+and is the same machine, under the same name, in each of them.
+
+Host a LAN on a server, which also becomes its first member:
+
+```bash
+curl -fsSL https://github.com/dreaifekks/Lody/releases/download/lan-latest/install.sh | bash -s -- up
+```
+
+The command prints an invite. Join from another server with it, or paste it into
+**Settings > LAN** of the desktop app:
+
+```bash
+curl -fsSL https://github.com/dreaifekks/Lody/releases/download/lan-latest/install.sh | bash -s -- join lody-lan://…
+```
+
+Desktop builds for macOS, Windows and Linux are attached to the
+[rolling release](https://github.com/dreaifekks/Lody/releases/tag/lan-latest).
+`lody-lan lan --help` lists the commands that list, rename, move and leave LANs;
+[how LANs work](.agents/docs/lan.md) explains the rest.
+
 ## Use Lody from the CLI
 
 The CLI is more than the process that connects a machine. From a terminal or script, you can register local projects; inspect workspaces, machines, linked repositories, and Agent configs; create and message sessions; read their history and status; or archive and restore them. Commands that support `--json` can also feed Lody workspace data into your own tools.
