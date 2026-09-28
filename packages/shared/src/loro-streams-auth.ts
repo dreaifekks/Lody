@@ -349,6 +349,26 @@ export class LoroStreamsTokenAuthError extends Error {
   }
 }
 
+/**
+ * Provider for a self-hosted gateway whose address and bearer credential are
+ * configured locally instead of minted by a token endpoint. A credential the
+ * gateway rejected cannot be refreshed, so the auth callback reports it as a
+ * terminal auth failure rather than resending it.
+ */
+export function createStaticLoroStreamsTokenProvider(options: {
+  gatewayBaseUrl: string;
+  token: string;
+}): ReturnType<typeof createLoroStreamsTokenProvider> {
+  return {
+    getToken: () => Promise.resolve(options.token),
+    invalidate: () => {},
+    getGatewayBaseUrl: () => options.gatewayBaseUrl,
+    getShardHostSuffix: () => undefined,
+    createAuthCallback: () => (context) =>
+      Promise.resolve(context?.reason === 'unauthorized' ? undefined : options.token),
+  };
+}
+
 export function createLoroStreamsTokenProvider(options: {
   endpoint: string;
   workspaceId: string;

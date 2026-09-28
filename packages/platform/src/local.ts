@@ -1,5 +1,10 @@
 import { LOCAL_PLATFORM_CAPABILITIES } from './capabilities';
-import type { CloudPort, CloudPortIdentity, RuntimeArtifactsPort } from './cloud-port';
+import type {
+  CloudPort,
+  CloudPortIdentity,
+  CloudStreamsTokenPort,
+  RuntimeArtifactsPort,
+} from './cloud-port';
 import type {
   PlatformIdentity,
   PlatformProvider,
@@ -83,12 +88,19 @@ export interface LocalCloudPortOptions {
   workspaces: readonly WorkspaceSummary[];
   /** Optional operator mirror; the public artifact channel is the default. */
   runtimeArtifactsBaseUrl?: string;
+  /**
+   * A self-hosted Streams gateway. Present ⇒ the data plane attaches it and
+   * `workspaces` is the workspace set shared through that gateway; account,
+   * billing and every other hosted port stay absent.
+   */
+  streamsTokens?: CloudStreamsTokenPort;
 }
 
 /**
- * The open-source CLI platform: every optional port is `null`, the access
+ * The open-source CLI platform: every hosted port is `null`, the access
  * oracle answers from the injected catalog snapshot, and only the daemon
- * owner is ever allowed. Guarantees zero cloud I/O by construction.
+ * owner is ever allowed. Without `streamsTokens` it guarantees zero network
+ * I/O by construction; with it the only remote peer is the configured gateway.
  */
 export function createLocalCloudPort(options: LocalCloudPortOptions): CloudPort {
   const { identity, workspaces } = options;
@@ -110,7 +122,7 @@ export function createLocalCloudPort(options: LocalCloudPortOptions): CloudPort 
       resolveWorkspaceUser: (request) =>
         Promise.resolve(request.userId === identity.userId ? { id: identity.userId } : null),
     },
-    streamsTokens: null,
+    streamsTokens: options.streamsTokens ?? null,
     notifications: null,
     usage: null,
     billing: null,

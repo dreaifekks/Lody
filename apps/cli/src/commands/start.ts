@@ -12,7 +12,14 @@ import {
   performLoginWithAuthCredential,
 } from '@/lib/auth';
 import { LodyFleet, syncCliServerTime } from '@/lib/lody-fleet';
-import { CliType, MachineId } from '@lody/shared';
+import { CliType, MachineId, createStaticLoroStreamsTokenProvider } from '@lody/shared';
+import {
+  LAN_HUB_WORKSPACE_NAME,
+  LAN_HUB_WORKSPACE_SLUG,
+  deriveLanHubIdentity,
+  readLanHubConfig,
+  type LanHubConfig,
+} from '@lody/shared/node/lan-hub';
 import { checkClaude, checkCodex } from '@/utils';
 import { CliAvailability, resolveCliTypesSelection } from './start-options';
 import { CliRuntimeStateReporter } from '@/lib/cli-runtime-state';
@@ -198,11 +205,22 @@ export const startCommand = new Command('start')
       logger.error(formatErrorMessage(error));
       process.exit(1);
     }
+    let lanHub: LanHubConfig | null = null;
     if (platformKind === 'local') {
       // Zero-cloud-I/O invariant (specs/platform-providers.md): blank the
       // cloud endpoints before anything reads them.
       applyLocalPlatformEnv();
-      logger.info('Starting in local platform mode (no account, no cloud services).');
+      try {
+        lanHub = readLanHubConfig();
+      } catch (error) {
+        logger.error(formatErrorMessage(error));
+        process.exit(1);
+      }
+      logger.info(
+        lanHub
+          ? `Starting in local platform mode with LAN hub ${lanHub.url} (no account, no cloud services).`
+          : 'Starting in local platform mode (no account, no cloud services).'
+      );
     }
 
     const startupTimeSync =
@@ -350,9 +368,12 @@ export const startCommand = new Command('start')
       // No account exists on the local platform: author everything under the
       // persisted synthetic identity. The empty token is safe because every
       // cloud endpoint env was blanked above, so token consumers are inert.
-      const localIdentity = await loadOrCreateLocalIdentity(logger);
+      // A LAN hub replaces the per-install identity with the one every device
+      // on that hub derives, so their machines and sessions share an owner.
       token = '';
-      userId = localIdentity.userId;
+      userId = lanHub
+        ? deriveLanHubIdentity(lanHub.token).userId
+        : (await loadOrCreateLocalIdentity(logger)).userId;
       machineId = await getOrCreateStableMachineIdAsync();
       machineName = defaultMachineName;
       authMethod = 'local_platform';
@@ -481,7 +502,8 @@ export const startCommand = new Command('start')
         supervisorIdentity,
         machineLifecycleCapability,
         unregisterStartupSupervisorControl,
-        platformKind
+        platformKind,
+        lanHub
       );
     } catch (error) {
       captureAgentServiceEvent('agent_service_startup_failed', {
@@ -521,7 +543,8 @@ async function startAgentService(
   supervisorIdentity: LocalSupervisorIdentity | null,
   machineLifecycleCapability: ReturnType<typeof resolveMachineLifecycleCapability>,
   unregisterStartupSupervisorControl: () => void,
-  platformKind: PlatformKind
+  platformKind: PlatformKind,
+  lanHub: LanHubConfig | null
 ): Promise<void> {
   // The startup listener protects authentication/bootstrap. From this point to
   // the graceful controller registration below there is no async yield.
@@ -556,8 +579,28 @@ async function startAgentService(
   if (platformKind === 'local') {
     cloudPort = createLocalCloudPort({
       identity: { userId },
-      workspaces: [],
+      workspaces: lanHub
+        ? [
+            {
+              id: deriveLanHubIdentity(lanHub.token).workspaceId,
+              name: LAN_HUB_WORKSPACE_NAME,
+              slug: LAN_HUB_WORKSPACE_SLUG,
+              role: 'owner',
+            },
+          ]
+        : [],
       runtimeArtifactsBaseUrl: process.env.LODY_RUNTIME_BASE_URL,
+      ...(lanHub
+        ? {
+            streamsTokens: {
+              createTokenProvider: () =>
+                createStaticLoroStreamsTokenProvider({
+                  gatewayBaseUrl: lanHub.url,
+                  token: lanHub.token,
+                }),
+            },
+          }
+        : {}),
     });
   } else {
     if (!LODY_AUTH_URL) {

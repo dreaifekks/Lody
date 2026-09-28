@@ -226,7 +226,10 @@ export class LodyFleet {
           getRuntime: (workspaceId) => this.runtimes.get(workspaceId)?.lody,
         })
       : null;
-    this.localPlatform = this.cloudPort.kind === 'local';
+    // A local platform assembled with a Streams gateway keeps its no-account
+    // identity but reconciles and attaches like any workspace with a remote
+    // plane; only the gateway-less assembly is the zero-network lifecycle.
+    this.localPlatform = this.cloudPort.kind === 'local' && !this.remoteBridge;
     // The local platform has no cloud reconcile: the catalog bootstrap is the
     // only workspace source, so it is unconditionally on.
     this.localFirstBootstrap =

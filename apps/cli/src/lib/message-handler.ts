@@ -3128,7 +3128,7 @@ export class MessageHandler {
       repo: this.workspaceDocument.repo,
       docId: this.getMachineFlockDocIdForMachine(),
       logContext: this.getMachineFlockLogContext(),
-      waitForRemoteAuthority: this.cloudPort.kind !== 'local',
+      waitForRemoteAuthority: this.cloudPort.streamsTokens !== null,
       logger: this.logger,
       onEvents: (events, { authoritative }) =>
         this.rescanMachineCommands(getMachineCommandEventImpact(events), authoritative),
@@ -3137,10 +3137,11 @@ export class MessageHandler {
     this.worktreeGc = new WorktreeGarbageCollector({
       reposDir: path.join(getLodyDataDir(), 'repos'),
       logger: this.logger,
-      // Local mode has no remote to lag behind; in cloud mode the first full
-      // metadata sync is what separates "deleted" from "not seen yet".
+      // Without a remote plane there is nothing to lag behind; with one the
+      // first full metadata sync is what separates "deleted" from "not seen yet".
       hasCompleteMetadata: () =>
-        this.cloudPort.kind === 'local' || this.workspaceDocument.hasCompletedInitialMetaSync(),
+        this.cloudPort.streamsTokens === null ||
+        this.workspaceDocument.hasCompletedInitialMetaSync(),
       readOwnerState: (sessionId) => this.readWorktreeOwnerState(sessionId),
       isRuntimeActive: (sessionId) =>
         this.archiveInFlight.has(sessionId) || this.sessionManager.hasSession(sessionId),
@@ -3931,7 +3932,7 @@ export class MessageHandler {
       void this.worktreeGc.schedule();
     }, WORKTREE_GC_INTERVAL_MS);
     this.worktreeGcTimer.unref?.();
-    if (this.cloudPort.kind === 'local') {
+    if (this.cloudPort.streamsTokens === null) {
       void this.worktreeGc.schedule();
       return;
     }
