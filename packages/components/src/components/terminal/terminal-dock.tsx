@@ -91,6 +91,9 @@ function formatTerminalError(error: unknown): string {
   if (message.includes('session_archived') || message.includes('session_deleted')) {
     return 'Terminal is unavailable for archived or deleted sessions.';
   }
+  if (message.includes('remote_unreachable')) {
+    return 'The machine of this session cannot be reached. Check that it is online and up to date.';
+  }
   if (message.includes('session_machine_mismatch')) {
     return 'Terminal is only available on the machine that owns this session.';
   }

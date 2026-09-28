@@ -1,10 +1,17 @@
-import { getSessionRoomId, type ElectronCliState, type SessionId } from '@lody/shared';
+import {
+  getSessionRoomId,
+  type ElectronCliState,
+  type MachineId,
+  type SessionId,
+} from '@lody/shared';
+import { parseLanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import { useAtomValue } from 'jotai';
 import { useParams } from '@tanstack/react-router';
 import { useMemo } from 'react';
 import { localMachineIdAtom } from '@/atoms/local-probe';
 import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
-import { sessionLiveStatusAtomFamily } from '@/atoms/presence';
+import { machineOnlineStatusAtomFamily, sessionLiveStatusAtomFamily } from '@/atoms/presence';
+import { getMachineMetaByIdAtomFamily } from '@/atoms/machines';
 import { useElectronCliDaemon } from '@/hooks/use-electron-cli-daemon';
 import { TerminalDock } from './terminal/terminal-dock';
 import { createElectronTerminalChannel } from './terminal/electron-terminal-channel';
@@ -15,11 +22,30 @@ function canUseTerminalCliPhase(phase: ElectronCliState['phase']): boolean {
 }
 
 /**
+ * Whether this desktop can reach the terminals of a session: its own
+ * machine's always, another LAN member's while that member is online and
+ * accepts terminals. The agent service of this machine connects to it.
+ */
+export function canReachSessionTerminal(input: {
+  sessionMachineId: MachineId | undefined;
+  localMachineId: MachineId | null | undefined;
+  sessionMachine: { lanTerminal?: unknown } | null | undefined;
+  sessionMachineOnline: boolean;
+}): boolean {
+  if (!input.sessionMachineId || !input.localMachineId) return false;
+  if (input.sessionMachineId === input.localMachineId) return true;
+  return (
+    input.sessionMachineOnline && parseLanTerminalEndpoint(input.sessionMachine?.lanTerminal) !== null
+  );
+}
+
+/**
  * Mounts the bottom terminal dock for the active route session. Electron-only,
- * and only wires a real `sessionId` when the route session is a local project on
- * this machine — that gate is also what makes the session header's dock icon and
- * the ⌃`/⌘J command appear (via the dock controller). The daemon status +
- * restart/terminate controls now live in Settings → General → Startup.
+ * and only wires a real `sessionId` when this desktop can reach the session's
+ * machine (`canReachSessionTerminal`) — that gate is also what makes the
+ * session header's dock icon and the ⌃`/⌘J command appear (via the dock
+ * controller). The daemon status + restart/terminate controls now live in
+ * Settings → General → Startup.
  */
 export function TerminalDockHost() {
   const params = useParams({ strict: false });
@@ -34,6 +60,9 @@ export function TerminalDockHost() {
   const routeSessionLiveStatus = useAtomValue(
     sessionLiveStatusAtomFamily((routeSessionId ?? '__no_session__') as SessionId)
   );
+  const routeMachineId = routeSession?.machineId as MachineId | undefined;
+  const routeMachine = useAtomValue(getMachineMetaByIdAtomFamily(routeMachineId));
+  const routeMachineStatus = useAtomValue(machineOnlineStatusAtomFamily(routeMachineId));
   const { phase: cliPhase } = useElectronCliDaemon();
 
   const terminalChannel = useMemo(
@@ -41,15 +70,20 @@ export function TerminalDockHost() {
     [isElectron]
   );
 
-  const isRouteSessionLocal =
-    Boolean(terminalChannel && routeSessionId && localMachineId) &&
-    routeSession?.machineId === localMachineId;
+  const isRouteSessionReachable =
+    Boolean(terminalChannel && routeSessionId) &&
+    canReachSessionTerminal({
+      sessionMachineId: routeMachineId,
+      localMachineId,
+      sessionMachine: routeMachine,
+      sessionMachineOnline: routeMachineStatus === 'online',
+    });
   const isRouteSessionReadyForTerminal =
     Boolean(routeSession?.acpSessionId) || routeSessionLiveStatus != null;
   const canCreateTerminal =
-    isRouteSessionLocal && canUseTerminalCliPhase(cliPhase) && isRouteSessionReadyForTerminal;
+    isRouteSessionReachable && canUseTerminalCliPhase(cliPhase) && isRouteSessionReadyForTerminal;
   const terminalSessionId =
-    terminalChannel && isRouteSessionLocal && routeSessionId ? routeSessionId : undefined;
+    terminalChannel && isRouteSessionReachable && routeSessionId ? routeSessionId : undefined;
 
   if (!isElectron || !terminalChannel) return null;
 

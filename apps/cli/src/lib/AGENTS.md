@@ -20,7 +20,7 @@ end-to-end map. The WS/DO control-plane path is DEPRECATED; do not add to it.
 - `cloud-cli-port.ts` is the sole official-build composition root for cloud clients and
   endpoint-derived adapters. Daemon runtime modules must not construct cloud SDK
   clients or read `LODY_AUTH_URL` / `LODY_AUTH_SITE_URL` / `LODY_SERVER_URL`. The local
-  port does no cloud I/O; its only remote peers are the hubs of its
+  port does no cloud I/O; it reaches only the hubs and members of its
   [LANs](../../../../.agents/docs/lan.md). Unavailable operations fail at their
   boundary; only best-effort background effects may skip. Enforced by
   `scripts/check-platform-boundaries.mjs` + `tests/local-platform-zero-cloud.test.ts`.

@@ -678,6 +678,8 @@ async function startAgentService(
       machineLifecycleCapability,
       onFatalAuthFailure: (error) => triggerFatalAuthShutdown?.(error),
       onProcessLifecycleAction: (action) => triggerProcessLifecycleAction?.(action),
+      // A service without a LAN has no member to reach, and joining one restarts it.
+      ...(lanMembership?.streamsTokens ? { lan: lanMembership } : {}),
     });
   } catch (error) {
     await managedRuntimeUpdates.shutdown();

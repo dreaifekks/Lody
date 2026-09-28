@@ -39,7 +39,7 @@ Repository map and entry points: [README.md](README.md#repository).
   platform-neutral; local telemetry is hard-disabled.
 - A LAN is a self-hosted hub whose members share one user; its credential never
   reaches a renderer or a log. Before changing LAN settings, identity, the hub
-  bridge or the fork build, read [LANs](.agents/docs/lan.md).
+  bridge, member terminals or the fork build, read [LANs](.agents/docs/lan.md).
 - Before changing composition, capability-gated settings, telemetry, or runtime
   downloads, read [platform contracts](packages/platform/AGENTS.md).
 - Before changing daemon protocol negotiation, MCP/Role catalogs or their UI

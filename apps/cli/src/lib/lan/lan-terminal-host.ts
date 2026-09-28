@@ -1,0 +1,253 @@
+import type tls from 'node:tls';
+import type { ReadonlyStore, WorkspaceSummary } from '@lody/platform';
+import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
+import {
+  LAN_TERMINAL_PROTOCOL_VERSION,
+  sameLanTerminalEndpoint,
+  type LanTerminalEndpoint,
+} from '@lody/shared/lan-terminal';
+import type { LanHub } from '@lody/shared/node/lan-hub';
+import { serveTerminalConnection, type TerminalService } from '@/lib/terminal-connection';
+import type { Logger } from '@/utils/logger';
+import { formatErrorMessage } from '@/utils/format-error';
+import {
+  createLanTerminalServer,
+  deriveLanTerminalKey,
+  LAN_TERMINAL_DEFAULT_PORT,
+  probeLocalAddressToward,
+} from './lan-terminal';
+
+const REFRESH_INTERVAL_MS = 60_000;
+const MAX_CONNECTIONS = 64;
+
+/** The LANs of this machine as the agent service follows them. */
+export type LanTerminalMembership = {
+  readonly hubs: readonly LanHub[];
+  readonly workspaces: ReadonlyStore<readonly WorkspaceSummary[]>;
+};
+
+/**
+ * `LODY_LAN_TERMINAL_PORT`: unset for the default port, a number for another
+ * one (`0` for any free port), `off` to accept no terminal connections.
+ */
+export function resolveLanTerminalPort(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.LODY_LAN_TERMINAL_PORT?.trim();
+  if (!raw) return LAN_TERMINAL_DEFAULT_PORT;
+  if (raw.toLowerCase() === 'off') return null;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new Error(`LODY_LAN_TERMINAL_PORT must be a port number or "off", not "${raw}"`);
+  }
+  return port;
+}
+
+type Listener = { server: tls.Server; port: number };
+
+/**
+ * Lets the other members of each LAN open terminals on this machine. It
+ * listens on the address this machine has toward each hub, not on every
+ * interface, and publishes that endpoint into the LAN's workspace.
+ */
+export class LanTerminalHost {
+  private readonly listeners = new Map<string, Listener>();
+  private readonly endpoints = new Map<string, LanTerminalEndpoint>();
+  private readonly sockets = new Set<tls.TLSSocket>();
+  private refreshing: Promise<void> | null = null;
+  private refreshAgain = false;
+  private timer: NodeJS.Timeout | null = null;
+  private unsubscribe: (() => void) | null = null;
+  private closed = false;
+
+  constructor(
+    private readonly options: {
+      machineId: string;
+      logger: Logger;
+      lans: LanTerminalMembership;
+      /** The terminals one LAN's members may reach, per connection; `null` while it does not run. */
+      serviceFor: (workspaceId: string) => TerminalService | null;
+      /** Records where this machine accepts terminals; `undefined` withdraws it. */
+      publish: (workspaceId: string, endpoint: LanTerminalEndpoint | undefined) => Promise<void>;
+      /** The port to prefer; `0` for any. */
+      port: number;
+      probeAddress?: (hubUrl: string) => Promise<string | null>;
+      refreshIntervalMs?: number;
+    }
+  ) {}
+
+  start(): void {
+    if (this.closed || this.unsubscribe) return;
+    this.unsubscribe = this.options.lans.workspaces.subscribe(() => {
+      void this.refresh();
+    });
+    // An address can change under a running service: a laptop moves between networks.
+    this.timer = setInterval(
+      () => void this.refresh(),
+      this.options.refreshIntervalMs ?? REFRESH_INTERVAL_MS
+    );
+    this.timer.unref?.();
+    void this.refresh();
+  }
+
+  /** What this machine publishes into a workspace; `undefined` while it accepts nothing there. */
+  endpointFor(workspaceId: string): LanTerminalEndpoint | undefined {
+    return this.endpoints.get(workspaceId);
+  }
+
+  /** Brings listeners and published endpoints in line with the LANs; runs one at a time. */
+  async refresh(): Promise<void> {
+    if (this.refreshing) {
+      this.refreshAgain = true;
+      return await this.refreshing;
+    }
+    this.refreshing = (async () => {
+      do {
+        this.refreshAgain = false;
+        await this.reconcile();
+      } while (this.refreshAgain && !this.closed);
+    })().finally(() => {
+      this.refreshing = null;
+    });
+    return await this.refreshing;
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
+    const listeners = [...this.listeners.values()];
+    this.listeners.clear();
+    await Promise.all(
+      listeners.map(({ server }) => new Promise<void>((resolve) => server.close(() => resolve())))
+    );
+  }
+
+  private async reconcile(): Promise<void> {
+    if (this.closed) return;
+    const probe = this.options.probeAddress ?? ((url: string) => probeLocalAddressToward(url));
+    const hubs = [...this.options.lans.hubs];
+    const addresses = new Map<string, string>();
+    for (const hub of hubs) {
+      const workspaceId = getLanHubWorkspaceId(hub.id);
+      // A hub that does not answer right now keeps the address it had.
+      const address = (await probe(hub.url)) ?? this.endpoints.get(workspaceId)?.host;
+      if (address) addresses.set(workspaceId, address);
+    }
+    if (this.closed) return;
+
+    const wanted = new Set(addresses.values());
+    for (const [address, listener] of [...this.listeners]) {
+      if (wanted.has(address)) continue;
+      this.listeners.delete(address);
+      listener.server.close();
+    }
+    for (const address of wanted) {
+      if (this.listeners.has(address)) continue;
+      const listener = await this.listen(address);
+      if (this.closed) {
+        listener?.server.close();
+        return;
+      }
+      if (listener) this.listeners.set(address, listener);
+    }
+
+    for (const [workspaceId, address] of addresses) {
+      const listener = this.listeners.get(address);
+      await this.setEndpoint(
+        workspaceId,
+        listener
+          ? { version: LAN_TERMINAL_PROTOCOL_VERSION, host: address, port: listener.port }
+          : undefined
+      );
+    }
+    const current = new Set(hubs.map((hub) => getLanHubWorkspaceId(hub.id)));
+    for (const workspaceId of [...this.endpoints.keys()]) {
+      // The workspace of a LAN this machine left stops with it; nothing to withdraw.
+      if (!current.has(workspaceId)) this.endpoints.delete(workspaceId);
+    }
+  }
+
+  private async setEndpoint(
+    workspaceId: string,
+    endpoint: LanTerminalEndpoint | undefined
+  ): Promise<void> {
+    if (sameLanTerminalEndpoint(this.endpoints.get(workspaceId), endpoint)) return;
+    if (endpoint) this.endpoints.set(workspaceId, endpoint);
+    else this.endpoints.delete(workspaceId);
+    try {
+      await this.options.publish(workspaceId, endpoint);
+    } catch (error) {
+      this.options.logger.debug(
+        `[lan-terminal] could not publish the endpoint into ${workspaceId}: ${formatErrorMessage(error)}`
+      );
+    }
+  }
+
+  private async listen(address: string): Promise<Listener | null> {
+    const server = createLanTerminalServer({
+      machineId: this.options.machineId,
+      logger: this.options.logger,
+      keyFor: (lanId) => {
+        const hub = this.options.lans.hubs.find((candidate) => candidate.id === lanId);
+        return hub ? deriveLanTerminalKey(hub.token) : null;
+      },
+      onConnection: ({ socket, lanId, initial }) => {
+        const service = this.options.serviceFor(getLanHubWorkspaceId(lanId));
+        if (!service) {
+          socket.end(
+            `${JSON.stringify({
+              type: 'error',
+              code: 'remote_unreachable',
+              message: 'remote_unreachable:this machine does not run that LAN yet',
+            })}\n`
+          );
+          return;
+        }
+        this.sockets.add(socket);
+        socket.once('close', () => this.sockets.delete(socket));
+        serveTerminalConnection(socket, { service, logger: this.options.logger, initial });
+        socket.resume();
+      },
+    });
+    server.maxConnections = MAX_CONNECTIONS;
+
+    const bind = (port: number) =>
+      new Promise<number>((resolve, reject) => {
+        const onError = (error: Error) => reject(error);
+        server.once('error', onError);
+        server.listen(port, address, () => {
+          server.off('error', onError);
+          const bound = server.address();
+          resolve(typeof bound === 'object' && bound ? bound.port : port);
+        });
+      });
+
+    try {
+      let port: number;
+      try {
+        port = await bind(this.options.port);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE' || this.options.port === 0) {
+          throw error;
+        }
+        port = await bind(0);
+      }
+      server.on('error', (error) => {
+        this.options.logger.warn(`[lan-terminal] listener on ${address} failed: ${error.message}`);
+      });
+      this.options.logger.info(
+        `[lan-terminal] accepting terminals of LAN members on ${address}:${port}`
+      );
+      return { server, port };
+    } catch (error) {
+      this.options.logger.warn(
+        `[lan-terminal] cannot accept terminals on ${address}: ${formatErrorMessage(error)}`
+      );
+      server.close();
+      return null;
+    }
+  }
+}

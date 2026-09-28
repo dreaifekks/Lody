@@ -19,6 +19,7 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | Bridge | `apps/electron/src/main/services/lan-hub-forward.ts` | Forwards `lody-hub://<lan id>` to the hub of that LAN and adds its credential |
 | Follower | `packages/components/src/providers/local-platform-follower.ts` | Keeps the renderer's workspaces equal to the CLI catalog |
 | Services | `apps/cli/src/lib/lan/service.ts` | systemd user units that keep a hub and an agent service running on a server |
+| Terminals | `apps/cli/src/lib/lan/lan-terminal*.ts`, `apps/cli/src/lib/terminal-services.ts` | Members open terminals on each other's machines, directly and not through the hub |
 
 ```text
  server                                   desktop
@@ -72,6 +73,37 @@ always had. `local-identity.json` remembers which workspace that is, because the
 catalog names its owner by whoever reconciled last; leaving the last LAN brings
 that workspace back instead of creating an empty one.
 
+## Terminals of other members
+
+A terminal cannot go through the hub: every keystroke would be a stream write,
+and the hub would store what was typed. Members therefore connect to each
+other. The agent service of each member listens on the address it has toward
+each hub, on port 8789 unless that is taken, and publishes the endpoint as
+`lanTerminal` in its machine metadata of that LAN's workspace.
+
+```text
+ desktop ─ unix socket ─▶ agent service ─ TLS-PSK ─▶ agent service ─▶ shell
+          (as before)     of this machine            of the member
+                          routes by the machine
+                          that owns the session
+```
+
+The desktop keeps talking to its own agent service over the local terminal
+socket; that service routes each terminal by the machine that owns its
+session. For another member it connects with TLS keyed by the LAN's
+credential (TLS-PSK): only a member completes the handshake in either
+direction, the traffic is encrypted, and no certificate is involved. After the
+handshake the client names the machine it meant to reach, so an address that
+passed to another member does not receive its input. A connection reaches only
+sessions of that LAN's workspace owned by the machine, and only terminals it
+listed, opened or attached.
+
+The session header offers a terminal for another member's session while that
+member is online and publishes an endpoint. A dropped connection ends its
+terminals on the desktop; the shells keep running over there, and listing the
+session again finds them. `LODY_LAN_TERMINAL_PORT` chooses another port, `0`
+any port, and `off` closes a machine's terminals to members.
+
 ## Following a change
 
 Settings change while processes run: `lody lan join` on a server, or Settings >
@@ -115,3 +147,5 @@ local platform, so a fork build is never replaced by an upstream release.
   `remoteMachines` capability, which a LAN does not grant.
 - The desktop application cannot host a LAN; it does not ship the Streams
   server.
+- Terminals of other members need a direct path between the machines, which an
+  overlay network gives; a hub reached through a proxy does not.

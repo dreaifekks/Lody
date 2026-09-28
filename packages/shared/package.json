@@ -124,6 +124,10 @@
       "types": "./src/hosted-config.ts",
       "import": "./src/hosted-config.ts"
     },
+    "./lan-terminal": {
+      "types": "./src/lan-terminal.ts",
+      "import": "./src/lan-terminal.ts"
+    },
     "./lan-hub": {
       "types": "./src/lan-hub.ts",
       "import": "./src/lan-hub.ts"

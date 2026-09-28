@@ -4,7 +4,9 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { getDefaultStore } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { MachineId } from '@lody/shared';
 import { TerminalDock } from '../src/components/terminal/terminal-dock';
+import { canReachSessionTerminal } from '../src/components/terminal-dock-host';
 import { terminalControllerAtom } from '../src/components/terminal/terminal-controller';
 import type {
   TerminalChannel,
@@ -261,5 +263,49 @@ describe('TerminalDock', () => {
 
     expect(hasOpenPanel(container)).toBe(true);
     expectActiveTerminal(container, 'beta');
+  });
+});
+
+describe('canReachSessionTerminal', () => {
+  const local = 'local-machine' as MachineId;
+  const member = 'member-machine' as MachineId;
+  const accepting = { lanTerminal: { version: 1, host: '100.64.0.2', port: 8789 } };
+
+  it('reaches the sessions of this machine', () => {
+    expect(
+      canReachSessionTerminal({
+        sessionMachineId: local,
+        localMachineId: local,
+        sessionMachine: null,
+        sessionMachineOnline: false,
+      })
+    ).toBe(true);
+  });
+
+  it('reaches another machine only while it is online and accepts terminals', () => {
+    const reach = (sessionMachine: { lanTerminal?: unknown } | null, online: boolean) =>
+      canReachSessionTerminal({
+        sessionMachineId: member,
+        localMachineId: local,
+        sessionMachine,
+        sessionMachineOnline: online,
+      });
+
+    expect(reach(accepting, true)).toBe(true);
+    expect(reach(accepting, false)).toBe(false);
+    // An older build publishes nothing; a newer protocol is not one this build speaks.
+    expect(reach({}, true)).toBe(false);
+    expect(reach({ lanTerminal: { ...accepting.lanTerminal, version: 2 } }, true)).toBe(false);
+  });
+
+  it('reaches nothing before this machine is known', () => {
+    expect(
+      canReachSessionTerminal({
+        sessionMachineId: member,
+        localMachineId: null,
+        sessionMachine: accepting,
+        sessionMachineOnline: true,
+      })
+    ).toBe(false);
   });
 });

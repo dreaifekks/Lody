@@ -1,3 +1,4 @@
+import type { LanTerminalEndpoint } from './lan-terminal';
 import type { SessionEntry, SessionFileDiff } from './session-data/domain';
 import { InferInputType, InferType, schema } from 'loro-mirror';
 // Type-only, so the cycle with `review.ts` (which needs
@@ -1268,6 +1269,8 @@ export type MachineMeta = {
    * authored on this clock; absent on older CLIs.
    */
   timeZone?: string;
+  /** Where the other members of this workspace's LAN open terminals on this machine. */
+  lanTerminal?: LanTerminalEndpoint;
 };
 
 /**

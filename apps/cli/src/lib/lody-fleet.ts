@@ -7,6 +7,7 @@ import {
   MachineId,
   WorkspaceId,
   createServerTimeFetcher,
+  getMachineRoomId,
   getSessionRoomId,
   getServerNow,
   isLoroRepoDocDeleted,
@@ -18,6 +19,7 @@ import {
   type LocalSessionControlRequest,
   type LocalSessionControlResponse,
   type MachineLifecycleCapability,
+  type MachineMeta,
   type SessionId,
   type SessionMeta,
 } from '@lody/shared';
@@ -41,6 +43,20 @@ import { LocalProjectControlService } from '@/lib/local-project-control-service'
 import { LocalProjectHistorySyncService } from '@/lib/local-project-history-sync-service';
 import { CliRuntimeStateReporter } from '@/lib/cli-runtime-state';
 import { makeTerminalPtyService, type TerminalPtyServiceApi } from '@/lib/terminal-pty-service';
+import {
+  ScopedTerminalService,
+  TerminalRouter,
+  type RemoteTerminalLink,
+  type TerminalSessionLocation,
+} from '@/lib/terminal-services';
+import {
+  LanTerminalHost,
+  resolveLanTerminalPort,
+  type LanTerminalMembership,
+} from '@/lib/lan/lan-terminal-host';
+import { connectLanTerminal, deriveLanTerminalKey } from '@/lib/lan/lan-terminal';
+import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
+import { parseLanTerminalEndpoint, type LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import {
   readMachineLocalProjects,
   reconcileMachineLocalProjectRootPaths,
@@ -155,6 +171,9 @@ export class LodyFleet {
   private readonly cloudPort: CloudPort;
   private readonly runtimeStateReporter: CliRuntimeStateReporter;
   private readonly terminalPtyService: TerminalPtyServiceApi;
+  private readonly terminalRouter: TerminalRouter;
+  private readonly lan: LanTerminalMembership | null;
+  private lanTerminalHost: LanTerminalHost | null = null;
   private readonly memoryPressure: MemoryPressureSampler;
   private readonly onFatalAuthFailure?: (error: Error) => void;
   private readonly localPlatform: boolean;
@@ -213,6 +232,8 @@ export class LodyFleet {
     machineLifecycleCapability: MachineLifecycleCapability;
     onFatalAuthFailure?: (error: Error) => void;
     onProcessLifecycleAction?: (action: MachineProcessLifecycleAction) => void;
+    /** The LANs of this machine: their members reach its terminals, and it theirs. */
+    lan?: LanTerminalMembership;
   }) {
     this.logger = options.logger;
     this.builtinAgentConfigCliTypes = options.builtinAgentConfigCliTypes;
@@ -264,6 +285,13 @@ export class LodyFleet {
       logger: this.logger,
       resolveSessionWorkdir: async (sessionId) =>
         await this.resolveTerminalSessionWorkdir(sessionId),
+    });
+    this.lan = options.lan ?? null;
+    this.terminalRouter = new TerminalRouter({
+      local: this.terminalPtyService,
+      machineId: this.machineId,
+      locate: async (sessionId) => await this.locateTerminalSession(sessionId as SessionId),
+      ...(this.lan ? { connect: async (location) => await this.connectLanTerminal(location) } : {}),
     });
     this.prStatusPoller = makePrStatusPoller({
       config: loadPrPollerConfig(),
@@ -344,7 +372,7 @@ export class LodyFleet {
       traceAsync(this.logger, 'startup.local_terminal', undefined, async () => {
         await startLocalTerminalServer({
           logger: this.logger,
-          terminalPtyService: this.terminalPtyService,
+          terminalService: this.terminalRouter,
         });
       }),
       traceAsync(this.logger, 'startup.local_data_plane', undefined, async () => {
@@ -358,6 +386,8 @@ export class LodyFleet {
         await startLodyMcpHttpServer({ logger: this.logger });
       }),
     ]);
+
+    this.startLanTerminalHost();
 
     // Start the PR poller BEFORE any workspace runtime can connect: the
     // local-first catalog bootstrap below registers each workspace with the
@@ -599,6 +629,7 @@ export class LodyFleet {
     const localServicesStopped = Promise.allSettled([
       stopLocalIpcSocketServers(),
       stopLocalTerminalServer(),
+      this.lanTerminalHost?.close(),
       stopLocalLoroDataPlaneServer(),
       stopLodyMcpHttpServer(),
     ]);
@@ -642,6 +673,7 @@ export class LodyFleet {
         );
       }
     }
+    this.terminalRouter.dispose();
     this.terminalPtyService.closeAll();
   }
 
@@ -968,6 +1000,10 @@ export class LodyFleet {
         });
         this.prStatusPoller.registerWorkspace(prPollerWorkspace);
         void this.remoteBridge?.attachRuntimeIfAllowed(workspace.id);
+        void this.publishLanTerminalEndpoint(
+          workspace.id,
+          this.lanTerminalHost?.endpointFor(workspace.id)
+        );
         this.logger.debug(`[fleet] Connected workspace: ${workspaceLabel} (${workspace.id})`);
         this.logger.debug(
           `[startup] Workspace runtime ready workspaceId=${workspace.id} durationMs=${
@@ -1395,6 +1431,121 @@ export class LodyFleet {
       return { type: 'deleted' };
     }
     return { type: 'found', meta: record.meta as SessionMeta };
+  }
+
+  private isLanWorkspace(workspaceId: string): boolean {
+    return this.lan?.hubs.some((hub) => getLanHubWorkspaceId(hub.id) === workspaceId) ?? false;
+  }
+
+  private startLanTerminalHost(): void {
+    if (!this.lan) return;
+    let port: number | null;
+    try {
+      port = resolveLanTerminalPort();
+    } catch (error) {
+      this.logger.warn(`[lan-terminal] ${formatErrorMessage(error)}`);
+      port = null;
+    }
+    if (port === null) {
+      this.logger.info('[lan-terminal] Terminals of this machine are closed to LAN members.');
+      return;
+    }
+    this.lanTerminalHost = new LanTerminalHost({
+      machineId: this.machineId,
+      logger: this.logger,
+      lans: this.lan,
+      port,
+      serviceFor: (workspaceId) =>
+        this.runtimes.has(workspaceId)
+          ? new ScopedTerminalService(
+              this.terminalPtyService,
+              async (sessionId) =>
+                await this.verifyLanTerminalSession(workspaceId, sessionId as SessionId)
+            )
+          : null,
+      publish: async (workspaceId, endpoint) =>
+        await this.publishLanTerminalEndpoint(workspaceId, endpoint),
+    });
+    this.lanTerminalHost.start();
+  }
+
+  /**
+   * Records in a LAN's workspace where its members open terminals on this
+   * machine. A workspace that starts before the endpoint is known, or while
+   * terminals are closed, loses the endpoint an earlier run left there.
+   */
+  private async publishLanTerminalEndpoint(
+    workspaceId: string,
+    endpoint: LanTerminalEndpoint | undefined
+  ): Promise<void> {
+    if (!this.isLanWorkspace(workspaceId)) return;
+    const runtime = this.runtimes.get(workspaceId);
+    if (!runtime) return;
+    try {
+      await runtime.lody.documentManager.repo.upsertDocMeta(getMachineRoomId(this.machineId), {
+        lanTerminal: endpoint,
+      } as Parameters<typeof runtime.lody.documentManager.repo.upsertDocMeta>[1]);
+    } catch (error) {
+      this.logger.debug(
+        `[lan-terminal] Failed to publish the terminal endpoint into ${workspaceId}: ${formatErrorMessage(error)}`
+      );
+    }
+  }
+
+  /** Answers a LAN member that asks for the terminals of a session of this machine. */
+  private async verifyLanTerminalSession(workspaceId: string, sessionId: SessionId): Promise<void> {
+    const runtime = this.runtimes.get(workspaceId);
+    const lookup = runtime
+      ? await this.lookupTerminalSessionMeta(runtime, sessionId)
+      : ({ type: 'missing' } as const);
+    if (lookup.type === 'missing') throw new Error(`session_not_found:${sessionId}`);
+    if (lookup.type === 'deleted') throw new Error(`session_deleted:${sessionId}`);
+    if (lookup.meta.isArchived) throw new Error(`session_archived:${sessionId}`);
+    if (lookup.meta.machineId !== this.machineId) {
+      throw new Error(`session_machine_mismatch:${sessionId}:${lookup.meta.machineId}`);
+    }
+  }
+
+  /** Where a session lives, for a terminal that may be on another machine. */
+  private async locateTerminalSession(
+    sessionId: SessionId
+  ): Promise<TerminalSessionLocation | null> {
+    for (const runtime of this.runtimes.values()) {
+      const lookup = await this.lookupTerminalSessionMeta(runtime, sessionId);
+      if (lookup.type !== 'found') continue;
+      // Metadata whose owner has not arrived yet names no machine to reach.
+      const machineId: unknown = lookup.meta.machineId;
+      if (typeof machineId !== 'string' || machineId === '') return null;
+      return { workspaceId: runtime.workspace.id, machineId };
+    }
+    return null;
+  }
+
+  private async connectLanTerminal(location: TerminalSessionLocation): Promise<RemoteTerminalLink> {
+    const hub = this.lan?.hubs.find(
+      (candidate) => getLanHubWorkspaceId(candidate.id) === location.workspaceId
+    );
+    const runtime = this.runtimes.get(location.workspaceId);
+    if (!hub || !runtime) {
+      throw new Error('remote_unreachable:the session belongs to no LAN of this machine');
+    }
+    const machine = (
+      await runtime.lody.documentManager.repo.getDocMeta(
+        getMachineRoomId(location.machineId as MachineId)
+      )
+    )?.meta as MachineMeta | undefined;
+    const endpoint = parseLanTerminalEndpoint(machine?.lanTerminal);
+    if (!endpoint) {
+      throw new Error(
+        `remote_unreachable:${machine?.name ?? location.machineId} accepts no terminals; update it`
+      );
+    }
+    return await connectLanTerminal({
+      endpoint,
+      lanId: hub.id,
+      key: deriveLanTerminalKey(hub.token),
+      machineId: location.machineId,
+    });
   }
 
   private async assertTerminalSessionAllowed(sessionId: SessionId): Promise<void> {

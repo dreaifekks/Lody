@@ -19,6 +19,7 @@ import { LODY_GIT_CRED_CONTEXT_TOKEN_ENV } from '@/lib/git-credential-broker';
 import { clearManagedGhTokenEnv, LODY_MANAGED_GH_TOKEN_SHA256_ENV } from '@/lib/gh-token-env';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
+import type { TerminalReplay } from '@/lib/terminal-connection';
 
 const SCROLLBACK_MAX_CHARS = 512 * 1024;
 const TITLE_PARSE_BUFFER_MAX_CHARS = 4096;
@@ -50,11 +51,6 @@ function loadPty(): typeof import('@lydell/node-pty') {
   return ptyModule;
 }
 
-export type TerminalReplay = {
-  title: string;
-  scrollback: string;
-};
-
 export interface TerminalPtyServiceApi {
   list(sessionId: string): TerminalSnapshot[];
   open(params: TerminalOpenParams): Promise<TerminalOpenResult>;
@@ -64,6 +60,8 @@ export interface TerminalPtyServiceApi {
   close(terminalId: string): void;
   closeSession(sessionId: string): void;
   closeAll(): void;
+  /** The session a live terminal belongs to; `null` once it is gone. */
+  sessionOf(terminalId: string): string | null;
   onEvent(handler: (event: TerminalServerEvent) => void): () => void;
 }
 
@@ -278,6 +276,10 @@ class TerminalPtyServiceImpl implements TerminalPtyServiceApi {
     for (const terminalId of ids) {
       this.closeIfPresent(terminalId);
     }
+  }
+
+  sessionOf(terminalId: string): string | null {
+    return this.records.get(terminalId)?.sessionId ?? null;
   }
 
   onEvent(handler: (event: TerminalServerEvent) => void): () => void {
