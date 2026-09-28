@@ -464,6 +464,10 @@ importers:
       zstd-stream:
         specifier: ^1.1.0
         version: 1.1.0
+    optionalDependencies:
+      '@loro-dev/loro-cli':
+        specifier: 'catalog:'
+        version: 0.6.0
 
   apps/electron:
     dependencies:
