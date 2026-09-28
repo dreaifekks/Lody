@@ -1,0 +1,215 @@
+name: LAN build
+
+# Builds the self-hosted LAN composition for a fork: the desktop installers,
+# the CLI tarball a server installs, and the install scripts, published as one
+# rolling release. Upstream ships from its own pipeline and never runs this.
+on:
+  push:
+    branches:
+      - lan-hub
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Replace the rolling release with this build
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lan-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+  LAN_RELEASE_TAG: lan-latest
+
+jobs:
+  # The renderer build needs more memory than a hosted macOS runner has, and
+  # its output is the same on every host, so it is built once here and only
+  # packaged per platform.
+  bundles:
+    name: Build bundles
+    if: github.repository != 'LodyAI/Lody'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Set up workspace toolchain
+        uses: ./.github/actions/setup-workspace
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Stamp build version
+        id: version
+        run: node scripts/lan-release.mjs version --build "$GITHUB_RUN_NUMBER" --write
+
+      - name: Build CLI and desktop bundles
+        run: pnpm --dir apps/electron run build
+
+      - name: Pack CLI
+        run: pnpm --dir apps/cli pack --pack-destination "$RUNNER_TEMP/lan-cli"
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-bundles
+          # Both paths keep their position below `apps/`, which is where the
+          # packaging jobs restore them.
+          path: |
+            apps/electron/out
+            apps/cli/dist
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload CLI tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-cli
+          path: ${{ runner.temp }}/lan-cli/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  desktop:
+    name: Package desktop (${{ matrix.id }})
+    needs: bundles
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: mac
+            os: macos-15
+            flags: --mac --arm64 --x64
+          - id: win
+            os: windows-latest
+            flags: --win --x64
+          - id: linux
+            os: ubuntu-latest
+            flags: --linux AppImage --x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Set up workspace toolchain
+        uses: ./.github/actions/setup-workspace
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Stamp build version
+        shell: bash
+        env:
+          LAN_VERSION: ${{ needs.bundles.outputs.version }}
+        run: |
+          stamped="$(node scripts/lan-release.mjs version --build "$GITHUB_RUN_NUMBER" --write)"
+          [ "$stamped" = "$LAN_VERSION" ]
+
+      - name: Restore bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: lan-bundles
+          path: apps
+
+      - name: Stage embedded CLI
+        run: pnpm --dir apps/electron run sync:cli
+
+      - name: Package
+        shell: bash
+        env:
+          LAN_VERSION: ${{ needs.bundles.outputs.version }}
+          # The build is unsigned. Without this, electron-builder searches the
+          # runner keychain for a certificate that is never there.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: pnpm --dir apps/electron run package -- ${{ matrix.flags }} "--version=$LAN_VERSION"
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-desktop-${{ matrix.id }}
+          path: |
+            apps/electron/dist/*.dmg
+            apps/electron/dist/*.zip
+            apps/electron/dist/*.exe
+            apps/electron/dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish rolling release
+    needs: [bundles, desktop]
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download build outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lan-{cli,desktop-*}
+          path: ${{ runner.temp }}/lan-artifacts
+
+      - name: Assemble release
+        env:
+          LAN_VERSION: ${{ needs.bundles.outputs.version }}
+        run: |
+          node scripts/lan-release.mjs assemble \
+            --version "$LAN_VERSION" \
+            --commit "$GITHUB_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$LAN_RELEASE_TAG" \
+            --artifacts "$RUNNER_TEMP/lan-artifacts" \
+            --out "$RUNNER_TEMP/lan-release" \
+            --notes "$RUNNER_TEMP/lan-release-notes.md"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LAN_VERSION: ${{ needs.bundles.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$LAN_RELEASE_TAG" >/dev/null 2>&1; then
+            # Move the tag first: the release keeps its download addresses and
+            # the files below replace the previous build in place.
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$LAN_RELEASE_TAG" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            gh release edit "$LAN_RELEASE_TAG" \
+              --title "Lody OSS LAN $LAN_VERSION" \
+              --notes-file "$RUNNER_TEMP/lan-release-notes.md"
+          else
+            gh release create "$LAN_RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "Lody OSS LAN $LAN_VERSION" \
+              --notes-file "$RUNNER_TEMP/lan-release-notes.md"
+          fi
+          gh release upload "$LAN_RELEASE_TAG" "$RUNNER_TEMP"/lan-release/* --clobber
