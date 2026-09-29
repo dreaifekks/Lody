@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url'
 import {
   isMacPackaging,
   resolvePackagedSparkleFeedUrl,
-  resolveSparkleRebuildArch
+  resolveSparkleRebuildArch,
+  withoutLibraryValidation
 } from './sparkle-packaging.mjs'
 
 // electron-builder derives the packaged version from apps/electron/package.json,
@@ -19,6 +20,8 @@ import {
 const electronDir = fileURLToPath(new URL('../', import.meta.url))
 const baseConfigPath = path.join(electronDir, 'electron-builder.yml')
 const packageJsonPath = path.join(electronDir, 'package.json')
+// What `mac.entitlements` of the base configuration names.
+const appEntitlementsPath = path.join(electronDir, 'build', 'entitlements.mac.plist')
 
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u
 
@@ -122,10 +125,24 @@ const sparkleFeedUrl = resolvePackagedSparkleFeedUrl({
   configuredAppcastUrl: configuredSparkleFeedUrl
 })
 const localSparkleFeed = Boolean(configuredSparkleFeedUrl?.trim())
+// `LODY_MAC_SELF_SIGNED=1` says that the certificate that signs this build is
+// the builder's own. It carries no Team ID, which library validation needs to
+// let the application load its own frameworks, so the application is signed
+// with the entitlements it has plus that one exception.
+const selfSigned = process.env.LODY_MAC_SELF_SIGNED === '1'
+const selfSignedEntitlementsPath = path.join(generatedConfigDirectory, 'entitlements.mac.plist')
+if (selfSigned) {
+  writeFileSync(
+    selfSignedEntitlementsPath,
+    withoutLibraryValidation(readFileSync(appEntitlementsPath, 'utf8')),
+    'utf8'
+  )
+}
 const generatedConfig = {
   extends: baseConfigPath,
   extraMetadata: { version },
   mac: {
+    ...(selfSigned ? { entitlements: selfSignedEntitlementsPath } : {}),
     extendInfo: {
       SUFeedURL: sparkleFeedUrl,
       ...(localSparkleFeed

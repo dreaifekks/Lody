@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import test from 'node:test'
 import path from 'node:path'
 import {
@@ -9,7 +10,8 @@ import {
   resolveSparkleRebuildArch,
   shouldAdHocSignSparkleApp,
   shouldInjectSparklePublicKey,
-  sparkleInfoPlistPath
+  sparkleInfoPlistPath,
+  withoutLibraryValidation
 } from './sparkle-packaging.mjs'
 
 void test('treats explicit --mac and host-default darwin packaging as Sparkle package runs', () => {
@@ -44,6 +46,34 @@ void test('ad-hoc signs Sparkle mac builds only when no Developer ID credentials
     shouldAdHocSignSparkleApp({ platform: 'win32', hasCodeSigningCredentials: false }),
     false
   )
+})
+
+function readEntitlements(document) {
+  const body = /<dict>([\s\S]*)<\/dict>/u.exec(document.replace(/<!--[\s\S]*?-->/gu, ''))
+  assert.ok(body, 'the document holds a dictionary')
+  return Object.fromEntries(
+    [...body[1].matchAll(/<key>([^<]+)<\/key>\s*<(true|false)\/>/gu)].map(([, key, value]) => [
+      key,
+      value === 'true'
+    ])
+  )
+}
+
+void test('a self-signed application keeps its entitlements and may load what carries no Team ID', () => {
+  const read = (name) => fs.readFileSync(new URL(`../build/${name}`, import.meta.url), 'utf8')
+  const application = read('entitlements.mac.plist')
+  const exception = 'com.apple.security.cs.disable-library-validation'
+
+  // The checked-in entitlements stay strict: a build signed with a Team ID uses them as they are.
+  assert.equal(exception in readEntitlements(application), false)
+  assert.deepEqual(readEntitlements(withoutLibraryValidation(application)), {
+    ...readEntitlements(application),
+    [exception]: true
+  })
+
+  const nested = read('entitlements.mac.inherit.plist')
+  assert.equal(withoutLibraryValidation(nested), nested)
+  assert.throws(() => withoutLibraryValidation('<plist version="1.0"></plist>'), /no dictionary/u)
 })
 
 void test('packages a local Sparkle feed URL when one is configured', () => {

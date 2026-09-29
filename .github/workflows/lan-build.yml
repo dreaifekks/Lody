@@ -146,6 +146,11 @@ jobs:
       # signs every build with it and keeps one identity; one without it builds
       # unsigned as before. The certificate is trusted for code signing on this
       # throwaway runner only, which is what lets electron-builder use it.
+      #
+      # Such a certificate carries no Team ID, and under the hardened runtime
+      # an application loads only what Apple signed or what carries its own:
+      # `LODY_MAC_SELF_SIGNED` signs the application with the exception that
+      # lets it load its own frameworks.
       - name: Trust the signing certificate
         if: matrix.id == 'mac'
         shell: bash
@@ -173,16 +178,44 @@ jobs:
           CSC_LINK: ${{ matrix.id == 'mac' && secrets.LAN_MAC_SIGNING_P12 || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.id == 'mac' && secrets.LAN_MAC_SIGNING_PASSWORD || '' }}
           CSC_NAME: ${{ matrix.id == 'mac' && secrets.LAN_MAC_SIGNING_P12 && 'Lody OSS LAN' || '' }}
+          LODY_MAC_SELF_SIGNED: ${{ matrix.id == 'mac' && secrets.LAN_MAC_SIGNING_P12 && '1' || '' }}
         run: pnpm --dir apps/electron run package -- ${{ matrix.flags }} "--version=$LAN_VERSION"
 
-      - name: Show the signing identity
+      # The probes of the packaging hooks run before the application is signed,
+      # and a signature decides what a process may load. What is published is
+      # started here as it ships: the application, which has to load its
+      # framework, and the helper that runs the agent service with its bindings.
+      - name: Start the signed application
         if: matrix.id == 'mac'
         shell: bash
         run: |
-          for app in apps/electron/dist/mac*/*.app; do
+          set -euo pipefail
+          for app in "$PWD"/apps/electron/dist/mac*/*.app; do
             echo "== $app"
-            codesign -dvv "$app" 2>&1 | grep -E '^(Authority|Identifier|Signature|TeamIdentifier)=' || true
+            codesign -dvv "$app" 2>&1 | grep -E '^(Authority|Identifier|Signature|TeamIdentifier|CodeDirectory)=' || true
             codesign -d -r- "$app" 2>&1 | grep designated || true
+            codesign -d --entitlements - "$app" 2>&1 | grep -F 'com.apple.security' || true
+
+            name="$(basename "$app" .app)"
+            application="$app/Contents/MacOS/$name"
+            helper="$app/Contents/Frameworks/$name Helper.app/Contents/MacOS/$name Helper"
+            cli="$app/Contents/Resources/app.asar.unpacked/resources/cli/index.js"
+            if [[ " $(lipo -archs "$application") " != *" $(uname -m) "* ]] &&
+              ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+              echo "This runner cannot run $(lipo -archs "$application"); not started."
+              continue
+            fi
+            ELECTRON_RUN_AS_NODE=1 "$application" -e \
+              'console.log("application", process.versions.electron, process.arch)'
+            ELECTRON_RUN_AS_NODE=1 "$helper" "$cli" --version
+            ELECTRON_RUN_AS_NODE=1 "$helper" -e '
+              const { createRequire } = require("node:module")
+              const load = createRequire(process.argv[1])
+              const Database = load("better-sqlite3")
+              new Database(":memory:").close()
+              if (typeof load("@lydell/node-pty").spawn !== "function") process.exit(1)
+              console.log("helper", process.arch, "loads its bindings")
+            ' "$cli"
           done
 
       - name: Upload installers

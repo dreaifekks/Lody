@@ -228,7 +228,14 @@ updater of the platform nor the one of the framework accepts, so a fork build
 certificate as the secrets `LAN_MAC_SIGNING_P12` and `LAN_MAC_SIGNING_PASSWORD`
 signs its macOS builds with it: macOS keys the permissions a user grants to that
 identity, which an unsigned build changes with every build. Gatekeeper still
-does not trust it, so the first launch is allowed as before.
+does not trust it, so the first launch is allowed as before. Such a certificate
+carries no Team ID, and under the hardened runtime a process loads only what
+Apple signed or what carries its own, so `LODY_MAC_SELF_SIGNED` has
+`package-electron.mjs` sign the application with the exception from library
+validation its nested binaries have; without it the application ends in dyld
+before it runs. The packaging probes run before signing, so the workflow starts
+the signed application and its helper once and publishes nothing that does not
+start.
 The update service of the publisher stays off on the local platform: a fork
 build is never replaced by an upstream release.
 Changes to a submodule the fork cannot push to live in `patches/submodules/`;
