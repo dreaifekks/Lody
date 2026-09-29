@@ -8,6 +8,10 @@ edit-evidence extraction; `history-apply.ts` owns the CRDT history writes. Proto
 reference: `context/acp-protocol.md`; per-agent payload quirks:
 `context/acp-agent-edit-evidence.md`.
 
+Tool updates are sparse per-toolCallId patches. Preserve omitted fields; present
+content/locations lists replace the previous list, including empty-list clears.
+Apply this to edit evidence as well as history, after terminal-output compaction.
+
 ## Ownership is bound at enqueue time
 
 Negotiated Core subagent events retain root/run ownership through the shared

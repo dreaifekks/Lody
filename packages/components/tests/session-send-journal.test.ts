@@ -85,6 +85,54 @@ function fixture(overrides: Partial<SessionSendJournalPorts> = {}) {
 }
 
 describe('persistent submission stages', () => {
+  it('joins a noncancelable local write before deleting its conversation and outbox', async () => {
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const locks = new Map<string, Promise<unknown>>();
+    const f = fixture({
+      lock: (key, _signal, execute) => {
+        const next = (locks.get(key) ?? Promise.resolve()).then(execute);
+        locks.set(
+          key,
+          next.catch(() => {})
+        );
+        return next;
+      },
+    });
+    const commit = f.ports.commit;
+    f.ports.commit = async (...args) => {
+      entered.resolve();
+      await finish.promise;
+      await commit(...args);
+    };
+    await f.journal.accept(record('in-flight'));
+    const submitting = f.journal.submit('session' as SessionId).catch(() => {});
+    await entered.promise;
+    let deleted = false;
+    const deleting = f.journal.forget('session' as SessionId, async () => {
+      expect(f.writer.readStored().map((turn) => turn.id)).toEqual(['in-flight']);
+      deleted = true;
+    });
+    expect(deleted).toBe(false);
+    finish.resolve();
+    await Promise.all([submitting, deleting]);
+    expect(deleted).toBe(true);
+    expect(await f.journal.read('in-flight')).toBeUndefined();
+  });
+
+  it('retains accepted input when conversation deletion fails', async () => {
+    const f = fixture();
+    await f.journal.accept(record('keep'));
+    await expect(
+      f.journal.forget('session' as SessionId, async () => {
+        throw new Error('local storage unavailable');
+      })
+    ).rejects.toThrow('local storage unavailable');
+    expect((await f.journal.read('keep'))?.entry.items).toEqual(record('keep').entry.items);
+    await f.journal.submit('session' as SessionId);
+    expect(f.writer.readStored().map((turn) => turn.id)).toEqual(['keep']);
+  });
+
   it('resumes an applied write that lost its acknowledgment without appending again', async () => {
     const f = fixture();
     let loseAck = true;
@@ -100,8 +148,8 @@ describe('persistent submission stages', () => {
     };
     await f.journal.accept(record('fixed'));
     await expect(f.journal.submit('session' as SessionId)).rejects.toThrow('Lost local receipt');
-    // Older clients can only replay prepared bytes, so this format must be refused there.
-    expect((await f.ports.storage.list())[0]).toMatchObject({ stage: 'prepared', version: 3 });
+    // An interrupted local write is retained without a separate prepared stage.
+    expect((await f.ports.storage.list())[0]).toMatchObject({ stage: 'committed', version: 4 });
     expect(f.writer.readStored().map((turn) => turn.id)).toEqual(['fixed']);
 
     // Simulate a new service using the same persisted intent after restart.
@@ -123,11 +171,11 @@ describe('persistent submission stages', () => {
     expect([...f.doc.oplogVersion().toJSON().keys()]).toEqual([f.doc.peerIdStr]);
   });
 
-  it('publishes nothing when saving the prepared operation fails', async () => {
+  it('publishes nothing when saving the local write intent fails', async () => {
     const f = fixture();
     const put = f.ports.storage.put;
     f.ports.storage.put = async (value) => {
-      if (value.stage === 'prepared') throw new Error('Disk full');
+      if (value.stage === 'committed') throw new Error('Disk full');
       await put(value);
     };
     await f.journal.accept(record('fixed'));
@@ -212,7 +260,7 @@ describe('persistent submission stages', () => {
     expect(await f.ports.storage.list()).toEqual([]);
   });
 
-  it('lets an explicit discard remove a prepared record whose commit cannot recover', async () => {
+  it('lets an explicit discard remove a local write intent whose commit cannot recover', async () => {
     const f = fixture({
       commit: async () => {
         throw new Error('Original submission replica is unavailable');
@@ -222,7 +270,7 @@ describe('persistent submission stages', () => {
     await expect(f.journal.submit('session' as SessionId)).rejects.toThrow(
       'Original submission replica is unavailable'
     );
-    expect((await f.ports.storage.list())[0]?.stage).toBe('prepared');
+    expect((await f.ports.storage.list())[0]).toMatchObject({ stage: 'committed', version: 4 });
     await f.journal.discard('prepared-stuck');
     expect(await f.ports.storage.list()).toEqual([]);
   });
@@ -431,9 +479,7 @@ describe('workspace commit writes local operations', () => {
       userId: 'account',
     },
     requestSessionSteer?: (
-      session: ReturnType<
-        typeof import('../src/lib/conversation-view').createConversationSession
-      >,
+      session: ReturnType<typeof import('../src/lib/conversation-view').createConversationSession>,
       request: { userTurnId: string }
     ) => Promise<import('@lody/shared').SessionSteerResponse>
   ) {
@@ -466,6 +512,7 @@ describe('workspace commit writes local operations', () => {
       releaseRef: () => {},
     });
     const events: string[] = [];
+    let offline = false;
     const dispatched: string[] = [];
     const steered: string[] = [];
     const stop = doc.subscribe((event) => events.push(`doc:${event.by}`));
@@ -478,7 +525,9 @@ describe('workspace commit writes local operations', () => {
         workspaceId: 'workspace',
         sendResources: resources,
         repo: { getDocMeta: async () => ({ meta }), flush: async () => {} },
-        writer: { upsertDocMeta: async (_room: string, patch: object) => Object.assign(meta, patch) },
+        writer: {
+          upsertDocMeta: async (_room: string, patch: object) => Object.assign(meta, patch),
+        },
         requestSessionDispatchTurn: async (_machineId: string, request: { userTurnId: string }) => {
           dispatched.push(request.userTurnId);
           return { accepted: true };
@@ -491,6 +540,7 @@ describe('workspace commit writes local operations', () => {
       } as never,
       waitForTargetSync: async () => {
         events.push('sync');
+        if (offline) throw new Error('offline');
         syncedMachineIds.push(meta.machineId);
       },
     });
@@ -529,6 +579,9 @@ describe('workspace commit writes local operations', () => {
       syncedMachineIds,
       entry,
       insertPrepared,
+      setOffline(value: boolean) {
+        offline = value;
+      },
       async dispose() {
         stop();
         await resources.dispose();
@@ -540,6 +593,118 @@ describe('workspace commit writes local operations', () => {
       },
     };
   }
+
+  it('accepts and activates offline, then synchronizes the same local turn on reconnect', async () => {
+    const f = await workspaceFixture();
+    try {
+      f.setOffline(true);
+      await f.journal.accept({ ...record('offline'), entry: f.entry('offline') });
+      await f.journal.submit('session' as SessionId);
+      expect(f.events).not.toContain('sync');
+      expect(f.meta.latestUserMsgId).toBe('offline');
+      expect(f.session.historyWriter.readStored().map((turn) => turn.id)).toEqual(['offline']);
+      await expect(f.journal.deliver((await f.journal.read('offline'))!)).rejects.toThrow(
+        'offline'
+      );
+      f.setOffline(false);
+      await f.journal.resume();
+      expect((await f.journal.read('offline'))?.stage).toBe('delivered');
+      expect(f.session.historyWriter.readStored().map((turn) => turn.id)).toEqual(['offline']);
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it('retains archived input locally and resumes it only after restoration', async () => {
+    const f = await workspaceFixture();
+    try {
+      await f.journal.accept({ ...record('draft'), entry: f.entry('draft') });
+      f.meta.isArchived = true;
+      await f.journal.refresh();
+      await f.journal.resume();
+      expect(f.journal.getSnapshot()[0]).toMatchObject({ paused: true, stage: 'saved' });
+      expect(f.session.historyWriter.readStored()).toEqual([]);
+      expect(f.dispatched).toEqual([]);
+      f.meta.isArchived = false;
+      await f.journal.resume();
+      expect(f.session.historyWriter.readStored().map((turn) => turn.id)).toEqual(['draft']);
+      expect((await f.journal.read('draft'))?.stage).toBe('delivered');
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it('retains a missing interrupted intent while offline instead of blindly appending it', async () => {
+    const f = await workspaceFixture();
+    try {
+      await f.insertPrepared('uncertain', { version: 4, stage: 'committed' });
+      f.setOffline(true);
+      await expect(f.journal.submit('session' as SessionId)).rejects.toThrow('offline');
+      expect(f.session.historyWriter.readStored()).toEqual([]);
+      expect(await f.journal.read('uncertain')).toMatchObject({ version: 4, stage: 'committed' });
+      f.meta.isArchived = true;
+      await f.journal.refresh();
+      await f.journal.resume();
+      expect(f.journal.getSnapshot()[0]?.paused).toBe(true);
+      expect(f.dispatched).toEqual([]);
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it('does not move local activation backwards when an older outbox entry syncs', async () => {
+    const f = await workspaceFixture();
+    try {
+      for (const id of ['first', 'second']) {
+        await f.journal.accept({ ...record(id), entry: f.entry(id) });
+        await f.journal.submit('session' as SessionId);
+      }
+      expect(f.meta.latestUserMsgId).toBe('second');
+      await f.journal.deliver((await f.journal.read('first'))!);
+      expect(f.meta.latestUserMsgId).toBe('second');
+      expect(f.session.historyWriter.readStored().map((turn) => turn.id)).toEqual([
+        'first',
+        'second',
+      ]);
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it('synchronizes an archived local turn without dispatching it', async () => {
+    const f = await workspaceFixture();
+    try {
+      await f.journal.accept({ ...record('local'), entry: f.entry('local') });
+      await f.journal.submit('session' as SessionId);
+      f.meta.isArchived = true;
+      await f.journal.resume();
+      expect(f.meta.isArchived).toBe(true);
+      expect(f.dispatched).toEqual([]);
+      expect(f.session.historyWriter.readStored().map((turn) => turn.id)).toEqual(['local']);
+      expect((await f.journal.read('local'))?.stage).toBe('delivered');
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it('keeps an archived guide pending instead of treating archive synchronization as its outcome', async () => {
+    const f = await workspaceFixture();
+    try {
+      await f.journal.accept({
+        ...record('guide'),
+        entry: { ...f.entry('guide'), status: 'pending_apply' },
+        delivery: { kind: 'guide', expectedTurnId: 'assistant-turn' },
+      });
+      await f.journal.submit('session' as SessionId);
+      f.meta.isArchived = true;
+      await f.journal.resume();
+      expect(f.steered).toEqual([]);
+      expect((await f.journal.read('guide'))?.stage).toBe('committed');
+      expect(f.session.historyWriter.read('guide')?.status).toBe('pending_apply');
+    } finally {
+      await f.dispose();
+    }
+  });
 
   it('activates and dispatches a turn the CLI auto-read marks seen before delivery', async () => {
     const { attachAutoMarkLatestUserHistoryAsRead } =
@@ -658,15 +823,16 @@ describe('workspace commit writes local operations', () => {
     }
   });
 
-  it('catches up before resuming and keeps a turn written by the interrupted attempt', async () => {
+  it('repairs the local activation before syncing a turn written by the interrupted attempt', async () => {
     const f = await workspaceFixture();
     try {
       f.session.historyWriter.append(f.entry('resumed'));
       const saved = await f.insertPrepared('resumed');
       f.events.length = 0;
-      await f.journal.retry(saved.sessionId);
-      expect((await f.journal.read('resumed'))?.stage).toBe('delivered');
-      expect(f.events[0]).toBe('sync');
+      await f.journal.submit(saved.sessionId);
+      expect((await f.journal.read('resumed'))?.stage).toBe('committed');
+      expect(f.events).not.toContain('sync');
+      expect(f.meta.latestUserMsgId).toBe('resumed');
       expect(f.session.historyWriter.readStored().map((turn) => turn.id)).toEqual(['resumed']);
     } finally {
       await f.dispose();

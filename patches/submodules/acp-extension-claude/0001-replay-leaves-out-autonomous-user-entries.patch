@@ -1,8 +1,8 @@
 diff --git a/src/acp-agent.ts b/src/acp-agent.ts
-index 1d969cd..546d957 100644
+index 361a456..4a5e328 100644
 --- a/src/acp-agent.ts
 +++ b/src/acp-agent.ts
-@@ -1296,6 +1296,32 @@ const AUTONOMOUS_RESULT_ORIGINS: ReadonlySet<SDKMessageOrigin["kind"]> = new Set
+@@ -1359,6 +1359,32 @@ const AUTONOMOUS_RESULT_ORIGINS: ReadonlySet<SDKMessageOrigin["kind"]> = new Set
    "observer-activity",
  ]);
  
@@ -35,22 +35,22 @@ index 1d969cd..546d957 100644
  /** Whether this turn's terminal result arrived but its settlement is being
   *  held for background subagents it spawned (see Turn.deferredSettle). The
   *  single spelling of the hold predicate, shared by the consumer's settle
-@@ -7049,6 +7075,10 @@ export class ClaudeAcpAgent {
-     };
- 
-     for (const message of messages) {
+@@ -7612,6 +7638,10 @@ export class ClaudeAcpAgent {
+         : { ids: new Map<string, string>() };
+     const replayedSubagents = new Set<string>();
+     const replayMessage = async (message: SessionMessage): Promise<void> => {
 +      // Before the turn bookkeeping: the model's followup to a notification
 +      // stays with the turn it belongs to rather than opening one for text
 +      // the user never sent.
-+      if (isAutonomousUserEntry(message)) continue;
++      if (isAutonomousUserEntry(message)) return;
        if (
          message.type === "user" &&
          message.parent_tool_use_id === null &&
 diff --git a/src/tests/acp-agent.test.ts b/src/tests/acp-agent.test.ts
-index 648f0e8..f62d440 100644
+index 45ee047..c87ec1b 100644
 --- a/src/tests/acp-agent.test.ts
 +++ b/src/tests/acp-agent.test.ts
-@@ -2440,6 +2440,76 @@ describe("synthetic login message (issue #863)", () => {
+@@ -2499,6 +2499,125 @@ describe("synthetic login message (issue #863)", () => {
      expect(JSON.stringify(updates)).not.toContain("system-reminder");
    });
  
@@ -84,6 +84,18 @@ index 648f0e8..f62d440 100644
 +        message: { role: "user", content: notification },
 +      },
 +      {
++        // What a subagent sent to the main loop.
++        type: "user",
++        uuid: "p1",
++        session_id: "s1",
++        parent_tool_use_id: null,
++        parent_agent_id: null,
++        origin: { kind: "peer", from: "builder" },
++        is_meta: true,
++        isQueuedCommand: true,
++        message: { role: "user", content: "<agent-message>the build is green</agent-message>" },
++      },
++      {
 +        type: "assistant",
 +        uuid: "a1",
 +        session_id: "s1",
@@ -94,7 +106,28 @@ index 648f0e8..f62d440 100644
 +          role: "assistant",
 +          type: "message",
 +          model: "claude-test",
-+          content: [{ type: "text", text: "The build finished." }],
++          content: [
++            { type: "text", text: "The build finished." },
++            {
++              type: "tool_use",
++              id: "toolu_log",
++              name: "Bash",
++              input: { command: "tail build.log" },
++            },
++          ],
++        },
++      },
++      {
++        // A tool result settles its call, whatever origin it carries.
++        type: "user",
++        uuid: "r1",
++        session_id: "s1",
++        parent_tool_use_id: null,
++        parent_agent_id: null,
++        origin: { kind: "task-notification" },
++        message: {
++          role: "user",
++          content: [{ type: "tool_result", tool_use_id: "toolu_log", content: "ok" }],
 +        },
 +      },
 +      {
@@ -121,7 +154,23 @@ index 648f0e8..f62d440 100644
 +      `why does my history show this?\n${notification}`,
 +    ]);
 +    // The model's followup to the notification still replays.
-+    expect(JSON.stringify(updates)).toContain("The build finished.");
++    expect(updates).toEqual(
++      expect.arrayContaining([
++        expect.objectContaining({
++          update: expect.objectContaining({
++            sessionUpdate: "agent_message_chunk",
++            content: { type: "text", text: "The build finished." },
++          }),
++        }),
++        expect.objectContaining({
++          update: expect.objectContaining({
++            sessionUpdate: "tool_call_update",
++            toolCallId: "toolu_log",
++            status: "completed",
++          }),
++        }),
++      ]),
++    );
 +  });
 +
    it("loadSession replay skips the synthetic login message but keeps the rest", async () => {

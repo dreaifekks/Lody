@@ -699,14 +699,6 @@ export function useSessionActions(): SessionActions {
         throw new Error('Runtime not ready');
       }
 
-      await runtime.sendJournal?.refresh();
-      if (
-        runtime.sendJournal
-          ?.getSnapshot()
-          .some((record) => record.sessionId === sessionId && record.stage !== 'delivered')
-      ) {
-        throw new Error('Complete or cancel pending messages before deleting this conversation');
-      }
       const sessionRoomId = getSessionRoomId(sessionId);
       const sessionMeta = (await runtime.repo.getDocMeta(sessionRoomId))?.meta as
         | SessionMeta
@@ -721,10 +713,13 @@ export function useSessionActions(): SessionActions {
         );
       }
 
-      await Promise.all([
-        runtime.writer.deleteDoc(sessionRoomId),
-        runtime.releaseSessionStore(sessionId),
-      ]);
+      const deleteDocuments = async () => {
+        await runtime.writer.deleteDoc(sessionRoomId);
+        await runtime.repo.flush();
+        await runtime.releaseSessionStore(sessionId);
+      };
+      if (runtime.sendJournal) await runtime.sendJournal.forget(sessionId, deleteDocuments);
+      else await deleteDocuments();
     },
     [invalidateExternalHistoryCatalog, runtime]
   );
@@ -749,21 +744,6 @@ export function useSessionActions(): SessionActions {
       if (store.get(activeWorkspaceRuntimeAtom) !== runtime) {
         throw new Error('Workspace changed before archiving');
       }
-      await runtime.sendJournal?.refresh();
-      if (
-        runtime.sendJournal
-          ?.getSnapshot()
-          .some(
-            (record) =>
-              record.stage !== 'delivered' &&
-              archiveTargets.some(
-                (target) =>
-                  target.id === record.sessionId || target.id === record.creation?.parentSessionId
-              )
-          )
-      ) {
-        throw new Error('Complete or cancel pending messages before archiving this conversation');
-      }
       for (const session of archiveTargets) {
         // The archived state is the whole request: the owning machine observes
         // it, releases the runtime, and reconciles the worktree directory.
@@ -780,6 +760,8 @@ export function useSessionActions(): SessionActions {
           }
         }
       }
+      await runtime.repo.flush();
+      await runtime.sendJournal?.refresh();
       log('[session-archive] archived', {
         sessionId,
         targetSessionIds: archiveTargets.map((session) => session.id),
@@ -807,6 +789,10 @@ export function useSessionActions(): SessionActions {
           isArchived: false,
         } as Partial<SessionMeta>);
       }
+      await runtime.sendJournal?.refresh();
+      void runtime.sendJournal?.resume().catch((error: unknown) => {
+        log('[session-restore] background send recovery failed', { sessionId, error });
+      });
       log('[session-restore] restored', {
         sessionId,
         targetSessionIds: restoreTargets.map((session) => session.id),

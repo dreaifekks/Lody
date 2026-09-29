@@ -744,11 +744,16 @@ const mergeStreamChunk = (current: string, incoming: string): string => {
 
 const mergeToolCallMessage = (
   prev: ToolCallMessage,
-  incoming: ToolCallMessage
+  incoming: ToolCallMessage,
+  replaceContent = false
 ): ToolCallMessage => {
   const nextKind = (incoming.kind ?? prev.kind) as ToolKind | null | undefined;
 
-  const mergedContent: StoredToolCallContent = prev.content ? [...prev.content] : [];
+  // ACP content is a replacement list. Locally derived terminal commands are
+  // independent rawInput projections and survive an output-only replacement.
+  const mergedContent: StoredToolCallContent = replaceContent
+    ? (prev.content ?? []).filter((block) => block.type === 'terminal_command')
+    : [...(prev.content ?? [])];
   const nextChunks = incoming.content ?? [];
 
   if (nextChunks.length > 0) {
@@ -925,7 +930,9 @@ const mergeToolCallMessage = (
     status: nextStatus,
     content: mergedContent.length
       ? compactToolCallContentForHistory(mergedContent, { kind: nextKind })
-      : prev.content,
+      : replaceContent
+        ? []
+        : prev.content,
     locations: incoming.locations !== undefined ? incoming.locations : prev.locations,
     // Scheduling tools split rawInput and the terminal `completed` across updates; keep
     // whichever update carried each (see SCHEDULING_TOOL_NAMES).
@@ -1070,7 +1077,8 @@ const parseAssistantTextTags = (text: string, turnId: string): MessageContent[] 
 };
 
 export const buildMessageContentFromNotification = (
-  message: AcpSessionNotification
+  message: AcpSessionNotification,
+  previousTool?: ToolCallMessage
 ): MessageContent[] => {
   const { update } = message;
   switch (update.sessionUpdate) {
@@ -1128,7 +1136,7 @@ export const buildMessageContentFromNotification = (
         return codexCollabTasks.map((task) => ({ type: 'subagent_task', ...task }));
       }
 
-      const kind = (update.kind ?? undefined) as ToolKind | null | undefined;
+      const kind = (update.kind ?? previousTool?.kind) as ToolKind | null | undefined;
 
       // `update.content` is untrusted and provider-dependent; some tools include whole file
       // contents or full old/new text. Strip those early so we never persist them.
@@ -1212,10 +1220,7 @@ export const buildMessageContentFromNotification = (
 
       const derived: StoredToolCallContent = [...derivedCommand, ...derivedOutput];
       const content = compactToolCallContentForHistory([...baseContent, ...derived], { kind });
-      const explicitLocations =
-        Array.isArray(update.locations) && update.locations.length > 0
-          ? update.locations
-          : undefined;
+      const explicitLocations = Array.isArray(update.locations) ? update.locations : undefined;
       const locations =
         explicitLocations ??
         deriveLocationsFromToolCallContent(update.content) ??
@@ -1224,7 +1229,8 @@ export const buildMessageContentFromNotification = (
       // scheduled-tasks panel derives entirely from history, so it needs the schedule and
       // the created job id. Persist them (small, stable) plus the canonical tool name the
       // deriver switches on; `title` stays whatever the agent chose to show.
-      const toolName = resolveAcpToolName((update as ToolCallUpdateWithMeta)._meta);
+      const toolName =
+        resolveAcpToolName((update as ToolCallUpdateWithMeta)._meta) ?? previousTool?.toolName;
       const activityKind = getToolCallActivityKind((update as ToolCallUpdateWithMeta)._meta);
       const isSchedulingTool = toolName !== undefined && SCHEDULING_TOOL_NAMES.has(toolName);
       return [
@@ -1233,8 +1239,8 @@ export const buildMessageContentFromNotification = (
           toolCallId: update.toolCallId,
           title: update.title,
           toolName,
-          kind: update.kind || undefined,
-          status: update.status || 'pending',
+          kind: kind ?? undefined,
+          status: update.status ?? previousTool?.status ?? 'pending',
           content: content.length ? content : undefined,
           locations,
           // Generic ACP rawInput/rawOutput is excluded because it is unstructured by spec;
@@ -1400,9 +1406,23 @@ class NotificationOnHistoryApplier {
         continue;
       }
 
-      const contents = buildMessageContentFromNotification(notification);
+      const toolUpdate =
+        update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update'
+          ? update
+          : undefined;
+      const entryIndex = toolUpdate
+        ? this.resolveToolCallEntryIndex(toolUpdate.toolCallId)
+        : undefined;
+      const previousTool =
+        entryIndex === undefined
+          ? undefined
+          : this.readEntryItems(entryIndex).find(
+              (item): item is ToolCallMessage =>
+                item.type === 'tool_call' && item.toolCallId === toolUpdate?.toolCallId
+            );
+      const contents = buildMessageContentFromNotification(notification, previousTool);
       for (const message of contents) {
-        this.applyMessageContent(message);
+        this.applyMessageContent(message, toolUpdate?.content != null);
       }
     }
 
@@ -1766,7 +1786,7 @@ class NotificationOnHistoryApplier {
     return this.history.length - 1;
   }
 
-  private applyMessageContent(message: MessageContent) {
+  private applyMessageContent(message: MessageContent, replaceContent = false) {
     switch (message.type) {
       case 'text': {
         const text = sanitizeLodyInternalInstructions(message.text);
@@ -1795,7 +1815,7 @@ class NotificationOnHistoryApplier {
       case 'tool_call': {
         const existingEntryIndex = this.resolveToolCallEntryIndex(message.toolCallId);
         if (existingEntryIndex !== undefined) {
-          this.upsertToolCall(existingEntryIndex, message);
+          this.upsertToolCall(existingEntryIndex, message, replaceContent);
           return;
         }
         const entryIndex = this.ensureActiveAssistantEntry();
@@ -1931,7 +1951,7 @@ class NotificationOnHistoryApplier {
     this.changed = true;
   }
 
-  private upsertToolCall(entryIndex: number, incoming: ToolCallMessage) {
+  private upsertToolCall(entryIndex: number, incoming: ToolCallMessage, replaceContent = false) {
     const entry = this.history[entryIndex];
     if (!entry) return;
 
@@ -1941,7 +1961,7 @@ class NotificationOnHistoryApplier {
     );
     if (toolIndex >= 0) {
       const prevTool = items[toolIndex] as ToolCallMessage;
-      items[toolIndex] = mergeToolCallMessage(prevTool, incoming);
+      items[toolIndex] = mergeToolCallMessage(prevTool, incoming, replaceContent);
       this.changed = true;
       return;
     }

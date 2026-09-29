@@ -49,6 +49,7 @@ export {
 type ToolCallAccumulator = {
   /** Parsed JSON from the last complete in-progress content block. */
   parsedInput: Record<string, unknown>;
+  status?: 'pending' | 'in_progress' | 'completed' | 'failed';
   /** Base title from the initial tool_call (e.g. "Shell", "ReadFile"). */
   baseTitle?: string;
   /** Last refined title from an in-progress tool_call_update (e.g. "Shell: echo hello"). */
@@ -687,9 +688,8 @@ const tryParseJsonFromContentBlocks = (content: AcpContentLike): Record<string, 
  * This single-pass enrichment handles two concerns:
  *
  * 1. **Title propagation** — Agents like Kimi refine the title during streaming
- *    (e.g. "Shell" → "Shell: cat hello.txt"). In-progress updates that carry the
- *    refined title are later filtered out, so we propagate the best title to the
- *    completed/failed update.
+ *    (e.g. "Shell" → "Shell: cat hello.txt"). Retain that title for sparse
+ *    completed/failed updates and for terminal-output projection.
  *
  * 2. **Missing field injection** — Agents that use ACP terminal RPCs (e.g. Kimi)
  *    don't set `kind`, `rawInput`, `rawOutput`, or `locations`. We derive them
@@ -702,17 +702,27 @@ const enrichNotificationBatch = (
   batch: AcpSessionNotification[],
   state: EnrichmentState
 ): AcpSessionNotification[] => {
-  // --- Collect phase: scan all notifications and accumulate per-toolCallId state ---
-  for (const { update } of batch) {
+  // Apply in wire order: looking ahead would mark running output completed
+  // before the actual response, and lose sparse post-result hook updates.
+  return batch.map((original) => {
+    let message = original;
+    let update = message.update;
     if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') {
-      continue;
+      return message;
     }
 
     const id = update.toolCallId;
+    const previous = state.get(id) ?? { parsedInput: {} };
+    state.set(id, previous);
+    if (update.status != null) previous.status = update.status;
+    else if (previous.status) {
+      update = { ...update, status: previous.status };
+      message = { ...message, update };
+    }
     const isTerminal = update.status === 'completed' || update.status === 'failed';
 
     // Derive kind and track titles from non-terminal notifications
-    if (update.title && !isTerminal) {
+    if ((update.title || update.kind) && !isTerminal) {
       let acc = state.get(id);
       if (!acc) {
         acc = { parsedInput: {} };
@@ -720,19 +730,21 @@ const enrichNotificationBatch = (
       }
 
       const explicitKind = normalizeToolKind(update.kind);
-      const titleKind = deriveKindFromTitle(update.title);
+      const titleKind = update.title ? deriveKindFromTitle(update.title) : undefined;
       if (explicitKind) {
         acc.kind = explicitKind;
       } else if (titleKind) {
         acc.kind = titleKind;
       }
 
-      if (update.sessionUpdate === 'tool_call') {
-        acc.baseTitle = update.title;
-      } else {
-        acc.refinedTitle = update.title;
+      if (update.title) {
+        if (update.sessionUpdate === 'tool_call') acc.baseTitle = update.title;
+        else acc.refinedTitle = update.title;
       }
     }
+
+    // A present list supersedes every earlier diff, including an explicit clear.
+    if (Array.isArray(update.content)) state.get(id)?.editDiffsByPath?.clear();
 
     // Accumulate edit evidence from non-terminal updates (Claude Code's completed update is
     // bare; see ToolCallAccumulator.editDiffsByPath).
@@ -787,16 +799,6 @@ const enrichNotificationBatch = (
         acc.parsedInput = parsed;
       }
     }
-  }
-
-  if (state.size === 0) return batch;
-
-  // --- Apply phase: patch notifications using accumulated state ---
-  return batch.map((message) => {
-    const { update } = message;
-    if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') {
-      return message;
-    }
 
     const acc = state.get(update.toolCallId);
     if (!acc) return message;
@@ -844,7 +846,7 @@ const enrichNotificationBatch = (
     if (
       typeof parsedPath === 'string' &&
       parsedPath.length > 0 &&
-      !(Array.isArray(update.locations) && update.locations.length > 0) &&
+      update.locations == null &&
       !deriveLocationsFromToolCallContent(update.content)
     ) {
       patches.locations = [{ path: parsedPath }];
@@ -1026,18 +1028,14 @@ const filterNotificationsForHistory = (
     // Task snapshots are small lifecycle facts, not replaceable tool output.
     // The history applier merges them by taskId for both live and resumed views.
     if (parseLodyTaskMeta(update._meta) ?? parseDevinSubagentTaskMeta(update._meta)) return true;
-    // Tool call updates are often "full snapshots" (especially terminal output). Persisting all
-    // intermediate snapshots causes the CRDT history to blow up. We keep only terminal state
-    // transitions that represent a finished tool call.
-    if (update.status === 'completed' || update.status === 'failed') return true;
-
-    // Claude Code sends rawInput in a tool_call_update (~14% of Bash calls, ~50% of Read/Grep,
-    // and ALL Edit calls). Keep these updates so we can extract terminal commands, diff blocks,
-    // and locations from them.
-    const rawInput = update.rawInput;
-    if (rawInput && typeof rawInput === 'object' && Object.keys(rawInput as object).length > 0) {
+    // Terminal payloads have already been compacted. Other tool fields are
+    // independent patches: a title/list-only update may be their only delivery.
+    if (
+      ['status', 'title', 'kind', 'content', 'locations', 'rawInput', 'rawOutput'].some(
+        (field) => (update as Record<string, unknown>)[field] != null
+      )
+    )
       return true;
-    }
 
     // Claude Code sends toolResponse in updates with status=null. Keep these updates
     // so we can extract terminal output from _meta.claudeCode.toolResponse.
@@ -1160,10 +1158,9 @@ const triggerEditCallbacksFromNotifications = async (
         ? { oldString: rawInputRecord.old_string, newString: rawInputRecord.new_string }
         : acc?.editReplacement;
 
-    // Diff blocks on the completed update win; accumulated in-progress blocks fill the gaps
-    // (Claude Code's terminal update carries no content at all).
+    // Only omission reuses the earlier list; an explicit list replaces it wholly.
     const diffBlocks = new Map<string, { oldText?: string; newText: string; isCreate: boolean }>(
-      acc?.editDiffsByPath ?? []
+      update.content == null ? (acc?.editDiffsByPath ?? []) : []
     );
     for (const content of contents) {
       if (content.type !== 'diff') continue;

@@ -8,7 +8,11 @@ import { getSessionFileIcon } from '@/components/ai-gui/session-file-card';
 import { ConversationColumn } from '@/components/shared/conversation-column';
 import type { SessionAttachmentDraft } from '@/lib/session-attachment-draft';
 import type { SessionSendRecord, SessionSendViewRecord } from '@/lib/session-send-journal';
-import { isQueueBoundSendRecord, selectInstantHistoryRecords } from '@/lib/session-send-status';
+import {
+  isQueueBoundSendRecord,
+  isUnsent,
+  selectInstantHistoryRecords,
+} from '@/lib/session-send-status';
 import { cn } from '@/lib/utils';
 import { Button } from '@lody/ui/button';
 import { Progress } from '@lody/ui/progress';
@@ -319,7 +323,9 @@ export function PendingMessageRow({
         ? t('sessions.pendingMessageWaiting')
         : t('sessions.pendingMessageUploading');
   const showRetry = failed || interrupted;
-  const showDiscard = record.stage === 'prepared' && Boolean(onDiscard);
+  const showDiscard =
+    (record.stage === 'prepared' || (record.stage === 'committed' && record.version === 4)) &&
+    Boolean(onDiscard);
   const showCancel = record.stage === 'saved';
 
   return (
@@ -423,7 +429,7 @@ export function SessionPendingMessages({ sessionId }: { sessionId: SessionId }) 
       record.sessionId === sessionId &&
       !isQueueBoundSendRecord(record) &&
       !instant.has(record.id) &&
-      (record.stage === 'saved' || record.stage === 'prepared')
+      isUnsent(record)
   );
   if (!pending.length) return null;
   const action = async (record: SessionSendRecord, kind: 'retry' | 'cancel' | 'discard') => {

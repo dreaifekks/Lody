@@ -99,8 +99,14 @@ export function selectPendingQueueRecords(
   );
 }
 
-function isUnsent(record: SessionSendViewRecord): boolean {
-  return (record.stage === 'saved' || record.stage === 'prepared') && !record.cancelRequested;
+export function isUnsent(record: SessionSendViewRecord): boolean {
+  return (
+    (record.stage === 'saved' ||
+      record.stage === 'prepared' ||
+      (record.stage === 'committed' && record.version === 4)) &&
+    !record.cancelRequested &&
+    !record.paused
+  );
 }
 
 /**

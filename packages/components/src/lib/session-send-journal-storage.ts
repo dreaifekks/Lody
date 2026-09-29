@@ -32,7 +32,7 @@ function decodeRecords(
   return values.map((value) => {
     if (!value || typeof value !== 'object') throw new Error('Invalid session recovery record');
     const record = value as SessionSendRecord;
-    if (record.version !== 1 && record.version !== 2 && record.version !== 3)
+    if (![1, 2, 3, 4].includes(record.version))
       throw new Error('Unsupported session recovery version; execute a compatible application');
     if (
       record.accountId !== accountId ||

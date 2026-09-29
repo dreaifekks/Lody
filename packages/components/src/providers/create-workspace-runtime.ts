@@ -4651,6 +4651,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
     windowBootstrap?.close();
     sharedWindowDocuments.clear();
     disposePromise = (async () => {
+      unsubscribeSendRecovery();
       // Cancel and join send I/O while its cache, transport and repo still exist.
       await sendResources.dispose();
       await sendJournal?.close();
@@ -4901,6 +4902,13 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
         },
       })
     : null;
+  const unsubscribeSendRecovery = presenceTransport.subscribeSyncState((state) => {
+    if (state === 'synced' && !disposePromise) {
+      void sendJournal?.resume().catch((error: unknown) => {
+        console.warn('Background session synchronization remains pending', error);
+      });
+    }
+  });
   return {
     workspaceSlug: deps.workspaceSlug,
     workspaceId,

@@ -5,6 +5,53 @@ Translation: current
 
 [中文](session-files.zh.md)
 
+The local-first revision below supersedes the staged handoff, explicit-retry,
+new-session publication and exit-warning requirements in sections 7–9 and the
+historical implementation plan in section 11. Attachment readiness and ordering
+requirements remain in force.
+
+## Local-first sending
+
+Send accepts complete input into local durable storage. Ready history/queue
+entries and activation metadata are written locally before remote confirmation.
+A disconnected target does not hold the composer or turn local acceptance into
+a send failure. Existing transports handle synchronization and RPC acceleration
+in the background.
+
+The outbox retains input and its authoring replica until synchronization is
+confirmed. New sends have no `prepared` record: a version-4 `committed` intent
+protects an interrupted local write; after local persistence it becomes the
+version-2 background delivery record. Older clients reject version 4; versions
+1–3 remain readable for migration. Recovery merges the original persisted local
+replica, checks the fixed turn ID and writes through SessionData. Ordinary sends
+and repairs of locally present turns do not wait for the target. If an interrupted
+write is missing locally, background recovery must reconcile the target before
+appending: the earlier write may have reached a peer before local persistence.
+Persist a migrated baseline before transferring outbox
+ownership. An older receipt must not move activation behind a newer local turn.
+
+Attachments remain durable local drafts until every file is ready; they cannot
+execute with missing files. New conversation metadata is published locally at
+admission, so the conversation can be archived while attachments prepare.
+Archive writes local lifecycle state and pauses drafts without discarding their
+sources. Restoration resumes them. Already-written history may synchronize with
+archive state but must not launch work in the archived conversation. Deletion
+removes that conversation's outbox entries, interrupts preparation/delivery and
+joins local writes before publishing the tombstone.
+
+Startup, foreground/online events and transport reconnection resume accepted
+inputs with the same identities. Ordinary close/reload/workspace switching needs
+no remote receipt; only local admission still being saved needs an unload guard.
+Destructive account/cache clearing and unsaved editor protection retain their
+disclosures. Uncertain guide outcomes must be reconciled without a repeated RPC
+offer or promotion to an ordinary message. Application exit still suspends work;
+this does not promise operating-system background transfers.
+
+Validation: the journal, session actions, attachment preparation and recovery UI
+suites cover local submission, offline retry, archive/restore, removal and legacy
+records. Packaged-device acceptance remains outstanding. See the
+[decision](../.agents/notes/implemented/simplification/2026-09-29-local-first-session-send.md).
+
 ## Abstract
 
 - **Use attachment drafts in both new conversations and continuations.** Picking, dropping, or pasting images/files performs preliminary validation and local preview only; attachments remain removable/replaceable. Existing transfer starts on Send.

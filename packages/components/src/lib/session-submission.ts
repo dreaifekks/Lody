@@ -334,7 +334,10 @@ export function createSessionSubmission(ports: SessionSubmissionPorts) {
     if (saved) {
       const active = await runtime.sendJournal!.activate(userTurnId, { kind: 'dispatch' });
       await runtime.sendJournal!.submit(sessionId);
-      if (active) await runtime.sendJournal!.deliver(active);
+      if (active)
+        void runtime.sendJournal!.deliver(active).catch((error: unknown) => {
+          log('background dispatch remains pending for %s/%s: %o', sessionId, userTurnId, error);
+        });
       return;
     }
     const entry = await runtime.sendResources.withSessionStore(sessionId, async (sessionStore) => {
@@ -470,8 +473,7 @@ export function createSessionSubmission(ports: SessionSubmissionPorts) {
     }
     if (
       !response?.recoveryOwned &&
-      (response?.disposition === 'no-active-turn' ||
-        response?.disposition === 'promotion-failed')
+      (response?.disposition === 'no-active-turn' || response?.disposition === 'promotion-failed')
     ) {
       // The CLI proved the steer was not applied, either before submission
       // or from the adapter's final verdict. Reuse the same user turn as an
@@ -484,12 +486,12 @@ export function createSessionSubmission(ports: SessionSubmissionPorts) {
         async (sessionStore) => {
           const changed =
             (
-            await sessionStore.sessionData.commands.applyHistoryAction({
-              kind: 'user-status',
-              turnId: userTurnId,
-              status: 'pending',
-              onlyPendingApply: true,
-            })
+              await sessionStore.sessionData.commands.applyHistoryAction({
+                kind: 'user-status',
+                turnId: userTurnId,
+                status: 'pending',
+                onlyPendingApply: true,
+              })
             ).matched ?? false;
           if (changed) return true;
           // CLI promotion can write history before its activation pointer

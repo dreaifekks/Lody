@@ -11,6 +11,10 @@ that carry an invariant — the directory itself is the list of hooks.
 for creation, initial history, continuation, dispatch, and guide. It has no React
 lifetime or second writer. The workspace journal durably accepts the full input before releasing the
 composer, prepares attachments on Send, and serializes same-session submission.
+History and activation are committed locally; synchronization retries in the
+background on startup/reconnect without blocking archive or ordinary exit.
+Archive retains and pauses unfinished attachment drafts; restore resumes them.
+Deletion removes the matching outbox and joins its writes before the tombstone.
 `use-session-preparation` holds an owned warmup lease; attachment takeover cancels
 and joins it. See the [attachment draft Spec](../../../../specs/session-files.md).
 

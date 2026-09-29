@@ -34,7 +34,7 @@ function unloadBlocked() {
 }
 
 it.each(['quit', 'reload', 'close'])(
-  'releases the beforeunload veto only after %s cleanup completes',
+  'retains accepted input without a beforeunload veto during %s cleanup',
   async (reason) => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     await initI18n();
@@ -123,14 +123,14 @@ it.each(['quit', 'reload', 'close'])(
       );
     });
     await act(async () => router.load());
-    expect(unloadBlocked()).toBe(true);
+    expect(unloadBlocked()).toBe(false);
     handlers.get('app.sendLifecycle')!({ requestId: 'commit', phase: 'commit', reason });
-    expect(unloadBlocked()).toBe(true);
+    expect(unloadBlocked()).toBe(false);
     await act(async () => {
       drain.resolve();
       await reply.promise;
     });
-    expect(await reply.promise).toMatchObject({ ready: true, pending: true });
+    expect(await reply.promise).toMatchObject({ ready: true, pending: false });
     expect(unloadBlocked()).toBe(false);
     expect(records.get('turn')?.stage).toBe('saved');
   }
@@ -401,7 +401,8 @@ it.each(['saved', 'prepared'] as const)(
 );
 
 it('shows a text-only send as an ordinary turn at once, and as pending only when it fails', async () => {
-  const { SessionPendingMessages } = await import('../src/components/chat/session-pending-messages');
+  const { SessionPendingMessages } =
+    await import('../src/components/chat/session-pending-messages');
   const { SidebarRowEndSlot } = await import('../src/components/sidebar-row-shared');
   const { acceptedSessionHistoryProjectionsAtom } =
     await import('../src/atoms/session-history-projection');
@@ -582,7 +583,8 @@ it('shows a text-only send as an ordinary turn at once, and as pending only when
 });
 
 it('shows a queue-bound upload in the queue sheet until its queue item replaces it', async () => {
-  const { SessionPendingMessages } = await import('../src/components/chat/session-pending-messages');
+  const { SessionPendingMessages } =
+    await import('../src/components/chat/session-pending-messages');
   const { MessageQueueDisplay } = await import('../src/components/sessions/message-queue');
   const { runtimeAtom } = await import('../src/atoms/runtime');
   const { currentWorkspaceIdAtom, currentWorkspaceSlugAtom } =
@@ -745,7 +747,7 @@ it('shows a queue-bound upload in the queue sheet until its queue item replaces 
   });
   // The queue item synced in while the record is still mid-commit: exactly one
   // row, and it is the real one.
-  expect(records.get('turn')?.stage).toBe('prepared');
+  expect(records.get('turn')).toMatchObject({ stage: 'committed', version: 4 });
   expect(localRow()).toBeNull();
   expect(sheet().textContent?.match(/ship the video/g)).toHaveLength(1);
   expect(sheet().textContent).toContain('1 queued');

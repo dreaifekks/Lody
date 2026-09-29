@@ -49,7 +49,7 @@ export function createWorkspaceSessionSendJournal(args: {
 }) {
   const { runtime, accountId } = args;
   const storage = createSessionSendJournalStorage({ accountId, workspaceId: runtime.workspaceId });
-  const requireAvailable = async (record: SessionSendRecord) => {
+  const readTarget = async (record: SessionSendRecord) => {
     if (record.accountId !== accountId || record.workspaceId !== runtime.workspaceId)
       throw new Error('Submission belongs to another account or workspace');
     // A new window can have a fresh replica. Merge persisted metadata before
@@ -63,7 +63,10 @@ export function createWorkspaceSessionSendJournal(args: {
         await original.close();
       }
     }
-    const found = await runtime.repo.getDocMeta(getSessionRoomId(record.sessionId));
+    return runtime.repo.getDocMeta(getSessionRoomId(record.sessionId));
+  };
+  const requireAvailable = async (record: SessionSendRecord) => {
+    const found = await readTarget(record);
     const meta = found?.meta as SessionMeta | undefined;
     if (isLoroRepoDocDeleted(found) || meta?.isArchived)
       throw new Error('Target conversation was deleted or archived');
@@ -114,24 +117,85 @@ export function createWorkspaceSessionSendJournal(args: {
   const isWritten = async (record: SessionSendRecord, store: SessionDocStore) =>
     (await store.sessionData.history.readTurn(record.id)).state !== 'missing' ||
     (!!record.queue && (store.getState().mq ?? []).some((item) => item.userTurnId === record.id));
+  const restoreReplica = async (record: SessionSendRecord, store: SessionDocStore) => {
+    if (record.sourceReplica === args.sourceReplica) return;
+    const original = new IndexedDBStorageAdaptor({ dbName: record.sourceReplica });
+    try {
+      const source = await original.loadDoc(getSessionRoomId(record.sessionId));
+      if (source) {
+        try {
+          store.doc.import(source.export({ mode: 'snapshot' }));
+        } finally {
+          source.free();
+        }
+      }
+    } finally {
+      await original.close();
+    }
+  };
+  const activateLocalTurn = async (record: SessionSendRecord, store: SessionDocStore) => {
+    const found = await runtime.repo.getDocMeta(getSessionRoomId(record.sessionId));
+    if (isLoroRepoDocDeleted(found)) return;
+    const latest = found?.meta?.latestUserMsgId;
+    if (latest === record.id) return;
+    if (latest) {
+      const rows = await store.sessionData.history.readDirectory(
+        0,
+        await store.sessionData.history.count()
+      );
+      if (
+        rows.findIndex((row) => row.turnId === latest) >
+        rows.findIndex((row) => row.turnId === record.id)
+      )
+        return;
+    }
+    await runtime.writer.upsertDocMeta(getSessionRoomId(record.sessionId), {
+      latestUserMsgId: record.id,
+    });
+  };
   let notify = () => {};
+  let interrupt = (_sessionId: SessionId) => {};
   return createSessionSendJournal({
     resources: runtime.sendResources,
     preparationReplica: args.sourceReplica,
     storage,
-    observeExternal: (refresh) => {
+    targetState: async (record) => {
+      const found = await readTarget(record);
+      if (isLoroRepoDocDeleted(found)) return 'deleted';
+      return found?.meta?.isArchived ? 'archived' : 'active';
+    },
+    admitted: async (record, signal) => {
+      if (!record.creation) return;
+      const meta = await requireAvailable(record);
+      await checkEligibility(record, signal);
+      throwIfSendAborted(signal);
+      const patch = Object.fromEntries(
+        Object.entries(record.creation).filter(([key]) => !meta || !(key in meta))
+      );
+      if (Object.keys(patch).length)
+        await runtime.writer.upsertDocMeta(getSessionRoomId(record.sessionId), patch);
+      await runtime.repo.flush();
+    },
+    observeExternal: (refresh, interruptSession) => {
       if (typeof BroadcastChannel === 'undefined') return () => {};
       const channel = new BroadcastChannel(
         `lody-session-send:${JSON.stringify([accountId, runtime.workspaceId])}`
       );
-      channel.onmessage = refresh;
+      channel.onmessage = (event) => {
+        if (event.data?.type === 'interrupt' && typeof event.data.sessionId === 'string')
+          interruptSession(event.data.sessionId as SessionId);
+        refresh();
+      };
       notify = () => channel.postMessage(null);
+      interrupt = (sessionId) => channel.postMessage({ type: 'interrupt', sessionId });
       return () => {
         notify = () => {};
+        interrupt = () => {};
         channel.close();
       };
     },
     notifyExternal: () => notify(),
+    interruptExternal: (sessionId) => interrupt(sessionId),
     activeSessions: async () => {
       const inventory = await navigator.locks?.query?.();
       const sessions = new Set<string>();
@@ -182,9 +246,12 @@ export function createWorkspaceSessionSendJournal(args: {
       await runtime.sendResources.withSessionStore(
         record.sessionId,
         async (store) => {
+          await restoreReplica(record, store);
           const current = await store.sessionData.history.readTurn(record.id);
           if (current.state !== 'missing')
             throw new Error('Submission identity already exists in this conversation');
+          // The outbox can now name this replica before its first publication.
+          await runtime.repo.flush();
         },
         signal
       );
@@ -201,30 +268,28 @@ export function createWorkspaceSessionSendJournal(args: {
         if (Object.keys(patch).length)
           await runtime.writer.upsertDocMeta(getSessionRoomId(record.sessionId), patch);
       }
-      // An interrupted attempt can publish the turn before its local receipt
-      // persists. Catch up first so the absence check below sees that write.
-      if (resumed) await args.waitForTargetSync(record.sessionId, signal);
+      // Ordinary sends never wait for the network. For an interrupted write,
+      // the original persisted turn suffices too. Only a missing uncertain
+      // turn needs reconciliation: it may have reached a peer before local
+      // persistence failed, and appending again would manufacture a duplicate.
+      if (resumed) {
+        const written = await runtime.sendResources.withSessionStore(
+          record.sessionId,
+          async (store) => {
+            await restoreReplica(record, store);
+            return isWritten(record, store);
+          },
+          signal
+        );
+        if (!written) await args.waitForTargetSync(record.sessionId, signal);
+      }
       await runtime.sendResources.withSessionStore(
         record.sessionId,
         async (store) => {
-          if (record.sourceReplica !== args.sourceReplica) {
-            // Recover the original persisted baseline, never infer absence from a new window.
-            const original = new IndexedDBStorageAdaptor({ dbName: record.sourceReplica });
-            try {
-              const source = await original.loadDoc(getSessionRoomId(record.sessionId));
-              if (source) {
-                try {
-                  store.doc.import(source.export({ mode: 'snapshot' }));
-                } finally {
-                  source.free();
-                }
-              }
-            } finally {
-              await original.close();
-            }
-          }
+          await restoreReplica(record, store);
           throwIfSendAborted(signal);
-          if (!resumed || !(await isWritten(record, store))) {
+          await requireAvailable(record);
+          if (!(await isWritten(record, store))) {
             // Local commits are what the transports upload; never write via import.
             if (record.queue) {
               const item = record.queue as MessageQueueItem;
@@ -239,13 +304,34 @@ export function createWorkspaceSessionSendJournal(args: {
             await runtime.writer.upsertDocMeta(getSessionRoomId(record.sessionId), {
               messageQueueUpdatedAt: Date.now(),
             });
+          else if (record.delivery.kind === 'dispatch') await activateLocalTurn(record, store);
           await runtime.repo.flush();
         },
         signal
       );
     },
     deliver: async (record, signal, checkpoint) => {
-      const meta = await requireAvailable(record);
+      const found = await readTarget(record);
+      if (isLoroRepoDocDeleted(found)) return;
+      const meta = found?.meta as SessionMeta | undefined;
+      await runtime.sendResources.withSessionStore(
+        record.sessionId,
+        (store) => restoreReplica(record, store),
+        signal
+      );
+      if (meta?.isArchived) {
+        // Synchronize the local archive and history, but never launch work in it.
+        if (record.delivery.kind === 'dispatch') {
+          await runtime.sendResources.withSessionStore(
+            record.sessionId,
+            (store) => activateLocalTurn(record, store),
+            signal
+          );
+          await runtime.repo.flush();
+        }
+        await args.waitForTargetSync(record.sessionId, signal);
+        return;
+      }
       const machineId = record.targetMachineId ?? meta?.machineId ?? record.creation?.machineId;
       if (!machineId) throw new Error('Target machine is unavailable');
       const inputConfig = normalizeSessionTurnInputConfig(record.entry.inputConfig);
@@ -379,9 +465,11 @@ export function createWorkspaceSessionSendJournal(args: {
         );
       }
       if (activate) {
-        await runtime.writer.upsertDocMeta(getSessionRoomId(record.sessionId), {
-          latestUserMsgId: record.id,
-        });
+        await runtime.sendResources.withSessionStore(
+          record.sessionId,
+          (store) => activateLocalTurn(record, store),
+          signal
+        );
         await runtime.repo.flush();
         throwIfSendAborted(signal);
       }

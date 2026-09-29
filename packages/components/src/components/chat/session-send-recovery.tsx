@@ -76,7 +76,11 @@ export function SessionSendRecovery({ runtime }: { runtime: WorkspaceRuntime | n
     const next = Object.fromEntries(
       records
         .filter(
-          (record) => record.creation && record.stage !== 'delivered' && !record.cancelRequested
+          (record) =>
+            record.creation &&
+            record.stage !== 'delivered' &&
+            !record.cancelRequested &&
+            !record.paused
         )
         .map((record) => [getSessionRoomId(record.sessionId), record.creation!])
     );
@@ -122,11 +126,24 @@ export function SessionSendRecovery({ runtime }: { runtime: WorkspaceRuntime | n
       });
     };
     refresh();
+    const resume = () => {
+      void journal.resume().catch((failure: unknown) => {
+        if (active)
+          setError(
+            failure instanceof Error ? failure.message : t('sessions.sendRecoveryUnavailable')
+          );
+      });
+    };
+    resume();
     window.addEventListener('focus', refresh);
+    window.addEventListener('online', resume);
+    window.addEventListener('focus', resume);
     document.addEventListener('visibilitychange', refresh);
     return () => {
       active = false;
       window.removeEventListener('focus', refresh);
+      window.removeEventListener('online', resume);
+      window.removeEventListener('focus', resume);
       document.removeEventListener('visibilitychange', refresh);
     };
   }, [journal, t]);
@@ -134,6 +151,9 @@ export function SessionSendRecovery({ runtime }: { runtime: WorkspaceRuntime | n
   useEffect(
     () =>
       registerSessionSendExitGuard(async (reason) => {
+        // Accepted input is durable locally. Ordinary navigation and shutdown
+        // do not require a remote receipt; destructive cache/account actions do.
+        if (reason !== 'logout' && reason !== 'cache-clear') return true;
         const active =
           journal?.getSnapshot().filter((record) => record.stage !== 'delivered') ?? [];
         let protectedRecords =
@@ -168,11 +188,8 @@ export function SessionSendRecovery({ runtime }: { runtime: WorkspaceRuntime | n
   );
 
   const hasPendingWork = useCallback(
-    () =>
-      !!error ||
-      (runtime?.sendResources.getActiveCount() ?? 0) > 0 ||
-      !!journal?.getSnapshot().some((record) => record.stage !== 'delivered'),
-    [error, journal, runtime]
+    () => (journal?.getPendingAdmissionCount() ?? 0) > 0,
+    [journal]
   );
 
   useBlocker({

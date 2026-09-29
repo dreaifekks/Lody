@@ -23,6 +23,7 @@ import {
   machineFlockKeys,
   readSessionOperationTargets,
   type MachineId,
+  type SessionHistory,
   type SessionId,
   type SessionMeta,
   type SessionToCreate,
@@ -175,6 +176,7 @@ const createRuntime = (
     } as unknown as WorkspaceRuntime['repo']);
 
   const sessionHistory: unknown[] = [];
+  if (!repo.flush) Object.defineProperty(repo, 'flush', { value: async () => {} });
 
   // Default direct-mode writer: durable primitives delegate to the repo mock so
   // existing `repo.upsertDocMeta` / `repo.deleteDoc` assertions keep asserting
@@ -1182,65 +1184,66 @@ describe('useSessionActions', () => {
   ] as const)(
     'never redispatches a stale-turn steer (daemon-owned: %s, history %s): %s',
     async (recoveryOwned, statusAfterRpc, expected) => {
-    const sessionId = 'session-steer-stale' as SessionId;
-    const userTurnId = 'user-turn-steer-stale';
-    const machineId = 'machine-1' as MachineId;
-    const history = [
-      {
-        id: userTurnId,
-        role: 'user',
-        userId: 'user-1',
-        timestamp: '2026-07-17T00:00:00.000Z',
-        status: 'pending_apply',
-        read: false,
-        inputConfig: {
-          prompt: 'stale guide',
-          inputBlocks: [{ type: 'text', text: 'stale guide' }],
-          cliType: 'builtin',
-          agentType: 'codex',
+      const sessionId = 'session-steer-stale' as SessionId;
+      const userTurnId = 'user-turn-steer-stale';
+      const machineId = 'machine-1' as MachineId;
+      const history = [
+        {
+          id: userTurnId,
+          role: 'user',
+          userId: 'user-1',
+          timestamp: '2026-07-17T00:00:00.000Z',
+          status: 'pending_apply',
+          read: false,
+          inputConfig: {
+            prompt: 'stale guide',
+            inputBlocks: [{ type: 'text', text: 'stale guide' }],
+            cliType: 'builtin',
+            agentType: 'codex',
+          },
         },
-      },
-    ];
-    const setState = vi.fn();
-    const requestSessionDispatchTurn = vi.fn();
-    const runtime = createRuntime({}) as WorkspaceRuntime & {
-      withSessionStore: WorkspaceRuntime['withSessionStore'];
-      requestSessionSteer: WorkspaceRuntime['requestSessionSteer'];
-      requestSessionDispatchTurn: WorkspaceRuntime['requestSessionDispatchTurn'];
-    };
-    runtime.withSessionStore = vi.fn(async (_sessionId: unknown, fn: (store: unknown) => unknown) =>
-      fn({
-        getState: vi.fn(() => ({ history })),
-        sessionData: sessionDataOver(history),
-        setState,
-        waitUntilSynced: vi.fn(async () => undefined),
-      })
-    ) as unknown as WorkspaceRuntime['withSessionStore'];
-    runtime.requestSessionSteer = vi.fn(async () => {
-      // A daemon-owned rejection has already requeued the turn in history.
-      history[0].status = statusAfterRpc;
-      return {
-        type: 'session/steer_response' as const,
-        sessionId,
-        userTurnId,
-        applied: false,
-        ...(recoveryOwned ? { recoveryOwned } : {}),
-        disposition: 'stale-turn' as const,
+      ];
+      const setState = vi.fn();
+      const requestSessionDispatchTurn = vi.fn();
+      const runtime = createRuntime({}) as WorkspaceRuntime & {
+        withSessionStore: WorkspaceRuntime['withSessionStore'];
+        requestSessionSteer: WorkspaceRuntime['requestSessionSteer'];
+        requestSessionDispatchTurn: WorkspaceRuntime['requestSessionDispatchTurn'];
       };
-    }) as WorkspaceRuntime['requestSessionSteer'];
-    runtime.requestSessionDispatchTurn =
-      requestSessionDispatchTurn as WorkspaceRuntime['requestSessionDispatchTurn'];
-    const actions = await renderActions(runtime);
+      runtime.withSessionStore = vi.fn(
+        async (_sessionId: unknown, fn: (store: unknown) => unknown) =>
+          fn({
+            getState: vi.fn(() => ({ history })),
+            sessionData: sessionDataOver(history),
+            setState,
+            waitUntilSynced: vi.fn(async () => undefined),
+          })
+      ) as unknown as WorkspaceRuntime['withSessionStore'];
+      runtime.requestSessionSteer = vi.fn(async () => {
+        // A daemon-owned rejection has already requeued the turn in history.
+        history[0].status = statusAfterRpc;
+        return {
+          type: 'session/steer_response' as const,
+          sessionId,
+          userTurnId,
+          applied: false,
+          ...(recoveryOwned ? { recoveryOwned } : {}),
+          disposition: 'stale-turn' as const,
+        };
+      }) as WorkspaceRuntime['requestSessionSteer'];
+      runtime.requestSessionDispatchTurn =
+        requestSessionDispatchTurn as WorkspaceRuntime['requestSessionDispatchTurn'];
+      const actions = await renderActions(runtime);
 
-    const result = actions.requestSessionSteer(sessionId, 'assistant:user-1', userTurnId, {
-      machineId,
-    });
-    if (expected === 'requeued') await expect(result).resolves.toBe(false);
-    else await expect(result).rejects.toThrow('Guide outcome is uncertain');
+      const result = actions.requestSessionSteer(sessionId, 'assistant:user-1', userTurnId, {
+        machineId,
+      });
+      if (expected === 'requeued') await expect(result).resolves.toBe(false);
+      else await expect(result).rejects.toThrow('Guide outcome is uncertain');
 
-    expect(history[0]).toMatchObject({ status: statusAfterRpc });
-    expect(setState).not.toHaveBeenCalled();
-    expect(requestSessionDispatchTurn).not.toHaveBeenCalled();
+      expect(history[0]).toMatchObject({ status: statusAfterRpc });
+      expect(setState).not.toHaveBeenCalled();
+      expect(requestSessionDispatchTurn).not.toHaveBeenCalled();
     }
   );
 
@@ -1539,6 +1542,74 @@ describe('useSessionActions', () => {
     expect(runtime.writer.flockRowPut).not.toHaveBeenCalled();
     for (const session of [rootSession, openedSession, openedFromTabSession]) {
       expect(metaRepo.getMeta(getMachineRoomId(session.machineId))).toBeUndefined();
+    }
+  });
+
+  it.each(['saved', 'committed'] as const)(
+    'archives locally with a %s outbox entry',
+    async (stage) => {
+      const tree = createContainmentSessions(`outbox-${stage}`, false);
+      const metaRepo = createSessionMetaRepo(tree.sessions);
+      const runtime = createRuntime({ repo: metaRepo.repo });
+      const actions = await renderActions(runtime);
+      await runtime.sendJournal!.accept({
+        id: 'offline-input',
+        sessionId: tree.rootSession.id,
+        accountId: 'user-1',
+        workspaceId: runtime.workspaceId!,
+        sourceReplica: 'synthetic-replica',
+        entry: {
+          id: 'offline-input',
+          role: 'user',
+          timestamp: '2026-09-29T00:00:00Z',
+          items: [{ type: 'text', text: 'Keep this local input' }],
+          fileDiff: [],
+        } as SessionHistory,
+        delivery: { kind: 'dispatch' },
+      });
+      if (stage === 'committed') await runtime.sendJournal!.submit(tree.rootSession.id);
+      await actions.archiveSession(tree.rootSession.id);
+      for (const session of tree.sessions)
+        expect(metaRepo.getSession(session.id)?.isArchived).toBe(true);
+      expect((await runtime.sendJournal!.read('offline-input'))?.entry.items).toEqual([
+        { type: 'text', text: 'Keep this local input' },
+      ]);
+    }
+  );
+
+  it('deletes a conversation and its saved outbox input together', async () => {
+    const tree = createContainmentSessions('delete-outbox', false);
+    const repo = await LoroRepo.create({});
+    try {
+      await repo.upsertDocMeta(getSessionRoomId(tree.rootSession.id), tree.rootSession);
+      const runtime = createRuntime({ repo });
+      const actions = await renderActions(runtime);
+      await runtime.sendJournal!.accept({
+        id: 'deleted-input',
+        sessionId: tree.rootSession.id,
+        accountId: 'user-1',
+        workspaceId: runtime.workspaceId!,
+        sourceReplica: 'synthetic-replica',
+        entry: {
+          id: 'deleted-input',
+          role: 'user',
+          timestamp: '2026-09-29T00:00:00Z',
+          items: [{ type: 'text', text: 'Delete with this session' }],
+          fileDiff: [],
+        } as SessionHistory,
+        delivery: { kind: 'dispatch' },
+      });
+      await actions.deleteSessions([tree.rootSession.id]);
+      expect(
+        isLoroRepoDocDeleted(await repo.getDocMeta(getSessionRoomId(tree.rootSession.id)))
+      ).toBe(true);
+      expect(await runtime.sendJournal!.read('deleted-input')).toBeUndefined();
+      await runtime.sendJournal!.resume();
+      expect(
+        isLoroRepoDocDeleted(await repo.getDocMeta(getSessionRoomId(tree.rootSession.id)))
+      ).toBe(true);
+    } finally {
+      await repo.destroy();
     }
   });
 
