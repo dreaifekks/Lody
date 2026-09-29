@@ -180,4 +180,25 @@ describe('SessionFileCard download action', () => {
 
     expect(downloadButton(view)).toBeNull();
   });
+
+  it('says where a file is kept when nothing uploads it, and promises an upload otherwise', async () => {
+    const held = file({
+      fileName: 'screenshot.png',
+      mimeType: 'image/png',
+      textPreview: false,
+      transport: 'local',
+      machineId: 'machine-1',
+    });
+
+    const kept = await render({ file: held, pendingMachineName: 'devbox', uploads: false });
+    expect(kept.textContent).toContain('On devbox · 15.9 KB');
+    expect(kept.textContent).not.toContain('Uploading');
+    // The machine holds the bytes; this window has none to preview or download.
+    expect(
+      kept.querySelector<HTMLButtonElement>('button[aria-label="screenshot.png"]')?.disabled
+    ).toBe(true);
+
+    const pending = await render({ file: held, pendingMachineName: 'devbox' });
+    expect(pending.textContent).toContain('Uploading from devbox');
+  });
 });

@@ -2268,6 +2268,7 @@
   "sessions.removeAttachment": "移除附件",
   "sessions.fileUploading": "正在上传…",
   "sessions.fileUploadingFromMachine": "正在从 {{machine}} 上传…",
+  "sessions.fileKeptOnMachine": "保存在 {{machine}} · {{size}}",
   "sessions.fileExpired": "文件已过期 · {{size}}",
   "sessions.filePreviewHint": "{{size}} · 点击预览",
   "sessions.fileDownloadHint": "{{size}} · 点击下载",

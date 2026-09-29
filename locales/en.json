@@ -2268,6 +2268,7 @@
   "sessions.removeAttachment": "Remove attachment",
   "sessions.fileUploading": "Uploading…",
   "sessions.fileUploadingFromMachine": "Uploading from {{machine}}…",
+  "sessions.fileKeptOnMachine": "On {{machine}} · {{size}}",
   "sessions.fileExpired": "File expired · {{size}}",
   "sessions.filePreviewHint": "{{size}} · Click to preview",
   "sessions.fileDownloadHint": "{{size}} · Click to download",
