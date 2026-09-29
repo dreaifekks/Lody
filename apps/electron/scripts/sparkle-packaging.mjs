@@ -38,6 +38,28 @@ export function shouldAdHocSignSparkleApp(input) {
   return !input.hasCodeSigningCredentials
 }
 
+const DISABLE_LIBRARY_VALIDATION = 'com.apple.security.cs.disable-library-validation'
+
+/**
+ * The entitlements of an application signed with a certificate of one's own.
+ *
+ * Under the hardened runtime a process loads only what Apple signed or what
+ * carries its own Team ID. Such a certificate carries none, so nothing in the
+ * bundle passes, Electron Framework included, and the application ends in dyld
+ * before it runs a line. It needs the exception its nested binaries have.
+ */
+export function withoutLibraryValidation(entitlements) {
+  if (entitlements.includes(`<key>${DISABLE_LIBRARY_VALIDATION}</key>`)) return entitlements
+  const end = entitlements.lastIndexOf('</dict>')
+  if (end === -1) {
+    throw new Error('[signing] the entitlements hold no dictionary to add an exception to')
+  }
+  return (
+    `${entitlements.slice(0, end)}  <key>${DISABLE_LIBRARY_VALIDATION}</key>\n` +
+    `    <true/>\n  ${entitlements.slice(end)}`
+  )
+}
+
 export function resolvePackagedSparkleFeedUrl(input = {}) {
   const configured = input.configuredAppcastUrl?.trim()
   return configured ? configured : DEFAULT_SPARKLE_APPCAST_URL

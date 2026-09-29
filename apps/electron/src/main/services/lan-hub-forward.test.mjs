@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
+import net from 'node:net'
 import test from 'node:test'
 import { createLanHubRequestHandler } from './lan-hub-forward.ts'
 
@@ -171,6 +172,50 @@ void test('reports a LAN that cannot be reached', async (t) => {
 
   assert.equal(response.status, 502)
   assert.deepEqual(await response.json(), { error: 'LAN is unreachable' })
+})
+
+void test('repeats a request the hub never read because it closed the idle connection', async (t) => {
+  // The first connection answers once and is then closed by the hub as idle,
+  // just as the next request arrives on it; later connections answer.
+  let connections = 0
+  const sockets = new Set()
+  const server = net.createServer((socket) => {
+    connections += 1
+    sockets.add(socket)
+    const closeWhenIdle = connections === 1
+    let answered = 0
+    socket.on('data', () => {
+      if (closeWhenIdle && answered === 1) {
+        socket.destroy()
+        return
+      }
+      answered += 1
+      socket.write(
+        'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{"ok":true}'
+      )
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        // The bridge keeps its connection for the next request.
+        for (const socket of sockets) socket.destroy()
+        server.close(resolve)
+      })
+  )
+  const handle = createLanHubRequestHandler(() => ({
+    url: `http://127.0.0.1:${server.address().port}`,
+    token: 'home-token'
+  }))
+
+  const first = await handle(new Request(`lody-hub://${HOME}/ds/lody/room`))
+  assert.deepEqual(await first.json(), { ok: true })
+  const second = await handle(new Request(`lody-hub://${HOME}/ds/lody/room`))
+
+  assert.equal(second.status, 200)
+  assert.deepEqual(await second.json(), { ok: true })
+  assert.equal(connections, 2)
 })
 
 void test('releases the subscription of a live read the renderer left', async (t) => {

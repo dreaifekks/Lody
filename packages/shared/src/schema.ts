@@ -1,3 +1,6 @@
+import type { LanAgentRuntime } from './lan-control';
+import type { LanMachineBuild, LanMachineUpdate } from './lan-release';
+import type { LanSshDestination } from './lan-ssh';
 import type { LanTerminalEndpoint } from './lan-terminal';
 import type { SessionEntry, SessionFileDiff } from './session-data/domain';
 import { InferInputType, InferType, schema } from 'loro-mirror';
@@ -1271,6 +1274,14 @@ export type MachineMeta = {
   timeZone?: string;
   /** Where the other members of this workspace's LAN open terminals on this machine. */
   lanTerminal?: LanTerminalEndpoint;
+  /** Where the SSH server of this machine answers the other members of this workspace's LAN. */
+  lanSsh?: LanSshDestination;
+  /** The build the agent service of this machine runs, and who replaces it with a later one. */
+  lanBuild?: LanMachineBuild;
+  /** Where an update of this machine stands. Absent while none is under way. */
+  lanUpdate?: LanMachineUpdate;
+  /** The runtimes of the agents this machine has providers for in this workspace. */
+  lanAgents?: LanAgentRuntime[];
 };
 
 /**

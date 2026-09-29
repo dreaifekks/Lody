@@ -4,30 +4,34 @@ import {
   countHostedConfigItems,
   type HostedConfigCategory,
   type HostedConfigItem,
-  type LocalProjectControlResponse,
+  type LanMachine,
   type MachineId,
   type WorkspaceId,
 } from '@lody/shared';
 import { Effect } from 'effect';
-import { makeLocalProbeClientAuto } from '@lody/shared/node/local-ipc';
 import {
   DAEMON_NOT_RUNNING_MESSAGE,
   printJson,
   runOneShotCommand,
   type CommonCommandOptions,
 } from '@/lib/command-runtime';
+import {
+  askLanMachine,
+  findLanMachine,
+  listLanMachinesOfThisMachine,
+  resolveControlWorkspace,
+  resolveLocalMachineId,
+} from '@/lib/lan/lan-control-client';
 import { makeLocalWorkspaceCatalog } from '@/lib/local-workspace-catalog';
-import { sendLocalProjectControl } from '@/lib/local-project-control-client';
 import { renderTerminalTable } from '@/lib/terminal-table';
 
 type ImportOptions = Pick<CommonCommandOptions, 'json' | 'debug'> & {
+  machine?: string;
   workspace?: string;
   from?: string;
   only?: string;
   dryRun?: boolean;
 };
-
-const PROBE_TIMEOUT_MS = 3_000;
 
 type Target = { workspaceId: WorkspaceId; name: string };
 
@@ -47,10 +51,6 @@ const REASONS: Record<NonNullable<HostedConfigItem['reason']>, string> = {
   invalid: 'cannot be read',
 };
 
-function fail(response: Extract<LocalProjectControlResponse, { ok: false }>): never {
-  throw new Error(response.message);
-}
-
 function parseCategories(only: string | undefined): HostedConfigCategory[] {
   if (!only?.trim()) return [...HOSTED_CONFIG_CATEGORIES];
   const names = only.split(',').map((name) => name.trim());
@@ -65,20 +65,8 @@ function parseCategories(only: string | undefined): HostedConfigCategory[] {
   return names as HostedConfigCategory[];
 }
 
-/** The agent service names its machine itself, so no account is involved. */
-async function resolveMachineId(): Promise<MachineId> {
-  try {
-    const health = await Effect.runPromise(
-      makeLocalProbeClientAuto().health({ timeoutMs: PROBE_TIMEOUT_MS })
-    );
-    return health.machineId as MachineId;
-  } catch {
-    throw new Error(DAEMON_NOT_RUNNING_MESSAGE);
-  }
-}
-
-/** The workspaces the agent service of this installation serves. */
-async function resolveTargets(selector?: string): Promise<Target[]> {
+/** The workspaces an import on this machine writes into: one that was named, or every one. */
+async function resolveOwnTargets(selector?: string): Promise<Target[]> {
   const workspaces = await Effect.runPromise(makeLocalWorkspaceCatalog().listActiveWorkspaces());
   const targets = workspaces.map((workspace) => ({
     workspaceId: workspace.workspaceId as WorkspaceId,
@@ -96,6 +84,13 @@ async function resolveTargets(selector?: string): Promise<Target[]> {
     );
   }
   return matches;
+}
+
+/** Another member is asked in one LAN both are in: the one that was named, or the first. */
+async function resolveMemberTargets(machine: LanMachine, selector?: string): Promise<Target[]> {
+  const workspaceId = await resolveControlWorkspace(machine, selector);
+  const lan = machine.lans.find((entry) => entry.workspaceId === workspaceId);
+  return [{ workspaceId, name: lan?.name ?? workspaceId }];
 }
 
 function describe(item: HostedConfigItem): string {
@@ -120,8 +115,9 @@ function printItems(items: readonly HostedConfigItem[]): void {
 }
 
 const importCommand = new Command('import')
-  .description('Import the configuration of the hosted Lody installed on this machine')
-  .option('--workspace <id|name>', 'Import into this workspace instead of every one')
+  .description('Import the configuration of the hosted Lody installed on a machine')
+  .option('--machine <name>', 'A member of a LAN to import on; this machine when left out')
+  .option('--workspace <id|name>', 'Import into this workspace or LAN')
   .option('--from <id>', 'Import this hosted workspace instead of every one')
   .option('--only <categories>', `Comma-separated: ${HOSTED_CONFIG_CATEGORIES.join(', ')}`)
   .option('--dry-run', 'Show what an import would do')
@@ -130,20 +126,31 @@ const importCommand = new Command('import')
   .action(async (options: ImportOptions) => {
     await runOneShotCommand('hosted', options, async () => {
       const categories = parseCategories(options.only);
-      const machineId = await resolveMachineId();
-      const targets = await resolveTargets(options.workspace);
+      const localMachineId = await resolveLocalMachineId();
+      const member = options.machine?.trim()
+        ? findLanMachine(
+            (await listLanMachinesOfThisMachine(localMachineId)).machines,
+            options.machine
+          )
+        : null;
+      const machineId = (member?.machineId ?? localMachineId) as MachineId;
+      const where = member && !member.self ? ` on ${member.name}` : '';
+      const targets =
+        member && !member.self
+          ? await resolveMemberTargets(member, options.workspace)
+          : await resolveOwnTargets(options.workspace);
       const results = [];
 
       for (const target of targets) {
-        const preview = await sendLocalProjectControl({
+        const preview = await askLanMachine(localMachineId, {
           type: 'hosted-config/preview',
           machineId,
           workspaceId: target.workspaceId,
         });
-        if (!preview.ok) fail(preview);
+        if (!preview.ok) throw new Error(preview.message);
         if (preview.type !== 'hosted-config/preview') throw new Error('Unexpected response');
         if (!preview.result.found) {
-          throw new Error('No hosted Lody installation was found on this machine');
+          throw new Error(`No hosted Lody installation was found${where || ' on this machine'}`);
         }
 
         const sources = preview.result.sources.filter(
@@ -154,14 +161,14 @@ const importCommand = new Command('import')
         for (const source of sources) {
           let items = source.items.filter((item) => categories.includes(item.category));
           if (!options.dryRun) {
-            const imported = await sendLocalProjectControl({
+            const imported = await askLanMachine(localMachineId, {
               type: 'hosted-config/import',
               machineId,
               workspaceId: target.workspaceId,
               sourceWorkspaceId: source.workspaceId,
               categories,
             });
-            if (!imported.ok) fail(imported);
+            if (!imported.ok) throw new Error(imported.message);
             if (imported.type !== 'hosted-config/import') throw new Error('Unexpected response');
             items = imported.result.items;
           }
@@ -169,7 +176,7 @@ const importCommand = new Command('import')
           if (options.json) continue;
 
           console.log(
-            `${options.dryRun ? 'Would import' : 'Imported'} ${source.name} into ${target.name}: ` +
+            `${options.dryRun ? 'Would import' : 'Imported'} ${source.name} into ${target.name}${where}: ` +
               `${countHostedConfigItems(items, ['create', 'update'])} changed, ` +
               `${countHostedConfigItems(items, ['unchanged'])} already there, ` +
               `${countHostedConfigItems(items, ['skip'])} skipped.`

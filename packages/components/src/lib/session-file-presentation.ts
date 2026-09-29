@@ -175,14 +175,24 @@ export const isSessionFileExpired = (
   now: number = getServerNow()
 ): boolean => now >= getSessionFileExpiryAt(file.uploadedAt);
 
-/** Presentation state of a file block, driving the card's affordance + copy. */
-export type SessionFileDisplayState = 'pending' | 'expired' | 'previewable' | 'downloadable';
+/**
+ * Presentation state of a file block, driving the card's affordance + copy.
+ * `kept`: the machine of the session holds the file and nothing uploads it.
+ */
+export type SessionFileDisplayState =
+  | 'pending'
+  | 'kept'
+  | 'expired'
+  | 'previewable'
+  | 'downloadable';
 
 export const getSessionFileDisplayState = (
   file: SessionFilePayload,
-  now: number = getServerNow()
+  now: number = getServerNow(),
+  /** Whether a file a machine holds is on its way to a store every device reads. */
+  uploads = true
 ): SessionFileDisplayState => {
-  if (file.transport === 'local') return 'pending';
+  if (file.transport === 'local') return uploads ? 'pending' : 'kept';
   if (isSessionFileExpired(file, now)) return 'expired';
   return file.textPreview ? 'previewable' : 'downloadable';
 };

@@ -235,6 +235,7 @@ import { stripRecommended } from '@/components/shared/acp-selector-options';
 import { DiffViewer } from '@/ui/diff-viewer/diff-viewer';
 import { Skeleton } from '@lody/ui/skeleton';
 import { getSessionImageBlobUrl, getSessionImageDataUrl } from '@/lib/session-image-cache';
+import { useAppCapabilityCheck } from '@/lib/app-platform';
 import { SessionFileCard, SessionFileCardList } from './session-file-card';
 import {
   SessionFilePreviewDialog,
@@ -6283,10 +6284,13 @@ const SessionFileBlockCard = ({
       file.transport === 'local' ? (file.machineId as MachineId | undefined) : undefined
     )
   );
+  // Files are uploaded to the store that syncs a workspace across devices.
+  const uploads = useAppCapabilityCheck()('cloudSync');
   return (
     <SessionFileCard
       file={file}
       pendingMachineName={machineMeta?.name ?? file.machineId}
+      uploads={uploads}
       onPreview={onPreview}
       onDownload={onDownload}
       isDownloading={isDownloading}

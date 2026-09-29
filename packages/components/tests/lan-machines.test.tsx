@@ -1,0 +1,504 @@
+// @vitest-environment jsdom
+
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { HostedConfigPreview } from '@lody/shared/hosted-config';
+import type { LanMachine, LanMachines } from '@lody/shared/lan-control';
+
+import {
+  LanMachinesView,
+  describeLanMachineBuild,
+  type LanMachinesViewProps,
+} from '../src/components/settings/lan-machines';
+import { resolveLanMachineWorkspace, type LanMachineAnswer } from '../src/hooks/use-lan-machines';
+import { initI18n } from '../src/i18n';
+
+const toasts = vi.hoisted(() => ({
+  success: [] as string[],
+  error: [] as string[],
+  info: [] as string[],
+}));
+vi.mock('@/lib/toast', () => ({
+  toast: {
+    success: (message: string) => toasts.success.push(message),
+    error: (message: string) => toasts.error.push(message),
+    info: (message: string) => toasts.info.push(message),
+  },
+}));
+
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
+
+class TestPointerEvent extends MouseEvent {
+  readonly pointerType: string;
+
+  constructor(type: string, init: MouseEventInit & { pointerType?: string } = {}) {
+    super(type, init);
+    this.pointerType = init.pointerType ?? '';
+  }
+}
+
+const RUNNING = '0.100.0-lan.4';
+const NEWEST = '0.100.0-lan.5';
+const source = { repository: 'someone/Lody', tag: 'lan-latest' };
+const home = { workspaceId: 'lw_home', name: 'Home' };
+const office = { workspaceId: 'lw_office', name: 'Office' };
+
+const machine = (overrides: Partial<LanMachine> & { machineId: string }): LanMachine => ({
+  name: overrides.machineId,
+  os: 'linux',
+  self: false,
+  online: true,
+  lans: [home],
+  version: RUNNING,
+  build: { version: RUNNING, update: 'service', source },
+  update: null,
+  controllable: true,
+  agents: [],
+  ...overrides,
+});
+
+const desk = machine({
+  machineId: 'desk',
+  os: 'darwin',
+  self: true,
+  lans: [home, office],
+  build: { version: RUNNING, update: 'desktop', source },
+  agents: [{ agentType: 'claude', name: 'Claude Code', version: '2.1.280', state: 'current' }],
+});
+const server = machine({
+  machineId: 'server',
+  agents: [
+    { agentType: 'codex', name: 'Codex', version: '0.155.0', target: '0.156.0', state: 'outdated' },
+  ],
+});
+
+const inventoryOf = (machines: LanMachine[], newest: string | null = NEWEST): LanMachines => ({
+  machines,
+  newest: newest
+    ? { version: newest, commit: 'abcdef12', builtAt: '2026-09-29T00:00:00.000Z' }
+    : null,
+});
+
+const hostedPreview: HostedConfigPreview = {
+  found: true,
+  sources: [
+    {
+      workspaceId: 'hosted',
+      name: 'Team',
+      items: [
+        { category: 'agentConfigs', id: 'codex', name: 'Codex', action: 'create' },
+        { category: 'localProjects', id: 'p1', name: 'mizuki', action: 'create' },
+        { category: 'localProjects', id: 'p2', name: 'lody', action: 'unchanged' },
+      ],
+    },
+  ],
+};
+
+describe('the build of a machine', () => {
+  it('is updated on request only by a service that would come back', () => {
+    expect(describeLanMachineBuild(server, NEWEST)).toEqual({ state: 'available', by: 'request' });
+    expect(describeLanMachineBuild(desk, NEWEST)).toEqual({
+      state: 'available',
+      by: 'application',
+    });
+    expect(
+      describeLanMachineBuild(
+        machine({ machineId: 'checkout', build: { version: RUNNING, update: 'manual' } }),
+        NEWEST
+      )
+    ).toEqual({ state: 'available', by: 'hand' });
+    // A service that says it updates itself but takes no requests is asked nothing.
+    expect(
+      describeLanMachineBuild(
+        machine({ machineId: 'old', controllable: false, build: null }),
+        NEWEST
+      )
+    ).toEqual({ state: 'available', by: 'hand' });
+  });
+
+  it('is the newest, or not one of the fork', () => {
+    expect(describeLanMachineBuild(server, RUNNING)).toEqual({ state: 'newest', by: null });
+    expect(describeLanMachineBuild(server, null)).toEqual({ state: 'unknown', by: null });
+    expect(
+      describeLanMachineBuild(machine({ machineId: 'upstream', version: '0.100.0' }), NEWEST)
+    ).toEqual({ state: 'unknown', by: null });
+  });
+
+  it('says where an update stands before it says what is out', () => {
+    const installing = { phase: 'installing', version: NEWEST, at: 1 } as const;
+    expect(
+      describeLanMachineBuild(machine({ machineId: 'busy', update: installing }), NEWEST)
+    ).toEqual({ state: 'updating', by: null });
+    expect(
+      describeLanMachineBuild(
+        machine({ machineId: 'failed', update: { ...installing, phase: 'failed' } }),
+        NEWEST
+      )
+    ).toEqual({ state: 'failed', by: 'request' });
+  });
+});
+
+describe('the workspace a machine is asked in', () => {
+  it('is the LAN the window shows when the machine is in it', () => {
+    expect(resolveLanMachineWorkspace(desk, 'lw_office')).toBe('lw_office');
+    expect(resolveLanMachineWorkspace(server, 'lw_office')).toBe('lw_home');
+    expect(resolveLanMachineWorkspace(server, null)).toBe('lw_home');
+  });
+
+  it('is the workspace the window shows for this machine without a LAN', () => {
+    const alone = machine({ machineId: 'alone', self: true, lans: [] });
+    expect(resolveLanMachineWorkspace(alone, 'lw_implicit')).toBe('lw_implicit');
+    expect(resolveLanMachineWorkspace(alone, null)).toBeNull();
+    expect(
+      resolveLanMachineWorkspace(machine({ machineId: 'lost', lans: [] }), 'lw_home')
+    ).toBeNull();
+  });
+});
+
+describe('the machines of the LANs', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let calls: Array<[string, ...unknown[]]>;
+  let answers: {
+    update: LanMachineAnswer<{ outcome: 'started' | 'current'; version: string }>;
+    install: LanMachineAnswer<{ agentType: string; outcome: 'started' | 'current' }>;
+    preview: LanMachineAnswer<HostedConfigPreview>;
+  };
+
+  const render = async (inventory: LanMachines, overrides: Partial<LanMachinesViewProps> = {}) => {
+    await act(async () => {
+      root.render(
+        <LanMachinesView
+          inventory={inventory}
+          updateMachine={async (target) => {
+            calls.push(['update', target.machineId]);
+            return answers.update;
+          }}
+          installAgent={async (target, agentType) => {
+            calls.push(['install', target.machineId, agentType]);
+            return answers.install;
+          }}
+          previewHostedImport={async (target) => {
+            calls.push(['preview', target.machineId]);
+            return answers.preview;
+          }}
+          importHostedConfig={async (target, input) => {
+            calls.push(['import', target.machineId, input]);
+            return {
+              ok: true,
+              result: { workspaceId: 'lw_home', items: hostedPreview.sources[0]!.items },
+            };
+          }}
+          {...overrides}
+        />
+      );
+    });
+  };
+
+  const text = () => document.body.textContent ?? '';
+  const rowOf = (name: string): HTMLElement => {
+    const row = [...container.querySelectorAll<HTMLElement>('section > div > div')].find(
+      (candidate) => candidate.textContent?.includes(name)
+    );
+    if (!row) throw new Error(`No row of ${name} in: ${text()}`);
+    return row;
+  };
+  const buttonIn = (scope: ParentNode, label: string): HTMLButtonElement | undefined =>
+    [...scope.querySelectorAll('button')].find(
+      (candidate) =>
+        candidate.getAttribute('aria-label') === label || candidate.textContent?.trim() === label
+    );
+  const click = async (element: Element | undefined | null) => {
+    expect(element).toBeTruthy();
+    await act(async () => {
+      (element as HTMLElement).click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  };
+  const openMenuOf = async (name: string) => {
+    const trigger = buttonIn(rowOf(name), `More for ${name}`);
+    expect(trigger).toBeTruthy();
+    await act(async () => {
+      trigger?.dispatchEvent(
+        new TestPointerEvent('mousedown', { bubbles: true, button: 0, pointerType: 'mouse' })
+      );
+      await vi.advanceTimersByTimeAsync(500);
+    });
+  };
+  const menuItem = (label: string): HTMLElement | undefined =>
+    [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) =>
+      item.textContent?.includes(label)
+    );
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    await initI18n('en');
+    Object.defineProperty(globalThis, 'PointerEvent', {
+      configurable: true,
+      value: TestPointerEvent,
+    });
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: (query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }),
+    });
+    toasts.success.length = 0;
+    toasts.error.length = 0;
+    toasts.info.length = 0;
+    calls = [];
+    answers = {
+      update: { ok: true, result: { outcome: 'started', version: NEWEST } },
+      install: { ok: true, result: { agentType: 'codex', outcome: 'started' } },
+      preview: { ok: true, result: hostedPreview },
+    };
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    document.body.innerHTML = '';
+    vi.useRealTimers();
+  });
+
+  it('says what each machine runs, where it is reached and what is out', async () => {
+    await render(
+      inventoryOf([
+        desk,
+        server,
+        machine({ machineId: 'laptop', online: false, lans: [office] }),
+        machine({ machineId: 'old', controllable: false, build: null, version: '0.100.0-lan.3' }),
+      ])
+    );
+
+    const own = rowOf('desk').textContent ?? '';
+    expect(own).toContain('This machine');
+    expect(own).toContain(`${RUNNING} · macOS · Home, Office`);
+    expect(own).toContain(`${NEWEST} is out. It comes with this application.`);
+    expect(own).toContain('Claude Code 2.1.280');
+
+    const member = rowOf('server').textContent ?? '';
+    expect(member).toContain('Online');
+    expect(member).toContain(`${NEWEST} is out`);
+    expect(member).toContain('Codex 0.155.0 → 0.156.0');
+    expect(buttonIn(rowOf('server'), 'Update')).toBeTruthy();
+
+    // A machine that is away, or that would not understand, is asked nothing.
+    expect(rowOf('laptop').textContent).toContain('Offline');
+    expect(rowOf('laptop').querySelectorAll('button')).toHaveLength(0);
+    expect(rowOf('old').textContent).toContain('takes no requests from other machines');
+    expect(rowOf('old').querySelectorAll('button')).toHaveLength(0);
+    // This application installs what this machine runs.
+    expect(buttonIn(rowOf('desk'), 'Update')).toBeUndefined();
+  });
+
+  it('says where an update stands, and how one ended that failed', async () => {
+    await render(
+      inventoryOf([
+        machine({
+          machineId: 'busy',
+          update: { phase: 'installing', version: NEWEST, at: 1 },
+        }),
+        machine({
+          machineId: 'broken',
+          update: { phase: 'failed', version: NEWEST, at: 1, error: 'npm could not install' },
+        }),
+      ])
+    );
+
+    expect(rowOf('busy').textContent).toContain(`Installing ${NEWEST}…`);
+    expect(buttonIn(rowOf('busy'), 'Update')).toBeUndefined();
+    expect(rowOf('broken').textContent).toContain(
+      `The update to ${NEWEST} failed.npm could not install`
+    );
+    expect(buttonIn(rowOf('broken'), 'Update')).toBeTruthy();
+  });
+
+  it('updates a machine once the user said so', async () => {
+    await render(inventoryOf([desk, server]));
+
+    await click(buttonIn(rowOf('server'), 'Update'));
+    expect(text()).toContain('Update server?');
+    expect(text()).toContain('Agents that run on it are interrupted.');
+    expect(calls).toEqual([]);
+
+    await click(buttonIn(document.body.querySelector('[role="alertdialog"]')!, 'Update'));
+    expect(calls).toEqual([['update', 'server']]);
+    expect(toasts.success).toEqual([`server installs ${NEWEST} and starts again when it is done.`]);
+  });
+
+  it('says why a machine refused', async () => {
+    answers.update = { ok: false, message: 'already', reason: 'busy' };
+    await render(inventoryOf([server]));
+
+    await click(buttonIn(rowOf('server'), 'Update'));
+    await click(buttonIn(document.body.querySelector('[role="alertdialog"]')!, 'Update'));
+    expect(toasts.error).toEqual(['server is already updating.']);
+
+    answers.update = { ok: false, message: 'the hub is away', reason: null };
+    await click(buttonIn(rowOf('server'), 'Update'));
+    await click(buttonIn(document.body.querySelector('[role="alertdialog"]')!, 'Update'));
+    expect(toasts.error.at(-1)).toBe('server: the hub is away');
+  });
+
+  it('installs the runtime of an agent that is behind', async () => {
+    await render(inventoryOf([desk, server]));
+
+    await openMenuOf('server');
+    await click(menuItem('Update Codex to 0.156.0'));
+
+    expect(calls).toEqual([['install', 'server', 'codex']]);
+    expect(toasts.success).toEqual([
+      'server downloads Codex. New sessions use it once it is there.',
+    ]);
+
+    // An agent that has what it runs with offers nothing.
+    await openMenuOf('desk');
+    expect(menuItem('Claude Code')).toBeUndefined();
+  });
+
+  it('imports the hosted configuration of a machine, category by category', async () => {
+    await render(inventoryOf([desk, server]));
+
+    await openMenuOf('server');
+    await click(menuItem('Import from hosted Lody'));
+
+    expect(calls).toEqual([['preview', 'server']]);
+    expect(text()).toContain('Import from hosted Lody on server');
+    expect(text()).toContain('From Team');
+    expect(text()).toContain('New: Codex');
+    expect(text()).toContain('Already here: lody');
+
+    await click(document.body.querySelector('[aria-label="Agents (1)"]'));
+    await click(buttonIn(document.body, 'Import (1)'));
+
+    expect(calls.slice(1)).toEqual([
+      ['import', 'server', { sourceWorkspaceId: 'hosted', categories: ['localProjects'] }],
+      ['preview', 'server'],
+    ]);
+    expect(toasts.success).toEqual(['Imported: 2']);
+  });
+
+  describe('the entry editors reach a machine through', () => {
+    const named = () =>
+      calls.filter(([what]) => what === 'ssh').map(([, machineId, entry]) => [machineId, entry]);
+    const naming: Partial<LanMachinesViewProps> = {
+      onSshEntryChange: (target, entry) => calls.push(['ssh', target.machineId, entry]),
+    };
+    const write = async (value: string) => {
+      const input = document.body.querySelector<HTMLInputElement>('[role="dialog"] input');
+      if (!input) throw new Error(`No field in: ${text()}`);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
+          input,
+          value
+        );
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+    const save = () => buttonIn(document.body.querySelector('[role="dialog"]')!, 'Save');
+
+    it('is named for a machine, as the configuration of this computer writes it', async () => {
+      await render(inventoryOf([desk, server]), { ...naming, sshEntries: {} });
+      expect(rowOf('server').textContent).not.toContain('Editors reach it');
+
+      await openMenuOf('server');
+      await click(menuItem('SSH entry for editors'));
+      expect(text()).toContain('How editors reach server');
+      expect(save()?.disabled).toBe(true);
+
+      await write('  ts:home-devNuc ');
+      expect(save()?.disabled).toBe(false);
+      await click(save());
+
+      expect(named()).toEqual([['server', { host: 'ts:home-devNuc' }]]);
+      expect(document.body.querySelector('[role="dialog"] input')).toBeNull();
+    });
+
+    it('is shown with the machine, changed, and taken back', async () => {
+      await render(inventoryOf([desk, server]), {
+        ...naming,
+        sshEntries: { server: 'me@nuc', desk: 'never-shown' },
+      });
+      expect(rowOf('server').textContent).toContain('Editors reach it as me@nuc');
+      expect(rowOf('desk').textContent).not.toContain('never-shown');
+
+      await openMenuOf('server');
+      await click(menuItem('SSH entry for editors'));
+      const input = document.body.querySelector<HTMLInputElement>('[role="dialog"] input');
+      expect(input?.value).toBe('me@nuc');
+      // What is written already is not saved again.
+      expect(save()?.disabled).toBe(true);
+
+      await write('admin@Home-Nuc');
+      await click(save());
+      expect(named()).toEqual([['server', { host: 'Home-Nuc', user: 'admin' }]]);
+
+      await openMenuOf('server');
+      await click(menuItem('SSH entry for editors'));
+      await write('');
+      await click(save());
+      expect(named().at(-1)).toEqual(['server', null]);
+    });
+
+    it('is not saved when an editor could not be handed it', async () => {
+      await render(inventoryOf([server]), { ...naming, sshEntries: {} });
+      await openMenuOf('server');
+      await click(menuItem('SSH entry for editors'));
+
+      for (const value of ['-oProxyCommand=id', 'two words', 'you@me@nuc', 'nuc/../x', '@nuc']) {
+        await write(value);
+        expect(text(), value).toContain('An editor cannot be handed this name.');
+        expect(save()?.disabled, value).toBe(true);
+      }
+      await write('nuc');
+      expect(text()).not.toContain('An editor cannot be handed this name.');
+      expect(save()?.disabled).toBe(false);
+
+      await click(buttonIn(document.body.querySelector('[role="dialog"]')!, 'Cancel'));
+      expect(named()).toEqual([]);
+    });
+
+    it('is named for a machine that is away, and never for this one', async () => {
+      const laptop = machine({ machineId: 'laptop', online: false });
+      await render(inventoryOf([desk, laptop]), { ...naming, sshEntries: {} });
+
+      await openMenuOf('laptop');
+      expect(menuItem('SSH entry for editors')).toBeTruthy();
+      // A machine that is away is asked nothing else.
+      expect(menuItem('Import from hosted Lody')).toBeUndefined();
+      await click(menuItem('SSH entry for editors'));
+      await click(buttonIn(document.body.querySelector('[role="dialog"]')!, 'Cancel'));
+
+      await openMenuOf('desk');
+      expect(menuItem('Import from hosted Lody')).toBeTruthy();
+      expect(menuItem('SSH entry for editors')).toBeUndefined();
+    });
+  });
+
+  it('says so when a machine has no hosted installation or does not answer', async () => {
+    answers.preview = { ok: true, result: { found: false, sources: [] } };
+    await render(inventoryOf([server]));
+    await openMenuOf('server');
+    await click(menuItem('Import from hosted Lody'));
+    expect(text()).toContain('No hosted Lody was found on server.');
+
+    await click(buttonIn(document.body.querySelector('[role="dialog"]')!, 'Close'));
+    answers.preview = { ok: false, message: 'server did not answer', reason: null };
+    await openMenuOf('server');
+    await click(menuItem('Import from hosted Lody'));
+    expect(text()).toContain('server did not answer');
+  });
+});

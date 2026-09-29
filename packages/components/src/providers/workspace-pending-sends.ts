@@ -16,6 +16,8 @@ export function createWorkspacePendingSends(args: {
   runtime: SessionSendRuntime;
   token(): string | null;
   localMachineId(): MachineId | null;
+  /** Whether the agent service of this machine hands files to the workspace's other machines. */
+  handsOffToMembers?(): boolean;
 }) {
   const { runtime } = args;
   return createPendingSessionSends({
@@ -31,6 +33,7 @@ export function createWorkspacePendingSends(args: {
         resources: runtime.sendResources,
         token: args.token,
         localMachineId: args.localMachineId,
+        handsOffToMembers: args.handsOffToMembers,
         update: publish,
         report: (id, progress) =>
           publish(

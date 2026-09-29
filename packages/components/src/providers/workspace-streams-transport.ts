@@ -8,6 +8,7 @@ import {
   streamsSnapshotCodec,
   type WorkspaceId,
 } from '@lody/shared';
+import { LAN_HUB_SCHEME } from '@lody/shared/platform-kind';
 import type { LoroRepo } from 'loro-repo';
 import { StreamsTransportAdapter, createRepoStreamsPersistence } from 'loro-repo/transport/streams';
 
@@ -36,6 +37,23 @@ export const getWorkspaceMetaStreamUrl = (
     baseUrl: streamsBaseUrl,
   });
 
+type ReconnectConfig = NonNullable<
+  ConstructorParameters<typeof StreamsTransportAdapter>[0]['reconnectConfig']
+>;
+
+/**
+ * A LAN may be reached through a relay at a few dozen KB/s, where the first
+ * sync of a large session takes minutes. The default two-minute deadline would
+ * abort it and start it over indefinitely, so a LAN gets ten. The option is
+ * forwarded to streams-crdt, which the adapter's declared type does not list.
+ */
+const LAN_INITIAL_SYNC_HARD_TIMEOUT_MS = 10 * 60_000;
+
+function reconnectConfigFor(streamsBaseUrl: string): ReconnectConfig | undefined {
+  if (!streamsBaseUrl.startsWith(`${LAN_HUB_SCHEME}://`)) return undefined;
+  return { initialSyncHardTimeoutMs: LAN_INITIAL_SYNC_HARD_TIMEOUT_MS } as ReconnectConfig;
+}
+
 /** The renderer's durable Streams transport for one workspace repo. */
 export const createWorkspaceStreamsTransport = (
   options: WorkspaceStreamsTransportOptions
@@ -56,4 +74,5 @@ export const createWorkspaceStreamsTransport = (
     snapshotUpload: {
       canUpload: async () => true,
     },
+    reconnectConfig: reconnectConfigFor(options.streamsBaseUrl),
   });

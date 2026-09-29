@@ -57,6 +57,12 @@ jobs:
         run: node scripts/lan-release.mjs version --build "$GITHUB_RUN_NUMBER" --write
 
       - name: Build CLI and desktop bundles
+        env:
+          # Stamped into both bundles: the releases a build follows are the
+          # ones of the repository that built it.
+          LODY_LAN_REPOSITORY: ${{ github.repository }}
+          LODY_LAN_TAG: ${{ env.LAN_RELEASE_TAG }}
+          LODY_LAN_COMMIT: ${{ github.sha }}
         run: pnpm --dir apps/electron run build
 
       - name: Pack CLI
@@ -93,6 +99,7 @@ jobs:
         include:
           - id: mac
             os: macos-15
+            # Without Apple credentials electron-builder skips notarization.
             flags: --mac --arm64 --x64
           - id: win
             os: windows-latest
@@ -132,14 +139,95 @@ jobs:
       - name: Stage embedded CLI
         run: pnpm --dir apps/electron run sync:cli
 
+      # macOS keys the permissions a user grants (the Documents folder, for
+      # one) to the identity an application is signed with. An unsigned build
+      # gets an ad-hoc identity that changes with every build, so every update
+      # asked again. A fork that stores a code-signing certificate as the
+      # secrets below signs every build with it and keeps one identity; one
+      # without it builds unsigned as before.
+      #
+      # The certificate is a Developer ID certificate or one of the fork's own.
+      # The workflow never asks Apple for one: a runner keeps no key, so every
+      # build would use up one more of the few an account may have.
+      - name: Read the signing certificate
+        id: signing
+        if: matrix.id == 'mac'
+        shell: bash
+        env:
+          SIGNING_P12: ${{ secrets.LAN_MAC_SIGNING_P12 }}
+          SIGNING_PASSWORD: ${{ secrets.LAN_MAC_SIGNING_PASSWORD }}
+        run: |
+          if [ -z "$SIGNING_P12" ]; then
+            echo "No signing certificate; the application stays unsigned."
+            exit 0
+          fi
+          printf '%s' "$SIGNING_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          openssl pkcs12 -in "$RUNNER_TEMP/signing.p12" -clcerts -nokeys \
+            -passin env:SIGNING_PASSWORD -out "$RUNNER_TEMP/signing.pem"
+          rm -f "$RUNNER_TEMP/signing.p12"
+          node scripts/lan-release.mjs signing --certificate "$RUNNER_TEMP/signing.pem"
+
+      # Nothing vouches for a certificate of the fork's own, so it is trusted
+      # for code signing on this throwaway runner only, which is what lets
+      # electron-builder use it. It carries no Team ID either, and under the
+      # hardened runtime an application loads only what Apple signed or what
+      # carries its own: `LODY_MAC_SELF_SIGNED` signs the application with the
+      # exception that lets it load its own frameworks.
+      - name: Trust the fork's own certificate
+        if: matrix.id == 'mac' && steps.signing.outputs.self_signed == '1'
+        shell: bash
+        run: |
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain "$RUNNER_TEMP/signing.pem"
+
       - name: Package
         shell: bash
         env:
           LAN_VERSION: ${{ needs.bundles.outputs.version }}
-          # The build is unsigned. Without this, electron-builder searches the
-          # runner keychain for a certificate that is never there.
+          # Never search the runner keychain; the only identity is the one named here.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          CSC_LINK: ${{ matrix.id == 'mac' && secrets.LAN_MAC_SIGNING_P12 || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.id == 'mac' && secrets.LAN_MAC_SIGNING_PASSWORD || '' }}
+          CSC_NAME: ${{ steps.signing.outputs.name }}
+          LODY_MAC_SELF_SIGNED: ${{ steps.signing.outputs.self_signed }}
         run: pnpm --dir apps/electron run package -- ${{ matrix.flags }} "--version=$LAN_VERSION"
+
+      # The probes of the packaging hooks run before the application is signed,
+      # and a signature decides what a process may load. What is published is
+      # started here as it ships: the application, which has to load its
+      # framework, and the helper that runs the agent service with its bindings.
+      - name: Start the signed application
+        if: matrix.id == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for app in "$PWD"/apps/electron/dist/mac*/*.app; do
+            echo "== $app"
+            codesign -dvv "$app" 2>&1 | grep -E '^(Authority|Identifier|Signature|TeamIdentifier|CodeDirectory)=' || true
+            codesign -d -r- "$app" 2>&1 | grep designated || true
+            codesign -d --entitlements - "$app" 2>&1 | grep -F 'com.apple.security' || true
+
+            name="$(basename "$app" .app)"
+            application="$app/Contents/MacOS/$name"
+            helper="$app/Contents/Frameworks/$name Helper.app/Contents/MacOS/$name Helper"
+            cli="$app/Contents/Resources/app.asar.unpacked/resources/cli/index.js"
+            if [[ " $(lipo -archs "$application") " != *" $(uname -m) "* ]] &&
+              ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+              echo "This runner cannot run $(lipo -archs "$application"); not started."
+              continue
+            fi
+            ELECTRON_RUN_AS_NODE=1 "$application" -e \
+              'console.log("application", process.versions.electron, process.arch)'
+            ELECTRON_RUN_AS_NODE=1 "$helper" "$cli" --version
+            ELECTRON_RUN_AS_NODE=1 "$helper" -e '
+              const { createRequire } = require("node:module")
+              const load = createRequire(process.argv[1])
+              const Database = load("better-sqlite3")
+              new Database(":memory:").close()
+              if (typeof load("@lydell/node-pty").spawn !== "function") process.exit(1)
+              console.log("helper", process.arch, "loads its bindings")
+            ' "$cli"
+          done
 
       - name: Upload installers
         uses: actions/upload-artifact@v4

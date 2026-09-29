@@ -12,7 +12,6 @@ import {
   Info,
   Keyboard,
   Monitor,
-  Download,
   Network,
   Palette,
   Plug,
@@ -40,7 +39,6 @@ export type SettingsTabId =
   | 'mcp'
   | 'projects'
   | 'lan'
-  | 'hostedImport'
   | 'github'
   | 'ai-usage'
   | 'billing'
@@ -61,7 +59,6 @@ export type SettingsPath =
   | '/$workspaceName/settings/mcp'
   | '/$workspaceName/settings/projects'
   | '/$workspaceName/settings/lan'
-  | '/$workspaceName/settings/import'
   | '/$workspaceName/settings/github'
   | '/$workspaceName/settings/ai-usage'
   | '/$workspaceName/settings/billing'
@@ -196,16 +193,6 @@ export const SETTINGS_TAB_CONFIGS: SettingsTabConfig[] = [
     path: '/$workspaceName/settings/lan',
   },
   {
-    id: 'hostedImport',
-    section: 'workspace',
-    labelKey: 'settings.tabs.hostedImport',
-    descriptionKey: 'settings.categories.hostedImport.description',
-    icon: Download,
-    desktopOnly: true,
-    localDesktopOnly: true,
-    path: '/$workspaceName/settings/import',
-  },
-  {
     id: 'github',
     section: 'workspace',
     labelKey: 'settings.tabs.github',
@@ -285,7 +272,6 @@ export function getActiveSettingsTabId(pathname: string): SettingsTabId | null {
     ['/settings/mcp', 'mcp'],
     ['/settings/projects', 'projects'],
     ['/settings/lan', 'lan'],
-    ['/settings/import', 'hostedImport'],
     ['/settings/github', 'github'],
     ['/settings/ai-usage', 'ai-usage'],
     ['/settings/stats', 'ai-usage'],

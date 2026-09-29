@@ -35,11 +35,15 @@ Repository map and entry points: [README.md](README.md#repository).
   API declarations. Optional-cloud protocol names/DTOs belong in `packages/cloud-api`;
   shared product code uses `packages/platform` capabilities and ports.
 - The OSS desktop is local-only; authenticated product-cloud requests are forbidden.
-  Public managed-runtime downloads are the exception. Shared packages stay
-  platform-neutral; local telemetry is hard-disabled.
+  Public managed-runtime downloads are the exception, as are the public releases a
+  fork build follows. Shared packages stay platform-neutral; local telemetry is
+  hard-disabled.
 - A LAN is a self-hosted hub whose members share one user; its credential never
   reaches a renderer or a log. Before changing LAN settings, identity, the hub
-  bridge, member terminals or the fork build, read [LANs](.agents/docs/lan.md).
+  bridge, member terminals, files and folders, requests between members, updates
+  or the fork build, read [LANs](.agents/docs/lan.md). A fork build follows only
+  the releases of the repository that built it, installs only a later build, and
+  checks every file against the release's manifest before anything is replaced.
 - Before changing composition, capability-gated settings, telemetry, or runtime
   downloads, read [platform contracts](packages/platform/AGENTS.md).
 - Before changing daemon protocol negotiation, MCP/Role catalogs or their UI

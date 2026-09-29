@@ -42,12 +42,16 @@ vi.mock('@/hooks/useOrganization', () => ({
     error: null,
   }),
 }));
-vi.mock('../src/providers/local-platform-provider', () => ({
+vi.mock('../src/providers/local-platform-provider', async () => ({
   useLocalPlatformWorkspacesState: () => ({
     status: 'ready',
     workspaces: [{ slug: 'local' }],
   }),
   getLocalWorkspaceSlug: (workspace: { slug: string }) => workspace.slug,
+  // An installation has a workspace for each LAN it belongs to; the entry
+  // opens the one the real resolution names.
+  resolveLocalWorkspace: (await import('../src/providers/local-platform-follower'))
+    .resolveLocalWorkspace,
 }));
 vi.mock('@/components/route-message', () => ({ RouteMessage: () => null }));
 vi.mock('@/components/loading-placeholder', () => ({ LoadingPlaceholder: () => null }));

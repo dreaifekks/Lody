@@ -6,10 +6,12 @@ import {
   sameLanTerminalEndpoint,
   type LanTerminalEndpoint,
 } from '@lody/shared/lan-terminal';
+import type { SessionFilePayload } from '@lody/shared';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { serveTerminalConnection, type TerminalService } from '@/lib/terminal-connection';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
+import { serveLanFileConnection, type ReceivedLanFile } from './lan-files';
 import {
   createLanTerminalServer,
   deriveLanTerminalKey,
@@ -43,10 +45,18 @@ export function resolveLanTerminalPort(env: NodeJS.ProcessEnv = process.env): nu
 
 type Listener = { server: tls.Server; port: number };
 
+/** Takes the files of a message for the sessions of one LAN's workspace. */
+export type LanFileReceiver = {
+  /** Throws the reason when this machine takes no file for the session. */
+  admit: (file: { sessionId: string; sizeBytes: number }) => Promise<void>;
+  store: (file: ReceivedLanFile) => Promise<SessionFilePayload>;
+};
+
 /**
- * Lets the other members of each LAN open terminals on this machine. It
- * listens on the address this machine has toward each hub, not on every
- * interface, and publishes that endpoint into the LAN's workspace.
+ * Lets the other members of each LAN open terminals on this machine and hand
+ * it the files of their messages. It listens on the address this machine has
+ * toward each hub, not on every interface, and publishes that endpoint into
+ * the LAN's workspace.
  */
 export class LanTerminalHost {
   private readonly listeners = new Map<string, Listener>();
@@ -65,6 +75,8 @@ export class LanTerminalHost {
       lans: LanTerminalMembership;
       /** The terminals one LAN's members may reach, per connection; `null` while it does not run. */
       serviceFor: (workspaceId: string) => TerminalService | null;
+      /** Absent on a machine that takes no files; `null` while the workspace does not run. */
+      filesFor?: (workspaceId: string) => LanFileReceiver | null;
       /** Records where this machine accepts terminals; `undefined` withdraws it. */
       publish: (workspaceId: string, endpoint: LanTerminalEndpoint | undefined) => Promise<void>;
       /** The port to prefer; `0` for any. */
@@ -187,16 +199,20 @@ export class LanTerminalHost {
   }
 
   private async listen(address: string): Promise<Listener | null> {
+    const { filesFor } = this.options;
     const server = createLanTerminalServer({
       machineId: this.options.machineId,
+      services: filesFor ? ['terminal', 'files'] : ['terminal'],
       logger: this.options.logger,
       keyFor: (lanId) => {
         const hub = this.options.lans.hubs.find((candidate) => candidate.id === lanId);
         return hub ? deriveLanTerminalKey(hub.token) : null;
       },
-      onConnection: ({ socket, lanId, initial }) => {
-        const service = this.options.serviceFor(getLanHubWorkspaceId(lanId));
-        if (!service) {
+      onConnection: ({ socket, lanId, service, initial }) => {
+        const workspaceId = getLanHubWorkspaceId(lanId);
+        const terminals = service === 'terminal' ? this.options.serviceFor(workspaceId) : null;
+        const files = service === 'files' ? (filesFor?.(workspaceId) ?? null) : null;
+        if (!terminals && !files) {
           socket.end(
             `${JSON.stringify({
               type: 'error',
@@ -208,8 +224,22 @@ export class LanTerminalHost {
         }
         this.sockets.add(socket);
         socket.once('close', () => this.sockets.delete(socket));
-        serveTerminalConnection(socket, { service, logger: this.options.logger, initial });
-        socket.resume();
+        if (files) {
+          void serveLanFileConnection(socket, {
+            ...files,
+            initial,
+            logger: this.options.logger,
+          });
+          return;
+        }
+        if (terminals) {
+          serveTerminalConnection(socket, {
+            service: terminals,
+            logger: this.options.logger,
+            initial,
+          });
+          socket.resume();
+        }
       },
     });
     server.maxConnections = MAX_CONNECTIONS;

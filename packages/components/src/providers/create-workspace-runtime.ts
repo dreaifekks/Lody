@@ -13,6 +13,7 @@ import {
   createSessionSnapshotLoader,
   readSessionBootstrapSnapshot,
 } from './local-window-bootstrap';
+import { isLocalAppPlatform } from '@/lib/app-platform';
 import { jotaiStore } from '@/lib/utils';
 import { desktopWindowId } from '@/lib/desktop-window';
 import { navigationSidebarHiddenAtom } from '@/atoms/layout-state';
@@ -4911,6 +4912,9 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
     },
     token: () => authToken,
     localMachineId: () => sendLocalMachineId,
+    // Without an account the machines of a workspace are the members of a
+    // LAN, which the agent service of this machine reaches itself.
+    handsOffToMembers: () => isLocalAppPlatform(),
   });
   if (deps.accountId) {
     const accountId = deps.accountId;

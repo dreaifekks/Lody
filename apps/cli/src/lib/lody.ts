@@ -13,6 +13,8 @@ import {
   type LocalMachineRpcRequestValidated,
   type LocalMachineRpcResponse,
   type MachineLifecycleCapability,
+  type LanMemberControlRequest,
+  type LanMemberControlResponse,
 } from '@lody/shared';
 import { getLoginShellEnv } from '@/agent/login-shell-env';
 import { SessionManager } from '@/session/session-manager';
@@ -49,6 +51,10 @@ interface LodyOptions {
   onFatalAuthFailure?: (error: Error) => void;
   onProcessLifecycleAction?: (action: MachineProcessLifecycleAction) => void;
   workspaceWatchCoordinator?: WorkspaceWatchCoordinatorApi;
+  /** Carries out what another member of the LAN of this workspace asks of this machine. */
+  answerLanMemberControl?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
+  /** The agent service takes the files of a message from the members of this workspace's LAN. */
+  acceptsLanMemberFiles?: boolean;
   cloudPort: CloudPort;
 }
 export class Lody {
@@ -129,6 +135,8 @@ export class Lody {
         onFatalAuthFailure: options.onFatalAuthFailure,
         onProcessLifecycleAction: options.onProcessLifecycleAction,
         workspaceWatchCoordinator: options.workspaceWatchCoordinator,
+        answerLanMemberControl: options.answerLanMemberControl,
+        acceptsLanMemberFiles: options.acceptsLanMemberFiles,
         cloudPort: options.cloudPort,
       },
       logger: this.logger,

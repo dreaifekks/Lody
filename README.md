@@ -87,8 +87,11 @@ This fork adds LANs. A LAN is a hub you host yourself plus the invite that opens
 every machine that holds the invite sees the others' projects and runs Agents on
 them, without an account or a hosted service. A machine can belong to several LANs
 and is the same machine, under the same name, in each of them. The terminal of a
-session opens on the machine that runs it, whichever machine the desktop is on;
-members reach each other on port 8789 of the address they use for the hub.
+session opens on the machine that runs it, whichever machine the desktop is on,
+and the images and files of a message are taken there; members reach each other
+on port 8789 of the address they use for the hub. The folder of such a session
+opens in an editor on the desktop over SSH, if the machine that has it runs an
+SSH server and the desktop is let in.
 
 Host a LAN on a server, which also becomes its first member:
 
@@ -108,12 +111,19 @@ Desktop builds for macOS, Windows and Linux are attached to the
 `lody-lan lan --help` lists the commands that list, rename, move and leave LANs;
 [how LANs work](.agents/docs/lan.md) explains the rest.
 
-Coming from the hosted Lody? **Settings > Import** of the desktop app, or
+**Settings > LAN** also lists the machines the LANs reach, with the build and
+the agent runtimes each of them runs. A newer build is installed from there: a
+server updates itself when asked, from the desktop or with
+`lody-lan lan update <machine>`, and the desktop app offers its own update in
+the sidebar. Builds follow the releases of the repository that built them, so a
+fork of this fork follows its own.
+
+Coming from the hosted Lody? The menu of a machine in **Settings > LAN**, or
 `lody-lan hosted import` on a server, reads the agents, MCP servers, Roles and
-projects the hosted Lody configured on that machine and adds them to this one.
-Nothing is sent anywhere and the hosted Lody keeps what it has;
-[importing](.agents/docs/hosted-import.md) explains what is left behind. Both
-desktop apps can run side by side.
+projects the hosted Lody configured on that machine and adds them to the
+installation there. Nothing is sent anywhere and the hosted Lody keeps what it
+has; [importing](.agents/docs/hosted-import.md) explains what is left behind.
+Both desktop apps can run side by side.
 
 ## Use Lody from the CLI
 

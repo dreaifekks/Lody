@@ -91,6 +91,9 @@ const LOCAL_SESSION_CONTROL_BINARY_INSTALL_TIMEOUT_MS = 300_000
 // Local file handoff hashes + copies up to 8 files (≤100 MB each) into the blob
 // store before responding; give it well beyond the default 10s.
 const LOCAL_SESSION_CONTROL_FILE_SEND_LOCAL_TIMEOUT_MS = 120_000
+// Files for a session another member of a LAN runs travel to that machine, which
+// may be reached through a relay that carries tens of kilobytes a second.
+const LOCAL_SESSION_CONTROL_FILE_SEND_MEMBER_TIMEOUT_MS = 900_000
 const LOCAL_PROJECT_CONTROL_TIMEOUT_MS = 20_000
 const LOCAL_PROJECT_CONTROL_LIST_FILES_TIMEOUT_MS = 120_000
 const LOCAL_PROBE_TIMEOUT_MS = 3000
@@ -249,14 +252,17 @@ function resolveLocalProjectControlTimeoutMs(type: LocalProjectControlRequest['t
     type === 'local-project/import-history' ||
     type === 'local-project/resolve-history-conflict' ||
     type === 'hosted-config/preview' ||
-    type === 'hosted-config/import'
+    type === 'hosted-config/import' ||
+    // A forwarded request waits for another machine to answer through the hub.
+    type === 'lan/forward'
   ) {
     return LOCAL_PROJECT_CONTROL_LIST_FILES_TIMEOUT_MS
   }
   return LOCAL_PROJECT_CONTROL_TIMEOUT_MS
 }
 
-function resolveLocalSessionControlTimeoutMs(type: LocalSessionControlRequest['type']): number {
+function resolveLocalSessionControlTimeoutMs(message: LocalSessionControlRequest): number {
+  const { type } = message
   if (type === 'machine/acp-capabilities-refresh') {
     return LOCAL_SESSION_CONTROL_ACP_REFRESH_TIMEOUT_MS
   }
@@ -266,8 +272,10 @@ function resolveLocalSessionControlTimeoutMs(type: LocalSessionControlRequest['t
   if (type === 'machine/acp-binary-install') {
     return LOCAL_SESSION_CONTROL_BINARY_INSTALL_TIMEOUT_MS
   }
-  if (type === 'session/file-send-local') {
-    return LOCAL_SESSION_CONTROL_FILE_SEND_LOCAL_TIMEOUT_MS
+  if (message.type === 'session/file-send-local') {
+    return message.targetMachineId
+      ? LOCAL_SESSION_CONTROL_FILE_SEND_MEMBER_TIMEOUT_MS
+      : LOCAL_SESSION_CONTROL_FILE_SEND_LOCAL_TIMEOUT_MS
   }
   return LOCAL_SESSION_CONTROL_TIMEOUT_MS
 }
@@ -773,7 +781,7 @@ export class CliService {
       return { ok: false, error: 'invalid_request' }
     }
 
-    const timeoutMs = resolveLocalSessionControlTimeoutMs(message.type)
+    const timeoutMs = resolveLocalSessionControlTimeoutMs(message)
 
     try {
       return await Effect.runPromise(

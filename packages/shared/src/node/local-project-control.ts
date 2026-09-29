@@ -3,9 +3,16 @@ import {
   HostedConfigImportResultSchema,
   HostedConfigPreviewSchema,
 } from '../hosted-config';
+import {
+  LanAgentInstallResultSchema,
+  LanMachineUpdateResultSchema,
+  LanMachinesSchema,
+  isLanMemberControlType,
+} from '../lan-control';
 import type { LocalProjectControlRequest, LocalProjectControlResponse } from '../message';
 
 export const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
+
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -495,6 +502,27 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     );
   }
 
+  if (value.type === 'lan/update-machine') {
+    return typeof value.workspaceId === 'string';
+  }
+
+  if (value.type === 'lan/install-agent') {
+    return typeof value.workspaceId === 'string' && typeof value.agentType === 'string';
+  }
+
+  if (value.type === 'lan/machines') {
+    return true;
+  }
+
+  if (value.type === 'lan/forward') {
+    return (
+      isObjectRecord(value.request) &&
+      typeof value.request.type === 'string' &&
+      isLanMemberControlType(value.request.type) &&
+      isLocalProjectControlRequest(value.request)
+    );
+  }
+
   return false;
 }
 
@@ -634,6 +662,28 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'hosted-config/import') {
     return HostedConfigImportResultSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/update-machine') {
+    return LanMachineUpdateResultSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/install-agent') {
+    return LanAgentInstallResultSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/machines') {
+    return LanMachinesSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/forward') {
+    return (
+      isObjectRecord(value.result) &&
+      isObjectRecord(value.result.response) &&
+      typeof value.result.response.type === 'string' &&
+      isLanMemberControlType(value.result.response.type) &&
+      isLocalProjectControlResponse(value.result.response)
+    );
   }
 
   return false;

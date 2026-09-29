@@ -14,6 +14,7 @@ import {
   FileSpreadsheet,
   FileText,
   FileVideo,
+  HardDrive,
 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import type { SessionFilePayload } from '@lody/shared';
@@ -53,6 +54,12 @@ export type SessionFileCardProps = {
   retention?: 'workspace' | 'publication';
   /** Resolved display name of the machine holding the bytes (transport='local'). */
   pendingMachineName?: string;
+  /**
+   * Whether a file a machine holds is being uploaded to a store every device
+   * reads. Where nothing uploads it, the machine keeps it and the card says so
+   * instead of promising an upload.
+   */
+  uploads?: boolean;
   /** Click opens the in-app preview (text-previewable, available files only). */
   onPreview?: (file: SessionFilePayload) => void;
   /**
@@ -77,6 +84,14 @@ const buildSubtitle = ({
   pendingMachineName?: string;
   t: ReturnType<typeof useTranslation>['t'];
 }): string => {
+  if (state === 'kept') {
+    return pendingMachineName
+      ? t('sessions.fileKeptOnMachine', 'On {{machine}} · {{size}}', {
+          machine: pendingMachineName,
+          size: sizeLabel,
+        })
+      : sizeLabel;
+  }
   if (state === 'pending') {
     return pendingMachineName
       ? t('sessions.fileUploadingFromMachine', 'Uploading from {{machine}}…', {
@@ -102,6 +117,9 @@ const buildActionIcon = ({
   if (state === 'pending') {
     return <Spinner className="h-4 w-4" aria-hidden="true" />;
   }
+  if (state === 'kept') {
+    return <HardDrive className="h-4 w-4" aria-hidden="true" />;
+  }
   if (state === 'expired') {
     return <Clock className="h-4 w-4" aria-hidden="true" />;
   }
@@ -126,6 +144,7 @@ export function SessionFileCard({
   file,
   retention = 'workspace',
   pendingMachineName,
+  uploads = true,
   onPreview,
   onDownload,
   isDownloading = false,
@@ -137,7 +156,7 @@ export function SessionFileCard({
       ? file.textPreview
         ? 'previewable'
         : 'downloadable'
-      : getSessionFileDisplayState(file);
+      : getSessionFileDisplayState(file, undefined, uploads);
   const kind = getSessionFileKind(file.fileName, file.mimeType);
   const Icon = KIND_ICON[kind];
 

@@ -1,9 +1,27 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from 'vitest';
+import type { LanSshDestination } from '@lody/shared/lan-ssh';
 import { pathLauncherPreferenceSchema } from '../src/lib/local-storage-cache';
+import {
+  MACHINE_SSH_ENTRY_CHANGED_EVENT,
+  parseMachineSshEntry,
+  readMachineSshEntry,
+  writeMachineSshEntry,
+} from '../src/lib/machine-ssh-entry';
+import {
+  resolveSessionOpenInIdeHost,
+  resolveSessionOpenInIdePathTarget,
+} from '../src/lib/session-open-in-ide-path';
 import {
   buildPathLauncherLaunchInput,
   buildPathLauncherProbes,
+  buildRemotePathLauncherLaunchInput,
   buildVSCodePathLauncherFallbackUrl,
+  canLaunchRemotePath,
+  remotePathLauncherTakesUrlHost,
+  resolveRemotePathDestination,
+  resolveRemotePathEntry,
   getAvailablePathLauncherOptions,
   getCustomPathLauncherOptionId,
   validateCustomPathLauncherCommandTemplate,
@@ -276,5 +294,475 @@ describe('built-in path launchers', () => {
         platform: 'darwin',
       })
     ).toEqual([]);
+  });
+});
+
+describe('a folder of another machine', () => {
+  const ssh: LanSshDestination = { version: 1, user: 'me', host: '10.0.0.7', port: 22 };
+  const reached = { host: '10.0.0.7', user: 'me' };
+  const custom: CustomPathLauncher = {
+    id: 'phpstorm',
+    label: 'PhpStorm',
+    commandTemplate: 'open -a "PhpStorm" {path}',
+  };
+  const launchers = (platform: string) =>
+    getAvailablePathLauncherOptions({ customLaunchers: [custom], isElectron: true, platform });
+  const getLauncher = (id: string, platform: string) => {
+    const launcher = launchers(platform).find(
+      (candidate) => candidate.kind === 'builtin' && candidate.id === id
+    );
+    if (!launcher) throw new Error(`no launcher ${id} on ${platform}`);
+    return launcher;
+  };
+  /** The letters the hexadecimal of an authority stands for. */
+  const readHexadecimal = (authority: string) => {
+    const hexadecimal = authority.replace(/^ssh-remote\+/u, '');
+    const bytes = hexadecimal.match(/../gu)?.map((pair) => Number.parseInt(pair, 16)) ?? [];
+    return JSON.parse(new TextDecoder().decode(new Uint8Array(bytes))) as unknown;
+  };
+  const readAuthority = (launcher: string, destination: Parameters<typeof parseTarget>[0]) =>
+    parseTarget(destination, launcher);
+  function parseTarget(destination: { host: string; user?: string; port?: number }, id = 'vscode') {
+    const input = buildRemotePathLauncherLaunchInput(
+      getLauncher(id, 'darwin'),
+      '/srv/app',
+      destination,
+      'darwin'
+    );
+    if (input.kind !== 'command') throw new Error('not a command');
+    const address = input.command.args?.at(-1) ?? '';
+    return {
+      address,
+      authority: address.replace(/^[a-z-]+:\/\//u, '').replace(/\/srv\/app$/u, ''),
+    };
+  }
+
+  it('opens in VS Code as a remote folder, whatever its name looks like', () => {
+    expect(
+      buildRemotePathLauncherLaunchInput(
+        getLauncher('vscode', 'darwin'),
+        '/home/me/My Project/site.v2',
+        reached,
+        'darwin'
+      )
+    ).toEqual({
+      kind: 'command',
+      command: {
+        command: 'code',
+        args: [
+          '-n',
+          '--folder-uri',
+          'vscode-remote://ssh-remote+me@10.0.0.7/home/me/My%20Project/site.v2',
+        ],
+      },
+      fallbackCommands: [
+        {
+          command: '/usr/local/bin/code',
+          args: [
+            '-n',
+            '--folder-uri',
+            'vscode-remote://ssh-remote+me@10.0.0.7/home/me/My%20Project/site.v2',
+          ],
+        },
+        {
+          command: '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code',
+          args: [
+            '-n',
+            '--folder-uri',
+            'vscode-remote://ssh-remote+me@10.0.0.7/home/me/My%20Project/site.v2',
+          ],
+        },
+      ],
+      fallbackUrl:
+        'vscode://vscode-remote/ssh-remote+me@10.0.0.7/home/me/My%20Project/site.v2?windowId=_blank',
+      targetPath: '/home/me/My Project/site.v2',
+      label: 'VS Code',
+    });
+  });
+
+  it('opens in the editors built on VS Code the same way, without its deeplink', () => {
+    for (const [id, cli] of [
+      ['cursor', 'cursor'],
+      ['windsurf', 'windsurf'],
+      ['antigravity', 'antigravity'],
+    ] as const) {
+      const input = buildRemotePathLauncherLaunchInput(
+        getLauncher(id, 'linux'),
+        '/srv/app',
+        reached,
+        'linux'
+      );
+      expect(input, id).toMatchObject({
+        kind: 'command',
+        command: {
+          command: cli,
+          args: ['-n', '--folder-uri', 'vscode-remote://ssh-remote+me@10.0.0.7/srv/app'],
+        },
+        targetPath: '/srv/app',
+      });
+      expect(input, id).not.toHaveProperty('fallbackUrl');
+    }
+  });
+
+  it('opens in Zed by its SSH address, with the port SSH does not assume', () => {
+    expect(
+      buildRemotePathLauncherLaunchInput(
+        getLauncher('zed', 'linux'),
+        '/srv/my app',
+        { host: 'server.lan', user: 'me', port: 2222 },
+        'linux'
+      )
+    ).toEqual({
+      kind: 'command',
+      command: { command: 'zed', args: ['ssh://me@server.lan:2222/srv/my%20app'] },
+      fallbackCommands: [
+        { command: '/usr/bin/zed', args: ['ssh://me@server.lan:2222/srv/my%20app'] },
+        { command: '/usr/local/bin/zed', args: ['ssh://me@server.lan:2222/srv/my%20app'] },
+      ],
+      targetPath: '/srv/my app',
+      label: 'Zed',
+    });
+  });
+
+  it('carries nothing of a path that an editor or a shell would read as its own', () => {
+    const input = buildRemotePathLauncherLaunchInput(
+      getLauncher('cursor', 'win32'),
+      '/srv/a&b | c?d#e/--remote',
+      reached,
+      'win32'
+    );
+    expect(input.kind === 'command' && input.command.args).toEqual([
+      '-n',
+      '--folder-uri',
+      'vscode-remote://ssh-remote+me@10.0.0.7/srv/a%26b%20%7C%20c%3Fd%23e/--remote',
+    ]);
+  });
+
+  it('is asked of the editors that open it there, and of nothing else', () => {
+    const all = launchers('darwin');
+
+    expect(all.filter(canLaunchRemotePath).map((launcher) => launcher.label)).toEqual([
+      'VS Code',
+      'Cursor',
+      'Antigravity',
+      'Windsurf',
+      'Zed',
+    ]);
+    expect(
+      buildPathLauncherProbes(all, '/srv/app', 'darwin', ssh).map(({ launcherId }) => launcherId)
+    ).toEqual(['vscode', 'cursor', 'antigravity', 'windsurf', 'zed']);
+    expect(buildPathLauncherProbes(all, '/srv/app', 'darwin', ssh)[4]?.input).toMatchObject({
+      command: { command: 'zed', args: ['ssh://me@10.0.0.7/srv/app'] },
+    });
+    // The same launchers asked about a folder of this machine.
+    expect(buildPathLauncherProbes(all, '/srv/app', 'darwin')).toHaveLength(all.length);
+  });
+
+  it('is refused by a launcher that would look for it on this machine', () => {
+    for (const launcher of launchers('darwin').filter(
+      (candidate) => !canLaunchRemotePath(candidate)
+    )) {
+      expect(
+        () => buildRemotePathLauncherLaunchInput(launcher, '/srv/app', reached, 'darwin'),
+        launcher.label
+      ).toThrow(/another machine/u);
+    }
+    expect(() =>
+      buildRemotePathLauncherLaunchInput(getLauncher('vscode', 'darwin'), 'C:\\code\\app', reached)
+    ).toThrow(/POSIX/u);
+  });
+
+  it('opens through the entry of this machine’s SSH configuration that leads to it', () => {
+    const vscode = getLauncher('vscode', 'darwin');
+    expect(resolveRemotePathDestination(vscode, ssh, { found: { host: 'nuc' } })).toEqual({
+      host: 'nuc',
+    });
+    expect(
+      resolveRemotePathDestination(vscode, ssh, { found: { host: 'nuc', user: 'me' } })
+    ).toEqual({ host: 'nuc', user: 'me' });
+    expect(
+      buildRemotePathLauncherLaunchInput(vscode, '/srv/app', { host: 'nuc' }, 'darwin')
+    ).toMatchObject({
+      command: {
+        command: 'code',
+        args: ['-n', '--folder-uri', 'vscode-remote://ssh-remote+nuc/srv/app'],
+      },
+      fallbackUrl: 'vscode://vscode-remote/ssh-remote+nuc/srv/app?windowId=_blank',
+    });
+    expect(
+      buildRemotePathLauncherLaunchInput(
+        getLauncher('zed', 'darwin'),
+        '/srv/app',
+        { host: 'home-devNuc' },
+        'darwin'
+      )
+    ).toMatchObject({ command: { command: 'zed', args: ['ssh://home-devNuc/srv/app'] } });
+  });
+
+  it('hands the VS Code family a name it would misread as the letters of what it is', () => {
+    // These editors write an authority in small letters and read a colon as the start of a port.
+    for (const destination of [
+      { host: 'home-devNuc' },
+      { host: 'ts:home-devNuc' },
+      { host: 'ts:home-devNuc', user: 'me' },
+      { host: 'nuc', user: 'Me' },
+      { host: 'server.lan', user: 'me', port: 2222 },
+      { host: 'work+nuc' },
+    ]) {
+      const { address, authority } = readAuthority('cursor', destination);
+      expect(authority, JSON.stringify(destination)).toMatch(/^ssh-remote\+[0-9a-f]+$/u);
+      expect(address).toBe(`vscode-remote://${authority}/srv/app`);
+      expect(readHexadecimal(authority)).toEqual({
+        hostName: destination.host,
+        ...('user' in destination ? { user: destination.user } : {}),
+        ...('port' in destination ? { port: destination.port } : {}),
+      });
+    }
+    expect(readAuthority('vscode', { host: 'ts:home-devNuc' }).authority).toBe(
+      'ssh-remote+7b22686f73744e616d65223a2274733a686f6d652d6465764e7563227d'
+    );
+    // What they read as it is written stays as it is written.
+    for (const [destination, authority] of [
+      [{ host: 'nuc' }, 'ssh-remote+nuc'],
+      [{ host: 'my_server-2.lan', user: 'dev_1' }, 'ssh-remote+dev_1@my_server-2.lan'],
+      [{ host: '10.0.0.7', user: 'me' }, 'ssh-remote+me@10.0.0.7'],
+    ] as const) {
+      expect(readAuthority('windsurf', destination).authority).toBe(authority);
+    }
+  });
+
+  it('hands Zed only an entry an address can name', () => {
+    const zed = getLauncher('zed', 'darwin');
+    const vscode = getLauncher('vscode', 'darwin');
+    const entry = { host: 'ts:home-devNuc' };
+
+    expect(remotePathLauncherTakesUrlHost(zed)).toBe(true);
+    expect(remotePathLauncherTakesUrlHost(vscode)).toBe(false);
+    expect(resolveRemotePathDestination(vscode, ssh, { found: entry })).toEqual(entry);
+    // Without one, Zed is handed what the machine says about itself.
+    expect(resolveRemotePathDestination(zed, ssh, { found: entry })).toEqual(reached);
+    expect(resolveRemotePathDestination(zed, ssh, { found: { host: 'ts-home-devNuc' } })).toEqual({
+      host: 'ts-home-devNuc',
+    });
+    expect(() => buildRemotePathLauncherLaunchInput(zed, '/srv/app', entry, 'darwin')).toThrow(
+      /cannot be handed/u
+    );
+  });
+
+  it('opens as the machine says where the configuration holds no entry for it', () => {
+    const vscode = getLauncher('vscode', 'darwin');
+    expect(resolveRemotePathDestination(vscode, ssh, {})).toEqual(reached);
+    expect(resolveRemotePathDestination(vscode, ssh, { found: null, named: null })).toEqual(
+      reached
+    );
+    expect(
+      resolveRemotePathDestination(vscode, { ...ssh, port: 2222, names: ['server'] }, {})
+    ).toEqual({ ...reached, port: 2222 });
+    // Nor an entry an editor could read as something else.
+    for (const host of ['-oProxyCommand=id', 'nuc/../x', 'two words', '', 'me@nuc']) {
+      expect(resolveRemotePathDestination(vscode, ssh, { found: { host } }), host).toEqual(reached);
+      expect(resolveRemotePathDestination(vscode, ssh, { named: { host } }), host).toEqual(reached);
+      expect(() => buildRemotePathLauncherLaunchInput(vscode, '/srv/app', { host }), host).toThrow(
+        /cannot be handed/u
+      );
+    }
+    expect(resolveRemotePathDestination(vscode, ssh, { found: 'nuc' })).toEqual(reached);
+  });
+
+  it('opens through the entry the user named before the one that answers first', () => {
+    const vscode = getLauncher('vscode', 'darwin');
+    const zed = getLauncher('zed', 'darwin');
+    const found = { host: 'home-devNuc' };
+
+    expect(
+      resolveRemotePathDestination(vscode, ssh, { named: { host: 'ts:home-devNuc' }, found })
+    ).toEqual({ host: 'ts:home-devNuc' });
+    expect(resolveRemotePathEntry(vscode, { host: 'ts:home-devNuc' })).toEqual({
+      host: 'ts:home-devNuc',
+    });
+    // An entry Zed cannot be handed leaves Zed with the one that was found.
+    expect(
+      resolveRemotePathDestination(zed, ssh, { named: { host: 'ts:home-devNuc' }, found })
+    ).toEqual(found);
+    expect(resolveRemotePathEntry(zed, { host: 'ts:home-devNuc' })).toBeNull();
+    expect(
+      resolveRemotePathDestination(zed, ssh, { named: { host: 'nuc', user: 'me' }, found })
+    ).toEqual({ host: 'nuc', user: 'me' });
+  });
+});
+
+describe('the entry the user names for a machine', () => {
+  it('is an entry or a host, with the user before it', () => {
+    expect(parseMachineSshEntry('nuc')).toEqual({ host: 'nuc' });
+    expect(parseMachineSshEntry('  ts:home-devNuc ')).toEqual({ host: 'ts:home-devNuc' });
+    expect(parseMachineSshEntry('me@Home-Nuc')).toEqual({ host: 'Home-Nuc', user: 'me' });
+    expect(parseMachineSshEntry('me@10.0.0.7')).toEqual({ host: '10.0.0.7', user: 'me' });
+  });
+
+  it('is nothing an editor could read as something else', () => {
+    for (const written of [
+      '',
+      ' ',
+      '@nuc',
+      'me@',
+      'you@me@nuc',
+      '-oProxyCommand=id',
+      'me@-nuc',
+      'two words',
+      'nuc/../x',
+      'nuc?x=1',
+      'dev*',
+    ]) {
+      expect(parseMachineSshEntry(written), written).toBeNull();
+    }
+  });
+
+  it('is kept on this computer by machine, and taken back', () => {
+    const changes: string[] = [];
+    const onChange = () => changes.push('changed');
+    window.addEventListener(MACHINE_SSH_ENTRY_CHANGED_EVENT, onChange);
+    try {
+      expect(readMachineSshEntry('server')).toBeNull();
+      writeMachineSshEntry('server', { host: 'ts:home-devNuc' });
+      writeMachineSshEntry('mini', { host: 'mini', user: 'admin' });
+
+      expect(readMachineSshEntry('server')).toEqual({ host: 'ts:home-devNuc' });
+      expect(readMachineSshEntry('mini')).toEqual({ host: 'mini', user: 'admin' });
+      expect(readMachineSshEntry('laptop')).toBeNull();
+      expect(readMachineSshEntry(null)).toBeNull();
+
+      writeMachineSshEntry('server', null);
+      expect(readMachineSshEntry('server')).toBeNull();
+      expect(readMachineSshEntry('mini')).toEqual({ host: 'mini', user: 'admin' });
+      expect(changes).toHaveLength(3);
+
+      // What this computer holds for a machine is read again, not trusted.
+      localStorage.setItem('lody:machineSshEntry', JSON.stringify({ mini: '-oProxyCommand=id' }));
+      expect(readMachineSshEntry('mini')).toBeNull();
+    } finally {
+      window.removeEventListener(MACHINE_SSH_ENTRY_CHANGED_EVENT, onChange);
+      localStorage.removeItem('lody:machineSshEntry');
+    }
+  });
+});
+
+describe('the folder a session opens in an editor', () => {
+  const ssh: LanSshDestination = { version: 1, user: 'me', host: '10.0.0.7', port: 22 };
+
+  it('is its worktree before its project, on this machine', () => {
+    expect(
+      resolveSessionOpenInIdePathTarget({
+        worktreePath: ' /data/worktrees/one ',
+        localProjectRootPath: '/code/app',
+        host: { kind: 'local' },
+      })
+    ).toEqual({ path: '/data/worktrees/one', source: 'worktree' });
+    expect(
+      resolveSessionOpenInIdePathTarget({
+        worktreePath: null,
+        localProjectRootPath: 'C:\\code\\app',
+        host: { kind: 'local' },
+      })
+    ).toEqual({ path: 'C:\\code\\app', source: 'local_project' });
+    expect(
+      resolveSessionOpenInIdePathTarget({
+        worktreePath: ' ',
+        localProjectRootPath: undefined,
+        host: { kind: 'local' },
+      })
+    ).toBeNull();
+  });
+
+  it('is reached over SSH on a machine that named its SSH server', () => {
+    expect(
+      resolveSessionOpenInIdePathTarget({
+        worktreePath: null,
+        localProjectRootPath: '/home/me/app',
+        host: { kind: 'remote', ssh },
+      })
+    ).toEqual({ path: '/home/me/app', source: 'local_project', ssh });
+  });
+
+  it('is none on a machine that named no SSH server, or for a path no address takes', () => {
+    expect(
+      resolveSessionOpenInIdePathTarget({
+        worktreePath: '/data/worktrees/one',
+        localProjectRootPath: '/home/me/app',
+        host: { kind: 'remote', ssh: null },
+      })
+    ).toBeNull();
+    expect(
+      resolveSessionOpenInIdePathTarget({
+        worktreePath: null,
+        localProjectRootPath: 'C:\\code\\app',
+        host: { kind: 'remote', ssh },
+      })
+    ).toBeNull();
+  });
+});
+
+describe('the machine that has the folder of a session', () => {
+  const ssh: LanSshDestination = { version: 1, user: 'me', host: '10.0.0.7', port: 22 };
+  const another = {
+    sessionMachineId: 'machine-server',
+    localMachineId: 'machine-desk',
+    currentUserId: 'local:home',
+    machineOwnerUserId: 'local:home',
+    machineSsh: ssh,
+  };
+
+  it('is this one for its own sessions, whatever it says about SSH', () => {
+    expect(resolveSessionOpenInIdeHost({ ...another, sessionMachineId: 'machine-desk' })).toEqual({
+      kind: 'local',
+    });
+    expect(
+      resolveSessionOpenInIdeHost({
+        ...another,
+        sessionMachineId: 'machine-desk',
+        currentUserId: null,
+        machineOwnerUserId: undefined,
+        machineSsh: undefined,
+      })
+    ).toEqual({ kind: 'local' });
+  });
+
+  it('is another one of the same user, reached where it named its SSH server', () => {
+    expect(resolveSessionOpenInIdeHost(another)).toEqual({ kind: 'remote', ssh });
+    expect(resolveSessionOpenInIdeHost({ ...another, machineSsh: undefined })).toEqual({
+      kind: 'remote',
+      ssh: null,
+    });
+    expect(
+      resolveSessionOpenInIdeHost({
+        ...another,
+        machineSsh: { ...ssh, host: '-oProxyCommand=id' },
+      })
+    ).toEqual({ kind: 'remote', ssh: null });
+  });
+
+  it('is not followed to an SSH server when it is someone else’s machine', () => {
+    for (const owner of ['user-teammate', '', null, undefined]) {
+      expect(
+        resolveSessionOpenInIdeHost({ ...another, machineOwnerUserId: owner }),
+        String(owner)
+      ).toEqual({ kind: 'remote', ssh: null });
+    }
+    expect(
+      resolveSessionOpenInIdeHost({
+        ...another,
+        currentUserId: undefined,
+        machineOwnerUserId: undefined,
+      })
+    ).toEqual({ kind: 'remote', ssh: null });
+  });
+
+  it('is not known before this machine knows which one it is', () => {
+    expect(resolveSessionOpenInIdeHost({ ...another, localMachineId: null })).toEqual({
+      kind: 'remote',
+      ssh: null,
+    });
+    expect(
+      resolveSessionOpenInIdeHost({ ...another, sessionMachineId: undefined, localMachineId: null })
+    ).toEqual({ kind: 'remote', ssh: null });
   });
 });

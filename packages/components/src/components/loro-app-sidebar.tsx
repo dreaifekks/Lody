@@ -40,7 +40,7 @@ import {
 } from '@lody/shared';
 import { useTranslation } from 'react-i18next';
 import { cloudOperations } from '@/lib/cloud-api-operations';
-import { useAppCapability } from '@/lib/app-platform';
+import { isLocalAppPlatform, useAppCapability } from '@/lib/app-platform';
 import { useCloudQuery } from '@lody/platform/react';
 import { resolveWorkspaceIdentityLogo } from '@/lib/workspace-identity';
 import {
@@ -1643,6 +1643,8 @@ export function LoroAppSidebar({
   });
   const isMobile = useIsMobile();
   const multiWorkspaceAvailable = useAppCapability('multiWorkspace');
+  // The LANs are settings of the local desktop; nothing else has the page.
+  const lanSettingsAvailable = isLocalAppPlatform() && isElectronRenderer();
   const { openSettings } = useOpenSettings();
 
   const user = useAtomValue(userAtom);
@@ -1681,6 +1683,12 @@ export function LoroAppSidebar({
   }, [isMobile, setMobileDrawerOpen]);
 
   const updateBanner = useMemo(() => readUpdateBannerState(updaterState), [updaterState]);
+  const updateError = updaterState?.error;
+  const updatePhase = updaterState?.phase;
+  useEffect(() => {
+    // An update that was started and failed is one that can be started again.
+    if (updateError) setIsInstallingUpdate(false);
+  }, [updateError, updatePhase]);
   // The changelog follows the language the UI actually rendered in, which is
   // i18next's resolved language rather than the stored preference.
   const resolvedLanguage = i18n.resolvedLanguage;
@@ -3176,9 +3184,11 @@ export function LoroAppSidebar({
     }
   }, [updateBanner]);
 
+  // A build that follows the releases of a repository has its changes there.
+  const followedReleaseUrl = updaterState?.followed?.url;
   const handleOpenChangelogSite = useCallback(() => {
-    void openExternalUrl(getChangelogUrl(resolvedLanguage));
-  }, [resolvedLanguage]);
+    void openExternalUrl(followedReleaseUrl ?? getChangelogUrl(resolvedLanguage));
+  }, [followedReleaseUrl, resolvedLanguage]);
 
   const handleApplyDownloadedUpdate = useCallback(async () => {
     if (!isElectron || typeof window === 'undefined') return;
@@ -3661,7 +3671,7 @@ export function LoroAppSidebar({
         // there is something to switch once it belongs to more than one.
         workspaceSwitcherEnabled={multiWorkspaceAvailable || workspaces.length > 1}
         workspaceSwitcherKind={multiWorkspaceAvailable ? 'account' : 'lan'}
-        onManageLansClicked={handleManageLans}
+        onManageLansClicked={lanSettingsAvailable ? handleManageLans : undefined}
         connectionUiState={connectionUiState}
         workspaceSyncing={sessionsListLoading}
         isElectron={isElectron}

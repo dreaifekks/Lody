@@ -447,7 +447,12 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       : http.createServer(gate);
     // Live reads are long-lived by design.
     created.requestTimeout = 0;
-    created.headersTimeout = 60_000;
+    // A member reuses an idle connection for its next request. Closing it
+    // after Node's default five seconds races that request, and over a slow
+    // link the close is still in flight often enough to fail joins; keep idle
+    // connections well past any member's reuse.
+    created.keepAliveTimeout = 65_000;
+    created.headersTimeout = 66_000;
     await new Promise<void>((resolve, reject) => {
       created.once('error', reject);
       created.listen(options.port, options.host, () => {

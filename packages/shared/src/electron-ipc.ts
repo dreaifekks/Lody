@@ -436,9 +436,15 @@ export type ElectronLoginState = {
   errorDetail: string | null;
 };
 
+/**
+ * `available` is a later version that waits for the user: an updater that
+ * downloads on its own goes from `checking` to `downloading`, one that asks
+ * first rests here until the user starts the update.
+ */
 export type ElectronUpdaterPhase =
   | 'idle'
   | 'checking'
+  | 'available'
   | 'downloading'
   | 'downloaded'
   | 'up_to_date'
@@ -470,6 +476,15 @@ export type ElectronUpdaterState = {
   checkedAtMs?: number;
   error?: string;
   disabledReason?: string;
+  /**
+   * The releases this build follows, when they are those of a repository
+   * rather than of its publisher: the repository that built it.
+   */
+  followed?: {
+    repository: string;
+    tag: string;
+    url: string;
+  };
 };
 
 export type CheckForElectronUpdateResult = {

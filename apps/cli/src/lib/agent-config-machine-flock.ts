@@ -218,7 +218,8 @@ async function listLoroRepoMetaAgentConfigs(repo: LoroRepo): Promise<AgentConfig
   return configs.filter((config): config is AgentConfigMeta => config !== null);
 }
 
-async function listMachineIds(repo: LoroRepo): Promise<MachineId[]> {
+/** The machines that registered in this workspace and were not removed from it. */
+export async function listMachineIds(repo: LoroRepo): Promise<MachineId[]> {
   const roomIds = await listAliveDocIds(repo, isMachineDocRoomId);
   return roomIds.map((roomId) => roomId.slice(MACHINE_DOC_PREFIX.length) as MachineId);
 }

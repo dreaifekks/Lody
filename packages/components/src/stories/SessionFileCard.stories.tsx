@@ -92,6 +92,23 @@ export const PendingLocalTransport: Story = {
   render: (args) => wrap(<SessionFileCard {...args} />),
 };
 
+/** Where nothing uploads a file, the machine of the session keeps it. */
+export const KeptOnMachine: Story = {
+  args: {
+    file: baseFile({
+      fileId: 'file-kept',
+      fileName: 'screenshot.png',
+      mimeType: 'image/png',
+      sizeBytes: 412_000,
+      transport: 'local',
+      machineId: 'machine-abc',
+    }),
+    pendingMachineName: 'homeserver',
+    uploads: false,
+  },
+  render: (args) => wrap(<SessionFileCard {...args} />),
+};
+
 export const Expired: Story = {
   args: {
     file: baseFile({

@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 
+import { safeParseLocalSessionControlRequest } from '../src/message-schemas';
 import {
   isLocalSessionControlRequest,
   isLocalSessionControlResponse,
@@ -399,6 +400,15 @@ describe('local session control node validators', () => {
     expect(isLocalSessionControlRequestCjs(eight)).toBe(true);
     expect(isLocalSessionControlRequest(nine)).toBe(false);
     expect(isLocalSessionControlRequestCjs(nine)).toBe(false);
+
+    // Files for a session another member of a LAN runs name that machine.
+    const forMember = { ...oneFile, targetMachineId: 'machine-2' };
+    const unnamed = { ...oneFile, targetMachineId: 2 };
+    expect(isLocalSessionControlRequest(forMember)).toBe(true);
+    expect(isLocalSessionControlRequestCjs(forMember)).toBe(true);
+    expect(safeParseLocalSessionControlRequest(JSON.stringify(forMember)).success).toBe(true);
+    expect(isLocalSessionControlRequest(unnamed)).toBe(false);
+    expect(isLocalSessionControlRequestCjs(unnamed)).toBe(false);
   });
 
   it('accepts file-send-local responses with local file blocks (ts + cjs)', () => {

@@ -18,13 +18,13 @@ import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 
 /**
- * Terminals between LAN members run over TLS with a key derived from the
- * credential of the LAN (TLS-PSK): only a member completes the handshake, in
- * either direction, and nothing on the wire is readable without the
- * credential. No certificate is involved. ECDHE keeps past sessions private
- * should a credential leak later. TLS 1.3 has no external-PSK support in
- * Node, so both sides pin TLS 1.2 and the one suite OpenSSL and BoringSSL
- * (Electron) share.
+ * What members of a LAN send each other directly runs over TLS with a key
+ * derived from the credential of the LAN (TLS-PSK): only a member completes
+ * the handshake, in either direction, and nothing on the wire is readable
+ * without the credential. No certificate is involved. ECDHE keeps past
+ * sessions private should a credential leak later. TLS 1.3 has no external-PSK
+ * support in Node, so both sides pin TLS 1.2 and the one suite OpenSSL and
+ * BoringSSL (Electron) share.
  */
 const TLS_OPTIONS = {
   ciphers: 'ECDHE-PSK-CHACHA20-POLY1305',
@@ -44,14 +44,25 @@ export function deriveLanTerminalKey(token: string): Buffer {
 }
 
 /**
+ * What a connection between members carries. A connection serves one of them,
+ * named in its hello; one that names none is a terminal connection, as every
+ * connection was before there was anything else.
+ */
+export const LAN_MEMBER_SERVICES = ['terminal', 'files'] as const;
+export type LanMemberService = (typeof LAN_MEMBER_SERVICES)[number];
+
+/**
  * After the TLS handshake the client names the machine it meant to reach and
  * the server names itself: an address that now belongs to another member of
- * the same LAN must not receive the input meant for the first.
+ * the same LAN must not receive the input meant for the first. The server
+ * repeats the service it is about to serve, so a client learns from the
+ * answer of a build that knows terminals only that it got a terminal.
  */
 const HelloSchema = z.object({
   type: z.literal('hello'),
   version: z.number().int(),
   machineId: z.string().min(1),
+  service: z.string().optional(),
 });
 const HelloRefusalSchema = z.object({
   type: z.literal('error'),
@@ -114,9 +125,15 @@ export type LanTerminalConnection = {
   socket: tls.TLSSocket;
   /** The LAN whose key the client proved it holds. */
   lanId: string;
+  /** What the client asked this connection to carry. */
+  service: LanMemberService;
   /** What the client sent after its hello; the socket is paused. */
   initial: Buffer;
 };
+
+function isLanMemberService(value: string): value is LanMemberService {
+  return (LAN_MEMBER_SERVICES as readonly string[]).includes(value);
+}
 
 /**
  * Accepts terminal connections from members of the LANs `keyFor` knows. A
@@ -125,6 +142,8 @@ export type LanTerminalConnection = {
  */
 export function createLanTerminalServer(options: {
   machineId: string;
+  /** What this machine serves; a connection that asks for anything else is refused. */
+  services: readonly LanMemberService[];
   keyFor: (lanId: string) => Buffer | null;
   onConnection: (connection: LanTerminalConnection) => void;
   logger: Logger;
@@ -168,13 +187,24 @@ export function createLanTerminalServer(options: {
             socket.end();
             return;
           }
+          const service = hello.service ?? 'terminal';
+          if (!isLanMemberService(service) || !options.services.includes(service)) {
+            writeLine(socket, {
+              type: 'error',
+              code: 'unsupported_service',
+              message: `This machine serves no ${service} to the members of its LANs`,
+            });
+            socket.end();
+            return;
+          }
           writeLine(socket, {
             type: 'hello',
             version: LAN_TERMINAL_PROTOCOL_VERSION,
             machineId: options.machineId,
+            service,
           });
           socket.setKeepAlive(true, KEEPALIVE_MS);
-          options.onConnection({ socket, lanId, initial: rest });
+          options.onConnection({ socket, lanId, service, initial: rest });
         } catch (error) {
           options.logger.debug(`[lan-terminal] hello failed: ${formatErrorMessage(error)}`);
           socket.destroy();
@@ -379,14 +409,21 @@ class LanTerminalLink implements RemoteTerminalLink {
   }
 }
 
-/** Connects to the terminals of one member of a LAN. */
-export async function connectLanTerminal(options: {
+export type LanMemberConnectOptions = {
   endpoint: LanTerminalEndpoint;
   lanId: string;
   key: Buffer;
   /** The machine expected at the endpoint. */
   machineId: string;
-}): Promise<RemoteTerminalLink> {
+};
+
+/**
+ * Connects to one member of a LAN for one service. The socket is paused and
+ * `rest` is what the member sent after its hello.
+ */
+export async function connectLanMember(
+  options: LanMemberConnectOptions & { service: LanMemberService }
+): Promise<{ socket: tls.TLSSocket; rest: Buffer }> {
   const socket = tls.connect({
     ...TLS_OPTIONS,
     host: options.endpoint.host,
@@ -412,6 +449,7 @@ export async function connectLanTerminal(options: {
       type: 'hello',
       version: LAN_TERMINAL_PROTOCOL_VERSION,
       machineId: options.machineId,
+      service: options.service,
     });
     const { line, rest } = await readFirstLine(socket);
     const refusal = parseLine(HelloRefusalSchema, line);
@@ -420,7 +458,11 @@ export async function connectLanTerminal(options: {
     if (!hello || hello.machineId !== options.machineId) {
       throw new Error('another machine answered');
     }
-    return new LanTerminalLink(socket, rest);
+    // A build from before services answers every hello as a terminal.
+    if ((hello.service ?? 'terminal') !== options.service) {
+      throw new Error(`the machine serves no ${options.service}; update it`);
+    }
+    return { socket, rest };
   } catch (error) {
     socket.destroy();
     throw new Error(
@@ -428,6 +470,14 @@ export async function connectLanTerminal(options: {
       { cause: error }
     );
   }
+}
+
+/** Connects to the terminals of one member of a LAN. */
+export async function connectLanTerminal(
+  options: LanMemberConnectOptions
+): Promise<RemoteTerminalLink> {
+  const { socket, rest } = await connectLanMember({ ...options, service: 'terminal' });
+  return new LanTerminalLink(socket, rest);
 }
 
 /**

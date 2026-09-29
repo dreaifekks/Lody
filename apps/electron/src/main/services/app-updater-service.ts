@@ -13,6 +13,7 @@ import type {
 import { IPC_PUSH_CHANNELS } from '@lody/shared/electron-ipc'
 import { formatUnknownError } from '../utils'
 import { setAppQuitting } from '../window-state'
+import type { AppUpdater } from './app-updater'
 import {
   resolveLinuxDebInstallPlan,
   runLinuxDebInstall,
@@ -78,7 +79,7 @@ function createUpdaterLogger() {
   }
 }
 
-export class AppUpdaterService {
+export class AppUpdaterService implements AppUpdater {
   private state: ElectronUpdaterState = {
     phase: 'idle',
     currentVersion: app.getVersion()

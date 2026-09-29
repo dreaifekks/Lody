@@ -55,6 +55,11 @@ import {
   type LanTerminalMembership,
 } from '@/lib/lan/lan-terminal-host';
 import { connectLanTerminal, deriveLanTerminalKey } from '@/lib/lan/lan-terminal';
+import { LanFileHandoff } from '@/lib/lan/lan-file-handoff';
+import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-control';
+import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
+import type { LanMemberWorkspace } from '@/lib/lan/lan-members';
+import { createLanSshDescriber } from '@/lib/lan/lan-ssh';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import { parseLanTerminalEndpoint, type LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import {
@@ -173,7 +178,9 @@ export class LodyFleet {
   private readonly terminalPtyService: TerminalPtyServiceApi;
   private readonly terminalRouter: TerminalRouter;
   private readonly lan: LanTerminalMembership | null;
+  private readonly lanFileHandoff: LanFileHandoff;
   private lanTerminalHost: LanTerminalHost | null = null;
+  private readonly lanFleetControl: LanFleetControl | null;
   private readonly memoryPressure: MemoryPressureSampler;
   private readonly onFatalAuthFailure?: (error: Error) => void;
   private readonly localPlatform: boolean;
@@ -234,6 +241,8 @@ export class LodyFleet {
     onProcessLifecycleAction?: (action: MachineProcessLifecycleAction) => void;
     /** The LANs of this machine: their members reach its terminals, and it theirs. */
     lan?: LanTerminalMembership;
+    /** What this machine tells the members of its LANs, and does when they ask. */
+    lanControl?: LanMachineControl;
   }) {
     this.logger = options.logger;
     this.builtinAgentConfigCliTypes = options.builtinAgentConfigCliTypes;
@@ -287,6 +296,40 @@ export class LodyFleet {
         await this.resolveTerminalSessionWorkdir(sessionId),
     });
     this.lan = options.lan ?? null;
+    this.lanFleetControl = options.lanControl
+      ? new LanFleetControl({
+          logger: this.logger,
+          machineId: this.machineId,
+          machineName: this.machineName,
+          control: options.lanControl,
+          ssh: createLanSshDescriber({ logger: this.logger }),
+          hubs: () => this.lan?.hubs ?? [],
+          workspaces: () =>
+            Array.from(this.runtimes.values(), (runtime) => this.toLanMemberWorkspace(runtime)),
+          workspace: async (workspaceId) => {
+            await this.startInFlight.get(workspaceId)?.catch(() => undefined);
+            const runtime = this.runtimes.get(workspaceId);
+            return runtime ? this.toLanMemberWorkspace(runtime) : null;
+          },
+        })
+      : null;
+    this.lanFileHandoff = new LanFileHandoff({
+      machineId: this.machineId,
+      logger: this.logger,
+      hubs: () => this.lan?.hubs ?? [],
+      workspace: (workspaceId) => {
+        const runtime = this.runtimes.get(workspaceId);
+        if (!runtime || !this.isLanWorkspace(workspaceId)) return null;
+        const { repo } = runtime.lody.documentManager;
+        return {
+          lookupSession: async (sessionId) =>
+            await this.lookupTerminalSessionMeta(runtime, sessionId),
+          readMachine: async (machineId) =>
+            (await repo.getDocMeta(getMachineRoomId(machineId)))?.meta as MachineMeta | undefined,
+          storeLocally: async (request) => await runtime.lody.dispatchLocalControl(request),
+        };
+      },
+    });
     this.terminalRouter = new TerminalRouter({
       local: this.terminalPtyService,
       machineId: this.machineId,
@@ -388,6 +431,7 @@ export class LodyFleet {
     ]);
 
     this.startLanTerminalHost();
+    this.lanFleetControl?.start();
 
     // Start the PR poller BEFORE any workspace runtime can connect: the
     // local-first catalog bootstrap below registers each workspace with the
@@ -630,6 +674,7 @@ export class LodyFleet {
       stopLocalIpcSocketServers(),
       stopLocalTerminalServer(),
       this.lanTerminalHost?.close(),
+      this.lanFleetControl?.close(),
       stopLocalLoroDataPlaneServer(),
       stopLodyMcpHttpServer(),
     ]);
@@ -860,6 +905,13 @@ export class LodyFleet {
           onFatalAuthFailure: this.onFatalAuthFailure,
           onProcessLifecycleAction: this.onProcessLifecycleAction,
           workspaceWatchCoordinator: this.workspaceWatchCoordinator,
+          ...(this.lanFleetControl
+            ? {
+                answerLanMemberControl: async (request) =>
+                  await (this.lanFleetControl as LanFleetControl).answer(request),
+              }
+            : {}),
+          acceptsLanMemberFiles: this.lanTerminalHost !== null && this.isLanWorkspace(workspace.id),
         });
 
         if (!this.desiredWorkspaces.has(workspace.id) || this.stopped) {
@@ -1004,6 +1056,7 @@ export class LodyFleet {
           workspace.id,
           this.lanTerminalHost?.endpointFor(workspace.id)
         );
+        this.lanFleetControl?.publishAfterStart();
         this.logger.debug(`[fleet] Connected workspace: ${workspaceLabel} (${workspace.id})`);
         this.logger.debug(
           `[startup] Workspace runtime ready workspaceId=${workspace.id} durationMs=${
@@ -1316,6 +1369,19 @@ export class LodyFleet {
     message: LocalSessionControlRequest,
     options: { onResponse?: (response: LocalSessionControlResponse) => void } = {}
   ): Promise<LocalSessionControlResponse[]> {
+    if (
+      message.type === 'session/file-send-local' &&
+      message.targetMachineId &&
+      message.targetMachineId !== this.machineId
+    ) {
+      const response = await this.lanFileHandoff.send({
+        ...message,
+        targetMachineId: message.targetMachineId,
+      });
+      options.onResponse?.(response);
+      return [response];
+    }
+
     // Image and file uploads (from the in-session MCP server) may omit the
     // workspaceId; resolve it by finding the single active runtime that holds
     // the session doc. Both share the same resolution + ambiguity handling.
@@ -1433,6 +1499,20 @@ export class LodyFleet {
     return { type: 'found', meta: record.meta as SessionMeta };
   }
 
+  private toLanMemberWorkspace(runtime: WorkspaceRuntimeState): LanMemberWorkspace {
+    const manager = runtime.lody.documentManager;
+    return {
+      workspaceId: runtime.workspace.id as WorkspaceId,
+      name: runtime.workspace.name,
+      userId: this.userIdFor(runtime.workspace.id),
+      lan: this.isLanWorkspace(runtime.workspace.id),
+      repo: manager.repo,
+      // A hub that is away answers late; the list of machines does not wait for it.
+      getOnlineMachineIds: async () => await manager.getOnlineMachineIds({ timeoutMs: 2_000 }),
+      sync: manager,
+    };
+  }
+
   private isLanWorkspace(workspaceId: string): boolean {
     return this.lan?.hubs.some((hub) => getLanHubWorkspaceId(hub.id) === workspaceId) ?? false;
   }
@@ -1463,6 +1543,7 @@ export class LodyFleet {
                 await this.verifyLanTerminalSession(workspaceId, sessionId as SessionId)
             )
           : null,
+      filesFor: (workspaceId) => this.lanFileHandoff.receiverFor(workspaceId),
       publish: async (workspaceId, endpoint) =>
         await this.publishLanTerminalEndpoint(workspaceId, endpoint),
     });
@@ -2204,20 +2285,14 @@ export class LodyFleet {
         };
       }
 
-      if (message.type === 'hosted-config/preview' || message.type === 'hosted-config/import') {
-        const runtime = await this.resolveWorkspaceRuntime(message.workspaceId);
-        const { importHostedConfig, previewHostedImport } =
-          await import('./hosted-config/hosted-config-import');
-        const workspace = {
-          repo: runtime.lody.documentManager.repo,
-          workspaceId: message.workspaceId,
-          machineId: this.machineId,
-          userId: this.userIdFor(message.workspaceId),
-          sync: runtime.lody.documentManager,
-        };
-        return message.type === 'hosted-config/preview'
-          ? { ok: true, type: message.type, result: await previewHostedImport(workspace) }
-          : { ok: true, type: message.type, result: await importHostedConfig(workspace, message) };
+      if (isLanControlRequest(message)) {
+        return this.lanFleetControl
+          ? await this.lanFleetControl.dispatch(message)
+          : this.toProjectControlError(
+              requestType,
+              'execution_failed',
+              'This agent service takes no requests about the machines of a LAN'
+            );
       }
 
       if (isLocalProjectWorktreeConfigRequest(message)) {

@@ -19,7 +19,15 @@ import {
   resolveMachineName,
   type LanHubSettings,
 } from '@lody/shared/node/lan-hub';
+import {
+  describeLanMachineBuild,
+  getLanReleaseSource,
+  resolveLanInstallation,
+  resolveLanUpdateChannel,
+} from '@/lib/lan/lan-build';
+import { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import { LanMembership, toLanWorkspaces } from '@/lib/lan/lan-membership';
+import { LanServiceManager } from '@/lib/lan/service';
 import { makeLocalWorkspaceCatalog } from '@/lib/local-workspace-catalog';
 import { checkClaude, checkCodex } from '@/utils';
 import { CliAvailability, resolveCliTypesSelection } from './start-options';
@@ -614,7 +622,7 @@ async function startAgentService(
   let triggerProcessLifecycleAction: ((action: MachineProcessLifecycleAction) => void) | null =
     null;
 
-  let triggerLanSettingsRestart: ((reason: string) => void) | null = null;
+  let triggerLanRestart: ((reason: string) => void) | null = null;
 
   let cloudPort: CloudPort;
   let lanMembership: LanMembership | null = null;
@@ -622,7 +630,7 @@ async function startAgentService(
     lanMembership = new LanMembership({
       settings: localStart?.lanSettings ?? { hubs: [], machineName: null, source: 'none' },
       logger,
-      onRestartRequired: (reason) => triggerLanSettingsRestart?.(reason),
+      onRestartRequired: (reason) => triggerLanRestart?.(`LAN settings changed: ${reason}`),
     });
     const streamsTokens = lanMembership.streamsTokens;
     cloudPort = createLocalCloudPort({
@@ -653,6 +661,43 @@ async function startAgentService(
     runtimeBaseUrl: cloudPort.runtimeArtifacts.baseUrl,
   });
 
+  // Whether something starts this process again after it exits decides what
+  // it may do to itself: a service that replaced its build has to come back.
+  const lanServices = new LanServiceManager();
+  const startedByServiceManager =
+    platformKind === 'local' && (await lanServices.isProcess('agent').catch(() => false));
+  let lanControl: LanMachineControl | null = null;
+  if (platformKind === 'local') {
+    const installation = resolveLanInstallation({
+      desktop: supervisorIdentity?.launchMode === 'electron',
+    });
+    const source = getLanReleaseSource();
+    lanControl = new LanMachineControl({
+      logger,
+      build: describeLanMachineBuild(
+        resolveLanUpdateChannel({
+          installation,
+          source,
+          restarted: startedByServiceManager || supervisorIdentity?.launchMode === 'daemon',
+        }),
+        source
+      ),
+      installation,
+      runtimes: () => managedRuntimeManager,
+      restart: (reason) => triggerLanRestart?.(reason),
+      // A machine that hosts a LAN runs the hub from the build that was replaced.
+      restartCompanions: async () => {
+        const hub = await lanServices.getState('hub');
+        if (hub.installed && hub.active) await lanServices.restartIfActive('hub');
+      },
+    });
+    logger.debug(
+      `[lan] build=${lanControl.build.version} update=${lanControl.build.update} follows=${
+        source ? `${source.repository}@${source.tag}` : 'nothing'
+      }`
+    );
+  }
+
   let fleet: LodyFleet;
   const managedRuntimeUpdates = configureManagedRuntimeUpdateCoordinator({
     manager: managedRuntimeManager,
@@ -680,6 +725,7 @@ async function startAgentService(
       onProcessLifecycleAction: (action) => triggerProcessLifecycleAction?.(action),
       // A service without a LAN has no member to reach, and joining one restarts it.
       ...(lanMembership?.streamsTokens ? { lan: lanMembership } : {}),
+      ...(lanControl ? { lanControl } : {}),
     });
   } catch (error) {
     await managedRuntimeUpdates.shutdown();
@@ -774,17 +820,14 @@ async function startAgentService(
     });
   };
 
-  triggerLanSettingsRestart = (reason) => {
+  triggerLanRestart = (reason) => {
     if (processLifecycleTriggered || fatalAuthTriggered) return;
     processLifecycleTriggered = true;
-    if (!supervisorIdentity) {
+    if (!supervisorIdentity && !startedByServiceManager) {
       // Nothing starts a foreground service again once it exits.
-      logger.warn('Start the agent service again to apply the new LAN settings.');
+      logger.warn(`Start the agent service again: ${reason}.`);
     }
-    void shutdownController.shutdown({
-      exitCode: EXIT_CODE_REMOTE_RESTART,
-      reason: `LAN settings changed: ${reason}`,
-    });
+    void shutdownController.shutdown({ exitCode: EXIT_CODE_REMOTE_RESTART, reason });
   };
 
   try {

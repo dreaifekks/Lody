@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import wasm from 'vite-plugin-wasm';
+import { defineBuildStamp } from '../../scripts/lan-build-stamp.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +15,8 @@ const inlineEnv = {
   'process.env.LODY_ENV': JSON.stringify(''),
   'process.env.WS_NO_BUFFER_UTIL': JSON.stringify('true'),
   'process.env.WS_NO_UTF_8_VALIDATE': JSON.stringify('true'),
+  // The releases this build follows, named by the workflow that builds it.
+  ...defineBuildStamp(),
 };
 
 const bundledNodeBuiltins = new Set([

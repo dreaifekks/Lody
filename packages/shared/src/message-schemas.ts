@@ -3,6 +3,11 @@ import {
   HostedConfigImportResultSchema,
   HostedConfigPreviewSchema,
 } from './hosted-config';
+import {
+  LanAgentInstallResultSchema,
+  LanMachineUpdateResultSchema,
+  LanMachinesSchema,
+} from './lan-control';
 import { z } from 'zod';
 import { SubagentTaskPayloadSchema } from './acp/claude-subagent-task';
 import {
@@ -1777,6 +1782,7 @@ export const SessionFileSendLocalRequestSchema = z
     sessionId: SessionIdSchema,
     workspaceId: WorkspaceIdSchema.optional(),
     paths: z.array(z.string().trim().min(1)).min(1).max(SESSION_FILE_MAX_COUNT),
+    targetMachineId: MachineIdSchema.optional(),
   })
   .strict();
 
@@ -2340,6 +2346,50 @@ export const HostedConfigImportRequestSchema = z
   })
   .strict();
 
+export const LanUpdateMachineRequestSchema = z
+  .object({
+    type: z.literal('lan/update-machine'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+  })
+  .strict();
+
+export const LanInstallAgentRequestSchema = z
+  .object({
+    type: z.literal('lan/install-agent'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    agentType: z.string().trim().min(1).max(64),
+  })
+  .strict();
+
+/** What the members of a LAN ask of each other's machines. */
+export const LanMemberControlRequestSchema = z.discriminatedUnion('type', [
+  LanUpdateMachineRequestSchema,
+  LanInstallAgentRequestSchema,
+  HostedConfigPreviewRequestSchema,
+  HostedConfigImportRequestSchema,
+]);
+
+export const LanMachinesRequestSchema = z
+  .object({
+    type: z.literal('lan/machines'),
+    machineId: MachineIdSchema,
+  })
+  .strict();
+
+/**
+ * Asks the agent service of this machine to put a request to another member
+ * of one of its LANs. The request inside names that member and that LAN.
+ */
+export const LanForwardRequestSchema = z
+  .object({
+    type: z.literal('lan/forward'),
+    machineId: MachineIdSchema,
+    request: LanMemberControlRequestSchema,
+  })
+  .strict();
+
 export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LocalProjectAddRequestSchema,
   LocalProjectPrepareAddRequestSchema,
@@ -2366,6 +2416,10 @@ export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   WorktreeReadFileRequestSchema,
   HostedConfigPreviewRequestSchema,
   HostedConfigImportRequestSchema,
+  LanUpdateMachineRequestSchema,
+  LanInstallAgentRequestSchema,
+  LanMachinesRequestSchema,
+  LanForwardRequestSchema,
 ]);
 
 const LocalProjectFileListResultSchema = z
@@ -2623,12 +2677,57 @@ const LocalProjectControlErrorResponseSchema = z
       'worktree/read-file',
       'hosted-config/preview',
       'hosted-config/import',
+      'lan/update-machine',
+      'lan/install-agent',
+      'lan/machines',
+      'lan/forward',
     ]),
     error: LocalProjectControlErrorCodeSchema,
     message: z.string(),
     data: z.unknown().optional(),
   })
   .strict();
+
+const HostedConfigPreviewResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    type: z.literal('hosted-config/preview'),
+    result: HostedConfigPreviewSchema,
+  })
+  .strict();
+
+const HostedConfigImportResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    type: z.literal('hosted-config/import'),
+    result: HostedConfigImportResultSchema,
+  })
+  .strict();
+
+const LanUpdateMachineResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    type: z.literal('lan/update-machine'),
+    result: LanMachineUpdateResultSchema,
+  })
+  .strict();
+
+const LanInstallAgentResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    type: z.literal('lan/install-agent'),
+    result: LanAgentInstallResultSchema,
+  })
+  .strict();
+
+/** What a member answers, which is also what a forwarded request brings back. */
+export const LanMemberControlResponseSchema = z.union([
+  HostedConfigPreviewResponseSchema,
+  HostedConfigImportResponseSchema,
+  LanUpdateMachineResponseSchema,
+  LanInstallAgentResponseSchema,
+  LocalProjectControlErrorResponseSchema,
+]);
 
 export const LocalProjectControlResponseSchema = z.union([
   z
@@ -2833,18 +2932,22 @@ export const LocalProjectControlResponseSchema = z.union([
       result: LocalProjectFileReadResultSchema.nullable(),
     })
     .strict(),
+  HostedConfigPreviewResponseSchema,
+  HostedConfigImportResponseSchema,
+  LanUpdateMachineResponseSchema,
+  LanInstallAgentResponseSchema,
   z
     .object({
       ok: z.literal(true),
-      type: z.literal('hosted-config/preview'),
-      result: HostedConfigPreviewSchema,
+      type: z.literal('lan/machines'),
+      result: LanMachinesSchema,
     })
     .strict(),
   z
     .object({
       ok: z.literal(true),
-      type: z.literal('hosted-config/import'),
-      result: HostedConfigImportResultSchema,
+      type: z.literal('lan/forward'),
+      result: z.object({ response: LanMemberControlResponseSchema }).strict(),
     })
     .strict(),
   LocalProjectControlErrorResponseSchema,

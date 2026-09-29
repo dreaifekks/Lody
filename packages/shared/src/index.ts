@@ -26,6 +26,8 @@ export type {
 } from './ids';
 export * from './message';
 export * from './hosted-config';
+export * from './lan-control';
+export * from './lan-release';
 export * from './ai';
 export * from './acp-model-capabilities';
 export * from './pi-provider-migration';

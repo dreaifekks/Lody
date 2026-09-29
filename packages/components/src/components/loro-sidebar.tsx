@@ -266,6 +266,10 @@ export interface LoroSidebarProps {
   onCreateWorkspaceClicked?: () => void;
   onInviteClicked?: () => void;
   onLinkRepoClicked?: () => void;
+  /**
+   * Opens the settings of the LANs. It is an entry of the switcher, and the
+   * nameplate itself while there is nothing to switch.
+   */
   onManageLansClicked?: () => void;
   onHomeClicked?: () => void;
   onArchiveClicked?: () => void;
@@ -1006,11 +1010,15 @@ export const LoroSidebar = memo(function LoroSidebar({
     </>
   );
   const windowDrag = isElectron && !isElectronFullscreen;
+  // One LAN leaves nothing to switch, but its name is still where a member
+  // looks for it: the nameplate then opens the settings of the LANs.
+  const lanSettingsShortcut =
+    !workspaceSwitcherEnabled && workspaceSwitcherKind === 'lan' && Boolean(onManageLansClicked);
   const workspaceIdentityClassName = cn(
     'flex w-full min-w-0 select-none items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[0.9em]',
     isMobile ? 'h-9' : 'h-8',
     'text-sidebar-foreground dark:text-sidebar-foreground/75',
-    workspaceSwitcherEnabled &&
+    (workspaceSwitcherEnabled || lanSettingsShortcut) &&
       'hover:bg-sidebar-hover hover:text-sidebar-hover-foreground focus-visible:outline-hidden focus-visible:bg-sidebar-hover'
   );
   const getPlanLabel = (planTier: LoroSidebarWorkspace['planTier']) =>
@@ -1193,6 +1201,18 @@ export const LoroSidebar = memo(function LoroSidebar({
           )}
         </Menu.Content>
       </Menu.Root>
+    ) : lanSettingsShortcut ? (
+      <div className="min-w-0 flex-1">
+        <button
+          type="button"
+          className={cn(workspaceIdentityClassName, windowDrag && WINDOW_DRAG_EXEMPT_CLASS)}
+          data-workspace-lan-settings
+          aria-label={`${workspaceName}: ${mergedLabels.manageLans}`}
+          onClick={() => onManageLansClicked?.()}
+        >
+          {workspaceIdentity}
+        </button>
+      </div>
     ) : (
       <div className="min-w-0 flex-1">
         <div className={workspaceIdentityClassName} data-workspace-identity>

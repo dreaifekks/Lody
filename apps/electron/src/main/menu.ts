@@ -2,7 +2,7 @@ import { productWindows } from './window-state'
 import { requestRendererReload } from './renderer-recovery'
 import { app, BrowserWindow, Menu, shell } from 'electron'
 import { closeFocusedTabOrWindow } from './close-focused-tab-or-window'
-import type { AppUpdaterService } from './services/app-updater-service'
+import type { AppUpdater } from './services/app-updater'
 import en from '../../../../locales/en.json'
 import zhCN from '../../../../locales/zh_CN.json'
 
@@ -25,7 +25,7 @@ function t(locale: SupportedLocale, key: string, vars?: Record<string, string>):
 }
 
 type SetupApplicationMenuOptions = {
-  appUpdaterService: AppUpdaterService
+  appUpdaterService: AppUpdater
   getMainWindow: () => BrowserWindow | null
   openOrFocusMainWindow: () => BrowserWindow
 }

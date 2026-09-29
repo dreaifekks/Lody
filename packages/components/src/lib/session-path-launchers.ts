@@ -1,6 +1,14 @@
 import type { LaunchLocalPathInput, LocalPathCommandSpec } from '@lody/shared';
 import { parseCustomAcpCommandLine } from '@lody/shared';
 import {
+  formatSshDestination,
+  isSshUrlHost,
+  parseSshDestination,
+  toSshDestination,
+  type LanSshDestination,
+  type SshDestination,
+} from '@lody/shared/lan-ssh';
+import {
   DEFAULT_PATH_LAUNCHER_PREFERENCE,
   PATH_LAUNCHER_PREFERENCE_STORAGE_KEY,
   builtinPathLauncherIdSchema,
@@ -359,18 +367,14 @@ export function buildVSCodePathLauncherFallbackUrl(
   return `vscode://file${encodedPath}?windowId=_blank`;
 }
 
-function buildEditorCliLauncherInput(
+/** The editor's CLI with `args`: by name first, then where each platform installs it. */
+function buildEditorCliCommands(
   id: keyof typeof EDITOR_CLI_LAUNCHERS,
-  targetPath: string,
   platform: PathLauncherPlatform,
-  label: string,
-  targetKind: 'file' | 'directory'
-): LaunchLocalPathInput {
+  args: string[]
+): Pick<Extract<LaunchLocalPathInput, { kind: 'command' }>, 'command' | 'fallbackCommands'> {
   const spec = EDITOR_CLI_LAUNCHERS[id];
-  const make = (command: string): LocalPathCommandSpec => ({
-    command,
-    args: spec.newWindowFlag ? [spec.newWindowFlag, targetPath] : [targetPath],
-  });
+  const make = (command: string): LocalPathCommandSpec => ({ command, args });
 
   let absoluteFallbacks: readonly string[];
   switch (platform) {
@@ -392,14 +396,150 @@ function buildEditorCliLauncherInput(
 
   const fallbackCommands = absoluteFallbacks.slice(0, 3).map(make);
   return {
-    kind: 'command',
     command: make(spec.cli),
     ...(fallbackCommands.length > 0 ? { fallbackCommands } : {}),
+  };
+}
+
+function buildEditorCliLauncherInput(
+  id: keyof typeof EDITOR_CLI_LAUNCHERS,
+  targetPath: string,
+  platform: PathLauncherPlatform,
+  label: string,
+  targetKind: 'file' | 'directory'
+): LaunchLocalPathInput {
+  const { newWindowFlag } = EDITOR_CLI_LAUNCHERS[id];
+  return {
+    kind: 'command',
+    ...buildEditorCliCommands(
+      id,
+      platform,
+      newWindowFlag ? [newWindowFlag, targetPath] : [targetPath]
+    ),
     ...(id === 'vscode'
       ? { fallbackUrl: buildVSCodePathLauncherFallbackUrl(targetPath, targetKind) }
       : {}),
     targetPath,
     label,
+  };
+}
+
+/**
+ * Whether the launcher opens a folder of another machine. That takes an editor
+ * that works over SSH; every other launcher hands the path to a program that
+ * would look for it on this machine.
+ */
+export function canLaunchRemotePath(launcher: PathLauncherOption): boolean {
+  return launcher.kind === 'builtin' && isEditorCliLauncherId(launcher.id);
+}
+
+/**
+ * Whether the launcher is handed a machine as the host of an address, where
+ * only some names fit. Zed is; the VS Code family has a way to write any.
+ */
+export function remotePathLauncherTakesUrlHost(launcher: PathLauncherOption): boolean {
+  return launcher.kind === 'builtin' && launcher.id === 'zed';
+}
+
+/** An entry of this machine's SSH configuration, if the launcher can be handed it. */
+export function resolveRemotePathEntry(
+  launcher: PathLauncherOption,
+  entry: unknown
+): SshDestination | null {
+  const parsed = parseSshDestination(entry);
+  if (!parsed) return null;
+  return !remotePathLauncherTakesUrlHost(launcher) || isSshUrlHost(parsed.host) ? parsed : null;
+}
+
+/**
+ * What an editor is handed to reach a machine: the entry of this machine's SSH
+ * configuration the user named for it, else the one found to lead there, which
+ * is where its key is, and without one that the launcher can be handed, what
+ * the machine says about itself.
+ */
+export function resolveRemotePathDestination(
+  launcher: PathLauncherOption,
+  ssh: LanSshDestination,
+  entries: { named?: unknown; found?: unknown }
+): SshDestination {
+  return (
+    resolveRemotePathEntry(launcher, entries.named) ??
+    resolveRemotePathEntry(launcher, entries.found) ??
+    toSshDestination(ssh)
+  );
+}
+
+/**
+ * The VS Code family writes the authority of an address in small letters and
+ * reads a colon in it as the start of a port. A destination with capital
+ * letters, a colon or a port is therefore handed over the way these editors
+ * write one themselves: as the hexadecimal of its parts, which they read back
+ * letter by letter.
+ */
+function formatVsCodeRemoteAuthority(destination: SshDestination): string {
+  const { host, user, port } = destination;
+  const written = formatSshDestination(destination);
+  if (port === undefined && /^[a-z0-9_.@-]+$/u.test(written)) return `ssh-remote+${written}`;
+  const parts = JSON.stringify({
+    hostName: host,
+    ...(user === undefined ? {} : { user }),
+    ...(port === undefined ? {} : { port }),
+  });
+  const hexadecimal = Array.from(new TextEncoder().encode(parts), (byte) =>
+    byte.toString(16).padStart(2, '0')
+  ).join('');
+  return `ssh-remote+${hexadecimal}`;
+}
+
+/**
+ * Opens a folder of another machine over SSH. The VS Code family takes it as a
+ * `vscode-remote` address and Zed as an `ssh` one. It is named by address and
+ * not as `--remote <destination> <path>`, because VS Code takes a remote path
+ * with a dot in its last segment for a file. The address carries the path
+ * encoded, so nothing in it reads as an option or as part of the destination.
+ */
+export function buildRemotePathLauncherLaunchInput(
+  launcher: PathLauncherOption,
+  targetPath: string,
+  /** As `resolveRemotePathDestination` gives it for the launcher. */
+  destination: SshDestination,
+  platform?: string | null
+): LaunchLocalPathInput {
+  if (launcher.kind !== 'builtin' || !isEditorCliLauncherId(launcher.id)) {
+    throw new Error(
+      `Path launcher ${getPathLauncherId(launcher)} cannot open a folder of another machine`
+    );
+  }
+  if (!targetPath.startsWith('/')) {
+    throw new Error('A folder of another machine is opened by its absolute POSIX path');
+  }
+  const reached = parseSshDestination(destination);
+  if (!reached || (remotePathLauncherTakesUrlHost(launcher) && !isSshUrlHost(reached.host))) {
+    throw new Error(`Path launcher ${launcher.id} cannot be handed that machine`);
+  }
+
+  const folder = targetPath
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  const { newWindowFlag } = EDITOR_CLI_LAUNCHERS[launcher.id];
+  const authority = formatVsCodeRemoteAuthority(reached);
+  const args =
+    launcher.id === 'zed'
+      ? [`ssh://${formatSshDestination(reached)}${folder}`]
+      : [
+          ...(newWindowFlag ? [newWindowFlag] : []),
+          '--folder-uri',
+          `vscode-remote://${authority}${folder}`,
+        ];
+  return {
+    kind: 'command',
+    ...buildEditorCliCommands(launcher.id, normalizePlatform(platform), args),
+    ...(launcher.id === 'vscode'
+      ? { fallbackUrl: `vscode://vscode-remote/${authority}${folder}?windowId=_blank` }
+      : {}),
+    targetPath,
+    label: launcher.label,
   };
 }
 
@@ -461,13 +601,32 @@ export function buildPathLauncherLaunchInput(
   throw new Error(`Path launcher ${launcher.id} cannot build a launch request`);
 }
 
+/**
+ * What to ask the desktop bridge about each launcher. With `ssh` the path is on
+ * another machine, and only the launchers that open it there are asked about.
+ * The bridge is asked whether the editor is there, not whether it gets in.
+ */
 export function buildPathLauncherProbes(
   launchers: readonly PathLauncherOption[],
   targetPath: string,
-  platform?: string | null
+  platform?: string | null,
+  ssh?: LanSshDestination | null
 ): Array<{ launcherId: string; input: LaunchLocalPathInput }> {
   const checks: Array<{ launcherId: string; input: LaunchLocalPathInput }> = [];
   for (const launcher of launchers) {
+    if (ssh) {
+      if (!canLaunchRemotePath(launcher)) continue;
+      checks.push({
+        launcherId: getPathLauncherId(launcher),
+        input: buildRemotePathLauncherLaunchInput(
+          launcher,
+          targetPath,
+          toSshDestination(ssh),
+          platform
+        ),
+      });
+      continue;
+    }
     if (
       launcher.kind === 'custom' &&
       !validateCustomPathLauncherCommandTemplate(launcher.commandTemplate).ok

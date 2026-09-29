@@ -100,8 +100,13 @@ async function createHarness() {
     child: () => logger,
     close: async () => {},
   };
+  // What the agent service has open, as the real manager keeps it: a refresh
+  // leaves a session alone while it is in here. The documents themselves stay
+  // in `docs`, so a test reads what an import wrote after it was released.
+  const open = new Map<SessionId, SessionDocument>();
   const manager = {
     repo,
+    sessions: open,
     async getOrCreateSessionDoc(sessionId: SessionId) {
       let doc = docs.get(sessionId);
       if (!doc) {
@@ -110,9 +115,12 @@ async function createHarness() {
         vi.spyOn(doc, 'waitUntilSynced').mockResolvedValue(true);
         docs.set(sessionId, doc);
       }
+      open.set(sessionId, doc);
       return doc;
     },
-    cleanSessionDoc: async () => {},
+    cleanSessionDoc: async (sessionId: SessionId) => {
+      open.delete(sessionId);
+    },
     findSoleAgentConfig: async () => agentConfigs.sole,
     getAgentConfigById: async (id: string) =>
       agentConfigs.all.find((config) => config.id === id) ?? null,
