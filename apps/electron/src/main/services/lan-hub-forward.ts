@@ -100,34 +100,55 @@ export async function forwardToLanHub(target: LanHubTarget, request: Request): P
     return errorResponse(400, 'unreadable request body')
   }
 
-  return await new Promise<Response>((resolve) => {
-    const secure = upstreamUrl.protocol === 'https:'
-    const upstream = (secure ? https : http).request(
-      upstreamUrl,
-      {
-        method: request.method,
-        headers: buildUpstreamHeaders(target, request),
-        agent: secure ? httpsAgent : httpAgent
-      },
-      (response) => {
-        const status = response.statusCode ?? 502
-        const headers = buildRendererHeaders(response)
-        if (request.method === 'HEAD' || NULL_BODY_STATUSES.has(status)) {
-          response.resume()
-          resolve(new Response(null, { status, headers }))
+  const secure = upstreamUrl.protocol === 'https:'
+  const send = (retried: boolean): Promise<Response> =>
+    new Promise<Response>((resolve) => {
+      const upstream = (secure ? https : http).request(
+        upstreamUrl,
+        {
+          method: request.method,
+          headers: buildUpstreamHeaders(target, request),
+          agent: secure ? httpsAgent : httpAgent
+        },
+        (response) => {
+          const status = response.statusCode ?? 502
+          const headers = buildRendererHeaders(response)
+          if (request.method === 'HEAD' || NULL_BODY_STATUSES.has(status)) {
+            response.resume()
+            resolve(new Response(null, { status, headers }))
+            return
+          }
+          // Cancelling the returned stream destroys the upstream response, so a
+          // live read the renderer leaves does not stay subscribed on the hub.
+          resolve(
+            new Response(Readable.toWeb(response) as ReadableStream<Uint8Array>, {
+              status,
+              headers
+            })
+          )
+        }
+      )
+      upstream.once('error', (error: NodeJS.ErrnoException) => {
+        // A kept-alive connection the hub closed while idle fails the request
+        // sent on it before the hub read a byte of it. Over a slow link the
+        // hub's close is still on its way often enough to matter; the request
+        // is repeated once on a fresh connection, which is safe because the
+        // hub never received it.
+        if (
+          !retried &&
+          upstream.reusedSocket &&
+          !request.signal.aborted &&
+          (error.code === 'ECONNRESET' || error.code === 'EPIPE')
+        ) {
+          resolve(send(true))
           return
         }
-        // Cancelling the returned stream destroys the upstream response, so a
-        // live read the renderer leaves does not stay subscribed on the hub.
-        resolve(
-          new Response(Readable.toWeb(response) as ReadableStream<Uint8Array>, { status, headers })
-        )
-      }
-    )
-    upstream.once('error', () => resolve(errorResponse(502, 'LAN is unreachable')))
-    request.signal.addEventListener('abort', () => upstream.destroy(), { once: true })
-    upstream.end(body ?? undefined)
-  })
+        resolve(errorResponse(502, 'LAN is unreachable'))
+      })
+      request.signal.addEventListener('abort', () => upstream.destroy(), { once: true })
+      upstream.end(body ?? undefined)
+    })
+  return await send(false)
 }
 
 /**
