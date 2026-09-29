@@ -1683,6 +1683,12 @@ export function LoroAppSidebar({
   }, [isMobile, setMobileDrawerOpen]);
 
   const updateBanner = useMemo(() => readUpdateBannerState(updaterState), [updaterState]);
+  const updateError = updaterState?.error;
+  const updatePhase = updaterState?.phase;
+  useEffect(() => {
+    // An update that was started and failed is one that can be started again.
+    if (updateError) setIsInstallingUpdate(false);
+  }, [updateError, updatePhase]);
   // The changelog follows the language the UI actually rendered in, which is
   // i18next's resolved language rather than the stored preference.
   const resolvedLanguage = i18n.resolvedLanguage;
@@ -3175,9 +3181,11 @@ export function LoroAppSidebar({
     }
   }, [updateBanner]);
 
+  // A build that follows the releases of a repository has its changes there.
+  const followedReleaseUrl = updaterState?.followed?.url;
   const handleOpenChangelogSite = useCallback(() => {
-    void openExternalUrl(getChangelogUrl(resolvedLanguage));
-  }, [resolvedLanguage]);
+    void openExternalUrl(followedReleaseUrl ?? getChangelogUrl(resolvedLanguage));
+  }, [followedReleaseUrl, resolvedLanguage]);
 
   const handleApplyDownloadedUpdate = useCallback(async () => {
     if (!isElectron || typeof window === 'undefined') return;

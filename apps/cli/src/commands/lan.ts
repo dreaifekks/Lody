@@ -18,6 +18,7 @@ import {
   type LanHubSettings,
 } from '@lody/shared/node/lan-hub';
 import { printJson, runOneShotCommand, type CommonCommandOptions } from '@/lib/command-runtime';
+import { machinesCommand, updateCommand } from './lan-machines';
 import { renderTerminalTable } from '@/lib/terminal-table';
 import {
   LAN_HUB_DEFAULT_PORT,
@@ -580,4 +581,6 @@ export const lanCommand = new Command('lan')
   .addCommand(upCommand)
   .addCommand(downCommand)
   .addCommand(statusCommand)
-  .addCommand(hubCommand);
+  .addCommand(hubCommand)
+  .addCommand(machinesCommand)
+  .addCommand(updateCommand);

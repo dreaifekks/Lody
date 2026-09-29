@@ -132,6 +132,14 @@
       "types": "./src/lan-hub.ts",
       "import": "./src/lan-hub.ts"
     },
+    "./lan-control": {
+      "types": "./src/lan-control.ts",
+      "import": "./src/lan-control.ts"
+    },
+    "./lan-release": {
+      "types": "./src/lan-release.ts",
+      "import": "./src/lan-release.ts"
+    },
     "./deepseek-harness": {
       "types": "./src/deepseek-harness.ts",
       "import": "./src/deepseek-harness.ts"

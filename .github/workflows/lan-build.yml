@@ -57,6 +57,12 @@ jobs:
         run: node scripts/lan-release.mjs version --build "$GITHUB_RUN_NUMBER" --write
 
       - name: Build CLI and desktop bundles
+        env:
+          # Stamped into both bundles: the releases a build follows are the
+          # ones of the repository that built it.
+          LODY_LAN_REPOSITORY: ${{ github.repository }}
+          LODY_LAN_TAG: ${{ env.LAN_RELEASE_TAG }}
+          LODY_LAN_COMMIT: ${{ github.sha }}
         run: pnpm --dir apps/electron run build
 
       - name: Pack CLI

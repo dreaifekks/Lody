@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { Copy, LogOut, Network, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -9,8 +9,14 @@ import type {
   ElectronLanSummary,
 } from '@lody/shared/electron-ipc';
 import { useDialogExitSnapshot } from '@/hooks/use-dialog-exit-snapshot';
+import { useElectronUpdaterState } from '@/hooks/use-electron-updater-state';
+import { useLanMachines } from '@/hooks/use-lan-machines';
 import { useLanSettings, type LanSettings, type LanSettingsResult } from '@/hooks/use-lan-settings';
+import { UpdateChangelogDialog } from '@/components/update-changelog-dialog';
 import { writeTextToClipboard } from '@/lib/clipboard';
+import { getIpcServices } from '@/lib/electron-ipc-client';
+import { pickLocalizedReleaseNotes } from '@/lib/electron-update-banner';
+import { openExternalUrl } from '@/lib/native-browser';
 import { withClassName } from '@/lib/stylex';
 import { toast } from '@/lib/toast';
 import { useLocalWorkspaces } from '../../providers/local-platform-provider';
@@ -20,8 +26,10 @@ import { Button } from '@lody/ui/button';
 import { Input } from '@lody/ui/input';
 import { Spinner } from '@lody/ui/spinner';
 import { Tabs } from '@lody/ui/tabs';
-import { CompactRow, CompactSection, SettingsEmptyList, settingsRecordsCard } from './compact-layout';
+import { CompactRow, CompactSection, SettingsEmptyList } from './compact-layout';
 import { Field, FormMessage, Section } from './form-primitives';
+import { LanAppUpdate } from './lan-app-update';
+import { LanMachinesView } from './lan-machines';
 import { SettingsPageActions, SettingsPageLead, useSettingsPane } from './settings-page-header';
 import {
   SETTINGS_EDITOR_DIALOG_LAYOUT,
@@ -43,6 +51,10 @@ export type LanSettingViewProps = Pick<
   reachability: Readonly<Record<string, ElectronLanReachability>>;
   /** The workspaces the agent service serves; a LAN without one is still starting. */
   servedWorkspaceIds: ReadonlySet<string>;
+  /** The build of this application, above what it is a member of. */
+  application?: ReactNode;
+  /** The machines the LANs reach, below them. */
+  machines?: ReactNode;
 };
 
 /** Desktop Settings > LAN, wired to the desktop shell. */
@@ -73,14 +85,82 @@ export function LanSetting() {
       {...settings}
       state={settings.state}
       servedWorkspaceIds={new Set(workspaces.map((workspace) => workspace.id))}
+      application={<LanApplication />}
+      machines={<LanMachinesOfThisMachine />}
     />
   );
+}
+
+/** The build of this application, wired to what keeps it current. */
+function LanApplication() {
+  const updater = useElectronUpdaterState();
+  const { i18n } = useTranslation();
+  const [updating, setUpdating] = useState(false);
+  const [changesOpen, setChangesOpen] = useState(false);
+
+  const failure = updater?.error;
+  const phase = updater?.phase;
+  useEffect(() => {
+    // An update that was started and failed is one that can be started again.
+    if (failure) setUpdating(false);
+  }, [failure, phase]);
+
+  const check = useCallback(() => {
+    void getIpcServices()?.updater.checkForUpdates();
+  }, []);
+  const update = useCallback(() => {
+    const ipc = getIpcServices();
+    if (!ipc) return;
+    setUpdating(true);
+    void ipc.updater
+      .quitAndInstall()
+      .then((result) => {
+        if (result.ok) return;
+        setUpdating(false);
+        toast.error(result.error ?? 'update_failed');
+      })
+      .catch(() => setUpdating(false));
+  }, []);
+
+  const version = updater?.downloadedVersion ?? updater?.availableVersion;
+  const followed = updater?.followed?.url;
+  return (
+    <>
+      <LanAppUpdate
+        updater={updater}
+        updating={updating}
+        onCheck={check}
+        onUpdate={update}
+        onViewChanges={() => setChangesOpen(true)}
+      />
+      {version ? (
+        <UpdateChangelogDialog
+          open={changesOpen}
+          onOpenChange={setChangesOpen}
+          version={version}
+          releaseDate={updater?.releaseDate}
+          notes={pickLocalizedReleaseNotes(updater, i18n.resolvedLanguage)}
+          onOpenChangelogSite={() => {
+            if (followed) void openExternalUrl(followed);
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/** The machines of the LANs, wired to the agent service of this machine. */
+function LanMachinesOfThisMachine() {
+  const { inventory, ...control } = useLanMachines();
+  return inventory ? <LanMachinesView inventory={inventory} {...control} /> : null;
 }
 
 export function LanSettingView({
   state,
   reachability,
   servedWorkspaceIds,
+  application,
+  machines,
   join,
   add,
   update,
@@ -158,6 +238,8 @@ export function LanSettingView({
         <FormMessage tone="warning">{t('settings.lan.notEditable')}</FormMessage>
       ) : null}
 
+      {application}
+
       <CompactSection title={t('settings.lan.thisMachine')}>
         <CompactRow
           label={state.machineName.name}
@@ -187,23 +269,22 @@ export function LanSettingView({
       {state.lans.length === 0 ? (
         <SettingsEmptyList>{t('settings.lan.empty')}</SettingsEmptyList>
       ) : (
-        <div {...stylex.props(settingsRecordsCard)}>
-          {state.lans.map((lan, index) => (
-            <div key={lan.id} {...stylex.props(surface.line, index > 0 && surface.lineRuled)}>
-              <LanRow
-                lan={lan}
-                editable={state.editable}
-                status={
-                  !servedWorkspaceIds.has(lan.workspaceId) ? 'starting' : reachability[lan.id]
-                }
-                onEdit={() => open({ mode: 'edit', lan })}
-                onCopyInvite={() => void copyInvite(lan)}
-                onLeave={() => setLeaving(lan)}
-              />
-            </div>
+        <CompactSection title={t('settings.lan.lans')} boxed>
+          {state.lans.map((lan) => (
+            <LanRow
+              key={lan.id}
+              lan={lan}
+              editable={state.editable}
+              status={!servedWorkspaceIds.has(lan.workspaceId) ? 'starting' : reachability[lan.id]}
+              onEdit={() => open({ mode: 'edit', lan })}
+              onCopyInvite={() => void copyInvite(lan)}
+              onLeave={() => setLeaving(lan)}
+            />
           ))}
-        </div>
+        </CompactSection>
       )}
+
+      {machines}
 
       <Dialog.Root
         open={editor !== null}

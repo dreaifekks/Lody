@@ -1,5 +1,13 @@
 import type { Meta, StoryObj } from '@storybook/react';
-import type { ElectronLanState, ElectronLanSummary } from '@lody/shared/electron-ipc';
+import type {
+  ElectronLanState,
+  ElectronLanSummary,
+  ElectronUpdaterState,
+} from '@lody/shared/electron-ipc';
+import type { HostedConfigPreview } from '@lody/shared/hosted-config';
+import type { LanMachine, LanMachines } from '@lody/shared/lan-control';
+import { LanAppUpdate } from '@/components/settings/lan-app-update';
+import { LanMachinesView } from '@/components/settings/lan-machines';
 import { LanSettingView } from '@/components/settings/lan-setting';
 import type { LanSettingsResult } from '@/hooks/use-lan-settings';
 
@@ -24,6 +32,133 @@ const state: ElectronLanState = {
 };
 
 const accepted = async (): Promise<LanSettingsResult> => ({ ok: true });
+
+const RUNNING = '0.100.0-lan.4';
+const NEWEST = '0.100.0-lan.5';
+const source = { repository: 'someone/Lody', tag: 'lan-latest' };
+
+const updater = (overrides: Partial<ElectronUpdaterState> = {}): ElectronUpdaterState => ({
+  phase: 'available',
+  currentVersion: RUNNING,
+  availableVersion: NEWEST,
+  followed: { ...source, url: 'https://github.com/someone/Lody/releases/tag/lan-latest' },
+  ...overrides,
+});
+
+const machine = (overrides: Partial<LanMachine> & { machineId: string }): LanMachine => ({
+  name: overrides.machineId,
+  os: 'linux',
+  self: false,
+  online: true,
+  lans: [{ workspaceId: home.workspaceId, name: home.name }],
+  version: RUNNING,
+  build: { version: RUNNING, update: 'service', source },
+  update: null,
+  controllable: true,
+  agents: [],
+  ...overrides,
+});
+
+const machines: LanMachines = {
+  newest: { version: NEWEST, commit: 'abcdef12', builtAt: '2026-09-29T00:00:00.000Z' },
+  machines: [
+    machine({
+      machineId: 'macbook-air',
+      os: 'darwin',
+      self: true,
+      lans: [
+        { workspaceId: home.workspaceId, name: home.name },
+        { workspaceId: office.workspaceId, name: office.name },
+      ],
+      build: { version: RUNNING, update: 'desktop', source },
+      agents: [
+        { agentType: 'claude', name: 'Claude Code', version: '2.1.280', state: 'current' },
+        { agentType: 'codex', name: 'Codex', target: '0.156.0', state: 'missing' },
+      ],
+    }),
+    machine({
+      machineId: 'home-server',
+      agents: [
+        { agentType: 'claude', name: 'Claude Code', version: '2.1.280', state: 'current' },
+        {
+          agentType: 'codex',
+          name: 'Codex',
+          version: '0.155.0',
+          target: '0.156.0',
+          state: 'outdated',
+        },
+      ],
+    }),
+    machine({
+      machineId: 'build-box',
+      version: NEWEST,
+      update: null,
+      build: { version: NEWEST, update: 'service', source },
+    }),
+    machine({
+      machineId: 'render-farm',
+      update: { phase: 'installing', version: NEWEST, at: 1 },
+    }),
+    machine({
+      machineId: 'attic',
+      update: {
+        phase: 'failed',
+        version: NEWEST,
+        at: 1,
+        error: 'npm could not install the build: ENOSPC no space left on device',
+      },
+    }),
+    machine({ machineId: 'old-laptop', online: false, controllable: false, build: null }),
+  ],
+};
+
+const hosted: HostedConfigPreview = {
+  found: true,
+  sources: [
+    {
+      workspaceId: 'hosted',
+      name: 'Team',
+      items: [
+        { category: 'agentConfigs', id: 'a1', name: 'Claude Code', action: 'unchanged' },
+        { category: 'agentConfigs', id: 'a2', name: 'Codex', action: 'update', needsSignIn: true },
+        { category: 'localProjects', id: 'p1', name: 'mizuki', action: 'create' },
+        {
+          category: 'localProjects',
+          id: 'p2',
+          name: 'gone',
+          action: 'skip',
+          reason: 'missing_directory',
+        },
+      ],
+    },
+  ],
+};
+
+const machinesView = (
+  <LanMachinesView
+    inventory={machines}
+    updateMachine={async () => ({ ok: true, result: { outcome: 'started', version: NEWEST } })}
+    installAgent={async (_machine, agentType) => ({
+      ok: true,
+      result: { agentType, outcome: 'started' },
+    })}
+    previewHostedImport={async () => ({ ok: true, result: hosted })}
+    importHostedConfig={async () => ({
+      ok: true,
+      result: { workspaceId: home.workspaceId, items: hosted.sources[0]?.items ?? [] },
+    })}
+  />
+);
+
+const application = (reported: ElectronUpdaterState, updating = false) => (
+  <LanAppUpdate
+    updater={reported}
+    updating={updating}
+    onCheck={() => {}}
+    onUpdate={() => {}}
+    onViewChanges={() => {}}
+  />
+);
 
 const meta = {
   title: 'Settings/LanSetting',
@@ -83,5 +218,35 @@ export const RejectedEdit: Story = {
       code: 'invalid_invite',
       message: 'A LAN invite starts with lody-lan:// or lody-lans://',
     }),
+  },
+};
+
+/**
+ * A later build is out: this application offers it, a server is updated from
+ * here, and a machine whose build is too old is updated by hand once.
+ */
+export const WithMachines: Story = {
+  args: { application: application(updater()), machines: machinesView },
+};
+
+export const ApplicationDownloading: Story = {
+  args: {
+    application: application(updater({ phase: 'downloading', percent: 41.6 }), true),
+    machines: machinesView,
+  },
+};
+
+export const ApplicationUpToDate: Story = {
+  args: {
+    application: application(updater({ phase: 'up_to_date', availableVersion: undefined })),
+    machines: machinesView,
+  },
+};
+
+/** The application runs from a disk image, where it cannot replace itself. */
+export const ApplicationNotInstalled: Story = {
+  args: {
+    application: application(updater({ phase: 'disabled', disabledReason: 'not_installed' })),
+    machines: machinesView,
   },
 };

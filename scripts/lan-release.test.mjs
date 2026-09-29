@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { defineBuildStamp, readBuildStamp } from './lan-build-stamp.mjs';
 import {
   assembleRelease,
   composeLanVersion,
@@ -202,4 +203,36 @@ test('release notes only advertise the platforms that were built', async (t) => 
   assert.ok(notes.includes('`0.100.0-lan.7`'));
   assert.ok(!notes.includes('macOS desktop'));
   assert.ok(!notes.includes('Linux desktop'));
+});
+
+test('a build is stamped with the repository and tag its workflow names', () => {
+  const env = { LODY_LAN_REPOSITORY: ' someone/Lody ', LODY_LAN_TAG: 'lan-latest' };
+  assert.deepEqual(readBuildStamp(env), { repository: 'someone/Lody', tag: 'lan-latest' });
+  assert.deepEqual(readBuildStamp({ ...env, LODY_LAN_COMMIT: COMMIT }), {
+    repository: 'someone/Lody',
+    tag: 'lan-latest',
+    commit: COMMIT,
+  });
+
+  const defined = defineBuildStamp({ ...env, LODY_LAN_COMMIT: COMMIT });
+  // The constant is source text: evaluating it gives the JSON the build reads.
+  assert.deepEqual(JSON.parse(JSON.parse(defined.__LODY_LAN_RELEASE_JSON__)), {
+    repository: 'someone/Lody',
+    tag: 'lan-latest',
+    commit: COMMIT,
+  });
+});
+
+test('a build made outside a release workflow follows nothing', () => {
+  assert.equal(readBuildStamp({}), null);
+  assert.equal(readBuildStamp({ LODY_LAN_REPOSITORY: 'someone/Lody' }), null);
+  assert.deepEqual(defineBuildStamp({}), { __LODY_LAN_RELEASE_JSON__: 'null' });
+});
+
+test('a wrong stamp fails the build', () => {
+  assert.throws(() => readBuildStamp({ LODY_LAN_REPOSITORY: 'nope', LODY_LAN_TAG: 'lan-latest' }));
+  assert.throws(() => readBuildStamp({ LODY_LAN_REPOSITORY: 'a/b', LODY_LAN_TAG: 'x/y' }));
+  assert.throws(() =>
+    readBuildStamp({ LODY_LAN_REPOSITORY: 'a/b', LODY_LAN_TAG: 'lan', LODY_LAN_COMMIT: 'HEAD' })
+  );
 });

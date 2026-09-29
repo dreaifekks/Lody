@@ -156,6 +156,27 @@ describe('LanServiceManager', () => {
     });
   });
 
+  it('tells the process the service manager starts again from one a service started', async () => {
+    const mainPid = 'systemctl --user show lody-lan-agent.service --property=MainPID --value';
+    const services = manager();
+    const onLinux = process.platform === 'linux';
+
+    answers.set(mainPid, ok('4321\n'));
+    expect(await services.isProcess('agent', 4321)).toBe(onLinux);
+    expect(await services.isProcess('agent', 4322)).toBe(false);
+
+    // A unit that does not run has no main process.
+    answers.set(mainPid, ok('0\n'));
+    expect(await services.isProcess('agent', 4321)).toBe(false);
+    answers.set(mainPid, { code: 1, stdout: '', stderr: 'Failed to connect to bus' });
+    expect(await services.isProcess('agent', 4321)).toBe(false);
+  });
+
+  it('starts a running service again and leaves a stopped one stopped', async () => {
+    await manager().restartIfActive('hub');
+    expect(calls).toEqual(['systemctl --user try-restart lody-lan-hub.service']);
+  });
+
   it('removes a service and leaves one that was never installed alone', async () => {
     const services = manager();
     expect(await services.remove('agent')).toBe(false);

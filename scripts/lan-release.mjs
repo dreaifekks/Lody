@@ -12,14 +12,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { COMMIT_PATTERN, REPOSITORY_PATTERN, TAG_PATTERN } from './lan-build-stamp.mjs';
 
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
 const VERSIONED_MANIFESTS = ['apps/cli/package.json', 'apps/electron/package.json'];
 const INSTALL_SCRIPT_TEMPLATES = ['install.sh', 'install-mac.sh'];
 const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+-lan\.\d+$/u;
-const REPOSITORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/u;
-const TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
-const COMMIT_PATTERN = /^[a-f0-9]{7,40}$/u;
 
 /**
  * The fork follows the upstream release line and numbers its own builds in the

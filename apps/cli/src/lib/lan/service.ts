@@ -196,6 +196,28 @@ export class LanServiceManager {
     await this.systemctl('restart', LAN_SERVICE_UNITS[kind]);
   }
 
+  /** Starts a running service again; one that does not run stays as it is. */
+  async restartIfActive(kind: LanServiceKind): Promise<void> {
+    await this.systemctl('try-restart', LAN_SERVICE_UNITS[kind]);
+  }
+
+  /**
+   * Whether the service is this process, which the service manager then
+   * starts again after it exits. What a service started has the environment
+   * of a service without being one, so the environment does not answer this.
+   */
+  async isProcess(kind: LanServiceKind, pid: number = process.pid): Promise<boolean> {
+    if (process.platform !== 'linux') return false;
+    const result = await this.run('systemctl', [
+      '--user',
+      'show',
+      LAN_SERVICE_UNITS[kind],
+      '--property=MainPID',
+      '--value',
+    ]);
+    return result.code === 0 && Number(result.stdout.trim()) === pid;
+  }
+
   async remove(kind: LanServiceKind): Promise<boolean> {
     const unitPath = this.getUnitPath(kind);
     if (!fs.existsSync(unitPath)) return false;

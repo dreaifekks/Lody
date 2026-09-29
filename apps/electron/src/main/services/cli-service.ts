@@ -249,7 +249,9 @@ function resolveLocalProjectControlTimeoutMs(type: LocalProjectControlRequest['t
     type === 'local-project/import-history' ||
     type === 'local-project/resolve-history-conflict' ||
     type === 'hosted-config/preview' ||
-    type === 'hosted-config/import'
+    type === 'hosted-config/import' ||
+    // A forwarded request waits for another machine to answer through the hub.
+    type === 'lan/forward'
   ) {
     return LOCAL_PROJECT_CONTROL_LIST_FILES_TIMEOUT_MS
   }

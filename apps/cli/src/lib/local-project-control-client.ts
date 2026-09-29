@@ -22,7 +22,8 @@ export type WorkspaceCandidate = {
 };
 
 export async function sendLocalProjectControl(
-  message: LocalProjectControlRequest
+  message: LocalProjectControlRequest,
+  options: { timeoutMs?: number } = {}
 ): Promise<LocalProjectControlResponse> {
   try {
     await ensureDaemonReachable();
@@ -39,7 +40,7 @@ export async function sendLocalProjectControl(
     return await Effect.runPromise(
       makeLocalControlClientAuto()
         .projectControl(message, {
-          timeoutMs: LOCAL_CONTROL_TIMEOUT_MS,
+          timeoutMs: options.timeoutMs ?? LOCAL_CONTROL_TIMEOUT_MS,
         })
         .pipe(
           Effect.catchTag('IpcTimeoutError', () =>

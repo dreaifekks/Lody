@@ -171,6 +171,12 @@ import {
   type StoredLodyOperation,
   hasPendingUserTurnActivation,
   getDeviceTimeZone,
+  isLanMemberControlType,
+  LAN_CONTROL_PROTOCOL_VERSION,
+  MACHINE_PROTOCOL_CAPABILITIES,
+  type LanMemberControlRequest,
+  type LanMemberControlResponse,
+  type MachineProtocolCapabilities,
 } from '@lody/shared';
 import { getHostMachineProtocolCapabilities } from '../agent/managed-agent-runtime';
 import { ISession, SessionManager } from '../session/session-manager';
@@ -581,6 +587,11 @@ export interface MessageHandlerConfig {
    */
   onProcessLifecycleAction?: (action: MachineProcessLifecycleAction) => void;
   workspaceWatchCoordinator?: WorkspaceWatchCoordinatorApi;
+  /**
+   * Carries out what another member of this workspace's LAN asks of this
+   * machine. Absent where the agent service takes no such requests.
+   */
+  answerLanMemberControl?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
   cloudPort: CloudPort;
 }
 
@@ -747,6 +758,7 @@ export class MessageHandler {
   ) => Promise<void>;
   private onFatalAuthFailure?: (error: Error) => void;
   private onProcessLifecycleAction?: (action: MachineProcessLifecycleAction) => void;
+  private readonly answerLanMemberControl?: MessageHandlerConfig['answerLanMemberControl'];
   private readonly machineLifecycleCapability: MachineLifecycleCapability;
   private pendingProcessLifecycleAction: MachineProcessLifecycleAction | null = null;
   private readonly store = new SessionTransientStore();
@@ -2909,6 +2921,7 @@ export class MessageHandler {
     this.onFatalAuthFailure = config.onFatalAuthFailure;
     this.localWorkspaceCatalog = config.localWorkspaceCatalog ?? makeLocalWorkspaceCatalog();
     this.onProcessLifecycleAction = config.onProcessLifecycleAction;
+    this.answerLanMemberControl = config.answerLanMemberControl;
     this.machineLifecycleCapability = config.machineLifecycleCapability ?? {
       launchMode: 'foreground',
       canRemoteRestart: false,
@@ -3590,7 +3603,7 @@ export class MessageHandler {
         os: process.platform,
         rpcVersion: supportsStreamsRpc ? LORO_STREAMS_RPC_VERSION : undefined,
         supportsLocalProjectHistoryRpc: supportsStreamsRpc,
-        protocolCapabilities: getHostMachineProtocolCapabilities(),
+        protocolCapabilities: this.describeProtocolCapabilities(),
         timeZone: getDeviceTimeZone(),
         supportRegistryAgentTypes: this.supportRegistryAgentTypes,
         sessions: [],
@@ -5815,6 +5828,15 @@ export class MessageHandler {
     await registration;
   }
 
+  /** What this daemon answers, which is more than what its build could. */
+  private describeProtocolCapabilities(): MachineProtocolCapabilities {
+    const capabilities: MachineProtocolCapabilities = getHostMachineProtocolCapabilities();
+    if (this.answerLanMemberControl) {
+      capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanControl] = LAN_CONTROL_PROTOCOL_VERSION;
+    }
+    return capabilities;
+  }
+
   /**
    * Ensure machine metadata and presence runtime are live for this runtime.
    */
@@ -5847,7 +5869,7 @@ export class MessageHandler {
         os: process.platform,
         rpcVersion: supportsStreamsRpc ? LORO_STREAMS_RPC_VERSION : machineMeta?.rpcVersion,
         supportsLocalProjectHistoryRpc: supportsStreamsRpc,
-        protocolCapabilities: getHostMachineProtocolCapabilities(),
+        protocolCapabilities: this.describeProtocolCapabilities(),
         timeZone: getDeviceTimeZone(),
         supportRegistryAgentTypes: this.supportRegistryAgentTypes,
         sessions: machineMeta?.sessions ?? [],
@@ -9323,6 +9345,24 @@ export class MessageHandler {
     const requestType = message.type;
     if (isLocalProjectOwnerOnlyRpcRequest(message)) {
       return await this.dispatchOwnerOnlyLocalProjectControlViaRpc(message);
+    }
+
+    if (isLanMemberControlType(message.type)) {
+      const request = message as LanMemberControlRequest;
+      if (request.workspaceId !== this.workspaceId) {
+        return this.toLocalProjectControlError(
+          requestType,
+          'workspace_not_found',
+          `Workspace mismatch: expected ${this.workspaceId}`
+        );
+      }
+      return this.answerLanMemberControl
+        ? await this.answerLanMemberControl(request)
+        : this.toLocalProjectControlError(
+            requestType,
+            'execution_failed',
+            'This machine takes no requests from the members of a LAN'
+          );
     }
 
     if (isLocalProjectFileRpcRequest(message)) {

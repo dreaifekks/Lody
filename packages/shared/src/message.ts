@@ -3,6 +3,7 @@ import type {
   HostedConfigImportResult,
   HostedConfigPreview,
 } from './hosted-config';
+import type { LanAgentInstallResult, LanMachineUpdateResult, LanMachines } from './lan-control';
 import type {
   MachineId,
   ACPSessionConfig,
@@ -943,6 +944,35 @@ export type LocalProjectWorktreeCleanupResult = {
   failed: Array<LocalProjectWorktreeCleanupItem & { message: string }>;
 };
 
+/**
+ * What the members of a LAN ask of each other's machines. `machineId` is the
+ * machine that is asked and `workspaceId` the workspace of the LAN both are in.
+ */
+export type LanMemberControlRequest =
+  | {
+      type: 'lan/update-machine';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+    }
+  | {
+      type: 'lan/install-agent';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      agentType: string;
+    }
+  | {
+      type: 'hosted-config/preview';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+    }
+  | {
+      type: 'hosted-config/import';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      sourceWorkspaceId: string;
+      categories: HostedConfigCategory[];
+    };
+
 export type LocalProjectControlRequest =
   | {
       type: 'local-project/add';
@@ -1112,17 +1142,19 @@ export type LocalProjectControlRequest =
       relativePath: string;
       maxBytes?: number;
     }
+  | LanMemberControlRequest
   | {
-      type: 'hosted-config/preview';
+      type: 'lan/machines';
       machineId: MachineId;
-      workspaceId: WorkspaceId;
     }
   | {
-      type: 'hosted-config/import';
+      /**
+       * Asks the agent service of this machine to put `request` to another
+       * member of one of its LANs; `request` names that member and that LAN.
+       */
+      type: 'lan/forward';
       machineId: MachineId;
-      workspaceId: WorkspaceId;
-      sourceWorkspaceId: string;
-      categories: HostedConfigCategory[];
+      request: LanMemberControlRequest;
     };
 
 export type LocalProjectControlErrorCode =
@@ -1150,6 +1182,17 @@ type LocalProjectControlOkResponse<TType extends LocalProjectControlRequest['typ
   type: TType;
   result: TResult;
 };
+
+type LanMemberControlOkResponse =
+  | LocalProjectControlOkResponse<'hosted-config/preview', HostedConfigPreview>
+  | LocalProjectControlOkResponse<'hosted-config/import', HostedConfigImportResult>
+  | LocalProjectControlOkResponse<'lan/update-machine', LanMachineUpdateResult>
+  | LocalProjectControlOkResponse<'lan/install-agent', LanAgentInstallResult>;
+
+/** What a member answers, which is also what a forwarded request brings back. */
+export type LanMemberControlResponse =
+  | LanMemberControlOkResponse
+  | LocalProjectControlErrorResponse;
 
 export type LocalProjectControlResponse =
   | LocalProjectControlOkResponse<
@@ -1214,8 +1257,9 @@ export type LocalProjectControlResponse =
     >
   | LocalProjectControlOkResponse<'worktree/list-files', LocalProjectFileListResult>
   | LocalProjectControlOkResponse<'worktree/read-file', LocalProjectFileReadResult | null>
-  | LocalProjectControlOkResponse<'hosted-config/preview', HostedConfigPreview>
-  | LocalProjectControlOkResponse<'hosted-config/import', HostedConfigImportResult>
+  | LanMemberControlOkResponse
+  | LocalProjectControlOkResponse<'lan/machines', LanMachines>
+  | LocalProjectControlOkResponse<'lan/forward', { response: LanMemberControlResponse }>
   | LocalProjectControlErrorResponse;
 
 // ============================================

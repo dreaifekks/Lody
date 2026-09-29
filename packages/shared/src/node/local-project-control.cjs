@@ -1,5 +1,34 @@
 const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
 
+const LAN_MEMBER_CONTROL_TYPES = new Set([
+  'lan/update-machine',
+  'lan/install-agent',
+  'hosted-config/preview',
+  'hosted-config/import',
+]);
+
+const HOSTED_CONFIG_CATEGORIES = new Set([
+  'agentConfigs',
+  'mcpServers',
+  'agentRoles',
+  'localProjects',
+  'worktreeScripts',
+]);
+
+function isHostedConfigItems(value) {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        isObjectRecord(item) &&
+        HOSTED_CONFIG_CATEGORIES.has(item.category) &&
+        typeof item.id === 'string' &&
+        typeof item.name === 'string' &&
+        typeof item.action === 'string'
+    )
+  );
+}
+
 function isObjectRecord(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -471,6 +500,35 @@ function isLocalProjectControlRequest(value) {
     );
   }
 
+  if (value.type === 'hosted-config/preview' || value.type === 'lan/update-machine') {
+    return typeof value.workspaceId === 'string';
+  }
+
+  if (value.type === 'hosted-config/import') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      typeof value.sourceWorkspaceId === 'string' &&
+      Array.isArray(value.categories) &&
+      value.categories.every((category) => HOSTED_CONFIG_CATEGORIES.has(category))
+    );
+  }
+
+  if (value.type === 'lan/install-agent') {
+    return typeof value.workspaceId === 'string' && typeof value.agentType === 'string';
+  }
+
+  if (value.type === 'lan/machines') {
+    return true;
+  }
+
+  if (value.type === 'lan/forward') {
+    return (
+      isObjectRecord(value.request) &&
+      LAN_MEMBER_CONTROL_TYPES.has(value.request.type) &&
+      isLocalProjectControlRequest(value.request)
+    );
+  }
+
   return false;
 }
 
@@ -590,6 +648,70 @@ function isLocalProjectControlResponse(value) {
 
   if (value.type === 'local-project/resolve-history-conflict') {
     return isLocalProjectHistoryConflictResolveResult(value.result);
+  }
+
+  if (value.type === 'hosted-config/preview') {
+    return (
+      isObjectRecord(value.result) &&
+      typeof value.result.found === 'boolean' &&
+      Array.isArray(value.result.sources) &&
+      value.result.sources.every(
+        (source) =>
+          isObjectRecord(source) &&
+          typeof source.workspaceId === 'string' &&
+          typeof source.name === 'string' &&
+          isHostedConfigItems(source.items)
+      )
+    );
+  }
+
+  if (value.type === 'hosted-config/import') {
+    return (
+      isObjectRecord(value.result) &&
+      typeof value.result.workspaceId === 'string' &&
+      isHostedConfigItems(value.result.items)
+    );
+  }
+
+  if (value.type === 'lan/update-machine') {
+    return (
+      isObjectRecord(value.result) &&
+      (value.result.outcome === 'started' || value.result.outcome === 'current') &&
+      typeof value.result.version === 'string'
+    );
+  }
+
+  if (value.type === 'lan/install-agent') {
+    return (
+      isObjectRecord(value.result) &&
+      (value.result.outcome === 'started' || value.result.outcome === 'current') &&
+      typeof value.result.agentType === 'string'
+    );
+  }
+
+  if (value.type === 'lan/machines') {
+    return (
+      isObjectRecord(value.result) &&
+      Array.isArray(value.result.machines) &&
+      value.result.machines.every(
+        (machine) =>
+          isObjectRecord(machine) &&
+          typeof machine.machineId === 'string' &&
+          typeof machine.name === 'string' &&
+          typeof machine.self === 'boolean' &&
+          Array.isArray(machine.lans) &&
+          Array.isArray(machine.agents)
+      )
+    );
+  }
+
+  if (value.type === 'lan/forward') {
+    return (
+      isObjectRecord(value.result) &&
+      isObjectRecord(value.result.response) &&
+      LAN_MEMBER_CONTROL_TYPES.has(value.result.response.type) &&
+      isLocalProjectControlResponse(value.result.response)
+    );
   }
 
   return false;

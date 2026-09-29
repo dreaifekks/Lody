@@ -21,6 +21,13 @@ describe('readUpdateBannerState', () => {
     }
   );
 
+  it('reports a later version that waits for the user', () => {
+    expect(
+      readUpdateBannerState(state({ phase: 'available', availableVersion: '1.1.0', percent: 12 }))
+    ).toEqual({ stage: 'available', version: '1.1.0', percent: null });
+    expect(readUpdateBannerState(state({ phase: 'available' }))).toBeNull();
+  });
+
   it('reports a download in progress with rounded percent', () => {
     expect(
       readUpdateBannerState(

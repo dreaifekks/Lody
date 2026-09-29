@@ -203,6 +203,69 @@ describe('MessageHandler machine registration', () => {
     await handler.cleanup();
   });
 
+  it('says that it answers the members of a LAN only when it was assembled to', async () => {
+    const register = async (answers: boolean): Promise<MachineMeta> => {
+      const workspaceDocument = {
+        sessions: new Map<SessionId, unknown>(),
+        restoreMachineDocument: vi.fn(async () => {}),
+        watchMachineDocumentExistence: vi.fn(() => {}),
+        registerMachine: vi.fn(async () => {}),
+        repo: {
+          watch: vi.fn(() => ({ unsubscribe: vi.fn() })),
+          getDocMeta: vi.fn(async () => undefined),
+        },
+      };
+      const sessionManager = {
+        on: vi.fn(),
+        setRequestPermissionHandler: vi.fn(),
+        getSession: vi.fn(),
+        finishSession: vi.fn(),
+        cleanUp: vi.fn(async () => {}),
+        setSessionError: vi.fn(),
+        terminateSession: vi.fn(),
+        hasSession: vi.fn(),
+        initialize: vi.fn(),
+        createSession: vi.fn(),
+        releaseGitHubRepoOwner: vi.fn(),
+      };
+      const handler = new MessageHandler(
+        sessionManager as unknown as SessionManager,
+        workspaceDocument as unknown as LoroDocumentManager,
+        createSilentLogger(),
+        {
+          token: 'token',
+          workspaceId: 'lw_home' as WorkspaceId,
+          userId: 'local:home',
+          machineId: 'machine-lan' as MachineId,
+          machineName: 'machine-name',
+          cliVersion: '0.100.0-lan.4',
+          cloudPort: createTestCloudPort(),
+          ...(answers
+            ? {
+                answerLanMemberControl: async (request) => ({
+                  ok: false,
+                  type: request.type,
+                  error: 'execution_failed',
+                  message: 'not asked here',
+                }),
+              }
+            : {}),
+        }
+      );
+      await handler.registerMachine();
+      const [, registered] = workspaceDocument.registerMachine.mock.calls[0] as [
+        MachineId,
+        MachineMeta,
+      ];
+      await handler.cleanup();
+      return registered;
+    };
+
+    expect((await register(true)).protocolCapabilities?.lanControl).toBe(1);
+    // A member does not ask a machine that would drop what it is asked.
+    expect((await register(false)).protocolCapabilities).not.toHaveProperty('lanControl');
+  });
+
   it('contains backend access registration failures after remote services activate', async () => {
     const registerMachineAccess = vi.fn(async () => {
       throw new Error('registration unavailable');

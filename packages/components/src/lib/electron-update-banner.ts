@@ -1,12 +1,13 @@
 import type { ElectronUpdaterState } from '@lody/shared';
 
 /**
- * Sidebar update banner model. `downloading` and `downloaded` are the only
- * phases the banner speaks for: earlier phases have nothing actionable, and
- * later ones are terminal for this app instance.
+ * Sidebar update banner model. The banner speaks for an update the user can
+ * act on or watch: one that waits to be started, one that downloads, and one
+ * that is ready to install. Earlier phases have nothing actionable, and later
+ * ones are terminal for this app instance.
  */
 export type UpdateBannerState = {
-  stage: 'downloading' | 'downloaded';
+  stage: 'available' | 'downloading' | 'downloaded';
   version: string;
   /** Rounded 0-100 download progress; null when the feed reports no percent. */
   percent: number | null;
@@ -34,7 +35,13 @@ export function readUpdateBannerState(
   state: ElectronUpdaterState | null
 ): UpdateBannerState | null {
   if (!state) return null;
-  if (state.phase !== 'downloading' && state.phase !== 'downloaded') return null;
+  if (
+    state.phase !== 'available' &&
+    state.phase !== 'downloading' &&
+    state.phase !== 'downloaded'
+  ) {
+    return null;
+  }
 
   const version = readTargetVersion(state);
   if (!version) return null;

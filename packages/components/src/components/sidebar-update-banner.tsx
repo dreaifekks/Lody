@@ -6,9 +6,9 @@ import { cn } from '@/lib/utils';
 import type { UpdateBannerState } from '@/lib/electron-update-banner';
 
 /**
- * Floating sidebar notice for a desktop update that is downloading or ready to
- * install. `View changelog` opens the in-app changelog dialog; it must never
- * leave the app on its own.
+ * Floating sidebar notice for a desktop update that waits to be started, is
+ * downloading, or is ready to install. `View changelog` opens the in-app
+ * changelog dialog; it must never leave the app on its own.
  */
 export function SidebarUpdateBanner({
   stage,
@@ -26,6 +26,7 @@ export function SidebarUpdateBanner({
 }) {
   const { t } = useTranslation();
   const isDownloading = stage === 'downloading';
+  const isAvailable = stage === 'available';
 
   return (
     <div
@@ -37,7 +38,9 @@ export function SidebarUpdateBanner({
       <div className="text-sm font-semibold text-foreground">
         {isDownloading
           ? t('sidebar.updateDownloading.title', 'Downloading update')
-          : t('sidebar.updateReady.title', 'Update ready')}
+          : isAvailable
+            ? t('sidebar.updateAvailable.title', 'Update available')
+            : t('sidebar.updateReady.title', 'Update ready')}
       </div>
       <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
         {isDownloading
@@ -46,7 +49,15 @@ export function SidebarUpdateBanner({
               'Version {{version}} is downloading in the background.',
               { version }
             )
-          : t('sidebar.updateReady.description', 'Restart to update to {{version}}.', { version })}
+          : isAvailable
+            ? t(
+                'sidebar.updateAvailable.description',
+                'Version {{version}} is out. Updating downloads it and restarts Lody.',
+                { version }
+              )
+            : t('sidebar.updateReady.description', 'Restart to update to {{version}}.', {
+                version,
+              })}
       </div>
       {isDownloading && percent != null ? (
         <div className="mt-2 flex items-center gap-2">

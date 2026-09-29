@@ -87,10 +87,12 @@ function formatBuildDate(isoDate: string): string {
 function UpdateStatusText({
   phase,
   percent,
+  availableVersion,
   t,
 }: {
   phase: ElectronUpdaterPhase;
   percent?: number;
+  availableVersion?: string;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   if (phase === 'up_to_date') {
@@ -123,6 +125,14 @@ function UpdateStatusText({
 
   if (phase === 'disabled') {
     return <span {...stylex.props(styles.status)}>{t('settings.about.updaterDisabled')}</span>;
+  }
+
+  if (phase === 'available' && availableVersion) {
+    return (
+      <span {...stylex.props(styles.status)}>
+        {t('settings.about.updateAvailable', { version: availableVersion })}
+      </span>
+    );
   }
 
   return null;
@@ -292,10 +302,21 @@ export function AboutSettingsComponent() {
   }, []);
 
   const phase = updaterState?.phase;
+  const updateError = updaterState?.error;
+  useEffect(() => {
+    // An update that was started and failed is one that can be started again.
+    if (updateError) setIsInstalling(false);
+  }, [updateError, phase]);
   const isChecking = phase === 'checking';
-  const isDownloaded = phase === 'downloaded';
+  // A later version that waits for the user is installed like one that is
+  // on disk already: the updater downloads what it has not got.
+  const isDownloaded = phase === 'downloaded' || phase === 'available';
   const showStatus =
-    phase === 'up_to_date' || phase === 'error' || phase === 'downloading' || phase === 'disabled';
+    phase === 'up_to_date' ||
+    phase === 'error' ||
+    phase === 'downloading' ||
+    phase === 'disabled' ||
+    phase === 'available';
   const showDeveloperModeSwitch = developerModeEnabled || developerModeRevealed;
   // Electron reports its running version through the updater; on the web there
   // is no updater, so fall back to the build-time linked client version.
@@ -344,7 +365,12 @@ export function AboutSettingsComponent() {
           {updaterState && phase !== 'disabled' ? (
             <>
               {showStatus && (
-                <UpdateStatusText phase={phase} percent={updaterState.percent} t={t} />
+                <UpdateStatusText
+                  phase={phase}
+                  percent={updaterState.percent}
+                  availableVersion={updaterState.availableVersion}
+                  t={t}
+                />
               )}
               {isDownloaded && updaterState.error && (
                 <span

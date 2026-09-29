@@ -26,6 +26,8 @@ export type {
 } from './ids';
 export * from './message';
 export * from './hosted-config';
+export * from './lan-control';
+export * from './lan-release';
 export * from './ai';
 export * from './pi-provider-migration';
 export * from './message-text-spans';

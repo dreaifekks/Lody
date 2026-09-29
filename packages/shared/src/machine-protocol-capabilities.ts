@@ -23,6 +23,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   previewControl: 'previewControl',
   piExtensions: 'piExtensions',
   acpCapabilityRefreshCache: 'acpCapabilityRefreshCache',
+  lanControl: 'lanControl',
 } as const;
 
 export const LOCAL_PROJECT_HISTORY_PROVIDER_PROTOCOL_VERSION = 1;
@@ -39,6 +40,7 @@ export const ACP_PROTOCOL_AUTHENTICATION_VERSION = 2;
 export const PREVIEW_CONTROL_PROTOCOL_VERSION = 1;
 export const PI_EXTENSIONS_PROTOCOL_VERSION = 1;
 export const ACP_CAPABILITY_REFRESH_CACHE_PROTOCOL_VERSION = 1;
+export const LAN_CONTROL_PROTOCOL_VERSION = 1;
 
 type MachineProtocolCapabilityCarrier = {
   protocolCapabilities?: MachineProtocolCapabilities;
@@ -251,5 +253,23 @@ export function machineSupportsHistoryProviderSelection(
     machine,
     MACHINE_PROTOCOL_CAPABILITIES.localProjectHistoryProvider,
     LOCAL_PROJECT_HISTORY_PROVIDER_PROTOCOL_VERSION
+  );
+}
+
+/**
+ * Whether the target daemon answers what the members of a LAN ask of each
+ * other: updating itself, installing an agent runtime, importing a hosted
+ * configuration. A daemon without it drops such a request without a reply.
+ *
+ * It is not part of the set every build advertises: a daemon says so only
+ * when it was assembled to answer.
+ */
+export function machineSupportsLanControl(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.lanControl,
+    LAN_CONTROL_PROTOCOL_VERSION
   );
 }

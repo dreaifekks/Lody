@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 import {
   LocalProjectControlResponseSchema,
@@ -633,5 +634,118 @@ describe('node local project control guard', () => {
         },
       })
     ).toBe(true);
+  });
+});
+
+describe('what the members of a LAN ask of each other', () => {
+  const commonJs = createRequire(import.meta.url)('../src/node/local-project-control.cjs') as {
+    isLocalProjectControlRequest: (value: unknown) => boolean;
+    isLocalProjectControlResponse: (value: unknown) => boolean;
+  };
+
+  const accepts = (request: unknown) => ({
+    schema: safeParseLocalProjectControlRequest(JSON.stringify(request)).success,
+    module: isLocalProjectControlRequest(request),
+    commonJs: commonJs.isLocalProjectControlRequest(request),
+  });
+  const answers = (response: unknown) => ({
+    schema: LocalProjectControlResponseSchema.safeParse(response).success,
+    module: isLocalProjectControlResponse(response),
+    commonJs: commonJs.isLocalProjectControlResponse(response),
+  });
+  const all = (value: boolean) => ({ schema: value, module: value, commonJs: value });
+
+  const member = { machineId: 'machine-2', workspaceId: 'lw_home' };
+  const update = { type: 'lan/update-machine', ...member };
+  const install = { type: 'lan/install-agent', ...member, agentType: 'claude' };
+  const preview = { type: 'hosted-config/preview', ...member };
+  const importing = {
+    type: 'hosted-config/import',
+    ...member,
+    sourceWorkspaceId: 'hosted',
+    categories: ['agentConfigs', 'localProjects'],
+  };
+
+  it('reads each request the same way at every boundary', () => {
+    for (const request of [update, install, preview, importing]) {
+      expect(accepts(request)).toEqual(all(true));
+      expect(accepts({ type: 'lan/forward', machineId: 'machine-1', request })).toEqual(all(true));
+    }
+    expect(accepts({ type: 'lan/machines', machineId: 'machine-1' })).toEqual(all(true));
+
+    expect(accepts({ ...install, agentType: undefined })).toEqual(all(false));
+    expect(accepts({ ...importing, categories: ['sessions'] })).toEqual(all(false));
+    expect(accepts({ type: 'lan/update-machine', machineId: 'machine-2' })).toEqual(all(false));
+  });
+
+  it('forwards nothing but what members ask of each other', () => {
+    const forward = (request: unknown) =>
+      accepts({ type: 'lan/forward', machineId: 'machine-1', request });
+
+    expect(
+      forward({ type: 'local-project/add', machineId: 'machine-2', rootPath: '/tmp/project' })
+    ).toEqual(all(false));
+    expect(forward({ type: 'lan/machines', machineId: 'machine-2' })).toEqual(all(false));
+    expect(forward({ type: 'lan/forward', machineId: 'machine-2', request: update })).toEqual(
+      all(false)
+    );
+    expect(forward(undefined)).toEqual(all(false));
+  });
+
+  it('reads each answer the same way at every boundary', () => {
+    const started = {
+      ok: true,
+      type: 'lan/update-machine',
+      result: { outcome: 'started', version: '0.100.0-lan.4' },
+    };
+    const refused = {
+      ok: false,
+      type: 'lan/update-machine',
+      error: 'execution_failed',
+      message: 'The desktop application updates this agent service',
+      data: { reason: 'desktop' },
+    };
+    const machines = {
+      ok: true,
+      type: 'lan/machines',
+      result: {
+        newest: { version: '0.100.0-lan.4', commit: 'abcdef1', builtAt: '2026-09-29T00:00:00Z' },
+        machines: [
+          {
+            machineId: 'machine-2',
+            name: 'server',
+            os: 'linux',
+            self: false,
+            online: true,
+            lans: [{ workspaceId: 'lw_home', name: 'Home' }],
+            version: '0.100.0-lan.3',
+            build: { version: '0.100.0-lan.3', update: 'service' },
+            update: null,
+            controllable: true,
+            agents: [
+              { agentType: 'claude', name: 'Claude Code', version: '2.1.280', state: 'current' },
+            ],
+          },
+        ],
+      },
+    };
+
+    for (const response of [
+      started,
+      refused,
+      machines,
+      { ok: true, type: 'lan/install-agent', result: { agentType: 'claude', outcome: 'current' } },
+      { ok: true, type: 'lan/forward', result: { response: started } },
+      { ok: true, type: 'lan/forward', result: { response: refused } },
+    ]) {
+      expect(answers(response)).toEqual(all(true));
+    }
+
+    expect(
+      answers({ ok: true, type: 'lan/update-machine', result: { outcome: 'done', version: '1' } })
+    ).toEqual(all(false));
+    expect(answers({ ok: true, type: 'lan/forward', result: { response: machines } })).toEqual(
+      all(false)
+    );
   });
 });
