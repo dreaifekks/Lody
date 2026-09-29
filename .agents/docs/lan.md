@@ -222,8 +222,13 @@ hub speaks plain HTTP unless `lody lan hub` is given a certificate.
 installers per platform from those bundles, and a rolling release whose file
 names carry no version. `scripts/lan-release.mjs` names the build and assembles
 the release; `scripts/lan/install.sh` and `install-mac.sh` are published with
-it. The desktop builds are unsigned, which neither the updater of the platform
-nor the one of the framework accepts, so a fork build [updates itself](#updates).
+it. The desktop builds carry no publisher's signature, which neither the
+updater of the platform nor the one of the framework accepts, so a fork build
+[updates itself](#updates). A fork that stores a self-signed code-signing
+certificate as the secrets `LAN_MAC_SIGNING_P12` and `LAN_MAC_SIGNING_PASSWORD`
+signs its macOS builds with it: macOS keys the permissions a user grants to that
+identity, which an unsigned build changes with every build. Gatekeeper still
+does not trust it, so the first launch is allowed as before.
 The update service of the publisher stays off on the local platform: a fork
 build is never replaced by an upstream release.
 Changes to a submodule the fork cannot push to live in `patches/submodules/`;
