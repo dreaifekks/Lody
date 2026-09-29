@@ -1,5 +1,6 @@
 import { createWorkspaceSessionSendJournal } from './workspace-session-send-journal';
 import { throwIfSendAborted } from '../lib/session-send-resources';
+import { confirmTargetSync } from './target-sync-confirmation';
 import { createSessionSendResources } from '@/lib/session-send-resources';
 import { waitForScheduleWriteSync, withScheduleWrite } from './schedule-write-sync';
 import {
@@ -4872,32 +4873,19 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
           // sync exports the missing operations and reuses the transport's room.
           // Upstream sync races its AbortSignal without joining raw stream.sync();
           // omit that signal here so our owner retains dependencies until it settles.
-          const report = await repo.sync({
-            scope: 'full',
-            docIds: [roomId],
-            flockDocIds: [],
-            requireTransports: [plane],
+          await confirmTargetSync({
+            plane,
+            currentPlane: () =>
+              targetRouter.getReadinessTransportForRoom({ kind: 'doc', id: roomId }),
+            sync: () =>
+              repo.sync({
+                scope: 'full',
+                docIds: [roomId],
+                flockDocIds: [],
+                requireTransports: [plane],
+              }),
+            signal,
           });
-          throwIfSendAborted(signal);
-          const outcome = report.transports.find((transport) => transport.transportId === plane);
-          const movedTo = targetRouter.getReadinessTransportForRoom({ kind: 'doc', id: roomId });
-          if (!outcome?.ok || movedTo !== plane) {
-            // Say why: the turn is usually delivered already, and only the
-            // reason tells a slow or failing plane from a route that moved.
-            const reason =
-              movedTo !== plane
-                ? `the session moved to the ${movedTo} plane`
-                : !outcome
-                  ? `the ${plane} plane did not take part`
-                  : outcome.failures
-                      .map((failure) =>
-                        failure.error instanceof Error
-                          ? failure.error.message
-                          : String(failure.error)
-                      )
-                      .join('; ') || `the ${plane} plane reported no success`;
-            throw new Error(`Target synchronization is not confirmed: ${reason}`);
-          }
         },
       })
     : null;
