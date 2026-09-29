@@ -3,8 +3,10 @@ import test from 'node:test'
 import {
   evaluateSshConfig,
   findSshConfigDestination,
+  listPossibleHostNames,
   listSshConfigHosts,
   parseSshConfig,
+  parseSshEvaluation,
   readSshConfig
 } from './ssh-config-core.ts'
 
@@ -16,14 +18,39 @@ const machine = {
   names: ['server', '192.168.1.5']
 }
 
+/**
+ * This machine as a test says it is: what `ssh` answers for a host, what
+ * names stand for, and where an SSH server answers. Left alone, `ssh` cannot
+ * be asked, no name stands for anything and a server answers everywhere.
+ */
+function createReach({ ssh, names = {}, answering } = {}) {
+  const asked = []
+  const reach = {
+    evaluate: async (host) => {
+      asked.push(`ssh ${host}`)
+      return ssh?.[host] ?? null
+    },
+    resolve: async (hostName) => {
+      asked.push(`name ${hostName}`)
+      return names[hostName] ?? []
+    },
+    probe: async (address, port) => {
+      asked.push(`server ${address}:${port}`)
+      return answering ? answering.includes(address) : true
+    }
+  }
+  return { reach, asked }
+}
+
 const find = (text, options = {}) =>
   findSshConfigDestination(
     text,
     { ...machine, ...options.machine },
-    options.localUser === undefined ? 'someone' : options.localUser
+    options.localUser === undefined ? 'someone' : options.localUser,
+    createReach(options).reach
   )
 
-void test('an entry that names the address of the machine is what an editor is handed', () => {
+void test('an entry that names the address of the machine is what an editor is handed', async () => {
   const text = `
     Host *
       AddKeysToAgent yes
@@ -33,10 +60,10 @@ void test('an entry that names the address of the machine is what an editor is h
       User me
       IdentityFile ~/.ssh/nuc
   `
-  assert.equal(find(text), 'nuc')
+  assert.equal(await find(text), 'nuc')
 })
 
-void test('each machine is reached by its own entry, whoever the user of this machine is', () => {
+void test('each machine is reached by its own entry, whoever the user of this machine is', async () => {
   const text = `
     Host *
       AddKeysToAgent yes
@@ -55,60 +82,245 @@ void test('each machine is reached by its own entry, whoever the user of this ma
   const mini = { version: 1, user: 'admin', host: '100.64.0.9', port: 22, names: ['mini-pc'] }
 
   for (const localUser of ['someone', 'me', 'admin', null]) {
-    assert.equal(findSshConfigDestination(text, machine, localUser), 'nuc')
-    assert.equal(findSshConfigDestination(text, mini, localUser), 'mini')
+    const { reach } = createReach()
+    assert.equal(await findSshConfigDestination(text, machine, localUser, reach), 'nuc')
+    assert.equal(await findSshConfigDestination(text, mini, localUser, reach), 'mini')
   }
 })
 
-void test('an entry reaches the machine by anything the machine is called', () => {
-  assert.equal(find('Host nuc\n  HostName 192.168.1.5\n  User me'), 'nuc')
-  assert.equal(find('Host nuc\n  HostName server\n  User me'), 'nuc')
-  assert.equal(find('Host nuc\n  HostName SERVER.tail1234.ts.net.\n  User me'), 'nuc')
-  // The name of the entry is the name of the machine when it names no other.
-  assert.equal(find('Host server\n  User me'), 'server')
-  assert.equal(find('Host 100.64.0.7\n  User me\n  IdentityFile ~/.ssh/nuc'), '100.64.0.7')
+void test('an entry is handed over as the configuration writes it', async () => {
+  // `ssh home-nuc` would find no entry: `Host` tells the letters of one case from the other.
+  const text = 'Host Home-Nuc\n  HostName 192.168.1.5\n  User me'
+  assert.equal(await find(text), 'Home-Nuc')
+
+  const sections = parseSshConfig(text)
+  assert.deepEqual(listSshConfigHosts(sections), ['Home-Nuc'])
+  assert.equal(evaluateSshConfig(sections, 'Home-Nuc').hostName, '192.168.1.5')
+  assert.equal(evaluateSshConfig(sections, 'home-nuc').hostName, 'home-nuc')
+})
+
+void test('an entry reaches the machine by anything the machine is called', async () => {
+  const names = {
+    server: ['192.168.1.5'],
+    'server.tail1234.ts.net': ['100.64.0.7'],
+    'server.lan': ['192.168.1.5']
+  }
+  assert.equal(await find('Host nuc\n  HostName 192.168.1.5\n  User me'), 'nuc')
+  assert.equal(await find('Host nuc\n  HostName server\n  User me', { names }), 'nuc')
   assert.equal(
-    find('Host nuc\n  HostName server.lan\n  User me', {
+    await find('Host nuc\n  HostName SERVER.tail1234.ts.net.\n  User me', { names }),
+    'nuc'
+  )
+  // The name of the entry is the name of the machine when it names no other.
+  assert.equal(await find('Host server\n  User me', { names }), 'server')
+  assert.equal(await find('Host 100.64.0.7\n  User me\n  IdentityFile ~/.ssh/nuc'), '100.64.0.7')
+  assert.equal(
+    await find('Host nuc\n  HostName server.lan\n  User me', {
+      names,
       machine: { host: 'server.home', names: undefined }
     }),
     'nuc'
   )
 })
 
-void test('an entry for another machine, port or user is not taken', () => {
-  assert.equal(find('Host other\n  HostName 100.64.0.8\n  User me'), null)
-  assert.equal(find('Host other\n  HostName servers\n  User me'), null)
-  assert.equal(find('Host other\n  HostName 192.168.1.50\n  User me'), null)
-  assert.equal(find('Host git\n  HostName 100.64.0.7\n  User me\n  Port 2222'), null)
-  assert.equal(find('Host root\n  HostName 100.64.0.7\n  User root'), null)
-  assert.equal(find(''), null)
+void test('a name that stands for an address of the machine is the machine', async () => {
+  // The overlay network calls the machine something the machine does not call itself.
+  const text = 'Host ts-nuc\n  HostName devbox.tail1234.ts.net\n  User me'
+  assert.equal(
+    await find(text, { names: { 'devbox.tail1234.ts.net': ['fd7a::7', '100.64.0.7'] } }),
+    'ts-nuc'
+  )
+  assert.equal(await find(text, { names: { 'devbox.tail1234.ts.net': ['192.168.1.5'] } }), 'ts-nuc')
+  assert.equal(await find(text, { names: { 'devbox.tail1234.ts.net': ['100.64.0.8'] } }), null)
+  assert.equal(await find(text), null)
+})
+
+void test('an entry for another machine, port or user is not taken', async () => {
+  assert.equal(await find('Host other\n  HostName 100.64.0.8\n  User me'), null)
+  assert.equal(await find('Host other\n  HostName servers\n  User me'), null)
+  assert.equal(await find('Host other\n  HostName 192.168.1.50\n  User me'), null)
+  assert.equal(await find('Host git\n  HostName 100.64.0.7\n  User me\n  Port 2222'), null)
+  assert.equal(await find('Host root\n  HostName 100.64.0.7\n  User root'), null)
+  assert.equal(await find(''), null)
 
   assert.equal(
-    find('Host git\n  HostName 100.64.0.7\n  User me\n  Port 2222', { machine: { port: 2222 } }),
+    await find('Host git\n  HostName 100.64.0.7\n  User me\n  Port 2222', {
+      machine: { port: 2222 }
+    }),
     'git'
   )
 })
 
-void test('an entry that leaves the user open is told who owns the folder', () => {
+void test('an entry that leaves the user open is told who owns the folder', async () => {
   const text = 'Host nuc\n  HostName 100.64.0.7\n  IdentityFile ~/.ssh/nuc'
-  assert.equal(find(text, { localUser: 'someone' }), 'me@nuc')
-  assert.equal(find(text, { localUser: null }), 'me@nuc')
+  assert.equal(await find(text, { localUser: 'someone' }), 'me@nuc')
+  assert.equal(await find(text, { localUser: null }), 'me@nuc')
   // `ssh nuc` of this machine would connect as that user anyway.
-  assert.equal(find(text, { localUser: 'me' }), 'nuc')
-  assert.equal(find(`Host *\n  User me\n${text}`, { localUser: 'someone' }), 'nuc')
-  assert.equal(find(`${text}\nMatch all\n  User me`, { localUser: 'someone' }), 'nuc')
+  assert.equal(await find(text, { localUser: 'me' }), 'nuc')
+  assert.equal(await find(`Host *\n  User me\n${text}`, { localUser: 'someone' }), 'nuc')
+  assert.equal(await find(`${text}\nMatch all\n  User me`, { localUser: 'someone' }), 'nuc')
+
+  // `ssh` says who it would connect as, named by the configuration or not.
+  const asked = (user) => ({ nuc: { hostName: '100.64.0.7', user, port: 22, proxied: false } })
+  assert.equal(await find(text, { ssh: asked('someone') }), 'me@nuc')
+  assert.equal(await find(text, { ssh: asked('me') }), 'nuc')
+  assert.equal(await find(`${text}\n  User root`, { ssh: asked('root') }), null)
 })
 
-void test('the entry for the address the machine answers on comes before one for another name', () => {
-  const home = 'Host home\n  HostName 192.168.1.5\n  User me'
-  const away = 'Host away\n  HostName 100.64.0.7\n  User me'
-  assert.equal(find(`${home}\n${away}`), 'away')
-  assert.equal(find(`${away}\n${home}`), 'away')
+void test('the entry at which a server answers is taken, from where this machine is', async () => {
+  const home = 'Host home-nuc\n  HostName 192.168.1.5\n  User me'
+  const away = 'Host ts-nuc\n  HostName 100.64.0.7\n  User me'
+  const lan = ['192.168.1.5']
+  const overlay = ['100.64.0.7']
+
+  for (const text of [`${home}\n${away}`, `${away}\n${home}`]) {
+    // Away from home the network of the house leads nowhere.
+    assert.equal(await find(text, { answering: overlay }), 'ts-nuc')
+    // At home without the overlay network.
+    assert.equal(await find(text, { answering: lan }), 'home-nuc')
+    // Where both lead to the machine, the address it answers members on comes first.
+    assert.equal(await find(text, { answering: [...lan, ...overlay] }), 'ts-nuc')
+    assert.equal(await find(text, { answering: [] }), null)
+  }
+  assert.equal(await find(home, { answering: overlay }), null)
 
   // Between two that are as good, the one that says who connects, then the first.
   const open = 'Host open\n  HostName 100.64.0.7'
-  assert.equal(find(`${open}\n${away}`, { localUser: 'me' }), 'away')
-  assert.equal(find(`${away}\nHost again\n  HostName 100.64.0.7\n  User me`), 'away')
+  assert.equal(await find(`${open}\n${away}`, { localUser: 'me' }), 'ts-nuc')
+  assert.equal(await find(`${away}\nHost again\n  HostName 100.64.0.7\n  User me`), 'ts-nuc')
+})
+
+void test('an entry is taken as soon as a server answers, whatever stays silent after it', async () => {
+  const text = `
+    Host home-nuc
+      HostName 192.168.1.5
+      User me
+    Host ts-nuc
+      HostName 100.64.0.7
+      User me
+  `
+  // The network of the house never answers from elsewhere; it only stops being waited for.
+  const silent = new Promise(() => {})
+  const found = await findSshConfigDestination(text, machine, 'someone', {
+    evaluate: async () => null,
+    resolve: async () => [],
+    probe: (address) => (address === '100.64.0.7' ? Promise.resolve(true) : silent)
+  })
+  assert.equal(found, 'ts-nuc')
+})
+
+void test('what ssh says an entry connects to counts, not what the file seems to say', async () => {
+  const text = `
+    Match originalhost nuc exec "at-home"
+      HostName 192.168.1.5
+    Host nuc
+      HostName 100.64.0.7
+      User me
+  `
+  const says = (hostName) => ({ nuc: { hostName, user: 'me', port: 22, proxied: false } })
+  const answering = ['100.64.0.7']
+
+  assert.equal(await find(text, { ssh: says('100.64.0.7'), answering }), 'nuc')
+  // At home `ssh` takes the entry to the network of the house, which answers there.
+  assert.equal(await find(text, { ssh: says('192.168.1.5'), answering: ['192.168.1.5'] }), 'nuc')
+  assert.equal(await find(text, { ssh: says('192.168.1.5'), answering }), null)
+  // An entry the configuration holds only while something holds that does not now.
+  assert.equal(await find(text, { ssh: says('nuc'), answering }), null)
+  assert.equal(await find(text, { ssh: says('100.64.0.8') }), null)
+  assert.equal(
+    await find(text, { ssh: { nuc: { ...says('100.64.0.7').nuc, port: 2222 } }, answering }),
+    null
+  )
+})
+
+void test('an entry that goes through another host comes after one a server answers at', async () => {
+  const jump = 'Host jump-nuc\n  HostName 192.168.1.5\n  User me\n  ProxyJump bastion'
+  const away = 'Host ts-nuc\n  HostName 100.64.0.7\n  User me'
+  const { reach, asked } = createReach({ answering: [] })
+
+  assert.equal(await findSshConfigDestination(jump, machine, 'me', reach), 'jump-nuc')
+  // Whether it leads anywhere is for the host it goes through to find out.
+  assert.deepEqual(
+    asked.filter((question) => question.startsWith('server')),
+    []
+  )
+  assert.equal(await find(`${jump}\n${away}`, { answering: ['100.64.0.7'] }), 'ts-nuc')
+  assert.equal(await find(`${jump}\n${away}`, { answering: [] }), 'jump-nuc')
+  assert.equal(
+    await find('Host direct\n  HostName 192.168.1.5\n  User me\n  ProxyJump none', {
+      answering: []
+    }),
+    null
+  )
+})
+
+void test('ssh is asked about the entries that may lead to the machine, and no other', async () => {
+  const text = `
+    Host github.com
+      User git
+    Host work
+      HostName work.example.com
+    Host nuc
+      HostName 100.64.0.7
+      User me
+    Match originalhost maybe exec "at-home"
+      HostName 192.168.1.5
+    Host maybe
+      User me
+  `
+  const { reach, asked } = createReach()
+
+  assert.equal(await findSshConfigDestination(text, machine, 'someone', reach), 'nuc')
+  assert.deepEqual(asked.filter((question) => question.startsWith('ssh')).sort(), [
+    'ssh maybe',
+    'ssh nuc'
+  ])
+  // Nor is a name asked about that no entry for this user and port connects to.
+  assert.deepEqual(asked.filter((question) => question.startsWith('name')).sort(), [
+    'name maybe',
+    'name work.example.com'
+  ])
+})
+
+void test('a name is asked about once, however many entries connect to it', async () => {
+  const text = `
+    Host one
+      HostName devbox.example.com
+    Host two
+      HostName DEVBOX.example.com.
+      User me
+  `
+  const { reach, asked } = createReach({ names: { 'devbox.example.com': ['100.64.0.7'] } })
+
+  assert.equal(await findSshConfigDestination(text, machine, 'someone', reach), 'two')
+  assert.deepEqual(
+    asked.filter((question) => question.startsWith('name')),
+    ['name devbox.example.com']
+  )
+})
+
+void test('a failure to ask leaves what the configuration says', async () => {
+  const text = 'Host nuc\n  HostName server\n  User me'
+  const failing = {
+    evaluate: async () => {
+      throw new Error('no ssh here')
+    },
+    resolve: async () => {
+      throw new Error('no resolver here')
+    },
+    probe: async () => {
+      throw new Error('no network here')
+    }
+  }
+  // The name names the machine, but nothing says where a server would answer.
+  assert.equal(await findSshConfigDestination(text, machine, 'me', failing), null)
+  assert.equal(
+    await findSshConfigDestination('Host nuc\n  HostName 100.64.0.7', machine, 'me', {
+      ...failing,
+      probe: async () => true
+    }),
+    'nuc'
+  )
 })
 
 void test('an entry is read as ssh reads it', () => {
@@ -120,39 +332,78 @@ void test('an entry is read as ssh reads it', () => {
       HostName=%h.lan
       User = me
       HostName ignored.lan
+      ProxyCommand none
     Match host nuc exec "true"
       User nobody
+    Match originalhost NUC,other exec "at-home"
+      HostName 192.168.1.5
     Host *
       User someone
       Port 22
+      ProxyJump bastion
   `)
 
-  assert.deepEqual(evaluateSshConfig(sections, 'NUC'), {
-    hostName: 'NUC.lan',
+  assert.deepEqual(evaluateSshConfig(sections, 'nuc'), {
+    hostName: 'nuc.lan',
     user: 'me',
-    port: 2200
+    port: 2200,
+    proxied: false
   })
   assert.deepEqual(evaluateSshConfig(sections, 'nuc-2'), {
     hostName: 'nuc-2.lan',
     user: 'me',
-    port: 2200
+    port: 2200,
+    proxied: false
   })
-  assert.deepEqual(evaluateSshConfig(sections, 'nuc-old'), {
-    hostName: 'nuc-old',
-    user: 'someone',
-    port: 2200
-  })
+  for (const host of ['nuc-old', 'NUC']) {
+    assert.deepEqual(evaluateSshConfig(sections, host), {
+      hostName: host,
+      user: 'someone',
+      port: 2200,
+      proxied: true
+    })
+  }
   assert.deepEqual(listSshConfigHosts(sections), ['nuc'])
+  assert.deepEqual(listPossibleHostNames(sections, 'nuc'), ['nuc.lan', '192.168.1.5'])
+  assert.deepEqual(listPossibleHostNames(sections, 'other'), ['other', '192.168.1.5'])
+  assert.deepEqual(listPossibleHostNames(sections, 'another'), ['another'])
 })
 
-void test('no entry is taken whose name an editor could read as something else', () => {
+void test('what ssh prints for a host is what it connects to', () => {
+  assert.deepEqual(
+    parseSshEvaluation(
+      'host nuc\nuser me\nhostname 100.64.0.7\nport 22\naddressfamily any\nidentityfile ~/.ssh/nuc\n'
+    ),
+    { hostName: '100.64.0.7', user: 'me', port: 22, proxied: false }
+  )
+  assert.deepEqual(
+    parseSshEvaluation('USER me\r\nHostName server.lan\r\nport 2222\r\nproxyjump bastion\r\n'),
+    { hostName: 'server.lan', user: 'me', port: 2222, proxied: true }
+  )
+  assert.equal(
+    parseSshEvaluation('hostname nuc\nport 22\nproxycommand ssh -W %h:%p bastion\n').proxied,
+    true
+  )
+  assert.deepEqual(parseSshEvaluation('hostname nuc\nport 22\nproxyjump none\n'), {
+    hostName: 'nuc',
+    user: null,
+    port: 22,
+    proxied: false
+  })
+
+  for (const output of ['', 'user me\nport 22\n', 'hostname nuc\n', 'hostname nuc\nport 0\n']) {
+    assert.equal(parseSshEvaluation(output), null)
+  }
+})
+
+void test('no entry is taken whose name an editor could read as something else', async () => {
   const text = `
     Host -oProxyCommand=id me@nuc nuc:22 nuc/1
       HostName 100.64.0.7
       User me
   `
   assert.deepEqual(listSshConfigHosts(parseSshConfig(text)), [])
-  assert.equal(find(text), null)
+  assert.equal(await find(text), null)
 })
 
 void test('what a configuration includes is read in its place', async () => {
@@ -184,7 +435,7 @@ void test('what a configuration includes is read in its place', async () => {
     'more',
     'last'
   ])
-  assert.equal(findSshConfigDestination(text, machine, 'someone'), 'b')
+  assert.equal(await find(text), 'b')
   // A configuration that includes itself is read a few times, not forever.
   assert.equal(read.filter((file) => file === '/etc/ssh/more').length, 4)
 })
@@ -195,5 +446,5 @@ void test('a configuration that cannot be read names no entry', async () => {
     list: async () => []
   })
   assert.equal(text, '')
-  assert.equal(findSshConfigDestination(text, machine, 'me'), null)
+  assert.equal(await find(text), null)
 })

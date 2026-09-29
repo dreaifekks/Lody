@@ -2,6 +2,11 @@
 // LAN. An editor that is handed the name of that entry connects the way `ssh`
 // of this machine does: with the key, the user and the settings the entry
 // names. Handed the bare address, it would find none of them.
+//
+// A configuration may hold several entries for one machine, such as one for
+// the network at home and one for an overlay network, and which of them leads
+// anywhere depends on where this machine is. What an entry connects to is
+// therefore asked of `ssh` itself, and whether a server answers there is tried.
 import path from 'node:path'
 import {
   LAN_SSH_DEFAULT_PORT,
@@ -12,11 +17,24 @@ import {
 
 /** A section of an SSH configuration, in the order of the file. */
 export type SshConfigSection = {
-  /** The hosts the section is for; `null` for every host, none for a section nothing here reads. */
+  /** The hosts the section is for; `null` for every host. */
   patterns: string[] | null
+  /** Whether it is for them only while something holds that is not asked here. */
+  conditional: boolean
   hostName?: string
   user?: string
   port?: number
+  proxied?: boolean
+}
+
+/** What `ssh <host>` connects to. */
+export type SshConfigEntry = {
+  hostName: string
+  /** `null` when the configuration names none, which leaves it to who connects. */
+  user: string | null
+  port: number
+  /** Whether it connects through another host or a command, where nothing here follows it. */
+  proxied: boolean
 }
 
 export type SshConfigFiles = {
@@ -26,8 +44,20 @@ export type SshConfigFiles = {
   list: (directory: string) => Promise<string[]>
 }
 
+/** What is asked of this machine as it is now. */
+export type SshReach = {
+  /** What `ssh <host>` connects to as `ssh` says it; `null` when it cannot be asked. */
+  evaluate: (host: string) => Promise<SshConfigEntry | null>
+  /** The addresses a host name stands for; none when it stands for none. */
+  resolve: (hostName: string) => Promise<string[]>
+  /** Whether an SSH server answers at an address. */
+  probe: (address: string, port: number) => Promise<boolean>
+}
+
 const INCLUDE_DEPTH_MAX = 4
 const FILES_MAX = 64
+const HOSTS_MAX = 256
+const ADDRESSES_MAX = 4
 const IPV4_PATTERN = /^\d{1,3}(?:\.\d{1,3}){3}$/u
 
 function readLine(line: string): { keyword: string; values: string[] } | null {
@@ -41,9 +71,9 @@ function readLine(line: string): { keyword: string; values: string[] } | null {
   return { keyword: (match[1] ?? '').toLowerCase(), values }
 }
 
-function toPattern(glob: string): RegExp {
+function toPattern(glob: string, flags = 'u'): RegExp {
   const source = glob.replace(/[.+^${}()|[\]\\]/gu, '\\$&').replace(/\*/gu, '.*')
-  return new RegExp(`^${source.replace(/\?/gu, '.')}$`, 'u')
+  return new RegExp(`^${source.replace(/\?/gu, '.')}$`, flags)
 }
 
 /** Where an `Include` points: beside the configuration unless it says otherwise. */
@@ -99,20 +129,32 @@ export async function readSshConfig(
   return await load(file, 0)
 }
 
+/**
+ * The hosts a `Match` is for. It asks nothing when it says `all`, and names
+ * hosts as `Host` does when it says `originalhost`; whatever else it asks is
+ * not answered here, so the section may or may not be for a host.
+ */
+function readMatch(values: readonly string[]): Pick<SshConfigSection, 'patterns' | 'conditional'> {
+  if (values.length === 1 && values[0]?.toLowerCase() === 'all') {
+    return { patterns: null, conditional: false }
+  }
+  const named = values.findIndex((value) => value.toLowerCase() === 'originalhost')
+  const list = named === -1 ? undefined : values[named + 1]
+  return { patterns: list ? list.split(',').filter(Boolean) : null, conditional: true }
+}
+
 export function parseSshConfig(text: string): SshConfigSection[] {
-  let section: SshConfigSection = { patterns: null }
+  let section: SshConfigSection = { patterns: null, conditional: false }
   const sections = [section]
   for (const line of text.split(/\r?\n/u)) {
     const read = readLine(line)
     if (!read) continue
     const { keyword, values } = read
     if (keyword === 'host') {
-      section = { patterns: values.map((value) => value.toLowerCase()) }
+      section = { patterns: [...values], conditional: false }
       sections.push(section)
     } else if (keyword === 'match') {
-      // What a `Match` asks cannot be answered here, except that `all` asks nothing.
-      const all = values.length === 1 && values[0]?.toLowerCase() === 'all'
-      section = { patterns: all ? null : [] }
+      section = readMatch(values)
       sections.push(section)
     } else if (keyword === 'hostname') {
       section.hostName ??= values[0]
@@ -121,6 +163,8 @@ export function parseSshConfig(text: string): SshConfigSection[] {
     } else if (keyword === 'port') {
       const port = Number(values[0])
       if (Number.isInteger(port) && port >= 1 && port <= 65_535) section.port ??= port
+    } else if (keyword === 'proxyjump' || keyword === 'proxycommand') {
+      section.proxied ??= values[0] !== undefined && values[0].toLowerCase() !== 'none'
     }
   }
   return sections
@@ -128,45 +172,71 @@ export function parseSshConfig(text: string): SshConfigSection[] {
 
 function isFor(section: SshConfigSection, host: string): boolean {
   if (section.patterns === null) return true
+  // `Host` tells letters of one case from the other; a `Match` does not.
+  const flags = section.conditional ? 'iu' : 'u'
   let named = false
   for (const pattern of section.patterns) {
     if (pattern.startsWith('!')) {
-      if (toPattern(pattern.slice(1)).test(host)) return false
-    } else if (toPattern(pattern).test(host)) {
+      if (toPattern(pattern.slice(1), flags).test(host)) return false
+    } else if (toPattern(pattern, flags).test(host)) {
       named = true
     }
   }
   return named
 }
 
-/** What `ssh <host>` would connect to: the first value each section for it gives. */
+const expandHostName = (hostName: string, host: string): string =>
+  hostName.replace(/%([h%])/gu, (_, token: string) => (token === 'h' ? host : '%'))
+
+/**
+ * What the configuration says `ssh <host>` connects to: the first value each
+ * section for the host gives, a section that may not be for it left out.
+ */
 export function evaluateSshConfig(
   sections: readonly SshConfigSection[],
   host: string
-): { hostName: string; user: string | null; port: number } {
-  const name = host.toLowerCase()
+): SshConfigEntry {
   let hostName: string | undefined
   let user: string | undefined
   let port: number | undefined
+  let proxied: boolean | undefined
   for (const section of sections) {
-    if (!isFor(section, name)) continue
+    if (section.conditional || !isFor(section, host)) continue
     hostName ??= section.hostName
     user ??= section.user
     port ??= section.port
+    proxied ??= section.proxied
   }
   return {
-    hostName: (hostName ?? host).replace(/%([h%])/gu, (_, token: string) =>
-      token === 'h' ? host : '%'
-    ),
+    hostName: expandHostName(hostName ?? host, host),
     user: user ?? null,
-    port: port ?? LAN_SSH_DEFAULT_PORT
+    port: port ?? LAN_SSH_DEFAULT_PORT,
+    proxied: proxied ?? false
   }
 }
 
-/** The hosts a configuration names one by one, in its order. */
+/**
+ * Every host name the configuration may hand `ssh <host>`: what it says
+ * without asking anything first, then what it says while something holds.
+ */
+export function listPossibleHostNames(
+  sections: readonly SshConfigSection[],
+  host: string
+): string[] {
+  const names = [evaluateSshConfig(sections, host).hostName]
+  for (const section of sections) {
+    if (!section.conditional || section.hostName === undefined || !isFor(section, host)) continue
+    const name = expandHostName(section.hostName, host)
+    if (!names.includes(name)) names.push(name)
+  }
+  return names
+}
+
+/** The hosts a configuration names one by one, in its order and as it writes them. */
 export function listSshConfigHosts(sections: readonly SshConfigSection[]): string[] {
   const hosts: string[] = []
   for (const section of sections) {
+    if (section.conditional) continue
     for (const pattern of section.patterns ?? []) {
       if (isSshConfiguredHost(pattern) && !hosts.includes(pattern)) hosts.push(pattern)
     }
@@ -174,46 +244,128 @@ export function listSshConfigHosts(sections: readonly SshConfigSection[]): strin
   return hosts
 }
 
-/**
- * How well a host name names the machine: 2 for the address the machine
- * answers members on, 1 for anything else it is called, 0 for another machine.
- * A name with the domain of a network and the same name without it are one.
- */
-function rankHostName(hostName: string, machine: LanSshDestination): number {
-  const target = hostName.toLowerCase().replace(/\.$/u, '')
-  const names = [machine.host, ...(machine.names ?? [])].map((name) => name.toLowerCase())
-  if (target === names[0]) return 2
-  if (names.includes(target)) return 1
-  if (IPV4_PATTERN.test(target)) return 0
-  const [label] = target.split('.')
-  return names.some((name) => !IPV4_PATTERN.test(name) && name.split('.')[0] === label) ? 1 : 0
+/** What `ssh -G <host>` printed, which is what `ssh <host>` connects to. */
+export function parseSshEvaluation(output: string): SshConfigEntry | null {
+  const said = new Map<string, string>()
+  for (const line of output.split(/\r?\n/u)) {
+    const [, keyword, value] = /^(\S+)\s+(.*)$/u.exec(line.trim()) ?? []
+    if (keyword && value !== undefined && !said.has(keyword.toLowerCase())) {
+      said.set(keyword.toLowerCase(), value.trim())
+    }
+  }
+  const hostName = said.get('hostname')
+  const port = Number(said.get('port'))
+  if (!hostName || !Number.isInteger(port) || port < 1 || port > 65_535) return null
+  const through = (keyword: string) => (said.get(keyword) ?? 'none').toLowerCase() !== 'none'
+  return {
+    hostName,
+    user: said.get('user') || null,
+    port,
+    proxied: through('proxyjump') || through('proxycommand')
+  }
 }
 
 /**
  * What to hand an editor so that it reaches the machine through the user's
- * SSH configuration, or `null` when no entry of it does. An entry counts when
- * it names the machine, on the port its SSH server answers, as the user the
- * agent service runs as; one that leaves the user open is told which.
+ * SSH configuration, or `null` when no entry of it does.
+ *
+ * An entry is for the machine when what it connects to is anything the
+ * machine is called, or a name that stands for one of its addresses; a name
+ * with the domain of a network and the same name without it are one. It has
+ * to connect to the port the SSH server of the machine answers on, as the
+ * user the agent service runs as; an entry that leaves the user open is told
+ * which. Among the entries for the machine, the first at which a server
+ * answers is taken: the one for the address the machine answers members on
+ * before one for another of its names, then in the order of the file.
  */
-export function findSshConfigDestination(
+export async function findSshConfigDestination(
   text: string,
   machine: LanSshDestination,
-  localUser: string | null
-): string | null {
+  localUser: string | null,
+  reach: SshReach
+): Promise<string | null> {
   const sections = parseSshConfig(text)
-  let best: { destination: string; rank: number } | null = null
-  for (const host of listSshConfigHosts(sections)) {
-    const entry = evaluateSshConfig(sections, host)
-    if (entry.port !== machine.port) continue
-    if (entry.user !== null && entry.user !== machine.user) continue
-    const reach = rankHostName(entry.hostName, machine)
-    if (reach === 0) continue
-    // The account that owns the folder, whoever this machine would connect as.
-    const asUser = (entry.user ?? localUser) === machine.user
-    const destination = parseSshDestinationText(asUser ? host : `${machine.user}@${host}`)
-    if (!destination) continue
-    const rank = reach * 2 + (entry.user === null ? 0 : 1)
-    if (!best || rank > best.rank) best = { destination, rank }
+  const called = [machine.host, ...(machine.names ?? [])].map((name) => name.toLowerCase())
+  const [answersOn = ''] = called
+  const addresses = called.filter((name) => IPV4_PATTERN.test(name))
+  const labels = called.filter((name) => !IPV4_PATTERN.test(name)).map((name) => name.split('.')[0])
+
+  const resolved = new Map<string, Promise<string[]>>()
+  const resolve = (hostName: string): Promise<string[]> => {
+    const name = hostName.toLowerCase().replace(/\.$/u, '')
+    if (IPV4_PATTERN.test(name)) return Promise.resolve([name])
+    let found = resolved.get(name)
+    if (!found) {
+      found = reach.resolve(name).catch(() => [])
+      resolved.set(name, found)
+    }
+    return found
   }
-  return best?.destination ?? null
+  // 2 for the address the machine answers members on, 1 for anything else it
+  // is called, 0 for another machine.
+  const rank = async (hostName: string): Promise<number> => {
+    const name = hostName.toLowerCase().replace(/\.$/u, '')
+    const found = await resolve(name)
+    if (name === answersOn || found.includes(answersOn)) return 2
+    if (called.includes(name) || found.some((address) => addresses.includes(address))) return 1
+    return !IPV4_PATTERN.test(name) && labels.includes(name.split('.')[0]) ? 1 : 0
+  }
+
+  const hosts = listSshConfigHosts(sections).slice(0, HOSTS_MAX)
+  const entries = await Promise.all(
+    hosts.map(async (host, order) => {
+      // Asking takes a process and the network, so nothing is asked about an
+      // entry the configuration says is for another user, port or machine.
+      const stated = evaluateSshConfig(sections, host)
+      if (stated.user !== null && stated.user !== machine.user) return null
+      if (stated.port !== machine.port) return null
+      const possible = await Promise.all(listPossibleHostNames(sections, host).map(rank))
+      if (!possible.some((reached) => reached > 0)) return null
+
+      const entry = (await reach.evaluate(host).catch(() => null)) ?? stated
+      if (entry.port !== machine.port) return null
+      const reached = await rank(entry.hostName)
+      if (reached === 0) return null
+
+      // The account that owns the folder, whoever this machine would connect as.
+      let destination: string | null
+      if ((entry.user ?? localUser) === machine.user) destination = host
+      else if (stated.user === null) destination = `${machine.user}@${host}`
+      else return null
+      destination = parseSshDestinationText(destination)
+      if (!destination) return null
+
+      // Every server is tried at once and none is waited for here: an address
+      // that leads nowhere says so only by staying silent.
+      const answers = entry.proxied
+        ? Promise.resolve(false)
+        : resolve(entry.hostName).then(async (found) =>
+            (
+              await Promise.all(
+                found
+                  .slice(0, ADDRESSES_MAX)
+                  .map((address) => reach.probe(address, entry.port).catch(() => false))
+              )
+            ).some(Boolean)
+          )
+      return {
+        destination,
+        rank: reached * 2 + (stated.user === null ? 0 : 1),
+        order,
+        answers,
+        proxied: entry.proxied
+      }
+    })
+  )
+
+  const found = entries
+    .filter((entry) => entry !== null)
+    .sort((left, right) => right.rank - left.rank || left.order - right.order)
+  for (const entry of found) {
+    // Only the entries that come before it are waited for.
+    if (await entry.answers) return entry.destination
+  }
+  // Whether an entry that goes through another host leads anywhere is not
+  // tried, so it comes after every entry at which a server answered.
+  return found.find((entry) => entry.proxied)?.destination ?? null
 }

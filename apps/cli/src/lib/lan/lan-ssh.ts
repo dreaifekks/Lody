@@ -1,7 +1,6 @@
 // Where the SSH server of this machine answers the members of its LANs. The
 // agent service opens nothing for it: an editor on another member opens a
 // folder of a session here through the SSH server the machine already runs.
-import net from 'node:net';
 import os from 'node:os';
 import {
   LAN_SSH_DEFAULT_PORT,
@@ -11,6 +10,7 @@ import {
   type LanSshDestination,
 } from '@lody/shared/lan-ssh';
 import type { LanHub } from '@lody/shared/node/lan-hub';
+import { probeSshServer } from '@lody/shared/node/ssh-probe';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import { probeLocalAddressToward } from './lan-terminal';
@@ -57,31 +57,6 @@ export type LanSshProbes = {
   /** What else this machine is called: its host name and the addresses it has. */
   names: () => string[];
 };
-
-const HEARD_MAX = 8 * 1024;
-
-/** An SSH server is the side that speaks first, and it says its version. */
-export function probeSshServer(host: string, port: number, timeoutMs = 3_000): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host, port });
-    let heard = '';
-    const finish = (answers: boolean) => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(answers);
-    };
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    timer.unref?.();
-    socket.on('data', (chunk: Buffer) => {
-      heard += chunk.toString('latin1');
-      // A server may say other lines before the one with its version.
-      if (/(?:^|\n)SSH-/u.test(heard)) finish(true);
-      else if (heard.length > HEARD_MAX) finish(false);
-    });
-    socket.once('error', () => finish(false));
-    socket.once('close', () => finish(false));
-  });
-}
 
 function readServiceUser(): string | null {
   try {

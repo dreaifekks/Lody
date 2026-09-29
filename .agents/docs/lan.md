@@ -175,13 +175,33 @@ entry its owner made for the machine. An editor that is handed the bare
 address finds no such entry and asks for a password every time. The desktop
 therefore reads `~/.ssh/config`, with what it includes, and hands the editor
 the entry that reaches the machine
-(`apps/electron/src/main/services/ssh-config-core.ts`): one whose host name is
-the address the machine named or anything else it is called, on the port its
-SSH server answers, for the user the agent service runs as or for no user in
-particular. A name with the domain of a network and the same name without it
-count as one. Where several entries reach the machine, the one for the address
-it named comes first. Without an entry the editor is handed `user@host` as the
-machine named them, and connects with the keys `ssh` offers any host.
+(`apps/electron/src/main/services/ssh-config-core.ts`), by the name the
+configuration writes it with: `Host` tells the letters of one case from the
+other.
+
+An entry is for the machine when what it connects to is the address the
+machine named, anything else the machine is called, or a name that stands for
+one of its addresses, which is how an overlay network names a machine. A name
+with the domain of a network and the same name without it count as one. It has
+to connect to the port the SSH server answers on, as the user the agent
+service runs as; an entry that names no user is handed over as `user@entry`.
+
+A configuration often holds one entry for the network at home and one for an
+overlay network, and which of them leads anywhere depends on where the desktop
+is. So the desktop asks rather than reads:
+
+| What                         | Whom it asks                                            |
+| ---------------------------- | ------------------------------------------------------- |
+| What an entry connects to    | `ssh -G`, which also answers what a `Match` makes of it |
+| What a name stands for       | The resolver of the desktop                             |
+| Whether an entry leads there | The address, for the version an SSH server starts with  |
+
+The entry for the address the machine named comes first, then the others in
+the order of the file, and the first at which a server answers is taken; an
+entry that goes through another host is not tried and comes after them.
+Nothing is asked about an entry the configuration says is for another user or
+port. Where no entry answers, the editor is handed `user@host` as the machine
+named them, and connects with the keys `ssh` offers any host.
 
 The session header offers the editors that work over SSH, which are the VS
 Code family and Zed, while the machine of the session names a server. VS Code
