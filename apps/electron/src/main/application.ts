@@ -36,7 +36,10 @@ import { LoroDataPlaneRelay } from './services/loro-data-plane-relay'
 import { NotificationService } from './services/notification-service'
 import { AuthService } from './services/auth-service'
 import { authClient } from './auth'
+import { parseLanReleaseSource } from '@lody/shared/lan-release'
+import type { AppUpdater } from './services/app-updater'
 import { AppUpdaterService } from './services/app-updater-service'
+import { LanUpdaterService } from './services/lan-updater-service'
 import { shouldConstructUpdaterEnabled } from './services/app-updater-sparkle-policy'
 import { startDevbarDevframeService, stopDevbarDevframeService } from './services/devbar/service'
 import { GlobalShortcutsService } from './services/global-shortcuts-service'
@@ -73,6 +76,7 @@ const DESKTOP_FILE_NAME = `${desktopInstallationProfile.desktopAppId}.desktop`
 const DEEP_LINK_DEBUG_PREFIX = '[electron-auth-debug]'
 const IS_E2E = !app.isPackaged && process.env.LODY_E2E === '1'
 declare const __LODY_DESKTOP_BUILD_JSON__: string | null
+declare const __LODY_LAN_RELEASE_JSON__: string | null
 
 type E2EBootDiagnostic = { stage: string; error?: string }
 type E2EGlobal = typeof globalThis & {
@@ -233,12 +237,21 @@ export function startApplication(executionHost?: DesktopExecutionHost): void {
     )
     loroDataPlaneRelay.setEnabled(cliService.getCliAutoStartEnabled())
 
-    const appUpdaterService = new AppUpdaterService({
-      enabled: shouldConstructUpdaterEnabled({
-        localPlatform: isLocalPlatform(),
-        forceEnable: process.env.LODY_ELECTRON_ENABLE_UPDATER === '1'
-      })
-    })
+    // A build of a fork follows the releases of the repository that built it.
+    // Without that stamp the local desktop follows nothing: the feed of the
+    // publisher would replace it with a build that is not the fork's.
+    const lanReleaseSource =
+      isLocalPlatform() && typeof __LODY_LAN_RELEASE_JSON__ === 'string'
+        ? parseLanReleaseSource(__LODY_LAN_RELEASE_JSON__)
+        : null
+    const appUpdaterService: AppUpdater = lanReleaseSource
+      ? new LanUpdaterService({ source: lanReleaseSource })
+      : new AppUpdaterService({
+          enabled: shouldConstructUpdaterEnabled({
+            localPlatform: isLocalPlatform(),
+            forceEnable: process.env.LODY_ELECTRON_ENABLE_UPDATER === '1'
+          })
+        })
     const notificationService = new NotificationService(() => getMainWindow())
     const windowsTrayService = new WindowsTrayService({
       iconPath: icon,

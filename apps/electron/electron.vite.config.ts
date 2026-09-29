@@ -19,6 +19,7 @@ import {
 import { stylexOptions } from '../../packages/ui/stylex-options'
 import { emojibaseAssetsPlugin } from '../../packages/components/vite-emojibase-assets'
 import { bootShellPlugin } from '../../packages/components/vite-boot-shell'
+import { defineBuildStamp } from '../../scripts/lan-build-stamp.mjs'
 
 function getGitCommitHash(): string {
   try {
@@ -85,7 +86,8 @@ export default defineConfig(({ mode }) => {
     main: {
       envDir: false,
       envPrefix: '__LodyPublicBuildOnlyPrefix__',
-      define: viteEnvDefine,
+      // The releases this build follows, named by the workflow that builds it.
+      define: { ...viteEnvDefine, ...defineBuildStamp() },
       build: {
         externalizeDeps: {
           exclude: [
