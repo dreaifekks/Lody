@@ -9,21 +9,21 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 
 ## The pieces
 
-| Piece | Where | What it does |
-| --- | --- | --- |
-| Hub | `apps/cli/src/lib/lan/hub-server.ts` | The single-node Streams server of `@loro-dev/loro-cli` on loopback, behind a bearer-token gate that is the only network entry |
-| Settings | `packages/shared/src/node/lan-hub.ts` | `lan-hub.json` in the data directory: the LANs of this installation and the name of this machine |
-| Contract | `packages/shared/src/lan-hub.ts` | What a renderer may know: ids, slugs, invites, users. Never a credential |
-| Membership | `apps/cli/src/lib/lan/lan-membership.ts` | One workspace and one gateway per LAN for the running agent service |
-| Store | `packages/shared/src/node/lan-hub-store.ts` | The settings as the desktop shell holds and edits them |
-| Bridge | `apps/electron/src/main/services/lan-hub-forward.ts` | Forwards `lody-hub://<lan id>` to the hub of that LAN and adds its credential |
-| Follower | `packages/components/src/providers/local-platform-follower.ts` | Keeps the renderer's workspaces equal to the CLI catalog |
-| Services | `apps/cli/src/lib/lan/service.ts` | systemd user units that keep a hub and an agent service running on a server |
-| Terminals | `apps/cli/src/lib/lan/lan-terminal*.ts`, `apps/cli/src/lib/terminal-services.ts` | Members open terminals on each other's machines, directly and not through the hub |
-| Machines | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts` | What a machine says about itself, the list of machines, and requests between members |
-| Releases | `packages/shared/src/lan-release.ts`, `packages/shared/src/node/lan-release.ts` | What a build follows, how builds are ordered, and the checked download of a release file |
-| Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts` | An agent service that replaces itself with the newest build |
-| Desktop update | `apps/electron/src/main/services/lan-updater-*.ts` | A desktop application that replaces itself with the newest build |
+| Piece          | Where                                                                            | What it does                                                                                                                  |
+| -------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Hub            | `apps/cli/src/lib/lan/hub-server.ts`                                             | The single-node Streams server of `@loro-dev/loro-cli` on loopback, behind a bearer-token gate that is the only network entry |
+| Settings       | `packages/shared/src/node/lan-hub.ts`                                            | `lan-hub.json` in the data directory: the LANs of this installation and the name of this machine                              |
+| Contract       | `packages/shared/src/lan-hub.ts`                                                 | What a renderer may know: ids, slugs, invites, users. Never a credential                                                      |
+| Membership     | `apps/cli/src/lib/lan/lan-membership.ts`                                         | One workspace and one gateway per LAN for the running agent service                                                           |
+| Store          | `packages/shared/src/node/lan-hub-store.ts`                                      | The settings as the desktop shell holds and edits them                                                                        |
+| Bridge         | `apps/electron/src/main/services/lan-hub-forward.ts`                             | Forwards `lody-hub://<lan id>` to the hub of that LAN and adds its credential                                                 |
+| Follower       | `packages/components/src/providers/local-platform-follower.ts`                   | Keeps the renderer's workspaces equal to the CLI catalog                                                                      |
+| Services       | `apps/cli/src/lib/lan/service.ts`                                                | systemd user units that keep a hub and an agent service running on a server                                                   |
+| Terminals      | `apps/cli/src/lib/lan/lan-terminal*.ts`, `apps/cli/src/lib/terminal-services.ts` | Members open terminals on each other's machines, directly and not through the hub                                             |
+| Machines       | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts`                    | What a machine says about itself, the list of machines, and requests between members                                          |
+| Releases       | `packages/shared/src/lan-release.ts`, `packages/shared/src/node/lan-release.ts`  | What a build follows, how builds are ordered, and the checked download of a release file                                      |
+| Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts`              | An agent service that replaces itself with the newest build                                                                   |
+| Desktop update | `apps/electron/src/main/services/lan-updater-*.ts`                               | A desktop application that replaces itself with the newest build                                                              |
 
 ```text
  server                                   desktop
@@ -117,10 +117,10 @@ per LAN and so sees all of them, while a window shows one.
 A machine says what it runs in its own machine metadata of each LAN's
 workspace, where members already read its name:
 
-| Field | What it says |
-| --- | --- |
-| `lanBuild` | The version, the releases the build follows, and who updates it |
-| `lanUpdate` | Where an update stands; absent while none is under way |
+| Field       | What it says                                                                 |
+| ----------- | ---------------------------------------------------------------------------- |
+| `lanBuild`  | The version, the releases the build follows, and who updates it              |
+| `lanUpdate` | Where an update stands; absent while none is under way                       |
 | `lanAgents` | The runtime of each agent it has providers for: installed and pinned version |
 
 Listing asks nothing of a machine. What a member asks of one is a
@@ -158,11 +158,11 @@ download meets while a newer build is being published.
 
 Who replaces the agent service of a machine is its update channel:
 
-| Channel | The agent service | Who updates it |
-| --- | --- | --- |
-| `service` | Was installed by the install script, and systemd or the daemon runner starts it again | Itself, when a member asks |
-| `desktop` | Is carried by a desktop application | The application, from its own window |
-| `manual` | Anything else, such as a checkout or a service started by hand | Whoever installed it |
+| Channel   | The agent service                                                                     | Who updates it                       |
+| --------- | ------------------------------------------------------------------------------------- | ------------------------------------ |
+| `service` | Was installed by the install script, and systemd or the daemon runner starts it again | Itself, when a member asks           |
+| `desktop` | Is carried by a desktop application                                                   | The application, from its own window |
+| `manual`  | Anything else, such as a checkout or a service started by hand                        | Whoever installed it                 |
 
 An agent service installs the newest build beside the running one, starts it
 once to see that it reports the version it should, and only then renames it
@@ -172,15 +172,17 @@ The machine answers a request before it installs, because being done starts it
 again, together with the hub if it hosts one. Members follow `lanUpdate`, and
 the update is over when the machine registers with the new version.
 
-A desktop application checks when it starts and every half hour, and asks
-before it downloads: a fork publishes a build for every push. It is replaced
-after it quit, by a script that first waits for it to be gone.
+A desktop application checks when it starts, every quarter of an hour and
+when the computer wakes up, and asks before it downloads: a fork publishes a
+build for every push. A check in the background leaves an update it already
+offers on screen. It is replaced after it quit, by a script that first waits
+for it to be gone.
 
-| Platform | How the application is replaced |
-| --- | --- |
-| macOS | The bundle is swapped with one staged beside it, so each move is a rename |
-| Windows | The installer runs without asking and starts the application |
-| Linux | The downloaded AppImage is renamed over the running one |
+| Platform | How the application is replaced                                           |
+| -------- | ------------------------------------------------------------------------- |
+| macOS    | The bundle is swapped with one staged beside it, so each move is a rename |
+| Windows  | The installer runs without asking and starts the application              |
+| Linux    | The downloaded AppImage is renamed over the running one                   |
 
 An application that runs from a disk image, or from the read-only copy the
 system makes of a quarantined application, cannot replace itself and says so.
@@ -195,12 +197,12 @@ Settings change while processes run: `lody lan join` on a server, or Settings >
 LAN on a desktop. Both write `lan-hub.json`, and every process that reads it
 watches it.
 
-| Change | Agent service | Desktop |
-| --- | --- | --- |
-| LAN joined, left or renamed | Starts or stops that workspace | The switcher follows the next snapshot |
-| First LAN changed, joined or left | Exits with the restart code | Reloads, because the installation is another user |
-| LAN moved to another address | Exits with the restart code | The bridge resolves the new address per request |
-| Machine renamed | Exits with the restart code | Nothing |
+| Change                            | Agent service                  | Desktop                                           |
+| --------------------------------- | ------------------------------ | ------------------------------------------------- |
+| LAN joined, left or renamed       | Starts or stops that workspace | The switcher follows the next snapshot            |
+| First LAN changed, joined or left | Exits with the restart code    | Reloads, because the installation is another user |
+| LAN moved to another address      | Exits with the restart code    | The bridge resolves the new address per request   |
+| Machine renamed                   | Exits with the restart code    | Nothing                                           |
 
 The restart code is `CLI_EXIT_CODE_REMOTE_RESTART`. The daemon runner, the
 desktop supervisor and the systemd unit all start the service again after it; a

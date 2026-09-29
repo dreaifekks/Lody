@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { app, BrowserWindow, net } from 'electron'
+import { app, BrowserWindow, net, powerMonitor } from 'electron'
 import type {
   CheckForElectronUpdateResult,
   ElectronUpdaterState,
@@ -37,7 +37,9 @@ import {
 } from './lan-updater-policy'
 
 const FIRST_CHECK_DELAY_MS = 20_000
-const CHECK_INTERVAL_MS = 30 * 60_000
+// A fork publishes a build for every push; a quarter of an hour notices one
+// soon without asking GitHub more than a few times an hour.
+const CHECK_INTERVAL_MS = 15 * 60_000
 const NOTES_TIMEOUT_MS = 15_000
 const PROGRESS_INTERVAL_MS = 250
 const EXTRACT_TIMEOUT_MS = 5 * 60_000
@@ -121,6 +123,12 @@ export class LanUpdaterService implements AppUpdater {
     this.discardLeftovers(this.decision.target)
     this.firstCheck = setTimeout(() => void this.checkForUpdates(), FIRST_CHECK_DELAY_MS)
     this.interval = setInterval(() => void this.checkForUpdates(), CHECK_INTERVAL_MS)
+    // Timers stand still while a laptop sleeps; waking up is when a check is due.
+    powerMonitor.on('resume', this.checkOnResume)
+  }
+
+  private readonly checkOnResume = (): void => {
+    void this.checkForUpdates()
   }
 
   stop(): void {
@@ -128,6 +136,7 @@ export class LanUpdaterService implements AppUpdater {
     if (this.interval) clearInterval(this.interval)
     this.firstCheck = null
     this.interval = null
+    powerMonitor.off('resume', this.checkOnResume)
   }
 
   async checkForUpdates(): Promise<CheckForElectronUpdateResult> {
@@ -137,7 +146,11 @@ export class LanUpdaterService implements AppUpdater {
     }
 
     this.checkInFlight = true
-    this.setState({ phase: 'checking', error: undefined })
+    // A check in the background leaves an offered update on screen instead of
+    // hiding it until the answer arrives.
+    if (this.state.phase !== 'available' && this.state.phase !== 'downloaded') {
+      this.setState({ phase: 'checking', error: undefined })
+    }
     try {
       const manifest = await fetchLanReleaseManifest(this.options.source, { fetch: netFetch })
       // Why the last update failed is said with the update it can be tried
