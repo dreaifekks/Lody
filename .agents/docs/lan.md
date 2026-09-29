@@ -222,22 +222,36 @@ hub speaks plain HTTP unless `lody lan hub` is given a certificate.
 installers per platform from those bundles, and a rolling release whose file
 names carry no version. `scripts/lan-release.mjs` names the build and assembles
 the release; `scripts/lan/install.sh` and `install-mac.sh` are published with
-it. The desktop builds carry no publisher's signature, which neither the
-updater of the platform nor the one of the framework accepts, so a fork build
-[updates itself](#updates). A fork that stores a self-signed code-signing
-certificate as the secrets `LAN_MAC_SIGNING_P12` and `LAN_MAC_SIGNING_PASSWORD`
-signs its macOS builds with it: macOS keys the permissions a user grants to that
-identity, which an unsigned build changes with every build. Gatekeeper still
-does not trust it, so the first launch is allowed as before. Such a certificate
-carries no Team ID, and under the hardened runtime a process loads only what
-Apple signed or what carries its own, so `LODY_MAC_SELF_SIGNED` has
-`package-electron.mjs` sign the application with the exception from library
+it. A fork build may carry no publisher's signature, which neither the updater
+of the platform nor the one of the framework accepts, so every fork build
+[updates itself](#updates).
+The update service of the publisher stays off on the local platform: a fork
+build is never replaced by an upstream release.
+
+A fork that stores a code-signing certificate as the secrets
+`LAN_MAC_SIGNING_P12` and `LAN_MAC_SIGNING_PASSWORD` signs its macOS builds
+with it: macOS keys the permissions a user grants to the identity an
+application is signed with, which an unsigned build changes with every build.
+`lan-release.mjs signing` reads the certificate, and the workflow signs by what
+it finds:
+
+| Certificate       | Team ID | What the workflow does                                                        |
+| ----------------- | ------- | ----------------------------------------------------------------------------- |
+| Developer ID      | Yes     | Signs with the entitlements as they are and keeps its owner's name out of log |
+| Of the fork's own | No      | Trusts it on the runner and signs the application with `LODY_MAC_SELF_SIGNED` |
+
+Under the hardened runtime a process loads only what Apple signed or what
+carries its own Team ID. For a certificate without one, `LODY_MAC_SELF_SIGNED`
+has `package-electron.mjs` sign the application with the exception from library
 validation its nested binaries have; without it the application ends in dyld
 before it runs. The packaging probes run before signing, so the workflow starts
 the signed application and its helper once and publishes nothing that does not
 start.
-The update service of the publisher stays off on the local platform: a fork
-build is never replaced by an upstream release.
+
+The certificate always comes from the secrets. Signing that asks Apple for one
+uses up one of the few an account may have with every build, because a runner
+keeps no key. No build is notarized: Gatekeeper stops a copy downloaded with a
+browser, while the install script and an update leave no quarantine mark.
 Changes to a submodule the fork cannot push to live in `patches/submodules/`;
 `scripts/apply-submodule-patches.mjs` applies them before the adapters build,
 and fails the build once an upstream update conflicts with one.

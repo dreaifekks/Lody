@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { defineBuildStamp, readBuildStamp } from './lan-build-stamp.mjs';
 import {
   assembleRelease,
   composeLanVersion,
+  describeSigningCertificate,
   renderInstallScript,
   renderReleaseNotes,
   resolvePublishedName,
@@ -203,6 +206,123 @@ test('release notes only advertise the platforms that were built', async (t) => 
   assert.ok(notes.includes('`0.100.0-lan.7`'));
   assert.ok(!notes.includes('macOS desktop'));
   assert.ok(!notes.includes('Linux desktop'));
+});
+
+// Made for these tests with keys nobody kept: a certificate of a fork's own,
+// one its own authority issued, and one issued by a stand-in for the authority
+// Apple issues Developer ID certificates with.
+const OWN_CERTIFICATE = `-----BEGIN CERTIFICATE-----
+MIIBqzCCAVGgAwIBAgIUL0VNwwiMy4maJUosbqeiswyRbngwCgYIKoZIzj0EAwIw
+KjEWMBQGA1UEAwwNU29tZSBGb3JrIExBTjEQMA4GA1UECgwHc29tZW9uZTAgFw0y
+NjA5MjkxMjA1MzRaGA8yMTI2MDkwNTEyMDUzNFowKjEWMBQGA1UEAwwNU29tZSBG
+b3JrIExBTjEQMA4GA1UECgwHc29tZW9uZTBZMBMGByqGSM49AgEGCCqGSM49AwEH
+A0IABMX2rq8Lj4rNL7tXd4b+gs5S+1wf5Ym+7xLdEaU1vqoyLUpcGvp7Z+gFhtgX
+eE2I/re2XsXbJW3qIjKqtf2YcXajUzBRMB0GA1UdDgQWBBT6ZJm3CmWP9EcBKhoJ
+tGDGq/tqajAfBgNVHSMEGDAWgBT6ZJm3CmWP9EcBKhoJtGDGq/tqajAPBgNVHRMB
+Af8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQDfjpmR/h7Y+qoBMXdEwvKO4MZH
+GVZd9kOlzrbS5s+ZGAIgeAD9kcDUsmePVGpP6SoJ2I8yFSQSeFd13MFwifIIFLE=
+-----END CERTIFICATE-----
+`;
+const OWN_AUTHORITY_CERTIFICATE = `-----BEGIN CERTIFICATE-----
+MIIBtTCCAVugAwIBAgIUdwoy+tXuSlxiKqyZfIWEUqFHHHcwCgYIKoZIzj0EAwIw
+MDEcMBoGA1UEAwwTU29tZSBGb3JrIEF1dGhvcml0eTEQMA4GA1UECgwHc29tZW9u
+ZTAgFw0yNjA5MjkxMjA1MzRaGA8yMTI2MDkwNTEyMDUzNFowPzEWMBQGA1UEAwwN
+U29tZSBGb3JrIExBTjETMBEGA1UECwwKQUJDREUxMjM0NTEQMA4GA1UECgwHc29t
+ZW9uZTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABEpSnWSEFsXmtwcDwqDDtUQC
+rFbQbPA9mK3RwqTGnTJU+qU7Ji88LSOCFixN5TeVyv/xi30eNXk5Sm270x8OJnGj
+QjBAMB0GA1UdDgQWBBR6G0NKsoPMLeKn2kiSYO5dpTtSGjAfBgNVHSMEGDAWgBQj
+SBbDd4/ZfXtUU9OAHM5imA5O+jAKBggqhkjOPQQDAgNIADBFAiAFRJB0JetFL/8m
+LChHojcX7cN6A/oq5Tf6OjwyVht7KgIhAL1TvLpVORH+/Rjin6dUFuDwttYl0/gS
+qJ9emum7ubp0
+-----END CERTIFICATE-----
+`;
+const DEVELOPER_ID_CERTIFICATE = `-----BEGIN CERTIFICATE-----
+MIICNTCCAdygAwIBAgIUDKpe7Wc6f3gJOS2L3AGefZvnBu4wCgYIKoZIzj0EAwIw
+XjELMAkGA1UEBhMCVVMxEzARBgNVBAoMCkFwcGxlIEluYy4xCzAJBgNVBAsMAkcy
+MS0wKwYDVQQDDCREZXZlbG9wZXIgSUQgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkw
+IBcNMjYwOTI5MTIwNTM0WhgPMjEyNjA5MDUxMjA1MzRaMIGRMRowGAYKCZImiZPy
+LGQBAQwKQUJDREUxMjM0NTE7MDkGA1UEAwwyRGV2ZWxvcGVyIElEIEFwcGxpY2F0
+aW9uOiBUZXN0IFBlcnNvbiAoQUJDREUxMjM0NSkxEzARBgNVBAsMCkFCQ0RFMTIz
+NDUxFDASBgNVBAoMC1Rlc3QgUGVyc29uMQswCQYDVQQGEwJVUzBZMBMGByqGSM49
+AgEGCCqGSM49AwEHA0IABMn6KUgnMo6QocyNcO8SE5wYZaUO0Dx/jpj0ZI2aXDal
+4m/Vflouf4ewbBPb8YnqDHAMbxXIXvYWgi63uahCRH+jQjBAMB0GA1UdDgQWBBR0
+k1iFug6TAZEhohkJ8s4N23vbXjAfBgNVHSMEGDAWgBTcCnXxMlPjUj9oxtDF1bUz
+kEwUcDAKBggqhkjOPQQDAgNHADBEAiAXMy1pZailfDMVrw+VsqTtj5ebOkc+NjVw
+HhrlYFd6ngIgEDLF0VSwQjb4z/fQw4E3pFP+CK05Rd3QX8Z4/q10k7w=
+-----END CERTIFICATE-----
+`;
+// What `openssl pkcs12` writes in front of a certificate it takes out of a bundle.
+const BAG_ATTRIBUTES = 'Bag Attributes\n    localKeyID: 01\nsubject=CN=x\nissuer=CN=y\n';
+
+async function readSigning(t, certificate) {
+  const root = await mkdtemp(path.join(tmpdir(), 'lan-signing-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, 'signing.pem'), certificate);
+  await writeFile(path.join(root, 'outputs'), '');
+  const result = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL('./lan-release.mjs', import.meta.url)),
+      'signing',
+      '--certificate',
+      path.join(root, 'signing.pem'),
+    ],
+    { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: path.join(root, 'outputs') } }
+  );
+  return { ...result, outputs: await readFile(path.join(root, 'outputs'), 'utf8') };
+}
+
+test('a certificate of a fork’s own names no team', () => {
+  assert.deepEqual(describeSigningCertificate(OWN_CERTIFICATE), {
+    name: 'Some Fork LAN',
+    teamId: null,
+    selfSigned: true,
+  });
+  // A unit its own authority wrote into it is no team either.
+  assert.deepEqual(describeSigningCertificate(OWN_AUTHORITY_CERTIFICATE), {
+    name: 'Some Fork LAN',
+    teamId: null,
+    selfSigned: true,
+  });
+});
+
+test('a certificate Apple issued names a team and is chosen by what follows its kind', () => {
+  const expected = { name: 'Test Person (ABCDE12345)', teamId: 'ABCDE12345', selfSigned: false };
+  assert.deepEqual(describeSigningCertificate(DEVELOPER_ID_CERTIFICATE), expected);
+  assert.deepEqual(
+    describeSigningCertificate(`${BAG_ATTRIBUTES}${DEVELOPER_ID_CERTIFICATE}`),
+    expected
+  );
+});
+
+test('what is no certificate is refused', () => {
+  assert.throws(() => describeSigningCertificate('-----BEGIN CERTIFICATE-----\n'));
+  assert.throws(() => describeSigningCertificate(''));
+});
+
+test('the workflow learns how to sign and its log does not name a person', async (t) => {
+  const issued = await readSigning(t, `${BAG_ATTRIBUTES}${DEVELOPER_ID_CERTIFICATE}`);
+  assert.equal(issued.status, 0, issued.stderr);
+  assert.equal(issued.outputs, 'name=Test Person (ABCDE12345)\nself_signed=\n');
+  const lines = issued.stdout.split('\n');
+  assert.ok(lines.includes('::add-mask::Test Person (ABCDE12345)'));
+  assert.ok(lines.includes('::add-mask::ABCDE12345'));
+  // Everything it prints that names the person or the team tells the runner to hide it.
+  assert.deepEqual(
+    lines.filter(
+      (line) => /Test Person|ABCDE12345/u.test(line) && !line.startsWith('::add-mask::')
+    ),
+    []
+  );
+
+  const own = await readSigning(t, OWN_CERTIFICATE);
+  assert.equal(own.status, 0, own.stderr);
+  assert.equal(own.outputs, 'name=Some Fork LAN\nself_signed=1\n');
+  assert.ok(!own.stdout.includes('::add-mask::'));
+
+  const none = await readSigning(t, 'not a certificate');
+  assert.notEqual(none.status, 0);
+  assert.equal(none.outputs, '');
 });
 
 test('a build is stamped with the repository and tag its workflow names', () => {

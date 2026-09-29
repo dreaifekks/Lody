@@ -7,6 +7,7 @@
 //   node scripts/lan-release.mjs version --build 12 --write
 //   node scripts/lan-release.mjs assemble --version 0.100.0-lan.12 --commit <sha> \
 //     --repository owner/repo --tag lan-latest --artifacts <dir> --out <dir>
+//   node scripts/lan-release.mjs signing --certificate <pem>
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -214,6 +215,50 @@ export function renderReleaseNotes(manifest) {
   return `${lines.join('\n')}\n`;
 }
 
+// electron-builder chooses the certificate by what follows these, and refuses
+// a name that still carries one.
+const APPLE_CERTIFICATE_PREFIXES = [
+  'Developer ID Application:',
+  'Developer ID Installer:',
+  '3rd Party Mac Developer Application:',
+  '3rd Party Mac Developer Installer:',
+];
+
+function readNameFields(name) {
+  const fields = new Map();
+  for (const line of name.split('\n')) {
+    const separator = line.indexOf('=');
+    if (separator > 0) fields.set(line.slice(0, separator), line.slice(separator + 1));
+  }
+  return fields;
+}
+
+/**
+ * What the workflow has to know about the certificate that signs the macOS
+ * build. One that Apple issued names a team, which every file it signs then
+ * carries. One of the builder's own names none: the workflow has to trust it
+ * before anything accepts it, and the application needs an exception to load
+ * what it is bundled with.
+ */
+export function describeSigningCertificate(pem) {
+  const certificate = new crypto.X509Certificate(pem);
+  const subject = readNameFields(certificate.subject);
+  const commonName = subject.get('CN')?.trim();
+  if (!commonName) throw new Error('The signing certificate names nobody');
+  // The name becomes a line of the workflow's outputs.
+  if (/[\u0000-\u001f\u007f]/u.test(commonName)) {
+    throw new Error('The name of the signing certificate holds a control character');
+  }
+
+  const prefix = APPLE_CERTIFICATE_PREFIXES.find((candidate) => commonName.startsWith(candidate));
+  const name = prefix ? commonName.slice(prefix.length).trim() : commonName;
+  const teamId =
+    readNameFields(certificate.issuer).get('O') === 'Apple Inc.'
+      ? subject.get('OU')?.trim() || null
+      : null;
+  return { name, teamId, selfSigned: teamId === null };
+}
+
 function requireOption(values, name) {
   const value = values[name];
   if (typeof value !== 'string' || !value.trim()) {
@@ -265,7 +310,31 @@ function main(argv) {
     for (const asset of manifest.assets) console.log(`${asset.sha256}  ${asset.name}`);
     return;
   }
-  throw new Error('Usage: lan-release.mjs <version|assemble> [options]');
+  if (command === 'signing') {
+    const { values } = parseArgs({ args: rest, options: { certificate: { type: 'string' } } });
+    const { name, teamId, selfSigned } = describeSigningCertificate(
+      fs.readFileSync(path.resolve(requireOption(values, 'certificate')), 'utf8')
+    );
+    if (teamId) {
+      // The certificate of a person names that person. Whoever inspects a
+      // build reads the name there; the log of a build does not repeat it.
+      console.log(`::add-mask::${name}`);
+      console.log(`::add-mask::${teamId}`);
+    }
+    if (process.env.GITHUB_OUTPUT) {
+      fs.appendFileSync(
+        process.env.GITHUB_OUTPUT,
+        `name=${name}\nself_signed=${selfSigned ? '1' : ''}\n`
+      );
+    }
+    console.log(
+      selfSigned
+        ? 'The certificate is the builder’s own and names no team.'
+        : 'Apple issued the certificate, and it names a team.'
+    );
+    return;
+  }
+  throw new Error('Usage: lan-release.mjs <version|assemble|signing> [options]');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
