@@ -441,21 +441,32 @@ export function remotePathLauncherTakesUrlHost(launcher: PathLauncherOption): bo
   return launcher.kind === 'builtin' && launcher.id === 'zed';
 }
 
+/** An entry of this machine's SSH configuration, if the launcher can be handed it. */
+export function resolveRemotePathEntry(
+  launcher: PathLauncherOption,
+  entry: unknown
+): SshDestination | null {
+  const parsed = parseSshDestination(entry);
+  if (!parsed) return null;
+  return !remotePathLauncherTakesUrlHost(launcher) || isSshUrlHost(parsed.host) ? parsed : null;
+}
+
 /**
  * What an editor is handed to reach a machine: the entry of this machine's SSH
- * configuration that leads to it, which is where its key is, and without one
- * that the launcher can be handed, what the machine says about itself.
+ * configuration the user named for it, else the one found to lead there, which
+ * is where its key is, and without one that the launcher can be handed, what
+ * the machine says about itself.
  */
 export function resolveRemotePathDestination(
   launcher: PathLauncherOption,
   ssh: LanSshDestination,
-  configured: unknown
+  entries: { named?: unknown; found?: unknown }
 ): SshDestination {
-  const entry = parseSshDestination(configured);
-  if (entry && (!remotePathLauncherTakesUrlHost(launcher) || isSshUrlHost(entry.host))) {
-    return entry;
-  }
-  return toSshDestination(ssh);
+  return (
+    resolveRemotePathEntry(launcher, entries.named) ??
+    resolveRemotePathEntry(launcher, entries.found) ??
+    toSshDestination(ssh)
+  );
 }
 
 /**

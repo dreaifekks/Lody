@@ -246,6 +246,15 @@ export const idePreferenceCache = createLocalStorageCache<IdePreference>(
   pathLauncherPreferenceSchema
 );
 
+// The entry of this computer's SSH configuration the user named for a machine
+// of a LAN, by machine id. A preference: clearing the cache leaves it.
+export const MACHINE_SSH_ENTRY_STORAGE_KEY = 'lody:machineSshEntry';
+
+export const machineSshEntryCache = createLocalStorageCache<string>(
+  MACHINE_SSH_ENTRY_STORAGE_KEY,
+  z.string().trim().min(1).max(320)
+);
+
 // Worktree setup / cleanup script config cache.
 // Maps `${machineId}:${localProjectId}` -> the last-known script config so the
 // project settings page can render instantly from disk while it re-fetches the

@@ -112,7 +112,10 @@ describe('the build of a machine', () => {
     ).toEqual({ state: 'available', by: 'hand' });
     // A service that says it updates itself but takes no requests is asked nothing.
     expect(
-      describeLanMachineBuild(machine({ machineId: 'old', controllable: false, build: null }), NEWEST)
+      describeLanMachineBuild(
+        machine({ machineId: 'old', controllable: false, build: null }),
+        NEWEST
+      )
     ).toEqual({ state: 'available', by: 'hand' });
   });
 
@@ -149,7 +152,9 @@ describe('the workspace a machine is asked in', () => {
     const alone = machine({ machineId: 'alone', self: true, lans: [] });
     expect(resolveLanMachineWorkspace(alone, 'lw_implicit')).toBe('lw_implicit');
     expect(resolveLanMachineWorkspace(alone, null)).toBeNull();
-    expect(resolveLanMachineWorkspace(machine({ machineId: 'lost', lans: [] }), 'lw_home')).toBeNull();
+    expect(
+      resolveLanMachineWorkspace(machine({ machineId: 'lost', lans: [] }), 'lw_home')
+    ).toBeNull();
   });
 });
 
@@ -331,9 +336,7 @@ describe('the machines of the LANs', () => {
 
     await click(buttonIn(document.body.querySelector('[role="alertdialog"]')!, 'Update'));
     expect(calls).toEqual([['update', 'server']]);
-    expect(toasts.success).toEqual([
-      `server installs ${NEWEST} and starts again when it is done.`,
-    ]);
+    expect(toasts.success).toEqual([`server installs ${NEWEST} and starts again when it is done.`]);
   });
 
   it('says why a machine refused', async () => {
@@ -386,6 +389,103 @@ describe('the machines of the LANs', () => {
       ['preview', 'server'],
     ]);
     expect(toasts.success).toEqual(['Imported: 2']);
+  });
+
+  describe('the entry editors reach a machine through', () => {
+    const named = () =>
+      calls.filter(([what]) => what === 'ssh').map(([, machineId, entry]) => [machineId, entry]);
+    const naming: Partial<LanMachinesViewProps> = {
+      onSshEntryChange: (target, entry) => calls.push(['ssh', target.machineId, entry]),
+    };
+    const write = async (value: string) => {
+      const input = document.body.querySelector<HTMLInputElement>('[role="dialog"] input');
+      if (!input) throw new Error(`No field in: ${text()}`);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
+          input,
+          value
+        );
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+    const save = () => buttonIn(document.body.querySelector('[role="dialog"]')!, 'Save');
+
+    it('is named for a machine, as the configuration of this computer writes it', async () => {
+      await render(inventoryOf([desk, server]), { ...naming, sshEntries: {} });
+      expect(rowOf('server').textContent).not.toContain('Editors reach it');
+
+      await openMenuOf('server');
+      await click(menuItem('SSH entry for editors'));
+      expect(text()).toContain('How editors reach server');
+      expect(save()?.disabled).toBe(true);
+
+      await write('  ts:home-devNuc ');
+      expect(save()?.disabled).toBe(false);
+      await click(save());
+
+      expect(named()).toEqual([['server', { host: 'ts:home-devNuc' }]]);
+      expect(document.body.querySelector('[role="dialog"] input')).toBeNull();
+    });
+
+    it('is shown with the machine, changed, and taken back', async () => {
+      await render(inventoryOf([desk, server]), {
+        ...naming,
+        sshEntries: { server: 'me@nuc', desk: 'never-shown' },
+      });
+      expect(rowOf('server').textContent).toContain('Editors reach it as me@nuc');
+      expect(rowOf('desk').textContent).not.toContain('never-shown');
+
+      await openMenuOf('server');
+      await click(menuItem('SSH entry for editors'));
+      const input = document.body.querySelector<HTMLInputElement>('[role="dialog"] input');
+      expect(input?.value).toBe('me@nuc');
+      // What is written already is not saved again.
+      expect(save()?.disabled).toBe(true);
+
+      await write('admin@Home-Nuc');
+      await click(save());
+      expect(named()).toEqual([['server', { host: 'Home-Nuc', user: 'admin' }]]);
+
+      await openMenuOf('server');
+      await click(menuItem('SSH entry for editors'));
+      await write('');
+      await click(save());
+      expect(named().at(-1)).toEqual(['server', null]);
+    });
+
+    it('is not saved when an editor could not be handed it', async () => {
+      await render(inventoryOf([server]), { ...naming, sshEntries: {} });
+      await openMenuOf('server');
+      await click(menuItem('SSH entry for editors'));
+
+      for (const value of ['-oProxyCommand=id', 'two words', 'you@me@nuc', 'nuc/../x', '@nuc']) {
+        await write(value);
+        expect(text(), value).toContain('An editor cannot be handed this name.');
+        expect(save()?.disabled, value).toBe(true);
+      }
+      await write('nuc');
+      expect(text()).not.toContain('An editor cannot be handed this name.');
+      expect(save()?.disabled).toBe(false);
+
+      await click(buttonIn(document.body.querySelector('[role="dialog"]')!, 'Cancel'));
+      expect(named()).toEqual([]);
+    });
+
+    it('is named for a machine that is away, and never for this one', async () => {
+      const laptop = machine({ machineId: 'laptop', online: false });
+      await render(inventoryOf([desk, laptop]), { ...naming, sshEntries: {} });
+
+      await openMenuOf('laptop');
+      expect(menuItem('SSH entry for editors')).toBeTruthy();
+      // A machine that is away is asked nothing else.
+      expect(menuItem('Import from hosted Lody')).toBeUndefined();
+      await click(menuItem('SSH entry for editors'));
+      await click(buttonIn(document.body.querySelector('[role="dialog"]')!, 'Cancel'));
+
+      await openMenuOf('desk');
+      expect(menuItem('Import from hosted Lody')).toBeTruthy();
+      expect(menuItem('SSH entry for editors')).toBeUndefined();
+    });
   });
 
   it('says so when a machine has no hosted installation or does not answer', async () => {

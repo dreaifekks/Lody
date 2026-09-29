@@ -138,6 +138,14 @@ void test('an entry with a colon in its name is taken, where an editor can be ha
   const renamed = text.replace('Host ts:home-devNuc', 'Host ts:home-devNuc ts-home-devNuc')
   assert.equal(await find(renamed, away), 'ts:home-devNuc')
   assert.equal(await find(renamed, { ...away, urlHost: true }), 'ts-home-devNuc')
+
+  // Both names lead to one server, which is asked once.
+  const { reach, asked } = createReach(away)
+  await findSshConfigDestination(renamed, machine, 'someone', reach)
+  assert.deepEqual(asked.filter((question) => question.startsWith('server')).sort(), [
+    'server 100.64.0.7:22',
+    'server 192.168.1.5:22'
+  ])
 })
 
 void test('an entry reaches the machine by anything the machine is called', async () => {
@@ -208,6 +216,81 @@ void test('an entry that leaves the user open is told who owns the folder', asyn
   assert.equal(await find(`${text}\n  User root`, { ssh: asked('root') }), null)
 })
 
+/** Servers that answer when a test lets them, in the order it lets them. */
+function createServers() {
+  const waiting = new Map()
+  const tried = []
+  return {
+    tried,
+    probe: (address) =>
+      new Promise((answer) => {
+        tried.push(address)
+        waiting.set(address, answer)
+      }),
+    /** Lets the server at an address answer, or stay silent for good. */
+    settle: async (address, answers) => {
+      waiting.get(address)(answers)
+      // What follows an answer runs before the next server is let to answer.
+      await new Promise((next) => setImmediate(next))
+    }
+  }
+}
+
+void test('the entry at which a server answers first is taken', async () => {
+  const text = `
+    Host home-nuc
+      HostName 192.168.1.5
+      User me
+    Host ts-nuc
+      HostName 100.64.0.7
+      User me
+  `
+  const race = async (order) => {
+    const servers = createServers()
+    const found = findSshConfigDestination(text, machine, 'someone', {
+      evaluate: async () => null,
+      resolve: async () => [],
+      probe: servers.probe
+    })
+    await new Promise((next) => setImmediate(next))
+    // Every server is tried before any has answered.
+    assert.deepEqual(servers.tried.sort(), ['100.64.0.7', '192.168.1.5'])
+    for (const [address, answers] of order) await servers.settle(address, answers)
+    return written(await found)
+  }
+
+  // At home the network of the house is the shorter way.
+  assert.equal(
+    await race([
+      ['192.168.1.5', true],
+      ['100.64.0.7', true]
+    ]),
+    'home-nuc'
+  )
+  assert.equal(
+    await race([
+      ['100.64.0.7', true],
+      ['192.168.1.5', true]
+    ]),
+    'ts-nuc'
+  )
+  // One that says it leads nowhere does not end the wait for the other.
+  assert.equal(
+    await race([
+      ['100.64.0.7', false],
+      ['192.168.1.5', true]
+    ]),
+    'home-nuc'
+  )
+  assert.equal(
+    await race([
+      ['192.168.1.5', false],
+      ['100.64.0.7', false]
+    ]),
+    null
+  )
+})
+
 void test('the entry at which a server answers is taken, from where this machine is', async () => {
   const home = 'Host home-nuc\n  HostName 192.168.1.5\n  User me'
   const away = 'Host ts-nuc\n  HostName 100.64.0.7\n  User me'
@@ -219,7 +302,7 @@ void test('the entry at which a server answers is taken, from where this machine
     assert.equal(await find(text, { answering: overlay }), 'ts-nuc')
     // At home without the overlay network.
     assert.equal(await find(text, { answering: lan }), 'home-nuc')
-    // Where both lead to the machine, the address it answers members on comes first.
+    // Where both answer at once, the address the machine answers members on comes first.
     assert.equal(await find(text, { answering: [...lan, ...overlay] }), 'ts-nuc')
     assert.equal(await find(text, { answering: [] }), null)
   }

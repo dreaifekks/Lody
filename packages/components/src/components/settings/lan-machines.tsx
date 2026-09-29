@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
-import { Download, Laptop, MoreHorizontal, RefreshCw, Server } from 'lucide-react';
+import { Download, Laptop, MoreHorizontal, RefreshCw, Server, SquareTerminal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { LanAgentRuntime, LanMachine, LanMachines } from '@lody/shared/lan-control';
 import { resolveLanUpdateAvailability } from '@lody/shared/lan-release';
+import type { SshDestination } from '@lody/shared/lan-ssh';
 import type { LanMachinesControl } from '@/hooks/use-lan-machines';
 import { toast } from '@/lib/toast';
 import { AlertDialog } from '@/ui/dialog';
@@ -13,6 +14,7 @@ import { Button } from '@lody/ui/button';
 import { Spinner } from '@lody/ui/spinner';
 import { CompactSection } from './compact-layout';
 import { LanHostedImport } from './lan-hosted-import';
+import { LanMachineSshEntry } from './lan-machine-ssh-entry';
 import { settingsCatalog as catalog } from './surface';
 
 const styles = stylex.create({
@@ -35,6 +37,14 @@ export type LanMachinesViewProps = Pick<
   'updateMachine' | 'installAgent' | 'previewHostedImport' | 'importHostedConfig'
 > & {
   inventory: LanMachines;
+  /**
+   * The entry of this computer's SSH configuration the user named for a
+   * machine, by machine id and as it is written. Editors reach the machine
+   * through it; one without an entry is reached through what answers first.
+   */
+  sshEntries?: Readonly<Record<string, string>>;
+  /** Absent where no entry can be named, such as outside the desktop. */
+  onSshEntryChange?: (machine: LanMachine, entry: SshDestination | null) => void;
 };
 
 const OS_NAMES: Record<string, string> = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' };
@@ -83,10 +93,13 @@ export function LanMachinesView({
   installAgent,
   previewHostedImport,
   importHostedConfig,
+  sshEntries,
+  onSshEntryChange,
 }: LanMachinesViewProps) {
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState<LanMachine | null>(null);
   const [importing, setImporting] = useState<LanMachine | null>(null);
+  const [naming, setNaming] = useState<LanMachine | null>(null);
   const [asked, setAsked] = useState<ReadonlySet<string>>(new Set());
   const newest = inventory.newest?.version ?? null;
 
@@ -147,9 +160,11 @@ export function LanMachinesView({
             machine={machine}
             newest={newest}
             busy={asked.has(machine.machineId)}
+            sshEntry={sshEntries?.[machine.machineId] ?? null}
             onUpdate={() => setConfirming(machine)}
             onImport={() => setImporting(machine)}
             onInstallAgent={(agent) => install(machine, agent)}
+            onNameSshEntry={onSshEntryChange ? () => setNaming(machine) : undefined}
           />
         ))}
       </CompactSection>
@@ -192,6 +207,15 @@ export function LanMachinesView({
         previewHostedImport={previewHostedImport}
         importHostedConfig={importHostedConfig}
       />
+
+      {onSshEntryChange ? (
+        <LanMachineSshEntry
+          machine={naming}
+          entry={naming ? (sshEntries?.[naming.machineId] ?? null) : null}
+          onClose={() => setNaming(null)}
+          onChange={onSshEntryChange}
+        />
+      ) : null}
     </>
   );
 }
@@ -200,20 +224,27 @@ function MachineRow({
   machine,
   newest,
   busy,
+  sshEntry,
   onUpdate,
   onImport,
   onInstallAgent,
+  onNameSshEntry,
 }: {
   machine: LanMachine;
   newest: string | null;
   busy: boolean;
+  sshEntry: string | null;
   onUpdate: () => void;
   onImport: () => void;
   onInstallAgent: (agent: LanAgentRuntime) => void;
+  /** Absent for this machine, and where no entry can be named. */
+  onNameSshEntry?: () => void;
 }) {
   const { t } = useTranslation();
   const build = describeLanMachineBuild(machine, newest);
   const reachable = takesRequests(machine);
+  // An entry is named on this computer, whether the machine answers or not.
+  const nameSshEntry = machine.self ? undefined : onNameSshEntry;
   const runtimes = reachable ? machine.agents.filter(needsRuntime) : [];
   const Glyph = machine.build?.update === 'desktop' ? Laptop : Server;
   const separator = t('settings.lan.machines.factSeparator');
@@ -236,7 +267,9 @@ function MachineRow({
               <Badge>{t('settings.lan.machines.self')}</Badge>
             ) : machine.online === null ? null : (
               <Badge tone={machine.online ? 'success' : undefined}>
-                {t(machine.online ? 'settings.lan.machines.online' : 'settings.lan.machines.offline')}
+                {t(
+                  machine.online ? 'settings.lan.machines.online' : 'settings.lan.machines.offline'
+                )}
               </Badge>
             )}
           </span>
@@ -265,6 +298,11 @@ function MachineRow({
               ))}
             </span>
           ) : null}
+          {!machine.self && sshEntry ? (
+            <span {...stylex.props(catalog.meta)}>
+              {t('settings.lan.machines.sshEntry.named', { entry: sshEntry })}
+            </span>
+          ) : null}
           {!machine.self && !machine.controllable ? (
             <span {...stylex.props(catalog.meta, catalog.metaHint)}>
               {t('settings.lan.machines.tooOld')}
@@ -280,7 +318,7 @@ function MachineRow({
             {t('settings.lan.machines.updateAction')}
           </Button>
         ) : null}
-        {reachable ? (
+        {reachable || nameSshEntry ? (
           <Menu.Root>
             <Menu.Trigger
               render={
@@ -295,9 +333,16 @@ function MachineRow({
               }
             />
             <Menu.Content align="end">
-              <Menu.Item icon={<Download />} onClick={onImport}>
-                {t('settings.lan.machines.importHosted')}
-              </Menu.Item>
+              {reachable ? (
+                <Menu.Item icon={<Download />} onClick={onImport}>
+                  {t('settings.lan.machines.importHosted')}
+                </Menu.Item>
+              ) : null}
+              {nameSshEntry ? (
+                <Menu.Item icon={<SquareTerminal />} onClick={nameSshEntry}>
+                  {t('settings.lan.machines.sshEntry.action')}
+                </Menu.Item>
+              ) : null}
               {runtimes.map((agent) => (
                 <Menu.Item
                   key={agent.agentType}

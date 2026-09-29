@@ -1,6 +1,14 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from 'vitest';
 import type { LanSshDestination } from '@lody/shared/lan-ssh';
 import { pathLauncherPreferenceSchema } from '../src/lib/local-storage-cache';
+import {
+  MACHINE_SSH_ENTRY_CHANGED_EVENT,
+  parseMachineSshEntry,
+  readMachineSshEntry,
+  writeMachineSshEntry,
+} from '../src/lib/machine-ssh-entry';
 import {
   resolveSessionOpenInIdeHost,
   resolveSessionOpenInIdePathTarget,
@@ -13,6 +21,7 @@ import {
   canLaunchRemotePath,
   remotePathLauncherTakesUrlHost,
   resolveRemotePathDestination,
+  resolveRemotePathEntry,
   getAvailablePathLauncherOptions,
   getCustomPathLauncherOptionId,
   validateCustomPathLauncherCommandTemplate,
@@ -465,11 +474,12 @@ describe('a folder of another machine', () => {
 
   it('opens through the entry of this machine’s SSH configuration that leads to it', () => {
     const vscode = getLauncher('vscode', 'darwin');
-    expect(resolveRemotePathDestination(vscode, ssh, { host: 'nuc' })).toEqual({ host: 'nuc' });
-    expect(resolveRemotePathDestination(vscode, ssh, { host: 'nuc', user: 'me' })).toEqual({
+    expect(resolveRemotePathDestination(vscode, ssh, { found: { host: 'nuc' } })).toEqual({
       host: 'nuc',
-      user: 'me',
     });
+    expect(
+      resolveRemotePathDestination(vscode, ssh, { found: { host: 'nuc', user: 'me' } })
+    ).toEqual({ host: 'nuc', user: 'me' });
     expect(
       buildRemotePathLauncherLaunchInput(vscode, '/srv/app', { host: 'nuc' }, 'darwin')
     ).toMatchObject({
@@ -528,10 +538,10 @@ describe('a folder of another machine', () => {
 
     expect(remotePathLauncherTakesUrlHost(zed)).toBe(true);
     expect(remotePathLauncherTakesUrlHost(vscode)).toBe(false);
-    expect(resolveRemotePathDestination(vscode, ssh, entry)).toEqual(entry);
+    expect(resolveRemotePathDestination(vscode, ssh, { found: entry })).toEqual(entry);
     // Without one, Zed is handed what the machine says about itself.
-    expect(resolveRemotePathDestination(zed, ssh, entry)).toEqual(reached);
-    expect(resolveRemotePathDestination(zed, ssh, { host: 'ts-home-devNuc' })).toEqual({
+    expect(resolveRemotePathDestination(zed, ssh, { found: entry })).toEqual(reached);
+    expect(resolveRemotePathDestination(zed, ssh, { found: { host: 'ts-home-devNuc' } })).toEqual({
       host: 'ts-home-devNuc',
     });
     expect(() => buildRemotePathLauncherLaunchInput(zed, '/srv/app', entry, 'darwin')).toThrow(
@@ -541,19 +551,98 @@ describe('a folder of another machine', () => {
 
   it('opens as the machine says where the configuration holds no entry for it', () => {
     const vscode = getLauncher('vscode', 'darwin');
-    expect(resolveRemotePathDestination(vscode, ssh, null)).toEqual(reached);
-    expect(resolveRemotePathDestination(vscode, ssh, undefined)).toEqual(reached);
+    expect(resolveRemotePathDestination(vscode, ssh, {})).toEqual(reached);
+    expect(resolveRemotePathDestination(vscode, ssh, { found: null, named: null })).toEqual(
+      reached
+    );
     expect(
-      resolveRemotePathDestination(vscode, { ...ssh, port: 2222, names: ['server'] }, null)
+      resolveRemotePathDestination(vscode, { ...ssh, port: 2222, names: ['server'] }, {})
     ).toEqual({ ...reached, port: 2222 });
     // Nor an entry an editor could read as something else.
     for (const host of ['-oProxyCommand=id', 'nuc/../x', 'two words', '', 'me@nuc']) {
-      expect(resolveRemotePathDestination(vscode, ssh, { host }), host).toEqual(reached);
+      expect(resolveRemotePathDestination(vscode, ssh, { found: { host } }), host).toEqual(reached);
+      expect(resolveRemotePathDestination(vscode, ssh, { named: { host } }), host).toEqual(reached);
       expect(() => buildRemotePathLauncherLaunchInput(vscode, '/srv/app', { host }), host).toThrow(
         /cannot be handed/u
       );
     }
-    expect(resolveRemotePathDestination(vscode, ssh, 'nuc')).toEqual(reached);
+    expect(resolveRemotePathDestination(vscode, ssh, { found: 'nuc' })).toEqual(reached);
+  });
+
+  it('opens through the entry the user named before the one that answers first', () => {
+    const vscode = getLauncher('vscode', 'darwin');
+    const zed = getLauncher('zed', 'darwin');
+    const found = { host: 'home-devNuc' };
+
+    expect(
+      resolveRemotePathDestination(vscode, ssh, { named: { host: 'ts:home-devNuc' }, found })
+    ).toEqual({ host: 'ts:home-devNuc' });
+    expect(resolveRemotePathEntry(vscode, { host: 'ts:home-devNuc' })).toEqual({
+      host: 'ts:home-devNuc',
+    });
+    // An entry Zed cannot be handed leaves Zed with the one that was found.
+    expect(
+      resolveRemotePathDestination(zed, ssh, { named: { host: 'ts:home-devNuc' }, found })
+    ).toEqual(found);
+    expect(resolveRemotePathEntry(zed, { host: 'ts:home-devNuc' })).toBeNull();
+    expect(
+      resolveRemotePathDestination(zed, ssh, { named: { host: 'nuc', user: 'me' }, found })
+    ).toEqual({ host: 'nuc', user: 'me' });
+  });
+});
+
+describe('the entry the user names for a machine', () => {
+  it('is an entry or a host, with the user before it', () => {
+    expect(parseMachineSshEntry('nuc')).toEqual({ host: 'nuc' });
+    expect(parseMachineSshEntry('  ts:home-devNuc ')).toEqual({ host: 'ts:home-devNuc' });
+    expect(parseMachineSshEntry('me@Home-Nuc')).toEqual({ host: 'Home-Nuc', user: 'me' });
+    expect(parseMachineSshEntry('me@10.0.0.7')).toEqual({ host: '10.0.0.7', user: 'me' });
+  });
+
+  it('is nothing an editor could read as something else', () => {
+    for (const written of [
+      '',
+      ' ',
+      '@nuc',
+      'me@',
+      'you@me@nuc',
+      '-oProxyCommand=id',
+      'me@-nuc',
+      'two words',
+      'nuc/../x',
+      'nuc?x=1',
+      'dev*',
+    ]) {
+      expect(parseMachineSshEntry(written), written).toBeNull();
+    }
+  });
+
+  it('is kept on this computer by machine, and taken back', () => {
+    const changes: string[] = [];
+    const onChange = () => changes.push('changed');
+    window.addEventListener(MACHINE_SSH_ENTRY_CHANGED_EVENT, onChange);
+    try {
+      expect(readMachineSshEntry('server')).toBeNull();
+      writeMachineSshEntry('server', { host: 'ts:home-devNuc' });
+      writeMachineSshEntry('mini', { host: 'mini', user: 'admin' });
+
+      expect(readMachineSshEntry('server')).toEqual({ host: 'ts:home-devNuc' });
+      expect(readMachineSshEntry('mini')).toEqual({ host: 'mini', user: 'admin' });
+      expect(readMachineSshEntry('laptop')).toBeNull();
+      expect(readMachineSshEntry(null)).toBeNull();
+
+      writeMachineSshEntry('server', null);
+      expect(readMachineSshEntry('server')).toBeNull();
+      expect(readMachineSshEntry('mini')).toEqual({ host: 'mini', user: 'admin' });
+      expect(changes).toHaveLength(3);
+
+      // What this computer holds for a machine is read again, not trusted.
+      localStorage.setItem('lody:machineSshEntry', JSON.stringify({ mini: '-oProxyCommand=id' }));
+      expect(readMachineSshEntry('mini')).toBeNull();
+    } finally {
+      window.removeEventListener(MACHINE_SSH_ENTRY_CHANGED_EVENT, onChange);
+      localStorage.removeItem('lody:machineSshEntry');
+    }
   });
 });
 

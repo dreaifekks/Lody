@@ -16,6 +16,7 @@ import { UpdateChangelogDialog } from '@/components/update-changelog-dialog';
 import { writeTextToClipboard } from '@/lib/clipboard';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { pickLocalizedReleaseNotes } from '@/lib/electron-update-banner';
+import { useMachineSshEntries, writeMachineSshEntry } from '@/lib/machine-ssh-entry';
 import { openExternalUrl } from '@/lib/native-browser';
 import { withClassName } from '@/lib/stylex';
 import { toast } from '@/lib/toast';
@@ -152,7 +153,15 @@ function LanApplication() {
 /** The machines of the LANs, wired to the agent service of this machine. */
 function LanMachinesOfThisMachine() {
   const { inventory, ...control } = useLanMachines();
-  return inventory ? <LanMachinesView inventory={inventory} {...control} /> : null;
+  const sshEntries = useMachineSshEntries();
+  return inventory ? (
+    <LanMachinesView
+      inventory={inventory}
+      {...control}
+      sshEntries={sshEntries}
+      onSshEntryChange={(machine, entry) => writeMachineSshEntry(machine.machineId, entry)}
+    />
+  ) : null;
 }
 
 export function LanSettingView({
@@ -409,9 +418,7 @@ function LanRow({
         <span {...stylex.props(catalog.body)}>
           <span {...stylex.props(catalog.titleLine)}>
             <span {...stylex.props(catalog.name)}>{lan.name}</span>
-            {status === undefined ? null : (
-              <Badge>{t(`settings.lan.status.${status}`)}</Badge>
-            )}
+            {status === undefined ? null : <Badge>{t(`settings.lan.status.${status}`)}</Badge>}
           </span>
           <span {...stylex.props(catalog.meta)}>
             <span {...stylex.props(catalog.truncate, catalog.mono)}>{lan.url}</span>
@@ -497,7 +504,8 @@ function JoinLanForm({
   const [token, setToken] = useState('');
   const [name, setName] = useState('');
 
-  const complete = how === 'invite' ? invite.trim() !== '' : url.trim() !== '' && token.trim() !== '';
+  const complete =
+    how === 'invite' ? invite.trim() !== '' : url.trim() !== '' && token.trim() !== '';
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const chosenName = name.trim() || null;
@@ -612,7 +620,9 @@ function EditLanForm({
     >
       <div {...withClassName(stylex.props(catalog.editorBody), 'scrollbar-pro')}>
         {error ? <FormMessage tone="error">{error}</FormMessage> : null}
-        {moved ? <FormMessage tone="warning">{t('settings.lan.form.moveWarning')}</FormMessage> : null}
+        {moved ? (
+          <FormMessage tone="warning">{t('settings.lan.form.moveWarning')}</FormMessage>
+        ) : null}
         <Section title={t('settings.lan.form.sectionLan')}>
           <Field
             htmlFor={`${fieldId}-name`}

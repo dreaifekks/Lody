@@ -147,6 +147,8 @@ const machinesView = (
       ok: true,
       result: { workspaceId: home.workspaceId, items: hosted.sources[0]?.items ?? [] },
     })}
+    sshEntries={{ 'home-server': 'ts:home-server' }}
+    onSshEntryChange={() => {}}
   />
 );
 

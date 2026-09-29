@@ -276,9 +276,11 @@ export function parseSshEvaluation(output: string): SshConfigEntry | null {
  * with the domain of a network and the same name without it are one. It has
  * to connect to the port the SSH server of the machine answers on, as the
  * user the agent service runs as; an entry that leaves the user open is told
- * which. Among the entries for the machine, the first at which a server
- * answers is taken: the one for the address the machine answers members on
- * before one for another of its names, then in the order of the file.
+ * which. Among the entries for the machine, the one at which a server answers
+ * first is taken, which is the one with the shortest way there from where this
+ * machine is; every server is tried at the same moment for that. Where two
+ * answer at once, the one for the address the machine answers members on
+ * comes before one for another of its names, then the order of the file.
  *
  * With `urlHost`, only an entry counts whose name an address can carry as it
  * is, for an editor that is handed the machine as an address.
@@ -341,24 +343,14 @@ export async function findSshConfigDestination(
       const destination = parseSshDestination(asUser ? { host } : { host, user: machine.user })
       if (!destination) return null
 
-      // Every server is tried at once and none is waited for here: an address
-      // that leads nowhere says so only by staying silent.
-      const answers = entry.proxied
-        ? Promise.resolve(false)
-        : resolve(entry.hostName).then(async (found) =>
-            (
-              await Promise.all(
-                found
-                  .slice(0, ADDRESSES_MAX)
-                  .map((address) => reach.probe(address, entry.port).catch(() => false))
-              )
-            ).some(Boolean)
-          )
       return {
         destination,
         rank: reached * 2 + (stated.user === null ? 0 : 1),
         order,
-        answers,
+        port: entry.port,
+        // Whether an entry that goes through another host leads anywhere is
+        // for that host to find out, so no server is tried for it.
+        addresses: entry.proxied ? [] : (await resolve(entry.hostName)).slice(0, ADDRESSES_MAX),
         proxied: entry.proxied
       }
     })
@@ -367,11 +359,23 @@ export async function findSshConfigDestination(
   const found = entries
     .filter((entry) => entry !== null)
     .sort((left, right) => right.rank - left.rank || left.order - right.order)
-  for (const entry of found) {
-    // Only the entries that come before it are waited for.
-    if (await entry.answers) return entry.destination
-  }
-  // Whether an entry that goes through another host leads anywhere is not
-  // tried, so it comes after every entry at which a server answered.
-  return found.find((entry) => entry.proxied)?.destination ?? null
+  // Every server is tried from the same moment on, and the first answer ends
+  // the wait: an address that leads nowhere says so only by staying silent.
+  const first = await new Promise<SshDestination | null>((done) => {
+    let silent = 0
+    const tried = found.flatMap((entry) => entry.addresses.map((address) => ({ entry, address })))
+    if (tried.length === 0) done(null)
+    // Two names of one entry lead to one server, which is tried once.
+    const servers = new Map<string, Promise<boolean>>()
+    for (const { entry, address } of tried) {
+      const server = `${address}:${entry.port}`
+      const answers = servers.get(server) ?? reach.probe(address, entry.port).catch(() => false)
+      servers.set(server, answers)
+      void answers.then((answered) => {
+        if (answered) done(entry.destination)
+        else if (++silent === tried.length) done(null)
+      })
+    }
+  })
+  return first ?? found.find((entry) => entry.proxied)?.destination ?? null
 }

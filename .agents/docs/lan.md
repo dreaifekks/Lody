@@ -196,12 +196,27 @@ is. So the desktop asks rather than reads:
 | What a name stands for       | The resolver of the desktop                             |
 | Whether an entry leads there | The address, for the version an SSH server starts with  |
 
-The entry for the address the machine named comes first, then the others in
-the order of the file, and the first at which a server answers is taken; an
-entry that goes through another host is not tried and comes after them.
-Nothing is asked about an entry the configuration says is for another user or
-port. Where no entry answers, the editor is handed `user@host` as the machine
-named them, and connects with the keys `ssh` offers any host.
+Every server is tried from the same moment on, and the entry at which one
+answers first is taken: it is the one with the shortest way to the machine
+from where the desktop is, the network of the house at home and the overlay
+network elsewhere. No entry that stays silent is waited for. Where two answer
+at once, the entry for the address the machine named comes first, then the
+order of the file. An entry that goes through another host is not tried and
+comes after them. Nothing is asked about an entry the configuration says is
+for another user or port. Where no entry answers, the editor is handed
+`user@host` as the machine named them, and connects with the keys `ssh` offers
+any host.
+
+The user may name the entry instead. Settings > LAN keeps an entry for each
+machine (`packages/components/src/lib/machine-ssh-entry.ts`), on the desktop
+it is named on: the configuration it is an entry of is that desktop's own. A
+named entry is handed over as it is written, without being looked for or
+tried, to every editor that can be handed it.
+
+No password is kept for a machine. An editor starts `ssh` itself and asks for
+what the server wants; the VS Code family takes no password from whoever
+starts it, and one handed to Zed would travel among the arguments of a
+process, where every program of the desktop reads it.
 
 The session header offers the editors that work over SSH, which are the VS
 Code family and Zed, while the machine of the session names a server. VS Code
