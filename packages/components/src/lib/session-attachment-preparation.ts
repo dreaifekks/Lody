@@ -46,8 +46,10 @@ export async function prepareDraftAttachments(args: {
       let ready: SessionInputBlock;
       if (attachment.kind === 'image') {
         const token = args.token();
-        if (!token) throw new Error('Image upload requires authentication');
         try {
+          // Without an account there is no image store to upload to; an image
+          // for this machine still reaches its session through the local handoff.
+          if (!token) throw new Error('Image upload requires authentication');
           const image = await args.resources.run(
             (signal) =>
               uploadSessionImage({

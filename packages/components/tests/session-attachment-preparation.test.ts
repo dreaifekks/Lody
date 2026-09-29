@@ -54,7 +54,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
   Object.assign(local, { enabled: false, machineId: null, files: [], fail: false });
 });
-function fixture() {
+function fixture(options: { token?: string | null } = {}) {
   const doc = new LoroDoc();
   const writer = createHistoryWriter(doc);
   const resources = createSessionSendResources({
@@ -94,7 +94,7 @@ function fixture() {
         checkpoint,
         report,
         resources,
-        token: () => 'token',
+        token: () => (options.token === undefined ? 'token' : options.token),
         localMachineId: () => local.machineId as never,
       }),
     prepare: async () => {},
@@ -391,6 +391,39 @@ it('prepares a failed image through the existing local handoff and persists its 
     ])
   );
   expect((await f.journal.read('local-image'))?.stage).toBe('delivered');
+});
+
+it('hands an image to this machine without an account to upload it to', async () => {
+  Object.assign(local, { enabled: true, machineId: 'machine' });
+  const f = fixture({ token: null });
+  upload.run = async () => {
+    throw new Error('Nothing may be uploaded without an account');
+  };
+  await f.journal.accept({
+    ...input('local-only', ['image.png']),
+    targetMachineId: 'machine' as never,
+  });
+  await f.journal.retry('session' as SessionId);
+  expect(local.files).toEqual(['image.png']);
+  expect(f.writer.readStored()[0]?.items).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: 'file', transport: 'local', fileId: 'image.png' }),
+    ])
+  );
+});
+
+it('keeps an image for another machine unsent without an account', async () => {
+  Object.assign(local, { enabled: true, machineId: 'machine' });
+  const f = fixture({ token: null });
+  await f.journal.accept({
+    ...input('remote-only', ['image.png']),
+    targetMachineId: 'other-machine' as never,
+  });
+  await expect(f.journal.retry('session' as SessionId)).rejects.toThrow(
+    'Image upload requires authentication'
+  );
+  expect(local.files).toEqual([]);
+  expect(f.writer.readStored()).toEqual([]);
 });
 
 it.each(['remote', 'no-capability', 'canceled', 'file-limit', 'local-failure'])(
