@@ -397,11 +397,17 @@ const hubCommand = new Command('hub')
       });
       console.log(`Lody LAN host listening on ${hub.url}`);
       console.log(`Data directory: ${path.resolve(options.dataDir)}`);
-      console.log('');
-      console.log('Join this LAN from another server with:');
-      console.log(
-        `  ${describeServerJoin(formatLanInvite({ url: options.publicUrl ?? hub.url, token: hub.token }))}`
-      );
+      // The invite carries the credential. Output that nobody watches, such as
+      // a service's journal, is a log, and the credential never goes there.
+      if (process.stdout.isTTY) {
+        console.log('');
+        console.log('Join this LAN from another server with:');
+        console.log(
+          `  ${describeServerJoin(formatLanInvite({ url: options.publicUrl ?? hub.url, token: hub.token }))}`
+        );
+      } else {
+        console.log('`lody lan invite` on a member of this LAN prints its invite.');
+      }
       for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         process.once(signal, () => void hub.close());
       }

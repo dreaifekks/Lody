@@ -4879,13 +4879,24 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
             requireTransports: [plane],
           });
           throwIfSendAborted(signal);
-          if (
-            !report.transports.some(
-              (transport) => transport.transportId === plane && transport.ok
-            ) ||
-            targetRouter.getReadinessTransportForRoom({ kind: 'doc', id: roomId }) !== plane
-          ) {
-            throw new Error('Target synchronization is not confirmed');
+          const outcome = report.transports.find((transport) => transport.transportId === plane);
+          const movedTo = targetRouter.getReadinessTransportForRoom({ kind: 'doc', id: roomId });
+          if (!outcome?.ok || movedTo !== plane) {
+            // Say why: the turn is usually delivered already, and only the
+            // reason tells a slow or failing plane from a route that moved.
+            const reason =
+              movedTo !== plane
+                ? `the session moved to the ${movedTo} plane`
+                : !outcome
+                  ? `the ${plane} plane did not take part`
+                  : outcome.failures
+                      .map((failure) =>
+                        failure.error instanceof Error
+                          ? failure.error.message
+                          : String(failure.error)
+                      )
+                      .join('; ') || `the ${plane} plane reported no success`;
+            throw new Error(`Target synchronization is not confirmed: ${reason}`);
           }
         },
       })
