@@ -20,6 +20,7 @@ import {
 import {
   LanReleaseError,
   downloadLanReleaseAsset,
+  downloadNewestLanReleaseAsset,
   fetchLanReleaseManifest,
   resolveLanReleaseBaseUrl,
   type LanReleaseFetch,
@@ -277,6 +278,53 @@ describe('downloading a file of a release', () => {
       expect((failure as LanReleaseError).code).toBe('mismatch');
       expect(fs.readdirSync(directory)).toEqual([]);
     }
+  });
+
+  it('follows a build that is published while its description is read', async () => {
+    // The description still names build 7 while the file is already build 8's.
+    const newer = Buffer.from('the next build of the command line');
+    const next = manifest({
+      version: '0.100.0-lan.8',
+      assets: [{ name: 'lody-lan-cli.tgz', size: newer.byteLength, sha256: sha256(newer) }],
+    });
+    const heard: string[] = [];
+    const result = await downloadNewestLanReleaseAsset({
+      source,
+      manifest: manifest(),
+      assetName: 'lody-lan-cli.tgz',
+      destination,
+      env: {},
+      fetch: release({
+        [`${BASE}/lody-lan-cli.tgz`]: { body: newer },
+        [`${BASE}/manifest.json`]: { body: JSON.stringify(next) },
+      }),
+      onManifest: (described) => heard.push(described.version),
+    });
+
+    expect(result.version).toBe('0.100.0-lan.8');
+    expect(heard).toEqual(['0.100.0-lan.8']);
+    expect(fs.readFileSync(destination)).toEqual(newer);
+  });
+
+  it('gives up when the newer description does not match either', async () => {
+    const failure = await downloadNewestLanReleaseAsset({
+      source,
+      manifest: manifest(),
+      assetName: 'lody-lan-cli.tgz',
+      destination,
+      env: {},
+      fetch: release({
+        [`${BASE}/lody-lan-cli.tgz`]: { body: Buffer.concat([payload, payload]) },
+        [`${BASE}/manifest.json`]: { body: JSON.stringify(manifest()) },
+      }),
+    }).then(
+      () => null,
+      (error: unknown) => error
+    );
+
+    expect((failure as LanReleaseError).code).toBe('mismatch');
+    expect((failure as LanReleaseError).message).toMatch(/a newer build may be on its way/);
+    expect(fs.readdirSync(directory)).toEqual([]);
   });
 
   it('reports a file the release does not have', async () => {

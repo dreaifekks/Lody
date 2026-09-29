@@ -16,7 +16,7 @@ import {
   type LanReleaseSource
 } from '@lody/shared/lan-release'
 import {
-  downloadLanReleaseAsset,
+  downloadNewestLanReleaseAsset,
   fetchLanReleaseManifest,
   type LanReleaseFetch
 } from '@lody/shared/node/lan-release'
@@ -224,11 +224,17 @@ export class LanUpdaterService implements AppUpdater {
           error: undefined
         })
         fs.mkdirSync(path.dirname(target.download), { recursive: true })
-        await downloadLanReleaseAsset({
+        const downloaded = await downloadNewestLanReleaseAsset({
           source: this.options.source,
-          asset,
+          manifest,
+          assetName: asset.name,
           destination: target.download,
           fetch: netFetch,
+          // A build published while this one was being offered is the one installed.
+          onManifest: (newer) => {
+            this.manifest = newer
+            this.setState({ availableVersion: newer.version, releaseDate: newer.builtAt })
+          },
           onProgress: (received, total) => {
             const now = Date.now()
             if (received < total && now - reportedAt < PROGRESS_INTERVAL_MS) return
@@ -241,10 +247,10 @@ export class LanUpdaterService implements AppUpdater {
             })
           }
         })
-        this.staged = { path: await this.stage(target, manifest), version: manifest.version }
+        this.staged = { path: await this.stage(target, downloaded), version: downloaded.version }
         this.setState({
           phase: 'downloaded',
-          downloadedVersion: manifest.version,
+          downloadedVersion: downloaded.version,
           percent: undefined,
           bytesPerSecond: undefined,
           transferred: undefined,

@@ -6,6 +6,7 @@ import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
 import {
   LAN_RELEASE_MANIFEST_NAME,
   LanReleaseManifestSchema,
+  findLanReleaseAsset,
   getLanReleaseBaseUrl,
   sameLanReleaseSource,
   type LanReleaseAsset,
@@ -171,7 +172,10 @@ export async function downloadLanReleaseAsset(
         for await (const chunk of chunks) {
           received += chunk.byteLength;
           if (received > asset.size) {
-            throw new LanReleaseError('mismatch', `${asset.name} is larger than described`);
+            throw new LanReleaseError(
+              'mismatch',
+              `${asset.name} is larger than the release describes; a newer build may be on its way`
+            );
           }
           hash.update(chunk);
           options.onProgress?.(received, asset.size);
@@ -195,5 +199,41 @@ export async function downloadLanReleaseAsset(
       throw new LanReleaseError('aborted', 'The download was cancelled', { cause: error });
     }
     throw new LanReleaseError('unreachable', `Downloading ${asset.name} failed`, { cause: error });
+  }
+}
+
+/**
+ * Downloads a file of the newest build. A release replaces its files one at a
+ * time, so the file can already belong to a build newer than the description
+ * read before it. The description is read again once, and the file of the
+ * build it names is downloaded; `onManifest` hears of that build. Returns the
+ * description the downloaded file belongs to.
+ */
+export async function downloadNewestLanReleaseAsset(
+  options: LanReleaseRequestOptions & {
+    source: LanReleaseSource;
+    manifest: LanReleaseManifest;
+    assetName: string;
+    destination: string;
+    onProgress?: (receivedBytes: number, totalBytes: number) => void;
+    onManifest?: (manifest: LanReleaseManifest) => void;
+  }
+): Promise<LanReleaseManifest> {
+  let manifest = options.manifest;
+  for (let attempt = 0; ; attempt += 1) {
+    const asset = findLanReleaseAsset(manifest, options.assetName);
+    if (!asset) {
+      throw new LanReleaseError('not_published', `The release carries no ${options.assetName}`);
+    }
+    try {
+      await downloadLanReleaseAsset({ ...options, asset });
+      return manifest;
+    } catch (error) {
+      if (attempt > 0 || !(error instanceof LanReleaseError) || error.code !== 'mismatch') {
+        throw error;
+      }
+      manifest = await fetchLanReleaseManifest(options.source, options);
+      options.onManifest?.(manifest);
+    }
   }
 }

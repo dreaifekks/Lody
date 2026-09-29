@@ -13,7 +13,7 @@ import {
 } from '@lody/shared/lan-release';
 import {
   LanReleaseError,
-  downloadLanReleaseAsset,
+  downloadNewestLanReleaseAsset,
   fetchLanReleaseManifest,
   type LanReleaseFetch,
 } from '@lody/shared/node/lan-release';
@@ -232,21 +232,25 @@ export async function applyLanSelfUpdate(
     const tarball = path.join(staging, LAN_CLI_ASSET_NAME);
 
     options.onPhase?.('downloading', manifest);
+    let downloaded: LanReleaseManifest;
     try {
-      await downloadLanReleaseAsset({
+      downloaded = await downloadNewestLanReleaseAsset({
         source,
-        asset,
+        manifest,
+        assetName: asset.name,
         destination: tarball,
         fetch: options.fetch,
         env,
         signal: options.signal,
+        // A build published meanwhile is the one installed.
+        onManifest: (newer) => options.onPhase?.('downloading', newer),
       });
     } catch (error) {
       if (!(error instanceof LanReleaseError)) throw error;
       throw new LanSelfUpdateError('release', error.message, { cause: error });
     }
 
-    options.onPhase?.('installing', manifest);
+    options.onPhase?.('installing', downloaded);
     const commandEnv = withRuntimeOnPath(env, runtime);
     const installed = await run(
       resolveNpm(runtime),
@@ -275,17 +279,17 @@ export async function applyLanSelfUpdate(
       timeoutMs: PROBE_TIMEOUT_MS,
     });
     const reported = probe.stdout.trim().split('\n').at(-1)?.trim();
-    if (probe.code !== 0 || reported !== manifest.version) {
+    if (probe.code !== 0 || reported !== downloaded.version) {
       throw new LanSelfUpdateError(
         'install_failed',
         probe.code === 0
-          ? `The installed build reports ${reported ?? 'nothing'}, not ${manifest.version}`
+          ? `The installed build reports ${reported ?? 'nothing'}, not ${downloaded.version}`
           : `The installed build does not start: ${summarizeFailure(probe, root)}`
       );
     }
 
     replaceInstallation(root, staging);
-    return { from: options.runningVersion, to: manifest.version, commit: manifest.commit };
+    return { from: options.runningVersion, to: downloaded.version, commit: downloaded.commit };
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
