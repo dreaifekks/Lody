@@ -1,0 +1,129 @@
+diff --git a/src/acp-agent.ts b/src/acp-agent.ts
+index 1d969cd..546d957 100644
+--- a/src/acp-agent.ts
++++ b/src/acp-agent.ts
+@@ -1296,6 +1296,32 @@ const AUTONOMOUS_RESULT_ORIGINS: ReadonlySet<SDKMessageOrigin["kind"]> = new Set
+   "observer-activity",
+ ]);
+ 
++/** A transcript user entry the CLI wrote for work the model does on its own
++ *  (a background task's notification, a peer's message): plain text nobody
++ *  typed. The live loop never shows it as the user's input, so replay must
++ *  not either. Tool results always stay, whatever their origin. */
++function isAutonomousUserEntry(message: SessionMessage): boolean {
++  if (message.type !== "user") return false;
++  const origin = (message as { origin?: { kind?: unknown } }).origin;
++  if (
++    typeof origin?.kind !== "string" ||
++    !AUTONOMOUS_RESULT_ORIGINS.has(origin.kind as SDKMessageOrigin["kind"])
++  ) {
++    return false;
++  }
++  const content = (message.message as { content?: unknown } | undefined)?.content;
++  return (
++    typeof content === "string" ||
++    (Array.isArray(content) &&
++      content.every(
++        (block) =>
++          typeof block === "object" &&
++          block !== null &&
++          (block as { type?: unknown }).type === "text",
++      ))
++  );
++}
++
+ /** Whether this turn's terminal result arrived but its settlement is being
+  *  held for background subagents it spawned (see Turn.deferredSettle). The
+  *  single spelling of the hold predicate, shared by the consumer's settle
+@@ -7049,6 +7075,10 @@ export class ClaudeAcpAgent {
+     };
+ 
+     for (const message of messages) {
++      // Before the turn bookkeeping: the model's followup to a notification
++      // stays with the turn it belongs to rather than opening one for text
++      // the user never sent.
++      if (isAutonomousUserEntry(message)) continue;
+       if (
+         message.type === "user" &&
+         message.parent_tool_use_id === null &&
+diff --git a/src/tests/acp-agent.test.ts b/src/tests/acp-agent.test.ts
+index 648f0e8..f62d440 100644
+--- a/src/tests/acp-agent.test.ts
++++ b/src/tests/acp-agent.test.ts
+@@ -2440,6 +2440,76 @@ describe("synthetic login message (issue #863)", () => {
+     expect(JSON.stringify(updates)).not.toContain("system-reminder");
+   });
+ 
++  it("loadSession replay leaves out what the CLI wrote for autonomous work", async () => {
++    const updates: SessionNotification[] = [];
++    const client = {
++      sessionUpdate: async (u: SessionNotification) => {
++        updates.push(u);
++      },
++    } as unknown as AcpClient;
++    const agent = new ClaudeAcpAgent(client, { log: () => {}, error: () => {} });
++    const notification =
++      "<task-notification>\n<task-id>bx1</task-id>\n<status>completed</status>\n</task-notification>";
++
++    vi.mocked(getSessionMessages).mockResolvedValueOnce([
++      {
++        type: "user",
++        uuid: "u1",
++        session_id: "s1",
++        parent_tool_use_id: null,
++        parent_agent_id: null,
++        message: { role: "user", content: "run the build in the background" },
++      },
++      {
++        type: "user",
++        uuid: "n1",
++        session_id: "s1",
++        parent_tool_use_id: null,
++        parent_agent_id: null,
++        origin: { kind: "task-notification" },
++        message: { role: "user", content: notification },
++      },
++      {
++        type: "assistant",
++        uuid: "a1",
++        session_id: "s1",
++        parent_tool_use_id: null,
++        parent_agent_id: null,
++        message: {
++          id: "api-a1",
++          role: "assistant",
++          type: "message",
++          model: "claude-test",
++          content: [{ type: "text", text: "The build finished." }],
++        },
++      },
++      {
++        // The user may paste such a notification into what they type.
++        type: "user",
++        uuid: "u2",
++        session_id: "s1",
++        parent_tool_use_id: null,
++        parent_agent_id: null,
++        origin: { kind: "human" },
++        message: { role: "user", content: `why does my history show this?\n${notification}` },
++      },
++    ] as unknown as Awaited<ReturnType<typeof getSessionMessages>>);
++
++    await (
++      agent as unknown as { replaySessionHistory(sessionId: string): Promise<void> }
++    ).replaySessionHistory("s1");
++
++    const userTexts = updates
++      .filter((u) => u.update.sessionUpdate === "user_message_chunk")
++      .map((u) => (u.update as { content: { text?: string } }).content.text);
++    expect(userTexts).toEqual([
++      "run the build in the background",
++      `why does my history show this?\n${notification}`,
++    ]);
++    // The model's followup to the notification still replays.
++    expect(JSON.stringify(updates)).toContain("The build finished.");
++  });
++
+   it("loadSession replay skips the synthetic login message but keeps the rest", async () => {
+     const updates: SessionNotification[] = [];
+     const client = {

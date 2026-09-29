@@ -137,6 +137,9 @@ names carry no version. `scripts/lan-release.mjs` names the build and assembles
 the release; `scripts/lan/install.sh` and `install-mac.sh` are published with
 it. The desktop builds are unsigned, and the update service stays off on the
 local platform, so a fork build is never replaced by an upstream release.
+Changes to a submodule the fork cannot push to live in `patches/submodules/`;
+`scripts/apply-submodule-patches.mjs` applies them before the adapters build,
+and fails the build once an upstream update conflicts with one.
 
 ## Limits
 
