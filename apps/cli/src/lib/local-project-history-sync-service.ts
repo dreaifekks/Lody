@@ -1042,6 +1042,12 @@ export class LocalProjectHistorySyncService {
     if (shouldSkipBySourceUpdatedAt(args.info, externalHistory)) {
       return 'skipped';
     }
+    // A conversation continued in Lody writes to the same transcript, so it
+    // looks updated at its source. Its history is Lody's now, and a refresh
+    // ends by releasing the session document a running turn writes to.
+    if (await this.isSessionInUse(args.existing.sessionId)) {
+      return 'skipped';
+    }
 
     const materialized = await this.loadReplay(
       args.rootPath,
@@ -1071,7 +1077,7 @@ export class LocalProjectHistorySyncService {
           } did not confirm sync before unload; clients may see the previous state until next sync.`
         );
       }
-      await this.manager.cleanSessionDoc(args.existing.sessionId, { preserveStatus: true });
+      await this.releaseRefreshedSession(args.existing.sessionId);
       return 'conflicted';
     }
 
@@ -1098,8 +1104,26 @@ export class LocalProjectHistorySyncService {
           'other clients may see the previous state until next sync.'
       );
     }
-    await this.manager.cleanSessionDoc(args.existing.sessionId, { preserveStatus: true });
+    await this.releaseRefreshedSession(args.existing.sessionId);
     return externalHistory.status === 'metadata_only' || appended > 0 ? 'refreshed' : 'skipped';
+  }
+
+  /** Open in this agent service, or in the middle of a turn. */
+  private async isSessionInUse(sessionId: SessionId): Promise<boolean> {
+    if (this.manager.sessions.has(sessionId)) return true;
+    const record = await this.manager.repo.getDocMeta(getSessionRoomId(sessionId));
+    return isActiveSessionStatus((record?.meta as SessionMeta | undefined)?.status);
+  }
+
+  /**
+   * Releases the document a refresh opened, unless a turn started meanwhile:
+   * that turn received the same document and would keep writing to a
+   * released one, which nobody reads.
+   */
+  private async releaseRefreshedSession(sessionId: SessionId): Promise<void> {
+    const record = await this.manager.repo.getDocMeta(getSessionRoomId(sessionId));
+    if (isActiveSessionStatus((record?.meta as SessionMeta | undefined)?.status)) return;
+    await this.manager.cleanSessionDoc(sessionId, { preserveStatus: true });
   }
 
   private async markConflict(

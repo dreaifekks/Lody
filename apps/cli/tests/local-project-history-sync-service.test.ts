@@ -847,6 +847,8 @@ describe('history import persistence', () => {
       rejectImport?: boolean;
       agentConfig?: AgentConfigMeta;
       existing?: Array<{ sessionId: SessionId; meta: SessionMeta }>;
+      /** Sessions whose document this agent service has open. */
+      openSessions?: SessionId[];
     } = {}
   ) {
     let storedHistory: SessionHistoryInput[] = [];
@@ -908,6 +910,7 @@ describe('history import persistence', () => {
         }),
       },
       getOrCreateSessionDoc: vi.fn(async () => sessionDoc),
+      sessions: new Map((options.openSessions ?? []).map((sessionId) => [sessionId, sessionDoc])),
       cleanSessionDoc,
       findSoleAgentConfig: vi.fn(async () => options.agentConfig),
       getAgentConfigById: async () => options.agentConfig ?? null,
@@ -928,6 +931,20 @@ describe('history import persistence', () => {
       },
       provider
     );
+    // Replaying a transcript starts an agent; a refresh that gets this far
+    // would have opened the session.
+    const loadReplay = vi.fn(async () => materializedReplay());
+    (service as unknown as { loadReplay: typeof loadReplay }).loadReplay = loadReplay;
+    const refreshExistingSession = (
+      service as unknown as {
+        refreshExistingSession(args: {
+          existing: { sessionId: SessionId; meta: SessionMeta };
+          info: { sessionId: string; title: string; updatedAt: string };
+          acpSessionId: ACPSessionId;
+          rootPath: string;
+        }): Promise<'refreshed' | 'skipped' | 'conflicted'>;
+      }
+    ).refreshExistingSession.bind(service);
     const importNewSession = (
       service as unknown as {
         importNewSession(args: {
@@ -957,6 +974,8 @@ describe('history import persistence', () => {
       cleanSessionDoc,
       deleteDoc,
       importNewSession,
+      loadReplay,
+      refreshExistingSession,
       listCatalogSnapshot,
       logger,
       sessionDoc,
@@ -975,6 +994,53 @@ describe('history import persistence', () => {
     acpSessionId: 'acp-1' as ACPSessionId,
     project: { kind: 'local' as const, localProjectId },
     materialized: materializedReplay(),
+  });
+
+  const refreshArgs = (existing: { sessionId: SessionId; meta: SessionMeta }) => ({
+    existing,
+    info: {
+      sessionId: 'acp-1',
+      title: 'Imported conversation',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    },
+    acpSessionId: 'acp-1' as ACPSessionId,
+    rootPath: '/work/project',
+  });
+
+  it('leaves a session this agent service has open to Lody instead of refreshing it', async () => {
+    // Continuing an imported conversation in Lody updates its transcript too.
+    const existing = { sessionId: 'session-1' as SessionId, meta: sessionMeta() };
+    const harness = createHarness({ existing: [existing], openSessions: [existing.sessionId] });
+
+    await expect(harness.refreshExistingSession(refreshArgs(existing))).resolves.toBe('skipped');
+
+    expect(harness.loadReplay).not.toHaveBeenCalled();
+    expect(harness.cleanSessionDoc).not.toHaveBeenCalled();
+  });
+
+  it('leaves a session in the middle of a turn to Lody', async () => {
+    const existing = {
+      sessionId: 'session-1' as SessionId,
+      meta: sessionMeta({ status: { type: 'running' } as SessionMeta['status'] }),
+    };
+    const harness = createHarness({ existing: [existing] });
+
+    await expect(harness.refreshExistingSession(refreshArgs(existing))).resolves.toBe('skipped');
+
+    expect(harness.loadReplay).not.toHaveBeenCalled();
+    expect(harness.cleanSessionDoc).not.toHaveBeenCalled();
+  });
+
+  it('still refreshes an idle imported session nobody has open', async () => {
+    const existing = { sessionId: 'session-1' as SessionId, meta: sessionMeta() };
+    const harness = createHarness({ existing: [existing] });
+
+    await harness.refreshExistingSession(refreshArgs(existing));
+
+    expect(harness.loadReplay).toHaveBeenCalledOnce();
+    expect(harness.cleanSessionDoc).toHaveBeenCalledWith(existing.sessionId, {
+      preserveStatus: true,
+    });
   });
 
   it('refuses default-account replay when a session’s bound provider was deleted', async () => {
