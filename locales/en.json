@@ -2019,6 +2019,7 @@
   "sessions.openSenderProfile": "View profile for {{name}}",
   "sessions.openIn": "Open in",
   "sessions.openInIde": "Open in {{name}}",
+  "sessions.openInIdeOverSsh": "Open in {{name}} over SSH ({{destination}})",
   "sessions.senderProfile": "Sender profile",
   "sessions.outline.noReplyYet": "No reply yet.",
   "sessions.outline.noUserMessage": "Started by the agent.",

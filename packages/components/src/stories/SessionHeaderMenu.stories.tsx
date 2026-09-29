@@ -114,3 +114,20 @@ export const OpenInIde: Story = {
     },
   },
 };
+
+/** A session of another machine of the LAN: the editor reaches its folder over SSH. */
+export const OpenInIdeOverSsh: Story = {
+  globals: { theme: 'dark' },
+  args: {
+    openInIde: {
+      options: [
+        { kind: 'builtin', id: 'vscode', label: 'VS Code' },
+        { kind: 'builtin', id: 'zed', label: 'Zed' },
+      ],
+      selected: { kind: 'builtin', id: 'vscode', label: 'VS Code' },
+      onOpen: fn(),
+      onSelect: fn(),
+      sshDestination: 'me@10.0.0.7',
+    },
+  },
+};

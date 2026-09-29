@@ -128,6 +128,10 @@
       "types": "./src/lan-terminal.ts",
       "import": "./src/lan-terminal.ts"
     },
+    "./lan-ssh": {
+      "types": "./src/lan-ssh.ts",
+      "import": "./src/lan-ssh.ts"
+    },
     "./lan-hub": {
       "types": "./src/lan-hub.ts",
       "import": "./src/lan-hub.ts"

@@ -311,6 +311,29 @@ describe('SessionHeaderMenu', () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
+  it('says how the IDE reaches a folder of another machine', async () => {
+    const onOpen = vi.fn();
+    await act(async () => {
+      root?.render(
+        <SessionHeaderMenu
+          session={session}
+          onCopyUrl={vi.fn()}
+          openInIde={{
+            options: [vscodeLauncher],
+            selected: vscodeLauncher,
+            onOpen,
+            onSelect: vi.fn(),
+            sshDestination: 'me@10.0.0.7',
+          }}
+          t={translate}
+        />
+      );
+    });
+    await openMenu();
+    await act(async () => menuItem('Open in VS Code over SSH (me@10.0.0.7)').click());
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
   it('lists multiple IDE launchers in a submenu and launches the chosen one', async () => {
     const onSelect = vi.fn();
     await act(async () => {

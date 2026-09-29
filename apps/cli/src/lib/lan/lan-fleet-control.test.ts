@@ -18,7 +18,11 @@ import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import { addLanHub, type LanHub } from '@lody/shared/node/lan-hub';
 import { upsertMachineAgentConfig } from '@/lib/agent-config-machine-flock';
 import type { Logger } from '@/utils/logger';
-import { LanFleetControl, isLanControlRequest } from './lan-fleet-control';
+import {
+  LanFleetControl,
+  isLanControlRequest,
+  type LanFleetControlOptions,
+} from './lan-fleet-control';
 import { LanMachineControl } from './lan-machine-control';
 import type { LanMemberWorkspace } from './lan-members';
 
@@ -57,7 +61,7 @@ describe('what an agent service does for the members of its LANs', () => {
   let installed: boolean;
   const opened: Array<{ repo: LoroRepo; store: SqliteRepoStore }> = [];
 
-  const createFleetControl = () =>
+  const createFleetControl = (overrides: Partial<LanFleetControlOptions> = {}) =>
     new LanFleetControl({
       logger: silentLogger(),
       machineId: THIS,
@@ -72,6 +76,7 @@ describe('what an agent service does for the members of its LANs', () => {
         return answer;
       },
       now: () => 500,
+      ...overrides,
     });
 
   const register = async (machineId: MachineId, meta: Partial<MachineMeta> = {}) => {
@@ -253,6 +258,56 @@ describe('what an agent service does for the members of its LANs', () => {
     fleet.close();
     await fleet.publish();
     expect((await factsOf(THIS))?.lanBuild).toBeUndefined();
+  });
+
+  it('tells the members of a LAN where the SSH server of this machine answers them', async () => {
+    const reached = { version: 1, user: 'me', host: '10.0.0.7', port: 22 } as const;
+    let answers: typeof reached | null | undefined = reached;
+    const asked: string[] = [];
+    const fleet = createFleetControl({
+      ssh: async (hub) => {
+        asked.push(hub.name);
+        return answers;
+      },
+    });
+
+    await fleet.publishSsh();
+    expect((await factsOf(THIS))?.lanSsh).toEqual(reached);
+    expect((await factsOf(SERVER))?.lanSsh).toBeUndefined();
+    // What the machine runs is told by itself, and does not wait for this.
+    expect((await factsOf(THIS))?.lanBuild).toBeUndefined();
+
+    // While it cannot be told, what was said stays.
+    answers = undefined;
+    await fleet.publishSsh();
+    expect((await factsOf(THIS))?.lanSsh).toEqual(reached);
+
+    answers = null;
+    await fleet.publishSsh();
+    expect((await factsOf(THIS))?.lanSsh).toBeUndefined();
+    expect(asked).toEqual(['Home', 'Home', 'Home']);
+
+    answers = reached;
+    fleet.close();
+    await fleet.publishSsh();
+    expect((await factsOf(THIS))?.lanSsh).toBeUndefined();
+  });
+
+  it('names no SSH server where no LAN carries the workspace, or when it was given none', async () => {
+    const reached = { version: 1, user: 'me', host: '10.0.0.7', port: 22 } as const;
+    const asked: string[] = [];
+    hubs = [];
+    await createFleetControl({
+      ssh: async (hub) => {
+        asked.push(hub.name);
+        return reached;
+      },
+    }).publishSsh();
+    hubs = [home];
+    await createFleetControl().publishSsh();
+
+    expect(asked).toEqual([]);
+    expect((await factsOf(THIS))?.lanSsh).toBeUndefined();
   });
 
   it('tells the members again when what this machine says changed', async () => {

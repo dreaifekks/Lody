@@ -59,6 +59,7 @@ import { LanFileHandoff } from '@/lib/lan/lan-file-handoff';
 import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-control';
 import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import type { LanMemberWorkspace } from '@/lib/lan/lan-members';
+import { createLanSshDescriber } from '@/lib/lan/lan-ssh';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import { parseLanTerminalEndpoint, type LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import {
@@ -301,6 +302,7 @@ export class LodyFleet {
           machineId: this.machineId,
           machineName: this.machineName,
           control: options.lanControl,
+          ssh: createLanSshDescriber({ logger: this.logger }),
           hubs: () => this.lan?.hubs ?? [],
           workspaces: () =>
             Array.from(this.runtimes.values(), (runtime) => this.toLanMemberWorkspace(runtime)),

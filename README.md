@@ -89,7 +89,9 @@ them, without an account or a hosted service. A machine can belong to several LA
 and is the same machine, under the same name, in each of them. The terminal of a
 session opens on the machine that runs it, whichever machine the desktop is on,
 and the images and files of a message are taken there; members reach each other
-on port 8789 of the address they use for the hub.
+on port 8789 of the address they use for the hub. The folder of such a session
+opens in an editor on the desktop over SSH, if the machine that has it runs an
+SSH server and the desktop is let in.
 
 Host a LAN on a server, which also becomes its first member:
 

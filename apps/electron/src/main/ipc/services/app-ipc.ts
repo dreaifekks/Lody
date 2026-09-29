@@ -21,6 +21,7 @@ import {
   type SetGlobalShortcutInput,
   type WindowBadgeInput
 } from '@lody/shared/electron-ipc'
+import { parseLanSshDestination } from '@lody/shared/lan-ssh'
 import { getIpcServiceDeps } from '../ipc-service-deps'
 import { parseDevbarControlInput } from '../../services/devbar/control'
 import { getDevbarConfig, getDevbarMetrics, setDevbarControl } from '../../services/devbar/service'
@@ -34,6 +35,7 @@ import {
 import { setMenuLanguage } from '../../menu'
 import { localFileActionError } from '../../services/local-file-action-error'
 import { hasPathLauncher, launchLocalPath } from '../../services/local-path-launcher-service'
+import { findSshDestination } from '../../services/ssh-config-service'
 import { takePendingRendererLocalClear } from '../../services/local-reset-service'
 import { parseWindowBadge } from '../../services/window-badge-service'
 import {
@@ -503,6 +505,18 @@ export class AppIpc extends IpcService {
         .filter(({ available }) => available)
         .map(({ launcherId }) => launcherId)
     }
+  }
+
+  // An editor reaches a machine of a LAN the way `ssh` of this machine does:
+  // through the entry of the user's SSH configuration that names the machine,
+  // which is where its key is. `null` when no entry does.
+  @IpcMethod()
+  async resolveSshDestination(payload: unknown) {
+    const machine = parseLanSshDestination(payload)
+    if (!machine) {
+      return { destination: null }
+    }
+    return { destination: await findSshDestination(machine) }
   }
 
   @IpcMethod()

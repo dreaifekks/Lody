@@ -40,9 +40,9 @@ Repository map and entry points: [README.md](README.md#repository).
   hard-disabled.
 - A LAN is a self-hosted hub whose members share one user; its credential never
   reaches a renderer or a log. Before changing LAN settings, identity, the hub
-  bridge, member terminals and files, requests between members, updates or the
-  fork build, read [LANs](.agents/docs/lan.md). A fork build follows only the
-  releases of the repository that built it, installs only a later build, and
+  bridge, member terminals, files and folders, requests between members, updates
+  or the fork build, read [LANs](.agents/docs/lan.md). A fork build follows only
+  the releases of the repository that built it, installs only a later build, and
   checks every file against the release's manifest before anything is replaced.
 - Before changing composition, capability-gated settings, telemetry, or runtime
   downloads, read [platform contracts](packages/platform/AGENTS.md).

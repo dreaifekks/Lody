@@ -18,6 +18,11 @@ import {
   type WorkspaceId,
 } from '@lody/shared';
 import { parseLanMachineBuild, parseLanMachineUpdate } from '@lody/shared/lan-release';
+import {
+  parseLanSshDestination,
+  sameLanSshDestination,
+  type LanSshDestination,
+} from '@lody/shared/lan-ssh';
 import type { LoroRepo } from 'loro-repo';
 import {
   listMachineIds,
@@ -217,6 +222,34 @@ export async function publishLanMachineFacts(options: {
     getMachineRoomId(machineId),
     facts as Parameters<LoroRepo['upsertDocMeta']>[1]
   );
+  return true;
+}
+
+/**
+ * Writes where the SSH server of this machine answers into its metadata of a
+ * LAN's workspace, where the editors of the other members read it; `null`
+ * takes back what it said. It is told apart from the other facts because
+ * finding it out asks the network, and they must not wait for that.
+ */
+export async function publishLanSshDestination(options: {
+  workspace: LanMemberWorkspace;
+  machineId: MachineId;
+  destination: LanSshDestination | null;
+}): Promise<boolean> {
+  const { workspace, machineId, destination } = options;
+  if (!workspace.lan) return false;
+  const meta = await readMachineMeta(workspace.repo, machineId);
+  // The machine registers first; where it answers follows with the next call.
+  if (!meta) return false;
+
+  const unchanged = destination
+    ? sameLanSshDestination(parseLanSshDestination(meta.lanSsh), destination)
+    : meta.lanSsh === undefined;
+  if (unchanged) return false;
+
+  await workspace.repo.upsertDocMeta(getMachineRoomId(machineId), {
+    lanSsh: destination ?? undefined,
+  } as Parameters<LoroRepo['upsertDocMeta']>[1]);
   return true;
 }
 

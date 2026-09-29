@@ -21,6 +21,7 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | Services       | `apps/cli/src/lib/lan/service.ts`                                                | systemd user units that keep a hub and an agent service running on a server                                                   |
 | Terminals      | `apps/cli/src/lib/lan/lan-terminal*.ts`, `apps/cli/src/lib/terminal-services.ts` | Members open terminals on each other's machines, directly and not through the hub                                             |
 | Files          | `apps/cli/src/lib/lan/lan-files.ts`, `lan-file-handoff.ts`                       | The files and images of a message reach the machine that runs its session, over the connection terminals use                  |
+| Folders        | `apps/cli/src/lib/lan/lan-ssh.ts`, `packages/shared/src/lan-ssh.ts`              | Where the SSH server of a machine answers, so an editor on another member opens a folder of it                                |
 | Machines       | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts`                    | What a machine says about itself, the list of machines, and requests between members                                          |
 | Releases       | `packages/shared/src/lan-release.ts`, `packages/shared/src/node/lan-release.ts`  | What a build follows, how builds are ordered, and the checked download of a release file                                      |
 | Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts`              | An agent service that replaces itself with the newest build                                                                   |
@@ -144,6 +145,58 @@ The agent service stores the file as it stores one its own desktop hands over,
 and dispatch reads it from there. Nothing uploads it afterwards, so the file
 card says where the file is kept instead of promising an upload. A picture
 reaches the agent as an image and as a path, as an uploaded one does.
+
+## Folders of other members
+
+An editor opens the folder of a session: its worktree, or the folder of its
+project. For a session of another member the folder is on that machine, and an
+editor on the desktop reaches it the way it reaches any other machine: over
+SSH. The agent service opens nothing for that. It names the SSH server the
+machine already runs, as `lanSsh` in its machine metadata of each LAN's
+workspace: the user it runs as, the address the machine has toward the hub,
+and port 22, with what else the machine is called, which is its host name and
+its other addresses.
+
+```text
+ desktop ─ starts ─▶ editor ─ SSH ─▶ SSH server ─▶ folder
+                     of this machine  of the member
+                     given the path and the entry
+                     of ~/.ssh/config for the member
+```
+
+A machine names an SSH server only where one answers: it connects to that
+address and reads the version an SSH server starts with. `LODY_LAN_SSH` says
+something else: `[user@]host[:port]` for a server the machine cannot find
+itself, such as one that an overlay network runs for it or one behind another
+name, and `off` to name none.
+
+The key that lets a desktop in is named in its SSH configuration, under the
+entry its owner made for the machine. An editor that is handed the bare
+address finds no such entry and asks for a password every time. The desktop
+therefore reads `~/.ssh/config`, with what it includes, and hands the editor
+the entry that reaches the machine
+(`apps/electron/src/main/services/ssh-config-core.ts`): one whose host name is
+the address the machine named or anything else it is called, on the port its
+SSH server answers, for the user the agent service runs as or for no user in
+particular. A name with the domain of a network and the same name without it
+count as one. Where several entries reach the machine, the one for the address
+it named comes first. Without an entry the editor is handed `user@host` as the
+machine named them, and connects with the keys `ssh` offers any host.
+
+The session header offers the editors that work over SSH, which are the VS
+Code family and Zed, while the machine of the session names a server. VS Code
+and what is built on it take the folder as a `vscode-remote` address and Zed
+as an `ssh` one. User, host and the name of an entry are limited to what cannot
+be read as an option or as part of an address, by the machine that publishes
+them and again by the desktop that reads them, and the path travels encoded.
+
+An editor trusts the server it works on, so the desktop follows a machine to
+the server it names only when the machine is the current user's. Every member
+of a LAN is; a machine that someone else owns could name any server.
+
+Whether the desktop is let in stays between it and the SSH server. A custom
+launcher hands its path to a program of the desktop and is offered for folders
+of the desktop only.
 
 ## The machines of a LAN
 
@@ -312,3 +365,8 @@ and fails the build once an upstream update conflicts with one.
   not.
 - A file stays on the machine that runs its session. Other members see its
   card and cannot open it, and it is gone with that machine's data directory.
+- A folder of another member opens in an editor only. It takes an SSH server
+  on that machine and a POSIX path. A machine that reaches its hub over IPv6
+  names its server with `LODY_LAN_SSH`, by a host name or an IPv4 address:
+  editors do not agree on how an IPv6 address is written. The files of such a
+  session do not open in an editor.

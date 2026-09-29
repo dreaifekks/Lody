@@ -187,10 +187,17 @@ import type { Locale } from 'date-fns';
 import { enUS } from 'date-fns/locale/en-US';
 import { zhCN } from 'date-fns/locale/zh-CN';
 import { getAppShareUrl } from '@/lib/app-location';
-import { resolveSessionOpenInIdePathTarget } from '@/lib/session-open-in-ide-path';
+import { parseLanSshDestination, type LanSshDestination } from '@lody/shared/lan-ssh';
+import {
+  resolveSessionOpenInIdeHost,
+  resolveSessionOpenInIdePathTarget,
+} from '@/lib/session-open-in-ide-path';
 import {
   buildPathLauncherLaunchInput,
   buildPathLauncherProbes,
+  buildRemotePathLauncherLaunchInput,
+  canLaunchRemotePath,
+  resolveRemotePathDestination,
   getAvailablePathLauncherOptions,
   getPathLauncherId,
   PATH_LAUNCHER_PREFERENCE_CHANGED_EVENT,
@@ -983,6 +990,8 @@ export function SessionHeaderMenu({
     selected: PathLauncherOption;
     onOpen: () => void;
     onSelect: (launcher: PathLauncherOption) => void;
+    /** Set when the folder is on another machine: the `user@host` the editor reaches it as. */
+    sshDestination?: string;
   };
   t: SessionSharingTranslator;
 }) {
@@ -1068,9 +1077,14 @@ export function SessionHeaderMenu({
   const openInIdeMenu = (() => {
     if (!openInIde || openInIde.options.length === 0) return null;
     const SelectedIcon = getPathLauncherIcon(openInIde.selected);
-    const openLabel = t('sessions.openInIde', 'Open in {{name}}', {
-      name: openInIde.selected.label,
-    });
+    const openLabel = openInIde.sshDestination
+      ? t('sessions.openInIdeOverSsh', 'Open in {{name}} over SSH ({{destination}})', {
+          name: openInIde.selected.label,
+          destination: openInIde.sshDestination,
+        })
+      : t('sessions.openInIde', 'Open in {{name}}', {
+          name: openInIde.selected.label,
+        });
     if (openInIde.options.length === 1) {
       return (
         <Menu.Item onClick={openInIde.onOpen}>
@@ -5659,8 +5673,33 @@ export const SessionChatInterface = memo(
       return trimmed ? (trimmed as LocalProjectId) : null;
     }, [session.project]);
 
+    // The folder of a session opens in an editor of this machine: as a path
+    // when it is on this machine, over SSH when it is on another machine of
+    // the same user that named its SSH server.
+    // Held as text: the metadata of a machine is a new object with every change
+    // of it, and what it says about SSH is the same while its text is.
+    const sessionMachineSshText = JSON.stringify(parseLanSshDestination(sessionMachine?.lanSsh));
+    const openInIdeHost = useMemo(
+      () =>
+        resolveSessionOpenInIdeHost({
+          sessionMachineId: session.machineId,
+          localMachineId,
+          currentUserId: currentUser?.id,
+          machineOwnerUserId: sessionMachine?.ownerUserId,
+          machineSsh: JSON.parse(sessionMachineSshText) as unknown,
+        }),
+      [
+        currentUser?.id,
+        localMachineId,
+        session.machineId,
+        sessionMachine?.ownerUserId,
+        sessionMachineSshText,
+      ]
+    );
+    const canOpenSessionFolder = openInIdeHost.kind === 'local' || openInIdeHost.ssh !== null;
+
     const localProjectRootPath = useMemo(() => {
-      if (!isLocalSession || !localProjectId) {
+      if (!canOpenSessionFolder || !localProjectId) {
         return null;
       }
       const rawPath = sessionMachineLocalProjects[localProjectId]?.rootPath;
@@ -5669,10 +5708,10 @@ export const SessionChatInterface = memo(
       }
       const trimmed = rawPath.trim();
       return trimmed || null;
-    }, [isLocalSession, localProjectId, sessionMachineLocalProjects]);
+    }, [canOpenSessionFolder, localProjectId, sessionMachineLocalProjects]);
 
     const worktreePath = useMemo(() => {
-      if (!isLocalSession || !session.isWorktree) return null;
+      if (!canOpenSessionFolder || !session.isWorktree) return null;
       return resolveSessionWorkspacePath({
         sessionId: session.id,
         ownerSessionId: session.parentSessionId,
@@ -5682,7 +5721,7 @@ export const SessionChatInterface = memo(
         repoFullName,
       });
     }, [
-      isLocalSession,
+      canOpenSessionFolder,
       localProjectRootPath,
       machineDotlodyPath,
       repoFullName,
@@ -5724,11 +5763,13 @@ export const SessionChatInterface = memo(
         resolveSessionOpenInIdePathTarget({
           worktreePath,
           localProjectRootPath,
+          host: openInIdeHost,
         }),
-      [localProjectRootPath, worktreePath]
+      [localProjectRootPath, openInIdeHost, worktreePath]
     );
     const openInIdePath = openInIdeTarget?.path ?? null;
     const openInIdePathSource = openInIdeTarget?.source ?? null;
+    const openInIdeSsh = openInIdeTarget?.ssh ?? null;
     const resolveOpenInIdePath = useCallback(async (): Promise<string | null> => {
       return openInIdePath;
     }, [openInIdePath]);
@@ -5786,7 +5827,8 @@ export const SessionChatInterface = memo(
       const launchers = buildPathLauncherProbes(
         launcherCandidates,
         openInIdePath,
-        electronPathLauncherPlatform
+        electronPathLauncherPlatform,
+        openInIdeSsh
       );
       void services.app
         .probePathLaunchers({
@@ -5812,15 +5854,57 @@ export const SessionChatInterface = memo(
       electronPathLauncherPlatform,
       isElectronRendererForPathLaunch,
       openInIdePath,
+      openInIdeSsh,
     ]);
     const pathLauncherOptions = useMemo(
       () =>
-        launcherCandidates.filter((launcher) =>
-          availableLauncherIds.has(getPathLauncherId(launcher))
+        launcherCandidates.filter(
+          (launcher) =>
+            availableLauncherIds.has(getPathLauncherId(launcher)) &&
+            // What was found for the session shown before may not open this one's folder.
+            (!openInIdeSsh || canLaunchRemotePath(launcher))
         ),
-      [availableLauncherIds, launcherCandidates]
+      [availableLauncherIds, launcherCandidates, openInIdeSsh]
     );
-    const shouldShowOpenInIdeButton = Boolean(openInIdePath) && pathLauncherOptions.length > 0;
+    // An editor reaches the machine of the session the way `ssh` of this
+    // machine does: through the entry of the user's SSH configuration that
+    // names it, where its key is. The desktop bridge reads the configuration.
+    const [configuredSshDestination, setConfiguredSshDestination] = useState<{
+      ssh: LanSshDestination;
+      destination: string | null;
+    } | null>(null);
+    const latestSshDestinationRequestRef = useRef(0);
+    const resolveOpenInIdeSshDestination = useCallback(
+      async (ssh: LanSshDestination): Promise<string> => {
+        const request = ++latestSshDestinationRequestRef.current;
+        const configured = await (
+          getIpcServices()?.app.resolveSshDestination(ssh) ?? Promise.resolve(null)
+        ).then(
+          (result) => result?.destination ?? null,
+          () => null
+        );
+        // An answer for the session shown before must not take the place of this one's.
+        if (request === latestSshDestinationRequestRef.current) {
+          setConfiguredSshDestination({ ssh, destination: configured });
+        }
+        return resolveRemotePathDestination(ssh, configured);
+      },
+      []
+    );
+    useEffect(() => {
+      if (!isElectronRendererForPathLaunch || !openInIdeSsh) return;
+      void resolveOpenInIdeSshDestination(openInIdeSsh);
+    }, [isElectronRendererForPathLaunch, openInIdeSsh, resolveOpenInIdeSshDestination]);
+    // `null` for a folder of this machine, and until the bridge has answered for another.
+    const openInIdeSshDestination =
+      openInIdeSsh && configuredSshDestination?.ssh === openInIdeSsh
+        ? resolveRemotePathDestination(openInIdeSsh, configuredSshDestination.destination)
+        : null;
+
+    const shouldShowOpenInIdeButton =
+      Boolean(openInIdePath) &&
+      pathLauncherOptions.length > 0 &&
+      (!openInIdeSsh || openInIdeSshDestination !== null);
     const selectedPathLauncher = useMemo(
       () =>
         resolveSelectedPathLauncher(pathLauncherPreference.selectedLauncherId, pathLauncherOptions),
@@ -5844,11 +5928,15 @@ export const SessionChatInterface = memo(
 
         const launcherId = getPathLauncherId(launcher);
         try {
-          const request = buildPathLauncherLaunchInput(
-            launcher,
-            path,
-            electronPathLauncherPlatform
-          );
+          const request = openInIdeSsh
+            ? buildRemotePathLauncherLaunchInput(
+                launcher,
+                path,
+                // Asked again: the configuration may have changed since the header was drawn.
+                await resolveOpenInIdeSshDestination(openInIdeSsh),
+                electronPathLauncherPlatform
+              )
+            : buildPathLauncherLaunchInput(launcher, path, electronPathLauncherPlatform);
           const analyticsProperties = {
             // Custom launcher ids are random uuids, so collapse them to a single
             // `custom` value to keep `ide_id` low-cardinality in analytics;
@@ -5898,7 +5986,9 @@ export const SessionChatInterface = memo(
         captureSessionEvent,
         electronPathLauncherPlatform,
         openInIdePathSource,
+        openInIdeSsh,
         resolveOpenInIdePath,
+        resolveOpenInIdeSshDestination,
         t,
       ]
     );
@@ -5973,6 +6063,14 @@ export const SessionChatInterface = memo(
               type="button"
               className={cn(SESSION_HEADER_STATUS_PILL_CLASS, 'gap-1 rounded-r-none border-r-0')}
               onClick={handleOpenInIde}
+              title={
+                openInIdeSshDestination
+                  ? t('sessions.openInIdeOverSsh', 'Open in {{name}} over SSH ({{destination}})', {
+                      name: selectedPathLauncher.label,
+                      destination: openInIdeSshDestination,
+                    })
+                  : undefined
+              }
             >
               <SelectedPathLauncherIcon className="h-3.5 w-3.5" />
               <span className="text-xs">{selectedPathLauncher.label}</span>
@@ -6089,6 +6187,7 @@ export const SessionChatInterface = memo(
                 onSelect: (launcher) => {
                   void handleSelectPathLauncher(launcher);
                 },
+                ...(openInIdeSshDestination ? { sshDestination: openInIdeSshDestination } : {}),
               }
             : undefined
         }

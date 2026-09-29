@@ -18,6 +18,7 @@ import {
   type MachineId,
 } from '@lody/shared';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
+import type { LanSshDestination } from '@lody/shared/lan-ssh';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { getCliHttpFetch } from '@/utils/http-transport';
 import type { Logger } from '@/utils/logger';
@@ -28,6 +29,7 @@ import {
   forwardLanMemberControl,
   listLanMachines,
   publishLanMachineFacts,
+  publishLanSshDestination,
   type LanMemberWorkspace,
 } from './lan-members';
 
@@ -84,6 +86,12 @@ export type LanFleetControlOptions = {
     hub: LanHub,
     request: LanMemberControlRequest
   ) => Promise<LocalProjectControlResponse | null>;
+  /**
+   * Where the SSH server of this machine answers the members of a LAN: `null`
+   * for nowhere, `undefined` while that cannot be told. Absent on a machine
+   * that says nothing about it.
+   */
+  ssh?: (hub: LanHub) => Promise<LanSshDestination | null | undefined>;
   now?: () => number;
 };
 
@@ -92,6 +100,7 @@ export class LanFleetControl {
   private timer: NodeJS.Timeout | null = null;
   private readonly afterStart = new Set<NodeJS.Timeout>();
   private publishing: Promise<void> = Promise.resolve();
+  private publishingSsh: Promise<void> = Promise.resolve();
   private closed = false;
 
   constructor(private readonly options: LanFleetControlOptions) {}
@@ -103,6 +112,8 @@ export class LanFleetControl {
     });
     this.timer = setInterval(() => {
       void this.publish();
+      // An address can change under a running service: a laptop moves between networks.
+      void this.publishSsh();
     }, REFRESH_INTERVAL_MS);
     this.timer.unref();
   }
@@ -120,10 +131,12 @@ export class LanFleetControl {
   /** Tells the LANs about this machine now, and again once a started workspace settled. */
   publishAfterStart(): void {
     void this.publish();
+    void this.publishSsh();
     for (const delay of AFTER_START_MS) {
       const timer = setTimeout(() => {
         this.afterStart.delete(timer);
         void this.publish();
+        void this.publishSsh();
       }, delay);
       timer.unref();
       this.afterStart.add(timer);
@@ -154,6 +167,40 @@ export class LanFleetControl {
     };
     this.publishing = this.publishing.then(run, run);
     return this.publishing;
+  }
+
+  /**
+   * Tells every LAN where the SSH server of this machine answers its members.
+   * Finding that out asks the network, so it keeps out of the way of what
+   * `publish` says: an update reports itself just before the machine is gone.
+   */
+  publishSsh(): Promise<void> {
+    const { ssh } = this.options;
+    if (!ssh) return this.publishingSsh;
+    const run = async () => {
+      if (this.closed) return;
+      for (const workspace of this.options.workspaces()) {
+        const hub = this.options
+          .hubs()
+          .find((candidate) => getLanHubWorkspaceId(candidate.id) === workspace.workspaceId);
+        if (!hub) continue;
+        try {
+          const destination = await ssh(hub);
+          if (destination === undefined || this.closed) continue;
+          await publishLanSshDestination({
+            workspace,
+            machineId: this.options.machineId,
+            destination,
+          });
+        } catch (error) {
+          this.options.logger.debug(
+            `[lan-ssh] Could not tell ${workspace.name} where this machine answers: ${formatErrorMessage(error)}`
+          );
+        }
+      }
+    };
+    this.publishingSsh = this.publishingSsh.then(run, run);
+    return this.publishingSsh;
   }
 
   /** A request that reached this machine over its own socket. */

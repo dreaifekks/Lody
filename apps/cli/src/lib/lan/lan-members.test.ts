@@ -20,6 +20,7 @@ import type {
   LanReleaseManifest,
   LanReleaseSource,
 } from '@lody/shared/lan-release';
+import type { LanSshDestination } from '@lody/shared/lan-ssh';
 import type { ManagedRuntimeStatus } from '@/agent/managed-agent-runtime';
 import { upsertMachineAgentConfig } from '@/lib/agent-config-machine-flock';
 import type { Logger } from '@/utils/logger';
@@ -29,6 +30,7 @@ import {
   forwardLanMemberControl,
   listLanMachines,
   publishLanMachineFacts,
+  publishLanSshDestination,
   type LanMemberWorkspace,
 } from './lan-members';
 
@@ -131,6 +133,13 @@ describe('the machines of the LANs of a machine', () => {
       | MachineMeta
       | undefined;
     return { lanBuild: meta?.lanBuild, lanUpdate: meta?.lanUpdate, lanAgents: meta?.lanAgents };
+  };
+
+  const readSsh = async (target: LanMemberWorkspace, machineId: MachineId) => {
+    const meta = (await target.repo.getDocMeta(getMachineRoomId(machineId)))?.meta as
+      | MachineMeta
+      | undefined;
+    return meta?.lanSsh;
   };
 
   const createControl = (
@@ -323,6 +332,60 @@ describe('the machines of the LANs of a machine', () => {
       await publishLanMachineFacts({ workspace: implicit, machineId: THIS, control, now: 500 })
     ).toBe(false);
     expect(await readFacts(implicit, THIS)).toEqual({});
+  });
+
+  it('tells the members where its SSH server answers, once, and takes it back', async () => {
+    const home = await workspace(HOME);
+    await register(home, THIS, { lanBuild: { version: RUNNING, update: 'service', source } });
+    const destination: LanSshDestination = { version: 1, user: 'me', host: '10.0.0.7', port: 22 };
+    const say = (value: LanSshDestination | null) =>
+      publishLanSshDestination({ workspace: home, machineId: THIS, destination: value });
+    const read = () => readSsh(home, THIS);
+
+    expect(await say(null)).toBe(false);
+    expect(await say(destination)).toBe(true);
+    expect(await read()).toEqual(destination);
+    expect(await say({ ...destination })).toBe(false);
+
+    expect(await say({ ...destination, host: 'server.lan', port: 2222 })).toBe(true);
+    expect(await read()).toEqual({ version: 1, user: 'me', host: 'server.lan', port: 2222 });
+
+    expect(await say(null)).toBe(true);
+    expect(await read()).toBeUndefined();
+    expect(await say(null)).toBe(false);
+    // What else the machine says about itself stays as it was.
+    expect((await readFacts(home, THIS)).lanBuild).toEqual({
+      version: RUNNING,
+      update: 'service',
+      source,
+    });
+  });
+
+  it('takes back an SSH destination no member could read', async () => {
+    const home = await workspace(HOME);
+    await register(home, THIS, {
+      lanSsh: { version: 1, user: '-oProxyCommand=id', host: '10.0.0.7', port: 22 },
+    });
+
+    expect(
+      await publishLanSshDestination({ workspace: home, machineId: THIS, destination: null })
+    ).toBe(true);
+    expect(await readSsh(home, THIS)).toBeUndefined();
+  });
+
+  it('names no SSH server before the machine registered, or where no member reads it', async () => {
+    const home = await workspace(HOME);
+    const implicit = await workspace('lw_implicit' as WorkspaceId, { lan: false });
+    await register(implicit, THIS);
+    const destination: LanSshDestination = { version: 1, user: 'me', host: '10.0.0.7', port: 22 };
+
+    expect(await publishLanSshDestination({ workspace: home, machineId: THIS, destination })).toBe(
+      false
+    );
+    expect(
+      await publishLanSshDestination({ workspace: implicit, machineId: THIS, destination })
+    ).toBe(false);
+    expect(await readSsh(implicit, THIS)).toBeUndefined();
   });
 
   it('closes the update it reported before it started again', async () => {

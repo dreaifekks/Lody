@@ -2019,6 +2019,7 @@
   "sessions.openSenderProfile": "查看 {{name}} 的名片",
   "sessions.openIn": "在…中打开",
   "sessions.openInIde": "通过 {{name}} 打开",
+  "sessions.openInIdeOverSsh": "通过 {{name}} 经 SSH 打开（{{destination}}）",
   "sessions.senderProfile": "发送者名片",
   "sessions.outline.noReplyYet": "暂无回复。",
   "sessions.outline.noUserMessage": "由 agent 发起。",
