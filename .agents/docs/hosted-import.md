@@ -13,8 +13,8 @@ of its workspaces, and what it leaves behind.
 | Source | `apps/cli/src/lib/hosted-config/hosted-config-source.ts` | Reads a hosted workspace from the files on disk |
 | Plan | `apps/cli/src/lib/hosted-config/hosted-config-plan.ts` | Decides per item: create, update, unchanged or skip |
 | Import | `apps/cli/src/lib/hosted-config/hosted-config-import.ts` | Reads the workspace, plans, and writes |
-| Command | `apps/cli/src/commands/hosted.ts` | `lody hosted import` for a server |
-| Page | `packages/components/src/components/settings/hosted-import-setting.tsx` | Settings > Import of the desktop |
+| Command | `apps/cli/src/commands/hosted.ts` | `lody hosted import`, on this machine or with `--machine` on a member of a LAN |
+| Dialog | `packages/components/src/components/settings/lan-hosted-import.tsx` | The menu of a machine in Settings > LAN |
 
 ```text
  hosted data directory              agent service of the local platform
@@ -23,9 +23,13 @@ of its workspaces, and what it leaves behind.
  │ loro-repo/<ws>/…sqlite│─ copy ──▶│             ▲          │          │
  │ local-project-setup/  │─ read ──▶│   workspace as it is   ▼ writes   │
  └───────────────────────┘          └──────────────────────────────────┘
-        never written                 asked by the command and the page
+        never written                 asked by the command and the dialog
                                       as two project-control requests
 ```
+
+The machine that holds the hosted installation does the import, into its own
+installation. Another member of a LAN asks it the way it asks a machine to
+update: through the hub, as [LANs](lan.md#the-machines-of-a-lan) explains.
 
 ## Reading without an account
 
@@ -71,6 +75,7 @@ its project, imported now or present already.
 
 - Prompt shortcuts and appearance settings live in the browser profile of the
   hosted desktop, not in its data directory, and are not imported.
-- Only what the hosted workspace configured for this machine is imported. Run
-  the import on every machine that moves.
+- Only what the hosted workspace configured for a machine is imported on it.
+  Every machine that moves imports for itself, asked from its own window or
+  from the window of another member.
 - Sessions are not imported.
