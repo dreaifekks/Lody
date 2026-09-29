@@ -554,9 +554,20 @@ export class LocalProjectHistorySyncService {
       throw new Error(`${this.providerKey} history sync is already running for this local project`);
     }
     syncLeases.add(leaseKey);
+    // Resolving opens the session's document. A refresh leaves a session alone
+    // while this agent service has it open, so a document opened here is
+    // released again, or the conversation would stop following its source.
+    const wasOpen = this.manager.sessions.has(args.sessionId);
     try {
       return await this.resolveHistoryConflictInner(args);
     } finally {
+      if (!wasOpen) {
+        await this.releaseRefreshedSession(args.sessionId).catch((error: unknown) => {
+          this.logger.debug(
+            `[${this.providerKey}-history-sync] Failed to release ${args.sessionId} after resolving its conflict: ${formatErrorMessage(error)}`
+          );
+        });
+      }
       syncLeases.delete(leaseKey);
     }
   }
