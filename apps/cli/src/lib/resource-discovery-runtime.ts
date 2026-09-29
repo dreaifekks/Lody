@@ -6,10 +6,6 @@ import {
   listWorkspaceAgentRoles,
   readMachineFlockRowsFromFlock,
   readWorkspaceFlockRowsFromFlock,
-  getSessionRoomId,
-  isLoroRepoDocDeleted,
-  type SessionId,
-  type SessionMeta,
   type MachineId,
   type MachineMeta,
   type WorkspaceId,
@@ -23,6 +19,7 @@ import { listWorkspaceGitHubRepositoriesForCliToken } from './workspace';
 import { listWorkspaceMcpCatalog } from './workspace-mcp-store';
 import { ResourceDiscovery } from './resource-discovery';
 import { getCliPlatformKind } from './cli-platform';
+import { getSessionCommandEnvironment } from './session-command-environment';
 
 export async function createResourceDiscovery(args: {
   manager: LoroDocumentManager;
@@ -31,18 +28,9 @@ export async function createResourceDiscovery(args: {
   delegatedRequester?: DelegatedSessionRequester;
   selectedMcpServerIds?: readonly string[];
   offline?: boolean;
-  requesterSessionId?: SessionId;
 }): Promise<ResourceDiscovery> {
   const { manager, auth, workspaceId } = args;
   if (!args.offline) await syncWorkspaceMetaForRead(manager, 'resource.discovery');
-  let roleMachineScope: MachineId | undefined;
-  if (args.requesterSessionId) {
-    const record = await manager.repo.getDocMeta(getSessionRoomId(args.requesterSessionId));
-    if (!record?.meta || isLoroRepoDocDeleted(record))
-      throw new Error('Requester Session not found.');
-    const session = record.meta as SessionMeta;
-    if (session.project?.kind !== 'github') roleMachineScope = session.machineId;
-  }
   const synced = new Set<string>();
   async function sync(id: string) {
     if (!args.offline && !synced.has(id)) {
@@ -54,10 +42,14 @@ export async function createResourceDiscovery(args: {
     workspaceId,
     userId: args.delegatedRequester?.userId ?? auth.userId,
     selectedMcpServerIds: args.selectedMcpServerIds,
-    roleMachineScope,
     machines: async () =>
       (await listAliveDocMetas<MachineMeta>(manager, isMachineDocRoomId)).map((row) => row.meta),
-    onlineMachineIds: async () => (args.offline ? null : manager.getOnlineMachineIds()),
+    onlineMachineIds: async () =>
+      getSessionCommandEnvironment()
+        ? new Set([auth.machineId])
+        : args.offline
+          ? null
+          : manager.getOnlineMachineIds(),
     canAccess: async (machineId, localProjectId) =>
       (
         await readSessionMachineAccess({

@@ -144,8 +144,17 @@ this page is the full text of the rules summarised there.
   deliberately absent: a sentence about what one value allows belongs to the
   Role editor, not to a scan of what is pinned. Its machine is passed
   in rather than looked up, so the pane stays renderable without the workspace's
-  machine-visibility context. The Role editor is a Dialog and is therefore
-  hosted by the composer, NOT inside menu content, where it would unmount with
+  machine-visibility context. The submenu is vertically centered against the
+  parent menu when shorter; when taller, its bottom stops at the parent menu's
+  bottom so it does not extend over the docked composer's footer controls. It
+  shifts within a short viewport rather than flipping its alignment. Its two
+  panes grow with their content up to 14rem, then scroll
+  independently. Create stays at the bottom of the Role list pane while its
+  rows scroll; it has no separator above it. The detail pane's header flows
+  into the pinned values without a divider. The parent, permission, and Role
+  menus retain the shared `@lody/ui` popup inset; neither list compensates for
+  it with custom horizontal margins. The Role editor is a Dialog and is
+  therefore hosted by the composer, NOT inside menu content, where it would unmount with
   the menu the moment it opened; `AgentRoleEditorDialog` is the one editor,
   shared with Settings.
   Picking a Role flows through the SAME preference channel as that agent's
@@ -236,13 +245,14 @@ this page is the full text of the rules summarised there.
   `SessionHeaderMenu` (`machineName` prop). Mobile keeps the single
   `MobileSessionRunConfig` button + sheet.
   Images and files stay as local drafts until Send. Oversize images (>5 MiB)
-  degrade to files using the existing validation. The composer passes immutable
-  Blob snapshots with the complete input to the workspace submission journal.
-  Successful persistence releases the composer; a pending-message view owns
+  degrade to files using the existing validation. On Send the composer hands the
+  complete input to the shared send admission and clears. A send with unready
+  attachments is held in the workspace runtime's memory, and its pending row owns
   progress, retry, and cancellation. Existing-session direct/queue/guide and new
   or child-session sends share this boundary, including attachment-only input.
-  Same-session text waits behind attachment preparation. Local creation metadata
-  stays in a renderer overlay until prepared history can be committed.
+  Same-session text waits behind a held send. A held new conversation's metadata
+  is an in-memory placeholder until its first turn is written. Held sends do not
+  survive the page; leaving asks first.
 
 The workspace Effect owner joins upload, local handoff, store borrows, and warmup
 cleanup before closing their dependencies. Successful attachment receipts survive
@@ -251,6 +261,6 @@ same-machine files still use `localProjects.sendSessionFileLocal`, including its
 existing cloud fallback and backfill policy. Permanent local references remain a
 [separate proposal](../../specs/local-attachment-references.md).
 
-See the [draft Spec](../../specs/session-files.md) for ownership, recovery, and
-acceptance boundaries. Implementation and deterministic tests do not establish
+See the [draft Spec](../../specs/session-files.md) for ownership, accepted loss,
+and acceptance boundaries. Implementation and deterministic tests do not establish
 packaged-device or native-mobile-shell acceptance.

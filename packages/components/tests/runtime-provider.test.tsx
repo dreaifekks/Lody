@@ -70,7 +70,9 @@ vi.mock('@/providers/local-platform-provider', () => ({
     null,
   getLocalWorkspaceSlug: (workspace: { slug: string }) => workspace.slug,
 }));
-vi.mock('../src/components/chat/session-send-recovery', () => ({ SessionSendRecovery: () => null }));
+vi.mock('../src/components/chat/session-pending-sends-host', () => ({
+  SessionPendingSendsHost: () => null,
+}));
 vi.mock('@/providers/create-workspace-runtime', () => ({ createWorkspaceRuntime: vi.fn() }));
 
 import { RuntimeProvider } from '../src/providers/runtime-provider';

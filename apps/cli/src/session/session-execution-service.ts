@@ -1,6 +1,7 @@
 import { readSessionHistory } from '@lody/shared/session-data';
 import { readLatestTurn } from '@lody/shared/session-data';
 import {
+  type AcpModelControls,
   type ACPSessionId,
   type AgentConfigId,
   type AgentConfigCliType,
@@ -643,6 +644,7 @@ export type SessionExecutionServiceDeps = {
     sessionTitle?: boolean;
     goalActions?: SessionGoalAction[];
     modelReasoningEfforts?: Record<string, string[]>;
+    modelCapabilities?: Record<string, AcpModelControls>;
     capabilitySourceVersion?: string;
   }>;
   /**
@@ -5977,7 +5979,10 @@ export class SessionExecutionService {
         capabilities.modelReasoningEfforts,
         capabilities.acknowledgedSteer,
         capabilities.goalActions,
-        { sessionTitle: capabilities.sessionTitle }
+        {
+          sessionTitle: capabilities.sessionTitle,
+          modelCapabilities: capabilities.modelCapabilities,
+        }
       );
       this.acpCapabilityLaunchInputFingerprints.set(
         agentConfigId,
@@ -6454,6 +6459,7 @@ export class SessionExecutionService {
         sessionTitle,
         goalActions,
         modelReasoningEfforts,
+        modelCapabilities,
         capabilitySourceVersion,
       } = await this.deps.fetchAcpCapabilities(
         message.cliType,
@@ -6495,7 +6501,7 @@ export class SessionExecutionService {
         modelReasoningEfforts,
         acknowledgedSteer,
         goalActions,
-        { signal: options.signal, sessionTitle }
+        { signal: options.signal, sessionTitle, modelCapabilities }
       );
       this.acpCapabilityLaunchInputFingerprints.set(
         message.configId,

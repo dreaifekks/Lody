@@ -226,11 +226,11 @@ const UNAVAILABLE_AGENT_ROLES: MentionCandidate[] = [
   ),
   toAgentRoleCandidate(
     {
-      slug: 'Remote-Reviewer',
-      role: agentRole({ id: 'remote-role' as AgentRoleId, name: 'Remote Reviewer' }),
-      availability: { kind: 'unavailable', reason: 'outside_work_context' },
+      slug: 'Unreachable-Reviewer',
+      role: agentRole({ id: 'unreachable-role' as AgentRoleId, name: 'Unreachable Reviewer' }),
+      availability: { kind: 'unavailable', reason: 'machine_unknown' },
     },
-    'Unavailable: this workspace requires a role on the same machine'
+    'Unavailable: its machine is not available to you'
   ),
 ];
 
@@ -304,10 +304,10 @@ const harness = stylex.create({
     display: 'flex',
     flexDirection: 'column',
     justifyContent: 'flex-end',
-    height: '500px',
-    width: '900px',
+    minHeight: 'max(500px, 100dvh)',
+    width: 'min(900px, 100%)',
     paddingBlock: '24px',
-    paddingInline: '120px',
+    paddingInline: 'clamp(16px, 13.33vw, 120px)',
     boxSizing: 'border-box',
   },
   floatingPageTop: { justifyContent: 'flex-start' },
@@ -429,10 +429,8 @@ const FLOATING_CATEGORIES: MentionCategory[] = CATEGORIES.map((entry) =>
 
 /**
  * The real floating menu in a composer-shaped frame: type `@`, `$` or `/` in
- * the textarea. The menu opens against the frame marked `data-mention-frame` —
- * above its chip row, left edges lined up — and keeps that side through a level
- * change and typing. At the top of the page there is no room above, so it opens
- * below the composer instead.
+ * the textarea. The menu follows the caret while typing and flips above it
+ * when there is not enough room below.
  */
 function FloatingHarness({ atTop = false }: { atTop?: boolean }) {
   const [value, setValue] = React.useState('');
@@ -626,7 +624,7 @@ export const FloatingInComposer: Story = {
   render: () => <FloatingHarness />,
 };
 
-/** The same composer at the top of the page: no room above, so it opens below. */
+/** The same composer at the top of the page: the popup stays with the caret. */
 export const FloatingComposerAtTop: Story = {
   args: { search: '' },
   render: () => <FloatingHarness atTop />,
