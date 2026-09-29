@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatLanSshDestination,
+  formatSshDestination,
   isSshConfiguredHost,
+  isSshUrlHost,
   parseLanSshDestination,
-  parseSshDestinationText,
+  parseSshDestination,
   sameLanSshDestination,
+  toSshDestination,
   type LanSshDestination,
 } from '../src/lan-ssh';
 
@@ -104,50 +107,79 @@ describe('where the SSH server of a LAN member answers', () => {
 describe('what an editor is handed to reach a machine', () => {
   it('is a host, with or without the user and the port', () => {
     for (const value of [
-      'server',
-      'my_server-2.lan',
-      '10.0.0.7',
-      'me@server',
-      'me@10.0.0.7:2222',
-      'server:65535',
+      { host: 'server' },
+      { host: 'my_server-2.lan' },
+      { host: '10.0.0.7', user: 'me' },
+      { host: 'Home-Nuc', user: 'me', port: 2222 },
+      // The name of an entry is whatever its owner chose.
+      { host: 'ts:home-devNuc' },
+      { host: 'work+nuc', user: 'dev_1.x-y' },
     ]) {
-      expect(parseSshDestinationText(value), value).toBe(value);
+      expect(parseSshDestination(value), JSON.stringify(value)).toEqual(value);
     }
+    expect(parseSshDestination({ host: 'server', note: 'kept out' })).toEqual({ host: 'server' });
   });
 
   it('is nothing an editor could read as something else', () => {
-    for (const value of [
+    for (const host of [
       '',
       ' server',
       'server ',
       '-oProxyCommand=id',
-      'me@-server',
-      '-me@server',
-      'me@',
-      '@server',
-      'you@me@server',
+      ':server',
+      'me@server',
       'server/path',
-      'server:0',
-      'server:65536',
-      'server:ssh',
       'server?x=1',
       'server#x',
-      'fd7a::7',
+      'dev*',
+      '!server',
       'two words',
-      `${'a'.repeat(254)}`,
+      '"server"',
+      'a'.repeat(254),
       7,
       null,
       undefined,
     ]) {
-      expect(parseSshDestinationText(value), String(value)).toBeNull();
+      expect(parseSshDestination({ host }), String(host)).toBeNull();
+    }
+    for (const user of ['', '-oProxyCommand=id', 'two words', 'me@there', 7, null]) {
+      expect(parseSshDestination({ host: 'server', user }), String(user)).toBeNull();
+    }
+    for (const port of [0, 65_536, 22.5, '22', null]) {
+      expect(parseSshDestination({ host: 'server', port }), String(port)).toBeNull();
+    }
+    for (const value of [undefined, null, 'server', ['server'], 7]) {
+      expect(parseSshDestination(value), String(value)).toBeNull();
     }
   });
 
-  it('knows the name of an entry from what only looks like one', () => {
-    expect(isSshConfiguredHost('my_server-2.lan')).toBe(true);
-    expect(isSshConfiguredHost('10.0.0.7')).toBe(true);
-    for (const value of ['*', 'dev*', '!server', '-server', 'me@server', 'server:22', '', 7]) {
+  it('is what the machine says about itself where no entry is taken', () => {
+    expect(toSshDestination(reached)).toEqual({ host: '10.0.0.7', user: 'me' });
+    expect(
+      toSshDestination({ ...reached, host: 'server.lan', port: 2222, names: ['server'] })
+    ).toEqual({ host: 'server.lan', user: 'me', port: 2222 });
+  });
+
+  it('is written out for someone to read', () => {
+    expect(formatSshDestination({ host: 'ts:home-devNuc' })).toBe('ts:home-devNuc');
+    expect(formatSshDestination({ host: 'nuc', user: 'me' })).toBe('me@nuc');
+    expect(formatSshDestination({ host: 'server.lan', user: 'me', port: 2222 })).toBe(
+      'me@server.lan:2222'
+    );
+  });
+
+  it('knows the name of an entry from a pattern, and the names an address carries', () => {
+    for (const value of ['my_server-2.lan', '10.0.0.7', 'Home-Nuc']) {
+      expect(isSshConfiguredHost(value), value).toBe(true);
+      expect(isSshUrlHost(value), value).toBe(true);
+    }
+    for (const value of ['ts:home-devNuc', 'work+nuc']) {
+      expect(isSshConfiguredHost(value), value).toBe(true);
+      expect(isSshUrlHost(value), value).toBe(false);
+    }
+    for (const value of ['*', 'dev*', '!server', '-server', 'me@server', 'a/b', '', 7]) {
       expect(isSshConfiguredHost(value), String(value)).toBe(false);
+      expect(isSshUrlHost(value), String(value)).toBe(false);
     }
   });
 });

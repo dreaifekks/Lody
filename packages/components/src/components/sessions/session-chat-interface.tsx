@@ -187,7 +187,11 @@ import type { Locale } from 'date-fns';
 import { enUS } from 'date-fns/locale/en-US';
 import { zhCN } from 'date-fns/locale/zh-CN';
 import { getAppShareUrl } from '@/lib/app-location';
-import { parseLanSshDestination, type LanSshDestination } from '@lody/shared/lan-ssh';
+import {
+  formatSshDestination,
+  parseLanSshDestination,
+  type LanSshDestination,
+} from '@lody/shared/lan-ssh';
 import {
   resolveSessionOpenInIdeHost,
   resolveSessionOpenInIdePathTarget,
@@ -197,6 +201,7 @@ import {
   buildPathLauncherProbes,
   buildRemotePathLauncherLaunchInput,
   canLaunchRemotePath,
+  remotePathLauncherTakesUrlHost,
   resolveRemotePathDestination,
   getAvailablePathLauncherOptions,
   getPathLauncherId,
@@ -5866,51 +5871,69 @@ export const SessionChatInterface = memo(
         ),
       [availableLauncherIds, launcherCandidates, openInIdeSsh]
     );
-    // An editor reaches the machine of the session the way `ssh` of this
-    // machine does: through the entry of the user's SSH configuration that
-    // names it, where its key is. The desktop bridge reads the configuration.
-    const [configuredSshDestination, setConfiguredSshDestination] = useState<{
-      ssh: LanSshDestination;
-      destination: string | null;
-    } | null>(null);
-    const latestSshDestinationRequestRef = useRef(0);
-    const resolveOpenInIdeSshDestination = useCallback(
-      async (ssh: LanSshDestination): Promise<string> => {
-        const request = ++latestSshDestinationRequestRef.current;
-        const configured = await (
-          getIpcServices()?.app.resolveSshDestination(ssh) ?? Promise.resolve(null)
-        ).then(
-          (result) => result?.destination ?? null,
-          () => null
-        );
-        // An answer for the session shown before must not take the place of this one's.
-        if (request === latestSshDestinationRequestRef.current) {
-          setConfiguredSshDestination({ ssh, destination: configured });
-        }
-        return resolveRemotePathDestination(ssh, configured);
-      },
-      []
-    );
-    useEffect(() => {
-      if (!isElectronRendererForPathLaunch || !openInIdeSsh) return;
-      void resolveOpenInIdeSshDestination(openInIdeSsh);
-    }, [isElectronRendererForPathLaunch, openInIdeSsh, resolveOpenInIdeSshDestination]);
-    // `null` for a folder of this machine, and until the bridge has answered for another.
-    const openInIdeSshDestination =
-      openInIdeSsh && configuredSshDestination?.ssh === openInIdeSsh
-        ? resolveRemotePathDestination(openInIdeSsh, configuredSshDestination.destination)
-        : null;
-
-    const shouldShowOpenInIdeButton =
-      Boolean(openInIdePath) &&
-      pathLauncherOptions.length > 0 &&
-      (!openInIdeSsh || openInIdeSshDestination !== null);
     const selectedPathLauncher = useMemo(
       () =>
         resolveSelectedPathLauncher(pathLauncherPreference.selectedLauncherId, pathLauncherOptions),
       [pathLauncherOptions, pathLauncherPreference.selectedLauncherId]
     );
     const SelectedPathLauncherIcon = getPathLauncherIcon(selectedPathLauncher);
+
+    // An editor reaches the machine of the session the way `ssh` of this
+    // machine does: through the entry of the user's SSH configuration that
+    // leads to it from here, where its key is. The desktop bridge finds it,
+    // for an editor that takes an address among the entries an address names.
+    const selectedLauncherTakesUrlHost = remotePathLauncherTakesUrlHost(selectedPathLauncher);
+    const [configuredSshDestination, setConfiguredSshDestination] = useState<{
+      ssh: LanSshDestination;
+      urlHost: boolean;
+      destination: unknown;
+    } | null>(null);
+    const latestSshDestinationRequestRef = useRef(0);
+    const findConfiguredSshDestination = useCallback(
+      async (ssh: LanSshDestination, urlHost: boolean): Promise<unknown> => {
+        const request = ++latestSshDestinationRequestRef.current;
+        const configured = await (
+          getIpcServices()?.app.resolveSshDestination({ machine: ssh, urlHost }) ??
+          Promise.resolve(null)
+        ).then(
+          (result) => result?.destination ?? null,
+          () => null
+        );
+        // An answer for the session shown before must not take the place of this one's.
+        if (request === latestSshDestinationRequestRef.current) {
+          setConfiguredSshDestination({ ssh, urlHost, destination: configured });
+        }
+        return configured;
+      },
+      []
+    );
+    useEffect(() => {
+      if (!isElectronRendererForPathLaunch || !openInIdeSsh) return;
+      void findConfiguredSshDestination(openInIdeSsh, selectedLauncherTakesUrlHost);
+    }, [
+      findConfiguredSshDestination,
+      isElectronRendererForPathLaunch,
+      openInIdeSsh,
+      selectedLauncherTakesUrlHost,
+    ]);
+    // `null` for a folder of this machine, and until the bridge has answered for another.
+    const openInIdeSshDestination =
+      openInIdeSsh &&
+      configuredSshDestination?.ssh === openInIdeSsh &&
+      configuredSshDestination.urlHost === selectedLauncherTakesUrlHost
+        ? formatSshDestination(
+            resolveRemotePathDestination(
+              selectedPathLauncher,
+              openInIdeSsh,
+              configuredSshDestination.destination
+            )
+          )
+        : null;
+
+    const shouldShowOpenInIdeButton =
+      Boolean(openInIdePath) &&
+      pathLauncherOptions.length > 0 &&
+      (!openInIdeSsh || openInIdeSshDestination !== null);
 
     const persistSelectedPathLauncher = useCallback(
       (launcherId: string) => {
@@ -5932,8 +5955,15 @@ export const SessionChatInterface = memo(
             ? buildRemotePathLauncherLaunchInput(
                 launcher,
                 path,
-                // Asked again: the configuration may have changed since the header was drawn.
-                await resolveOpenInIdeSshDestination(openInIdeSsh),
+                resolveRemotePathDestination(
+                  launcher,
+                  openInIdeSsh,
+                  // Asked again: where this machine is may have changed since the header was drawn.
+                  await findConfiguredSshDestination(
+                    openInIdeSsh,
+                    remotePathLauncherTakesUrlHost(launcher)
+                  )
+                ),
                 electronPathLauncherPlatform
               )
             : buildPathLauncherLaunchInput(launcher, path, electronPathLauncherPlatform);
@@ -5985,10 +6015,10 @@ export const SessionChatInterface = memo(
       [
         captureSessionEvent,
         electronPathLauncherPlatform,
+        findConfiguredSshDestination,
         openInIdePathSource,
         openInIdeSsh,
         resolveOpenInIdePath,
-        resolveOpenInIdeSshDestination,
         t,
       ]
     );

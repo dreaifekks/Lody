@@ -1,9 +1,12 @@
 import type { LaunchLocalPathInput, LocalPathCommandSpec } from '@lody/shared';
 import { parseCustomAcpCommandLine } from '@lody/shared';
 import {
-  formatLanSshDestination,
-  parseSshDestinationText,
+  formatSshDestination,
+  isSshUrlHost,
+  parseSshDestination,
+  toSshDestination,
   type LanSshDestination,
+  type SshDestination,
 } from '@lody/shared/lan-ssh';
 import {
   DEFAULT_PATH_LAUNCHER_PREFERENCE,
@@ -431,15 +434,50 @@ export function canLaunchRemotePath(launcher: PathLauncherOption): boolean {
 }
 
 /**
+ * Whether the launcher is handed a machine as the host of an address, where
+ * only some names fit. Zed is; the VS Code family has a way to write any.
+ */
+export function remotePathLauncherTakesUrlHost(launcher: PathLauncherOption): boolean {
+  return launcher.kind === 'builtin' && launcher.id === 'zed';
+}
+
+/**
  * What an editor is handed to reach a machine: the entry of this machine's SSH
- * configuration that names it, which is where its key is, and without one what
- * the machine says about itself.
+ * configuration that leads to it, which is where its key is, and without one
+ * that the launcher can be handed, what the machine says about itself.
  */
 export function resolveRemotePathDestination(
+  launcher: PathLauncherOption,
   ssh: LanSshDestination,
-  configured: string | null | undefined
-): string {
-  return parseSshDestinationText(configured) ?? formatLanSshDestination(ssh);
+  configured: unknown
+): SshDestination {
+  const entry = parseSshDestination(configured);
+  if (entry && (!remotePathLauncherTakesUrlHost(launcher) || isSshUrlHost(entry.host))) {
+    return entry;
+  }
+  return toSshDestination(ssh);
+}
+
+/**
+ * The VS Code family writes the authority of an address in small letters and
+ * reads a colon in it as the start of a port. A destination with capital
+ * letters, a colon or a port is therefore handed over the way these editors
+ * write one themselves: as the hexadecimal of its parts, which they read back
+ * letter by letter.
+ */
+function formatVsCodeRemoteAuthority(destination: SshDestination): string {
+  const { host, user, port } = destination;
+  const written = formatSshDestination(destination);
+  if (port === undefined && /^[a-z0-9_.@-]+$/u.test(written)) return `ssh-remote+${written}`;
+  const parts = JSON.stringify({
+    hostName: host,
+    ...(user === undefined ? {} : { user }),
+    ...(port === undefined ? {} : { port }),
+  });
+  const hexadecimal = Array.from(new TextEncoder().encode(parts), (byte) =>
+    byte.toString(16).padStart(2, '0')
+  ).join('');
+  return `ssh-remote+${hexadecimal}`;
 }
 
 /**
@@ -452,8 +490,8 @@ export function resolveRemotePathDestination(
 export function buildRemotePathLauncherLaunchInput(
   launcher: PathLauncherOption,
   targetPath: string,
-  /** `[user@]host[:port]`, as `resolveRemotePathDestination` gives it. */
-  destination: string,
+  /** As `resolveRemotePathDestination` gives it for the launcher. */
+  destination: SshDestination,
   platform?: string | null
 ): LaunchLocalPathInput {
   if (launcher.kind !== 'builtin' || !isEditorCliLauncherId(launcher.id)) {
@@ -464,8 +502,9 @@ export function buildRemotePathLauncherLaunchInput(
   if (!targetPath.startsWith('/')) {
     throw new Error('A folder of another machine is opened by its absolute POSIX path');
   }
-  if (parseSshDestinationText(destination) === null) {
-    throw new Error('A machine is reached as [user@]host[:port]');
+  const reached = parseSshDestination(destination);
+  if (!reached || (remotePathLauncherTakesUrlHost(launcher) && !isSshUrlHost(reached.host))) {
+    throw new Error(`Path launcher ${launcher.id} cannot be handed that machine`);
   }
 
   const folder = targetPath
@@ -473,21 +512,20 @@ export function buildRemotePathLauncherLaunchInput(
     .map((segment) => encodeURIComponent(segment))
     .join('/');
   const { newWindowFlag } = EDITOR_CLI_LAUNCHERS[launcher.id];
+  const authority = formatVsCodeRemoteAuthority(reached);
   const args =
     launcher.id === 'zed'
-      ? [`ssh://${destination}${folder}`]
+      ? [`ssh://${formatSshDestination(reached)}${folder}`]
       : [
           ...(newWindowFlag ? [newWindowFlag] : []),
           '--folder-uri',
-          `vscode-remote://ssh-remote+${destination}${folder}`,
+          `vscode-remote://${authority}${folder}`,
         ];
   return {
     kind: 'command',
     ...buildEditorCliCommands(launcher.id, normalizePlatform(platform), args),
     ...(launcher.id === 'vscode'
-      ? {
-          fallbackUrl: `vscode://vscode-remote/ssh-remote+${destination}${folder}?windowId=_blank`,
-        }
+      ? { fallbackUrl: `vscode://vscode-remote/${authority}${folder}?windowId=_blank` }
       : {}),
     targetPath,
     label: launcher.label,
@@ -572,7 +610,7 @@ export function buildPathLauncherProbes(
         input: buildRemotePathLauncherLaunchInput(
           launcher,
           targetPath,
-          formatLanSshDestination(ssh),
+          toSshDestination(ssh),
           platform
         ),
       });

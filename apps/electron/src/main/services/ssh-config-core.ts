@@ -11,8 +11,10 @@ import path from 'node:path'
 import {
   LAN_SSH_DEFAULT_PORT,
   isSshConfiguredHost,
-  parseSshDestinationText,
-  type LanSshDestination
+  isSshUrlHost,
+  parseSshDestination,
+  type LanSshDestination,
+  type SshDestination
 } from '@lody/shared/lan-ssh'
 
 /** A section of an SSH configuration, in the order of the file. */
@@ -277,13 +279,17 @@ export function parseSshEvaluation(output: string): SshConfigEntry | null {
  * which. Among the entries for the machine, the first at which a server
  * answers is taken: the one for the address the machine answers members on
  * before one for another of its names, then in the order of the file.
+ *
+ * With `urlHost`, only an entry counts whose name an address can carry as it
+ * is, for an editor that is handed the machine as an address.
  */
 export async function findSshConfigDestination(
   text: string,
   machine: LanSshDestination,
   localUser: string | null,
-  reach: SshReach
-): Promise<string | null> {
+  reach: SshReach,
+  options: { urlHost?: boolean } = {}
+): Promise<SshDestination | null> {
   const sections = parseSshConfig(text)
   const called = [machine.host, ...(machine.names ?? [])].map((name) => name.toLowerCase())
   const [answersOn = ''] = called
@@ -311,7 +317,9 @@ export async function findSshConfigDestination(
     return !IPV4_PATTERN.test(name) && labels.includes(name.split('.')[0]) ? 1 : 0
   }
 
-  const hosts = listSshConfigHosts(sections).slice(0, HOSTS_MAX)
+  const hosts = listSshConfigHosts(sections)
+    .filter((host) => !options.urlHost || isSshUrlHost(host))
+    .slice(0, HOSTS_MAX)
   const entries = await Promise.all(
     hosts.map(async (host, order) => {
       // Asking takes a process and the network, so nothing is asked about an
@@ -328,11 +336,9 @@ export async function findSshConfigDestination(
       if (reached === 0) return null
 
       // The account that owns the folder, whoever this machine would connect as.
-      let destination: string | null
-      if ((entry.user ?? localUser) === machine.user) destination = host
-      else if (stated.user === null) destination = `${machine.user}@${host}`
-      else return null
-      destination = parseSshDestinationText(destination)
+      const asUser = (entry.user ?? localUser) === machine.user
+      if (!asUser && stated.user !== null) return null
+      const destination = parseSshDestination(asUser ? { host } : { host, user: machine.user })
       if (!destination) return null
 
       // Every server is tried at once and none is waited for here: an address

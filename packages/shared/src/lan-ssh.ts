@@ -23,16 +23,15 @@ export type LanSshDestination = {
 
 // All of them end up in the arguments of an editor on the machine that reads
 // them, so none can begin an option or carry the syntax of an address.
-const USER = '[A-Za-z0-9_][A-Za-z0-9._-]{0,63}';
-const USER_PATTERN = new RegExp(`^${USER}$`, 'u');
+const USER_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/u;
 // A host name or an IPv4 address. An IPv6 address has no spelling every editor reads.
 const HOST_LABEL = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
 const HOST_PATTERN = new RegExp(`^${HOST_LABEL}(?:\\.${HOST_LABEL})*$`, 'u');
 const HOST_MAX = 253;
-// The name of an entry of an SSH configuration is whatever its owner chose.
-const CONFIGURED_HOST = '[A-Za-z0-9_][A-Za-z0-9._-]{0,252}';
-const CONFIGURED_HOST_PATTERN = new RegExp(`^${CONFIGURED_HOST}$`, 'u');
-const DESTINATION_PATTERN = new RegExp(`^(?:${USER}@)?${CONFIGURED_HOST}(?::(\\d{1,5}))?$`, 'u');
+// The name of an entry of an SSH configuration is whatever its owner chose,
+// a colon among it. An address has no place for one in the name of a host.
+const URL_HOST_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,252}$/u;
+const CONFIGURED_HOST_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._:+-]{0,252}$/u;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -92,19 +91,50 @@ export function formatLanSshDestination(destination: LanSshDestination): string 
   return `${destination.user}@${destination.host}${port}`;
 }
 
+/**
+ * What an editor is handed to reach a machine. It is kept in its parts: the
+ * name of an entry may hold a colon, which written out would read as a port.
+ */
+export type SshDestination = {
+  /** A host name, an address, or an entry of the SSH configuration of the machine that connects. */
+  host: string;
+  /** Absent where the entry says who connects. */
+  user?: string;
+  /** Absent where the entry says it, or where it is the one SSH assumes. */
+  port?: number;
+};
+
 /** Whether an entry of an SSH configuration has a name an editor can be handed. */
 export function isSshConfiguredHost(value: unknown): value is string {
   return typeof value === 'string' && CONFIGURED_HOST_PATTERN.test(value);
 }
 
-/**
- * What an editor is handed to reach a machine: `[user@]host[:port]`, where the
- * host may be an entry of the SSH configuration of the machine that connects.
- * `null` for anything an editor could read as something else.
- */
-export function parseSshDestinationText(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const match = DESTINATION_PATTERN.exec(value);
-  if (!match) return null;
-  return match[1] === undefined || isPort(Number(match[1])) ? value : null;
+/** Whether a host has a name that an address can carry as it is. */
+export function isSshUrlHost(value: unknown): value is string {
+  return typeof value === 'string' && URL_HOST_PATTERN.test(value);
+}
+
+/** `null` for anything an editor could read as something else. */
+export function parseSshDestination(value: unknown): SshDestination | null {
+  if (!isRecord(value) || !isSshConfiguredHost(value.host)) return null;
+  const { host, user, port } = value;
+  if (user !== undefined && (typeof user !== 'string' || !USER_PATTERN.test(user))) return null;
+  if (port !== undefined && !isPort(port)) return null;
+  return { host, ...(user === undefined ? {} : { user }), ...(port === undefined ? {} : { port }) };
+}
+
+/** What a machine says about itself, as an editor is handed it. */
+export function toSshDestination(machine: LanSshDestination): SshDestination {
+  return {
+    host: machine.host,
+    user: machine.user,
+    ...(machine.port === LAN_SSH_DEFAULT_PORT ? {} : { port: machine.port }),
+  };
+}
+
+/** `[user@]host[:port]`, for someone to read. */
+export function formatSshDestination(destination: SshDestination): string {
+  const user = destination.user === undefined ? '' : `${destination.user}@`;
+  const port = destination.port === undefined ? '' : `:${destination.port}`;
+  return `${user}${destination.host}${port}`;
 }

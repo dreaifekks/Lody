@@ -3,7 +3,7 @@ import { lookup } from 'node:dns/promises'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import type { LanSshDestination } from '@lody/shared/lan-ssh'
+import type { LanSshDestination, SshDestination } from '@lody/shared/lan-ssh'
 import { probeSshServer } from '@lody/shared/node/ssh-probe'
 import { getUserShellEnvCached } from './shell-env'
 import {
@@ -106,23 +106,26 @@ function readLocalUser(): string | null {
   }
 }
 
-async function find(machine: LanSshDestination): Promise<string | null> {
+async function find(machine: LanSshDestination, urlHost: boolean): Promise<SshDestination | null> {
   const home = os.homedir()
   const text = await readSshConfig(path.join(home, '.ssh', 'config'), home, files)
-  return await findSshConfigDestination(text, machine, readLocalUser(), reach)
+  return await findSshConfigDestination(text, machine, readLocalUser(), reach, { urlHost })
 }
 
-let recent: { machine: string; at: number; found: Promise<string | null> } | null = null
+let recent: { asked: string; at: number; found: Promise<SshDestination | null> } | null = null
 
 /**
  * The entry of the user's SSH configuration that reaches a machine of a LAN
  * from where this machine is now, as an editor is handed it; `null` when
- * there is none.
+ * there is none. With `urlHost`, an entry an address cannot name is none.
  */
-export function findSshDestination(machine: LanSshDestination): Promise<string | null> {
-  const key = JSON.stringify(machine)
-  if (recent && recent.machine === key && Date.now() - recent.at < RECENT_MS) return recent.found
-  const found = find(machine).catch(() => null)
-  recent = { machine: key, at: Date.now(), found }
+export function findSshDestination(
+  machine: LanSshDestination,
+  urlHost: boolean
+): Promise<SshDestination | null> {
+  const asked = JSON.stringify([machine, urlHost])
+  if (recent && recent.asked === asked && Date.now() - recent.at < RECENT_MS) return recent.found
+  const found = find(machine, urlHost).catch(() => null)
+  recent = { asked, at: Date.now(), found }
   return found
 }

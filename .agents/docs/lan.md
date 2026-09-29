@@ -210,6 +210,23 @@ as an `ssh` one. User, host and the name of an entry are limited to what cannot
 be read as an option or as part of an address, by the machine that publishes
 them and again by the desktop that reads them, and the path travels encoded.
 
+The name of an entry is whatever its owner chose, and an address is not made
+for every name:
+
+| Editor         | A name with capital letters, a colon or a port                         |
+| -------------- | ---------------------------------------------------------------------- |
+| VS Code family | Handed over as the hexadecimal of its parts, as these editors write it |
+| Zed            | With capital letters as it is; an entry with a colon is not taken      |
+
+The VS Code family writes the authority of an address in small letters and
+reads a colon in it as the start of a port, so it has its own way to write
+such a destination, and the desktop uses it for those only: what the editor
+reads as it is written stays as its owner knows it. Zed is handed the machine
+as the host of an `ssh` address, where a colon starts the port. For Zed the
+desktop therefore asks for an entry an address can name, and an entry such as
+`Host ts:server` is reached by giving it a second name: `Host ts:server
+ts-server`.
+
 An editor trusts the server it works on, so the desktop follows a machine to
 the server it names only when the machine is the current user's. Every member
 of a LAN is; a machine that someone else owns could name any server.

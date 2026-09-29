@@ -11,6 +11,7 @@ import {
   buildRemotePathLauncherLaunchInput,
   buildVSCodePathLauncherFallbackUrl,
   canLaunchRemotePath,
+  remotePathLauncherTakesUrlHost,
   resolveRemotePathDestination,
   getAvailablePathLauncherOptions,
   getCustomPathLauncherOptionId,
@@ -289,6 +290,7 @@ describe('built-in path launchers', () => {
 
 describe('a folder of another machine', () => {
   const ssh: LanSshDestination = { version: 1, user: 'me', host: '10.0.0.7', port: 22 };
+  const reached = { host: '10.0.0.7', user: 'me' };
   const custom: CustomPathLauncher = {
     id: 'phpstorm',
     label: 'PhpStorm',
@@ -303,13 +305,35 @@ describe('a folder of another machine', () => {
     if (!launcher) throw new Error(`no launcher ${id} on ${platform}`);
     return launcher;
   };
+  /** The letters the hexadecimal of an authority stands for. */
+  const readHexadecimal = (authority: string) => {
+    const hexadecimal = authority.replace(/^ssh-remote\+/u, '');
+    const bytes = hexadecimal.match(/../gu)?.map((pair) => Number.parseInt(pair, 16)) ?? [];
+    return JSON.parse(new TextDecoder().decode(new Uint8Array(bytes))) as unknown;
+  };
+  const readAuthority = (launcher: string, destination: Parameters<typeof parseTarget>[0]) =>
+    parseTarget(destination, launcher);
+  function parseTarget(destination: { host: string; user?: string; port?: number }, id = 'vscode') {
+    const input = buildRemotePathLauncherLaunchInput(
+      getLauncher(id, 'darwin'),
+      '/srv/app',
+      destination,
+      'darwin'
+    );
+    if (input.kind !== 'command') throw new Error('not a command');
+    const address = input.command.args?.at(-1) ?? '';
+    return {
+      address,
+      authority: address.replace(/^[a-z-]+:\/\//u, '').replace(/\/srv\/app$/u, ''),
+    };
+  }
 
   it('opens in VS Code as a remote folder, whatever its name looks like', () => {
     expect(
       buildRemotePathLauncherLaunchInput(
         getLauncher('vscode', 'darwin'),
         '/home/me/My Project/site.v2',
-        'me@10.0.0.7',
+        reached,
         'darwin'
       )
     ).toEqual({
@@ -356,7 +380,7 @@ describe('a folder of another machine', () => {
       const input = buildRemotePathLauncherLaunchInput(
         getLauncher(id, 'linux'),
         '/srv/app',
-        'me@10.0.0.7',
+        reached,
         'linux'
       );
       expect(input, id).toMatchObject({
@@ -376,7 +400,7 @@ describe('a folder of another machine', () => {
       buildRemotePathLauncherLaunchInput(
         getLauncher('zed', 'linux'),
         '/srv/my app',
-        'me@server.lan:2222',
+        { host: 'server.lan', user: 'me', port: 2222 },
         'linux'
       )
     ).toEqual({
@@ -395,7 +419,7 @@ describe('a folder of another machine', () => {
     const input = buildRemotePathLauncherLaunchInput(
       getLauncher('cursor', 'win32'),
       '/srv/a&b | c?d#e/--remote',
-      'me@10.0.0.7',
+      reached,
       'win32'
     );
     expect(input.kind === 'command' && input.command.args).toEqual([
@@ -430,29 +454,24 @@ describe('a folder of another machine', () => {
       (candidate) => !canLaunchRemotePath(candidate)
     )) {
       expect(
-        () => buildRemotePathLauncherLaunchInput(launcher, '/srv/app', 'me@10.0.0.7', 'darwin'),
+        () => buildRemotePathLauncherLaunchInput(launcher, '/srv/app', reached, 'darwin'),
         launcher.label
       ).toThrow(/another machine/u);
     }
     expect(() =>
-      buildRemotePathLauncherLaunchInput(
-        getLauncher('vscode', 'darwin'),
-        'C:\\code\\app',
-        'me@10.0.0.7'
-      )
+      buildRemotePathLauncherLaunchInput(getLauncher('vscode', 'darwin'), 'C:\\code\\app', reached)
     ).toThrow(/POSIX/u);
   });
 
-  it('opens through the entry of this machine’s SSH configuration that reaches it', () => {
-    expect(resolveRemotePathDestination(ssh, 'nuc')).toBe('nuc');
-    expect(resolveRemotePathDestination(ssh, 'me@nuc')).toBe('me@nuc');
+  it('opens through the entry of this machine’s SSH configuration that leads to it', () => {
+    const vscode = getLauncher('vscode', 'darwin');
+    expect(resolveRemotePathDestination(vscode, ssh, { host: 'nuc' })).toEqual({ host: 'nuc' });
+    expect(resolveRemotePathDestination(vscode, ssh, { host: 'nuc', user: 'me' })).toEqual({
+      host: 'nuc',
+      user: 'me',
+    });
     expect(
-      buildRemotePathLauncherLaunchInput(
-        getLauncher('vscode', 'darwin'),
-        '/srv/app',
-        resolveRemotePathDestination(ssh, 'nuc'),
-        'darwin'
-      )
+      buildRemotePathLauncherLaunchInput(vscode, '/srv/app', { host: 'nuc' }, 'darwin')
     ).toMatchObject({
       command: {
         command: 'code',
@@ -461,29 +480,80 @@ describe('a folder of another machine', () => {
       fallbackUrl: 'vscode://vscode-remote/ssh-remote+nuc/srv/app?windowId=_blank',
     });
     expect(
-      buildRemotePathLauncherLaunchInput(getLauncher('zed', 'darwin'), '/srv/app', 'nuc', 'darwin')
-    ).toMatchObject({ command: { command: 'zed', args: ['ssh://nuc/srv/app'] } });
+      buildRemotePathLauncherLaunchInput(
+        getLauncher('zed', 'darwin'),
+        '/srv/app',
+        { host: 'home-devNuc' },
+        'darwin'
+      )
+    ).toMatchObject({ command: { command: 'zed', args: ['ssh://home-devNuc/srv/app'] } });
   });
 
-  it('opens as the machine says where the configuration names no entry for it', () => {
-    expect(resolveRemotePathDestination(ssh, null)).toBe('me@10.0.0.7');
-    expect(resolveRemotePathDestination(ssh, undefined)).toBe('me@10.0.0.7');
-    expect(resolveRemotePathDestination({ ...ssh, port: 2222, names: ['server'] }, null)).toBe(
-      'me@10.0.0.7:2222'
-    );
-    // Nor an entry an editor could read as something else.
-    for (const configured of ['-oProxyCommand=id', 'nuc/../x', 'two words', '']) {
-      expect(resolveRemotePathDestination(ssh, configured), configured).toBe('me@10.0.0.7');
-      expect(
-        () =>
-          buildRemotePathLauncherLaunchInput(
-            getLauncher('vscode', 'darwin'),
-            '/srv/app',
-            configured
-          ),
-        configured
-      ).toThrow(/reached as/u);
+  it('hands the VS Code family a name it would misread as the letters of what it is', () => {
+    // These editors write an authority in small letters and read a colon as the start of a port.
+    for (const destination of [
+      { host: 'home-devNuc' },
+      { host: 'ts:home-devNuc' },
+      { host: 'ts:home-devNuc', user: 'me' },
+      { host: 'nuc', user: 'Me' },
+      { host: 'server.lan', user: 'me', port: 2222 },
+      { host: 'work+nuc' },
+    ]) {
+      const { address, authority } = readAuthority('cursor', destination);
+      expect(authority, JSON.stringify(destination)).toMatch(/^ssh-remote\+[0-9a-f]+$/u);
+      expect(address).toBe(`vscode-remote://${authority}/srv/app`);
+      expect(readHexadecimal(authority)).toEqual({
+        hostName: destination.host,
+        ...('user' in destination ? { user: destination.user } : {}),
+        ...('port' in destination ? { port: destination.port } : {}),
+      });
     }
+    expect(readAuthority('vscode', { host: 'ts:home-devNuc' }).authority).toBe(
+      'ssh-remote+7b22686f73744e616d65223a2274733a686f6d652d6465764e7563227d'
+    );
+    // What they read as it is written stays as it is written.
+    for (const [destination, authority] of [
+      [{ host: 'nuc' }, 'ssh-remote+nuc'],
+      [{ host: 'my_server-2.lan', user: 'dev_1' }, 'ssh-remote+dev_1@my_server-2.lan'],
+      [{ host: '10.0.0.7', user: 'me' }, 'ssh-remote+me@10.0.0.7'],
+    ] as const) {
+      expect(readAuthority('windsurf', destination).authority).toBe(authority);
+    }
+  });
+
+  it('hands Zed only an entry an address can name', () => {
+    const zed = getLauncher('zed', 'darwin');
+    const vscode = getLauncher('vscode', 'darwin');
+    const entry = { host: 'ts:home-devNuc' };
+
+    expect(remotePathLauncherTakesUrlHost(zed)).toBe(true);
+    expect(remotePathLauncherTakesUrlHost(vscode)).toBe(false);
+    expect(resolveRemotePathDestination(vscode, ssh, entry)).toEqual(entry);
+    // Without one, Zed is handed what the machine says about itself.
+    expect(resolveRemotePathDestination(zed, ssh, entry)).toEqual(reached);
+    expect(resolveRemotePathDestination(zed, ssh, { host: 'ts-home-devNuc' })).toEqual({
+      host: 'ts-home-devNuc',
+    });
+    expect(() => buildRemotePathLauncherLaunchInput(zed, '/srv/app', entry, 'darwin')).toThrow(
+      /cannot be handed/u
+    );
+  });
+
+  it('opens as the machine says where the configuration holds no entry for it', () => {
+    const vscode = getLauncher('vscode', 'darwin');
+    expect(resolveRemotePathDestination(vscode, ssh, null)).toEqual(reached);
+    expect(resolveRemotePathDestination(vscode, ssh, undefined)).toEqual(reached);
+    expect(
+      resolveRemotePathDestination(vscode, { ...ssh, port: 2222, names: ['server'] }, null)
+    ).toEqual({ ...reached, port: 2222 });
+    // Nor an entry an editor could read as something else.
+    for (const host of ['-oProxyCommand=id', 'nuc/../x', 'two words', '', 'me@nuc']) {
+      expect(resolveRemotePathDestination(vscode, ssh, { host }), host).toEqual(reached);
+      expect(() => buildRemotePathLauncherLaunchInput(vscode, '/srv/app', { host }), host).toThrow(
+        /cannot be handed/u
+      );
+    }
+    expect(resolveRemotePathDestination(vscode, ssh, 'nuc')).toEqual(reached);
   });
 });
 

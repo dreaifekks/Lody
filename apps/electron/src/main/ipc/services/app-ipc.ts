@@ -509,14 +509,19 @@ export class AppIpc extends IpcService {
 
   // An editor reaches a machine of a LAN the way `ssh` of this machine does:
   // through the entry of the user's SSH configuration that names the machine,
-  // which is where its key is. `null` when no entry does.
+  // which is where its key is. `null` when no entry does. `urlHost` asks for
+  // an entry whose name an address can carry, for an editor that takes one.
   @IpcMethod()
   async resolveSshDestination(payload: unknown) {
-    const machine = parseLanSshDestination(payload)
+    const asked =
+      typeof payload === 'object' && payload !== null
+        ? (payload as { machine?: unknown; urlHost?: unknown })
+        : {}
+    const machine = parseLanSshDestination(asked.machine)
     if (!machine) {
       return { destination: null }
     }
-    return { destination: await findSshDestination(machine) }
+    return { destination: await findSshDestination(machine, asked.urlHost === true) }
   }
 
   @IpcMethod()
