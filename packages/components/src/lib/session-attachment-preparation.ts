@@ -24,6 +24,11 @@ export async function prepareDraftAttachments(args: {
   signal: AbortSignal;
   token(): string | null;
   localMachineId(): MachineId | null;
+  /**
+   * Whether the agent service of this machine hands files over to the other
+   * machines of the workspace, as the members of a LAN do.
+   */
+  handsOffToMembers?(): boolean;
   checkpoint(
     patch: Partial<Pick<SessionSendRecord, 'attachments' | 'entry' | 'queue'>>
   ): Promise<void>;
@@ -32,6 +37,12 @@ export async function prepareDraftAttachments(args: {
   let attachments = args.record.attachments ?? [];
   if (!attachments.length) return;
   let failure: unknown;
+  // The agent service of this machine takes the files of its own sessions,
+  // and where it reaches the other machines, of theirs.
+  const canHandOffTo = (machineId: MachineId | null | undefined): machineId is MachineId =>
+    !!machineId &&
+    canUseElectronLocalFileSend() &&
+    (machineId === args.localMachineId() || args.handsOffToMembers?.() === true);
   // One transfer at a time per message bounds hashing memory and preserves
   // successful results; different conversations retain independent lifetimes.
   for (const attachment of attachments) {
@@ -43,7 +54,7 @@ export async function prepareDraftAttachments(args: {
         type: attachment.mimeType,
         lastModified: attachment.lastModified,
       });
-      let ready: SessionInputBlock;
+      let ready: SessionInputBlock | undefined;
       if (attachment.kind === 'image') {
         const token = args.token();
         try {
@@ -72,16 +83,16 @@ export async function prepareDraftAttachments(args: {
             ).length +
             attachments.filter((item) => item.kind === 'file' || item.ready?.type === 'file')
               .length;
-          // Keep the existing same-machine image fallback. Cancellation, remote
-          // targets and a full file allowance never authorize a local transfer.
+          // Keep the existing image fallback. Cancellation, a machine the agent
+          // service does not reach and a full file allowance never authorize a
+          // handoff.
           if (
             isUploadAbortedError(error) ||
-            !machineId ||
-            machineId !== args.localMachineId() ||
-            !canUseElectronLocalFileSend() ||
+            !canHandOffTo(machineId) ||
             fileCount >= SESSION_FILE_MAX_COUNT
           )
             throw error;
+          let refusal: string | undefined;
           try {
             const outcome = await args.resources.run(
               (signal) =>
@@ -94,13 +105,17 @@ export async function prepareDraftAttachments(args: {
                 }),
               args.signal
             );
-            if (!outcome?.ok || !outcome.files[0]) throw error;
-            ready = outcome.files[0];
+            if (outcome?.ok && outcome.files[0]) ready = outcome.files[0];
+            else if (outcome && !outcome.ok) refusal = outcome.error;
           } catch {
             throwIfSendAborted(args.signal);
-            // The original upload failure remains the reason if local handoff
-            // is also unavailable. No second cloud file upload is introduced.
-            throw error;
+          }
+          if (!ready) {
+            // The upload failure remains the reason if the handoff is also
+            // unavailable, and no second cloud file upload is introduced.
+            // Where nothing could be uploaded the handoff was the only way,
+            // and what it said is why the image was not sent.
+            throw !token && refusal ? new Error(refusal) : error;
           }
         }
       } else {
@@ -110,8 +125,7 @@ export async function prepareDraftAttachments(args: {
           sessionId: args.record.sessionId as SessionId,
           token: args.token(),
           machineId,
-          canSendLocally:
-            !!machineId && machineId === args.localMachineId() && canUseElectronLocalFileSend(),
+          canSendLocally: canHandOffTo(machineId),
           file,
           signal: args.signal,
           onProgress: (progress) => args.report(attachment.id, progress.percent),

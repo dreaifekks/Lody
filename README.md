@@ -87,8 +87,9 @@ This fork adds LANs. A LAN is a hub you host yourself plus the invite that opens
 every machine that holds the invite sees the others' projects and runs Agents on
 them, without an account or a hosted service. A machine can belong to several LANs
 and is the same machine, under the same name, in each of them. The terminal of a
-session opens on the machine that runs it, whichever machine the desktop is on;
-members reach each other on port 8789 of the address they use for the hub.
+session opens on the machine that runs it, whichever machine the desktop is on,
+and the images and files of a message are taken there; members reach each other
+on port 8789 of the address they use for the hub.
 
 Host a LAN on a server, which also becomes its first member:
 

@@ -55,6 +55,7 @@ import {
   type LanTerminalMembership,
 } from '@/lib/lan/lan-terminal-host';
 import { connectLanTerminal, deriveLanTerminalKey } from '@/lib/lan/lan-terminal';
+import { LanFileHandoff } from '@/lib/lan/lan-file-handoff';
 import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-control';
 import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import type { LanMemberWorkspace } from '@/lib/lan/lan-members';
@@ -176,6 +177,7 @@ export class LodyFleet {
   private readonly terminalPtyService: TerminalPtyServiceApi;
   private readonly terminalRouter: TerminalRouter;
   private readonly lan: LanTerminalMembership | null;
+  private readonly lanFileHandoff: LanFileHandoff;
   private lanTerminalHost: LanTerminalHost | null = null;
   private readonly lanFleetControl: LanFleetControl | null;
   private readonly memoryPressure: MemoryPressureSampler;
@@ -309,6 +311,23 @@ export class LodyFleet {
           },
         })
       : null;
+    this.lanFileHandoff = new LanFileHandoff({
+      machineId: this.machineId,
+      logger: this.logger,
+      hubs: () => this.lan?.hubs ?? [],
+      workspace: (workspaceId) => {
+        const runtime = this.runtimes.get(workspaceId);
+        if (!runtime || !this.isLanWorkspace(workspaceId)) return null;
+        const { repo } = runtime.lody.documentManager;
+        return {
+          lookupSession: async (sessionId) =>
+            await this.lookupTerminalSessionMeta(runtime, sessionId),
+          readMachine: async (machineId) =>
+            (await repo.getDocMeta(getMachineRoomId(machineId)))?.meta as MachineMeta | undefined,
+          storeLocally: async (request) => await runtime.lody.dispatchLocalControl(request),
+        };
+      },
+    });
     this.terminalRouter = new TerminalRouter({
       local: this.terminalPtyService,
       machineId: this.machineId,
@@ -890,6 +909,7 @@ export class LodyFleet {
                   await (this.lanFleetControl as LanFleetControl).answer(request),
               }
             : {}),
+          acceptsLanMemberFiles: this.lanTerminalHost !== null && this.isLanWorkspace(workspace.id),
         });
 
         if (!this.desiredWorkspaces.has(workspace.id) || this.stopped) {
@@ -1347,6 +1367,19 @@ export class LodyFleet {
     message: LocalSessionControlRequest,
     options: { onResponse?: (response: LocalSessionControlResponse) => void } = {}
   ): Promise<LocalSessionControlResponse[]> {
+    if (
+      message.type === 'session/file-send-local' &&
+      message.targetMachineId &&
+      message.targetMachineId !== this.machineId
+    ) {
+      const response = await this.lanFileHandoff.send({
+        ...message,
+        targetMachineId: message.targetMachineId,
+      });
+      options.onResponse?.(response);
+      return [response];
+    }
+
     // Image and file uploads (from the in-session MCP server) may omit the
     // workspaceId; resolve it by finding the single active runtime that holds
     // the session doc. Both share the same resolution + ambiguity handling.
@@ -1508,6 +1541,7 @@ export class LodyFleet {
                 await this.verifyLanTerminalSession(workspaceId, sessionId as SessionId)
             )
           : null,
+      filesFor: (workspaceId) => this.lanFileHandoff.receiverFor(workspaceId),
       publish: async (workspaceId, endpoint) =>
         await this.publishLanTerminalEndpoint(workspaceId, endpoint),
     });

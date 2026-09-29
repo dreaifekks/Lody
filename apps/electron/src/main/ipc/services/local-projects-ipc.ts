@@ -87,20 +87,39 @@ export class LocalProjectsIpc extends IpcService {
           .join('')
           .trim()
         const safeName = !base || base === '.' || base === '..' ? 'file' : base.slice(0, 255)
-        const tempPath = path.join(tempDir, `${index}-${safeName}`)
+        // The agent service names a file by the last segment of its path, so
+        // each file gets a directory of its own rather than a prefix.
+        const fileDir = path.join(tempDir, String(index))
+        await fs.mkdir(fileDir)
+        const tempPath = path.join(fileDir, safeName)
         await fs.writeFile(tempPath, Buffer.from(file.bytes))
         tempPaths.push(tempPath)
       }
       if (tempPaths.length !== input.files.length) {
         return { ok: false, error: 'temp_write_incomplete' }
       }
-      const result = await getIpcServiceDeps().cliService.sendLocalSessionControl({
-        type: 'session/file-send-local',
-        machineId: input.machineId,
-        sessionId: input.sessionId as SessionId,
-        workspaceId: input.workspaceId as WorkspaceId,
-        paths: tempPaths
-      } as LocalSessionControlRequest)
+      const { cliService } = getIpcServiceDeps()
+      // The desktop asks the agent service of its own machine. A session that
+      // another machine runs is named as the target, and that agent service
+      // hands the files over to it.
+      const send = async (localMachineId: string) =>
+        await cliService.sendLocalSessionControl({
+          type: 'session/file-send-local',
+          machineId: localMachineId,
+          sessionId: input.sessionId as SessionId,
+          workspaceId: input.workspaceId as WorkspaceId,
+          paths: tempPaths,
+          ...(input.machineId === localMachineId ? {} : { targetMachineId: input.machineId })
+        } as LocalSessionControlRequest)
+      // A desktop that does not start the agent service itself does not know
+      // its machine; the session's machine is then asked, as it always was.
+      const localMachineId = (await cliService.getLocalMachineId()) ?? input.machineId
+      let result = await send(localMachineId)
+      if (!result.ok && result.error === 'machine_mismatch') {
+        // The agent service was replaced by one of another installation.
+        const refreshed = await cliService.getLocalMachineId({ forceRefresh: true })
+        if (refreshed && refreshed !== localMachineId) result = await send(refreshed)
+      }
       if (!result.ok) {
         return { ok: false, error: result.error }
       }
@@ -112,7 +131,8 @@ export class LocalProjectsIpc extends IpcService {
         return { ok: false, error: 'invalid_response' }
       }
       if (!response.success) {
-        return { ok: false, error: response.error ?? 'local_handoff_failed' }
+        // The message says which machine refused and why; the code alone does not.
+        return { ok: false, error: response.message ?? response.error ?? 'local_handoff_failed' }
       }
       return {
         ok: true,

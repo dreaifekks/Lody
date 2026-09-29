@@ -24,6 +24,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   piExtensions: 'piExtensions',
   acpCapabilityRefreshCache: 'acpCapabilityRefreshCache',
   lanControl: 'lanControl',
+  lanFiles: 'lanFiles',
 } as const;
 
 export const LOCAL_PROJECT_HISTORY_PROVIDER_PROTOCOL_VERSION = 1;
@@ -41,6 +42,7 @@ export const PREVIEW_CONTROL_PROTOCOL_VERSION = 1;
 export const PI_EXTENSIONS_PROTOCOL_VERSION = 1;
 export const ACP_CAPABILITY_REFRESH_CACHE_PROTOCOL_VERSION = 1;
 export const LAN_CONTROL_PROTOCOL_VERSION = 1;
+export const LAN_FILES_PROTOCOL_VERSION = 1;
 
 type MachineProtocolCapabilityCarrier = {
   protocolCapabilities?: MachineProtocolCapabilities;
@@ -271,5 +273,22 @@ export function machineSupportsLanControl(
     machine,
     MACHINE_PROTOCOL_CAPABILITIES.lanControl,
     LAN_CONTROL_PROTOCOL_VERSION
+  );
+}
+
+/**
+ * Whether the target daemon takes the files of a message from the other
+ * members of a LAN, at the endpoint it publishes for them. A daemon without it
+ * would read a file as terminal input.
+ *
+ * Like `lanControl` it is said only by a daemon that was assembled to accept.
+ */
+export function machineSupportsLanFiles(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.lanFiles,
+    LAN_FILES_PROTOCOL_VERSION
   );
 }

@@ -173,6 +173,7 @@ import {
   getDeviceTimeZone,
   isLanMemberControlType,
   LAN_CONTROL_PROTOCOL_VERSION,
+  LAN_FILES_PROTOCOL_VERSION,
   MACHINE_PROTOCOL_CAPABILITIES,
   type LanMemberControlRequest,
   type LanMemberControlResponse,
@@ -592,6 +593,11 @@ export interface MessageHandlerConfig {
    * machine. Absent where the agent service takes no such requests.
    */
   answerLanMemberControl?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
+  /**
+   * The agent service takes the files of a message from the other members of
+   * this workspace's LAN, at the endpoint it publishes for them.
+   */
+  acceptsLanMemberFiles?: boolean;
   cloudPort: CloudPort;
 }
 
@@ -759,6 +765,7 @@ export class MessageHandler {
   private onFatalAuthFailure?: (error: Error) => void;
   private onProcessLifecycleAction?: (action: MachineProcessLifecycleAction) => void;
   private readonly answerLanMemberControl?: MessageHandlerConfig['answerLanMemberControl'];
+  private readonly acceptsLanMemberFiles: boolean;
   private readonly machineLifecycleCapability: MachineLifecycleCapability;
   private pendingProcessLifecycleAction: MachineProcessLifecycleAction | null = null;
   private readonly store = new SessionTransientStore();
@@ -2399,6 +2406,14 @@ export class MessageHandler {
         this.enqueueSessionFileBackfill(storageSessionId, block.fileId);
       }
 
+      // A picture that arrived as a file is still a picture. Where nothing can
+      // be uploaded every image arrives this way, and an agent that can look
+      // at images gets it to look at, not only the path to it.
+      const picture = await this.readAttachedPicture(block, destPath);
+      if (picture) {
+        promptBlocks.push(picture);
+      }
+
       promptBlocks.push({
         type: 'resource_link',
         uri: pathToFileURL(destPath).href,
@@ -2416,6 +2431,29 @@ export class MessageHandler {
     }
 
     return promptBlocks;
+  }
+
+  /** The image block of a file attachment that is an image an upload would have taken. */
+  private async readAttachedPicture(
+    block: Extract<SessionInputBlock, { type: 'file' }>,
+    filePath: string
+  ): Promise<Extract<ContentBlock, { type: 'image' }> | null> {
+    const mimeType = block.mimeType.toLowerCase();
+    if (
+      !(SESSION_IMAGE_ALLOWED_MIME_TYPES as readonly string[]).includes(mimeType) ||
+      block.sizeBytes > SESSION_IMAGE_MAX_SIZE_BYTES
+    ) {
+      return null;
+    }
+    try {
+      const bytes = await fs.promises.readFile(filePath);
+      return { type: 'image', mimeType, data: bytes.toString('base64') };
+    } catch (error) {
+      this.logger.debug(
+        `File attachment ${block.fileId} is not shown as an image: ${formatErrorMessage(error)}`
+      );
+      return null;
+    }
   }
 
   private async buildAcpPromptBlocks(args: {
@@ -2922,6 +2960,7 @@ export class MessageHandler {
     this.localWorkspaceCatalog = config.localWorkspaceCatalog ?? makeLocalWorkspaceCatalog();
     this.onProcessLifecycleAction = config.onProcessLifecycleAction;
     this.answerLanMemberControl = config.answerLanMemberControl;
+    this.acceptsLanMemberFiles = config.acceptsLanMemberFiles === true;
     this.machineLifecycleCapability = config.machineLifecycleCapability ?? {
       launchMode: 'foreground',
       canRemoteRestart: false,
@@ -5834,6 +5873,9 @@ export class MessageHandler {
     if (this.answerLanMemberControl) {
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanControl] = LAN_CONTROL_PROTOCOL_VERSION;
     }
+    if (this.acceptsLanMemberFiles) {
+      capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanFiles] = LAN_FILES_PROTOCOL_VERSION;
+    }
     return capabilities;
   }
 
@@ -7456,7 +7498,13 @@ export class MessageHandler {
     const sessionMetaRecord = await this.workspaceDocument.repo.getDocMeta(
       getSessionRoomId(sessionId)
     );
-    if (!sessionMetaRecord?.meta || isLoroRepoDocDeleted(sessionMetaRecord)) {
+    const known = !!sessionMetaRecord?.meta && !isLoroRepoDocDeleted(sessionMetaRecord);
+    // The files of a message are prepared before the message is written, and
+    // the first message of a conversation is what creates it. Where a relay
+    // exists the client uploads those files instead; without one this handoff
+    // is the only way in, so it takes them for the conversation to come.
+    const awaited = !sessionMetaRecord && this.cloudPort.attachmentUpload === null;
+    if (!known && !awaited) {
       respond({
         success: false,
         error: 'session_not_found',
@@ -7547,9 +7595,13 @@ export class MessageHandler {
     // and succeed once the send lands within the backoff window. The reliable
     // trigger is message dispatch (materializeSessionFileAttachments enqueues
     // when it serves the block), with the startup scan as the final net.
-    // Re-enqueues are deduped by the in-flight key set.
-    for (const block of localBlocks) {
-      this.enqueueSessionFileBackfill(sessionId, block.fileId);
+    // Re-enqueues are deduped by the in-flight key set. A conversation that
+    // does not exist yet has no document to look for the block in, and opening
+    // one here would create it ahead of the client that owns its creation.
+    if (known) {
+      for (const block of localBlocks) {
+        this.enqueueSessionFileBackfill(sessionId, block.fileId);
+      }
     }
 
     const partialMessage =

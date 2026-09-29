@@ -30,6 +30,7 @@ export function prepareSessionFile(
   }
 ): Promise<SessionFilePayload> {
   return resources.run(async (signal) => {
+    let refusal: string | undefined;
     if (args.canSendLocally && args.machineId) {
       try {
         const result = await sendSessionFileToLocalRuntime({
@@ -39,6 +40,7 @@ export function prepareSessionFile(
         });
         throwIfSendAborted(signal);
         if (result?.ok && result.files[0]) return result.files[0];
+        if (result && !result.ok) refusal = result.error;
       } catch (error) {
         // Preserve the existing transport fallback, but cancellation never
         // authorizes a second transfer after a late local handoff.
@@ -47,7 +49,11 @@ export function prepareSessionFile(
       }
     }
     throwIfSendAborted(signal);
-    if (!args.token) throw new SessionFilePreparationAuthError();
+    if (!args.token) {
+      // Nothing can be uploaded, so what the handoff said is the reason.
+      if (refusal) throw new Error(refusal);
+      throw new SessionFilePreparationAuthError();
+    }
     const progress = (value: SessionFileUploadProgress) => {
       if (!signal.aborted) args.onProgress?.(value);
     };

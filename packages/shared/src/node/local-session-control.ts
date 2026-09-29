@@ -610,11 +610,21 @@ export function isLocalSessionControlRequest(value: unknown): value is LocalSess
     );
   }
 
-  if (value.type === 'session/file-upload' || value.type === 'session/file-send-local') {
+  if (value.type === 'session/file-upload') {
     return (
       typeof value.machineId === 'string' &&
       typeof value.sessionId === 'string' &&
       isOptionalString(value.workspaceId) &&
+      isStringList(value.paths, { min: 1, max: SESSION_FILE_MAX_COUNT })
+    );
+  }
+
+  if (value.type === 'session/file-send-local') {
+    return (
+      typeof value.machineId === 'string' &&
+      typeof value.sessionId === 'string' &&
+      isOptionalString(value.workspaceId) &&
+      isOptionalString(value.targetMachineId) &&
       isStringList(value.paths, { min: 1, max: SESSION_FILE_MAX_COUNT })
     );
   }

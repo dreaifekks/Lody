@@ -747,6 +747,12 @@ export interface SessionFileSendLocalRequest {
   sessionId: SessionId;
   workspaceId?: WorkspaceId;
   paths: string[];
+  /**
+   * The machine that runs the session when it is not the one asked: another
+   * member of a LAN of `machineId`, which hands the files over to it. The
+   * blocks returned then name that machine.
+   */
+  targetMachineId?: MachineId;
 }
 
 export interface SessionFileSendLocalResponse {

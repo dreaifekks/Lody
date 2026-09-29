@@ -53,6 +53,8 @@ interface LodyOptions {
   workspaceWatchCoordinator?: WorkspaceWatchCoordinatorApi;
   /** Carries out what another member of the LAN of this workspace asks of this machine. */
   answerLanMemberControl?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
+  /** The agent service takes the files of a message from the members of this workspace's LAN. */
+  acceptsLanMemberFiles?: boolean;
   cloudPort: CloudPort;
 }
 export class Lody {
@@ -134,6 +136,7 @@ export class Lody {
         onProcessLifecycleAction: options.onProcessLifecycleAction,
         workspaceWatchCoordinator: options.workspaceWatchCoordinator,
         answerLanMemberControl: options.answerLanMemberControl,
+        acceptsLanMemberFiles: options.acceptsLanMemberFiles,
         cloudPort: options.cloudPort,
       },
       logger: this.logger,

@@ -35,6 +35,8 @@ export function createWorkspaceSessionSendJournal(args: {
   };
   token(): string | null;
   localMachineId(): MachineId | null;
+  /** Whether the agent service of this machine hands files to the workspace's other machines. */
+  handsOffToMembers?(): boolean;
   sourceReplica: string;
   runtime: Pick<
     WorkspaceRuntime,
@@ -174,6 +176,7 @@ export function createWorkspaceSessionSendJournal(args: {
         resources: runtime.sendResources,
         token: args.token,
         localMachineId: args.localMachineId,
+        handsOffToMembers: args.handsOffToMembers,
       });
     },
     prepare: async (record, signal) => {

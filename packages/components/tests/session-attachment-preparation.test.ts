@@ -27,7 +27,7 @@ const local = vi.hoisted(() => ({
 }));
 vi.mock('../src/lib/electron-session-file-sender', () => ({
   canUseElectronLocalFileSend: () => local.enabled,
-  sendSessionFileToLocalRuntime: async ({ file }: { file: File }) => {
+  sendSessionFileToLocalRuntime: async ({ file, machineId }: { file: File; machineId: string }) => {
     if (local.fail) return { ok: false, error: 'Local handoff failed' };
     local.files.push(await file.text());
     return {
@@ -40,7 +40,7 @@ vi.mock('../src/lib/electron-session-file-sender', () => ({
           fileName: file.name,
           mimeType: file.type,
           sizeBytes: file.size,
-          machineId: 'machine',
+          machineId,
           sha256: 'a'.repeat(64),
           textPreview: false,
           uploadedAt: 1,
@@ -54,7 +54,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
   Object.assign(local, { enabled: false, machineId: null, files: [], fail: false });
 });
-function fixture(options: { token?: string | null } = {}) {
+function fixture(options: { token?: string | null; handsOffToMembers?: boolean } = {}) {
   const doc = new LoroDoc();
   const writer = createHistoryWriter(doc);
   const resources = createSessionSendResources({
@@ -96,6 +96,7 @@ function fixture(options: { token?: string | null } = {}) {
         resources,
         token: () => (options.token === undefined ? 'token' : options.token),
         localMachineId: () => local.machineId as never,
+        handsOffToMembers: () => options.handsOffToMembers === true,
       }),
     prepare: async () => {},
     commit: async (record) => {
@@ -411,6 +412,53 @@ it('hands an image to this machine without an account to upload it to', async ()
     ])
   );
 });
+
+it.each(['image', 'file'] as const)(
+  'hands a dropped %s to the member of a LAN that runs the session',
+  async (kind) => {
+    Object.assign(local, { enabled: true, machineId: 'machine' });
+    const f = fixture({ token: null, handsOffToMembers: true });
+    upload.run = async () => {
+      throw new Error('Nothing may be uploaded without an account');
+    };
+    const message = input('for-member', ['shot.png']);
+    await f.journal.accept({
+      ...message,
+      attachments: message.attachments.map((attachment) => ({ ...attachment, kind })),
+      targetMachineId: 'member' as never,
+    });
+    await f.journal.retry('session' as SessionId);
+    expect(local.files).toEqual(['shot.png']);
+    // The block names the machine that holds the file, which is not this one.
+    expect(f.writer.readStored()[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'file', transport: 'local', machineId: 'member' }),
+        expect.objectContaining({ type: 'text', text: 'keep this text' }),
+      ])
+    );
+    expect((await f.journal.read('for-member'))?.stage).toBe('delivered');
+  }
+);
+
+it.each(['image', 'file'] as const)(
+  'says why the member did not take a dropped %s when nothing can be uploaded',
+  async (kind) => {
+    Object.assign(local, { enabled: true, machineId: 'machine', fail: true });
+    const f = fixture({ token: null, handsOffToMembers: true });
+    const message = input('refused', ['shot.png']);
+    await f.journal.accept({
+      ...message,
+      attachments: message.attachments.map((attachment) => ({ ...attachment, kind })),
+      targetMachineId: 'member' as never,
+    });
+    await expect(f.journal.retry('session' as SessionId)).rejects.toThrow('Local handoff failed');
+    expect(f.writer.readStored()).toEqual([]);
+    expect(await f.journal.read('refused')).toMatchObject({
+      stage: 'saved',
+      attachments: [expect.objectContaining({ error: 'Local handoff failed' })],
+    });
+  }
+);
 
 it('keeps an image for another machine unsent without an account', async () => {
   Object.assign(local, { enabled: true, machineId: 'machine' });

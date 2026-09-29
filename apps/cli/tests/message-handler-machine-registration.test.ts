@@ -204,7 +204,7 @@ describe('MessageHandler machine registration', () => {
   });
 
   it('says that it answers the members of a LAN only when it was assembled to', async () => {
-    const register = async (answers: boolean): Promise<MachineMeta> => {
+    const register = async (answers: boolean, takesFiles = false): Promise<MachineMeta> => {
       const workspaceDocument = {
         sessions: new Map<SessionId, unknown>(),
         restoreMachineDocument: vi.fn(async () => {}),
@@ -240,6 +240,7 @@ describe('MessageHandler machine registration', () => {
           machineName: 'machine-name',
           cliVersion: '0.100.0-lan.4',
           cloudPort: createTestCloudPort(),
+          acceptsLanMemberFiles: takesFiles,
           ...(answers
             ? {
                 answerLanMemberControl: async (request) => ({
@@ -264,6 +265,10 @@ describe('MessageHandler machine registration', () => {
     expect((await register(true)).protocolCapabilities?.lanControl).toBe(1);
     // A member does not ask a machine that would drop what it is asked.
     expect((await register(false)).protocolCapabilities).not.toHaveProperty('lanControl');
+
+    // Nor does it send files to a machine that would take them for terminal input.
+    expect((await register(false, true)).protocolCapabilities).toMatchObject({ lanFiles: 1 });
+    expect((await register(true)).protocolCapabilities).not.toHaveProperty('lanFiles');
   });
 
   it('contains backend access registration failures after remote services activate', async () => {

@@ -1782,6 +1782,7 @@ export const SessionFileSendLocalRequestSchema = z
     sessionId: SessionIdSchema,
     workspaceId: WorkspaceIdSchema.optional(),
     paths: z.array(z.string().trim().min(1)).min(1).max(SESSION_FILE_MAX_COUNT),
+    targetMachineId: MachineIdSchema.optional(),
   })
   .strict();
 

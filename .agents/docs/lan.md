@@ -20,6 +20,7 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | Follower       | `packages/components/src/providers/local-platform-follower.ts`                   | Keeps the renderer's workspaces equal to the CLI catalog                                                                      |
 | Services       | `apps/cli/src/lib/lan/service.ts`                                                | systemd user units that keep a hub and an agent service running on a server                                                   |
 | Terminals      | `apps/cli/src/lib/lan/lan-terminal*.ts`, `apps/cli/src/lib/terminal-services.ts` | Members open terminals on each other's machines, directly and not through the hub                                             |
+| Files          | `apps/cli/src/lib/lan/lan-files.ts`, `lan-file-handoff.ts`                       | The files and images of a message reach the machine that runs its session, over the connection terminals use                  |
 | Machines       | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts`                    | What a machine says about itself, the list of machines, and requests between members                                          |
 | Releases       | `packages/shared/src/lan-release.ts`, `packages/shared/src/node/lan-release.ts`  | What a build follows, how builds are ordered, and the checked download of a release file                                      |
 | Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts`              | An agent service that replaces itself with the newest build                                                                   |
@@ -107,6 +108,42 @@ member is online and publishes an endpoint. A dropped connection ends its
 terminals on the desktop; the shells keep running over there, and listing the
 session again finds them. `LODY_LAN_TERMINAL_PORT` chooses another port, `0`
 any port, and `off` closes a machine's terminals to members.
+
+## Files of a message
+
+An image or a file a message carries has to be on the machine that runs the
+session, where the agent reads it. The hosted product uploads it to a store
+every machine downloads from; a LAN has none, and the hub is no place for it:
+a request in the hub is a line in a stream, which the hub keeps.
+
+```text
+ window ─ bytes ─▶ shell ─ temp file ─▶ agent service ─ TLS-PSK ─▶ agent service
+                                        of this machine            of the member
+                                        names the target           stores it for
+                                                                   the session
+```
+
+The window hands the bytes to the agent service of its own machine, as it
+does for a session of that machine. For a session another member runs, the
+request names that machine (`targetMachineId`), and the agent service takes the
+files there over the connection terminals use: same listener, same key, and a
+hello that asks for `files` instead of a terminal. A member says that it takes
+files with the `lanFiles` protocol capability; one that does not is not sent
+any, because it would read them as terminal input.
+
+Each file is announced with its session, name, size and SHA-256, and the member
+answers `ready` or refuses, so a file it will not take is refused before its
+bytes travel. It refuses a session that was archived or deleted, or that
+another machine runs. A session it has not heard of it takes: the files of a
+message are prepared before the message is written, and the first message of a
+conversation is what creates it. What arrived is checked against the announced
+size and digest, stored under the name alone whatever path the name carried,
+and answered with the block the message then carries, which names the member.
+
+The agent service stores the file as it stores one its own desktop hands over,
+and dispatch reads it from there. Nothing uploads it afterwards, so the file
+card says where the file is kept instead of promising an upload. A picture
+reaches the agent as an image and as a path, as an uploaded one does.
 
 ## The machines of a LAN
 
@@ -270,5 +307,8 @@ and fails the build once an upstream update conflicts with one.
   holds the credential can read it there, as they can read everything else.
 - The desktop application cannot host a LAN; it does not ship the Streams
   server.
-- Terminals of other members need a direct path between the machines, which an
-  overlay network gives; a hub reached through a proxy does not.
+- Terminals and files of other members need a direct path between the
+  machines, which an overlay network gives; a hub reached through a proxy does
+  not.
+- A file stays on the machine that runs its session. Other members see its
+  card and cannot open it, and it is gone with that machine's data directory.

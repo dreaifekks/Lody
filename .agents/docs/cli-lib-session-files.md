@@ -18,6 +18,14 @@ because the statements below bind those paths.
 `session-file-blob-store.ts` under `~/.lody/session-files/<ws>/<sess>/<fileId>` and are
 persisted as `transport:'local'`.
 
+The handoff is also how a file arrives from another member of a
+[LAN](lan.md#files-of-a-message): the fleet receives it and hands it to the same
+entry point. Where the port has no relay (`attachmentUpload` is `null`) the handoff
+is the only way in, so it takes files for a conversation that does not exist yet:
+a client prepares the files of a message before it writes the message, and the
+first message creates the conversation. It starts no backfill for such a file,
+which would open the conversation's document ahead of the client that creates it.
+
 ## Dispatch
 
 `materializeSessionFileAttachments` copies or downloads the bytes to
@@ -26,7 +34,9 @@ URIs, so an agent can open the real file rather than a pasted excerpt.
 
 Human image inputs keep their ACP `image` block for visual context and additionally
 materialize the same bytes as a `resource_link`, so agents can echo or transform them
-through a local file path.
+through a local file path. A file attachment that is an image an upload would have
+taken (allowed type, within the image size limit) gets the same two blocks: without a
+relay every image arrives as a file.
 
 ## Backfill to the relay
 

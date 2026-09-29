@@ -203,4 +203,72 @@ describe('MessageHandler session file ACP prompt blocks', () => {
       await handler.cleanup();
     }
   });
+
+  it('shows a picture that came as a file, and only what an upload would have taken', async () => {
+    const attach = (fileId: string, fileName: string, mimeType: string, bytes: Buffer) => {
+      const block = {
+        type: 'file',
+        fileId,
+        fileName,
+        mimeType,
+        sizeBytes: bytes.byteLength,
+        sha256: sha256Hex(bytes),
+        textPreview: false,
+        transport: 'local',
+        machineId: 'machine-1',
+        uploadedAt: 123,
+      } satisfies Extract<SessionInputBlock, { type: 'file' }>;
+      // Already where dispatch puts it, as after an earlier turn.
+      const attachmentPath = path.join(
+        tmpDir,
+        ATTACHMENTS_DIR_RELATIVE,
+        buildAttachmentFileName(fileId, fileName)
+      );
+      fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
+      fs.writeFileSync(attachmentPath, bytes);
+      return { block, attachmentPath };
+    };
+    const picture = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 4, 5, 6]);
+    const screenshot = attach('file-picture1', 'screenshot.png', 'image/png', picture);
+    const poster = attach(
+      'file-picture2',
+      'poster.png',
+      'image/png',
+      Buffer.alloc(5 * 1024 * 1024 + 1, 7)
+    );
+    const drawing = attach('file-picture3', 'drawing.svg', 'image/svg+xml', Buffer.from('<svg/>'));
+
+    const handler = createPromptHandler({ workspaceRoot: tmpDir, workspaceId });
+    try {
+      const promptBlocks = await handler.buildAcpPromptBlocks({
+        workspaceId,
+        sessionId,
+        inputBlocks: [
+          { type: 'text', text: 'what is wrong here' },
+          screenshot.block,
+          poster.block,
+          drawing.block,
+        ],
+      });
+
+      expect(promptBlocks.filter((block) => block.type === 'image')).toEqual([
+        { type: 'image', mimeType: 'image/png', data: picture.toString('base64') },
+      ]);
+      // The picture comes right before the path to it, and every file keeps its path.
+      expect(promptBlocks.map((block) => block.type)).toEqual([
+        'image',
+        'resource_link',
+        'resource_link',
+        'resource_link',
+        'text',
+      ]);
+      expect(
+        promptBlocks.flatMap((block) => (block.type === 'resource_link' ? [block.uri] : []))
+      ).toEqual(
+        [screenshot, poster, drawing].map((file) => pathToFileURL(file.attachmentPath).href)
+      );
+    } finally {
+      await handler.cleanup();
+    }
+  });
 });
