@@ -40,7 +40,7 @@ import {
 } from '@lody/shared';
 import { useTranslation } from 'react-i18next';
 import { cloudOperations } from '@/lib/cloud-api-operations';
-import { useAppCapability } from '@/lib/app-platform';
+import { isLocalAppPlatform, useAppCapability } from '@/lib/app-platform';
 import { useCloudQuery } from '@lody/platform/react';
 import { resolveWorkspaceIdentityLogo } from '@/lib/workspace-identity';
 import {
@@ -1643,6 +1643,8 @@ export function LoroAppSidebar({
   });
   const isMobile = useIsMobile();
   const multiWorkspaceAvailable = useAppCapability('multiWorkspace');
+  // The LANs are settings of the local desktop; nothing else has the page.
+  const lanSettingsAvailable = isLocalAppPlatform() && isElectronRenderer();
   const { openSettings } = useOpenSettings();
 
   const user = useAtomValue(userAtom);
@@ -3658,7 +3660,7 @@ export function LoroAppSidebar({
         // there is something to switch once it belongs to more than one.
         workspaceSwitcherEnabled={multiWorkspaceAvailable || workspaces.length > 1}
         workspaceSwitcherKind={multiWorkspaceAvailable ? 'account' : 'lan'}
-        onManageLansClicked={handleManageLans}
+        onManageLansClicked={lanSettingsAvailable ? handleManageLans : undefined}
         connectionUiState={connectionUiState}
         workspaceSyncing={sessionsListLoading}
         isElectron={isElectron}

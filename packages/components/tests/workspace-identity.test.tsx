@@ -86,6 +86,38 @@ describe('workspace identity capability boundary', () => {
     expect(container?.querySelector('[data-workspace-switcher-trigger]')).toBeNull();
   });
 
+  it('opens the settings of the LANs from the nameplate of the only LAN', () => {
+    let opened = 0;
+    render(
+      <LoroSidebar
+        {...sidebarProps}
+        workspaceName="Home"
+        workspaceSwitcherEnabled={false}
+        workspaceSwitcherKind="lan"
+        onManageLansClicked={() => {
+          opened += 1;
+        }}
+      />
+    );
+
+    const nameplate = container?.querySelector<HTMLElement>('[data-workspace-lan-settings]');
+    expect(nameplate?.tagName).toBe('BUTTON');
+    expect(nameplate?.textContent).toContain('Home');
+    expect(container?.querySelector('[data-workspace-switcher-trigger]')).toBeNull();
+
+    flushSync(() => nameplate?.click());
+    expect(opened).toBe(1);
+  });
+
+  it('keeps the nameplate static where the LANs have no settings', () => {
+    render(
+      <LoroSidebar {...sidebarProps} workspaceSwitcherEnabled={false} workspaceSwitcherKind="lan" />
+    );
+
+    expect(container?.querySelector('[data-workspace-identity]')?.tagName).toBe('DIV');
+    expect(container?.querySelector('[data-workspace-lan-settings]')).toBeNull();
+  });
+
   it('keeps the desktop cloud workspace trigger enabled by default', () => {
     render(<LoroSidebar {...sidebarProps} />);
 
