@@ -272,7 +272,7 @@ function resolveLocalSessionControlTimeoutMs(message: LocalSessionControlRequest
   if (type === 'machine/acp-binary-install') {
     return LOCAL_SESSION_CONTROL_BINARY_INSTALL_TIMEOUT_MS
   }
-  if (message.type === 'session/file-send-local') {
+  if (message.type === 'session/file-send-local' || message.type === 'session/file-read-local') {
     return message.targetMachineId
       ? LOCAL_SESSION_CONTROL_FILE_SEND_MEMBER_TIMEOUT_MS
       : LOCAL_SESSION_CONTROL_FILE_SEND_LOCAL_TIMEOUT_MS

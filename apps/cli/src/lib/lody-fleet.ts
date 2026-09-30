@@ -329,6 +329,12 @@ export class LodyFleet {
           storeLocally: async (request) => await runtime.lody.dispatchLocalControl(request),
         };
       },
+      localSessions: (workspaceId) => {
+        const runtime = this.runtimes.get(workspaceId);
+        return runtime
+          ? async (sessionId) => await this.lookupTerminalSessionMeta(runtime, sessionId)
+          : null;
+      },
     });
     this.terminalRouter = new TerminalRouter({
       local: this.terminalPtyService,
@@ -1369,6 +1375,11 @@ export class LodyFleet {
     message: LocalSessionControlRequest,
     options: { onResponse?: (response: LocalSessionControlResponse) => void } = {}
   ): Promise<LocalSessionControlResponse[]> {
+    if (message.type === 'session/file-read-local') {
+      const response = await this.lanFileHandoff.read(message);
+      options.onResponse?.(response);
+      return [response];
+    }
     if (
       message.type === 'session/file-send-local' &&
       message.targetMachineId &&

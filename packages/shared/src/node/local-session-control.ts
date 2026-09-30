@@ -629,6 +629,23 @@ export function isLocalSessionControlRequest(value: unknown): value is LocalSess
     );
   }
 
+  if (value.type === 'session/file-read-local') {
+    return (
+      typeof value.machineId === 'string' &&
+      typeof value.sessionId === 'string' &&
+      typeof value.workspaceId === 'string' &&
+      typeof value.fileId === 'string' &&
+      value.fileId.length > 0 &&
+      typeof value.sizeBytes === 'number' &&
+      Number.isInteger(value.sizeBytes) &&
+      value.sizeBytes > 0 &&
+      typeof value.sha256 === 'string' &&
+      typeof value.destinationPath === 'string' &&
+      value.destinationPath.length > 0 &&
+      isOptionalString(value.targetMachineId)
+    );
+  }
+
   if (value.type === 'session/preview-candidate-report') {
     return (
       typeof value.machineId === 'string' &&
@@ -1056,6 +1073,16 @@ export function isLocalSessionControlResponse(
           value.files.length > 0 &&
           value.files.length <= SESSION_FILE_MAX_COUNT &&
           value.files.every((item) => isObjectRecord(item) && isSessionFilePayload(item))))
+    );
+  }
+
+  if (value.type === 'session/file-read-local_response') {
+    return (
+      typeof value.sessionId === 'string' &&
+      isOptionalString(value.workspaceId) &&
+      typeof value.success === 'boolean' &&
+      isOptionalString(value.error) &&
+      isOptionalString(value.message)
     );
   }
 

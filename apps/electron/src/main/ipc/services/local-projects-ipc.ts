@@ -4,12 +4,16 @@ import os from 'node:os'
 import path from 'node:path'
 import { getIpcContext, IpcMethod, IpcService } from 'electron-ipc-decorator'
 import type {
+  ReadSessionFileLocalInput,
+  ReadSessionFileLocalResult,
   SendSessionFileLocalInput,
   SendSessionFileLocalResult
 } from '@lody/shared/electron-ipc'
 import type {
   LocalProjectControlRequest,
   LocalSessionControlRequest,
+  LocalSessionControlResponse,
+  SessionFileReadLocalResponse,
   SessionFileSendLocalResponse
 } from '@lody/shared/message'
 import type { SessionId, WorkspaceId } from '@lody/shared/ids'
@@ -21,6 +25,63 @@ import { sendLocalProjectControl } from '../local-project-dispatch'
 
 const SESSION_FILE_SEND_LOCAL_MAX_COUNT = 8
 const SESSION_FILE_SEND_LOCAL_MAX_SIZE_BYTES = 100 * 1024 * 1024
+/** Files are read back to be shown as images: bound one IPC copy. */
+const SESSION_FILE_READ_LOCAL_MAX_SIZE_BYTES = 64 * 1024 * 1024
+
+type LocalSessionControlResult =
+  | { ok: true; responses: LocalSessionControlResponse[] }
+  | { ok: false; error: string }
+
+/**
+ * Asks the agent service of this machine. A desktop that does not start the
+ * agent service itself does not know its machine; `fallbackMachineId` is then
+ * asked, as it always was.
+ */
+async function askLocalAgentService(
+  build: (localMachineId: string) => LocalSessionControlRequest,
+  fallbackMachineId: string
+): Promise<LocalSessionControlResult> {
+  const { cliService } = getIpcServiceDeps()
+  const localMachineId = (await cliService.getLocalMachineId()) ?? fallbackMachineId
+  let result = await cliService.sendLocalSessionControl(build(localMachineId))
+  if (!result.ok && result.error === 'machine_mismatch') {
+    // The agent service was replaced by one of another installation.
+    const refreshed = await cliService.getLocalMachineId({ forceRefresh: true })
+    if (refreshed && refreshed !== localMachineId) {
+      result = await cliService.sendLocalSessionControl(build(refreshed))
+    }
+  }
+  return result
+}
+
+function parseReadSessionFileLocalInput(payload: unknown): ReadSessionFileLocalInput | null {
+  if (!payload || typeof payload !== 'object') return null
+  const { workspaceId, sessionId, machineId, fileId, sizeBytes, sha256 } = payload as Record<
+    string,
+    unknown
+  >
+  if (
+    [workspaceId, sessionId, machineId, fileId].some(
+      (value) => typeof value !== 'string' || !value.trim()
+    ) ||
+    typeof sizeBytes !== 'number' ||
+    !Number.isInteger(sizeBytes) ||
+    sizeBytes <= 0 ||
+    sizeBytes > SESSION_FILE_READ_LOCAL_MAX_SIZE_BYTES ||
+    typeof sha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(sha256)
+  ) {
+    return null
+  }
+  return {
+    workspaceId: workspaceId as string,
+    sessionId: sessionId as string,
+    machineId: machineId as string,
+    fileId: fileId as string,
+    sizeBytes,
+    sha256
+  }
+}
 
 function parseSendSessionFileLocalInput(payload: unknown): SendSessionFileLocalInput | null {
   if (!payload || typeof payload !== 'object') return null
@@ -98,28 +159,21 @@ export class LocalProjectsIpc extends IpcService {
       if (tempPaths.length !== input.files.length) {
         return { ok: false, error: 'temp_write_incomplete' }
       }
-      const { cliService } = getIpcServiceDeps()
       // The desktop asks the agent service of its own machine. A session that
       // another machine runs is named as the target, and that agent service
       // hands the files over to it.
-      const send = async (localMachineId: string) =>
-        await cliService.sendLocalSessionControl({
-          type: 'session/file-send-local',
-          machineId: localMachineId,
-          sessionId: input.sessionId as SessionId,
-          workspaceId: input.workspaceId as WorkspaceId,
-          paths: tempPaths,
-          ...(input.machineId === localMachineId ? {} : { targetMachineId: input.machineId })
-        } as LocalSessionControlRequest)
-      // A desktop that does not start the agent service itself does not know
-      // its machine; the session's machine is then asked, as it always was.
-      const localMachineId = (await cliService.getLocalMachineId()) ?? input.machineId
-      let result = await send(localMachineId)
-      if (!result.ok && result.error === 'machine_mismatch') {
-        // The agent service was replaced by one of another installation.
-        const refreshed = await cliService.getLocalMachineId({ forceRefresh: true })
-        if (refreshed && refreshed !== localMachineId) result = await send(refreshed)
-      }
+      const result = await askLocalAgentService(
+        (localMachineId) =>
+          ({
+            type: 'session/file-send-local',
+            machineId: localMachineId,
+            sessionId: input.sessionId as SessionId,
+            workspaceId: input.workspaceId as WorkspaceId,
+            paths: tempPaths,
+            ...(input.machineId === localMachineId ? {} : { targetMachineId: input.machineId })
+          }) as LocalSessionControlRequest,
+        input.machineId
+      )
       if (!result.ok) {
         return { ok: false, error: result.error }
       }
@@ -138,6 +192,62 @@ export class LocalProjectsIpc extends IpcService {
         ok: true,
         files: response.files ?? [],
         ...(response.message ? { message: response.message } : {})
+      }
+    } catch (error) {
+      return { ok: false, error: formatUnknownError(error) }
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  @IpcMethod()
+  async readSessionFileLocal(
+    payload: ReadSessionFileLocalInput
+  ): Promise<ReadSessionFileLocalResult> {
+    const input = parseReadSessionFileLocalInput(payload)
+    if (!input) {
+      return { ok: false, error: 'invalid_request' }
+    }
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lody-file-read-'))
+    try {
+      // The agent service writes the file here, fetching it first from the
+      // member of a LAN that keeps it when that is another machine.
+      const destinationPath = path.join(tempDir, 'file')
+      const result = await askLocalAgentService(
+        (localMachineId) =>
+          ({
+            type: 'session/file-read-local',
+            machineId: localMachineId,
+            sessionId: input.sessionId as SessionId,
+            workspaceId: input.workspaceId as WorkspaceId,
+            fileId: input.fileId,
+            sizeBytes: input.sizeBytes,
+            sha256: input.sha256,
+            destinationPath,
+            ...(input.machineId === localMachineId ? {} : { targetMachineId: input.machineId })
+          }) as LocalSessionControlRequest,
+        input.machineId
+      )
+      if (!result.ok) {
+        return { ok: false, error: result.error }
+      }
+      const response = result.responses.find(
+        (item): item is SessionFileReadLocalResponse =>
+          item.type === 'session/file-read-local_response'
+      )
+      if (!response) {
+        return { ok: false, error: 'invalid_response' }
+      }
+      if (!response.success) {
+        return { ok: false, error: response.message ?? response.error ?? 'file_read_failed' }
+      }
+      const bytes = await fs.readFile(destinationPath)
+      if (bytes.byteLength !== input.sizeBytes) {
+        return { ok: false, error: 'invalid_file' }
+      }
+      return {
+        ok: true,
+        bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
       }
     } catch (error) {
       return { ok: false, error: formatUnknownError(error) }

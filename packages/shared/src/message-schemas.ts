@@ -1801,6 +1801,31 @@ export const SessionFileSendLocalResponseSchema = z
   })
   .strict();
 
+export const SessionFileReadLocalRequestSchema = z
+  .object({
+    type: z.literal('session/file-read-local'),
+    machineId: MachineIdSchema,
+    sessionId: SessionIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    fileId: z.string().trim().min(1).max(256),
+    sizeBytes: z.number().int().positive().max(SESSION_FILE_MAX_SIZE_BYTES),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/i),
+    destinationPath: z.string().trim().min(1),
+    targetMachineId: MachineIdSchema.optional(),
+  })
+  .strict();
+
+export const SessionFileReadLocalResponseSchema = z
+  .object({
+    type: z.literal('session/file-read-local_response'),
+    sessionId: SessionIdSchema,
+    workspaceId: WorkspaceIdSchema.optional(),
+    success: z.boolean(),
+    error: z.string().optional(),
+    message: z.string().optional(),
+  })
+  .strict();
+
 const PreviewProtocolSchema = z.enum(['http', 'https']);
 
 export const PreviewTargetSchema = z
@@ -2048,6 +2073,7 @@ export const LocalSessionControlRequestSchema = z.discriminatedUnion('type', [
   SessionImageUploadRequestSchema,
   SessionFileUploadRequestSchema,
   SessionFileSendLocalRequestSchema,
+  SessionFileReadLocalRequestSchema,
   PreviewCandidateReportRequestSchema,
   SessionPreviewCreateRequestSchema,
   SessionPreviewRevokeRequestSchema,
@@ -2076,6 +2102,7 @@ export const LocalSessionControlResponseSchema = z.discriminatedUnion('type', [
   SessionImageUploadResponseSchema,
   SessionFileUploadResponseSchema,
   SessionFileSendLocalResponseSchema,
+  SessionFileReadLocalResponseSchema,
   PreviewCandidateReportResponseSchema,
   SessionPreviewCreateResponseSchema,
   SessionPreviewRevokeResponseSchema,
@@ -3670,6 +3697,8 @@ import type {
   SessionFileUploadResponse,
   SessionFileSendLocalRequest,
   SessionFileSendLocalResponse,
+  SessionFileReadLocalRequest,
+  SessionFileReadLocalResponse,
   PreviewCandidateReportRequest,
   PreviewCandidateReportResponse,
   SessionPreviewCreateRequest,
@@ -3715,6 +3744,8 @@ export type {
   SessionFileUploadResponse as SessionFileUploadResponseValidated,
   SessionFileSendLocalRequest as SessionFileSendLocalRequestValidated,
   SessionFileSendLocalResponse as SessionFileSendLocalResponseValidated,
+  SessionFileReadLocalRequest as SessionFileReadLocalRequestValidated,
+  SessionFileReadLocalResponse as SessionFileReadLocalResponseValidated,
   PreviewCandidateReportRequest as PreviewCandidateReportRequestValidated,
   PreviewCandidateReportResponse as PreviewCandidateReportResponseValidated,
   SessionPreviewCreateRequest as SessionPreviewCreateRequestValidated,

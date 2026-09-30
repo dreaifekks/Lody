@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import {
   machineSupportsLanFiles,
@@ -5,6 +7,8 @@ import {
   type MachineId,
   type MachineMeta,
   type SessionFilePayload,
+  type SessionFileReadLocalRequest,
+  type SessionFileReadLocalResponse,
   type SessionFileSendLocalRequest,
   type SessionFileSendLocalResponse,
   type SessionId,
@@ -16,7 +20,13 @@ import { parseLanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
-import { sendFilesToLanMember, type ReceivedLanFile } from './lan-files';
+import { getSessionFileBlobPath } from '@/lib/session-file-blob-store';
+import {
+  fetchFileFromLanMember,
+  sendFilesToLanMember,
+  type LanFileToRead,
+  type ReceivedLanFile,
+} from './lan-files';
 import { deriveLanTerminalKey } from './lan-terminal';
 import type { LanFileReceiver } from './lan-terminal-host';
 
@@ -32,6 +42,8 @@ export type LanFileWorkspace = {
 };
 
 type SendFiles = typeof sendFilesToLanMember;
+type FetchFile = typeof fetchFileFromLanMember;
+type SessionLookup = LanFileWorkspace['lookupSession'];
 
 /**
  * The files of a message between the members of a LAN. A desktop hands them
@@ -47,7 +59,15 @@ export class LanFileHandoff {
       hubs: () => readonly LanHub[];
       /** `null` while this machine does not run the workspace. */
       workspace: (workspaceId: string) => LanFileWorkspace | null;
+      /**
+       * The sessions of any workspace this machine runs, LAN or not: a desktop
+       * reads the files of its own machine's sessions whatever carries them.
+       */
+      localSessions: (workspaceId: string) => SessionLookup | null;
       sendFiles?: SendFiles;
+      fetchFile?: FetchFile;
+      /** Where this machine keeps the file of a block; the blob store by default. */
+      keptPath?: typeof getSessionFileBlobPath;
     }
   ) {}
 
@@ -58,7 +78,108 @@ export class LanFileHandoff {
         await this.admit(workspaceId, sessionId as SessionId);
       },
       store: async (file) => await this.store(workspaceId, file),
+      read: async ({ sessionId, fileId }) => await this.kept(workspaceId, sessionId, fileId),
     };
+  }
+
+  /** A file this machine keeps for a session, as a block of its history names it. */
+  private async kept(
+    workspaceId: string,
+    sessionId: string,
+    fileId: string
+  ): Promise<LanFileToRead> {
+    const lookup = this.options.localSessions(workspaceId);
+    if (!lookup) throw new Error('remote_unreachable:this machine does not run that workspace');
+    const session = await lookup(sessionId as SessionId);
+    if (session.type === 'deleted') throw new Error(`session_deleted:${sessionId}`);
+    if (session.type === 'missing') throw new Error(`session_not_found:${sessionId}`);
+    let filePath: string;
+    try {
+      filePath = (this.options.keptPath ?? getSessionFileBlobPath)({
+        workspaceId,
+        sessionId,
+        fileId,
+      });
+    } catch {
+      throw new Error('invalid_request:that is not the name of a file');
+    }
+    const stat = await fs.promises.stat(filePath).catch(() => null);
+    if (!stat?.isFile()) throw new Error(`file_not_found:this machine does not keep ${fileId}`);
+    return { path: filePath, sizeBytes: stat.size };
+  }
+
+  /**
+   * Writes the bytes of a file block to where the desktop asked: from this
+   * machine's own store, or from the member of a LAN that keeps the file.
+   */
+  async read(message: SessionFileReadLocalRequest): Promise<SessionFileReadLocalResponse> {
+    const answer = (
+      response: Omit<SessionFileReadLocalResponse, 'type' | 'sessionId' | 'workspaceId'>
+    ): SessionFileReadLocalResponse => ({
+      type: 'session/file-read-local_response',
+      sessionId: message.sessionId,
+      workspaceId: message.workspaceId,
+      ...response,
+    });
+    const refused = (error: unknown, prefix = '') => {
+      const reason = formatErrorMessage(error);
+      return answer({
+        success: false,
+        error: /^([a-z][a-z0-9_]*):/.exec(reason)?.[1] ?? 'file_read_failed',
+        message: `${prefix}${reason}`,
+      });
+    };
+    const { workspaceId, targetMachineId } = message;
+    if (!targetMachineId || targetMachineId === this.options.machineId) {
+      try {
+        const file = await this.kept(workspaceId, message.sessionId, message.fileId);
+        await copyChecked(file, message);
+        return answer({ success: true });
+      } catch (error) {
+        return refused(error);
+      }
+    }
+
+    const hub = this.options
+      .hubs()
+      .find((candidate) => getLanHubWorkspaceId(candidate.id) === workspaceId);
+    const workspace = this.options.workspace(workspaceId);
+    if (!hub || !workspace) {
+      return answer({
+        success: false,
+        error: 'remote_unreachable',
+        message: 'Another machine keeps the file, and no LAN of this machine reaches it',
+      });
+    }
+    const machine = await workspace.readMachine(targetMachineId);
+    const name = machine?.name?.trim() || targetMachineId;
+    const endpoint = parseLanTerminalEndpoint(machine?.lanTerminal);
+    if (!endpoint || !machineSupportsLanFiles(machine)) {
+      return answer({
+        success: false,
+        error: 'remote_unreachable',
+        message: `${name} gives no files to the other machines of ${hub.name}. Update it, and check that its terminals are open to them.`,
+      });
+    }
+    try {
+      await (this.options.fetchFile ?? fetchFileFromLanMember)({
+        endpoint,
+        lanId: hub.id,
+        key: deriveLanTerminalKey(hub.token),
+        machineId: targetMachineId,
+        sessionId: message.sessionId,
+        fileId: message.fileId,
+        sizeBytes: message.sizeBytes,
+        sha256: message.sha256,
+        destinationPath: message.destinationPath,
+      });
+      return answer({ success: true });
+    } catch (error) {
+      this.options.logger.debug(
+        `[lan-files] ${name} did not give ${message.fileId}: ${formatErrorMessage(error)}`
+      );
+      return refused(error, `${name}: `);
+    }
   }
 
   /**
@@ -160,5 +281,31 @@ export class LanFileHandoff {
         message: `${name} did not take the files: ${reason}`,
       });
     }
+  }
+}
+
+/** Copies a kept file where it was asked for, if it is the one the block names. */
+async function copyChecked(
+  file: LanFileToRead,
+  wanted: { sizeBytes: number; sha256: string; destinationPath: string }
+): Promise<void> {
+  if (file.sizeBytes !== wanted.sizeBytes) {
+    throw new Error('invalid_file:this machine keeps another file under that name');
+  }
+  const handle = await fs.promises.open(wanted.destinationPath, 'wx', 0o600);
+  let complete = false;
+  try {
+    const hash = crypto.createHash('sha256');
+    for await (const chunk of fs.createReadStream(file.path, { end: file.sizeBytes - 1 })) {
+      hash.update(chunk as Buffer);
+      await handle.write(chunk as Buffer);
+    }
+    if (hash.digest('hex') !== wanted.sha256.toLowerCase()) {
+      throw new Error('invalid_file:this machine keeps another file under that name');
+    }
+    complete = true;
+  } finally {
+    await handle.close();
+    if (!complete) await fs.promises.rm(wanted.destinationPath, { force: true });
   }
 }

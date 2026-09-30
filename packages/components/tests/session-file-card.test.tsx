@@ -11,12 +11,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getServerNow, type SessionFilePayload } from '@lody/shared';
 
 import { SessionFileCard } from '../src/components/ai-gui/session-file-card';
+import {
+  isKeptImageFile,
+  SessionKeptImageFile,
+} from '../src/components/ai-gui/session-local-image-file';
 import { SESSION_FILE_RETENTION_MS } from '../src/lib/session-file-presentation';
 import { initI18n } from '../src/i18n';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+type ReadInput = { machineId: string; fileId: string; sizeBytes: number; sha256: string };
+type ReadResult = { ok: true; bytes: ArrayBuffer } | { ok: false; error: string };
+/** The agent service of this machine, as the desktop's main process answers for it. */
+let readKeptFile: (input: ReadInput) => Promise<ReadResult> = async () => ({
+  ok: false,
+  error: 'not wired',
+});
+vi.mock('../src/lib/electron-ipc-client', () => ({
+  getIpcServices: () => ({
+    localProjects: { readSessionFileLocal: (input: ReadInput) => readKeptFile(input) },
+  }),
+}));
 
 const file = (overrides: Partial<SessionFilePayload> = {}): SessionFilePayload => ({
   type: 'file',
@@ -200,5 +217,164 @@ describe('SessionFileCard download action', () => {
 
     const pending = await render({ file: held, pendingMachineName: 'devbox' });
     expect(pending.textContent).toContain('Uploading from devbox');
+  });
+});
+
+describe('an image a machine keeps', () => {
+  let root: Root | undefined;
+  let container: HTMLDivElement | undefined;
+  let nextUrl = 0;
+  const liveUrls = new Set<string>();
+
+  beforeEach(async () => {
+    await initI18n('en');
+    (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__ = true;
+    URL.createObjectURL = () => {
+      const url = `blob:kept-${(nextUrl += 1)}`;
+      liveUrls.add(url);
+      return url;
+    };
+    URL.revokeObjectURL = (url: string) => {
+      liveUrls.delete(url);
+    };
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root?.unmount();
+      });
+      root = undefined;
+    }
+    container?.remove();
+    container = undefined;
+    delete (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__;
+  });
+
+  // Each test names its own file: what a page read once it keeps.
+  const kept = (fileId: string, overrides: Partial<SessionFilePayload> = {}) =>
+    file({
+      fileId,
+      fileName: 'shinku_birthday.png',
+      mimeType: 'image/png',
+      sizeBytes: 1_997_038,
+      sha256: 'b'.repeat(64),
+      textPreview: false,
+      transport: 'local',
+      machineId: 'homenucserver',
+      ...overrides,
+    });
+
+  const render = async (shown: SessionFilePayload) => {
+    await act(async () => {
+      root?.render(
+        createElement(SessionKeptImageFile, {
+          file: shown,
+          workspaceId: 'lan-home',
+          sessionId: 'session-1',
+          card: createElement('div', { 'data-testid': 'card' }, 'the file card'),
+        })
+      );
+    });
+    return container as HTMLDivElement;
+  };
+
+  const image = (view: HTMLElement) => view.querySelector<HTMLImageElement>('img');
+  const decode = async (view: HTMLElement) => {
+    await act(async () => {
+      image(view)?.dispatchEvent(new Event('load'));
+    });
+  };
+  const button = (view: HTMLElement, label: string) =>
+    Array.from(view.querySelectorAll<HTMLButtonElement>('button')).find(
+      (candidate) => candidate.textContent === label
+    );
+
+  it('is an image only when a machine keeps it and this desktop can ask for it', () => {
+    expect(isKeptImageFile(kept('a'))).toBe(true);
+    expect(isKeptImageFile(kept('a', { transport: 'r2', machineId: undefined }))).toBe(false);
+    expect(isKeptImageFile(kept('a', { mimeType: 'image/svg+xml' }))).toBe(false);
+    delete (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__;
+    expect(isKeptImageFile(kept('a'))).toBe(false);
+  });
+
+  it('shows a small image as itself, read from the machine that keeps it', async () => {
+    const asked: ReadInput[] = [];
+    readKeptFile = async (input) => {
+      asked.push(input);
+      return { ok: true, bytes: new Uint8Array([1, 2, 3]).buffer };
+    };
+
+    const view = await render(kept('small'));
+    await decode(view);
+
+    expect(asked).toEqual([
+      expect.objectContaining({
+        machineId: 'homenucserver',
+        fileId: 'small',
+        sizeBytes: 1_997_038,
+        sha256: 'b'.repeat(64),
+      }),
+    ]);
+    expect(image(view)?.getAttribute('src')).toMatch(/^blob:kept-/);
+    expect(view.querySelector('[data-testid="card"]')).toBeNull();
+  });
+
+  it('waits for a click before reading an image over ten megabytes', async () => {
+    let reads = 0;
+    readKeptFile = async () => {
+      reads += 1;
+      return { ok: true, bytes: new Uint8Array([1]).buffer };
+    };
+
+    const view = await render(kept('large', { sizeBytes: 12 * 1024 * 1024 }));
+
+    expect(reads).toBe(0);
+    expect(image(view)).toBeNull();
+    expect(view.querySelector('[data-testid="card"]')).not.toBeNull();
+
+    await act(async () => {
+      button(view, 'Load image')?.click();
+    });
+    await decode(view);
+
+    expect(image(view)).not.toBeNull();
+    expect(view.querySelector('[data-testid="card"]')).toBeNull();
+  });
+
+  it('keeps the card and says why when the image cannot be read, and reads again on retry', async () => {
+    readKeptFile = async () => ({ ok: false, error: 'homenucserver: file_not_found' });
+
+    const view = await render(kept('missing'));
+
+    expect(image(view)).toBeNull();
+    expect(view.querySelector('[data-testid="card"]')).not.toBeNull();
+    expect(view.textContent).toContain('homenucserver: file_not_found');
+
+    readKeptFile = async () => ({ ok: true, bytes: new Uint8Array([1]).buffer });
+    await act(async () => {
+      button(view, 'Retry')?.click();
+    });
+    await decode(view);
+
+    expect(image(view)).not.toBeNull();
+  });
+
+  it('releases its object URL when the row goes away', async () => {
+    readKeptFile = async () => ({ ok: true, bytes: new Uint8Array([1]).buffer });
+    const view = await render(kept('released'));
+    await decode(view);
+    const url = image(view)?.getAttribute('src');
+    expect(url && liveUrls.has(url)).toBe(true);
+
+    await act(async () => {
+      root?.unmount();
+    });
+    root = undefined;
+
+    expect(url && liveUrls.has(url)).toBe(false);
   });
 });

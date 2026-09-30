@@ -11,7 +11,7 @@ import type { LanHub } from '@lody/shared/node/lan-hub';
 import { serveTerminalConnection, type TerminalService } from '@/lib/terminal-connection';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
-import { serveLanFileConnection, type ReceivedLanFile } from './lan-files';
+import { serveLanFileConnection, type LanFileToRead, type ReceivedLanFile } from './lan-files';
 import {
   createLanTerminalServer,
   deriveLanTerminalKey,
@@ -50,6 +50,8 @@ export type LanFileReceiver = {
   /** Throws the reason when this machine takes no file for the session. */
   admit: (file: { sessionId: string; sizeBytes: number }) => Promise<void>;
   store: (file: ReceivedLanFile) => Promise<SessionFilePayload>;
+  /** A file this machine keeps, for a member that shows its message. */
+  read: (file: { sessionId: string; fileId: string }) => Promise<LanFileToRead>;
 };
 
 /**

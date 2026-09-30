@@ -770,6 +770,33 @@ export interface SessionFileSendLocalResponse {
   files?: SessionFilePayload[];
 }
 
+/**
+ * Desktop -> local CLI: copy the bytes of a `transport: 'local'` file block to
+ * `destinationPath`, a path the desktop created and removes. A file another
+ * machine keeps is fetched from that member of a LAN, named in `targetMachineId`.
+ * The bytes are checked against the block's size and digest before success.
+ */
+export interface SessionFileReadLocalRequest {
+  type: 'session/file-read-local';
+  machineId: MachineId;
+  sessionId: SessionId;
+  workspaceId: WorkspaceId;
+  fileId: string;
+  sizeBytes: number;
+  sha256: string;
+  destinationPath: string;
+  targetMachineId?: MachineId;
+}
+
+export interface SessionFileReadLocalResponse {
+  type: 'session/file-read-local_response';
+  sessionId: SessionId;
+  workspaceId?: WorkspaceId;
+  success: boolean;
+  error?: string;
+  message?: string;
+}
+
 // Local CLI control (Electron -> local CLI) message subsets
 export type LocalSessionControlRequest =
   | SessionCreateRequest
@@ -788,6 +815,7 @@ export type LocalSessionControlRequest =
   | SessionImageUploadRequest
   | SessionFileUploadRequest
   | SessionFileSendLocalRequest
+  | SessionFileReadLocalRequest
   | PreviewCandidateReportRequest
   | SessionPreviewCreateRequest
   | SessionPreviewRevokeRequest
@@ -815,6 +843,7 @@ export type LocalSessionControlResponse =
   | SessionImageUploadResponse
   | SessionFileUploadResponse
   | SessionFileSendLocalResponse
+  | SessionFileReadLocalResponse
   | PreviewCandidateReportResponse
   | SessionPreviewCreateResponse
   | SessionPreviewRevokeResponse

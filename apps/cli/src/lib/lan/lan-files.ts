@@ -27,6 +27,10 @@ import { connectLanMember, type LanMemberConnectOptions } from './lan-terminal';
  * its bytes travel. It then sends exactly the bytes it announced, and the
  * member answers with the block it stored them as. Every answer is one line;
  * a refusal is the last one of its connection.
+ *
+ * The same connection also gives a file back: a member that shows a message
+ * asks for one file the other keeps, which answers with its size and then
+ * exactly that many bytes. The asker checks them against the block.
  */
 const HEADER_MAX_BYTES = 8 * 1024;
 const ANSWER_MAX_BYTES = 64 * 1024;
@@ -42,12 +46,27 @@ const FileHeaderSchema = z
   })
   .strict();
 
+const ReadRequestSchema = z
+  .object({
+    type: z.literal('read'),
+    sessionId: z.string().trim().min(1).max(256),
+    fileId: z.string().trim().min(1).max(256),
+  })
+  .strict();
+
 const RefusalSchema = z.object({
   type: z.literal('error'),
   code: z.string().min(1),
   message: z.string(),
 });
 const ReadyAnswerSchema = z.union([z.object({ type: z.literal('ready') }), RefusalSchema]);
+const ContentAnswerSchema = z.union([
+  z.object({
+    type: z.literal('content'),
+    sizeBytes: z.number().int().positive().max(SESSION_FILE_MAX_SIZE_BYTES),
+  }),
+  RefusalSchema,
+]);
 const StoredAnswerSchema = z.union([
   z.object({ type: z.literal('stored'), file: SessionFileBlockSchema }),
   RefusalSchema,
@@ -61,6 +80,13 @@ export type ReceivedLanFile = {
   path: string;
   sizeBytes: number;
   sha256: string;
+};
+
+/** A file this machine keeps, as a member asks for it. */
+export type LanFileToRead = {
+  /** Where the bytes are. */
+  path: string;
+  sizeBytes: number;
 };
 
 export type LanFileToSend = {
@@ -158,6 +184,15 @@ function armIdleTimeout(stream: Duplex, timeoutMs: number): void {
   });
 }
 
+function parseReadRequest(line: string): z.infer<typeof ReadRequestSchema> | null {
+  try {
+    const parsed = ReadRequestSchema.safeParse(JSON.parse(line));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 function classifyRefusal(error: unknown): { code: string; message: string } {
   const message = formatErrorMessage(error);
   const code = /^([a-z][a-z0-9_]*):/.exec(message)?.[1];
@@ -177,6 +212,8 @@ export async function serveLanFileConnection(
     /** Throws the reason when this machine takes no file for the session. */
     admit: (file: { sessionId: string; sizeBytes: number }) => Promise<void>;
     store: (file: ReceivedLanFile) => Promise<SessionFilePayload>;
+    /** Throws the reason when this machine gives no such file back. */
+    read?: (file: { sessionId: string; fileId: string }) => Promise<LanFileToRead>;
     logger: Logger;
     idleTimeoutMs?: number;
   }
@@ -190,6 +227,16 @@ export async function serveLanFileConnection(
       const line = await reader.readLine(HEADER_MAX_BYTES);
       if (line === null) return;
       if (line.trim() === '') continue;
+      const read = parseReadRequest(line);
+      if (read) {
+        if (!options.read) throw new Error('invalid_request:this machine gives no files back');
+        const file = await options.read(read);
+        writeLine(stream, { type: 'content', sizeBytes: file.sizeBytes });
+        await pipeline(fs.createReadStream(file.path, { end: file.sizeBytes - 1 }), stream, {
+          end: false,
+        });
+        continue;
+      }
       received += 1;
       if (received > SESSION_FILE_MAX_COUNT) {
         throw new Error(`too_many_files:at most ${SESSION_FILE_MAX_COUNT} files per message`);
@@ -256,6 +303,44 @@ async function describeFile(file: LanFileToSend): Promise<{ sizeBytes: number; s
   return { sizeBytes: stat.size, sha256: hash.digest('hex') };
 }
 
+/** The side of a connection that asks, reading the member's answers. */
+function answersOf(stream: Duplex, options: { initial: Buffer; idleTimeoutMs?: number }) {
+  armIdleTimeout(stream, options.idleTimeoutMs ?? IDLE_TIMEOUT_MS);
+  let failure: Error | null = null;
+  stream.on('error', (error) => {
+    failure ??= error;
+  });
+  const reader = new ByteReader(stream, options.initial);
+  const unreachable = (error: unknown): Error =>
+    new Error(`remote_unreachable:${formatErrorMessage(failure ?? error)}`, { cause: error });
+  const readAnswer = async <T>(schema: z.ZodType<T>): Promise<T> => {
+    let line: string | null;
+    try {
+      line = await reader.readLine(ANSWER_MAX_BYTES);
+    } catch (error) {
+      throw unreachable(error);
+    }
+    if (line === null) {
+      throw new Error(
+        `remote_unreachable:${failure ? formatErrorMessage(failure) : 'the machine closed the connection'}`
+      );
+    }
+    try {
+      return schema.parse(JSON.parse(line));
+    } catch {
+      throw new Error('remote_unreachable:the machine answered with something else');
+    }
+  };
+  return { reader, readAnswer, unreachable };
+}
+
+function toRefusal(refusal: z.infer<typeof RefusalSchema>): Error {
+  const prefix = `${refusal.code}:`;
+  return new Error(
+    refusal.message.startsWith(prefix) ? refusal.message : `${prefix}${refusal.message}`
+  );
+}
+
 /**
  * Sends files over a connection the member already answered, and returns the
  * blocks it stored them as, in the order of `files`.
@@ -271,38 +356,7 @@ export async function sendLanFiles(
     idleTimeoutMs?: number;
   }
 ): Promise<SessionFilePayload[]> {
-  armIdleTimeout(stream, options.idleTimeoutMs ?? IDLE_TIMEOUT_MS);
-  let failure: Error | null = null;
-  stream.on('error', (error) => {
-    failure ??= error;
-  });
-  const reader = new ByteReader(stream, options.initial);
-  const readAnswer = async <T>(schema: z.ZodType<T>): Promise<T> => {
-    let line: string | null;
-    try {
-      line = await reader.readLine(ANSWER_MAX_BYTES);
-    } catch (error) {
-      throw new Error(`remote_unreachable:${formatErrorMessage(failure ?? error)}`, {
-        cause: error,
-      });
-    }
-    if (line === null) {
-      throw new Error(
-        `remote_unreachable:${failure ? formatErrorMessage(failure) : 'the machine closed the connection'}`
-      );
-    }
-    try {
-      return schema.parse(JSON.parse(line));
-    } catch {
-      throw new Error('remote_unreachable:the machine answered with something else');
-    }
-  };
-  const toRefusal = (refusal: z.infer<typeof RefusalSchema>): Error => {
-    const prefix = `${refusal.code}:`;
-    return new Error(
-      refusal.message.startsWith(prefix) ? refusal.message : `${prefix}${refusal.message}`
-    );
-  };
+  const { readAnswer } = answersOf(stream, options);
   const stored: SessionFilePayload[] = [];
   try {
     for (const file of options.files) {
@@ -351,6 +405,70 @@ export async function sendFilesToLanMember(
       machineId: options.machineId,
       files: options.files,
     });
+  } finally {
+    socket.destroy();
+  }
+}
+
+/** A file a member keeps, as a block names it, and where its bytes go. */
+export type LanFileToFetch = {
+  sessionId: string;
+  fileId: string;
+  sizeBytes: number;
+  sha256: string;
+  /** Created by the fetch; it must not exist yet. */
+  destinationPath: string;
+};
+
+/**
+ * Asks a member that already answered for one file it keeps, and writes it to
+ * `destinationPath` once its size and digest are those of the block. A file
+ * that arrives otherwise is removed again.
+ */
+export async function readLanFile(
+  stream: Duplex,
+  options: LanFileToFetch & { initial: Buffer; idleTimeoutMs?: number }
+): Promise<void> {
+  const { reader, readAnswer, unreachable } = answersOf(stream, options);
+  try {
+    writeLine(stream, { type: 'read', sessionId: options.sessionId, fileId: options.fileId });
+    const answer = await readAnswer(ContentAnswerSchema);
+    if (answer.type === 'error') throw toRefusal(answer);
+    if (answer.sizeBytes !== options.sizeBytes) {
+      throw new Error('invalid_file:the machine keeps another file under that name');
+    }
+    const handle = await fs.promises.open(options.destinationPath, 'wx', 0o600);
+    let complete = false;
+    try {
+      const hash = crypto.createHash('sha256');
+      try {
+        await reader.readBytes(answer.sizeBytes, async (chunk) => {
+          hash.update(chunk);
+          await handle.write(chunk);
+        });
+      } catch (error) {
+        throw unreachable(error);
+      }
+      if (hash.digest('hex') !== options.sha256.toLowerCase()) {
+        throw new Error('invalid_file:the file arrived damaged');
+      }
+      complete = true;
+    } finally {
+      await handle.close();
+      if (!complete) await fs.promises.rm(options.destinationPath, { force: true });
+    }
+  } finally {
+    stream.end();
+  }
+}
+
+/** Fetches one file from the member of a LAN that keeps it. */
+export async function fetchFileFromLanMember(
+  options: LanMemberConnectOptions & LanFileToFetch
+): Promise<void> {
+  const { socket, rest } = await connectLanMember({ ...options, service: 'files' });
+  try {
+    await readLanFile(socket, { ...options, initial: rest });
   } finally {
     socket.destroy();
   }

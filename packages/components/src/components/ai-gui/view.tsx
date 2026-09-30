@@ -234,6 +234,7 @@ import { Button } from '@lody/ui/button';
 import { stripRecommended } from '@/components/shared/acp-selector-options';
 import { DiffViewer } from '@/ui/diff-viewer/diff-viewer';
 import { Skeleton } from '@lody/ui/skeleton';
+import { isKeptImageFile, SessionKeptImageFile } from './session-local-image-file';
 import { getSessionImageBlobUrl, getSessionImageDataUrl } from '@/lib/session-image-cache';
 import { useAppCapabilityCheck } from '@/lib/app-platform';
 import { SessionFileCard, SessionFileCardList } from './session-file-card';
@@ -6240,6 +6241,8 @@ const WorkspaceSessionFileGroup = ({
             // remount the card and drop in-flight download/preview state.
             key={`${file.sha256}-${index}`}
             file={file}
+            sessionId={sessionId}
+            workspaceId={workspaceId}
             onPreview={handlePreview}
             onDownload={handleDownload}
             isDownloading={downloadingId === file.fileId}
@@ -6270,11 +6273,15 @@ const WorkspaceSessionFileGroup = ({
 /** One card, resolving the pending machine name when transport is local. */
 const SessionFileBlockCard = ({
   file,
+  sessionId,
+  workspaceId,
   onPreview,
   onDownload,
   isDownloading,
 }: {
   file: SessionFilePayload;
+  sessionId: SessionId;
+  workspaceId: WorkspaceId | null;
   onPreview: (file: SessionFilePayload) => void;
   onDownload: (file: SessionFilePayload) => void;
   isDownloading: boolean;
@@ -6286,7 +6293,7 @@ const SessionFileBlockCard = ({
   );
   // Files are uploaded to the store that syncs a workspace across devices.
   const uploads = useAppCapabilityCheck()('cloudSync');
-  return (
+  const card = (
     <SessionFileCard
       file={file}
       pendingMachineName={machineMeta?.name ?? file.machineId}
@@ -6295,6 +6302,17 @@ const SessionFileBlockCard = ({
       onDownload={onDownload}
       isDownloading={isDownloading}
     />
+  );
+  // Nothing uploads an image a machine keeps; it is read from that machine.
+  return !uploads && workspaceId && isKeptImageFile(file) ? (
+    <SessionKeptImageFile
+      file={file}
+      workspaceId={workspaceId}
+      sessionId={file.storageSessionId ?? sessionId}
+      card={card}
+    />
+  ) : (
+    card
   );
 };
 

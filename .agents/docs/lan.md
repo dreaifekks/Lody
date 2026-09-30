@@ -146,6 +146,20 @@ and dispatch reads it from there. Nothing uploads it afterwards, so the file
 card says where the file is kept instead of promising an upload. A picture
 reaches the agent as an image and as a path, as an uploaded one does.
 
+A picture is still shown as one. The desktop asks the agent service of its own
+machine for the file (`session/file-read-local`, with the block's size and
+digest and a path the desktop created); it copies the file from its store, or,
+when another member keeps it, asks that member over the same `files`
+connection with a `read` line. The member answers with the size and the bytes
+of a file of a session it has not deleted, and the asker writes them only once
+they match the block. Up to 10 MB a picture is read on sight, a larger one on a
+click, and the window keeps what it read for the life of the page. A member of
+a build from before `read` refuses it, and the card stays.
+
+An image over the 5 MB image limit travels as a file from the new-chat page
+too, as it does in a conversation. That limit stays: it is what the agent
+receives as an image.
+
 ## Folders of other members
 
 An editor opens the folder of a session: its worktree, or the folder of its

@@ -608,6 +608,24 @@ export type SendSessionFileLocal = (
   input: SendSessionFileLocalInput
 ) => Promise<SendSessionFileLocalResult>;
 
+/**
+ * The bytes of a `transport: 'local'` file block, which `machineId` keeps: the
+ * desktop's own machine, or another member of a LAN that the agent service of
+ * this machine reaches. Checked against `sizeBytes` and `sha256` on the way.
+ */
+export type ReadSessionFileLocalInput = {
+  workspaceId: string;
+  sessionId: string;
+  machineId: string;
+  fileId: string;
+  sizeBytes: number;
+  sha256: string;
+};
+
+export type ReadSessionFileLocalResult =
+  | { ok: true; bytes: ArrayBuffer }
+  | { ok: false; error: string };
+
 /* ── Image preview context menu ──────────────────────────────────────────────
  *
  * The previewed image only exists in the renderer (a `blob:` URL over bytes the

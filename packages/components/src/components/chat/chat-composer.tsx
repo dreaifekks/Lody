@@ -795,7 +795,8 @@ export function ChatComposer({
                               alt={image.name}
                               className={cn(
                                 'h-full w-full object-cover',
-                                image.status !== 'uploaded' && 'grayscale'
+                                (image.status === 'uploading' || image.status === 'failed') &&
+                                  'grayscale'
                               )}
                             />
                             {image.status === 'draft' ? (

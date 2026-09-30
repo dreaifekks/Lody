@@ -48,6 +48,7 @@ import {
   type WorktreeCleanupScriptConfig,
   type WorkspaceId,
   deriveDraftSessionTitle,
+  SESSION_IMAGE_MAX_SIZE_BYTES,
 } from '@lody/shared';
 import { useCloudMutation, useCloudQuery } from '@lody/platform/react';
 import { usePostHog } from '@posthog/react';
@@ -2793,7 +2794,22 @@ function WorkspaceChatLanding({
 
   const attachPastedFiles = useCallback(
     (files: File[]) => {
-      const { images, attachments } = splitImageAndFileAttachments(files);
+      const split = splitImageAndFileAttachments(files);
+      // A large image goes as a file, as it does in a conversation.
+      const images = split.images.filter((file) => file.size <= SESSION_IMAGE_MAX_SIZE_BYTES);
+      const largeImages = split.images.filter((file) => file.size > SESSION_IMAGE_MAX_SIZE_BYTES);
+      const attachments = [...split.attachments, ...largeImages];
+      if (largeImages.length > 0) {
+        toast.info(
+          t(
+            'sessions.imageDegradedToFile',
+            '{{count}} large image(s) were added as file attachments',
+            {
+              count: largeImages.length,
+            }
+          )
+        );
+      }
       if (images.length > 0) {
         addFiles(images);
       }
@@ -2801,7 +2817,7 @@ function WorkspaceChatLanding({
         addFileAttachments(attachments);
       }
     },
-    [addFileAttachments, addFiles]
+    [addFileAttachments, addFiles, t]
   );
   const handlePromptPaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -2852,18 +2868,7 @@ function WorkspaceChatLanding({
     },
     [attachPastedFiles, handleImagePromptPaste, insertLargePastedTextAtSelection, t]
   );
-  const handleImageDrop = useCallback(
-    (files: File[]) => {
-      const { images, attachments } = splitImageAndFileAttachments(files);
-      if (images.length > 0) {
-        addFiles(images);
-      }
-      if (attachments.length > 0) {
-        addFileAttachments(attachments);
-      }
-    },
-    [addFileAttachments, addFiles]
-  );
+  const handleImageDrop = attachPastedFiles;
   const handleAttachmentInputChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(event.target.files ?? []);

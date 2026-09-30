@@ -10,6 +10,7 @@ import type {
   MachineId,
   MachineMeta,
   SessionFilePayload,
+  SessionFileReadLocalRequest,
   SessionFileSendLocalRequest,
   SessionId,
   SessionMeta,
@@ -18,6 +19,7 @@ import type {
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import type { LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import { addLanHub, type LanHub } from '@lody/shared/node/lan-hub';
+import { getSessionFileBlobPath } from '@/lib/session-file-blob-store';
 import type { Logger } from '@/utils/logger';
 import { LanFileHandoff, type LanFileWorkspace } from './lan-file-handoff';
 import { sendFilesToLanMember, toStoredFileName } from './lan-files';
@@ -109,6 +111,16 @@ describe('files between LAN members', () => {
     fs.rmSync(scratch, { recursive: true, force: true });
   });
 
+  /** Where a machine of the test keeps the files of its sessions. */
+  const keptPath: typeof getSessionFileBlobPath = (args) =>
+    getSessionFileBlobPath({ ...args, homeDir: path.join(scratch, 'kept') });
+
+  const keep = (sessionId: string, fileId: string, bytes: Buffer): void => {
+    const filePath = keptPath({ workspaceId: HOME, sessionId, fileId });
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, bytes);
+  };
+
   const writeFile = (name: string, bytes: Buffer): string => {
     const directory = fs.mkdtempSync(path.join(scratch, 'file-'));
     const filePath = path.join(directory, name);
@@ -127,6 +139,8 @@ describe('files between LAN members', () => {
       logger: silentLogger(),
       hubs: () => [home],
       workspace: (workspaceId) => (workspaceId === HOME ? workspace : null),
+      localSessions: (workspaceId) => (workspaceId === HOME ? workspace.lookupSession : null),
+      keptPath,
     });
     const published = new Map<string, LanTerminalEndpoint | undefined>();
     const host = new LanTerminalHost({
@@ -147,7 +161,7 @@ describe('files between LAN members', () => {
     await host.refresh();
     const endpoint = published.get(HOME);
     if (!endpoint) throw new Error('the server published no endpoint');
-    return { endpoint, stored };
+    return { endpoint, stored, handoff };
   }
 
   /** The client machine: a member that sends what its desktop handed it. */
@@ -173,6 +187,7 @@ describe('files between LAN members', () => {
       logger: silentLogger(),
       hubs: () => options.hubs ?? [home],
       workspace: (workspaceId) => (workspaceId === HOME ? workspace : null),
+      localSessions: () => null,
     });
   }
 
@@ -339,6 +354,99 @@ describe('files between LAN members', () => {
 
     expect(response).toMatchObject({ success: false, error: 'remote_unreachable' });
     expect(response.message).toContain('no LAN of this machine reaches it');
+  });
+
+  describe('reading a file another member keeps', () => {
+    const readRequest = (
+      bytes: Buffer,
+      overrides: Partial<SessionFileReadLocalRequest> = {}
+    ): SessionFileReadLocalRequest => ({
+      type: 'session/file-read-local',
+      machineId: CLIENT,
+      targetMachineId: SERVER,
+      sessionId: 'home-session' as SessionId,
+      workspaceId: HOME as WorkspaceId,
+      fileId: 'file-picture',
+      sizeBytes: bytes.length,
+      sha256: sha256(bytes),
+      destinationPath: path.join(fs.mkdtempSync(path.join(scratch, 'read-')), 'picture.png'),
+      ...overrides,
+    });
+
+    it('writes the bytes the member keeps where the desktop asked', async () => {
+      const picture = crypto.randomBytes(3_000_000);
+      keep('home-session', 'file-picture', picture);
+      const { endpoint } = await startServer({ 'home-session': { machineId: SERVER } });
+      const asked = readRequest(picture);
+
+      const response = await startClient(endpoint).read(asked);
+
+      expect(response).toMatchObject({ success: true, sessionId: 'home-session' });
+      expect(fs.readFileSync(asked.destinationPath).equals(picture)).toBe(true);
+    });
+
+    it('reads a file this machine keeps without a LAN', async () => {
+      const picture = crypto.randomBytes(1000);
+      keep('home-session', 'file-picture', picture);
+      const { handoff } = await startServer({ 'home-session': { machineId: SERVER } });
+      const asked = readRequest(picture, { machineId: SERVER, targetMachineId: undefined });
+
+      const response = await handoff.read(asked);
+
+      expect(response.success).toBe(true);
+      expect(fs.readFileSync(asked.destinationPath).equals(picture)).toBe(true);
+    });
+
+    it.each([
+      ['a deleted session', 'deleted' as const, 'file-picture', 'session_deleted'],
+      ['a file it does not keep', { machineId: SERVER }, 'file-other', 'file_not_found'],
+      ['a name that leaves the store', { machineId: SERVER }, '..', 'invalid_request'],
+    ])('refuses %s and leaves nothing behind', async (_name, session, fileId, code) => {
+      const picture = crypto.randomBytes(1000);
+      keep('home-session', 'file-picture', picture);
+      const { endpoint } = await startServer({ 'home-session': session });
+      const asked = readRequest(picture, { fileId });
+
+      const response = await startClient(endpoint).read(asked);
+
+      expect(response).toMatchObject({ success: false, error: code });
+      expect(response.message).toContain('devbox');
+      expect(fs.existsSync(asked.destinationPath)).toBe(false);
+    });
+
+    it('refuses bytes that are not those of the block, remote or local', async () => {
+      const picture = crypto.randomBytes(1000);
+      keep('home-session', 'file-picture', picture);
+      const { endpoint, handoff } = await startServer({ 'home-session': { machineId: SERVER } });
+      const other = crypto.randomBytes(1000);
+
+      const remote = readRequest(picture, { sha256: sha256(other) });
+      const local = readRequest(picture, {
+        machineId: SERVER,
+        targetMachineId: undefined,
+        sha256: sha256(other),
+      });
+      const resized = readRequest(picture, { sizeBytes: 999 });
+
+      expect(await startClient(endpoint).read(remote)).toMatchObject({ error: 'invalid_file' });
+      expect(await handoff.read(local)).toMatchObject({ error: 'invalid_file' });
+      expect(await startClient(endpoint).read(resized)).toMatchObject({ error: 'invalid_file' });
+      for (const asked of [remote, local, resized]) {
+        expect(fs.existsSync(asked.destinationPath)).toBe(false);
+      }
+    });
+
+    it('does not ask a machine that says nothing about files', async () => {
+      const picture = crypto.randomBytes(10);
+      const { endpoint } = await startServer({});
+
+      const response = await startClient(endpoint, { capabilities: { lanControl: 1 } }).read(
+        readRequest(picture)
+      );
+
+      expect(response).toMatchObject({ success: false, error: 'remote_unreachable' });
+      expect(response.message).toContain('devbox gives no files');
+    });
   });
 
   describe('what a member sends itself', () => {
