@@ -3,12 +3,10 @@ name: LAN build
 # Builds the self-hosted LAN composition for a fork: the desktop installers,
 # the CLI tarball a server installs, and the install scripts, published as one
 # rolling release. Upstream ships from its own pipeline and never runs this.
-# A push to the branch only builds; a tag v<upstream>-lan.<n>, pushed when the
-# branch is ready, builds and publishes.
+# Only a tag v<upstream>-lan.<n>, pushed when the branch is ready, builds and
+# publishes; running it by hand on a branch builds without publishing.
 on:
   push:
-    branches:
-      - lan-hub
     tags:
       - 'v*-lan.*'
   workflow_dispatch:

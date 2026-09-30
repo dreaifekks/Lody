@@ -376,9 +376,9 @@ hub speaks plain HTTP unless `lody lan hub` is given a certificate.
 
 `.github/workflows/lan-build.yml` builds a fork: the bundles once on Linux, the
 installers per platform from those bundles, and a rolling release whose file
-names carry no version. A push to the branch only builds; the release is
-replaced only by a build of a tag `v<upstream>-lan.<n>`, pushed when the branch
-is ready. `<upstream>` is the newest release in the synced changelog
+names carry no version. It runs only for a tag `v<upstream>-lan.<n>`, pushed
+when the branch is ready, whose build replaces the release; run by hand on a
+branch, it builds without publishing. `<upstream>` is the newest release in the synced changelog
 (`site-docs/content/changelog/en`, since upstream never bumps its manifests),
 and `<n>` restarts at 1 with each upstream release, so the updater's order of
 upstream part first, build second always puts a later tag after an earlier one.
