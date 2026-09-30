@@ -17,6 +17,7 @@ import { COMMIT_PATTERN, REPOSITORY_PATTERN, TAG_PATTERN } from './lan-build-sta
 
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
 const VERSIONED_MANIFESTS = ['apps/cli/package.json', 'apps/electron/package.json'];
+const CHANGELOG_DIRECTORY = 'site-docs/content/changelog/en';
 const INSTALL_SCRIPT_TEMPLATES = ['install.sh', 'install-mac.sh'];
 const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+-lan\.\d+$/u;
 
@@ -37,9 +38,27 @@ export function composeLanVersion(baseVersion, buildNumber) {
   return `${match[1]}-lan.${build}`;
 }
 
+/**
+ * Upstream never bumps the manifests (they stay at the version of an old
+ * release); each release instead adds a changelog entry whose frontmatter names
+ * it. The newest of those is the upstream release this checkout has synced.
+ */
 export function readBaseVersion(root = repositoryRoot) {
-  const manifest = JSON.parse(fs.readFileSync(path.join(root, VERSIONED_MANIFESTS[1]), 'utf8'));
-  return manifest.version;
+  const directory = path.join(root, CHANGELOG_DIRECTORY);
+  const versions = fs
+    .readdirSync(directory)
+    .filter((name) => name.endsWith('.mdx'))
+    .map((name) => {
+      const text = fs.readFileSync(path.join(directory, name), 'utf8');
+      return /^---\n[\s\S]*?^version:\s*(\d+)\.(\d+)\.(\d+)\s*$/mu.exec(text);
+    })
+    .filter((match) => match !== null)
+    .map((match) => match.slice(1, 4).map(Number));
+  if (versions.length === 0) {
+    throw new Error(`No released version found in ${CHANGELOG_DIRECTORY}`);
+  }
+  versions.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+  return versions.at(-1).join('.');
 }
 
 export function writeVersion(version, root = repositoryRoot) {

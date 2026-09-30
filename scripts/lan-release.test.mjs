@@ -10,6 +10,7 @@ import {
   assembleRelease,
   composeLanVersion,
   describeSigningCertificate,
+  readBaseVersion,
   renderInstallScript,
   renderReleaseNotes,
   resolvePublishedName,
@@ -57,6 +58,21 @@ test('a fork build sorts after the upstream version it is based on', () => {
   assert.throws(() => composeLanVersion('0.100.0', 0), /positive integer/u);
   assert.throws(() => composeLanVersion('0.100.0', undefined), /positive integer/u);
   assert.throws(() => composeLanVersion('next', 1), /Cannot derive/u);
+});
+
+test('the base version is the newest upstream release in the changelog, not the manifest', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lan-release-base-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const changelog = path.join(root, 'site-docs', 'content', 'changelog', 'en');
+  await mkdir(changelog, { recursive: true });
+  assert.throws(() => readBaseVersion(root), /No released version/u);
+  const entry = (version) => `---\ntitle: 'x'\nversion: ${version}\n---\n\nVersion ${version}\n`;
+  await writeFile(path.join(changelog, '20260929-0.102.0.mdx'), entry('0.102.0'));
+  await writeFile(path.join(changelog, '20260930.mdx'), entry('0.103.0'));
+  await writeFile(path.join(changelog, '20260801.mdx'), entry('0.99.4'));
+  await writeFile(path.join(changelog, 'notes.md'), entry('9.9.9'));
+  assert.equal(readBaseVersion(root), '0.103.0');
+  assert.equal(composeLanVersion(readBaseVersion(root), 23), '0.103.0-lan.23');
 });
 
 test('the stamped version reaches both the CLI and the desktop manifest', async (t) => {
