@@ -4,10 +4,12 @@
 // install scripts under names that never change, so one documented command
 // keeps working for every later build.
 //
-//   node scripts/lan-release.mjs version --build 12 --write
-//   node scripts/lan-release.mjs assemble --version 0.100.0-lan.12 --commit <sha> \
+//   node scripts/lan-release.mjs version --write
+//   node scripts/lan-release.mjs version --set 0.103.0-lan.4 --write
+//   node scripts/lan-release.mjs assemble --version 0.103.0-lan.4 --commit <sha> \
 //     --repository owner/repo --tag lan-latest --artifacts <dir> --out <dir>
 //   node scripts/lan-release.mjs signing --certificate <pem>
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -59,6 +61,34 @@ export function readBaseVersion(root = repositoryRoot) {
   }
   versions.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
   return versions.at(-1).join('.');
+}
+
+/**
+ * Builds restart at 1 with every upstream release: the commit on the branch's
+ * first-parent line that brought the release's changelog entry (the sync merge)
+ * is build 1, and each later commit adds one. Derived from history alone, so
+ * every job of a run and every rebuild of a commit agree, and a later commit
+ * always numbers after an earlier one.
+ */
+export function countBuildsSince(baseVersion, root = repositoryRoot) {
+  const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+  if (git('rev-parse', '--is-shallow-repository') === 'true') {
+    throw new Error('Numbering a LAN build needs the full history; check out with fetch-depth 0');
+  }
+  const pattern = `^version:[[:space:]]*${baseVersion.replaceAll('.', '\\.')}[[:space:]]*$`;
+  const [introduced] = git(
+    'log',
+    '--first-parent',
+    '--reverse',
+    '--format=%H',
+    `-G${pattern}`,
+    '--',
+    CHANGELOG_DIRECTORY
+  ).split('\n');
+  if (!introduced) {
+    throw new Error(`No commit brought the changelog entry of ${baseVersion}`);
+  }
+  return Number(git('rev-list', '--count', '--first-parent', `${introduced}..HEAD`)) + 1;
 }
 
 export function writeVersion(version, root = repositoryRoot) {
@@ -291,12 +321,16 @@ function main(argv) {
   if (command === 'version') {
     const { values } = parseArgs({
       args: rest,
-      options: { build: { type: 'string' }, write: { type: 'boolean', default: false } },
+      options: { set: { type: 'string' }, write: { type: 'boolean', default: false } },
     });
-    const version = composeLanVersion(
-      readBaseVersion(),
-      values.build ?? process.env.GITHUB_RUN_NUMBER
-    );
+    // `--set` stamps a version another job already derived.
+    let version = values.set;
+    if (version === undefined) {
+      const base = readBaseVersion();
+      version = composeLanVersion(base, countBuildsSince(base));
+    } else if (!RELEASE_VERSION_PATTERN.test(version)) {
+      throw new Error(`Refusing to stamp version ${JSON.stringify(version)}`);
+    }
     if (values.write) writeVersion(version);
     if (process.env.GITHUB_OUTPUT) {
       fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);

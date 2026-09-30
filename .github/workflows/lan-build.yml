@@ -43,6 +43,8 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+          # The build number counts commits since the last upstream release.
+          fetch-depth: 0
 
       - name: Set up workspace toolchain
         uses: ./.github/actions/setup-workspace
@@ -54,7 +56,7 @@ jobs:
 
       - name: Stamp build version
         id: version
-        run: node scripts/lan-release.mjs version --build "$GITHUB_RUN_NUMBER" --write
+        run: node scripts/lan-release.mjs version --write
 
       - name: Build CLI and desktop bundles
         env:
@@ -126,9 +128,7 @@ jobs:
         shell: bash
         env:
           LAN_VERSION: ${{ needs.bundles.outputs.version }}
-        run: |
-          stamped="$(node scripts/lan-release.mjs version --build "$GITHUB_RUN_NUMBER" --write)"
-          [ "$stamped" = "$LAN_VERSION" ]
+        run: node scripts/lan-release.mjs version --set "$LAN_VERSION" --write
 
       - name: Restore bundles
         uses: actions/download-artifact@v4
