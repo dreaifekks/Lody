@@ -4,9 +4,10 @@
 // install scripts under names that never change, so one documented command
 // keeps working for every later build.
 //
-//   node scripts/lan-release.mjs version --write
-//   node scripts/lan-release.mjs version --set 0.103.0-lan.4 --write
-//   node scripts/lan-release.mjs assemble --version 0.103.0-lan.4 --commit <sha> \
+//   node scripts/lan-release.mjs version            # the next release tag's version
+//   node scripts/lan-release.mjs version --tag v0.103.0-lan.1 --write
+//   node scripts/lan-release.mjs version --set 0.103.0-lan.1 --write
+//   node scripts/lan-release.mjs assemble --version 0.103.0-lan.1 --commit <sha> \
 //     --repository owner/repo --tag lan-latest --artifacts <dir> --out <dir>
 //   node scripts/lan-release.mjs signing --certificate <pem>
 import { execFileSync } from 'node:child_process';
@@ -64,31 +65,44 @@ export function readBaseVersion(root = repositoryRoot) {
 }
 
 /**
- * Builds restart at 1 with every upstream release: the commit on the branch's
- * first-parent line that brought the release's changelog entry (the sync merge)
- * is build 1, and each later commit adds one. Derived from history alone, so
- * every job of a run and every rebuild of a commit agree, and a later commit
- * always numbers after an earlier one.
+ * A build is published only from a tag `v<upstream>-lan.<n>`, pushed once its
+ * owner decides the branch is ready. The tag names the build, and its upstream
+ * part has to be the release the tagged commit synced.
  */
-export function countBuildsSince(baseVersion, root = repositoryRoot) {
-  const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
-  if (git('rev-parse', '--is-shallow-repository') === 'true') {
-    throw new Error('Numbering a LAN build needs the full history; check out with fetch-depth 0');
+export function resolveTagVersion(tag, baseVersion) {
+  const version = String(tag).replace(/^v/u, '');
+  if (!RELEASE_VERSION_PATTERN.test(version) || !/^v/u.test(String(tag))) {
+    throw new Error(
+      `A LAN release tag looks like v${baseVersion}-lan.1, got ${JSON.stringify(tag)}`
+    );
   }
-  const pattern = `^version:[[:space:]]*${baseVersion.replaceAll('.', '\\.')}[[:space:]]*$`;
-  const [introduced] = git(
-    'log',
-    '--first-parent',
-    '--reverse',
-    '--format=%H',
-    `-G${pattern}`,
-    '--',
-    CHANGELOG_DIRECTORY
-  ).split('\n');
-  if (!introduced) {
-    throw new Error(`No commit brought the changelog entry of ${baseVersion}`);
+  if (!version.startsWith(`${baseVersion}-lan.`)) {
+    throw new Error(
+      `Tag ${tag} does not name ${baseVersion}, the upstream release this commit synced`
+    );
   }
-  return Number(git('rev-list', '--count', '--first-parent', `${introduced}..HEAD`)) + 1;
+  composeLanVersion(baseVersion, version.slice(`${baseVersion}-lan.`.length));
+  return version;
+}
+
+/**
+ * The version the next release tag takes: numbers restart at 1 with every
+ * upstream release, so a newer upstream part sorts after every earlier build.
+ */
+export function nextLanVersion(baseVersion, tags) {
+  const prefix = `v${baseVersion}-lan.`;
+  const taken = tags
+    .filter((tag) => tag.startsWith(prefix) && /^\d+$/u.test(tag.slice(prefix.length)))
+    .map((tag) => Number(tag.slice(prefix.length)));
+  return composeLanVersion(baseVersion, Math.max(0, ...taken) + 1);
+}
+
+function listReleaseTags(baseVersion, root = repositoryRoot) {
+  return execFileSync('git', ['-C', root, 'tag', '--list', `v${baseVersion}-lan.*`], {
+    encoding: 'utf8',
+  })
+    .split('\n')
+    .filter(Boolean);
 }
 
 export function writeVersion(version, root = repositoryRoot) {
@@ -321,13 +335,21 @@ function main(argv) {
   if (command === 'version') {
     const { values } = parseArgs({
       args: rest,
-      options: { set: { type: 'string' }, write: { type: 'boolean', default: false } },
+      options: {
+        tag: { type: 'string' },
+        set: { type: 'string' },
+        write: { type: 'boolean', default: false },
+      },
     });
-    // `--set` stamps a version another job already derived.
+    // `--tag` names a release build; `--set` stamps a version another job
+    // already derived; without either this is the version the next tag takes.
     let version = values.set;
     if (version === undefined) {
       const base = readBaseVersion();
-      version = composeLanVersion(base, countBuildsSince(base));
+      version =
+        values.tag === undefined
+          ? nextLanVersion(base, listReleaseTags(base))
+          : resolveTagVersion(values.tag, base);
     } else if (!RELEASE_VERSION_PATTERN.test(version)) {
       throw new Error(`Refusing to stamp version ${JSON.stringify(version)}`);
     }

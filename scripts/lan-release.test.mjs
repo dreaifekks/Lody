@@ -9,11 +9,12 @@ import { defineBuildStamp, readBuildStamp } from './lan-build-stamp.mjs';
 import {
   assembleRelease,
   composeLanVersion,
-  countBuildsSince,
+  nextLanVersion,
   describeSigningCertificate,
   readBaseVersion,
   renderInstallScript,
   renderReleaseNotes,
+  resolveTagVersion,
   resolvePublishedName,
   writeVersion,
 } from './lan-release.mjs';
@@ -77,47 +78,25 @@ test('the base version is the newest upstream release in the changelog, not the 
   assert.equal(composeLanVersion(readBaseVersion(root), 23), '0.103.0-lan.23');
 });
 
-test('builds count again from 1 once a sync brings a newer upstream release', async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), 'lan-release-count-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const git = (...args) => {
-    const result = spawnSync(
-      'git',
-      ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args],
-      { encoding: 'utf8' }
-    );
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  const changelog = path.join(root, 'site-docs', 'content', 'changelog', 'en');
-  await mkdir(changelog, { recursive: true });
-  const commit = async (file, text) => {
-    await writeFile(path.join(root, file), text);
-    git('add', '-A');
-    git('commit', '-q', '-m', file);
-  };
-  git('init', '-q', '-b', 'lan-hub');
-  await commit('site-docs/content/changelog/en/a.mdx', '---\nversion: 0.102.0\n---\n');
-  await commit('fork.txt', 'one');
-  assert.equal(countBuildsSince(readBaseVersion(root), root), 2);
+test('release numbers restart at 1 with each upstream release and follow the tags', () => {
+  assert.equal(nextLanVersion('0.103.0', []), '0.103.0-lan.1');
+  const tags = [
+    'v0.102.0-lan.7',
+    'v0.103.0-lan.1',
+    'v0.103.0-lan.3',
+    'v0.103.0-lan.x',
+    'lan-latest',
+  ];
+  assert.equal(nextLanVersion('0.103.0', tags), '0.103.0-lan.4');
+  assert.equal(nextLanVersion('0.104.0', tags), '0.104.0-lan.1');
+});
 
-  // Upstream's release arrives through a merge on the fork's branch.
-  git('checkout', '-q', '-b', 'upstream', 'HEAD~1');
-  await commit('site-docs/content/changelog/en/b.mdx', '---\nversion: 0.103.0\n---\n');
-  await commit('upstream.txt', 'more');
-  git('checkout', '-q', 'lan-hub');
-  git('merge', '-q', '--no-ff', '-m', 'sync', 'upstream');
-  assert.equal(readBaseVersion(root), '0.103.0');
-  assert.equal(countBuildsSince('0.103.0', root), 1);
-  await commit('fork.txt', 'two');
-  await commit('fork.txt', 'three');
-  assert.equal(composeLanVersion('0.103.0', countBuildsSince('0.103.0', root)), '0.103.0-lan.3');
-  assert.throws(() => countBuildsSince('0.104.0', root), /No commit brought/u);
-
-  const shallow = `${root}-shallow`;
-  t.after(() => rm(shallow, { recursive: true, force: true }));
-  spawnSync('git', ['clone', '-q', '--depth', '1', `file://${root}`, shallow]);
-  assert.throws(() => countBuildsSince('0.103.0', shallow), /full history/u);
+test('a release tag must name the upstream release its commit synced', () => {
+  assert.equal(resolveTagVersion('v0.103.0-lan.2', '0.103.0'), '0.103.0-lan.2');
+  assert.throws(() => resolveTagVersion('v0.102.0-lan.2', '0.103.0'), /does not name 0\.103\.0/u);
+  assert.throws(() => resolveTagVersion('0.103.0-lan.2', '0.103.0'), /looks like/u);
+  assert.throws(() => resolveTagVersion('v0.103.0-lan.0', '0.103.0'), /positive integer/u);
+  assert.throws(() => resolveTagVersion('lan-latest', '0.103.0'), /looks like/u);
 });
 
 test('the stamped version reaches both the CLI and the desktop manifest', async (t) => {

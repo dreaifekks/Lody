@@ -3,16 +3,15 @@ name: LAN build
 # Builds the self-hosted LAN composition for a fork: the desktop installers,
 # the CLI tarball a server installs, and the install scripts, published as one
 # rolling release. Upstream ships from its own pipeline and never runs this.
+# A push to the branch only builds; a tag v<upstream>-lan.<n>, pushed when the
+# branch is ready, builds and publishes.
 on:
   push:
     branches:
       - lan-hub
+    tags:
+      - 'v*-lan.*'
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Replace the rolling release with this build
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -43,7 +42,7 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
-          # The build number counts commits since the last upstream release.
+          # A build off a tag numbers itself after the release tags.
           fetch-depth: 0
 
       - name: Set up workspace toolchain
@@ -56,7 +55,9 @@ jobs:
 
       - name: Stamp build version
         id: version
-        run: node scripts/lan-release.mjs version --write
+        env:
+          LAN_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: node scripts/lan-release.mjs version --write ${LAN_TAG:+--tag "$LAN_TAG"}
 
       - name: Build CLI and desktop bundles
         env:
@@ -244,7 +245,7 @@ jobs:
   release:
     name: Publish rolling release
     needs: [bundles, desktop]
-    if: github.event_name == 'push' || inputs.publish
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
