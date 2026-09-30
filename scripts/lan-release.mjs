@@ -50,7 +50,7 @@ export function readBaseVersion(root = repositoryRoot) {
     .filter((name) => name.endsWith('.mdx'))
     .map((name) => {
       const text = fs.readFileSync(path.join(directory, name), 'utf8');
-      return /^---\n[\s\S]*?^version:\s*(\d+)\.(\d+)\.(\d+)\s*$/mu.exec(text);
+      return /^---\r?\n[\s\S]*?^version:\s*(\d+)\.(\d+)\.(\d+)\s*$/mu.exec(text);
     })
     .filter((match) => match !== null)
     .map((match) => match.slice(1, 4).map(Number));

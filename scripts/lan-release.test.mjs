@@ -68,7 +68,8 @@ test('the base version is the newest upstream release in the changelog, not the 
   assert.throws(() => readBaseVersion(root), /No released version/u);
   const entry = (version) => `---\ntitle: 'x'\nversion: ${version}\n---\n\nVersion ${version}\n`;
   await writeFile(path.join(changelog, '20260929-0.102.0.mdx'), entry('0.102.0'));
-  await writeFile(path.join(changelog, '20260930.mdx'), entry('0.103.0'));
+  // A Windows checkout converts line endings.
+  await writeFile(path.join(changelog, '20260930.mdx'), entry('0.103.0').replaceAll('\n', '\r\n'));
   await writeFile(path.join(changelog, '20260801.mdx'), entry('0.99.4'));
   await writeFile(path.join(changelog, 'notes.md'), entry('9.9.9'));
   assert.equal(readBaseVersion(root), '0.103.0');
