@@ -28,13 +28,15 @@ lives in its `README.md`.
 
 ## Menu placement
 
-The desktop menu's virtual anchor measures the textarea's laid-out caret, not
-the width of its unwrapped text. Soft wraps, internal scrolling, and scaled
-editor containers therefore move the popup with the insertion point. The
-virtual element retains the textarea as its observation target so an open menu
-also follows a layout shift that did not change the text. Floating placement
-flips at the viewport edge; when neither side fits a tall menu, the visible
-surface and its rows scroll instead of extending off-screen.
+The main desktop chat composer anchors its menu to the whole composer frame
+and pins it above that frame. The popup stays within the frame's width and
+caps its height to the available room above; the list scrolls when needed.
+The dialog composer and inline editor instead use a virtual anchor measured
+from the textarea's laid-out caret. Soft wraps, internal scrolling, and scaled
+editor containers move those popups with the insertion point. The virtual
+element retains the textarea as its observation target so layout shifts also
+update the menu. Those floating menus flip at the viewport edge and scroll
+within visible room when neither side fits.
 
 The mobile composer uses a separate docked strip. Its boundary is the whole
 `data-mention-frame` (input, controls, and attachments), so the strip cannot

@@ -942,6 +942,7 @@ export function ChatComposer({
 
               <CombinedMentionTextarea
                 enablePromptShortcuts={shortcutsEnabled}
+                menuSide="top"
                 id={promptId}
                 ref={promptRef}
                 mentionSource={mentionSource}
