@@ -382,6 +382,10 @@ import { PreviewService } from '@/preview/preview-service';
 import { LocalProjectHistorySyncService } from '@/lib/local-project-history-sync-service';
 import { precheckLocalProjectHistoryRequest } from '@/lib/local-project-history-precheck';
 import {
+  readCatchUpAnchor,
+  readNativeTranscriptTailTurnId,
+} from '@/session/native-session-catch-up';
+import {
   cleanupLocalProjectWorktrees,
   preflightLocalProjectWorktreeRemoval,
 } from '@/lib/local-project-removal';
@@ -4455,7 +4459,7 @@ export class MessageHandler {
       );
       return;
     }
-    if (this.store.recordSuppressedAcpReplay(sessionId)) {
+    if (this.store.recordSuppressedAcpReplay(sessionId, update)) {
       return;
     }
     const target = this.store.getCurrentACPUpdateTarget(sessionId);
@@ -5674,13 +5678,14 @@ export class MessageHandler {
     this.store.beginAcpReplaySuppression(sessionId);
   }
 
-  private endACPReplaySuppression(sessionId: SessionId): void {
-    const droppedCount = this.store.endAcpReplaySuppression(sessionId);
+  private endACPReplaySuppression(sessionId: SessionId): AcpSessionNotification[] | undefined {
+    const { droppedCount, replay } = this.store.endAcpReplaySuppression(sessionId);
     if (droppedCount > 0) {
       this.logger.debug(
         `[${sessionId}] Dropped ${droppedCount} ACP replay notifications emitted during session restore before turn initialization`
       );
     }
+    return replay;
   }
 
   private clearActiveTurnIdIfMatches(sessionId: SessionId, turnId: string): void {
@@ -9967,6 +9972,38 @@ export class MessageHandler {
    * Clean all transient state for a session.
    * Called by GC manager when a session has been idle or evicted under memory pressure.
    */
+  /** Last native transcript turn id already compared, per live session. */
+  private readonly checkedNativeTails = new Map<SessionId, string>();
+
+  /**
+   * Whether the native session behind a live, idle Lody session has a newer
+   * turn than the one Lody recorded last. See `native-session-catch-up.ts`.
+   */
+  async hasNativeTurnsWrittenOutside(sessionId: SessionId): Promise<boolean> {
+    const session = this.sessionManager.getSession(sessionId);
+    const acpSessionId = session?.acpSessionId;
+    if (!acpSessionId || !session.agentClient?.isCreated()) return false;
+    const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
+    const meta = await sessionDoc.getMetaState();
+    if (meta?.cliType !== 'builtin') return false;
+    if (meta.agentType !== 'claude' && meta.agentType !== 'codex') return false;
+    const tail = await readNativeTranscriptTailTurnId({
+      agentType: meta.agentType,
+      acpSessionId,
+    });
+    if (!tail || this.checkedNativeTails.get(sessionId) === tail) return false;
+    const anchor = await readCatchUpAnchor(sessionDoc.sessionData.history, undefined);
+    if (!anchor) return false;
+    if (anchor.turnId === tail) {
+      this.checkedNativeTails.set(sessionId, tail);
+      return false;
+    }
+    this.logger.debug(
+      `[${sessionId}] Native session ${acpSessionId} ends at ${tail}; Lody recorded ${anchor.turnId}`
+    );
+    return true;
+  }
+
   async cleanSessionForGC(sessionId: SessionId): Promise<void> {
     this.logger.debug(`[GC] Cleaning session ${sessionId}`);
 
@@ -9987,6 +10024,7 @@ export class MessageHandler {
     // 4. Drop transient tracking last — only after all cleanup succeeded,
     //    so getTrackedSessionIds() can still see it for retry if steps above throw.
     this.store.deleteSession(sessionId);
+    this.checkedNativeTails.delete(sessionId);
 
     this.logger.debug(`[GC] Session ${sessionId} cleaned`);
   }

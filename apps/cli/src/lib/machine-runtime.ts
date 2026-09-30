@@ -355,6 +355,7 @@ export class MachineRuntime {
       hasPendingUserWork: async (sessionId) => await handler.hasPendingUserWork(sessionId),
       isArchiveInFlight: (sessionId) => handler.isArchiveInFlight(sessionId),
       cleanSession: (sessionId) => handler.cleanSessionForGC(sessionId),
+      hasNativeTurnsWrittenOutside: (sessionId) => handler.hasNativeTurnsWrittenOutside(sessionId),
       getSessionIds: () => handler.getTrackedSessionIds(),
       memoryPressure: this.options.memoryPressure,
       logger: this.options.logger,

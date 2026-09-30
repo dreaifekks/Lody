@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SessionTransientStore } from './session-transient-store';
-import type { SessionId } from '@lody/shared';
+import { parseSessionNotification, type SessionId } from '@lody/shared';
 
 const sid = (id: string) => id as SessionId;
 
@@ -68,14 +68,27 @@ describe('SessionTransientStore', () => {
       const store = new SessionTransientStore();
       const id = sid('s1');
 
+      const replayed = (text: string) =>
+        parseSessionNotification({
+          sessionId: 'native-1',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+        });
+      const first = replayed('first');
+      const second = replayed('second');
+
       store.beginAcpReplaySuppression(id);
-      expect(store.recordSuppressedAcpReplay(id)).toBe(true);
-      expect(store.recordSuppressedAcpReplay(id)).toBe(true);
+      expect(store.recordSuppressedAcpReplay(id, first)).toBe(true);
+      expect(store.recordSuppressedAcpReplay(id, second)).toBe(true);
 
       store.beginTurn(id, { turnId: 'turn-1' });
       expect(store.getTurnId(id)).toBe('turn-1');
-      expect(store.endAcpReplaySuppression(id)).toBe(2);
-      expect(store.recordSuppressedAcpReplay(id)).toBe(false);
+      // The dropped replay is handed over whole for the native catch-up.
+      expect(store.endAcpReplaySuppression(id)).toEqual({
+        droppedCount: 2,
+        replay: [first, second],
+      });
+      expect(store.recordSuppressedAcpReplay(id, first)).toBe(false);
+      expect(store.endAcpReplaySuppression(id)).toEqual({ droppedCount: 0, replay: [] });
     });
 
     it('routes late ACP updates to the finalized turn until the next turn starts', () => {

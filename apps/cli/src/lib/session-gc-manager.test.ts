@@ -37,6 +37,7 @@ describe('SessionGCManager', () => {
   let pendingUpdates: Set<SessionId>;
   let pendingUserWork: Set<SessionId>;
   let archiveInFlight: Set<SessionId>;
+  let nativeMovedOn: Set<SessionId>;
   let sleepCalls: number[];
 
   beforeEach(() => {
@@ -55,6 +56,7 @@ describe('SessionGCManager', () => {
     pendingUpdates = new Set();
     pendingUserWork = new Set();
     archiveInFlight = new Set();
+    nativeMovedOn = new Set();
     mockedGetMemoryPressureSnapshot.mockResolvedValue({
       availableMemoryBytes: 4 * 1024 * 1024 * 1024,
       effectiveMemoryLimitBytes: 32 * 1024 * 1024 * 1024,
@@ -91,6 +93,7 @@ describe('SessionGCManager', () => {
         hasPendingUserWork: async (sessionId) => pendingUserWork.has(sessionId),
         isArchiveInFlight: (sessionId) => archiveInFlight.has(sessionId),
         cleanSession: cleanMock,
+        hasNativeTurnsWrittenOutside: async (sessionId) => nativeMovedOn.has(sessionId),
         getSessionIds: () => [...sessionActivities.keys()],
         memoryPressure: {
           getLatest: mockedGetMemoryPressureSnapshot,
@@ -159,6 +162,23 @@ describe('SessionGCManager', () => {
 
       expect(cleanMock).toHaveBeenCalledTimes(1);
       expect(cleanMock).toHaveBeenCalledWith(s1);
+    });
+
+    it('reclaims a recently active session whose native session moved on', async () => {
+      const manager = createManager({ idleTimeoutMs: 1000 });
+      const now = Date.now();
+      const movedOn = 'session-moved-on' as SessionId;
+      const unchanged = 'session-unchanged' as SessionId;
+      const busy = 'session-busy' as SessionId;
+      for (const sessionId of [movedOn, unchanged, busy])
+        sessionActivities.set(sessionId, now - 10);
+      nativeMovedOn.add(movedOn);
+      nativeMovedOn.add(busy);
+      activeTurns.add(busy);
+
+      await manager.sweep();
+
+      expect(cleanMock.mock.calls).toEqual([[movedOn]]);
     });
 
     it('does not clean sessions with pending updates', async () => {

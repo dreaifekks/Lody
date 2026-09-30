@@ -23,6 +23,7 @@ import {
   ACP_CAPABILITY_REFRESH_CACHE_TTL_MS,
   type AcpCapabilityCacheEntry,
   getMachineRoomId,
+  parseSessionNotification,
   SessionStatusFactory,
   type ACPSessionId,
   type AgentConfigMeta,
@@ -3885,6 +3886,121 @@ describe('SessionExecutionService', () => {
     expect(deps.startSessionActivePresence).toHaveBeenCalledTimes(1);
     expect(deps.startSessionActivePresence).toHaveBeenCalledWith('session-1', 'initializing');
     expect(deps.clearSessionActivePresence).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds turns written outside Lody from the replay of a restored native session', async () => {
+    const turn = (entry: Record<string, unknown>) => ({
+      timestamp: '2026-09-30T00:00:00.000Z',
+      fileDiff: [],
+      ...entry,
+    });
+    let history: unknown[] = [
+      turn({ id: 'u1', role: 'user', status: 'handled', items: [{ type: 'text', text: 'one' }] }),
+      turn({ id: 'a1', role: 'assistant', finished: true, acpTurnId: 'native-1', items: [] }),
+      turn({
+        id: 'turn-user-2',
+        role: 'user',
+        status: 'pending',
+        items: [{ type: 'text', text: 'two' }],
+      }),
+    ];
+    const sessionDoc = withHistoryPort({
+      getMetaState: vi.fn(async () => ({
+        acpSessionId: 'acp-1' as ACPSessionId,
+        isArchived: false,
+      })),
+      setStatus: vi.fn(async () => {}),
+      setBaseBranch: vi.fn(async () => {}),
+      getHistory: vi.fn(() => history),
+      updateHistory: vi.fn(async (updater: (prev: unknown[]) => unknown[]) => {
+        history = updater(history);
+      }),
+    });
+    const restoredSession = {
+      sessionId: 'session-1' as SessionId,
+      acpSessionId: 'acp-1' as ACPSessionId,
+      agentClient: {
+        isCreated: vi.fn(() => true),
+        cancel: vi.fn(async () => {}),
+        prompt: vi.fn(async () => ({})),
+        currentModel: undefined,
+      },
+      terminalManager: {} as unknown,
+      getWorkdir: () => '/tmp',
+      getHostWorkdir: () => '/tmp',
+      getParentSessionId: () => undefined,
+      exec: vi.fn(async () => ''),
+      terminate: vi.fn(async () => {}),
+      updateGitIdentity: vi.fn(),
+      createAgent: vi.fn(async () => 'acp-1'),
+      applyExecutionPlaneLimits: vi.fn(async () => {}),
+    };
+    const replay = [
+      {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'one' },
+        messageId: 'm1',
+      },
+      { sessionUpdate: 'session_info_update', _meta: { lody: { turnId: 'native-1' } } },
+      {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'from the terminal' },
+        messageId: 'm2',
+      },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'terminal answer' } },
+      { sessionUpdate: 'session_info_update', _meta: { lody: { turnId: 'native-2' } } },
+    ].map((update) => parseSessionNotification({ sessionId: 'acp-1', update }));
+    const deps = createBaseDeps({
+      sessionManager: {
+        getSession: vi.fn(() => null),
+        getPendingSession: vi.fn(() => null),
+        createSession: vi.fn(async () => restoredSession as unknown),
+        setSessionError: vi.fn(),
+        terminateSession: vi.fn(),
+        refreshGhTokenForSession: vi.fn(async () => {}),
+      } as unknown as SessionManager,
+      workspaceDocument: {
+        getAgentConfigById: async () =>
+          createLaunchConfig({ cliType: 'builtin', agentType: 'claude', env: {} }),
+        repo: {
+          upsertDocMeta: vi.fn(async () => {}),
+          getDocMeta: vi.fn(async () => undefined),
+        },
+        getOrCreateSessionDoc: vi.fn(async () => sessionDoc),
+        updateAcpCapabilities: vi.fn(async () => {}),
+      } as unknown as LoroDocumentManager,
+      endACPReplaySuppression: vi.fn(() => replay),
+      buildAcpPromptBlocks: vi.fn(async () => [{ type: 'text', text: 'two' }] as any),
+    });
+
+    await new SessionExecutionService(deps).continueSession({
+      type: 'session/chat',
+      sessionId: 'session-1' as SessionId,
+      machineId: 'machine-1',
+      workspaceId: 'workspace-1' as WorkspaceId,
+      acpSessionConfig: { prompt: 'two', cliType: 'builtin', agentType: 'claude' },
+      userTurnId: 'turn-user-2',
+      userId: 'user-1',
+      userName: 'User',
+      userEmail: 'user@example.com',
+    });
+
+    const rows = (
+      history as Array<{
+        id: string;
+        role: string;
+        status?: string;
+        acpTurnId?: string;
+        items?: Array<{ text?: string }>;
+      }>
+    ).map((entry) => [entry.role, entry.items?.[0]?.text, entry.acpTurnId ?? entry.status]);
+    expect(rows.slice(0, 5)).toEqual([
+      ['user', 'one', 'handled'],
+      ['assistant', undefined, 'native-1'],
+      ['user', 'from the terminal', 'handled'],
+      ['assistant', 'terminal answer', 'native-2'],
+      ['user', 'two', expect.any(String)],
+    ]);
   });
 
   it('replays durable history when a fresh ACP restore has no resumable session id', async () => {
@@ -9210,8 +9326,10 @@ describe('SessionExecutionService initialization deadline', () => {
         refreshGhTokenForSession: vi.fn(async () => {}),
       } as unknown as SessionManager,
       workspaceDocument,
-      startSessionActivePresence: (sessionId: SessionId, phase?: SessionActivePresencePhase | null) =>
-        presence.start(sessionId, phase),
+      startSessionActivePresence: (
+        sessionId: SessionId,
+        phase?: SessionActivePresencePhase | null
+      ) => presence.start(sessionId, phase),
       setSessionActivePresencePhase: (
         sessionId: SessionId,
         phase: SessionActivePresencePhase | null,
@@ -9298,9 +9416,9 @@ describe('SessionExecutionService initialization deadline', () => {
 
       // The turn runtime is released, so the session stops counting as active
       // and becomes collectable again.
-      expect(harness.service.getExecutionSnapshot('session-stalled-init' as SessionId).hasActiveTurn).toBe(
-        false
-      );
+      expect(
+        harness.service.getExecutionSnapshot('session-stalled-init' as SessionId).hasActiveTurn
+      ).toBe(false);
     } finally {
       vi.useRealTimers();
     }

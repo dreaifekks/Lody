@@ -11,6 +11,11 @@ export type BuildHistoryReplayImportOptions = {
   now?: () => string;
   createId?: () => string;
   mode?: 'resumable' | 'imported_snapshot';
+  /**
+   * Start a new user turn when consecutive user chunks carry different message
+   * ids. Off by default: stored imports hash the merged form.
+   */
+  splitUserMessagesById?: boolean;
 };
 
 export type BuildHistoryReplayImportResult = {
@@ -100,6 +105,7 @@ export function buildHistoryReplayImport(
   const provider = options.provider;
   let history: SessionHistoryInput[] = [];
   let lastWasUserChunk = false;
+  let lastUserMessageId: string | undefined;
   let droppedNotifications = 0;
 
   for (const notification of notifications) {
@@ -113,7 +119,14 @@ export function buildHistoryReplayImport(
 
       const lastIndex = history.length - 1;
       const last = lastIndex >= 0 ? history[lastIndex] : undefined;
-      if (lastWasUserChunk && last?.role === 'user') {
+      const messageId = notification.update.messageId ?? undefined;
+      const sameMessage =
+        !options.splitUserMessagesById ||
+        messageId === undefined ||
+        lastUserMessageId === undefined ||
+        messageId === lastUserMessageId;
+      lastUserMessageId = messageId;
+      if (lastWasUserChunk && last?.role === 'user' && sameMessage) {
         history[lastIndex] = appendUserText(last, text);
       } else {
         history.push(

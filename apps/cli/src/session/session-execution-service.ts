@@ -2,6 +2,7 @@ import { readSessionHistory } from '@lody/shared/session-data';
 import { readLatestTurn } from '@lody/shared/session-data';
 import {
   type AcpModelControls,
+  type AcpSessionNotification,
   type ACPSessionId,
   type AgentConfigId,
   type AgentConfigCliType,
@@ -121,6 +122,7 @@ import {
   resolveResumableAcpSessionId,
 } from './session-dispatch-logic';
 import { resolveSessionLaunchConfig } from './session-launch-config-resolver';
+import { catchUpNativeTurns } from './native-session-catch-up';
 import type { MachineAccessVerification } from './session-access-retry';
 import {
   GIT_EXECUTABLE_NOT_FOUND_CODE,
@@ -553,7 +555,8 @@ export type SessionExecutionServiceDeps = {
     detail?: string
   ) => void;
   beginACPReplaySuppression: (sessionId: SessionId) => void;
-  endACPReplaySuppression: (sessionId: SessionId) => void;
+  /** Returns the suppressed replay when it was retained whole. */
+  endACPReplaySuppression: (sessionId: SessionId) => AcpSessionNotification[] | undefined | void;
   beginConversationTurn: (
     sessionId: SessionId,
     userTurnId?: string,
@@ -2398,18 +2401,49 @@ export class SessionExecutionService {
     return drain;
   }
 
+  /**
+   * Adds the turns another client wrote to the native session since Lody last
+   * drove it, taken from the replay of the `session/load` that just restored it.
+   * See `native-session-catch-up.ts`.
+   */
+  private async catchUpNativeTurns(
+    sessionId: SessionId,
+    args: Omit<Parameters<typeof catchUpNativeTurns>[0], 'sessionData'> & {
+      sessionDoc: SessionDocument;
+    }
+  ): Promise<void> {
+    const { sessionDoc, ...rest } = args;
+    const result = await catchUpNativeTurns({ ...rest, sessionData: sessionDoc.sessionData });
+    if (result.status === 'added') {
+      this.deps.logger.info(
+        `[${sessionId}] Added ${result.added} history entries written outside Lody to ${args.acpSessionId} (skippedOwnTurns=${result.skippedOwnTurns} droppedNotifications=${result.droppedNotifications})`
+      );
+    } else if (result.status === 'unaligned') {
+      this.deps.logger.warn(
+        `[${sessionId}] Turns written outside Lody were not added: the turn Lody recorded last is not in the replay of ${args.acpSessionId}`
+      );
+    } else if (result.status === 'target-missing') {
+      this.deps.logger.debug(
+        `[${sessionId}] Native catch-up skipped: turn ${args.beforeTurnId} is not in local history yet`
+      );
+    }
+  }
+
   private createAcpReplaySuppressionResource(sessionId: SessionId): {
     acquire: Effect.Effect<void, never, Scope.Scope>;
     release: Effect.Effect<void, never, never>;
+    /** The replay the last release handed over; each replay is taken once. */
+    takeReplay: () => AcpSessionNotification[] | undefined;
   } {
     let active = false;
+    let replay: AcpSessionNotification[] | undefined;
     const release = Effect.sync(() => {
       if (!active) {
         return;
       }
       active = false;
       try {
-        this.deps.endACPReplaySuppression(sessionId);
+        replay = this.deps.endACPReplaySuppression(sessionId) ?? undefined;
       } catch (error) {
         this.deps.logger.warn(
           `[${sessionId}] Failed to release ACP replay suppression: ${formatErrorMessage(error)}`
@@ -2429,6 +2463,11 @@ export class SessionExecutionService {
         () => release
       ).pipe(Effect.asVoid),
       release,
+      takeReplay: () => {
+        const taken = replay;
+        replay = undefined;
+        return taken;
+      },
     };
   }
 
@@ -4303,6 +4342,9 @@ export class SessionExecutionService {
     let session = this.deps.sessionManager.getSession(sessionId);
     let project: ProjectRef | undefined = message.project;
     const acpReplaySuppression = this.createAcpReplaySuppressionResource(sessionId);
+    // Set when this turn restored the native session by id, so its replay is the
+    // native history and may hold turns written outside Lody.
+    let restoredNativeSessionId: ACPSessionId | undefined;
 
     let replayPromptResult: ReplayPromptResult | null = null;
     let usedHistoryReplay = false;
@@ -4478,6 +4520,9 @@ export class SessionExecutionService {
           yield* ctx.abortIfCancelled({ terminateSession: true });
           const requested = resumeSessionId;
           const actual = restoredSession.acpSessionId ?? null;
+          if (requested && actual === requested) {
+            restoredNativeSessionId = requested;
+          }
           if (requested) {
             self.deps.logger.debug(
               `[${sessionId}] Session restore result (requestedAcpSessionId=${requested} actualAcpSessionId=${actual ?? 'null'} resumed=${actual === requested ? 'yes' : 'no'})`
@@ -4878,6 +4923,29 @@ export class SessionExecutionService {
 
         bindReadySession(readySession);
         yield* acpReplaySuppression.release;
+        const nativeReplay = acpReplaySuppression.takeReplay();
+        if (
+          nativeReplay &&
+          restoredNativeSessionId &&
+          executionUserTurnId &&
+          acpSessionConfig.cliType === 'builtin' &&
+          (acpSessionConfig.agentType === 'claude' || acpSessionConfig.agentType === 'codex')
+        ) {
+          const catchUp = {
+            sessionDoc,
+            acpSessionId: restoredNativeSessionId,
+            cliType: acpSessionConfig.cliType,
+            agentType: acpSessionConfig.agentType,
+            userId,
+            beforeTurnId: executionUserTurnId,
+            replay: nativeReplay,
+          };
+          yield* self.ignoreWithWarning(
+            sessionId,
+            'Failed to add turns written outside Lody',
+            self.tryPromise(() => self.catchUpNativeTurns(sessionId, catchUp))
+          );
+        }
         self.deps.setSessionActivePresencePhase(sessionId, 'thinking');
         yield* self.tryPromise(() => sessionDoc.setStatus(SessionStatusFactory.running()));
         self.captureStatusChanged(sessionId, 'running', undefined, 'chat_dispatch');

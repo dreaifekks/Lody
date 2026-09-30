@@ -47,6 +47,9 @@ import {
 import type { Logger } from '@/utils/logger';
 import type { TurnHistoryGate } from '@/session/turn-history-gate';
 
+/** Replays longer than this are dropped whole; the catch-up then skips. */
+const MAX_RETAINED_ACP_REPLAY = 50_000;
+
 type AssistantTurnACPUpdateTargetSource = 'active_turn' | 'finalized_turn';
 
 export type AssistantTurnACPUpdateTarget = {
@@ -112,6 +115,8 @@ export interface SessionState {
   lateACPUpdateTarget: AssistantTurnACPUpdateTarget | undefined;
   suppressAcpReplayUntilTurnStart: boolean;
   suppressedAcpReplayCount: number;
+  /** The suppressed replay, kept for the catch-up with turns written outside Lody. */
+  suppressedAcpReplay: AcpSessionNotification[];
 
   // ── ACP update buffering ────────────────────────────────────────────────
   acpUpdateBuffer: BufferedACPUpdate[];
@@ -166,6 +171,7 @@ function createSessionState(): SessionState {
     lateACPUpdateTarget: undefined,
     suppressAcpReplayUntilTurnStart: false,
     suppressedAcpReplayCount: 0,
+    suppressedAcpReplay: [],
     acpUpdateBuffer: [],
     acpFlushInFlight: null,
     acpFlushTimer: null,
@@ -345,21 +351,39 @@ export class SessionTransientStore {
     state.lateACPUpdateTarget = undefined;
     state.suppressAcpReplayUntilTurnStart = true;
     state.suppressedAcpReplayCount = 0;
+    state.suppressedAcpReplay = [];
   }
 
-  endAcpReplaySuppression(sessionId: SessionId): number {
+  /**
+   * Ends suppression and hands over what it dropped. `replay` is undefined when
+   * the replay exceeded the retention cap and is incomplete.
+   */
+  endAcpReplaySuppression(sessionId: SessionId): {
+    droppedCount: number;
+    replay: AcpSessionNotification[] | undefined;
+  } {
     const state = this.sessions.get(sessionId);
-    if (!state) return 0;
+    if (!state) return { droppedCount: 0, replay: undefined };
     const droppedCount = state.suppressedAcpReplayCount;
+    const replay =
+      droppedCount === state.suppressedAcpReplay.length ? state.suppressedAcpReplay : undefined;
     state.suppressAcpReplayUntilTurnStart = false;
     state.suppressedAcpReplayCount = 0;
-    return droppedCount;
+    state.suppressedAcpReplay = [];
+    return { droppedCount, replay };
   }
 
-  recordSuppressedAcpReplay(sessionId: SessionId): boolean {
+  recordSuppressedAcpReplay(sessionId: SessionId, update: AcpSessionNotification): boolean {
     const state = this.get(sessionId);
     if (!state.suppressAcpReplayUntilTurnStart) {
       return false;
+    }
+    if (state.suppressedAcpReplayCount === state.suppressedAcpReplay.length) {
+      if (state.suppressedAcpReplay.length < MAX_RETAINED_ACP_REPLAY) {
+        state.suppressedAcpReplay.push(update);
+      } else {
+        state.suppressedAcpReplay = [];
+      }
     }
     state.suppressedAcpReplayCount += 1;
     return true;
@@ -420,6 +444,7 @@ export class SessionTransientStore {
     state.turnHistoryGate = null;
     state.suppressAcpReplayUntilTurnStart = false;
     state.suppressedAcpReplayCount = 0;
+    state.suppressedAcpReplay = [];
     // The ACP update buffer is NOT turn-scoped: every entry carries the target
     // it was enqueued against, so entries buffered during the finalization tail
     // (agents keep emitting after cancel) must survive the turn clear and flush

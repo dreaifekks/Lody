@@ -101,6 +101,12 @@ export interface SessionGCDeps {
   hasPendingUserWork: (sessionId: SessionId) => boolean | Promise<boolean>;
   isArchiveInFlight: (sessionId: SessionId) => boolean;
   cleanSession: (sessionId: SessionId) => Promise<void>;
+  /**
+   * Whether another client wrote to the session's native agent session since
+   * Lody drove it last. A live process would fork that work away, so such a
+   * session is reclaimed early; its next turn restores and catches up.
+   */
+  hasNativeTurnsWrittenOutside?: (sessionId: SessionId) => Promise<boolean>;
   getSessionIds: () => SessionId[];
   memoryPressure: MemoryPressureSnapshotSource;
   logger: Logger;
@@ -364,10 +370,19 @@ export class SessionGCManager {
 
     let cleaned = 0;
     let skipped = 0;
-    for (const { sessionId } of candidates) {
-      if (!(await this.isStillEligibleForGC(sessionId))) {
+    for (const { sessionId, nativeMovedOn } of candidates) {
+      if (
+        !(nativeMovedOn
+          ? await this.isEligibleForCleanup(sessionId)
+          : await this.isStillEligibleForGC(sessionId))
+      ) {
         skipped++;
         continue;
+      }
+      if (nativeMovedOn) {
+        this.deps.logger.info(
+          `[GC] Reclaiming ${sessionId}: its native session has turns written outside Lody`
+        );
       }
 
       try {
@@ -619,12 +634,17 @@ export class SessionGCManager {
   /**
    * Get idle sessions eligible for cleanup, sorted by idle time (longest idle first).
    */
-  private async getIdleCandidates(): Promise<Array<{ sessionId: SessionId; idleMs: number }>> {
+  private async getIdleCandidates(): Promise<
+    Array<{ sessionId: SessionId; idleMs: number; nativeMovedOn?: boolean }>
+  > {
     const sessions = this.getSessionsWithIdleTime();
-    const candidates: Array<{ sessionId: SessionId; idleMs: number }> = [];
+    const candidates: Array<{ sessionId: SessionId; idleMs: number; nativeMovedOn?: boolean }> = [];
 
     for (const session of sessions) {
       if (session.idleMs < this.config.idleTimeoutMs) {
+        if (await this.isNativeSessionMovedOn(session.sessionId)) {
+          candidates.push({ ...session, nativeMovedOn: true });
+        }
         continue;
       }
 
@@ -636,6 +656,19 @@ export class SessionGCManager {
     }
 
     return candidates;
+  }
+
+  private async isNativeSessionMovedOn(sessionId: SessionId): Promise<boolean> {
+    if (!this.deps.hasNativeTurnsWrittenOutside) return false;
+    if (!(await this.isEligibleForCleanup(sessionId))) return false;
+    try {
+      return await this.deps.hasNativeTurnsWrittenOutside(sessionId);
+    } catch (error) {
+      this.deps.logger.debug(
+        `[GC] Native transcript check failed for ${sessionId}: ${formatErrorMessage(error)}`
+      );
+      return false;
+    }
   }
 
   private getSessionsWithIdleTime(): Array<{ sessionId: SessionId; idleMs: number }> {
