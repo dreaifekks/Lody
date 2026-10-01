@@ -12,6 +12,11 @@ import {
 } from './lan-push-protocol';
 
 const REPORT_TIMEOUT_MS = 8_000;
+/**
+ * Long enough for a device showing the conversation to mark the reply read,
+ * or for someone at a desktop to answer a permission request first.
+ */
+export const LAN_ALERT_GRACE_MS = 10_000;
 
 type WithoutMachine<E> = E extends LanPushEvent ? Omit<E, 'machineId'> : never;
 type Report = WithoutMachine<LanPushEvent>;
@@ -57,6 +62,7 @@ export function createLanNotificationsPort(options: {
     });
 
   return {
+    alertGraceMs: LAN_ALERT_GRACE_MS,
     notifySessionCompleted: async (input) => {
       await send({
         type: 'session-completed',

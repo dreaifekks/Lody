@@ -493,6 +493,17 @@ async function withTimeoutOrUndefined<T>(
   }
 }
 
+/** Someone has read the session up to its latest reply. */
+function isSessionReadThrough(meta: SessionMeta | undefined): boolean {
+  const lastReadAt = meta?.lastReadAt;
+  const lastMessageAt = meta?.lastMessageAt;
+  return (
+    typeof lastReadAt === 'number' &&
+    typeof lastMessageAt === 'number' &&
+    lastReadAt >= lastMessageAt
+  );
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -808,6 +819,8 @@ export class MessageHandler {
   private hasShownHappyCodingMessage = false;
   private readonly cloudPort: CloudPort;
   private notificationService: CloudNotificationsPort | null;
+  /** Alerts held for `alertGraceMs`; cleared on cleanup. */
+  private readonly alertGraceTimers = new Set<NodeJS.Timeout>();
   private usageTrackingService: CloudUsagePort | null;
   private readonly turnTokenUsage = new TurnTokenUsageLedger();
   // Backstop bound on how long turn finalization waits for a cloud side
@@ -8640,7 +8653,11 @@ export class MessageHandler {
             this.logger.debug(
               `[${sessionId}] Permission request history was not confirmed before Live Activity sync; sending notification fallback`
             );
-            await notificationService.notifyPermissionRequested(notificationInput);
+            await this.notifyPermissionUnlessAnswered(
+              notificationService,
+              notificationInput,
+              () => resolved
+            );
             return;
           }
 
@@ -8652,7 +8669,11 @@ export class MessageHandler {
             return;
           }
 
-          await notificationService.notifyPermissionRequested(notificationInput);
+          await this.notifyPermissionUnlessAnswered(
+            notificationService,
+            notificationInput,
+            () => resolved
+          );
         })().catch((error: unknown) => {
           this.logger.debug(
             `[${sessionId}] Failed to send permission notification fallback: ${formatErrorMessage(
@@ -8661,7 +8682,11 @@ export class MessageHandler {
           );
         });
       } else {
-        void notificationService.notifyPermissionRequested(notificationInput);
+        void this.notifyPermissionUnlessAnswered(
+          notificationService,
+          notificationInput,
+          () => resolved
+        );
         void this.syncLiveActivitySummary(permissionUserId);
       }
     }
@@ -9663,6 +9688,8 @@ export class MessageHandler {
    * Flush pending ACP updates and tear down session resources.
    */
   async cleanup(): Promise<void> {
+    for (const timer of this.alertGraceTimers) clearTimeout(timer);
+    this.alertGraceTimers.clear();
     this.logger.debug('Cleaning up message handler resources');
     this.cleanedUp = true;
     this.cancelAllCodeCollabTurnRetryTimers();
@@ -9707,6 +9734,33 @@ export class MessageHandler {
     await this.sessionManager.cleanUp();
   }
 
+  /** Runs a held alert later; never blocks the turn that raised it. */
+  private afterAlertGrace(delayMs: number, send: () => Promise<void>): void {
+    const timer = setTimeout(() => {
+      this.alertGraceTimers.delete(timer);
+      send().catch((error: unknown) => {
+        this.logger.debug(`[notifications] Held alert failed: ${formatErrorMessage(error)}`);
+      });
+    }, delayMs);
+    timer.unref?.();
+    this.alertGraceTimers.add(timer);
+  }
+
+  private async notifyPermissionUnlessAnswered(
+    notificationService: CloudNotificationsPort,
+    input: PermissionRequestNotificationInput,
+    isAnswered: () => boolean
+  ): Promise<void> {
+    if (!notificationService.alertGraceMs) {
+      await notificationService.notifyPermissionRequested(input);
+      return;
+    }
+    this.afterAlertGrace(notificationService.alertGraceMs, async () => {
+      if (isAnswered()) return;
+      await notificationService.notifyPermissionRequested(input);
+    });
+  }
+
   private async notifySessionCompleted(
     sessionId: SessionId,
     userId: string,
@@ -9720,15 +9774,27 @@ export class MessageHandler {
       const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
       const meta = await sessionDoc.getMetaState();
       const workspaceSlug = this.workspaceSlug?.trim() || this.workspaceId;
-      await notificationService.notifySessionCompleted({
-        sessionId,
-        occurrenceId,
-        sessionTitle: meta?.title,
-        pullRequests: meta?.pullRequests,
-        workspaceId: this.workspaceId,
-        workspaceSlug,
-        userId,
-      });
+      const notify = () =>
+        notificationService.notifySessionCompleted({
+          sessionId,
+          occurrenceId,
+          sessionTitle: meta?.title,
+          pullRequests: meta?.pullRequests,
+          workspaceId: this.workspaceId,
+          workspaceSlug,
+          userId,
+        });
+      if (notificationService.alertGraceMs) {
+        // A device showing the conversation marks the reply read; then no
+        // other device needs to be told.
+        this.afterAlertGrace(notificationService.alertGraceMs, async () => {
+          const latest = await sessionDoc.getMetaState();
+          if (isSessionReadThrough(latest)) return;
+          await notify();
+        });
+      } else {
+        await notify();
+      }
       await this.syncLiveActivitySummary(userId);
     });
   }

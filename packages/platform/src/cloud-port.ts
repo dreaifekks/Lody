@@ -162,6 +162,12 @@ export interface CloudPermissionRequestResolutionInput {
 }
 
 export interface CloudNotificationsPort {
+  /**
+   * Hold completion and permission alerts this long, and drop the ones
+   * another device made moot meanwhile: a completion someone read, a
+   * permission request someone answered. Only self-hosted LANs set it.
+   */
+  alertGraceMs?: number;
   notifySessionCompleted(input: {
     sessionId: SessionId;
     occurrenceId: string;
