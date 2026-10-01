@@ -26,6 +26,8 @@ import {
   startLanHubServer,
 } from '@/lib/lan/hub-server';
 import { hostLan, pickLanHostAddress } from '@/lib/lan/lan-host';
+import { readApnsConfig, writeApnsConfig } from '@/lib/lan/apns';
+import { LAN_PUSH_STATUS_PATH, LAN_PUSH_TEST_PATH } from '@/lib/lan/lan-push-protocol';
 import {
   LAN_SERVICE_UNITS,
   LanServiceManager,
@@ -391,6 +393,7 @@ const hubCommand = new Command('hub')
         host: options.host,
         port: parsePort(options.port),
         dataDir: path.resolve(options.dataDir),
+        log: (line) => console.log(line),
         tls:
           options.tlsCert && options.tlsKey
             ? { cert: fs.readFileSync(options.tlsCert), key: fs.readFileSync(options.tlsKey) }
@@ -568,6 +571,96 @@ const statusCommand = new Command('status')
     });
   });
 
+type PushSetupOptions = OutputOptions & {
+  key: string;
+  keyId?: string;
+  teamId: string;
+  dataDir: string;
+};
+
+const pushSetupCommand = new Command('setup')
+  .description('Give the LAN host an APNs key so it can push to phones')
+  .requiredOption('--key <path>', 'AuthKey_<KEYID>.p8 downloaded from Apple Developer')
+  .option('--key-id <id>', 'Key ID; read from the file name when omitted')
+  .requiredOption('--team-id <id>', 'Apple Developer team ID')
+  .option('--data-dir <path>', 'Data directory of the LAN host', getDefaultLanHubDataDir())
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(async (options: PushSetupOptions) => {
+    await runOneShotCommand('lan', options, async () => {
+      const keyId = options.keyId ?? /AuthKey_([A-Z0-9]{10})\.p8$/.exec(options.key)?.[1];
+      if (!keyId) throw new Error('Pass --key-id; it is not in the file name');
+      writeApnsConfig(path.resolve(options.dataDir), {
+        keyId,
+        teamId: options.teamId,
+        privateKey: fs.readFileSync(options.key, 'utf8'),
+      });
+      if (options.json) {
+        printJson({ ok: true, keyId, teamId: options.teamId });
+        return;
+      }
+      console.log(`APNs key ${keyId} saved. The running host uses it from its next push.`);
+    });
+  });
+
+async function callHubPush(hub: LanHub, method: 'GET' | 'POST', pushPath: string) {
+  const response = await fetch(`${hub.url}${pushPath}`, {
+    method,
+    headers: { Authorization: `Bearer ${hub.token}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status === 404) throw new Error(`${hub.name} runs a host without push; update it`);
+  return { status: response.status, body };
+}
+
+const pushStatusCommand = new Command('status')
+  .description('Show whether the LAN host can push and how many phones registered')
+  .argument('[lan]', 'Name or id of the LAN')
+  .option('--data-dir <path>', 'Data directory, when this machine is the LAN host')
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(async (selector: string | undefined, options: OutputOptions & { dataDir?: string }) => {
+    await runOneShotCommand('lan', options, async () => {
+      const hub = requireLan(readLanHubSettings(), selector);
+      const { body } = await callHubPush(hub, 'GET', LAN_PUSH_STATUS_PATH);
+      const local = readApnsConfig(path.resolve(options.dataDir ?? getDefaultLanHubDataDir()));
+      if (options.json) {
+        printJson({ ok: true, ...body, localKeyId: local?.keyId ?? null });
+        return;
+      }
+      console.log(
+        `${hub.name}: ${body.configured ? 'APNs configured' : 'no APNs key (run `lody lan push setup` on the host)'}, ` +
+          `${String(body.devices ?? 0)} phone(s) registered`
+      );
+    });
+  });
+
+const pushTestCommand = new Command('test')
+  .description('Send a test notification to every registered phone')
+  .argument('[lan]', 'Name or id of the LAN')
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(async (selector: string | undefined, options: OutputOptions) => {
+    await runOneShotCommand('lan', options, async () => {
+      const hub = requireLan(readLanHubSettings(), selector);
+      const { status, body } = await callHubPush(hub, 'POST', LAN_PUSH_TEST_PATH);
+      if (status === 409)
+        throw new Error('The LAN host has no APNs key; run `lody lan push setup`');
+      if (options.json) {
+        printJson({ ok: true, ...body });
+        return;
+      }
+      console.log(`Delivered to ${String(body.delivered)} of ${String(body.devices)} phone(s).`);
+    });
+  });
+
+const pushCommand = new Command('push')
+  .description('Push notifications and Live Activities for phones in a LAN')
+  .addCommand(pushSetupCommand)
+  .addCommand(pushStatusCommand)
+  .addCommand(pushTestCommand);
+
 export const lanCommand = new Command('lan')
   .description('Host and join LANs: machines that reach each other without an account')
   .addCommand(listCommand)
@@ -583,4 +676,5 @@ export const lanCommand = new Command('lan')
   .addCommand(statusCommand)
   .addCommand(hubCommand)
   .addCommand(machinesCommand)
-  .addCommand(updateCommand);
+  .addCommand(updateCommand)
+  .addCommand(pushCommand);

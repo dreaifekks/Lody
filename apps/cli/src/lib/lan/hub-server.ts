@@ -14,6 +14,8 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { LORO_STREAMS_BUCKET_ID } from '@lody/shared';
+import { createApnsSender, readApnsConfig, type ApnsSender } from './apns';
+import { createLanHubPush, type LanHubPush } from './hub-push';
 
 export const LAN_HUB_DEFAULT_PORT = 8788;
 export const LAN_HUB_LORO_CLI_PACKAGE = '@loro-dev/loro-cli';
@@ -54,6 +56,9 @@ export type LanHubServerOptions = {
   /** Replaces the Streams server; the gate is tested without spawning one. */
   startUpstream?: (options: { dataDir: string }) => Promise<LanHubUpstream>;
   keepaliveMs?: number;
+  /** Replaces APNs; push is tested without Apple. */
+  sendPush?: ApnsSender;
+  log?: (line: string) => void;
 };
 
 export type LanHubServer = {
@@ -336,6 +341,7 @@ function createGate(options: {
   upstreamPort: number;
   token: string;
   keepaliveMs?: number;
+  push: LanHubPush;
 }): http.RequestListener {
   const expectedAuthorization = Buffer.from(`Bearer ${options.token}`);
   return (request, response) => {
@@ -352,6 +358,10 @@ function createGate(options: {
     }
     if (!isAuthorized(expectedAuthorization, request.headers.authorization)) {
       sendJson(request, response, 401, { error: 'unauthorized' });
+      return;
+    }
+    if (request.url?.startsWith('/push/')) {
+      void options.push.handle(request, response);
       return;
     }
 
@@ -394,6 +404,21 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
   const dataDir = path.resolve(options.dataDir);
   const token = loadOrCreateLanHubToken(dataDir);
   const upstream = await (options.startUpstream ?? startStreamsServer)({ dataDir });
+  const loadApnsConfig = () => {
+    try {
+      return readApnsConfig(dataDir);
+    } catch (error) {
+      options.log?.(`[push] unreadable APNs configuration: ${String(error)}`);
+      return null;
+    }
+  };
+  const apns = createApnsSender({ loadConfig: loadApnsConfig });
+  const push = createLanHubPush({
+    dataDir,
+    send: options.sendPush ?? apns,
+    isConfigured: () => Boolean(options.sendPush) || loadApnsConfig() !== null,
+    log: options.log,
+  });
 
   let server: http.Server | https.Server | null = null;
   let closing = false;
@@ -414,6 +439,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
         listening.closeAllConnections();
       });
     }
+    apns.close();
     upstream.stop();
     await upstream.exited;
     resolveStopped({ error });
@@ -441,6 +467,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       upstreamPort: upstream.port,
       token,
       keepaliveMs: options.keepaliveMs,
+      push,
     });
     const created = options.tls
       ? https.createServer({ cert: options.tls.cert, key: options.tls.key }, gate)

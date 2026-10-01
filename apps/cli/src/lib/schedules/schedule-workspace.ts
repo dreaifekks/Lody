@@ -1,4 +1,5 @@
 import type { RepoRoomSubscription } from 'loro-repo';
+import type { CloudNotificationsPort } from '@lody/platform';
 import {
   canonicalScheduleJson,
   getScheduleRegistryFlockDocId,
@@ -59,6 +60,7 @@ export async function createScheduleWorkspace(args: {
   slots: AgentExecutionSlots;
   logger: Logger;
   hasSessionWork: (sessionId: SessionId) => boolean;
+  notifications?: CloudNotificationsPort | null;
 }): Promise<ScheduleWorkspaceHandle> {
   const { manager, workspace, auth, slots } = args;
   const workspaceId = workspace.id as WorkspaceId;
@@ -250,6 +252,27 @@ export async function createScheduleWorkspace(args: {
           latencyMs: run ? Math.max(0, getServerNow() - run.scheduledFor) : undefined,
         })}`
       );
+      const notify = args.notifications?.notifyScheduleEvent;
+      if (
+        notify &&
+        run &&
+        runKey &&
+        (event.type === 'dispatched' || event.type === 'blocked' || event.type === 'skipped')
+      ) {
+        void notify
+          .call(args.notifications, {
+            phase: event.type,
+            scheduleId: run.scheduleId,
+            runKey,
+            title: run.definition.title,
+            sessionId: run.sessionId || null,
+            code: event.code ?? null,
+            workspaceId,
+            workspaceSlug: workspace.slug?.trim() || workspaceId,
+            userId: auth.userId,
+          })
+          .catch(() => {});
+      }
     },
     onError: () =>
       args.logger.warn(

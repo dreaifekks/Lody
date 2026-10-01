@@ -60,6 +60,7 @@ import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-contro
 import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import type { LanMemberWorkspace } from '@/lib/lan/lan-members';
 import { createLanSshDescriber } from '@/lib/lan/lan-ssh';
+import { createLanNotificationsPort } from '@/lib/lan/lan-push-notifier';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import { parseLanTerminalEndpoint, type LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import {
@@ -889,6 +890,7 @@ export class LodyFleet {
       let lody: Lody | null = null;
       let stopSchedules: (() => Promise<void>) | undefined;
       const workspaceStartAt = Date.now();
+      const workspaceCloudPort = this.cloudPortFor(workspace);
       try {
         lody = await Lody.create({
           logger: workspaceLogger,
@@ -901,7 +903,7 @@ export class LodyFleet {
           machineId: this.machineId,
           machineName: this.machineName,
           machineNameExplicit: this.machineNameExplicit,
-          cloudPort: this.cloudPortFor(workspace),
+          cloudPort: workspaceCloudPort,
           localWorkspaceCatalog: this.localWorkspaceCatalog,
           memoryPressure: this.memoryPressure,
           machineLifecycleCapability: this.machineLifecycleCapability,
@@ -974,6 +976,7 @@ export class LodyFleet {
           slots: executionSlots,
           logger: workspaceLogger,
           hasSessionWork: (sessionId) => startedLody.hasAutomationSessionWork(sessionId),
+          notifications: workspaceCloudPort.notifications,
         });
         stopSchedules = schedules.dispose;
         // Auto review and merge. It runs here rather than through MCP because
@@ -1142,12 +1145,29 @@ export class LodyFleet {
    * that LAN rather than the one the process started as.
    */
   private cloudPortFor(workspace: WorkspaceListItem): CloudPort {
-    if (!workspace.userId || workspace.userId === this.cloudPort.identity.userId) {
+    // A LAN has no hosted backend; its hub pushes to the phones of the LAN.
+    const notifications =
+      !this.cloudPort.notifications && this.isLanWorkspace(workspace.id)
+        ? createLanNotificationsPort({
+            resolveHub: () =>
+              this.lan?.hubs.find((hub) => getLanHubWorkspaceId(hub.id) === workspace.id) ?? null,
+            machineId: this.machineId,
+            logger: this.logger,
+          })
+        : this.cloudPort.notifications;
+    const sameUser = !workspace.userId || workspace.userId === this.cloudPort.identity.userId;
+    if (sameUser && notifications === this.cloudPort.notifications) {
       return this.cloudPort;
     }
     return {
       ...this.cloudPort,
-      identity: { ...this.cloudPort.identity, userId: workspace.userId },
+      identity: sameUser
+        ? this.cloudPort.identity
+        : {
+            ...this.cloudPort.identity,
+            userId: workspace.userId ?? this.cloudPort.identity.userId,
+          },
+      notifications,
       // The fleet owns the port; a workspace that stops must not dispose it.
       dispose: () => Promise.resolve(),
     };

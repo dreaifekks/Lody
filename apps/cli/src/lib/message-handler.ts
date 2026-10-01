@@ -1664,6 +1664,29 @@ export class MessageHandler {
       items: [noticeItem],
     };
     await sessionDoc.sessionData.commands.appendTurn(systemNotice);
+    void this.notifySessionFailed(sessionDoc, reason, message);
+  }
+
+  private async notifySessionFailed(
+    sessionDoc: SessionDocument,
+    reason: ChatFailedReason,
+    message?: string
+  ): Promise<void> {
+    const notify = this.notificationService?.notifySessionFailed;
+    if (!notify) return;
+    const sessionId = sessionDoc.sessionId;
+    await this.runTurnCloudSideEffect(sessionId, 'failure notification', async () => {
+      const meta = await sessionDoc.getMetaState();
+      await notify.call(this.notificationService, {
+        sessionId,
+        sessionTitle: meta?.title,
+        workspaceId: this.workspaceId,
+        workspaceSlug: this.workspaceSlug?.trim() || this.workspaceId,
+        userId: meta?.userId ?? this.userId,
+        reason,
+        message,
+      });
+    });
   }
 
   private async applyAcpModeAndModel(

@@ -172,6 +172,28 @@ export interface CloudNotificationsPort {
     userId: string;
   }): Promise<void>;
   notifyPermissionRequested(input: CloudPermissionRequestNotificationInput): Promise<void>;
+  /** A turn that ended in a recorded failure. Only self-hosted LANs implement it. */
+  notifySessionFailed?(input: {
+    sessionId: SessionId;
+    sessionTitle?: string | null;
+    workspaceId: WorkspaceId;
+    workspaceSlug: string;
+    userId: string;
+    reason: string;
+    message?: string | null;
+  }): Promise<void>;
+  /** A scheduled task fired or could not. Only self-hosted LANs implement it. */
+  notifyScheduleEvent?(input: {
+    phase: 'dispatched' | 'blocked' | 'skipped';
+    scheduleId: string;
+    runKey: string;
+    title: string;
+    sessionId?: string | null;
+    code?: string | null;
+    workspaceId: WorkspaceId;
+    workspaceSlug: string;
+    userId: string;
+  }): Promise<void>;
   recordPermissionRequested(input: CloudPermissionRequestNotificationInput): Promise<void>;
   resolvePermissionRequested(input: CloudPermissionRequestResolutionInput): Promise<void>;
   syncLiveActivitySummary(input: {
