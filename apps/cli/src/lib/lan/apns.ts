@@ -157,6 +157,17 @@ export function createApnsSender(options: {
     sessions.set(environment, session);
     return session;
   };
+  // A push in flight keeps the process alive until APNs answers.
+  const inFlight = new WeakMap<http2.ClientHttp2Session, number>();
+  const hold = (session: http2.ClientHttp2Session) => {
+    inFlight.set(session, (inFlight.get(session) ?? 0) + 1);
+    session.ref();
+    return () => {
+      const left = (inFlight.get(session) ?? 1) - 1;
+      inFlight.set(session, left);
+      if (left === 0 && !session.destroyed) session.unref();
+    };
+  };
 
   const send: ApnsSender = async (push) => {
     const config = options.loadConfig();
@@ -175,8 +186,11 @@ export function createApnsSender(options: {
     const body = JSON.stringify(push.payload);
     return await new Promise<ApnsResult>((resolve) => {
       let request: http2.ClientHttp2Stream;
+      let release: () => void;
       try {
-        request = sessionFor(push.environment).request(headers);
+        const session = sessionFor(push.environment);
+        request = session.request(headers);
+        release = hold(session);
       } catch (error) {
         resolve({ ok: false, status: 0, reason: String(error), unregistered: false });
         return;
@@ -193,6 +207,7 @@ export function createApnsSender(options: {
         resolve({ ok: false, status, reason: error.message, unregistered: false })
       );
       request.on('close', () => {
+        release();
         if (status === 200) {
           resolve({ ok: true });
           return;
