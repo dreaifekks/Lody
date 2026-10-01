@@ -248,6 +248,8 @@ export function createLanHubPush(options: {
    * re-stamps `lastRunningSeen` when the agent resumes, the turn keeps going.
    */
   const workStarts = new Map<string, number>();
+  /** Activities already ended; a phone lists them until they are dismissed. */
+  const endedTokens = new Set<string>();
   const machinesSeen = new Map<string, number>();
   /** Naming the sender only helps once more than one machine reports. */
   const senderName = (event: { machineId: string; machineName?: string | null }) => {
@@ -368,6 +370,83 @@ export function createLanHubPush(options: {
     return { latest, items: pinned, statusCounts, active, permissionAlert };
   };
 
+  type MergedState = NonNullable<ReturnType<typeof mergedState>>;
+
+  const contentStateFor = (device: LanPushDevice, state: MergedState) => {
+    const labels = device.liveActivityLabels ?? {};
+    return {
+      totalCount: state.items.length,
+      statusCounts: state.statusCounts,
+      items: state.items.map((item) => ({
+        ...item,
+        statusLabel: labels[item.status] ?? item.statusLabel,
+        // Relative labels age between pushes; the widget does not show them.
+        updatedAtLabel: '',
+      })),
+      ...(state.permissionAlert ? { permissionAlert: state.permissionAlert } : {}),
+      ...(device.liveActivityCopy ? { copy: device.liveActivityCopy } : {}),
+    };
+  };
+
+  /** Brings one running activity up to date, or ends it when the work stopped. */
+  const updateActivity = async (
+    device: LanPushDevice,
+    activityId: string,
+    state: MergedState
+  ): Promise<boolean> => {
+    const token = device.activities[activityId];
+    if (!token) return false;
+    const timestamp = Math.floor(now() / 1000);
+    const contentState = contentStateFor(device, state);
+    const ok = await push(device, {
+      deviceToken: token,
+      topic: `${device.bundleId}.push-type.liveactivity`,
+      pushType: 'liveactivity',
+      priority: state.active && !state.permissionAlert ? 5 : 10,
+      payload: {
+        aps: state.active
+          ? {
+              timestamp,
+              event: 'update',
+              'content-state': contentState,
+              'stale-date': timestamp + STALE_AFTER_S,
+            }
+          : {
+              timestamp,
+              event: 'end',
+              'content-state': contentState,
+              'dismissal-date': timestamp + DISMISS_AFTER_S,
+            },
+      },
+    });
+    if (!state.active) {
+      endedTokens.add(token);
+      if (endedTokens.size > SEEN_EVENT_LIMIT) {
+        endedTokens.delete(endedTokens.values().next().value as string);
+      }
+      if (device.activities[activityId] === token) {
+        delete device.activities[activityId];
+        persist();
+      }
+    }
+    return ok;
+  };
+
+  /**
+   * A phone reports the token of an activity some time after it starts, and
+   * a short turn may finish first. Whatever happened meanwhile is pushed to
+   * the new token right away, so the activity never stays behind.
+   */
+  const catchUp = async (device: LanPushDevice, previous: Record<string, string>) => {
+    for (const [activityId, token] of Object.entries(device.activities)) {
+      if (previous[activityId] === token || !summaries.has(activityId)) continue;
+      const state = mergedState(activityId);
+      if (!state) continue;
+      wasActive.set(`${device.deviceToken}:${activityId}`, state.active);
+      await updateActivity(device, activityId, state);
+    }
+  };
+
   const liveActivity = async (summary: Summary): Promise<LanPushLiveActivityResult> => {
     let bySource = summaries.get(summary.activityId);
     if (!bySource) summaries.set(summary.activityId, (bySource = new Map()));
@@ -381,71 +460,32 @@ export function createLanHubPush(options: {
       recipients(summary.userId)
         .filter((device) => device.liveActivities)
         .map(async (device) => {
-          const labels = device.liveActivityLabels ?? {};
-          const contentState = {
-            totalCount: state.items.length,
-            statusCounts: state.statusCounts,
-            items: state.items.map((item) => ({
-              ...item,
-              statusLabel: labels[item.status] ?? item.statusLabel,
-              // Relative labels age between pushes; the widget does not show them.
-              updatedAtLabel: '',
-            })),
-            ...(state.permissionAlert ? { permissionAlert: state.permissionAlert } : {}),
-            ...(device.liveActivityCopy ? { copy: device.liveActivityCopy } : {}),
-          };
           const key = `${device.deviceToken}:${summary.activityId}`;
           const before = wasActive.get(key) ?? false;
           wasActive.set(key, state.active);
-          const token = device.activities[summary.activityId];
-          const topic = `${device.bundleId}.push-type.liveactivity`;
-          if (token) {
-            const ok = await push(device, {
-              deviceToken: token,
-              topic,
-              pushType: 'liveactivity',
-              priority: state.active && !state.permissionAlert ? 5 : 10,
-              payload: {
-                aps: state.active
-                  ? {
-                      timestamp,
-                      event: 'update',
-                      'content-state': contentState,
-                      'stale-date': timestamp + STALE_AFTER_S,
-                    }
-                  : {
-                      timestamp,
-                      event: 'end',
-                      'content-state': contentState,
-                      'dismissal-date': timestamp + DISMISS_AFTER_S,
-                    },
-              },
-            });
-            if (ok) delivered += 1;
-            if (!state.active) {
-              ended = true;
-              delete device.activities[summary.activityId];
-              persist();
-            }
+          if (device.activities[summary.activityId]) {
+            if (await updateActivity(device, summary.activityId, state)) delivered += 1;
+            if (!state.active) ended = true;
             return;
           }
           // No activity on this phone: start one when work begins, the way the
           // phone itself would if it were open.
           if (!state.active || before || !device.pushToStartToken) return;
+          const labels = device.liveActivityLabels ?? {};
           const focus =
             state.items.find(
               (item) => item.status === 'permission' || item.status === 'question'
             ) ?? state.items.find((item) => item.status === 'running');
           const ok = await push(device, {
             deviceToken: device.pushToStartToken,
-            topic,
+            topic: `${device.bundleId}.push-type.liveactivity`,
             pushType: 'liveactivity',
             priority: 10,
             payload: {
               aps: {
                 timestamp,
                 event: 'start',
-                'content-state': contentState,
+                'content-state': contentStateFor(device, state),
                 'stale-date': timestamp + STALE_AFTER_S,
                 'attributes-type': LIVE_ACTIVITY_ATTRIBUTES_TYPE,
                 attributes: {
@@ -543,9 +583,18 @@ export function createLanHubPush(options: {
           const oldest = [...devices.values()].sort((a, b) => a.updatedAt - b.updatedAt)[0];
           if (oldest) devices.delete(oldest.deviceToken);
         }
+        const previous = devices.get(device.deviceToken)?.activities ?? {};
+        for (const [activityId, token] of Object.entries(device.activities)) {
+          if (endedTokens.has(token)) delete device.activities[activityId];
+        }
         devices.set(device.deviceToken, device);
         persist();
         sendJson(response, 200, { ok: true, configured: options.isConfigured() });
+        if (options.isConfigured() && device.liveActivities) {
+          void catchUp(device, previous).catch((error: unknown) =>
+            log(`[push] catching up a new activity failed: ${String(error)}`)
+          );
+        }
       } else if (pathname === LAN_PUSH_DEVICES_PATH && request.method === 'DELETE') {
         const body = await readJson(request);
         const token = isRecord(body) ? body.deviceToken : undefined;

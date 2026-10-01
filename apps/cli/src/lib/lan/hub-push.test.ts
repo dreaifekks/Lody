@@ -254,17 +254,18 @@ describe('LAN host push', () => {
     await notifications.syncLiveActivitySummary(summary('running'));
     expect(sent).toHaveLength(1);
 
-    // The phone reports the activity it started.
+    // The phone reports the activity it started and is brought up to date.
     await register({ activities: { [ACTIVITY]: ACTIVITY_TOKEN } });
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
     await notifications.syncLiveActivitySummary(summary('running'));
-    expect(sent[1]).toMatchObject({
+    expect(sent[2]).toMatchObject({
       deviceToken: ACTIVITY_TOKEN,
       priority: 5,
       payload: { aps: { event: 'update' } },
     });
 
     const result = await notifications.syncLiveActivitySummary(summary('unread'));
-    expect(sent[2]).toMatchObject({
+    expect(sent[3]).toMatchObject({
       deviceToken: ACTIVITY_TOKEN,
       payload: { aps: { event: 'end', 'dismissal-date': Math.floor(clock / 1000) + 60 } },
     });
@@ -323,6 +324,49 @@ describe('LAN host push', () => {
     await notifications.syncLiveActivitySummary(summary('running', clock - 60_000));
     expect(startedAtOf(0)).toBe(clock - 600_000);
     expect(startedAtOf(1)).toBe(clock - 600_000);
+  });
+
+  it('ends an activity whose token arrives after its turn already finished', async () => {
+    await register();
+    const notifications = port();
+    const summary = (status: 'running' | 'unread') => ({
+      activityId: ACTIVITY,
+      workspaceId: WORKSPACE as never,
+      userId: USER,
+      totalCount: 1,
+      statusCounts: { permission: 0, question: 0, running: 0, unread: 0, [status]: 1 },
+      items: [
+        {
+          id: 'session-1',
+          status,
+          statusLabel: status,
+          agentLogoKind: 'claude' as const,
+          agentLogoText: 'CC',
+          title: 'Quick fix',
+          updatedAt: clock,
+          updatedAtLabel: '',
+        },
+      ],
+      updatedAt: clock,
+    });
+    await notifications.syncLiveActivitySummary(summary('running'));
+    expect(sent.map((push) => (push.payload as { aps: { event: string } }).aps.event)).toEqual([
+      'start',
+    ]);
+    // The turn is over before the phone reports the started activity.
+    await notifications.syncLiveActivitySummary(summary('unread'));
+    expect(sent).toHaveLength(1);
+
+    await register({ activities: { [ACTIVITY]: ACTIVITY_TOKEN } });
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toMatchObject({
+      deviceToken: ACTIVITY_TOKEN,
+      payload: { aps: { event: 'end' } },
+    });
+    // Registering the same token again pushes nothing more.
+    await register({ activities: { [ACTIVITY]: ACTIVITY_TOKEN } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(sent).toHaveLength(2);
   });
 
   it('forgets a token APNs no longer accepts', async () => {
