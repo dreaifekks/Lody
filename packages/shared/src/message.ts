@@ -1183,6 +1183,14 @@ export type LocalProjectControlRequest =
       machineId: MachineId;
     }
   | {
+      /** Gives `target` a short name in the LANs this machine shares with it. */
+      type: 'lan/alias-machine';
+      machineId: MachineId;
+      target: MachineId;
+      /** `null` takes the short name back. */
+      alias: string | null;
+    }
+  | {
       /**
        * Asks the agent service of this machine to put `request` to another
        * member of one of its LANs; `request` names that member and that LAN.
@@ -1294,6 +1302,7 @@ export type LocalProjectControlResponse =
   | LocalProjectControlOkResponse<'worktree/read-file', LocalProjectFileReadResult | null>
   | LanMemberControlOkResponse
   | LocalProjectControlOkResponse<'lan/machines', LanMachines>
+  | LocalProjectControlOkResponse<'lan/alias-machine', { alias: string | null }>
   | LocalProjectControlOkResponse<'lan/forward', { response: LanMemberControlResponse }>
   | LocalProjectControlErrorResponse;
 

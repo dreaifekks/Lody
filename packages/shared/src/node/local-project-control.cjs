@@ -1,5 +1,8 @@
 const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
 
+// Kept equal to LAN_MACHINE_ALIAS_MAX of lan-control.ts.
+const LAN_MACHINE_ALIAS_MAX = 32;
+
 const LAN_MEMBER_CONTROL_TYPES = new Set([
   'lan/update-machine',
   'lan/install-agent',
@@ -521,6 +524,14 @@ function isLocalProjectControlRequest(value) {
     return true;
   }
 
+  if (value.type === 'lan/alias-machine') {
+    return (
+      typeof value.target === 'string' &&
+      (value.alias === null ||
+        (typeof value.alias === 'string' && value.alias.length <= LAN_MACHINE_ALIAS_MAX))
+    );
+  }
+
   if (value.type === 'lan/forward') {
     return (
       isObjectRecord(value.request) &&
@@ -702,6 +713,13 @@ function isLocalProjectControlResponse(value) {
           Array.isArray(machine.lans) &&
           Array.isArray(machine.agents)
       )
+    );
+  }
+
+  if (value.type === 'lan/alias-machine') {
+    return (
+      isObjectRecord(value.result) &&
+      (value.result.alias === null || typeof value.result.alias === 'string')
     );
   }
 

@@ -31,8 +31,11 @@ export function createLanNotificationsPort(options: {
   /** Read at each report, so a LAN that moved is followed. */
   resolveHub: () => LanHub | null;
   machineId: string;
-  /** Read at each report; `lody lan name` renames a running member. */
-  machineName?: () => string | null;
+  /**
+   * Read at each report; `lody lan name` renames a running member, and a
+   * short name given in the LAN takes the place of the name.
+   */
+  machineName?: () => string | null | Promise<string | null>;
   logger: Logger;
   fetch?: typeof fetch;
 }): Required<CloudNotificationsPort> {
@@ -64,7 +67,7 @@ export function createLanNotificationsPort(options: {
     await report({
       ...event,
       machineId: options.machineId,
-      machineName: options.machineName?.() ?? null,
+      machineName: (await options.machineName?.()) ?? null,
     });
 
   return {

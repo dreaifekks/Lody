@@ -62,10 +62,28 @@ export function sameLanAgentRuntimes(
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/** How long a short name a member gives a machine may be. */
+export const LAN_MACHINE_ALIAS_MAX = 32;
+
+/**
+ * A short name for a machine as it is written, or `null` for none. Anything
+ * that is not text, or holds nothing but spaces, is none.
+ */
+export function normalizeLanMachineAlias(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const alias = value.replace(/\s+/g, ' ').trim();
+  return alias ? alias.slice(0, LAN_MACHINE_ALIAS_MAX) : null;
+}
+
 export const LanMachineSchema = z
   .object({
     machineId: z.string().min(1),
     name: z.string(),
+    /**
+     * The short name a member gave the machine, shown before its name and
+     * used by alerts where room is short. `null` while it has none.
+     */
+    alias: z.string().max(LAN_MACHINE_ALIAS_MAX).nullable(),
     os: z.string().nullable(),
     /** The machine that answers. */
     self: z.boolean(),

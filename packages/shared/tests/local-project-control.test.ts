@@ -672,6 +672,11 @@ describe('what the members of a LAN ask of each other', () => {
       expect(accepts({ type: 'lan/forward', machineId: 'machine-1', request })).toEqual(all(true));
     }
     expect(accepts({ type: 'lan/machines', machineId: 'machine-1' })).toEqual(all(true));
+    const alias = { type: 'lan/alias-machine', machineId: 'machine-1', target: 'machine-2' };
+    expect(accepts({ ...alias, alias: 'nas' })).toEqual(all(true));
+    expect(accepts({ ...alias, alias: null })).toEqual(all(true));
+    expect(accepts({ ...alias, alias: 'x'.repeat(33) })).toEqual(all(false));
+    expect(accepts({ ...alias, alias: 'nas', target: undefined })).toEqual(all(false));
 
     expect(accepts({ ...install, agentType: undefined })).toEqual(all(false));
     expect(accepts({ ...importing, categories: ['sessions'] })).toEqual(all(false));
@@ -686,6 +691,15 @@ describe('what the members of a LAN ask of each other', () => {
       forward({ type: 'local-project/add', machineId: 'machine-2', rootPath: '/tmp/project' })
     ).toEqual(all(false));
     expect(forward({ type: 'lan/machines', machineId: 'machine-2' })).toEqual(all(false));
+    // A short name is written by this machine; no member is asked for it.
+    expect(
+      forward({
+        type: 'lan/alias-machine',
+        machineId: 'machine-2',
+        target: 'machine-2',
+        alias: 'x',
+      })
+    ).toEqual(all(false));
     expect(forward({ type: 'lan/forward', machineId: 'machine-2', request: update })).toEqual(
       all(false)
     );
@@ -714,6 +728,7 @@ describe('what the members of a LAN ask of each other', () => {
           {
             machineId: 'machine-2',
             name: 'server',
+            alias: 'nas',
             os: 'linux',
             self: false,
             online: true,
@@ -735,6 +750,8 @@ describe('what the members of a LAN ask of each other', () => {
       refused,
       machines,
       { ok: true, type: 'lan/install-agent', result: { agentType: 'claude', outcome: 'current' } },
+      { ok: true, type: 'lan/alias-machine', result: { alias: 'nas' } },
+      { ok: true, type: 'lan/alias-machine', result: { alias: null } },
       { ok: true, type: 'lan/forward', result: { response: started } },
       { ok: true, type: 'lan/forward', result: { response: refused } },
     ]) {

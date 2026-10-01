@@ -64,7 +64,7 @@ export const machinesCommand = new Command('machines')
             { header: 'Agents' },
           ],
           inventory.machines.map((machine) => [
-            machine.name,
+            machine.alias ? `${machine.alias} (${machine.name})` : machine.name,
             describePresence(machine),
             machine.version ?? '',
             describeLanMachineUpdate(machine, newest),

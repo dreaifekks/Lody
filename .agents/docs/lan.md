@@ -279,6 +279,12 @@ workspace, where members already read its name:
 | `lanUpdate` | Where an update stands; absent while none is under way                       |
 | `lanAgents` | The runtime of each agent it has providers for: installed and pinned version |
 
+One field is not the machine's own: `lanAlias`, the short name a member gave
+it in Settings > LAN. The agent service of that member writes it into every
+LAN it shares with the machine, which need not be online, and the last one
+written wins. The list shows it before the machine's name, and a member puts it
+in the alerts it reports to the hub in place of that name.
+
 Listing asks nothing of a machine. What a member asks of one is a
 project-control request, and four of them cross machines: `lan/update-machine`,
 `lan/install-agent`, `hosted-config/preview` and `hosted-config/import`.

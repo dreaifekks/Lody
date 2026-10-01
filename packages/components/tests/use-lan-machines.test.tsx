@@ -37,6 +37,7 @@ vi.mock('@/lib/electron-ipc-client', () => ({
 
 const machine = (overrides: Partial<LanMachine> & { machineId: string }): LanMachine => ({
   name: overrides.machineId,
+  alias: null,
   os: 'linux',
   self: false,
   online: true,
@@ -103,10 +104,7 @@ describe('asking the machines of the LANs', () => {
 
   it('lists the machines and keeps the list current', async () => {
     expect(control.loading).toBe(false);
-    expect(control.inventory?.machines.map((entry) => entry.machineId)).toEqual([
-      'desk',
-      'server',
-    ]);
+    expect(control.inventory?.machines.map((entry) => entry.machineId)).toEqual(['desk', 'server']);
     expect(sent('lan/machines')).toEqual([{ type: 'lan/machines', machineId: '' }]);
 
     listed = [desk];
@@ -182,6 +180,43 @@ describe('asking the machines of the LANs', () => {
     ]);
   });
 
+  it('gives another member a short name through this machine, without asking it', async () => {
+    answers.set('lan/alias-machine', {
+      ok: true,
+      type: 'lan/alias-machine',
+      result: { alias: 'nuc' },
+    });
+    const before = sent('lan/machines').length;
+    let named;
+    await act(async () => {
+      named = await control.setAlias(server, 'nuc');
+    });
+
+    expect(named).toEqual({ ok: true, result: { alias: 'nuc' } });
+    expect(sent('lan/alias-machine')).toEqual([
+      { type: 'lan/alias-machine', machineId: '', target: 'server', alias: 'nuc' },
+    ]);
+    expect(sent('lan/forward')).toEqual([]);
+    // The list shows the short name without waiting for the next round.
+    expect(sent('lan/machines').length).toBeGreaterThan(before);
+
+    answers.set('lan/alias-machine', {
+      ok: false,
+      type: 'lan/alias-machine',
+      error: 'execution_failed',
+      message: 'No LAN of this machine has that machine',
+    });
+    let refused;
+    await act(async () => {
+      refused = await control.setAlias(server, null);
+    });
+    expect(refused).toEqual({
+      ok: false,
+      message: 'No LAN of this machine has that machine',
+      reason: null,
+    });
+  });
+
   it('says why a machine refused, and that one did not answer', async () => {
     answers.set('lan/forward', {
       ok: true,
@@ -216,7 +251,11 @@ describe('asking the machines of the LANs', () => {
     await act(async () => {
       silent = await control.previewHostedImport(server);
     });
-    expect(silent).toEqual({ ok: false, message: 'Local CLI daemon is unavailable.', reason: null });
+    expect(silent).toEqual({
+      ok: false,
+      message: 'Local CLI daemon is unavailable.',
+      reason: null,
+    });
 
     let unreachable;
     await act(async () => {

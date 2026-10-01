@@ -6,13 +6,13 @@ import {
 import {
   LanAgentInstallResultSchema,
   LanMachineUpdateResultSchema,
+  LAN_MACHINE_ALIAS_MAX,
   LanMachinesSchema,
   isLanMemberControlType,
 } from '../lan-control';
 import type { LocalProjectControlRequest, LocalProjectControlResponse } from '../message';
 
 export const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
-
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -514,6 +514,14 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     return true;
   }
 
+  if (value.type === 'lan/alias-machine') {
+    return (
+      typeof value.target === 'string' &&
+      (value.alias === null ||
+        (typeof value.alias === 'string' && value.alias.length <= LAN_MACHINE_ALIAS_MAX))
+    );
+  }
+
   if (value.type === 'lan/forward') {
     return (
       isObjectRecord(value.request) &&
@@ -674,6 +682,13 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'lan/machines') {
     return LanMachinesSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/alias-machine') {
+    return (
+      isObjectRecord(value.result) &&
+      (value.result.alias === null || typeof value.result.alias === 'string')
+    );
   }
 
   if (value.type === 'lan/forward') {

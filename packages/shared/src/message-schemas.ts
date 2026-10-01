@@ -4,6 +4,7 @@ import {
   HostedConfigPreviewSchema,
 } from './hosted-config';
 import {
+  LAN_MACHINE_ALIAS_MAX,
   LanAgentInstallResultSchema,
   LanMachineUpdateResultSchema,
   LanMachinesSchema,
@@ -2406,6 +2407,20 @@ export const LanMachinesRequestSchema = z
   .strict();
 
 /**
+ * Gives a machine of the LANs of this machine a short name, or takes it back
+ * with `null`. The agent service of this machine writes it into the LANs it
+ * shares with that machine, so the machine need not be online.
+ */
+export const LanAliasMachineRequestSchema = z
+  .object({
+    type: z.literal('lan/alias-machine'),
+    machineId: MachineIdSchema,
+    target: MachineIdSchema,
+    alias: z.string().max(LAN_MACHINE_ALIAS_MAX).nullable(),
+  })
+  .strict();
+
+/**
  * Asks the agent service of this machine to put a request to another member
  * of one of its LANs. The request inside names that member and that LAN.
  */
@@ -2446,6 +2461,7 @@ export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LanUpdateMachineRequestSchema,
   LanInstallAgentRequestSchema,
   LanMachinesRequestSchema,
+  LanAliasMachineRequestSchema,
   LanForwardRequestSchema,
 ]);
 
@@ -2707,6 +2723,7 @@ const LocalProjectControlErrorResponseSchema = z
       'lan/update-machine',
       'lan/install-agent',
       'lan/machines',
+      'lan/alias-machine',
       'lan/forward',
     ]),
     error: LocalProjectControlErrorCodeSchema,
@@ -2968,6 +2985,13 @@ export const LocalProjectControlResponseSchema = z.union([
       ok: z.literal(true),
       type: z.literal('lan/machines'),
       result: LanMachinesSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      type: z.literal('lan/alias-machine'),
+      result: z.object({ alias: z.string().nullable() }).strict(),
     })
     .strict(),
   z

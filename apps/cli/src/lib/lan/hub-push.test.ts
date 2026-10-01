@@ -109,7 +109,8 @@ describe('LAN host push', () => {
     createLanNotificationsPort({
       resolveHub: member,
       machineId,
-      machineName: () => machineName,
+      // Read from the LAN's workspace, where a short name may stand in for it.
+      machineName: async () => machineName,
       logger: { debug: () => {} } as never,
     });
 

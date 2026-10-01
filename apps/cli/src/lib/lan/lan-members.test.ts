@@ -31,6 +31,8 @@ import {
   listLanMachines,
   publishLanMachineFacts,
   publishLanSshDestination,
+  readLanMachineAlias,
+  writeLanMachineAlias,
   type LanMemberWorkspace,
 } from './lan-members';
 
@@ -215,6 +217,7 @@ describe('the machines of the LANs of a machine', () => {
     expect(machines[0]).toEqual({
       machineId: THIS,
       name: 'desk',
+      alias: null,
       os: 'darwin',
       self: true,
       online: true,
@@ -257,6 +260,62 @@ describe('the machines of the LANs of a machine', () => {
       controllable: false,
       agents: [],
     });
+  });
+
+  it('gives a machine a short name in every LAN that has it, and takes it back', async () => {
+    const home = await workspace(HOME, {
+      getOnlineMachineIds: async () => new Set([THIS, SERVER]),
+    });
+    const office = await workspace(OFFICE);
+    await register(home, THIS);
+    await register(home, SERVER);
+    await register(office, SERVER);
+    await register(office, LAPTOP);
+
+    // The server need not be online in the office for its short name to be written there.
+    await expect(
+      writeLanMachineAlias({ workspaces: [home, office], target: SERVER, alias: '  nas   box ' })
+    ).resolves.toBe('nas box');
+    await expect(
+      writeLanMachineAlias({ workspaces: [home, office], target: THIS, alias: 'me' })
+    ).resolves.toBe('me');
+
+    expect(await readLanMachineAlias(home.repo, SERVER)).toBe('nas box');
+    expect(await readLanMachineAlias(office.repo, SERVER)).toBe('nas box');
+    expect(await readLanMachineAlias(home.repo, THIS)).toBe('me');
+    // Registering again says nothing about the short name and keeps it.
+    await register(home, SERVER, { cliVersion: '0.100.0-lan.4' });
+
+    const listed = (await list([home, office])).machines;
+    expect(listed.map((machine) => [machine.machineId, machine.name, machine.alias])).toEqual([
+      [THIS, 'desk', 'me'],
+      [SERVER, 'server', 'nas box'],
+      [LAPTOP, 'laptop', null],
+    ]);
+
+    await expect(
+      writeLanMachineAlias({ workspaces: [home, office], target: SERVER, alias: '   ' })
+    ).resolves.toBeNull();
+    expect(await readLanMachineAlias(home.repo, SERVER)).toBeNull();
+    expect(await readLanMachineAlias(office.repo, SERVER)).toBeNull();
+    expect((await list([home, office])).machines[1]).toMatchObject({
+      machineId: SERVER,
+      alias: null,
+    });
+  });
+
+  it('names no machine that no LAN of this machine has', async () => {
+    const home = await workspace(HOME);
+    const implicit = await workspace('lw_implicit' as WorkspaceId, { lan: false });
+    await register(implicit, SERVER);
+    await register(home, 'machine-ghost' as MachineId, { ownerUserId: 'local:shared' });
+
+    for (const target of [SERVER, 'machine-ghost' as MachineId, LAPTOP]) {
+      await expect(
+        writeLanMachineAlias({ workspaces: [home, implicit], target, alias: 'x' })
+      ).rejects.toThrow('No LAN of this machine has that machine');
+    }
+    expect(await readLanMachineAlias(implicit.repo, SERVER)).toBeNull();
   });
 
   it('lists this machine alone when it is a member of no LAN', async () => {

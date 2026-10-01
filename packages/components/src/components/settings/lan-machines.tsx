@@ -1,6 +1,15 @@
 import { useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
-import { Download, Laptop, MoreHorizontal, RefreshCw, Server, SquareTerminal } from 'lucide-react';
+import { colors } from '@lody/ui/tokens/colors.stylex';
+import {
+  Download,
+  Laptop,
+  MoreHorizontal,
+  PencilLine,
+  RefreshCw,
+  Server,
+  SquareTerminal,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { LanAgentRuntime, LanMachine, LanMachines } from '@lody/shared/lan-control';
 import { resolveLanUpdateAvailability } from '@lody/shared/lan-release';
@@ -14,6 +23,7 @@ import { Button } from '@lody/ui/button';
 import { Spinner } from '@lody/ui/spinner';
 import { CompactSection } from './compact-layout';
 import { LanHostedImport } from './lan-hosted-import';
+import { LanMachineAlias } from './lan-machine-alias';
 import { LanMachineSshEntry } from './lan-machine-ssh-entry';
 import { settingsCatalog as catalog } from './surface';
 
@@ -28,13 +38,26 @@ const styles = stylex.create({
     paddingInline: '16px',
     paddingBlock: '8px',
   },
+  /**
+   * The machine's own name after the short name a member gave it: a step
+   * below the caption and quiet, because the short name is the one to read.
+   */
+  machineName: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontSize: 'calc(var(--ui-font-size, 14px) * 0.786)',
+    lineHeight: 1.45,
+    color: colors.tertiaryLabel,
+  },
   /** One fact after another, each as long as it is; a long line wraps between facts. */
   facts: { display: 'flex', flexWrap: 'wrap', rowGap: '2px', minWidth: 0, whiteSpace: 'pre' },
 });
 
 export type LanMachinesViewProps = Pick<
   LanMachinesControl,
-  'updateMachine' | 'installAgent' | 'previewHostedImport' | 'importHostedConfig'
+  'updateMachine' | 'installAgent' | 'previewHostedImport' | 'importHostedConfig' | 'setAlias'
 > & {
   inventory: LanMachines;
   /**
@@ -93,6 +116,7 @@ export function LanMachinesView({
   installAgent,
   previewHostedImport,
   importHostedConfig,
+  setAlias,
   sshEntries,
   onSshEntryChange,
 }: LanMachinesViewProps) {
@@ -100,6 +124,7 @@ export function LanMachinesView({
   const [confirming, setConfirming] = useState<LanMachine | null>(null);
   const [importing, setImporting] = useState<LanMachine | null>(null);
   const [naming, setNaming] = useState<LanMachine | null>(null);
+  const [aliasing, setAliasing] = useState<LanMachine | null>(null);
   const [asked, setAsked] = useState<ReadonlySet<string>>(new Set());
   const newest = inventory.newest?.version ?? null;
 
@@ -151,6 +176,16 @@ export function LanMachinesView({
       );
     });
 
+  const alias = (machine: LanMachine, next: string | null) =>
+    asking(machine.machineId, async () => {
+      const answer = await setAlias(machine, next);
+      if (!answer.ok) {
+        toast.error(
+          t('settings.lan.machines.alias.failed', { name: machine.name, message: answer.message })
+        );
+      }
+    });
+
   return (
     <>
       <CompactSection title={t('settings.lan.machines.title')} boxed>
@@ -163,6 +198,7 @@ export function LanMachinesView({
             sshEntry={sshEntries?.[machine.machineId] ?? null}
             onUpdate={() => setConfirming(machine)}
             onImport={() => setImporting(machine)}
+            onAlias={() => setAliasing(machine)}
             onInstallAgent={(agent) => install(machine, agent)}
             onNameSshEntry={onSshEntryChange ? () => setNaming(machine) : undefined}
           />
@@ -208,6 +244,8 @@ export function LanMachinesView({
         importHostedConfig={importHostedConfig}
       />
 
+      <LanMachineAlias machine={aliasing} onClose={() => setAliasing(null)} onChange={alias} />
+
       {onSshEntryChange ? (
         <LanMachineSshEntry
           machine={naming}
@@ -227,6 +265,7 @@ function MachineRow({
   sshEntry,
   onUpdate,
   onImport,
+  onAlias,
   onInstallAgent,
   onNameSshEntry,
 }: {
@@ -236,6 +275,7 @@ function MachineRow({
   sshEntry: string | null;
   onUpdate: () => void;
   onImport: () => void;
+  onAlias: () => void;
   onInstallAgent: (agent: LanAgentRuntime) => void;
   /** Absent for this machine, and where no entry can be named. */
   onNameSshEntry?: () => void;
@@ -262,7 +302,20 @@ function MachineRow({
         </span>
         <span {...stylex.props(catalog.body)}>
           <span {...stylex.props(catalog.titleLine)}>
-            <span {...stylex.props(catalog.name)}>{machine.name}</span>
+            <span {...stylex.props(catalog.name)}>{machine.alias ?? machine.name}</span>
+            {machine.alias ? (
+              <span {...stylex.props(styles.machineName)}>{machine.name}</span>
+            ) : null}
+            <Button
+              variant="ghost"
+              size="mini"
+              icon
+              aria-label={t('settings.lan.machines.alias.action', { name: machine.name })}
+              title={t('settings.lan.machines.alias.action', { name: machine.name })}
+              onClick={onAlias}
+            >
+              <PencilLine {...stylex.props(catalog.iconSmall)} />
+            </Button>
             {machine.self ? (
               <Badge>{t('settings.lan.machines.self')}</Badge>
             ) : machine.online === null ? null : (

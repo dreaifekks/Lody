@@ -30,12 +30,13 @@ import {
   listLanMachines,
   publishLanMachineFacts,
   publishLanSshDestination,
+  writeLanMachineAlias,
   type LanMemberWorkspace,
 } from './lan-members';
 
 export type LanControlRequest = Extract<
   LocalProjectControlRequest,
-  { type: 'lan/machines' | 'lan/forward' } | LanMemberControlRequest
+  { type: 'lan/machines' | 'lan/alias-machine' | 'lan/forward' } | LanMemberControlRequest
 >;
 
 // An agent runtime that the service installs by itself shows up without anyone
@@ -60,6 +61,7 @@ export function isLanControlRequest(
 ): message is LanControlRequest {
   return (
     message.type === 'lan/machines' ||
+    message.type === 'lan/alias-machine' ||
     message.type === 'lan/forward' ||
     isLanMemberControlType(message.type)
   );
@@ -218,6 +220,23 @@ export class LanFleetControl {
           now: this.now(),
         }),
       };
+    }
+    if (message.type === 'lan/alias-machine') {
+      try {
+        const alias = await writeLanMachineAlias({
+          workspaces: this.options.workspaces(),
+          target: message.target,
+          alias: message.alias,
+        });
+        return { ok: true, type: message.type, result: { alias } };
+      } catch (error) {
+        return {
+          ok: false,
+          type: message.type,
+          error: 'execution_failed',
+          message: formatErrorMessage(error),
+        };
+      }
     }
     if (message.type === 'lan/forward') {
       const { request } = message;

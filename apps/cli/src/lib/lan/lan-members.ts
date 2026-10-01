@@ -5,6 +5,7 @@ import {
   LanMemberControlResponseSchema,
   getMachineRoomId,
   machineSupportsLanControl,
+  normalizeLanMachineAlias,
   parseLanAgentRuntimes,
   sameLanAgentRuntimes,
   type LanAgentRuntime,
@@ -61,6 +62,14 @@ async function readMachineMeta(repo: LoroRepo, machineId: MachineId): Promise<Ma
   return (record?.meta as MachineMeta | undefined) ?? null;
 }
 
+/** The short name the members of a workspace's LAN gave a machine, if any. */
+export async function readLanMachineAlias(
+  repo: LoroRepo,
+  machineId: MachineId
+): Promise<string | null> {
+  return normalizeLanMachineAlias((await readMachineMeta(repo, machineId))?.lanAlias);
+}
+
 async function describeOwnAgents(
   workspace: LanMemberWorkspace,
   machineId: MachineId,
@@ -103,6 +112,7 @@ export async function listLanMachines(options: {
   machines.set(machineId, {
     machineId,
     name: options.machineName,
+    alias: null,
     os: options.os,
     self: true,
     online: true,
@@ -132,7 +142,10 @@ export async function listLanMachines(options: {
         const self = machines.get(machineId);
         if (!self) continue;
         self.name = meta.name || self.name;
-        if (workspace.lan) self.lans.push(lan);
+        if (workspace.lan) {
+          self.lans.push(lan);
+          self.alias ??= normalizeLanMachineAlias(meta.lanAlias);
+        }
         self.update ??= settleLanMachineUpdate(
           parseLanMachineUpdate(meta.lanUpdate),
           control.build.version,
@@ -151,6 +164,7 @@ export async function listLanMachines(options: {
       const known = machines.get(id);
       if (known) {
         known.lans.push(lan);
+        known.alias ??= normalizeLanMachineAlias(meta.lanAlias);
         known.online = mergeOnline(known.online, seenOnline);
         known.agents = mergeAgents(known.agents, parseLanAgentRuntimes(meta.lanAgents));
         continue;
@@ -158,6 +172,7 @@ export async function listLanMachines(options: {
       machines.set(id, {
         machineId: id,
         name: meta.name,
+        alias: normalizeLanMachineAlias(meta.lanAlias),
         os: meta.os ?? null,
         self: false,
         online: seenOnline,
@@ -178,7 +193,9 @@ export async function listLanMachines(options: {
   const rank = (machine: LanMachine) => (machine.self ? 0 : machine.online ? 1 : 2);
   return {
     machines: [...machines.values()].sort(
-      (left, right) => rank(left) - rank(right) || left.name.localeCompare(right.name)
+      (left, right) =>
+        rank(left) - rank(right) ||
+        (left.alias ?? left.name).localeCompare(right.alias ?? right.name)
     ),
     newest: await control.readNewestRelease(),
   };
@@ -251,6 +268,34 @@ export async function publishLanSshDestination(options: {
     lanSsh: destination ?? undefined,
   } as Parameters<LoroRepo['upsertDocMeta']>[1]);
   return true;
+}
+
+/**
+ * Gives a machine a short name, or takes it back with `null`, in every LAN of
+ * this machine that the machine is a member of. Each member writes it into the
+ * machine's metadata of the LAN's workspace, where every member reads it; the
+ * machine itself need not be there.
+ */
+export async function writeLanMachineAlias(options: {
+  workspaces: readonly LanMemberWorkspace[];
+  target: MachineId;
+  alias: string | null;
+}): Promise<string | null> {
+  const alias = normalizeLanMachineAlias(options.alias);
+  let written = 0;
+  for (const workspace of options.workspaces) {
+    if (!workspace.lan) continue;
+    const meta = await readMachineMeta(workspace.repo, options.target);
+    if (!meta || (meta.ownerUserId && meta.ownerUserId !== workspace.userId)) continue;
+    if (normalizeLanMachineAlias(meta.lanAlias) !== alias) {
+      await workspace.repo.upsertDocMeta(getMachineRoomId(options.target), {
+        lanAlias: alias ?? undefined,
+      } as Parameters<LoroRepo['upsertDocMeta']>[1]);
+    }
+    written += 1;
+  }
+  if (written === 0) throw new Error('No LAN of this machine has that machine');
+  return alias;
 }
 
 function refuse(

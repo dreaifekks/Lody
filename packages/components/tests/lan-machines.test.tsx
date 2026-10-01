@@ -48,6 +48,7 @@ const office = { workspaceId: 'lw_office', name: 'Office' };
 
 const machine = (overrides: Partial<LanMachine> & { machineId: string }): LanMachine => ({
   name: overrides.machineId,
+  alias: null,
   os: 'linux',
   self: false,
   online: true,
@@ -166,6 +167,7 @@ describe('the machines of the LANs', () => {
     update: LanMachineAnswer<{ outcome: 'started' | 'current'; version: string }>;
     install: LanMachineAnswer<{ agentType: string; outcome: 'started' | 'current' }>;
     preview: LanMachineAnswer<HostedConfigPreview>;
+    alias: LanMachineAnswer<{ alias: string | null }> | null;
   };
 
   const render = async (inventory: LanMachines, overrides: Partial<LanMachinesViewProps> = {}) => {
@@ -184,6 +186,10 @@ describe('the machines of the LANs', () => {
           previewHostedImport={async (target) => {
             calls.push(['preview', target.machineId]);
             return answers.preview;
+          }}
+          setAlias={async (target, alias) => {
+            calls.push(['alias', target.machineId, alias]);
+            return answers.alias ?? { ok: true, result: { alias } };
           }}
           importHostedConfig={async (target, input) => {
             calls.push(['import', target.machineId, input]);
@@ -261,6 +267,7 @@ describe('the machines of the LANs', () => {
       update: { ok: true, result: { outcome: 'started', version: NEWEST } },
       install: { ok: true, result: { agentType: 'codex', outcome: 'started' } },
       preview: { ok: true, result: hostedPreview },
+      alias: null,
     };
     container = document.createElement('div');
     document.body.append(container);
@@ -295,11 +302,16 @@ describe('the machines of the LANs', () => {
     expect(member).toContain('Codex 0.155.0 → 0.156.0');
     expect(buttonIn(rowOf('server'), 'Update')).toBeTruthy();
 
-    // A machine that is away, or that would not understand, is asked nothing.
+    // A machine that is away, or that would not understand, is asked nothing;
+    // only its short name, which no one asks it for, can still be given.
+    const asked = (name: string) =>
+      [...rowOf(name).querySelectorAll('button')].map((button) =>
+        button.getAttribute('aria-label')
+      );
     expect(rowOf('laptop').textContent).toContain('Offline');
-    expect(rowOf('laptop').querySelectorAll('button')).toHaveLength(0);
+    expect(asked('laptop')).toEqual(['Short name for laptop']);
     expect(rowOf('old').textContent).toContain('takes no requests from other machines');
-    expect(rowOf('old').querySelectorAll('button')).toHaveLength(0);
+    expect(asked('old')).toEqual(['Short name for old']);
     // This application installs what this machine runs.
     expect(buttonIn(rowOf('desk'), 'Update')).toBeUndefined();
   });
@@ -485,6 +497,76 @@ describe('the machines of the LANs', () => {
       await openMenuOf('desk');
       expect(menuItem('Import from hosted Lody')).toBeTruthy();
       expect(menuItem('SSH entry for editors')).toBeUndefined();
+    });
+  });
+
+  describe('the short name of a machine', () => {
+    const aliased = () =>
+      calls.filter(([what]) => what === 'alias').map(([, machineId, alias]) => [machineId, alias]);
+    const field = () => document.body.querySelector<HTMLInputElement>('[role="dialog"] input');
+    const write = async (value: string) => {
+      const input = field();
+      if (!input) throw new Error(`No field in: ${text()}`);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
+          input,
+          value
+        );
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+    const save = () => buttonIn(document.body.querySelector('[role="dialog"]')!, 'Save');
+
+    it('comes before the machine name, which stays beside it', async () => {
+      const nas = machine({ machineId: 'nas', name: 'home-nas-ubuntu-2404', alias: 'nas' });
+      await render(inventoryOf([desk, nas]));
+
+      const title = [...rowOf('home-nas-ubuntu-2404').querySelectorAll('span > span > span')]
+        .slice(0, 2)
+        .map((span) => span.textContent);
+      expect(title).toEqual(['nas', 'home-nas-ubuntu-2404']);
+      expect(rowOf('desk').textContent).toContain('desk');
+    });
+
+    it('is given to any machine, even one that is away, and taken back', async () => {
+      const laptop = machine({ machineId: 'laptop', online: false, controllable: false });
+      await render(inventoryOf([desk, laptop]));
+
+      await click(buttonIn(rowOf('laptop'), 'Short name for laptop'));
+      expect(text()).toContain('Short name for laptop');
+      expect(save()?.disabled).toBe(true);
+      await write('  old   one ');
+      await click(save());
+      expect(aliased()).toEqual([['laptop', 'old one']]);
+      expect(field()).toBeNull();
+
+      await render(inventoryOf([desk, { ...laptop, alias: 'old one' }]));
+      await click(buttonIn(rowOf('laptop'), 'Short name for laptop'));
+      expect(field()?.value).toBe('old one');
+      expect(save()?.disabled).toBe(true);
+      await write('');
+      await click(save());
+      expect(aliased().at(-1)).toEqual(['laptop', null]);
+
+      await click(buttonIn(rowOf('desk'), 'Short name for desk'));
+      await write('me');
+      await click(save());
+      expect(aliased().at(-1)).toEqual(['desk', 'me']);
+    });
+
+    it('says so when it could not be given', async () => {
+      answers.alias = {
+        ok: false,
+        message: 'No LAN of this machine has that machine',
+        reason: null,
+      };
+      await render(inventoryOf([server]));
+      await click(buttonIn(rowOf('server'), 'Short name for server'));
+      await write('nuc');
+      await click(save());
+      expect(toasts.error).toEqual([
+        'Could not name server: No LAN of this machine has that machine',
+      ]);
     });
   });
 

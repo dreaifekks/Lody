@@ -58,7 +58,7 @@ import { connectLanTerminal, deriveLanTerminalKey } from '@/lib/lan/lan-terminal
 import { LanFileHandoff } from '@/lib/lan/lan-file-handoff';
 import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-control';
 import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
-import type { LanMemberWorkspace } from '@/lib/lan/lan-members';
+import { readLanMachineAlias, type LanMemberWorkspace } from '@/lib/lan/lan-members';
 import { createLanSshDescriber } from '@/lib/lan/lan-ssh';
 import { createLanNotificationsPort } from '@/lib/lan/lan-push-notifier';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
@@ -1152,7 +1152,14 @@ export class LodyFleet {
             resolveHub: () =>
               this.lan?.hubs.find((hub) => getLanHubWorkspaceId(hub.id) === workspace.id) ?? null,
             machineId: this.machineId,
-            machineName: () => this.machineName,
+            // Alerts have little room; the short name the LAN gave this machine fits better.
+            machineName: async () => {
+              const repo = this.runtimes.get(workspace.id)?.lody.documentManager.repo;
+              const alias = repo
+                ? await readLanMachineAlias(repo, this.machineId).catch(() => null)
+                : null;
+              return alias ?? this.machineName;
+            },
             logger: this.logger,
           })
         : this.cloudPort.notifications;

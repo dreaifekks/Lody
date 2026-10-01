@@ -1311,6 +1311,11 @@ export type MachineMeta = {
   lanTerminal?: LanTerminalEndpoint;
   /** Where the SSH server of this machine answers the other members of this workspace's LAN. */
   lanSsh?: LanSshDestination;
+  /**
+   * The short name the members of this workspace's LAN gave the machine. Any
+   * member writes it, the machine itself included; the last one written wins.
+   */
+  lanAlias?: string;
   /** The build the agent service of this machine runs, and who replaces it with a later one. */
   lanBuild?: LanMachineBuild;
   /** Where an update of this machine stands. Absent while none is under way. */

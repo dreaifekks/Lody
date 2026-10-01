@@ -37,6 +37,11 @@ export type LanMachinesControl = {
     machine: LanMachine,
     input: { sourceWorkspaceId: string; categories: HostedConfigCategory[] }
   ) => Promise<LanMachineAnswer<HostedConfigImportResult>>;
+  /** Gives a machine a short name in the LANs; `null` takes it back. */
+  setAlias: (
+    machine: LanMachine,
+    alias: string | null
+  ) => Promise<LanMachineAnswer<{ alias: string | null }>>;
 };
 
 const UNAVAILABLE = 'The agent service of this machine is not running';
@@ -166,14 +171,40 @@ export function useLanMachines(): LanMachinesControl {
     [currentWorkspaceId, refresh]
   );
 
+  // Written by this machine into the LANs it shares with the machine, which
+  // need not be online for it.
+  const setAlias = useCallback(
+    async (
+      machine: LanMachine,
+      alias: string | null
+    ): Promise<LanMachineAnswer<{ alias: string | null }>> => {
+      const control = getControl();
+      if (!control) return { ok: false, message: UNAVAILABLE, reason: null };
+      const response = await control
+        .control({
+          type: 'lan/alias-machine',
+          machineId: THIS_MACHINE,
+          target: machine.machineId as MachineId,
+          alias,
+        })
+        .catch(() => null);
+      void refresh();
+      if (!response) return { ok: false, message: UNAVAILABLE, reason: null };
+      if (!response.ok) return { ok: false, message: response.message, reason: null };
+      if (response.type !== 'lan/alias-machine') {
+        return { ok: false, message: UNAVAILABLE, reason: null };
+      }
+      return { ok: true, result: response.result };
+    },
+    [refresh]
+  );
+
   return {
     inventory,
     loading,
     refresh,
-    updateMachine: useCallback(
-      (machine) => ask(machine, { type: 'lan/update-machine' }),
-      [ask]
-    ),
+    setAlias,
+    updateMachine: useCallback((machine) => ask(machine, { type: 'lan/update-machine' }), [ask]),
     installAgent: useCallback(
       (machine, agentType) => ask(machine, { type: 'lan/install-agent', agentType }),
       [ask]

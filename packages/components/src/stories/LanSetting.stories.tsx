@@ -47,6 +47,7 @@ const updater = (overrides: Partial<ElectronUpdaterState> = {}): ElectronUpdater
 
 const machine = (overrides: Partial<LanMachine> & { machineId: string }): LanMachine => ({
   name: overrides.machineId,
+  alias: null,
   os: 'linux',
   self: false,
   online: true,
@@ -78,6 +79,8 @@ const machines: LanMachines = {
     }),
     machine({
       machineId: 'home-server',
+      name: 'home-server-ubuntu-2404-lts',
+      alias: 'home',
       agents: [
         { agentType: 'claude', name: 'Claude Code', version: '2.1.280', state: 'current' },
         {
@@ -137,6 +140,7 @@ const hosted: HostedConfigPreview = {
 const machinesView = (
   <LanMachinesView
     inventory={machines}
+    setAlias={async (_machine, alias) => ({ ok: true, result: { alias } })}
     updateMachine={async () => ({ ok: true, result: { outcome: 'started', version: NEWEST } })}
     installAgent={async (_machine, agentType) => ({
       ok: true,
