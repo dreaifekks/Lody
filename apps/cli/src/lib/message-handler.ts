@@ -212,6 +212,7 @@ import {
 } from './machine-lifecycle';
 import { resolveRegisteredMachineName } from './machine-name';
 import { formatErrorMessage } from '@/utils/format-error';
+import { LiveActivityDetailTracker } from './live-activity-detail';
 import { startTraceSpan, traceAsync } from '@/utils/trace-span';
 import { getCliHttpFetch } from '@/utils/http-transport';
 import { prepareCliStreamsGatewayBaseUrl } from './loro/streams-access';
@@ -819,6 +820,9 @@ export class MessageHandler {
   private hasShownHappyCodingMessage = false;
   private readonly cloudPort: CloudPort;
   private notificationService: CloudNotificationsPort | null;
+  /** What running turns are doing, for Live Activities on a LAN. */
+  private liveActivityDetail: LiveActivityDetailTracker | null = null;
+  private stopPermissionAnswers: (() => void) | null = null;
   /** Alerts held for `alertGraceMs`; cleared on cleanup. */
   private readonly alertGraceTimers = new Set<NodeJS.Timeout>();
   private usageTrackingService: CloudUsagePort | null;
@@ -3017,6 +3021,7 @@ export class MessageHandler {
     );
     this.cloudPort = config.cloudPort;
     this.notificationService = this.cloudPort.notifications;
+    this.startLiveActivityDetail(this.notificationService);
     this.usageTrackingService = this.cloudPort.usage;
     this.localProjectControlService = new LocalProjectControlService(this.logger);
     this.codeCollabV2DiffStore = new CodeCollabV2DiffStore(this.workspaceId);
@@ -4519,6 +4524,7 @@ export class MessageHandler {
     }
     this.store.get(sessionId).acpUpdateBuffer.push({ notification: update, target });
     this.scheduleFlushACPUpdates(sessionId);
+    if (target.source !== 'finalized_turn') this.liveActivityDetail?.observe(sessionId, update);
   }
 
   private clearScheduledACPFlush(sessionId: SessionId): void {
@@ -8644,6 +8650,18 @@ export class MessageHandler {
       );
     }
 
+    if (requestKind === 'permission') {
+      this.liveActivityDetail?.permission(sessionId, {
+        requestId,
+        command: displayTitle ?? null,
+        options: request.options.map((option) => ({
+          id: option.optionId,
+          label: option.name,
+          kind: option.kind,
+        })),
+      });
+    }
+
     if (notificationService) {
       if (requestKind === 'permission') {
         void (async () => {
@@ -8748,6 +8766,7 @@ export class MessageHandler {
 
         // A drained tool must not clear a still-pending question's waiting state.
         pendingRequests.delete(requestId);
+        if (requestKind === 'permission') this.liveActivityDetail?.permission(sessionId, null);
         if (pendingRequests.size === 0) {
           this.pendingPermissionRequests.delete(sessionId);
           try {
@@ -9690,6 +9709,9 @@ export class MessageHandler {
   async cleanup(): Promise<void> {
     for (const timer of this.alertGraceTimers) clearTimeout(timer);
     this.alertGraceTimers.clear();
+    this.stopPermissionAnswers?.();
+    this.stopPermissionAnswers = null;
+    this.liveActivityDetail?.dispose();
     this.logger.debug('Cleaning up message handler resources');
     this.cleanedUp = true;
     this.cancelAllCodeCollabTurnRetryTimers();
@@ -9734,6 +9756,45 @@ export class MessageHandler {
     await this.sessionManager.cleanUp();
   }
 
+  private startLiveActivityDetail(notificationService: CloudNotificationsPort | null): void {
+    const sync = notificationService?.syncLiveActivityDetail;
+    if (!notificationService || !sync) return;
+    this.liveActivityDetail = new LiveActivityDetailTracker((sessionId, detail) => {
+      void sync
+        .call(notificationService, {
+          sessionId,
+          workspaceId: this.workspaceId,
+          userId: this.userId,
+          ...detail,
+        })
+        .catch(() => {});
+    });
+    this.stopPermissionAnswers =
+      notificationService.watchPermissionAnswers?.((answer) =>
+        this.applyPhonePermissionAnswer(answer)
+      ) ?? null;
+  }
+
+  /**
+   * A choice made on a phone's Live Activity. Only a request this machine is
+   * still waiting on is answered; the history write resumes the agent the
+   * same way an answer from any client does.
+   */
+  private async applyPhonePermissionAnswer(answer: {
+    sessionId: SessionId;
+    requestId: string;
+    optionId: string;
+  }): Promise<void> {
+    if (!this.pendingPermissionRequests.get(answer.sessionId)?.has(answer.requestId)) return;
+    const doc = await this.workspaceDocument.getOrCreateSessionDoc(answer.sessionId);
+    await updatePermissionOutcomeInHistory(
+      doc,
+      answer.requestId,
+      { outcome: 'selected', optionId: answer.optionId },
+      this.logger
+    );
+  }
+
   /** Runs a held alert later; never blocks the turn that raised it. */
   private afterAlertGrace(delayMs: number, send: () => Promise<void>): void {
     const timer = setTimeout(() => {
@@ -9770,6 +9831,7 @@ export class MessageHandler {
       return;
     }
     const notificationService = this.notificationService;
+    this.liveActivityDetail?.clear(sessionId);
     await this.runTurnCloudSideEffect(sessionId, 'completion notification', async () => {
       const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
       const meta = await sessionDoc.getMetaState();

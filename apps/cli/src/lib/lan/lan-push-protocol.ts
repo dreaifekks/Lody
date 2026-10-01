@@ -10,6 +10,13 @@ export const LAN_PUSH_DEVICES_PATH = '/push/devices';
 export const LAN_PUSH_EVENTS_PATH = '/push/events';
 export const LAN_PUSH_STATUS_PATH = '/push/status';
 export const LAN_PUSH_TEST_PATH = '/push/test';
+/** A phone answers a permission request from its Live Activity. */
+export const LAN_PUSH_PERMISSION_PATH = '/push/permission';
+/** A member collects the answers meant for it; held open until one arrives. */
+export const LAN_PUSH_PERMISSION_ANSWERS_PATH = '/push/permission-answers';
+
+export type LanPermissionAnswer = { sessionId: string; requestId: string; optionId: string };
+export type LanPermissionOption = { id: string; label: string; kind: string };
 
 type LanPushEventBase = {
   /** The member that observed the event. */
@@ -51,6 +58,18 @@ export type LanPushEvent =
       title: string;
       sessionId?: string | null;
       code?: string | null;
+    })
+  | (LanPushEventBase & {
+      type: 'session-detail';
+      sessionId: string;
+      activity?: string | null;
+      thought?: string | null;
+      /** `null` once answered; absent when unchanged. */
+      permission?: {
+        requestId: string;
+        command?: string | null;
+        options: readonly LanPermissionOption[];
+      } | null;
     })
   | (LanPushEventBase & {
       type: 'live-activity';

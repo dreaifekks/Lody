@@ -161,6 +161,20 @@ export interface CloudPermissionRequestResolutionInput {
   toolCallId: string;
 }
 
+export interface CloudLiveActivityDetailInput {
+  sessionId: SessionId;
+  workspaceId: WorkspaceId;
+  userId: string;
+  activity?: string | null;
+  thought?: string | null;
+  /** `null` once the request is answered. */
+  permission?: {
+    requestId: string;
+    command?: string | null;
+    options: readonly { id: string; label: string; kind: string }[];
+  } | null;
+}
+
 export interface CloudNotificationsPort {
   /**
    * Hold completion and permission alerts this long, and drop the ones
@@ -200,6 +214,23 @@ export interface CloudNotificationsPort {
     workspaceSlug: string;
     userId: string;
   }): Promise<void>;
+  /**
+   * What a running turn is doing, for Live Activities: its current step, the
+   * latest line of reasoning and the choices of a pending permission request.
+   * Only self-hosted LANs implement it.
+   */
+  syncLiveActivityDetail?(input: CloudLiveActivityDetailInput): Promise<void>;
+  /**
+   * Permission answers given on a phone, for this machine to apply. Returns
+   * the stop function. Only self-hosted LANs implement it.
+   */
+  watchPermissionAnswers?(
+    onAnswer: (answer: {
+      sessionId: SessionId;
+      requestId: string;
+      optionId: string;
+    }) => Promise<void>
+  ): () => void;
   recordPermissionRequested(input: CloudPermissionRequestNotificationInput): Promise<void>;
   resolvePermissionRequested(input: CloudPermissionRequestResolutionInput): Promise<void>;
   syncLiveActivitySummary(input: {

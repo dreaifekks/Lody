@@ -10,8 +10,11 @@ import { isApnsDeviceToken, type ApnsPush, type ApnsSender } from './apns';
 import {
   LAN_PUSH_DEVICES_PATH,
   LAN_PUSH_EVENTS_PATH,
+  LAN_PUSH_PERMISSION_ANSWERS_PATH,
+  LAN_PUSH_PERMISSION_PATH,
   LAN_PUSH_STATUS_PATH,
   LAN_PUSH_TEST_PATH,
+  type LanPermissionAnswer,
   type LanPushDevice,
   type LanPushEvent,
   type LanPushLiveActivityResult,
@@ -36,6 +39,12 @@ const STATUS_PRIORITY: Record<string, number> = { question: 0, permission: 1, ru
 /** The phone draws the focus and at most this many more; it sends no more itself. */
 const VISIBLE_ITEMS = 2;
 const FAILURE_WINDOW_MS = 10 * 60_000;
+/** Detail of a running turn changes constantly; the phone hears it this often. */
+const DETAIL_INTERVAL_MS = 10_000;
+const DETAIL_TTL_MS = 30 * 60_000;
+const DETAIL_LIMIT = 256;
+/** How long a member's poll for permission answers is held open. */
+const ANSWER_HOLD_MS = 25_000;
 
 type Language = 'en' | 'zh';
 type Copy = {
@@ -162,6 +171,7 @@ const EVENT_TYPES = new Set([
   'session-failed',
   'permission-requested',
   'schedule',
+  'session-detail',
   'live-activity',
 ]);
 
@@ -258,17 +268,34 @@ export function createLanHubPush(options: {
   /** What each activity last showed as running, so its end shows those as done. */
   const lastActiveItems = new Map<string, ContentItem[]>();
   const recentFailures = new Map<string, number>();
+  type Detail = {
+    machineId: string;
+    machineName: string | null;
+    activity: string | null;
+    thought: string | null;
+    permission: Extract<LanPushEvent, { type: 'session-detail' }>['permission'] | null;
+    updatedAt: number;
+  };
+  /** What each running session is doing, as the member running it reported. */
+  const details = new Map<string, Detail>();
+  const detailPushedAt = new Map<string, number>();
+  const detailTimers = new Map<string, NodeJS.Timeout>();
+  /** Permission answers from phones, per member, until it collects them. */
+  const answers = new Map<string, LanPermissionAnswer[]>();
+  const answerWaiters = new Map<string, Set<() => void>>();
   const machinesSeen = new Map<string, number>();
   /** Naming the sender only helps once more than one machine reports. */
-  const senderName = (event: { machineId: string; machineName?: string | null }) => {
+  const namesMembers = () => {
     const cutoff = now() - MEMBER_WINDOW_MS;
     let members = 0;
     for (const [machineId, seenAt] of machinesSeen) {
       if (seenAt < cutoff) machinesSeen.delete(machineId);
       else members += 1;
     }
-    return members > 1 && event.machineName ? truncate(event.machineName, 60) : null;
+    return members > 1;
   };
+  const senderName = (event: { machineId: string; machineName?: string | null }) =>
+    namesMembers() && event.machineName ? truncate(event.machineName, 60) : null;
 
   const push = async (device: LanPushDevice, message: Omit<ApnsPush, 'environment'>) => {
     const result = await options.send({ ...message, environment: device.environment });
@@ -399,12 +426,29 @@ export function createLanHubPush(options: {
       ...(state.permissionAlert && state.active ? { permissionAlert: state.permissionAlert } : {}),
       ...(device.liveActivityCopy ? { copy: device.liveActivityCopy } : {}),
     };
-    const label = (item: ContentItem) => ({
-      ...item,
-      statusLabel: labels[item.status] ?? item.statusLabel,
-      // Relative labels age between pushes; the widget does not show them.
-      updatedAtLabel: '',
-    });
+    const named = namesMembers();
+    const label = (item: ContentItem) => {
+      const detail = ACTIVE_STATUSES.has(item.status) ? details.get(item.id) : undefined;
+      const permission = item.status === 'permission' ? detail?.permission : null;
+      return {
+        ...item,
+        statusLabel: labels[item.status] ?? item.statusLabel,
+        // Relative labels age between pushes; the widget does not show them.
+        updatedAtLabel: '',
+        ...(named && detail?.machineName ? { machineName: truncate(detail.machineName, 40) } : {}),
+        ...(detail?.activity ? { activity: detail.activity } : {}),
+        ...(detail?.thought ? { thought: detail.thought } : {}),
+        ...(permission
+          ? {
+              permissionRequestId: permission.requestId,
+              ...(permission.command
+                ? { permissionCommand: truncate(permission.command, 200) }
+                : {}),
+              permissionOptions: permission.options.slice(0, 4),
+            }
+          : {}),
+      };
+    };
     if (state.active) {
       const active = state.items
         .filter((item) => ACTIVE_STATUSES.has(item.status))
@@ -565,9 +609,112 @@ export function createLanHubPush(options: {
     return delivered > 0 ? { sent: true, ended } : { sent: false, reason: 'no_activity' };
   };
 
+  const pushDetail = async (activityId: string, userId: string) => {
+    detailTimers.delete(activityId);
+    const state = mergedState(activityId);
+    if (!state?.active) return;
+    detailPushedAt.set(activityId, now());
+    await Promise.all(
+      recipients(userId)
+        .filter((device) => device.liveActivities && device.activities[activityId])
+        .map((device) => updateActivity(device, activityId, state))
+    );
+  };
+
+  const applyDetail = (event: Extract<LanPushEvent, { type: 'session-detail' }>) => {
+    const cutoff = now() - DETAIL_TTL_MS;
+    for (const [sessionId, detail] of details) {
+      if (detail.updatedAt < cutoff) details.delete(sessionId);
+    }
+    const previous = details.get(event.sessionId);
+    details.delete(event.sessionId);
+    details.set(event.sessionId, {
+      machineId: event.machineId,
+      machineName: event.machineName ?? null,
+      activity: event.activity ?? null,
+      thought: event.thought ?? null,
+      permission:
+        'permission' in event ? (event.permission ?? null) : (previous?.permission ?? null),
+      updatedAt: now(),
+    });
+    if (details.size > DETAIL_LIMIT) details.delete(details.keys().next().value as string);
+    const activityId = `lody-conversations:v5:${event.workspaceId}:${event.userId}`;
+    if (!summaries.has(activityId)) return;
+    // A permission request is waited on; everything else can wait its turn.
+    const wait =
+      'permission' in event
+        ? 0
+        : Math.max(0, (detailPushedAt.get(activityId) ?? 0) + DETAIL_INTERVAL_MS - now());
+    if (wait === 0) {
+      const pending = detailTimers.get(activityId);
+      if (pending) clearTimeout(pending);
+      void pushDetail(activityId, event.userId).catch((error: unknown) =>
+        log(`[push] detail update failed: ${String(error)}`)
+      );
+      return;
+    }
+    if (detailTimers.has(activityId)) return;
+    const timer = setTimeout(() => {
+      void pushDetail(activityId, event.userId).catch((error: unknown) =>
+        log(`[push] detail update failed: ${String(error)}`)
+      );
+    }, wait);
+    timer.unref?.();
+    detailTimers.set(activityId, timer);
+  };
+
+  /** Queues a phone's answer for the member waiting on the request. */
+  const answerPermission = (answer: LanPermissionAnswer): boolean => {
+    const detail = details.get(answer.sessionId);
+    const permission = detail?.permission;
+    if (
+      !detail ||
+      !permission ||
+      permission.requestId !== answer.requestId ||
+      !permission.options.some((option) => option.id === answer.optionId)
+    ) {
+      return false;
+    }
+    detail.permission = null;
+    const queue = answers.get(detail.machineId) ?? [];
+    queue.push(answer);
+    answers.set(detail.machineId, queue.slice(-32));
+    for (const wake of answerWaiters.get(detail.machineId) ?? []) wake();
+    return true;
+  };
+
+  const collectAnswers = async (
+    machineId: string,
+    request: http.IncomingMessage
+  ): Promise<LanPermissionAnswer[]> => {
+    if (!answers.get(machineId)?.length) {
+      await new Promise<void>((resolve) => {
+        const waiters = answerWaiters.get(machineId) ?? new Set<() => void>();
+        answerWaiters.set(machineId, waiters);
+        const done = () => {
+          clearTimeout(timer);
+          waiters.delete(done);
+          request.off('close', done);
+          resolve();
+        };
+        const timer = setTimeout(done, ANSWER_HOLD_MS);
+        timer.unref?.();
+        waiters.add(done);
+        request.once('close', done);
+      });
+    }
+    const taken = answers.get(machineId) ?? [];
+    answers.delete(machineId);
+    return taken;
+  };
+
   const deliver = async (event: LanPushEvent): Promise<LanPushLiveActivityResult | null> => {
     machinesSeen.set(event.machineId, now());
     if (event.type === 'live-activity') return await liveActivity(event);
+    if (event.type === 'session-detail') {
+      applyDetail(event);
+      return null;
+    }
     if (event.type === 'session-completed') {
       if (!firstTime(`completed:${event.sessionId}:${event.occurrenceId}`)) return null;
       await alert(
@@ -667,6 +814,27 @@ export function createLanHubPush(options: {
         }
         const result = await deliver(event);
         sendJson(response, 200, result ?? { ok: true });
+      } else if (pathname === LAN_PUSH_PERMISSION_PATH && request.method === 'POST') {
+        const body = await readJson(request);
+        if (
+          !isRecord(body) ||
+          typeof body.sessionId !== 'string' ||
+          typeof body.requestId !== 'string' ||
+          typeof body.optionId !== 'string'
+        ) {
+          throw new BadRequest('invalid answer');
+        }
+        const accepted = answerPermission({
+          sessionId: body.sessionId,
+          requestId: body.requestId,
+          optionId: body.optionId,
+        });
+        sendJson(response, accepted ? 200 : 409, accepted ? { ok: true } : { error: 'stale' });
+      } else if (pathname === LAN_PUSH_PERMISSION_ANSWERS_PATH && request.method === 'GET') {
+        const machineId = new URL(request.url ?? '/', 'http://hub').searchParams.get('machineId');
+        if (!machineId) throw new BadRequest('missing machineId');
+        const taken = await collectAnswers(machineId, request);
+        if (!response.destroyed) sendJson(response, 200, { answers: taken });
       } else if (pathname === LAN_PUSH_STATUS_PATH && request.method === 'GET') {
         sendJson(response, 200, { configured: options.isConfigured(), devices: devices.size });
       } else if (pathname === LAN_PUSH_TEST_PATH && request.method === 'POST') {

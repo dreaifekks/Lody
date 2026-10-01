@@ -415,6 +415,90 @@ describe('LAN host push', () => {
     expect(sent).toHaveLength(2);
   });
 
+  it('adds what the agent is doing and answers a permission from the phone', async () => {
+    await register({ activities: { [ACTIVITY]: ACTIVITY_TOKEN } });
+    const notifications = port();
+    const base = { workspaceId: WORKSPACE as never, userId: USER };
+    const summary = (status: 'running' | 'permission') => ({
+      ...base,
+      activityId: ACTIVITY,
+      totalCount: 1,
+      statusCounts: { permission: 0, question: 0, running: 0, unread: 0, [status]: 1 },
+      items: [
+        {
+          id: 'session-1',
+          status,
+          statusLabel: status,
+          agentLogoKind: 'claude' as const,
+          agentLogoText: 'CC',
+          title: 'Deploy',
+          updatedAt: clock,
+          updatedAtLabel: '',
+        },
+      ],
+      updatedAt: clock,
+    });
+    const lastItem = () =>
+      (
+        sent.at(-1)!.payload as {
+          aps: { 'content-state': { items: Record<string, unknown>[] } };
+        }
+      ).aps['content-state'].items[0];
+
+    await notifications.syncLiveActivitySummary(summary('running'));
+    await notifications.syncLiveActivityDetail({
+      ...base,
+      sessionId: 'session-1' as never,
+      activity: 'Run pnpm build',
+      thought: 'The bundle is ready to ship.',
+    });
+    await vi.waitFor(() =>
+      expect(lastItem()).toMatchObject({
+        activity: 'Run pnpm build',
+        thought: 'The bundle is ready to ship.',
+      })
+    );
+    // One member: no need to say which.
+    expect(lastItem()).not.toHaveProperty('machineName');
+
+    const options = [
+      { id: 'once', label: 'Allow', kind: 'allow_once' },
+      { id: 'no', label: 'Reject', kind: 'reject_once' },
+    ];
+    await notifications.syncLiveActivitySummary(summary('permission'));
+    await notifications.syncLiveActivityDetail({
+      ...base,
+      sessionId: 'session-1' as never,
+      permission: { requestId: 'req-1', command: 'git push', options },
+    });
+    await vi.waitFor(() =>
+      expect(lastItem()).toMatchObject({
+        permissionRequestId: 'req-1',
+        permissionCommand: 'git push',
+        permissionOptions: options,
+      })
+    );
+
+    const answered: unknown[] = [];
+    const stop = notifications.watchPermissionAnswers(async (answer) => {
+      answered.push(answer);
+    });
+    try {
+      const answer = (requestId: string, optionId: string) =>
+        call('POST', '/push/permission', { sessionId: 'session-1', requestId, optionId });
+      expect((await answer('req-0', 'once')).status).toBe(409);
+      expect((await answer('req-1', 'bogus')).status).toBe(409);
+      expect(await answer('req-1', 'once')).toEqual({ status: 200, body: { ok: true } });
+      await vi.waitFor(() =>
+        expect(answered).toEqual([{ sessionId: 'session-1', requestId: 'req-1', optionId: 'once' }])
+      );
+      // Answered once; the same request cannot be answered again.
+      expect((await answer('req-1', 'no')).status).toBe(409);
+    } finally {
+      stop();
+    }
+  });
+
   it('forgets a token APNs no longer accepts', async () => {
     await register();
     refuse.add(PHONE);
