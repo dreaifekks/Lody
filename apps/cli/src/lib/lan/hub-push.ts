@@ -26,6 +26,8 @@ const SUMMARY_TTL_MS = 30 * 60_000;
 /** Finished work stays on the activity briefly, then leaves. */
 const UNREAD_WINDOW_MS = 15 * 60_000;
 const STALE_AFTER_S = 30 * 60;
+/** Machines heard from this recently count as members when naming senders. */
+const MEMBER_WINDOW_MS = 24 * 60 * 60_000;
 const DISMISS_AFTER_S = 60;
 const LIVE_ACTIVITY_ATTRIBUTES_TYPE = 'LodyConversationLiveActivityAttributes';
 const ACTIVE_STATUSES = new Set(['running', 'permission', 'question']);
@@ -241,6 +243,22 @@ export function createLanHubPush(options: {
   const summaries = new Map<string, Map<string, { summary: Summary; receivedAt: number }>>();
   /** Whether a phone last saw active work, so a remote start fires once per wave. */
   const wasActive = new Map<string, boolean>();
+  /**
+   * The earliest start seen while a session stays active: a permission pause
+   * re-stamps `lastRunningSeen` when the agent resumes, the turn keeps going.
+   */
+  const workStarts = new Map<string, number>();
+  const machinesSeen = new Map<string, number>();
+  /** Naming the sender only helps once more than one machine reports. */
+  const senderName = (event: { machineId: string; machineName?: string | null }) => {
+    const cutoff = now() - MEMBER_WINDOW_MS;
+    let members = 0;
+    for (const [machineId, seenAt] of machinesSeen) {
+      if (seenAt < cutoff) machinesSeen.delete(machineId);
+      else members += 1;
+    }
+    return members > 1 && event.machineName ? truncate(event.machineName, 60) : null;
+  };
 
   const push = async (device: LanPushDevice, message: Omit<ApnsPush, 'environment'>) => {
     const result = await options.send({ ...message, environment: device.environment });
@@ -268,10 +286,16 @@ export function createLanHubPush(options: {
     [...devices.values()].filter((device) => !device.userId || device.userId === userId);
 
   const alert = async (
-    event: { userId: string; workspaceSlug: string },
+    event: {
+      userId: string;
+      workspaceSlug: string;
+      machineId: string;
+      machineName?: string | null;
+    },
     compose: (copy: Copy) => { title: string; body: string },
     target: { sessionId?: string | null; collapseId?: string }
   ) => {
+    const subtitle = senderName(event);
     await Promise.all(
       recipients(event.userId)
         .filter((device) => device.alerts)
@@ -286,7 +310,11 @@ export function createLanHubPush(options: {
             collapseId: target.collapseId,
             payload: {
               aps: {
-                alert: { title: truncate(title, 120), body: truncate(body, 240) },
+                alert: {
+                  title: truncate(title, 120),
+                  ...(subtitle ? { subtitle } : {}),
+                  body: truncate(body, 240),
+                },
                 sound: 'default',
                 ...(target.sessionId ? { 'thread-id': target.sessionId } : {}),
               },
@@ -325,10 +353,19 @@ export function createLanHubPush(options: {
     const kept = [...items.values()].filter(
       (item) => ACTIVE_STATUSES.has(item.status) || item.updatedAt >= recentUnread
     );
+    const starts = new Map<string, number>();
+    const pinned = kept.map((item) => {
+      if (!ACTIVE_STATUSES.has(item.status) || item.startedAt === undefined) return item;
+      const startedAt = Math.min(item.startedAt, workStarts.get(item.id) ?? item.startedAt);
+      starts.set(item.id, startedAt);
+      return { ...item, startedAt };
+    });
+    workStarts.clear();
+    for (const [id, startedAt] of starts) workStarts.set(id, startedAt);
     const statusCounts = { permission: 0, question: 0, running: 0, unread: 0 };
     for (const item of kept) statusCounts[item.status] += 1;
     const active = kept.some((item) => ACTIVE_STATUSES.has(item.status));
-    return { latest, items: kept, statusCounts, active, permissionAlert };
+    return { latest, items: pinned, statusCounts, active, permissionAlert };
   };
 
   const liveActivity = async (summary: Summary): Promise<LanPushLiveActivityResult> => {
@@ -435,6 +472,7 @@ export function createLanHubPush(options: {
   };
 
   const deliver = async (event: LanPushEvent): Promise<LanPushLiveActivityResult | null> => {
+    machinesSeen.set(event.machineId, now());
     if (event.type === 'live-activity') return await liveActivity(event);
     if (event.type === 'session-completed') {
       if (!firstTime(`completed:${event.sessionId}:${event.occurrenceId}`)) return null;

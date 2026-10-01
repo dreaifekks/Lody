@@ -20,6 +20,8 @@ export function createLanNotificationsPort(options: {
   /** Read at each report, so a LAN that moved is followed. */
   resolveHub: () => LanHub | null;
   machineId: string;
+  /** Read at each report; `lody lan name` renames a running member. */
+  machineName?: () => string | null;
   logger: Logger;
   fetch?: typeof fetch;
 }): Required<CloudNotificationsPort> {
@@ -47,7 +49,12 @@ export function createLanNotificationsPort(options: {
     }
   };
 
-  const send = async (event: Report) => await report({ ...event, machineId: options.machineId });
+  const send = async (event: Report) =>
+    await report({
+      ...event,
+      machineId: options.machineId,
+      machineName: options.machineName?.() ?? null,
+    });
 
   return {
     notifySessionCompleted: async (input) => {

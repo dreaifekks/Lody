@@ -14,6 +14,8 @@ export const LAN_PUSH_TEST_PATH = '/push/test';
 type LanPushEventBase = {
   /** The member that observed the event. */
   machineId: string;
+  /** Shown on alerts once a LAN has more than one member. */
+  machineName?: string | null;
   workspaceId: string;
   workspaceSlug: string;
   userId: string;

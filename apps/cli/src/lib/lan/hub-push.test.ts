@@ -105,10 +105,11 @@ describe('LAN host push', () => {
     url: hub.url,
     token: hub.token,
   });
-  const port = () =>
+  const port = (machineId = 'machine-1', machineName = 'homenucserver') =>
     createLanNotificationsPort({
       resolveHub: member,
-      machineId: 'machine-1',
+      machineId,
+      machineName: () => machineName,
       logger: { debug: () => {} } as never,
     });
 
@@ -268,6 +269,60 @@ describe('LAN host push', () => {
       payload: { aps: { event: 'end', 'dismissal-date': Math.floor(clock / 1000) + 60 } },
     });
     expect(result).toEqual({ sent: true, ended: true });
+  });
+
+  it('names the sending machine once more than one machine reports', async () => {
+    await register({ locale: 'en-US' });
+    const base = { workspaceId: WORKSPACE as never, workspaceSlug: 'lan', userId: USER };
+    const done = (occurrenceId: string) => ({
+      ...base,
+      sessionId: 's' as never,
+      occurrenceId,
+      sessionTitle: 'Build',
+    });
+    await port('machine-1', 'homenucserver').notifySessionCompleted(done('t1'));
+    await port('machine-2', 'macbook-air').notifySessionCompleted(done('t2'));
+
+    const alerts = sent.map((push) => (push.payload as { aps: { alert: unknown } }).aps.alert);
+    expect(alerts).toEqual([
+      { title: 'Build', body: 'Finished' },
+      { title: 'Build', subtitle: 'macbook-air', body: 'Finished' },
+    ]);
+  });
+
+  it('keeps the earliest start of a turn across a permission pause', async () => {
+    await register({ activities: { [ACTIVITY]: ACTIVITY_TOKEN } });
+    const notifications = port();
+    const summary = (status: 'running' | 'permission', startedAt: number) => ({
+      activityId: ACTIVITY,
+      workspaceId: WORKSPACE as never,
+      userId: USER,
+      totalCount: 1,
+      statusCounts: { permission: 0, question: 0, running: 0, unread: 0, [status]: 1 },
+      items: [
+        {
+          id: 'session-1',
+          status,
+          statusLabel: status,
+          agentLogoKind: 'claude' as const,
+          agentLogoText: 'CC',
+          title: 'Fix the build',
+          updatedAt: clock - 3_600_000,
+          updatedAtLabel: '',
+          startedAt,
+        },
+      ],
+      updatedAt: clock,
+    });
+    type Pushed = { aps: { 'content-state': { items: { startedAt?: number }[] } } };
+    const startedAtOf = (index: number) =>
+      (sent[index]!.payload as Pushed).aps['content-state'].items[0]?.startedAt;
+
+    await notifications.syncLiveActivitySummary(summary('running', clock - 600_000));
+    // The agent resumes after approval and stamps a later lastRunningSeen.
+    await notifications.syncLiveActivitySummary(summary('running', clock - 60_000));
+    expect(startedAtOf(0)).toBe(clock - 600_000);
+    expect(startedAtOf(1)).toBe(clock - 600_000);
   });
 
   it('forgets a token APNs no longer accepts', async () => {

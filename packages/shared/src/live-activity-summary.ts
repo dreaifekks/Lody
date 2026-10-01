@@ -24,6 +24,8 @@ export type LiveActivityConversationItem = {
   title: string;
   updatedAt: number;
   updatedAtLabel: string;
+  /** When the current turn (or its wait for the user) began, for the elapsed timer. */
+  startedAt?: number;
 };
 
 export type LiveActivityStatusCounts = Record<LiveActivityConversationStatus, number>;
@@ -126,6 +128,23 @@ function resolveStatus(
   return lastReadAt === null || lastMessageAt > lastReadAt ? 'unread' : null;
 }
 
+/**
+ * `lastMessageAt` is written when a turn completes, so a `lastRunningSeen`
+ * behind it belongs to an earlier turn and must not seed this one's timer.
+ */
+function resolveStartedAt(
+  session: SessionMeta,
+  status: LiveActivityConversationStatus
+): number | undefined {
+  const lastRunningSeen = parseTimestamp(session.lastRunningSeen);
+  const lastMessageAt = parseTimestamp(session.lastMessageAt) ?? 0;
+  const turnStart =
+    lastRunningSeen !== null && lastRunningSeen >= lastMessageAt ? lastRunningSeen : undefined;
+  if (status === 'unread') return undefined;
+  if (status === 'running') return turnStart;
+  return parseTimestamp(session.awaitingUserSince) ?? turnStart;
+}
+
 function resolveUpdatedAt(session: SessionMeta): number {
   return parseTimestamp(session.lastMessageAt) ?? parseTimestamp(session.createdAt) ?? 0;
 }
@@ -219,6 +238,8 @@ export function buildLiveActivityConversationItems({
         updatedAt,
         updatedAtLabel: formatUpdatedAt(updatedAt),
       };
+      const startedAt = resolveStartedAt(session, status);
+      if (startedAt !== undefined) item.startedAt = startedAt;
       return item;
     })
     .filter((item): item is LiveActivityConversationItem => item !== null)

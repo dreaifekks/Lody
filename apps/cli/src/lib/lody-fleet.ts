@@ -1152,6 +1152,7 @@ export class LodyFleet {
             resolveHub: () =>
               this.lan?.hubs.find((hub) => getLanHubWorkspaceId(hub.id) === workspace.id) ?? null,
             machineId: this.machineId,
+            machineName: () => this.machineName,
             logger: this.logger,
           })
         : this.cloudPort.notifications;
