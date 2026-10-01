@@ -11,6 +11,8 @@ import {
 } from '@lody/platform';
 import { useStoreValue } from '@lody/platform/react';
 import { isLocalAppPlatform } from '@/lib/app-platform';
+import { installGitHubTokenPort } from '@/lib/github-token-port';
+import { createLocalGitHubTokenPort } from './local-github-token-port';
 import { reloadApp } from '@/lib/clear-local-cache';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { readPreferredWorkspaceSlug } from '@/lib/workspace';
@@ -81,10 +83,7 @@ function ensureLocalPlatformFollowing(): void {
   const follower = getLocalPlatformFollower();
   const follow = (): void => {
     void follower.refresh().finally(() => {
-      setTimeout(
-        follow,
-        follower.isReady() ? FOLLOW_POLL_INTERVAL_MS : BOOTSTRAP_POLL_INTERVAL_MS
-      );
+      setTimeout(follow, follower.isReady() ? FOLLOW_POLL_INTERVAL_MS : BOOTSTRAP_POLL_INTERVAL_MS);
     });
   };
   follow();
@@ -106,6 +105,9 @@ export async function refreshLocalPlatformSnapshot(): Promise<void> {
  */
 export function getLocalPlatformProvider(): PlatformProvider {
   if (!cachedProvider) {
+    installGitHubTokenPort(
+      createLocalGitHubTokenPort(async () => await getIpcServices()?.localPlatform.getGitHubToken())
+    );
     const follower = getLocalPlatformFollower();
     cachedProvider = createLocalPlatformProvider({
       session: getLocalSessionStore(),

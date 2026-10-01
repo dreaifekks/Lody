@@ -41,10 +41,10 @@ describe('resolvePlatformKind', () => {
 });
 
 describe('capabilities', () => {
-  it('local set is empty; cloud set covers every capability', () => {
-    expect(LOCAL_PLATFORM_CAPABILITIES.list()).toEqual([]);
+  it('local set holds only machine-backed capabilities; cloud set covers every capability', () => {
+    expect(LOCAL_PLATFORM_CAPABILITIES.list()).toEqual(['githubPullRequests']);
     for (const capability of PLATFORM_CAPABILITIES) {
-      expect(LOCAL_PLATFORM_CAPABILITIES.has(capability)).toBe(false);
+      expect(LOCAL_PLATFORM_CAPABILITIES.has(capability)).toBe(capability === 'githubPullRequests');
       expect(CLOUD_PLATFORM_CAPABILITIES.has(capability)).toBe(true);
     }
   });
@@ -135,7 +135,7 @@ describe('createLocalPlatformProvider', () => {
     });
     expect(provider.kind).toBe('local');
     expect(provider.sync.mode).toBe('local');
-    expect(provider.capabilities.list()).toEqual([]);
+    expect(provider.capabilities.list()).toEqual(['githubPullRequests']);
     expect(provider.cloudApi).toBeNull();
     expect(provider.identity.session.get()).toEqual({ status: 'loading' });
     session.set({ status: 'authenticated', user });
@@ -173,7 +173,7 @@ describe('createLocalPlatformProvider', () => {
     await expect(provider.workspaces.setActive('lw_gone')).rejects.toThrow(/no workspace lw_gone/);
     expect(workspaces.get()).toMatchObject({ activeWorkspaceId: office.id });
     // Still no capability that needs an account.
-    expect(provider.capabilities.list()).toEqual([]);
+    expect(provider.capabilities.list()).toEqual(['githubPullRequests']);
   });
 
   it('syncs each workspace through the gateway of its own LAN', () => {
@@ -258,13 +258,23 @@ describe('createLocalCloudPort', () => {
       identity: { userId: 'local:home-user' },
       workspaces: [
         { id: 'lw_home', name: 'Home', slug: 'home', role: 'owner', userId: 'local:home-user' },
-        { id: 'lw_office', name: 'Office', slug: 'office', role: 'owner', userId: 'local:office-user' },
+        {
+          id: 'lw_office',
+          name: 'Office',
+          slug: 'office',
+          role: 'owner',
+          userId: 'local:office-user',
+        },
         { id: 'lw_plain', name: 'Plain', slug: null, role: 'owner' },
       ],
     });
     const verdict = async (workspaceId: string, requesterUserId: string) =>
-      (await port.access.verifyMachineAccess({ workspaceId: workspaceId as WorkspaceId, requesterUserId }))
-        .allowed;
+      (
+        await port.access.verifyMachineAccess({
+          workspaceId: workspaceId as WorkspaceId,
+          requesterUserId,
+        })
+      ).allowed;
 
     expect(await verdict('lw_home', 'local:home-user')).toBe(true);
     expect(await verdict('lw_office', 'local:office-user')).toBe(true);
@@ -291,7 +301,11 @@ describe('createLocalCloudPort', () => {
     const home = { id: 'lw_home', name: 'Home', slug: 'lan-home', role: 'owner' };
     const office = { id: 'lw_office', name: 'Office', slug: 'office', role: 'owner' };
     const live = createStore<readonly (typeof home)[]>([home]);
-    const tokens = { createTokenProvider: () => { throw new Error('not used'); } };
+    const tokens = {
+      createTokenProvider: () => {
+        throw new Error('not used');
+      },
+    };
     const port = createLocalCloudPort({ identity, workspaces: live, streamsTokens: tokens });
     expect(port.streamsTokens).toBe(tokens);
 

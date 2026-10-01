@@ -2,6 +2,8 @@
 import { act, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { LOCAL_PLATFORM_CAPABILITIES, type PlatformProvider } from '@lody/platform';
+import { PlatformContext } from '@lody/platform/react';
 import { installGitHubTokenPort } from '../src/lib/github-token-port';
 import { invalidateGitHubTokensForWorkspace } from '../src/lib/github-token';
 import {
@@ -50,9 +52,21 @@ function Probe() {
   });
   return null;
 }
-const render = async () => {
+const { TEST_CLOUD_PLATFORM } = await import('./test-platform');
+const LOCAL_PLATFORM: PlatformProvider = {
+  ...TEST_CLOUD_PLATFORM,
+  kind: 'local',
+  capabilities: LOCAL_PLATFORM_CAPABILITIES,
+  cloudApi: null,
+  sync: { mode: 'local' },
+};
+const render = async (platform: PlatformProvider = TEST_CLOUD_PLATFORM) => {
   await act(async () => {
-    root.render(<Probe />);
+    root.render(
+      <PlatformContext.Provider value={platform}>
+        <Probe />
+      </PlatformContext.Provider>
+    );
   });
 };
 beforeEach(() => {
@@ -136,4 +150,16 @@ it('keeps the identity gate closed when safe repair is unavailable', async () =>
   expect(result.error?.message).toContain('repository identity');
   await expect(result.refresh()).resolves.toBeUndefined();
   expect(result.threads).toEqual([]);
+});
+
+it('on the local platform, uses the Git remote name without a hosted identity', async () => {
+  mocks.versions = undefined;
+  await render(LOCAL_PLATFORM);
+  const saved = await result.runWithToken('write', async (_token, repo) =>
+    (
+      await fetch(`https://api.github.com/repos/${repo}/pulls/7/comments`, { method: 'POST' })
+    ).json()
+  );
+  expect(saved).toEqual({ saved: true });
+  expect(writes).toEqual(['https://api.github.com/repos/org/old/pulls/7/comments']);
 });

@@ -2388,7 +2388,7 @@ export const SessionChatInterface = memo(
       () => getSessionGitHubState(session, workspaceSession),
       [session, workspaceSession]
     );
-    const hasHostedGitHub = usePlatformCapability('githubIntegration');
+    const hasGitHubPullRequests = usePlatformCapability('githubPullRequests');
     const latestPrNumber = getPullRequestNumber(latestPr);
     const latestPrRepoFullName = getPullRequestRepoFullName(latestPr) ?? repoFullName;
     // Stable identity: it is the PrLinkProvider value over the whole
@@ -2396,7 +2396,7 @@ export const SessionChatInterface = memo(
     // through every row. It reads the latest PR when called.
     const openLatestPr = useStableCallback(() => {
       if (!latestPr) return;
-      if (hasHostedGitHub && onOpenPrTab && latestPrRepoFullName && latestPrNumber) {
+      if (hasGitHubPullRequests && onOpenPrTab && latestPrRepoFullName && latestPrNumber) {
         onOpenPrTab({
           prNumber: latestPrNumber,
           repoFullName: latestPrRepoFullName,
@@ -2414,7 +2414,7 @@ export const SessionChatInterface = memo(
       repoFullName: latestPrRepoFullName,
       prNumber: latestPrNumber,
       headCommitSha: getSessionPullRequestLegacyFields(latestPr).headCommitSha,
-      enabled: hasHostedGitHub && canShowGitHubActions && hasExistingPr,
+      enabled: hasGitHubPullRequests && canShowGitHubActions && hasExistingPr,
     });
     const {
       data: activePrData,
@@ -4954,7 +4954,7 @@ export const SessionChatInterface = memo(
       const liveCiFailed = infoBarPrCiRuns?.some((run) => run.status === 'failure') ?? false;
       return resolveSessionInfoBarGitHubActionIds({
         canShowGitHubActions,
-        canMutatePr: hasHostedGitHub,
+        canMutatePr: hasGitHubPullRequests,
         hasExistingPr,
         workspaceDirty,
         workspaceUnpushed,
@@ -5032,7 +5032,7 @@ export const SessionChatInterface = memo(
       });
     }, [
       canShowGitHubActions,
-      hasHostedGitHub,
+      hasGitHubPullRequests,
       handleCommitAndPush,
       handleCreateDraftPr,
       handleCreatePr,

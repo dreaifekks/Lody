@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCloudMutation, useCloudQuery } from '@lody/platform/react';
+import { useAppCapability } from '@/lib/app-platform';
 import { cloudOperations } from '@/lib/cloud-api-operations';
 import { useAuthenticatedConvex } from './use-authenticated-convex';
 
@@ -22,6 +23,10 @@ export function useGitHubPrIdentity({
 }) {
   const { t } = useTranslation();
   const { isAuthenticated } = useAuthenticatedConvex();
+  // Without the hosted registry, the repository comes from the machine's own
+  // Git remote and GitHub checks access with the machine's own login; there is
+  // no brokered token whose repository could be swapped under a name.
+  const hostedIdentity = useAppCapability('githubIntegration');
   const requestedRepoFullName = repoFullName?.trim() || null;
   const hasInputs = Boolean(
     enabled && workspaceId && requestedRepoFullName && prNumber && prNumber > 0
@@ -41,11 +46,13 @@ export function useGitHubPrIdentity({
   const repositoryId = serverVersions?.repositoryId;
   const ready =
     hasInputs &&
-    !serverVersions?.identityPending &&
-    (!sessionId || (typeof repositoryId === 'number' && Boolean(serverVersions?.repoFullName)));
+    (!hostedIdentity ||
+      (!serverVersions?.identityPending &&
+        (!sessionId ||
+          (typeof repositoryId === 'number' && Boolean(serverVersions?.repoFullName)))));
   const unresolved = hasInputs && !ready && serverVersions !== undefined;
   const retry = useCallback(async () => {
-    if (!hasInputs || !sessionId || !isAuthenticated) return;
+    if (!hostedIdentity || !hasInputs || !sessionId || !isAuthenticated) return;
     try {
       await resolveLegacy({
         workspaceId: workspaceId!,
@@ -59,6 +66,7 @@ export function useGitHubPrIdentity({
     }
   }, [
     hasInputs,
+    hostedIdentity,
     isAuthenticated,
     prNumber,
     requestedRepoFullName,
@@ -92,6 +100,8 @@ export function useGitHubPrIdentity({
     serverVersions,
     repositoryId,
     repoFullName: serverVersions?.repoFullName ?? requestedRepoFullName,
+    /** Operations must pin the hosted repository ID; the local platform has none. */
+    requiresRepositoryId: hostedIdentity,
     ready,
     error,
     retry,

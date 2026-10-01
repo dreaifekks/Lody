@@ -26,6 +26,7 @@ import {
   withGitHubOperationTokenRetry,
   withGitHubTokenRetry,
 } from '@/lib/github-token';
+import { useAppCapability } from '@/lib/app-platform';
 import { runWithRetry } from '@/lib/async-retry';
 import {
   EMPTY_PR_CACHE_VERSIONS,
@@ -298,7 +299,13 @@ export function useGitHubPrDetails({
   // exactly the window right after a long idle while the WS reconnects and the
   // JWT refreshes. Reuse the shared authed-query gate the other authed hooks
   // use so we never fire a doomed request.
-  const { isAuthenticated, isLoading: isConvexAuthLoading } = useAuthenticatedConvex();
+  // The local desktop has no hosted session: its tokens come from the machine's
+  // own `gh` login, so the hosted auth gate does not apply.
+  const hostedGitHub = useAppCapability('githubIntegration');
+  const { isAuthenticated: isConvexAuthenticated, isLoading: isConvexAuthLoadingRaw } =
+    useAuthenticatedConvex();
+  const isAuthenticated = hostedGitHub ? isConvexAuthenticated : true;
+  const isConvexAuthLoading = hostedGitHub && isConvexAuthLoadingRaw;
   const canFetch = enabledWithInputs && canRunAuthedWorkspaceQuery(workspaceId, isAuthenticated);
 
   const [payload, setPayload] = useState<PrCachePayload | null>(null);

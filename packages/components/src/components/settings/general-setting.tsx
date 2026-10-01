@@ -126,7 +126,7 @@ function useElectronEnabledSetting(
  */
 export function GeneralSettingsComponent() {
   const { t } = useTranslation();
-  const githubIntegrationAvailable = useAppCapability('githubIntegration');
+  const prAutoArchiveAvailable = useAppCapability('githubPullRequests');
   const postHog = usePostHog();
   const user = useAtomValue(userAtom);
   const [electronCompletionNotificationsEnabled, setElectronCompletionNotificationsEnabled] =
@@ -802,7 +802,7 @@ export function GeneralSettingsComponent() {
           </CompactSection>
         )}
 
-        {githubIntegrationAvailable ? <AutoArchiveSection /> : null}
+        {prAutoArchiveAvailable ? <AutoArchiveSection /> : null}
 
         {/* Clear local cache stays last in General settings. */}
         <CompactSection title={t('settings.general.sections.advanced', 'Advanced')}>

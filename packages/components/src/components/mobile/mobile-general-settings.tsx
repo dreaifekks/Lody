@@ -70,7 +70,7 @@ function getDesktopNotificationHintKey(platform: ElectronPlatform): string {
 
 export function MobileGeneralSettings() {
   const { t } = useTranslation();
-  const githubIntegrationAvailable = useAppCapability('githubIntegration');
+  const prAutoArchiveAvailable = useAppCapability('githubPullRequests');
   const postHog = usePostHog();
   const user = useAtomValue(userAtom);
   const [electronCompletionNotificationsEnabled, setElectronCompletionNotificationsEnabled] =
@@ -606,8 +606,8 @@ export function MobileGeneralSettings() {
           >
             {isProcessing ? (
               <span className="flex h-5 w-9 items-center justify-center">
-                  <Spinner size="small" label={t('common.loading', 'Loading...')} />
-                </span>
+                <Spinner size="small" label={t('common.loading', 'Loading...')} />
+              </span>
             ) : (
               <Switch
                 id="notification-toggle"
@@ -661,7 +661,7 @@ export function MobileGeneralSettings() {
         ) : null}
       </MobileInlinePickerCoordinator>
 
-      {githubIntegrationAvailable ? (
+      {prAutoArchiveAvailable ? (
         <MobileSettingsSection title={t('settings.autoArchive.title', 'Auto-archive sessions')}>
           <MobileSettingsRowGroup>
             <MobileSettingsRow

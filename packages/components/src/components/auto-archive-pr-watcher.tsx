@@ -21,8 +21,8 @@ import { useAppCapability } from '@/lib/app-platform';
 // (Same shape as electron-session-completion-notifier's initializedRef + prev-status map.)
 export function AutoArchivePrWatcher() {
   const owner = useContext(WorkspaceWindowOwnerContext);
-  const githubIntegrationAvailable = useAppCapability('githubIntegration');
-  if (!githubIntegrationAvailable || !owner) {
+  const prAutoArchiveAvailable = useAppCapability('githubPullRequests');
+  if (!prAutoArchiveAvailable || !owner) {
     return null;
   }
   return <CloudAutoArchivePrWatcher />;

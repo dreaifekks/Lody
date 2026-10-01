@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installGitHubTokenPort } from '../src/lib/github-token-port';
+import {
+  createLocalGitHubTokenPort,
+  type LocalGitHubCliTokenResult,
+} from '../src/providers/local-github-token-port';
 
 const mockAction = vi.fn();
 
@@ -25,6 +29,7 @@ const {
   invalidateGitHubRepoToken,
   invalidateGitHubOperationToken,
   invalidateGitHubTokensForWorkspace,
+  isGitHubUnauthorizedTokenError,
   withGitHubOperationTokenRetry,
   withGitHubTokenRetry,
 } = await import('../src/lib/github-token');
@@ -454,5 +459,56 @@ describe('withGitHubOperationTokenRetry', () => {
       invalidatedPersonalToken: 'ghu_personal',
     });
     expect(mockAction.mock.calls[1]?.[1]).not.toMatchObject({ forceAppFallback: true });
+  });
+});
+
+describe('local gh login token port', () => {
+  const useLocalPort = (readResults: LocalGitHubCliTokenResult[]) => {
+    uninstallGitHubTokenPort?.();
+    const results = [...readResults];
+    uninstallGitHubTokenPort = installGitHubTokenPort(
+      createLocalGitHubTokenPort(async () => results.shift() ?? null)
+    );
+  };
+
+  it('runs a read and a write with the machine gh token', async () => {
+    invalidateGitHubTokensForWorkspace('local-gh');
+    useLocalPort([
+      { ok: true, token: 'gho_local' },
+      { ok: true, token: 'gho_local' },
+    ]);
+    await expect(
+      withGitHubTokenRetry('local-gh', 'org/repo', async (token) => `read:${token}`)
+    ).resolves.toBe('read:gho_local');
+    await expect(
+      withGitHubOperationTokenRetry('local-gh', 'org/repo', 'write', async (token) => {
+        return `write:${token}`;
+      })
+    ).resolves.toBe('write:gho_local');
+  });
+
+  it('reads the login again after GitHub rejects the cached token', async () => {
+    invalidateGitHubTokensForWorkspace('local-gh-relogin');
+    useLocalPort([
+      { ok: true, token: 'gho_old' },
+      { ok: true, token: 'gho_new' },
+    ]);
+    const used: string[] = [];
+    await expect(
+      withGitHubTokenRetry('local-gh-relogin', 'org/repo', async (token) => {
+        used.push(token);
+        if (token === 'gho_old') throw new GitHubAuthError();
+        return 'ok';
+      })
+    ).resolves.toBe('ok');
+    expect(used).toEqual(['gho_old', 'gho_new']);
+  });
+
+  it('reports a missing login as a non-retryable token error', async () => {
+    invalidateGitHubTokensForWorkspace('local-gh-missing');
+    useLocalPort([{ ok: false, code: 'not-authed', message: 'Run gh auth login.' }]);
+    const error = await getGitHubRepoToken('local-gh-missing', 'org/repo').catch((e) => e);
+    expect(error).toMatchObject({ code: 'gh_not_authenticated', message: 'Run gh auth login.' });
+    expect(isGitHubUnauthorizedTokenError(error)).toBe(false);
   });
 });

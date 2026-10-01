@@ -269,7 +269,7 @@ export function useGitHubReviewComments({
         !enabledWithInputs ||
         !workspaceId ||
         !normalizedRepoFullName ||
-        repositoryId === undefined
+        (identity.requiresRepositoryId && repositoryId === undefined)
       ) {
         throw (
           identity.error ??
@@ -284,7 +284,14 @@ export function useGitHubReviewComments({
         repositoryId
       );
     },
-    [enabledWithInputs, workspaceId, normalizedRepoFullName, repositoryId, identity.error]
+    [
+      enabledWithInputs,
+      workspaceId,
+      normalizedRepoFullName,
+      repositoryId,
+      identity.error,
+      identity.requiresRepositoryId,
+    ]
   );
 
   return {
