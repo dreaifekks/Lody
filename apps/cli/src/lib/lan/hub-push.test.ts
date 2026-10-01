@@ -267,9 +267,55 @@ describe('LAN host push', () => {
     const result = await notifications.syncLiveActivitySummary(summary('unread'));
     expect(sent[3]).toMatchObject({
       deviceToken: ACTIVITY_TOKEN,
-      payload: { aps: { event: 'end', 'dismissal-date': Math.floor(clock / 1000) + 60 } },
+      payload: {
+        aps: {
+          event: 'end',
+          'dismissal-date': Math.floor(clock / 1000) + 60,
+          // What was running ends as finished, with when it finished.
+          'content-state': {
+            totalCount: 1,
+            statusCounts: { running: 0, unread: 1 },
+            items: [{ id: 'session-1', status: 'unread', completedAt: clock }],
+          },
+        },
+      },
     });
     expect(result).toEqual({ sent: true, ended: true });
+  });
+
+  it('shows only running work, the focus and one more, like the phone itself', async () => {
+    await register({ activities: { [ACTIVITY]: ACTIVITY_TOKEN } });
+    const item = (id: string, status: 'running' | 'question' | 'unread') => ({
+      id,
+      status,
+      statusLabel: status,
+      agentLogoKind: 'claude' as const,
+      agentLogoText: 'CC',
+      title: id,
+      updatedAt: clock,
+      updatedAtLabel: '',
+    });
+    await port().syncLiveActivitySummary({
+      activityId: ACTIVITY,
+      workspaceId: WORKSPACE as never,
+      userId: USER,
+      totalCount: 4,
+      statusCounts: { permission: 0, question: 1, running: 2, unread: 1 },
+      items: [
+        item('b', 'running'),
+        item('done', 'unread'),
+        item('a', 'running'),
+        item('q', 'question'),
+      ],
+      updatedAt: clock,
+    });
+    const state = (sent.at(-1)!.payload as { aps: { 'content-state': Record<string, unknown> } })
+      .aps['content-state'];
+    expect(state).toMatchObject({
+      totalCount: 3,
+      statusCounts: { question: 1, running: 2, unread: 0 },
+      items: [{ id: 'q' }, { id: 'a' }],
+    });
   });
 
   it('names the sending machine once more than one machine reports', async () => {

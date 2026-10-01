@@ -31,6 +31,11 @@ const MEMBER_WINDOW_MS = 24 * 60 * 60_000;
 const DISMISS_AFTER_S = 60;
 const LIVE_ACTIVITY_ATTRIBUTES_TYPE = 'LodyConversationLiveActivityAttributes';
 const ACTIVE_STATUSES = new Set(['running', 'permission', 'question']);
+/** The widget's own ordering (`Item.Status.priority`): who needs the user first. */
+const STATUS_PRIORITY: Record<string, number> = { question: 0, permission: 1, running: 2 };
+/** The phone draws the focus and at most this many more; it sends no more itself. */
+const VISIBLE_ITEMS = 2;
+const FAILURE_WINDOW_MS = 10 * 60_000;
 
 type Language = 'en' | 'zh';
 type Copy = {
@@ -250,6 +255,9 @@ export function createLanHubPush(options: {
   const workStarts = new Map<string, number>();
   /** Activities already ended; a phone lists them until they are dismissed. */
   const endedTokens = new Set<string>();
+  /** What each activity last showed as running, so its end shows those as done. */
+  const lastActiveItems = new Map<string, ContentItem[]>();
+  const recentFailures = new Map<string, number>();
   const machinesSeen = new Map<string, number>();
   /** Naming the sender only helps once more than one machine reports. */
   const senderName = (event: { machineId: string; machineName?: string | null }) => {
@@ -367,24 +375,70 @@ export function createLanHubPush(options: {
     const statusCounts = { permission: 0, question: 0, running: 0, unread: 0 };
     for (const item of kept) statusCounts[item.status] += 1;
     const active = kept.some((item) => ACTIVE_STATUSES.has(item.status));
+    if (active) {
+      lastActiveItems.set(
+        activityId,
+        pinned.filter((item) => ACTIVE_STATUSES.has(item.status))
+      );
+    }
     return { latest, items: pinned, statusCounts, active, permissionAlert };
   };
 
   type MergedState = NonNullable<ReturnType<typeof mergedState>>;
 
-  const contentStateFor = (device: LanPushDevice, state: MergedState) => {
+  /**
+   * The same state the phone builds for itself while it is open
+   * (`LiveActivities.reconcile`): running work shows only active sessions,
+   * the focus and one more; an ending activity turns what was running into
+   * finished rows with their durations.
+   */
+  const contentStateFor = (device: LanPushDevice, activityId: string, state: MergedState) => {
     const labels = device.liveActivityLabels ?? {};
-    return {
-      totalCount: state.items.length,
-      statusCounts: state.statusCounts,
-      items: state.items.map((item) => ({
-        ...item,
-        statusLabel: labels[item.status] ?? item.statusLabel,
-        // Relative labels age between pushes; the widget does not show them.
-        updatedAtLabel: '',
-      })),
-      ...(state.permissionAlert ? { permissionAlert: state.permissionAlert } : {}),
+    const copy = device.liveActivityCopy ?? {};
+    const shared = {
+      ...(state.permissionAlert && state.active ? { permissionAlert: state.permissionAlert } : {}),
       ...(device.liveActivityCopy ? { copy: device.liveActivityCopy } : {}),
+    };
+    const label = (item: ContentItem) => ({
+      ...item,
+      statusLabel: labels[item.status] ?? item.statusLabel,
+      // Relative labels age between pushes; the widget does not show them.
+      updatedAtLabel: '',
+    });
+    if (state.active) {
+      const active = state.items
+        .filter((item) => ACTIVE_STATUSES.has(item.status))
+        .sort(
+          (a, b) =>
+            (STATUS_PRIORITY[a.status] ?? 9) - (STATUS_PRIORITY[b.status] ?? 9) ||
+            a.id.localeCompare(b.id)
+        );
+      return {
+        totalCount: active.length,
+        statusCounts: { ...state.statusCounts, unread: 0 },
+        items: active.slice(0, VISIBLE_ITEMS).map(label),
+        ...shared,
+      };
+    }
+    const stamp = now();
+    const finished = (lastActiveItems.get(activityId) ?? []).map((item) => {
+      const failed = (recentFailures.get(item.id) ?? 0) >= stamp - FAILURE_WINDOW_MS;
+      const { permissionCommand: _command, ...rest } = item;
+      return {
+        ...rest,
+        status: failed ? 'failed' : 'unread',
+        statusLabel:
+          (failed ? copy.failedLabel : copy.completedLabel) ?? labels.unread ?? item.statusLabel,
+        updatedAt: stamp,
+        updatedAtLabel: '',
+        completedAt: stamp,
+      };
+    });
+    return {
+      totalCount: finished.length,
+      statusCounts: { permission: 0, question: 0, running: 0, unread: finished.length },
+      items: finished,
+      ...shared,
     };
   };
 
@@ -397,7 +451,7 @@ export function createLanHubPush(options: {
     const token = device.activities[activityId];
     if (!token) return false;
     const timestamp = Math.floor(now() / 1000);
-    const contentState = contentStateFor(device, state);
+    const contentState = contentStateFor(device, activityId, state);
     const ok = await push(device, {
       deviceToken: token,
       topic: `${device.bundleId}.push-type.liveactivity`,
@@ -485,7 +539,7 @@ export function createLanHubPush(options: {
               aps: {
                 timestamp,
                 event: 'start',
-                'content-state': contentStateFor(device, state),
+                'content-state': contentStateFor(device, summary.activityId, state),
                 'stale-date': timestamp + STALE_AFTER_S,
                 'attributes-type': LIVE_ACTIVITY_ATTRIBUTES_TYPE,
                 attributes: {
@@ -522,6 +576,10 @@ export function createLanHubPush(options: {
         { sessionId: event.sessionId, collapseId: `done-${event.sessionId}` }
       );
     } else if (event.type === 'session-failed') {
+      recentFailures.set(event.sessionId, now());
+      if (recentFailures.size > SEEN_EVENT_LIMIT) {
+        recentFailures.delete(recentFailures.keys().next().value as string);
+      }
       // One failure is often recorded by more than one layer.
       const minute = Math.floor(now() / 60_000);
       if (!firstTime(`failed:${event.sessionId}:${minute}`)) return null;
