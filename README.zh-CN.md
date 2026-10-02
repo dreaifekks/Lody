@@ -1,87 +1,103 @@
 <p align="center">
-    <a href="https://play.google.com/store/apps/details?id=ai.lody.android">
-        <img src="https://img.shields.io/badge/Google_Play-414141?logo=google-play&logoColor=white"/>
-    </a>
-    <a href="https://apps.apple.com/us/app/lody-run-code-agent-anywhere/id6761373528">
-        <img src="https://img.shields.io/badge/App_Store-0D96F6?logo=app-store&logoColor=white"/>
-    </a>
-    <a href="https://lody.ai/download">
-        <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=F0F0F0"/>
-    </a>
-    <a href="https://lody.ai/download">
-        <img src="https://custom-icon-badges.demolab.com/badge/Windows-0078D6?logo=windows11&logoColor=white"/>
-    </a>
-    <a href="https://lody.ai/download">
-        <img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black"/>
-    </a>
+  <img src="./site-docs/public/icon-mac.png" width="128"/>
 </p>
-
-<p align="center">
-  <a href="https://lody.ai">
-    <picture>
-      <img src="./site-docs/public/icon-mac.png" width="128"/>
-    </picture>
-  </a>
-</p>
-<h1 align="center">
-<a href="https://lody.ai" alt="lody-site">Lody</a>
-</h1>
+<h1 align="center">Lody LAN</h1>
 <p align="center">
   <a href="./README.md">English</a> | <b>简体中文</b>
 </p>
 <p align="center">
-  <b>为团队正在使用的 Coding Agents 提供一个共享工作空间。</b>
+  <b>不需要账号，只给你自己的机器用的 Lody。</b>
 </p>
 <p align="center">
-  连接任意机器，通过 ACP 接入任意 Coding Agent。与团队共享对话，并从桌面端、移动端、网页端或 CLI 调度工作。
+  <a href="https://github.com/LodyAI/Lody">Lody</a> 的个人 fork，通过你自己托管的 hub 把多台机器连在一起。
 </p>
 <p align="center">
-  <a href="https://lody.ai/zh/docs/">
-    <b>文档</b>
-  </a>
+  <a href="https://github.com/dreaifekks/Lody/releases/tag/lan-latest"><b>下载</b></a>
   |
-  <a href="https://lody.ai/zh/docs/quickstart">
-    <b>快速开始</b>
-  </a>
-</p>
-<p align="center">
-  <a aria-label="X" href="https://x.com/intent/follow?screen_name=lody_ai" target="_blank">
-    <img alt="" src="https://img.shields.io/badge/X-%23000000.svg?style=for-the-badge&logo=X&logoColor=white">
-  </a>
-  <a aria-label="Discord-Link" href="https://discord.gg/E8mZtMu38s" target="_blank">
-    <img alt="" src="https://img.shields.io/badge/Discord-black?style=for-the-badge&logo=discord">
-  </a>
+  <a href="./.agents/docs/lan.md"><b>LAN 的工作方式</b></a>
+  |
+  <a href="https://github.com/LodyAI/Lody"><b>上游 Lody</b></a>
 </p>
 
-<p align="center">
-  <img src="./site-docs/public/_docs-assets/lody-readme-hero.png" alt="通过 Lody 在桌面端和移动端运行 Coding Agents" width="100%" />
-</p>
+## 这是什么
 
-## 你可以用 Lody 做什么
+Lody LAN 基于开源的 Lody 桌面应用和 CLI，让同一个人的多台机器不需要 Lody 账号、也不依赖托管服务就能协同工作。它不是 Lody 团队出品，也不由他们维护。它跟随上游发布：每个构建的版本号是 `<上游版本>-lan.<n>`，桌面应用和服务器都从本仓库的[滚动发布](https://github.com/dreaifekks/Lody/releases/tag/lan-latest)自我更新，不会被上游版本替换。
 
-### 与团队共享 Agent 对话
+Lody 的大部分功能和上游一致：通过 ACP 接入 Agent、worktree、diff、终端、浏览器预览、Roles 和 CLI。依赖 Lody 服务器的部分被替换或者缺失，详见[与 Lody 的差异](#与-lody-的差异)。
 
-团队成员可以打开同一个对话，查看完整记录、运行状态、相关文件和代码改动，并直接补充指令，不再需要来回传递截图或粘贴日志。
+## 开始使用
 
-### 接入你已经在使用的 Agents 和机器
+一个 LAN 就是你自己托管的 hub 加上打开它的邀请：持有邀请的每台机器都能看到其他机器的项目，并在上面运行 Agent。一台机器可以加入多个 LAN，在每个 LAN 里都是同一台机器、同一个名字。会话的终端开在运行该会话的机器上，不管你在哪台机器上用桌面应用；消息附带的图片和文件也会送到那台机器。成员之间通过各自连接 hub 的地址的 8789 端口互连。如果那台机器开着 SSH 服务并允许桌面这台机器登录，会话所在的文件夹还能在桌面这边的编辑器里通过 SSH 打开。
 
-接入 Claude Code、Codex、Kimi、OpenCode 或其他兼容 ACP 的 Agent。继续使用各台笔记本、工作站、服务器和云主机上已有的订阅、登录状态、模型与权限配置。机器默认保持私有，只有所有者主动共享后才会加入团队工作空间。
-
-### 从任意端调度工作
-
-从桌面端、移动端、网页端或 CLI 选择任意已连接的机器来调度工作。权限请求、运行进度、对话和代码改动会在这些入口间保持可见。
-
-## 连接一台机器
-
-在工作站、服务器或云主机上运行：
+在一台服务器上托管 LAN，这台服务器同时成为第一个成员：
 
 ```bash
-npx lody daemon start
+curl -fsSL https://github.com/dreaifekks/Lody/releases/download/lan-latest/install.sh | bash -s -- up
 ```
 
-这条命令会打开登录链接，将当前机器连接到你的工作空间，并让桌面端、移动端、网页端或 CLI 可以向它调度工作。
+命令会打印一个邀请。在另一台服务器上用它加入，或者粘贴到桌面应用的 **Settings > LAN**：
 
-## 通过 CLI 使用 Lody
+```bash
+curl -fsSL https://github.com/dreaifekks/Lody/releases/download/lan-latest/install.sh | bash -s -- join lody-lan://…
+```
+
+macOS、Windows 和 Linux 的桌面安装包附在[滚动发布](https://github.com/dreaifekks/Lody/releases/tag/lan-latest)里。`lody-lan lan --help` 列出查看、改名、迁移和退出 LAN 的命令，[LAN 的工作方式](.agents/docs/lan.md)解释其余部分。
+
+**Settings > LAN** 还会列出各个 LAN 能连到的机器，以及每台机器的构建版本和 Agent 运行时。新构建也从这里安装：服务器可以从桌面或用 `lody-lan lan update <机器>` 让它自我更新，桌面应用则在侧边栏提示自己的更新。构建跟随构建它的那个仓库的发布，所以 fork 这个 fork 的人会跟随他们自己的发布。
+
+从托管版 Lody 迁过来？在 **Settings > LAN** 的机器菜单里，或者在服务器上运行 `lody-lan hosted import`，可以读取托管版 Lody 在那台机器上配置的 Agent、MCP 服务、Roles 和项目，并加到那台机器的安装里。不会向任何地方发送数据，托管版也保留原有配置；[导入说明](.agents/docs/hosted-import.md)列出了不会带过来的内容。两个桌面应用可以同时安装。
+
+## 与 Lody 的差异
+
+### 新增的功能
+
+| 功能             | Lody LAN 中的情况                                                                                                                |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| LAN              | 自建 hub 和它的邀请取代账号；一台机器可以加入多个 LAN                                                                            |
+| 其他机器的终端   | 成员之间直接连接，用 LAN 凭证加密，不经过 hub                                                                                    |
+| 消息附带的文件   | 直接送到运行该会话的机器                                                                                                         |
+| 其他机器的文件夹 | 别的成员上的会话文件夹，可以在本机编辑器里通过 SSH 打开                                                                          |
+| 机器与更新       | Settings > LAN 列出所有机器及其构建版本；任一成员都能更新服务器，桌面应用自我更新                                                |
+| 手机提醒         | hub 用你自己的 APNs 密钥（`lody-lan lan push setup`）向注册过的 iOS 客户端推送提醒和实时活动，并可以在实时活动里直接审批权限请求 |
+| Pull Request     | PR 面板、合并、评论和 PR 驱动的自动归档在本地可用，用的是当前查看的那台机器的 `gh` 登录                                          |
+| 原生会话         | Lody 会话会补上在 Lody 之外写进对应 Claude 或 Codex 会话的轮次                                                                   |
+| 托管配置导入     | 读取托管版 Lody 在某台机器上的配置                                                                                               |
+
+### 实现方式不同的功能
+
+| 方面           | Lody                              | Lody LAN                                                          |
+| -------------- | --------------------------------- | ----------------------------------------------------------------- |
+| 身份           | Lody 账号、团队和工作空间         | 持有 LAN 邀请的就是成员；所有成员视为同一个用户；邀请不能原地更换 |
+| 同步           | Lody 的服务器                     | 你的 hub：单节点 SQLite、没有副本，请备份它的数据目录             |
+| 机器之间的请求 | Lody 的服务器                     | 在 hub 上排队，最多等两分钟                                       |
+| 附件           | 上传到所有设备都能读取的存储      | 留在运行会话的机器上；其他成员能看到卡片，但打不开                |
+| GitHub 凭证    | Lody 的 GitHub App 和你关联的账号 | 每台机器自己的 `git`/`gh` 登录                                    |
+| PR 面板刷新    | GitHub webhook                    | 面板打开时轮询；新的 review 和评论要刷新后才出现                  |
+| 手机和网页端   | Lody 的 iOS、Android 和网页应用   | 这些应用需要 Lody 账号，连不上 LAN；手机通过 hub 接收提醒         |
+| 更新           | Lody 的更新服务                   | 本仓库的滚动发布；上游的更新器保持关闭                            |
+
+### 暂不可用的功能
+
+- 与团队共享，以及会话的公开分享链接。
+- GitHub App 相关：仓库注册、Settings > GitHub、在云端克隆的仓库，以及以你关联的 GitHub 身份操作。
+- 自动 review 与合并：review 引擎目前不会在 LAN 上启动。
+- 远程预览：Agent 在其他机器上启动的开发服务器，不能在本机的浏览器面板里打开。
+- 跨机器的用量报告。
+- Settings > Machines 和快捷指令的机器选择；改由 Settings > LAN 列出机器。
+- 在桌面应用里托管 LAN，因为桌面应用不包含 hub。
+- 计费、Bug 报告上传和遥测，这些按设计关闭。
+
+## 路线图
+
+- **进行中：** 整个 LAN 共用一个 GitHub 凭证，没登录 `gh` 的机器也能开 PR、运行自动 review。
+- **走向点对点：** 凭证和密钥由每个成员各自保存，而不是放在 hub 上；机器之间的请求改走它们的直连通道；hub 可以迁移到别的机器。hub 保留为中转，暂存离线成员还没收到的内容。
+- **待补的功能：** 通过成员直连通道实现远程预览、跨机器用量汇总，以及 PR 面板中 review 和评论的定时刷新。
+
+## 与 Lody 共有的功能
+
+下面几节介绍 Lody LAN 从上游保留下来的功能。其中提到团队、账号下的工作空间，或者手机和网页应用的地方，请先看[与 Lody 的差异](#与-lody-的差异)。
+
+### 通过 CLI 使用 Lody
 
 CLI 不只是用来连接机器的后台进程。你可以从终端或脚本注册本地项目；查看工作空间、机器、已关联的仓库和 Agent 配置；创建 Session、发送消息、读取历史和状态；以及归档或恢复 Session。支持 `--json` 的命令还可以把 Lody 工作空间中的数据接入你自己的工具。
 
@@ -94,19 +110,19 @@ npx lody session list --workspace my-team
 
 完整命令请查看 [CLI 文档](https://lody.ai/zh/docs/cli)。
 
-## 让 Agent 跨对话协调工作
+### 让 Agent 跨对话协调工作
 
 Lody 为 Agent 提供创建或复用其他对话、读取状态和历史、追加指令、取消运行中任务以及取回结果的工具。这样，一个对话就可以承担协调者的角色：你可以先与主 Agent 一起分析 Bug，再让它把调查、实现和测试分别交给多个并行对话。
 
 每个子对话仍然拥有独立的历史和任务状态，Lody 同时会保留它与发起对话之间的关系。你或 Agent 也可以通过 `@` 引用其他对话，把不同 Session 中的工作联系起来。
 
-## 在同一个工作空间中查看代码和运行结果
+### 在同一个工作空间中查看代码和运行结果
 
-### 隔离并行任务的代码改动
+#### 隔离并行任务的代码改动
 
 为不同 Session 创建独立的 Git worktree，让多个 Agents 并行工作而不会混在同一个工作目录中。你可以在标签页中同时打开多个对话、文件、Diff、终端和 Preview，也可以把一个 Session 派生为新的对话或 worktree，探索另一种解决方案。
 
-### 在工作发生的地方查看改动
+#### 在工作发生的地方查看改动
 
 在对话旁浏览项目文件，查看单轮或整个 Session 的 Diff。你还可以添加行级评论、跟踪 Pull Request 和 CI 状态，并让 GitHub Review 讨论留在产生这些改动的 Agent 附近。
 
@@ -114,7 +130,7 @@ Lody 为 Agent 提供创建或复用其他对话、读取状态和历史、追�
   <img src="./site-docs/public/_docs-assets/PR-panel.png" alt="在 Agent 对话旁查看 Pull Request 和 CI 状态" width="100%" />
 </p>
 
-### 向 Agent 提供视觉反馈
+#### 向 Agent 提供视觉反馈
 
 在 Session 中打开正在运行的网页应用，切换不同的响应式视口，并把针对具体元素的视觉批注直接发回给 Agent。
 
@@ -122,7 +138,7 @@ Lody 为 Agent 提供创建或复用其他对话、读取状态和历史、追�
   <img src="./site-docs/public/_docs-assets/20260507-preview.png" alt="在网页 Preview 中添加批注并发送给 Agent" width="100%" />
 </p>
 
-## 更多内置能力
+### 更多内置能力
 
 - **Agent Roles** — 与团队共享可复用的 Agent、模型、权限和默认指令配置。
 - **附件** — 从桌面端、移动端、网页端或 CLI 发送文件和图片，并接收 Agent 生成的文件。
@@ -135,35 +151,19 @@ Lody 为 Agent 提供创建或复用其他对话、读取状态和历史、追�
   <img src="./site-docs/public/_docs-assets/20260611-island.png" alt="通过 iPhone 实时活动批准 Agent 的权限请求" width="60%" />
 </p>
 
-## 不止于对话
+## 发布
 
-共享对话是 Lody 理解项目的起点，但不会是工作空间的全部。
-
-我们计划加入文档和文档沙盒，帮助团队整理需求、保留决策，并与 Agents 一起处理不适合放在单个对话时间线中的工作。随着这些能力发展，它们可以逐渐成为团队共享的上下文，帮助成员理解不只是代码改了什么，还有为什么这样改。
-
-我们希望整个工作空间——而不只是对话——最终成为 local-first。Lody 使用 [Loro](https://loro.dev/) Stack，通过 Loro 和 Flock 表示并同步基于 CRDT 的协作状态。同一套基础可以从对话扩展到文档和未来的其他工作空间工具。我们的目标是让团队上下文更加持久、可迁移，并最终由团队自己掌控。
-
-Lody 仍在走向完整的 local-first 支持。
-
-## 加入社区
-
-欢迎加入 Lody 中文用户群，与团队和其他用户交流、反馈问题、了解新功能。
-
-<p align="center">
-  <img src="./packages/components/src/assets/community-feishu-qr.png" alt="Lody 飞书用户群二维码" width="220" />
-</p>
-<p align="center">
-  使用飞书扫描上方二维码加入群聊，或加入我们的 <a href="https://discord.gg/E8mZtMu38s">Discord</a>。
-</p>
+推送 `v<上游版本>-lan.<n>` 形式的 tag，会构建桌面应用和 CLI 包，并替换[滚动发布](https://github.com/dreaifekks/Lody/releases/tag/lan-latest)。`node scripts/lan-release.mjs version` 会打印下一个版本号。上游自带的 `Release` 工作流只接受 `vX.Y.Z` 形式的正式版本 tag，在本仓库已停用。
 
 ## 仓库结构
 
-- `apps/cli` — 连接机器并运行 Coding Agents
-- `apps/electron` — Lody 桌面应用
+- `apps/cli` — 连接机器并运行 Coding Agents；`src/lib/lan` 是 hub 和 LAN 相关功能
+- `apps/electron` — 桌面应用
 - `packages/components` — 工作空间共享 UI
 - `packages/ui` — Base UI 基础组件与 StyleX 设计令牌
 - `packages/platform` — 平台能力与集成
 - `packages/shared` — 共享 Schema、协议与工具
-- `site-docs` — 官网、文档与博客
+- `scripts/lan` — 随每次发布一起发布的安装脚本
+- `site-docs` — 上游的官网、文档与博客
 
-如果希望参与开发，请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)（含社区 PR 规模限制）。
+开发环境配置请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)。
