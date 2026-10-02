@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { LORO_STREAMS_BUCKET_ID } from '@lody/shared';
 import { createApnsSender, readApnsConfig, type ApnsSender } from './apns';
+import { createLanHubGitHub, type LanHubGitHub } from './hub-github';
 import { createLanHubPush, type LanHubPush } from './hub-push';
 
 export const LAN_HUB_DEFAULT_PORT = 8788;
@@ -342,6 +343,7 @@ function createGate(options: {
   token: string;
   keepaliveMs?: number;
   push: LanHubPush;
+  github: LanHubGitHub;
 }): http.RequestListener {
   const expectedAuthorization = Buffer.from(`Bearer ${options.token}`);
   return (request, response) => {
@@ -362,6 +364,10 @@ function createGate(options: {
     }
     if (request.url?.startsWith('/push/')) {
       void options.push.handle(request, response);
+      return;
+    }
+    if (options.github.handles(request.url)) {
+      options.github.handle(request, response);
       return;
     }
 
@@ -468,6 +474,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       token,
       keepaliveMs: options.keepaliveMs,
       push,
+      github: createLanHubGitHub({ dataDir, log: options.log }),
     });
     const created = options.tls
       ? https.createServer({ cert: options.tls.cert, key: options.tls.key }, gate)

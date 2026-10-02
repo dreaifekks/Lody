@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process'
+import { fetchLanHubGitHubCredential } from '@lody/shared/node/lan-github'
+import type { LanHub } from '@lody/shared/node/lan-hub'
 import { getUserShellEnvCached } from './shell-env'
 
 /**
@@ -60,4 +62,25 @@ export async function readGitHubCliToken(
     }
   }
   return { ok: true, token }
+}
+
+const LAN_HUB_TIMEOUT_MS = 3_000
+
+/**
+ * The token the host of one of this installation's LANs keeps, so a machine
+ * without a `gh` login shows pull requests too; the machine's own login when
+ * no host keeps one or none answers.
+ */
+export async function readGitHubToken(
+  hubs: readonly Pick<LanHub, 'url' | 'token'>[],
+  options: { fetch?: typeof fetch; run?: RunGhAuthToken } = {}
+): Promise<GitHubCliTokenResult> {
+  for (const hub of hubs) {
+    const credential = await fetchLanHubGitHubCredential(hub, {
+      fetch: options.fetch,
+      timeoutMs: LAN_HUB_TIMEOUT_MS
+    }).catch(() => null)
+    if (credential) return { ok: true, token: credential.token }
+  }
+  return await readGitHubCliToken(options.run)
 }

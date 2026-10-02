@@ -4,6 +4,8 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LAN_GITHUB_TOKEN_PATH, fetchLanHubGitHubCredential } from '@lody/shared/node/lan-github';
+import { removeLanHubGitHubConfig, writeLanHubGitHubConfig } from './hub-github';
 import {
   createLiveReadKeepalive,
   loadOrCreateLanHubToken,
@@ -176,6 +178,32 @@ describe('LAN host', () => {
     const { error } = await hub.stopped;
     expect(error?.message).toBe('Streams server exited unexpectedly (code=1)');
     await expect(request('/ds/lody/room', { headers: authorized() })).rejects.toThrow();
+  });
+
+  it('hands its GitHub credential only to members, from the moment it is saved', async () => {
+    const before = streams.seen.length;
+    expect((await request(LAN_GITHUB_TOKEN_PATH)).status).toBe(401);
+    expect((await request(LAN_GITHUB_TOKEN_PATH, { headers: authorized() })).status).toBe(404);
+    const member = { url: hub.url, token: hub.token };
+    await expect(fetchLanHubGitHubCredential(member)).resolves.toBeNull();
+
+    writeLanHubGitHubConfig(dataDir, {
+      token: 'github_pat_example',
+      login: 'octocat',
+      userId: '583231',
+      savedAt: '2026-10-02T00:00:00.000Z',
+    });
+    expect(fs.statSync(path.join(dataDir, 'github.json')).mode & 0o777).toBe(0o600);
+    await expect(fetchLanHubGitHubCredential(member)).resolves.toEqual({
+      token: 'github_pat_example',
+      login: 'octocat',
+      userId: '583231',
+    });
+
+    removeLanHubGitHubConfig(dataDir);
+    await expect(fetchLanHubGitHubCredential(member)).resolves.toBeNull();
+    // None of it is a stream.
+    expect(streams.seen).toHaveLength(before);
   });
 
   it('keeps its credential across restarts and away from other users', async () => {
