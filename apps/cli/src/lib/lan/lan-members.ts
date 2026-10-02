@@ -376,7 +376,11 @@ export async function forwardLanMemberControl(options: {
   /** The workspace the request names, if this machine runs it. */
   workspace: LanMemberWorkspace | null;
   machineId: MachineId;
-  send: (request: LanMemberControlRequest) => Promise<LocalProjectControlResponse | null>;
+  /** Puts the request to the member that `machine` describes. */
+  send: (
+    request: LanMemberControlRequest,
+    machine: MachineMeta
+  ) => Promise<LocalProjectControlResponse | null>;
 }): Promise<LanMemberControlResponse> {
   const { request, workspace } = options;
   if (!workspace?.lan) {
@@ -399,7 +403,7 @@ export async function forwardLanMemberControl(options: {
 
   let answer: LocalProjectControlResponse | null;
   try {
-    answer = await options.send(request);
+    answer = await options.send(request, meta);
   } catch (error) {
     return refuse(request, `${meta.name} could not be reached: ${formatErrorMessage(error)}`);
   }

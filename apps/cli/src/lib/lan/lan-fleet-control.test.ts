@@ -23,6 +23,7 @@ import {
   isLanControlRequest,
   type LanFleetControlOptions,
 } from './lan-fleet-control';
+import { LanMemberUnreachableError } from './lan-control-channel';
 import { LanMachineControl } from './lan-machine-control';
 import type { LanMemberWorkspace } from './lan-members';
 
@@ -54,7 +55,8 @@ describe('what an agent service does for the members of its LANs', () => {
   let root: string;
   let workspace: LanMemberWorkspace;
   let control: LanMachineControl;
-  let sent: Array<{ hub: string; request: LanMemberControlRequest }>;
+  let sent: Array<{ via: 'direct' | 'hub'; hub: string; request: LanMemberControlRequest }>;
+  let direct: (() => Promise<LocalProjectControlResponse | null>) | null;
   let answer: LocalProjectControlResponse | null;
   let hubs: LanHub[];
   let running: boolean;
@@ -71,8 +73,13 @@ describe('what an agent service does for the members of its LANs', () => {
       workspaces: () => (running ? [workspace] : []),
       workspace: async (workspaceId) =>
         running && workspaceId === workspace.workspaceId ? workspace : null,
-      send: async (hub, request) => {
-        sent.push({ hub: hub.name, request });
+      sendDirect: async (hub, _endpoint, request) => {
+        sent.push({ via: 'direct', hub: hub.name, request });
+        if (!direct) throw new Error('no direct connection in this test');
+        return await direct();
+      },
+      sendThroughHub: async (hub, request) => {
+        sent.push({ via: 'hub', hub: hub.name, request });
         return answer;
       },
       now: () => 500,
@@ -143,6 +150,7 @@ describe('what an agent service does for the members of its LANs', () => {
     });
     sent = [];
     answer = null;
+    direct = null;
     hubs = [home];
     running = true;
     installed = false;
@@ -203,7 +211,59 @@ describe('what an agent service does for the members of its LANs', () => {
     });
 
     expect(response).toEqual({ ok: true, type: 'lan/forward', result: { response: answer } });
-    expect(sent).toEqual([{ hub: 'Home', request }]);
+    expect(sent).toEqual([{ via: 'hub', hub: 'Home', request }]);
+  });
+
+  describe('a member that accepts members at an endpoint', () => {
+    const request: LanMemberControlRequest = {
+      type: 'lan/update-machine',
+      machineId: SERVER,
+      workspaceId: HOME,
+    };
+    const started: LocalProjectControlResponse = {
+      ok: true,
+      type: 'lan/update-machine',
+      result: { outcome: 'started', version: '0.100.0-lan.5' },
+    };
+    const forward = async () =>
+      await createFleetControl().dispatch({ type: 'lan/forward', machineId: THIS, request });
+
+    beforeEach(async () => {
+      await register(SERVER, { lanTerminal: { version: 1, host: '10.0.0.2', port: 8789 } });
+    });
+
+    it('is asked directly, and the hub carries nothing', async () => {
+      direct = async () => started;
+
+      expect(await forward()).toEqual({
+        ok: true,
+        type: 'lan/forward',
+        result: { response: started },
+      });
+      expect(sent).toEqual([{ via: 'direct', hub: 'Home', request }]);
+    });
+
+    it('is asked through the hub when the request never reached it', async () => {
+      direct = async () => {
+        throw new LanMemberUnreachableError('connect ECONNREFUSED 10.0.0.2:8789');
+      };
+      answer = started;
+
+      expect(await forward()).toMatchObject({ result: { response: started } });
+      expect(sent.map((entry) => entry.via)).toEqual(['direct', 'hub']);
+    });
+
+    it('is not asked again when the connection broke after the request left', async () => {
+      direct = async () => {
+        throw new Error('the member closed the connection');
+      };
+      answer = started;
+
+      expect(await forward()).toMatchObject({
+        result: { response: { ok: false, message: expect.stringContaining('closed') } },
+      });
+      expect(sent.map((entry) => entry.via)).toEqual(['direct']);
+    });
   });
 
   it('says so when no LAN of this machine carries the workspace any more', async () => {

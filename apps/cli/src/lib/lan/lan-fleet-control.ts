@@ -1,6 +1,7 @@
 // What an agent service does for the members of its LANs beyond running
 // agents: it keeps what it says about itself current in every LAN, lists the
-// machines it reaches, and carries requests between members.
+// machines it reaches, and carries requests between members: directly where
+// it can connect to the member, through the hub where it cannot.
 import {
   createLoroStreamsJsonStreamClient,
   LORO_STREAMS_RPC_RETENTION_SECONDS,
@@ -16,14 +17,18 @@ import {
   type LocalProjectControlRequest,
   type LocalProjectControlResponse,
   type MachineId,
+  type MachineMeta,
 } from '@lody/shared';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
+import { parseLanTerminalEndpoint, type LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import type { LanSshDestination } from '@lody/shared/lan-ssh';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { getCliHttpFetch } from '@/utils/http-transport';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
+import { askLanMemberDirectly, LanMemberUnreachableError } from './lan-control-channel';
 import type { LanMachineControl } from './lan-machine-control';
+import { deriveLanTerminalKey } from './lan-terminal';
 import {
   answerLanMemberControl,
   forwardLanMemberControl,
@@ -84,7 +89,14 @@ export type LanFleetControlOptions = {
   workspaces: () => LanMemberWorkspace[];
   /** Waits for a workspace that is starting; `null` for one that is not run. */
   workspace: (workspaceId: string) => Promise<LanMemberWorkspace | null>;
-  send?: (
+  /** Puts a request to a member at the endpoint it publishes. */
+  sendDirect?: (
+    hub: LanHub,
+    endpoint: LanTerminalEndpoint,
+    request: LanMemberControlRequest
+  ) => Promise<LocalProjectControlResponse | null>;
+  /** Puts a request to a member through the hub, for one this machine cannot connect to. */
+  sendThroughHub?: (
     hub: LanHub,
     request: LanMemberControlRequest
   ) => Promise<LocalProjectControlResponse | null>;
@@ -249,7 +261,7 @@ export class LanFleetControl {
             request,
             workspace: await this.options.workspace(request.workspaceId),
             machineId: this.options.machineId,
-            send: async (forwarded) => await this.send(forwarded),
+            send: async (forwarded, machine) => await this.send(forwarded, machine),
           }),
         },
       };
@@ -284,19 +296,51 @@ export class LanFleetControl {
     return response;
   }
 
+  /**
+   * Connects to the member where it says it accepts members; the hub carries
+   * the request only when that connection never got as far as the request,
+   * so the member is never asked twice.
+   */
   private async send(
-    request: LanMemberControlRequest
+    request: LanMemberControlRequest,
+    machine: MachineMeta
   ): Promise<LocalProjectControlResponse | null> {
     const hub = this.options
       .hubs()
       .find((candidate) => getLanHubWorkspaceId(candidate.id) === request.workspaceId);
     if (!hub) throw new Error('no LAN of this machine carries the workspace');
-    return await (this.options.send ?? sendThroughHub(this.options.logger))(hub, request);
+    const endpoint = parseLanTerminalEndpoint(machine.lanTerminal);
+    if (endpoint) {
+      try {
+        return await (this.options.sendDirect ?? sendDirectly)(hub, endpoint, request);
+      } catch (error) {
+        if (!(error instanceof LanMemberUnreachableError)) throw error;
+        this.options.logger.debug(
+          `[lan] ${machine.name} takes no request directly, asking through the hub: ${formatErrorMessage(error)}`
+        );
+      }
+    }
+    return await (this.options.sendThroughHub ?? sendThroughHub(this.options.logger))(hub, request);
   }
 
   private now(): number {
     return (this.options.now ?? Date.now)();
   }
+}
+
+async function sendDirectly(
+  hub: LanHub,
+  endpoint: LanTerminalEndpoint,
+  request: LanMemberControlRequest
+): Promise<LocalProjectControlResponse> {
+  return await askLanMemberDirectly({
+    endpoint,
+    lanId: hub.id,
+    key: deriveLanTerminalKey(hub.token),
+    machineId: request.machineId,
+    request,
+    timeoutMs: ANSWER_TIMEOUT_MS[request.type],
+  });
 }
 
 /**

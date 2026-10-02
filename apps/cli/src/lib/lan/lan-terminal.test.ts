@@ -2,6 +2,9 @@ import net from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createStore, type WorkspaceSummary } from '@lody/platform';
 import type {
+  LanMemberControlRequest,
+  LanMemberControlResponse,
+  MachineId,
   TerminalOpenParams,
   TerminalOpenResult,
   TerminalServerEvent,
@@ -14,6 +17,7 @@ import { serveTerminalConnection, type TerminalReplay } from '@/lib/terminal-con
 import type { TerminalPtyServiceApi } from '@/lib/terminal-pty-service';
 import { ScopedTerminalService, TerminalRouter } from '@/lib/terminal-services';
 import type { Logger } from '@/utils/logger';
+import { askLanMemberDirectly, LanMemberUnreachableError } from './lan-control-channel';
 import { connectLanTerminal, deriveLanTerminalKey } from './lan-terminal';
 import { LanTerminalHost, resolveLanTerminalPort } from './lan-terminal-host';
 
@@ -143,7 +147,12 @@ describe('terminals between LAN members', () => {
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   });
 
-  async function startServer(options: { port?: number } = {}) {
+  async function startServer(
+    options: {
+      port?: number;
+      control?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
+    } = {}
+  ) {
     const pty = new FakePty('server');
     const published = new Map<string, LanTerminalEndpoint | undefined>();
     const host = new LanTerminalHost({
@@ -157,6 +166,12 @@ describe('terminals between LAN members', () => {
       probeAddress: async () => '127.0.0.1',
       serviceFor: (workspaceId) =>
         workspaceId === HOME ? new ScopedTerminalService(pty, verifyHomeSession) : null,
+      ...(options.control
+        ? {
+            controlFor: (workspaceId: string) =>
+              workspaceId === HOME ? (options.control ?? null) : null,
+          }
+        : {}),
       publish: async (workspaceId, endpoint) => {
         published.set(workspaceId, endpoint);
       },
@@ -358,6 +373,59 @@ describe('terminals between LAN members', () => {
     await host.close();
     expect(await ended).toEqual({ type: 'exit', terminalId, exitCode: -1, signal: 'disconnected' });
     await expect(router.list('home-session')).rejects.toThrow(/^remote_unreachable:/);
+  });
+
+  it('answers a request of a member over the connection, once, and only for its own LAN', async () => {
+    const asked: LanMemberControlRequest[] = [];
+    const { published } = await startServer({
+      control: async (request) => {
+        asked.push(request);
+        return {
+          ok: true,
+          type: 'lan/update-machine',
+          result: { outcome: 'started', version: '0.100.0-lan.5' },
+        };
+      },
+    });
+    const ask = (request: LanMemberControlRequest) =>
+      askLanMemberDirectly({
+        endpoint: published.get(HOME)!,
+        lanId: home.id,
+        key: deriveLanTerminalKey(home.token),
+        machineId: SERVER,
+        request,
+        timeoutMs: 5_000,
+      });
+    const request: LanMemberControlRequest = {
+      type: 'lan/update-machine',
+      machineId: SERVER as MachineId,
+      workspaceId: HOME,
+    };
+
+    expect(await ask(request)).toEqual({
+      ok: true,
+      type: 'lan/update-machine',
+      result: { outcome: 'started', version: '0.100.0-lan.5' },
+    });
+    // The connection is keyed to Home; a request about another LAN's workspace is not answered.
+    expect(
+      await ask({ ...request, workspaceId: getLanHubWorkspaceId(office.id) as typeof HOME })
+    ).toMatchObject({ ok: false, error: 'workspace_not_found' });
+    expect(asked).toEqual([request]);
+  });
+
+  it('says a request never left when the member takes none over its connection', async () => {
+    const { published } = await startServer();
+    const asking = askLanMemberDirectly({
+      endpoint: published.get(HOME)!,
+      lanId: home.id,
+      key: deriveLanTerminalKey(home.token),
+      machineId: SERVER,
+      request: { type: 'lan/update-machine', machineId: SERVER as MachineId, workspaceId: HOME },
+      timeoutMs: 5_000,
+    });
+
+    await expect(asking).rejects.toBeInstanceOf(LanMemberUnreachableError);
   });
 
   it('takes another port when the preferred one is in use', async () => {

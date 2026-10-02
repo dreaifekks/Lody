@@ -12,6 +12,7 @@ import {
   getServerNow,
   isLoroRepoDocDeleted,
   syncTime,
+  type LanMemberControlRequest,
   type LocalProjectControlErrorCode,
   type LocalProjectControlRequest,
   type LocalProjectControlResponse,
@@ -1569,6 +1570,7 @@ export class LodyFleet {
       this.logger.info('[lan-terminal] Terminals of this machine are closed to LAN members.');
       return;
     }
+    const control = this.lanFleetControl;
     this.lanTerminalHost = new LanTerminalHost({
       machineId: this.machineId,
       logger: this.logger,
@@ -1583,6 +1585,14 @@ export class LodyFleet {
             )
           : null,
       filesFor: (workspaceId) => this.lanFileHandoff.receiverFor(workspaceId),
+      ...(control
+        ? {
+            controlFor: (workspaceId: string) =>
+              this.runtimes.has(workspaceId)
+                ? async (request: LanMemberControlRequest) => await control.answer(request)
+                : null,
+          }
+        : {}),
       publish: async (workspaceId, endpoint) =>
         await this.publishLanTerminalEndpoint(workspaceId, endpoint),
     });

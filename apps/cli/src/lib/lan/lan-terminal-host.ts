@@ -6,11 +6,16 @@ import {
   sameLanTerminalEndpoint,
   type LanTerminalEndpoint,
 } from '@lody/shared/lan-terminal';
-import type { SessionFilePayload } from '@lody/shared';
+import type {
+  LanMemberControlRequest,
+  LanMemberControlResponse,
+  SessionFilePayload,
+} from '@lody/shared';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { serveTerminalConnection, type TerminalService } from '@/lib/terminal-connection';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
+import { serveLanControlConnection } from './lan-control-channel';
 import { serveLanFileConnection, type LanFileToRead, type ReceivedLanFile } from './lan-files';
 import {
   createLanTerminalServer,
@@ -55,8 +60,8 @@ export type LanFileReceiver = {
 };
 
 /**
- * Lets the other members of each LAN open terminals on this machine and hand
- * it the files of their messages. It listens on the address this machine has
+ * Lets the other members of each LAN open terminals on this machine, hand it
+ * the files of their messages and put their requests to it. It listens on the address this machine has
  * toward each hub, not on every interface, and publishes that endpoint into
  * the LAN's workspace.
  */
@@ -79,6 +84,10 @@ export class LanTerminalHost {
       serviceFor: (workspaceId: string) => TerminalService | null;
       /** Absent on a machine that takes no files; `null` while the workspace does not run. */
       filesFor?: (workspaceId: string) => LanFileReceiver | null;
+      /** Absent on a machine that answers no requests of members; `null` while the workspace does not run. */
+      controlFor?: (
+        workspaceId: string
+      ) => ((request: LanMemberControlRequest) => Promise<LanMemberControlResponse>) | null;
       /** Records where this machine accepts terminals; `undefined` withdraws it. */
       publish: (workspaceId: string, endpoint: LanTerminalEndpoint | undefined) => Promise<void>;
       /** The port to prefer; `0` for any. */
@@ -201,10 +210,14 @@ export class LanTerminalHost {
   }
 
   private async listen(address: string): Promise<Listener | null> {
-    const { filesFor } = this.options;
+    const { filesFor, controlFor } = this.options;
     const server = createLanTerminalServer({
       machineId: this.options.machineId,
-      services: filesFor ? ['terminal', 'files'] : ['terminal'],
+      services: [
+        'terminal',
+        ...(filesFor ? (['files'] as const) : []),
+        ...(controlFor ? (['control'] as const) : []),
+      ],
       logger: this.options.logger,
       keyFor: (lanId) => {
         const hub = this.options.lans.hubs.find((candidate) => candidate.id === lanId);
@@ -214,7 +227,8 @@ export class LanTerminalHost {
         const workspaceId = getLanHubWorkspaceId(lanId);
         const terminals = service === 'terminal' ? this.options.serviceFor(workspaceId) : null;
         const files = service === 'files' ? (filesFor?.(workspaceId) ?? null) : null;
-        if (!terminals && !files) {
+        const control = service === 'control' ? (controlFor?.(workspaceId) ?? null) : null;
+        if (!terminals && !files && !control) {
           socket.end(
             `${JSON.stringify({
               type: 'error',
@@ -226,6 +240,15 @@ export class LanTerminalHost {
         }
         this.sockets.add(socket);
         socket.once('close', () => this.sockets.delete(socket));
+        if (control) {
+          void serveLanControlConnection(socket, {
+            initial,
+            workspaceId,
+            answer: control,
+            logger: this.options.logger,
+          });
+          return;
+        }
         if (files) {
           void serveLanFileConnection(socket, {
             ...files,

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Duplex } from 'node:stream';
+import type { Duplex, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
   SESSION_FILE_MAX_COUNT,
@@ -120,12 +120,12 @@ export function toStoredFileName(fileName: string): string {
 }
 
 /** Reads lines and counted bytes from one stream, in the order they arrive. */
-class ByteReader {
+export class ByteReader {
   private buffered: Buffer;
   private readonly source: AsyncIterator<Buffer>;
   private ended = false;
 
-  constructor(stream: Duplex, initial: Buffer) {
+  constructor(stream: Readable, initial: Buffer) {
     this.buffered = initial;
     this.source = (stream as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
   }
