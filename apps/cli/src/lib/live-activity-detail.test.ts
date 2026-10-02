@@ -52,6 +52,38 @@ describe('LiveActivityDetailTracker', () => {
     expect(sent[1]).toEqual({ activity: 'Run pnpm test', thought: 'Tests pass.' });
   });
 
+  it('keeps the last reasoning on show through the tool calls after it', async () => {
+    tracker.observe(sessionId, toolCall('Read file'));
+    await vi.advanceTimersByTimeAsync(0);
+    tracker.observe(sessionId, thought('The label must come from the host.'));
+    tracker.observe(sessionId, toolCall('Search hub-push.ts'));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sent[1]).toEqual({
+      activity: 'Search hub-push.ts',
+      thought: 'The label must come from the host.',
+    });
+
+    tracker.observe(sessionId, toolCall('Read live-activity-detail.ts'));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sent[2]).toEqual({
+      activity: 'Read live-activity-detail.ts',
+      thought: 'The label must come from the host.',
+    });
+  });
+
+  it('starts a new stretch when the agent turns from reasoning to its reply', async () => {
+    tracker.observe(sessionId, thought('Checking the hub.'));
+    tracker.observe(
+      sessionId,
+      update({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Found it.' },
+      })
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent).toEqual([{ activity: null, thought: 'Found it.' }]);
+  });
+
   it('sends a permission request and its answer at once', () => {
     tracker.permission(sessionId, {
       requestId: 'r1',
