@@ -16,6 +16,16 @@ import path from 'node:path';
 import { LORO_STREAMS_BUCKET_ID } from '@lody/shared';
 import { createApnsSender, readApnsConfig, type ApnsSender } from './apns';
 import { createLanHubGitHub, type LanHubGitHub } from './hub-github';
+import {
+  LAN_HUB_HANDOVER_ABORT_PATH,
+  LAN_HUB_HANDOVER_COMPLETE_PATH,
+  LAN_HUB_HANDOVER_PATH,
+  LAN_HUB_WHERE_PATH,
+  readLanHubMoved,
+  writeLanHubHandover,
+  writeLanHubMoved,
+  type LanHubMoved,
+} from './hub-handover';
 import { createLanHubPush, type LanHubPush } from './hub-push';
 
 export const LAN_HUB_DEFAULT_PORT = 8788;
@@ -24,6 +34,9 @@ const UPSTREAM_START_TIMEOUT_MS = 15_000;
 const LIVE_READ_KEEPALIVE_MS = 15_000;
 const TOKEN_FILE_NAME = 'token';
 const DATABASE_FILE_NAME = 'streams.sqlite';
+/** A new host that took the data and never said it runs leaves the LAN here again. */
+const HANDOVER_TIMEOUT_MS = 10 * 60_000;
+const HANDOVER_BODY_MAX_BYTES = 4096;
 
 // Connection-scoped headers must not cross the proxy in either direction.
 const HOP_BY_HOP_HEADERS = new Set([
@@ -57,6 +70,7 @@ export type LanHubServerOptions = {
   /** Replaces the Streams server; the gate is tested without spawning one. */
   startUpstream?: (options: { dataDir: string }) => Promise<LanHubUpstream>;
   keepaliveMs?: number;
+  handoverTimeoutMs?: number;
   /** Replaces APNs; push is tested without Apple. */
   sendPush?: ApnsSender;
   log?: (line: string) => void;
@@ -338,8 +352,34 @@ function isAuthorized(expected: Buffer, header: string | undefined): boolean {
   return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
 }
 
+function readSmallBody(request: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk: string) => {
+      body += chunk;
+      if (body.length > HANDOVER_BODY_MAX_BYTES) request.destroy(new Error('body too large'));
+    });
+    request.once('end', () => resolve(body));
+    request.once('error', reject);
+  });
+}
+
+/**
+ * Where a hub stands. It serves its LAN; or it is handing its data to a new
+ * host and serves nothing, so nothing changes under the copy; or it moved,
+ * and tells every member where.
+ */
+type HubState =
+  | { kind: 'starting' }
+  | { kind: 'serving'; upstream: LanHubUpstream }
+  | { kind: 'handing-over'; timer: NodeJS.Timeout }
+  | { kind: 'moved'; moved: LanHubMoved };
+
 function createGate(options: {
-  upstreamPort: number;
+  state: () => HubState;
+  /** The routes of the hub itself: where it is, and its handover. */
+  hub: (request: http.IncomingMessage, response: http.ServerResponse) => boolean;
   token: string;
   keepaliveMs?: number;
   push: LanHubPush;
@@ -362,6 +402,17 @@ function createGate(options: {
       sendJson(request, response, 401, { error: 'unauthorized' });
       return;
     }
+    if (options.hub(request, response)) return;
+    const state = options.state();
+    if (state.kind === 'moved') {
+      sendJson(request, response, 410, { error: 'moved', ...state.moved });
+      return;
+    }
+    if (state.kind !== 'serving') {
+      response.setHeader('Retry-After', '30');
+      sendJson(request, response, 503, { error: 'moving' });
+      return;
+    }
     if (request.url?.startsWith('/push/')) {
       void options.push.handle(request, response);
       return;
@@ -374,7 +425,7 @@ function createGate(options: {
     const upstream = http.request(
       {
         host: '127.0.0.1',
-        port: options.upstreamPort,
+        port: state.upstream.port,
         method: request.method,
         path: request.url,
         headers: forwardedHeaders(request.headers),
@@ -409,7 +460,7 @@ function createGate(options: {
 export async function startLanHubServer(options: LanHubServerOptions): Promise<LanHubServer> {
   const dataDir = path.resolve(options.dataDir);
   const token = loadOrCreateLanHubToken(dataDir);
-  const upstream = await (options.startUpstream ?? startStreamsServer)({ dataDir });
+  const startUpstream = options.startUpstream ?? startStreamsServer;
   const loadApnsConfig = () => {
     try {
       return readApnsConfig(dataDir);
@@ -430,6 +481,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
   let closing = false;
   let resolveStopped: (result: { error: Error | null }) => void = () => {};
   const stopped = new Promise<{ error: Error | null }>((resolve) => (resolveStopped = resolve));
+  let state: HubState = { kind: 'starting' };
 
   const close = async (error: Error | null = null): Promise<void> => {
     if (closing) {
@@ -446,19 +498,25 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       });
     }
     apns.close();
-    upstream.stop();
-    await upstream.exited;
+    if (state.kind === 'serving') {
+      state.upstream.stop();
+      await state.upstream.exited;
+    }
+    if (state.kind === 'handing-over') clearTimeout(state.timer);
     resolveStopped({ error });
   };
 
-  void upstream.exited.then((code) => {
-    if (closing) return;
-    void close(
-      new LanHubUnavailableError(`Streams server exited unexpectedly (code=${String(code)})`)
-    );
-  });
-
-  try {
+  /** Starts the Streams server and serves the LAN with it. */
+  const serve = async (): Promise<void> => {
+    const upstream = await startUpstream({ dataDir });
+    state = { kind: 'serving', upstream };
+    void upstream.exited.then((code) => {
+      // A handover stops the server on purpose, and a later one replaces it.
+      if (closing || state.kind !== 'serving' || state.upstream !== upstream) return;
+      void close(
+        new LanHubUnavailableError(`Streams server exited unexpectedly (code=${String(code)})`)
+      );
+    });
     const bucketStatus = await requestUpstream(
       upstream.port,
       'PUT',
@@ -469,8 +527,121 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
         `Failed to prepare the ${LORO_STREAMS_BUCKET_ID} bucket (status=${bucketStatus})`
       );
     }
+  };
+
+  /** The data stays where it is; the LAN is served here again. */
+  const resume = async (reason: string): Promise<void> => {
+    if (closing || state.kind !== 'handing-over') return;
+    clearTimeout(state.timer);
+    options.log?.(`[handover] Serving the LAN here again: ${reason}`);
+    try {
+      await serve();
+    } catch (error) {
+      await close(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+
+  const hubRoutes = (request: http.IncomingMessage, response: http.ServerResponse): boolean => {
+    const route = request.url?.split('?')[0];
+    if (route === LAN_HUB_WHERE_PATH && request.method === 'GET') {
+      if (state.kind === 'moved') sendJson(request, response, 410, state.moved);
+      else sendJson(request, response, 200, { movedTo: null });
+      return true;
+    }
+    if (request.method !== 'POST') return false;
+    if (route === LAN_HUB_HANDOVER_PATH) {
+      void handOver(request, response);
+      return true;
+    }
+    if (route === LAN_HUB_HANDOVER_COMPLETE_PATH) {
+      void completeHandover(request, response);
+      return true;
+    }
+    if (route === LAN_HUB_HANDOVER_ABORT_PATH) {
+      void (async () => {
+        const wasHandingOver = state.kind === 'handing-over';
+        await resume('the new host gave up');
+        sendJson(request, response, 200, { resumed: wasHandingOver });
+      })();
+      return true;
+    }
+    return false;
+  };
+
+  const handOver = async (
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> => {
+    if (state.kind !== 'serving') {
+      sendJson(request, response, 409, { error: state.kind });
+      return;
+    }
+    const { upstream } = state;
+    const timer = setTimeout(
+      () => void resume('the new host did not say it runs'),
+      options.handoverTimeoutMs ?? HANDOVER_TIMEOUT_MS
+    );
+    timer.unref?.();
+    state = { kind: 'handing-over', timer };
+    options.log?.('[handover] A new host asked for this LAN; stopping the Streams server.');
+    upstream.stop();
+    await upstream.exited;
+    response.writeHead(200, {
+      ...corsHeaders(request),
+      'Content-Type': 'application/octet-stream',
+    });
+    try {
+      const files = await writeLanHubHandover(dataDir, response);
+      response.end();
+      options.log?.(`[handover] Sent ${files} file(s); waiting for the new host.`);
+    } catch (error) {
+      response.destroy(error instanceof Error ? error : new Error(String(error)));
+      await resume(`sending failed: ${String(error)}`);
+    }
+  };
+
+  const completeHandover = async (
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> => {
+    let movedTo: unknown;
+    try {
+      movedTo = (JSON.parse(await readSmallBody(request)) as { url?: unknown }).url;
+    } catch {
+      movedTo = null;
+    }
+    if (typeof movedTo !== 'string' || movedTo.trim() === '') {
+      sendJson(request, response, 400, { error: 'url required' });
+      return;
+    }
+    if (state.kind !== 'handing-over') {
+      sendJson(request, response, 409, { error: state.kind });
+      return;
+    }
+    clearTimeout(state.timer);
+    let moved: LanHubMoved;
+    try {
+      moved = writeLanHubMoved(dataDir, token, movedTo);
+    } catch (error) {
+      sendJson(request, response, 500, { error: String(error) });
+      return;
+    }
+    state = { kind: 'moved', moved };
+    options.log?.(`[handover] The LAN moved to ${moved.movedTo}; members are pointed there.`);
+    sendJson(request, response, 200, moved);
+  };
+
+  try {
+    const moved = readLanHubMoved(dataDir);
+    if (moved) {
+      state = { kind: 'moved', moved };
+      options.log?.(`[handover] This LAN moved to ${moved.movedTo}; members are pointed there.`);
+    } else {
+      await serve();
+    }
     const gate = createGate({
-      upstreamPort: upstream.port,
+      state: () => state,
+      hub: hubRoutes,
       token,
       keepaliveMs: options.keepaliveMs,
       push,

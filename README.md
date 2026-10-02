@@ -124,8 +124,10 @@ Both desktop apps can run side by side.
 
 - **Toward peer to peer:** keep credentials and keys on every member rather
   than on the hub, send requests between machines over their direct
-  connections, and let the hub move to another machine. The hub stays as a
-  relay that stores what an offline member has not seen yet.
+  connections (updates, agent installs and config imports already do), and
+  let the hub move to another machine (`lody-lan lan take-over` moves it by
+  hand). The hub stays as a relay that stores
+  what an offline member has not seen yet.
 - **Missing pieces:** remote preview over the members' direct connections,
   usage across machines, and periodic refresh of reviews and comments in the
   PR panel.

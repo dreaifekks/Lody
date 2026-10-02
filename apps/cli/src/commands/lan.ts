@@ -27,7 +27,7 @@ import {
   getDefaultLanHubDataDir,
   startLanHubServer,
 } from '@/lib/lan/hub-server';
-import { hostLan, pickLanHostAddress } from '@/lib/lan/lan-host';
+import { hostLan, pickLanHostAddress, takeOverLan } from '@/lib/lan/lan-host';
 import { readApnsConfig, writeApnsConfig } from '@/lib/lan/apns';
 import {
   describeGitHubToken,
@@ -518,6 +518,82 @@ const upCommand = new Command('up')
     });
   });
 
+type TakeOverOptions = OutputOptions & {
+  host?: string;
+  port: string;
+  dataDir: string;
+  publicUrl?: string;
+};
+
+const takeOverCommand = new Command('take-over')
+  .description(
+    'Move the host of a LAN onto this machine; the current host hands over its data and ' +
+      'points every member here'
+  )
+  .argument('[lan]', 'Name or id of the LAN')
+  .option('--host <address>', 'Interface to listen on (default: a private address of this machine)')
+  .option('--port <port>', 'Port to listen on', String(LAN_HUB_DEFAULT_PORT))
+  .option(
+    '--data-dir <path>',
+    'Where the LAN stores its streams and credential',
+    getDefaultLanHubDataDir()
+  )
+  .option('--public-url <url>', 'Address other machines use when it differs')
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(async (selector: string | undefined, options: TakeOverOptions) => {
+    await runOneShotCommand('lan', options, async () => {
+      const services = new LanServiceManager();
+      if (!(await services.isAvailable())) {
+        throw new Error('This machine has no systemd user session to run the LAN host in.');
+      }
+      const hub = requireLan(readEditableSettings(), selector);
+      const host = options.host ?? pickLanHostAddress(os.networkInterfaces());
+      if (!host) {
+        throw new Error(
+          'This machine has no private network address to host a LAN on. Pass --host to choose ' +
+            'one; a public address exposes the LAN to the internet.'
+        );
+      }
+      const result = await takeOverLan(
+        {
+          hub,
+          host,
+          port: parsePort(options.port),
+          dataDir: path.resolve(options.dataDir),
+          publicUrl: options.publicUrl ?? null,
+        },
+        {
+          services,
+          command: resolveLanServiceCommand(),
+          searchPath: process.env.PATH ?? '',
+          dataDir: getDataDirOverride(),
+          waitFor,
+        }
+      );
+      if (options.json) {
+        printJson({
+          ok: true,
+          lan: describeLan(result.hub, readLanHubSettings().hubs),
+          files: result.files,
+          replaced: result.replaced,
+          lingering: result.lingering,
+        });
+        return;
+      }
+      console.log(`${result.hub.name} is now hosted here at ${result.hub.url}.`);
+      console.log(
+        'Members follow within a minute. The former host keeps pointing them here; once all ' +
+          'did, `lody lan down --keep-agent` there stops it.'
+      );
+      if (result.replaced)
+        console.log(`What ${options.dataDir} held before is in ${result.replaced}.`);
+      if (!result.lingering) {
+        console.log('The hub stops at logout. Run `loginctl enable-linger` to keep it running.');
+      }
+    });
+  });
+
 const downCommand = new Command('down')
   .description('Stop hosting and remove the services; stored data stays on disk')
   .option('--keep-agent', 'Only stop hosting the LAN')
@@ -779,6 +855,7 @@ export const lanCommand = new Command('lan')
   .addCommand(nameCommand)
   .addCommand(upCommand)
   .addCommand(downCommand)
+  .addCommand(takeOverCommand)
   .addCommand(statusCommand)
   .addCommand(hubCommand)
   .addCommand(machinesCommand)

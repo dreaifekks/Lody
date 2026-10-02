@@ -1,6 +1,9 @@
 // `lody lan up`: turns a server into a LAN host that is also a member of its
 // own LAN, and keeps both running as services.
+import fs from 'node:fs';
 import type os from 'node:os';
+import { Readable } from 'node:stream';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { formatLanInvite, normalizeLanHubUrl } from '@lody/shared/lan-hub';
 import {
   addLanHub,
@@ -11,6 +14,12 @@ import {
   type LanHub,
   type LanHubSettingsLocation,
 } from '@lody/shared/node/lan-hub';
+import {
+  LAN_HUB_HANDOVER_ABORT_PATH,
+  LAN_HUB_HANDOVER_COMPLETE_PATH,
+  LAN_HUB_HANDOVER_PATH,
+  readLanHubHandover,
+} from './hub-handover';
 import { readLanHubToken } from './hub-server';
 import {
   LAN_SERVICE_UNITS,
@@ -71,6 +80,11 @@ export type HostLanOptions = {
   publicUrl?: string | null;
   /** Hosts the LAN without running agents on this machine. */
   withAgent: boolean;
+  /**
+   * Runs once the hub answers and before this machine joins it at its
+   * address; throwing leaves the settings as they were.
+   */
+  beforeJoin?: (publicUrl: string) => Promise<void>;
 };
 
 export type HostLanResult = {
@@ -143,6 +157,7 @@ export async function hostLan(
   }, `${LAN_SERVICE_UNITS.hub} to accept connections`);
   const token = started.token;
   if (!token) throw new Error('The LAN host started without a credential');
+  await options.beforeJoin?.(publicUrl);
 
   const joined = addLanHub(settings.hubs, { url: publicUrl, token, name: options.name ?? null });
   writeLanHubSettings(
@@ -181,4 +196,117 @@ export async function hostLan(
     agent,
     agentLog,
   };
+}
+
+export type TakeOverLanOptions = Omit<HostLanOptions, 'name' | 'beforeJoin' | 'withAgent'> & {
+  /** The LAN, as this machine is a member of it. */
+  hub: LanHub;
+};
+
+export type TakeOverLanResult = HostLanResult & { files: string[]; replaced: string | null };
+
+/**
+ * `lody lan take-over`: moves the hub of a LAN this machine is a member of
+ * onto this machine. The current host stops serving and sends its data; this
+ * machine starts a hub with it; the current host then points every member
+ * here. Until that last step nothing is decided: whatever fails before it
+ * has the current host serve the LAN again, so two hubs never serve one LAN.
+ */
+export async function takeOverLan(
+  options: TakeOverLanOptions,
+  dependencies: HostLanDependencies & { fetch?: typeof fetch }
+): Promise<TakeOverLanResult> {
+  const { hub, dataDir } = options;
+  const { services } = dependencies;
+  const request = dependencies.fetch ?? fetch;
+  const readToken = dependencies.readToken ?? readLanHubToken;
+  const authorization = { Authorization: `Bearer ${hub.token}` };
+
+  const existing = readToken(dataDir);
+  if (existing && existing !== hub.token) {
+    throw new Error(`${dataDir} holds another LAN; choose another directory with --data-dir`);
+  }
+  if ((await services.getState('hub')).active) {
+    throw new Error(
+      'This machine already hosts a LAN; run `lody lan down --keep-agent` to stop it first'
+    );
+  }
+
+  const abort = async () => {
+    await request(`${hub.url}${LAN_HUB_HANDOVER_ABORT_PATH}`, {
+      method: 'POST',
+      headers: authorization,
+      signal: AbortSignal.timeout(30_000),
+    }).catch(() => undefined);
+  };
+
+  const incoming = `${dataDir}.incoming-${process.pid}`;
+  fs.rmSync(incoming, { recursive: true, force: true });
+  fs.mkdirSync(incoming, { recursive: true, mode: 0o700 });
+  let files: string[];
+  try {
+    const response = await request(`${hub.url}${LAN_HUB_HANDOVER_PATH}`, {
+      method: 'POST',
+      headers: authorization,
+    });
+    if (response.status === 409) {
+      throw new Error(`The host of ${hub.name} is already handing it over, or it moved`);
+    }
+    if (response.status === 404) {
+      throw new Error(`The host of ${hub.name} runs a build that cannot hand it over; update it`);
+    }
+    if (!response.ok || !response.body) {
+      throw new Error(`The host of ${hub.name} answered ${response.status}`);
+    }
+    files = await readLanHubHandover(
+      Readable.fromWeb(response.body as WebReadableStream<Uint8Array>),
+      incoming
+    );
+    if (readToken(incoming) !== hub.token) {
+      throw new Error(`The host of ${hub.name} sent the data of another LAN`);
+    }
+  } catch (error) {
+    fs.rmSync(incoming, { recursive: true, force: true });
+    // Only a host that started handing over is affected; one that refused is not.
+    await abort();
+    throw error;
+  }
+
+  let replaced: string | null = null;
+  if (fs.existsSync(dataDir)) {
+    replaced = `${dataDir}.replaced-${Date.now()}`;
+    fs.renameSync(dataDir, replaced);
+  }
+  fs.renameSync(incoming, dataDir);
+
+  let committed = false;
+  try {
+    const result = await hostLan(
+      {
+        ...options,
+        name: null,
+        withAgent: false,
+        beforeJoin: async (publicUrl) => {
+          const response = await request(`${hub.url}${LAN_HUB_HANDOVER_COMPLETE_PATH}`, {
+            method: 'POST',
+            headers: { ...authorization, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: publicUrl }),
+            signal: AbortSignal.timeout(30_000),
+          });
+          if (!response.ok) {
+            throw new Error(`The host of ${hub.name} did not point its members here`);
+          }
+          committed = true;
+        },
+      },
+      dependencies
+    );
+    return { ...result, files, replaced };
+  } catch (error) {
+    // Past the commit the LAN lives here, and the hub stays whatever else failed.
+    if (committed) throw error;
+    await services.remove('hub').catch(() => false);
+    await abort();
+    throw error;
+  }
 }

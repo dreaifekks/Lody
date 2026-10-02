@@ -10,14 +10,20 @@ import {
   classifyLanHubChange,
   readLanHubSettings,
   summarizeLanHubs,
+  updateLanHub,
   watchLanHubSettings,
+  writeLanHubSettings,
   type LanHub,
   type LanHubSettings,
   type LanHubSettingsWatcher,
 } from '@lody/shared/node/lan-hub';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
+import { askWhereLanHubIs } from './hub-handover';
 import { createLanGitHubTokenPort } from './lan-github-tokens';
+
+/** How often a member asks its hubs whether they moved. */
+const FOLLOW_INTERVAL_MS = 60_000;
 
 export function toLanWorkspaces(hubs: readonly LanHub[]): WorkspaceSummary[] {
   return summarizeLanHubs(hubs).map((hub) => ({
@@ -38,6 +44,8 @@ export class LanMembership {
   private settings: LanHubSettings;
   private readonly workspaceStore;
   private watcher: LanHubSettingsWatcher | null = null;
+  private followTimer: NodeJS.Timeout | null = null;
+  private following: Promise<void> | null = null;
   private restartRequested = false;
 
   constructor(
@@ -48,6 +56,9 @@ export class LanMembership {
       onRestartRequired: (reason: string) => void;
       watch?: typeof watchLanHubSettings;
       read?: typeof readLanHubSettings;
+      write?: typeof writeLanHubSettings;
+      askWhere?: typeof askWhereLanHubIs;
+      followIntervalMs?: number;
       env?: NodeJS.ProcessEnv;
       filePath?: string;
     }
@@ -125,11 +136,56 @@ export class LanMembership {
     } catch (error) {
       onError(error);
     }
+    this.followTimer = setInterval(
+      () => void this.follow(),
+      this.options.followIntervalMs ?? FOLLOW_INTERVAL_MS
+    );
+    this.followTimer.unref?.();
   }
 
   close(): void {
     this.watcher?.close();
     this.watcher = null;
+    if (this.followTimer) clearInterval(this.followTimer);
+    this.followTimer = null;
+  }
+
+  /**
+   * Asks every hub whether it moved, and writes where one went into the
+   * settings, which the watcher then follows like any other move. A hub
+   * that is away has not moved; only one that says so with the credential's
+   * signature is followed.
+   */
+  follow(): Promise<void> {
+    this.following ??= this.followOnce().finally(() => {
+      this.following = null;
+    });
+    return this.following;
+  }
+
+  private async followOnce(): Promise<void> {
+    const askWhere = this.options.askWhere ?? askWhereLanHubIs;
+    const location = { env: this.options.env, filePath: this.options.filePath };
+    for (const hub of this.settings.hubs) {
+      const movedTo = await askWhere(hub);
+      if (!movedTo || this.restartRequested) continue;
+      try {
+        const current = (this.options.read ?? readLanHubSettings)(location);
+        const entry = current.hubs.find((candidate) => candidate.id === hub.id);
+        // Someone moved it already, or the machine left it meanwhile.
+        if (!entry || entry.url !== hub.url) continue;
+        const { hubs } = updateLanHub(current.hubs, hub.id, { url: movedTo });
+        (this.options.write ?? writeLanHubSettings)(
+          { hubs, machineName: current.machineName },
+          location
+        );
+        this.options.logger.info(`[lan] ${hub.name} moved to ${movedTo}; following it.`);
+      } catch (error) {
+        this.options.logger.warn(
+          `[lan] ${hub.name} moved to ${movedTo}, and the settings could not follow: ${formatErrorMessage(error)}`
+        );
+      }
+    }
   }
 
   private apply(next: LanHubSettings): void {
