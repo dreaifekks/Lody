@@ -3,7 +3,12 @@ import type {
   HostedConfigImportResult,
   HostedConfigPreview,
 } from './hosted-config';
-import type { LanAgentInstallResult, LanMachineUpdateResult, LanMachines } from './lan-control';
+import type {
+  LanAgentInstallResult,
+  LanMachineColor,
+  LanMachineUpdateResult,
+  LanMachines,
+} from './lan-control';
 import type {
   MachineId,
   ACPSessionConfig,
@@ -1189,6 +1194,8 @@ export type LocalProjectControlRequest =
       target: MachineId;
       /** `null` takes the short name back. */
       alias: string | null;
+      /** The color of its name; `null` takes it back, absent leaves it as it is. */
+      color?: LanMachineColor | null;
     }
   | {
       /**
@@ -1302,7 +1309,10 @@ export type LocalProjectControlResponse =
   | LocalProjectControlOkResponse<'worktree/read-file', LocalProjectFileReadResult | null>
   | LanMemberControlOkResponse
   | LocalProjectControlOkResponse<'lan/machines', LanMachines>
-  | LocalProjectControlOkResponse<'lan/alias-machine', { alias: string | null }>
+  | LocalProjectControlOkResponse<
+      'lan/alias-machine',
+      { alias: string | null; color?: LanMachineColor | null }
+    >
   | LocalProjectControlOkResponse<'lan/forward', { response: LanMemberControlResponse }>
   | LocalProjectControlErrorResponse;
 

@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react';
-import { Folder, Monitor, User } from 'lucide-react';
+import { Activity, Folder, Monitor, User } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MachineId } from '@lody/shared';
+import { useMachineLatency } from '@/hooks/use-machine-latency';
 import { useMachineOnlineStatus } from '@/hooks/use-machine-online-status';
+import { lanMachineNameStyle } from '@/lib/lan-machine-color';
 import { cn } from '@/lib/utils';
 import { UserAvatar } from '@/components/user-avatar';
 import { SidebarHoverCard } from '@/components/session-info-hover-card';
@@ -24,6 +26,10 @@ export type SidebarMachineInfo = {
   machineId: MachineId;
   /** The machine's full name (the sidebar label may drop `.local`). */
   name: string;
+  /** The name it registered under, when `name` is the short name its LAN gave it. */
+  ownName?: string;
+  /** The color its LAN gave the name (`lanColor`). */
+  nameColor?: string;
   owner?: { name?: string | null; image?: string | null } | null;
   /** The signed-in user owns this machine. */
   isOwn: boolean;
@@ -152,12 +158,27 @@ function SidebarMachineCard({ machine }: { machine: SidebarMachineInfo }) {
       value: <span className="min-w-0 truncate text-foreground">{activityDescription}</span>,
     });
   }
+  if (machine.machineId && status !== 'offline') {
+    rows.push({
+      key: 'latency',
+      icon: <Activity className="h-3.5 w-3.5" aria-hidden="true" />,
+      label: t('sidebar.machineCard.latency', 'Latency'),
+      value: <SidebarMachineLatency machineId={machine.machineId} />,
+    });
+  }
 
   return (
     <div className="flex min-w-0 flex-col text-xs text-foreground">
       <div className="mb-2 flex items-baseline gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm text-foreground" title={machine.name}>
+        <span
+          className="min-w-0 flex-1 truncate text-sm text-foreground"
+          style={lanMachineNameStyle(machine.nameColor)}
+          title={machine.ownName ?? machine.name}
+        >
           {machine.name}
+          {machine.ownName ? (
+            <span className="ms-1.5 text-xs text-muted-foreground">{machine.ownName}</span>
+          ) : null}
         </span>
         {status === 'unknown' ? null : (
           <span
@@ -194,5 +215,29 @@ function SidebarMachineCard({ machine }: { machine: SidebarMachineInfo }) {
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * The round trip of a ping through the hub, measured while the card is open;
+ * a leaf, so each answer re-renders only this line.
+ */
+function SidebarMachineLatency({ machineId }: { machineId: MachineId }) {
+  const { t } = useTranslation();
+  const reach = useMachineLatency(machineId);
+  if (!reach) return null;
+  if (reach.state === 'online') {
+    return (
+      <span className="text-foreground">
+        {t('sidebar.machineCard.latencyMs', '{{ms}} ms', { ms: reach.ms })}
+      </span>
+    );
+  }
+  return (
+    <span className={reach.state === 'offline' ? 'text-status-danger' : 'text-muted-foreground'}>
+      {reach.state === 'offline'
+        ? t('sidebar.machineCard.noAnswer', 'No answer')
+        : t('sidebar.machineCard.measuring', 'Measuring…')}
+    </span>
   );
 }

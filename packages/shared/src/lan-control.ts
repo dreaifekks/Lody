@@ -75,6 +75,26 @@ export function normalizeLanMachineAlias(value: unknown): string | null {
   return alias ? alias.slice(0, LAN_MACHINE_ALIAS_MAX) : null;
 }
 
+/** The colors a member may give a machine's name, by name so each theme picks its shade. */
+export const LAN_MACHINE_COLORS = [
+  'red',
+  'orange',
+  'yellow',
+  'green',
+  'teal',
+  'blue',
+  'purple',
+  'pink',
+] as const;
+export type LanMachineColor = (typeof LAN_MACHINE_COLORS)[number];
+
+/** A machine's color as it is written, or `null` for none or one this build does not know. */
+export function normalizeLanMachineColor(value: unknown): LanMachineColor | null {
+  return (LAN_MACHINE_COLORS as readonly unknown[]).includes(value)
+    ? (value as LanMachineColor)
+    : null;
+}
+
 export const LanMachineSchema = z
   .object({
     machineId: z.string().min(1),
@@ -84,6 +104,8 @@ export const LanMachineSchema = z
      * used by alerts where room is short. `null` while it has none.
      */
     alias: z.string().max(LAN_MACHINE_ALIAS_MAX).nullable(),
+    /** The color a member gave the machine's name; absent from builds before it. */
+    color: z.enum(LAN_MACHINE_COLORS).nullish(),
     os: z.string().nullable(),
     /** The machine that answers. */
     self: z.boolean(),

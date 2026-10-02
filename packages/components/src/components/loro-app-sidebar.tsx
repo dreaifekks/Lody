@@ -1,5 +1,7 @@
 import { openSessionOnModifiedClick } from '@/lib/desktop-window';
 import { jsonValueEqual } from '@/lib/json-value-equal';
+import { lanMachineNameStyle } from '@/lib/lan-machine-color';
+import { LanConnectionIndicator } from '@/components/lan-connection-indicator';
 import { usePostHog } from '@posthog/react';
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
 import { SessionWindowMenuItem } from './session-window-menu-item';
@@ -2426,6 +2428,7 @@ export function LoroAppSidebar({
               typeof localMachineMeta?.name === 'string' && localMachineMeta.name.trim()
                 ? localMachineMeta.name.trim()
                 : null,
+            nameColor: localMachineMeta?.lanColor,
             canImport: isElectron,
             canRemoveProject: machineSupportsLocalProjectRemovalProtocol(localMachineMeta),
             defaultCollapsed: false,
@@ -2458,6 +2461,7 @@ export function LoroAppSidebar({
           sectionLabel: sidebarMachineLabel(machine.name),
           machineDisplayName:
             typeof machine.name === 'string' && machine.name.trim() ? machine.name.trim() : null,
+          nameColor: machine.lanColor,
           canImport: false,
           // Only the machine owner can remove a remote device's projects; the
           // request is queued on that device's machine Flock doc.
@@ -2791,6 +2795,8 @@ export function LoroAppSidebar({
               ? {
                   machineId: section.machineId,
                   name: machineMeta.name,
+                  ownName: machineMeta.ownName,
+                  nameColor: machineMeta.lanColor,
                   owner: machineMeta.ownerUserId
                     ? (membersByUserId.get(machineMeta.ownerUserId) ?? null)
                     : null,
@@ -2874,7 +2880,16 @@ export function LoroAppSidebar({
                   )}
                   label={
                     <span className="inline-flex min-w-0 items-center gap-1.5">
-                      <span className="min-w-0 truncate">{section.sectionLabel}</span>
+                      <span
+                        className="min-w-0 truncate"
+                        style={
+                          'nameColor' in section
+                            ? lanMachineNameStyle(section.nameColor)
+                            : undefined
+                        }
+                      >
+                        {section.sectionLabel}
+                      </span>
                       {section.machineId && section.kind === 'remote' ? (
                         <SidebarMachineOfflinePill machineId={section.machineId} />
                       ) : null}
@@ -3674,6 +3689,11 @@ export function LoroAppSidebar({
         onManageLansClicked={lanSettingsAvailable ? handleManageLans : undefined}
         connectionUiState={connectionUiState}
         workspaceSyncing={sessionsListLoading}
+        workspaceStatusAccessory={
+          lanSettingsAvailable ? (
+            <LanConnectionIndicator workspaceId={resolvedWorkspaceId ?? null} />
+          ) : undefined
+        }
         isElectron={isElectron}
         // Traffic lights auto-hide in native fullscreen — drop the reserved
         // header inset so the sidebar's first row aligns with the top bar.

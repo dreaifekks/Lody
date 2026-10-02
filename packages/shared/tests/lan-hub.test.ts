@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +19,7 @@ import {
   deriveLanHubId,
   deriveLanHubUserId,
   findLanHub,
+  measureLanHubLatency,
   readLanHubSettings,
   removeLanHub,
   resolveMachineName,
@@ -166,7 +168,10 @@ describe('LAN settings file', () => {
 
   it('lets the environment describe one LAN and then refuses edits', () => {
     const env = { LODY_LAN_HUB_URL: 'http://10.0.0.9:8788', LODY_LAN_HUB_TOKEN: HOME_TOKEN };
-    fs.writeFileSync(filePath, JSON.stringify({ url: 'http://10.0.0.1:8788', token: OFFICE_TOKEN }));
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({ url: 'http://10.0.0.1:8788', token: OFFICE_TOKEN })
+    );
     expect(readLanHubSettings({ env, filePath })).toMatchObject({
       hubs: [{ url: 'http://10.0.0.9:8788', token: HOME_TOKEN }],
       source: 'environment',
@@ -282,7 +287,11 @@ describe('LAN slugs', () => {
 
 describe('LAN invites', () => {
   it('carries everything a device needs in one shell-safe word', () => {
-    const invite = formatLanInvite({ url: 'http://100.64.0.1:8788', token: HOME_TOKEN, name: 'Home' });
+    const invite = formatLanInvite({
+      url: 'http://100.64.0.1:8788',
+      token: HOME_TOKEN,
+      name: 'Home',
+    });
     expect(invite).toBe(`lody-lan://${HOME_TOKEN}@100.64.0.1:8788/Home`);
     expect(invite).toMatch(/^[A-Za-z0-9._~:/@%-]+$/);
     expect(parseLanInvite(invite)).toEqual({
@@ -379,9 +388,9 @@ describe('following a settings change', () => {
     expect(classifyLanHubChange(settings([home, office]), settings([home]))).toEqual({
       kind: 'workspaces',
     });
-    expect(
-      classifyLanHubChange(settings([home]), settings([{ ...home, name: 'Flat' }]))
-    ).toEqual({ kind: 'workspaces' });
+    expect(classifyLanHubChange(settings([home]), settings([{ ...home, name: 'Flat' }]))).toEqual({
+      kind: 'workspaces',
+    });
     expect(classifyLanHubChange(settings([home]), settings([{ ...home }]))).toEqual({
       kind: 'none',
     });
@@ -487,5 +496,67 @@ describe('watching the settings file', () => {
     watched.settle();
     expect(watched.changes).toEqual([]);
     expect(watched.isClosed()).toBe(true);
+  });
+});
+
+describe('the round trip to a hub', () => {
+  const servers: http.Server[] = [];
+  afterEach(async () => {
+    await Promise.all(
+      servers.splice(0).map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.closeAllConnections();
+            server.close(() => resolve());
+          })
+      )
+    );
+  });
+
+  /** A hub on this machine that knows one credential and never saw the workspace. */
+  const listen = async () => {
+    const seen: Array<{ method?: string; url?: string; authorization?: string }> = [];
+    let connections = 0;
+    const server = http.createServer((request, response) => {
+      seen.push({
+        method: request.method,
+        url: request.url,
+        authorization: request.headers.authorization,
+      });
+      // As the hub does: a length even on HEAD, which lets the connection be kept.
+      response.statusCode = request.headers.authorization === 'Bearer good' ? 404 : 401;
+      response.setHeader('content-length', 0);
+      response.end();
+    });
+    server.on('connection', () => {
+      connections += 1;
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('the server has no port');
+    return { url: `http://127.0.0.1:${address.port}`, seen, connections: () => connections };
+  };
+
+  it('is measured on one kept connection, and is nothing when the hub refuses or is away', async () => {
+    const hub = await listen();
+    const id = 'a'.repeat(32);
+
+    const first = await measureLanHubLatency({ url: hub.url, token: 'good', id });
+    const second = await measureLanHubLatency({ url: hub.url, token: 'good', id });
+    expect(first).toEqual(expect.any(Number));
+    expect(second).toEqual(expect.any(Number));
+    expect(hub.seen).toEqual([
+      { method: 'HEAD', url: `/ds/lody/lw_${id}%3Ameta`, authorization: 'Bearer good' },
+      { method: 'HEAD', url: `/ds/lody/lw_${id}%3Ameta`, authorization: 'Bearer good' },
+    ]);
+    expect(hub.connections()).toBe(1);
+
+    await expect(measureLanHubLatency({ url: hub.url, token: 'bad', id })).resolves.toBeNull();
+
+    const away = await listen();
+    const awayUrl = away.url;
+    await new Promise<void>((resolve) => servers.pop()!.close(() => resolve()));
+    await expect(measureLanHubLatency({ url: awayUrl, token: 'good', id })).resolves.toBeNull();
   });
 });

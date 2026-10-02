@@ -200,6 +200,18 @@ describe('asking the machines of the LANs', () => {
     // The list shows the short name without waiting for the next round.
     expect(sent('lan/machines').length).toBeGreaterThan(before);
 
+    // A color goes with the short name; one left out is not sent, so it stays.
+    await act(async () => {
+      await control.setAlias(server, 'nuc', 'blue');
+    });
+    expect(sent('lan/alias-machine').at(-1)).toEqual({
+      type: 'lan/alias-machine',
+      machineId: '',
+      target: 'server',
+      alias: 'nuc',
+      color: 'blue',
+    });
+
     answers.set('lan/alias-machine', {
       ok: false,
       type: 'lan/alias-machine',

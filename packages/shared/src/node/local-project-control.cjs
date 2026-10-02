@@ -1,7 +1,8 @@
 const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
 
-// Kept equal to LAN_MACHINE_ALIAS_MAX of lan-control.ts.
+// Kept equal to LAN_MACHINE_ALIAS_MAX and LAN_MACHINE_COLORS of lan-control.ts.
 const LAN_MACHINE_ALIAS_MAX = 32;
+const LAN_MACHINE_COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink'];
 
 const LAN_MEMBER_CONTROL_TYPES = new Set([
   'lan/update-machine',
@@ -528,7 +529,10 @@ function isLocalProjectControlRequest(value) {
     return (
       typeof value.target === 'string' &&
       (value.alias === null ||
-        (typeof value.alias === 'string' && value.alias.length <= LAN_MACHINE_ALIAS_MAX))
+        (typeof value.alias === 'string' && value.alias.length <= LAN_MACHINE_ALIAS_MAX)) &&
+      (value.color === undefined ||
+        value.color === null ||
+        LAN_MACHINE_COLORS.includes(value.color))
     );
   }
 
@@ -719,7 +723,10 @@ function isLocalProjectControlResponse(value) {
   if (value.type === 'lan/alias-machine') {
     return (
       isObjectRecord(value.result) &&
-      (value.result.alias === null || typeof value.result.alias === 'string')
+      (value.result.alias === null || typeof value.result.alias === 'string') &&
+      (value.result.color === undefined ||
+        value.result.color === null ||
+        LAN_MACHINE_COLORS.includes(value.result.color))
     );
   }
 

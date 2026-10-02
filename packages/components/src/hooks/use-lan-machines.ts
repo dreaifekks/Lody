@@ -6,6 +6,7 @@ import type {
   HostedConfigPreview,
   LanAgentInstallResult,
   LanMachine,
+  LanMachineColor,
   LanMachineUpdateResult,
   LanMachines,
   LanMemberControlRequest,
@@ -37,11 +38,15 @@ export type LanMachinesControl = {
     machine: LanMachine,
     input: { sourceWorkspaceId: string; categories: HostedConfigCategory[] }
   ) => Promise<LanMachineAnswer<HostedConfigImportResult>>;
-  /** Gives a machine a short name in the LANs; `null` takes it back. */
+  /**
+   * Gives a machine a short name and a color for it in the LANs; `null` takes
+   * either back, a color left out stays as it is.
+   */
   setAlias: (
     machine: LanMachine,
-    alias: string | null
-  ) => Promise<LanMachineAnswer<{ alias: string | null }>>;
+    alias: string | null,
+    color?: LanMachineColor | null
+  ) => Promise<LanMachineAnswer<{ alias: string | null; color?: LanMachineColor | null }>>;
 };
 
 const UNAVAILABLE = 'The agent service of this machine is not running';
@@ -176,8 +181,9 @@ export function useLanMachines(): LanMachinesControl {
   const setAlias = useCallback(
     async (
       machine: LanMachine,
-      alias: string | null
-    ): Promise<LanMachineAnswer<{ alias: string | null }>> => {
+      alias: string | null,
+      color?: LanMachineColor | null
+    ): Promise<LanMachineAnswer<{ alias: string | null; color?: LanMachineColor | null }>> => {
       const control = getControl();
       if (!control) return { ok: false, message: UNAVAILABLE, reason: null };
       const response = await control
@@ -186,6 +192,7 @@ export function useLanMachines(): LanMachinesControl {
           machineId: THIS_MACHINE,
           target: machine.machineId as MachineId,
           alias,
+          ...(color === undefined ? {} : { color }),
         })
         .catch(() => null);
       void refresh();

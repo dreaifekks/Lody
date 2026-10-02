@@ -11,7 +11,7 @@ import {
   type ElectronLanState,
   type ElectronLanSummary
 } from '@lody/shared/electron-ipc'
-import { probeLanHub } from '@lody/shared/node/lan-hub'
+import { measureLanHubLatency, probeLanHub } from '@lody/shared/node/lan-hub'
 import type { LanHubStore } from '@lody/shared/node/lan-hub-store'
 import { assertProductWindowSender } from '../assert-sender'
 import { getIpcServiceDeps } from '../ipc-service-deps'
@@ -83,6 +83,14 @@ export class LanIpc extends IpcService {
     const parsed = ElectronLanIdInputSchema.safeParse(input)
     const hub = parsed.success ? getIpcServiceDeps().lanHubStore?.resolve(parsed.data.id) : null
     return hub ? await probeLanHub(hub) : 'unreachable'
+  }
+
+  /** The hub's round trip in milliseconds, or `null` when it does not answer. */
+  @IpcMethod()
+  async latency(input: unknown): Promise<number | null> {
+    const parsed = ElectronLanIdInputSchema.safeParse(input)
+    const hub = parsed.success ? getIpcServiceDeps().lanHubStore?.resolve(parsed.data.id) : null
+    return hub ? await measureLanHubLatency(hub) : null
   }
 }
 

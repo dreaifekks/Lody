@@ -218,6 +218,7 @@ describe('the machines of the LANs of a machine', () => {
       machineId: THIS,
       name: 'desk',
       alias: null,
+      color: null,
       os: 'darwin',
       self: true,
       online: true,
@@ -274,11 +275,16 @@ describe('the machines of the LANs of a machine', () => {
 
     // The server need not be online in the office for its short name to be written there.
     await expect(
-      writeLanMachineAlias({ workspaces: [home, office], target: SERVER, alias: '  nas   box ' })
-    ).resolves.toBe('nas box');
+      writeLanMachineAlias({
+        workspaces: [home, office],
+        target: SERVER,
+        alias: '  nas   box ',
+        color: 'teal',
+      })
+    ).resolves.toEqual({ alias: 'nas box', color: 'teal' });
     await expect(
       writeLanMachineAlias({ workspaces: [home, office], target: THIS, alias: 'me' })
-    ).resolves.toBe('me');
+    ).resolves.toEqual({ alias: 'me' });
 
     expect(await readLanMachineAlias(home.repo, SERVER)).toBe('nas box');
     expect(await readLanMachineAlias(office.repo, SERVER)).toBe('nas box');
@@ -287,21 +293,30 @@ describe('the machines of the LANs of a machine', () => {
     await register(home, SERVER, { cliVersion: '0.100.0-lan.4' });
 
     const listed = (await list([home, office])).machines;
-    expect(listed.map((machine) => [machine.machineId, machine.name, machine.alias])).toEqual([
-      [THIS, 'desk', 'me'],
-      [SERVER, 'server', 'nas box'],
-      [LAPTOP, 'laptop', null],
+    expect(
+      listed.map((machine) => [machine.machineId, machine.name, machine.alias, machine.color])
+    ).toEqual([
+      [THIS, 'desk', 'me', null],
+      [SERVER, 'server', 'nas box', 'teal'],
+      [LAPTOP, 'laptop', null, null],
     ]);
 
+    // A short name taken back without a color leaves the color as it was.
     await expect(
       writeLanMachineAlias({ workspaces: [home, office], target: SERVER, alias: '   ' })
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ alias: null });
     expect(await readLanMachineAlias(home.repo, SERVER)).toBeNull();
     expect(await readLanMachineAlias(office.repo, SERVER)).toBeNull();
     expect((await list([home, office])).machines[1]).toMatchObject({
       machineId: SERVER,
       alias: null,
+      color: 'teal',
     });
+
+    await expect(
+      writeLanMachineAlias({ workspaces: [home, office], target: SERVER, alias: null, color: null })
+    ).resolves.toEqual({ alias: null, color: null });
+    expect((await list([home, office])).machines[1]).toMatchObject({ color: null });
   });
 
   it('names no machine that no LAN of this machine has', async () => {

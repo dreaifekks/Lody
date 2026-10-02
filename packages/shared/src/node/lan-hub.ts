@@ -4,6 +4,8 @@
 // presents itself in them.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { getLodyDataDir } from './installation-profile';
@@ -182,7 +184,9 @@ export function readLanHubSettings(options: LanHubSettingsLocation = {}): LanHub
   const envToken = env[LAN_HUB_TOKEN_ENV]?.trim();
   if (envUrl || envToken) {
     return {
-      hubs: [parseHub('from the environment', { url: envUrl, token: envToken }, LAN_HUB_DEFAULT_NAME)],
+      hubs: [
+        parseHub('from the environment', { url: envUrl, token: envToken }, LAN_HUB_DEFAULT_NAME),
+      ],
       machineName: null,
       source: 'environment',
     };
@@ -366,6 +370,60 @@ export async function probeLanHub(
   } catch {
     return 'unreachable';
   }
+}
+
+// One kept connection per hub, so successive measurements leave connection setup out.
+const latencyAgents = {
+  http: new http.Agent({ keepAlive: true, maxSockets: 1 }),
+  https: new https.Agent({ keepAlive: true, maxSockets: 1 }),
+};
+
+/**
+ * Milliseconds from sending a request to the hub to its first byte back, which
+ * leaves out setting up the connection; `null` when the hub does not accept
+ * the credential or does not answer in time.
+ */
+export async function measureLanHubLatency(
+  hub: Pick<LanHub, 'url' | 'token' | 'id'>,
+  options: { timeoutMs?: number } = {}
+): Promise<number | null> {
+  const url = new URL(
+    `${hub.url}/ds/lody/${encodeURIComponent(`${getLanHubWorkspaceId(hub.id)}:meta`)}`
+  );
+  const secure = url.protocol === 'https:';
+  return await new Promise<number | null>((resolve) => {
+    let sentAt: number | null = null;
+    const request = (secure ? https : http).request(
+      url,
+      {
+        method: 'HEAD',
+        headers: { Authorization: `Bearer ${hub.token}` },
+        agent: secure ? latencyAgents.https : latencyAgents.http,
+        timeout: options.timeoutMs ?? 5_000,
+      },
+      (response) => {
+        const answeredAt = performance.now();
+        response.resume();
+        const status = response.statusCode ?? 0;
+        // A hub that never saw this workspace answers 404, which is an answer.
+        const accepted = (status >= 200 && status < 300) || status === 404;
+        resolve(accepted && sentAt !== null ? Math.max(0, Math.round(answeredAt - sentAt)) : null);
+      }
+    );
+    request.once('socket', (socket) => {
+      // A new connection counts from when it is ready; a kept one from now.
+      if (!socket.connecting) {
+        sentAt = performance.now();
+        return;
+      }
+      socket.once(secure ? 'secureConnect' : 'connect', () => {
+        sentAt = performance.now();
+      });
+    });
+    request.once('timeout', () => request.destroy());
+    request.once('error', () => resolve(null));
+    request.end();
+  });
 }
 
 export function normalizeMachineNameInput(input: string | null | undefined): string | null {

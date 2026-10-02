@@ -81,6 +81,7 @@ const machines: LanMachines = {
       machineId: 'home-server',
       name: 'home-server-ubuntu-2404-lts',
       alias: 'home',
+      color: 'teal',
       agents: [
         { agentType: 'claude', name: 'Claude Code', version: '2.1.280', state: 'current' },
         {
@@ -140,7 +141,7 @@ const hosted: HostedConfigPreview = {
 const machinesView = (
   <LanMachinesView
     inventory={machines}
-    setAlias={async (_machine, alias) => ({ ok: true, result: { alias } })}
+    setAlias={async (_machine, alias, color) => ({ ok: true, result: { alias, color } })}
     updateMachine={async () => ({ ok: true, result: { outcome: 'started', version: NEWEST } })}
     installAgent={async (_machine, agentType) => ({
       ok: true,

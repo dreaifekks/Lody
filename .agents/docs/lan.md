@@ -279,11 +279,23 @@ workspace, where members already read its name:
 | `lanUpdate` | Where an update stands; absent while none is under way                       |
 | `lanAgents` | The runtime of each agent it has providers for: installed and pinned version |
 
-One field is not the machine's own: `lanAlias`, the short name a member gave
-it in Settings > LAN. The agent service of that member writes it into every
+Two fields are not the machine's own: `lanAlias`, the short name a member gave
+it in Settings > LAN, and `lanColor`, the color of that name, one of
+`LAN_MACHINE_COLORS`. The agent service of that member writes both into every
 LAN it shares with the machine, which need not be online, and the last one
-written wins. The list shows it before the machine's name, and a member puts it
-in the alerts it reports to the hub in place of that name.
+written wins. The renderer's machine metadata shows the short name as the
+machine's `name` everywhere (the registered name stays in `ownName`), the
+sidebar and the list draw it in its color, and a member puts the short name in
+the alerts it reports to the hub in place of that name.
+
+How a LAN answers is shown where a member looks for it. The sidebar's nameplate
+adds a dot and the hub's round trip while the workspace is connected, and Settings
+
+> LAN adds it to each LAN. The shell measures it every ten seconds on one kept
+> connection, from the request to the first byte (`measureLanHubLatency`). A
+> machine's round trip is a `machine/ping` through the hub, measured while its
+> sidebar card is open or Settings > LAN shows it, every fifteen seconds; one that
+> does not answer within six seconds says so.
 
 Listing asks nothing of a machine. What a member asks of one is a
 project-control request, and four of them cross machines: `lan/update-machine`,

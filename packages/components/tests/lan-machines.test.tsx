@@ -187,9 +187,9 @@ describe('the machines of the LANs', () => {
             calls.push(['preview', target.machineId]);
             return answers.preview;
           }}
-          setAlias={async (target, alias) => {
-            calls.push(['alias', target.machineId, alias]);
-            return answers.alias ?? { ok: true, result: { alias } };
+          setAlias={async (target, alias, color) => {
+            calls.push(['alias', target.machineId, alias, color]);
+            return answers.alias ?? { ok: true, result: { alias, color } };
           }}
           importHostedConfig={async (target, input) => {
             calls.push(['import', target.machineId, input]);
@@ -503,6 +503,14 @@ describe('the machines of the LANs', () => {
   describe('the short name of a machine', () => {
     const aliased = () =>
       calls.filter(([what]) => what === 'alias').map(([, machineId, alias]) => [machineId, alias]);
+    const colored = () =>
+      calls
+        .filter(([what]) => what === 'alias')
+        .map(([, machineId, , color]) => [machineId, color]);
+    const swatch = (label: string) =>
+      document.body.querySelector<HTMLButtonElement>(
+        `[role="dialog"] button[aria-label="${label}"]`
+      );
     const field = () => document.body.querySelector<HTMLInputElement>('[role="dialog"] input');
     const write = async (value: string) => {
       const input = field();
@@ -533,7 +541,7 @@ describe('the machines of the LANs', () => {
       await render(inventoryOf([desk, laptop]));
 
       await click(buttonIn(rowOf('laptop'), 'Short name for laptop'));
-      expect(text()).toContain('Short name for laptop');
+      expect(text()).toContain('Short name and color for laptop');
       expect(save()?.disabled).toBe(true);
       await write('  old   one ');
       await click(save());
@@ -552,6 +560,31 @@ describe('the machines of the LANs', () => {
       await write('me');
       await click(save());
       expect(aliased().at(-1)).toEqual(['desk', 'me']);
+    });
+
+    it('gives the name a color, which the row shows, and takes it back', async () => {
+      await render(inventoryOf([desk, server]));
+      await click(buttonIn(rowOf('server'), 'Short name for server'));
+      expect(swatch('No color')?.getAttribute('aria-pressed')).toBe('true');
+      await click(swatch('Teal'));
+      expect(swatch('Teal')?.getAttribute('aria-pressed')).toBe('true');
+      // A color alone is a change worth saving; the short name stays as it was.
+      expect(save()?.disabled).toBe(false);
+      await click(save());
+      expect(aliased().at(-1)).toEqual(['server', null]);
+      expect(colored().at(-1)).toEqual(['server', 'teal']);
+
+      await render(inventoryOf([desk, { ...server, color: 'teal' }]));
+      const name = [...rowOf('server').querySelectorAll<HTMLElement>('span')].find(
+        (span) => span.textContent === 'server'
+      );
+      expect(name?.style.color).toBe('hsl(var(--lan-machine-teal))');
+      await click(buttonIn(rowOf('server'), 'Short name for server'));
+      expect(swatch('Teal')?.getAttribute('aria-pressed')).toBe('true');
+      expect(save()?.disabled).toBe(true);
+      await click(swatch('No color'));
+      await click(save());
+      expect(colored().at(-1)).toEqual(['server', null]);
     });
 
     it('says so when it could not be given', async () => {

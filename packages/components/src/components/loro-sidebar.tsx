@@ -175,6 +175,8 @@ export interface LoroSidebarProps {
    * workspace identity instead of incorrectly presenting it as ready.
    */
   workspaceSyncing?: boolean;
+  /** Shown after the workspace's name while it is connected and synced, e.g. how its LAN answers. */
+  workspaceStatusAccessory?: ReactNode;
   isElectron?: boolean;
   isElectronMacOS?: boolean;
   defaultWidth?: number;
@@ -742,6 +744,7 @@ export const LoroSidebar = memo(function LoroSidebar({
   workspaceSwitcherKind = 'account',
   connectionUiState,
   workspaceSyncing = false,
+  workspaceStatusAccessory,
   isElectron = false,
   isElectronMacOS: _isElectronMacOS = false,
   defaultWidth = DEFAULT_DESKTOP_SIDEBAR_WIDTH,
@@ -1005,7 +1008,9 @@ export const LoroSidebar = memo(function LoroSidebar({
         <span className="min-w-0 flex-1 truncate font-medium">{workspaceName}</span>
         {workspaceIdentityStatus ? (
           <ConnectionPill state={workspaceIdentityStatus} labels={mergedLabels} />
-        ) : null}
+        ) : (
+          workspaceStatusAccessory
+        )}
       </span>
     </>
   );

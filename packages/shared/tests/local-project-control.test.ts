@@ -677,6 +677,9 @@ describe('what the members of a LAN ask of each other', () => {
     expect(accepts({ ...alias, alias: null })).toEqual(all(true));
     expect(accepts({ ...alias, alias: 'x'.repeat(33) })).toEqual(all(false));
     expect(accepts({ ...alias, alias: 'nas', target: undefined })).toEqual(all(false));
+    expect(accepts({ ...alias, alias: 'nas', color: 'teal' })).toEqual(all(true));
+    expect(accepts({ ...alias, alias: 'nas', color: null })).toEqual(all(true));
+    expect(accepts({ ...alias, alias: 'nas', color: '#ff0000' })).toEqual(all(false));
 
     expect(accepts({ ...install, agentType: undefined })).toEqual(all(false));
     expect(accepts({ ...importing, categories: ['sessions'] })).toEqual(all(false));
@@ -752,6 +755,7 @@ describe('what the members of a LAN ask of each other', () => {
       { ok: true, type: 'lan/install-agent', result: { agentType: 'claude', outcome: 'current' } },
       { ok: true, type: 'lan/alias-machine', result: { alias: 'nas' } },
       { ok: true, type: 'lan/alias-machine', result: { alias: null } },
+      { ok: true, type: 'lan/alias-machine', result: { alias: 'nas', color: 'teal' } },
       { ok: true, type: 'lan/forward', result: { response: started } },
       { ok: true, type: 'lan/forward', result: { response: refused } },
     ]) {

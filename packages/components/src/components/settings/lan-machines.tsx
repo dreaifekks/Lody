@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ComponentType } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import {
@@ -11,7 +11,12 @@ import {
   SquareTerminal,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { LanAgentRuntime, LanMachine, LanMachines } from '@lody/shared/lan-control';
+import type {
+  LanAgentRuntime,
+  LanMachine,
+  LanMachineColor,
+  LanMachines,
+} from '@lody/shared/lan-control';
 import { resolveLanUpdateAvailability } from '@lody/shared/lan-release';
 import type { SshDestination } from '@lody/shared/lan-ssh';
 import type { LanMachinesControl } from '@/hooks/use-lan-machines';
@@ -25,6 +30,7 @@ import { CompactSection } from './compact-layout';
 import { LanHostedImport } from './lan-hosted-import';
 import { LanMachineAlias } from './lan-machine-alias';
 import { LanMachineSshEntry } from './lan-machine-ssh-entry';
+import { lanMachineNameStyle } from '@/lib/lan-machine-color';
 import { settingsCatalog as catalog } from './surface';
 
 const styles = stylex.create({
@@ -68,6 +74,8 @@ export type LanMachinesViewProps = Pick<
   sshEntries?: Readonly<Record<string, string>>;
   /** Absent where no entry can be named, such as outside the desktop. */
   onSshEntryChange?: (machine: LanMachine, entry: SshDestination | null) => void;
+  /** How long a machine that answers takes to, after its status; absent outside the desktop. */
+  Latency?: ComponentType<{ machine: LanMachine }>;
 };
 
 const OS_NAMES: Record<string, string> = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' };
@@ -119,6 +127,7 @@ export function LanMachinesView({
   setAlias,
   sshEntries,
   onSshEntryChange,
+  Latency,
 }: LanMachinesViewProps) {
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState<LanMachine | null>(null);
@@ -176,9 +185,9 @@ export function LanMachinesView({
       );
     });
 
-  const alias = (machine: LanMachine, next: string | null) =>
+  const alias = (machine: LanMachine, next: string | null, color: LanMachineColor | null) =>
     asking(machine.machineId, async () => {
-      const answer = await setAlias(machine, next);
+      const answer = await setAlias(machine, next, color);
       if (!answer.ok) {
         toast.error(
           t('settings.lan.machines.alias.failed', { name: machine.name, message: answer.message })
@@ -201,6 +210,7 @@ export function LanMachinesView({
             onAlias={() => setAliasing(machine)}
             onInstallAgent={(agent) => install(machine, agent)}
             onNameSshEntry={onSshEntryChange ? () => setNaming(machine) : undefined}
+            Latency={Latency}
           />
         ))}
       </CompactSection>
@@ -268,6 +278,7 @@ function MachineRow({
   onAlias,
   onInstallAgent,
   onNameSshEntry,
+  Latency,
 }: {
   machine: LanMachine;
   newest: string | null;
@@ -279,6 +290,7 @@ function MachineRow({
   onInstallAgent: (agent: LanAgentRuntime) => void;
   /** Absent for this machine, and where no entry can be named. */
   onNameSshEntry?: () => void;
+  Latency?: ComponentType<{ machine: LanMachine }>;
 }) {
   const { t } = useTranslation();
   const build = describeLanMachineBuild(machine, newest);
@@ -302,7 +314,9 @@ function MachineRow({
         </span>
         <span {...stylex.props(catalog.body)}>
           <span {...stylex.props(catalog.titleLine)}>
-            <span {...stylex.props(catalog.name)}>{machine.alias ?? machine.name}</span>
+            <span {...stylex.props(catalog.name)} style={lanMachineNameStyle(machine.color)}>
+              {machine.alias ?? machine.name}
+            </span>
             {machine.alias ? (
               <span {...stylex.props(styles.machineName)}>{machine.name}</span>
             ) : null}
@@ -317,12 +331,16 @@ function MachineRow({
               <PencilLine {...stylex.props(catalog.iconSmall)} />
             </Button>
             {machine.self ? (
-              <Badge>{t('settings.lan.machines.self')}</Badge>
+              <Badge>
+                {t('settings.lan.machines.self')}
+                {Latency ? <Latency machine={machine} /> : null}
+              </Badge>
             ) : machine.online === null ? null : (
               <Badge tone={machine.online ? 'success' : undefined}>
                 {t(
                   machine.online ? 'settings.lan.machines.online' : 'settings.lan.machines.offline'
                 )}
+                {machine.online && Latency ? <Latency machine={machine} /> : null}
               </Badge>
             )}
           </span>

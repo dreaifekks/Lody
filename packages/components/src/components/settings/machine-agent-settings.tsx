@@ -13,7 +13,6 @@ import {
   type MachineViewMeta,
   type ProviderSetupTask,
   type SessionId,
-  type WorkspaceId,
 } from '@lody/shared';
 import { Check, ChevronDown, ChevronRight, Plus } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
@@ -23,6 +22,7 @@ import { developerModeEnabledAtom, reviewAgentFeatureEnabledAtom } from '@/atoms
 import { settingsDialogOpenAtom } from '@/atoms/settings';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '@/atoms/workspace-context';
+import { createMachineRequestId, pingMachineWithRuntime } from '@/lib/machine-ping';
 import { localMachineIdAtom } from '@/atoms/local-probe';
 import {
   cmdCreateAgentConfigAtom,
@@ -334,11 +334,6 @@ export type MachineAgentSettingsProps = {
   mode?: 'agents' | 'machines';
 };
 
-const createMachineRequestId = (): string =>
-  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
 const waitForMonitorSessionRemoval = async (args: {
   runtime: WorkspaceRuntime;
   machineId: MachineId;
@@ -369,38 +364,6 @@ const waitForMonitorSessionRemoval = async (args: {
     if (settled) nextUnsubscribe();
     else args.runtime.forceMachineMonitorSample(args.machineId);
   });
-
-async function pingMachineWithRuntime(args: {
-  runtime: WorkspaceRuntime;
-  workspaceId: WorkspaceId;
-  machineId: MachineId;
-  timeoutMessage: string;
-  failedMessage: string;
-}): Promise<number> {
-  const requestId = createMachineRequestId();
-  const startedAt = performance.now();
-  const responsePromise = args.runtime.waitForMachinePingResponse(args.machineId, requestId, {
-    timeoutMs: 30000,
-  });
-  args.runtime.sendControl({
-    type: 'machine/ping',
-    machineId: args.machineId,
-    workspaceId: args.workspaceId,
-    requestId,
-  });
-  const response = await responsePromise;
-  if (!response) {
-    throw new Error(args.timeoutMessage);
-  }
-  if (!response.success || response.message !== 'pong') {
-    const errorMessage =
-      typeof response.error === 'string' && response.error.length > 0
-        ? response.error
-        : args.failedMessage;
-    throw new Error(errorMessage);
-  }
-  return Math.max(0, Math.round(performance.now() - startedAt));
-}
 
 export function MachineAgentSettings({
   selectedMachineId,

@@ -1131,6 +1131,15 @@ pre,
     --github-merged: 261 69% 59%;
     --github-closed: 356 72% 47%;
     --github-draft: 213 8% 47%;
+    /* The colors a LAN member gives a machine's name; fixed, like GitHub's. */
+    --lan-machine-red: 356 68% 48%;
+    --lan-machine-orange: 24 85% 45%;
+    --lan-machine-yellow: 40 90% 38%;
+    --lan-machine-green: 142 55% 34%;
+    --lan-machine-teal: 178 65% 31%;
+    --lan-machine-blue: 214 75% 50%;
+    --lan-machine-purple: 266 55% 55%;
+    --lan-machine-pink: 328 65% 50%;
     --github-addition: var(--github-open);
     --github-deletion: var(--github-closed);
     --primary-content: 225 7% 11%;
@@ -1312,6 +1321,14 @@ pre,
     --github-merged: 262 89% 71%;
     --github-closed: 3 93% 63%;
     --github-draft: 212 8% 58%;
+    --lan-machine-red: 0 85% 70%;
+    --lan-machine-orange: 26 90% 64%;
+    --lan-machine-yellow: 45 90% 60%;
+    --lan-machine-green: 140 50% 60%;
+    --lan-machine-teal: 175 55% 55%;
+    --lan-machine-blue: 212 90% 70%;
+    --lan-machine-purple: 266 80% 76%;
+    --lan-machine-pink: 328 80% 74%;
     --github-addition: var(--github-open);
     --github-deletion: var(--github-closed);
     --primary-content: 210 40% 96%;

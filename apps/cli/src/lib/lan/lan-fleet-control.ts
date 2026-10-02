@@ -223,12 +223,13 @@ export class LanFleetControl {
     }
     if (message.type === 'lan/alias-machine') {
       try {
-        const alias = await writeLanMachineAlias({
+        const result = await writeLanMachineAlias({
           workspaces: this.options.workspaces(),
           target: message.target,
           alias: message.alias,
+          color: message.color,
         });
-        return { ok: true, type: message.type, result: { alias } };
+        return { ok: true, type: message.type, result };
       } catch (error) {
         return {
           ok: false,

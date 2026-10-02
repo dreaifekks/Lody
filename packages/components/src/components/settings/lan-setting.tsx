@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
+import { useAtomValue } from 'jotai';
 import { Copy, LogOut, Network, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type {
@@ -8,9 +9,14 @@ import type {
   ElectronLanState,
   ElectronLanSummary,
 } from '@lody/shared/electron-ipc';
+import type { MachineId } from '@lody/shared';
+import type { LanMachine } from '@lody/shared/lan-control';
+import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
 import { useDialogExitSnapshot } from '@/hooks/use-dialog-exit-snapshot';
 import { useElectronUpdaterState } from '@/hooks/use-electron-updater-state';
+import { useLanHubLatency } from '@/hooks/use-lan-hub-latency';
 import { useLanMachines } from '@/hooks/use-lan-machines';
+import { useMachineLatency } from '@/hooks/use-machine-latency';
 import { useLanSettings, type LanSettings, type LanSettingsResult } from '@/hooks/use-lan-settings';
 import { UpdateChangelogDialog } from '@/components/update-changelog-dialog';
 import { writeTextToClipboard } from '@/lib/clipboard';
@@ -160,8 +166,43 @@ function LanMachinesOfThisMachine() {
       {...control}
       sshEntries={sshEntries}
       onSshEntryChange={(machine, entry) => writeMachineSshEntry(machine.machineId, entry)}
+      Latency={LanMachineLatency}
     />
   ) : null;
+}
+
+/**
+ * How long a machine takes to answer through the hub of the workspace this
+ * window shows; a machine of another LAN only, which that hub does not reach,
+ * says nothing.
+ */
+function LanMachineLatency({ machine }: { machine: LanMachine }) {
+  const { t } = useTranslation();
+  const workspaceId = useAtomValue(currentWorkspaceIdAtom);
+  const shared = machine.lans.some((lan) => lan.workspaceId === workspaceId);
+  const reach = useMachineLatency(shared ? (machine.machineId as MachineId) : null);
+  if (!reach || reach.state === 'checking') return null;
+  return (
+    <>
+      {t('settings.lan.machines.factSeparator')}
+      {reach.state === 'online'
+        ? t('settings.lan.latency', { ms: reach.ms })
+        : t('settings.lan.noAnswer')}
+    </>
+  );
+}
+
+/** The hub's round trip after a LAN that answers. */
+function LanHubLatency({ lanId }: { lanId: string }) {
+  const { t } = useTranslation();
+  const latency = useLanHubLatency(lanId);
+  if (latency === undefined) return null;
+  return (
+    <>
+      {t('settings.lan.machines.factSeparator')}
+      {latency === null ? t('settings.lan.noAnswer') : t('settings.lan.latency', { ms: latency })}
+    </>
+  );
 }
 
 export function LanSettingView({
@@ -418,7 +459,12 @@ function LanRow({
         <span {...stylex.props(catalog.body)}>
           <span {...stylex.props(catalog.titleLine)}>
             <span {...stylex.props(catalog.name)}>{lan.name}</span>
-            {status === undefined ? null : <Badge>{t(`settings.lan.status.${status}`)}</Badge>}
+            {status === undefined ? null : (
+              <Badge tone={status === 'reachable' ? 'success' : undefined}>
+                {t(`settings.lan.status.${status}`)}
+                {status === 'reachable' ? <LanHubLatency lanId={lan.id} /> : null}
+              </Badge>
+            )}
           </span>
           <span {...stylex.props(catalog.meta)}>
             <span {...stylex.props(catalog.truncate, catalog.mono)}>{lan.url}</span>

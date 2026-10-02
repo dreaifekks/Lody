@@ -5,6 +5,7 @@ import {
 } from './hosted-config';
 import {
   LAN_MACHINE_ALIAS_MAX,
+  LAN_MACHINE_COLORS,
   LanAgentInstallResultSchema,
   LanMachineUpdateResultSchema,
   LanMachinesSchema,
@@ -2417,6 +2418,8 @@ export const LanAliasMachineRequestSchema = z
     machineId: MachineIdSchema,
     target: MachineIdSchema,
     alias: z.string().max(LAN_MACHINE_ALIAS_MAX).nullable(),
+    /** The color of its name; `null` takes it back, absent leaves it as it is. */
+    color: z.enum(LAN_MACHINE_COLORS).nullable().optional(),
   })
   .strict();
 
@@ -2991,7 +2994,12 @@ export const LocalProjectControlResponseSchema = z.union([
     .object({
       ok: z.literal(true),
       type: z.literal('lan/alias-machine'),
-      result: z.object({ alias: z.string().nullable() }).strict(),
+      result: z
+        .object({
+          alias: z.string().nullable(),
+          color: z.enum(LAN_MACHINE_COLORS).nullable().optional(),
+        })
+        .strict(),
     })
     .strict(),
   z

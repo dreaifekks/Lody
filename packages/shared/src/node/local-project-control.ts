@@ -9,6 +9,7 @@ import {
   LAN_MACHINE_ALIAS_MAX,
   LanMachinesSchema,
   isLanMemberControlType,
+  normalizeLanMachineColor,
 } from '../lan-control';
 import type { LocalProjectControlRequest, LocalProjectControlResponse } from '../message';
 
@@ -518,7 +519,10 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     return (
       typeof value.target === 'string' &&
       (value.alias === null ||
-        (typeof value.alias === 'string' && value.alias.length <= LAN_MACHINE_ALIAS_MAX))
+        (typeof value.alias === 'string' && value.alias.length <= LAN_MACHINE_ALIAS_MAX)) &&
+      (value.color === undefined ||
+        value.color === null ||
+        normalizeLanMachineColor(value.color) !== null)
     );
   }
 
@@ -687,7 +691,10 @@ export function isLocalProjectControlResponse(
   if (value.type === 'lan/alias-machine') {
     return (
       isObjectRecord(value.result) &&
-      (value.result.alias === null || typeof value.result.alias === 'string')
+      (value.result.alias === null || typeof value.result.alias === 'string') &&
+      (value.result.color === undefined ||
+        value.result.color === null ||
+        normalizeLanMachineColor(value.result.color) !== null)
     );
   }
 

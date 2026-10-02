@@ -6,10 +6,12 @@ import {
   getMachineRoomId,
   machineSupportsLanControl,
   normalizeLanMachineAlias,
+  normalizeLanMachineColor,
   parseLanAgentRuntimes,
   sameLanAgentRuntimes,
   type LanAgentRuntime,
   type LanMachine,
+  type LanMachineColor,
   type LanMachines,
   type LanMemberControlRequest,
   type LanMemberControlResponse,
@@ -113,6 +115,7 @@ export async function listLanMachines(options: {
     machineId,
     name: options.machineName,
     alias: null,
+    color: null,
     os: options.os,
     self: true,
     online: true,
@@ -145,6 +148,7 @@ export async function listLanMachines(options: {
         if (workspace.lan) {
           self.lans.push(lan);
           self.alias ??= normalizeLanMachineAlias(meta.lanAlias);
+          self.color ??= normalizeLanMachineColor(meta.lanColor);
         }
         self.update ??= settleLanMachineUpdate(
           parseLanMachineUpdate(meta.lanUpdate),
@@ -165,6 +169,7 @@ export async function listLanMachines(options: {
       if (known) {
         known.lans.push(lan);
         known.alias ??= normalizeLanMachineAlias(meta.lanAlias);
+        known.color ??= normalizeLanMachineColor(meta.lanColor);
         known.online = mergeOnline(known.online, seenOnline);
         known.agents = mergeAgents(known.agents, parseLanAgentRuntimes(meta.lanAgents));
         continue;
@@ -173,6 +178,7 @@ export async function listLanMachines(options: {
         machineId: id,
         name: meta.name,
         alias: normalizeLanMachineAlias(meta.lanAlias),
+        color: normalizeLanMachineColor(meta.lanColor),
         os: meta.os ?? null,
         self: false,
         online: seenOnline,
@@ -271,31 +277,40 @@ export async function publishLanSshDestination(options: {
 }
 
 /**
- * Gives a machine a short name, or takes it back with `null`, in every LAN of
- * this machine that the machine is a member of. Each member writes it into the
- * machine's metadata of the LAN's workspace, where every member reads it; the
- * machine itself need not be there.
+ * Gives a machine a short name and a color for it, or takes them back with
+ * `null`, in every LAN of this machine that the machine is a member of. Each
+ * member writes them into the machine's metadata of the LAN's workspace, where
+ * every member reads them; the machine itself need not be there. A color left
+ * out stays as it is.
  */
 export async function writeLanMachineAlias(options: {
   workspaces: readonly LanMemberWorkspace[];
   target: MachineId;
   alias: string | null;
-}): Promise<string | null> {
+  color?: LanMachineColor | null;
+}): Promise<{ alias: string | null; color?: LanMachineColor | null }> {
   const alias = normalizeLanMachineAlias(options.alias);
+  const color = options.color === undefined ? undefined : normalizeLanMachineColor(options.color);
   let written = 0;
   for (const workspace of options.workspaces) {
     if (!workspace.lan) continue;
     const meta = await readMachineMeta(workspace.repo, options.target);
     if (!meta || (meta.ownerUserId && meta.ownerUserId !== workspace.userId)) continue;
-    if (normalizeLanMachineAlias(meta.lanAlias) !== alias) {
-      await workspace.repo.upsertDocMeta(getMachineRoomId(options.target), {
-        lanAlias: alias ?? undefined,
-      } as Parameters<LoroRepo['upsertDocMeta']>[1]);
+    const change: Partial<MachineMeta> = {};
+    if (normalizeLanMachineAlias(meta.lanAlias) !== alias) change.lanAlias = alias ?? undefined;
+    if (color !== undefined && normalizeLanMachineColor(meta.lanColor) !== color) {
+      change.lanColor = color ?? undefined;
+    }
+    if (Object.keys(change).length > 0) {
+      await workspace.repo.upsertDocMeta(
+        getMachineRoomId(options.target),
+        change as Parameters<LoroRepo['upsertDocMeta']>[1]
+      );
     }
     written += 1;
   }
   if (written === 0) throw new Error('No LAN of this machine has that machine');
-  return alias;
+  return color === undefined ? { alias } : { alias, color };
 }
 
 function refuse(

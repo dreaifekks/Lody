@@ -1316,6 +1316,8 @@ export type MachineMeta = {
    * member writes it, the machine itself included; the last one written wins.
    */
   lanAlias?: string;
+  /** The color of the machine's name, one of `LAN_MACHINE_COLORS`, written like `lanAlias`. */
+  lanColor?: string;
   /** The build the agent service of this machine runs, and who replaces it with a later one. */
   lanBuild?: LanMachineBuild;
   /** Where an update of this machine stands. Absent while none is under way. */
@@ -1346,6 +1348,11 @@ export type MachineLegacyMetaFields = {
 export type MachineViewMeta = MachineMeta &
   Omit<MachineLegacyMetaFields, 'raceLimits'> & {
     raceLimits: Record<string, RateLimit>;
+    /**
+     * The name the machine registered under, set while the short name its LAN
+     * gave it (`lanAlias`) takes the place of `name`.
+     */
+    ownName?: string;
   };
 
 export const getMachineHostType = (meta: Pick<MachineMeta, 'hostType'>): MachineHostType =>

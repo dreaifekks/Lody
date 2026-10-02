@@ -2,6 +2,7 @@ import { atom } from 'jotai';
 import {
   getMachineRoomId,
   MACHINE_DOC_PREFIX,
+  normalizeLanMachineAlias,
   type MachineLegacyMetaFields,
   type MachineViewMeta,
   type MachineId,
@@ -27,10 +28,13 @@ export const getMachineMetaByIdAtomFamily = atomFamily((machineId?: MachineId) =
       raw.supportRegistryAgentTypes
     );
     const legacy = raw as MachineLegacyMetaFields;
+    // A short name the LAN gave the machine is the name everything shows.
+    const alias = normalizeLanMachineAlias(raw.lanAlias);
     return {
       ...raw,
       id: raw.id ?? machineId,
-      name: raw.name ?? machineId,
+      name: alias ?? raw.name ?? machineId,
+      ownName: alias ? (raw.name ?? machineId) : undefined,
       cliVersion: raw.cliVersion ?? '',
       os: raw.os ?? '',
       sessions: raw.sessions ?? [],
@@ -59,6 +63,8 @@ export const getAllMachineIdsAtom = atom((get) => {
 const MACHINE_META_VISIBLE_KEYS: readonly (keyof MachineViewMeta)[] = [
   'id',
   'name',
+  'ownName',
+  'lanColor',
   'ownerUserId',
   'localProjects',
   'workspacePaths',
