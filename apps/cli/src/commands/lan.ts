@@ -1,8 +1,10 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Command } from 'commander';
 import { formatLanInvite, parseLanInvite } from '@lody/shared/lan-hub';
+import { fetchLanHubGitHubCredential } from '@lody/shared/node/lan-github';
 import {
   addLanHub,
   findLanHub,
@@ -27,6 +29,11 @@ import {
 } from '@/lib/lan/hub-server';
 import { hostLan, pickLanHostAddress } from '@/lib/lan/lan-host';
 import { readApnsConfig, writeApnsConfig } from '@/lib/lan/apns';
+import {
+  describeGitHubToken,
+  removeLanHubGitHubConfig,
+  writeLanHubGitHubConfig,
+} from '@/lib/lan/hub-github';
 import { LAN_PUSH_STATUS_PATH, LAN_PUSH_TEST_PATH } from '@/lib/lan/lan-push-protocol';
 import {
   LAN_SERVICE_UNITS,
@@ -661,6 +668,105 @@ const pushCommand = new Command('push')
   .addCommand(pushStatusCommand)
   .addCommand(pushTestCommand);
 
+type GitHubSetupOptions = OutputOptions & { fromGh?: boolean; dataDir: string };
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk as Buffer));
+  return Buffer.concat(chunks).toString('utf8').trim();
+}
+
+function readGhLoginToken(): string {
+  const result = spawnSync('gh', ['auth', 'token', '--hostname', 'github.com'], {
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  const token = result.status === 0 ? result.stdout.trim() : '';
+  if (!token) throw new Error('`gh` on this machine is not logged in to github.com');
+  return token;
+}
+
+const githubSetupCommand = new Command('setup')
+  .description(
+    'Give the LAN host the GitHub token its members use when they have no gh login; ' +
+      'the token is read from standard input'
+  )
+  .option('--from-gh', "Use the token of this machine's own gh login")
+  .option('--data-dir <path>', 'Data directory of the LAN host', getDefaultLanHubDataDir())
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(async (options: GitHubSetupOptions) => {
+    await runOneShotCommand('lan', options, async () => {
+      if (!options.fromGh && process.stdin.isTTY) {
+        throw new Error(
+          'Pipe the token in (`lody lan github setup < token.txt`) or pass --from-gh; ' +
+            'a token typed as an argument stays in the shell history'
+        );
+      }
+      const token = options.fromGh ? readGhLoginToken() : await readStdin();
+      if (!token) throw new Error('No token was given');
+      const { login, userId } = await describeGitHubToken(token);
+      writeLanHubGitHubConfig(path.resolve(options.dataDir), {
+        token,
+        login,
+        userId,
+        savedAt: new Date().toISOString(),
+      });
+      if (options.json) {
+        printJson({ ok: true, login, userId });
+        return;
+      }
+      console.log(`GitHub token of ${login} saved. Members get it from their next request.`);
+    });
+  });
+
+const githubStatusCommand = new Command('status')
+  .description('Show which GitHub account the LAN host gives its members')
+  .argument('[lan]', 'Name or id of the LAN')
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(async (selector: string | undefined, options: OutputOptions) => {
+    await runOneShotCommand('lan', options, async () => {
+      const hub = requireLan(readLanHubSettings(), selector);
+      const credential = await fetchLanHubGitHubCredential(hub);
+      if (options.json) {
+        printJson({
+          ok: true,
+          configured: credential !== null,
+          login: credential?.login ?? null,
+        });
+        return;
+      }
+      console.log(
+        credential
+          ? `${hub.name}: GitHub token of ${credential.login ?? 'an unknown account'}`
+          : `${hub.name}: no GitHub token (run \`lody lan github setup\` on the host)`
+      );
+    });
+  });
+
+const githubRemoveCommand = new Command('remove')
+  .description('Remove the GitHub token from the LAN host')
+  .option('--data-dir <path>', 'Data directory of the LAN host', getDefaultLanHubDataDir())
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(async (options: OutputOptions & { dataDir: string }) => {
+    await runOneShotCommand('lan', options, async () => {
+      const removed = removeLanHubGitHubConfig(path.resolve(options.dataDir));
+      if (options.json) {
+        printJson({ ok: true, removed });
+        return;
+      }
+      console.log(removed ? 'GitHub token removed.' : 'The LAN host kept no GitHub token.');
+    });
+  });
+
+const githubCommand = new Command('github')
+  .description('One GitHub token on the LAN host for members without a gh login')
+  .addCommand(githubSetupCommand)
+  .addCommand(githubStatusCommand)
+  .addCommand(githubRemoveCommand);
+
 export const lanCommand = new Command('lan')
   .description('Host and join LANs: machines that reach each other without an account')
   .addCommand(listCommand)
@@ -677,4 +783,5 @@ export const lanCommand = new Command('lan')
   .addCommand(hubCommand)
   .addCommand(machinesCommand)
   .addCommand(updateCommand)
-  .addCommand(pushCommand);
+  .addCommand(pushCommand)
+  .addCommand(githubCommand);

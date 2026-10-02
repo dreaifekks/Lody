@@ -2,6 +2,7 @@ import { LOCAL_PLATFORM_CAPABILITIES } from './capabilities';
 import type {
   CloudPort,
   CloudPortIdentity,
+  CloudGithubTokenPort,
   CloudStreamsTokenPort,
   RuntimeArtifactsPort,
 } from './cloud-port';
@@ -143,6 +144,11 @@ export interface LocalCloudPortOptions {
    * them; account, billing and every other hosted port stay absent.
    */
   streamsTokens?: CloudStreamsTokenPort;
+  /**
+   * The GitHub credential the hubs of those gateways keep. Present only with
+   * `streamsTokens`; the hubs are then the only peers it reaches.
+   */
+  githubTokens?: CloudGithubTokenPort;
 }
 
 function isWorkspaceStore(
@@ -193,7 +199,7 @@ export function createLocalCloudPort(options: LocalCloudPortOptions): CloudPort 
     notifications: null,
     usage: null,
     billing: null,
-    githubTokens: null,
+    githubTokens: options.githubTokens ?? null,
     bugReports: null,
     sessionSharing: null,
     prAssociation: null,

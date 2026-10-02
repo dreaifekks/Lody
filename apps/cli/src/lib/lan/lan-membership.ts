@@ -1,5 +1,6 @@
 import {
   createStore,
+  type CloudGithubTokenPort,
   type CloudStreamsTokenPort,
   type ReadonlyStore,
   type WorkspaceSummary,
@@ -16,6 +17,7 @@ import {
 } from '@lody/shared/node/lan-hub';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
+import { createLanGitHubTokenPort } from './lan-github-tokens';
 
 export function toLanWorkspaces(hubs: readonly LanHub[]): WorkspaceSummary[] {
   return summarizeLanHubs(hubs).map((hub) => ({
@@ -72,10 +74,7 @@ export class LanMembership {
     if (this.options.settings.hubs.length === 0) return null;
     return {
       createTokenProvider: ({ workspaceId }) => {
-        const hub = summarizeLanHubs(this.settings.hubs).find(
-          (candidate) => candidate.workspaceId === workspaceId
-        );
-        const credentials = hub && this.settings.hubs.find((entry) => entry.id === hub.id);
+        const credentials = this.hubOf(workspaceId);
         if (!credentials) {
           // Reached when a workspace outlives its LAN for a moment; the attach
           // fails and the fleet stops the workspace with the next list.
@@ -87,6 +86,25 @@ export class LanMembership {
         });
       },
     };
+  }
+
+  /**
+   * The GitHub credential the host of each LAN keeps; `null` without a LAN,
+   * where nothing may be asked of any host.
+   */
+  get githubTokens(): CloudGithubTokenPort | null {
+    if (this.options.settings.hubs.length === 0) return null;
+    return createLanGitHubTokenPort({
+      resolveHub: (workspaceId) => this.hubOf(workspaceId),
+      logger: this.options.logger,
+    });
+  }
+
+  private hubOf(workspaceId: string): LanHub | null {
+    const hub = summarizeLanHubs(this.settings.hubs).find(
+      (candidate) => candidate.workspaceId === workspaceId
+    );
+    return (hub && this.settings.hubs.find((entry) => entry.id === hub.id)) ?? null;
   }
 
   start(): void {

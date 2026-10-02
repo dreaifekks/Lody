@@ -633,11 +633,13 @@ async function startAgentService(
       onRestartRequired: (reason) => triggerLanRestart?.(`LAN settings changed: ${reason}`),
     });
     const streamsTokens = lanMembership.streamsTokens;
+    const githubTokens = lanMembership.githubTokens;
     cloudPort = createLocalCloudPort({
       identity: { userId },
       workspaces: streamsTokens ? lanMembership.workspaces : [],
       runtimeArtifactsBaseUrl: process.env.LODY_RUNTIME_BASE_URL,
       ...(streamsTokens ? { streamsTokens } : {}),
+      ...(streamsTokens && githubTokens ? { githubTokens } : {}),
     });
   } else {
     if (!LODY_AUTH_URL) {

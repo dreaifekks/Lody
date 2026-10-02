@@ -9,23 +9,24 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 
 ## The pieces
 
-| Piece          | Where                                                                            | What it does                                                                                                                  |
-| -------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Hub            | `apps/cli/src/lib/lan/hub-server.ts`                                             | The single-node Streams server of `@loro-dev/loro-cli` on loopback, behind a bearer-token gate that is the only network entry |
-| Settings       | `packages/shared/src/node/lan-hub.ts`                                            | `lan-hub.json` in the data directory: the LANs of this installation and the name of this machine                              |
-| Contract       | `packages/shared/src/lan-hub.ts`                                                 | What a renderer may know: ids, slugs, invites, users. Never a credential                                                      |
-| Membership     | `apps/cli/src/lib/lan/lan-membership.ts`                                         | One workspace and one gateway per LAN for the running agent service                                                           |
-| Store          | `packages/shared/src/node/lan-hub-store.ts`                                      | The settings as the desktop shell holds and edits them                                                                        |
-| Bridge         | `apps/electron/src/main/services/lan-hub-forward.ts`                             | Forwards `lody-hub://<lan id>` to the hub of that LAN and adds its credential                                                 |
-| Follower       | `packages/components/src/providers/local-platform-follower.ts`                   | Keeps the renderer's workspaces equal to the CLI catalog                                                                      |
-| Services       | `apps/cli/src/lib/lan/service.ts`                                                | systemd user units that keep a hub and an agent service running on a server                                                   |
-| Terminals      | `apps/cli/src/lib/lan/lan-terminal*.ts`, `apps/cli/src/lib/terminal-services.ts` | Members open terminals on each other's machines, directly and not through the hub                                             |
-| Files          | `apps/cli/src/lib/lan/lan-files.ts`, `lan-file-handoff.ts`                       | The files and images of a message reach the machine that runs its session, over the connection terminals use                  |
-| Folders        | `apps/cli/src/lib/lan/lan-ssh.ts`, `packages/shared/src/lan-ssh.ts`              | Where the SSH server of a machine answers, so an editor on another member opens a folder of it                                |
-| Machines       | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts`                    | What a machine says about itself, the list of machines, and requests between members                                          |
-| Releases       | `packages/shared/src/lan-release.ts`, `packages/shared/src/node/lan-release.ts`  | What a build follows, how builds are ordered, and the checked download of a release file                                      |
-| Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts`              | An agent service that replaces itself with the newest build                                                                   |
-| Desktop update | `apps/electron/src/main/services/lan-updater-*.ts`                               | A desktop application that replaces itself with the newest build                                                              |
+| Piece          | Where                                                                               | What it does                                                                                                                  |
+| -------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Hub            | `apps/cli/src/lib/lan/hub-server.ts`                                                | The single-node Streams server of `@loro-dev/loro-cli` on loopback, behind a bearer-token gate that is the only network entry |
+| Settings       | `packages/shared/src/node/lan-hub.ts`                                               | `lan-hub.json` in the data directory: the LANs of this installation and the name of this machine                              |
+| Contract       | `packages/shared/src/lan-hub.ts`                                                    | What a renderer may know: ids, slugs, invites, users. Never a credential                                                      |
+| Membership     | `apps/cli/src/lib/lan/lan-membership.ts`                                            | One workspace and one gateway per LAN for the running agent service                                                           |
+| Store          | `packages/shared/src/node/lan-hub-store.ts`                                         | The settings as the desktop shell holds and edits them                                                                        |
+| Bridge         | `apps/electron/src/main/services/lan-hub-forward.ts`                                | Forwards `lody-hub://<lan id>` to the hub of that LAN and adds its credential                                                 |
+| Follower       | `packages/components/src/providers/local-platform-follower.ts`                      | Keeps the renderer's workspaces equal to the CLI catalog                                                                      |
+| Services       | `apps/cli/src/lib/lan/service.ts`                                                   | systemd user units that keep a hub and an agent service running on a server                                                   |
+| Terminals      | `apps/cli/src/lib/lan/lan-terminal*.ts`, `apps/cli/src/lib/terminal-services.ts`    | Members open terminals on each other's machines, directly and not through the hub                                             |
+| Files          | `apps/cli/src/lib/lan/lan-files.ts`, `lan-file-handoff.ts`                          | The files and images of a message reach the machine that runs its session, over the connection terminals use                  |
+| Folders        | `apps/cli/src/lib/lan/lan-ssh.ts`, `packages/shared/src/lan-ssh.ts`                 | Where the SSH server of a machine answers, so an editor on another member opens a folder of it                                |
+| Machines       | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts`                       | What a machine says about itself, the list of machines, and requests between members                                          |
+| Releases       | `packages/shared/src/lan-release.ts`, `packages/shared/src/node/lan-release.ts`     | What a build follows, how builds are ordered, and the checked download of a release file                                      |
+| Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts`                 | An agent service that replaces itself with the newest build                                                                   |
+| Desktop update | `apps/electron/src/main/services/lan-updater-*.ts`                                  | A desktop application that replaces itself with the newest build                                                              |
+| GitHub         | `apps/cli/src/lib/lan/hub-github.ts`, `lan-github-tokens.ts`, `lan-agent-github.ts` | One GitHub token on the host for members that have no `gh` login                                                              |
 
 ```text
  server                                   desktop
@@ -435,6 +436,33 @@ browser, while the install script and an update leave no quarantine mark.
 Changes to a submodule the fork cannot push to live in `patches/submodules/`;
 `scripts/apply-submodule-patches.mjs` applies them before the adapters build,
 and fails the build once an upstream update conflicts with one.
+
+## GitHub
+
+Hosted Lody brokers GitHub tokens from its own GitHub App, whose key and
+webhooks live on a private server. A LAN has one user, so its host keeps one
+token instead: a fine-grained personal access token, or the token of the
+host's own `gh` login. `lody lan github setup` saves it in `github.json` of the
+host's data directory after asking GitHub whose it is; members ask for it at
+`/github/token` behind the credential gate, and the host never logs it.
+`lody lan github status` and `remove` read and drop it.
+
+Three places ask the host:
+
+- The pull request panel of a desktop asks the hosts of its LANs from the main
+  process, and uses the machine's `gh` login when none keeps a token.
+- The agent service hands the host's token to the hosted token port of each
+  LAN workspace. PR status checks prefer it over the machine's `gh` login,
+  and auto review and merge, which upstream starts only when that port exists,
+  now runs on a LAN.
+- An agent gets the token only on a machine whose `gh` is not logged in:
+  `GH_TOKEN` for `gh`, and a Git credential helper for github.com placed after
+  every helper the machine has. Credentials the machine has win, and an SSH
+  remote still needs a key of the machine. A session keeps the token it
+  started with.
+
+There is no personal identity, no per-repository scoping and no webhook: the
+panel refreshes when opened and by polling.
 
 ## Limits
 

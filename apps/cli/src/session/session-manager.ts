@@ -76,6 +76,11 @@ import {
   ensureCredentialHelperScript,
 } from '@/lib/git-credential-helper-script';
 import { clearManagedGhTokenEnv } from '@/lib/gh-token-env';
+import {
+  applyLanGitHubCredentialEnv,
+  createGhLoginProbe,
+  type GhLoginProbe,
+} from '@/lib/lan/lan-agent-github';
 import { ensureGhShimScript, prependGhShimBinDirToPath } from '@/lib/gh-shim-script';
 import { ensureLodyBashEnvForGhShim, shouldInjectBashEnvForGhShim } from '@/lib/lody-bashenv';
 import { ensureLodyZdotdirForGhShim, shouldInjectZdotdirForGhShim } from '@/lib/lody-zdotdir';
@@ -460,6 +465,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   protected token: string;
   private githubTokenManager: CloudGithubTokenManager | null = null;
   private gitCredentialBroker: GitCredentialBroker | null = null;
+  private ghLoginProbe: GhLoginProbe | null = null;
   private readonly sessions = new Map<SessionId, Session>();
   /** Per-instance listener teardown for `detachSession`; see `registerSessionEvents`. */
   private readonly sessionEventDetachers = new WeakMap<ISession, () => void>();
@@ -1673,6 +1679,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   private async prepareGitHubRepoSessionConfig(config: SessionConfig): Promise<void> {
+    if (this.cloudPort.kind === 'local') await this.applyLanGitHubCredential(config);
     // A GitHub remote does not make a local project a managed GitHub checkout.
     // Direct local sessions and their worktrees keep the user's native auth.
     if (config.project?.kind === 'local') return;
@@ -1760,6 +1767,36 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     };
   }
 
+  /**
+   * A LAN member without a `gh` login of its own gives its agents the token
+   * the LAN host keeps. Setup never fails for it: without the token the agent
+   * has what the machine has.
+   */
+  private async applyLanGitHubCredential(config: SessionConfig): Promise<void> {
+    const tokenManager = this.getGitHubTokenManager();
+    if (!tokenManager) return;
+    try {
+      this.ghLoginProbe ??= createGhLoginProbe();
+      if (await this.ghLoginProbe()) return;
+      // The LAN token is one credential for every repository. A host that
+      // does not answer must not hold up the session for long.
+      let timer: NodeJS.Timeout | undefined;
+      const token = await Promise.race([
+        tokenManager.getAppTokenForRepo(config.githubRepo ?? ''),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('the LAN host did not answer')), 3_000);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      const env: Record<string, string> = { ...config.env };
+      applyLanGitHubCredentialEnv(env, token);
+      config.env = env;
+    } catch (error) {
+      this.logger.debug(
+        `[lan-github] Session ${config.sessionId ?? '(new)'} runs without the LAN GitHub token: ${formatErrorMessage(error)}`
+      );
+    }
+  }
+
   async refreshGhTokenForSession(
     session: ISession,
     _githubRepo: string | undefined,
@@ -1805,6 +1842,11 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     port: number;
     token: string;
   } | null> {
+    // A LAN's token is not brokered: agents get it only through
+    // `applyLanGitHubCredential`, and host-side git uses the machine's login.
+    if (this.cloudPort.kind === 'local') {
+      return null;
+    }
     const tokenManager = this.getGitHubTokenManager();
     if (!tokenManager) {
       return null;

@@ -82,17 +82,17 @@ Both desktop apps can run side by side.
 
 ### Added
 
-| Feature                     | In Lody LAN                                                                                                                                                                                  |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| LANs                        | A self-hosted hub and its invite replace the account; a machine can belong to several LANs                                                                                                   |
-| Terminals of other machines | Open directly between members, encrypted with the LAN's credential, never through the hub                                                                                                    |
-| Files of a message          | Sent straight to the machine that runs the session                                                                                                                                           |
-| Folders of other machines   | A session's folder on another member opens in a local editor over SSH                                                                                                                        |
-| Machines and updates        | Settings > LAN lists every machine with its build; any member can update a server, the desktop updates itself                                                                                |
-| Phone alerts                | The hub pushes alerts and Live Activities through your own APNs key (`lody-lan lan push setup`) to an iOS client that registers with it; a permission can be answered from the Live Activity |
-| Pull requests               | The PR panel, merge, comments and PR-driven auto-archive work locally with the `gh` login of the machine showing them                                                                        |
-| Native sessions             | A Lody session catches up with turns written to its Claude or Codex session outside Lody                                                                                                     |
-| Hosted import               | Reads a machine's configuration from the hosted Lody                                                                                                                                         |
+| Feature                     | In Lody LAN                                                                                                                                                                                      |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| LANs                        | A self-hosted hub and its invite replace the account; a machine can belong to several LANs                                                                                                       |
+| Terminals of other machines | Open directly between members, encrypted with the LAN's credential, never through the hub                                                                                                        |
+| Files of a message          | Sent straight to the machine that runs the session                                                                                                                                               |
+| Folders of other machines   | A session's folder on another member opens in a local editor over SSH                                                                                                                            |
+| Machines and updates        | Settings > LAN lists every machine with its build; any member can update a server, the desktop updates itself                                                                                    |
+| Phone alerts                | The hub pushes alerts and Live Activities through your own APNs key (`lody-lan lan push setup`) to an iOS client that registers with it; a permission can be answered from the Live Activity     |
+| Pull requests               | The PR panel, merge, comments, PR-driven auto-archive and auto review and merge work locally, with one GitHub token the hub keeps (`lody-lan lan github setup`) or the `gh` login of the machine |
+| Native sessions             | A Lody session catches up with turns written to its Claude or Codex session outside Lody                                                                                                         |
+| Hosted import               | Reads a machine's configuration from the hosted Lody                                                                                                                                             |
 
 ### Works differently
 
@@ -102,7 +102,7 @@ Both desktop apps can run side by side.
 | Sync                      | Lody's servers                              | Your hub: one node on SQLite, no replication, so back up its data directory                                 |
 | Requests between machines | Lody's servers                              | Wait in the hub for up to two minutes                                                                       |
 | Attachments               | Uploaded to a store every device reads      | Stay on the machine that runs the session; other members see the card but cannot open it                    |
-| GitHub tokens             | The Lody GitHub App and your linked account | Each machine's own `git`/`gh` login                                                                         |
+| GitHub tokens             | The Lody GitHub App and your linked account | One token the hub keeps for the LAN; an Agent uses it only on a machine without a `gh` login                |
 | PR panel freshness        | GitHub webhooks                             | Polling while the panel is open; new reviews and comments appear on refresh                                 |
 | Phone and web             | Lody's iOS, Android and web apps            | Those apps need a Lody account and do not reach a LAN; phones get alerts from the hub                       |
 | Updates                   | Lody's update service                       | This repository's rolling release; upstream's updater stays off                                             |
@@ -112,7 +112,6 @@ Both desktop apps can run side by side.
 - Sharing with a team, and public links to a session.
 - The GitHub App: repository registry, Settings > GitHub, repositories cloned
   in the cloud, and acting under your linked GitHub identity.
-- Auto review and merge: the review engine does not start on a LAN yet.
 - Remote preview: a dev server an Agent starts on another machine does not
   open in this machine's browser panel.
 - Usage reports across machines.
@@ -123,8 +122,6 @@ Both desktop apps can run side by side.
 
 ## Roadmap
 
-- **In progress:** one GitHub credential for the whole LAN, so a machine
-  without a `gh` login can still open pull requests and run auto review.
 - **Toward peer to peer:** keep credentials and keys on every member rather
   than on the hub, send requests between machines over their direct
   connections, and let the hub move to another machine. The hub stays as a
