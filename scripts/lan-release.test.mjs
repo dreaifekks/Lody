@@ -17,6 +17,8 @@ import {
   resolveTagVersion,
   resolvePublishedName,
   writeVersion,
+  LAN_CHANNELS,
+  resolveTagChannel,
 } from './lan-release.mjs';
 
 const COMMIT = '0123456789abcdef0123456789abcdef01234567';
@@ -89,6 +91,17 @@ test('release numbers restart at 1 with each upstream release and follow the tag
   ];
   assert.equal(nextLanVersion('0.103.0', tags), '0.103.0-lan.4');
   assert.equal(nextLanVersion('0.104.0', tags), '0.104.0-lan.1');
+});
+
+test('dev builds number themselves apart from the releases', () => {
+  const tags = ['v0.103.0-lan.7', 'dev-v0.103.0-lan.2', 'dev-v0.103.0-lan.3'];
+  assert.equal(nextLanVersion('0.103.0', tags, 'dev'), '0.103.0-lan.4');
+  assert.equal(nextLanVersion('0.103.0', tags), '0.103.0-lan.8');
+  assert.equal(resolveTagVersion('dev-v0.103.0-lan.4', '0.103.0'), '0.103.0-lan.4');
+  assert.equal(resolveTagChannel('dev-v0.103.0-lan.4'), 'dev');
+  assert.equal(resolveTagChannel('v0.103.0-lan.4'), 'stable');
+  assert.equal(LAN_CHANNELS.dev.rollingTag, 'lan-dev');
+  assert.throws(() => resolveTagVersion('dev-0.103.0-lan.4', '0.103.0'), /looks like/u);
 });
 
 test('a release tag must name the upstream release its commit synced', () => {

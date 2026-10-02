@@ -4,11 +4,14 @@ name: LAN build
 # the CLI tarball a server installs, and the install scripts, published as one
 # rolling release. Upstream ships from its own pipeline and never runs this.
 # Only a tag v<upstream>-lan.<n>, pushed when the branch is ready, builds and
-# publishes; running it by hand on a branch builds without publishing.
+# publishes; running it by hand on a branch builds without publishing. A tag
+# dev-v<upstream>-lan.<n> publishes to the separate `lan-dev` release as a
+# prerelease, for machines installed from it to try a branch first.
 on:
   push:
     tags:
       - 'v*-lan.*'
+      - 'dev-v*-lan.*'
   workflow_dispatch:
 
 permissions:
@@ -21,7 +24,8 @@ concurrency:
 env:
   NODE_VERSION: 22
   COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
-  LAN_RELEASE_TAG: lan-latest
+  LAN_RELEASE_TAG: ${{ startsWith(github.ref_name, 'dev-') && 'lan-dev' || 'lan-latest' }}
+  LAN_PRERELEASE: ${{ startsWith(github.ref_name, 'dev-') && '--prerelease' || '' }}
 
 jobs:
   # The renderer build needs more memory than a hosted macOS runner has, and
@@ -290,13 +294,13 @@ jobs:
             # the files below replace the previous build in place.
             gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$LAN_RELEASE_TAG" \
               -f sha="$GITHUB_SHA" -F force=true >/dev/null
-            gh release edit "$LAN_RELEASE_TAG" \
-              --title "Lody OSS LAN $LAN_VERSION" \
+            gh release edit "$LAN_RELEASE_TAG" $LAN_PRERELEASE \
+              --title "Lody OSS LAN${LAN_PRERELEASE:+ dev} $LAN_VERSION" \
               --notes-file "$RUNNER_TEMP/lan-release-notes.md"
           else
-            gh release create "$LAN_RELEASE_TAG" \
+            gh release create "$LAN_RELEASE_TAG" $LAN_PRERELEASE \
               --target "$GITHUB_SHA" \
-              --title "Lody OSS LAN $LAN_VERSION" \
+              --title "Lody OSS LAN${LAN_PRERELEASE:+ dev} $LAN_VERSION" \
               --notes-file "$RUNNER_TEMP/lan-release-notes.md"
           fi
           gh release upload "$LAN_RELEASE_TAG" "$RUNNER_TEMP"/lan-release/* --clobber
