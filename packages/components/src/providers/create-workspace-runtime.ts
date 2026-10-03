@@ -35,7 +35,10 @@ import {
   LoroStreamsRpcResponseDispatcher,
   LORO_STREAMS_RPC_RETENTION_SECONDS,
   type LoroStreamsLiveTransport,
+  type LoroStreamsRpcRequest,
 } from '@lody/loro-streams-rpc';
+import { LanRpcForwardResultSchema } from '@lody/shared/local-machine-rpc';
+import { LOCAL_WORKSPACE_ID_PREFIX } from '@lody/shared/platform-kind';
 import {
   buildLoroStreamsTokenEndpoint,
   createLoroStreamsTokenProvider,
@@ -1745,6 +1748,36 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
       `Streams RPC client not ready after ${MACHINE_RPC_TRANSPORT_READY_TIMEOUT_MS}ms`
     );
 
+  /**
+   * Hands a request for another member of this LAN to the agent service of
+   * this machine, which carries it over its direct connection to the member.
+   * `null` leaves it to the hub: no agent service to hand it to, a build of
+   * one without the route, or a member it could not connect to.
+   */
+  const sendThroughLanMember = async (
+    request: LoroStreamsRpcRequest
+  ): Promise<readonly unknown[] | null> => {
+    const sender = getIpcServices()?.machineRpc.send;
+    const localMachineId = sendLocalMachineId;
+    if (!sender || !localMachineId || request.machineId === localMachineId) return null;
+    let response: Awaited<ReturnType<typeof sender>>;
+    try {
+      response = await sender({
+        machineId: localMachineId,
+        workspaceId,
+        method: 'lan/rpc-forward',
+        params: { targetMachineId: request.machineId, request },
+        timeoutMs: Math.max(1_000, request.expiresAt - getServerNow()) + 5_000,
+      });
+    } catch {
+      return null;
+    }
+    const result = response.ok ? LanRpcForwardResultSchema.safeParse(response.result) : null;
+    if (!result?.success || !result.data.sent) return null;
+    if (result.data.error !== undefined) throw new Error(result.data.error);
+    return result.data.answers;
+  };
+
   const getMachineRpcClient = async (
     machineId: MachineId
   ): Promise<LoroStreamsMachineRpcClient> => {
@@ -1771,6 +1804,9 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
       retentionSeconds: LORO_STREAMS_RPC_RETENTION_SECONDS,
       now: getServerNow,
       trace: logCodeCollabDebug,
+      ...(workspaceId.startsWith(LOCAL_WORKSPACE_ID_PREFIX)
+        ? { directTransport: sendThroughLanMember }
+        : {}),
     });
     machineRpcClients.set(machineId, next);
     try {

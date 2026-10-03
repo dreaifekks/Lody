@@ -344,6 +344,11 @@ export class Lody {
     return await this.runtime.dispatchLocalMachineRpc(message);
   }
 
+  /** A machine RPC request a member of this workspace's LAN sent directly. */
+  async handleDirectMachineRpc(raw: unknown): Promise<unknown[] | null> {
+    return await this.runtime.handleDirectMachineRpc(raw);
+  }
+
   isControlPlaneReady(): boolean {
     // Ready == nothing needs recovering. Deliberately NOT gated on
     // `isTransportConnected()`: that is the raw aggregate status, which reads

@@ -467,6 +467,9 @@ type RpcServerDeps = {
   onFatalAuthFailure?: (error: LoroStreamsTokenAuthError) => void;
 };
 
+/** The reply address of a request that arrived directly; no stream has it. */
+const DIRECT_REPLY_PREFIX = 'direct:';
+
 export class LoroStreamsMachineRpcServer {
   private readonly requestStreamId: string;
   private readonly requestState: LoroJsonStreamState = { nextOffset: '-1' };
@@ -733,6 +736,28 @@ export class LoroStreamsMachineRpcServer {
     } finally {
       lane.release();
     }
+  }
+
+  /** Where the answers to requests that arrived directly go, by their reply address. */
+  private readonly directAnswers = new Map<string, (payload: unknown) => void>();
+
+  /**
+   * Answers a request that reached this machine some other way than the
+   * hub, such as a member's direct connection: it is handled as one read
+   * from the request stream, and its answers come back here instead of
+   * going to the hub.
+   */
+  async handleDirectRequest(raw: unknown): Promise<unknown[]> {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return [];
+    const replyTo = `${DIRECT_REPLY_PREFIX}${crypto.randomUUID()}`;
+    const answers: unknown[] = [];
+    this.directAnswers.set(replyTo, (payload) => answers.push(payload));
+    try {
+      await this.handleRawRequest({ ...raw, replyTo });
+    } finally {
+      this.directAnswers.delete(replyTo);
+    }
+    return answers;
   }
 
   private async handleRawRequest(raw: unknown): Promise<void> {
@@ -1749,6 +1774,11 @@ export class LoroStreamsMachineRpcServer {
   }
 
   private async appendResponse(replyTo: string, payload: unknown): Promise<void> {
+    if (replyTo.startsWith(DIRECT_REPLY_PREFIX)) {
+      // A direct request answered after its connection was done has nowhere to go.
+      this.directAnswers.get(replyTo)?.(payload);
+      return;
+    }
     // The host POSTs the RPC response to the per-client response stream over
     // HTTP. That request can fail transiently — a raw network error
     // ("fetch failed", e.g. a connection reset or a stalled event loop) or a

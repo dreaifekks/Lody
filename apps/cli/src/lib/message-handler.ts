@@ -6492,9 +6492,9 @@ export class MessageHandler {
                       .catch(() => null);
                     return online ? online.has(machineId) : null;
                   },
-                  withClient: async <T>(
+                  withClient: async <R>(
                     machineId: MachineId,
-                    fn: (client: LoroStreamsMachineRpcClient) => Promise<T>
+                    fn: (client: LoroStreamsMachineRpcClient) => Promise<R>
                   ) => await this.withRemoteMachineRpcClient(machineId, fn),
                 },
               }
@@ -6539,6 +6539,15 @@ export class MessageHandler {
     } finally {
       client.stop();
     }
+  }
+
+  /**
+   * A machine RPC request that another member of this workspace's LAN sent
+   * over its direct connection; `null` where this machine takes no machine
+   * RPC requests at all.
+   */
+  async handleDirectMachineRpc(raw: unknown): Promise<unknown[] | null> {
+    return (await this.machineRpcServer?.handleDirectRequest(raw)) ?? null;
   }
 
   async handleLocalMachineRpc(
@@ -6756,6 +6765,9 @@ export class MessageHandler {
       }
       case 'session/terminate':
         return await this.terminateAcpSession(request.params.sessionId as SessionId);
+      case 'lan/rpc-forward':
+        // The agent service routes these to the member before any workspace.
+        throw new Error('A request for another member is not handled by a workspace');
       case 'machine/pi-extensions':
         return await this.executionService.listMachinePiExtensions(
           request.params.configId as AgentConfigId | undefined

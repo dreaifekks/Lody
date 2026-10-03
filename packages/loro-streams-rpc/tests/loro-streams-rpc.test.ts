@@ -596,6 +596,71 @@ describe('LoroStreamsMachineRpcClient', () => {
     client.stop();
   });
 
+  describe('a direct transport', () => {
+    const answerFor = (request: { id: string }) => ({
+      jsonrpc: '2.0',
+      id: request.id,
+      method: 'session/live-status',
+      rpcVersion: '1',
+      machineId: 'machine-1',
+      result: {
+        type: 'session/live-status_response',
+        machineId: 'machine-1',
+        sessionId: 'session-1',
+        success: true,
+        state: 'idle',
+        observedAtMs: 7,
+      },
+    });
+
+    it('carries a request and resolves it with the answer, past the hub', async () => {
+      const fake = createFakeStreamClient();
+      const carried: string[] = [];
+      const client = new LoroStreamsMachineRpcClient({
+        workspaceId: 'workspace-1',
+        machineId: 'machine-1',
+        streamClient: fake.streamClient,
+        directTransport: async (request) => {
+          carried.push(request.method);
+          return [answerFor(request)];
+        },
+      });
+
+      await expect(
+        client.requestSessionLiveStatus({ sessionId: 'session-1', timeoutMs: 5_000 })
+      ).resolves.toMatchObject({ success: true, state: 'idle' });
+      expect(carried).toEqual(['session/live-status']);
+      expect(fake.appended).toEqual([]);
+      client.stop();
+    });
+
+    it('leaves to the hub what it could not send, and what may be answered more than once', async () => {
+      const fake = createFakeStreamClient();
+      const carried: string[] = [];
+      const client = new LoroStreamsMachineRpcClient({
+        workspaceId: 'workspace-1',
+        machineId: 'machine-1',
+        streamClient: fake.streamClient,
+        directTransport: async (request) => {
+          carried.push(request.method);
+          return null;
+        },
+      });
+
+      void client.requestSessionLiveStatus({ sessionId: 'session-1', timeoutMs: 5_000 });
+      await vi.waitFor(() => expect(fake.appended).toHaveLength(1));
+      void client.requestMachineStatus({ timeoutMs: 5_000 }).catch(() => undefined);
+      await vi.waitFor(() => expect(fake.appended).toHaveLength(2));
+
+      expect(carried).toEqual(['session/live-status']);
+      expect(fake.appended.map((entry) => (entry.value as { method: string }).method)).toEqual([
+        'session/live-status',
+        'machine/status',
+      ]);
+      client.stop();
+    });
+  });
+
   it('requests live session status', async () => {
     const fake = createFakeStreamClient();
     const client = new LoroStreamsMachineRpcClient({

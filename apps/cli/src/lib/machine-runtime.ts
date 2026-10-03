@@ -339,6 +339,10 @@ export class MachineRuntime {
     return await handler.handleLocalMachineRpc(message);
   }
 
+  async handleDirectMachineRpc(raw: unknown): Promise<unknown[] | null> {
+    return await this.requireHandler().handleDirectMachineRpc(raw);
+  }
+
   private initializeGCManager(): void {
     if (!this.handler) {
       return;

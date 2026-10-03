@@ -497,6 +497,27 @@ followed: a member hands the credential to whatever address it follows.
 Once every member follows, `lody lan down --keep-agent` on the former host
 stops the pointer. A member that was away longer has to be moved by hand.
 
+## A desktop's requests to other machines
+
+A desktop asks another machine for what it shows of that machine's sessions
+and projects with machine RPC requests, which the hub carries on request and
+response streams. In a LAN the window hands the ones answered once (dispatch,
+steer, cancel, goal and live status of a session, its preparation, Code
+Collab and file previews, project control and git state) to the agent service
+of its own machine instead (`lan/rpc-forward` on the local socket). That
+service carries the request, as the hub would have carried it, to the member
+over the connection terminals use (a hello that asks for `rpc`,
+`lan-rpc-channel.ts`), and the member handles it as one read from its request
+stream, with the same checks and the same encryption
+(`handleDirectRequest` of the machine RPC server), its answers coming back
+over the connection instead of going to the hub.
+
+A request that never reached the member, because it publishes no endpoint,
+runs a build without `rpc` or cannot be reached from here, goes through the
+hub as before. One that reached it and failed is not sent again. Requests
+that wait for a second one, such as a cancellation, or that report progress
+(restarts, updates, sign-ins, runtime installs) stay on the hub.
+
 ## Sessions agents start on other machines
 
 An agent asks for a session on another machine of its LAN through Lody's

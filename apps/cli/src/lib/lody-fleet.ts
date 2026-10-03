@@ -56,6 +56,7 @@ import {
   type LanTerminalMembership,
 } from '@/lib/lan/lan-terminal-host';
 import { connectLanTerminal, deriveLanTerminalKey } from '@/lib/lan/lan-terminal';
+import { askLanMemberRpc, LanRpcNotSentError } from '@/lib/lan/lan-rpc-channel';
 import { LanFileHandoff } from '@/lib/lan/lan-file-handoff';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-control';
@@ -1527,6 +1528,9 @@ export class LodyFleet {
   private async dispatchLocalMachineRpc(
     message: import('@lody/shared').LocalMachineRpcRequestValidated
   ): Promise<import('@lody/shared').LocalMachineRpcResponse> {
+    if (message.method === 'lan/rpc-forward') {
+      return { ok: true, result: await this.forwardLanRpc(message) };
+    }
     const pendingStart = this.startInFlight.get(message.workspaceId);
     if (pendingStart) {
       await pendingStart;
@@ -1538,6 +1542,64 @@ export class LodyFleet {
     }
 
     return await runtime.lody.dispatchLocalMachineRpc(message);
+  }
+
+  /**
+   * Carries a desktop's machine RPC request to the member of a LAN it is
+   * for, over the connection terminals use. `sent` false leaves it to the
+   * hub: the member publishes no endpoint, runs a build without `rpc`, or
+   * cannot be reached from here.
+   */
+  private async forwardLanRpc(
+    message: Extract<
+      import('@lody/shared').LocalMachineRpcRequestValidated,
+      { method: 'lan/rpc-forward' }
+    >
+  ): Promise<import('@lody/shared').LanRpcForwardResult> {
+    const notSent = (error: string) => ({
+      type: 'lan/rpc-forward_response' as const,
+      sent: false,
+      answers: [],
+      error,
+    });
+    const { workspaceId } = message;
+    const { targetMachineId, request } = message.params;
+    const hub = this.lan?.hubs.find(
+      (candidate) => getLanHubWorkspaceId(candidate.id) === workspaceId
+    );
+    const runtime = this.runtimes.get(workspaceId);
+    if (!hub || !runtime) return notSent('No LAN of this machine carries the workspace');
+    const meta = (
+      await runtime.lody.documentManager.repo.getDocMeta(
+        getMachineRoomId(targetMachineId as MachineId)
+      )
+    )?.meta as MachineMeta | undefined;
+    const endpoint = parseLanTerminalEndpoint(meta?.lanTerminal);
+    if (!endpoint) return notSent('The member accepts no direct connections');
+    const expiresAt = (request as { expiresAt?: unknown }).expiresAt;
+    const timeoutMs =
+      typeof expiresAt === 'number'
+        ? Math.min(Math.max(expiresAt - getServerNow(), 1_000), 5 * 60_000)
+        : 30_000;
+    try {
+      const answers = await askLanMemberRpc({
+        endpoint,
+        lanId: hub.id,
+        key: deriveLanTerminalKey(hub.token),
+        machineId: targetMachineId,
+        request,
+        timeoutMs,
+      });
+      return { type: 'lan/rpc-forward_response', sent: true, answers };
+    } catch (error) {
+      if (error instanceof LanRpcNotSentError) return notSent(error.message);
+      return {
+        type: 'lan/rpc-forward_response',
+        sent: true,
+        answers: [],
+        error: formatErrorMessage(error),
+      };
+    }
   }
 
   // Resolves the push-based data-plane engine for a workspace the CLI socket
@@ -1625,6 +1687,15 @@ export class LodyFleet {
               this.lanHubStandby?.peerHandlerFor(workspaceId) ?? null,
           }
         : {}),
+      rpcFor: (workspaceId: string) => {
+        const runtime = this.runtimes.get(workspaceId);
+        if (!runtime) return null;
+        return async (request: unknown) => {
+          const answers = await runtime.lody.handleDirectMachineRpc(request);
+          if (answers === null) throw new Error('This machine takes no machine requests');
+          return answers;
+        };
+      },
       publish: async (workspaceId, endpoint) =>
         await this.publishLanTerminalEndpoint(workspaceId, endpoint),
     });

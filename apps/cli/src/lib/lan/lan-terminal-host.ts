@@ -16,6 +16,7 @@ import { serveTerminalConnection, type TerminalService } from '@/lib/terminal-co
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import { serveLanControlConnection } from './lan-control-channel';
+import { serveLanRpcConnection } from './lan-rpc-channel';
 import {
   serveLanHubPeerConnection,
   type LanHubLocation,
@@ -98,6 +99,8 @@ export class LanTerminalHost {
       ) => ((request: LanMemberControlRequest) => Promise<LanMemberControlResponse>) | null;
       /** Absent on a machine that tells members nothing about the hub. */
       hubFor?: (workspaceId: string) => LanHubPeerHandler | null;
+      /** Absent on a machine that takes no machine RPC requests directly. */
+      rpcFor?: (workspaceId: string) => ((request: unknown) => Promise<unknown[]>) | null;
       /** Records where this machine accepts terminals; `undefined` withdraws it. */
       publish: (workspaceId: string, endpoint: LanTerminalEndpoint | undefined) => Promise<void>;
       /** The port to prefer; `0` for any. */
@@ -220,7 +223,7 @@ export class LanTerminalHost {
   }
 
   private async listen(address: string): Promise<Listener | null> {
-    const { filesFor, controlFor, hubFor } = this.options;
+    const { filesFor, controlFor, hubFor, rpcFor } = this.options;
     const server = createLanTerminalServer({
       machineId: this.options.machineId,
       services: [
@@ -228,6 +231,7 @@ export class LanTerminalHost {
         ...(filesFor ? (['files'] as const) : []),
         ...(controlFor ? (['control'] as const) : []),
         ...(hubFor ? (['hub'] as const) : []),
+        ...(rpcFor ? (['rpc'] as const) : []),
       ],
       logger: this.options.logger,
       keyFor: (lanId) => {
@@ -240,7 +244,8 @@ export class LanTerminalHost {
         const files = service === 'files' ? (filesFor?.(workspaceId) ?? null) : null;
         const control = service === 'control' ? (controlFor?.(workspaceId) ?? null) : null;
         const hub = service === 'hub' ? (hubFor?.(workspaceId) ?? null) : null;
-        if (!terminals && !files && !control && !hub) {
+        const rpc = service === 'rpc' ? (rpcFor?.(workspaceId) ?? null) : null;
+        if (!terminals && !files && !control && !hub && !rpc) {
           socket.end(
             `${JSON.stringify({
               type: 'error',
@@ -252,6 +257,15 @@ export class LanTerminalHost {
         }
         this.sockets.add(socket);
         socket.once('close', () => this.sockets.delete(socket));
+        if (rpc) {
+          void serveLanRpcConnection(socket, {
+            initial,
+            workspaceId,
+            handle: rpc,
+            logger: this.options.logger,
+          });
+          return;
+        }
         if (hub) {
           void serveLanHubPeerConnection(socket, {
             initial,

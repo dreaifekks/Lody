@@ -19,6 +19,7 @@ import { ScopedTerminalService, TerminalRouter } from '@/lib/terminal-services';
 import type { Logger } from '@/utils/logger';
 import { askLanMemberDirectly, LanMemberUnreachableError } from './lan-control-channel';
 import { askLanHubPeer, type LanHubPeerHandler } from './lan-hub-peers';
+import { askLanMemberRpc, LanRpcNotSentError } from './lan-rpc-channel';
 import { connectLanTerminal, deriveLanTerminalKey } from './lan-terminal';
 import { LanTerminalHost, resolveLanTerminalPort } from './lan-terminal-host';
 
@@ -153,6 +154,7 @@ describe('terminals between LAN members', () => {
       port?: number;
       control?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
       hub?: LanHubPeerHandler;
+      rpc?: (request: unknown) => Promise<unknown[]>;
     } = {}
   ) {
     const pty = new FakePty('server');
@@ -173,6 +175,9 @@ describe('terminals between LAN members', () => {
             controlFor: (workspaceId: string) =>
               workspaceId === HOME ? (options.control ?? null) : null,
           }
+        : {}),
+      ...(options.rpc
+        ? { rpcFor: (workspaceId: string) => (workspaceId === HOME ? (options.rpc ?? null) : null) }
         : {}),
       ...(options.hub
         ? { hubFor: (workspaceId: string) => (workspaceId === HOME ? (options.hub ?? null) : null) }
@@ -465,6 +470,46 @@ describe('terminals between LAN members', () => {
       await ask({ type: 'moved', location: { url: 'http://10.0.0.2:8788', term: 3 } })
     ).toEqual({ type: 'moved', followed: true });
     expect(followed).toEqual([{ url: 'http://10.0.0.2:8788', term: 3 }]);
+  });
+
+  it('carries a machine request to a member and brings back its answers', async () => {
+    const handled: unknown[] = [];
+    const { published } = await startServer({
+      rpc: async (request) => {
+        handled.push(request);
+        return [{ id: 'live-1', result: { state: 'idle' } }];
+      },
+    });
+    const ask = (request: unknown) =>
+      askLanMemberRpc({
+        endpoint: published.get(HOME)!,
+        lanId: home.id,
+        key: deriveLanTerminalKey(home.token),
+        machineId: SERVER,
+        request,
+        timeoutMs: 5_000,
+      });
+
+    expect(await ask({ id: 'live-1', workspaceId: HOME })).toEqual([
+      { id: 'live-1', result: { state: 'idle' } },
+    ]);
+    // The connection is keyed to Home; a request about another LAN's workspace is not handled.
+    await expect(ask({ id: 'live-2', workspaceId: 'lw_office' })).rejects.toThrow(/another LAN/);
+    expect(handled).toEqual([{ id: 'live-1', workspaceId: HOME }]);
+  });
+
+  it('says a machine request never left when the member takes none directly', async () => {
+    const { published } = await startServer();
+    await expect(
+      askLanMemberRpc({
+        endpoint: published.get(HOME)!,
+        lanId: home.id,
+        key: deriveLanTerminalKey(home.token),
+        machineId: SERVER,
+        request: { id: 'live-1', workspaceId: HOME },
+        timeoutMs: 5_000,
+      })
+    ).rejects.toBeInstanceOf(LanRpcNotSentError);
   });
 
   it('takes another port when the preferred one is in use', async () => {

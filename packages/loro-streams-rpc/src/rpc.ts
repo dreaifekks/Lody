@@ -2013,6 +2013,37 @@ export type LoroStreamsRpcPendingRequest = LoroStreamsRpcPendingRegistration & {
   progressFrames: number;
 };
 
+/**
+ * The methods a direct transport may carry: each is answered once, and none
+ * waits for a second request, such as a cancellation, that the hub would carry.
+ */
+const DIRECT_RPC_METHODS: ReadonlySet<string> = new Set([
+  'session/cancel',
+  'session/live-status',
+  'session/steer',
+  'session/goal',
+  'session/dispatch-turn',
+  'session/prepare',
+  'session/prepare-cancel',
+  'code-collab/get-file-index',
+  'code-collab/open-text',
+  'code-collab/refresh-text',
+  'code-collab/save-text',
+  'code-collab/open-current-diff',
+  'code-collab/open-all-changes-diff',
+  'code-collab/open-turn-diff',
+  'code-collab/init-directory',
+  'code-collab/lsp-definition',
+  'code-collab/lsp-references',
+  'file/preview',
+  'local-project/git-state',
+  'local-project/control',
+]);
+
+export function isDirectRpcMethod(method: string): boolean {
+  return DIRECT_RPC_METHODS.has(method);
+}
+
 export class LoroStreamsRpcResponseDispatcher {
   readonly responseStreamId: string;
   private readonly responseState: LoroJsonStreamState = { nextOffset: '-1' };
@@ -2274,6 +2305,11 @@ export class LoroStreamsRpcResponseDispatcher {
     }
   }
 
+  /** An answer that arrived some other way than the response stream. */
+  async deliverResponse(raw: unknown): Promise<void> {
+    await this.handleRawResponse(raw);
+  }
+
   private async handleRawResponse(raw: unknown): Promise<void> {
     const parsed = LoroStreamsRpcResponseSchema.safeParse(raw);
     if (!parsed.success) {
@@ -2434,6 +2470,14 @@ export class LoroStreamsMachineRpcClient {
       rpcVersion?: string;
       retentionSeconds?: number;
       trace?: LoroStreamsMachineRpcTrace;
+      /**
+       * Carries a request to the machine some other way than the hub, such
+       * as a direct connection between the members of a LAN, for the methods
+       * `isDirectRpcMethod` names. Returns the machine's answers, or `null`
+       * when the request never left, which sends it through the hub. A
+       * request that left and then failed throws.
+       */
+      directTransport?: (request: LoroStreamsRpcRequest) => Promise<readonly unknown[] | null>;
     }
   ) {
     this.requestStreamId = getLoroMachineRpcRequestStreamId(options.workspaceId, options.machineId);
@@ -3779,6 +3823,17 @@ export class LoroStreamsMachineRpcClient {
         case 'local-project/control':
           request = { ...envelope, method: args.method, params: args.params };
           break;
+      }
+
+      const direct = this.options.directTransport;
+      if (direct && isDirectRpcMethod(request.method)) {
+        const answers = await direct(request);
+        if (answers !== null) {
+          requestAppended = true;
+          this.responseDispatcher.markAppendFinished(requestId);
+          for (const answer of answers) await this.responseDispatcher.deliverResponse(answer);
+          return await promise;
+        }
       }
 
       const appendStartedAtMs = Date.now();
