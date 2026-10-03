@@ -93,19 +93,21 @@ Both desktop apps can run side by side.
 | Pull requests               | The PR panel, merge, comments, PR-driven auto-archive and auto review and merge work locally, with one GitHub token the hub keeps (`lody-lan lan github setup`) or the `gh` login of the machine |
 | Native sessions             | A Lody session catches up with turns written to its Claude or Codex session outside Lody                                                                                                         |
 | Hosted import               | Reads a machine's configuration from the hosted Lody                                                                                                                                             |
+| Moving and standby hub      | `lody-lan lan take-over` moves the hub to another server; a standby server keeps a copy and takes over when the hub stays away; Settings > LAN marks both                                        |
+| Agents on other machines    | Lody's tools inside a session start and drive sessions on the other machines of its LAN                                                                                                          |
 
 ### Works differently
 
-| Area                      | Lody                                        | Lody LAN                                                                                                    |
-| ------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Identity                  | Lody accounts, teams and workspaces         | Whoever holds a LAN's invite is a member; all members act as one user; an invite cannot be rotated in place |
-| Sync                      | Lody's servers                              | Your hub: one node on SQLite, no replication, so back up its data directory                                 |
-| Requests between machines | Lody's servers                              | Wait in the hub for up to two minutes                                                                       |
-| Attachments               | Uploaded to a store every device reads      | Stay on the machine that runs the session; other members see the card but cannot open it                    |
-| GitHub tokens             | The Lody GitHub App and your linked account | One token the hub keeps for the LAN; an Agent uses it only on a machine without a `gh` login                |
-| PR panel freshness        | GitHub webhooks                             | Polling while the panel is open; new reviews and comments appear on refresh                                 |
-| Phone and web             | Lody's iOS, Android and web apps            | Those apps need a Lody account and do not reach a LAN; phones get alerts from the hub                       |
-| Updates                   | Lody's update service                       | This repository's rolling release; upstream's updater stays off                                             |
+| Area                      | Lody                                        | Lody LAN                                                                                                     |
+| ------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Identity                  | Lody accounts, teams and workspaces         | Whoever holds a LAN's invite is a member; all members act as one user; an invite cannot be rotated in place  |
+| Sync                      | Lody's servers                              | Your hub: one node on SQLite; a standby server copies it every ten minutes and takes over when it stays away |
+| Requests between machines | Lody's servers                              | Go directly between the machines; through the hub, for up to two minutes, when they cannot connect           |
+| Attachments               | Uploaded to a store every device reads      | Stay on the machine that runs the session; other members see the card but cannot open it                     |
+| GitHub tokens             | The Lody GitHub App and your linked account | One token the hub keeps for the LAN; an Agent uses it only on a machine without a `gh` login                 |
+| PR panel freshness        | GitHub webhooks                             | Polling while the panel is open; new reviews and comments appear on refresh                                  |
+| Phone and web             | Lody's iOS, Android and web apps            | Those apps need a Lody account and do not reach a LAN; phones get alerts from the hub                        |
+| Updates                   | Lody's update service                       | This repository's rolling release; upstream's updater stays off                                              |
 
 ### Not available
 
@@ -122,12 +124,12 @@ Both desktop apps can run side by side.
 
 ## Roadmap
 
-- **Toward peer to peer:** keep credentials and keys on every member rather
-  than on the hub, send requests between machines over their direct
-  connections (updates, agent installs and config imports already do), and
-  let the hub move to another machine (`lody-lan lan take-over` moves it by
-  hand, and a standby server takes it over when it stays away). The hub stays
-  as a relay that stores what an offline member has not seen yet.
+- **Toward peer to peer:** requests between machines go over their direct
+  connections, the hub moves with `lody-lan lan take-over`, and a standby
+  server takes it over when it stays away. Left: keep credentials and keys on
+  every member rather than on the hub, and let a phone follow the hub when it
+  moves. The hub stays as a relay that stores what an offline member has not
+  seen yet.
 - **Missing pieces:** remote preview over the members' direct connections,
   usage across machines, and periodic refresh of reviews and comments in the
   PR panel.
@@ -196,7 +198,10 @@ Open a running web app inside the session, switch between responsive viewports, 
 
 A tag `v<upstream>-lan.<n>` builds the desktop apps and the CLI bundle and
 replaces the [rolling release](https://github.com/dreaifekks/Lody/releases/tag/lan-latest).
-`node scripts/lan-release.mjs version` prints the next version. Upstream's own
+`node scripts/lan-release.mjs version` prints the next version. A tag
+`dev-v<upstream>-lan.<n>` builds the same way from any branch and replaces the
+`lan-dev` prerelease instead, which only installations made from it follow
+(`lan-release.mjs version --channel dev`). Upstream's own
 `Release` workflow is disabled on this repository; it accepts only stable
 `vX.Y.Z` tags.
 
