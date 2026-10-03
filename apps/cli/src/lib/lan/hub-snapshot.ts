@@ -16,7 +16,7 @@ import { LAN_HUB_HANDOVER_FILES } from './hub-handover';
 import { ByteReader } from './lan-files';
 
 export const LAN_HUB_SNAPSHOT_PATH = '/lan/snapshot';
-export const LAN_HUB_SNAPSHOT_BLOCK_BYTES = 4 * 1024 * 1024;
+export const LAN_HUB_SNAPSHOT_BLOCK_BYTES = 64 * 1024;
 
 const DATABASE_FILE_NAME = 'streams.sqlite';
 /** What travels beside the database: everything a hub keeps except the database itself. */

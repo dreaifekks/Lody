@@ -508,7 +508,7 @@ fresh copy stays the standby until another is clearly closer.
 `LODY_LAN_STANDBY=off` keeps a server out of it.
 
 The standby copies the hub every ten minutes. The hub backs its database up
-while it serves (SQLite's online backup) and sends only the 4 MB blocks whose
+while it serves (SQLite's online backup) and sends only the 64 KB blocks whose
 digests differ from the standby's copy, with its other files; the standby
 patches its copy beside the current one and keeps it only when every block
 matches.
