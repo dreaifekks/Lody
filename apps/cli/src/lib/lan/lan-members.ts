@@ -21,6 +21,7 @@ import {
   type WorkspaceId,
 } from '@lody/shared';
 import {
+  describeLanHubPart,
   parseLanHubRole,
   sameLanHubRole,
   type LanHubCandidate,
@@ -104,6 +105,19 @@ function mergeAgents(
   return [...merged.values()];
 }
 
+/** What a machine said about its part in keeping the hub, as a list shows it. */
+function describeHubOf(meta: MachineMeta, now: number): LanMachine['hub'] {
+  const role = parseLanHubRole(meta.lanHubRole);
+  const part = describeLanHubPart(role, now);
+  if (!role || !part) return null;
+  return {
+    part,
+    term: role.term ?? null,
+    snapshotAt: role.snapshotAt ?? null,
+    rttMs: role.hubRttMs,
+  };
+}
+
 /**
  * Every machine this machine reaches through its LANs, itself first. A machine
  * that is a member of several of them is listed once.
@@ -166,6 +180,7 @@ export async function listLanMachines(options: {
           self.agents,
           await describeOwnAgents(workspace, machineId, control)
         );
+        if (workspace.lan) self.hub ??= describeHubOf(meta, options.now);
         continue;
       }
       // Nothing but this machine is reached through a workspace no LAN carries.
@@ -179,6 +194,7 @@ export async function listLanMachines(options: {
         known.color ??= normalizeLanMachineColor(meta.lanColor);
         known.online = mergeOnline(known.online, seenOnline);
         known.agents = mergeAgents(known.agents, parseLanAgentRuntimes(meta.lanAgents));
+        known.hub ??= describeHubOf(meta, options.now);
         continue;
       }
       machines.set(id, {
@@ -199,6 +215,7 @@ export async function listLanMachines(options: {
         ),
         controllable: machineSupportsLanControl(meta),
         agents: parseLanAgentRuntimes(meta.lanAgents),
+        hub: describeHubOf(meta, options.now),
       });
     }
   }

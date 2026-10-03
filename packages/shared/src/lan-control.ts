@@ -121,6 +121,21 @@ export const LanMachineSchema = z
     /** Whether the machine understands what members ask of each other. */
     controllable: z.boolean(),
     agents: z.array(LanAgentRuntimeSchema),
+    /**
+     * What it does for the hub: hosts it, keeps the standby copy, or could
+     * do either. `null` for a machine that could host no hub; absent from
+     * builds before it.
+     */
+    hub: z
+      .object({
+        part: z.enum(['hub', 'standby', 'candidate']),
+        term: z.number().int().nonnegative().nullable(),
+        /** When its copy of the hub was taken (ISO 8601). */
+        snapshotAt: z.string().nullable(),
+        rttMs: z.number().nullable(),
+      })
+      .strict()
+      .nullish(),
   })
   .strict();
 export type LanMachine = z.infer<typeof LanMachineSchema>;

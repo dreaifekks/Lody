@@ -163,6 +163,7 @@ describe('the standby of a LAN hub', () => {
       hosting: false,
       hubRttMs: 5,
       snapshotAt: new Date(START).toISOString(),
+      term: 0,
     } satisfies LanHubRole);
     expect(fs.existsSync(getLanHubStandbyDirectory(root, home.id))).toBe(true);
   });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   chooseLanHubStandby,
+  describeLanHubPart,
   parseLanHubRole,
   type LanHubCandidate,
   type LanHubRole,
@@ -80,5 +81,21 @@ describe('parseLanHubRole', () => {
     });
     expect(parseLanHubRole({ capable: true, hosting: false, hubRttMs: 'fast' })).toBeNull();
     expect(parseLanHubRole(null)).toBeNull();
+  });
+});
+
+describe('describeLanHubPart', () => {
+  it('tells the host, a standby with a fresh copy, and a server that could take over', () => {
+    const role = (extra: Partial<LanHubRole>): LanHubRole => ({
+      capable: true,
+      hosting: false,
+      hubRttMs: 5,
+      ...extra,
+    });
+    expect(describeLanHubPart(role({ hosting: true }), NOW)).toBe('hub');
+    expect(describeLanHubPart(role({ snapshotAt: minutesAgo(5) }), NOW)).toBe('standby');
+    expect(describeLanHubPart(role({ snapshotAt: minutesAgo(45) }), NOW)).toBe('candidate');
+    expect(describeLanHubPart(role({ capable: false }), NOW)).toBeNull();
+    expect(describeLanHubPart(null, NOW)).toBeNull();
   });
 });

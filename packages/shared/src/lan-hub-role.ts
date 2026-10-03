@@ -13,6 +13,8 @@ export type LanHubRole = {
   hubRttMs: number | null;
   /** When the copy of the hub's data this machine keeps was taken (ISO 8601). */
   snapshotAt?: string;
+  /** The term of the hub as this machine knows it: how often the hub moved. */
+  term?: number;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -20,7 +22,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 export function parseLanHubRole(value: unknown): LanHubRole | null {
   if (!isRecord(value)) return null;
-  const { capable, hosting, hubRttMs, snapshotAt } = value;
+  const { capable, hosting, hubRttMs, snapshotAt, term } = value;
   if (typeof capable !== 'boolean' || typeof hosting !== 'boolean') return null;
   if (hubRttMs !== null && (typeof hubRttMs !== 'number' || !Number.isFinite(hubRttMs))) {
     return null;
@@ -29,6 +31,7 @@ export function parseLanHubRole(value: unknown): LanHubRole | null {
   if (typeof snapshotAt === 'string' && Number.isFinite(Date.parse(snapshotAt))) {
     role.snapshotAt = snapshotAt;
   }
+  if (typeof term === 'number' && Number.isInteger(term) && term >= 0) role.term = term;
   return role;
 }
 
@@ -38,7 +41,8 @@ export function sameLanHubRole(left: LanHubRole | null, right: LanHubRole | null
     left.capable === right.capable &&
     left.hosting === right.hosting &&
     left.hubRttMs === right.hubRttMs &&
-    left.snapshotAt === right.snapshotAt
+    left.snapshotAt === right.snapshotAt &&
+    left.term === right.term
   );
 }
 
@@ -83,4 +87,18 @@ export function chooseLanHubStandby(
     return keeper.machineId;
   }
   return closest?.machineId ?? null;
+}
+
+/** What a machine does for its LAN's hub, as a member shows it. */
+export type LanHubPart = 'hub' | 'standby' | 'candidate';
+
+/**
+ * A machine's part from what it said about itself. A standby is told by a
+ * fresh copy: every member keeps choosing the one that holds it.
+ */
+export function describeLanHubPart(role: LanHubRole | null, now: number): LanHubPart | null {
+  if (!role?.capable) return null;
+  if (role.hosting) return 'hub';
+  const at = Date.parse(role.snapshotAt ?? '');
+  return Number.isFinite(at) && now - at <= LAN_HUB_SNAPSHOT_FRESH_MS ? 'standby' : 'candidate';
 }

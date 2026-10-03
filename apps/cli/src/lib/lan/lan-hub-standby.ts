@@ -151,6 +151,8 @@ export type LanHubStandbyOptions = {
   /** Follows a LAN's hub to where it is now; whether the settings changed. */
   adopt: (hubId: string, location: LanHubLocation, reason: string) => boolean;
   termOf: (hubId: string) => number;
+  /** The term of the hub this machine hosts, from the hub's data. */
+  hubTerm?: (hub: LanHub) => number;
   /** Whether this machine could host a hub; asked once. */
   capable: () => Promise<boolean>;
   /** Whether this machine hosts that hub now. */
@@ -269,10 +271,14 @@ export class LanHubStandby {
 
     if (!capable) return;
     let kept = readKeptLanHubSnapshot(directory);
+    const term = hosting
+      ? (this.options.hubTerm ?? (() => readLanHubTerm(getDefaultLanHubDataDir())))(hub)
+      : this.options.termOf(hub.id);
     const role = (): LanHubRole => ({
       capable: true,
       hosting,
       hubRttMs: rtt,
+      term,
       ...(kept && !hosting ? { snapshotAt: kept.takenAt } : {}),
     });
     await publishLanHubRole({ workspace, machineId, role: role() });

@@ -316,6 +316,31 @@ describe('the machines of the LANs', () => {
     expect(buttonIn(rowOf('desk'), 'Update')).toBeUndefined();
   });
 
+  it('marks the machine that hosts the hub and the standby, and says why on hover', async () => {
+    await render(
+      inventoryOf([
+        machine({
+          ...desk,
+          hub: { part: 'standby', term: 1, snapshotAt: new Date().toISOString(), rttMs: 5 },
+        }),
+        machine({ ...server, hub: { part: 'hub', term: 1, snapshotAt: null, rttMs: 0 } }),
+        machine({
+          machineId: 'laptop',
+          lans: [office],
+          build: { ...desk.build!, update: 'desktop' },
+        }),
+      ])
+    );
+    const hint = (name: string) =>
+      rowOf(name).querySelector('[aria-label]')?.getAttribute('aria-label') ?? '';
+
+    expect(hint('server')).toBe("Hosts the LAN's hub · Term 1");
+    expect(hint('desk')).toBe(
+      'Standby: keeps a copy of the hub and takes over if it stays away · Copy taken 0 minutes ago · 5 ms to the hub'
+    );
+    expect(hint('laptop')).toBe('Member; a desktop does not host the hub');
+  });
+
   it('says where an update stands, and how one ended that failed', async () => {
     await render(
       inventoryOf([
