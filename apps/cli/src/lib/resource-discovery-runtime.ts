@@ -44,12 +44,12 @@ export async function createResourceDiscovery(args: {
     selectedMcpServerIds: args.selectedMcpServerIds,
     machines: async () =>
       (await listAliveDocMetas<MachineMeta>(manager, isMachineDocRoomId)).map((row) => row.meta),
-    onlineMachineIds: async () =>
-      getSessionCommandEnvironment()
-        ? new Set([auth.machineId])
-        : args.offline
-          ? null
-          : manager.getOnlineMachineIds(),
+    onlineMachineIds: async () => {
+      const environment = getSessionCommandEnvironment();
+      // Inside the agent service the hub says who is there, where it reaches other machines.
+      if (environment && !environment.host.remote) return new Set([auth.machineId]);
+      return args.offline ? null : manager.getOnlineMachineIds();
+    },
     canAccess: async (machineId, localProjectId) =>
       (
         await readSessionMachineAccess({

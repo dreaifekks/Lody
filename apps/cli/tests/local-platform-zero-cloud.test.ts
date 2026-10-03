@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createLocalCloudPort } from '@lody/platform';
 import {
   AGENT_ROLE_VERSION,
+  getMachineRoomId,
   getSessionRoomId,
   getWorkspaceFlockDocId,
   writeWorkspaceAgentRoleToFlock,
@@ -308,6 +309,136 @@ describe('local platform zero-cloud integration', () => {
       await expect(call('lody_feedback', { feedback: 'not allowed' })).rejects.toThrow(
         'Unsupported daemon Session tool'
       );
+      expect(cloudConnectionAttempts).toBe(0);
+    } finally {
+      await manager.cleanUp({ fast: true, preserveSessionStatus: true });
+    }
+  });
+
+  it('creates a Session on another machine of the LAN and asks that machine, not this one, to run it', async () => {
+    applyLocalPlatformEnv();
+    const workspaceId = 'lw_lan_test' as WorkspaceId;
+    const machineId = 'lan-desk' as MachineId;
+    const peerId = 'lan-server' as MachineId;
+    const userId = 'local:lan-test';
+    const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
+    const dispatchedHere: SessionId[] = [];
+    const askedPeer: Array<{ machineId: MachineId; method: string; sessionId: SessionId }> = [];
+    let peerOnline: boolean | null = true;
+    try {
+      await manager.registerMachine(machineId, {
+        id: machineId,
+        name: 'Desk',
+        ownerUserId: userId,
+      });
+      // The other machines of the LAN registered themselves; this replica holds what they wrote.
+      for (const [id, owner] of [
+        [peerId, userId],
+        ['stranger', 'local:someone-else'],
+      ] as const) {
+        await manager.repo.upsertDocMeta(getMachineRoomId(id as MachineId), {
+          id,
+          name: id,
+          ownerUserId: owner,
+        } as Parameters<typeof manager.repo.upsertDocMeta>[1]);
+      }
+      const peerConfigId = await manager.createAgentConfig('custom', 'claude', peerId, 'Synthetic');
+      const sessionId = await manager.createSession(machineId, 'custom', 'claude');
+      const catalog = await manager.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
+      writeWorkspaceAgentRoleToFlock(catalog.flock, {
+        v: AGENT_ROLE_VERSION,
+        id: 'peer-reviewer' as AgentRoleId,
+        ownerUserId: userId,
+        visibility: 'private',
+        name: 'Peer reviewer',
+        machineId: peerId,
+        agentConfigId: peerConfigId,
+        runConfig: {},
+        promptPrefix: 'Review carefully.',
+        revision: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      await manager.repo.flush();
+      const environment = createLocalSessionCommandEnvironment({
+        manager,
+        workspaceId,
+        machineId,
+        machineName: 'Desk',
+        userId,
+        host: {
+          readInvocation: (id) => ({
+            type: 'session/active-invocation-context',
+            active: true,
+            sessionId: id,
+            requesterUserId: userId,
+            sourceTurnId: 'source-turn',
+            inputConfig: { cliType: 'custom', agentType: 'claude' },
+          }),
+          readLiveStatus: async (id) => ({ sessionId: id, machineOnline: true, fresh: true }),
+          cancelSession: async () => ({ success: true }),
+          dispatchSession: async (id) => {
+            dispatchedHere.push(id);
+          },
+          remote: {
+            isOnline: async () => peerOnline,
+            withClient: async (target, fn) =>
+              await fn({
+                requestSessionDispatchTurn: async (options: { sessionId: SessionId }) => {
+                  askedPeer.push({
+                    machineId: target,
+                    method: 'session/dispatch-turn',
+                    sessionId: options.sessionId,
+                  });
+                  return null;
+                },
+              } as unknown as Parameters<typeof fn>[0]),
+          },
+        },
+      });
+      const context = {
+        machineId,
+        workspaceId,
+        sessionId,
+        localControlSocketPath: undefined,
+        workdir: tempDir,
+      };
+      const call = (name: string, args: unknown) =>
+        runWithSessionCommandEnvironment(environment, () =>
+          executeDaemonSessionTool(context, name, args)
+        );
+
+      const created = await call('lody_session_create', {
+        operationId: 'peer-create',
+        agentRoleId: 'peer-reviewer',
+        prompt: 'Check the change.',
+      });
+      expect(created.isError, JSON.stringify(created)).not.toBe(true);
+      expect(dispatchedHere).toEqual([]);
+      expect(askedPeer).toHaveLength(1);
+      expect(askedPeer[0]?.machineId).toBe(peerId);
+      const target = await manager.repo.getDocMeta(getSessionRoomId(askedPeer[0]!.sessionId));
+      expect(target?.meta).toMatchObject({ machineId: peerId, openedBySessionId: sessionId });
+      expect(typeof target?.meta.latestUserMsgId).toBe('string');
+
+      peerOnline = false;
+      const offline = await call('lody_session_create', {
+        operationId: 'peer-create-offline',
+        agentRoleId: 'peer-reviewer',
+        prompt: 'Check it again.',
+      });
+      expect(JSON.stringify(offline)).toContain('offline');
+      expect(askedPeer).toHaveLength(1);
+
+      expect(
+        (
+          await environment.checkMachineAccess({
+            workspaceId,
+            machineId: 'stranger' as MachineId,
+            requesterUserId: userId,
+          })
+        ).allowed
+      ).toBe(false);
       expect(cloudConnectionAttempts).toBe(0);
     } finally {
       await manager.cleanUp({ fast: true, preserveSessionStatus: true });

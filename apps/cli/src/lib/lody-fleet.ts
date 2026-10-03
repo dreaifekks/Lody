@@ -946,6 +946,7 @@ export class LodyFleet {
               }
             : {}),
           acceptsLanMemberFiles: this.lanTerminalHost !== null && this.isLanWorkspace(workspace.id),
+          lanWorkspace: this.isLanWorkspace(workspace.id),
         });
 
         if (!this.desiredWorkspaces.has(workspace.id) || this.stopped) {

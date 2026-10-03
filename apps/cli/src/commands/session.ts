@@ -2075,11 +2075,15 @@ async function ensureTargetMachineOnline(args: {
 }): Promise<void> {
   const environment = getSessionCommandEnvironment();
   if (environment) {
-    if (
-      args.workspaceId !== environment.workspace.id ||
-      args.machineId !== environment.auth.machineId
-    )
+    if (args.workspaceId !== environment.workspace.id)
       throw new Error('Target machine is unavailable in this workspace');
+    if (args.machineId === environment.auth.machineId) return;
+    const remote = environment.host.remote;
+    if (!remote) throw new Error('Target machine is unavailable in this workspace');
+    // A hub that cannot say leaves it to the session document, which waits for the machine.
+    if ((await remote.isOnline(args.machineId)) === false) {
+      throw new Error(`Machine ${args.machineId} is offline`);
+    }
     return;
   }
   if (args.machineId === args.auth.machineId) {
@@ -2252,11 +2256,31 @@ async function dispatchTurnFastPath(args: {
   inputConfig: SessionTurnInputConfig | undefined;
 }): Promise<void> {
   const environment = getSessionCommandEnvironment();
-  if (environment) {
+  if (environment && args.machineId === environment.auth.machineId) {
     await environment.host.dispatchSession(args.sessionId);
     return;
   }
   if (!args.inputConfig) {
+    return;
+  }
+  if (environment) {
+    // Another machine of the LAN picks the turn up from the session document;
+    // the request only spares it the wait.
+    const inputConfig = args.inputConfig;
+    await environment.host.remote
+      ?.withClient(
+        args.machineId,
+        async (client) =>
+          await client.requestSessionDispatchTurn({
+            sessionId: args.sessionId,
+            userTurnId: args.userTurnId,
+            userId: args.userId,
+            timestamp: args.timestamp,
+            inputConfig,
+            timeoutMs: 15_000,
+          })
+      )
+      .catch(() => undefined);
     return;
   }
   try {
@@ -3675,18 +3699,54 @@ export async function readSessionLiveStatusesMany(args: {
   const environment = getSessionCommandEnvironment();
   if (environment) {
     const output = new Map<SessionId, SessionLiveStatusBatchItem>();
+    const remote = environment.host.remote;
     for (const session of args.sessions) {
-      output.set(
-        session.id,
-        session.machineId === environment.auth.machineId
-          ? await environment.host.readLiveStatus(session.id)
-          : {
-              sessionId: session.id,
-              machineOnline: false,
-              fresh: false,
-              reason: 'Machine unavailable in local workspace',
-            }
-      );
+      if (session.machineId === environment.auth.machineId) {
+        output.set(session.id, await environment.host.readLiveStatus(session.id));
+        continue;
+      }
+      if (!remote) {
+        output.set(session.id, {
+          sessionId: session.id,
+          machineOnline: false,
+          fresh: false,
+          reason: 'Machine unavailable in local workspace',
+        });
+        continue;
+      }
+      if ((await remote.isOnline(session.machineId)) === false) {
+        output.set(session.id, {
+          sessionId: session.id,
+          machineOnline: false,
+          fresh: false,
+          reason: `Machine ${session.machineId} is offline`,
+        });
+        continue;
+      }
+      try {
+        const response = await remote.withClient(
+          session.machineId,
+          async (client) =>
+            await client.requestSessionLiveStatus({ sessionId: session.id, timeoutMs: 10_000 })
+        );
+        output.set(session.id, {
+          sessionId: session.id,
+          machineOnline: true,
+          fresh: response?.success === true,
+          ...(response?.state ? { state: response.state } : {}),
+          ...(response?.success === true && typeof response.observedAtMs === 'number'
+            ? { observedAt: response.observedAtMs }
+            : {}),
+          ...(!response?.success && response?.error ? { reason: response.error } : {}),
+        });
+      } catch (error) {
+        output.set(session.id, {
+          sessionId: session.id,
+          machineOnline: true,
+          fresh: false,
+          reason: formatErrorMessage(error),
+        });
+      }
     }
     return output;
   }

@@ -497,6 +497,22 @@ followed: a member hands the credential to whatever address it follows.
 Once every member follows, `lody lan down --keep-agent` on the former host
 stops the pointer. A member that was away longer has to be moved by hand.
 
+## Sessions agents start on other machines
+
+An agent asks for a session on another machine of its LAN through Lody's
+tools (`lody_session_create`, `lody_session_chat`, `lody_session_status`,
+`lody_session_cancel`) as the desktop does. The agent service of its own
+machine writes the session's document and dispatch pointer into the LAN's
+workspace, which the other machine reads through the hub, and asks that
+machine over the hub's request streams to take the turn now rather than
+when it next looks (`SessionCommandRemote` in
+`apps/cli/src/lib/session-command-environment.ts`). The operation stays with
+the machine that was asked, which completes it from the synced document.
+
+A machine of the LAN is reached when it is the workspace user's, like every
+member; a machine the hub says is offline is refused, and one the hub cannot
+say anything about is left to the document, which waits for it.
+
 ## Standby and failover
 
 A machine that could host a hub, a server whose agent service the install
