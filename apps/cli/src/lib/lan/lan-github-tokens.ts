@@ -116,6 +116,16 @@ function createLanGitHubTokenManager(options: {
   };
 }
 
+const lanGitHubTokenPorts = new WeakSet<CloudGithubTokenPort>();
+
+/**
+ * Whether a cloud port's GitHub tokens are the LAN host's. That token is never
+ * brokered: agents receive it only where the machine has no `gh` login.
+ */
+export function isLanGitHubTokenPort(port: CloudGithubTokenPort | null | undefined): boolean {
+  return port ? lanGitHubTokenPorts.has(port) : false;
+}
+
 export function createLanGitHubTokenPort(options: {
   /** Read at each request, so a LAN that moved is followed. */
   resolveHub: (workspaceId: string) => LanHub | null;
@@ -123,8 +133,10 @@ export function createLanGitHubTokenPort(options: {
   fetch?: typeof fetch;
   now?: () => number;
 }): CloudGithubTokenPort {
-  return {
+  const port: CloudGithubTokenPort = {
     createTokenManager: (workspaceId) =>
       createLanGitHubTokenManager({ ...options, workspaceId, now: options.now ?? Date.now }),
   };
+  lanGitHubTokenPorts.add(port);
+  return port;
 }

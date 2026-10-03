@@ -281,6 +281,7 @@ export const startCommand = new Command('start')
       kimi: 'managed-runtime',
       pi: 'managed-runtime',
       grok: 'managed-runtime',
+      devin: 'managed-runtime',
       claude: checkClaude(),
       codex: checkCodex(),
     };

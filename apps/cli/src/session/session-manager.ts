@@ -1,3 +1,9 @@
+import { applyNonOwnerShellEnv } from '@/lib/non-owner-shell-env';
+import path from 'node:path';
+import {
+  ensureCredentialHelperAtPath,
+  buildCredentialHelperValueForPath,
+} from '@/lib/git-credential-helper-script';
 import { EventEmitter } from 'eventemitter3';
 import os from 'os';
 import { existsSync } from 'node:fs';
@@ -71,17 +77,18 @@ import {
   LODY_GIT_CRED_CONTEXT_FILE_ENV,
 } from '@/lib/git-credential-broker';
 import type { CloudGithubTokenManager, CloudPort } from '@lody/platform';
-import {
-  buildCredentialHelperValueForHost,
-  ensureCredentialHelperScript,
-} from '@/lib/git-credential-helper-script';
 import { clearManagedGhTokenEnv } from '@/lib/gh-token-env';
+import { isLanGitHubTokenPort } from '@/lib/lan/lan-github-tokens';
 import {
   applyLanGitHubCredentialEnv,
   createGhLoginProbe,
   type GhLoginProbe,
 } from '@/lib/lan/lan-agent-github';
-import { ensureGhShimScript, prependGhShimBinDirToPath } from '@/lib/gh-shim-script';
+import {
+  ensureGhShimScript,
+  getGhShimHostBinDir,
+  prependGhShimBinDirToPath,
+} from '@/lib/gh-shim-script';
 import { ensureLodyBashEnvForGhShim, shouldInjectBashEnvForGhShim } from '@/lib/lody-bashenv';
 import { ensureLodyZdotdirForGhShim, shouldInjectZdotdirForGhShim } from '@/lib/lody-zdotdir';
 import type { RateLimit, SessionUsageUpdate } from 'acp-extension-core';
@@ -96,6 +103,7 @@ import type {
 import { readLocalProjectWorktreeSetup } from './worktree/worktree-setup-config-store';
 import { resolveTerminalWorkdirFromMetadata } from '@/lib/terminal-workdir-resolver';
 import { createWorktreeScriptHistoryRecorder } from './worktree/worktree-script-history';
+import { createSessionBackend } from './session-backend';
 import { runWorktreeSetup } from './worktree/worktree-setup-runner';
 import { deriveRepoIdFromLocalProjectPath } from '@lody/shared/node/worktree-paths';
 import {
@@ -347,6 +355,7 @@ export interface ISession {
    * Takes effect on all subsequent exec() calls (each exec spawns a new process).
    */
   updateEnv(env: Record<string, string | undefined>): void;
+  updateGitHubCredentialPolicy(allowLocalAuth: boolean): void;
 }
 
 export type SessionMonitorRuntimeInfo = {
@@ -1679,7 +1688,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   private async prepareGitHubRepoSessionConfig(config: SessionConfig): Promise<void> {
-    if (this.cloudPort.kind === 'local') await this.applyLanGitHubCredential(config);
+    if (isLanGitHubTokenPort(this.cloudPort.githubTokens)) {
+      await this.applyLanGitHubCredential(config);
+    }
     // A GitHub remote does not make a local project a managed GitHub checkout.
     // Direct local sessions and their worktrees keep the user's native auth.
     if (config.project?.kind === 'local') return;
@@ -1691,16 +1702,17 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         config.repoId ??= deriveRepoIdFromGitHubRepo(githubRepo);
         config.githubRepoUrl = buildGitHubCloneUrl(githubRepo);
       }
-      this.getGitHubTokenManager()?.retainRepoOwner(githubRepo);
     }
     const brokerEnv = await this.ensureGitCredentialBrokerEnv();
     if (!brokerEnv) return;
-    const allowLocalAuth = config.requesterUserId === this.cloudPort.identity.userId;
+    if (!config.sessionId) throw new Error('SessionId is required for GitHub credentials');
+    const credentialOwner = await this.resolveGitHubOwner(config.sessionId, config.requesterUserId);
+    const allowLocalAuth = credentialOwner === this.cloudPort.identity.userId;
     config.githubCredentialPolicy = { allowLocalAuth };
     if (!config.sessionId) throw new Error('SessionId is required for GitHub credentials');
     const contextToken = this.gitCredentialBroker!.activateSessionContext({
       sessionId: config.sessionId,
-      requesterUserId: config.requesterUserId,
+      requesterUserId: credentialOwner,
       machineId: this.machineId,
     });
     const brokerStateFilePath = this.gitCredentialBroker!.getStateFilePath();
@@ -1712,13 +1724,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     const contextFile = this.gitCredentialBroker!.getSessionContextFilePath(config.sessionId);
     if (contextFile) sessionEnv[LODY_GIT_CRED_CONTEXT_FILE_ENV] = contextFile;
     this.ensureGhShimSessionEnv(sessionEnv);
-    // Install even without an initial repository: commands may cd into another
-    // checkout or address an authorized repository using -R.
-    const helperRepoId = config.repoId ?? ('github-credentials' as RepoId);
-    ensureCredentialHelperScript(helperRepoId);
-    // Preserve the caller's config for the composite helper's local delegation.
-    // The outer helper list is intentionally replaced: Git sends "store" to
-    // every configured helper and must never persist an injected App/user token.
+    if (!allowLocalAuth) applyNonOwnerShellEnv(sessionEnv, brokerStateFilePath);
+    // Native Git helper adapters keep remote URLs and wire protocols unchanged.
+    // Save only caller config; each native attempt removes our SSH normalization.
     sessionEnv.LODY_GIT_LOCAL_CONFIG ??= JSON.stringify(
       Object.fromEntries(
         Object.entries({ ...process.env, ...sessionEnv }).filter(([key]) =>
@@ -1732,31 +1740,35 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
     Object.assign(sessionEnv, localConfig);
     let configCount = Number(localConfig.GIT_CONFIG_COUNT ?? 0);
-    for (const host of ['github.com', 'www.github.com']) {
+    for (const value of [
+      'git@github.com:',
+      'ssh://git@github.com/',
+      'ssh://git@github.com:22/',
+      'ssh://git@ssh.github.com:443/',
+    ]) {
+      sessionEnv[`GIT_CONFIG_KEY_${configCount}`] = value.includes(':443/')
+        ? 'url.https://github.com:443/.insteadOf'
+        : 'url.https://github.com/.insteadOf';
+      sessionEnv[`GIT_CONFIG_VALUE_${configCount++}`] = value;
+    }
+    // Checkout filters and LFS ask Git for credentials directly, outside HTTP transport.
+    const helperPath = path.join(
+      getGhShimHostBinDir(brokerStateFilePath),
+      'git-credential-lody.cjs'
+    );
+    ensureCredentialHelperAtPath(helperPath);
+    for (const host of ['https://github.com', 'https://www.github.com']) {
       for (const [key, value] of [
-        [`credential.https://${host}.helper`, ''],
-        [`credential.https://${host}.helper`, buildCredentialHelperValueForHost(helperRepoId)],
-        [`credential.https://${host}.useHttpPath`, 'true'],
+        [`credential.${host}.helper`, ''],
+        [`credential.${host}.helper`, buildCredentialHelperValueForPath(helperPath)],
+        [`credential.${host}.useHttpPath`, 'true'],
       ] as const) {
         sessionEnv[`GIT_CONFIG_KEY_${configCount}`] = key;
         sessionEnv[`GIT_CONFIG_VALUE_${configCount++}`] = value;
       }
     }
     sessionEnv.GIT_CONFIG_COUNT = String(configCount);
-    for (const [key, value] of [
-      ['url.lody-github::.insteadOf', 'git@github.com:'],
-      ['url.lody-github::.insteadOf', 'ssh://git@github.com/'],
-      ['url.lody-github::.insteadOf', 'ssh://git@github.com:22/'],
-      ['url.lody-github::ssh443/.insteadOf', 'ssh://git@ssh.github.com:443/'],
-      ['url.lody-github::https/.insteadOf', 'https://github.com/'],
-      ['url.lody-github::https/.insteadOf', 'https://www.github.com/'],
-      ['url.lody-github::https/.insteadOf', 'https://github.com:443/'],
-      ['protocol.lody-github.allow', 'always'],
-    ] as const) {
-      sessionEnv[`GIT_CONFIG_KEY_${configCount}`] = key;
-      sessionEnv[`GIT_CONFIG_VALUE_${configCount++}`] = value;
-    }
-    sessionEnv.GIT_CONFIG_COUNT = String(configCount);
+    sessionEnv.GIT_EXEC_PATH = getGhShimHostBinDir(brokerStateFilePath);
     config.env = {
       ...sessionEnv,
       LODY_GIT_CRED_BROKER_URL: brokerEnv.url,
@@ -1797,17 +1809,37 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
   }
 
+  private async resolveGitHubOwner(sessionId: SessionId, initialOwner: string): Promise<string> {
+    const record = await this.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId));
+    const owner = record?.meta?.userId;
+    if (typeof owner === 'string' && owner) return owner;
+    if (record?.meta) throw new Error('GitHub session owner is missing');
+    // A new session has not published metadata yet; its creator is the owner.
+    return initialOwner;
+  }
+
   async refreshGhTokenForSession(
     session: ISession,
     _githubRepo: string | undefined,
     requesterUserId: string
   ): Promise<void> {
-    const contextToken = this.gitCredentialBroker?.refreshSessionContext({
+    if (!this.gitCredentialBroker?.hasSessionContext(session.sessionId)) return;
+    const owner = await this.resolveGitHubOwner(session.sessionId, requesterUserId);
+    const previousOwner = this.gitCredentialBroker.getSessionOwner(session.sessionId);
+    const contextToken = this.gitCredentialBroker.refreshSessionContext({
       sessionId: session.sessionId,
-      requesterUserId,
+      requesterUserId: owner,
       machineId: this.machineId,
     });
+    session.updateGitHubCredentialPolicy(owner === this.cloudPort.identity.userId);
     if (contextToken) session.updateEnv({ [LODY_GIT_CRED_CONTEXT_TOKEN_ENV]: contextToken });
+    if (previousOwner !== owner) {
+      // Existing children may contain the old owner's raw tokens. Never reuse them.
+      await session.terminate(true);
+      throw new Error(
+        'github_owner_changed: previous session processes were closed; start a new turn with the new owner'
+      );
+    }
   }
 
   private ensureGhShimSessionEnv(sessionEnv: Record<string, string>): void {
@@ -1833,7 +1865,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       return null;
     }
     this.githubTokenManager = this.cloudPort.githubTokens.createTokenManager(this.workspaceId);
-    this.githubTokenManager.startAutoRefresh();
     return this.githubTokenManager;
   }
 
@@ -1844,7 +1875,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   } | null> {
     // A LAN's token is not brokered: agents get it only through
     // `applyLanGitHubCredential`, and host-side git uses the machine's login.
-    if (this.cloudPort.kind === 'local') {
+    if (isLanGitHubTokenPort(this.cloudPort.githubTokens)) {
       return null;
     }
     const tokenManager = this.getGitHubTokenManager();
@@ -1859,7 +1890,17 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         ownerUserId: this.cloudPort.identity.userId ?? undefined,
       });
     }
-    return await this.gitCredentialBroker.ensureStarted();
+    try {
+      return await this.gitCredentialBroker.ensureStarted();
+    } catch (error) {
+      const code =
+        error instanceof Error && 'code' in error ? String(error.code) : 'broker_start_failed';
+      this.logger.warn(
+        `[Lody GitHub] broker unavailable (${code}); continuing with eligible local credentials`
+      );
+      // The trusted owner snapshot remains usable independently of token service.
+      return { url: '', port: 0, token: '' };
+    }
   }
 
   /**
@@ -1892,6 +1933,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
     return {
       workspaceId: this.workspaceId,
+      allowLocalAuth: config.githubCredentialPolicy?.allowLocalAuth === true,
       url: brokerEnv.url,
       token: brokerEnv.token,
       contextToken,
@@ -1900,6 +1942,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         Object.entries(config.env ?? {}).filter(
           ([key]) =>
             key === 'PATH' ||
+            key === 'GIT_EXEC_PATH' ||
+            key === 'BASH_ENV' ||
+            key === 'ZDOTDIR' ||
             key === 'LODY_GIT_LOCAL_CONFIG' ||
             /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(key)
         )
@@ -2209,6 +2254,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
             sessionId: config.sessionId!,
             phase: 'setup',
             logger: this.logger,
+            backend: await createSessionBackend(sessionDoc, await sessionDoc.getMetaState()),
             insertBeforeEntryId: config.worktreeScriptHistoryInsertBeforeEntryId,
           }),
         });
