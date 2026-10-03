@@ -211,12 +211,44 @@ function waitForUpstreamPort(child: ChildProcess): Promise<number> {
   });
 }
 
+/**
+ * Loaded into the Streams server before it starts. Its request handler answers
+ * every failure by setting headers, so a live read that fails after its
+ * response started (a reader resuming below the retained range, say) threw
+ * from an async handler nobody awaits, and the unhandled rejection took the
+ * whole server down. Such a response is dropped instead; any other unhandled
+ * rejection still ends the process as before.
+ */
+export const LAN_HUB_STREAMS_GUARD = `
+import http from 'node:http';
+const setHeader = http.ServerResponse.prototype.setHeader;
+http.ServerResponse.prototype.setHeader = function (name, value) {
+  if (this.headersSent) {
+    this.destroy();
+    const error = new Error('Dropped ' + (this.req?.method ?? '') + ' ' + (this.req?.url ?? '') + ', which failed after its response started');
+    error.code = 'LODY_RESPONSE_STARTED';
+    throw error;
+  }
+  return setHeader.call(this, name, value);
+};
+process.on('unhandledRejection', (reason) => {
+  if (reason?.code !== 'LODY_RESPONSE_STARTED') throw reason;
+  console.error('[streams] ' + reason.message);
+});
+`;
+
+export const LAN_HUB_STREAMS_GUARD_IMPORT = `data:text/javascript,${encodeURIComponent(
+  LAN_HUB_STREAMS_GUARD
+)}`;
+
 async function startStreamsServer(options: { dataDir: string }): Promise<LanHubUpstream> {
   const loroCli = resolveLoroCli();
   ensureSqliteBinding(loroCli.manifestPath);
   const child = spawn(
     process.execPath,
     [
+      '--import',
+      LAN_HUB_STREAMS_GUARD_IMPORT,
       loroCli.binPath,
       'dev',
       '--host',

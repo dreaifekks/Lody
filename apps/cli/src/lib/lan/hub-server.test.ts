@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -18,6 +19,7 @@ import {
   signLanHubMove,
 } from './hub-handover';
 import {
+  LAN_HUB_STREAMS_GUARD_IMPORT,
   createLiveReadKeepalive,
   loadOrCreateLanHubToken,
   readLanHubToken,
@@ -280,6 +282,87 @@ describe('live read keepalive', () => {
     keepalive.stop();
     vi.advanceTimersByTime(60_000);
     expect(written).toEqual([]);
+  });
+});
+
+describe('Streams server guard', () => {
+  // Answers failures the way the Streams server does: by setting headers from
+  // an async handler nobody awaits.
+  const STREAMS_LIKE_SERVER = `
+import http from 'node:http';
+async function handle(request, response) {
+  try {
+    if (request.url === '/late') {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.write('event: data\\ndata: first\\n\\n');
+      await Promise.resolve();
+      throw new Error('offset is outside the readable retained range');
+    }
+    response.end('ok');
+  } catch (error) {
+    if (response.writableEnded) return;
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({ error: error.message }));
+  }
+}
+const server = http.createServer((request, response) => { handle(request, response); });
+server.listen(0, '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'));
+`;
+
+  const children: ChildProcess[] = [];
+  afterEach(() => {
+    for (const child of children.splice(0)) child.kill('SIGKILL');
+  });
+
+  const start = (guarded: boolean) => {
+    const child = spawn(
+      process.execPath,
+      [
+        ...(guarded ? ['--import', LAN_HUB_STREAMS_GUARD_IMPORT] : []),
+        '--input-type=module',
+        '-e',
+        STREAMS_LIKE_SERVER,
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    children.push(child);
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    return {
+      exited: new Promise<number | null>((resolve) => child.once('exit', resolve)),
+      port: new Promise<number>((resolve) =>
+        child.stdout?.once('data', (chunk: Buffer) => resolve(Number(chunk.toString().trim())))
+      ),
+      stderr: () => stderr,
+    };
+  };
+
+  const get = (port: number, pathname: string) =>
+    new Promise<{ complete: boolean; body: string }>((resolve) => {
+      const request = http.get({ host: '127.0.0.1', port, path: pathname }, (response) => {
+        let body = '';
+        response.on('data', (chunk: Buffer) => (body += chunk.toString()));
+        response.once('close', () => resolve({ complete: response.complete, body }));
+        response.once('error', () => {});
+      });
+      request.once('error', () => resolve({ complete: false, body: '' }));
+    });
+
+  it('drops a live read that fails after its response started and keeps serving', async () => {
+    const server = start(true);
+    const port = await server.port;
+
+    expect((await get(port, '/late')).complete).toBe(false);
+    expect(await get(port, '/ok')).toEqual({ complete: true, body: 'ok' });
+    expect(server.stderr()).toContain('Dropped GET /late, which failed after its response started');
+  });
+
+  it('is what keeps such a failure from ending the server', async () => {
+    const server = start(false);
+    const port = await server.port;
+
+    await get(port, '/late');
+    expect(await server.exited).toBe(1);
   });
 });
 
