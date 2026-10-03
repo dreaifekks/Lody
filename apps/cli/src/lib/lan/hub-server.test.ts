@@ -356,7 +356,7 @@ describe('moving a LAN host', () => {
     const moved = await call(hub, '/ds/lody/room');
     expect(moved.status).toBe(410);
     expect(await moved.json()).toMatchObject({ movedTo: 'http://100.64.0.9:8788' });
-    expect(await askWhereLanHubIs({ url: hub.url, token: hub.token })).toBe(
+    expect((await askWhereLanHubIs({ url: hub.url, token: hub.token }))?.url).toBe(
       'http://100.64.0.9:8788'
     );
     // Only a member learns where the LAN went.
@@ -375,7 +375,7 @@ describe('moving a LAN host', () => {
 
     const again = await start();
     expect(started).toHaveLength(1);
-    expect(await askWhereLanHubIs({ url: again.url, token: again.token })).toBe(
+    expect((await askWhereLanHubIs({ url: again.url, token: again.token }))?.url).toBe(
       'http://100.64.0.9:8788'
     );
   });

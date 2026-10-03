@@ -17,6 +17,8 @@ export const LAN_HUB_HANDOVER_COMPLETE_PATH = '/lan/handover/complete';
 export const LAN_HUB_HANDOVER_ABORT_PATH = '/lan/handover/abort';
 /** Where a hub says whether it still serves its LAN, or where it went. */
 export const LAN_HUB_WHERE_PATH = '/lan/where';
+/** Where a hub that came back hears that another one took over meanwhile. */
+export const LAN_HUB_SUPERSEDED_PATH = '/lan/superseded';
 
 const MOVED_FILE_NAME = 'moved.json';
 const HEADER_MAX_BYTES = 4096;
@@ -35,7 +37,32 @@ export const LAN_HUB_HANDOVER_FILES = [
   'apns.json',
   'apns-key.p8',
   'push-devices.json',
+  'term.json',
 ] as const;
+
+const TERM_FILE_NAME = 'term.json';
+
+/**
+ * How many times the LAN's hub moved, as the hub's data says: a hub that takes
+ * over, by handover or failover, serves the next term. Members compare terms
+ * to tell where the hub is now from where it was.
+ */
+export function readLanHubTerm(dataDir: string): number {
+  try {
+    const { term } = JSON.parse(fs.readFileSync(path.join(dataDir, TERM_FILE_NAME), 'utf8')) as {
+      term?: unknown;
+    };
+    return typeof term === 'number' && Number.isInteger(term) && term >= 0 ? term : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function writeLanHubTerm(dataDir: string, term: number): void {
+  const target = path.join(dataDir, TERM_FILE_NAME);
+  fs.writeFileSync(`${target}.tmp`, `${JSON.stringify({ term })}\n`, { mode: 0o600 });
+  fs.renameSync(`${target}.tmp`, target);
+}
 
 const FileHeaderSchema = z
   .object({
@@ -47,10 +74,38 @@ const FileHeaderSchema = z
   .strict();
 const EndSchema = z.object({ type: z.literal('end'), files: z.number().int() }).strict();
 
-/** Where a hub went, as it tells members who reach its old address. */
-export type LanHubMoved = { movedTo: string; signature: string };
+/**
+ * Where a hub went, as it tells members who reach its old address: the
+ * address signed alone, as builds that know no terms check it, and the term
+ * with the address signed together.
+ */
+export type LanHubMoved = {
+  movedTo: string;
+  signature: string;
+  term?: number;
+  termSignature?: string;
+};
 
-const MovedSchema = z.object({ movedTo: z.string().min(1), signature: z.string().min(1) });
+const MovedSchema = z.object({
+  movedTo: z.string().min(1),
+  signature: z.string().min(1),
+  term: z.number().int().nonnegative().optional(),
+  termSignature: z.string().min(1).optional(),
+});
+
+function signLanHubLocation(token: string, url: string, term: number): string {
+  const key = crypto.createHash('sha256').update(`lody-lan-hub:location:${token}`).digest();
+  return crypto
+    .createHmac('sha256', key)
+    .update(`${term}\n${normalizeLanHubUrl(url)}`)
+    .digest('hex');
+}
+
+function sameDigest(left: string, right: string): boolean {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 /**
  * Signed with the credential, so only someone who holds it can point members
@@ -62,9 +117,12 @@ export function signLanHubMove(token: string, movedTo: string): string {
 }
 
 export function verifyLanHubMove(token: string, moved: LanHubMoved): boolean {
-  const expected = Buffer.from(signLanHubMove(token, moved.movedTo));
-  const given = Buffer.from(moved.signature);
-  return expected.length === given.length && crypto.timingSafeEqual(expected, given);
+  if (!sameDigest(signLanHubMove(token, moved.movedTo), moved.signature)) return false;
+  if (moved.term === undefined) return moved.termSignature === undefined;
+  return (
+    moved.termSignature !== undefined &&
+    sameDigest(signLanHubLocation(token, moved.movedTo, moved.term), moved.termSignature)
+  );
 }
 
 export function readLanHubMoved(dataDir: string): LanHubMoved | null {
@@ -78,9 +136,19 @@ export function readLanHubMoved(dataDir: string): LanHubMoved | null {
   return MovedSchema.parse(JSON.parse(raw));
 }
 
-export function writeLanHubMoved(dataDir: string, token: string, movedTo: string): LanHubMoved {
+export function writeLanHubMoved(
+  dataDir: string,
+  token: string,
+  movedTo: string,
+  term: number
+): LanHubMoved {
   const url = normalizeLanHubUrl(movedTo);
-  const moved: LanHubMoved = { movedTo: url, signature: signLanHubMove(token, url) };
+  const moved: LanHubMoved = {
+    movedTo: url,
+    signature: signLanHubMove(token, url),
+    term,
+    termSignature: signLanHubLocation(token, url, term),
+  };
   const target = path.join(dataDir, MOVED_FILE_NAME);
   const temporary = `${target}.${process.pid}.tmp`;
   fs.writeFileSync(
@@ -167,13 +235,13 @@ export async function readLanHubHandover(stream: Readable, directory: string): P
 
 /**
  * Asks a hub whether it still serves its LAN. Returns the address it moved
- * to when it says so with the credential's signature, `null` otherwise:
- * a hub that is away has not moved.
+ * to, and the term of the hub there, when it says so with the credential's
+ * signature; `null` otherwise: a hub that is away has not moved.
  */
 export async function askWhereLanHubIs(
   hub: Pick<LanHub, 'url' | 'token'>,
   options: { fetch?: typeof fetch; timeoutMs?: number } = {}
-): Promise<string | null> {
+): Promise<{ url: string; term: number | null } | null> {
   let response: Response;
   try {
     response = await (options.fetch ?? fetch)(`${hub.url}${LAN_HUB_WHERE_PATH}`, {
@@ -187,5 +255,7 @@ export async function askWhereLanHubIs(
   const parsed = MovedSchema.safeParse(await response.json().catch(() => null));
   if (!parsed.success || !verifyLanHubMove(hub.token, parsed.data)) return null;
   const movedTo = normalizeLanHubUrl(parsed.data.movedTo);
-  return movedTo === normalizeLanHubUrl(hub.url) ? null : movedTo;
+  if (movedTo === normalizeLanHubUrl(hub.url)) return null;
+  // A hub of a build without terms says none; whatever it points to is later.
+  return { url: movedTo, term: parsed.data.term ?? null };
 }

@@ -20,12 +20,19 @@ import {
   type MachineMeta,
   type WorkspaceId,
 } from '@lody/shared';
+import {
+  parseLanHubRole,
+  sameLanHubRole,
+  type LanHubCandidate,
+  type LanHubRole,
+} from '@lody/shared/lan-hub-role';
 import { parseLanMachineBuild, parseLanMachineUpdate } from '@lody/shared/lan-release';
 import {
   parseLanSshDestination,
   sameLanSshDestination,
   type LanSshDestination,
 } from '@lody/shared/lan-ssh';
+import { parseLanTerminalEndpoint, type LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import type { LoroRepo } from 'loro-repo';
 import {
   listMachineIds,
@@ -245,6 +252,44 @@ export async function publishLanMachineFacts(options: {
     getMachineRoomId(machineId),
     facts as Parameters<LoroRepo['upsertDocMeta']>[1]
   );
+  return true;
+}
+
+/** What every machine of a LAN's workspace says about its part in keeping the hub. */
+export async function readLanHubCandidates(
+  workspace: LanMemberWorkspace
+): Promise<Array<LanHubCandidate & { endpoint: LanTerminalEndpoint | null }>> {
+  const [ids, online] = await Promise.all([
+    listMachineIds(workspace.repo),
+    workspace.getOnlineMachineIds().catch(() => null),
+  ]);
+  const candidates: Array<LanHubCandidate & { endpoint: LanTerminalEndpoint | null }> = [];
+  for (const id of ids) {
+    const meta = await readMachineMeta(workspace.repo, id);
+    if (!meta || (meta.ownerUserId && meta.ownerUserId !== workspace.userId)) continue;
+    candidates.push({
+      machineId: id,
+      online: online?.has(id) ?? false,
+      role: parseLanHubRole(meta.lanHubRole),
+      endpoint: parseLanTerminalEndpoint(meta.lanTerminal),
+    });
+  }
+  return candidates;
+}
+
+/** Writes this machine's part in keeping the hub into its metadata, when it changed. */
+export async function publishLanHubRole(options: {
+  workspace: LanMemberWorkspace;
+  machineId: MachineId;
+  role: LanHubRole;
+}): Promise<boolean> {
+  const { workspace, machineId, role } = options;
+  if (!workspace.lan) return false;
+  const meta = await readMachineMeta(workspace.repo, machineId);
+  if (!meta || sameLanHubRole(parseLanHubRole(meta.lanHubRole), role)) return false;
+  await workspace.repo.upsertDocMeta(getMachineRoomId(machineId), {
+    lanHubRole: role,
+  } as Parameters<LoroRepo['upsertDocMeta']>[1]);
   return true;
 }
 

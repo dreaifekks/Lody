@@ -57,7 +57,13 @@ import {
 } from '@/lib/lan/lan-terminal-host';
 import { connectLanTerminal, deriveLanTerminalKey } from '@/lib/lan/lan-terminal';
 import { LanFileHandoff } from '@/lib/lan/lan-file-handoff';
+import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-control';
+import {
+  LanHubStandby,
+  canThisMachineHostLanHub,
+  doesThisMachineHostLanHub,
+} from '@/lib/lan/lan-hub-standby';
 import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import { readLanMachineAlias, type LanMemberWorkspace } from '@/lib/lan/lan-members';
 import { createLanSshDescriber } from '@/lib/lan/lan-ssh';
@@ -183,6 +189,7 @@ export class LodyFleet {
   private readonly lanFileHandoff: LanFileHandoff;
   private lanTerminalHost: LanTerminalHost | null = null;
   private readonly lanFleetControl: LanFleetControl | null;
+  private readonly lanHubStandby: LanHubStandby | null;
   private readonly memoryPressure: MemoryPressureSampler;
   private readonly onFatalAuthFailure?: (error: Error) => void;
   private readonly localPlatform: boolean;
@@ -315,6 +322,21 @@ export class LodyFleet {
           },
         })
       : null;
+    const lanControl = options.lanControl;
+    this.lanHubStandby = lanControl
+      ? new LanHubStandby({
+          logger: this.logger,
+          machineId: this.machineId,
+          dataDir: getLodyDataDir(),
+          hubs: () => this.lan?.hubs ?? [],
+          workspaces: () =>
+            Array.from(this.runtimes.values(), (runtime) => this.toLanMemberWorkspace(runtime)),
+          capable: async () => await canThisMachineHostLanHub({ update: lanControl.build.update }),
+          adopt: (hubId, location, reason) => this.lan?.adopt?.(hubId, location, reason) ?? false,
+          termOf: (hubId) => this.lan?.termOf?.(hubId) ?? 0,
+          hosting: async (hub) => await doesThisMachineHostLanHub(hub),
+        })
+      : null;
     this.lanFileHandoff = new LanFileHandoff({
       machineId: this.machineId,
       logger: this.logger,
@@ -440,6 +462,7 @@ export class LodyFleet {
 
     this.startLanTerminalHost();
     this.lanFleetControl?.start();
+    this.lanHubStandby?.start();
 
     // Start the PR poller BEFORE any workspace runtime can connect: the
     // local-first catalog bootstrap below registers each workspace with the
@@ -683,6 +706,7 @@ export class LodyFleet {
       stopLocalTerminalServer(),
       this.lanTerminalHost?.close(),
       this.lanFleetControl?.close(),
+      this.lanHubStandby?.close(),
       stopLocalLoroDataPlaneServer(),
       stopLodyMcpHttpServer(),
     ]);
@@ -1591,6 +1615,12 @@ export class LodyFleet {
               this.runtimes.has(workspaceId)
                 ? async (request: LanMemberControlRequest) => await control.answer(request)
                 : null,
+          }
+        : {}),
+      ...(this.lanHubStandby
+        ? {
+            hubFor: (workspaceId: string) =>
+              this.lanHubStandby?.peerHandlerFor(workspaceId) ?? null,
           }
         : {}),
       publish: async (workspaceId, endpoint) =>

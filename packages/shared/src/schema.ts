@@ -1,5 +1,6 @@
 import type { LanAgentRuntime } from './lan-control';
 import type { LanMachineBuild, LanMachineUpdate } from './lan-release';
+import type { LanHubRole } from './lan-hub-role';
 import type { LanSshDestination } from './lan-ssh';
 import type { LanTerminalEndpoint } from './lan-terminal';
 import type { SessionEntry, SessionFileDiff } from './session-data/domain';
@@ -1324,6 +1325,8 @@ export type MachineMeta = {
   lanUpdate?: LanMachineUpdate;
   /** The runtimes of the agents this machine has providers for in this workspace. */
   lanAgents?: LanAgentRuntime[];
+  /** Whether this machine could host the LAN's hub, hosts it, or keeps a copy of its data. */
+  lanHubRole?: LanHubRole;
 };
 
 /**

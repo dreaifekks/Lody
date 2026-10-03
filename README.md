@@ -126,8 +126,8 @@ Both desktop apps can run side by side.
   than on the hub, send requests between machines over their direct
   connections (updates, agent installs and config imports already do), and
   let the hub move to another machine (`lody-lan lan take-over` moves it by
-  hand). The hub stays as a relay that stores
-  what an offline member has not seen yet.
+  hand, and a standby server takes it over when it stays away). The hub stays
+  as a relay that stores what an offline member has not seen yet.
 - **Missing pieces:** remote preview over the members' direct connections,
   usage across machines, and periodic refresh of reviews and comments in the
   PR panel.

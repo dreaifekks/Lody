@@ -132,6 +132,10 @@
       "types": "./src/lan-ssh.ts",
       "import": "./src/lan-ssh.ts"
     },
+    "./lan-hub-role": {
+      "types": "./src/lan-hub-role.ts",
+      "import": "./src/lan-hub-role.ts"
+    },
     "./lan-hub": {
       "types": "./src/lan-hub.ts",
       "import": "./src/lan-hub.ts"

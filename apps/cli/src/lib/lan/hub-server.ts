@@ -20,13 +20,21 @@ import {
   LAN_HUB_HANDOVER_ABORT_PATH,
   LAN_HUB_HANDOVER_COMPLETE_PATH,
   LAN_HUB_HANDOVER_PATH,
+  LAN_HUB_SUPERSEDED_PATH,
   LAN_HUB_WHERE_PATH,
   readLanHubMoved,
+  readLanHubTerm,
   writeLanHubHandover,
   writeLanHubMoved,
   type LanHubMoved,
 } from './hub-handover';
+import { readLanHubEpoch, readsBeforeLanHubEpoch, type LanHubEpoch } from './hub-failover';
 import { createLanHubPush, type LanHubPush } from './hub-push';
+import {
+  LAN_HUB_SNAPSHOT_PATH,
+  LanHubSnapshotRequestSchema,
+  writeLanHubSnapshot,
+} from './hub-snapshot';
 
 export const LAN_HUB_DEFAULT_PORT = 8788;
 export const LAN_HUB_LORO_CLI_PACKAGE = '@loro-dev/loro-cli';
@@ -135,6 +143,16 @@ function resolveLoroCli(): { binPath: string; manifestPath: string } {
     manifestPath,
     binPath: path.join(path.dirname(manifestPath), manifest.bin?.loro ?? 'bin/loro.mjs'),
   };
+}
+
+/** Whether this installation carries the Streams server a hub runs; the desktop does not. */
+export function isLanHubServerInstalled(): boolean {
+  try {
+    resolveLoroCli();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -352,13 +370,16 @@ function isAuthorized(expected: Buffer, header: string | undefined): boolean {
   return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
 }
 
-function readSmallBody(request: http.IncomingMessage): Promise<string> {
+function readSmallBody(
+  request: http.IncomingMessage,
+  maxBytes = HANDOVER_BODY_MAX_BYTES
+): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = '';
     request.setEncoding('utf8');
     request.on('data', (chunk: string) => {
       body += chunk;
-      if (body.length > HANDOVER_BODY_MAX_BYTES) request.destroy(new Error('body too large'));
+      if (body.length > maxBytes) request.destroy(new Error('body too large'));
     });
     request.once('end', () => resolve(body));
     request.once('error', reject);
@@ -381,6 +402,8 @@ function createGate(options: {
   /** The routes of the hub itself: where it is, and its handover. */
   hub: (request: http.IncomingMessage, response: http.ServerResponse) => boolean;
   token: string;
+  /** Set on a hub that started from a standby's copy. */
+  epoch: LanHubEpoch | null;
   keepaliveMs?: number;
   push: LanHubPush;
   github: LanHubGitHub;
@@ -411,6 +434,10 @@ function createGate(options: {
     if (state.kind !== 'serving') {
       response.setHeader('Retry-After', '30');
       sendJson(request, response, 503, { error: 'moving' });
+      return;
+    }
+    if (options.epoch && readsBeforeLanHubEpoch(options.epoch, request.method, request.url)) {
+      sendJson(request, response, 410, { error: 'offset predates this hub' });
       return;
     }
     if (request.url?.startsWith('/push/')) {
@@ -545,12 +572,20 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     const route = request.url?.split('?')[0];
     if (route === LAN_HUB_WHERE_PATH && request.method === 'GET') {
       if (state.kind === 'moved') sendJson(request, response, 410, state.moved);
-      else sendJson(request, response, 200, { movedTo: null });
+      else sendJson(request, response, 200, { movedTo: null, term: readLanHubTerm(dataDir) });
+      return true;
+    }
+    if (route === LAN_HUB_SUPERSEDED_PATH && request.method === 'POST') {
+      void supersede(request, response);
       return true;
     }
     if (request.method !== 'POST') return false;
     if (route === LAN_HUB_HANDOVER_PATH) {
       void handOver(request, response);
+      return true;
+    }
+    if (route === LAN_HUB_SNAPSHOT_PATH) {
+      void sendSnapshot(request, response);
       return true;
     }
     if (route === LAN_HUB_HANDOVER_COMPLETE_PATH) {
@@ -600,13 +635,106 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     }
   };
 
+  // One copy at a time: each reads the whole database.
+  let snapshotting: Promise<unknown> = Promise.resolve();
+  const sendSnapshot = async (
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> => {
+    let have: string[];
+    try {
+      have = LanHubSnapshotRequestSchema.parse(
+        JSON.parse(await readSmallBody(request, 256 * 1024 * 1024))
+      ).have;
+    } catch {
+      sendJson(request, response, 400, { error: 'have required' });
+      return;
+    }
+    const run = async () => {
+      // A hub that hands over or moved has no copy to give: the data is elsewhere.
+      if (state.kind !== 'serving') {
+        sendJson(request, response, 409, { error: state.kind });
+        return;
+      }
+      response.writeHead(200, {
+        ...corsHeaders(request),
+        'Content-Type': 'application/octet-stream',
+      });
+      try {
+        const sent = await writeLanHubSnapshot({ dataDir, have, stream: response });
+        response.end();
+        options.log?.(
+          `[standby] Sent a copy: ${sent.sent} of ${sent.blocks} block(s) of ${sent.sizeBytes} bytes.`
+        );
+      } catch (error) {
+        options.log?.(`[standby] A copy failed: ${String(error)}`);
+        response.destroy(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+    snapshotting = snapshotting.then(run, run);
+    await snapshotting;
+  };
+
+  /**
+   * Another hub took over while this one was away: a failover. This hub
+   * serves nothing from now on and points every member there, as after a
+   * handover; what members wrote here meanwhile they send to the new hub
+   * themselves, from their own copies.
+   */
+  const supersede = async (
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> => {
+    let body: { url?: unknown; term?: unknown };
+    try {
+      body = JSON.parse(await readSmallBody(request)) as typeof body;
+    } catch {
+      body = {};
+    }
+    const { url, term } = body;
+    if (typeof url !== 'string' || typeof term !== 'number' || !Number.isInteger(term)) {
+      sendJson(request, response, 400, { error: 'url and term required' });
+      return;
+    }
+    if (state.kind === 'moved' && (state.moved.term ?? 0) >= term) {
+      sendJson(request, response, 200, state.moved);
+      return;
+    }
+    if (term <= readLanHubTerm(dataDir)) {
+      sendJson(request, response, 409, { error: 'this hub serves that term or a later one' });
+      return;
+    }
+    const previous = state;
+    let moved: LanHubMoved;
+    try {
+      moved = writeLanHubMoved(dataDir, token, url, term);
+    } catch (error) {
+      sendJson(request, response, 500, { error: String(error) });
+      return;
+    }
+    state = { kind: 'moved', moved };
+    if (previous.kind === 'serving') {
+      previous.upstream.stop();
+      await previous.upstream.exited;
+    }
+    if (previous.kind === 'handing-over') clearTimeout(previous.timer);
+    options.log?.(
+      `[failover] ${moved.movedTo} serves this LAN in term ${term}; pointing members there.`
+    );
+    sendJson(request, response, 200, moved);
+  };
+
   const completeHandover = async (
     request: http.IncomingMessage,
     response: http.ServerResponse
   ): Promise<void> => {
     let movedTo: unknown;
+    let term: unknown;
     try {
-      movedTo = (JSON.parse(await readSmallBody(request)) as { url?: unknown }).url;
+      ({ url: movedTo, term } = JSON.parse(await readSmallBody(request)) as {
+        url?: unknown;
+        term?: unknown;
+      });
     } catch {
       movedTo = null;
     }
@@ -621,7 +749,12 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     clearTimeout(state.timer);
     let moved: LanHubMoved;
     try {
-      moved = writeLanHubMoved(dataDir, token, movedTo);
+      moved = writeLanHubMoved(
+        dataDir,
+        token,
+        movedTo,
+        typeof term === 'number' && Number.isInteger(term) ? term : readLanHubTerm(dataDir) + 1
+      );
     } catch (error) {
       sendJson(request, response, 500, { error: String(error) });
       return;
@@ -643,6 +776,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       state: () => state,
       hub: hubRoutes,
       token,
+      epoch: readLanHubEpoch(dataDir),
       keepaliveMs: options.keepaliveMs,
       push,
       github: createLanHubGitHub({ dataDir, log: options.log }),

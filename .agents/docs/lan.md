@@ -24,6 +24,7 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | Files          | `apps/cli/src/lib/lan/lan-files.ts`, `lan-file-handoff.ts`                          | The files and images of a message reach the machine that runs its session, over the connection terminals use                  |
 | Folders        | `apps/cli/src/lib/lan/lan-ssh.ts`, `packages/shared/src/lan-ssh.ts`                 | Where the SSH server of a machine answers, so an editor on another member opens a folder of it                                |
 | Machines       | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts`                       | What a machine says about itself, the list of machines, and requests between members                                          |
+| Standby        | `apps/cli/src/lib/lan/lan-hub-standby.ts`, `hub-snapshot.ts`, `hub-failover.ts`     | Keeps a copy of the hub on another server and starts a hub from it when the hub stays away                                    |
 | Requests       | `apps/cli/src/lib/lan/lan-control-channel.ts`                                       | A request of one member to another and its answer, over the connection terminals use                                          |
 | Releases       | `packages/shared/src/lan-release.ts`, `packages/shared/src/node/lan-release.ts`     | What a build follows, how builds are ordered, and the checked download of a release file                                      |
 | Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts`                 | An agent service that replaces itself with the newest build                                                                   |
@@ -496,6 +497,52 @@ followed: a member hands the credential to whatever address it follows.
 Once every member follows, `lody lan down --keep-agent` on the former host
 stops the pointer. A member that was away longer has to be moved by hand.
 
+## Standby and failover
+
+A machine that could host a hub, a server whose agent service the install
+script set up, says so in its machine metadata (`lanHubRole`), with its round
+trip to the hub in steps of 5 ms. Every member chooses the same standby from
+what all of them say (`chooseLanHubStandby` in `packages/shared/src/lan-hub-role.ts`):
+the capable member closest to the hub that does not host it. One that keeps a
+fresh copy stays the standby until another is clearly closer.
+`LODY_LAN_STANDBY=off` keeps a server out of it.
+
+The standby copies the hub every ten minutes. The hub backs its database up
+while it serves (SQLite's online backup) and sends only the 4 MB blocks whose
+digests differ from the standby's copy, with its other files; the standby
+patches its copy beside the current one and keeps it only when every block
+matches.
+
+```text
+ every member, every minute      hub away 2 min: ask the members where it is
+ the standby                     hub away 3 min, no member reaches it:
+                                 start a hub from the copy in the next term,
+                                 tell the members, follow it, then tell the
+                                 old address until a hub there hears it
+```
+
+Members tell each other over the connection terminals use (`lan-hub-peers.ts`,
+a hello that asks for `hub`): where each follows the hub, in which term, and
+whether it reaches it; and that a standby took over. Every move of the hub
+starts the next term, kept in `term.json` with the hub's data; a member keeps
+the term it follows in `lan-hub-terms.json` and follows a later one only. Two
+hubs of the same term settle on the address that sorts first.
+
+A hub that came back after a failover hears from the new hub's machine at
+`/lan/superseded`, stops serving and points its members to the new address,
+as after a handover. What members wrote to it meanwhile they still hold, and
+send to the new hub themselves.
+
+The copy may be minutes behind the hub it replaces. A member that read past
+the copy's end would resume where the new hub has other bytes: it reads
+entries out of place and cannot join the room again. Before the new hub
+serves, every binary stream of the copy therefore continues at a base offset
+no earlier hub reached (`epoch.json`), and the gate answers a read from an
+offset before the base with 410. A client that hears 410 bootstraps again and
+sends what the hub lacks, which is how a write that only it and the lost hub
+had survives (`hub-failover.test.ts` runs this against the Streams server).
+JSON streams, the short-lived request streams, keep their offsets.
+
 ## GitHub
 
 Hosted Lody brokers GitHub tokens from its own GitHub App, whose key and
@@ -529,7 +576,11 @@ panel refreshes when opened and by polling.
   its data directory.
 - A credential cannot be rotated in place. Host a new LAN and move.
 - Only a server with a systemd user session takes a LAN over, as only one hosts
-  it. Phones registered for push keep the address they were given; the iOS
+  it. A failover loses what the lost hub alone had: what was written after the
+  standby's last copy and is held by no member that comes back.
+- While its hub is away, a member does not know who is online, so the standby
+  is chosen from what the members said before. A standby that is down as well
+  leaves the LAN without a hub until someone takes it over by hand. Phones registered for push keep the address they were given; the iOS
   client has to be pointed to the new host by hand.
 - Settings > Machines and the machine picker of Prompt Shortcuts depend on the
   `remoteMachines` capability, which a LAN does not grant. Settings > LAN lists

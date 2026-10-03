@@ -19,6 +19,8 @@ import {
   LAN_HUB_HANDOVER_COMPLETE_PATH,
   LAN_HUB_HANDOVER_PATH,
   readLanHubHandover,
+  readLanHubTerm,
+  writeLanHubTerm,
 } from './hub-handover';
 import { readLanHubToken } from './hub-server';
 import {
@@ -278,6 +280,9 @@ export async function takeOverLan(
     fs.renameSync(dataDir, replaced);
   }
   fs.renameSync(incoming, dataDir);
+  // The hub here serves the next term: members tell it from where the LAN was.
+  const term = readLanHubTerm(dataDir) + 1;
+  writeLanHubTerm(dataDir, term);
 
   let committed = false;
   try {
@@ -290,7 +295,7 @@ export async function takeOverLan(
           const response = await request(`${hub.url}${LAN_HUB_HANDOVER_COMPLETE_PATH}`, {
             method: 'POST',
             headers: { ...authorization, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: publicUrl }),
+            body: JSON.stringify({ url: publicUrl, term }),
             signal: AbortSignal.timeout(30_000),
           });
           if (!response.ok) {

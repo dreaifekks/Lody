@@ -16,6 +16,11 @@ import { serveTerminalConnection, type TerminalService } from '@/lib/terminal-co
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import { serveLanControlConnection } from './lan-control-channel';
+import {
+  serveLanHubPeerConnection,
+  type LanHubLocation,
+  type LanHubPeerHandler,
+} from './lan-hub-peers';
 import { serveLanFileConnection, type LanFileToRead, type ReceivedLanFile } from './lan-files';
 import {
   createLanTerminalServer,
@@ -31,6 +36,9 @@ const MAX_CONNECTIONS = 64;
 export type LanTerminalMembership = {
   readonly hubs: readonly LanHub[];
   readonly workspaces: ReadonlyStore<readonly WorkspaceSummary[]>;
+  /** Follows a LAN's hub to where it is now; whether the settings changed. */
+  adopt?: (hubId: string, location: LanHubLocation, reason: string) => boolean;
+  termOf?: (hubId: string) => number;
 };
 
 /**
@@ -88,6 +96,8 @@ export class LanTerminalHost {
       controlFor?: (
         workspaceId: string
       ) => ((request: LanMemberControlRequest) => Promise<LanMemberControlResponse>) | null;
+      /** Absent on a machine that tells members nothing about the hub. */
+      hubFor?: (workspaceId: string) => LanHubPeerHandler | null;
       /** Records where this machine accepts terminals; `undefined` withdraws it. */
       publish: (workspaceId: string, endpoint: LanTerminalEndpoint | undefined) => Promise<void>;
       /** The port to prefer; `0` for any. */
@@ -210,13 +220,14 @@ export class LanTerminalHost {
   }
 
   private async listen(address: string): Promise<Listener | null> {
-    const { filesFor, controlFor } = this.options;
+    const { filesFor, controlFor, hubFor } = this.options;
     const server = createLanTerminalServer({
       machineId: this.options.machineId,
       services: [
         'terminal',
         ...(filesFor ? (['files'] as const) : []),
         ...(controlFor ? (['control'] as const) : []),
+        ...(hubFor ? (['hub'] as const) : []),
       ],
       logger: this.options.logger,
       keyFor: (lanId) => {
@@ -228,7 +239,8 @@ export class LanTerminalHost {
         const terminals = service === 'terminal' ? this.options.serviceFor(workspaceId) : null;
         const files = service === 'files' ? (filesFor?.(workspaceId) ?? null) : null;
         const control = service === 'control' ? (controlFor?.(workspaceId) ?? null) : null;
-        if (!terminals && !files && !control) {
+        const hub = service === 'hub' ? (hubFor?.(workspaceId) ?? null) : null;
+        if (!terminals && !files && !control && !hub) {
           socket.end(
             `${JSON.stringify({
               type: 'error',
@@ -240,6 +252,14 @@ export class LanTerminalHost {
         }
         this.sockets.add(socket);
         socket.once('close', () => this.sockets.delete(socket));
+        if (hub) {
+          void serveLanHubPeerConnection(socket, {
+            initial,
+            handler: hub,
+            logger: this.options.logger,
+          });
+          return;
+        }
         if (control) {
           void serveLanControlConnection(socket, {
             initial,

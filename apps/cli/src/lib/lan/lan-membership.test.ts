@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   addLanHub,
@@ -233,7 +236,14 @@ describe('LanMembership', () => {
           written.push(onDisk);
           return 'lan-hub.json';
         },
-        askWhere: async (asked) => options.movedTo[asked.name] ?? null,
+        askWhere: async (asked) => {
+          const url = options.movedTo[asked.name];
+          return url ? { url, term: 1 } : null;
+        },
+        termsPath: path.join(
+          fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-terms-')),
+          'terms.json'
+        ),
       });
       await membership.follow();
       return written;

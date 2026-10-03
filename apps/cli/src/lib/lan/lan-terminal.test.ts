@@ -18,6 +18,7 @@ import type { TerminalPtyServiceApi } from '@/lib/terminal-pty-service';
 import { ScopedTerminalService, TerminalRouter } from '@/lib/terminal-services';
 import type { Logger } from '@/utils/logger';
 import { askLanMemberDirectly, LanMemberUnreachableError } from './lan-control-channel';
+import { askLanHubPeer, type LanHubPeerHandler } from './lan-hub-peers';
 import { connectLanTerminal, deriveLanTerminalKey } from './lan-terminal';
 import { LanTerminalHost, resolveLanTerminalPort } from './lan-terminal-host';
 
@@ -151,6 +152,7 @@ describe('terminals between LAN members', () => {
     options: {
       port?: number;
       control?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
+      hub?: LanHubPeerHandler;
     } = {}
   ) {
     const pty = new FakePty('server');
@@ -171,6 +173,9 @@ describe('terminals between LAN members', () => {
             controlFor: (workspaceId: string) =>
               workspaceId === HOME ? (options.control ?? null) : null,
           }
+        : {}),
+      ...(options.hub
+        ? { hubFor: (workspaceId: string) => (workspaceId === HOME ? (options.hub ?? null) : null) }
         : {}),
       publish: async (workspaceId, endpoint) => {
         published.set(workspaceId, endpoint);
@@ -426,6 +431,40 @@ describe('terminals between LAN members', () => {
     });
 
     await expect(asking).rejects.toBeInstanceOf(LanMemberUnreachableError);
+  });
+
+  it('tells a member where it follows the hub, and follows one that took over', async () => {
+    const followed: unknown[] = [];
+    const { published } = await startServer({
+      hub: {
+        where: async () => ({
+          location: { url: 'http://10.0.0.1:8788', term: 2 },
+          reachable: false,
+        }),
+        moved: async (location) => {
+          followed.push(location);
+          return true;
+        },
+      },
+    });
+    const ask = (request: Parameters<typeof askLanHubPeer>[0]['request']) =>
+      askLanHubPeer({
+        endpoint: published.get(HOME)!,
+        lanId: home.id,
+        key: deriveLanTerminalKey(home.token),
+        machineId: SERVER,
+        request,
+      });
+
+    expect(await ask({ type: 'where' })).toEqual({
+      type: 'where',
+      location: { url: 'http://10.0.0.1:8788', term: 2 },
+      reachable: false,
+    });
+    expect(
+      await ask({ type: 'moved', location: { url: 'http://10.0.0.2:8788', term: 3 } })
+    ).toEqual({ type: 'moved', followed: true });
+    expect(followed).toEqual([{ url: 'http://10.0.0.2:8788', term: 3 }]);
   });
 
   it('takes another port when the preferred one is in use', async () => {

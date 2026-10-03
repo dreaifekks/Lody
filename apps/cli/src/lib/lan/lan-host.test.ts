@@ -314,7 +314,7 @@ describe('hostLan', () => {
       expect(readLanHubSettings(settings()).hubs).toEqual([
         { ...member, url: 'http://100.64.0.9:8788' },
       ]);
-      expect(await askWhereLanHubIs(member)).toBe('http://100.64.0.9:8788');
+      expect((await askWhereLanHubIs(member))?.url).toBe('http://100.64.0.9:8788');
       expect(await servedByFormer()).toBe(410);
     });
 
