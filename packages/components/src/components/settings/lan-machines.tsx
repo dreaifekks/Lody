@@ -2,12 +2,14 @@ import { useState, type ComponentType } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import {
+  DatabaseBackup,
   Download,
   Laptop,
   MoreHorizontal,
   PencilLine,
   RefreshCw,
   Server,
+  ServerCog,
   SquareTerminal,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -26,6 +28,7 @@ import { Menu } from '@/ui/menu';
 import { Badge } from '@lody/ui/badge';
 import { Button } from '@lody/ui/button';
 import { Spinner } from '@lody/ui/spinner';
+import { Tooltip } from '@lody/ui/tooltip';
 import { CompactSection } from './compact-layout';
 import { LanHostedImport } from './lan-hosted-import';
 import { LanMachineAlias } from './lan-machine-alias';
@@ -33,7 +36,43 @@ import { LanMachineSshEntry } from './lan-machine-ssh-entry';
 import { lanMachineNameStyle } from '@/lib/lan-machine-color';
 import { settingsCatalog as catalog } from './surface';
 
+/**
+ * What a machine does for the LAN's hub, a line each, for the hint over its
+ * glyph: hosting it, keeping the standby copy, able to take over, or neither.
+ */
+function describeHubPart(machine: LanMachine, t: ReturnType<typeof useTranslation>['t']): string[] {
+  const hub = machine.hub ?? null;
+  if (!hub) {
+    return [
+      t(
+        machine.build?.update === 'desktop'
+          ? 'settings.lan.machines.hub.desktop'
+          : 'settings.lan.machines.hub.member'
+      ),
+    ];
+  }
+  const lines = [t(`settings.lan.machines.hub.part.${hub.part}`)];
+  if (hub.term !== null && hub.part === 'hub') {
+    lines.push(t('settings.lan.machines.hub.term', { term: hub.term }));
+  }
+  if (hub.part === 'standby' && hub.snapshotAt) {
+    const minutes = Math.max(0, Math.round((Date.now() - Date.parse(hub.snapshotAt)) / 60_000));
+    lines.push(t('settings.lan.machines.hub.copiedAgo', { count: minutes }));
+  }
+  if (hub.part !== 'hub') {
+    lines.push(
+      hub.rttMs === null
+        ? t('settings.lan.machines.hub.unreachable')
+        : t('settings.lan.machines.hub.rtt', { ms: hub.rttMs })
+    );
+  }
+  return lines;
+}
+
 const styles = stylex.create({
+  /** The machine that hosts the hub: its glyph is the one in color. */
+  hubGlyph: { color: colors.accent },
+  hubLine: { display: 'block' },
   /** A record that opens nothing: what it offers is in its trailing cluster. */
   body: {
     display: 'flex',
@@ -298,7 +337,16 @@ function MachineRow({
   // An entry is named on this computer, whether the machine answers or not.
   const nameSshEntry = machine.self ? undefined : onNameSshEntry;
   const runtimes = reachable ? machine.agents.filter(needsRuntime) : [];
-  const Glyph = machine.build?.update === 'desktop' ? Laptop : Server;
+  const hub = machine.hub ?? null;
+  const Glyph =
+    hub?.part === 'hub'
+      ? ServerCog
+      : hub?.part === 'standby'
+        ? DatabaseBackup
+        : machine.build?.update === 'desktop'
+          ? Laptop
+          : Server;
+  const hubLines = describeHubPart(machine, t);
   const separator = t('settings.lan.machines.factSeparator');
   const facts = [
     machine.version,
@@ -309,9 +357,25 @@ function MachineRow({
   return (
     <div {...stylex.props(catalog.row)}>
       <div {...stylex.props(styles.body)}>
-        <span {...stylex.props(catalog.glyph)}>
-          <Glyph {...stylex.props(catalog.icon)} aria-hidden="true" />
-        </span>
+        <Tooltip.Root>
+          <Tooltip.Trigger
+            render={
+              <span
+                {...stylex.props(catalog.glyph, hub?.part === 'hub' && styles.hubGlyph)}
+                aria-label={hubLines.join(' · ')}
+              >
+                <Glyph {...stylex.props(catalog.icon)} aria-hidden="true" />
+              </span>
+            }
+          />
+          <Tooltip.Content side="right">
+            {hubLines.map((line, position) => (
+              <span key={position} {...stylex.props(styles.hubLine)}>
+                {line}
+              </span>
+            ))}
+          </Tooltip.Content>
+        </Tooltip.Root>
         <span {...stylex.props(catalog.body)}>
           <span {...stylex.props(catalog.titleLine)}>
             <span {...stylex.props(catalog.name)} style={lanMachineNameStyle(machine.color)}>

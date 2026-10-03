@@ -1,15 +1,26 @@
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseLanInvite } from '@lody/shared/lan-hub';
 import {
+  addLanHub,
   deriveLanHubId,
+  type LanHub,
   probeLanHub,
   readLanHubSettings,
   writeLanHubSettings,
 } from '@lody/shared/node/lan-hub';
-import { hostLan, pickLanHostAddress, type HostLanDependencies } from './lan-host';
+import { askWhereLanHubIs } from './hub-handover';
+import {
+  readLanHubToken,
+  startLanHubServer,
+  type LanHubServer,
+  type LanHubUpstream,
+} from './hub-server';
+import { hostLan, pickLanHostAddress, takeOverLan, type HostLanDependencies } from './lan-host';
 import { LanServiceManager, type CommandResult } from './service';
 
 const address = (value: string, internal = false) => ({
@@ -232,5 +243,102 @@ describe('hostLan', () => {
       )
     ).rejects.toThrow(/set by the environment/);
     expect(calls).toEqual([]);
+  });
+  describe('taking over the host of a LAN', () => {
+    let formerDir: string;
+    let former: LanHubServer;
+    let upstreams: number;
+    let member: LanHub;
+    const closing: Array<() => Promise<void>> = [];
+
+    /** The Streams server of the former host, which has no authentication of its own. */
+    const startStreams = async (): Promise<LanHubUpstream> => {
+      upstreams += 1;
+      const server = http.createServer((request, response) => {
+        response.writeHead(request.method === 'PUT' ? 201 : 200).end('served');
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      let stopped: (code: number | null) => void = () => {};
+      const exited = new Promise<number | null>((resolve) => (stopped = resolve));
+      return {
+        port: (server.address() as AddressInfo).port,
+        exited,
+        stop: () => {
+          server.closeAllConnections();
+          server.close(() => stopped(0));
+        },
+      };
+    };
+
+    beforeEach(async () => {
+      upstreams = 0;
+      formerDir = path.join(directory, 'former');
+      fs.mkdirSync(formerDir);
+      fs.writeFileSync(path.join(formerDir, 'streams.sqlite'), 'the streams of the LAN');
+      former = await startLanHubServer({
+        host: '127.0.0.1',
+        port: 0,
+        dataDir: formerDir,
+        startUpstream: startStreams,
+      });
+      closing.push(() => former.close());
+      member = addLanHub([], { url: former.url, token: former.token, name: 'Home' }).hub;
+      writeLanHubSettings({ hubs: [member], machineName: null }, settings());
+    });
+
+    afterEach(async () => {
+      for (const close of closing.splice(0)) await close();
+    });
+
+    const target = () => ({
+      hub: member,
+      host: '100.64.0.9',
+      port: 8788,
+      dataDir: path.join(directory, 'hosted'),
+    });
+    const servedByFormer = async () =>
+      (
+        await fetch(`${former.url}/ds/lody/room`, {
+          headers: { Authorization: `Bearer ${former.token}` },
+        })
+      ).status;
+
+    it('hosts the data of the former host here and has its members pointed here', async () => {
+      const result = await takeOverLan(target(), dependencies({ readToken: readLanHubToken }));
+
+      expect(result.files.sort()).toEqual(['streams.sqlite', 'token']);
+      expect(fs.readFileSync(path.join(target().dataDir, 'streams.sqlite'), 'utf8')).toBe(
+        'the streams of the LAN'
+      );
+      expect(unit('lody-lan-hub.service')).toContain('"--host" "100.64.0.9" "--port" "8788"');
+      expect(readLanHubSettings(settings()).hubs).toEqual([
+        { ...member, url: 'http://100.64.0.9:8788' },
+      ]);
+      expect((await askWhereLanHubIs(member))?.url).toBe('http://100.64.0.9:8788');
+      expect(await servedByFormer()).toBe(410);
+    });
+
+    it('leaves the LAN with the former host when the new one never answers', async () => {
+      await expect(
+        takeOverLan(
+          target(),
+          dependencies({ readToken: readLanHubToken, probe: async () => 'unreachable' })
+        )
+      ).rejects.toThrow(/to accept connections/);
+
+      expect(fs.existsSync(path.join(directory, 'units', 'lody-lan-hub.service'))).toBe(false);
+      expect(readLanHubSettings(settings()).hubs).toEqual([member]);
+      expect(await askWhereLanHubIs(member)).toBeNull();
+      expect(await servedByFormer()).toBe(200);
+      expect(upstreams).toBe(2);
+    });
+
+    it('asks nothing of the former host when this machine keeps another LAN there', async () => {
+      await expect(
+        takeOverLan(target(), dependencies({ readToken: () => 'another-credential' }))
+      ).rejects.toThrow(/holds another LAN/);
+      expect(await servedByFormer()).toBe(200);
+      expect(upstreams).toBe(1);
+    });
   });
 });

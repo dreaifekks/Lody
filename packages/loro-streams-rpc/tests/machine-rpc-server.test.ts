@@ -154,7 +154,8 @@ describe('LoroStreamsMachineRpcServer', () => {
                   type: 'machine/preview-control_response',
                   machineId,
                   success: true,
-                  runtimeNonce: scenario === 'invalid nonce' ? 'invalid' : previewProof.runtimeNonce,
+                  runtimeNonce:
+                    scenario === 'invalid nonce' ? 'invalid' : previewProof.runtimeNonce,
                 };
               },
         refreshMachineAcpCapabilities: vi.fn(),
@@ -345,6 +346,48 @@ describe('LoroStreamsMachineRpcServer', () => {
       server.stop();
     }
   });
+  it('answers a request that arrived directly to its caller, and writes nothing to the hub', async () => {
+    const fake = createFakeStreamClient();
+    const server = new LoroStreamsMachineRpcServer({
+      logger: createSilentLogger(),
+      workspaceId: 'workspace-1' as WorkspaceId,
+      machineId: 'machine-1' as MachineId,
+      streamClient: fake.streamClient,
+      getMachineStatus: vi.fn(),
+      refreshMachineAcpCapabilities: vi.fn(),
+      getSessionLiveStatus: async ({ sessionId }) => ({
+        type: 'session/live-status_response' as const,
+        machineId: 'machine-1',
+        sessionId,
+        success: true,
+        state: 'running',
+        observedAtMs: 5,
+      }),
+    });
+    const request = (machineId: string) => ({
+      jsonrpc: '2.0',
+      id: 'live-1',
+      method: 'session/live-status',
+      rpcVersion: '1',
+      machineId,
+      workspaceId: 'workspace-1',
+      replyTo: 'workspace-1:rpc:res:client-1',
+      sentAt: 1,
+      expiresAt: Number.MAX_SAFE_INTEGER,
+      params: { sessionId: 'session-1' },
+    });
+
+    expect(await server.handleDirectRequest(request('machine-1'))).toEqual([
+      expect.objectContaining({
+        id: 'live-1',
+        result: expect.objectContaining({ state: 'running' }),
+      }),
+    ]);
+    // A request meant for another machine is not answered, as on the hub.
+    expect(await server.handleDirectRequest(request('machine-2'))).toEqual([]);
+    expect(fake.appended).toEqual([]);
+  });
+
   it('redacts invalid authorization-code requests from warning logs', async () => {
     const fake = createFakeStreamClient();
     const logger = {

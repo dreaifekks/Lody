@@ -55,6 +55,8 @@ interface LodyOptions {
   answerLanMemberControl?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
   /** The agent service takes the files of a message from the members of this workspace's LAN. */
   acceptsLanMemberFiles?: boolean;
+  /** A LAN carries the workspace, so its other machines are reached through the LAN's hub. */
+  lanWorkspace?: boolean;
   cloudPort: CloudPort;
 }
 export class Lody {
@@ -137,6 +139,7 @@ export class Lody {
         workspaceWatchCoordinator: options.workspaceWatchCoordinator,
         answerLanMemberControl: options.answerLanMemberControl,
         acceptsLanMemberFiles: options.acceptsLanMemberFiles,
+        lanWorkspace: options.lanWorkspace,
         cloudPort: options.cloudPort,
       },
       logger: this.logger,
@@ -339,6 +342,11 @@ export class Lody {
     message: LocalMachineRpcRequestValidated
   ): Promise<LocalMachineRpcResponse> {
     return await this.runtime.dispatchLocalMachineRpc(message);
+  }
+
+  /** A machine RPC request a member of this workspace's LAN sent directly. */
+  async handleDirectMachineRpc(raw: unknown): Promise<unknown[] | null> {
+    return await this.runtime.handleDirectMachineRpc(raw);
   }
 
   isControlPlaneReady(): boolean {

@@ -40,6 +40,12 @@ export type ScheduleCommandContext = {
   workspace: WorkspaceSummary;
   auth: AuthContext;
   localOnly: boolean;
+  /**
+   * Whether a hosted backend answers machine access. A LAN member syncs
+   * through its hub (`localOnly` false) yet has no such backend: the ownership,
+   * Agent and Project checks here are its whole gate.
+   */
+  hostedAccess: boolean;
   requesterSessionId?: SessionId;
 };
 
@@ -213,7 +219,7 @@ export async function executeScheduleCommand(
             : 'This schedule’s chat uses a different Agent; start a new chat to change it'
         );
     }
-    if (!localOnly) {
+    if (!localOnly && context.hostedAccess) {
       const { buildProjectOptions } = await import('./schedule-project-options');
       await validateSessionCreateOptions({
         auth,

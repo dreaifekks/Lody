@@ -65,6 +65,7 @@ const MACHINE_META_VISIBLE_KEYS: readonly (keyof MachineViewMeta)[] = [
   'name',
   'ownName',
   'lanColor',
+  'lanHubRole',
   'ownerUserId',
   'localProjects',
   'workspacePaths',

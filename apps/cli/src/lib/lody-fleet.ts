@@ -12,6 +12,7 @@ import {
   getServerNow,
   isLoroRepoDocDeleted,
   syncTime,
+  type LanMemberControlRequest,
   type LocalProjectControlErrorCode,
   type LocalProjectControlRequest,
   type LocalProjectControlResponse,
@@ -55,8 +56,15 @@ import {
   type LanTerminalMembership,
 } from '@/lib/lan/lan-terminal-host';
 import { connectLanTerminal, deriveLanTerminalKey } from '@/lib/lan/lan-terminal';
+import { askLanMemberRpc, LanRpcNotSentError } from '@/lib/lan/lan-rpc-channel';
 import { LanFileHandoff } from '@/lib/lan/lan-file-handoff';
+import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-control';
+import {
+  LanHubStandby,
+  canThisMachineHostLanHub,
+  doesThisMachineHostLanHub,
+} from '@/lib/lan/lan-hub-standby';
 import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import { readLanMachineAlias, type LanMemberWorkspace } from '@/lib/lan/lan-members';
 import { createLanSshDescriber } from '@/lib/lan/lan-ssh';
@@ -182,6 +190,7 @@ export class LodyFleet {
   private readonly lanFileHandoff: LanFileHandoff;
   private lanTerminalHost: LanTerminalHost | null = null;
   private readonly lanFleetControl: LanFleetControl | null;
+  private readonly lanHubStandby: LanHubStandby | null;
   private readonly memoryPressure: MemoryPressureSampler;
   private readonly onFatalAuthFailure?: (error: Error) => void;
   private readonly localPlatform: boolean;
@@ -314,6 +323,21 @@ export class LodyFleet {
           },
         })
       : null;
+    const lanControl = options.lanControl;
+    this.lanHubStandby = lanControl
+      ? new LanHubStandby({
+          logger: this.logger,
+          machineId: this.machineId,
+          dataDir: getLodyDataDir(),
+          hubs: () => this.lan?.hubs ?? [],
+          workspaces: () =>
+            Array.from(this.runtimes.values(), (runtime) => this.toLanMemberWorkspace(runtime)),
+          capable: async () => await canThisMachineHostLanHub({ update: lanControl.build.update }),
+          adopt: (hubId, location, reason) => this.lan?.adopt?.(hubId, location, reason) ?? false,
+          termOf: (hubId) => this.lan?.termOf?.(hubId) ?? 0,
+          hosting: async (hub) => await doesThisMachineHostLanHub(hub),
+        })
+      : null;
     this.lanFileHandoff = new LanFileHandoff({
       machineId: this.machineId,
       logger: this.logger,
@@ -397,6 +421,7 @@ export class LodyFleet {
                 machineName: this.machineName,
               },
               localOnly: this.localPlatform,
+              hostedAccess: this.cloudPort.kind !== 'local',
               requesterSessionId: message.requesterSessionId as SessionId | undefined,
             },
             message.command
@@ -439,6 +464,7 @@ export class LodyFleet {
 
     this.startLanTerminalHost();
     this.lanFleetControl?.start();
+    this.lanHubStandby?.start();
 
     // Start the PR poller BEFORE any workspace runtime can connect: the
     // local-first catalog bootstrap below registers each workspace with the
@@ -682,6 +708,7 @@ export class LodyFleet {
       stopLocalTerminalServer(),
       this.lanTerminalHost?.close(),
       this.lanFleetControl?.close(),
+      this.lanHubStandby?.close(),
       stopLocalLoroDataPlaneServer(),
       stopLodyMcpHttpServer(),
     ]);
@@ -920,6 +947,7 @@ export class LodyFleet {
               }
             : {}),
           acceptsLanMemberFiles: this.lanTerminalHost !== null && this.isLanWorkspace(workspace.id),
+          lanWorkspace: this.isLanWorkspace(workspace.id),
         });
 
         if (!this.desiredWorkspaces.has(workspace.id) || this.stopped) {
@@ -1500,6 +1528,9 @@ export class LodyFleet {
   private async dispatchLocalMachineRpc(
     message: import('@lody/shared').LocalMachineRpcRequestValidated
   ): Promise<import('@lody/shared').LocalMachineRpcResponse> {
+    if (message.method === 'lan/rpc-forward') {
+      return { ok: true, result: await this.forwardLanRpc(message) };
+    }
     const pendingStart = this.startInFlight.get(message.workspaceId);
     if (pendingStart) {
       await pendingStart;
@@ -1511,6 +1542,64 @@ export class LodyFleet {
     }
 
     return await runtime.lody.dispatchLocalMachineRpc(message);
+  }
+
+  /**
+   * Carries a desktop's machine RPC request to the member of a LAN it is
+   * for, over the connection terminals use. `sent` false leaves it to the
+   * hub: the member publishes no endpoint, runs a build without `rpc`, or
+   * cannot be reached from here.
+   */
+  private async forwardLanRpc(
+    message: Extract<
+      import('@lody/shared').LocalMachineRpcRequestValidated,
+      { method: 'lan/rpc-forward' }
+    >
+  ): Promise<import('@lody/shared').LanRpcForwardResult> {
+    const notSent = (error: string) => ({
+      type: 'lan/rpc-forward_response' as const,
+      sent: false,
+      answers: [],
+      error,
+    });
+    const { workspaceId } = message;
+    const { targetMachineId, request } = message.params;
+    const hub = this.lan?.hubs.find(
+      (candidate) => getLanHubWorkspaceId(candidate.id) === workspaceId
+    );
+    const runtime = this.runtimes.get(workspaceId);
+    if (!hub || !runtime) return notSent('No LAN of this machine carries the workspace');
+    const meta = (
+      await runtime.lody.documentManager.repo.getDocMeta(
+        getMachineRoomId(targetMachineId as MachineId)
+      )
+    )?.meta as MachineMeta | undefined;
+    const endpoint = parseLanTerminalEndpoint(meta?.lanTerminal);
+    if (!endpoint) return notSent('The member accepts no direct connections');
+    const expiresAt = (request as { expiresAt?: unknown }).expiresAt;
+    const timeoutMs =
+      typeof expiresAt === 'number'
+        ? Math.min(Math.max(expiresAt - getServerNow(), 1_000), 5 * 60_000)
+        : 30_000;
+    try {
+      const answers = await askLanMemberRpc({
+        endpoint,
+        lanId: hub.id,
+        key: deriveLanTerminalKey(hub.token),
+        machineId: targetMachineId,
+        request,
+        timeoutMs,
+      });
+      return { type: 'lan/rpc-forward_response', sent: true, answers };
+    } catch (error) {
+      if (error instanceof LanRpcNotSentError) return notSent(error.message);
+      return {
+        type: 'lan/rpc-forward_response',
+        sent: true,
+        answers: [],
+        error: formatErrorMessage(error),
+      };
+    }
   }
 
   // Resolves the push-based data-plane engine for a workspace the CLI socket
@@ -1569,6 +1658,7 @@ export class LodyFleet {
       this.logger.info('[lan-terminal] Terminals of this machine are closed to LAN members.');
       return;
     }
+    const control = this.lanFleetControl;
     this.lanTerminalHost = new LanTerminalHost({
       machineId: this.machineId,
       logger: this.logger,
@@ -1583,6 +1673,29 @@ export class LodyFleet {
             )
           : null,
       filesFor: (workspaceId) => this.lanFileHandoff.receiverFor(workspaceId),
+      ...(control
+        ? {
+            controlFor: (workspaceId: string) =>
+              this.runtimes.has(workspaceId)
+                ? async (request: LanMemberControlRequest) => await control.answer(request)
+                : null,
+          }
+        : {}),
+      ...(this.lanHubStandby
+        ? {
+            hubFor: (workspaceId: string) =>
+              this.lanHubStandby?.peerHandlerFor(workspaceId) ?? null,
+          }
+        : {}),
+      rpcFor: (workspaceId: string) => {
+        const runtime = this.runtimes.get(workspaceId);
+        if (!runtime) return null;
+        return async (request: unknown) => {
+          const answers = await runtime.lody.handleDirectMachineRpc(request);
+          if (answers === null) throw new Error('This machine takes no machine requests');
+          return answers;
+        };
+      },
       publish: async (workspaceId, endpoint) =>
         await this.publishLanTerminalEndpoint(workspaceId, endpoint),
     });

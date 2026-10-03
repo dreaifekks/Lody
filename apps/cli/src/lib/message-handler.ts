@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { Effect } from 'effect';
 import {
   createLoroStreamsJsonStreamClient,
+  LoroStreamsMachineRpcClient,
   LoroStreamsMachineRpcServer,
   LORO_STREAMS_RPC_RETENTION_SECONDS,
   LORO_STREAMS_RPC_VERSION,
@@ -619,6 +620,11 @@ export interface MessageHandlerConfig {
    * this workspace's LAN, at the endpoint it publishes for them.
    */
   acceptsLanMemberFiles?: boolean;
+  /**
+   * A LAN carries the workspace: the sessions agents start through Lody's
+   * tools may run on its other machines, reached through the LAN's hub.
+   */
+  lanWorkspace?: boolean;
   cloudPort: CloudPort;
 }
 
@@ -787,6 +793,7 @@ export class MessageHandler {
   private onProcessLifecycleAction?: (action: MachineProcessLifecycleAction) => void;
   private readonly answerLanMemberControl?: MessageHandlerConfig['answerLanMemberControl'];
   private readonly acceptsLanMemberFiles: boolean;
+  private readonly lanWorkspace: boolean;
   private readonly machineLifecycleCapability: MachineLifecycleCapability;
   private pendingProcessLifecycleAction: MachineProcessLifecycleAction | null = null;
   private readonly store = new SessionTransientStore();
@@ -874,6 +881,8 @@ export class MessageHandler {
   private localWorkspaceCatalog: LocalWorkspaceCatalogService;
   private machineRpcServer: LoroStreamsMachineRpcServer | null = null;
   private machineRpcTokenProvider: LoroStreamsTokenProvider | null = null;
+  private machineRpcStreamClient: ReturnType<typeof createLoroStreamsJsonStreamClient> | null =
+    null;
   private machineRpcGatewayBaseUrl: string | null = null;
   private machineRpcServerStartPromise: Promise<void> | null = null;
   private machineRpcServerRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3010,6 +3019,7 @@ export class MessageHandler {
     this.onProcessLifecycleAction = config.onProcessLifecycleAction;
     this.answerLanMemberControl = config.answerLanMemberControl;
     this.acceptsLanMemberFiles = config.acceptsLanMemberFiles === true;
+    this.lanWorkspace = config.lanWorkspace === true;
     this.machineLifecycleCapability = config.machineLifecycleCapability ?? {
       launchMode: 'foreground',
       canRemoteRestart: false,
@@ -3290,6 +3300,7 @@ export class MessageHandler {
           connectTimeoutMs: rpcConnectTimeoutMs,
         },
       });
+      this.machineRpcStreamClient = jsonStreamClient;
       this.machineRpcServer = new LoroStreamsMachineRpcServer({
         logger: this.logger,
         workspaceId: this.workspaceId,
@@ -6442,6 +6453,19 @@ export class MessageHandler {
             };
           },
           cancelSession: async (sessionId, turnId) => {
+            const owner = await this.readSessionOwner(sessionId);
+            if (owner.machineId && owner.machineId !== this.machineId && this.lanWorkspace) {
+              const remoteTurnId = turnId ?? owner.latestUserMsgId;
+              if (!remoteTurnId) return { success: false, error: 'Session has no active turn' };
+              const response = await this.withRemoteMachineRpcClient(
+                owner.machineId as MachineId,
+                async (client) =>
+                  await client.requestSessionCancel({ sessionId, turnId: remoteTurnId })
+              );
+              return response?.success
+                ? { success: true }
+                : { success: false, error: response?.error ?? 'The machine did not answer' };
+            }
             const targetTurnId =
               turnId ?? this.executionService.getExecutionSnapshot(sessionId).activeTurnId;
             if (!targetTurnId) return { success: false, error: 'Session has no active turn' };
@@ -6459,10 +6483,71 @@ export class MessageHandler {
           dispatchSession: async (sessionId) => {
             void this.sessionDispatchWatcher.enqueueSessionCheck(sessionId);
           },
+          ...(this.lanWorkspace
+            ? {
+                remote: {
+                  isOnline: async (machineId: MachineId) => {
+                    const online = await this.workspaceDocument
+                      .getOnlineMachineIds({ timeoutMs: 2_000 })
+                      .catch(() => null);
+                    return online ? online.has(machineId) : null;
+                  },
+                  withClient: async <R>(
+                    machineId: MachineId,
+                    fn: (client: LoroStreamsMachineRpcClient) => Promise<R>
+                  ) => await this.withRemoteMachineRpcClient(machineId, fn),
+                },
+              }
+            : {}),
         },
       }),
       run
     );
+  }
+
+  /** Which machine runs a session, and the turn it was last asked for. */
+  private async readSessionOwner(
+    sessionId: SessionId
+  ): Promise<{ machineId?: string; latestUserMsgId?: string }> {
+    const row = await this.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId));
+    const meta = row?.meta as Partial<SessionMeta> | undefined;
+    return { machineId: meta?.machineId, latestUserMsgId: meta?.latestUserMsgId };
+  }
+
+  /**
+   * Asks another machine of this LAN's workspace through the hub, where its
+   * agent service reads the requests every client of the workspace writes.
+   */
+  private async withRemoteMachineRpcClient<T>(
+    machineId: MachineId,
+    fn: (client: LoroStreamsMachineRpcClient) => Promise<T>
+  ): Promise<T> {
+    const streamClient = this.machineRpcStreamClient;
+    if (!streamClient) throw new Error('This machine reaches no hub');
+    const client = new LoroStreamsMachineRpcClient({
+      workspaceId: this.workspaceId,
+      machineId,
+      streamClient,
+      rpcVersion: LORO_STREAMS_RPC_VERSION,
+      retentionSeconds: LORO_STREAMS_RPC_RETENTION_SECONDS,
+      now: getServerNow,
+      logger: this.logger,
+    });
+    await client.start();
+    try {
+      return await fn(client);
+    } finally {
+      client.stop();
+    }
+  }
+
+  /**
+   * A machine RPC request that another member of this workspace's LAN sent
+   * over its direct connection; `null` where this machine takes no machine
+   * RPC requests at all.
+   */
+  async handleDirectMachineRpc(raw: unknown): Promise<unknown[] | null> {
+    return (await this.machineRpcServer?.handleDirectRequest(raw)) ?? null;
   }
 
   async handleLocalMachineRpc(
@@ -6680,6 +6765,9 @@ export class MessageHandler {
       }
       case 'session/terminate':
         return await this.terminateAcpSession(request.params.sessionId as SessionId);
+      case 'lan/rpc-forward':
+        // The agent service routes these to the member before any workspace.
+        throw new Error('A request for another member is not handled by a workspace');
       case 'machine/pi-extensions':
         return await this.executionService.listMachinePiExtensions(
           request.params.configId as AgentConfigId | undefined

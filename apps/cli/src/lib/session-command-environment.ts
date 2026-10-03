@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
+  getMachineFlockDocId,
   getMachineRoomId,
   isLoroRepoDocDeleted,
   type MachineId,
@@ -8,6 +9,7 @@ import {
   type SessionId,
   type SessionActiveInvocationContextResult,
 } from '@lody/shared';
+import type { LoroStreamsMachineRpcClient } from '@lody/loro-streams-rpc';
 import type { AuthContext } from './command-runtime';
 import type { LoroDocumentManager } from './loro/doc';
 import type { MachineAccessCheckResult, WorkspaceSummary } from './workspace';
@@ -22,6 +24,20 @@ export interface SessionCommandHost {
     turnId?: string
   ): Promise<{ success: boolean; error?: string }>;
   dispatchSession(sessionId: SessionId): Promise<void>;
+  /**
+   * The other machines of a LAN's workspace, reached through the LAN's hub.
+   * Absent where the workspace has no machine but this one.
+   */
+  remote?: SessionCommandRemote;
+}
+
+export interface SessionCommandRemote {
+  /** Whether the machine is online, as the hub says; `null` while it cannot tell. */
+  isOnline(machineId: MachineId): Promise<boolean | null>;
+  withClient<T>(
+    machineId: MachineId,
+    fn: (client: LoroStreamsMachineRpcClient) => Promise<T>
+  ): Promise<T>;
 }
 
 /** A daemon-owned workspace, never a second replica opened by an MCP process. */
@@ -69,9 +85,10 @@ export function createLocalSessionCommandEnvironment(args: {
     async checkMachineAccess(target) {
       if (target.workspaceId !== workspaceId || target.requesterUserId !== userId)
         return { allowed: false, reason: 'requester_not_member' };
-      if (target.machineId !== machineId)
+      // The other machines of a LAN are this user's too; nothing else is reached.
+      if (target.machineId !== machineId && !args.host.remote)
         return { allowed: false, reason: 'machine_not_registered' };
-      const row = await manager.repo.getDocMeta(getMachineRoomId(machineId));
+      const row = await manager.repo.getDocMeta(getMachineRoomId(target.machineId));
       if (
         !row?.meta ||
         isLoroRepoDocDeleted(row) ||
@@ -79,7 +96,19 @@ export function createLocalSessionCommandEnvironment(args: {
       )
         return { allowed: false, reason: 'not_visible' };
       if (target.localProjectId) {
-        const projects = await readMachineLocalProjects(manager.repo, workspaceId, machineId);
+        // Another machine's projects are in its document, which this replica may not hold yet.
+        if (target.machineId !== machineId) {
+          await manager
+            .syncFlockDocOrThrow(getMachineFlockDocId(workspaceId, target.machineId), {
+              reason: 'session.machine-access',
+            })
+            .catch(() => undefined);
+        }
+        const projects = await readMachineLocalProjects(
+          manager.repo,
+          workspaceId,
+          target.machineId
+        );
         const project = Object.values(projects).find((entry) => entry.id === target.localProjectId);
         if (!project) return { allowed: false, reason: 'project_not_shared' };
       }

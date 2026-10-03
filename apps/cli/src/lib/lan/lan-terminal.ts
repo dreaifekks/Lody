@@ -48,7 +48,7 @@ export function deriveLanTerminalKey(token: string): Buffer {
  * named in its hello; one that names none is a terminal connection, as every
  * connection was before there was anything else.
  */
-export const LAN_MEMBER_SERVICES = ['terminal', 'files'] as const;
+export const LAN_MEMBER_SERVICES = ['terminal', 'files', 'control', 'hub', 'rpc'] as const;
 export type LanMemberService = (typeof LAN_MEMBER_SERVICES)[number];
 
 /**

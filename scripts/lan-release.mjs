@@ -5,6 +5,7 @@
 // keeps working for every later build.
 //
 //   node scripts/lan-release.mjs version            # the next release tag's version
+//   node scripts/lan-release.mjs version --channel dev   # the next dev tag's version
 //   node scripts/lan-release.mjs version --tag v0.103.0-lan.1 --write
 //   node scripts/lan-release.mjs version --set 0.103.0-lan.1 --write
 //   node scripts/lan-release.mjs assemble --version 0.103.0-lan.1 --commit <sha> \
@@ -23,6 +24,22 @@ const VERSIONED_MANIFESTS = ['apps/cli/package.json', 'apps/electron/package.jso
 const CHANGELOG_DIRECTORY = 'site-docs/content/changelog/en';
 const INSTALL_SCRIPT_TEMPLATES = ['install.sh', 'install-mac.sh'];
 const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+-lan\.\d+$/u;
+
+/**
+ * Where a tag publishes. A release tag `v<upstream>-lan.<n>` replaces the
+ * rolling release everyone follows; a dev tag `dev-v<upstream>-lan.<n>`
+ * replaces `lan-dev`, which only installations made from it follow. Each
+ * channel numbers its builds on its own, since a build only ever compares
+ * itself with the builds of the release it follows.
+ */
+export const LAN_CHANNELS = {
+  stable: { tagPrefix: 'v', rollingTag: 'lan-latest' },
+  dev: { tagPrefix: 'dev-v', rollingTag: 'lan-dev' },
+};
+
+export function resolveTagChannel(tag) {
+  return String(tag).startsWith(LAN_CHANNELS.dev.tagPrefix) ? 'dev' : 'stable';
+}
 
 /**
  * The fork follows the upstream release line and numbers its own builds in the
@@ -70,10 +87,11 @@ export function readBaseVersion(root = repositoryRoot) {
  * part has to be the release the tagged commit synced.
  */
 export function resolveTagVersion(tag, baseVersion) {
-  const version = String(tag).replace(/^v/u, '');
-  if (!RELEASE_VERSION_PATTERN.test(version) || !/^v/u.test(String(tag))) {
+  const { tagPrefix } = LAN_CHANNELS[resolveTagChannel(tag)];
+  const version = String(tag).slice(tagPrefix.length);
+  if (!RELEASE_VERSION_PATTERN.test(version) || !String(tag).startsWith(tagPrefix)) {
     throw new Error(
-      `A LAN release tag looks like v${baseVersion}-lan.1, got ${JSON.stringify(tag)}`
+      `A LAN release tag looks like v${baseVersion}-lan.1 or dev-v${baseVersion}-lan.1, got ${JSON.stringify(tag)}`
     );
   }
   if (!version.startsWith(`${baseVersion}-lan.`)) {
@@ -89,16 +107,17 @@ export function resolveTagVersion(tag, baseVersion) {
  * The version the next release tag takes: numbers restart at 1 with every
  * upstream release, so a newer upstream part sorts after every earlier build.
  */
-export function nextLanVersion(baseVersion, tags) {
-  const prefix = `v${baseVersion}-lan.`;
+export function nextLanVersion(baseVersion, tags, channel = 'stable') {
+  const prefix = `${LAN_CHANNELS[channel].tagPrefix}${baseVersion}-lan.`;
   const taken = tags
     .filter((tag) => tag.startsWith(prefix) && /^\d+$/u.test(tag.slice(prefix.length)))
     .map((tag) => Number(tag.slice(prefix.length)));
   return composeLanVersion(baseVersion, Math.max(0, ...taken) + 1);
 }
 
-function listReleaseTags(baseVersion, root = repositoryRoot) {
-  return execFileSync('git', ['-C', root, 'tag', '--list', `v${baseVersion}-lan.*`], {
+function listReleaseTags(baseVersion, channel, root = repositoryRoot) {
+  const pattern = `${LAN_CHANNELS[channel].tagPrefix}${baseVersion}-lan.*`;
+  return execFileSync('git', ['-C', root, 'tag', '--list', pattern], {
     encoding: 'utf8',
   })
     .split('\n')
@@ -338,6 +357,7 @@ function main(argv) {
       options: {
         tag: { type: 'string' },
         set: { type: 'string' },
+        channel: { type: 'string', default: 'stable' },
         write: { type: 'boolean', default: false },
       },
     });
@@ -346,9 +366,11 @@ function main(argv) {
     let version = values.set;
     if (version === undefined) {
       const base = readBaseVersion();
+      const { channel } = values;
+      if (!(channel in LAN_CHANNELS)) throw new Error(`No channel ${JSON.stringify(channel)}`);
       version =
         values.tag === undefined
-          ? nextLanVersion(base, listReleaseTags(base))
+          ? nextLanVersion(base, listReleaseTags(base, channel), channel)
           : resolveTagVersion(values.tag, base);
     } else if (!RELEASE_VERSION_PATTERN.test(version)) {
       throw new Error(`Refusing to stamp version ${JSON.stringify(version)}`);

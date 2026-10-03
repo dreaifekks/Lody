@@ -287,6 +287,27 @@ export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
       })
       .strict(),
   }).strict(),
+  /**
+   * A machine RPC request for another member of this workspace's LAN, which
+   * the agent service of this machine carries over its direct connection to
+   * that member instead of the hub. `request` is the envelope the hub would
+   * carry; the target checks it as one read from its request stream.
+   */
+  BaseLocalMachineRpcRequestSchema.extend({
+    method: z.literal('lan/rpc-forward'),
+    params: z
+      .object({
+        targetMachineId: z.string().trim().min(1),
+        request: z
+          .record(z.string(), z.unknown())
+          .refine(
+            (value) =>
+              new TextEncoder().encode(JSON.stringify(value)).byteLength <= 8 * 1024 * 1024,
+            'The request exceeds 8 MiB'
+          ),
+      })
+      .strict(),
+  }).strict(),
   BaseLocalMachineRpcRequestSchema.extend({
     method: z.literal('machine/pi-extensions'),
     params: z
@@ -300,7 +321,23 @@ export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
 export type LocalMachineRpcRequest = z.infer<typeof LocalMachineRpcRequestSchema>;
 export type LocalMachineRpcRequestValidated = LocalMachineRpcRequest;
 
+/**
+ * What became of a request carried to another member: `sent` false when it
+ * never reached the member, which leaves it to the hub; otherwise the
+ * member's answers, as it would have written them to the hub.
+ */
+export const LanRpcForwardResultSchema = z
+  .object({
+    type: z.literal('lan/rpc-forward_response'),
+    sent: z.boolean(),
+    answers: z.array(z.unknown()),
+    error: z.string().optional(),
+  })
+  .strict();
+export type LanRpcForwardResult = z.infer<typeof LanRpcForwardResultSchema>;
+
 export const LocalMachineRpcResultSchema = z.union([
+  LanRpcForwardResultSchema,
   SessionToolResultSchema,
   SessionActiveInvocationContextResultSchema,
   CodeCollabV2FileIndexSnapshotSchema,

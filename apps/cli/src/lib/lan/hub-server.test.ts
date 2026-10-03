@@ -3,9 +3,20 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LAN_GITHUB_TOKEN_PATH, fetchLanHubGitHubCredential } from '@lody/shared/node/lan-github';
 import { removeLanHubGitHubConfig, writeLanHubGitHubConfig } from './hub-github';
+import {
+  LAN_HUB_HANDOVER_ABORT_PATH,
+  LAN_HUB_HANDOVER_COMPLETE_PATH,
+  LAN_HUB_HANDOVER_PATH,
+  LAN_HUB_WHERE_PATH,
+  askWhereLanHubIs,
+  readLanHubHandover,
+  signLanHubMove,
+} from './hub-handover';
 import {
   createLiveReadKeepalive,
   loadOrCreateLanHubToken,
@@ -269,5 +280,133 @@ describe('live read keepalive', () => {
     keepalive.stop();
     vi.advanceTimersByTime(60_000);
     expect(written).toEqual([]);
+  });
+});
+
+describe('moving a LAN host', () => {
+  let dataDir: string;
+  let received: string;
+  let started: Array<Awaited<ReturnType<typeof startFakeStreamsServer>>>;
+  const running: LanHubServer[] = [];
+
+  const start = async () => {
+    const hub = await startLanHubServer({
+      host: '127.0.0.1',
+      port: 0,
+      dataDir,
+      startUpstream: async () => {
+        const streams = await startFakeStreamsServer();
+        started.push(streams);
+        return streams.upstream;
+      },
+    });
+    running.push(hub);
+    return hub;
+  };
+  const call = (
+    hub: LanHubServer,
+    pathname: string,
+    init: { method?: string; body?: string; headers?: Record<string, string> } = {}
+  ) =>
+    fetch(`${hub.url}${pathname}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${hub.token}`, ...init.headers },
+    });
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-hub-move-'));
+    received = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-hub-received-'));
+    started = [];
+    fs.writeFileSync(path.join(dataDir, 'streams.sqlite'), 'the streams of the LAN');
+  });
+
+  afterEach(async () => {
+    for (const hub of running.splice(0)) await hub.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(received, { recursive: true, force: true });
+  });
+
+  it('hands its data over, serves nothing meanwhile, and then points members to the new host', async () => {
+    const hub = await start();
+    writeLanHubGitHubConfig(dataDir, { token: 'ghp_x', login: 'me', userId: '1', savedAt: 'now' });
+
+    const handover = await call(hub, LAN_HUB_HANDOVER_PATH, { method: 'POST' });
+    expect(handover.status).toBe(200);
+    const files = await readLanHubHandover(
+      Readable.fromWeb(handover.body as WebReadableStream<Uint8Array>),
+      received
+    );
+    expect(files.sort()).toEqual(['github.json', 'streams.sqlite', 'token']);
+    expect(fs.readFileSync(path.join(received, 'streams.sqlite'), 'utf8')).toBe(
+      'the streams of the LAN'
+    );
+    expect(readLanHubToken(received)).toBe(hub.token);
+
+    // Nothing may change under the copy.
+    expect((await call(hub, '/ds/lody/room')).status).toBe(503);
+    expect((await call(hub, LAN_HUB_HANDOVER_PATH, { method: 'POST' })).status).toBe(409);
+
+    const complete = await call(hub, LAN_HUB_HANDOVER_COMPLETE_PATH, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'http://100.64.0.9:8788' }),
+    });
+    expect(complete.status).toBe(200);
+
+    const moved = await call(hub, '/ds/lody/room');
+    expect(moved.status).toBe(410);
+    expect(await moved.json()).toMatchObject({ movedTo: 'http://100.64.0.9:8788' });
+    expect((await askWhereLanHubIs({ url: hub.url, token: hub.token }))?.url).toBe(
+      'http://100.64.0.9:8788'
+    );
+    // Only a member learns where the LAN went.
+    expect((await fetch(`${hub.url}${LAN_HUB_WHERE_PATH}`)).status).toBe(401);
+  });
+
+  it('keeps pointing to the new host after it starts again', async () => {
+    const first = await start();
+    const handover = await call(first, LAN_HUB_HANDOVER_PATH, { method: 'POST' });
+    await handover.arrayBuffer();
+    await call(first, LAN_HUB_HANDOVER_COMPLETE_PATH, {
+      method: 'POST',
+      body: JSON.stringify({ url: 'http://100.64.0.9:8788' }),
+    });
+    await first.close();
+
+    const again = await start();
+    expect(started).toHaveLength(1);
+    expect((await askWhereLanHubIs({ url: again.url, token: again.token }))?.url).toBe(
+      'http://100.64.0.9:8788'
+    );
+  });
+
+  it('serves the LAN again when the new host gives up', async () => {
+    const hub = await start();
+    await (await call(hub, LAN_HUB_HANDOVER_PATH, { method: 'POST' })).arrayBuffer();
+
+    const abort = await call(hub, LAN_HUB_HANDOVER_ABORT_PATH, { method: 'POST' });
+    expect(await abort.json()).toEqual({ resumed: true });
+    expect(started).toHaveLength(2);
+    const served = await call(hub, '/ds/lody/room');
+    expect(served.status).toBe(200);
+    expect(await served.text()).toBe('hello');
+    expect(await askWhereLanHubIs({ url: hub.url, token: hub.token })).toBeNull();
+  });
+
+  it('is not followed where the move is not signed with the credential', async () => {
+    const forged = async () =>
+      new Response(
+        JSON.stringify({
+          movedTo: 'http://203.0.113.5:8788',
+          signature: signLanHubMove('another-credential', 'http://203.0.113.5:8788'),
+        }),
+        { status: 410 }
+      );
+    expect(
+      await askWhereLanHubIs(
+        { url: 'http://100.64.0.1:8788', token: 'the-credential' },
+        { fetch: forged }
+      )
+    ).toBeNull();
   });
 });

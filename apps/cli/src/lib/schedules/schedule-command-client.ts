@@ -25,6 +25,7 @@ export async function sendScheduleCommand(
           auth,
           workspace,
           localOnly: false,
+          hostedAccess: true,
           requesterSessionId: options.requesterSessionId,
         },
         command

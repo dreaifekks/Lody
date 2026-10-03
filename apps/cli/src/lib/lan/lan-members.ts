@@ -20,12 +20,20 @@ import {
   type MachineMeta,
   type WorkspaceId,
 } from '@lody/shared';
+import {
+  describeLanHubPart,
+  parseLanHubRole,
+  sameLanHubRole,
+  type LanHubCandidate,
+  type LanHubRole,
+} from '@lody/shared/lan-hub-role';
 import { parseLanMachineBuild, parseLanMachineUpdate } from '@lody/shared/lan-release';
 import {
   parseLanSshDestination,
   sameLanSshDestination,
   type LanSshDestination,
 } from '@lody/shared/lan-ssh';
+import { parseLanTerminalEndpoint, type LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import type { LoroRepo } from 'loro-repo';
 import {
   listMachineIds,
@@ -97,6 +105,19 @@ function mergeAgents(
   return [...merged.values()];
 }
 
+/** What a machine said about its part in keeping the hub, as a list shows it. */
+function describeHubOf(meta: MachineMeta, now: number): LanMachine['hub'] {
+  const role = parseLanHubRole(meta.lanHubRole);
+  const part = describeLanHubPart(role, now);
+  if (!role || !part) return null;
+  return {
+    part,
+    term: role.term ?? null,
+    snapshotAt: role.snapshotAt ?? null,
+    rttMs: role.hubRttMs,
+  };
+}
+
 /**
  * Every machine this machine reaches through its LANs, itself first. A machine
  * that is a member of several of them is listed once.
@@ -159,6 +180,7 @@ export async function listLanMachines(options: {
           self.agents,
           await describeOwnAgents(workspace, machineId, control)
         );
+        if (workspace.lan) self.hub ??= describeHubOf(meta, options.now);
         continue;
       }
       // Nothing but this machine is reached through a workspace no LAN carries.
@@ -172,6 +194,7 @@ export async function listLanMachines(options: {
         known.color ??= normalizeLanMachineColor(meta.lanColor);
         known.online = mergeOnline(known.online, seenOnline);
         known.agents = mergeAgents(known.agents, parseLanAgentRuntimes(meta.lanAgents));
+        known.hub ??= describeHubOf(meta, options.now);
         continue;
       }
       machines.set(id, {
@@ -192,6 +215,7 @@ export async function listLanMachines(options: {
         ),
         controllable: machineSupportsLanControl(meta),
         agents: parseLanAgentRuntimes(meta.lanAgents),
+        hub: describeHubOf(meta, options.now),
       });
     }
   }
@@ -245,6 +269,44 @@ export async function publishLanMachineFacts(options: {
     getMachineRoomId(machineId),
     facts as Parameters<LoroRepo['upsertDocMeta']>[1]
   );
+  return true;
+}
+
+/** What every machine of a LAN's workspace says about its part in keeping the hub. */
+export async function readLanHubCandidates(
+  workspace: LanMemberWorkspace
+): Promise<Array<LanHubCandidate & { endpoint: LanTerminalEndpoint | null }>> {
+  const [ids, online] = await Promise.all([
+    listMachineIds(workspace.repo),
+    workspace.getOnlineMachineIds().catch(() => null),
+  ]);
+  const candidates: Array<LanHubCandidate & { endpoint: LanTerminalEndpoint | null }> = [];
+  for (const id of ids) {
+    const meta = await readMachineMeta(workspace.repo, id);
+    if (!meta || (meta.ownerUserId && meta.ownerUserId !== workspace.userId)) continue;
+    candidates.push({
+      machineId: id,
+      online: online?.has(id) ?? false,
+      role: parseLanHubRole(meta.lanHubRole),
+      endpoint: parseLanTerminalEndpoint(meta.lanTerminal),
+    });
+  }
+  return candidates;
+}
+
+/** Writes this machine's part in keeping the hub into its metadata, when it changed. */
+export async function publishLanHubRole(options: {
+  workspace: LanMemberWorkspace;
+  machineId: MachineId;
+  role: LanHubRole;
+}): Promise<boolean> {
+  const { workspace, machineId, role } = options;
+  if (!workspace.lan) return false;
+  const meta = await readMachineMeta(workspace.repo, machineId);
+  if (!meta || sameLanHubRole(parseLanHubRole(meta.lanHubRole), role)) return false;
+  await workspace.repo.upsertDocMeta(getMachineRoomId(machineId), {
+    lanHubRole: role,
+  } as Parameters<LoroRepo['upsertDocMeta']>[1]);
   return true;
 }
 
@@ -376,7 +438,11 @@ export async function forwardLanMemberControl(options: {
   /** The workspace the request names, if this machine runs it. */
   workspace: LanMemberWorkspace | null;
   machineId: MachineId;
-  send: (request: LanMemberControlRequest) => Promise<LocalProjectControlResponse | null>;
+  /** Puts the request to the member that `machine` describes. */
+  send: (
+    request: LanMemberControlRequest,
+    machine: MachineMeta
+  ) => Promise<LocalProjectControlResponse | null>;
 }): Promise<LanMemberControlResponse> {
   const { request, workspace } = options;
   if (!workspace?.lan) {
@@ -399,7 +465,7 @@ export async function forwardLanMemberControl(options: {
 
   let answer: LocalProjectControlResponse | null;
   try {
-    answer = await options.send(request);
+    answer = await options.send(request, meta);
   } catch (error) {
     return refuse(request, `${meta.name} could not be reached: ${formatErrorMessage(error)}`);
   }

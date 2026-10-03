@@ -12,6 +12,7 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | Piece          | Where                                                                               | What it does                                                                                                                  |
 | -------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Hub            | `apps/cli/src/lib/lan/hub-server.ts`                                                | The single-node Streams server of `@loro-dev/loro-cli` on loopback, behind a bearer-token gate that is the only network entry |
+| Handover       | `apps/cli/src/lib/lan/hub-handover.ts`, `lan-host.ts`                               | Moves a hub onto another machine and points the members there                                                                 |
 | Settings       | `packages/shared/src/node/lan-hub.ts`                                               | `lan-hub.json` in the data directory: the LANs of this installation and the name of this machine                              |
 | Contract       | `packages/shared/src/lan-hub.ts`                                                    | What a renderer may know: ids, slugs, invites, users. Never a credential                                                      |
 | Membership     | `apps/cli/src/lib/lan/lan-membership.ts`                                            | One workspace and one gateway per LAN for the running agent service                                                           |
@@ -23,6 +24,8 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | Files          | `apps/cli/src/lib/lan/lan-files.ts`, `lan-file-handoff.ts`                          | The files and images of a message reach the machine that runs its session, over the connection terminals use                  |
 | Folders        | `apps/cli/src/lib/lan/lan-ssh.ts`, `packages/shared/src/lan-ssh.ts`                 | Where the SSH server of a machine answers, so an editor on another member opens a folder of it                                |
 | Machines       | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts`                       | What a machine says about itself, the list of machines, and requests between members                                          |
+| Standby        | `apps/cli/src/lib/lan/lan-hub-standby.ts`, `hub-snapshot.ts`, `hub-failover.ts`     | Keeps a copy of the hub on another server and starts a hub from it when the hub stays away                                    |
+| Requests       | `apps/cli/src/lib/lan/lan-control-channel.ts`                                       | A request of one member to another and its answer, over the connection terminals use                                          |
 | Releases       | `packages/shared/src/lan-release.ts`, `packages/shared/src/node/lan-release.ts`     | What a build follows, how builds are ordered, and the checked download of a release file                                      |
 | Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts`                 | An agent service that replaces itself with the newest build                                                                   |
 | Desktop update | `apps/electron/src/main/services/lan-updater-*.ts`                                  | A desktop application that replaces itself with the newest build                                                              |
@@ -303,16 +306,27 @@ project-control request, and four of them cross machines: `lan/update-machine`,
 `lan/install-agent`, `hosted-config/preview` and `hosted-config/import`.
 
 ```text
- window ─ lan/forward ─▶ agent service ─ stream in the hub ─▶ agent service
-                         of this machine                      of the member
+ window ─ lan/forward ─▶ agent service ─ TLS-PSK ─────────────────▶ agent service
+                         of this machine                            of the member
+                                   └─ stream in the hub, if no connection ─┘
 ```
 
 The window hands the request to the agent service of its own machine, which
-puts it on the stream the member reads in the hub of a LAN both are in, the way
-a desktop browses the projects of another machine. A machine advertises
-`lanControl` in its protocol capabilities. One that does not is not asked: it
-would drop a request it cannot read without answering, and the asking member
-would wait in vain. Such a machine is updated by hand once.
+connects to the member where it accepts members, as for a terminal, with a
+hello that asks for `control`. The connection carries the request and the
+answer, one line each, and ends; the member answers only for the workspace of
+the LAN whose key opened it. The hub carries the request only when that
+connection never got as far as the request: the member publishes no endpoint,
+cannot be reached from here, or runs a build that serves no `control`. It then
+goes on the stream the member reads in the hub of a LAN both are in, the way a
+desktop browses the projects of another machine. A connection that breaks
+after the request left is not tried again through the hub, so no member is
+asked twice.
+
+A machine advertises `lanControl` in its protocol capabilities. One that does
+not is not asked by either way: it would drop a request it cannot read without
+answering, and the asking member would wait in vain. Such a machine is updated
+by hand once.
 
 The runtime of an agent is pinned by the build of the agent service. A machine
 reports the version it has and the one its build runs agents with, and
@@ -401,7 +415,16 @@ branch, it builds without publishing. `<upstream>` is the newest release in the 
 (`site-docs/content/changelog/en`, since upstream never bumps its manifests),
 and `<n>` restarts at 1 with each upstream release, so the updater's order of
 upstream part first, build second always puts a later tag after an earlier one.
-`lan-release.mjs version` prints the next tag's version. `scripts/lan-release.mjs` names the build and assembles
+`lan-release.mjs version` prints the next tag's version.
+
+A tag `dev-v<upstream>-lan.<n>` builds the same way and replaces `lan-dev`
+instead, a prerelease that only installations made from it follow: its builds
+are stamped with that tag, and its install scripts install from it. A branch
+is tried on a few machines that way before it is merged and released to
+everyone. Dev builds number themselves on their own
+(`lan-release.mjs version --channel dev`), since a build only compares itself
+with the builds of the release it follows; a machine changes channel by
+installing from the other release. `scripts/lan-release.mjs` names the build and assembles
 the release; `scripts/lan/install.sh` and `install-mac.sh` are published with
 it. A fork build may carry no publisher's signature, which neither the updater
 of the platform nor the one of the framework accepts, so every fork build
@@ -437,6 +460,126 @@ Changes to a submodule the fork cannot push to live in `patches/submodules/`;
 `scripts/apply-submodule-patches.mjs` applies them before the adapters build,
 and fails the build once an upstream update conflicts with one.
 
+## Moving the host
+
+A LAN is its credential, so its hub can move to another machine and stay the
+same LAN: the data directory goes along, and the members only need the new
+address. `lody lan take-over`, run on a member that is to host the LAN, does
+both with the current host.
+
+```text
+ new host                               current host
+ POST /lan/handover ──────────────────▶ stops its Streams server, serves nothing
+                    ◀── data directory ─ token, database, GitHub and push files
+ starts a hub with it
+ POST /lan/handover/complete ─────────▶ writes moved.json, answers 410 with the
+                                        new address to every request after
+```
+
+While it hands over, the current host answers every request with 503: a
+database that stands still is one a plain copy reads whole, write-ahead log
+included. Each file travels with its size and SHA-256 and the new host checks
+that the credential it received is the LAN's own. Until `complete` nothing is
+decided. A new host that fails before it, including one whose hub never
+answers, removes its hub service and tells the current host to serve again;
+a current host that hears nothing for ten minutes does so by itself. Two hubs
+therefore never serve one LAN.
+
+After `complete` the former host is a pointer. `/lan/where` and every request
+behind its gate answer with the new address, signed with a key derived from
+the credential, and it stays a pointer across restarts. The agent service of
+every member asks each hub where it is once a minute (`LanMembership`), writes
+an address that carries a valid signature into `lan-hub.json`, and then
+[follows the change](#following-a-change) as it follows `lody lan move`. A
+hub that is away has not moved, and an address without the signature is not
+followed: a member hands the credential to whatever address it follows.
+
+Once every member follows, `lody lan down --keep-agent` on the former host
+stops the pointer. A member that was away longer has to be moved by hand.
+
+## A desktop's requests to other machines
+
+A desktop asks another machine for what it shows of that machine's sessions
+and projects with machine RPC requests, which the hub carries on request and
+response streams. In a LAN the window hands the ones answered once (dispatch,
+steer, cancel, goal and live status of a session, its preparation, Code
+Collab and file previews, project control and git state) to the agent service
+of its own machine instead (`lan/rpc-forward` on the local socket). That
+service carries the request, as the hub would have carried it, to the member
+over the connection terminals use (a hello that asks for `rpc`,
+`lan-rpc-channel.ts`), and the member handles it as one read from its request
+stream, with the same checks and the same encryption
+(`handleDirectRequest` of the machine RPC server), its answers coming back
+over the connection instead of going to the hub.
+
+A request that never reached the member, because it publishes no endpoint,
+runs a build without `rpc` or cannot be reached from here, goes through the
+hub as before. One that reached it and failed is not sent again. Requests
+that wait for a second one, such as a cancellation, or that report progress
+(restarts, updates, sign-ins, runtime installs) stay on the hub.
+
+## Sessions agents start on other machines
+
+An agent asks for a session on another machine of its LAN through Lody's
+tools (`lody_session_create`, `lody_session_chat`, `lody_session_status`,
+`lody_session_cancel`) as the desktop does. The agent service of its own
+machine writes the session's document and dispatch pointer into the LAN's
+workspace, which the other machine reads through the hub, and asks that
+machine over the hub's request streams to take the turn now rather than
+when it next looks (`SessionCommandRemote` in
+`apps/cli/src/lib/session-command-environment.ts`). The operation stays with
+the machine that was asked, which completes it from the synced document.
+
+A machine of the LAN is reached when it is the workspace user's, like every
+member; a machine the hub says is offline is refused, and one the hub cannot
+say anything about is left to the document, which waits for it.
+
+## Standby and failover
+
+A machine that could host a hub, a server whose agent service the install
+script set up, says so in its machine metadata (`lanHubRole`), with its round
+trip to the hub in steps of 5 ms. Every member chooses the same standby from
+what all of them say (`chooseLanHubStandby` in `packages/shared/src/lan-hub-role.ts`):
+the capable member closest to the hub that does not host it. One that keeps a
+fresh copy stays the standby until another is clearly closer.
+`LODY_LAN_STANDBY=off` keeps a server out of it.
+
+The standby copies the hub every ten minutes. The hub backs its database up
+while it serves (SQLite's online backup) and sends only the 64 KB blocks whose
+digests differ from the standby's copy, with its other files; the standby
+patches its copy beside the current one and keeps it only when every block
+matches.
+
+```text
+ every member, every minute      hub away 2 min: ask the members where it is
+ the standby                     hub away 3 min, no member reaches it:
+                                 start a hub from the copy in the next term,
+                                 tell the members, follow it, then tell the
+                                 old address until a hub there hears it
+```
+
+Members tell each other over the connection terminals use (`lan-hub-peers.ts`,
+a hello that asks for `hub`): where each follows the hub, in which term, and
+whether it reaches it; and that a standby took over. Every move of the hub
+starts the next term, kept in `term.json` with the hub's data; a member keeps
+the term it follows in `lan-hub-terms.json` and follows a later one only. Two
+hubs of the same term settle on the address that sorts first.
+
+A hub that came back after a failover hears from the new hub's machine at
+`/lan/superseded`, stops serving and points its members to the new address,
+as after a handover. What members wrote to it meanwhile they still hold, and
+send to the new hub themselves.
+
+The copy may be minutes behind the hub it replaces. A member that read past
+the copy's end would resume where the new hub has other bytes: it reads
+entries out of place and cannot join the room again. Before the new hub
+serves, every binary stream of the copy therefore continues at a base offset
+no earlier hub reached (`epoch.json`), and the gate answers a read from an
+offset before the base with 410. A client that hears 410 bootstraps again and
+sends what the hub lacks, which is how a write that only it and the lost hub
+had survives (`hub-failover.test.ts` runs this against the Streams server).
+JSON streams, the short-lived request streams, keep their offsets.
+
 ## GitHub
 
 Hosted Lody brokers GitHub tokens from its own GitHub App, whose key and
@@ -469,13 +612,21 @@ panel refreshes when opened and by polling.
 - The hub is a development server on SQLite: one node, no replication. Back up
   its data directory.
 - A credential cannot be rotated in place. Host a new LAN and move.
+- Only a server with a systemd user session takes a LAN over, as only one hosts
+  it. A failover loses what the lost hub alone had: what was written after the
+  standby's last copy and is held by no member that comes back.
+- While its hub is away, a member does not know who is online, so the standby
+  is chosen from what the members said before. A standby that is down as well
+  leaves the LAN without a hub until someone takes it over by hand. Phones registered for push keep the address they were given; the iOS
+  client has to be pointed to the new host by hand.
 - Settings > Machines and the machine picker of Prompt Shortcuts depend on the
   `remoteMachines` capability, which a LAN does not grant. Settings > LAN lists
   the machines instead.
 - A desktop application is updated from its own window, and an agent service
   that nothing starts again by whoever started it; no member can ask either.
-- A request between members waits in the hub for up to two minutes. Anyone who
-  holds the credential can read it there, as they can read everything else.
+- A request between members that cannot connect to each other waits in the hub
+  for up to two minutes. Anyone who holds the credential can read it there, as
+  they can read everything else.
 - The desktop application cannot host a LAN; it does not ship the Streams
   server.
 - Terminals and files of other members need a direct path between the

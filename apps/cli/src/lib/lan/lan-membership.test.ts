@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   addLanHub,
@@ -214,5 +217,62 @@ describe('LanMembership', () => {
     expect(harness.isWatching()).toBe(true);
     harness.membership.close();
     expect(harness.isWatching()).toBe(false);
+  });
+
+  describe('a hub that moved', () => {
+    const follow = async (options: {
+      onDisk: LanHubSettings;
+      movedTo: Record<string, string | null>;
+    }) => {
+      let onDisk = options.onDisk;
+      const written: LanHubSettings[] = [];
+      const membership = new LanMembership({
+        settings: settings([home, office]),
+        logger: silentLogger(),
+        onRestartRequired: () => {},
+        read: () => onDisk,
+        write: (next) => {
+          onDisk = { ...next, source: 'file' };
+          written.push(onDisk);
+          return 'lan-hub.json';
+        },
+        askWhere: async (asked) => {
+          const url = options.movedTo[asked.name];
+          return url ? { url, term: 1 } : null;
+        },
+        termsPath: path.join(
+          fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-terms-')),
+          'terms.json'
+        ),
+      });
+      await membership.follow();
+      return written;
+    };
+
+    it('is followed to where it says it went, and the other LANs stay', async () => {
+      const written = await follow({
+        onDisk: settings([home, office], 'desk'),
+        movedTo: { Home: 'http://100.64.0.9:8788' },
+      });
+
+      expect(written).toEqual([
+        {
+          hubs: [{ ...home, url: 'http://100.64.0.9:8788' }, office],
+          machineName: 'desk',
+          source: 'file',
+        },
+      ]);
+    });
+
+    it('is left alone where the settings already changed', async () => {
+      const elsewhere = { ...home, url: 'http://100.64.0.7:8788' };
+      expect(
+        await follow({
+          onDisk: settings([elsewhere, office]),
+          movedTo: { Home: 'http://100.64.0.9:8788' },
+        })
+      ).toEqual([]);
+      expect(await follow({ onDisk: settings([office]), movedTo: { Home: 'x' } })).toEqual([]);
+    });
   });
 });

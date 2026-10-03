@@ -191,9 +191,19 @@ describe('the machines of the LANs of a machine', () => {
       getOnlineMachineIds: async () => new Set([THIS, SERVER]),
     });
     const office = await workspace(OFFICE, { getOnlineMachineIds: async () => new Set([THIS]) });
-    await register(home, THIS);
+    await register(home, THIS, {
+      // A copy taken just now, at the list's clock of 500 ms after the epoch.
+      lanHubRole: {
+        capable: true,
+        hosting: false,
+        hubRttMs: 5,
+        snapshotAt: '1970-01-01T00:00:00.000Z',
+        term: 2,
+      },
+    });
     await register(office, THIS);
     await register(home, SERVER, {
+      lanHubRole: { capable: true, hosting: true, hubRttMs: 0, term: 2 },
       cliVersion: '0.100.0-lan.3',
       lanBuild: { version: '0.100.0-lan.3', update: 'service', source },
       lanAgents: [
@@ -239,6 +249,7 @@ describe('the machines of the LANs of a machine', () => {
           state: 'current',
         },
       ],
+      hub: { part: 'standby', term: 2, snapshotAt: '1970-01-01T00:00:00.000Z', rttMs: 5 },
     });
     expect(machines[1]).toMatchObject({
       machineId: SERVER,
@@ -252,6 +263,7 @@ describe('the machines of the LANs of a machine', () => {
       build: { update: 'service' },
       controllable: true,
       agents: [{ agentType: 'claude', version: '2.1.280' }],
+      hub: { part: 'hub', term: 2, snapshotAt: null, rttMs: 0 },
     });
     expect(machines[2]).toMatchObject({
       machineId: LAPTOP,
@@ -260,6 +272,7 @@ describe('the machines of the LANs of a machine', () => {
       build: null,
       controllable: false,
       agents: [],
+      hub: null,
     });
   });
 

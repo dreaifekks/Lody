@@ -1,3 +1,4 @@
+import { parseLanHubRole } from '@lody/shared/lan-hub-role';
 import { openSessionOnModifiedClick } from '@/lib/desktop-window';
 import { jsonValueEqual } from '@/lib/json-value-equal';
 import { lanMachineNameStyle } from '@/lib/lan-machine-color';
@@ -2806,6 +2807,7 @@ export function LoroAppSidebar({
                   isCurrent: section.kind === 'local',
                   os: machineMeta.os,
                   projectCount: section.projects.length,
+                  hubRole: parseLanHubRole(machineMeta.lanHubRole),
                 }
               : null;
           // A folded machine says whether anything in its projects needs the
