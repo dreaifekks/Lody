@@ -69,6 +69,7 @@ import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import { readLanMachineAlias, type LanMemberWorkspace } from '@/lib/lan/lan-members';
 import { createLanSshDescriber } from '@/lib/lan/lan-ssh';
 import { createLanNotificationsPort } from '@/lib/lan/lan-push-notifier';
+import { createLanPushFallback, type LanPushFallback } from '@/lib/lan/lan-push-fallback';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import { parseLanTerminalEndpoint, type LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import {
@@ -171,6 +172,8 @@ type WorkspaceRuntimeState = {
 
 export class LodyFleet {
   private readonly logger: Logger;
+  /** Shared by the LAN workspaces: alerts sent from here while a hub is away. */
+  private lanPushFallback: LanPushFallback | null = null;
   private readonly builtinAgentConfigCliTypes: CliType[];
   private readonly supportRegistryAgentTypes: string[];
   private readonly cliToken: string;
@@ -699,6 +702,7 @@ export class LodyFleet {
     this.stopRuntimeStateLoop();
     this.memoryPressure.stop();
     Effect.runSync(this.prStatusPoller.stop);
+    this.lanPushFallback?.close();
 
     // Stop accepting local work before draining workspace runtimes. Endpoint
     // teardown must not sit behind slow agent/session cleanup, and the owning
@@ -1189,6 +1193,7 @@ export class LodyFleet {
               return alias ?? this.machineName;
             },
             logger: this.logger,
+            fallback: (this.lanPushFallback ??= createLanPushFallback({ logger: this.logger })),
           })
         : this.cloudPort.notifications;
     const sameUser = !workspace.userId || workspace.userId === this.cloudPort.identity.userId;

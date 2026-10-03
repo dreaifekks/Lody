@@ -27,6 +27,7 @@ import {
 } from '@/lib/lan/lan-build';
 import { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import { LanMembership, toLanWorkspaces } from '@/lib/lan/lan-membership';
+import { createLanCredentialSync } from '@/lib/lan/lan-credential-sync';
 import { LanServiceManager } from '@/lib/lan/service';
 import { makeLocalWorkspaceCatalog } from '@/lib/local-workspace-catalog';
 import { checkClaude, checkCodex } from '@/utils';
@@ -632,6 +633,7 @@ async function startAgentService(
       settings: localStart?.lanSettings ?? { hubs: [], machineName: null, source: 'none' },
       logger,
       onRestartRequired: (reason) => triggerLanRestart?.(`LAN settings changed: ${reason}`),
+      credentials: (hubs) => createLanCredentialSync({ hubs, logger }),
     });
     const streamsTokens = lanMembership.streamsTokens;
     const githubTokens = lanMembership.githubTokens;

@@ -13,6 +13,7 @@ import type { pullLanHubSnapshot } from './hub-snapshot';
 import type { askLanHubPeer, LanHubPeerAnswer } from './lan-hub-peers';
 import { LanHubStandby, getLanHubStandbyDirectory, roundLanHubRtt } from './lan-hub-standby';
 import type { LanMemberWorkspace } from './lan-members';
+import { fillMissingLanHubCredentials } from './lan-credential-sync';
 
 const silentLogger = (): Logger => ({
   info: () => {},
@@ -288,5 +289,40 @@ describe('the standby of a LAN hub', () => {
   it('says round trips in steps, so jitter changes nothing', () => {
     expect([0.4, 3, 7, 8, 12].map(roundLanHubRtt)).toEqual([5, 5, 5, 10, 10]);
     expect(roundLanHubRtt(null)).toBeNull();
+  });
+});
+
+describe('a hub promoted from a standby copy', () => {
+  it("takes from this machine's copy of the credentials only what the standby copy lacks", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-promote-'));
+    try {
+      const hubDir = path.join(root, 'hub');
+      const copy = path.join(root, 'copy');
+      fs.mkdirSync(hubDir);
+      fs.mkdirSync(copy);
+      // The standby copy predates the APNs key; its phones are newer than the member's.
+      fs.writeFileSync(path.join(hubDir, 'push-devices.json'), '{"devices":["standby"]}');
+      for (const [name, content] of [
+        ['github.json', '{"token":"github_pat_1"}'],
+        ['apns.json', '{"keyId":"ABCDEFGHIJ","teamId":"TEAM123456"}'],
+        ['apns-key.p8', 'key'],
+        ['push-devices.json', '{"devices":["member"]}'],
+      ]) {
+        fs.writeFileSync(path.join(copy, name), content as string);
+      }
+
+      expect(fillMissingLanHubCredentials(hubDir, copy).sort()).toEqual([
+        'apns-key.p8',
+        'apns.json',
+        'github.json',
+      ]);
+      expect(fs.readFileSync(path.join(hubDir, 'push-devices.json'), 'utf8')).toContain('standby');
+      expect(fs.statSync(path.join(hubDir, 'apns-key.p8')).mode & 0o777).toBe(0o600);
+      // Half a key is no key: an APNs pair is taken whole or not at all.
+      fs.rmSync(path.join(hubDir, 'apns-key.p8'));
+      expect(fillMissingLanHubCredentials(hubDir, copy)).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
