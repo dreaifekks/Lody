@@ -6,6 +6,10 @@ import { Command } from 'commander';
 import { formatLanInvite, parseLanInvite } from '@lody/shared/lan-hub';
 import { fetchLanHubGitHubCredential } from '@lody/shared/node/lan-github';
 import {
+  LAN_HUB_CREDENTIALS_APNS_PATH,
+  LAN_HUB_CREDENTIALS_GITHUB_PATH,
+} from '@lody/shared/node/lan-credentials';
+import {
   addLanHub,
   findLanHub,
   normalizeMachineNameInput,
@@ -28,7 +32,7 @@ import {
   startLanHubServer,
 } from '@/lib/lan/hub-server';
 import { hostLan, pickLanHostAddress, takeOverLan } from '@/lib/lan/lan-host';
-import { readApnsConfig, writeApnsConfig } from '@/lib/lan/apns';
+import { readApnsConfig, validateApnsConfig, writeApnsConfig } from '@/lib/lan/apns';
 import {
   describeGitHubToken,
   removeLanHubGitHubConfig,
@@ -658,31 +662,76 @@ type PushSetupOptions = OutputOptions & {
   key: string;
   keyId?: string;
   teamId: string;
-  dataDir: string;
+  dataDir?: string;
 };
+
+/**
+ * Sets or removes a credential on the hub of a LAN, which hands it to every
+ * member. Only `--data-dir` writes the files of a hub on this machine instead.
+ */
+async function callHubCredentials(
+  hub: LanHub,
+  method: 'PUT' | 'DELETE',
+  route: string,
+  body?: unknown
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`${hub.url}${route}`, {
+    method,
+    headers: { Authorization: `Bearer ${hub.token}`, 'Content-Type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    redirect: 'error',
+    signal: AbortSignal.timeout(20_000),
+  });
+  const answer = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status === 404) {
+    throw new Error(
+      `${hub.name} runs a host that takes no credentials from members; update it, or run this on the host with --data-dir`
+    );
+  }
+  if (!response.ok) {
+    throw new Error(
+      `${hub.name} refused: ${typeof answer.error === 'string' ? answer.error : response.status}`
+    );
+  }
+  return answer;
+}
 
 const pushSetupCommand = new Command('setup')
   .description('Give the LAN host an APNs key so it can push to phones')
+  .argument('[lan]', 'Name or id of the LAN')
   .requiredOption('--key <path>', 'AuthKey_<KEYID>.p8 downloaded from Apple Developer')
   .option('--key-id <id>', 'Key ID; read from the file name when omitted')
   .requiredOption('--team-id <id>', 'Apple Developer team ID')
-  .option('--data-dir <path>', 'Data directory of the LAN host', getDefaultLanHubDataDir())
+  .option(
+    '--data-dir <path>',
+    'Write into this LAN host data directory instead of sending to the hub'
+  )
   .option('--json', 'Print JSON output')
   .option('--debug', 'Enable debug output')
-  .action(async (options: PushSetupOptions) => {
+  .action(async (selector: string | undefined, options: PushSetupOptions) => {
     await runOneShotCommand('lan', options, async () => {
       const keyId = options.keyId ?? /AuthKey_([A-Z0-9]{10})\.p8$/.exec(options.key)?.[1];
       if (!keyId) throw new Error('Pass --key-id; it is not in the file name');
-      writeApnsConfig(path.resolve(options.dataDir), {
+      const config = validateApnsConfig({
         keyId,
         teamId: options.teamId,
         privateKey: fs.readFileSync(options.key, 'utf8'),
       });
+      let where = 'The running host';
+      if (options.dataDir) {
+        writeApnsConfig(path.resolve(options.dataDir), config);
+      } else {
+        const hub = requireLan(readLanHubSettings(), selector);
+        await callHubCredentials(hub, 'PUT', LAN_HUB_CREDENTIALS_APNS_PATH, config);
+        where = `${hub.name}`;
+      }
       if (options.json) {
         printJson({ ok: true, keyId, teamId: options.teamId });
         return;
       }
-      console.log(`APNs key ${keyId} saved. The running host uses it from its next push.`);
+      console.log(
+        `APNs key ${keyId} saved. ${where} uses it from its next push; members copy it within 10 minutes.`
+      );
     });
   });
 
@@ -713,7 +762,7 @@ const pushStatusCommand = new Command('status')
         return;
       }
       console.log(
-        `${hub.name}: ${body.configured ? 'APNs configured' : 'no APNs key (run `lody lan push setup` on the host)'}, ` +
+        `${hub.name}: ${body.configured ? 'APNs configured' : 'no APNs key (run `lody lan push setup`)'}, ` +
           `${String(body.devices ?? 0)} phone(s) registered`
       );
     });
@@ -744,7 +793,7 @@ const pushCommand = new Command('push')
   .addCommand(pushStatusCommand)
   .addCommand(pushTestCommand);
 
-type GitHubSetupOptions = OutputOptions & { fromGh?: boolean; dataDir: string };
+type GitHubSetupOptions = OutputOptions & { fromGh?: boolean; dataDir?: string };
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -767,11 +816,15 @@ const githubSetupCommand = new Command('setup')
     'Give the LAN host the GitHub token its members use when they have no gh login; ' +
       'the token is read from standard input'
   )
+  .argument('[lan]', 'Name or id of the LAN')
   .option('--from-gh', "Use the token of this machine's own gh login")
-  .option('--data-dir <path>', 'Data directory of the LAN host', getDefaultLanHubDataDir())
+  .option(
+    '--data-dir <path>',
+    'Write into this LAN host data directory instead of sending to the hub'
+  )
   .option('--json', 'Print JSON output')
   .option('--debug', 'Enable debug output')
-  .action(async (options: GitHubSetupOptions) => {
+  .action(async (selector: string | undefined, options: GitHubSetupOptions) => {
     await runOneShotCommand('lan', options, async () => {
       if (!options.fromGh && process.stdin.isTTY) {
         throw new Error(
@@ -779,15 +832,24 @@ const githubSetupCommand = new Command('setup')
             'a token typed as an argument stays in the shell history'
         );
       }
+      const hub = options.dataDir ? null : requireLan(readLanHubSettings(), selector);
       const token = options.fromGh ? readGhLoginToken() : await readStdin();
       if (!token) throw new Error('No token was given');
       const { login, userId } = await describeGitHubToken(token);
-      writeLanHubGitHubConfig(path.resolve(options.dataDir), {
-        token,
-        login,
-        userId,
-        savedAt: new Date().toISOString(),
-      });
+      if (hub) {
+        await callHubCredentials(hub, 'PUT', LAN_HUB_CREDENTIALS_GITHUB_PATH, {
+          token,
+          login,
+          userId,
+        });
+      } else if (options.dataDir) {
+        writeLanHubGitHubConfig(path.resolve(options.dataDir), {
+          token,
+          login,
+          userId,
+          savedAt: new Date().toISOString(),
+        });
+      }
       if (options.json) {
         printJson({ ok: true, login, userId });
         return;
@@ -816,19 +878,28 @@ const githubStatusCommand = new Command('status')
       console.log(
         credential
           ? `${hub.name}: GitHub token of ${credential.login ?? 'an unknown account'}`
-          : `${hub.name}: no GitHub token (run \`lody lan github setup\` on the host)`
+          : `${hub.name}: no GitHub token (run \`lody lan github setup\`)`
       );
     });
   });
 
 const githubRemoveCommand = new Command('remove')
   .description('Remove the GitHub token from the LAN host')
-  .option('--data-dir <path>', 'Data directory of the LAN host', getDefaultLanHubDataDir())
+  .argument('[lan]', 'Name or id of the LAN')
+  .option('--data-dir <path>', 'Remove it from this LAN host data directory instead of the hub')
   .option('--json', 'Print JSON output')
   .option('--debug', 'Enable debug output')
-  .action(async (options: OutputOptions & { dataDir: string }) => {
+  .action(async (selector: string | undefined, options: OutputOptions & { dataDir?: string }) => {
     await runOneShotCommand('lan', options, async () => {
-      const removed = removeLanHubGitHubConfig(path.resolve(options.dataDir));
+      const removed = options.dataDir
+        ? removeLanHubGitHubConfig(path.resolve(options.dataDir))
+        : (
+            await callHubCredentials(
+              requireLan(readLanHubSettings(), selector),
+              'DELETE',
+              LAN_HUB_CREDENTIALS_GITHUB_PATH
+            )
+          ).removed === true;
       if (options.json) {
         printJson({ ok: true, removed });
         return;

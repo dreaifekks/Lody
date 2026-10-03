@@ -125,9 +125,10 @@ Both desktop apps can run side by side.
 ## Roadmap
 
 - **Toward peer to peer:** requests between machines go over their direct
-  connections, the hub moves with `lody-lan lan take-over`, and a standby
-  server takes it over when it stays away. Left: keep credentials and keys on
-  every member rather than on the hub, and let a phone follow the hub when it
+  connections, the hub moves with `lody-lan lan take-over`, a standby server
+  takes it over when it stays away, and every member keeps a copy of the
+  GitHub token, the APNs key and the phones, so pull requests and alerts keep
+  working while the hub is away. Left: let a phone follow the hub when it
   moves. The hub stays as a relay that stores what an offline member has not
   seen yet.
 - **Missing pieces:** remote preview over the members' direct connections,

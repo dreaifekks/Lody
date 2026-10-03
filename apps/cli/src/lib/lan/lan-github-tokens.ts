@@ -12,6 +12,7 @@ import {
   fetchLanHubGitHubCredential,
   type LanGitHubCredential,
 } from '@lody/shared/node/lan-github';
+import { readLanCredentialsGitHub } from '@lody/shared/node/lan-credentials';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 
@@ -37,6 +38,8 @@ function createLanGitHubTokenManager(options: {
   resolveHub: (workspaceId: string) => LanHub | null;
   logger: Logger;
   fetch?: typeof fetch;
+  /** This machine's copy of what the hub holds; see `lan-credential-sync.ts`. */
+  readCopy?: (hubId: string) => LanGitHubCredential | null;
   now: () => number;
 }): CloudGithubTokenManager {
   let cached: Cached | null = null;
@@ -49,7 +52,17 @@ function createLanGitHubTokenManager(options: {
     try {
       credential = await fetchLanHubGitHubCredential(hub, { fetch: options.fetch });
     } catch (error) {
-      // Remembered briefly, so a host that is away does not slow every request.
+      // A host that is away is asked again soon; meanwhile this machine's copy
+      // of its token stands in, and is remembered as briefly.
+      const copy = (options.readCopy ?? readLanCredentialsGitHub)(hub.id);
+      if (copy) {
+        cached = {
+          kind: 'credential',
+          credential: copy,
+          until: options.now() + UNREACHABLE_TTL_MS,
+        };
+        return copy;
+      }
       cached = { kind: 'absent', until: options.now() + UNREACHABLE_TTL_MS };
       throw new LanGitHubTokenUnavailableError(
         `The host of ${hub.name} could not be asked for its GitHub token: ${formatErrorMessage(error)}`
@@ -116,15 +129,28 @@ function createLanGitHubTokenManager(options: {
   };
 }
 
+const lanGitHubTokenPorts = new WeakSet<CloudGithubTokenPort>();
+
+/**
+ * Whether a cloud port's GitHub tokens are the LAN host's. That token is never
+ * brokered: agents receive it only where the machine has no `gh` login.
+ */
+export function isLanGitHubTokenPort(port: CloudGithubTokenPort | null | undefined): boolean {
+  return port ? lanGitHubTokenPorts.has(port) : false;
+}
+
 export function createLanGitHubTokenPort(options: {
   /** Read at each request, so a LAN that moved is followed. */
   resolveHub: (workspaceId: string) => LanHub | null;
   logger: Logger;
   fetch?: typeof fetch;
+  readCopy?: (hubId: string) => LanGitHubCredential | null;
   now?: () => number;
 }): CloudGithubTokenPort {
-  return {
+  const port: CloudGithubTokenPort = {
     createTokenManager: (workspaceId) =>
       createLanGitHubTokenManager({ ...options, workspaceId, now: options.now ?? Date.now }),
   };
+  lanGitHubTokenPorts.add(port);
+  return port;
 }
