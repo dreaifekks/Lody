@@ -11,6 +11,8 @@ import {
   type WorkspaceId,
 } from '@lody/shared';
 import { AuthClient } from '@/lib/auth';
+import { getCliPlatformKind } from '@/lib/cli-platform';
+import { resolveLocalMachineId } from '@/lib/lan/lan-control-client';
 import {
   extractWorkspaceCandidates,
   printWorkspaceCandidates,
@@ -58,8 +60,18 @@ function setDebugIfEnabled(options: CommonOptions): void {
   }
 }
 
-function resolveMachineIdOrExit(): MachineId {
+async function resolveMachineIdOrExit(): Promise<MachineId> {
   const logger = getLogger('project');
+  // The local platform has no account to read it from; its agent service names
+  // the machine.
+  if (getCliPlatformKind() === 'local') {
+    try {
+      return await resolveLocalMachineId();
+    } catch (error) {
+      logger.error(formatErrorMessage(error));
+      process.exit(1);
+    }
+  }
   const authClient = new AuthClient(logger);
   const authInfo = authClient.getAuthInfo();
   if (!authInfo) {
@@ -200,7 +212,7 @@ const projectAddCommand = new Command('add')
       process.exit(1);
     }
 
-    const machineId = resolveMachineIdOrExit();
+    const machineId = await resolveMachineIdOrExit();
     const rootPath = path.resolve(projectPath ?? '.');
 
     let response = await sendLocalProjectControl(
@@ -264,7 +276,7 @@ const projectDeleteCommand = new Command('delete')
       process.exit(1);
     }
 
-    const machineId = resolveMachineIdOrExit();
+    const machineId = await resolveMachineIdOrExit();
     const listResponse = await sendLocalProjectControl({
       type: 'local-project/list',
       machineId,
@@ -383,7 +395,7 @@ const projectListCommand = addDiscoveryOptions(new Command('list'))
     }
     setDebugIfEnabled(options);
 
-    const machineId = resolveMachineIdOrExit();
+    const machineId = await resolveMachineIdOrExit();
     const response = await sendLocalProjectControl({
       type: 'local-project/list',
       machineId,

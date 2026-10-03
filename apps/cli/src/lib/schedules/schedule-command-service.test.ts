@@ -60,6 +60,7 @@ async function fixture() {
   });
   let history: any[] = [];
   let owner = 'owner';
+  let machinePresent = false;
   const context = {
     manager: {
       repo: {
@@ -74,7 +75,25 @@ async function fixture() {
                   processingUserMsgId: 'turn',
                 },
               }
-            : undefined,
+            : id === 'machine-machine' && machinePresent
+              ? {
+                  meta: {
+                    id: 'machine',
+                    ownerUserId: 'owner',
+                    protocolCapabilities: { schedules: 1 },
+                  },
+                }
+              : id === 'agent-agent'
+                ? {
+                    meta: {
+                      id: 'agent',
+                      machineId: 'machine',
+                      name: 'Agent',
+                      cliType: 'builtin',
+                      agentType: 'claude',
+                    },
+                  }
+                : undefined,
       },
       getOrCreateSessionDoc: async () =>
         withHistoryPort({
@@ -90,6 +109,7 @@ async function fixture() {
     workspace: { id: 'workspace' },
     auth: { userId: 'owner', machineId: 'machine' },
     localOnly: true,
+    hostedAccess: false,
   } as unknown as ScheduleCommandContext;
   return {
     context,
@@ -100,6 +120,9 @@ async function fixture() {
     history: () => history,
     owner: (value: string) => {
       owner = value;
+    },
+    addMachine: () => {
+      machinePresent = true;
     },
   };
 }
@@ -185,6 +208,32 @@ it('publishes the pause gate before waiting for a failed notification sync', asy
   expect(h.registrySync.mock.invocationCallOrder.at(-1)).toBeLessThan(
     h.notificationSync.mock.invocationCallOrder[0]!
   );
+});
+
+it('lets a LAN member create a schedule without a hosted access check', async () => {
+  const h = await fixture();
+  // A LAN member syncs through its hub but has no hosted backend to ask.
+  h.context.localOnly = false;
+  h.addMachine();
+  const { definition } = (await h.repository.read('schedule'))!;
+  await expect(
+    executeScheduleCommand(h.context, {
+      action: 'create',
+      scheduleId: 'lan',
+      requestId: 'lan-create',
+      draft: {
+        title: 'From a LAN member',
+        machineId: definition.machineId,
+        trigger: definition.trigger,
+        misfirePolicy: definition.misfirePolicy,
+        overlapPolicy: definition.overlapPolicy,
+        agent: definition.agent,
+        retryPolicy: definition.retryPolicy,
+        prompt: 'Synthetic prompt',
+      },
+    })
+  ).resolves.toEqual({ ok: true, scheduleId: 'lan' });
+  expect((await h.repository.read('lan'))?.definition.title).toBe('From a LAN member');
 });
 
 it('bounds MCP prompt output and returns usable Registry pagination metadata', async () => {

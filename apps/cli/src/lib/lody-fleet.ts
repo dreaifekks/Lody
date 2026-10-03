@@ -420,6 +420,7 @@ export class LodyFleet {
                 machineName: this.machineName,
               },
               localOnly: this.localPlatform,
+              hostedAccess: this.cloudPort.kind !== 'local',
               requesterSessionId: message.requesterSessionId as SessionId | undefined,
             },
             message.command
