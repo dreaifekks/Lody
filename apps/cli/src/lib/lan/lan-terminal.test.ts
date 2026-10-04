@@ -49,7 +49,15 @@ class FakePty implements TerminalPtyServiceApi {
   private readonly handlers = new Set<(event: TerminalServerEvent) => void>();
   private sequence = 0;
 
-  constructor(private readonly name: string) {}
+  constructor(
+    private readonly name: string,
+    private readonly behavior: {
+      /** Says, as the real service does, that its events reach every listener from the start. */
+      attachedOnOpen?: boolean;
+      /** A command that writes this and ends at once, before anyone could attach it. */
+      quick?: { output: string; exitCode: number };
+    } = {}
+  ) {}
 
   list(sessionId: string): TerminalSnapshot[] {
     return [...this.terminals]
@@ -62,7 +70,19 @@ class FakePty implements TerminalPtyServiceApi {
     this.terminals.set(terminalId, { sessionId: params.sessionId, scrollback: '$ ' });
     this.opened.push(params.sessionId);
     this.openParams.push(params);
-    return { terminalId, cwd: `/${this.name}` };
+    const { quick } = this.behavior;
+    if (quick) {
+      queueMicrotask(() => {
+        this.emit({ type: 'data', terminalId, data: quick.output });
+        this.terminals.delete(terminalId);
+        this.emit({ type: 'exit', terminalId, exitCode: quick.exitCode });
+      });
+    }
+    return {
+      terminalId,
+      cwd: `/${this.name}`,
+      ...(this.behavior.attachedOnOpen ? { attached: true } : {}),
+    };
   }
 
   attach(terminalId: string): TerminalReplay {
@@ -162,9 +182,10 @@ describe('terminals between LAN members', () => {
       hub?: LanHubPeerHandler;
       rpc?: (request: unknown) => Promise<unknown[]>;
       tunnels?: boolean;
+      pty?: FakePty;
     } = {}
   ) {
-    const pty = new FakePty('server');
+    const pty = options.pty ?? new FakePty('server');
     const published = new Map<string, LanTerminalEndpoint | undefined>();
     const host = new LanTerminalHost({
       machineId: SERVER,
@@ -598,6 +619,27 @@ describe('terminals between LAN members', () => {
 
     expect(local.opened).toEqual([machineShellScope(CLIENT)]);
     expect(pty.opened).toEqual([]);
+  });
+
+  it('gives the output and exit code of a command that ends before it could be attached', async () => {
+    const { published } = await startServer({
+      pty: new FakePty('server', {
+        attachedOnOpen: true,
+        quick: { output: 'hi\r\n', exitCode: 3 },
+      }),
+    });
+    const { router } = startClient(published.get(HOME)!);
+    const link = await serveLocally(router);
+    const { io, output } = pipedIo();
+
+    const outcome = await runMachineShell(link, {
+      machineId: SERVER,
+      command: 'echo hi; exit 3',
+      io,
+    });
+
+    expect(outcome).toEqual({ type: 'exited', exitCode: 3 });
+    expect(output()).toBe('hi\r\n');
   });
 
   it('lists the shells of a member and brings one back after the command left it', async () => {

@@ -292,7 +292,7 @@ class TerminalLink implements RemoteTerminalLink {
     return new Promise((resolve, reject) => {
       const requestId = this.register({ kind: 'open', resolve, reject });
       // Only the fields of an open: the caller's message may carry its own request id.
-      const { sessionId, cols, rows, cwd, command } = params;
+      const { sessionId, cols, rows, cwd, command, attach } = params;
       this.write({
         type: 'open',
         requestId,
@@ -301,6 +301,7 @@ class TerminalLink implements RemoteTerminalLink {
         rows,
         ...(cwd ? { cwd } : {}),
         ...(command ? { command } : {}),
+        ...(attach ? { attach } : {}),
       });
     });
   }
@@ -407,7 +408,11 @@ class TerminalLink implements RemoteTerminalLink {
       pending.resolve(event.terminals);
     } else if (pending.kind === 'open' && event.type === 'opened') {
       this.settle(event.requestId, pending);
-      pending.resolve({ terminalId: event.terminalId, ...(event.cwd ? { cwd: event.cwd } : {}) });
+      pending.resolve({
+        terminalId: event.terminalId,
+        ...(event.cwd ? { cwd: event.cwd } : {}),
+        ...(event.attached ? { attached: true } : {}),
+      });
     }
   }
 

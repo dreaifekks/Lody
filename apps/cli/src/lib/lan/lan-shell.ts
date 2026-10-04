@@ -144,17 +144,35 @@ export async function runMachineShell(
   });
   const scope = machineShellScope(options.machineId);
 
+  // Listening starts before the open: a short command can end, and say so,
+  // in the same breath as the answer that names its terminal.
+  const before: TerminalServerEvent[] = [];
+  let deliver: ((event: TerminalServerEvent) => void) | null = null;
+  const stopListening = link.onEvent((event) => {
+    if (deliver) deliver(event);
+    else before.push(event);
+  });
+
   let terminalId: string;
-  if (options.attach) {
-    terminalId = findMachineShell(await link.list(scope), options.attach).terminalId;
-  } else {
-    const opened = await link.open({
-      sessionId: scope,
-      ...size(),
-      ...(options.cwd ? { cwd: options.cwd } : {}),
-      ...(options.command ? { command: options.command } : {}),
-    });
-    terminalId = opened.terminalId;
+  let attached = false;
+  try {
+    if (options.attach) {
+      terminalId = findMachineShell(await link.list(scope), options.attach).terminalId;
+    } else {
+      const opened = await link.open({
+        sessionId: scope,
+        ...size(),
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        ...(options.command ? { command: options.command } : {}),
+        attach: true,
+      });
+      terminalId = opened.terminalId;
+      // A machine of a build before `attach` on open needs the attach after it.
+      attached = opened.attached === true;
+    }
+  } catch (error) {
+    stopListening();
+    throw error;
   }
 
   return await new Promise<ShellOutcome>((resolve, reject) => {
@@ -193,12 +211,11 @@ export async function runMachineShell(
         io.stderr.write(`\r\n${describeTerminalError(new Error(event.message))}\r\n`);
       }
     };
-    cleanups.push(
-      link.onEvent((event) => {
-        if (replayed) handle(event);
-        else early.push(event);
-      })
-    );
+    deliver = (event) => {
+      if (replayed) handle(event);
+      else early.push(event);
+    };
+    cleanups.push(stopListening);
     cleanups.push(link.onClose((reason) => finish({ type: 'disconnected', terminalId, reason })));
 
     const filter = createDetachFilter(() => finish({ type: 'detached', terminalId }));
@@ -242,6 +259,13 @@ export async function runMachineShell(
       });
     }
 
+    if (attached) {
+      // Everything the terminal did reached this connection, in order.
+      replayed = true;
+      for (const event of before.splice(0)) handle(event);
+      return;
+    }
+    before.length = 0;
     link.attach(terminalId, size().cols, size().rows).then(
       (replay) => {
         if (replay.scrollback) io.stdout.write(replay.scrollback);

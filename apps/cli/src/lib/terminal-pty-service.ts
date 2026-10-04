@@ -252,7 +252,8 @@ class TerminalPtyServiceImpl implements TerminalPtyServiceApi {
         `[terminal] opened terminalId=${terminalId} sessionId=${params.sessionId} cwd=${cwd}`
       );
 
-      return { terminalId, cwd };
+      // Its events go to every handler from the start, title included.
+      return { terminalId, cwd, attached: true };
     } finally {
       this.releaseSessionOpen(params.sessionId);
     }

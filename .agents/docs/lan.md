@@ -133,7 +133,11 @@ without it would answer the scope as an unknown session, so it is not asked.
 terminal socket, as a desktop does, so the LAN's credential stays in the agent
 service. Enter, `~` and `.` leaves the shell running, `--attach` brings it
 back, `--list` and `--kill` manage what runs there, and words after `--` run
-as a command whose exit code the command returns. The command runs in a
+as a command whose exit code the command returns. The command opens with
+`attach`, so the connection receives the terminal's events from the moment it
+exists: a command that ends before a second request could cross the network
+still reports its output and exit. A machine whose answer does not say
+`attached` is attached afterwards, as before. The command runs in a
 terminal there, like `ssh -t`, so piped input is echoed.
 
 ## Ports of other members
