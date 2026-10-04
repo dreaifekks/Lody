@@ -69,6 +69,7 @@ import {
   toSessionTranscriptEntries,
   updateSessionActivityTimestamps,
   updateSessionActivityTimestampsBestEffort,
+  validateCreateTurnConfigOptionValues,
   validateTurnConfigOptionValues,
   validateTurnModeAndModel,
   withBuiltinDefaultTurnMode,
@@ -930,6 +931,57 @@ describe('session command helpers', () => {
     expect(
       filterCompatibleTurnConfigOptionValues({ fast: true, effort: 'default' }, capability, 'haiku')
     ).toBeUndefined();
+  });
+
+  it('validates a Role create Fast value against the target model, not the probed one', () => {
+    // The probe ran on a Fable model, whose options carry effort but no Fast.
+    const capability: AcpCapabilityCacheEntry = {
+      cliType: 'builtin',
+      agentType: 'claude',
+      modes: [{ id: 'auto', name: 'Auto' }],
+      models: [
+        { modelId: 'fable', name: 'Fable' },
+        { modelId: 'opus', name: 'Opus' },
+        { modelId: 'haiku', name: 'Haiku' },
+      ],
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'fable',
+          options: [
+            { value: 'fable', name: 'Fable' },
+            { value: 'opus', name: 'Opus' },
+            { value: 'haiku', name: 'Haiku' },
+          ],
+        },
+        {
+          id: 'effort',
+          name: 'Effort',
+          category: 'thought_level',
+          type: 'select',
+          currentValue: 'high',
+          options: [{ value: 'high', name: 'High' }],
+        },
+      ],
+      declaredModelControls: { haiku: { fastMode: false } },
+      fetchedAt: 1,
+    };
+    const validate =
+      (modelId: string, configOptionValues: Record<string, string | boolean>) => () =>
+        validateCreateTurnConfigOptionValues(
+          { modelId, configOptionValues },
+          capability,
+          new Set()
+        );
+
+    expect(validate('opus', { effort: 'high', fast: false })).not.toThrow();
+    expect(validate('opus', { fast: true })).not.toThrow();
+    expect(validate('haiku', { fast: true })).toThrow(/does not offer fast mode/);
+    // The probed model itself still answers from its snapshot.
+    expect(validate('fable', { fast: false })).toThrow(/Unknown ACP config option/);
   });
 
   it('fills omitted chat follow-up selectors from the target turn and keeps explicit overrides', () => {

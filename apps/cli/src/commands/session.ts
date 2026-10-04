@@ -1629,6 +1629,31 @@ function validateModelDependentTurnConfigOptionValues(
   return validatedIds;
 }
 
+/**
+ * Validates a create's raw config options against its TARGET model. A Role
+ * stores Fast and effort as raw options, and the probe may describe a model
+ * without them (Fable omits Fast), so the snapshot alone would reject them.
+ */
+export function validateCreateTurnConfigOptionValues(
+  config: ResolvedTurnDispatchConfig,
+  capability: AcpCapabilityCacheEntry | undefined,
+  validatedConfigIds: ReadonlySet<string>
+): void {
+  const targetModelId =
+    config.modelId ??
+    getTurnSelectorConfigOptionValue(config.configOptionValues, capability, 'model');
+  const modelValidatedIds = validateModelDependentTurnConfigOptionValues(
+    config.configOptionValues,
+    capability,
+    targetModelId
+  );
+  validateTurnConfigOptionValues(
+    config.configOptionValues,
+    capability,
+    new Set([...validatedConfigIds, ...modelValidatedIds])
+  );
+}
+
 function isTurnEffortEntry(
   optionsById: ReadonlyMap<string, AcpConfigOptionSummary>,
   id: string
@@ -3122,11 +3147,7 @@ export async function resolveEffectiveSessionCreateDispatchConfig(args: {
     : undefined;
   const requested = applyAgentRunConfigSelection(dispatchConfig, capability);
   validateTurnModeAndModel(requested.config, capability);
-  validateTurnConfigOptionValues(
-    requested.config.configOptionValues,
-    capability,
-    requested.validatedConfigIds
-  );
+  validateCreateTurnConfigOptionValues(requested.config, capability, requested.validatedConfigIds);
   const inherited = filterCompatibleInheritedTurnConfig(inheritedDispatchConfig, capability);
   if (inherited) {
     // Raw selectors must override inherited scalar selectors, which the runtime
