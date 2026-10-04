@@ -107,7 +107,7 @@ Both desktop apps can run side by side.
 | Requests between machines | Lody's servers                              | Go directly between the machines; through the hub, for up to two minutes, when they cannot connect           |
 | Attachments               | Uploaded to a store every device reads      | Stay on the machine that runs the session; other members see the card but cannot open it                     |
 | GitHub tokens             | The Lody GitHub App and your linked account | One token the hub keeps for the LAN; an Agent uses it only on a machine without a `gh` login                 |
-| PR panel freshness        | GitHub webhooks                             | Polling while the panel is open; new reviews and comments appear on refresh                                  |
+| PR panel freshness        | GitHub webhooks                             | Polling while the panel is open: CI every 15 seconds, reviews and comments every minute                      |
 | Phone and web             | Lody's iOS, Android and web apps            | Those apps need a Lody account and do not reach a LAN; phones get alerts from the hub                        |
 | Updates                   | Lody's update service                       | This repository's rolling release; upstream's updater stays off                                              |
 
@@ -133,9 +133,8 @@ Both desktop apps can run side by side.
   working while the hub is away. Left: let a phone follow the hub when it
   moves. The hub stays as a relay that stores what an offline member has not
   seen yet.
-- **Missing pieces:** remote preview over the members' direct connections,
-  usage across machines, and periodic refresh of reviews and comments in the
-  PR panel.
+- **Missing pieces:** remote preview in the browser panel, over the ports
+  `lody-lan lan forward` already reaches.
 
 ## Shared with Lody
 

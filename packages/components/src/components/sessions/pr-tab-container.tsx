@@ -101,6 +101,7 @@ export function PrTabContainer({
     prNumber,
     headCommitSha,
     visible,
+    watchConversation: true,
   });
   const mergeMethod = usePreferredPrMergeMethod();
   // The owning session (this PR tab's session) publishes the live resolve-
