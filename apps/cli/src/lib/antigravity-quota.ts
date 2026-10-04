@@ -10,7 +10,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import type { RateLimit, RateLimitWindow } from 'acp-extension-core';
-import { ANTIGRAVITY_AGENT_TYPE, type AgentConfigId } from '@lody/shared';
+import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
+  type AgentConfigId,
+} from '@lody/shared';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 
@@ -90,8 +94,7 @@ function groupIdOf(bucketId: string | undefined): string | null {
 // The session usage popover picks a limit by matching its name against the
 // selected model, so the Gemini group is named so that `gemini-*` models find it.
 const GROUP_NAMES: Record<string, string> = { gemini: 'Gemini', '3p': 'Claude / GPT' };
-// Provider rows show the first limit; `gemini` sorts before `third-party`.
-const GROUP_LIMIT_IDS: Record<string, string> = { '3p': 'third-party' };
+const GROUP_LIMIT_IDS: Record<string, string> = { '3p': ANTIGRAVITY_THIRD_PARTY_LIMIT_ID };
 
 /**
  * Maps a `retrieveUserQuotaSummary` response to one rate limit per model group,

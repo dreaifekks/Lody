@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
   CODEX_SPARK_LIMIT_ID,
   getRateLimitEntryKey,
   type AgentConfigId,
@@ -171,24 +173,44 @@ describe('session usage', () => {
     ).toBe('codex');
   });
 
+  it("selects Antigravity's Claude/GPT quota for its non-Gemini models", () => {
+    const configId = 'antigravity-mac' as AgentConfigId;
+    const scope = { providerId: ANTIGRAVITY_AGENT_TYPE };
+    const rateLimits: MachineRateLimits = {
+      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, 'gemini', configId)]: usage({
+        limitId: 'gemini',
+        limitName: 'Gemini',
+        scope,
+      }),
+      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, ANTIGRAVITY_THIRD_PARTY_LIMIT_ID, configId)]:
+        usage({ limitId: ANTIGRAVITY_THIRD_PARTY_LIMIT_ID, limitName: 'Claude / GPT', scope }),
+    };
+    const limitFor = (modelId: string) =>
+      resolveAgentRateLimitForModel({
+        rateLimits,
+        agentType: ANTIGRAVITY_AGENT_TYPE,
+        agentConfigId: configId,
+        modelId,
+      })?.limitId;
+
+    expect(limitFor('gemini-3.8-flash-high')).toBe('gemini');
+    expect(limitFor('gemini-pro-agent')).toBe('gemini');
+    expect(limitFor('claude-opus-5-5-high')).toBe(ANTIGRAVITY_THIRD_PARTY_LIMIT_ID);
+    expect(limitFor('gpt-oss-120b-medium')).toBe(ANTIGRAVITY_THIRD_PARTY_LIMIT_ID);
+  });
+
   it('keeps quota snapshots isolated between Codex provider configs', () => {
     const workConfigId = 'codex-work' as AgentConfigId;
     const personalConfigId = 'codex-personal' as AgentConfigId;
     const rateLimits: MachineRateLimits = {
       [getRateLimitEntryKey('codex', 'codex')]: usage({
-        windows: [
-          { usedPercent: 55, windowDurationSeconds: 604_800, resetsAtEpochSeconds: null },
-        ],
+        windows: [{ usedPercent: 55, windowDurationSeconds: 604_800, resetsAtEpochSeconds: null }],
       }),
       [getRateLimitEntryKey('codex', 'codex', workConfigId)]: usage({
-        windows: [
-          { usedPercent: 10, windowDurationSeconds: 604_800, resetsAtEpochSeconds: null },
-        ],
+        windows: [{ usedPercent: 10, windowDurationSeconds: 604_800, resetsAtEpochSeconds: null }],
       }),
       [getRateLimitEntryKey('codex', 'codex', personalConfigId)]: usage({
-        windows: [
-          { usedPercent: 80, windowDurationSeconds: 604_800, resetsAtEpochSeconds: null },
-        ],
+        windows: [{ usedPercent: 80, windowDurationSeconds: 604_800, resetsAtEpochSeconds: null }],
       }),
     };
 

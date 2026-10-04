@@ -6,6 +6,7 @@ import { useAtomValue } from 'jotai';
 import { RefreshCw, Trash2 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import {
+  ANTIGRAVITY_AGENT_TYPE,
   REGISTRY_ACP_AGENTS,
   type AgentConfigCliType,
   type AgentConfigMeta,
@@ -216,7 +217,15 @@ export function ProviderRow({
   // Compact usage meters shown inline after the provider name.
   const rateLimitWindows = useMemo(() => {
     if (!showRateLimits || !machine?.raceLimits) return [];
-    for (const entry of getAgentRateLimitEntries(machine.raceLimits, agentType, config.id)) {
+    const entries = getAgentRateLimitEntries(machine.raceLimits, agentType, config.id);
+    // Antigravity's groups (Gemini; Claude/GPT) are separate quotas, each window
+    // labelled with its group, so the row shows all of them rather than the first.
+    if (agentType === ANTIGRAVITY_AGENT_TYPE) {
+      return entries
+        .toSorted((left, right) => (left.limitId ?? '').localeCompare(right.limitId ?? ''))
+        .flatMap((entry) => getAgentRateLimitWindows(entry.limits));
+    }
+    for (const entry of entries) {
       const windows = getAgentRateLimitWindows(entry.limits);
       if (windows.length > 0) return windows;
     }
@@ -401,7 +410,11 @@ export function ProviderRow({
           {rateLimitWindows.map((window, index) => (
             <RateLimitMeter
               key={`${window.windowDurationSeconds ?? 'unknown'}-${index}`}
-              label={formatRateLimitWindowShortLabel(window.windowDurationSeconds)}
+              label={formatAgentRateLimitWindowLabel(
+                window,
+                formatRateLimitWindowShortLabel(window.windowDurationSeconds),
+                t
+              )}
               remainingPercent={window.remainingPercent}
             />
           ))}

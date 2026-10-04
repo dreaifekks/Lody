@@ -51,6 +51,8 @@ export function isAntigravityThirdPartyModelsEnabled(
 ): boolean {
   return agentType === ANTIGRAVITY_AGENT_TYPE && env?.[ANTIGRAVITY_THIRD_PARTY_MODELS_ENV] === '1';
 }
+/** Rate-limit id of Antigravity's Claude/GPT quota group; the Gemini group is `gemini`. */
+export const ANTIGRAVITY_THIRD_PARTY_LIMIT_ID = 'third-party';
 /** Agent types that may own rate-limit rows: managed builtins plus Antigravity. */
 export type RateLimitAgentType = CliType | typeof ANTIGRAVITY_AGENT_TYPE;
 
