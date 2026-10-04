@@ -48,7 +48,14 @@ export function deriveLanTerminalKey(token: string): Buffer {
  * named in its hello; one that names none is a terminal connection, as every
  * connection was before there was anything else.
  */
-export const LAN_MEMBER_SERVICES = ['terminal', 'files', 'control', 'hub', 'rpc'] as const;
+export const LAN_MEMBER_SERVICES = [
+  'terminal',
+  'files',
+  'control',
+  'hub',
+  'rpc',
+  'tunnel',
+] as const;
 export type LanMemberService = (typeof LAN_MEMBER_SERVICES)[number];
 
 /**
@@ -70,7 +77,7 @@ const HelloRefusalSchema = z.object({
   message: z.string(),
 });
 
-function writeLine(socket: net.Socket, value: unknown): void {
+export function writeLine(socket: net.Socket, value: unknown): void {
   if (!socket.destroyed) socket.write(`${JSON.stringify(value)}\n`);
 }
 
@@ -78,7 +85,7 @@ function writeLine(socket: net.Socket, value: unknown): void {
  * The first line of a connection, and whatever followed it in the same chunk.
  * The socket is paused afterwards so nothing is lost before the next reader.
  */
-function readFirstLine(socket: net.Socket): Promise<{ line: string; rest: Buffer }> {
+export function readFirstLine(socket: net.Socket): Promise<{ line: string; rest: Buffer }> {
   return new Promise((resolve, reject) => {
     let received = Buffer.alloc(0);
     const timer = setTimeout(() => finish(new Error('hello timed out')), HANDSHAKE_TIMEOUT_MS);

@@ -24,6 +24,7 @@ import { askLanHubPeer, type LanHubPeerHandler } from './lan-hub-peers';
 import { askLanMemberRpc, LanRpcNotSentError } from './lan-rpc-channel';
 import { createDetachFilter, runMachineShell, type ShellIo } from './lan-shell';
 import { connectLanTerminal, createTerminalLink, deriveLanTerminalKey } from './lan-terminal';
+import { openLanTunnel } from './lan-tunnel';
 import { LanTerminalHost, resolveLanTerminalPort } from './lan-terminal-host';
 
 const silentLogger = (): Logger => ({
@@ -160,6 +161,7 @@ describe('terminals between LAN members', () => {
       control?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
       hub?: LanHubPeerHandler;
       rpc?: (request: unknown) => Promise<unknown[]>;
+      tunnels?: boolean;
     } = {}
   ) {
     const pty = new FakePty('server');
@@ -187,6 +189,7 @@ describe('terminals between LAN members', () => {
       ...(options.hub
         ? { hubFor: (workspaceId: string) => (workspaceId === HOME ? (options.hub ?? null) : null) }
         : {}),
+      ...(options.tunnels ? { tunnels: true } : {}),
       publish: async (workspaceId, endpoint) => {
         published.set(workspaceId, endpoint);
       },
@@ -637,6 +640,60 @@ describe('terminals between LAN members', () => {
       closed.open({ sessionId: machineShellScope(SERVER), cols: 80, rows: 24 })
     ).rejects.toThrow(/^session_not_found:/);
     expect(pty.opened).toEqual([]);
+  });
+
+  it('carries a connection to a port the member reaches both ways', async () => {
+    // A dev server of the member: it answers what it receives in capitals.
+    const devServer = net.createServer((socket) =>
+      socket.on('data', (chunk) => socket.write(chunk.toString('utf8').toUpperCase()))
+    );
+    await new Promise<void>((resolve) => devServer.listen(0, '127.0.0.1', () => resolve()));
+    cleanups.push(() => new Promise<void>((resolve) => devServer.close(() => resolve())));
+    const port = (devServer.address() as net.AddressInfo).port;
+    const { published } = await startServer({ tunnels: true });
+    const member = {
+      endpoint: published.get(HOME)!,
+      lanId: home.id,
+      key: deriveLanTerminalKey(home.token),
+      machineId: SERVER,
+    };
+
+    const tunnel = await openLanTunnel({ ...member, port });
+    cleanups.push(() => tunnel.destroy());
+    const answered = new Promise<string>((resolve) =>
+      tunnel.once('data', (chunk: Buffer) => resolve(chunk.toString('utf8')))
+    );
+    tunnel.resume();
+    tunnel.write('get /');
+    expect(await answered).toBe('GET /');
+
+    // A host the member reaches, as with ssh -L.
+    const named = await openLanTunnel({ ...member, port, host: '127.0.0.1' });
+    cleanups.push(() => named.destroy());
+    const namedAnswer = new Promise<string>((resolve) =>
+      named.once('data', (chunk: Buffer) => resolve(chunk.toString('utf8')))
+    );
+    named.resume();
+    named.write('via host');
+    expect(await namedAnswer).toBe('VIA HOST');
+
+    // A port nothing listens on is refused with the reason, not left open.
+    devServer.close();
+    await expect(openLanTunnel({ ...member, port })).rejects.toThrow(/nothing listens/);
+  });
+
+  it('opens no port of a member that serves none', async () => {
+    const { published } = await startServer();
+
+    await expect(
+      openLanTunnel({
+        endpoint: published.get(HOME)!,
+        lanId: home.id,
+        key: deriveLanTerminalKey(home.token),
+        machineId: SERVER,
+        port: 1,
+      })
+    ).rejects.toThrow(/serves no tunnel/);
   });
 
   it('takes another port when the preferred one is in use', async () => {

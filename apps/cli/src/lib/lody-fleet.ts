@@ -1,3 +1,4 @@
+import type net from 'node:net';
 import { Effect } from 'effect';
 import { initCliAnalytics } from '@/lib/analytics/posthog';
 import {
@@ -13,6 +14,7 @@ import {
   isLoroRepoDocDeleted,
   machineShellScope,
   machineSupportsLanShell,
+  machineSupportsLanTunnel,
   parseMachineShellScope,
   syncTime,
   type LanMemberControlRequest,
@@ -39,7 +41,9 @@ import { startLodyMcpHttpServer, stopLodyMcpHttpServer } from '@/mcp/lody-mcp-ht
 import type { LocalProbeConfig } from '@/lib/local-probe';
 import type { LocalSessionControlConfig } from '@/lib/local-session-control';
 import { startLocalTerminalServer, stopLocalTerminalServer } from '@/lib/local-terminal-server';
+import { LocalTunnelServer } from '@/lib/local-tunnel-server';
 import type { LanHub } from '@lody/shared/node/lan-hub';
+import { connectPort, openLanTunnel } from '@/lib/lan/lan-tunnel';
 import {
   startLocalLoroDataPlaneServer,
   stopLocalLoroDataPlaneServer,
@@ -194,6 +198,7 @@ export class LodyFleet {
   private readonly runtimeStateReporter: CliRuntimeStateReporter;
   private readonly terminalPtyService: TerminalPtyServiceApi;
   private readonly terminalRouter: TerminalRouter;
+  private readonly localTunnelServer: LocalTunnelServer;
   private readonly lan: LanTerminalMembership | null;
   private readonly lanFileHandoff: LanFileHandoff;
   private lanTerminalHost: LanTerminalHost | null = null;
@@ -382,6 +387,15 @@ export class LodyFleet {
       locate: async (sessionId) => await this.locateTerminalSession(sessionId as SessionId),
       ...(this.lan ? { connect: async (location) => await this.connectLanTerminal(location) } : {}),
     });
+    this.localTunnelServer = new LocalTunnelServer({
+      logger: this.logger,
+      connect: async (request) =>
+        await this.openMachineTunnel(
+          request.machineId ?? this.machineId,
+          request.port,
+          request.host
+        ),
+    });
     this.prStatusPoller = makePrStatusPoller({
       config: loadPrPollerConfig(),
       stateStore: new PrPollerStateStore({ logger: this.logger }),
@@ -469,6 +483,12 @@ export class LodyFleet {
         await startLocalLoroDataPlaneServer({
           logger: this.logger,
           getWorkspaceServer: (workspaceId) => this.getWorkspaceLoroDataPlaneServer(workspaceId),
+        });
+      }),
+      traceAsync(this.logger, 'startup.local_tunnel', undefined, async () => {
+        // Never fatal: only `lan forward` needs it.
+        await this.localTunnelServer.start().catch((error: unknown) => {
+          this.logger.warn(`[lan-tunnel] ${formatErrorMessage(error)}`);
         });
       }),
       traceAsync(this.logger, 'startup.mcp_http', undefined, async () => {
@@ -722,6 +742,7 @@ export class LodyFleet {
     const localServicesStopped = Promise.allSettled([
       stopLocalIpcSocketServers(),
       stopLocalTerminalServer(),
+      this.localTunnelServer.stop(),
       this.lanTerminalHost?.close(),
       this.lanFleetControl?.close(),
       this.lanHubStandby?.close(),
@@ -1720,6 +1741,7 @@ export class LodyFleet {
               this.lanHubStandby?.peerHandlerFor(workspaceId) ?? null,
           }
         : {}),
+      tunnels: true,
       rpcFor: (workspaceId: string) => {
         const runtime = this.runtimes.get(workspaceId);
         if (!runtime) return null;
@@ -1828,6 +1850,24 @@ export class LodyFleet {
         ? `remote_unreachable:${found.name ?? machineId} ${refusal} to members; update it`
         : `remote_unreachable:no LAN of this machine reaches ${machineId}`
     );
+  }
+
+  /** A port a machine reaches: this machine directly, a member over its LAN. */
+  private async openMachineTunnel(
+    machineId: string,
+    port: number,
+    host?: string
+  ): Promise<net.Socket> {
+    if (machineId === this.machineId) return await connectPort(port, host);
+    const member = await this.findLanMember(machineId, machineSupportsLanTunnel, 'opens no port');
+    return await openLanTunnel({
+      endpoint: member.endpoint,
+      lanId: member.hub.id,
+      key: deriveLanTerminalKey(member.hub.token),
+      machineId,
+      port,
+      ...(host ? { host } : {}),
+    });
   }
 
   private async connectLanTerminal(location: TerminalSessionLocation): Promise<RemoteTerminalLink> {

@@ -25,6 +25,7 @@ import {
 } from '@lody/shared/node/lan-hub';
 import { printJson, runOneShotCommand, type CommonCommandOptions } from '@/lib/command-runtime';
 import { machinesCommand, updateCommand } from './lan-machines';
+import { forwardCommand } from './lan-forward';
 import { shellCommand } from './lan-shell';
 import { renderTerminalTable } from '@/lib/terminal-table';
 import {
@@ -933,5 +934,6 @@ export const lanCommand = new Command('lan')
   .addCommand(machinesCommand)
   .addCommand(updateCommand)
   .addCommand(shellCommand)
+  .addCommand(forwardCommand)
   .addCommand(pushCommand)
   .addCommand(githubCommand);

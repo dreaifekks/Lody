@@ -31,6 +31,7 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | Desktop update | `apps/electron/src/main/services/lan-updater-*.ts`                                          | A desktop application that replaces itself with the newest build                                                              |
 | GitHub         | `apps/cli/src/lib/lan/hub-github.ts`, `lan-github-tokens.ts`, `lan-agent-github.ts`         | One GitHub token on the host for members that have no `gh` login                                                              |
 | Credentials    | `apps/cli/src/lib/lan/hub-credentials.ts`, `lan-credential-sync.ts`, `lan-push-fallback.ts` | Every member keeps a copy of the GitHub token, the APNs key and the phones, and uses it while the hub is away                 |
+| Ports          | `apps/cli/src/lib/lan/lan-tunnel.ts`, `apps/cli/src/lib/local-tunnel-server.ts`             | A program of one member reaches a port another member reaches                                                                 |
 
 ```text
  server                                   desktop
@@ -133,6 +134,32 @@ service. Enter, `~` and `.` leaves the shell running, `--attach` brings it
 back, `--list` and `--kill` manage what runs there, and words after `--` run
 as a command whose exit code the command returns. The command runs in a
 terminal there, like `ssh -t`, so piped input is echoed.
+
+## Ports of other members
+
+A dev server an agent starts on another member often listens on that
+machine's loopback interface only. A connection that asks for `tunnel` names
+one port, and optionally a host, in its first line
+(`apps/cli/src/lib/lan/lan-tunnel.ts`); the member connects to that port of
+its own loopback interface, or of the host as it reaches it, answers
+`connected` or the reason it could not, and from then on the connection carries
+the port's bytes both ways. The host is not restricted, as `ssh -L` restricts
+none: a member that holds the LAN's key can run anything on the machine, and
+so reach whatever the machine reaches, already. A machine says it serves them
+with the `lanTunnel` protocol capability.
+
+```text
+ program ─▶ local tunnel socket ─▶ agent service ─ TLS-PSK ─▶ agent service ─▶ <host>:<port>
+ of this    names machine, host,   of this machine            of the member      localhost unless
+ machine    port                                                                 a host is named
+```
+
+Programs of this machine reach it through the agent service's local tunnel
+socket (`getLocalTunnelSocketPath`, beside the terminal socket), which takes the
+same first line plus the machine; this machine's own ports are connected
+directly. `lody-lan lan forward <machine> [<local>:][<host>:]<port>...`
+listens on `127.0.0.1` (`--bind` for another address) and carries every
+connection there until it ends.
 
 ## Files of a message
 
