@@ -1,6 +1,7 @@
 import type { RateLimit } from 'acp-extension-core';
 import { CodexAuthProfileSchema, assertManagedCodexProfileConfig } from './codex-auth-profile';
 import {
+  ANTIGRAVITY_AGENT_TYPE,
   getAcpCapabilityCacheKey,
   hasBuiltinRuntimeOverrideValues,
   isBuiltinRuntimeOverrides,
@@ -12,6 +13,7 @@ import {
   type AgentType,
   type CliType,
   type ManagedBuiltinAgentType,
+  type RateLimitAgentType,
 } from './ai';
 import { isAcpModelCapabilities, type AcpModelCapabilities } from './acp-model-capabilities';
 import type { AgentConfigId, MachineId, SessionId, WorkspaceId } from './ids';
@@ -189,7 +191,7 @@ export type MachineFlockLegacyRateLimitKey = ['rateLimit', CliType, string];
 export type MachineFlockProviderRateLimitKey = [
   'rateLimit',
   AgentConfigId,
-  CliType,
+  RateLimitAgentType,
   string,
 ];
 export type MachineFlockRateLimitKey =
@@ -263,7 +265,7 @@ export type ParsedMachineFlockKey =
       kind: 'rateLimit';
       key: MachineFlockRateLimitKey;
       agentConfigId: AgentConfigId | null;
-      cliType: CliType;
+      cliType: RateLimitAgentType;
       limitId: string;
     }
   | {
@@ -321,7 +323,7 @@ export const machineFlockKeys = {
   ],
   rateLimit: (
     agentConfigId: AgentConfigId,
-    cliType: CliType,
+    cliType: RateLimitAgentType,
     limitId: string
   ): MachineFlockProviderRateLimitKey => [
     'rateLimit',
@@ -472,7 +474,7 @@ export const parseMachineFlockKey = (
     key.length === 4 &&
     key[0] === 'rateLimit' &&
     isNonEmptyString(key[1]) &&
-    isCliType(key[2]) &&
+    isRateLimitAgentType(key[2]) &&
     isNonEmptyString(key[3])
   ) {
     const agentConfigId = key[1] as AgentConfigId;
@@ -1363,6 +1365,9 @@ const normalizeSessionLaunchConfig = (value: unknown): SessionLaunchConfig | und
 
 const isCliType = (value: unknown): value is CliType =>
   typeof value === 'string' && isBuiltinAgentType(value);
+
+const isRateLimitAgentType = (value: unknown): value is RateLimitAgentType =>
+  isCliType(value) || value === ANTIGRAVITY_AGENT_TYPE;
 
 const isAgentConfigCliType = (value: unknown): value is AgentConfigCliType =>
   value === 'builtin' || value === 'registry' || value === 'custom';

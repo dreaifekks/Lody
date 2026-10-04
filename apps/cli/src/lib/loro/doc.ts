@@ -4,9 +4,11 @@ import { readLatestTurn } from '@lody/shared/session-data';
 import { isContainer, type LoroDoc, type LoroList, type LoroMap } from 'loro-crdt';
 import {
   ACPSessionId,
+  ANTIGRAVITY_AGENT_TYPE,
   AgentConfigCliType,
   AgentType,
   CliType,
+  RateLimitAgentType,
   collectOnlineMachineIdsFromPresence,
   createHistoryWriter,
   createSessionControlPlaneMirror,
@@ -1371,6 +1373,19 @@ export class LoroDocumentManager {
     );
   }
 
+  async listMachineAgentConfigsOfType(
+    cliType: AgentConfigCliType,
+    agentType: string,
+    machineId: MachineId
+  ): Promise<AgentConfigMeta[]> {
+    return (await listMergedAgentConfigs(this.repo, this.workspaceId, [machineId])).filter(
+      (config) =>
+        config.cliType === cliType &&
+        config.agentType === agentType &&
+        config.machineId === machineId
+    );
+  }
+
   /** Managed builtin provider types the user removed on this machine, so they must not be auto-registered at startup. */
   async getBuiltinAgentOptOuts(machineId: MachineId): Promise<Set<ManagedBuiltinAgentType>> {
     return await readMachineBuiltinAgentOptOuts(this.repo, this.workspaceId, machineId);
@@ -1502,7 +1517,7 @@ export class LoroDocumentManager {
   async updateRateLimits(
     machineId: MachineId,
     agentConfigId: AgentConfigId | undefined,
-    cliType: CliType,
+    cliType: RateLimitAgentType,
     limits: RateLimit
   ): Promise<void> {
     if (!this.machine) {
@@ -3016,18 +3031,19 @@ export class MachineDocument implements LoroDocument<{}, MachineMeta> {
 
   async updateRateLimits(
     agentConfigId: AgentConfigId | undefined,
-    cliType: CliType,
+    cliType: RateLimitAgentType,
     limits: RateLimit
   ): Promise<void> {
     return this.enqueueRateLimitsUpdate(async () => {
       const limitId = ((limits as { limitId?: string }).limitId ?? cliType).trim() || cliType;
+      const key = agentConfigId
+        ? machineFlockKeys.rateLimit(agentConfigId, cliType, limitId)
+        : cliType !== ANTIGRAVITY_AGENT_TYPE
+          ? machineFlockKeys.legacyRateLimit(cliType, limitId)
+          : null;
+      if (!key) return;
       const handle = await this.openMachineFlockDoc();
-      const changed = writeMachineFlockRowToFlock(handle.flock, {
-        key: agentConfigId
-          ? machineFlockKeys.rateLimit(agentConfigId, cliType, limitId)
-          : machineFlockKeys.legacyRateLimit(cliType, limitId),
-        value: limits,
-      });
+      const changed = writeMachineFlockRowToFlock(handle.flock, { key, value: limits });
       if (changed) {
         await this.repo.flush();
         if (this.markMachineFlockDirty) {

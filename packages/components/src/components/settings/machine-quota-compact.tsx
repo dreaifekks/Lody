@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { MachineViewMeta } from '@lody/shared';
 import {
+  ANTIGRAVITY_AGENT_TYPE,
   CODEX_SPARK_LIMIT_ID,
   normalizePersistedRateLimit,
   parseRateLimitEntryKey,
@@ -92,7 +93,9 @@ export function MachineQuotaCompact({ raceLimits, filterCliType }: MachineQuotaC
             ? 'Codex'
             : parsed.cliType === 'claude'
               ? 'Claude'
-              : parsed.cliType;
+              : parsed.cliType === ANTIGRAVITY_AGENT_TYPE
+                ? 'Antigravity'
+                : parsed.cliType;
         const cliIcon =
           parsed.cliType === 'codex' ? (
             <OpenAIIcon {...stylex.props(styles.cliIcon)} />

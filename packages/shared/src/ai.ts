@@ -34,6 +34,10 @@ export type ManagedBuiltinAgentType = ManagedBuiltinRuntime['agentType'];
 /** Legacy installed-CLI detection only covers Lody-managed builtin runtimes. */
 export type BuiltinCliType = ManagedBuiltinAgentType;
 export type CliType = BuiltinCliType;
+/** Registry provider whose subscription quota the daemon reads itself; no Lody adapter reports it. */
+export const ANTIGRAVITY_AGENT_TYPE = 'antigravity-acp';
+/** Agent types that may own rate-limit rows: managed builtins plus Antigravity. */
+export type RateLimitAgentType = CliType | typeof ANTIGRAVITY_AGENT_TYPE;
 
 export const BUILTIN_AGENTS = [
   ...MANAGED_BUILTIN_RUNTIMES.map(({ agentType, displayName }) => ({ agentType, displayName })),

@@ -179,6 +179,7 @@ import {
   type LanMemberControlRequest,
   type LanMemberControlResponse,
   type MachineProtocolCapabilities,
+  ANTIGRAVITY_AGENT_TYPE,
 } from '@lody/shared';
 import { getHostMachineProtocolCapabilities } from '../agent/managed-agent-runtime';
 import { ISession, SessionManager } from '../session/session-manager';
@@ -400,6 +401,7 @@ import {
   isLocalProjectWorktreeConfigRequest,
 } from '@/session/worktree/worktree-setup-config-store';
 import { resolveSessionWorktreeCleanupConfig } from '@/session/worktree/worktree-config-resolver';
+import { AntigravityQuotaPoller, createAntigravityQuotaClient } from '@/lib/antigravity-quota';
 
 type RepoDocMetaPatch = Parameters<LoroDocumentManager['repo']['upsertDocMeta']>[1];
 type LocalProjectFileRpcRequest = Extract<
@@ -807,6 +809,7 @@ export class MessageHandler {
   private readonly worktreeGc: WorktreeGarbageCollector;
   private worktreeGcTimer: NodeJS.Timeout | null = null;
   private detachWorktreeGcSyncListener: (() => void) | null = null;
+  private antigravityQuotaPoller: AntigravityQuotaPoller | null = null;
   private readonly deleteLocalProjectInFlight = new Set<LocalProjectId>();
   private machineFlockCommandWatcher: MachineFlockCommandWatcher;
   // Desktop local-transport backfill: in-flight task keys (`${sessionId}:${fileId}`)
@@ -3677,6 +3680,7 @@ export class MessageHandler {
     // This prevents dispatch from racing ahead of local session startup prerequisites.
     this.setupSessionLifecycleWatchers();
     this.startWorktreeGc();
+    this.startAntigravityQuota();
     void this.machineFlockCommandWatcher.start();
     void this.discardLegacySessionCommands();
   }
@@ -4053,6 +4057,38 @@ export class MessageHandler {
       ),
     ];
     this.logger.debug('[session-lifecycle] Archive and delete watchers registered');
+  }
+
+  private startAntigravityQuota(): void {
+    if (this.antigravityQuotaPoller) return;
+    const client = createAntigravityQuotaClient();
+    const poller = new AntigravityQuotaPoller({
+      listAgentConfigIds: async () =>
+        (
+          await this.workspaceDocument.listMachineAgentConfigsOfType(
+            'registry',
+            ANTIGRAVITY_AGENT_TYPE,
+            this.machineId
+          )
+        ).map((config) => config.id),
+      write: async (agentConfigId, limits) =>
+        await this.workspaceDocument.updateRateLimits(
+          this.machineId,
+          agentConfigId,
+          ANTIGRAVITY_AGENT_TYPE,
+          limits
+        ),
+      fetchRateLimits: () => client.fetchRateLimits(),
+      logger: this.logger,
+    });
+    this.antigravityQuotaPoller = poller;
+    poller.start();
+    // Providers are known once metadata has synced. Off the startup path: the
+    // quota is a best-effort display and must never fail handler setup.
+    void Promise.resolve()
+      .then(() => this.workspaceDocument.waitForInitialMetaSync())
+      .then(() => poller.poll())
+      .catch(() => undefined);
   }
 
   private startWorktreeGc(): void {
@@ -9823,6 +9859,8 @@ export class MessageHandler {
     }
     this.detachWorktreeGcSyncListener?.();
     this.detachWorktreeGcSyncListener = null;
+    this.antigravityQuotaPoller?.stop();
+    this.antigravityQuotaPoller = null;
     this.machineFlockCommandWatcher.stop();
     this.providerSetupManager.stop();
     this.sessionActivePresence.clearAll();

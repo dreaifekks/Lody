@@ -20,6 +20,7 @@ import {
   BuiltinRuntimeOverrides,
   CliType,
   CustomAcpLaunchSpec,
+  RateLimitAgentType,
   LocalProjectHistoryProvider,
   LocalProjectId,
   LocalProjectMeta,
@@ -50,7 +51,7 @@ const PROVIDER_RATE_LIMIT_ENTRY_KEY_PREFIX = 'provider';
 export const CODEX_SPARK_LIMIT_ID = 'codex_bengalfox';
 
 export const getRateLimitEntryKey = (
-  cliType: CliType,
+  cliType: RateLimitAgentType,
   limitId: string | null | undefined,
   agentConfigId?: AgentConfigId | null
 ): string => {

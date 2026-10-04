@@ -602,6 +602,23 @@ describe('machine Flock helpers', () => {
     });
   });
 
+  it('keeps Antigravity provider rate limits and drops other registry agent types', () => {
+    const configId = 'config-antigravity' as AgentConfigId;
+    const row = {
+      key: machineFlockKeys.rateLimit(configId, 'antigravity-acp', 'gemini'),
+      value: { limitId: 'gemini', scope: { providerId: 'antigravity-acp' }, windows: [] },
+    } as const;
+    const foreign = { key: ['rateLimit', configId, 'gemini', 'gemini'], value: {} };
+
+    expect(
+      getMachineFlockRateLimits(
+        applyMachineFlockRowEvents({}, [row, foreign as unknown as typeof row])
+      )
+    ).toEqual({
+      [getRateLimitEntryKey('antigravity-acp', 'gemini', configId)]: row.value,
+    });
+  });
+
   describe('builtin agent opt-out rows', () => {
     const machineId = 'machine-1' as MachineId;
 

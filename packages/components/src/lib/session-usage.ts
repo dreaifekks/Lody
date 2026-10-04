@@ -1,4 +1,5 @@
 import {
+  ANTIGRAVITY_AGENT_TYPE,
   CODEX_SPARK_LIMIT_ID,
   normalizePersistedRateLimit,
   parseRateLimitEntryKey,
@@ -125,6 +126,8 @@ export function canShowSubscriptionRateLimits({
   agentType: string;
   config?: Pick<AgentConfigMeta, 'brandId' | 'env'> | null;
 }): boolean {
+  // Antigravity's quota is read by the daemon from the ACP server's own sign-in.
+  if (cliType === 'registry' && agentType === ANTIGRAVITY_AGENT_TYPE) return true;
   if (
     cliType !== 'builtin' ||
     (agentType !== 'claude' &&
