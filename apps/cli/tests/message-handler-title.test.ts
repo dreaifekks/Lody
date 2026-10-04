@@ -345,6 +345,23 @@ describe('MessageHandler title generation', () => {
     ]);
   });
 
+  it('keeps the fork marker when the agent of a fork reports its title', async () => {
+    const { handler, sessionDoc } = await createHandler('(fork) Fix flaky login', 'generated');
+    const titleHost = handler as unknown as {
+      maybeStoreAgentSessionTitle: (sessionId: SessionId, title: string) => Promise<void>;
+    };
+
+    await titleHost.maybeStoreAgentSessionTitle('s-11' as SessionId, 'Fix flaky login');
+    expect(sessionDoc.setTitleIfSourceIn).not.toHaveBeenCalled();
+
+    await titleHost.maybeStoreAgentSessionTitle('s-11' as SessionId, 'Retry login on 401');
+    expect(sessionDoc.setTitleIfSourceIn).toHaveBeenCalledWith(
+      '(fork) Retry login on 401',
+      'generated',
+      ['draft', 'generated']
+    );
+  });
+
   it('does not store an ACP title containing only Lody internal instructions', async () => {
     const { handler, sessionDoc } = await createHandler(undefined);
     const titleHost = handler as unknown as {

@@ -100,6 +100,9 @@ function rewriteAttachmentNamespace(
   return item;
 }
 
+/** Marks a forked Session's title; agent title updates keep it. */
+export const FORK_TITLE_PREFIX = '(fork) ';
+
 export function cloneHistoryThroughTurn(
   history: SessionHistoryInput[],
   sourceTurnId: string,
@@ -568,7 +571,7 @@ export class SessionForkService {
     const sourceTitle = source.title?.trim() || 'Untitled session';
     // One expression shared by the target meta and the recovery marker so a
     // repaired session can never drift from a normally-forked one's title.
-    const forkTitle = `(fork) ${sourceTitle}`;
+    const forkTitle = `${FORK_TITLE_PREFIX}${sourceTitle}`;
     const historyResult = cloneHistoryThroughTurn(
       [...sourceSnapshot.history],
       spec.sourceTurnId,

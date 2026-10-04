@@ -301,7 +301,7 @@ import {
 import { TurnHistoryGate } from '@/session/turn-history-gate';
 import { SessionDispatchWatcher } from '@/session/session-dispatch-watcher';
 import { SessionUserResolver } from '@/session/session-user-resolver';
-import { SessionForkService } from '@/session/session-fork-service';
+import { FORK_TITLE_PREFIX, SessionForkService } from '@/session/session-fork-service';
 import { createFileSessionForkOperationStore } from '@/session/session-fork-operation-store';
 import {
   SessionEditAndResendService,
@@ -9264,15 +9264,22 @@ export class MessageHandler {
         return;
       }
       const meta = await sessionDoc.getMetaState();
-      if (meta?.title?.trim() === sanitized) {
+      // A fork's agent keeps reporting the source conversation's title; keep
+      // the fork marker in front of whatever it reports.
+      const keepsForkPrefix =
+        meta?.titleSource === 'generated' &&
+        meta.title?.trim().startsWith(FORK_TITLE_PREFIX) === true &&
+        !sanitized.startsWith(FORK_TITLE_PREFIX);
+      const nextTitle = keepsForkPrefix ? `${FORK_TITLE_PREFIX}${sanitized}` : sanitized;
+      if (meta?.title?.trim() === nextTitle) {
         return;
       }
-      const applied = await sessionDoc.setTitleIfSourceIn(sanitized, 'generated', [
+      const applied = await sessionDoc.setTitleIfSourceIn(nextTitle, 'generated', [
         'draft',
         'generated',
       ]);
       if (applied) {
-        this.logger.debug(`[${sessionId}] Session title updated from agent: ${sanitized}`);
+        this.logger.debug(`[${sessionId}] Session title updated from agent: ${nextTitle}`);
       }
     } catch (error) {
       this.logger.debug(
