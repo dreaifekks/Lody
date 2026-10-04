@@ -5,6 +5,7 @@ import { reportError } from '../utils/telemetry';
 import { AuthClient } from '@/lib/auth';
 import { flushTelemetry } from '@/instrument';
 import { captureAuthEvent } from './analytics-events';
+import { getCliPlatformKind } from '@/lib/cli-platform';
 
 interface LogoutOptions {
   debug?: boolean;
@@ -21,6 +22,10 @@ export const logoutCommand = new Command('logout')
       rootLogger.setDebug(true);
     }
     const logger = getLogger('logout');
+    if (getCliPlatformKind() === 'local') {
+      logger.info('This build has no Lody account, so there is nothing to log out of.');
+      return;
+    }
 
     const authClient = new AuthClient(logger);
     const logoutResult = authClient.logout();

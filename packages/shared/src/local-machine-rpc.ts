@@ -106,6 +106,217 @@ export const SessionToolResultSchema = z
   })
   .strict();
 
+const SessionToolCallSchema = z.object({
+  name: z.string().min(1).max(100),
+  arguments: z
+    .record(z.string(), z.json())
+    .refine(
+      (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= 256 * 1024,
+      'Session tool arguments exceed 256 KiB'
+    ),
+});
+
+const TerminalSessionIdSchema = z.string().trim().min(1).max(200);
+const TerminalPromptShape = {
+  prompt: z
+    .string()
+    .min(1)
+    .max(1024 * 1024),
+  mode: z.string().trim().min(1).optional(),
+  model: z.string().trim().min(1).optional(),
+  configOption: z.array(z.string().min(1)).max(50).optional(),
+};
+const TerminalSessionTargetSchema = <const T extends string>(command: T) =>
+  z.object({ command: z.literal(command), sessionId: TerminalSessionIdSchema }).strict();
+
+const TerminalSelectorSchema = z.string().trim().min(1).max(500);
+const TerminalEnvSchema = z.record(z.string(), z.string());
+const TerminalTitleGenerationSchema = z
+  .object({
+    configOptionValues: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
+  })
+  .strict();
+/** Present when the command changes the field; an absent `value` clears it. */
+const TerminalClearableSchema = <T extends z.ZodType>(value: T) =>
+  z.object({ value: value.optional() }).strict();
+const TerminalMcpOptionsSchema = z
+  .object({
+    name: z.string().optional(),
+    description: z.string().optional(),
+    default: z.boolean().optional(),
+    command: z.string().optional(),
+    arg: z.array(z.string()).optional(),
+    env: z.array(z.string()).optional(),
+    envPassthrough: z.array(z.string()).optional(),
+    url: z.string().optional(),
+    bearerToken: z.string().optional(),
+    header: z.array(z.string()).optional(),
+  })
+  .strict();
+
+/** `lody agent-config` and `lody mcp` writes: catalog edits the daemon makes for a terminal. */
+const TerminalCatalogCommandSchemas = [
+  z
+    .object({
+      command: z.literal('agent-config-show'),
+      selector: TerminalSelectorSchema.optional(),
+      showSecrets: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('agent-config-target'),
+      selector: TerminalSelectorSchema.optional(),
+      machine: TerminalSelectorSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('agent-config-refresh'),
+      machineId: TerminalSelectorSchema,
+      configId: TerminalSelectorSchema,
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('agent-config-create'),
+      agentType: TerminalSelectorSchema,
+      machine: TerminalSelectorSchema.optional(),
+      name: z.string().trim().min(1).max(500).optional(),
+      description: z.string().max(10_000).optional(),
+      env: TerminalEnvSchema,
+      prompt: z
+        .string()
+        .max(1024 * 1024)
+        .optional(),
+      titleGeneration: TerminalTitleGenerationSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('agent-config-update'),
+      selector: TerminalSelectorSchema.optional(),
+      name: z.string().trim().min(1).max(500).optional(),
+      description: TerminalClearableSchema(z.string().max(10_000)).optional(),
+      env: z
+        .object({ set: TerminalEnvSchema, unset: z.array(z.string().min(1)) })
+        .strict()
+        .optional(),
+      prompt: TerminalClearableSchema(z.string().max(1024 * 1024)).optional(),
+      titleGeneration: TerminalClearableSchema(TerminalTitleGenerationSchema).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('agent-config-delete'),
+      selector: TerminalSelectorSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('mcp'),
+      action: z.enum(['add', 'set', 'remove']),
+      selector: TerminalSelectorSchema,
+      offline: z.boolean().optional(),
+      options: TerminalMcpOptionsSchema,
+    })
+    .strict(),
+] as const;
+
+/** A `lody` command of this machine's user that its daemon runs on the workspace replica. */
+export const TerminalCommandSchema = z.discriminatedUnion('command', [
+  z
+    .object({
+      command: z.literal('create'),
+      ...TerminalPromptShape,
+      title: z.string().trim().min(1).max(500).optional(),
+      machine: z.string().trim().min(1).optional(),
+      agentConfig: z.string().trim().min(1).optional(),
+      parent: TerminalSessionIdSchema.optional(),
+      useCurrentSessionAsParent: z.boolean().optional(),
+      /** The terminal's `LODY_SESSION_ID`: the opener of the new Session. */
+      currentSessionId: TerminalSessionIdSchema.optional(),
+      repo: z.string().trim().min(1).optional(),
+      localProject: z.string().trim().min(1).optional(),
+      worktree: z.boolean().optional(),
+      branch: z.string().trim().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('chat'),
+      sessionId: TerminalSessionIdSchema,
+      ...TerminalPromptShape,
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('wait'),
+      sessionId: TerminalSessionIdSchema,
+      userTurnId: z.string().trim().min(1),
+      timeoutMs: z
+        .number()
+        .int()
+        .positive()
+        .max(24 * 60 * 60 * 1000),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('cancel'),
+      sessionId: TerminalSessionIdSchema,
+      turnId: z.string().trim().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('rename'),
+      sessionId: TerminalSessionIdSchema,
+      title: z.string().trim().min(1).max(500),
+    })
+    .strict(),
+  TerminalSessionTargetSchema('archive'),
+  TerminalSessionTargetSchema('restore'),
+  TerminalSessionTargetSchema('delete'),
+  TerminalSessionTargetSchema('show'),
+  ...TerminalCatalogCommandSchemas,
+  z.object({ command: z.literal('github-list') }).strict(),
+  z
+    .object({
+      command: z.literal('operation-list'),
+      session: TerminalSessionIdSchema,
+      state: z.string().optional(),
+      limit: z.number().optional(),
+      cursor: z.string().optional(),
+    })
+    .strict(),
+  z.object({ command: z.literal('sync'), concurrency: z.number().int().min(1).max(64) }).strict(),
+  z
+    .object({
+      command: z.literal('export'),
+      /** An absolute directory on this machine; the daemon writes it as the same user. */
+      outputDir: z.string().min(1),
+      offline: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal('machine-list'),
+      onlineOnly: z.boolean().optional(),
+      includeAgents: z.boolean().optional(),
+      includeAcpCapabilities: z.boolean().optional(),
+    })
+    .strict(),
+]);
+export type TerminalCommand = z.infer<typeof TerminalCommandSchema>;
+
+export const TerminalCommandResultSchema = z
+  .object({
+    type: z.literal('cli/command-result'),
+    value: z.record(z.string(), z.json()),
+  })
+  .strict();
+
 export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
   BaseLocalMachineRpcRequestSchema.extend({
     method: z.literal('ios-simulator/agent-control'),
@@ -123,18 +334,17 @@ export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
   }).strict(),
   BaseLocalMachineRpcRequestSchema.extend({
     method: z.literal('session/call-tool'),
-    params: z
-      .object({
-        sessionId: SessionIdSchema,
-        name: z.string().min(1).max(100),
-        arguments: z
-          .record(z.string(), z.json())
-          .refine(
-            (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= 256 * 1024,
-            'Session tool arguments exceed 256 KiB'
-          ),
-      })
-      .strict(),
+    params: SessionToolCallSchema.extend({ sessionId: SessionIdSchema }).strict(),
+  }).strict(),
+  // A terminal command: no Session or Turn drives it, so the daemon admits
+  // only its read-only tools and answers as the machine's own user.
+  BaseLocalMachineRpcRequestSchema.extend({
+    method: z.literal('cli/call-tool'),
+    params: SessionToolCallSchema.strict(),
+  }).strict(),
+  BaseLocalMachineRpcRequestSchema.extend({
+    method: z.literal('cli/command'),
+    params: TerminalCommandSchema,
   }).strict(),
   BaseLocalMachineRpcRequestSchema.extend({
     method: z.literal('session/get-active-invocation-context'),
@@ -381,6 +591,7 @@ export const LocalMachineRpcResultSchema = z.union([
   IosSimulatorResponseSchema,
   McpToolListResultSchema,
   SessionToolResultSchema,
+  TerminalCommandResultSchema,
   SessionActiveInvocationContextResultSchema,
   CodeCollabV2FileIndexSnapshotSchema,
   CodeCollabV2OpenTextOkSchema,

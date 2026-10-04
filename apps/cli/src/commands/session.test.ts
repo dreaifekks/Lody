@@ -3,6 +3,27 @@ import os from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
+
+// The local-platform branch hands each command to the daemon; record what it would receive.
+const terminal = vi.hoisted(() => ({
+  platform: undefined as string | undefined,
+  commands: [] as unknown[],
+}));
+vi.mock('@/lib/cli-platform', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/lib/cli-platform')>();
+  return {
+    ...original,
+    getCliPlatformKind: () => terminal.platform ?? original.getCliPlatformKind(),
+  };
+});
+vi.mock('@/lib/terminal-session-tools', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/terminal-session-tools')>()),
+  resolveTerminalToolTarget: async () => ({ machineId: 'machine', workspaceId: 'workspace' }),
+  runTerminalCommand: async (_target: unknown, command: unknown) => {
+    terminal.commands.push(command);
+    return { sessionId: 'session', userTurnId: 'turn' };
+  },
+}));
 import { LoroRepo } from 'loro-repo';
 import {
   getMachineFlockDocId,
@@ -73,6 +94,7 @@ import {
   validateTurnConfigOptionValues,
   validateTurnModeAndModel,
   withBuiltinDefaultTurnMode,
+  sessionCommand,
 } from './session';
 
 const createSessionMeta = (overrides: Partial<SessionMeta> = {}): SessionMeta => ({
@@ -2206,5 +2228,32 @@ describe('delegated machine access', () => {
       allowed: false,
       reason: 'not_visible',
     });
+  });
+});
+
+describe('local platform session create', () => {
+  it('names a --local-project path from the terminal directory, not the daemon one', async () => {
+    terminal.platform = 'local';
+    terminal.commands.length = 0;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await sessionCommand.parseAsync(['create', '--local-project', '.', 'Fix it.'], {
+        from: 'user',
+      });
+      await sessionCommand.parseAsync(['create', '--local-project', 'my-project', 'Fix it.'], {
+        from: 'user',
+      });
+      expect(terminal.commands).toEqual([
+        expect.objectContaining({
+          command: 'create',
+          prompt: 'Fix it.',
+          localProject: normalizeLocalProjectRootPath(process.cwd()),
+        }),
+        expect.objectContaining({ command: 'create', localProject: 'my-project' }),
+      ]);
+    } finally {
+      terminal.platform = undefined;
+      log.mockRestore();
+    }
   });
 });

@@ -77,7 +77,7 @@ import {
   LODY_GIT_CRED_CONTEXT_FILE_ENV,
 } from '@/lib/git-credential-broker';
 import type { CloudGithubTokenManager, CloudPort } from '@lody/platform';
-import { clearManagedGhTokenEnv } from '@/lib/gh-token-env';
+import { clearManagedGhTokenEnv, LODY_MANAGED_GH_TOKEN_SHA256_ENV } from '@/lib/gh-token-env';
 import { isLanGitHubTokenPort } from '@/lib/lan/lan-github-tokens';
 import {
   applyLanGitHubCredentialEnv,
@@ -94,7 +94,7 @@ import { ensureLodyZdotdirForGhShim, shouldInjectZdotdirForGhShim } from '@/lib/
 import type { RateLimit, SessionUsageUpdate } from 'acp-extension-core';
 import { getWorktreeManager } from './worktree/worktree-manager';
 import type {
-  GitCredentialBrokerAuth,
+  HostGitAuth,
   WorktreeInfo,
   WorktreeManager,
   WorktreeManagerConfig,
@@ -1875,8 +1875,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     port: number;
     token: string;
   } | null> {
-    // A LAN's token is not brokered: agents get it only through
-    // `applyLanGitHubCredential`, and host-side git uses the machine's login.
+    // A LAN's token is not brokered: agents get it through
+    // `applyLanGitHubCredential`, and host-side git through `resolveHostGitBrokerAuth`,
+    // both only on a machine without a `gh` login of its own.
     if (isLanGitHubTokenPort(this.cloudPort.githubTokens)) {
       return null;
     }
@@ -1919,9 +1920,23 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   private async resolveHostGitBrokerAuth(
     source: WorktreeManagerSource | undefined,
     config: SessionConfig
-  ): Promise<GitCredentialBrokerAuth | undefined> {
+  ): Promise<HostGitAuth | undefined> {
     if (source && source.kind !== 'github') {
       return undefined;
+    }
+    if (isLanGitHubTokenPort(this.cloudPort.githubTokens)) {
+      // `applyLanGitHubCredential` gave the session the LAN host's token only
+      // when this machine has no `gh` login; host git then needs it too.
+      // The marker tells the LAN token from a GH_TOKEN of the agent config's own.
+      if (!config.env?.GH_TOKEN || !config.env[LODY_MANAGED_GH_TOKEN_SHA256_ENV]) return undefined;
+      return {
+        kind: 'lan',
+        env: Object.fromEntries(
+          Object.entries(config.env).filter(
+            ([key]) => key === 'GH_TOKEN' || /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(key)
+          )
+        ),
+      };
     }
     const brokerEnv = await this.ensureGitCredentialBrokerEnv();
     if (!brokerEnv) {

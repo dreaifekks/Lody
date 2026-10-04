@@ -82,6 +82,7 @@ import {
   type SessionQuotaKind,
   type SessionTurnInputConfig,
   type SessionId,
+  type TerminalCommand,
   type SessionMeta,
   type SessionOperation,
   type WorkspaceId,
@@ -124,6 +125,16 @@ import { readMachineLocalProjects } from '@/lib/local-project-meta';
 import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
 import { listMergedAgentConfigs } from '@/lib/agent-config-machine-flock';
 import { getLogger, rootLogger } from '@/utils/logger';
+import { getCliPlatformKind } from '@/lib/cli-platform';
+import { readGitHubRepository } from '@/lib/lan/lan-github-repos';
+import {
+  printTerminalSessionList,
+  printTerminalSessionStatus,
+  readTerminalSessionHistory,
+  readTerminalSessionList,
+  readTerminalSessionStatus,
+} from './session-terminal';
+import { resolveTerminalToolTarget, runTerminalCommand } from '@/lib/terminal-session-tools';
 import { parseEnvAssignments } from './agent-config';
 import { formatErrorMessage } from '@/utils/format-error';
 import {
@@ -820,6 +831,9 @@ export async function rollbackPendingSessionCreate(
 }
 
 function getAuthContextOrThrow(): AuthContext {
+  // Every session command has a local-platform branch that runs on the daemon.
+  if (getCliPlatformKind() === 'local')
+    throw new Error('This session command is not available on the local platform.');
   const authClient = new AuthClient(getLogger('session'));
   const authInfo = authClient.getAuthInfo();
   if (!authInfo) {
@@ -1264,7 +1278,7 @@ async function syncSessionReadData(
   await syncDocForRead(manager, getSessionRoomId(sessionId), `${reason}:doc`);
 }
 
-async function resolveSessionMetaOrThrow(
+export async function resolveSessionMetaOrThrow(
   manager: LoroDocumentManager,
   sessionId: SessionId
 ): Promise<SessionMeta> {
@@ -1275,7 +1289,7 @@ async function resolveSessionMetaOrThrow(
   return raw.meta as SessionMeta;
 }
 
-async function resolveRunningAssistantTurnId(
+export async function resolveRunningAssistantTurnId(
   manager: LoroDocumentManager,
   sessionId: SessionId
 ): Promise<string | undefined> {
@@ -2663,14 +2677,29 @@ async function resolveAgentConfigForCreate(args: {
   );
 }
 
+/**
+ * Whether the requester may open the repository, and its default branch when
+ * known. A local daemon has no hosted registry: GitHub itself answers, asked
+ * with this machine's own `gh` login or else the LAN host's token.
+ */
 async function assertGitHubRepoAccess(args: {
   auth: AuthContext;
   workspaceId: WorkspaceId;
   repoFullName: string;
   requesterUserId: string;
-}): Promise<void> {
-  if (getSessionCommandEnvironment())
-    throw new Error('Hosted repository contexts are unavailable; use a registered local project.');
+}): Promise<{ defaultBranch?: string }> {
+  const environment = getSessionCommandEnvironment();
+  if (environment) {
+    const token = await environment.host.githubToken?.(args.repoFullName);
+    if (!token)
+      throw new Error(
+        'This machine has no GitHub credential: log in with `gh auth login`, or give the LAN host a token with `lan github setup`.'
+      );
+    const repository = await readGitHubRepository(token, args.repoFullName);
+    if (!repository)
+      throw new Error(`GitHub repository is not available to this machine: ${args.repoFullName}`);
+    return { defaultBranch: repository.defaultBranch };
+  }
   const repos = await listWorkspaceGitHubRepositoriesForCliToken({
     token: args.auth.token,
     workspaceId: args.workspaceId,
@@ -2681,6 +2710,7 @@ async function assertGitHubRepoAccess(args: {
   if (!repos.some((repo) => repo.fullName.toLowerCase() === normalized)) {
     throw new Error(`GitHub repository is not available in this workspace: ${args.repoFullName}`);
   }
+  return {};
 }
 
 export async function readLocalProjectGitStateOnMachine(args: {
@@ -2901,7 +2931,9 @@ function resolveParentProjectRef(parentSession: SessionMeta): ProjectRef | undef
 
 export function resolveCreateCurrentSessionId(
   options: Pick<CreateOptions, 'currentSessionId'>,
-  env: NodeJS.ProcessEnv = process.env
+  // Inside a daemon the process environment is the daemon's own; a caller
+  // names its current Session explicitly or has none.
+  env: NodeJS.ProcessEnv = getSessionCommandEnvironment() ? {} : process.env
 ): SessionId | undefined {
   return (normalizeCliValue(options.currentSessionId) ?? normalizeCliValue(env.LODY_SESSION_ID)) as
     | SessionId
@@ -3026,7 +3058,7 @@ async function resolveCreateContext(args: {
       });
     }
   } else if (normalizedRepo) {
-    await assertGitHubRepoAccess({
+    const access = await assertGitHubRepoAccess({
       auth: args.auth,
       workspaceId,
       repoFullName: normalizedRepo,
@@ -3034,7 +3066,7 @@ async function resolveCreateContext(args: {
     });
     const branch = resolveBaseBranchPreference({
       preferredBranch: requestedBranch,
-      fallbackBranch: 'main',
+      fallbackBranch: access.defaultBranch ?? 'main',
     });
     project = { kind: 'github', repoFullName: normalizedRepo, branch };
   } else if (normalizedLocalProject) {
@@ -3636,7 +3668,7 @@ export async function sendSessionChatResult(
   }
 }
 
-async function buildSessionShowResult(
+export async function buildSessionShowResult(
   workspace: WorkspaceSummary,
   manager: LoroDocumentManager,
   sessionId: SessionId
@@ -4054,6 +4086,71 @@ async function exitSessionCommand(code: number): Promise<void> {
   }
 }
 
+/** The longest `--wait` a daemon takes on (`TerminalCommandSchema`). */
+const TERMINAL_MAX_WAIT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Local platform: the daemon creates or continues the Session as this
+ * machine's user, and `--wait` waits on the daemon's copy of it.
+ */
+async function finishTerminalTurn(
+  args: {
+    workspace?: string;
+    outputMode: 'human' | 'json' | 'jsonl';
+    wait: boolean;
+    timeout?: number;
+    /** What human output prints first: the new Session, or the sent turn. */
+    print: 'session' | 'turn';
+  },
+  command: Extract<TerminalCommand, { command: 'create' | 'chat' }>
+): Promise<void> {
+  if (args.wait && args.outputMode === 'jsonl')
+    throw new Error(
+      '--jsonl --wait streams turn events and needs the hosted Lody; use --json --wait.'
+    );
+  const timeoutMs = resolveStructuredOutputTimeoutMs(args.timeout);
+  if (args.wait && timeoutMs > TERMINAL_MAX_WAIT_MS)
+    throw new Error(`--timeout is at most ${TERMINAL_MAX_WAIT_MS / 1000} seconds here.`);
+  const target = await resolveTerminalToolTarget(args.workspace);
+  const started = await runTerminalCommand(target, command);
+  const response = { ok: true, ...started };
+  const sessionId = String(started.sessionId) as SessionId;
+  const userTurnId = String(started.userTurnId);
+  if (!args.wait) {
+    if (args.outputMode === 'human') console.log(args.print === 'session' ? sessionId : userTurnId);
+    else printJson(response);
+    return;
+  }
+  if (args.outputMode === 'human' && args.print === 'session') console.log(sessionId);
+  let completed: Record<string, unknown>;
+  try {
+    completed = await runTerminalCommand(target, {
+      command: 'wait',
+      sessionId,
+      userTurnId,
+      timeoutMs,
+    });
+  } catch (error) {
+    throw buildStructuredWaitError('json', sessionId, userTurnId, error);
+  }
+  if (args.outputMode === 'json') {
+    printJson({ ...response, ...completed });
+    return;
+  }
+  if (args.print === 'session') console.log('');
+  console.log(
+    renderAssistantTurnCompletion(z.array(z.unknown()).parse(completed.content) as MessageContent[])
+  );
+}
+
+/** Local platform: one daemon-run session command, printed as the hosted one prints it. */
+async function runTerminalSessionWrite(
+  workspace: string | undefined,
+  command: TerminalCommand
+): Promise<Record<string, unknown>> {
+  return await runTerminalCommand(await resolveTerminalToolTarget(workspace), command);
+}
+
 const sessionCreateCommand = new Command('create')
   .description('Create a new session')
   .option('--workspace <selector>', 'Target workspace id, slug, or name')
@@ -4095,6 +4192,43 @@ const sessionCreateCommand = new Command('create')
       const createStartMs = Date.now();
       captureSessionCommandEvent('session_create_started', { output_mode: outputMode });
       try {
+        if (getCliPlatformKind() === 'local') {
+          if ((options.env?.length ?? 0) > 0)
+            throw new Error(
+              'Per-session --env overrides are no longer persisted. Configure environment variables on the agent config instead.'
+            );
+          await finishTerminalTurn(
+            {
+              workspace: options.workspace,
+              outputMode,
+              wait: shouldWaitForSessionCompletion(options),
+              timeout: options.timeout,
+              print: 'session',
+            },
+            {
+              command: 'create',
+              prompt: await readPromptText(options, promptArg),
+              title: normalizeCliValue(options.title),
+              machine: normalizeCliValue(options.machine),
+              agentConfig: resolveCreateAgentSelector(options),
+              parent: normalizeCliValue(options.parent),
+              useCurrentSessionAsParent: options.useCurrentSessionAsParent,
+              currentSessionId: normalizeCliValue(process.env.LODY_SESSION_ID),
+              repo: normalizeCliValue(options.repo),
+              // A path names this terminal's directory, not the daemon's working directory.
+              localProject: options.localProject
+                ? (normalizeLocalProjectPathSelector(options.localProject) ??
+                  normalizeCliValue(options.localProject))
+                : undefined,
+              worktree: options.worktree,
+              branch: normalizeCliValue(options.branch),
+              mode: normalizeCliValue(options.mode),
+              model: normalizeCliValue(options.model),
+              configOption: options.configOption,
+            }
+          );
+          return;
+        }
         const auth = getAuthContextOrThrow();
         const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
         const prompt = await readPromptText(options, promptArg);
@@ -4261,7 +4395,6 @@ const sessionChatCommand = new Command('chat')
     ) => {
       await runSessionCommand(options, async () => {
         const outputMode = resolveStructuredOutputMode(options);
-        const auth = getAuthContextOrThrow();
         const stdinState = shouldReadStdinForChatArgResolution({
           sessionIdArg,
           promptArg,
@@ -4283,6 +4416,27 @@ const sessionChatCommand = new Command('chat')
           }),
         });
 
+        if (getCliPlatformKind() === 'local') {
+          await finishTerminalTurn(
+            {
+              workspace: options.workspace,
+              outputMode,
+              wait: shouldWaitForSessionCompletion(options),
+              timeout: options.timeout,
+              print: 'turn',
+            },
+            {
+              command: 'chat',
+              sessionId,
+              prompt: await readPromptText(options, positionalPrompt, stdinState),
+              mode: normalizeCliValue(options.mode),
+              model: normalizeCliValue(options.model),
+              configOption: options.configOption,
+            }
+          );
+          return;
+        }
+        const auth = getAuthContextOrThrow();
         const workspace = await resolveWorkspaceForSessionOrThrow(
           auth,
           sessionId,
@@ -4394,13 +4548,28 @@ const sessionCancelCommand = new Command('cancel')
   .action(
     async (sessionIdArg: string | undefined, options: CommonOptions & { turnId?: string }) => {
       await runSessionCommand(options, async () => {
-        const auth = getAuthContextOrThrow();
         const sessionId = (normalizeCliValue(sessionIdArg) ??
           normalizeCliValue(process.env.LODY_SESSION_ID)) as SessionId | undefined;
         if (!sessionId) {
           throw new Error('Missing session ID. Pass one explicitly or set LODY_SESSION_ID.');
         }
+        if (getCliPlatformKind() === 'local') {
+          const result = await runTerminalSessionWrite(options.workspace, {
+            command: 'cancel',
+            sessionId,
+            turnId: normalizeCliValue(options.turnId),
+          });
+          if (options.json) printJson({ ok: true, ...result });
+          else if (result.expectedTurnId)
+            console.log(
+              `Target turn ${String(result.expectedTurnId)} is no longer active in ${sessionId}.`
+            );
+          else if (result.alreadyStopped) console.log(`Session ${sessionId} has no active turn.`);
+          else console.log(`Cancelled ${sessionId}`);
+          return;
+        }
 
+        const auth = getAuthContextOrThrow();
         const workspace = await resolveWorkspaceForSessionOrThrow(
           auth,
           sessionId,
@@ -4503,8 +4672,6 @@ const sessionListCommand = new Command('list')
   .option('--debug', 'Enable debug output')
   .action(async (options: ListOptions) => {
     await runSessionCommand(options, async () => {
-      const auth = getAuthContextOrThrow();
-      const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
       if (options.openedBy && options.openedByCurrent === true) {
         throw new Error('Pass either --opened-by or --opened-by-current, not both.');
       }
@@ -4515,6 +4682,17 @@ const sessionListCommand = new Command('list')
       if (options.openedByCurrent === true && !openedBySessionId) {
         throw new Error('No current session is available for --opened-by-current.');
       }
+      if (getCliPlatformKind() === 'local') {
+        const { target, sessions } = await readTerminalSessionList({
+          ...options,
+          openedBy: openedBySessionId,
+        });
+        if (options.json) printJson({ ok: true, workspaceId: target.workspaceId, sessions });
+        else await printTerminalSessionList(target, sessions);
+        return;
+      }
+      const auth = getAuthContextOrThrow();
+      const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
 
       await withWorkspaceManager(auth, workspace, async (manager) => {
         if (options.offline !== true) {
@@ -4572,13 +4750,28 @@ const sessionHistoryCommand = new Command('history')
         throw new Error('Pass either --limit or --all, not both.');
       }
 
-      const auth = getAuthContextOrThrow();
       const sessionId = (normalizeCliValue(sessionIdArg) ??
         normalizeCliValue(process.env.LODY_SESSION_ID)) as SessionId | undefined;
       if (!sessionId) {
         throw new Error('Missing session ID. Pass one explicitly or set LODY_SESSION_ID.');
       }
+      if (getCliPlatformKind() === 'local') {
+        const { target, entries: newestLast } = await readTerminalSessionHistory(sessionId, {
+          workspace: options.workspace,
+          limit: options.limit ?? DEFAULT_SESSION_HISTORY_LIMIT,
+          all: options.all,
+        });
+        const entries = options.reverse ? [...newestLast].reverse() : newestLast;
+        const workspaceId = target.workspaceId;
+        if (outputMode === 'json')
+          printJson({ ok: true, workspaceId, sessionId, returned: entries.length, entries });
+        else if (outputMode === 'jsonl')
+          for (const entry of entries) printJson({ workspaceId, sessionId, ...entry });
+        else console.log(renderSessionTranscript(entries as SessionTranscriptEntry[]));
+        return;
+      }
 
+      const auth = getAuthContextOrThrow();
       const workspace = await resolveWorkspaceForSessionOrThrow(auth, sessionId, {
         workspace: options.workspace,
         offline: options.offline,
@@ -4638,13 +4831,22 @@ const sessionShowCommand = new Command('show')
   .argument('[sessionId]', 'Session ID; falls back to LODY_SESSION_ID')
   .action(async (sessionIdArg: string | undefined, options: CommonOptions) => {
     await runSessionCommand(options, async () => {
-      const auth = getAuthContextOrThrow();
       const sessionId = (normalizeCliValue(sessionIdArg) ??
         normalizeCliValue(process.env.LODY_SESSION_ID)) as SessionId | undefined;
       if (!sessionId) {
         throw new Error('Missing session ID. Pass one explicitly or set LODY_SESSION_ID.');
       }
+      if (getCliPlatformKind() === 'local') {
+        const result = (await runTerminalSessionWrite(options.workspace, {
+          command: 'show',
+          sessionId,
+        })) as unknown as SessionShowResult;
+        if (options.json) printJson({ ok: true, ...result });
+        else printHumanSessionShow(result);
+        return;
+      }
 
+      const auth = getAuthContextOrThrow();
       const workspace = await resolveWorkspaceForSessionOrThrow(auth, sessionId, {
         workspace: options.workspace,
         offline: options.offline,
@@ -4672,13 +4874,19 @@ const sessionStatusCommand = new Command('status')
   .argument('[sessionId]', 'Session ID; falls back to LODY_SESSION_ID')
   .action(async (sessionIdArg: string | undefined, options: CommonOptions) => {
     await runSessionCommand(options, async () => {
-      const auth = getAuthContextOrThrow();
       const sessionId = (normalizeCliValue(sessionIdArg) ??
         normalizeCliValue(process.env.LODY_SESSION_ID)) as SessionId | undefined;
       if (!sessionId) {
         throw new Error('Missing session ID. Pass one explicitly or set LODY_SESSION_ID.');
       }
+      if (getCliPlatformKind() === 'local') {
+        const { target, status } = await readTerminalSessionStatus(sessionId, options.workspace);
+        if (options.json) printJson({ ok: true, workspaceId: target.workspaceId, ...status });
+        else await printTerminalSessionStatus(target, status);
+        return;
+      }
 
+      const auth = getAuthContextOrThrow();
       const workspace = await resolveWorkspaceForSessionOrThrow(auth, sessionId, {
         workspace: options.workspace,
         offline: options.offline,
@@ -4717,13 +4925,20 @@ const sessionRenameCommand = new Command('rename')
       options: RenameOptions
     ) => {
       await runSessionCommand(options, async () => {
-        const auth = getAuthContextOrThrow();
         const { sessionId, title } = resolveRenameArgs({
           sessionIdArg,
           titleArg,
           optionTitle: options.title,
           envSessionId: process.env.LODY_SESSION_ID,
         });
+        if (getCliPlatformKind() === 'local') {
+          await runTerminalSessionWrite(options.workspace, { command: 'rename', sessionId, title });
+          if (options.json) printJson({ ok: true, sessionId, title });
+          else console.log(`Renamed ${sessionId}`);
+          return;
+        }
+
+        const auth = getAuthContextOrThrow();
 
         const workspace = await resolveWorkspaceForSessionOrThrow(
           auth,
@@ -4756,13 +4971,22 @@ const sessionArchiveCommand = new Command('archive')
   .argument('[sessionId]', 'Session ID; falls back to LODY_SESSION_ID')
   .action(async (sessionIdArg: string | undefined, options: CommonOptions) => {
     await runSessionCommand(options, async () => {
-      const auth = getAuthContextOrThrow();
       const sessionId = (normalizeCliValue(sessionIdArg) ??
         normalizeCliValue(process.env.LODY_SESSION_ID)) as SessionId | undefined;
       if (!sessionId) {
         throw new Error('Missing session ID. Pass one explicitly or set LODY_SESSION_ID.');
       }
+      if (getCliPlatformKind() === 'local') {
+        const result = await runTerminalSessionWrite(options.workspace, {
+          command: 'archive',
+          sessionId,
+        });
+        if (options.json) printJson({ ok: true, ...result });
+        else console.log(`Archived ${sessionId}`);
+        return;
+      }
 
+      const auth = getAuthContextOrThrow();
       const workspace = await resolveWorkspaceForSessionOrThrow(auth, sessionId, {
         workspace: options.workspace,
         reason: `session.archive:${sessionId}:resolve`,
@@ -4792,13 +5016,22 @@ const sessionRestoreCommand = new Command('restore')
   .argument('[sessionId]', 'Session ID; falls back to LODY_SESSION_ID')
   .action(async (sessionIdArg: string | undefined, options: CommonOptions) => {
     await runSessionCommand(options, async () => {
-      const auth = getAuthContextOrThrow();
       const sessionId = (normalizeCliValue(sessionIdArg) ??
         normalizeCliValue(process.env.LODY_SESSION_ID)) as SessionId | undefined;
       if (!sessionId) {
         throw new Error('Missing session ID. Pass one explicitly or set LODY_SESSION_ID.');
       }
+      if (getCliPlatformKind() === 'local') {
+        const result = await runTerminalSessionWrite(options.workspace, {
+          command: 'restore',
+          sessionId,
+        });
+        if (options.json) printJson({ ok: true, ...result });
+        else console.log(`Restored ${sessionId}`);
+        return;
+      }
 
+      const auth = getAuthContextOrThrow();
       const workspace = await resolveWorkspaceForSessionOrThrow(auth, sessionId, {
         workspace: options.workspace,
         reason: `session.restore:${sessionId}:resolve`,
@@ -4828,13 +5061,22 @@ const sessionDeleteCommand = new Command('delete')
   .argument('[sessionId]', 'Session ID; falls back to LODY_SESSION_ID')
   .action(async (sessionIdArg: string | undefined, options: CommonOptions) => {
     await runSessionCommand(options, async () => {
-      const auth = getAuthContextOrThrow();
       const sessionId = (normalizeCliValue(sessionIdArg) ??
         normalizeCliValue(process.env.LODY_SESSION_ID)) as SessionId | undefined;
       if (!sessionId) {
         throw new Error('Missing session ID. Pass one explicitly or set LODY_SESSION_ID.');
       }
+      if (getCliPlatformKind() === 'local') {
+        const result = await runTerminalSessionWrite(options.workspace, {
+          command: 'delete',
+          sessionId,
+        });
+        if (options.json) printJson({ ok: true, ...result });
+        else console.log(`Deleted ${sessionId}`);
+        return;
+      }
 
+      const auth = getAuthContextOrThrow();
       const workspace = await resolveWorkspaceForSessionOrThrow(auth, sessionId, {
         workspace: options.workspace,
         reason: `session.delete:${sessionId}:resolve`,

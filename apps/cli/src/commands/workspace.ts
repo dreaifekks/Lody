@@ -7,6 +7,9 @@ import {
 } from '@/lib/command-runtime';
 import { renderTerminalTable } from '@/lib/terminal-table';
 import { listWorkspacesForToken, type WorkspaceSummary } from '@/lib/workspace';
+import { Effect } from 'effect';
+import { getCliPlatformKind } from '@/lib/cli-platform';
+import { makeLocalWorkspaceCatalog } from '@/lib/local-workspace-catalog';
 
 type WorkspaceListOptions = Pick<CommonCommandOptions, 'json' | 'debug'>;
 
@@ -28,6 +31,19 @@ export function sortWorkspaceSummaries(workspaces: WorkspaceSummary[]): Workspac
   });
 }
 
+/**
+ * The local platform has no account to ask: its workspaces are the ones this
+ * machine's catalog holds, one per LAN or the single local one.
+ */
+async function listAccessibleWorkspaces(): Promise<WorkspaceSummary[]> {
+  if (getCliPlatformKind() !== 'local')
+    return await listWorkspacesForToken(getAuthContextOrThrow('workspace').token);
+  const catalog = await Effect.runPromise(makeLocalWorkspaceCatalog().read());
+  return catalog.workspaces
+    .filter((row) => row.state === 'active')
+    .map((row) => ({ id: row.workspaceId, name: row.name, slug: row.slug, role: row.role }));
+}
+
 export const workspaceCommand = new Command('workspace')
   .description('Manage workspaces')
   .addCommand(
@@ -37,8 +53,7 @@ export const workspaceCommand = new Command('workspace')
       .option('--debug', 'Enable debug output')
       .action(async (options: WorkspaceListOptions) => {
         await runOneShotCommand('workspace', options, async () => {
-          const auth = getAuthContextOrThrow('workspace');
-          const workspaces = sortWorkspaceSummaries(await listWorkspacesForToken(auth.token));
+          const workspaces = sortWorkspaceSummaries(await listAccessibleWorkspaces());
           if (options.json) {
             printJson({
               ok: true,

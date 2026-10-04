@@ -9,18 +9,17 @@ import {
   type McpHttpConnection,
   type McpServerId,
   type McpStdioConnection,
+  type TerminalCommand,
   type WorkspaceId,
   type WorkspaceMcpServerMeta,
 } from '@lody/shared';
 import {
-  getAuthContextOrThrow,
   normalizeCliValue,
   printJson,
-  resolveWorkspaceOrThrow,
   runOneShotCommand,
-  withWorkspaceManager,
   type CommonCommandOptions,
 } from '@/lib/command-runtime';
+import { runWorkspaceCommand, type WorkspaceCommandContext } from '@/lib/terminal-session-tools';
 import {
   deleteWorkspaceMcpCatalogEntry,
   listWorkspaceMcpCatalog,
@@ -191,38 +190,38 @@ type McpCatalogContext = {
   writeOptions: { sync: boolean };
 };
 
+export type McpCatalogAction = Omit<Extract<TerminalCommand, { command: 'mcp' }>, 'command'>;
+
 /**
- * Every `lody mcp` subcommand resolves the same workspace, refreshes the
- * catalog unless `--offline`, and reads it once before acting.
+ * Every `lody mcp` write refreshes the catalog unless `--offline`, reads it
+ * once and applies one action. It runs wherever the workspace replica lives:
+ * the hosted command line's own, or a local daemon's (`runWorkspaceCommand`).
  */
-async function withMcpCatalog(
-  options: McpCommandOptions,
-  run: (context: McpCatalogContext) => Promise<void>
-): Promise<void> {
-  await runOneShotCommand('mcp', options, async () => {
-    const auth = getAuthContextOrThrow('mcp');
-    const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
-    await withWorkspaceManager(auth, workspace, 'mcp', async (manager) => {
-      const workspaceId = workspace.id as WorkspaceId;
-      if (!options.offline) {
-        try {
-          await syncMcpCatalog(manager, workspaceId);
-        } catch (error) {
-          throw new Error(
-            `${formatErrorMessage(error)} Use --offline to read the local MCP catalog cache without syncing.`,
-            { cause: error }
-          );
-        }
-      }
-      await run({
-        repo: manager.repo,
-        workspaceId,
-        userId: auth.userId,
-        servers: await listWorkspaceMcpCatalog(manager.repo, workspaceId),
-        writeOptions: { sync: !options.offline },
-      });
-    });
-  });
+export async function applyMcpCatalogAction(
+  { auth, workspace, manager }: WorkspaceCommandContext,
+  action: McpCatalogAction
+): Promise<{ payload: Record<string, unknown>; message: string; result: McpCatalogWriteResult }> {
+  const workspaceId = workspace.id as WorkspaceId;
+  if (!action.offline) {
+    try {
+      await syncMcpCatalog(manager, workspaceId);
+    } catch (error) {
+      throw new Error(
+        `${formatErrorMessage(error)} Use --offline to read the local MCP catalog cache without syncing.`,
+        { cause: error }
+      );
+    }
+  }
+  const context: McpCatalogContext = {
+    repo: manager.repo,
+    workspaceId,
+    userId: auth.userId,
+    servers: await listWorkspaceMcpCatalog(manager.repo, workspaceId),
+    writeOptions: { sync: !action.offline },
+  };
+  if (action.action === 'add') return await addMcpServer(context, action.selector, action.options);
+  if (action.action === 'set') return await setMcpServer(context, action.selector, action.options);
+  return await removeMcpServer(context, action.selector);
 }
 
 /** Shared write reporting: JSON envelope, or a human line plus the sync warning. */
@@ -242,6 +241,124 @@ function reportWrite(
       `Warning: saved locally but NOT synced to the workspace yet (${result.syncError ?? 'unknown error'}).\nOther machines will not see it until this machine syncs.`
     );
   }
+}
+
+/** Runs one `lody mcp` write as the command line's options describe it, and reports it. */
+async function runMcpCommand(
+  options: McpCommandOptions & McpSetOptions,
+  action: McpCatalogAction['action'],
+  selector: string
+): Promise<void> {
+  await runOneShotCommand('mcp', options, async () => {
+    const mcpAction: McpCatalogAction = {
+      action,
+      selector,
+      offline: options.offline,
+      options: {
+        name: options.name,
+        description: options.description,
+        default: options.default,
+        command: options.command,
+        arg: options.arg,
+        env: options.env,
+        envPassthrough: options.envPassthrough,
+        url: options.url,
+        bearerToken: options.bearerToken,
+        header: options.header,
+      },
+    };
+    const { payload, message, result } = await runWorkspaceCommand(
+      'mcp',
+      options.workspace,
+      { command: 'mcp', ...mcpAction },
+      (context) => applyMcpCatalogAction(context, mcpAction)
+    );
+    reportWrite(options, payload, message, result);
+  });
+}
+
+async function addMcpServer(
+  { repo, workspaceId, userId, servers, writeOptions }: McpCatalogContext,
+  name: string,
+  options: McpAddOptions
+) {
+  const normalizedName = normalizeName(name);
+  assertUniqueName(servers, normalizedName);
+  const connection = buildMcpConnectionFromOptions(options);
+  const now = getServerNow();
+  const entry: WorkspaceMcpServerMeta = {
+    id: uuidV4() as McpServerId,
+    name: normalizedName,
+    transport: connection?.transport ?? 'stdio',
+    ...(normalizeCliValue(options.description)
+      ? { description: normalizeCliValue(options.description) }
+      : {}),
+    ...(connection ? { connection } : {}),
+    ...(options.default ? { enabledByDefault: true } : {}),
+    createdAt: now,
+    updatedAt: now,
+    createdBy: userId,
+  };
+  const result = await upsertWorkspaceMcpCatalogEntry(repo, workspaceId, entry, writeOptions);
+  captureCli('workspace/mcp_created', {
+    workspace_id: workspaceId,
+    source: 'cli',
+    transport: entry.transport,
+    enabled_by_default: entry.enabledByDefault === true,
+    has_description: Boolean(entry.description),
+  });
+  return {
+    payload: { workspaceId, server: entry },
+    message: `Added MCP server ${entry.name} (${entry.id}).`,
+    result,
+  };
+}
+
+async function setMcpServer(
+  { repo, workspaceId, servers, writeOptions }: McpCatalogContext,
+  selector: string,
+  options: McpSetOptions
+) {
+  const current = findByIdOrName(servers, selector);
+  const name = options.name === undefined ? current.name : normalizeName(options.name);
+  assertUniqueName(servers, name, current.id);
+  const connection = buildMcpConnectionFromOptions(options, current.connection);
+  const next: WorkspaceMcpServerMeta = {
+    ...current,
+    name,
+    transport: connection?.transport ?? current.transport,
+    ...(connection ? { connection } : {}),
+  };
+  if (options.description !== undefined) {
+    const description = normalizeCliValue(options.description);
+    if (description) next.description = description;
+    else delete next.description;
+  }
+  if (options.default !== undefined) {
+    next.enabledByDefault = options.default;
+  }
+  if (!isDeepStrictEqual(next, current)) {
+    next.updatedAt = getServerNow();
+  }
+  const result = await upsertWorkspaceMcpCatalogEntry(repo, workspaceId, next, writeOptions);
+  return {
+    payload: { workspaceId, server: next },
+    message: result.changed ? `Updated MCP server ${next.name}.` : 'No changes.',
+    result,
+  };
+}
+
+async function removeMcpServer(
+  { repo, workspaceId, servers, writeOptions }: McpCatalogContext,
+  selector: string
+) {
+  const current = findByIdOrName(servers, selector);
+  const result = await deleteWorkspaceMcpCatalogEntry(repo, workspaceId, current.id, writeOptions);
+  return {
+    payload: { workspaceId, mcpServerId: current.id },
+    message: `Removed MCP server ${current.name} (${current.id}).`,
+    result,
+  };
 }
 
 function addCommonOptions(command: Command): Command {
@@ -277,39 +394,7 @@ const addCommand = addConnectionOptions(
   .option('--default', 'Select this server by default for new sessions')
   .option('--no-default', 'Do not select this server by default for new sessions')
   .action(async (name: string, options: McpAddOptions) => {
-    await withMcpCatalog(options, async ({ repo, workspaceId, userId, servers, writeOptions }) => {
-      const normalizedName = normalizeName(name);
-      assertUniqueName(servers, normalizedName);
-      const connection = buildMcpConnectionFromOptions(options);
-      const now = getServerNow();
-      const entry: WorkspaceMcpServerMeta = {
-        id: uuidV4() as McpServerId,
-        name: normalizedName,
-        transport: connection?.transport ?? 'stdio',
-        ...(normalizeCliValue(options.description)
-          ? { description: normalizeCliValue(options.description) }
-          : {}),
-        ...(connection ? { connection } : {}),
-        ...(options.default ? { enabledByDefault: true } : {}),
-        createdAt: now,
-        updatedAt: now,
-        createdBy: userId,
-      };
-      const result = await upsertWorkspaceMcpCatalogEntry(repo, workspaceId, entry, writeOptions);
-      captureCli('workspace/mcp_created', {
-        workspace_id: workspaceId,
-        source: 'cli',
-        transport: entry.transport,
-        enabled_by_default: entry.enabledByDefault === true,
-        has_description: Boolean(entry.description),
-      });
-      reportWrite(
-        options,
-        { workspaceId, server: entry },
-        `Added MCP server ${entry.name} (${entry.id}).`,
-        result
-      );
-    });
+    await runMcpCommand(options, 'add', name);
   });
 
 const setCommand = addConnectionOptions(
@@ -321,36 +406,7 @@ const setCommand = addConnectionOptions(
   .option('--default', 'Select this server by default for new sessions')
   .option('--no-default', 'Do not select this server by default for new sessions')
   .action(async (selector: string, options: McpSetOptions) => {
-    await withMcpCatalog(options, async ({ repo, workspaceId, servers, writeOptions }) => {
-      const current = findByIdOrName(servers, selector);
-      const name = options.name === undefined ? current.name : normalizeName(options.name);
-      assertUniqueName(servers, name, current.id);
-      const connection = buildMcpConnectionFromOptions(options, current.connection);
-      const next: WorkspaceMcpServerMeta = {
-        ...current,
-        name,
-        transport: connection?.transport ?? current.transport,
-        ...(connection ? { connection } : {}),
-      };
-      if (options.description !== undefined) {
-        const description = normalizeCliValue(options.description);
-        if (description) next.description = description;
-        else delete next.description;
-      }
-      if (options.default !== undefined) {
-        next.enabledByDefault = options.default;
-      }
-      if (!isDeepStrictEqual(next, current)) {
-        next.updatedAt = getServerNow();
-      }
-      const result = await upsertWorkspaceMcpCatalogEntry(repo, workspaceId, next, writeOptions);
-      reportWrite(
-        options,
-        { workspaceId, server: next },
-        result.changed ? `Updated MCP server ${next.name}.` : 'No changes.',
-        result
-      );
-    });
+    await runMcpCommand(options, 'set', selector);
   });
 
 const removeCommand = addCommonOptions(
@@ -358,21 +414,7 @@ const removeCommand = addCommonOptions(
 )
   .argument('<server>', 'Server id or name')
   .action(async (selector: string, options: McpCommandOptions) => {
-    await withMcpCatalog(options, async ({ repo, workspaceId, servers, writeOptions }) => {
-      const current = findByIdOrName(servers, selector);
-      const result = await deleteWorkspaceMcpCatalogEntry(
-        repo,
-        workspaceId,
-        current.id,
-        writeOptions
-      );
-      reportWrite(
-        options,
-        { workspaceId, mcpServerId: current.id },
-        `Removed MCP server ${current.name} (${current.id}).`,
-        result
-      );
-    });
+    await runMcpCommand(options, 'remove', selector);
   });
 
 export const mcpCommand = new Command('mcp')

@@ -56,6 +56,7 @@ import {
   getMachineRoomId,
   getSessionIdFromRoomId,
   getSessionRoomId,
+  TerminalCommandResultSchema,
   type IssuePRMention,
   type SessionImageGroupContent,
   type SessionInputBlock,
@@ -199,6 +200,7 @@ import {
 import type { ModelInfo } from '@lody/shared';
 import type {
   CloudNotificationsPort,
+  CloudGithubTokenManager,
   CloudPort,
   CloudUsagePort,
   LoroStreamsTokenProvider,
@@ -216,6 +218,7 @@ import {
 } from './machine-lifecycle';
 import { resolveRegisteredMachineName } from './machine-name';
 import { formatErrorMessage } from '@/utils/format-error';
+import { readGhAuthToken } from '@/lib/lan/lan-agent-github';
 import { LiveActivityDetailTracker } from './live-activity-detail';
 import { startTraceSpan, traceAsync } from '@/utils/trace-span';
 import { getCliHttpFetch } from '@/utils/http-transport';
@@ -6549,6 +6552,27 @@ export class MessageHandler {
     return requester === ownerUserId || requester === this.userId;
   }
 
+  /**
+   * The GitHub credential a terminal command checks a repository with, in the
+   * order agents and host git use: this machine's own `gh` login, then the LAN
+   * host's token.
+   */
+  private terminalGitHubTokens: CloudGithubTokenManager | undefined;
+
+  private async readGitHubToken(repoFullName: string): Promise<string | null> {
+    const own = await readGhAuthToken();
+    if (own) return own;
+    this.terminalGitHubTokens ??= this.cloudPort.githubTokens?.createTokenManager(this.workspaceId);
+    const tokenManager = this.terminalGitHubTokens;
+    if (!tokenManager) return null;
+    try {
+      return await tokenManager.getAppTokenForRepo(repoFullName);
+    } catch (error) {
+      this.logger.debug(`[lan-github] No LAN GitHub token: ${formatErrorMessage(error)}`);
+      return null;
+    }
+  }
+
   private withSessionCommandEnvironment<T>(run: () => T): T {
     if (this.cloudPort.kind !== 'local') return run();
     return runWithSessionCommandEnvironment(
@@ -6615,6 +6639,7 @@ export class MessageHandler {
           dispatchSession: async (sessionId) => {
             void this.sessionDispatchWatcher.enqueueSessionCheck(sessionId);
           },
+          githubToken: async (repoFullName) => await this.readGitHubToken(repoFullName),
           ...(this.lanWorkspace
             ? {
                 remote: {
@@ -6743,6 +6768,37 @@ export class MessageHandler {
             args
           )
         );
+      }
+      case 'cli/call-tool': {
+        if (this.cloudPort.kind !== 'local')
+          throw new Error('Terminal Session tools require a local workspace');
+        if (request.workspaceId !== this.workspaceId || request.machineId !== this.machineId)
+          throw new Error('Session tool scope mismatch');
+        const { executeDaemonTerminalTool } = await import('@/mcp/daemon-session-tools');
+        return this.withSessionCommandEnvironment(() =>
+          executeDaemonTerminalTool(
+            { machineId: this.machineId, workspaceId: this.workspaceId },
+            request.params.name,
+            request.params.arguments
+          )
+        );
+      }
+      case 'cli/command': {
+        if (this.cloudPort.kind !== 'local')
+          throw new Error('Terminal session commands require a local workspace');
+        if (request.workspaceId !== this.workspaceId || request.machineId !== this.machineId)
+          throw new Error('Session command scope mismatch');
+        const { executeTerminalCommand } = await import('@/commands/terminal-daemon');
+        const value = await this.withSessionCommandEnvironment(() =>
+          executeTerminalCommand(
+            { machineId: this.machineId, workspaceId: this.workspaceId },
+            request.params
+          )
+        );
+        return TerminalCommandResultSchema.parse({
+          type: 'cli/command-result',
+          value: JSON.parse(JSON.stringify(value)),
+        });
       }
       case 'code-collab/get-file-index':
         await assertOwner(request.params.sessionId as SessionId);

@@ -529,4 +529,37 @@ process.exit(result.status ?? 1);
       spawnMock.mock.calls.find(([, args]) => (args as string[]).includes('fetch'))?.[1]
     ).toEqual(['fetch', 'origin', '--prune']);
   });
+
+  it.each(['clone', 'fetch'])(
+    "gives host %s a LAN's token after the machine's own helpers, with no broker",
+    async (verb) => {
+      if (verb === 'clone')
+        rmSync(path.join(dataDir, 'repos', REPO_ID, 'bare.git'), { recursive: true });
+      // A stale pointer of a hosted workspace in the same process must not be borrowed.
+      process.env.LODY_GIT_CRED_BROKER_URL = 'http://127.0.0.1:44102';
+      process.env.LODY_GIT_CRED_BROKER_TOKEN = 'other-workspace-token';
+      const manager = await newManager();
+      await manager.ensureRepo({
+        brokerAuth: {
+          kind: 'lan',
+          env: {
+            GH_TOKEN: 'lan-host-token',
+            GIT_CONFIG_COUNT: '1',
+            GIT_CONFIG_KEY_0: 'credential.https://github.com.helper',
+            GIT_CONFIG_VALUE_0: '!lan-helper',
+          },
+        },
+      });
+
+      const env = envOfGitCall(verb);
+      expect(env).toMatchObject({
+        GH_TOKEN: 'lan-host-token',
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'credential.https://github.com.helper',
+        GIT_CONFIG_VALUE_0: '!lan-helper',
+      });
+      expect(env.LODY_GIT_CRED_BROKER_URL).toBeUndefined();
+      expect(env.LODY_GIT_CRED_BROKER_TOKEN).toBeUndefined();
+    }
+  );
 });

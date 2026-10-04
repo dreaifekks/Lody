@@ -9,8 +9,12 @@ import {
 import { renderTerminalTable } from '@/lib/terminal-table';
 import {
   listWorkspaceGitHubRepositoriesForCliToken,
+  WorkspaceGitHubRepositorySchema,
   type WorkspaceGitHubRepository,
 } from '@/lib/workspace';
+import { z } from 'zod';
+import { getCliPlatformKind } from '@/lib/cli-platform';
+import { resolveTerminalToolTarget, runTerminalCommand } from '@/lib/terminal-session-tools';
 
 type GitHubListOptions = Pick<CommonCommandOptions, 'workspace' | 'json' | 'debug'>;
 
@@ -56,24 +60,50 @@ function printHumanRepositoryList(repositories: WorkspaceGitHubRepository[]): vo
   );
 }
 
+const LocalRepositoryListSchema = z.object({
+  workspaceId: z.string(),
+  repositories: z.array(WorkspaceGitHubRepositorySchema),
+});
+
+/**
+ * The hosted Lody lists the repositories linked to the workspace. A local
+ * daemon has no such registry and lists what its GitHub credential can read:
+ * the LAN host's token, or this machine's own `gh` login.
+ */
+async function listRepositories(workspaceSelector: string | undefined) {
+  if (getCliPlatformKind() === 'local') {
+    const result = LocalRepositoryListSchema.parse(
+      await runTerminalCommand(await resolveTerminalToolTarget(workspaceSelector), {
+        command: 'github-list',
+      })
+    );
+    return {
+      workspace: { id: result.workspaceId },
+      repositories: sortGitHubRepositories(result.repositories),
+    };
+  }
+  const auth = getAuthContextOrThrow('github');
+  const workspace = await resolveWorkspaceOrThrow(auth, workspaceSelector);
+  const repositories = sortGitHubRepositories(
+    await listWorkspaceGitHubRepositoriesForCliToken({
+      token: auth.token,
+      workspaceId: workspace.id,
+    })
+  );
+  return { workspace, repositories };
+}
+
 export const githubCommand = new Command('github')
-  .description('Manage GitHub repositories linked to a workspace')
+  .description('List the GitHub repositories a workspace can use')
   .addCommand(
     new Command('list')
-      .description('List GitHub repositories linked to a workspace')
+      .description('List the GitHub repositories a workspace can use')
       .option('--workspace <selector>', 'Target workspace id, slug, or name')
       .option('--json', 'Print JSON output')
       .option('--debug', 'Enable debug output')
       .action(async (options: GitHubListOptions) => {
         await runOneShotCommand('github', options, async () => {
-          const auth = getAuthContextOrThrow('github');
-          const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
-          const repositories = sortGitHubRepositories(
-            await listWorkspaceGitHubRepositoriesForCliToken({
-              token: auth.token,
-              workspaceId: workspace.id,
-            })
-          );
+          const { workspace, repositories } = await listRepositories(options.workspace);
 
           if (options.json) {
             printJson({

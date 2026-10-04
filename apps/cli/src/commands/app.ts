@@ -28,6 +28,10 @@ import {
 import { formatWorkspaceCandidate } from '@/lib/workspace-selector';
 import { openBrowser } from '@/utils/open-browser';
 import { getLogger } from '@/utils/logger';
+import { Effect } from 'effect';
+import { getCliPlatformKind } from '@/lib/cli-platform';
+import { makeLocalWorkspaceCatalog } from '@/lib/local-workspace-catalog';
+import { resolveLocalMachineId } from '@/lib/lan/lan-control-client';
 
 type AppCommandOptions = Pick<CommonCommandOptions, 'json' | 'debug' | 'workspace'>;
 
@@ -119,6 +123,16 @@ export async function resolveLocalProjectForApp(args: {
   };
 }
 
+/**
+ * The machine the app opens a project on. The local platform has no account;
+ * the workspace catalog names the machine even while its daemon is down.
+ */
+async function resolveAppMachineId(): Promise<MachineId> {
+  if (getCliPlatformKind() !== 'local') return getAuthContextOrThrow('app').machineId;
+  const catalog = await Effect.runPromise(makeLocalWorkspaceCatalog().read());
+  return (catalog.machine?.machineId as MachineId | undefined) ?? (await resolveLocalMachineId());
+}
+
 export const appCommand = new Command('app')
   .description(
     'Open the Lody desktop app on a new chat with a local directory selected (registers it if needed)'
@@ -140,7 +154,7 @@ export const appCommand = new Command('app')
   .action(async (projectPath: string, options: AppCommandOptions) => {
     await runOneShotCommand('app', options, async () => {
       const logger = getLogger('app');
-      const auth = getAuthContextOrThrow('app');
+      const auth = { machineId: await resolveAppMachineId() };
       const rootPath = ensureLocalProjectRootPath(path.resolve(projectPath ?? '.'));
 
       const target = await resolveLocalProjectForApp({

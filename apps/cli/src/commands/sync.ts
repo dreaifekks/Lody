@@ -24,6 +24,11 @@ import type { LoroDocumentManager } from '@/lib/loro/doc';
 import { mapWithConcurrency } from '@/lib/session-export/concurrency';
 import { formatErrorMessage } from '@/utils/format-error';
 import { listWorkspacesForToken, type WorkspaceSummary } from '@/lib/workspace';
+import { Effect } from 'effect';
+import { z } from 'zod';
+import { getCliPlatformKind } from '@/lib/cli-platform';
+import { makeLocalWorkspaceCatalog } from '@/lib/local-workspace-catalog';
+import { resolveTerminalToolTarget, runTerminalCommand } from '@/lib/terminal-session-tools';
 
 type SyncOptions = CommonCommandOptions & {
   allWorkspace?: boolean;
@@ -59,6 +64,22 @@ export type WorkspaceSyncSummary = {
   failed: Record<WorkspaceSyncKind, number>;
   failures: WorkspaceSyncFailure[];
 };
+
+const SyncCountsSchema = z.object({ meta: z.number(), doc: z.number(), flock: z.number() });
+const WorkspaceSyncSummarySchema = z.object({
+  workspaceId: z.string(),
+  totals: SyncCountsSchema,
+  completed: SyncCountsSchema,
+  failed: SyncCountsSchema,
+  failures: z.array(
+    z.object({
+      workspaceId: z.string(),
+      kind: z.enum(['meta', 'doc', 'flock']),
+      id: z.string(),
+      error: z.string(),
+    })
+  ),
+});
 
 export type SyncSummary = {
   ok: boolean;
@@ -265,59 +286,70 @@ async function syncWorkspace(input: {
   concurrency: number;
   outputMode: 'human' | 'json' | 'jsonl';
 }): Promise<WorkspaceSyncSummary> {
-  const workspaceId = input.workspace.id as WorkspaceId;
-  const summary = createWorkspaceSummary(input.workspace.id);
+  return await withWorkspaceManager(input.auth, input.workspace, 'sync', (manager) =>
+    syncWorkspaceReplica(manager, input.workspace.id, input)
+  );
+}
 
-  await withWorkspaceManager(input.auth, input.workspace, 'sync', async (manager) => {
-    summary.totals.meta = 1;
-    try {
-      await manager.syncMetaOrThrow({ reason: `sync:${workspaceId}:meta` });
-      recordSyncResult({
-        summary,
-        kind: 'meta',
-        id: 'meta',
-        ok: true,
-        outputMode: input.outputMode,
-      });
-    } catch (error) {
-      recordSyncResult({
-        summary,
-        kind: 'meta',
-        id: 'meta',
-        ok: false,
-        error: formatErrorMessage(error),
-        outputMode: input.outputMode,
-      });
-      return;
-    }
-
-    await manager.syncFlockDocOrThrow(getScheduleRegistryFlockDocId(workspaceId), {
-      reason: 'sync:schedules:registry',
-    });
-    const scheduleIds = await listWorkspaceScheduleIds(manager, workspaceId);
-    const docIds = buildSyncDocIds(await listAliveRoomIds(manager, () => true), scheduleIds);
-    const flockDocIds = await listSyncableFlockDocIds(manager, workspaceId);
-
-    await syncItems({
+/**
+ * Syncs every document of one workspace replica: the hosted command line's own,
+ * or a local daemon's, which then pulls everything its LAN's hub holds.
+ */
+export async function syncWorkspaceReplica(
+  manager: LoroDocumentManager,
+  workspaceIdValue: string,
+  input: { concurrency: number; outputMode: 'human' | 'json' | 'jsonl' }
+): Promise<WorkspaceSyncSummary> {
+  const workspaceId = workspaceIdValue as WorkspaceId;
+  const summary = createWorkspaceSummary(workspaceIdValue);
+  summary.totals.meta = 1;
+  try {
+    await manager.syncMetaOrThrow({ reason: `sync:${workspaceId}:meta` });
+    recordSyncResult({
       summary,
-      kind: 'doc',
-      ids: docIds,
-      concurrency: input.concurrency,
+      kind: 'meta',
+      id: 'meta',
+      ok: true,
       outputMode: input.outputMode,
-      syncOne: async (id) => {
-        await manager.syncDocOrThrow(id, { reason: `sync:${workspaceId}:doc:${id}` });
-      },
     });
-    await syncItems({
+  } catch (error) {
+    recordSyncResult({
       summary,
-      kind: 'flock',
-      ids: flockDocIds,
-      concurrency: input.concurrency,
+      kind: 'meta',
+      id: 'meta',
+      ok: false,
+      error: formatErrorMessage(error),
       outputMode: input.outputMode,
-      syncOne: async (id) => {
-        await manager.syncFlockDocOrThrow(id, { reason: `sync:${workspaceId}:flock:${id}` });
-      },
     });
+    return summary;
+  }
+
+  await manager.syncFlockDocOrThrow(getScheduleRegistryFlockDocId(workspaceId), {
+    reason: 'sync:schedules:registry',
+  });
+  const scheduleIds = await listWorkspaceScheduleIds(manager, workspaceId);
+  const docIds = buildSyncDocIds(await listAliveRoomIds(manager, () => true), scheduleIds);
+  const flockDocIds = await listSyncableFlockDocIds(manager, workspaceId);
+
+  await syncItems({
+    summary,
+    kind: 'doc',
+    ids: docIds,
+    concurrency: input.concurrency,
+    outputMode: input.outputMode,
+    syncOne: async (id) => {
+      await manager.syncDocOrThrow(id, { reason: `sync:${workspaceId}:doc:${id}` });
+    },
+  });
+  await syncItems({
+    summary,
+    kind: 'flock',
+    ids: flockDocIds,
+    concurrency: input.concurrency,
+    outputMode: input.outputMode,
+    syncOne: async (id) => {
+      await manager.syncFlockDocOrThrow(id, { reason: `sync:${workspaceId}:flock:${id}` });
+    },
   });
 
   return summary;
@@ -358,24 +390,38 @@ export const syncCommand = new Command('sync')
   .action(async (options: SyncOptions) => {
     await runOneShotCommand('sync', options, async () => {
       const outputMode = resolveStructuredOutputMode(options);
-      const auth = getAuthContextOrThrow('sync');
       if (options.allWorkspace && options.workspace) {
         throw new Error('Pass either --workspace or --all-workspace, not both.');
       }
+      const concurrency = options.concurrency ?? DEFAULT_SYNC_CONCURRENCY;
 
-      const workspaces = options.allWorkspace
-        ? await listWorkspacesForToken(auth.token)
-        : [await resolveWorkspaceOrThrow(auth, options.workspace)];
       const workspaceSummaries: WorkspaceSyncSummary[] = [];
-      for (const workspace of workspaces) {
-        workspaceSummaries.push(
-          await syncWorkspace({
-            auth,
-            workspace,
-            concurrency: options.concurrency ?? DEFAULT_SYNC_CONCURRENCY,
-            outputMode,
-          })
-        );
+      if (getCliPlatformKind() === 'local') {
+        if (concurrency > 64) throw new Error('--concurrency is at most 64 here.');
+        // The daemon syncs its own replica and reports only the summary, so
+        // `--jsonl` has no per-item events here.
+        const catalog = await Effect.runPromise(makeLocalWorkspaceCatalog().read());
+        const selectors = options.allWorkspace
+          ? catalog.workspaces.filter((row) => row.state === 'active').map((row) => row.workspaceId)
+          : [options.workspace];
+        for (const selector of selectors) {
+          const target = await resolveTerminalToolTarget(selector);
+          workspaceSummaries.push(
+            WorkspaceSyncSummarySchema.parse(
+              await runTerminalCommand(target, { command: 'sync', concurrency })
+            )
+          );
+        }
+      } else {
+        const auth = getAuthContextOrThrow('sync');
+        const workspaces = options.allWorkspace
+          ? await listWorkspacesForToken(auth.token)
+          : [await resolveWorkspaceOrThrow(auth, options.workspace)];
+        for (const workspace of workspaces) {
+          workspaceSummaries.push(
+            await syncWorkspace({ auth, workspace, concurrency, outputMode })
+          );
+        }
       }
 
       const summary = mergeSummaries(workspaceSummaries);

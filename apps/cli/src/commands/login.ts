@@ -12,6 +12,7 @@ import {
 } from '@/lib/auth';
 import { flushTelemetry } from '@/instrument';
 import { captureAuthEvent } from './analytics-events';
+import { getCliPlatformKind } from '@/lib/cli-platform';
 
 interface LoginOptions {
   debug?: boolean;
@@ -35,6 +36,12 @@ export const loginCommand = new Command('login')
       rootLogger.setDebug(true);
     }
     const logger = getLogger('login');
+    if (getCliPlatformKind() === 'local') {
+      logger.error(
+        'This build has no Lody account to log in to. Machines join each other through a LAN: see `lan join`.'
+      );
+      process.exit(1);
+    }
 
     const authClient = new AuthClient(logger);
     const providedAuth = options.auth?.trim();
