@@ -666,6 +666,24 @@ describe('what the members of a LAN ask of each other', () => {
     categories: ['agentConfigs', 'localProjects'],
   };
   const usage = { type: 'lan/usage', ...member, sinceMs: 1_700_000_000_000 };
+  const importedRow = {
+    startMs: 1_700_000_000_000,
+    spanMs: 86_400_000,
+    modelId: 'gpt-5.5',
+    inputTokens: 10,
+    outputTokens: 2,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    costUSD: 0.01,
+  };
+  const usageImport = {
+    type: 'lan/usage-import',
+    ...member,
+    source: 'vibe',
+    replace: true,
+    rows: [importedRow],
+  };
 
   it('reads each request the same way at every boundary', () => {
     for (const request of [
@@ -694,6 +712,17 @@ describe('what the members of a LAN ask of each other', () => {
     expect(accepts({ type: 'lan/update-machine', machineId: 'machine-2' })).toEqual(all(false));
     expect(accepts({ ...usage, sinceMs: -1 })).toEqual(all(false));
     expect(accepts({ ...usage, sinceMs: 1.5 })).toEqual(all(false));
+    for (const request of [usageImport, { ...usageImport, replace: false, rows: [] }]) {
+      expect(accepts(request)).toEqual(all(true));
+      expect(accepts({ type: 'lan/forward', machineId: 'machine-1', request })).toEqual(all(true));
+    }
+    expect(accepts({ ...usageImport, source: '' })).toEqual(all(false));
+    expect(accepts({ ...usageImport, replace: undefined })).toEqual(all(false));
+    expect(accepts({ ...usageImport, rows: [{ ...importedRow, spanMs: 60_000 }] })).toEqual(
+      all(false)
+    );
+    expect(accepts({ ...usageImport, rows: [{ ...importedRow, extra: 1 }] })).toEqual(all(false));
+    expect(accepts({ ...usageImport, rows: Array(801).fill(importedRow) })).toEqual(all(false));
   });
 
   it('forwards nothing but what members ask of each other', () => {
@@ -780,6 +809,11 @@ describe('what the members of a LAN ask of each other', () => {
       { ok: true, type: 'lan/forward', result: { response: started } },
       { ok: true, type: 'lan/forward', result: { response: refused } },
       { ok: true, type: 'lan/usage', result: { rows: [usageRow] } },
+      {
+        ok: true,
+        type: 'lan/usage-import',
+        result: { kept: 3, dropped: 1, cutoffMs: 1_700_000_000_000 },
+      },
       {
         ok: true,
         type: 'lan/forward',

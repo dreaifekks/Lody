@@ -159,6 +159,7 @@ export const LAN_MEMBER_CONTROL_TYPES = [
   'hosted-config/preview',
   'hosted-config/import',
   'lan/usage',
+  'lan/usage-import',
 ] as const;
 export type LanMemberControlType = (typeof LAN_MEMBER_CONTROL_TYPES)[number];
 
@@ -213,6 +214,23 @@ export const LanUsageReportSchema = z
   .object({ rows: z.array(LanUsageRowSchema).max(200_000) })
   .strict();
 export type LanUsageReport = z.infer<typeof LanUsageReportSchema>;
+
+/** Rows of usage counted elsewhere before this machine counted its own, per request. */
+export const LAN_USAGE_IMPORT_MAX_ROWS = 800;
+
+/**
+ * What a machine kept of an import: rows of days before it counted usage
+ * itself; the rest would count twice.
+ */
+export const LanUsageImportResultSchema = z
+  .object({
+    kept: z.number().int().nonnegative(),
+    dropped: z.number().int().nonnegative(),
+    /** Where the machine's own counting starts; nothing from then on is kept. */
+    cutoffMs: z.number().int().nonnegative(),
+  })
+  .strict();
+export type LanUsageImportResult = z.infer<typeof LanUsageImportResultSchema>;
 
 /**
  * Why a machine refuses what a member asks, as `data.reason` of the refusal:

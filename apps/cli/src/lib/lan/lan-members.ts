@@ -15,6 +15,7 @@ import {
   type LanMachines,
   type LanMemberControlRequest,
   type LanMemberControlResponse,
+  type LanUsageImportResult,
   type LanUsageRow,
   type LocalProjectControlResponse,
   type MachineId,
@@ -393,6 +394,12 @@ function refuse(
 /** What this machine's agents used, kept where it runs them. */
 export type LanUsageSource = {
   report: (workspaceId: string, sinceMs?: number) => LanUsageRow[];
+  importRows: (
+    workspaceId: string,
+    source: string,
+    rows: readonly LanUsageRow[],
+    replace: boolean
+  ) => LanUsageImportResult;
 };
 
 /** Carries out what a member asked of this machine. */
@@ -410,6 +417,19 @@ export async function answerLanMemberControl(options: {
         ok: true,
         type: request.type,
         result: { rows: options.usage?.report(workspace.workspaceId, request.sinceMs) ?? [] },
+      };
+    }
+    if (request.type === 'lan/usage-import') {
+      if (!options.usage) return refuse(request, 'This machine keeps no usage');
+      return {
+        ok: true,
+        type: request.type,
+        result: options.usage.importRows(
+          workspace.workspaceId,
+          request.source,
+          request.rows,
+          request.replace
+        ),
       };
     }
     if (request.type === 'lan/update-machine') {

@@ -10,7 +10,36 @@ const LAN_MEMBER_CONTROL_TYPES = new Set([
   'hosted-config/preview',
   'hosted-config/import',
   'lan/usage',
+  'lan/usage-import',
 ]);
+
+// Kept equal to LAN_USAGE_IMPORT_MAX_ROWS and the spans of LanUsageRowSchema in lan-control.ts.
+const LAN_USAGE_IMPORT_MAX_ROWS = 800;
+const LAN_USAGE_SPANS = new Set([3_600_000, 86_400_000]);
+const LAN_USAGE_COUNTERS = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+  'reasoningOutputTokens',
+  'costUSD',
+];
+
+function isLanUsageRow(row) {
+  return (
+    isObjectRecord(row) &&
+    Object.keys(row).length === LAN_USAGE_COUNTERS.length + 3 &&
+    Number.isInteger(row.startMs) &&
+    row.startMs >= 0 &&
+    LAN_USAGE_SPANS.has(row.spanMs) &&
+    typeof row.modelId === 'string' &&
+    row.modelId.length > 0 &&
+    row.modelId.length <= 256 &&
+    LAN_USAGE_COUNTERS.every(
+      (key) => typeof row[key] === 'number' && Number.isFinite(row[key]) && row[key] >= 0
+    )
+  );
+}
 
 const HOSTED_CONFIG_CATEGORIES = new Set([
   'agentConfigs',
@@ -529,6 +558,19 @@ function isLocalProjectControlRequest(value) {
     );
   }
 
+  if (value.type === 'lan/usage-import') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      typeof value.source === 'string' &&
+      value.source.trim().length > 0 &&
+      value.source.length <= 32 &&
+      typeof value.replace === 'boolean' &&
+      Array.isArray(value.rows) &&
+      value.rows.length <= LAN_USAGE_IMPORT_MAX_ROWS &&
+      value.rows.every(isLanUsageRow)
+    );
+  }
+
   if (value.type === 'lan/machines') {
     return true;
   }
@@ -729,6 +771,15 @@ function isLocalProjectControlResponse(value) {
           typeof row.reasoningOutputTokens === 'number' &&
           typeof row.costUSD === 'number'
       )
+    );
+  }
+
+  if (value.type === 'lan/usage-import') {
+    return (
+      isObjectRecord(value.result) &&
+      Number.isInteger(value.result.kept) &&
+      Number.isInteger(value.result.dropped) &&
+      Number.isInteger(value.result.cutoffMs)
     );
   }
 

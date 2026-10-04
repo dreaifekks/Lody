@@ -9,7 +9,10 @@ import {
   LanAgentInstallResultSchema,
   LanMachineUpdateResultSchema,
   LanMachinesSchema,
+  LAN_USAGE_IMPORT_MAX_ROWS,
+  LanUsageImportResultSchema,
   LanUsageReportSchema,
+  LanUsageRowSchema,
 } from './lan-control';
 import { z } from 'zod';
 import { SubagentTaskPayloadSchema } from './acp/claude-subagent-task';
@@ -2403,6 +2406,17 @@ export const LanUsageRequestSchema = z
   })
   .strict();
 
+export const LanUsageImportRequestSchema = z
+  .object({
+    type: z.literal('lan/usage-import'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    source: z.string().trim().min(1).max(32),
+    replace: z.boolean(),
+    rows: z.array(LanUsageRowSchema).max(LAN_USAGE_IMPORT_MAX_ROWS),
+  })
+  .strict();
+
 /** What the members of a LAN ask of each other's machines. */
 export const LanMemberControlRequestSchema = z.discriminatedUnion('type', [
   LanUpdateMachineRequestSchema,
@@ -2410,6 +2424,7 @@ export const LanMemberControlRequestSchema = z.discriminatedUnion('type', [
   HostedConfigPreviewRequestSchema,
   HostedConfigImportRequestSchema,
   LanUsageRequestSchema,
+  LanUsageImportRequestSchema,
 ]);
 
 export const LanMachinesRequestSchema = z
@@ -2476,6 +2491,7 @@ export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LanUpdateMachineRequestSchema,
   LanInstallAgentRequestSchema,
   LanUsageRequestSchema,
+  LanUsageImportRequestSchema,
   LanMachinesRequestSchema,
   LanAliasMachineRequestSchema,
   LanForwardRequestSchema,
@@ -2739,6 +2755,7 @@ const LocalProjectControlErrorResponseSchema = z
       'lan/update-machine',
       'lan/install-agent',
       'lan/usage',
+      'lan/usage-import',
       'lan/machines',
       'lan/alias-machine',
       'lan/forward',
@@ -2789,6 +2806,14 @@ const LanUsageResponseSchema = z
   })
   .strict();
 
+const LanUsageImportResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    type: z.literal('lan/usage-import'),
+    result: LanUsageImportResultSchema,
+  })
+  .strict();
+
 /** What a member answers, which is also what a forwarded request brings back. */
 export const LanMemberControlResponseSchema = z.union([
   HostedConfigPreviewResponseSchema,
@@ -2796,6 +2821,7 @@ export const LanMemberControlResponseSchema = z.union([
   LanUpdateMachineResponseSchema,
   LanInstallAgentResponseSchema,
   LanUsageResponseSchema,
+  LanUsageImportResponseSchema,
   LocalProjectControlErrorResponseSchema,
 ]);
 
@@ -3007,6 +3033,7 @@ export const LocalProjectControlResponseSchema = z.union([
   LanUpdateMachineResponseSchema,
   LanInstallAgentResponseSchema,
   LanUsageResponseSchema,
+  LanUsageImportResponseSchema,
   z
     .object({
       ok: z.literal(true),
