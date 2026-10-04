@@ -177,6 +177,7 @@ import {
   isLanMemberControlType,
   LAN_CONTROL_PROTOCOL_VERSION,
   LAN_FILES_PROTOCOL_VERSION,
+  LAN_SHELL_PROTOCOL_VERSION,
   MACHINE_PROTOCOL_CAPABILITIES,
   type LanMemberControlRequest,
   type LanMemberControlResponse,
@@ -6087,6 +6088,8 @@ export class MessageHandler {
     }
     if (this.acceptsLanMemberFiles) {
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanFiles] = LAN_FILES_PROTOCOL_VERSION;
+      // The same listener opens the shells of this machine to the members.
+      capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanShell] = LAN_SHELL_PROTOCOL_VERSION;
     }
     return capabilities;
   }

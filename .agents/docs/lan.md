@@ -115,6 +115,25 @@ terminals on the desktop; the shells keep running over there, and listing the
 session again finds them. `LODY_LAN_TERMINAL_PORT` chooses another port, `0`
 any port, and `off` closes a machine's terminals to members.
 
+A shell can also belong to a machine rather than to a session. Its terminals
+are opened, listed and attached under the scope `lody-shell:<machine id>` in
+place of a session id (`machineShellScope` in
+`packages/shared/src/terminal-protocol.ts`); an `open` in that scope may name
+the directory to start in, the home directory by default, and a command to run
+instead of a login shell. The agent service routes the scope by its machine as
+it routes a session by its owner, and a member opens only the shells of its own
+machine (`ScopedTerminalService`). That grants nothing new: a member that holds
+the LAN's key could open a shell in any session of the machine already. A
+machine says it opens them with the `lanShell` protocol capability; a build
+without it would answer the scope as an unknown session, so it is not asked.
+
+`lody-lan lan shell <machine>` is the client. The command connects to the local
+terminal socket, as a desktop does, so the LAN's credential stays in the agent
+service. Enter, `~` and `.` leaves the shell running, `--attach` brings it
+back, `--list` and `--kill` manage what runs there, and words after `--` run
+as a command whose exit code the command returns. The command runs in a
+terminal there, like `ssh -t`, so piped input is echoed.
+
 ## Files of a message
 
 An image or a file a message carries has to be on the machine that runs the

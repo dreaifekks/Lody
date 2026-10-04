@@ -11,6 +11,9 @@ import {
   getSessionRoomId,
   getServerNow,
   isLoroRepoDocDeleted,
+  machineShellScope,
+  machineSupportsLanShell,
+  parseMachineShellScope,
   syncTime,
   type LanMemberControlRequest,
   type LocalProjectControlErrorCode,
@@ -36,6 +39,7 @@ import { startLodyMcpHttpServer, stopLodyMcpHttpServer } from '@/mcp/lody-mcp-ht
 import type { LocalProbeConfig } from '@/lib/local-probe';
 import type { LocalSessionControlConfig } from '@/lib/local-session-control';
 import { startLocalTerminalServer, stopLocalTerminalServer } from '@/lib/local-terminal-server';
+import type { LanHub } from '@lody/shared/node/lan-hub';
 import {
   startLocalLoroDataPlaneServer,
   stopLocalLoroDataPlaneServer,
@@ -90,6 +94,7 @@ import {
 } from '@/session/worktree/worktree-setup-config-store';
 import { formatErrorMessage } from '@/utils/format-error';
 import {
+  resolveMachineShellWorkdir,
   resolveTerminalWorkdirFromMetadata,
   type TerminalSessionMetaLookup,
 } from '@/lib/terminal-workdir-resolver';
@@ -307,6 +312,13 @@ export class LodyFleet {
       logger: this.logger,
       resolveSessionWorkdir: async (sessionId) =>
         await this.resolveTerminalSessionWorkdir(sessionId),
+      resolveShellWorkdir: async (machineId, requested) => {
+        // Every caller routes another machine's shell away before it gets here.
+        if (machineId !== this.machineId) {
+          throw new Error(`session_machine_mismatch:${machineShellScope(machineId)}:${machineId}`);
+        }
+        return resolveMachineShellWorkdir(requested);
+      },
     });
     this.lan = options.lan ?? null;
     this.lanFleetControl = options.lanControl
@@ -1689,7 +1701,8 @@ export class LodyFleet {
           ? new ScopedTerminalService(
               this.terminalPtyService,
               async (sessionId) =>
-                await this.verifyLanTerminalSession(workspaceId, sessionId as SessionId)
+                await this.verifyLanTerminalSession(workspaceId, sessionId as SessionId),
+              this.machineId
             )
           : null,
       filesFor: (workspaceId) => this.lanFileHandoff.receiverFor(workspaceId),
@@ -1763,6 +1776,8 @@ export class LodyFleet {
   private async locateTerminalSession(
     sessionId: SessionId
   ): Promise<TerminalSessionLocation | null> {
+    const shellMachineId = parseMachineShellScope(sessionId);
+    if (shellMachineId !== null) return await this.locateMachineShell(shellMachineId);
     for (const runtime of this.runtimes.values()) {
       const lookup = await this.lookupTerminalSessionMeta(runtime, sessionId);
       if (lookup.type !== 'found') continue;
@@ -1772,6 +1787,47 @@ export class LodyFleet {
       return { workspaceId: runtime.workspace.id, machineId };
     }
     return null;
+  }
+
+  /**
+   * The LAN through which another machine's shell is reached; `null` for this
+   * machine. A machine no LAN of this one reaches is refused rather than
+   * answered with a shell here.
+   */
+  private async locateMachineShell(machineId: string): Promise<TerminalSessionLocation | null> {
+    if (machineId === this.machineId) return null;
+    const member = await this.findLanMember(machineId, machineSupportsLanShell, 'opens no shell');
+    return { workspaceId: member.workspaceId, machineId };
+  }
+
+  /**
+   * A LAN of this machine in which another machine publishes where members
+   * reach it and says it serves what `supports` asks; refused otherwise.
+   */
+  private async findLanMember(
+    machineId: string,
+    supports: (meta: MachineMeta) => boolean,
+    refusal: string
+  ): Promise<{ workspaceId: string; hub: LanHub; endpoint: LanTerminalEndpoint }> {
+    let found: MachineMeta | undefined;
+    for (const runtime of this.runtimes.values()) {
+      const hub = this.lan?.hubs.find(
+        (candidate) => getLanHubWorkspaceId(candidate.id) === runtime.workspace.id
+      );
+      if (!hub) continue;
+      const meta = (
+        await runtime.lody.documentManager.repo.getDocMeta(getMachineRoomId(machineId as MachineId))
+      )?.meta as MachineMeta | undefined;
+      if (!meta) continue;
+      found ??= meta;
+      const endpoint = parseLanTerminalEndpoint(meta.lanTerminal);
+      if (endpoint && supports(meta)) return { workspaceId: runtime.workspace.id, hub, endpoint };
+    }
+    throw new Error(
+      found
+        ? `remote_unreachable:${found.name ?? machineId} ${refusal} to members; update it`
+        : `remote_unreachable:no LAN of this machine reaches ${machineId}`
+    );
   }
 
   private async connectLanTerminal(location: TerminalSessionLocation): Promise<RemoteTerminalLink> {

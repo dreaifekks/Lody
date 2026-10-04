@@ -120,3 +120,35 @@ export async function resolveTerminalWorkdirFromMetadata(
 ): Promise<string> {
   return await resolveTerminalWorkdirForSession(options.sessionId, options, new Set());
 }
+
+/**
+ * Where a shell of this machine starts: the home directory, or the directory
+ * asked for, which may begin with `~`. A relative path or one that is no
+ * directory is refused rather than replaced by another place.
+ */
+export function resolveMachineShellWorkdir(
+  requested: string | undefined,
+  options: { homeDir?: string; isDirectory?: (path: string) => boolean } = {}
+): string {
+  const home = options.homeDir ?? os.homedir();
+  const isDirectory =
+    options.isDirectory ??
+    ((candidate: string) => {
+      try {
+        return fs.statSync(candidate).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+  const wanted = requested?.trim();
+  let workdir = home;
+  if (wanted) {
+    if (wanted === '~') workdir = home;
+    else if (wanted.startsWith('~/') || wanted.startsWith('~\\')) {
+      workdir = path.join(home, wanted.slice(2));
+    } else if (path.isAbsolute(wanted)) workdir = path.resolve(wanted);
+    else throw new Error(`workdir_unavailable:${wanted} is not an absolute path`);
+  }
+  if (!isDirectory(workdir)) throw new Error(`workdir_unavailable:${workdir} is no directory`);
+  return workdir;
+}

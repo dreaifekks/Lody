@@ -13,6 +13,24 @@ export const TerminalSnapshotSchema = z.object({
 
 export const TERMINAL_MAX_PER_SESSION = 8;
 
+/**
+ * A shell of a machine rather than of a session: it starts where it is asked
+ * to, the home directory by default, and its terminals are listed under this
+ * scope in place of a session id. No session id has a colon.
+ */
+const MACHINE_SHELL_SCOPE_PREFIX = 'lody-shell:';
+
+export function machineShellScope(machineId: string): string {
+  return `${MACHINE_SHELL_SCOPE_PREFIX}${machineId}`;
+}
+
+/** The machine of a shell scope; `null` for the id of a session. */
+export function parseMachineShellScope(sessionId: string): string | null {
+  if (!sessionId.startsWith(MACHINE_SHELL_SCOPE_PREFIX)) return null;
+  const machineId = sessionId.slice(MACHINE_SHELL_SCOPE_PREFIX.length);
+  return machineId === '' ? null : machineId;
+}
+
 // Fallback dimensions used when a terminal is opened before xterm has measured the
 // viewport; the real size is corrected on the first fit() after mount.
 export const TERMINAL_DEFAULT_COLS = 80;
@@ -34,6 +52,10 @@ export const TerminalClientMessageSchema = z.discriminatedUnion('type', [
     sessionId: z.string().min(1),
     cols: TerminalDimensionsSchema.shape.cols,
     rows: TerminalDimensionsSchema.shape.rows,
+    /** Where a machine shell starts; a session's terminal starts in its workdir. */
+    cwd: z.string().min(1).max(4096).optional(),
+    /** What a machine shell runs instead of an interactive login shell. */
+    command: z.string().min(1).max(65_536).optional(),
   }),
   z.object({
     type: z.literal('attach'),
@@ -121,6 +143,8 @@ export interface TerminalOpenParams {
   sessionId: string;
   cols: number;
   rows: number;
+  cwd?: string;
+  command?: string;
 }
 
 export interface TerminalOpenResult {

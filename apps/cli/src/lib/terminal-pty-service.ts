@@ -11,6 +11,7 @@ import {
   type TerminalServerEvent,
   type TerminalSnapshot,
   type TerminalTitleEvent,
+  parseMachineShellScope,
   TERMINAL_MAX_PER_SESSION,
 } from '@lody/shared';
 import { getCachedLoginShellEnvSync } from '@/agent/login-shell-env';
@@ -68,6 +69,11 @@ export interface TerminalPtyServiceApi {
 export type TerminalPtyServiceOptions = {
   logger: Logger;
   resolveSessionWorkdir: (sessionId: SessionId) => Promise<string>;
+  /**
+   * Where a shell of a machine starts, given the machine of its scope and the
+   * directory asked for. Absent where no machine shell is opened.
+   */
+  resolveShellWorkdir?: (machineId: string, requested: string | undefined) => Promise<string>;
 };
 
 type TerminalRecord = {
@@ -85,28 +91,27 @@ function basenameForTitle(cwd: string): string {
   return name || cwd;
 }
 
-function resolveShellCommand(): { file: string; args: string[] } {
+function resolveShellCommand(command?: string): { file: string; args: string[] } {
   if (process.platform === 'win32') {
-    return {
-      file: process.env.ComSpec || 'powershell.exe',
-      args: [],
-    };
+    const file = process.env.ComSpec || 'powershell.exe';
+    if (!command) return { file, args: [] };
+    return { file, args: /powershell|pwsh/i.test(file) ? ['-Command', command] : ['/c', command] };
   }
 
   return {
     file: process.env.SHELL || '/bin/sh',
-    args: ['-l'],
+    args: command ? ['-l', '-c', command] : ['-l'],
   };
 }
 
-function buildTerminalEnv(sessionId: string): NodeJS.ProcessEnv {
+/** `sessionId` is absent for a shell of the machine, which no session owns. */
+function buildTerminalEnv(sessionId: string | null): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {
     ...process.env,
     TERM: 'xterm-256color',
     COLORTERM: process.env.COLORTERM ?? 'truecolor',
     FORCE_COLOR: '1',
-    LODY_SESSION_ID: sessionId,
-    LODY_WORKSPACE_SESSION_ID: sessionId,
+    ...(sessionId ? { LODY_SESSION_ID: sessionId, LODY_WORKSPACE_SESSION_ID: sessionId } : {}),
   };
   const merged = withDefaultAcpPathEntries(mergeLoginShellEnv(base, getCachedLoginShellEnvSync()));
   clearManagedGhTokenEnv(merged);
@@ -142,6 +147,7 @@ function extractLatestTitle(record: TerminalRecord, data: string): string | null
 class TerminalPtyServiceImpl implements TerminalPtyServiceApi {
   private readonly logger: Logger;
   private readonly resolveSessionWorkdir: (sessionId: SessionId) => Promise<string>;
+  private readonly resolveShellWorkdir: TerminalPtyServiceOptions['resolveShellWorkdir'];
   private readonly records = new Map<string, TerminalRecord>();
   private readonly sessionIndex = new Map<string, Set<string>>();
   private readonly pendingSessionOpens = new Map<string, number>();
@@ -150,6 +156,7 @@ class TerminalPtyServiceImpl implements TerminalPtyServiceApi {
   constructor(options: TerminalPtyServiceOptions) {
     this.logger = options.logger;
     this.resolveSessionWorkdir = options.resolveSessionWorkdir;
+    this.resolveShellWorkdir = options.resolveShellWorkdir;
   }
 
   list(sessionId: string): TerminalSnapshot[] {
@@ -172,15 +179,24 @@ class TerminalPtyServiceImpl implements TerminalPtyServiceApi {
     const sessionId = params.sessionId as SessionId;
     this.reserveSessionOpen(params.sessionId);
     try {
-      const cwd = await this.resolveSessionWorkdir(sessionId);
+      const shellMachineId = parseMachineShellScope(params.sessionId);
+      let cwd: string;
+      if (shellMachineId === null) {
+        cwd = await this.resolveSessionWorkdir(sessionId);
+      } else if (this.resolveShellWorkdir) {
+        cwd = await this.resolveShellWorkdir(shellMachineId, params.cwd);
+      } else {
+        throw new Error(`session_not_found:${params.sessionId}`);
+      }
       const terminalId = randomUUID();
-      const shell = resolveShellCommand();
+      // Only a machine shell runs what it is given; a session's terminal is a shell.
+      const shell = resolveShellCommand(shellMachineId === null ? undefined : params.command);
       const terminal = loadPty().spawn(shell.file, shell.args, {
         name: 'xterm-256color',
         cols: params.cols,
         rows: params.rows,
         cwd,
-        env: buildTerminalEnv(params.sessionId),
+        env: buildTerminalEnv(shellMachineId === null ? params.sessionId : null),
       });
 
       const record: TerminalRecord = {

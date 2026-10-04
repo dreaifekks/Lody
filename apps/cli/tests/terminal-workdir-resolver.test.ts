@@ -15,6 +15,7 @@ import {
 } from '@lody/shared/node/worktree-paths';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import {
+  resolveMachineShellWorkdir,
   resolveTerminalWorkdirFromMetadata,
   type TerminalSessionMetaLookup,
 } from '../src/lib/terminal-workdir-resolver';
@@ -253,5 +254,22 @@ describe('terminal workdir resolver', () => {
       })
     ).resolves.toBe(expected);
     expect(fs.statSync(expected).isDirectory()).toBe(true);
+  });
+});
+
+describe('resolveMachineShellWorkdir', () => {
+  const directories = new Set(['/home/me', '/home/me/src', '/srv']);
+  const options = { homeDir: '/home/me', isDirectory: (dir: string) => directories.has(dir) };
+
+  it('starts at home, under it, or where an absolute path says', () => {
+    expect(resolveMachineShellWorkdir(undefined, options)).toBe('/home/me');
+    expect(resolveMachineShellWorkdir('~', options)).toBe('/home/me');
+    expect(resolveMachineShellWorkdir('~/src', options)).toBe('/home/me/src');
+    expect(resolveMachineShellWorkdir('/srv/', options)).toBe('/srv');
+  });
+
+  it('refuses a relative path and one that is no directory instead of starting elsewhere', () => {
+    expect(() => resolveMachineShellWorkdir('src', options)).toThrow(/^workdir_unavailable:/);
+    expect(() => resolveMachineShellWorkdir('/missing', options)).toThrow(/^workdir_unavailable:/);
   });
 });

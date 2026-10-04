@@ -1,14 +1,16 @@
 import net from 'node:net';
+import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createStore, type WorkspaceSummary } from '@lody/platform';
-import type {
-  LanMemberControlRequest,
-  LanMemberControlResponse,
-  MachineId,
-  TerminalOpenParams,
-  TerminalOpenResult,
-  TerminalServerEvent,
-  TerminalSnapshot,
+import {
+  machineShellScope,
+  type LanMemberControlRequest,
+  type LanMemberControlResponse,
+  type MachineId,
+  type TerminalOpenParams,
+  type TerminalOpenResult,
+  type TerminalServerEvent,
+  type TerminalSnapshot,
 } from '@lody/shared';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import type { LanTerminalEndpoint } from '@lody/shared/lan-terminal';
@@ -20,7 +22,8 @@ import type { Logger } from '@/utils/logger';
 import { askLanMemberDirectly, LanMemberUnreachableError } from './lan-control-channel';
 import { askLanHubPeer, type LanHubPeerHandler } from './lan-hub-peers';
 import { askLanMemberRpc, LanRpcNotSentError } from './lan-rpc-channel';
-import { connectLanTerminal, deriveLanTerminalKey } from './lan-terminal';
+import { createDetachFilter, runMachineShell, type ShellIo } from './lan-shell';
+import { connectLanTerminal, createTerminalLink, deriveLanTerminalKey } from './lan-terminal';
 import { LanTerminalHost, resolveLanTerminalPort } from './lan-terminal-host';
 
 const silentLogger = (): Logger => ({
@@ -40,6 +43,7 @@ const silentLogger = (): Logger => ({
 class FakePty implements TerminalPtyServiceApi {
   readonly inputs: Array<[string, string]> = [];
   readonly opened: string[] = [];
+  readonly openParams: TerminalOpenParams[] = [];
   private readonly terminals = new Map<string, { sessionId: string; scrollback: string }>();
   private readonly handlers = new Set<(event: TerminalServerEvent) => void>();
   private sequence = 0;
@@ -56,6 +60,7 @@ class FakePty implements TerminalPtyServiceApi {
     const terminalId = `${this.name}-${++this.sequence}`;
     this.terminals.set(terminalId, { sessionId: params.sessionId, scrollback: '$ ' });
     this.opened.push(params.sessionId);
+    this.openParams.push(params);
     return { terminalId, cwd: `/${this.name}` };
   }
 
@@ -169,7 +174,7 @@ describe('terminals between LAN members', () => {
       port: options.port ?? 0,
       probeAddress: async () => '127.0.0.1',
       serviceFor: (workspaceId) =>
-        workspaceId === HOME ? new ScopedTerminalService(pty, verifyHomeSession) : null,
+        workspaceId === HOME ? new ScopedTerminalService(pty, verifyHomeSession, SERVER) : null,
       ...(options.control
         ? {
             controlFor: (workspaceId: string) =>
@@ -201,7 +206,7 @@ describe('terminals between LAN members', () => {
       local,
       machineId: CLIENT,
       locate: async (sessionId) =>
-        sessionId === 'local-session'
+        sessionId === 'local-session' || sessionId === machineShellScope(CLIENT)
           ? { workspaceId: HOME, machineId: CLIENT }
           : { workspaceId: HOME, machineId: SERVER },
       connect: async () =>
@@ -512,6 +517,128 @@ describe('terminals between LAN members', () => {
     ).rejects.toBeInstanceOf(LanRpcNotSentError);
   });
 
+  /** This machine's local terminal socket in front of the router, as `lan shell` reaches it. */
+  async function serveLocally(router: TerminalRouter) {
+    const localSocket = net.createServer((socket) =>
+      serveTerminalConnection(socket, { service: router, logger: silentLogger() })
+    );
+    await new Promise<void>((resolve) => localSocket.listen(0, '127.0.0.1', () => resolve()));
+    cleanups.push(() => new Promise<void>((resolve) => localSocket.close(() => resolve())));
+    const socket = net.connect((localSocket.address() as net.AddressInfo).port, '127.0.0.1');
+    await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+    socket.pause();
+    const link = createTerminalLink(socket);
+    cleanups.push(() => link.close());
+    return link;
+  }
+
+  function pipedIo() {
+    const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+    const stdout = new PassThrough() as unknown as NodeJS.WriteStream;
+    let output = '';
+    const waiters: Array<() => void> = [];
+    stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+      for (const wake of waiters.splice(0)) wake();
+    });
+    const io: ShellIo = {
+      stdin,
+      stdout,
+      stderr: new PassThrough() as unknown as NodeJS.WriteStream,
+    };
+    /** Resolves once the terminal shows `text`. */
+    const shows = async (text: string) => {
+      for (;;) {
+        if (output === text) return;
+        await new Promise<void>((resolve) => waiters.push(resolve));
+      }
+    };
+    return { io, stdin, output: () => output, shows };
+  }
+
+  it("opens a shell of a member's machine where it is asked to start and runs a command", async () => {
+    const { published, pty } = await startServer();
+    const { router, local } = startClient(published.get(HOME)!);
+    const link = await serveLocally(router);
+    const { io, stdin, output, shows } = pipedIo();
+
+    const outcome = runMachineShell(link, {
+      machineId: SERVER,
+      cwd: '~/src',
+      command: 'cat',
+      io,
+    });
+    // The replay of the new shell says it is attached.
+    await shows('$ ');
+    const [opened] = pty.openParams;
+    expect(opened).toMatchObject({
+      sessionId: machineShellScope(SERVER),
+      cwd: '~/src',
+      command: 'cat',
+    });
+    expect(local.opened).toEqual([]);
+    // The member echoes input, as a shell would; the exit ends the command.
+    stdin.write('hello\n');
+    await shows('$ hello\n');
+    pty.close('server-1');
+
+    expect(await outcome).toEqual({ type: 'exited', exitCode: 0 });
+    expect(output()).toBe('$ hello\n');
+    expect(pty.inputs).toEqual([['server-1', 'hello\n']]);
+  });
+
+  it('opens a shell of this machine on this machine', async () => {
+    const { published, pty } = await startServer();
+    const { router, local } = startClient(published.get(HOME)!);
+
+    await router.open({ sessionId: machineShellScope(CLIENT), cols: 80, rows: 24 });
+
+    expect(local.opened).toEqual([machineShellScope(CLIENT)]);
+    expect(pty.opened).toEqual([]);
+  });
+
+  it('lists the shells of a member and brings one back after the command left it', async () => {
+    const { published, pty } = await startServer();
+    const { router } = startClient(published.get(HOME)!);
+    const first = await serveLocally(router);
+    const { terminalId } = await first.open({
+      sessionId: machineShellScope(SERVER),
+      cols: 80,
+      rows: 24,
+    });
+    first.close();
+
+    const again = await serveLocally(router);
+    expect(await again.list(machineShellScope(SERVER))).toEqual([{ terminalId, title: 'server' }]);
+    const { io, shows } = pipedIo();
+    const outcome = runMachineShell(again, { machineId: SERVER, attach: 'server-', io });
+    await shows('$ ');
+    pty.close(terminalId);
+    expect(await outcome).toEqual({ type: 'exited', exitCode: 0 });
+  });
+
+  it('refuses a shell of another machine, and one of a machine that opens none', async () => {
+    const { published, pty } = await startServer();
+    const link = await connectLanTerminal({
+      endpoint: published.get(HOME)!,
+      lanId: home.id,
+      key: deriveLanTerminalKey(home.token),
+      machineId: SERVER,
+    });
+    cleanups.push(() => link.close());
+
+    await expect(
+      link.open({ sessionId: machineShellScope(CLIENT), cols: 80, rows: 24 })
+    ).rejects.toThrow(/^session_machine_mismatch:/);
+    expect(pty.opened).toEqual([]);
+
+    const closed = new ScopedTerminalService(pty, verifyHomeSession);
+    await expect(
+      closed.open({ sessionId: machineShellScope(SERVER), cols: 80, rows: 24 })
+    ).rejects.toThrow(/^session_not_found:/);
+    expect(pty.opened).toEqual([]);
+  });
+
   it('takes another port when the preferred one is in use', async () => {
     const occupant = net.createServer();
     await new Promise<void>((resolve) => occupant.listen(0, '127.0.0.1', () => resolve()));
@@ -532,5 +659,22 @@ describe('resolveLanTerminalPort', () => {
     expect(resolveLanTerminalPort({ LODY_LAN_TERMINAL_PORT: '9000' })).toBe(9000);
     expect(resolveLanTerminalPort({ LODY_LAN_TERMINAL_PORT: 'off' })).toBeNull();
     expect(() => resolveLanTerminalPort({ LODY_LAN_TERMINAL_PORT: 'many' })).toThrow();
+  });
+});
+
+describe('createDetachFilter', () => {
+  it('leaves on Enter ~ . and passes everything else on', () => {
+    let detached = 0;
+    const filter = createDetachFilter(() => {
+      detached += 1;
+    });
+
+    expect(filter('ls ~/src\r')).toBe('ls ~/src\r');
+    expect(filter('~~')).toBe('~');
+    expect(filter('\r~x')).toBe('\r~x');
+    expect(detached).toBe(0);
+    expect(filter('\r~')).toBe('\r');
+    expect(filter('.')).toBe('');
+    expect(detached).toBe(1);
   });
 });
