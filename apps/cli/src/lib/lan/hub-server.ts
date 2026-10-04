@@ -487,39 +487,110 @@ function createGate(options: {
       return;
     }
 
-    const upstream = http.request(
-      {
-        host: '127.0.0.1',
-        port: state.upstream.port,
-        method: request.method,
-        path: request.url,
-        headers: forwardedHeaders(request.headers),
-      },
-      (upstreamResponse) => {
-        response.writeHead(upstreamResponse.statusCode ?? 502, {
-          ...answeredHeaders(upstreamResponse.headers),
-          ...corsHeaders(request),
+    const forward = () => forwardToUpstream(request, response, state.upstream, options.keepaliveMs);
+    const liveRead = liveReadFrom(request.method, request.url);
+    if (!liveRead) {
+      forward();
+      return;
+    }
+    void readsBeforeRetainedRange(state.upstream.port, liveRead).then((before) => {
+      // A reader that left while the stream was asked needs no subscription.
+      if (request.destroyed || response.destroyed) return;
+      if (before) {
+        sendJson(request, response, 410, {
+          error: 'offset is outside the readable retained range',
         });
-        const contentType = String(upstreamResponse.headers['content-type'] ?? '');
-        if (contentType.toLowerCase().includes('text/event-stream')) {
-          pipeLiveRead(upstreamResponse, response, options.keepaliveMs);
-          return;
-        }
-        upstreamResponse.pipe(response);
-      }
-    );
-    upstream.once('error', (error) => {
-      if (response.headersSent) {
-        response.destroy(error);
         return;
       }
-      sendJson(request, response, 502, { error: 'hub upstream unavailable' });
+      forward();
     });
-    // A live read stays open until the client leaves; release the upstream
-    // subscription with it.
-    response.once('close', () => upstream.destroy());
-    request.pipe(upstream);
   };
+}
+
+const LIVE_READ_PATH = /^\/ds\/[^/]+\/[^/?]+$/u;
+const LIVE_READ_OFFSET = /^\d{1,20}$/u;
+
+/** A live read resuming at a numbered offset, the one kind a compacted stream can strand. */
+function liveReadFrom(
+  method: string | undefined,
+  requestUrl: string | undefined
+): { path: string; offset: bigint } | null {
+  if (method !== 'GET' || !requestUrl) return null;
+  const url = new URL(requestUrl, 'http://hub.invalid');
+  const offset = url.searchParams.get('offset');
+  if (!url.searchParams.has('live') || !LIVE_READ_PATH.test(url.pathname)) return null;
+  if (!offset || !LIVE_READ_OFFSET.test(offset)) return null;
+  return { path: url.pathname, offset: BigInt(offset) };
+}
+
+/**
+ * Whether a live read names an offset the stream no longer keeps. A plain read
+ * from there gets 410 and the client bootstraps again, but a live read is
+ * answered 200 first and only then fails, so the client never hears 410 and
+ * resumes at the same offset forever. The gate asks the stream where it starts
+ * and gives the live read the plain read's answer.
+ */
+function readsBeforeRetainedRange(
+  port: number,
+  liveRead: { path: string; offset: bigint }
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const head = http.request(
+      { host: '127.0.0.1', port, method: 'HEAD', path: liveRead.path },
+      (headResponse) => {
+        headResponse.resume();
+        const earliest = headResponse.headers['stream-earliest-offset'];
+        resolve(
+          typeof earliest === 'string' &&
+            LIVE_READ_OFFSET.test(earliest) &&
+            liveRead.offset < BigInt(earliest)
+        );
+      }
+    );
+    // Not knowing is no reason to refuse: the live read goes ahead as before.
+    head.once('error', () => resolve(false));
+    head.end();
+  });
+}
+
+function forwardToUpstream(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  upstreamServer: LanHubUpstream,
+  keepaliveMs: number | undefined
+): void {
+  const upstream = http.request(
+    {
+      host: '127.0.0.1',
+      port: upstreamServer.port,
+      method: request.method,
+      path: request.url,
+      headers: forwardedHeaders(request.headers),
+    },
+    (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode ?? 502, {
+        ...answeredHeaders(upstreamResponse.headers),
+        ...corsHeaders(request),
+      });
+      const contentType = String(upstreamResponse.headers['content-type'] ?? '');
+      if (contentType.toLowerCase().includes('text/event-stream')) {
+        pipeLiveRead(upstreamResponse, response, keepaliveMs);
+        return;
+      }
+      upstreamResponse.pipe(response);
+    }
+  );
+  upstream.once('error', (error) => {
+    if (response.headersSent) {
+      response.destroy(error);
+      return;
+    }
+    sendJson(request, response, 502, { error: 'hub upstream unavailable' });
+  });
+  // A live read stays open until the client leaves; release the upstream
+  // subscription with it.
+  response.once('close', () => upstream.destroy());
+  request.pipe(upstream);
 }
 
 export async function startLanHubServer(options: LanHubServerOptions): Promise<LanHubServer> {

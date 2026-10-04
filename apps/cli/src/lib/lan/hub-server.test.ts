@@ -62,6 +62,8 @@ async function startFakeStreamsServer() {
       response.writeHead(200, {
         'Content-Type': 'application/octet-stream',
         'Stream-Next-Offset': '5',
+        // Like a stream whose start was compacted away.
+        'Stream-Earliest-Offset': '00000000000000000100',
         'Access-Control-Allow-Origin': 'http://upstream.invalid',
       });
       response.end('hello');
@@ -184,6 +186,33 @@ describe('LAN host', () => {
     await closed;
 
     expect(streams.liveReads.size).toBe(0);
+  });
+
+  it('answers a live read below the retained range like a plain read, so the reader bootstraps', async () => {
+    const response = await request('/ds/lody/room%3Ameta?offset=00000000000000000042&live=sse', {
+      headers: authorized(),
+    });
+
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({
+      error: 'offset is outside the readable retained range',
+    });
+    expect(streams.seen.some((seen) => seen.url.includes('live=sse'))).toBe(false);
+  });
+
+  it('forwards a live read inside the retained range', async () => {
+    const controller = new AbortController();
+    const response = await request('/ds/lody/room%3Ameta?offset=00000000000000000100&live=sse', {
+      headers: authorized(),
+      signal: controller.signal,
+    });
+    const first = await response.body?.getReader().read();
+
+    expect(response.status).toBe(200);
+    expect(new TextDecoder().decode(first?.value)).toBe('event: data\ndata: first\n\n');
+    const closed = streams.whenLiveReadCloses();
+    controller.abort();
+    await closed;
   });
 
   it('stops when the streams behind it are gone', async () => {
