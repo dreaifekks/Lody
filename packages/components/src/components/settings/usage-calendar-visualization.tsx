@@ -17,6 +17,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Box, Copy, Download, FileText, MousePointerClick, X } from 'lucide-react';
 import i18next from 'i18next';
 import { useTranslation } from 'react-i18next';
+import { useUsageMemberLabel } from './usage-member-label';
 import { toast } from '@/lib/toast';
 import { Avatar } from '@lody/ui/avatar';
 import { Button } from '@lody/ui/button';
@@ -717,6 +718,7 @@ function UsageCompositionSummary({
   className?: string;
 }) {
   const { t } = useTranslation();
+  const memberLabel = useUsageMemberLabel();
   const modelSegments = useMemo(
     () =>
       createUsageCompositionSegments(
@@ -763,7 +765,7 @@ function UsageCompositionSummary({
         reduced={reduced}
       />
       <UsageCompositionBar
-        label={t('workspace.usage.byUser')}
+        label={memberLabel}
         segments={memberSegments}
         colors={MEMBER_SERIES_COLORS}
         reduced={reduced}
@@ -1603,6 +1605,7 @@ function UsageDayDetailPanel({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
+  const memberLabel = useUsageMemberLabel();
   const formats = useCalendarFormats();
   const { locale } = formats;
   // While a new day is in flight the previous payload is still mounted; only
@@ -1757,9 +1760,7 @@ function UsageDayDetailPanel({
                 />
               </div>
               <div className="min-w-0">
-                <p className="mb-2 text-[11px] font-normal text-muted-foreground">
-                  {t('workspace.usage.byUser')}
-                </p>
+                <p className="mb-2 text-[11px] font-normal text-muted-foreground">{memberLabel}</p>
                 <RankedBars
                   rows={day.byUser.map((row) => {
                     const user = day.users[row.userId];

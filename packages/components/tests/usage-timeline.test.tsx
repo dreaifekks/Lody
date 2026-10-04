@@ -5,6 +5,7 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UsageCalendarVisualization } from '../src/components/settings/usage-calendar-visualization';
+import { UsageMemberLabelContext } from '../src/components/settings/usage-member-label';
 import type { SettingsUsageTimelineData } from '../src/components/settings/settings-data-cache';
 import {
   createUsageTimelineFormatter,
@@ -42,31 +43,40 @@ function timeline(range: SettingsUsageTimelineData['range']): SettingsUsageTimel
   };
 }
 
-function render(data: SettingsUsageTimelineData): HTMLDivElement {
+function render(data: SettingsUsageTimelineData, memberLabel?: string): HTMLDivElement {
   const firstDay = Math.floor(data.startMs / DAY_MS) * DAY_MS;
   const container = document.createElement('div');
   container.innerHTML = renderToStaticMarkup(
-    <UsageCalendarVisualization
-      timeline={data}
-      calendar={{
-        workspaceId: data.workspaceId,
-        timezone: 'UTC',
-        startMs: firstDay,
-        endMs: data.endMs,
-        days: Array.from({ length: 8 }, (_, index) => ({
-          dayStartMs: firstDay + index * DAY_MS,
-          date: new Date(firstDay + index * DAY_MS).toISOString().slice(0, 10),
-          tokens: 0,
-          costUSD: 0,
-          isFuture: false,
-        })),
-      }}
-    />
+    <UsageMemberLabelContext.Provider value={memberLabel}>
+      <UsageCalendarVisualization
+        timeline={data}
+        calendar={{
+          workspaceId: data.workspaceId,
+          timezone: 'UTC',
+          startMs: firstDay,
+          endMs: data.endMs,
+          days: Array.from({ length: 8 }, (_, index) => ({
+            dayStartMs: firstDay + index * DAY_MS,
+            date: new Date(firstDay + index * DAY_MS).toISOString().slice(0, 10),
+            tokens: 0,
+            costUSD: 0,
+            isFuture: false,
+          })),
+        }}
+      />
+    </UsageMemberLabelContext.Provider>
   );
   return container;
 }
 
 describe('usage timeline presentation', () => {
+  it('names the second split as the page says, by member unless told otherwise', () => {
+    expect(render(timeline('month')).textContent).toContain('workspace.usage.byUser');
+    const byMachine = render(timeline('month'), 'By machine').textContent;
+    expect(byMachine).toContain('By machine');
+    expect(byMachine).not.toContain('workspace.usage.byUser');
+  });
+
   it('renders the actual UTC window and bucket-aligned skyline axis', () => {
     const data = timeline('day');
     const container = render(data);

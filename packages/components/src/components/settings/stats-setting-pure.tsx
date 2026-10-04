@@ -13,6 +13,7 @@ import {
   type StackedAreaSeriesMarkerRender,
 } from './usage-stacked-area-chart';
 import { UsageCalendarSkeleton } from './usage-calendar-skeleton';
+import { useUsageMemberLabel } from './usage-member-label';
 import type {
   SettingsUsageCalendarData,
   SettingsUsageDayData,
@@ -58,8 +59,6 @@ export type StatsSettingsViewProps = {
    * an action it cannot perform nor pulls the capture pipeline into its bundle.
    */
   shareCard?: boolean;
-  /** Title of the second chart; the hosted page splits usage by member. */
-  memberChartTitle?: string;
   /** Said under the header, such as which machines did not answer. */
   notice?: ReactNode;
 };
@@ -212,10 +211,10 @@ export function StatsSettingsView({
   tintMemberSeriesLabel,
   costFractionDigits = 2,
   shareCard = false,
-  memberChartTitle,
   notice,
 }: StatsSettingsViewProps) {
   const { t, i18n } = useTranslation();
+  const memberLabel = useUsageMemberLabel();
   const [shareOpen, setShareOpen] = useState(false);
   const locale = toIntlLocaleOrEn(i18n.resolvedLanguage ?? i18n.language);
   const windowCaption = t(`workspace.usage.window.${range}.long`);
@@ -338,7 +337,7 @@ export function StatsSettingsView({
         loadingText={t('workspace.usage.loading', 'Loading usage data...')}
       />
       <UsageStackedAreaChart
-        title={memberChartTitle ?? t('workspace.usage.byUser')}
+        title={memberLabel}
         buckets={byMemberBuckets}
         emptyText={t('workspace.usage.empty', 'No usage data in this range')}
         valueFormatter={tokensCompact}

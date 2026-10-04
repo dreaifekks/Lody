@@ -19,6 +19,7 @@ import {
   formatUsageTimelineBucketLabel,
 } from './usage-timeline-bucket-label';
 import { toIntlLocaleOrEn } from '@/lib/intl-locale';
+import { UsageMemberLabelContext } from './usage-member-label';
 import { useAtomValue } from 'jotai';
 import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
 import { useLanUsage } from '@/hooks/use-lan-usage';
@@ -75,25 +76,26 @@ function LocalStatsSettings() {
       : null;
 
   return (
-    <div className={settingContainerClass}>
-      <StatsSettingsView
-        range={range}
-        onRangeChange={setRange}
-        ready={Boolean(usageTimeline)}
-        totals={usageTimeline?.totals ?? null}
-        byModelBuckets={byModelBuckets}
-        byMemberBuckets={byMemberBuckets}
-        usageCalendar={views?.calendar}
-        usageTimeline={usageTimeline}
-        usageDay={usageDay}
-        usageDayLoading={false}
-        onSelectedUsageDayChange={setSelectedUsageDayMs}
-        workspaceId={workspaceId}
-        loading={Boolean(workspaceId) && !usageTimeline}
-        memberChartTitle={t('workspace.usage.byMachine')}
-        notice={notice}
-      />
-    </div>
+    <UsageMemberLabelContext.Provider value={t('workspace.usage.byMachine')}>
+      <div className={settingContainerClass}>
+        <StatsSettingsView
+          range={range}
+          onRangeChange={setRange}
+          ready={Boolean(usageTimeline)}
+          totals={usageTimeline?.totals ?? null}
+          byModelBuckets={byModelBuckets}
+          byMemberBuckets={byMemberBuckets}
+          usageCalendar={views?.calendar}
+          usageTimeline={usageTimeline}
+          usageDay={usageDay}
+          usageDayLoading={false}
+          onSelectedUsageDayChange={setSelectedUsageDayMs}
+          workspaceId={workspaceId}
+          loading={Boolean(workspaceId) && !usageTimeline}
+          notice={notice}
+        />
+      </div>
+    </UsageMemberLabelContext.Provider>
   );
 }
 
