@@ -6715,6 +6715,15 @@ export class MessageHandler {
     return (await this.machineRpcServer?.handleDirectRequest(raw)) ?? null;
   }
 
+  /**
+   * Runs work of this machine's own, such as auto review, as a session command
+   * of this workspace: on the local platform it is checked against the
+   * workspace's members rather than a hosted account.
+   */
+  async runAsSessionCommand<T>(run: () => Promise<T>): Promise<T> {
+    return await this.withSessionCommandEnvironment(run);
+  }
+
   async handleLocalMachineRpc(
     request: LocalMachineRpcRequestValidated
   ): Promise<LocalMachineRpcResponse> {

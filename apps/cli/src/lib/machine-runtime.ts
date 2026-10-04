@@ -343,6 +343,10 @@ export class MachineRuntime {
     return await this.requireHandler().handleDirectMachineRpc(raw);
   }
 
+  async runAsSessionCommand<T>(run: () => Promise<T>): Promise<T> {
+    return await this.requireHandler().runAsSessionCommand(run);
+  }
+
   private initializeGCManager(): void {
     if (!this.handler) {
       return;

@@ -42,6 +42,7 @@ import type { LocalProbeConfig } from '@/lib/local-probe';
 import type { LocalSessionControlConfig } from '@/lib/local-session-control';
 import { startLocalTerminalServer, stopLocalTerminalServer } from '@/lib/local-terminal-server';
 import { LocalTunnelServer } from '@/lib/local-tunnel-server';
+import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
 import type { LocalUsageLedger } from '@/lib/usage/local-usage-ledger';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { connectPort, openLanTunnel } from '@/lib/lan/lan-tunnel';
@@ -1069,6 +1070,10 @@ export class LodyFleet {
         // the orchestration chain-depth guard caps a chain at five hops from the
         // last human input, and because CI and GitHub state are explicitly
         // outside that contract.
+        const asSessionCommand =
+          <A extends unknown[], R>(run: (...args: A) => Promise<R>) =>
+          async (...args: A) =>
+            await startedLody.runAsSessionCommand(() => run(...args));
         const reviewAutomation = this.cloudPort.githubTokens
           ? createReviewAutomation({
               documentManager: startedLody.documentManager,
@@ -1085,11 +1090,14 @@ export class LodyFleet {
                 ).resolve(repoFullName);
                 return credential?.token ?? null;
               },
-              createReviewerSession: async (args) => {
+              // On the local platform there is no hosted account to check the
+              // reviewer's machine against; the workspace's session command
+              // environment checks it against the members instead.
+              createReviewerSession: asSessionCommand(async (args) => {
                 const { createSessionResult, resolveTurnDispatchConfig } =
                   await import('@/commands/session');
                 const created = await createSessionResult(
-                  this.reviewAuthContext(),
+                  this.reviewAuth(),
                   workspace,
                   startedLody.documentManager,
                   args.prompt,
@@ -1121,12 +1129,12 @@ export class LodyFleet {
                   }
                 );
                 return { sessionId: created.sessionId };
-              },
-              sendChat: async (sessionId, prompt) => {
+              }),
+              sendChat: asSessionCommand(async (sessionId: SessionId, prompt: string) => {
                 const { sendSessionChatResult, resolveTurnDispatchConfig } =
                   await import('@/commands/session');
                 const sent = await sendSessionChatResult(
-                  this.reviewAuthContext(),
+                  this.reviewAuth(),
                   workspace,
                   startedLody.documentManager,
                   sessionId,
@@ -1134,7 +1142,7 @@ export class LodyFleet {
                   resolveTurnDispatchConfig({})
                 );
                 return { userTurnId: sent.userTurnId };
-              },
+              }),
             })
           : null;
         this.runtimes.set(workspace.id, {
@@ -1375,6 +1383,14 @@ export class LodyFleet {
       machineId: this.machineId,
       machineName: this.machineName,
     };
+  }
+
+  /**
+   * Who auto review acts as: the session command environment's identity where
+   * one runs (the local platform), the CLI token's otherwise.
+   */
+  private reviewAuth(): ReturnType<LodyFleet['reviewAuthContext']> {
+    return getSessionCommandEnvironment()?.auth ?? this.reviewAuthContext();
   }
 
   /** One resolver per workspace, so the credential cache is shared across runs. */
