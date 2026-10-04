@@ -576,6 +576,8 @@ export interface AgentClientOptions {
     cliType: AgentConfigCliType;
     agentType: string;
   };
+  /** `initialize.clientInfo`, from the resolved launch; absent sends none. */
+  clientInfo?: acp.Implementation;
   /** Config selected before ACP session establishment. */
   configOptionValues?: SessionTurnInputConfig['configOptionValues'];
   /** Launcher family (npx/uvx/local) for ACP startup analytics; non-PII. */
@@ -1923,6 +1925,7 @@ export class AgentClient implements acp.Client {
         withAbort(
           connection.initialize({
             protocolVersion: acp.PROTOCOL_VERSION,
+            ...(this.options.clientInfo ? { clientInfo: this.options.clientInfo } : {}),
             ...(grokClientIdentifier ? { _meta: { clientIdentifier: grokClientIdentifier } } : {}),
             clientCapabilities: {
               terminal: this.terminalEnabled,

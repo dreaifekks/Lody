@@ -709,6 +709,7 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
             cliType: callbacks.cliType,
             agentType: callbacks.agentType,
           },
+          clientInfo: callbacks.clientInfo,
           configOptionValues: this.config.configOptionValues,
           launcher,
           workspaceId: this.config.workspaceId,

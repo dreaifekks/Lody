@@ -13,6 +13,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { toast } from '@/lib/toast';
 import { usePostHog } from '@posthog/react';
 import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_THIRD_PARTY_MODELS_ENV,
   computeTitleGenerationDefaults,
   DEEPSEEK_HARNESS_API_KEY_ENV,
   DEEPSEEK_HARNESS_BASE_URL_ENV,
@@ -86,7 +88,8 @@ import { useKeyboardAwareScrollIntoView } from '@/hooks/use-keyboard-aware-scrol
 import { useMachineAcpBinaryProgress } from '@/hooks/use-machine-acp-binary-progress';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { Button } from '@lody/ui/button';
-import { Dialog } from '@/ui/dialog';
+import { AlertDialog, Dialog } from '@/ui/dialog';
+import { Switch } from '@lody/ui/switch';
 import { Collapsible } from '@lody/ui/collapsible';
 import { Input } from '@lody/ui/input';
 import { Field as UiField } from '@lody/ui/field';
@@ -1398,6 +1401,12 @@ function resolveDeepSeekEndpointForm(
   return { deepseekEndpointMode: 'custom', deepseekCustomBaseUrl: stored };
 }
 
+function omitEnvKey(env: Record<string, string>, key: string): Record<string, string> {
+  if (!(key in env)) return env;
+  const { [key]: _omitted, ...rest } = env;
+  return rest;
+}
+
 function omitDeepSeekProtectedEnv(env: Record<string, string>): Record<string, string> {
   const additionalEnv = { ...env };
   delete additionalEnv[DEEPSEEK_HARNESS_API_KEY_ENV];
@@ -2235,7 +2244,15 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
     });
   }, [isPreset, titleSelectors, formData.titleGeneration?.configOptionValues]);
 
-  const additionalEnv = isDeepSeekBuiltin ? omitDeepSeekProtectedEnv(formData.env) : formData.env;
+  const isAntigravityRegistry =
+    formData.cliType === 'registry' && formData.agentType === ANTIGRAVITY_AGENT_TYPE;
+  const antigravityThirdPartyModels = formData.env[ANTIGRAVITY_THIRD_PARTY_MODELS_ENV];
+  // The opt-in is owned by its switch below, so the free-form list neither shows
+  // nor drops it.
+  const additionalEnv = omitEnvKey(
+    isDeepSeekBuiltin ? omitDeepSeekProtectedEnv(formData.env) : formData.env,
+    ANTIGRAVITY_THIRD_PARTY_MODELS_ENV
+  );
   const envCount = Object.keys(additionalEnv).length;
 
   const invalidateBuiltinVerification = () => {
@@ -3200,6 +3217,18 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
               naming its setting and folding open in place — so they hold the
               lower half of the form as one object rather than three captions. */}
           <div {...stylex.props(styles.sectionGroup)}>
+            {isAntigravityRegistry ? (
+              <AntigravityThirdPartyModelsSection
+                enabled={antigravityThirdPartyModels === '1'}
+                onChange={(enabled) =>
+                  updateEnvironment(
+                    enabled
+                      ? { ...formData.env, [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: '1' }
+                      : omitEnvKey(formData.env, ANTIGRAVITY_THIRD_PARTY_MODELS_ENV)
+                  )
+                }
+              />
+            ) : null}
             {!isPreset &&
               !acpProvidesSessionTitle &&
               (capabilitiesReady ? titleSelectors.length > 0 : true) && (
@@ -3294,7 +3323,14 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
                 value={additionalEnv}
                 onChange={(env) => {
                   if (!isDeepSeekBuiltin) {
-                    updateEnvironment(env);
+                    updateEnvironment(
+                      antigravityThirdPartyModels === undefined
+                        ? env
+                        : {
+                            ...env,
+                            [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: antigravityThirdPartyModels,
+                          }
+                    );
                     return;
                   }
                   const next = omitDeepSeekProtectedEnv(env);
@@ -4089,6 +4125,75 @@ function Section({
         </Collapsible.Panel>
       </Collapsible.Root>
     </div>
+  );
+}
+
+/**
+ * Opt-in for Antigravity's Claude/GPT models. Turning it on makes the daemon
+ * introduce itself as Zed, so it asks the owner to accept that account risk first.
+ */
+function AntigravityThirdPartyModelsSection({
+  enabled,
+  onChange,
+}: {
+  enabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const [confirming, setConfirming] = useState(false);
+  const label = t(
+    'settings.agent.dialog.antigravityThirdParty.toggle',
+    'Offer Claude and GPT models'
+  );
+  return (
+    <Section
+      title={t('settings.agent.dialog.antigravityThirdParty.title', 'Claude and GPT models')}
+      defaultOpen={enabled}
+    >
+      <div {...stylex.props(styles.optionRow)}>
+        <UiField.Label>{label}</UiField.Label>
+        <div>
+          <Switch
+            aria-label={label}
+            checked={enabled}
+            onCheckedChange={(checked) => {
+              if (checked) setConfirming(true);
+              else onChange(false);
+            }}
+          />
+        </div>
+      </div>
+      <p {...stylex.props(styles.note)}>
+        {t(
+          'settings.agent.dialog.antigravityThirdParty.hint',
+          'Antigravity lists these models only to clients that identify as Zed. When on, Lody identifies as Zed to this agent. Start a new session after changing this.'
+        )}
+      </p>
+      <AlertDialog.Root open={confirming} onOpenChange={setConfirming}>
+        <AlertDialog.Content>
+          <AlertDialog.Header>
+            <AlertDialog.Title>
+              {t(
+                'settings.agent.dialog.antigravityThirdParty.confirmTitle',
+                'Identify as Zed to Antigravity?'
+              )}
+            </AlertDialog.Title>
+            <AlertDialog.Description>
+              {t(
+                'settings.agent.dialog.antigravityThirdParty.confirmBody',
+                "Lody will tell Google's Antigravity agent that it is the Zed editor. Google does not offer these models to Lody, and may treat a client misstating its identity as a breach of its terms — up to restricting or suspending your Google account. Google can also stop this from working at any time. Enable only if you accept that risk."
+              )}
+            </AlertDialog.Description>
+          </AlertDialog.Header>
+          <AlertDialog.Footer>
+            <AlertDialog.Cancel>{t('common.cancel', 'Cancel')}</AlertDialog.Cancel>
+            <AlertDialog.Action variant="destructive" onClick={() => onChange(true)}>
+              {t('settings.agent.dialog.antigravityThirdParty.confirmAction', 'I accept the risk')}
+            </AlertDialog.Action>
+          </AlertDialog.Footer>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
+    </Section>
   );
 }
 

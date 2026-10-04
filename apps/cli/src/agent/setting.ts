@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { Implementation } from '@agentclientprotocol/sdk';
 import {
   type AgentConfigCliType,
   DEEPSEEK_HARNESS_BASE_URL_ENV,
@@ -13,6 +14,7 @@ import {
   getBuiltinRuntimeOverrideSourceVersionSuffix,
   getRegistryAcpLaunchKind,
   getManagedBuiltinRuntimeByAgentType,
+  isAntigravityThirdPartyModelsEnabled,
   isBuiltinAgentType,
   isManagedBuiltinAgentType,
   type ManagedBuiltinAgentType,
@@ -109,6 +111,8 @@ export type ResolvedACPProcessLaunch = {
   command: string;
   args: string[];
   capabilitySourceVersion?: string;
+  /** `initialize.clientInfo` this launch must send; absent sends none. */
+  clientInfo?: Implementation;
   /**
    * Environment overlay required by this ACP launch. Callers that spawn a
    * process directly should merge this over their base environment.
@@ -326,7 +330,26 @@ export function getAcpCapabilitySourceVersion(
     return `registry:${input.agentType}:unknown`;
   }
 
-  return `${agent.id}@${agent.version}`;
+  // The client identity changes which models the agent lists, so it is part of
+  // the cache key: toggling it must re-probe instead of serving the old catalog.
+  const clientInfo = getAcpClientInfo(input);
+  return clientInfo
+    ? `${agent.id}@${agent.version}+client:${clientInfo.name}`
+    : `${agent.id}@${agent.version}`;
+}
+
+/** Zed's identity, which unlocks Antigravity's Claude/GPT models (see the env key's doc). */
+const ANTIGRAVITY_THIRD_PARTY_CLIENT_INFO: Implementation = {
+  name: 'zed',
+  title: 'Zed',
+  version: '1',
+};
+
+export function getAcpClientInfo(input: ResolveACPSettingInput): Implementation | undefined {
+  return input.cliType === 'registry' &&
+    isAntigravityThirdPartyModelsEnabled(input.agentType, input.env)
+    ? ANTIGRAVITY_THIRD_PARTY_CLIENT_INFO
+    : undefined;
 }
 
 /**
@@ -728,6 +751,7 @@ export function resolveACPProcessLaunch(
     args: [...setting.exec.args, ...(input.extraArgs ?? [])],
     env: setting.exec.env,
     capabilitySourceVersion: getAcpCapabilitySourceVersion(input),
+    clientInfo: getAcpClientInfo(input),
   };
 }
 
@@ -755,6 +779,7 @@ export async function resolveACPProcessLaunchAsync(
         args: [...launch.args, ...(input.extraArgs ?? [])],
         env: launch.env,
         capabilitySourceVersion: getAcpCapabilitySourceVersion(input),
+        clientInfo: getAcpClientInfo(input),
       };
     }
   }

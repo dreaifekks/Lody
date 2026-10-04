@@ -8,11 +8,16 @@ import {
   ACP_EXTENSION_DSH_QUERY_PATH_ENV,
   ACP_EXTENSION_DSH_SESSION_ROOT_ENV,
 } from 'acp-extension-dsh/profile';
-import { REGISTRY_ACP_AGENTS, CODEX_PROFILE_LEGACY_LAUNCH_GUARD } from '@lody/shared';
+import {
+  ANTIGRAVITY_THIRD_PARTY_MODELS_ENV,
+  REGISTRY_ACP_AGENTS,
+  CODEX_PROFILE_LEGACY_LAUNCH_GUARD,
+} from '@lody/shared';
 import { spawn } from 'node:child_process';
 
 import {
   getAcpCapabilitySourceVersion,
+  getAcpClientInfo,
   mergeLoginShellEnv,
   resolveACPSetting,
   resolveExpectedAcpCapabilitySourceVersion,
@@ -726,6 +731,26 @@ describe('resolveBuiltinACPSetting', () => {
     expect(getAcpCapabilitySourceVersion({ cliType: 'registry', agentType: 'factory-droid' })).toBe(
       `factory-droid@${agent.version}`
     );
+  });
+
+  it('identifies as Zed to Antigravity only when its provider opted in', () => {
+    const agent = REGISTRY_ACP_AGENTS.find((entry) => entry.id === 'antigravity-acp');
+    if (!agent) throw new Error('antigravity-acp missing from registry');
+    const plain = { cliType: 'registry' as const, agentType: 'antigravity-acp' };
+    const optedIn = { ...plain, env: { [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: '1' } };
+
+    expect(getAcpClientInfo(plain)).toBeUndefined();
+    expect(getAcpCapabilitySourceVersion(plain)).toBe(`antigravity-acp@${agent.version}`);
+    expect(getAcpClientInfo(optedIn)?.name).toBe('zed');
+    // A different identity lists different models, so it must not share the cache entry.
+    expect(getAcpCapabilitySourceVersion(optedIn)).toBe(
+      `antigravity-acp@${agent.version}+client:zed`
+    );
+    expect(
+      getAcpClientInfo({ ...plain, env: { [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: '0' } })
+    ).toBeUndefined();
+    expect(getAcpClientInfo({ ...optedIn, agentType: 'amp-acp' })).toBeUndefined();
+    expect(getAcpClientInfo({ ...optedIn, cliType: 'custom' })).toBeUndefined();
   });
 
   it('keeps removed registry providers launchable without listing duplicates', () => {

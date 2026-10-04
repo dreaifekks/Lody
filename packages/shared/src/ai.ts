@@ -37,6 +37,20 @@ export type BuiltinCliType = ManagedBuiltinAgentType;
 export type CliType = BuiltinCliType;
 /** Registry provider whose subscription quota the daemon reads itself; no Lody adapter reports it. */
 export const ANTIGRAVITY_AGENT_TYPE = 'antigravity-acp';
+/**
+ * Agent-config env key that opts an Antigravity provider into Claude/GPT models.
+ * The ACP server lists them only to clients that name themselves Zed, so the
+ * daemon sends `clientInfo.name = 'zed'` while this is `'1'`. That is a client
+ * identity Lody does not own: the owner accepts the account risk in Settings.
+ */
+export const ANTIGRAVITY_THIRD_PARTY_MODELS_ENV = 'LODY_ANTIGRAVITY_THIRD_PARTY_MODELS';
+
+export function isAntigravityThirdPartyModelsEnabled(
+  agentType: string,
+  env: Readonly<Record<string, string | undefined>> | undefined
+): boolean {
+  return agentType === ANTIGRAVITY_AGENT_TYPE && env?.[ANTIGRAVITY_THIRD_PARTY_MODELS_ENV] === '1';
+}
 /** Agent types that may own rate-limit rows: managed builtins plus Antigravity. */
 export type RateLimitAgentType = CliType | typeof ANTIGRAVITY_AGENT_TYPE;
 
