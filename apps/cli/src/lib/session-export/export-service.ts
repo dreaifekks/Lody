@@ -26,6 +26,8 @@ export type ExportWorkspaceDataOptions = {
   cliToken: string;
   outputDir: string;
   downloadImages?: boolean;
+  /** Workspace usage lives in the hosted Lody; a local export leaves it out. */
+  includeUsage?: boolean;
 };
 
 type SessionIndexEntry = ExportSessionSummary & {
@@ -226,22 +228,24 @@ export async function exportWorkspaceData(
   ]);
 
   let usageExported = false;
-  try {
-    const usageBundle = await fetchWorkspaceUsageBundle({
-      workspaceId: options.workspace.id,
-      cliToken: options.cliToken,
-    });
-    await writeJson(
-      path.join(options.outputDir, 'usage', 'workspace-summary.json'),
-      usageBundle.summary
-    );
-    await writeJson(
-      path.join(options.outputDir, 'usage', 'workspace-timeline.json'),
-      usageBundle.timelines
-    );
-    usageExported = true;
-  } catch (error) {
-    warnings.push(`Workspace usage export failed: ${formatErrorMessage(error)}`);
+  if (options.includeUsage !== false) {
+    try {
+      const usageBundle = await fetchWorkspaceUsageBundle({
+        workspaceId: options.workspace.id,
+        cliToken: options.cliToken,
+      });
+      await writeJson(
+        path.join(options.outputDir, 'usage', 'workspace-summary.json'),
+        usageBundle.summary
+      );
+      await writeJson(
+        path.join(options.outputDir, 'usage', 'workspace-timeline.json'),
+        usageBundle.timelines
+      );
+      usageExported = true;
+    } catch (error) {
+      warnings.push(`Workspace usage export failed: ${formatErrorMessage(error)}`);
+    }
   }
 
   const manifest: ExportManifest = {

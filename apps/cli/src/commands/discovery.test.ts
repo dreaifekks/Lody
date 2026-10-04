@@ -12,8 +12,28 @@ vi.mock('@/lib/resource-discovery-runtime', () => ({
   createResourceDiscovery: async () => state.discovery,
 }));
 vi.mock('@/lib/cli-platform', () => ({ getCliPlatformKind: () => state.platform }));
+// The daemon's terminal tools, answering from the same catalog and checking
+// arguments against the tool schemas, as the daemon does.
+vi.mock('@/lib/terminal-session-tools', () => ({
+  resolveTerminalToolTarget: async () => ({ machineId: 'machine', workspaceId: 'workspace' }),
+  callTerminalSessionTool: async (_target: unknown, name: string, args: object) => {
+    const { ResourceListSchemas } = await import('@/lib/discovery-query');
+    const match = /^lody_(.+)_(list|get)$/.exec(name);
+    const discovery = state.discovery;
+    if (!discovery || !match) throw new Error(`Unexpected tool ${name}`);
+    const resource = match[1] as keyof typeof ResourceListSchemas;
+    const input = JSON.parse(JSON.stringify(args)) as { id?: string };
+    if (match[2] === 'list')
+      return discovery.list(resource, ResourceListSchemas[resource].parse(input));
+    if (resource !== 'agent_config' && resource !== 'agent_role') throw new Error(`No ${name}`);
+    return discovery.get(resource, String(input.id));
+  },
+}));
 vi.mock('@/lib/command-runtime', () => ({
-  getAuthContextOrThrow: () => ({ userId: 'user' }),
+  getAuthContextOrThrow: () => {
+    if (state.platform === 'local') throw new Error('Local discovery read a cloud login');
+    return { userId: 'user' };
+  },
   resolveWorkspaceOrThrow: async () => ({ id: 'workspace' }),
   withWorkspaceManager: async (
     _auth: unknown,
@@ -118,14 +138,25 @@ describe('CLI discovery boundary', () => {
     expect(state.output).toMatchObject({ items: [{ id: 'role-10' }, { id: 'role-11' }] });
   });
 
-  it.each(['agent_config', 'agent_role', 'mcp'] as const)(
-    'rejects unsupported local %s discovery before reading a cloud catalog',
-    async (resource) => {
-      state.platform = 'local';
-      await expect(
-        discoveryListCommand(resource).parseAsync(['--json'], { from: 'user' })
-      ).rejects.toThrow('unavailable on the local platform');
-      expect(state.output).toBeUndefined();
-    }
-  );
+  it('reads the local catalog through the daemon, never a cloud login', async () => {
+    state.platform = 'local';
+    state.discovery = fixture();
+    await discoveryListCommand('agent_role').parseAsync(
+      ['--json', '--machine', 'Workstation', '--all-pages', '--limit', '10'],
+      { from: 'user' }
+    );
+    const output = state.output as { items: Array<{ id: string }>; roles: unknown[] };
+    expect(output.items).toHaveLength(25);
+    expect(output.roles).toEqual(output.items);
+    await expect(
+      discoveryListCommand('agent_role').parseAsync(['--json', '--machine', 'Elsewhere'], {
+        from: 'user',
+      })
+    ).rejects.toThrow('Machine not found: Elsewhere');
+
+    const discovery = fixture();
+    state.discovery = discovery;
+    await discoveryGetCommand('agent_role').parseAsync(['role-1', '--json'], { from: 'user' });
+    expect(state.output).toEqual(await discovery.get('agent_role', 'role-1'));
+  });
 });

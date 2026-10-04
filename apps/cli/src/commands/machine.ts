@@ -26,6 +26,10 @@ import {
   type CommonCommandOptions,
 } from '@/lib/command-runtime';
 import { renderTerminalTable } from '@/lib/terminal-table';
+import { getCliPlatformKind } from '@/lib/cli-platform';
+import type { LoroDocumentManager } from '@/lib/loro/doc';
+import { resolveTerminalToolTarget, runTerminalCommand } from '@/lib/terminal-session-tools';
+import { z } from 'zod';
 import { listMergedAgentConfigs } from '@/lib/agent-config-machine-flock';
 
 type MachineListOptions = CommonCommandOptions &
@@ -261,6 +265,58 @@ function printHumanMachineList(
   );
 }
 
+const PRESENCE_UNKNOWN_WARNING =
+  'Warning: presence room unavailable; machine online status is unknown, reported as onlineStatus "unknown".';
+
+const MachineListResultSchema = z.object({
+  presenceUnknown: z.boolean(),
+  machines: z.array(z.record(z.string(), z.unknown())),
+  json: z.array(z.unknown()),
+});
+
+/**
+ * The detailed machine list: durable machine rows with presence, and on
+ * request each machine's Agent configs and ACP capabilities. The hosted
+ * command reads it from its own replica, a local daemon from its own.
+ */
+export async function readDetailedMachineList(
+  scope: { manager: LoroDocumentManager; workspaceId: WorkspaceId; machineId: MachineId },
+  options: Pick<MachineListOptions, 'onlineOnly' | 'includeAgents' | 'includeAcpCapabilities'>
+): Promise<{ presenceUnknown: boolean; machines: MachineListEntry[]; json: unknown[] }> {
+  const { manager, workspaceId } = scope;
+  // Online status comes from the ephemeral presence room, not from
+  // durable machine meta (whose lastSeen is a legacy registration
+  // timestamp). A null snapshot means presence could not be joined.
+  const onlineMachineIds = await manager.getOnlineMachineIds();
+  const onlineIds = onlineMachineIds ?? new Set<MachineId>();
+  let machines = sortMachineMetas(
+    (await listAliveDocMetas<MachineMeta>(manager, isMachineDocRoomId)).map((entry) => entry.meta),
+    onlineIds,
+    scope.machineId
+  )
+    .map((machine) => toMachineListEntry(machine, onlineMachineIds))
+    .filter((machine) => !options.onlineOnly || machine.online);
+
+  if (options.includeAgents === true) {
+    machines = await attachAgentConfigsToMachines(manager.repo, workspaceId, machines);
+  }
+
+  const includeAcpCapabilities = options.includeAcpCapabilities === true;
+  const includeAgents = options.includeAgents === true;
+  const jsonMachines = await Promise.all(
+    machines.map((machine) =>
+      mergeMachineFlockJsonState(manager.repo, workspaceId, machine, includeAcpCapabilities)
+    )
+  );
+  return {
+    presenceUnknown: onlineMachineIds === null,
+    machines,
+    json: jsonMachines.map((machine) =>
+      toMachineJsonEntry(machine, { includeAcpCapabilities, includeAgents })
+    ),
+  };
+}
+
 export const machineCommand = new Command('machine')
   .description('Inspect registered machines')
   .addCommand(
@@ -293,62 +349,43 @@ export const machineCommand = new Command('machine')
           );
         }
         await runOneShotCommand('machine', options, async () => {
+          if (getCliPlatformKind() === 'local') {
+            const target = await resolveTerminalToolTarget(options.workspace);
+            const result = MachineListResultSchema.parse(
+              await runTerminalCommand(target, {
+                command: 'machine-list',
+                onlineOnly: options.onlineOnly,
+                includeAgents: options.includeAgents,
+                includeAcpCapabilities: options.includeAcpCapabilities,
+              })
+            );
+            if (result.presenceUnknown) console.error(PRESENCE_UNKNOWN_WARNING);
+            if (options.json) {
+              printJson({ ok: true, workspaceId: target.workspaceId, machines: result.json });
+              return;
+            }
+            printHumanMachineList(
+              result.machines as MachineListEntry[],
+              target.machineId as MachineId,
+              options.includeAgents === true
+            );
+            return;
+          }
           const auth = getAuthContextOrThrow('machine');
           const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
 
           await withWorkspaceManager(auth, workspace, 'machine', async (manager) => {
-            // Online status comes from the ephemeral presence room, not from
-            // durable machine meta (whose lastSeen is a legacy registration
-            // timestamp). A null snapshot means presence could not be joined.
-            const onlineMachineIds = await manager.getOnlineMachineIds();
-            if (onlineMachineIds === null) {
-              console.error(
-                'Warning: presence room unavailable; machine online status is unknown, reported as onlineStatus "unknown".'
-              );
-            }
-            const onlineIds = onlineMachineIds ?? new Set<MachineId>();
-            let machines = sortMachineMetas(
-              (await listAliveDocMetas<MachineMeta>(manager, isMachineDocRoomId)).map(
-                (entry) => entry.meta
-              ),
-              onlineIds,
-              auth.machineId
-            )
-              .map((machine) => toMachineListEntry(machine, onlineMachineIds))
-              .filter((machine) => !options.onlineOnly || machine.online);
-
-            if (options.includeAgents === true) {
-              machines = await attachAgentConfigsToMachines(
-                manager.repo,
-                workspace.id as WorkspaceId,
-                machines
-              );
-            }
-
+            const result = await readDetailedMachineList(
+              { manager, workspaceId: workspace.id as WorkspaceId, machineId: auth.machineId },
+              options
+            );
+            if (result.presenceUnknown) console.error(PRESENCE_UNKNOWN_WARNING);
             if (options.json) {
-              const includeAcpCapabilities = options.includeAcpCapabilities === true;
-              const includeAgents = options.includeAgents === true;
-              const jsonMachines = await Promise.all(
-                machines.map((machine) =>
-                  mergeMachineFlockJsonState(
-                    manager.repo,
-                    workspace.id as WorkspaceId,
-                    machine,
-                    includeAcpCapabilities
-                  )
-                )
-              );
-              printJson({
-                ok: true,
-                workspaceId: workspace.id,
-                machines: jsonMachines.map((machine) =>
-                  toMachineJsonEntry(machine, { includeAcpCapabilities, includeAgents })
-                ),
-              });
+              printJson({ ok: true, workspaceId: workspace.id, machines: result.json });
               return;
             }
 
-            printHumanMachineList(machines, auth.machineId, options.includeAgents === true);
+            printHumanMachineList(result.machines, auth.machineId, options.includeAgents === true);
           });
         });
       })

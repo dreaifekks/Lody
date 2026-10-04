@@ -94,6 +94,7 @@ import { readMachineLocalProjects } from '@/lib/local-project-meta';
 import { listWorkspaceGitHubRepositoriesForCliToken } from '@/lib/workspace';
 import {
   createSessionResult,
+  runSessionOperationWithSyncedMetadata,
   readLocalProjectGitStateOnMachine,
   readSessionLiveStatusesMany,
   readSessionMachineAccess,
@@ -903,7 +904,19 @@ export interface McpSessionContext {
   sessionId: SessionId;
   localControlSocketPath: string | undefined;
   workdir: string;
+  /** A terminal command: `sessionId` is a placeholder and no Turn is active. */
+  terminal?: true;
 }
+
+/** Stands in for the requester Session of a terminal command; never a real id. */
+export const TERMINAL_SESSION_ID = SessionIdSchema.parse('terminal');
+
+/** The Session a `current` alias names; a terminal command has none. */
+const requireCurrentSessionId = (ctx: McpSessionContext): SessionId => {
+  if (ctx.terminal)
+    throw new Error('A terminal command has no current Session; pass a Session id.');
+  return ctx.sessionId;
+};
 
 // The stdio entrypoint is a dedicated per-session process, so its context can
 // live in environment variables. The daemon-hosted HTTP transport serves many
@@ -1183,7 +1196,7 @@ const resolveMcpSessionId = (
 ) => {
   const normalized = normalizeCliValue(sessionId);
   if (!normalized || normalized === 'current') {
-    return ctx.sessionId;
+    return requireCurrentSessionId(ctx);
   }
   // Mentions arrive as `session://<id>`; accept that form as well as a bare id.
   return stripSessionUriPrefix(normalized);
@@ -1685,8 +1698,8 @@ const sessionListFingerprint = (
       JSON.stringify({
         archive: input.archive,
         createdBy: input.createdBy,
-        openedBy: input.openedBy === 'current' ? ctx.sessionId : input.openedBy,
-        parent: input.parent === 'current' ? ctx.sessionId : input.parent,
+        openedBy: input.openedBy === 'current' ? requireCurrentSessionId(ctx) : input.openedBy,
+        parent: input.parent === 'current' ? requireCurrentSessionId(ctx) : input.parent,
         executionState: input.executionState,
         executionContext: input.executionContext,
         pullRequest: input.pullRequest,
@@ -1741,9 +1754,9 @@ const matchesSessionListFilters = (
   if (input.archive === 'active' && session.isArchived === true) return false;
   if (input.archive === 'archived' && session.isArchived !== true) return false;
   if (input.createdBy === 'me' && session.userId !== userId) return false;
-  const openedBy = input.openedBy === 'current' ? ctx.sessionId : input.openedBy;
+  const openedBy = input.openedBy === 'current' ? requireCurrentSessionId(ctx) : input.openedBy;
   if (openedBy && session.openedBySessionId !== openedBy) return false;
-  const parent = input.parent === 'current' ? ctx.sessionId : input.parent;
+  const parent = input.parent === 'current' ? requireCurrentSessionId(ctx) : input.parent;
   if (parent && session.parentSessionId !== parent) return false;
   // `executionState` is filtered in buildSessionList after the shared
   // history/queue/live snapshot has been resolved.
@@ -2146,7 +2159,12 @@ type InvokingTurnSource = {
 };
 
 const resolveInvokingTurnSource = async (): Promise<InvokingTurnSource> => {
-  const active = await readActiveInvocationContext(getSessionContext());
+  const ctx = getSessionContext();
+  const environment = getSessionCommandEnvironment();
+  // A terminal command is its machine's user, with no Turn configuration to inherit.
+  if (ctx.terminal && environment)
+    return { id: 'terminal', userId: environment.auth.userId, inputConfig: {} };
+  const active = await readActiveInvocationContext(ctx);
   if (!active.active) {
     throw new LodyOperationStoreError(
       'INVOKING_TURN_NOT_FOUND',
@@ -4304,7 +4322,7 @@ export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServe
     }
   );
 
-  server.registerTool(
+  registerSessionTool(
     SESSION_ARCHIVE_TOOL_NAME,
     {
       title: 'Archive a Lody session',
@@ -4317,6 +4335,18 @@ export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServe
         const ctx = getSessionContext();
         const auth = getCliAuthContextOrThrow('mcp');
         await resolveWorkspaceOrThrow(auth, getMcpWorkspaceId(ctx));
+        // A local daemon archives on its own replica; the command line it would
+        // run instead is the hosted one.
+        const environment = getSessionCommandEnvironment();
+        if (environment) {
+          const sessionId = resolveMcpSessionId(args.sessionId, ctx) as SessionId;
+          const archivedChildSessionIds = await runSessionOperationWithSyncedMetadata(
+            environment.manager,
+            sessionId,
+            'archive'
+          );
+          return jsonTextResult({ ok: true, sessionId, archivedChildSessionIds });
+        }
         return jsonTextResult(
           await runLodyCliJson([
             'session',

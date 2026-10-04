@@ -117,34 +117,56 @@ export type GitCredentialBrokerAuth = {
   transportEnv: Record<string, string>;
 };
 
-const buildBrokerAuthEnv = (auth: GitCredentialBrokerAuth | undefined): NodeJS.ProcessEnv =>
-  auth
+/**
+ * A LAN's GitHub credential for host git: the token and a credential helper
+ * entry placed after every helper the machine configured, so the machine's
+ * own login still wins (`applyLanGitHubCredentialEnv`). Nothing is brokered.
+ */
+export type LanHostGitAuth = { kind: 'lan'; env: Record<string, string> };
+
+/** How host git authenticates to GitHub for one call: the hosted broker, or a LAN's token. */
+export type HostGitAuth = GitCredentialBrokerAuth | LanHostGitAuth;
+
+const brokerOnly = (auth: HostGitAuth | undefined): GitCredentialBrokerAuth | undefined =>
+  auth && !('kind' in auth) ? auth : undefined;
+
+const buildBrokerAuthEnv = (auth: HostGitAuth | undefined): NodeJS.ProcessEnv =>
+  auth && 'kind' in auth
     ? {
-        ...auth.transportEnv,
-        ...(!auth.allowLocalAuth
-          ? Object.fromEntries(
-              [
-                ...GITHUB_CREDENTIAL_ENV_KEYS,
-                ...Object.keys(process.env).filter((key) =>
-                  GITHUB_CREDENTIAL_ENV_KEYS.includes(key.toUpperCase())
-                ),
-              ].map((key) => [key, undefined])
-            )
-          : {}),
-        LODY_GIT_CRED_BROKER_URL: auth.url,
-        LODY_GIT_CRED_BROKER_TOKEN: auth.token,
-        LODY_GIT_CRED_CONTEXT_TOKEN: auth.contextToken,
-        LODY_GIT_CRED_CONTEXT_FILE: undefined,
-        LODY_GIT_CRED_BROKER_STATE_FILE: auth.stateFilePath,
-        LODY_GIT_OPERATION: 'read',
-      }
-    : {
+        ...auth.env,
         LODY_GIT_CRED_BROKER_URL: undefined,
         LODY_GIT_CRED_BROKER_TOKEN: undefined,
         LODY_GIT_CRED_CONTEXT_TOKEN: undefined,
         LODY_GIT_CRED_CONTEXT_FILE: undefined,
         LODY_GIT_CRED_BROKER_STATE_FILE: undefined,
-      };
+      }
+    : auth
+      ? {
+          ...auth.transportEnv,
+          ...(!auth.allowLocalAuth
+            ? Object.fromEntries(
+                [
+                  ...GITHUB_CREDENTIAL_ENV_KEYS,
+                  ...Object.keys(process.env).filter((key) =>
+                    GITHUB_CREDENTIAL_ENV_KEYS.includes(key.toUpperCase())
+                  ),
+                ].map((key) => [key, undefined])
+              )
+            : {}),
+          LODY_GIT_CRED_BROKER_URL: auth.url,
+          LODY_GIT_CRED_BROKER_TOKEN: auth.token,
+          LODY_GIT_CRED_CONTEXT_TOKEN: auth.contextToken,
+          LODY_GIT_CRED_CONTEXT_FILE: undefined,
+          LODY_GIT_CRED_BROKER_STATE_FILE: auth.stateFilePath,
+          LODY_GIT_OPERATION: 'read',
+        }
+      : {
+          LODY_GIT_CRED_BROKER_URL: undefined,
+          LODY_GIT_CRED_BROKER_TOKEN: undefined,
+          LODY_GIT_CRED_CONTEXT_TOKEN: undefined,
+          LODY_GIT_CRED_CONTEXT_FILE: undefined,
+          LODY_GIT_CRED_BROKER_STATE_FILE: undefined,
+        };
 
 export type RemoveWorktreeOptions = {
   baseBranchName?: string;
@@ -751,7 +773,7 @@ export class WorktreeManager {
    */
   private async ensureRepoLocked(
     fetchMode: RepoFetchMode = 'best-effort',
-    brokerAuth?: GitCredentialBrokerAuth
+    brokerAuth?: HostGitAuth
   ): Promise<void> {
     // Both branches below build every path they hand git out of this root, so prove it
     // is reachable once, here, and report it as Lody's own directory when it is not.
@@ -791,7 +813,7 @@ export class WorktreeManager {
         await this.diagnoseGitHubGitAuthFailure({
           operation: 'clone',
           errorMessage: message,
-          brokerAuth,
+          brokerAuth: brokerOnly(brokerAuth),
         });
         throw new Error(`[${this.repoId}] Failed to clone bare repository: ${message}`, {
           cause: error,
@@ -850,7 +872,7 @@ export class WorktreeManager {
       await this.diagnoseGitHubGitAuthFailure({
         operation: 'fetch',
         errorMessage: message,
-        brokerAuth,
+        brokerAuth: brokerOnly(brokerAuth),
       });
       if (fetchMode === 'required') {
         throw new Error(`[${this.repoId}] Failed to fetch from origin: ${message}`, {
@@ -1105,7 +1127,7 @@ export class WorktreeManager {
   /**
    * Ensure the base repository is cloned/fetched
    */
-  async ensureRepo(options?: { brokerAuth?: GitCredentialBrokerAuth }): Promise<void> {
+  async ensureRepo(options?: { brokerAuth?: HostGitAuth }): Promise<void> {
     return withRepoLock(this.repoId, async () => {
       await this.ensureRepoLocked('best-effort', options?.brokerAuth);
     });
@@ -1329,7 +1351,7 @@ export class WorktreeManager {
     baseBranch?: string,
     restoreBranchName?: string,
     exactStartPoint?: string,
-    brokerAuth?: GitCredentialBrokerAuth
+    brokerAuth?: HostGitAuth
   ): Promise<WorktreeInfo> {
     return withRepoLock(this.repoId, async () => {
       assertSafeSessionId(sessionId);

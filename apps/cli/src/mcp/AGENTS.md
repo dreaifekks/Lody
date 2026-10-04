@@ -6,8 +6,9 @@ Parent instructions apply. Background: [README.md](README.md).
   second writer. Reuse SDK-parsed arguments and validate daemon inputs in
   `session-tool-router.ts`; scope identity/host operations with AsyncLocalStorage in
   `session-command-environment.ts`. Require an active local user Turn and exact
-  workspace/machine scope. Cloud retains authenticated commands and remote recovery
-  confirmation.
+  workspace/machine scope. Terminal `cli/call-tool` admits only the read-only
+  `TERMINAL_SESSION_TOOLS`, as the daemon user. Cloud retains authenticated commands and
+  remote recovery confirmation.
 
 - MCP sharing requires the active Turn user to equal the CLI authenticated account.
   Fail closed on shared-machine account mismatch; never substitute the machine owner.

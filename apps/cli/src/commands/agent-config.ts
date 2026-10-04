@@ -10,6 +10,7 @@ import {
   type AgentConfigCliType,
   type AgentConfigId,
   type AgentConfigMeta,
+  type TerminalCommand,
   type TitleGenerationConfig,
   type LocalSessionControlResponse,
   type MachineId,
@@ -24,14 +25,19 @@ import {
   normalizeCliValue,
   printJson,
   resolveStructuredOutputMode,
-  resolveWorkspaceOrThrow,
   runOneShotCommand,
-  withWorkspaceManager,
   type CommonCommandOptions,
 } from '@/lib/command-runtime';
 import { toAgentConfigOutput, type AgentConfigOutput } from './agent-config-output';
 import { renderTerminalTable } from '@/lib/terminal-table';
 import { formatErrorMessage } from '@/utils/format-error';
+import { getCliPlatformKind } from '@/lib/cli-platform';
+import {
+  resolveTerminalToolTarget,
+  runTerminalCommand,
+  runWorkspaceCommand,
+  type WorkspaceCommandContext,
+} from '@/lib/terminal-session-tools';
 import {
   deleteMachineAgentConfig,
   listMergedAgentConfigs,
@@ -313,7 +319,7 @@ function printHumanAgentConfig(config: AgentConfigOutput): void {
 }
 
 function printHumanRefreshSummary(input: {
-  config: AgentConfigMeta;
+  config: Pick<AgentConfigMeta, 'id' | 'name' | 'agentType'>;
   machine: MachineMeta;
   response: z.infer<typeof MachineAcpCapabilitiesRefreshResponseSchema>;
 }): void {
@@ -433,6 +439,136 @@ function buildTitleGenerationConfig(options: {
   return { configOptionValues };
 }
 
+type AgentConfigInput<C extends TerminalCommand['command']> = Omit<
+  Extract<TerminalCommand, { command: C }>,
+  'command'
+>;
+
+/**
+ * The bodies of the `agent-config` writes. Each reads and writes only the
+ * workspace replica it is given, so the hosted command line runs it on its
+ * own replica and a local daemon on its (`runWorkspaceCommand`).
+ */
+export async function showAgentConfig(
+  { workspace, manager }: WorkspaceCommandContext,
+  input: AgentConfigInput<'agent-config-show'>
+) {
+  const config = resolveAgentConfigSelector(
+    await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
+    { selector: input.selector }
+  );
+  return {
+    workspaceId: workspace.id,
+    agentConfig: toAgentConfigOutput(config, input.showSecrets === true),
+  };
+}
+
+export async function resolveAgentConfigTarget(
+  { auth, workspace, manager }: WorkspaceCommandContext,
+  input: AgentConfigInput<'agent-config-target'>
+) {
+  const config = resolveAgentConfigSelector(
+    await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
+    { selector: input.selector }
+  );
+  const machine = resolveMachineOrThrow(await listMachineMetasForWorkspace(manager), {
+    selector: input.machine,
+    authMachineId: auth.machineId,
+  });
+  const onlineMachineIds = await manager.getOnlineMachineIds();
+  return {
+    workspaceId: workspace.id,
+    config: { id: config.id, name: config.name, agentType: config.agentType },
+    machine,
+    // Null when presence is unknown: the refresh then fails on its own if the machine is down.
+    online: onlineMachineIds ? onlineMachineIds.has(machine.id) : null,
+  };
+}
+
+export async function createAgentConfig(
+  { auth, workspace, manager }: WorkspaceCommandContext,
+  input: AgentConfigInput<'agent-config-create'>
+) {
+  const machine = resolveMachineOrThrow(await listMachineMetasForWorkspace(manager), {
+    selector: input.machine,
+    authMachineId: auth.machineId,
+  });
+  const config: AgentConfigMeta = {
+    id: uuidV4() as AgentConfigId,
+    machineId: machine.id,
+    name: input.name ?? input.agentType,
+    description: input.description,
+    cliType: inferAgentConfigCliType(input.agentType),
+    agentType: input.agentType,
+    env: input.env,
+    ...(input.prompt ? { prompt: input.prompt } : {}),
+    ...(input.titleGeneration ? { titleGeneration: input.titleGeneration } : {}),
+  };
+  await upsertMachineAgentConfig(manager.repo, workspace.id as WorkspaceId, config);
+  await ensureWorkspaceMetaSynced(manager, `agent-config.create:${config.id}`);
+  return {
+    workspaceId: workspace.id,
+    agentConfigId: config.id,
+    changedFields: [
+      'name',
+      'agentType',
+      'machineId',
+      'env',
+      ...(config.description !== undefined ? ['description'] : []),
+      ...(config.prompt !== undefined ? ['prompt'] : []),
+      ...(config.titleGeneration !== undefined ? ['titleGeneration'] : []),
+    ],
+  };
+}
+
+export async function updateAgentConfig(
+  { workspace, manager }: WorkspaceCommandContext,
+  input: AgentConfigInput<'agent-config-update'>
+) {
+  const current = resolveAgentConfigSelector(
+    await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
+    { selector: input.selector }
+  );
+  const nextConfig: AgentConfigMeta = {
+    ...current,
+    name: input.name ?? current.name,
+    description: input.description ? input.description.value : current.description,
+    env: input.env ? applyEnvUpdates(current.env, {}, input.env.set, input.env.unset) : current.env,
+    prompt: input.prompt ? input.prompt.value : current.prompt,
+    titleGeneration: input.titleGeneration ? input.titleGeneration.value : current.titleGeneration,
+  };
+  await upsertMachineAgentConfig(manager.repo, workspace.id as WorkspaceId, nextConfig);
+  await ensureWorkspaceMetaSynced(manager, `agent-config.update:${current.id}`);
+  return {
+    workspaceId: workspace.id,
+    agentConfigId: nextConfig.id,
+    changedFields: [
+      ...(input.name !== undefined ? ['name'] : []),
+      ...(input.description ? ['description'] : []),
+      ...(input.env ? ['env'] : []),
+      ...(input.prompt ? ['prompt'] : []),
+      ...(input.titleGeneration ? ['titleGeneration'] : []),
+    ],
+  };
+}
+
+export async function deleteAgentConfig(
+  { workspace, manager }: WorkspaceCommandContext,
+  input: AgentConfigInput<'agent-config-delete'>
+) {
+  const config = resolveAgentConfigSelector(
+    await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
+    { selector: input.selector }
+  );
+  await deleteMachineAgentConfig(manager.repo, workspace.id as WorkspaceId, config);
+  await ensureWorkspaceMetaSynced(manager, `agent-config.delete:${config.id}`);
+  return { workspaceId: workspace.id, agentConfigId: config.id };
+}
+
+/** The config a command names: its argument, else `LODY_AGENT_CONFIG_ID`. */
+const configSelector = (selector: string | undefined) =>
+  normalizeCliValue(selector) ?? normalizeCliValue(process.env.LODY_AGENT_CONFIG_ID);
+
 const agentConfigListCommand = discoveryListCommand('agent_config');
 
 const agentConfigShowCommand = new Command('show')
@@ -444,35 +580,23 @@ const agentConfigShowCommand = new Command('show')
   .argument('[idOrName]', 'Agent config id or name; falls back to LODY_AGENT_CONFIG_ID')
   .action(async (selector: string | undefined, options: AgentConfigShowOptions) => {
     await runOneShotCommand('agent-config', options, async () => {
-      const auth = getAuthContextOrThrow('agent-config');
-      const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
-
-      await withWorkspaceManager(auth, workspace, 'agent-config', async (manager) => {
-        const config = resolveAgentConfigSelector(
-          await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
-          {
-            selector,
-            envSelector: process.env.LODY_AGENT_CONFIG_ID,
-          }
-        );
-
-        const output = toAgentConfigOutput(config, options.showSecrets === true);
-        if (options.json) {
-          printJson({
-            ok: true,
-            workspaceId: workspace.id,
-            agentConfig: output,
-          });
-          return;
-        }
-
-        printHumanAgentConfig(output);
-      });
+      const input = { selector: configSelector(selector), showSecrets: options.showSecrets };
+      const result = await runWorkspaceCommand(
+        'agent-config',
+        options.workspace,
+        { command: 'agent-config-show', ...input },
+        (context) => showAgentConfig(context, input)
+      );
+      if (options.json) {
+        printJson({ ok: true, ...result });
+        return;
+      }
+      printHumanAgentConfig(result.agentConfig);
     });
   });
 
 const agentConfigRefreshCapabilitiesCommand = new Command('refresh-capabilities')
-  .description('Refresh ACP capabilities for an agent config on the current machine')
+  .description('Refresh ACP capabilities for an agent config on a machine')
   .option('--workspace <selector>', 'Target workspace id, slug, or name')
   .option('--machine <idOrName>', 'Machine id or name; defaults to the current machine')
   .option('--json', 'Print JSON output')
@@ -482,81 +606,84 @@ const agentConfigRefreshCapabilitiesCommand = new Command('refresh-capabilities'
   .action(async (selector: string | undefined, options: AgentConfigRefreshOptions) => {
     await runOneShotCommand('agent-config', options, async () => {
       const outputMode = resolveStructuredOutputMode(options);
-      const auth = getAuthContextOrThrow('agent-config');
-      const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
+      const input = {
+        selector: configSelector(selector),
+        machine:
+          normalizeCliValue(options.machine) ?? normalizeCliValue(process.env.LODY_MACHINE_ID),
+      };
+      const local = getCliPlatformKind() === 'local';
+      const localTarget = local ? await resolveTerminalToolTarget(options.workspace) : undefined;
+      const target = await runWorkspaceCommand(
+        'agent-config',
+        options.workspace,
+        { command: 'agent-config-target', ...input },
+        (context) => resolveAgentConfigTarget(context, input)
+      );
+      const { config, machine } = target;
+      const currentMachineId =
+        localTarget?.machineId ?? getAuthContextOrThrow('agent-config').machineId;
+      if (target.online === false)
+        throw new Error(`Machine ${machine.id} appears offline. Run \`lody start\` there first.`);
 
-      await withWorkspaceManager(auth, workspace, 'agent-config', async (manager) => {
-        const config = resolveAgentConfigSelector(
-          await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
-          {
-            selector,
-            envSelector: process.env.LODY_AGENT_CONFIG_ID,
-          }
-        );
-        const machines = await listMachineMetasForWorkspace(manager);
-        const machine = resolveMachineOrThrow(machines, {
-          selector: options.machine,
-          envSelector: process.env.LODY_MACHINE_ID,
-          authMachineId: auth.machineId,
-        });
-
-        if (machine.id !== auth.machineId) {
-          throw new Error(
-            `Remote machine capability refresh is not implemented in CLI yet. Current machine: ${auth.machineId}`
-          );
-        }
-        // Presence-based liveness; a null snapshot (presence room unavailable)
-        // falls through to the local dispatch, which fails with its own error
-        // if the daemon is actually down.
-        const onlineMachineIds = await manager.getOnlineMachineIds();
-        if (onlineMachineIds && !onlineMachineIds.has(machine.id)) {
-          throw new Error(`Machine ${machine.id} appears offline. Run \`lody start\` first.`);
-        }
-
-        const response = extractRefreshResponse(
+      // This command exists to pick up changes Lody cannot see in the launch
+      // inputs, so it must start the agent instead of accepting the stored
+      // entry. Negotiated because the CLI binary can be newer than the
+      // running daemon, which would reject an unknown field outright.
+      let response: z.infer<typeof MachineAcpCapabilitiesRefreshResponseSchema>;
+      if (machine.id === currentMachineId) {
+        response = extractRefreshResponse(
           await dispatchLocalControl({
             type: 'machine/acp-capabilities-refresh',
             machineId: machine.id,
-            workspaceId: workspace.id as WorkspaceId,
-            configId: config.id,
-            // This command exists to pick up changes Lody cannot see in the launch
-            // inputs, so it must start the agent instead of accepting the stored
-            // entry. Negotiated because the CLI binary can be newer than the
-            // running daemon, which would reject an unknown field outright.
+            workspaceId: target.workspaceId as WorkspaceId,
+            configId: config.id as AgentConfigId,
             ...negotiatedAcpCapabilitiesRefreshForce(machine, true),
           })
         );
-
-        if (!response.success) {
-          throw new Error(
-            response.error ??
-              `Failed to refresh capabilities for ${config.name} on machine ${machine.id}.`
-          );
-        }
-
-        if (outputMode === 'json') {
-          printJson({
-            ok: true,
-            workspaceId: workspace.id,
+      } else if (localTarget) {
+        // Another machine of the LAN refreshes through the daemon's connection to it.
+        response = MachineAcpCapabilitiesRefreshResponseSchema.parse(
+          await runTerminalCommand(localTarget, {
+            command: 'agent-config-refresh',
             machineId: machine.id,
-            agentConfigId: config.id,
-            response: toRefreshCapabilitiesOutput(response),
-          });
-          return;
-        }
+            configId: config.id,
+          })
+        );
+      } else {
+        throw new Error(
+          `Remote machine capability refresh is not implemented in CLI yet. Current machine: ${currentMachineId}`
+        );
+      }
 
-        if (outputMode === 'jsonl') {
-          printJson({
-            event: 'response',
-            workspaceId: workspace.id,
-            agentConfigId: config.id,
-            ...toRefreshCapabilitiesOutput(response),
-          });
-          return;
-        }
+      if (!response.success) {
+        throw new Error(
+          response.error ??
+            `Failed to refresh capabilities for ${config.name} on machine ${machine.id}.`
+        );
+      }
 
-        printHumanRefreshSummary({ config, machine, response });
-      });
+      if (outputMode === 'json') {
+        printJson({
+          ok: true,
+          workspaceId: target.workspaceId,
+          machineId: machine.id,
+          agentConfigId: config.id,
+          response: toRefreshCapabilitiesOutput(response),
+        });
+        return;
+      }
+
+      if (outputMode === 'jsonl') {
+        printJson({
+          event: 'response',
+          workspaceId: target.workspaceId,
+          agentConfigId: config.id,
+          ...toRefreshCapabilitiesOutput(response),
+        });
+        return;
+      }
+
+      printHumanRefreshSummary({ config, machine, response });
     });
   });
 
@@ -586,69 +713,38 @@ const agentConfigCreateCommand = new Command('create')
   .option('--debug', 'Enable debug output')
   .action(async (options: AgentConfigCreateOptions) => {
     await runOneShotCommand('agent-config', options, async () => {
-      const auth = getAuthContextOrThrow('agent-config');
-      const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
-
       const agentType = normalizeCliValue(options.agentType);
       if (!agentType) {
         throw new Error('Missing --agent-type.');
       }
-      const cliType = inferAgentConfigCliType(agentType);
-
       const fileEnv = options.envFile
         ? parseEnvFileText(await fs.readFile(options.envFile, 'utf8'))
         : {};
-      const inlineEnv = parseEnvAssignments(options.env);
       const prompt = await readOptionalTextInput({
         text: options.prompt,
         filePath: options.promptFile,
       });
-      const titleGeneration = buildTitleGenerationConfig(options);
-
-      await withWorkspaceManager(auth, workspace, 'agent-config', async (manager) => {
-        const machines = await listMachineMetasForWorkspace(manager);
-        const machine = resolveMachineOrThrow(machines, {
-          selector: options.machine,
-          envSelector: process.env.LODY_MACHINE_ID,
-          authMachineId: auth.machineId,
-        });
-
-        const configId = uuidV4() as AgentConfigId;
-        const config: AgentConfigMeta = {
-          id: configId,
-          machineId: machine.id,
-          name: normalizeCliValue(options.name) ?? agentType,
-          description: normalizeCliValue(options.description),
-          cliType,
-          agentType,
-          env: applyEnvUpdates({}, fileEnv, inlineEnv),
-          ...(prompt ? { prompt } : {}),
-          ...(titleGeneration ? { titleGeneration } : {}),
-        };
-
-        await upsertMachineAgentConfig(manager.repo, workspace.id as WorkspaceId, config);
-        await ensureWorkspaceMetaSynced(manager, `agent-config.create:${config.id}`);
-
-        if (options.json) {
-          printJson({
-            ok: true,
-            workspaceId: workspace.id,
-            agentConfigId: config.id,
-            changedFields: [
-              'name',
-              'agentType',
-              'machineId',
-              'env',
-              ...(config.description !== undefined ? ['description'] : []),
-              ...(config.prompt !== undefined ? ['prompt'] : []),
-              ...(config.titleGeneration !== undefined ? ['titleGeneration'] : []),
-            ],
-          });
-          return;
-        }
-
-        console.log(configId);
-      });
+      const input: AgentConfigInput<'agent-config-create'> = {
+        agentType,
+        machine:
+          normalizeCliValue(options.machine) ?? normalizeCliValue(process.env.LODY_MACHINE_ID),
+        name: normalizeCliValue(options.name),
+        description: normalizeCliValue(options.description),
+        env: applyEnvUpdates({}, fileEnv, parseEnvAssignments(options.env)),
+        prompt,
+        titleGeneration: buildTitleGenerationConfig(options),
+      };
+      const result = await runWorkspaceCommand(
+        'agent-config',
+        options.workspace,
+        { command: 'agent-config-create', ...input },
+        (context) => createAgentConfig(context, input)
+      );
+      if (options.json) {
+        printJson({ ok: true, ...result });
+        return;
+      }
+      console.log(result.agentConfigId);
     });
   });
 
@@ -679,9 +775,6 @@ const agentConfigUpdateCommand = new Command('update')
   .argument('[idOrName]', 'Agent config id or name; falls back to LODY_AGENT_CONFIG_ID')
   .action(async (selector: string | undefined, options: AgentConfigUpdateOptions) => {
     await runOneShotCommand('agent-config', options, async () => {
-      const auth = getAuthContextOrThrow('agent-config');
-      const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
-
       const requestedEnvUpdate =
         !!options.envFile || (options.env?.length ?? 0) > 0 || (options.unsetEnv?.length ?? 0) > 0;
       const requestedPromptUpdate =
@@ -700,74 +793,59 @@ const agentConfigUpdateCommand = new Command('update')
       ) {
         throw new Error('No updates specified.');
       }
+      const name = requestedNameUpdate ? normalizeCliValue(options.name) : undefined;
+      if (requestedNameUpdate && !name) {
+        throw new Error('Updated name must be non-empty.');
+      }
 
       const fileEnv = options.envFile
         ? parseEnvFileText(await fs.readFile(options.envFile, 'utf8'))
         : {};
-      const inlineEnv = parseEnvAssignments(options.env);
-      const unsetEnv = parseUnsetEnvKeys(options.unsetEnv);
-      const prompt = requestedPromptUpdate
-        ? await readOptionalTextInput({
-            text: options.prompt,
-            filePath: options.promptFile,
-          })
-        : undefined;
-
-      let titleGeneration: TitleGenerationConfig | undefined;
-      if (requestedTitleUpdate) {
-        titleGeneration = options.clearTitleGeneration
-          ? undefined
-          : buildTitleGenerationConfig(options);
+      const input: AgentConfigInput<'agent-config-update'> = {
+        selector: configSelector(selector),
+        name,
+        ...(requestedDescriptionUpdate
+          ? { description: { value: normalizeCliValue(options.description) } }
+          : {}),
+        ...(requestedEnvUpdate
+          ? {
+              env: {
+                set: { ...fileEnv, ...parseEnvAssignments(options.env) },
+                unset: parseUnsetEnvKeys(options.unsetEnv),
+              },
+            }
+          : {}),
+        ...(requestedPromptUpdate
+          ? {
+              prompt: {
+                value: await readOptionalTextInput({
+                  text: options.prompt,
+                  filePath: options.promptFile,
+                }),
+              },
+            }
+          : {}),
+        ...(requestedTitleUpdate
+          ? {
+              titleGeneration: {
+                value: options.clearTitleGeneration
+                  ? undefined
+                  : buildTitleGenerationConfig(options),
+              },
+            }
+          : {}),
+      };
+      const result = await runWorkspaceCommand(
+        'agent-config',
+        options.workspace,
+        { command: 'agent-config-update', ...input },
+        (context) => updateAgentConfig(context, input)
+      );
+      if (options.json) {
+        printJson({ ok: true, ...result });
+        return;
       }
-
-      await withWorkspaceManager(auth, workspace, 'agent-config', async (manager) => {
-        const current = resolveAgentConfigSelector(
-          await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
-          {
-            selector,
-            envSelector: process.env.LODY_AGENT_CONFIG_ID,
-          }
-        );
-
-        const nextName = requestedNameUpdate ? normalizeCliValue(options.name) : current.name;
-        if (!nextName) {
-          throw new Error('Updated name must be non-empty.');
-        }
-
-        const nextConfig: AgentConfigMeta = {
-          ...current,
-          name: nextName,
-          description: requestedDescriptionUpdate
-            ? normalizeCliValue(options.description)
-            : current.description,
-          env: requestedEnvUpdate
-            ? applyEnvUpdates(current.env, fileEnv, inlineEnv, unsetEnv)
-            : current.env,
-          prompt: requestedPromptUpdate ? prompt : current.prompt,
-          titleGeneration: requestedTitleUpdate ? titleGeneration : current.titleGeneration,
-        };
-
-        await upsertMachineAgentConfig(manager.repo, workspace.id as WorkspaceId, nextConfig);
-        await ensureWorkspaceMetaSynced(manager, `agent-config.update:${current.id}`);
-
-        if (options.json) {
-          printJson({
-            ok: true,
-            workspaceId: workspace.id,
-            agentConfigId: nextConfig.id,
-            changedFields: [
-              ...(requestedNameUpdate ? ['name'] : []),
-              ...(requestedDescriptionUpdate ? ['description'] : []),
-              ...(requestedEnvUpdate ? ['env'] : []),
-              ...(requestedPromptUpdate ? ['prompt'] : []),
-              ...(requestedTitleUpdate ? ['titleGeneration'] : []),
-            ],
-          });
-          return;
-        }
-
-        console.log(`Updated ${current.id}`);
-      });
+      console.log(`Updated ${result.agentConfigId}`);
     });
   });
 
@@ -779,32 +857,18 @@ const agentConfigDeleteCommand = new Command('delete')
   .argument('[idOrName]', 'Agent config id or name; falls back to LODY_AGENT_CONFIG_ID')
   .action(async (selector: string | undefined, options: AgentConfigCommandOptions) => {
     await runOneShotCommand('agent-config', options, async () => {
-      const auth = getAuthContextOrThrow('agent-config');
-      const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
-
-      await withWorkspaceManager(auth, workspace, 'agent-config', async (manager) => {
-        const config = resolveAgentConfigSelector(
-          await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
-          {
-            selector,
-            envSelector: process.env.LODY_AGENT_CONFIG_ID,
-          }
-        );
-
-        await deleteMachineAgentConfig(manager.repo, workspace.id as WorkspaceId, config);
-        await ensureWorkspaceMetaSynced(manager, `agent-config.delete:${config.id}`);
-
-        if (options.json) {
-          printJson({
-            ok: true,
-            workspaceId: workspace.id,
-            agentConfigId: config.id,
-          });
-          return;
-        }
-
-        console.log(`Deleted ${config.id}`);
-      });
+      const input = { selector: configSelector(selector) };
+      const result = await runWorkspaceCommand(
+        'agent-config',
+        options.workspace,
+        { command: 'agent-config-delete', ...input },
+        (context) => deleteAgentConfig(context, input)
+      );
+      if (options.json) {
+        printJson({ ok: true, ...result });
+        return;
+      }
+      console.log(`Deleted ${result.agentConfigId}`);
     });
   });
 

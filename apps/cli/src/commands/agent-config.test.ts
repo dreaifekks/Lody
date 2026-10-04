@@ -19,6 +19,9 @@ const state = vi.hoisted(() => ({
   saved: undefined as AgentConfigMeta | undefined,
 }));
 
+// These cases cover the hosted body; the local platform runs the same body on its daemon
+// (tests/local-platform-zero-cloud.test.ts).
+vi.mock('@/lib/cli-platform', () => ({ getCliPlatformKind: () => 'cloud' }));
 vi.mock('@/lib/command-runtime', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/lib/command-runtime')>();
   return {

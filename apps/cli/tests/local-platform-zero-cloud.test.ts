@@ -5,24 +5,30 @@ import path from 'node:path';
 import { Effect } from 'effect';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLocalCloudPort } from '@lody/platform';
 import {
   AGENT_ROLE_VERSION,
   getMachineRoomId,
   getSessionRoomId,
   getWorkspaceFlockDocId,
+  isLoroRepoDocDeleted,
   writeWorkspaceAgentRoleToFlock,
   type AgentRoleId,
   type MachineId,
   type SessionId,
+  type SessionMeta,
   type WorkspaceId,
 } from '@lody/shared';
 import {
   createLocalSessionCommandEnvironment,
   runWithSessionCommandEnvironment,
 } from '../src/lib/session-command-environment';
-import { executeDaemonSessionTool } from '../src/mcp/daemon-session-tools';
+import {
+  executeDaemonSessionTool,
+  executeDaemonTerminalTool,
+} from '../src/mcp/daemon-session-tools';
+import { executeTerminalCommand } from '../src/commands/terminal-daemon';
 import { buildLodyMcpServer, runWithMcpSessionContext } from '../src/mcp/lody-mcp-server';
 import { LocalControlHandler } from '../src/lib/local-control-handler';
 import {
@@ -441,6 +447,296 @@ describe('local platform zero-cloud integration', () => {
       ).toBe(false);
       expect(cloudConnectionAttempts).toBe(0);
     } finally {
+      await manager.cleanUp({ fast: true, preserveSessionStatus: true });
+    }
+  });
+
+  it("answers a terminal's read-only tools as the machine's user, with no Turn driving them", async () => {
+    applyLocalPlatformEnv();
+    const workspaceId = 'lw_terminal_test' as WorkspaceId;
+    const machineId = 'terminal-desk' as MachineId;
+    const userId = 'local:terminal-test';
+    const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
+    try {
+      await manager.registerMachine(machineId, {
+        id: machineId,
+        name: 'Desk',
+        ownerUserId: userId,
+      });
+      const configId = await manager.createAgentConfig('custom', 'claude', machineId, 'Synthetic');
+      const sessionId = await manager.createSession(machineId, 'custom', 'claude');
+      await manager.repo.flush();
+      const environment = createLocalSessionCommandEnvironment({
+        manager,
+        workspaceId,
+        machineId,
+        machineName: 'Desk',
+        userId,
+        host: {
+          // No Session of this machine is running a Turn.
+          readInvocation: (id) => ({
+            type: 'session/active-invocation-context',
+            sessionId: id,
+            active: false,
+          }),
+          readLiveStatus: async (id) => ({ sessionId: id, machineOnline: true, fresh: true }),
+          cancelSession: async () => ({ success: true }),
+          dispatchSession: async () => {
+            throw new Error('A terminal read must not dispatch');
+          },
+        },
+      });
+      const scope: { machineId: string; workspaceId: string } = { machineId, workspaceId };
+      const call = (name: string, args: unknown, target = scope) =>
+        runWithSessionCommandEnvironment(environment, () =>
+          executeDaemonTerminalTool(target, name, args)
+        );
+      const payload = (result: { content: Array<{ text: string }>; isError?: boolean }) => {
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        return JSON.parse(result.content.map((part) => part.text).join(''));
+      };
+
+      expect(payload(await call('lody_session_list', {})).items).toEqual([
+        expect.objectContaining({ id: sessionId, machineId, isMine: true }),
+      ]);
+      expect(payload(await call('lody_session_history', { sessionId }))).toMatchObject({
+        sessionId,
+        items: [],
+      });
+      expect(
+        payload(await call('lody_session_status_many', { sessionIds: [sessionId] })).items
+      ).toEqual([expect.objectContaining({ sessionId, ok: true })]);
+      expect(payload(await call('lody_agent_config_list', {})).items).toEqual([
+        expect.objectContaining({ id: configId, machineId }),
+      ]);
+      expect(payload(await call('lody_machine_list', {})).items).toEqual([
+        expect.objectContaining({ id: machineId, name: 'Desk' }),
+      ]);
+
+      const current = await call('lody_session_history', {});
+      expect(current.isError).toBe(true);
+      expect(current.content[0]?.text).toContain('no current Session');
+      await expect(
+        call('lody_session_create', { operationId: 'terminal', prompt: 'Not from here.' })
+      ).rejects.toThrow('not available from a terminal');
+      await expect(
+        call('lody_session_list', {}, { ...scope, workspaceId: 'wrong-workspace' })
+      ).rejects.toThrow('scope mismatch');
+      expect(cloudConnectionAttempts).toBe(0);
+    } finally {
+      await manager.cleanUp({ fast: true, preserveSessionStatus: true });
+    }
+  });
+
+  it("runs a terminal's session commands on the daemon replica as the machine's user", async () => {
+    applyLocalPlatformEnv();
+    const workspaceId = 'lw_terminal_write' as WorkspaceId;
+    const machineId = 'terminal-write-desk' as MachineId;
+    const userId = 'local:terminal-write';
+    const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
+    const dispatched: SessionId[] = [];
+    let invocationActive = false;
+    let githubToken: string | null = null;
+    // GitHub as the LAN's credential sees it: one repository on a `trunk` branch.
+    const githubRequests: string[] = [];
+    const repository = {
+      id: 7,
+      name: 'tool',
+      full_name: 'acme/tool',
+      private: true,
+      default_branch: 'trunk',
+    };
+    vi.stubGlobal('fetch', async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      githubRequests.push(`${new Headers(init?.headers).get('authorization')} ${url}`);
+      if (url === 'https://api.github.com/repos/acme/tool') return Response.json(repository);
+      if (url.startsWith('https://api.github.com/user/repos?')) return Response.json([repository]);
+      return new Response('{}', { status: 404 });
+    });
+    try {
+      await manager.registerMachine(machineId, {
+        id: machineId,
+        name: 'Desk',
+        ownerUserId: userId,
+      });
+      const configId = await manager.createAgentConfig('custom', 'claude', machineId, 'Synthetic');
+      await manager.repo.flush();
+      const environment = createLocalSessionCommandEnvironment({
+        manager,
+        workspaceId,
+        machineId,
+        machineName: 'Desk',
+        userId,
+        host: {
+          readInvocation: (id) =>
+            invocationActive
+              ? {
+                  type: 'session/active-invocation-context',
+                  active: true,
+                  sessionId: id,
+                  requesterUserId: userId,
+                  sourceTurnId: 'source-turn',
+                  inputConfig: { cliType: 'custom', agentType: 'claude' },
+                }
+              : { type: 'session/active-invocation-context', sessionId: id, active: false },
+          readLiveStatus: async (id) => ({ sessionId: id, machineOnline: true, fresh: true }),
+          cancelSession: async () => {
+            throw new Error('No turn is running');
+          },
+          dispatchSession: async (id) => {
+            dispatched.push(id);
+          },
+          githubToken: async () => githubToken,
+        },
+      });
+      const run = (command: Parameters<typeof executeTerminalCommand>[1]) =>
+        runWithSessionCommandEnvironment(environment, () =>
+          executeTerminalCommand({ machineId, workspaceId }, command)
+        );
+      const meta = async (id: SessionId) =>
+        (await manager.repo.getDocMeta(getSessionRoomId(id)))?.meta as SessionMeta | undefined;
+      const userPrompts = async (id: SessionId) =>
+        (await (await manager.getOrCreateSessionDoc(id)).sessionData.history.readAll())
+          .filter((turn) => turn.role === 'user')
+          .map((turn) => turn.items);
+
+      const created = await run({ command: 'create', prompt: 'Start here.', title: 'Terminal' });
+      const sessionId = created.sessionId as SessionId;
+      expect(created).toMatchObject({ machineId, agentConfigId: configId, workspaceId });
+      expect(dispatched).toEqual([sessionId]);
+      expect(await meta(sessionId)).toMatchObject({ title: 'Terminal', userId });
+
+      const chatted = await run({ command: 'chat', sessionId, prompt: 'And then this.' });
+      expect(dispatched).toEqual([sessionId, sessionId]);
+      expect(await userPrompts(sessionId)).toEqual([
+        [{ type: 'text', text: 'Start here.' }],
+        [{ type: 'text', text: 'And then this.' }],
+      ]);
+      expect(chatted.userTurnId).not.toBe(created.userTurnId);
+
+      await run({ command: 'rename', sessionId, title: 'Renamed' });
+      expect(await run({ command: 'show', sessionId })).toMatchObject({
+        session: { id: sessionId, title: 'Renamed' },
+        historyCount: 2,
+      });
+      // Nothing runs, so cancelling asks no machine to stop anything.
+      expect(await run({ command: 'cancel', sessionId })).toEqual({
+        sessionId,
+        alreadyStopped: true,
+      });
+      expect(
+        ((await run({ command: 'machine-list', includeAgents: true })).machines as unknown[])[0]
+      ).toMatchObject({ id: machineId, agentConfigs: [expect.objectContaining({ id: configId })] });
+
+      await run({ command: 'archive', sessionId });
+      expect((await meta(sessionId))?.isArchived).toBe(true);
+      await run({ command: 'restore', sessionId });
+      expect((await meta(sessionId))?.isArchived).not.toBe(true);
+      await expect(run({ command: 'delete', sessionId })).rejects.toThrow('is not archived');
+
+      // An Agent archives through the same replica rather than a hosted command line.
+      const requester = (await run({ command: 'create', prompt: 'Requester.' }))
+        .sessionId as SessionId;
+      invocationActive = true;
+      const archived = await runWithSessionCommandEnvironment(environment, () =>
+        executeDaemonSessionTool(
+          {
+            machineId,
+            workspaceId,
+            sessionId: requester,
+            localControlSocketPath: undefined,
+            workdir: tempDir,
+          },
+          'lody_session_archive',
+          { sessionId }
+        )
+      );
+      expect(archived.isError, JSON.stringify(archived)).not.toBe(true);
+      expect((await meta(sessionId))?.isArchived).toBe(true);
+      await run({ command: 'delete', sessionId });
+      const deleted = await manager.repo.getDocMeta(getSessionRoomId(sessionId));
+      expect(deleted && isLoroRepoDocDeleted(deleted)).toBe(true);
+
+      // Agent configs and MCP servers are catalog edits on the same replica.
+      const second = await run({
+        command: 'agent-config-create',
+        agentType: 'codex',
+        name: 'Second',
+        env: { OLD: '1' },
+      });
+      await run({
+        command: 'agent-config-update',
+        selector: second.agentConfigId as string,
+        name: 'Renamed config',
+        env: { set: { NEW: '2' }, unset: ['OLD'] },
+        description: { value: 'Edited' },
+      });
+      expect(
+        await run({ command: 'agent-config-show', selector: 'Renamed config', showSecrets: true })
+      ).toMatchObject({
+        agentConfig: { name: 'Renamed config', description: 'Edited', env: { NEW: '2' } },
+      });
+      await run({ command: 'agent-config-delete', selector: 'Renamed config' });
+      await expect(
+        run({ command: 'agent-config-show', selector: 'Renamed config' })
+      ).rejects.toThrow('not found');
+      const added = await run({
+        command: 'mcp',
+        action: 'add',
+        selector: 'docs',
+        offline: true,
+        options: { command: 'docs-server', arg: ['--stdio'] },
+      });
+      expect(added).toMatchObject({
+        payload: { server: { name: 'docs' } },
+        result: { changed: true },
+      });
+      await run({
+        command: 'mcp',
+        action: 'set',
+        selector: 'docs',
+        offline: true,
+        options: { default: true },
+      });
+      await run({ command: 'mcp', action: 'remove', selector: 'docs', offline: true, options: {} });
+
+      // A repository opens through the LAN's GitHub credential, on its own default branch.
+      await expect(run({ command: 'github-list' })).rejects.toThrow('no GitHub credential');
+      await expect(
+        run({ command: 'create', prompt: 'Fix it.', repo: 'acme/tool' })
+      ).rejects.toThrow('no GitHub credential');
+      githubToken = 'lan-token';
+      expect(await run({ command: 'github-list' })).toMatchObject({
+        repositories: [{ fullName: 'acme/tool', private: true }],
+      });
+      const repoSession = (await run({ command: 'create', prompt: 'Fix it.', repo: 'acme/tool' }))
+        .sessionId as SessionId;
+      expect((await meta(repoSession))?.project).toMatchObject({
+        kind: 'github',
+        repoFullName: 'acme/tool',
+        branch: 'trunk',
+      });
+      await expect(
+        run({ command: 'create', prompt: 'Fix it.', repo: 'acme/hidden' })
+      ).rejects.toThrow('not available to this machine');
+      expect(githubRequests.every((request) => request.startsWith('Bearer lan-token '))).toBe(true);
+
+      expect(await run({ command: 'operation-list', session: requester })).toMatchObject({
+        items: [],
+      });
+      expect(await run({ command: 'sync', concurrency: 2 })).toMatchObject({
+        failed: { meta: 0, doc: 0, flock: 0 },
+      });
+      const exportDir = path.join(tempDir, 'export');
+      const exported = await run({ command: 'export', outputDir: exportDir });
+      expect(exported.sessionCount).toBeGreaterThan(0);
+      await expect(
+        fs.readFile(path.join(String(exported.outputDir), 'sessions', 'index.json'), 'utf8')
+      ).resolves.toContain(requester);
+      await expect(run({ command: 'export', outputDir: 'relative' })).rejects.toThrow('absolute');
+      expect(cloudConnectionAttempts).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
       await manager.cleanUp({ fast: true, preserveSessionStatus: true });
     }
   });

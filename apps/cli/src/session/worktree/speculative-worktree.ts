@@ -7,7 +7,7 @@ import type { MachineId, RepoId, SessionId, WorkspaceId } from '@lody/shared';
 import type { Logger } from '@/utils/logger';
 import {
   getWorktreeManager,
-  type GitCredentialBrokerAuth,
+  type HostGitAuth,
   type WorktreeInfo,
   type WorktreeManager,
   type WorktreeManagerConfig,
@@ -204,7 +204,7 @@ export async function materializeSpeculativeWorktree(args: {
    *
    * Lazy so a preparation that is never started does not start a broker.
    */
-  resolveBrokerAuth?: () => Promise<GitCredentialBrokerAuth | undefined>;
+  resolveBrokerAuth?: () => Promise<HostGitAuth | undefined>;
   logger: Logger;
 }): Promise<PreparedWorktree> {
   const target = buildTarget(args);

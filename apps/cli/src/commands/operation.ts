@@ -1,12 +1,7 @@
 import { Command } from 'commander';
 import type { SessionId, WorkspaceId } from '@lody/shared';
-import {
-  getAuthContextOrThrow,
-  resolveWorkspaceOrThrow,
-  runOneShotCommand,
-  printJson,
-} from '@/lib/command-runtime';
-import { getCliPlatformKind } from '@/lib/cli-platform';
+import { runOneShotCommand, printJson } from '@/lib/command-runtime';
+import { runWorkspaceCommand, type WorkspaceCommandContext } from '@/lib/terminal-session-tools';
 import {
   getLodyOperationStorePath,
   LodyOperationStore,
@@ -22,6 +17,35 @@ type Options = OperationListQuery & {
   json?: boolean;
   debug?: boolean;
 };
+/**
+ * The Operations a requester Session started for this user, from the store of
+ * the machine they run on: read by the hosted command line, or by a local
+ * daemon, whose identity in the workspace names the user.
+ */
+export async function listRequesterOperations(
+  { auth, workspace }: Pick<WorkspaceCommandContext, 'auth' | 'workspace'>,
+  sessionId: string,
+  query: OperationListQuery
+) {
+  const store = new LodyOperationStore(getLodyOperationStorePath(auth.machineId), undefined, {
+    maintenance: false,
+  });
+  try {
+    return await runWithOperationStoreBusyRetry(() =>
+      store.listForRequester(
+        {
+          workspaceId: workspace.id as WorkspaceId,
+          requesterSessionId: sessionId as SessionId,
+          requesterUserId: auth.userId,
+        },
+        query
+      )
+    );
+  } finally {
+    store.close();
+  }
+}
+
 export const operationCommand = new Command('operation')
   .description('Inspect Operations on this machine')
   .addCommand(
@@ -36,8 +60,6 @@ export const operationCommand = new Command('operation')
       .option('--debug', 'Enable debug output')
       .action(async (options: Options) =>
         runOneShotCommand('operation', options, async () => {
-          if (getCliPlatformKind() === 'local')
-            throw new Error('Workspace Operation discovery is unavailable on the local platform.');
           const sessionId = options.session?.trim() || process.env.LODY_SESSION_ID?.trim();
           if (!sessionId) throw new Error('Pass --session or set LODY_SESSION_ID.');
           const query = OperationListQuerySchema.parse({
@@ -45,36 +67,21 @@ export const operationCommand = new Command('operation')
             limit: options.limit,
             cursor: options.cursor,
           });
-          const auth = getAuthContextOrThrow('operation');
-          const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
-          const store = new LodyOperationStore(
-            getLodyOperationStorePath(auth.machineId),
-            undefined,
-            { maintenance: false }
+          const page = await runWorkspaceCommand(
+            'operation',
+            options.workspace,
+            { command: 'operation-list', session: sessionId, ...query },
+            (context) => listRequesterOperations(context, sessionId, query)
           );
-          try {
-            const page = await runWithOperationStoreBusyRetry(() =>
-              store.listForRequester(
-                {
-                  workspaceId: workspace.id as WorkspaceId,
-                  requesterSessionId: sessionId as SessionId,
-                  requesterUserId: auth.userId,
-                },
-                query
+          if (options.json) printJson(page);
+          else {
+            console.log(
+              renderTerminalTable(
+                [{ header: 'ID' }, { header: 'Kind' }, { header: 'State' }, { header: 'Items' }],
+                page.items.map((row) => [row.operationId, row.kind, row.state, row.itemCount])
               )
             );
-            if (options.json) printJson(page);
-            else {
-              console.log(
-                renderTerminalTable(
-                  [{ header: 'ID' }, { header: 'Kind' }, { header: 'State' }, { header: 'Items' }],
-                  page.items.map((row) => [row.operationId, row.kind, row.state, row.itemCount])
-                )
-              );
-              if (page.nextCursor) console.log(`Next page: --cursor ${page.nextCursor}`);
-            }
-          } finally {
-            store.close();
+            if (page.nextCursor) console.log(`Next page: --cursor ${page.nextCursor}`);
           }
         })
       )

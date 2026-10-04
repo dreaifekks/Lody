@@ -288,6 +288,10 @@ export async function ensureWorkspaceMetaSynced(
   manager: Pick<LoroDocumentManager, 'waitUntilMetaSynced'>,
   reason: string
 ): Promise<void> {
+  // A daemon's workspace without a LAN has no machine but this one and no
+  // upstream to confirm a write; its local replica is the whole of it.
+  const environment = getSessionCommandEnvironment();
+  if (environment && !environment.host.remote) return;
   const synced = await manager.waitUntilMetaSynced({ reason });
   if (!synced) {
     throw new Error(

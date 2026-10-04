@@ -31,6 +31,9 @@ and file responsibilities: [../README.md](../README.md).
   (per-workspace `broker-<workspaceId>.json`) for the same reason. Diagnostics must probe the
   same broker the failing command used, or they report a misroute as the caller's workspace
   lacking the repo link. Regression test: `worktree-manager-broker-auth.test.ts`.
+- A LAN workspace has no broker: on a machine without a `gh` login, host git gets the
+  LAN host's token as `brokerAuth = { kind: 'lan', env }`, a credential helper placed after
+  the machine's own (`resolveHostGitBrokerAuth`); broker diagnostics never see it.
 - `createWorktree` owns clone/fetch under its repo lock: callers must not pre-fetch
   separately. Clone a missing cache before validating a persisted restore branch.
   The same frozen auth must reach checkout and retries too (smudge/LFS can fetch).

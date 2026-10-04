@@ -25,6 +25,11 @@ export interface SessionCommandHost {
   ): Promise<{ success: boolean; error?: string }>;
   dispatchSession(sessionId: SessionId): Promise<void>;
   /**
+   * The GitHub credential this machine uses for a repository: the LAN host's
+   * token, else the machine's own `gh` login; `null` when it has neither.
+   */
+  githubToken?(repoFullName: string): Promise<string | null>;
+  /**
    * The other machines of a LAN's workspace, reached through the LAN's hub.
    * Absent where the workspace has no machine but this one.
    */

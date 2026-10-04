@@ -35,6 +35,8 @@ export class MachineRpcIpc extends IpcService {
 
   @IpcMethod()
   async send(message: LocalMachineRpcRequest) {
+    // `cli/*` answers a terminal of this machine's user, never a renderer.
+    if (message.method.startsWith('cli/')) throw new Error('Invalid machine RPC request.')
     return await getIpcServiceDeps().cliService.sendLocalMachineRpc(message)
   }
 }
