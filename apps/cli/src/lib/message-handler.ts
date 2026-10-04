@@ -17,6 +17,7 @@ import {
   LORO_STREAMS_RPC_RETENTION_SECONDS,
   LORO_STREAMS_RPC_VERSION,
   type LocalProjectGitStateRpcResponse,
+  type LoroStreamsRpcRequest,
 } from '@lody/loro-streams-rpc';
 import {
   HistoryWriteError,
@@ -626,6 +627,15 @@ export interface MessageHandlerConfig {
    * tools may run on its other machines, reached through the LAN's hub.
    */
   lanWorkspace?: boolean;
+  /**
+   * Carries a machine RPC request to another member over the connection
+   * terminals use. `null` when it never left, which leaves it to the hub; a
+   * request that left and failed throws.
+   */
+  askLanMemberDirect?: (
+    machineId: MachineId,
+    request: LoroStreamsRpcRequest
+  ) => Promise<readonly unknown[] | null>;
   cloudPort: CloudPort;
 }
 
@@ -795,6 +805,7 @@ export class MessageHandler {
   private readonly answerLanMemberControl?: MessageHandlerConfig['answerLanMemberControl'];
   private readonly acceptsLanMemberFiles: boolean;
   private readonly lanWorkspace: boolean;
+  private readonly askLanMemberDirect?: MessageHandlerConfig['askLanMemberDirect'];
   private readonly machineLifecycleCapability: MachineLifecycleCapability;
   private pendingProcessLifecycleAction: MachineProcessLifecycleAction | null = null;
   private readonly store = new SessionTransientStore();
@@ -3042,6 +3053,7 @@ export class MessageHandler {
     this.answerLanMemberControl = config.answerLanMemberControl;
     this.acceptsLanMemberFiles = config.acceptsLanMemberFiles === true;
     this.lanWorkspace = config.lanWorkspace === true;
+    this.askLanMemberDirect = config.askLanMemberDirect;
     this.machineLifecycleCapability = config.machineLifecycleCapability ?? {
       launchMode: 'foreground',
       canRemoteRestart: false,
@@ -6608,6 +6620,7 @@ export class MessageHandler {
   ): Promise<T> {
     const streamClient = this.machineRpcStreamClient;
     if (!streamClient) throw new Error('This machine reaches no hub');
+    const askDirect = this.askLanMemberDirect;
     const client = new LoroStreamsMachineRpcClient({
       workspaceId: this.workspaceId,
       machineId,
@@ -6616,6 +6629,8 @@ export class MessageHandler {
       retentionSeconds: LORO_STREAMS_RPC_RETENTION_SECONDS,
       now: getServerNow,
       logger: this.logger,
+      // Straight to the member where it can be reached; the hub otherwise.
+      ...(askDirect ? { directTransport: (request) => askDirect(machineId, request) } : {}),
     });
     await client.start();
     try {

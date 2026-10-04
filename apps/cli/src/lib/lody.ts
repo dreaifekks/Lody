@@ -26,6 +26,7 @@ import { traceAsync } from '@/utils/trace-span';
 import type { MemoryPressureSnapshotSource } from '@/monitor/memory-pressure-sampler';
 import type { WorkspaceWatchCoordinatorApi } from '@/lib/code-collab/workspace-watch-coordinator';
 import type { CloudPort } from '@lody/platform';
+import type { MessageHandlerConfig } from './message-handler';
 
 const BUILTIN_AGENT_CONFIG_INITIAL_RETRY_DELAY_MS = 10_000;
 const BUILTIN_AGENT_CONFIG_MAX_RETRY_DELAY_MS = 5 * 60_000;
@@ -57,6 +58,8 @@ interface LodyOptions {
   acceptsLanMemberFiles?: boolean;
   /** A LAN carries the workspace, so its other machines are reached through the LAN's hub. */
   lanWorkspace?: boolean;
+  /** Carries a machine RPC request straight to another member; see `MessageHandlerConfig`. */
+  askLanMemberDirect?: MessageHandlerConfig['askLanMemberDirect'];
   cloudPort: CloudPort;
 }
 export class Lody {
@@ -140,6 +143,7 @@ export class Lody {
         answerLanMemberControl: options.answerLanMemberControl,
         acceptsLanMemberFiles: options.acceptsLanMemberFiles,
         lanWorkspace: options.lanWorkspace,
+        askLanMemberDirect: options.askLanMemberDirect,
         cloudPort: options.cloudPort,
       },
       logger: this.logger,
