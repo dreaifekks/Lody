@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { LanHub } from '@lody/shared/node/lan-hub';
+import type { LanGitHubCredential } from '@lody/shared/node/lan-github';
 import { GitHubCredentialResolver } from '@/lib/pr-poller/github-credential-resolver';
 import type { Logger } from '@/utils/logger';
 import { applyLanGitHubCredentialEnv, createGhLoginProbe } from './lan-agent-github';
@@ -41,14 +42,21 @@ function fakeHost(answer: { status: number; body?: unknown }) {
   return { request, seen, answer };
 }
 
-function createPort(host: ReturnType<typeof fakeHost>, clock: { now: number }) {
+function createPort(
+  host: ReturnType<typeof fakeHost>,
+  clock: { now: number },
+  copies: Record<string, LanGitHubCredential> = {}
+) {
   return createLanGitHubTokenPort({
     resolveHub: (workspaceId) => (workspaceId === 'lw_lan1' ? hub : null),
     logger,
     fetch: host.request,
+    readCopy: (hubId) => copies[hubId] ?? null,
     now: () => clock.now,
   });
 }
+
+const unreachable: typeof fetch = () => Promise.reject(new TypeError('fetch failed'));
 
 const context = { requesterUserId: 'user', machineId: 'machine' };
 
@@ -97,6 +105,44 @@ describe('LAN GitHub token port', () => {
       token: 'github_pat_1',
       rateLimitScope: 'github:lan:lw_lan1',
     });
+  });
+
+  it("uses this machine's copy of the token while the host is away", async () => {
+    const host = fakeHost({
+      status: 200,
+      body: { token: 'github_pat_2', login: 'o', userId: '7' },
+    });
+    const away = { ...host, request: unreachable };
+    const clock = { now: 0 };
+    const copies = { lan1: { token: 'github_pat_1', login: 'o', userId: '7' } };
+
+    const manager = createPort(away, clock, copies).createTokenManager('lw_lan1');
+    await expect(manager.getAppTokenForRepo('a/one')).resolves.toBe('github_pat_1');
+
+    const noCopy = createPort(away, clock).createTokenManager('lw_lan1');
+    await expect(noCopy.getAppTokenForRepo('a/one')).rejects.toThrow('could not be asked');
+  });
+
+  it('asks the host again soon after standing in with the copy', async () => {
+    let away = true;
+    const host = fakeHost({
+      status: 200,
+      body: { token: 'github_pat_2', login: 'o', userId: '7' },
+    });
+    const flaky = {
+      ...host,
+      request: ((input, init) =>
+        away ? unreachable(input, init) : host.request(input, init)) as typeof fetch,
+    };
+    const clock = { now: 0 };
+    const manager = createPort(flaky, clock, {
+      lan1: { token: 'github_pat_1', login: 'o', userId: '7' },
+    }).createTokenManager('lw_lan1');
+
+    await expect(manager.getAppTokenForRepo('a/one')).resolves.toBe('github_pat_1');
+    away = false;
+    clock.now = 15_000;
+    await expect(manager.getAppTokenForRepo('a/one')).resolves.toBe('github_pat_2');
   });
 
   it('has nothing for a workspace no LAN carries', async () => {

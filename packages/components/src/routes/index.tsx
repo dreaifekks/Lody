@@ -1,4 +1,5 @@
-import { createFileRoute, Navigate } from '@tanstack/react-router';
+import { createFileRoute } from '@tanstack/react-router';
+import { BootNavigate } from '@/components/boot-navigate';
 import { useTranslation } from 'react-i18next';
 import { useOrganization } from '@/hooks/useOrganization';
 import { getPreferredWorkspaceSlug, readPreferredWorkspaceSlug } from '@/lib/workspace';
@@ -57,7 +58,7 @@ function LocalHomeRoute() {
   }
 
   return (
-    <Navigate
+    <BootNavigate
       to="/$workspaceName/chat"
       params={{ workspaceName: getLocalWorkspaceSlug(workspace) }}
       replace
@@ -80,7 +81,7 @@ function CloudHomeRoute() {
     const preferredSlug = readPreferredWorkspaceSlug();
     if (preferredSlug) {
       return (
-        <Navigate to="/$workspaceName/chat" params={{ workspaceName: preferredSlug }} replace />
+        <BootNavigate to="/$workspaceName/chat" params={{ workspaceName: preferredSlug }} replace />
       );
     }
     return <AuthedHomeRoute />;
@@ -99,7 +100,7 @@ function CloudHomeRoute() {
   // Redirect based on auth state. Do not mount organization fetching when unauthenticated.
   if (!session?.user || sessionError) {
     const redirectPath = typeof window === 'undefined' ? '/' : getAppCurrentPathWithSearch();
-    return <Navigate to="/login" search={{ redirect: redirectPath }} replace />;
+    return <BootNavigate to="/login" search={{ redirect: redirectPath }} replace />;
   }
 
   return <AuthedHomeRoute />;
@@ -156,7 +157,7 @@ function AuthedHomeRoute() {
   }
 
   if (organizations.length === 0) {
-    return <Navigate to="/workspace/create" replace />;
+    return <BootNavigate to="/workspace/create" replace />;
   }
 
   const targetSlug = getPreferredWorkspaceSlug(
@@ -165,8 +166,8 @@ function AuthedHomeRoute() {
     preferredWorkspaceSlug
   );
   if (!targetSlug) {
-    return <Navigate to="/workspace/create" replace />;
+    return <BootNavigate to="/workspace/create" replace />;
   }
 
-  return <Navigate to="/$workspaceName/chat" params={{ workspaceName: targetSlug }} replace />;
+  return <BootNavigate to="/$workspaceName/chat" params={{ workspaceName: targetSlug }} replace />;
 }
