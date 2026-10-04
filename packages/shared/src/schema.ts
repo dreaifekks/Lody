@@ -18,7 +18,6 @@ import {
   AgentType,
   AcpCapabilityCacheEntry,
   BuiltinRuntimeOverrides,
-  CliType,
   CustomAcpLaunchSpec,
   RateLimitAgentType,
   LocalProjectHistoryProvider,
