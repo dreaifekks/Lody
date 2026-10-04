@@ -665,9 +665,17 @@ describe('what the members of a LAN ask of each other', () => {
     sourceWorkspaceId: 'hosted',
     categories: ['agentConfigs', 'localProjects'],
   };
+  const usage = { type: 'lan/usage', ...member, sinceMs: 1_700_000_000_000 };
 
   it('reads each request the same way at every boundary', () => {
-    for (const request of [update, install, preview, importing]) {
+    for (const request of [
+      update,
+      install,
+      preview,
+      importing,
+      usage,
+      { ...usage, sinceMs: undefined },
+    ]) {
       expect(accepts(request)).toEqual(all(true));
       expect(accepts({ type: 'lan/forward', machineId: 'machine-1', request })).toEqual(all(true));
     }
@@ -684,6 +692,8 @@ describe('what the members of a LAN ask of each other', () => {
     expect(accepts({ ...install, agentType: undefined })).toEqual(all(false));
     expect(accepts({ ...importing, categories: ['sessions'] })).toEqual(all(false));
     expect(accepts({ type: 'lan/update-machine', machineId: 'machine-2' })).toEqual(all(false));
+    expect(accepts({ ...usage, sinceMs: -1 })).toEqual(all(false));
+    expect(accepts({ ...usage, sinceMs: 1.5 })).toEqual(all(false));
   });
 
   it('forwards nothing but what members ask of each other', () => {
@@ -710,6 +720,17 @@ describe('what the members of a LAN ask of each other', () => {
   });
 
   it('reads each answer the same way at every boundary', () => {
+    const usageRow = {
+      startMs: 1_700_000_000_000,
+      spanMs: 3_600_000,
+      modelId: 'claude-opus',
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+      costUSD: 0.01,
+    };
     const started = {
       ok: true,
       type: 'lan/update-machine',
@@ -758,6 +779,12 @@ describe('what the members of a LAN ask of each other', () => {
       { ok: true, type: 'lan/alias-machine', result: { alias: 'nas', color: 'teal' } },
       { ok: true, type: 'lan/forward', result: { response: started } },
       { ok: true, type: 'lan/forward', result: { response: refused } },
+      { ok: true, type: 'lan/usage', result: { rows: [usageRow] } },
+      {
+        ok: true,
+        type: 'lan/forward',
+        result: { response: { ok: true, type: 'lan/usage', result: { rows: [] } } },
+      },
     ]) {
       expect(answers(response)).toEqual(all(true));
     }
@@ -768,5 +795,12 @@ describe('what the members of a LAN ask of each other', () => {
     expect(answers({ ok: true, type: 'lan/forward', result: { response: machines } })).toEqual(
       all(false)
     );
+    expect(
+      answers({
+        ok: true,
+        type: 'lan/usage',
+        result: { rows: [{ ...usageRow, costUSD: undefined }] },
+      })
+    ).toEqual(all(false));
   });
 });

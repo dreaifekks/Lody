@@ -7,6 +7,7 @@ import { SqliteRepoStore } from 'loro-repo/storage/sqlite';
 import {
   CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
   getMachineRoomId,
+  LanMemberControlResponseSchema,
   type AgentConfigId,
   type AgentConfigMeta,
   type LanMemberControlRequest,
@@ -24,6 +25,7 @@ import type { LanSshDestination } from '@lody/shared/lan-ssh';
 import type { ManagedRuntimeStatus } from '@/agent/managed-agent-runtime';
 import { upsertMachineAgentConfig } from '@/lib/agent-config-machine-flock';
 import type { Logger } from '@/utils/logger';
+import { LocalUsageLedger } from '@/lib/usage/local-usage-ledger';
 import { LanMachineControl, type LanMachineControlOptions } from './lan-machine-control';
 import {
   answerLanMemberControl,
@@ -556,6 +558,51 @@ describe('the machines of the LANs of a machine', () => {
         createControl()
       )
     ).toMatchObject({ ok: false, type: 'lan/install-agent', data: { reason: 'unknown_agent' } });
+  });
+
+  it("tells a member what this machine's agents used in their LAN, and nothing of another", async () => {
+    const home = await workspace(HOME);
+    const hour = Date.UTC(2026, 9, 4, 10);
+    const ledger = new LocalUsageLedger({
+      file: path.join(root, 'usage-ledger.json'),
+      logger: silentLogger(),
+      now: () => hour + 60_000,
+    });
+    const used = (workspaceId: string, inputTokens: number) =>
+      ledger.recordSessionUsageUpdate({
+        workspaceId: workspaceId as WorkspaceId,
+        sessionId: `session-${workspaceId}` as never,
+        acpSessionId: 'native',
+        userId: HOME_USER,
+        machineId: THIS,
+        cliType: 'claude',
+        update: {
+          modelUsage: { 'claude-opus': { inputTokens, outputTokens: 1, cacheReadInputTokens: 0 } },
+        },
+      });
+    used(HOME, 500);
+    used('lw_office', 900);
+    const ask = (sinceMs?: number) =>
+      answerLanMemberControl({
+        request: { type: 'lan/usage', machineId: THIS, workspaceId: HOME, sinceMs },
+        workspace: home,
+        machineId: THIS,
+        control: createControl(),
+        usage: ledger,
+      });
+
+    const answer = LanMemberControlResponseSchema.parse(await ask());
+    expect(answer).toMatchObject({
+      ok: true,
+      type: 'lan/usage',
+      result: { rows: [{ startMs: hour, modelId: 'claude-opus', inputTokens: 500 }] },
+    });
+    expect(await ask(hour + 3_600_000)).toEqual({
+      ok: true,
+      type: 'lan/usage',
+      result: { rows: [] },
+    });
+    ledger.close();
   });
 
   it('answers a member that asks for the hosted configuration of this machine', async () => {

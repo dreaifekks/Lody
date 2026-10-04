@@ -158,6 +158,7 @@ export const LAN_MEMBER_CONTROL_TYPES = [
   'lan/install-agent',
   'hosted-config/preview',
   'hosted-config/import',
+  'lan/usage',
 ] as const;
 export type LanMemberControlType = (typeof LAN_MEMBER_CONTROL_TYPES)[number];
 
@@ -181,6 +182,37 @@ export const LanAgentInstallResultSchema = z
   .object({ agentType: z.string().min(1), outcome: z.enum(['started', 'current']) })
   .strict();
 export type LanAgentInstallResult = z.infer<typeof LanAgentInstallResultSchema>;
+
+/** A usage bucket a machine keeps: an hour, or a day once it is older than a week. */
+export const LAN_USAGE_HOUR_MS = 3_600_000;
+export const LAN_USAGE_DAY_MS = 86_400_000;
+
+const UsageCountSchema = z.number().nonnegative().finite();
+
+/**
+ * The tokens one model used in one bucket of one machine. `costUSD` sums the
+ * costs that were known; `pricedTokens` says how many of the tokens they cover.
+ */
+export const LanUsageRowSchema = z
+  .object({
+    startMs: z.number().int().nonnegative(),
+    spanMs: z.union([z.literal(LAN_USAGE_HOUR_MS), z.literal(LAN_USAGE_DAY_MS)]),
+    modelId: z.string().min(1).max(256),
+    inputTokens: UsageCountSchema,
+    outputTokens: UsageCountSchema,
+    cacheReadInputTokens: UsageCountSchema,
+    cacheCreationInputTokens: UsageCountSchema,
+    reasoningOutputTokens: UsageCountSchema,
+    costUSD: UsageCountSchema,
+  })
+  .strict();
+export type LanUsageRow = z.infer<typeof LanUsageRowSchema>;
+
+/** What a machine counted for the sessions of one LAN's workspace. */
+export const LanUsageReportSchema = z
+  .object({ rows: z.array(LanUsageRowSchema).max(200_000) })
+  .strict();
+export type LanUsageReport = z.infer<typeof LanUsageReportSchema>;
 
 /**
  * Why a machine refuses what a member asks, as `data.reason` of the refusal:

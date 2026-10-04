@@ -31,6 +31,7 @@ import type { LanMachineControl } from './lan-machine-control';
 import { deriveLanTerminalKey } from './lan-terminal';
 import {
   answerLanMemberControl,
+  type LanUsageSource,
   forwardLanMemberControl,
   listLanMachines,
   publishLanMachineFacts,
@@ -59,6 +60,7 @@ const ANSWER_TIMEOUT_MS: Record<LanMemberControlRequest['type'], number> = {
   'lan/install-agent': 30_000,
   'hosted-config/preview': 90_000,
   'hosted-config/import': 100_000,
+  'lan/usage': 20_000,
 };
 
 export function isLanControlRequest(
@@ -106,6 +108,8 @@ export type LanFleetControlOptions = {
    * that says nothing about it.
    */
   ssh?: (hub: LanHub) => Promise<LanSshDestination | null | undefined>;
+  /** What this machine's agents used; absent where nothing counts it. */
+  usage?: LanUsageSource;
   now?: () => number;
 };
 
@@ -290,9 +294,12 @@ export class LanFleetControl {
       workspace,
       machineId: this.options.machineId,
       control: this.options.control,
+      usage: this.options.usage,
     });
     // What was imported or installed is something the members should see.
-    if (response.ok && request.type !== 'hosted-config/preview') void this.publish();
+    if (response.ok && request.type !== 'hosted-config/preview' && request.type !== 'lan/usage') {
+      void this.publish();
+    }
     return response;
   }
 

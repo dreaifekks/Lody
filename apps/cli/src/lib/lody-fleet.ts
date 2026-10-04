@@ -42,6 +42,7 @@ import type { LocalProbeConfig } from '@/lib/local-probe';
 import type { LocalSessionControlConfig } from '@/lib/local-session-control';
 import { startLocalTerminalServer, stopLocalTerminalServer } from '@/lib/local-terminal-server';
 import { LocalTunnelServer } from '@/lib/local-tunnel-server';
+import type { LocalUsageLedger } from '@/lib/usage/local-usage-ledger';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { connectPort, openLanTunnel } from '@/lib/lan/lan-tunnel';
 import {
@@ -199,6 +200,7 @@ export class LodyFleet {
   private readonly terminalPtyService: TerminalPtyServiceApi;
   private readonly terminalRouter: TerminalRouter;
   private readonly localTunnelServer: LocalTunnelServer;
+  private readonly usageLedger: LocalUsageLedger | null;
   private readonly lan: LanTerminalMembership | null;
   private readonly lanFileHandoff: LanFileHandoff;
   private lanTerminalHost: LanTerminalHost | null = null;
@@ -266,6 +268,8 @@ export class LodyFleet {
     lan?: LanTerminalMembership;
     /** What this machine tells the members of its LANs, and does when they ask. */
     lanControl?: LanMachineControl;
+    /** What this machine's agents used, which the members of its LANs ask for. */
+    usageLedger?: LocalUsageLedger;
   }) {
     this.logger = options.logger;
     this.builtinAgentConfigCliTypes = options.builtinAgentConfigCliTypes;
@@ -332,6 +336,7 @@ export class LodyFleet {
           machineId: this.machineId,
           machineName: this.machineName,
           control: options.lanControl,
+          ...(options.usageLedger ? { usage: options.usageLedger } : {}),
           ssh: createLanSshDescriber({ logger: this.logger }),
           hubs: () => this.lan?.hubs ?? [],
           workspaces: () =>
@@ -387,6 +392,7 @@ export class LodyFleet {
       locate: async (sessionId) => await this.locateTerminalSession(sessionId as SessionId),
       ...(this.lan ? { connect: async (location) => await this.connectLanTerminal(location) } : {}),
     });
+    this.usageLedger = options.usageLedger ?? null;
     this.localTunnelServer = new LocalTunnelServer({
       logger: this.logger,
       connect: async (request) =>
@@ -405,7 +411,7 @@ export class LodyFleet {
   }
 
   async start(): Promise<void> {
-    if (this.cloudPort.usage) {
+    if (this.cloudPort.kind !== 'local' && this.cloudPort.usage) {
       // Start the analytics poster before any events fire (idempotent; no-op
       // without a key). Local platform: telemetry is off by contract (D-O12).
       initCliAnalytics();
@@ -735,6 +741,7 @@ export class LodyFleet {
     this.memoryPressure.stop();
     Effect.runSync(this.prStatusPoller.stop);
     this.lanPushFallback?.close();
+    this.usageLedger?.close();
 
     // Stop accepting local work before draining workspace runtimes. Endpoint
     // teardown must not sit behind slow agent/session cleanup, and the owning

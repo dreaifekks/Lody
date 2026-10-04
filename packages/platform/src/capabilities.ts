@@ -17,6 +17,11 @@ export const PLATFORM_CAPABILITIES = [
   'billing',
   /** Cloud-aggregated token and cost reporting. */
   'usageAnalytics',
+  /**
+   * Token and cost reporting each machine keeps itself; a LAN gathers what its
+   * members counted. Shown where `usageAnalytics` is not.
+   */
+  'localUsage',
   /** Sharing sessions/machines/projects with workspace members. */
   'teamSharing',
   /** GitHub App integration (repo registry, brokered tokens, PR status). */
@@ -59,6 +64,7 @@ export function createCapabilitySet(
 /** The open-source local platform: only what the machine backs without a hosted service. */
 export const LOCAL_PLATFORM_CAPABILITIES: PlatformCapabilities = createCapabilitySet([
   'githubPullRequests',
+  'localUsage',
 ]);
 
 /** The cloud platform baseline: every capability (entitlement gating happens elsewhere). */

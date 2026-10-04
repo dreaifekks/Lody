@@ -3815,6 +3815,8 @@
   "workspace.usage.breakdown.title": "Token 明细",
   "workspace.usage.byModel": "按模型",
   "workspace.usage.byUser": "按成员",
+  "workspace.usage.byMachine": "按机器",
+  "workspace.usage.machinesMissing": "{{names}} 没有应答，其用量未计入。",
   "workspace.usage.perspective": "用量倒影",
   "workspace.usage.activeMembers": "活跃成员",
   "workspace.usage.modelsUsed": "使用模型",

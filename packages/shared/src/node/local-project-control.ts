@@ -5,6 +5,7 @@ import {
 } from '../hosted-config';
 import {
   LanAgentInstallResultSchema,
+  LanUsageReportSchema,
   LanMachineUpdateResultSchema,
   LAN_MACHINE_ALIAS_MAX,
   LanMachinesSchema,
@@ -511,6 +512,14 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     return typeof value.workspaceId === 'string' && typeof value.agentType === 'string';
   }
 
+  if (value.type === 'lan/usage') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      (value.sinceMs === undefined ||
+        (Number.isInteger(value.sinceMs) && (value.sinceMs as number) >= 0))
+    );
+  }
+
   if (value.type === 'lan/machines') {
     return true;
   }
@@ -682,6 +691,10 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'lan/install-agent') {
     return LanAgentInstallResultSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/usage') {
+    return LanUsageReportSchema.safeParse(value.result).success;
   }
 
   if (value.type === 'lan/machines') {

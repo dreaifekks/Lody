@@ -15,6 +15,7 @@ import {
   type LanMachines,
   type LanMemberControlRequest,
   type LanMemberControlResponse,
+  type LanUsageRow,
   type LocalProjectControlResponse,
   type MachineId,
   type MachineMeta,
@@ -389,15 +390,28 @@ function refuse(
   };
 }
 
+/** What this machine's agents used, kept where it runs them. */
+export type LanUsageSource = {
+  report: (workspaceId: string, sinceMs?: number) => LanUsageRow[];
+};
+
 /** Carries out what a member asked of this machine. */
 export async function answerLanMemberControl(options: {
   request: LanMemberControlRequest;
   workspace: LanMemberWorkspace;
   machineId: MachineId;
   control: LanMachineControl;
+  usage?: LanUsageSource;
 }): Promise<LanMemberControlResponse> {
   const { request, workspace, control } = options;
   try {
+    if (request.type === 'lan/usage') {
+      return {
+        ok: true,
+        type: request.type,
+        result: { rows: options.usage?.report(workspace.workspaceId, request.sinceMs) ?? [] },
+      };
+    }
     if (request.type === 'lan/update-machine') {
       return { ok: true, type: request.type, result: await control.startUpdate() };
     }

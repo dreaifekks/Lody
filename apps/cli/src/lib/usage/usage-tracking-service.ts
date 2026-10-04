@@ -2,7 +2,7 @@ import { ConvexHttpClient } from 'convex/browser';
 import { api } from '@lody/cloud-api';
 import type { Logger } from '@/utils/logger';
 import type { BuiltinAgentType } from '@lody/shared';
-import { PRICE_DATA } from './price';
+import { cloneUsageUpdate, priceSessionUsageUpdate } from './price';
 import type { SessionUsageUpdate } from 'acp-extension-core';
 import { formatErrorMessage } from '@/utils/format-error';
 
@@ -37,31 +37,6 @@ const toPendingKey = (
   input: Pick<RecordSessionUsageInput, 'workspaceId' | 'sessionId' | 'acpSessionId' | 'userId'>
 ): PendingKey => `${input.workspaceId}:${input.sessionId}:${input.acpSessionId}:${input.userId}`;
 
-const cloneModelUsage = (
-  modelUsage: SessionUsageUpdate['modelUsage']
-): SessionUsageUpdate['modelUsage'] => {
-  if (!modelUsage) return undefined;
-  const cloned: NonNullable<SessionUsageUpdate['modelUsage']> = {};
-  for (const [model, usage] of Object.entries(modelUsage)) {
-    cloned[model] = { ...usage };
-  }
-  return cloned;
-};
-
-const cloneUsageUpdate = (update: SessionUsageUpdate): SessionUsageUpdate => ({
-  sessionId: update.sessionId,
-  usage: { ...update.usage },
-  ...(update.modelUsage ? { modelUsage: cloneModelUsage(update.modelUsage) } : {}),
-  ...(update.delta
-    ? {
-        delta: {
-          usage: { ...update.delta.usage },
-          modelUsage: cloneModelUsage(update.delta.modelUsage) ?? {},
-        },
-      }
-    : {}),
-});
-
 // Core can carry fields the legacy persistence endpoint does not accept.
 const persistedCounters = (usage: SessionUsageUpdate['usage']) => {
   const counters: SessionUsageUpdate['usage'] = {
@@ -91,7 +66,9 @@ export class UsageTrackingService {
   recordSessionUsageUpdate(input: RecordSessionUsageInput): void {
     const key = toPendingKey(input);
     // Own the snapshot while coalescing or retrying delivery.
-    const update = this.calculatePrice(cloneUsageUpdate(input.update), input.cliType);
+    const update = priceSessionUsageUpdate(cloneUsageUpdate(input.update), input.cliType, (model) =>
+      this.logger.debug(`${model} have not set price`)
+    );
     const latestMeta = {
       workspaceId: input.workspaceId,
       sessionId: input.sessionId,
@@ -212,42 +189,5 @@ export class UsageTrackingService {
 
     this.pending.delete(key);
     this.removePendingKeyFromSession(state.latestMeta.sessionId, key);
-  }
-
-  private calculatePrice(
-    update: SessionUsageUpdate,
-    cliType: BuiltinAgentType
-  ): SessionUsageUpdate {
-    switch (cliType) {
-      case 'claude':
-        return update;
-      case 'codex':
-      case 'kimi':
-        if (!update.modelUsage) return update;
-        for (const [model, usage] of Object.entries(update.modelUsage)) {
-          if (usage.costUSD !== undefined) continue;
-          // No cache-write tariff is known in this legacy price table. A read
-          // tariff is not a substitute; preserve unknown rather than underprice.
-          if ((usage.cacheCreationInputTokens ?? 0) > 0) continue;
-          let costUSD = 0;
-          const modelName = model.split('/')[0];
-          if (!modelName) continue;
-          const price = PRICE_DATA[modelName];
-          if (!price) {
-            this.logger.debug(`${modelName} have not set price`);
-            continue;
-          }
-          costUSD += usage.inputTokens * price.inputCostPerToken;
-          costUSD +=
-            (usage.outputTokens + (usage.reasoningOutputTokens || 0)) * price.outputCostPerToken;
-          costUSD +=
-            (usage.cacheReadInputTokens + (usage.cacheCreationInputTokens || 0)) *
-            price.cacheReadInputTokenCost;
-          usage.costUSD = costUSD;
-        }
-        return update;
-      default:
-        return update;
-    }
   }
 }

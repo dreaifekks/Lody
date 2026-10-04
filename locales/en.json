@@ -3815,6 +3815,8 @@
   "workspace.usage.breakdown.title": "Token breakdown",
   "workspace.usage.byModel": "By model",
   "workspace.usage.byUser": "By member",
+  "workspace.usage.byMachine": "By machine",
+  "workspace.usage.machinesMissing": "{{names}} did not answer; what they used is not counted here.",
   "workspace.usage.perspective": "Usage reflection",
   "workspace.usage.activeMembers": "Active members",
   "workspace.usage.modelsUsed": "Models used",

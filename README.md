@@ -95,6 +95,7 @@ Both desktop apps can run side by side.
 | Hosted import               | Reads a machine's configuration from the hosted Lody                                                                                                                                             |
 | Moving and standby hub      | `lody-lan lan take-over` moves the hub to another server; a standby server keeps a copy and takes over when the hub stays away; Settings > LAN marks both                                        |
 | Agents on other machines    | Lody's tools inside a session start and drive sessions on the other machines of its LAN                                                                                                          |
+| Usage                       | Each machine keeps what its agents used; Settings > AI Usage gathers it from every member, by model and by machine                                                                               |
 | Shells and ports            | `lody-lan lan shell <machine>` opens a shell on a member, `lody-lan lan forward <machine> <port>` reaches one of its ports, both over the members' direct connections                            |
 
 ### Works differently
@@ -118,7 +119,6 @@ Both desktop apps can run side by side.
 - Remote preview: a dev server an Agent starts on another machine does not
   open in this machine's browser panel; `lody-lan lan forward <machine> <port>`
   makes it reachable here.
-- Usage reports across machines.
 - Settings > Machines and the machine picker of Prompt Shortcuts; Settings >
   LAN lists the machines instead.
 - Hosting a LAN from the desktop app, which does not ship the hub.

@@ -70,8 +70,11 @@ export type SettingsTabConfig = {
   labelKey: string;
   descriptionKey: string;
   icon: LucideIcon;
-  /** Cloud capability the whole tab depends on; the tab hides when missing. */
-  capability?: PlatformCapability;
+  /**
+   * Cloud capability the whole tab depends on; the tab hides when missing. A
+   * list is met by any one of its capabilities.
+   */
+  capability?: PlatformCapability | readonly PlatformCapability[];
   /** The workspace machine inventory has no useful distinction in a solo workspace. */
   multiMemberOnly?: boolean;
   /** Keyboard-centric surfaces are hidden from the mobile settings list. */
@@ -207,7 +210,7 @@ export const SETTINGS_TAB_CONFIGS: SettingsTabConfig[] = [
     labelKey: 'settings.tabs.aiUsage',
     descriptionKey: 'settings.categories.aiUsage.description',
     icon: ChartNoAxesCombined,
-    capability: 'usageAnalytics',
+    capability: ['usageAnalytics', 'localUsage'],
     path: '/$workspaceName/settings/ai-usage',
   },
   {
@@ -246,7 +249,10 @@ export function useVisibleSettingsTabs(options?: {
   const localDesktop = isLocalAppPlatform() && isElectronRenderer();
   return SETTINGS_TAB_CONFIGS.filter(
     (tab) =>
-      (tab.capability === undefined || hasCapability(tab.capability)) &&
+      (tab.capability === undefined ||
+        (typeof tab.capability === 'string'
+          ? hasCapability(tab.capability)
+          : tab.capability.some(hasCapability))) &&
       (!tab.multiMemberOnly || includeMultiMemberOnly) &&
       (!tab.localDesktopOnly || localDesktop)
   );

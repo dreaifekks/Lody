@@ -9,6 +9,7 @@ const LAN_MEMBER_CONTROL_TYPES = new Set([
   'lan/install-agent',
   'hosted-config/preview',
   'hosted-config/import',
+  'lan/usage',
 ]);
 
 const HOSTED_CONFIG_CATEGORIES = new Set([
@@ -521,6 +522,13 @@ function isLocalProjectControlRequest(value) {
     return typeof value.workspaceId === 'string' && typeof value.agentType === 'string';
   }
 
+  if (value.type === 'lan/usage') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      (value.sinceMs === undefined || (Number.isInteger(value.sinceMs) && value.sinceMs >= 0))
+    );
+  }
+
   if (value.type === 'lan/machines') {
     return true;
   }
@@ -701,6 +709,26 @@ function isLocalProjectControlResponse(value) {
       isObjectRecord(value.result) &&
       (value.result.outcome === 'started' || value.result.outcome === 'current') &&
       typeof value.result.agentType === 'string'
+    );
+  }
+
+  if (value.type === 'lan/usage') {
+    return (
+      isObjectRecord(value.result) &&
+      Array.isArray(value.result.rows) &&
+      value.result.rows.every(
+        (row) =>
+          isObjectRecord(row) &&
+          typeof row.startMs === 'number' &&
+          typeof row.spanMs === 'number' &&
+          typeof row.modelId === 'string' &&
+          typeof row.inputTokens === 'number' &&
+          typeof row.outputTokens === 'number' &&
+          typeof row.cacheReadInputTokens === 'number' &&
+          typeof row.cacheCreationInputTokens === 'number' &&
+          typeof row.reasoningOutputTokens === 'number' &&
+          typeof row.costUSD === 'number'
+      )
     );
   }
 

@@ -58,6 +58,10 @@ export type StatsSettingsViewProps = {
    * an action it cannot perform nor pulls the capture pipeline into its bundle.
    */
   shareCard?: boolean;
+  /** Title of the second chart; the hosted page splits usage by member. */
+  memberChartTitle?: string;
+  /** Said under the header, such as which machines did not answer. */
+  notice?: ReactNode;
 };
 
 const RANGE_ORDER: SettingsUsageRange[] = ['day', 'week', 'month', 'total'];
@@ -208,6 +212,8 @@ export function StatsSettingsView({
   tintMemberSeriesLabel,
   costFractionDigits = 2,
   shareCard = false,
+  memberChartTitle,
+  notice,
 }: StatsSettingsViewProps) {
   const { t, i18n } = useTranslation();
   const [shareOpen, setShareOpen] = useState(false);
@@ -228,19 +234,24 @@ export function StatsSettingsView({
             {workspaceName || t('workspace.usage.title')}
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">{windowCaption}</p>
+          {notice ? <p className="mt-0.5 text-xs text-muted-foreground">{notice}</p> : null}
         </div>
         <div className="flex items-center gap-1.5">
           <RangeSelector range={range} onRangeChange={onRangeChange} />
           {shareCard && usageCalendar ? (
             <Tooltip.Root>
-              <Tooltip.Trigger render={<Button
-                  icon
-                  variant="ghost"
-                  aria-label={t('workspace.usage.shareImage.action')}
-                  onClick={() => setShareOpen(true)}
-                >
-                  <Share2 />
-                </Button>}/>
+              <Tooltip.Trigger
+                render={
+                  <Button
+                    icon
+                    variant="ghost"
+                    aria-label={t('workspace.usage.shareImage.action')}
+                    onClick={() => setShareOpen(true)}
+                  >
+                    <Share2 />
+                  </Button>
+                }
+              />
               <Tooltip.Content>{t('workspace.usage.shareImage.action')}</Tooltip.Content>
             </Tooltip.Root>
           ) : null}
@@ -327,7 +338,7 @@ export function StatsSettingsView({
         loadingText={t('workspace.usage.loading', 'Loading usage data...')}
       />
       <UsageStackedAreaChart
-        title={t('workspace.usage.byUser')}
+        title={memberChartTitle ?? t('workspace.usage.byUser')}
         buckets={byMemberBuckets}
         emptyText={t('workspace.usage.empty', 'No usage data in this range')}
         valueFormatter={tokensCompact}

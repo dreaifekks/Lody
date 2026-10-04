@@ -32,6 +32,7 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | GitHub         | `apps/cli/src/lib/lan/hub-github.ts`, `lan-github-tokens.ts`, `lan-agent-github.ts`         | One GitHub token on the host for members that have no `gh` login                                                              |
 | Credentials    | `apps/cli/src/lib/lan/hub-credentials.ts`, `lan-credential-sync.ts`, `lan-push-fallback.ts` | Every member keeps a copy of the GitHub token, the APNs key and the phones, and uses it while the hub is away                 |
 | Ports          | `apps/cli/src/lib/lan/lan-tunnel.ts`, `apps/cli/src/lib/local-tunnel-server.ts`             | A program of one member reaches a port another member reaches                                                                 |
+| Usage          | `apps/cli/src/lib/usage/local-usage-ledger.ts`, `packages/components/src/lib/lan-usage.ts`  | Each machine counts what its agents used; the usage page gathers it from every member                                         |
 
 ```text
  server                                   desktop
@@ -684,6 +685,32 @@ of the LAN from any member; `--data-dir` writes into a hub's data directory on
 the machine instead. The renderer never reaches these routes: the bridge
 forwards `/ds/` alone, as the standby copy and the credentials route carry
 what only a member may hold.
+
+## Usage
+
+The hosted service counts what every agent used from what each machine reports
+to it. A LAN has no such service, so each machine counts for itself: on the
+local platform the agent service's usage port is a ledger on its own disk
+(`apps/cli/src/lib/usage/local-usage-ledger.ts`, `<data dir>/usage-ledger.json`).
+It receives the cumulative per-model counters an agent reports, adds what a
+reading grew by since the highest one of its accounting scope, which is how the
+hosted service counts too, and files the growth under the hour it arrived and
+the workspace of the session. Hours older than a week are kept as days.
+
+```text
+ Settings > AI Usage ─ lan/machines ─▶ agent service ─ lan/usage ─▶ every member of the LAN
+                      lan/usage (self)  of this machine   (direct, else the hub)  answers from its ledger
+```
+
+The page asks every machine of the workspace's LAN with `lan/usage`, a request
+members put to each other like `lan/update-machine`, and builds the hosted
+page's timeline, calendar and day views from the answers
+(`packages/components/src/lib/lan-usage.ts`). Every member of a LAN is one user,
+so the second chart splits by machine where the hosted page splits by member.
+A machine that is offline or runs a build without `lan/usage` is named under
+the header and left out; its usage is on its own disk until it answers again.
+The `localUsage` platform capability shows the page where `usageAnalytics`
+does not.
 
 ## Limits
 
