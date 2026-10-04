@@ -6,6 +6,7 @@ import type { SessionId } from '@lody/shared';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
+import type { LanPushFallback } from './lan-push-fallback';
 import {
   LAN_PUSH_EVENTS_PATH,
   LAN_PUSH_PERMISSION_ANSWERS_PATH,
@@ -38,6 +39,8 @@ export function createLanNotificationsPort(options: {
   machineName?: () => string | null | Promise<string | null>;
   logger: Logger;
   fetch?: typeof fetch;
+  /** Sends alerts from this machine while the hub cannot be reached. */
+  fallback?: LanPushFallback;
 }): Required<CloudNotificationsPort> {
   const request = options.fetch ?? fetch;
 
@@ -58,7 +61,18 @@ export function createLanNotificationsPort(options: {
       }
       return (await response.json()) as LanPushLiveActivityResult;
     } catch (error) {
-      options.logger.debug(`[lan-push] ${event.type} not delivered: ${formatErrorMessage(error)}`);
+      // The hub cannot be reached, which is when this machine sends alerts itself.
+      const sent = await options.fallback?.deliver(hub, event).catch((fallbackError: unknown) => {
+        options.logger.debug(
+          `[lan-push] ${event.type} not sent from here either: ${formatErrorMessage(fallbackError)}`
+        );
+        return false;
+      });
+      options.logger.debug(
+        `[lan-push] ${event.type} not delivered to the hub: ${formatErrorMessage(error)}${
+          sent ? '; sent from this machine' : ''
+        }`
+      );
       return null;
     }
   };

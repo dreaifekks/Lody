@@ -10,8 +10,10 @@ const OFFICE = 'b'.repeat(32)
 /** A hub that answers with what it received, so a test sees what crossed the bridge. */
 async function startHub(t, name) {
   const liveReads = new Set()
+  const received = []
   let liveReadClosed = () => {}
   const server = http.createServer((request, response) => {
+    received.push(request.url)
     const chunks = []
     request.on('data', (chunk) => chunks.push(chunk))
     request.on('end', () => {
@@ -55,6 +57,7 @@ async function startHub(t, name) {
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     liveReads,
+    received,
     whenLiveReadCloses: () => new Promise((resolve) => (liveReadClosed = resolve))
   }
 }
@@ -128,15 +131,33 @@ void test('follows a LAN that is joined, moved or left while it runs', async (t)
   assert.deepEqual(await left.json(), { error: 'unknown LAN' })
 })
 
-void test('sends the credential to the hub whatever the path looks like', async (t) => {
+void test('never sends the credential to a host a path names', async (t) => {
   const { handle, office } = await bridge(t)
   const elsewhere = new URL(office.url).host
 
   for (const path of [`//${elsewhere}/ds/lody/room`, `/\\${elsewhere}/ds/lody/room`]) {
-    const seen = await (await handle(new Request(`lody-hub://${HOME}${path}`))).json()
-    assert.equal(seen.hub, 'home', path)
-    assert.equal(seen.headers.authorization, 'Bearer home-token')
+    const response = await handle(new Request(`lody-hub://${HOME}${path}`))
+    assert.notEqual(response.status, 200, path)
   }
+  assert.deepEqual(office.received, [])
+})
+
+void test('keeps every route but the documents from the renderer', async (t) => {
+  const { handle, home } = await bridge(t)
+
+  for (const path of [
+    '/lan/snapshot',
+    '/lan/credentials',
+    '/github/token',
+    '/push/devices',
+    '/ds/../lan/snapshot',
+    '/ds/%2e%2e/lan/credentials',
+    '/ds'
+  ]) {
+    const response = await handle(new Request(`lody-hub://${HOME}${path}`, { method: 'POST' }))
+    assert.equal(response.status, 403, path)
+  }
+  assert.deepEqual(home.received, [])
 })
 
 void test('never forwards a request for a LAN that is not joined', async (t) => {

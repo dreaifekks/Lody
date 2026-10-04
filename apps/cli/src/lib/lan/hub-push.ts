@@ -20,7 +20,7 @@ import {
   type LanPushLiveActivityResult,
 } from './lan-push-protocol';
 
-const DEVICES_FILE_NAME = 'push-devices.json';
+export const LAN_PUSH_DEVICES_FILE_NAME = 'push-devices.json';
 const MAX_BODY_BYTES = 512 * 1024;
 const MAX_DEVICES = 32;
 const SEEN_EVENT_LIMIT = 512;
@@ -218,7 +218,7 @@ export function createLanHubPush(options: {
 }): LanHubPush {
   const now = options.now ?? Date.now;
   const log = options.log ?? (() => {});
-  const devicesPath = path.join(options.dataDir, DEVICES_FILE_NAME);
+  const devicesPath = path.join(options.dataDir, LAN_PUSH_DEVICES_FILE_NAME);
   const devices = new Map<string, LanPushDevice>();
   try {
     const stored = JSON.parse(fs.readFileSync(devicesPath, 'utf8')) as { devices?: unknown };
@@ -748,7 +748,8 @@ export function createLanHubPush(options: {
       await alert(
         event,
         (copy) => ({ title: event.sessionTitle || copy.untitled, body: body(copy) }),
-        { sessionId: event.sessionId }
+        // A member whose hub was away may have sent it as well.
+        { sessionId: event.sessionId, collapseId: `permission-${event.requestId}` }
       );
     } else {
       if (!firstTime(`schedule:${event.runKey}:${event.phase}`)) return null;
@@ -763,7 +764,7 @@ export function createLanHubPush(options: {
           };
           return { title: event.title || copy.untitled, body: bodies[event.phase] };
         },
-        { sessionId: event.sessionId }
+        { sessionId: event.sessionId, collapseId: `schedule-${event.phase}-${event.runKey}` }
       );
     }
     return null;

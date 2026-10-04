@@ -26,6 +26,7 @@ import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import { askWhereLanHubIs } from './hub-handover';
 import { createLanGitHubTokenPort } from './lan-github-tokens';
+import type { LanCredentialSync } from './lan-credential-sync';
 
 /** How often a member asks its hubs whether they moved. */
 const FOLLOW_INTERVAL_MS = 60_000;
@@ -57,6 +58,7 @@ export class LanMembership {
   private followTimer: NodeJS.Timeout | null = null;
   private following: Promise<void> | null = null;
   private restartRequested = false;
+  private readonly credentials: LanCredentialSync | null;
 
   constructor(
     private readonly options: {
@@ -73,9 +75,12 @@ export class LanMembership {
       followIntervalMs?: number;
       env?: NodeJS.ProcessEnv;
       filePath?: string;
+      /** Keeps this machine's copy of the credentials each of its hubs holds. */
+      credentials?: (hubs: () => readonly LanHub[]) => LanCredentialSync;
     }
   ) {
     this.settings = options.settings;
+    this.credentials = options.credentials?.(() => this.settings.hubs) ?? null;
     this.workspaceStore = createStore<readonly WorkspaceSummary[]>(
       toLanWorkspaces(options.settings.hubs)
     );
@@ -131,6 +136,7 @@ export class LanMembership {
   }
 
   start(): void {
+    this.credentials?.start();
     // Settings from the environment cannot change while the process runs.
     if (this.watcher || this.settings.source === 'environment') return;
     const watch = this.options.watch ?? watchLanHubSettings;
@@ -156,6 +162,7 @@ export class LanMembership {
   }
 
   close(): void {
+    this.credentials?.close();
     this.watcher?.close();
     this.watcher = null;
     if (this.followTimer) clearInterval(this.followTimer);
@@ -271,5 +278,7 @@ export class LanMembership {
         .join(', ')}`
     );
     this.workspaceStore.set(workspaces);
+    // A LAN joined, left or followed elsewhere is copied from at once.
+    void this.credentials?.syncNow();
   }
 }

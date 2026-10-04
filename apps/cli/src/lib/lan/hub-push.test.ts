@@ -9,6 +9,14 @@ import type { LanHub } from '@lody/shared/node/lan-hub';
 import { createApnsProviderToken, readApnsConfig, writeApnsConfig, type ApnsPush } from './apns';
 import { startLanHubServer, type LanHubServer, type LanHubUpstream } from './hub-server';
 import { createLanNotificationsPort } from './lan-push-notifier';
+import { createLanCredentialSync } from './lan-credential-sync';
+import { createLanPushFallback } from './lan-push-fallback';
+import {
+  LAN_HUB_CREDENTIALS_APNS_PATH,
+  LAN_HUB_CREDENTIALS_GITHUB_PATH,
+  getLanCredentialsDirectory,
+  readLanCredentialsGitHub,
+} from '@lody/shared/node/lan-credentials';
 
 async function startUpstream(): Promise<{ upstream: LanHubUpstream; seen: string[] }> {
   const seen: string[] = [];
@@ -200,6 +208,95 @@ describe('LAN host push', () => {
       { title: 'New Task', body: 'Failed: The agent process disconnected' },
       { title: 'Daily report', body: 'Scheduled task started' },
     ]);
+  });
+
+  it('copies its credentials to members, which alert phones themselves while it is away', async () => {
+    await register({ locale: 'en-US' });
+    const pem = crypto
+      .generateKeyPairSync('ec', { namedCurve: 'P-256' })
+      .privateKey.export({ type: 'pkcs8', format: 'pem' })
+      .toString();
+    const apns = { keyId: 'ABCDEFGHIJ', teamId: 'TEAM123456', privateKey: pem };
+    expect((await call('PUT', LAN_HUB_CREDENTIALS_APNS_PATH, apns, 'wrong')).status).toBe(401);
+    expect(
+      (await call('PUT', LAN_HUB_CREDENTIALS_APNS_PATH, { ...apns, privateKey: 'nope' })).status
+    ).toBe(400);
+    expect((await call('PUT', LAN_HUB_CREDENTIALS_APNS_PATH, apns)).status).toBe(200);
+    const github = { token: 'github_pat_1', login: 'octocat', userId: '583231' };
+    expect((await call('PUT', LAN_HUB_CREDENTIALS_GITHUB_PATH, github)).status).toBe(200);
+    // Set from a member, kept by the hub as `lody lan github setup` on it would.
+    expect(readApnsConfig(dataDir)).toMatchObject({ keyId: 'ABCDEFGHIJ' });
+
+    const memberDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-member-'));
+    try {
+      const lan = { ...member(), id: 'd'.repeat(32) };
+      let joined = [lan];
+      const sync = createLanCredentialSync({
+        hubs: () => joined,
+        logger: { debug: () => {}, info: () => {}, warn: () => {} } as never,
+        dataDir: memberDir,
+      });
+      await sync.syncNow();
+      const copy = getLanCredentialsDirectory(lan.id, memberDir);
+      expect(readLanCredentialsGitHub(lan.id, memberDir)).toEqual(github);
+      expect(fs.statSync(path.join(copy, 'apns-key.p8')).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(copy).mode & 0o777).toBe(0o700);
+
+      const direct: ApnsPush[] = [];
+      const away = createLanNotificationsPort({
+        resolveHub: () => lan,
+        machineId: 'machine-1',
+        logger: { debug: () => {} } as never,
+        fetch: () => Promise.reject(new TypeError('fetch failed')),
+        fallback: createLanPushFallback({
+          logger: { debug: () => {} } as never,
+          dataDir: memberDir,
+          createSender: () =>
+            Object.assign(
+              async (push: ApnsPush) => {
+                direct.push(push);
+                return { ok: true as const };
+              },
+              { close: () => {} }
+            ),
+        }),
+      });
+      const base = { workspaceId: WORKSPACE as never, workspaceSlug: 'lan', userId: USER };
+      await away.notifySessionCompleted({
+        ...base,
+        sessionId: 'session-1' as never,
+        occurrenceId: 'turn-1',
+        sessionTitle: 'Fix the build',
+      });
+      await away.syncLiveActivitySummary({
+        ...base,
+        activityId: ACTIVITY,
+        summary: { items: [] },
+      } as never);
+
+      expect(sent).toHaveLength(0);
+      expect(direct).toHaveLength(1);
+      expect(direct[0]).toMatchObject({
+        deviceToken: PHONE,
+        topic: 'com.example.lody',
+        pushType: 'alert',
+        // The hub collapses the same alert by the same id.
+        collapseId: 'done-session-1',
+        payload: { aps: { alert: { title: 'Fix the build', body: 'Finished' } } },
+      });
+
+      // A removal reaches the copy, and a LAN left takes its copy with it.
+      expect((await call('DELETE', LAN_HUB_CREDENTIALS_GITHUB_PATH)).body).toEqual({
+        removed: true,
+      });
+      await sync.syncNow();
+      expect(readLanCredentialsGitHub(lan.id, memberDir)).toBeNull();
+      joined = [];
+      await sync.syncNow();
+      expect(fs.existsSync(copy)).toBe(false);
+    } finally {
+      fs.rmSync(memberDir, { recursive: true, force: true });
+    }
   });
 
   it('starts a Live Activity when work begins, updates it, and ends it when work stops', async () => {

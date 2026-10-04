@@ -69,6 +69,7 @@ import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import { readLanMachineAlias, type LanMemberWorkspace } from '@/lib/lan/lan-members';
 import { createLanSshDescriber } from '@/lib/lan/lan-ssh';
 import { createLanNotificationsPort } from '@/lib/lan/lan-push-notifier';
+import { createLanPushFallback, type LanPushFallback } from '@/lib/lan/lan-push-fallback';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import { parseLanTerminalEndpoint, type LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import {
@@ -171,6 +172,8 @@ type WorkspaceRuntimeState = {
 
 export class LodyFleet {
   private readonly logger: Logger;
+  /** Shared by the LAN workspaces: alerts sent from here while a hub is away. */
+  private lanPushFallback: LanPushFallback | null = null;
   private readonly builtinAgentConfigCliTypes: CliType[];
   private readonly supportRegistryAgentTypes: string[];
   private readonly cliToken: string;
@@ -699,6 +702,7 @@ export class LodyFleet {
     this.stopRuntimeStateLoop();
     this.memoryPressure.stop();
     Effect.runSync(this.prStatusPoller.stop);
+    this.lanPushFallback?.close();
 
     // Stop accepting local work before draining workspace runtimes. Endpoint
     // teardown must not sit behind slow agent/session cleanup, and the owning
@@ -948,6 +952,20 @@ export class LodyFleet {
             : {}),
           acceptsLanMemberFiles: this.lanTerminalHost !== null && this.isLanWorkspace(workspace.id),
           lanWorkspace: this.isLanWorkspace(workspace.id),
+          ...(this.isLanWorkspace(workspace.id)
+            ? {
+                askLanMemberDirect: async (machineId, request) => {
+                  const forwarded = await this.forwardLanRpc({
+                    workspaceId: workspace.id,
+                    targetMachineId: machineId,
+                    request,
+                  });
+                  if (!forwarded.sent) return null;
+                  if (forwarded.error) throw new Error(forwarded.error);
+                  return forwarded.answers;
+                },
+              }
+            : {}),
         });
 
         if (!this.desiredWorkspaces.has(workspace.id) || this.stopped) {
@@ -1189,6 +1207,7 @@ export class LodyFleet {
               return alias ?? this.machineName;
             },
             logger: this.logger,
+            fallback: (this.lanPushFallback ??= createLanPushFallback({ logger: this.logger })),
           })
         : this.cloudPort.notifications;
     const sameUser = !workspace.userId || workspace.userId === this.cloudPort.identity.userId;
@@ -1529,7 +1548,10 @@ export class LodyFleet {
     message: import('@lody/shared').LocalMachineRpcRequestValidated
   ): Promise<import('@lody/shared').LocalMachineRpcResponse> {
     if (message.method === 'lan/rpc-forward') {
-      return { ok: true, result: await this.forwardLanRpc(message) };
+      return {
+        ok: true,
+        result: await this.forwardLanRpc({ workspaceId: message.workspaceId, ...message.params }),
+      };
     }
     const pendingStart = this.startInFlight.get(message.workspaceId);
     if (pendingStart) {
@@ -1545,25 +1567,23 @@ export class LodyFleet {
   }
 
   /**
-   * Carries a desktop's machine RPC request to the member of a LAN it is
-   * for, over the connection terminals use. `sent` false leaves it to the
+   * Carries a machine RPC request, of a desktop or of this machine's own Lody
+   * tools, to the member of a LAN it is for, over the connection terminals use. `sent` false leaves it to the
    * hub: the member publishes no endpoint, runs a build without `rpc`, or
    * cannot be reached from here.
    */
-  private async forwardLanRpc(
-    message: Extract<
-      import('@lody/shared').LocalMachineRpcRequestValidated,
-      { method: 'lan/rpc-forward' }
-    >
-  ): Promise<import('@lody/shared').LanRpcForwardResult> {
+  private async forwardLanRpc(message: {
+    workspaceId: string;
+    targetMachineId: string;
+    request: unknown;
+  }): Promise<import('@lody/shared').LanRpcForwardResult> {
     const notSent = (error: string) => ({
       type: 'lan/rpc-forward_response' as const,
       sent: false,
       answers: [],
       error,
     });
-    const { workspaceId } = message;
-    const { targetMachineId, request } = message.params;
+    const { workspaceId, targetMachineId, request } = message;
     const hub = this.lan?.hubs.find(
       (candidate) => getLanHubWorkspaceId(candidate.id) === workspaceId
     );

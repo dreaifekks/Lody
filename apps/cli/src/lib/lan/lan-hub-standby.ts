@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { getLanCredentialsDirectory } from '@lody/shared/node/lan-credentials';
 import { chooseLanHubStandby, type LanHubRole } from '@lody/shared/lan-hub-role';
 import { getLanHubWorkspaceId, normalizeLanHubUrl } from '@lody/shared/lan-hub';
 import type { LanTerminalEndpoint } from '@lody/shared/lan-terminal';
@@ -20,6 +21,7 @@ import type { MachineId } from '@lody/shared';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import { prepareLanHubFailover } from './hub-failover';
+import { fillMissingLanHubCredentials } from './lan-credential-sync';
 import {
   LAN_HUB_SUPERSEDED_PATH,
   readLanHubMoved,
@@ -99,6 +101,8 @@ export async function promoteToLanHub(options: {
   announce: (url: string) => Promise<void>;
   services?: LanServiceManager;
   dataDir?: string;
+  /** This machine's copy of the hub's credentials, for what the standby copy lacks. */
+  credentials?: string;
 }): Promise<string> {
   const dataDir = options.dataDir ?? getDefaultLanHubDataDir();
   const existing = readLanHubToken(dataDir);
@@ -107,6 +111,7 @@ export async function promoteToLanHub(options: {
   }
   if (fs.existsSync(dataDir)) fs.renameSync(dataDir, `${dataDir}.replaced-${Date.now()}`);
   fs.cpSync(options.copy, dataDir, { recursive: true });
+  if (options.credentials) fillMissingLanHubCredentials(dataDir, options.credentials);
   prepareLanHubFailover(dataDir);
   writeLanHubTerm(dataDir, options.term);
 
@@ -363,6 +368,7 @@ export class LanHubStandby {
       hub,
       copy,
       term,
+      credentials: getLanCredentialsDirectory(hub.id, this.options.dataDir),
       announce: async (url) => {
         const location = { url, term };
         // Before anything else: the agent service starts again once it follows.

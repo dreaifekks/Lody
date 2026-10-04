@@ -82,6 +82,20 @@ export function writeApnsConfig(dataDir: string, config: ApnsConfig): void {
   );
 }
 
+/** `false` when there was nothing to remove. */
+export function removeApnsConfig(dataDir: string): boolean {
+  let removed = false;
+  for (const name of [APNS_CONFIG_FILE_NAME, APNS_KEY_FILE_NAME]) {
+    try {
+      fs.unlinkSync(path.join(dataDir, name));
+      removed = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return removed;
+}
+
 /** `null` until `lody lan push setup` has run on the hub. */
 export function readApnsConfig(dataDir: string): ApnsConfig | null {
   let raw: string;
