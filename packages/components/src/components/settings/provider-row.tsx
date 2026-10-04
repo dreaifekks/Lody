@@ -7,6 +7,7 @@ import { RefreshCw, Trash2 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import {
   ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
   REGISTRY_ACP_AGENTS,
   type AgentConfigCliType,
   type AgentConfigMeta,
@@ -218,12 +219,14 @@ export function ProviderRow({
   const rateLimitWindows = useMemo(() => {
     if (!showRateLimits || !machine?.raceLimits) return [];
     const entries = getAgentRateLimitEntries(machine.raceLimits, agentType, config.id);
-    // Antigravity's groups (Gemini; Claude/GPT) are separate quotas, each window
-    // labelled with its group, so the row shows all of them rather than the first.
     if (agentType === ANTIGRAVITY_AGENT_TYPE) {
-      return entries
-        .toSorted((left, right) => (left.limitId ?? '').localeCompare(right.limitId ?? ''))
-        .flatMap((entry) => getAgentRateLimitWindows(entry.limits));
+      // Only the Gemini group: Google does not count Claude/GPT use made through
+      // the ACP server against its Claude/GPT group, which therefore always reads
+      // full. Its windows drop the group label, which would only repeat "Gemini".
+      const gemini = entries.find((entry) => entry.limitId !== ANTIGRAVITY_THIRD_PARTY_LIMIT_ID);
+      return gemini
+        ? getAgentRateLimitWindows(gemini.limits).map(({ label: _label, ...window }) => window)
+        : [];
     }
     for (const entry of entries) {
       const windows = getAgentRateLimitWindows(entry.limits);
@@ -410,11 +413,7 @@ export function ProviderRow({
           {rateLimitWindows.map((window, index) => (
             <RateLimitMeter
               key={`${window.windowDurationSeconds ?? 'unknown'}-${index}`}
-              label={formatAgentRateLimitWindowLabel(
-                window,
-                formatRateLimitWindowShortLabel(window.windowDurationSeconds),
-                t
-              )}
+              label={formatRateLimitWindowShortLabel(window.windowDurationSeconds)}
               remainingPercent={window.remainingPercent}
             />
           ))}

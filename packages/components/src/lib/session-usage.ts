@@ -1,6 +1,5 @@
 import {
   ANTIGRAVITY_AGENT_TYPE,
-  ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
   CODEX_SPARK_LIMIT_ID,
   normalizePersistedRateLimit,
   parseRateLimitEntryKey,
@@ -211,11 +210,10 @@ export function resolveAgentRateLimitForModel({
     );
     if (exactLimitIdMatch) return exactLimitIdMatch;
 
-    // Antigravity has one quota group for Gemini, matched by name above, and one
-    // shared by every other model it offers (Claude, GPT-OSS).
-    if (agentType === ANTIGRAVITY_AGENT_TYPE) {
-      return entries.find((entry) => entry.limitId === ANTIGRAVITY_THIRD_PARTY_LIMIT_ID) ?? null;
-    }
+    // Gemini models matched their group by name above. Antigravity's Claude/GPT
+    // group is not shown: Google does not count use made through the ACP server
+    // against it, so it always reads full.
+    if (agentType === ANTIGRAVITY_AGENT_TYPE) return null;
 
     const wantsCodexSpark = agentType === 'codex' && normalizedModelId.includes('spark');
     if (wantsCodexSpark) {

@@ -3,7 +3,16 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentConfigId, AgentConfigMeta, MachineId, MachineViewMeta } from '@lody/shared';
+import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
+  ANTIGRAVITY_THIRD_PARTY_MODELS_ENV,
+  getRateLimitEntryKey,
+  type AgentConfigId,
+  type AgentConfigMeta,
+  type MachineId,
+  type MachineViewMeta,
+} from '@lody/shared';
 
 import { ProviderRow } from '../src/components/settings/provider-row';
 import { initI18n } from '../src/i18n';
@@ -140,5 +149,78 @@ describe('ProviderRow meta line', () => {
     await renderCustom();
 
     expect(container.textContent).toContain('Custom · 1 conversation · Used 2m ago');
+  });
+});
+
+describe('ProviderRow Antigravity quota', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    await initI18n('en');
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  const config = makeConfig({ cliType: 'registry', agentType: ANTIGRAVITY_AGENT_TYPE });
+  const group = (limitId: string, limitName: string, usedPercent: number) => ({
+    limitId,
+    limitName,
+    scope: { providerId: ANTIGRAVITY_AGENT_TYPE },
+    windows: [
+      {
+        label: limitName,
+        usedPercent,
+        windowDurationSeconds: 5 * 60 * 60,
+        resetsAtEpochSeconds: null,
+      },
+    ],
+  });
+  const quotaMachine: MachineViewMeta = {
+    ...machine,
+    raceLimits: {
+      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, 'gemini', config.id)]: group(
+        'gemini',
+        'Gemini',
+        10
+      ),
+      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, ANTIGRAVITY_THIRD_PARTY_LIMIT_ID, config.id)]:
+        group(ANTIGRAVITY_THIRD_PARTY_LIMIT_ID, 'Claude / GPT', 60),
+    },
+  };
+  const meterTitles = () =>
+    Array.from(container.querySelectorAll('[title]')).map((node) => node.getAttribute('title'));
+
+  const render = async (env: Record<string, string>) => {
+    await act(async () => {
+      root.render(
+        <ProviderRow
+          config={{ ...config, env }}
+          machine={quotaMachine}
+          onEdit={vi.fn()}
+          variant="card"
+        />
+      );
+    });
+  };
+
+  // Google never counts ACP use against the Claude/GPT group, so even a
+  // provider that offers those models shows only its Gemini quota.
+  it.each([
+    { offersClaude: false, env: {} },
+    { offersClaude: true, env: { [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: '1' } },
+  ])('shows only the Gemini quota (offers Claude: $offersClaude)', async ({ env }) => {
+    await render(env);
+
+    expect(meterTitles()).toContain('5h: 90%');
+    expect(meterTitles()).not.toContain('5h: 40%');
+    expect(meterTitles().some((title) => title?.includes('Claude / GPT'))).toBe(false);
   });
 });

@@ -173,7 +173,7 @@ describe('session usage', () => {
     ).toBe('codex');
   });
 
-  it("selects Antigravity's Claude/GPT quota for its non-Gemini models", () => {
+  it("shows Antigravity's Gemini quota only for its Gemini models", () => {
     const configId = 'antigravity-mac' as AgentConfigId;
     const scope = { providerId: ANTIGRAVITY_AGENT_TYPE };
     const rateLimits: MachineRateLimits = {
@@ -195,8 +195,9 @@ describe('session usage', () => {
 
     expect(limitFor('gemini-3.8-flash-high')).toBe('gemini');
     expect(limitFor('gemini-pro-agent')).toBe('gemini');
-    expect(limitFor('claude-opus-5-5-high')).toBe(ANTIGRAVITY_THIRD_PARTY_LIMIT_ID);
-    expect(limitFor('gpt-oss-120b-medium')).toBe(ANTIGRAVITY_THIRD_PARTY_LIMIT_ID);
+    // Google never counts ACP use against the Claude/GPT group, so it is not shown.
+    expect(limitFor('claude-opus-5-5-high')).toBeUndefined();
+    expect(limitFor('gpt-oss-120b-medium')).toBeUndefined();
   });
 
   it('keeps quota snapshots isolated between Codex provider configs', () => {
