@@ -46,6 +46,10 @@ import { listGitHubRepositories } from '@/lib/lan/lan-github-repos';
  * workspace: the same bodies the hosted command line runs, here on the
  * daemon's own replica as the machine's user. Another machine of the LAN is
  * reached the way an Agent's Session tools reach it.
+ *
+ * INVARIANT: a command runs as the daemon's user and never with the
+ * `LODY_SESSION_ID` of the terminal that sent it (kept here because
+ * `commands/AGENTS.md` is at its size limit).
  */
 export async function executeTerminalCommand(
   scope: { machineId: string; workspaceId: string },
