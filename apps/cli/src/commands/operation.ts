@@ -1,7 +1,18 @@
 import { Command } from 'commander';
 import type { SessionId, WorkspaceId } from '@lody/shared';
-import { runOneShotCommand, printJson } from '@/lib/command-runtime';
-import { runWorkspaceCommand, type WorkspaceCommandContext } from '@/lib/terminal-session-tools';
+import {
+  getAuthContextOrThrow,
+  printJson,
+  resolveWorkspaceOrThrow,
+  runOneShotCommand,
+} from '@/lib/command-runtime';
+import { getCliPlatformKind } from '@/lib/cli-platform';
+import {
+  resolveTerminalToolTarget,
+  runTerminalCommand,
+  type WorkspaceCommandContext,
+} from '@/lib/terminal-session-tools';
+import { z } from 'zod';
 import {
   getLodyOperationStorePath,
   LodyOperationStore,
@@ -46,6 +57,18 @@ export async function listRequesterOperations(
   }
 }
 
+const OperationPageSchema = z.object({
+  items: z.array(
+    z.looseObject({
+      operationId: z.string(),
+      kind: z.string(),
+      state: z.string(),
+      itemCount: z.number(),
+    })
+  ),
+  nextCursor: z.string().optional(),
+});
+
 export const operationCommand = new Command('operation')
   .description('Inspect Operations on this machine')
   .addCommand(
@@ -67,12 +90,22 @@ export const operationCommand = new Command('operation')
             limit: options.limit,
             cursor: options.cursor,
           });
-          const page = await runWorkspaceCommand(
-            'operation',
-            options.workspace,
-            { command: 'operation-list', session: sessionId, ...query },
-            (context) => listRequesterOperations(context, sessionId, query)
-          );
+          // The store is a file of this machine: the hosted command line reads it
+          // without a replica, a local daemon with its own identity in the workspace.
+          const page =
+            getCliPlatformKind() === 'local'
+              ? OperationPageSchema.parse(
+                  await runTerminalCommand(await resolveTerminalToolTarget(options.workspace), {
+                    command: 'operation-list',
+                    session: sessionId,
+                    ...query,
+                  })
+                )
+              : await (async () => {
+                  const auth = getAuthContextOrThrow('operation');
+                  const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
+                  return await listRequesterOperations({ auth, workspace }, sessionId, query);
+                })();
           if (options.json) printJson(page);
           else {
             console.log(

@@ -2680,7 +2680,7 @@ async function resolveAgentConfigForCreate(args: {
 /**
  * Whether the requester may open the repository, and its default branch when
  * known. A local daemon has no hosted registry: GitHub itself answers, asked
- * with the LAN host's token or this machine's own `gh` login.
+ * with this machine's own `gh` login or else the LAN host's token.
  */
 async function assertGitHubRepoAccess(args: {
   auth: AuthContext;
@@ -4086,6 +4086,9 @@ async function exitSessionCommand(code: number): Promise<void> {
   }
 }
 
+/** The longest `--wait` a daemon takes on (`TerminalCommandSchema`). */
+const TERMINAL_MAX_WAIT_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Local platform: the daemon creates or continues the Session as this
  * machine's user, and `--wait` waits on the daemon's copy of it.
@@ -4105,6 +4108,9 @@ async function finishTerminalTurn(
     throw new Error(
       '--jsonl --wait streams turn events and needs the hosted Lody; use --json --wait.'
     );
+  const timeoutMs = resolveStructuredOutputTimeoutMs(args.timeout);
+  if (args.wait && timeoutMs > TERMINAL_MAX_WAIT_MS)
+    throw new Error(`--timeout is at most ${TERMINAL_MAX_WAIT_MS / 1000} seconds here.`);
   const target = await resolveTerminalToolTarget(args.workspace);
   const started = await runTerminalCommand(target, command);
   const response = { ok: true, ...started };
@@ -4122,7 +4128,7 @@ async function finishTerminalTurn(
       command: 'wait',
       sessionId,
       userTurnId,
-      timeoutMs: resolveStructuredOutputTimeoutMs(args.timeout),
+      timeoutMs,
     });
   } catch (error) {
     throw buildStructuredWaitError('json', sessionId, userTurnId, error);
@@ -4209,7 +4215,11 @@ const sessionCreateCommand = new Command('create')
               useCurrentSessionAsParent: options.useCurrentSessionAsParent,
               currentSessionId: normalizeCliValue(process.env.LODY_SESSION_ID),
               repo: normalizeCliValue(options.repo),
-              localProject: normalizeCliValue(options.localProject),
+              // A path names this terminal's directory, not the daemon's working directory.
+              localProject: options.localProject
+                ? (normalizeLocalProjectPathSelector(options.localProject) ??
+                  normalizeCliValue(options.localProject))
+                : undefined,
               worktree: options.worktree,
               branch: normalizeCliValue(options.branch),
               mode: normalizeCliValue(options.mode),

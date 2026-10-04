@@ -397,6 +397,7 @@ export const syncCommand = new Command('sync')
 
       const workspaceSummaries: WorkspaceSyncSummary[] = [];
       if (getCliPlatformKind() === 'local') {
+        if (concurrency > 64) throw new Error('--concurrency is at most 64 here.');
         // The daemon syncs its own replica and reports only the summary, so
         // `--jsonl` has no per-item events here.
         const catalog = await Effect.runPromise(makeLocalWorkspaceCatalog().read());

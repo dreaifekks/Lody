@@ -11,6 +11,7 @@ import { makeLocalWorkspaceCatalog } from './local-workspace-catalog';
 import {
   classifyLocalDaemonIpcError,
   getAuthContextOrThrow,
+  LocalDaemonAvailabilityError,
   resolveWorkspaceOrThrow,
   withWorkspaceManager,
   type AuthContext,
@@ -153,7 +154,18 @@ export async function runTerminalCommand(
       : command.command === 'sync' || command.command === 'export'
         ? TERMINAL_BULK_COMMAND_TIMEOUT_MS
         : TERMINAL_COMMAND_TIMEOUT_MS
-  );
+  ).catch((error: unknown) => {
+    // The daemon keeps going after the socket gives up: a retry could send twice.
+    if (
+      (command.command === 'create' || command.command === 'chat') &&
+      error instanceof LocalDaemonAvailabilityError &&
+      error.code === 'DAEMON_BUSY'
+    )
+      throw new Error(
+        `The daemon did not answer in time, but it may still have ${command.command === 'create' ? 'created the Session' : 'sent the message'}. Check \`session list\` or \`session history\` before retrying.`
+      );
+    throw error;
+  });
   if (!('type' in result) || result.type !== 'cli/command-result')
     throw new Error('Unexpected session command response');
   return result.value;

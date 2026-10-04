@@ -19,17 +19,23 @@ export const LAN_GIT_CREDENTIAL_HELPER =
 
 export type GhLoginProbe = () => Promise<boolean>;
 
-const runGhAuthToken = async (): Promise<boolean> => {
+/**
+ * The token of this machine's own `gh` login to github.com, read with the login
+ * shell's environment so a daemon started outside a shell finds `gh` as agents do.
+ */
+export const readGhAuthToken = async (): Promise<string | null> => {
   const env = { ...process.env, ...(await getLoginShellEnv()) };
   return await new Promise((resolve) => {
     execFile(
       'gh',
       ['auth', 'token', '--hostname', 'github.com'],
       { env, timeout: GH_TIMEOUT_MS, windowsHide: true },
-      (error, stdout) => resolve(!error && String(stdout).trim().length > 0)
+      (error, stdout) => resolve((!error && String(stdout).trim()) || null)
     );
   });
 };
+
+const runGhAuthToken = async (): Promise<boolean> => (await readGhAuthToken()) !== null;
 
 /** Whether `gh` on this machine is logged in to github.com, asked at most once a minute. */
 export function createGhLoginProbe(

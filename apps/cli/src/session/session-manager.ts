@@ -77,7 +77,7 @@ import {
   LODY_GIT_CRED_CONTEXT_FILE_ENV,
 } from '@/lib/git-credential-broker';
 import type { CloudGithubTokenManager, CloudPort } from '@lody/platform';
-import { clearManagedGhTokenEnv } from '@/lib/gh-token-env';
+import { clearManagedGhTokenEnv, LODY_MANAGED_GH_TOKEN_SHA256_ENV } from '@/lib/gh-token-env';
 import { isLanGitHubTokenPort } from '@/lib/lan/lan-github-tokens';
 import {
   applyLanGitHubCredentialEnv,
@@ -1927,7 +1927,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     if (isLanGitHubTokenPort(this.cloudPort.githubTokens)) {
       // `applyLanGitHubCredential` gave the session the LAN host's token only
       // when this machine has no `gh` login; host git then needs it too.
-      if (!config.env?.GH_TOKEN) return undefined;
+      // The marker tells the LAN token from a GH_TOKEN of the agent config's own.
+      if (!config.env?.GH_TOKEN || !config.env[LODY_MANAGED_GH_TOKEN_SHA256_ENV]) return undefined;
       return {
         kind: 'lan',
         env: Object.fromEntries(

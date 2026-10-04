@@ -200,6 +200,7 @@ import {
 import type { ModelInfo } from '@lody/shared';
 import type {
   CloudNotificationsPort,
+  CloudGithubTokenManager,
   CloudPort,
   CloudUsagePort,
   LoroStreamsTokenProvider,
@@ -217,7 +218,7 @@ import {
 } from './machine-lifecycle';
 import { resolveRegisteredMachineName } from './machine-name';
 import { formatErrorMessage } from '@/utils/format-error';
-import { GitHubCredentialResolver } from '@/lib/pr-poller/github-credential-resolver';
+import { readGhAuthToken } from '@/lib/lan/lan-agent-github';
 import { LiveActivityDetailTracker } from './live-activity-detail';
 import { startTraceSpan, traceAsync } from '@/utils/trace-span';
 import { getCliHttpFetch } from '@/utils/http-transport';
@@ -6551,17 +6552,25 @@ export class MessageHandler {
     return requester === ownerUserId || requester === this.userId;
   }
 
-  private githubCredentialResolver: GitHubCredentialResolver | undefined;
+  /**
+   * The GitHub credential a terminal command checks a repository with, in the
+   * order agents and host git use: this machine's own `gh` login, then the LAN
+   * host's token.
+   */
+  private terminalGitHubTokens: CloudGithubTokenManager | undefined;
 
-  /** Managed credential first (a LAN's host token), then this machine's `gh` login. */
-  private getGitHubCredentialResolver(): GitHubCredentialResolver {
-    this.githubCredentialResolver ??= new GitHubCredentialResolver({
-      tokenManager: this.cloudPort.githubTokens?.createTokenManager(this.workspaceId) ?? null,
-      writeTokenContext: { requesterUserId: this.userId, machineId: this.machineId },
-      workspaceId: this.workspaceId,
-      logger: this.logger,
-    });
-    return this.githubCredentialResolver;
+  private async readGitHubToken(repoFullName: string): Promise<string | null> {
+    const own = await readGhAuthToken();
+    if (own) return own;
+    this.terminalGitHubTokens ??= this.cloudPort.githubTokens?.createTokenManager(this.workspaceId);
+    const tokenManager = this.terminalGitHubTokens;
+    if (!tokenManager) return null;
+    try {
+      return await tokenManager.getAppTokenForRepo(repoFullName);
+    } catch (error) {
+      this.logger.debug(`[lan-github] No LAN GitHub token: ${formatErrorMessage(error)}`);
+      return null;
+    }
   }
 
   private withSessionCommandEnvironment<T>(run: () => T): T {
@@ -6630,8 +6639,7 @@ export class MessageHandler {
           dispatchSession: async (sessionId) => {
             void this.sessionDispatchWatcher.enqueueSessionCheck(sessionId);
           },
-          githubToken: async (repoFullName) =>
-            (await this.getGitHubCredentialResolver().resolve(repoFullName))?.token ?? null,
+          githubToken: async (repoFullName) => await this.readGitHubToken(repoFullName),
           ...(this.lanWorkspace
             ? {
                 remote: {
