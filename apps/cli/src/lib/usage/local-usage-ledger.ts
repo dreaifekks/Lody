@@ -8,7 +8,6 @@ import {
   LAN_USAGE_DAY_MS,
   LAN_USAGE_HOUR_MS,
   LanUsageRowSchema,
-  type LanUsageImportResult,
   type LanUsageRow,
 } from '@lody/shared';
 import type { SessionUsageUpdate } from 'acp-extension-core';
@@ -49,8 +48,6 @@ const LedgerFileSchema = z.object({
     z.object({ seenAt: z.number(), models: z.record(z.string(), CountersSchema) })
   ),
   workspaces: z.record(z.string(), z.array(z.unknown())),
-  /** Rows another tracker counted before this machine did, per workspace and source. */
-  imported: z.record(z.string(), z.record(z.string(), z.array(z.unknown()))).optional(),
 });
 type LedgerFile = z.infer<typeof LedgerFileSchema>;
 
@@ -92,7 +89,6 @@ function addRow(target: LanUsageRow, source: LanUsageRow): void {
 export class LocalUsageLedger implements CloudUsagePort {
   private readonly scopes = new Map<string, { seenAt: number; models: Record<string, Counters> }>();
   private readonly workspaces = new Map<string, Map<string, LanUsageRow>>();
-  private readonly imported = new Map<string, Map<string, Map<string, LanUsageRow>>>();
   private saveTimer: NodeJS.Timeout | null = null;
   private dirty = false;
 
@@ -161,70 +157,20 @@ export class LocalUsageLedger implements CloudUsagePort {
     this.save();
   }
 
-  /**
-   * What this machine counted for a workspace, and what it imported for the
-   * days before, in buckets that end after `sinceMs`.
-   */
+  /** What this machine counted for a workspace, in buckets that end after `sinceMs`. */
   report(workspaceId: string, sinceMs = 0): LanUsageRow[] {
-    const sources = [
-      this.workspaces.get(workspaceId),
-      ...(this.imported.get(workspaceId)?.values() ?? []),
-    ];
-    return sources
-      .flatMap((rows) => (rows ? [...rows.values()] : []))
+    const rows = this.workspaces.get(workspaceId);
+    if (!rows) return [];
+    return [...rows.values()]
       .filter((row) => row.startMs + row.spanMs > sinceMs)
       .sort((left, right) => left.startMs - right.startMs)
       .map((row) => ({ ...row }));
-  }
-
-  /**
-   * Keeps rows another tracker counted for this machine, for the whole days
-   * before the first one this machine counted itself; later rows would be
-   * counted twice. `replace` drops what the source gave before.
-   */
-  importRows(
-    workspaceId: string,
-    source: string,
-    rows: readonly LanUsageRow[],
-    replace: boolean
-  ): LanUsageImportResult {
-    const cutoffMs = this.ownCountingStart(workspaceId);
-    let bySource = this.imported.get(workspaceId);
-    if (!bySource) {
-      bySource = new Map();
-      this.imported.set(workspaceId, bySource);
-    }
-    const target = (replace ? undefined : bySource.get(source)) ?? new Map<string, LanUsageRow>();
-    bySource.set(source, target);
-    let kept = 0;
-    let dropped = 0;
-    for (const row of rows) {
-      if (row.startMs + row.spanMs > cutoffMs) {
-        dropped += 1;
-        continue;
-      }
-      const existing = target.get(rowKey(row));
-      if (existing) addRow(existing, row);
-      else target.set(rowKey(row), { ...row });
-      kept += 1;
-    }
-    this.scheduleSave();
-    return { kept, dropped, cutoffMs };
   }
 
   close(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = null;
     if (this.dirty) this.save();
-  }
-
-  /** The start of the first day this machine counted usage itself, or of today. */
-  private ownCountingStart(workspaceId: string): number {
-    let start = Math.floor(this.now() / LAN_USAGE_DAY_MS) * LAN_USAGE_DAY_MS;
-    for (const row of this.workspaces.get(workspaceId)?.values() ?? []) {
-      start = Math.min(start, Math.floor(row.startMs / LAN_USAGE_DAY_MS) * LAN_USAGE_DAY_MS);
-    }
-    return start;
   }
 
   private rowsOf(workspaceId: string): Map<string, LanUsageRow> {
@@ -253,11 +199,7 @@ export class LocalUsageLedger implements CloudUsagePort {
   /** Folds old hours into days and forgets scopes nobody reports any more. */
   private compact(): void {
     const now = this.now();
-    const maps = [
-      ...this.workspaces.values(),
-      ...[...this.imported.values()].flatMap((bySource) => [...bySource.values()]),
-    ];
-    for (const rows of maps) {
+    for (const rows of this.workspaces.values()) {
       for (const [key, row] of [...rows]) {
         if (row.spanMs !== LAN_USAGE_HOUR_MS || row.startMs + row.spanMs > now - HOURLY_FOR_MS) {
           continue;
@@ -288,12 +230,6 @@ export class LocalUsageLedger implements CloudUsagePort {
       scopes: Object.fromEntries(this.scopes),
       workspaces: Object.fromEntries(
         [...this.workspaces].map(([workspaceId, rows]) => [workspaceId, [...rows.values()]])
-      ),
-      imported: Object.fromEntries(
-        [...this.imported].map(([workspaceId, bySource]) => [
-          workspaceId,
-          Object.fromEntries([...bySource].map(([source, rows]) => [source, [...rows.values()]])),
-        ])
       ),
     };
     try {
@@ -335,23 +271,12 @@ export class LocalUsageLedger implements CloudUsagePort {
       return;
     }
     for (const [key, scope] of Object.entries(parsed.data.scopes)) this.scopes.set(key, scope);
-    const fill = (map: Map<string, LanUsageRow>, rows: readonly unknown[]) => {
+    for (const [workspaceId, rows] of Object.entries(parsed.data.workspaces)) {
+      const map = this.rowsOf(workspaceId);
       for (const candidate of rows) {
         const row = LanUsageRowSchema.safeParse(candidate);
         if (row.success) map.set(rowKey(row.data), row.data);
       }
-    };
-    for (const [workspaceId, rows] of Object.entries(parsed.data.workspaces)) {
-      fill(this.rowsOf(workspaceId), rows);
-    }
-    for (const [workspaceId, bySource] of Object.entries(parsed.data.imported ?? {})) {
-      const sources = new Map<string, Map<string, LanUsageRow>>();
-      for (const [source, rows] of Object.entries(bySource)) {
-        const map = new Map<string, LanUsageRow>();
-        fill(map, rows);
-        sources.set(source, map);
-      }
-      this.imported.set(workspaceId, sources);
     }
   }
 }

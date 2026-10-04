@@ -5,10 +5,7 @@ import {
 } from '../hosted-config';
 import {
   LanAgentInstallResultSchema,
-  LanUsageImportResultSchema,
   LanUsageReportSchema,
-  LanUsageRowSchema,
-  LAN_USAGE_IMPORT_MAX_ROWS,
   LanMachineUpdateResultSchema,
   LAN_MACHINE_ALIAS_MAX,
   LanMachinesSchema,
@@ -515,19 +512,6 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     return typeof value.workspaceId === 'string' && typeof value.agentType === 'string';
   }
 
-  if (value.type === 'lan/usage-import') {
-    return (
-      typeof value.workspaceId === 'string' &&
-      typeof value.source === 'string' &&
-      value.source.trim().length > 0 &&
-      value.source.length <= 32 &&
-      typeof value.replace === 'boolean' &&
-      Array.isArray(value.rows) &&
-      value.rows.length <= LAN_USAGE_IMPORT_MAX_ROWS &&
-      value.rows.every((row) => LanUsageRowSchema.safeParse(row).success)
-    );
-  }
-
   if (value.type === 'lan/usage') {
     return (
       typeof value.workspaceId === 'string' &&
@@ -711,10 +695,6 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'lan/usage') {
     return LanUsageReportSchema.safeParse(value.result).success;
-  }
-
-  if (value.type === 'lan/usage-import') {
-    return LanUsageImportResultSchema.safeParse(value.result).success;
   }
 
   if (value.type === 'lan/machines') {

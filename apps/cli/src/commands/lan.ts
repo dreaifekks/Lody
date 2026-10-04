@@ -27,7 +27,6 @@ import { printJson, runOneShotCommand, type CommonCommandOptions } from '@/lib/c
 import { machinesCommand, updateCommand } from './lan-machines';
 import { forwardCommand } from './lan-forward';
 import { shellCommand } from './lan-shell';
-import { usageCommand } from './lan-usage';
 import { renderTerminalTable } from '@/lib/terminal-table';
 import {
   LAN_HUB_DEFAULT_PORT,
@@ -936,6 +935,5 @@ export const lanCommand = new Command('lan')
   .addCommand(updateCommand)
   .addCommand(shellCommand)
   .addCommand(forwardCommand)
-  .addCommand(usageCommand)
   .addCommand(pushCommand)
   .addCommand(githubCommand);

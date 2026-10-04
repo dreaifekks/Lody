@@ -95,7 +95,7 @@ Both desktop apps can run side by side.
 | Hosted import               | Reads a machine's configuration from the hosted Lody                                                                                                                                             |
 | Moving and standby hub      | `lody-lan lan take-over` moves the hub to another server; a standby server keeps a copy and takes over when the hub stays away; Settings > LAN marks both                                        |
 | Agents on other machines    | Lody's tools inside a session start and drive sessions on the other machines of its LAN                                                                                                          |
-| Usage                       | Each machine keeps what its agents used; Settings > AI Usage gathers it from every member, by model and by machine; `lody-lan lan usage import-vibe` fills the days before from Vibe Usage       |
+| Usage                       | Each machine keeps what its agents used; Settings > AI Usage gathers it from every member, by model and by machine                                                                               |
 | Shells and ports            | `lody-lan lan shell <machine>` opens a shell on a member, `lody-lan lan forward <machine> <port>` reaches one of its ports, both over the members' direct connections                            |
 
 ### Works differently

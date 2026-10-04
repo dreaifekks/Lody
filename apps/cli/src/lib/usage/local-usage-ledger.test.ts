@@ -147,40 +147,4 @@ describe('LocalUsageLedger', () => {
     expect(fs.readFileSync(`${file}.unreadable-${START}`, 'utf8')).toBe('{ not json');
     expect(make().report(WORKSPACE)).toHaveLength(1);
   });
-
-  it('keeps imported days before its own counting, replaces them on a new import, and keeps them', async () => {
-    const clock = { now: START };
-    const { make } = open(clock);
-    const ledger = make();
-    // This machine started counting itself today.
-    ledger.recordSessionUsageUpdate(update({ 'claude-opus': counters(100, 10) }));
-    const today = Math.floor(START / LAN_USAGE_DAY_MS) * LAN_USAGE_DAY_MS;
-    const day = (offset: number, inputTokens: number) => ({
-      startMs: today + offset * LAN_USAGE_DAY_MS,
-      spanMs: LAN_USAGE_DAY_MS,
-      modelId: 'gpt-5.5',
-      inputTokens,
-      outputTokens: 0,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-      reasoningOutputTokens: 0,
-      costUSD: 1,
-    });
-
-    expect(
-      ledger.importRows(WORKSPACE, 'vibe', [day(-2, 500), day(-1, 700), day(0, 900)], true)
-    ).toEqual({ kept: 2, dropped: 1, cutoffMs: today });
-    // A later part of the same import adds; a new import starts again.
-    ledger.importRows(WORKSPACE, 'vibe', [day(-1, 1)], false);
-    expect(ledger.report(WORKSPACE).map((row) => row.inputTokens)).toEqual([500, 701, 100]);
-    ledger.importRows(WORKSPACE, 'vibe', [day(-3, 40)], true);
-    await ledger.flushSessionUsage();
-
-    expect(
-      make()
-        .report(WORKSPACE)
-        .map((row) => row.inputTokens)
-    ).toEqual([40, 100]);
-    expect(make().report('lw_other')).toEqual([]);
-  });
 });

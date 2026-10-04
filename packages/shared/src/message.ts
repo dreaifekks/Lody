@@ -8,9 +8,7 @@ import type {
   LanMachineColor,
   LanMachineUpdateResult,
   LanMachines,
-  LanUsageImportResult,
   LanUsageReport,
-  LanUsageRow,
 } from './lan-control';
 import type {
   MachineId,
@@ -1021,19 +1019,6 @@ export type LanMemberControlRequest =
       machineId: MachineId;
       workspaceId: WorkspaceId;
       sinceMs?: number;
-    }
-  | {
-      /**
-       * Usage counted elsewhere, such as by another usage tracker, for the
-       * days before the machine counted its own. `replace` starts the
-       * source's rows again; later parts of one import add to them.
-       */
-      type: 'lan/usage-import';
-      machineId: MachineId;
-      workspaceId: WorkspaceId;
-      source: string;
-      replace: boolean;
-      rows: LanUsageRow[];
     };
 
 export type LocalProjectControlRequest =
@@ -1261,8 +1246,7 @@ type LanMemberControlOkResponse =
   | LocalProjectControlOkResponse<'hosted-config/import', HostedConfigImportResult>
   | LocalProjectControlOkResponse<'lan/update-machine', LanMachineUpdateResult>
   | LocalProjectControlOkResponse<'lan/install-agent', LanAgentInstallResult>
-  | LocalProjectControlOkResponse<'lan/usage', LanUsageReport>
-  | LocalProjectControlOkResponse<'lan/usage-import', LanUsageImportResult>;
+  | LocalProjectControlOkResponse<'lan/usage', LanUsageReport>;
 
 /** What a member answers, which is also what a forwarded request brings back. */
 export type LanMemberControlResponse =

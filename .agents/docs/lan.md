@@ -712,18 +712,6 @@ the header and left out; its usage is on its own disk until it answers again.
 The `localUsage` platform capability shows the page where `usageAnalytics`
 does not.
 
-The days before a machine counted its own usage can be filled from Vibe Usage,
-a tracker that reads the logs of the agents and keeps their counts by day,
-model and host. `lody-lan lan usage import-vibe` reads the account the local
-`vibe-usage` tracker is linked to (`~/.vibe-usage/config.json`; the service
-answers the last 90 days), turns its buckets into day rows
-(`apps/cli/src/lib/usage/vibe-usage-import.ts`), finds the machine of each
-host by its name or short name (`--map` for the rest), and hands each machine
-its rows with `lan/usage-import`, in parts below the size of one request
-between members. A machine keeps imported rows apart from its own and only
-for the whole days before the first one it counted itself, so nothing counts
-twice; a new import of the same source replaces the last.
-
 ## Limits
 
 - The hub is a development server on SQLite: one node, no replication. Back up
