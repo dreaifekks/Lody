@@ -4,6 +4,7 @@
 // to each other, so no credential leaves it.
 import net from 'node:net';
 import {
+  createUtf8StreamDecoder,
   machineShellScope,
   TERMINAL_DEFAULT_COLS,
   TERMINAL_DEFAULT_ROWS,
@@ -238,8 +239,12 @@ export async function runMachineShell(
 
     const filter = createDetachFilter(() => finish({ type: 'detached', terminalId }));
     let lastInput = '';
+    // A character can be split between two chunks of input; one decoder keeps
+    // its first bytes until the rest arrives.
+    const decode = createUtf8StreamDecoder();
     const onInput = (chunk: Buffer | string) => {
-      const data = interactive ? filter(chunk.toString()) : chunk.toString();
+      const text = typeof chunk === 'string' ? chunk : decode(chunk);
+      const data = interactive ? filter(text) : text;
       if (!data) return;
       lastInput = data;
       link.send({ type: 'input', terminalId, data });

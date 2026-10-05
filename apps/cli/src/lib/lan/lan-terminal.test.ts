@@ -611,6 +611,25 @@ describe('terminals between LAN members', () => {
     expect(pty.inputs).toEqual([['server-1', 'hello\n']]);
   });
 
+  it('keeps a character whose bytes arrive in two chunks of piped input', async () => {
+    const { published, pty } = await startServer();
+    const { router } = startClient(published.get(HOME)!);
+    const link = await serveLocally(router);
+    const { io, stdin, shows } = pipedIo();
+
+    const outcome = runMachineShell(link, { machineId: SERVER, command: 'cat', io });
+    await shows('$ ');
+    // 「中文\n」 split inside its first character.
+    stdin.write(Buffer.from([0xe4]));
+    await new Promise((resolve) => setImmediate(resolve));
+    stdin.write(Buffer.from([0xb8, 0xad, 0xe6, 0x96, 0x87, 0x0a]));
+    await shows('$ 中文\n');
+    pty.close('server-1');
+
+    expect(await outcome).toEqual({ type: 'exited', exitCode: 0 });
+    expect(pty.inputs.map(([, data]) => data).join('')).toBe('中文\n');
+  });
+
   it('opens a shell of this machine on this machine', async () => {
     const { published, pty } = await startServer();
     const { router, local } = startClient(published.get(HOME)!);
