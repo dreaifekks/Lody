@@ -386,12 +386,15 @@ export class LanUpdaterService implements AppUpdater {
     }
   }
 
-  /** What an update that did not finish left behind. */
+  /**
+   * What an update that did not finish left behind. A download that broke off
+   * stays: the next one continues it if it is of the same file.
+   */
   private discardLeftovers(target: LanInstallTarget): void {
     const leftovers =
       target.kind === 'mac-bundle'
-        ? [target.download, `${target.download}.partial`, target.staging, target.backup]
-        : [target.download, `${target.download}.partial`]
+        ? [target.download, target.staging, target.backup]
+        : [target.download]
     for (const leftover of leftovers) {
       try {
         fs.rmSync(leftover, { recursive: true, force: true })

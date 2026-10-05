@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   compareLanVersions,
   composeLanReleaseSource,
@@ -325,6 +325,173 @@ describe('downloading a file of a release', () => {
     expect((failure as LanReleaseError).code).toBe('mismatch');
     expect((failure as LanReleaseError).message).toMatch(/a newer build may be on its way/);
     expect(fs.readdirSync(directory)).toEqual([]);
+  });
+
+  /** Resolves once `bytes` of the download reached the disk. */
+  const written = async (bytes: number) => {
+    const partial = `${destination}.partial`;
+    while (!fs.existsSync(partial) || fs.statSync(partial).size < bytes) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+
+  /**
+   * A connection that sends `bytes` and, once they are written, breaks off, or
+   * stalls if `stall` is set. Breaking off earlier would drop what was not yet
+   * written, which only makes the next attempt ask for more.
+   */
+  const brokenOff = (bytes: Buffer, stall = false) => {
+    let sent = false;
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          if (!sent) {
+            sent = true;
+            controller.enqueue(new Uint8Array(bytes));
+            return;
+          }
+          if (stall) return new Promise<void>(() => undefined);
+          await written(bytes.byteLength);
+          controller.error(new Error('connection reset'));
+        },
+      })
+    );
+  };
+
+  /** Answers a range request the way a release host does. */
+  const rest = (from: number) =>
+    new Response(payload.subarray(from), {
+      status: 206,
+      headers: {
+        'content-range': `bytes ${from}-${payload.byteLength - 1}/${payload.byteLength}`,
+      },
+    });
+
+  const rangeOf = (init: { headers: Record<string, string> }) => init.headers.range ?? null;
+
+  it('continues where a connection broke off', async () => {
+    const half = Math.floor(payload.byteLength / 2);
+    const ranges: (string | null)[] = [];
+    await downloadLanReleaseAsset({
+      source,
+      asset: manifest().assets[0]!,
+      destination,
+      env: {},
+      retryDelaysMs: [0],
+      fetch: async (_url, init) => {
+        ranges.push(rangeOf(init));
+        return ranges.length === 1 ? brokenOff(payload.subarray(0, half)) : rest(half);
+      },
+    });
+
+    expect(ranges).toEqual([null, `bytes=${half}-`]);
+    expect(fs.readFileSync(destination)).toEqual(payload);
+    expect(fs.readdirSync(directory)).toEqual(['lody-lan-cli.tgz']);
+  });
+
+  it('keeps what arrived for a later download of the same file', async () => {
+    const half = Math.floor(payload.byteLength / 2);
+    const failure = await downloadLanReleaseAsset({
+      source,
+      asset: manifest().assets[0]!,
+      destination,
+      env: {},
+      retryDelaysMs: [],
+      fetch: async () => brokenOff(payload.subarray(0, half)),
+    }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect((failure as LanReleaseError).code).toBe('unreachable');
+    expect(fs.existsSync(destination)).toBe(false);
+
+    const ranges: (string | null)[] = [];
+    await downloadLanReleaseAsset({
+      source,
+      asset: manifest().assets[0]!,
+      destination,
+      env: {},
+      fetch: async (_url, init) => {
+        ranges.push(rangeOf(init));
+        return rest(half);
+      },
+    });
+    expect(ranges).toEqual([`bytes=${half}-`]);
+    expect(fs.readFileSync(destination)).toEqual(payload);
+    expect(fs.readdirSync(directory)).toEqual(['lody-lan-cli.tgz']);
+  });
+
+  it('never continues the part of another build', async () => {
+    const other = Buffer.from('another build entirely');
+    await downloadLanReleaseAsset({
+      source,
+      asset: { name: 'lody-lan-cli.tgz', size: other.byteLength + 10, sha256: sha256(other) },
+      destination,
+      env: {},
+      retryDelaysMs: [],
+      fetch: async () => brokenOff(other),
+    }).catch(() => undefined);
+
+    const ranges: (string | null)[] = [];
+    await downloadLanReleaseAsset({
+      source,
+      asset: manifest().assets[0]!,
+      destination,
+      env: {},
+      fetch: async (_url, init) => {
+        ranges.push(rangeOf(init));
+        return new Response(payload);
+      },
+    });
+    expect(ranges).toEqual([null]);
+    expect(fs.readFileSync(destination)).toEqual(payload);
+  });
+
+  it('starts over when the host ignores the range', async () => {
+    const half = Math.floor(payload.byteLength / 2);
+    let requests = 0;
+    await downloadLanReleaseAsset({
+      source,
+      asset: manifest().assets[0]!,
+      destination,
+      env: {},
+      retryDelaysMs: [0],
+      fetch: async () => {
+        requests += 1;
+        return requests === 1 ? brokenOff(payload.subarray(0, half)) : new Response(payload);
+      },
+    });
+    expect(fs.readFileSync(destination)).toEqual(payload);
+  });
+
+  it('tries again, where it stopped, once nothing arrived for a while', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const half = Math.floor(payload.byteLength / 2);
+      const ranges: (string | null)[] = [];
+      const done = downloadLanReleaseAsset({
+        source,
+        asset: manifest().assets[0]!,
+        destination,
+        env: {},
+        idleTimeoutMs: 60_000,
+        retryDelaysMs: [0],
+        fetch: async (_url, init) => {
+          ranges.push(rangeOf(init));
+          return ranges.length === 1 ? brokenOff(payload.subarray(0, half), true) : rest(half);
+        },
+      });
+      await written(half);
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(ranges).toEqual([null]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await done;
+
+      expect(ranges).toEqual([null, `bytes=${half}-`]);
+      expect(fs.readFileSync(destination)).toEqual(payload);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports a file the release does not have', async () => {
