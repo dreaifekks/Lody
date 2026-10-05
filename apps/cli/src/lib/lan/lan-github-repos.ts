@@ -3,6 +3,7 @@
 // the LAN host's token, or this machine's own `gh` login when the host has none.
 import { z } from 'zod';
 import type { WorkspaceGitHubRepository } from '@/lib/workspace';
+import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 /** `/user/repos` pages of 100; ten cover any account a terminal lists. */
@@ -76,4 +77,15 @@ export async function listGitHubRepositories(
     if (items.length < 100) break;
   }
   return repositories;
+}
+
+/**
+ * The repositories agents of this machine may open: the ones its credential
+ * reads, from inside the agent service. None without a credential.
+ */
+export async function listLocalGitHubRepositories(
+  request: typeof fetch = fetch
+): Promise<GitHubRepositoryInfo[]> {
+  const token = await getSessionCommandEnvironment()?.host.githubToken?.('');
+  return token ? await listGitHubRepositories(token, request) : [];
 }

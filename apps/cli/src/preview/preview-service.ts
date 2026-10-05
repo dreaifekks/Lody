@@ -39,6 +39,7 @@ import type { LoroDocumentManager } from '@/lib/loro/doc';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import { LocalPreviewProxyManager } from './local-preview-proxy';
+import type { LanMemberPorts } from './lan-member-ports';
 import { QuickTunnelSession, type PreviewCloseReason } from './quick-tunnel-session';
 import { createPreviewTargetTransport, fetchPreviewTarget } from './preview-target-transport';
 
@@ -86,6 +87,12 @@ type PreviewServiceDeps = {
   userId: string;
   runtimeBaseUrl: string | null;
   remotePreview: CloudRemotePreviewPort | null;
+  /**
+   * Ports of this machine that carry a dev server another member of a LAN
+   * runs; present in a LAN's workspace, where this machine previews the
+   * sessions of the other members too.
+   */
+  memberPorts?: LanMemberPorts;
   now?: () => number;
 };
 
@@ -746,7 +753,7 @@ export class PreviewService {
       };
     }
 
-    const session = await this.getSessionMeta(request.sessionId);
+    const session = await this.getSessionMeta(request.sessionId, { member: true });
     if (!session.ok) {
       return {
         type: 'session/preview-endpoint-acquire_response',
@@ -767,7 +774,29 @@ export class PreviewService {
       };
     }
 
-    const validation = await this.validateTargetForCreate(request.target);
+    let connectTo: PreviewTarget | undefined;
+    if (session.meta.machineId !== this.deps.machineId && this.deps.memberPorts) {
+      // The dev server runs on another member: a port of this machine carries
+      // every connection there, and is proxied as one of this machine.
+      try {
+        const port = await this.deps.memberPorts.open(
+          request.sessionId,
+          session.meta.machineId as MachineId,
+          request.target
+        );
+        connectTo = { ...request.target, host: '127.0.0.1', port };
+      } catch (error) {
+        return {
+          type: 'session/preview-endpoint-acquire_response',
+          sessionId: request.sessionId,
+          success: false,
+          error: 'port_not_listening',
+          message: formatErrorMessage(error),
+        };
+      }
+    }
+
+    const validation = await this.validateTargetForCreate(connectTo ?? request.target);
     if ('failure' in validation) {
       return {
         type: 'session/preview-endpoint-acquire_response',
@@ -787,7 +816,11 @@ export class PreviewService {
         : undefined;
     const endpoint = await this.localProxyManager.acquire({
       sessionId: request.sessionId,
-      target: validation.normalizedTarget,
+      // The page keeps the address the member serves it at.
+      target: connectTo
+        ? { ...validation.normalizedTarget, host: request.target.host, port: request.target.port }
+        : validation.normalizedTarget,
+      ...(connectTo ? { connectTo: validation.normalizedTarget } : {}),
       connectionAddress: validation.connectionAddress,
       shareUrl,
     });
@@ -817,6 +850,7 @@ export class PreviewService {
       };
     }
     await this.localProxyManager.release(request.sessionId, request.endpointId);
+    await this.deps.memberPorts?.release(request.sessionId);
     return {
       type: 'session/preview-endpoint-release_response',
       sessionId: request.sessionId,
@@ -872,7 +906,10 @@ export class PreviewService {
     const results = await Promise.allSettled(
       [...sessionIds].map((sessionId) => this.closeSessionPreviewForCleanup(sessionId, reason))
     );
-    const local = await Promise.allSettled([this.localProxyManager.closeAll(reason)]);
+    const local = await Promise.allSettled([
+      this.localProxyManager.closeAll(reason),
+      this.deps.memberPorts?.closeAll(),
+    ]);
     const failures = [...results, ...local].flatMap((result) =>
       result.status === 'rejected' ? [result.reason] : []
     );
@@ -1151,7 +1188,8 @@ export class PreviewService {
   }
 
   private async getSessionMeta(
-    sessionId: SessionId
+    sessionId: SessionId,
+    options: { member?: boolean } = {}
   ): Promise<{ ok: true; meta: PreviewSessionMeta } | { ok: false; failure: ValidationFailure }> {
     const record = await this.deps.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId));
     if (!record?.meta || isLoroRepoDocDeleted(record)) {
@@ -1166,7 +1204,9 @@ export class PreviewService {
     }
 
     const meta = PreviewSessionOwner.parse(record.meta);
-    if (meta.machineId !== this.deps.machineId) {
+    // A session another member of the LAN runs is previewed from here only.
+    const member = options.member === true && this.deps.memberPorts !== undefined;
+    if (meta.machineId !== this.deps.machineId && !member) {
       return {
         ok: false,
         failure: {

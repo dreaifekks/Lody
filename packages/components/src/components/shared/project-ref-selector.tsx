@@ -22,7 +22,7 @@ export type ProjectRefSelectorProps = {
   repositories?: ReadonlyArray<{ fullName: string; description?: string | null }>;
   latestMessageAtByRepo?: ReadonlyMap<string, number>;
   onAddLocalProject: () => void;
-  onConnectGitRepo: () => void;
+  onConnectGitRepo?: () => void;
   className?: string;
   /** Defaults to `bottom` — task surfaces open downward from the trigger. */
   contentSide?: 'top' | 'bottom';

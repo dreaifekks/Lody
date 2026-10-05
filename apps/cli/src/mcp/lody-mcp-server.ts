@@ -92,6 +92,7 @@ import { applyReviewSubmission } from '@/lib/review-automation/review-automation
 import type { LoroDocumentManager } from '@/lib/loro/doc';
 import { readMachineLocalProjects } from '@/lib/local-project-meta';
 import { listWorkspaceGitHubRepositoriesForCliToken } from '@/lib/workspace';
+import { listLocalGitHubRepositories } from '@/lib/lan/lan-github-repos';
 import {
   createSessionResult,
   runSessionOperationWithSyncedMetadata,
@@ -113,7 +114,11 @@ import type {
   StructuredSessionOutputMode,
 } from '@/commands/session-output';
 import { toMachineAccessMcpError } from '@/mcp/machine-access-error';
-import { MAX_AGENT_FEEDBACK_LENGTH, submitAgentFeedback } from '@/lib/feedback';
+import {
+  LOCAL_FEEDBACK_UNAVAILABLE,
+  MAX_AGENT_FEEDBACK_LENGTH,
+  submitAgentFeedback,
+} from '@/lib/feedback';
 import {
   getLodyOperationStorePath,
   LodyOperationStore,
@@ -2527,19 +2532,20 @@ const buildSessionCreateOptions = async (
       )
     );
     const repoQuery = normalizeCliValue(input.repoQuery)?.toLowerCase();
-    const repos =
-      repoQuery && !getSessionCommandEnvironment()
-        ? (
-            await listWorkspaceGitHubRepositoriesForCliToken({
+    const repos = repoQuery
+      ? (getSessionCommandEnvironment()
+          ? // The agent service keeps no registry: what this machine's GitHub credential reads.
+            await listLocalGitHubRepositories()
+          : await listWorkspaceGitHubRepositoriesForCliToken({
               token: auth.token,
               workspaceId,
               requesterUserId,
               enabledOnly: true,
             })
-          )
-            .filter((repo) => repo.fullName.toLowerCase().includes(repoQuery))
-            .slice(0, MAX_MCP_CREATE_OPTION_MATCHES)
-        : [];
+        )
+          .filter((repo) => repo.fullName.toLowerCase().includes(repoQuery))
+          .slice(0, MAX_MCP_CREATE_OPTION_MATCHES)
+      : [];
     return {
       ok: true,
       current: await buildSessionCurrentInfo(manager, workspaceId, currentSession),
@@ -3676,6 +3682,7 @@ export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServe
     },
     async (args: FeedbackToolInput) => {
       try {
+        if (getCliPlatformKind() === 'local') throw new Error(LOCAL_FEEDBACK_UNAVAILABLE);
         const auth = getCliAuthContextOrThrow('mcp-feedback');
         return jsonTextResult(
           await submitAgentFeedback({
@@ -3737,7 +3744,9 @@ export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServe
     }
   );
 
-  server.registerTool(
+  // A catalog write: the local platform makes it on the daemon's replica, as
+  // the other Session tools do, instead of asking a hosted account.
+  registerSessionTool(
     MCP_CONFIGURE_TOOL_NAME,
     {
       title: 'Configure a workspace MCP server',
@@ -4171,8 +4180,18 @@ export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServe
         if (environment) {
           const sessionId = resolveMcpSessionId(args.sessionId, ctx) as SessionId;
           const session = await readCurrentSessionMeta(environment.manager, sessionId);
-          if (!session || session.machineId !== auth.machineId)
-            throw new Error('Session not found on this machine');
+          // Another machine of a LAN runs its own sessions; its agent service cancels them.
+          const reachable =
+            !!session &&
+            (session.machineId === auth.machineId ||
+              (
+                await environment.checkMachineAccess({
+                  workspaceId: environment.workspace.id as WorkspaceId,
+                  machineId: session.machineId as MachineId,
+                  requesterUserId: auth.userId,
+                })
+              ).allowed);
+          if (!reachable) throw new Error('Session not found on this machine');
           return jsonTextResult(await environment.host.cancelSession(sessionId));
         }
         return jsonTextResult(
@@ -4268,7 +4287,10 @@ export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServe
             startedTargets.map((item) =>
               item.status === 'active'
                 ? environment
-                  ? environment.host.cancelSession(item.target.sessionId, item.target.userTurnId)
+                  ? environment.host.cancelSession(
+                      item.target.sessionId,
+                      `assistant:${item.target.userTurnId}`
+                    )
                   : runLodyCliJson(buildOperationTargetCancelArgs(getMcpWorkspaceId(ctx), item))
                 : Promise.resolve()
             )

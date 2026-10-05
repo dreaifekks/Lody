@@ -61,6 +61,7 @@ const ANSWER_TIMEOUT_MS: Record<LanMemberControlRequest['type'], number> = {
   'hosted-config/preview': 90_000,
   'hosted-config/import': 100_000,
   'lan/usage': 20_000,
+  'lan/restart-machine': 15_000,
 };
 
 export function isLanControlRequest(
@@ -297,7 +298,12 @@ export class LanFleetControl {
       usage: this.options.usage,
     });
     // What was imported or installed is something the members should see.
-    if (response.ok && request.type !== 'hosted-config/preview' && request.type !== 'lan/usage') {
+    if (
+      response.ok &&
+      request.type !== 'hosted-config/preview' &&
+      request.type !== 'lan/usage' &&
+      request.type !== 'lan/restart-machine'
+    ) {
       void this.publish();
     }
     return response;

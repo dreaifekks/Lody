@@ -165,7 +165,8 @@ interface UnifiedProjectSelectorProps {
   latestMessageAtByRepo?: ReadonlyMap<string, number>;
   latestMessageAtByLocalProject?: ReadonlyMap<string, number>;
   onAddLocalProject: () => void;
-  onConnectGitRepo: () => void;
+  /** Absent where repositories come from no hosted registry, which leaves the item out. */
+  onConnectGitRepo?: () => void;
   projectSharing?: {
     currentUserId: string | null;
     machineAccessByMachineId: ReadonlyMap<MachineId, MachineVisibilityAccess>;
@@ -674,10 +675,12 @@ export function UnifiedProjectSelectorView({
             <FolderPlus className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span>{t('chat.contextSwitch.addProject', 'Add a folder')}</span>
           </Menu.Item>
-          <Menu.Item onClick={onConnectGitRepo}>
-            <ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span>{t('repos.connectMore', 'Connect more GitHub projects')}</span>
-          </Menu.Item>
+          {onConnectGitRepo ? (
+            <Menu.Item onClick={onConnectGitRepo}>
+              <ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span>{t('repos.connectMore', 'Connect more GitHub projects')}</span>
+            </Menu.Item>
+          ) : null}
         </Menu.Content>
       </Menu.Root>
       {selectedPrivateSharing ? (

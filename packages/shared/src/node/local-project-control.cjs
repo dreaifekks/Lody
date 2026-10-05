@@ -10,6 +10,7 @@ const LAN_MEMBER_CONTROL_TYPES = new Set([
   'hosted-config/preview',
   'hosted-config/import',
   'lan/usage',
+  'lan/restart-machine',
 ]);
 
 const HOSTED_CONFIG_CATEGORIES = new Set([
@@ -505,7 +506,11 @@ function isLocalProjectControlRequest(value) {
     );
   }
 
-  if (value.type === 'hosted-config/preview' || value.type === 'lan/update-machine') {
+  if (
+    value.type === 'hosted-config/preview' ||
+    value.type === 'lan/update-machine' ||
+    value.type === 'lan/restart-machine'
+  ) {
     return typeof value.workspaceId === 'string';
   }
 
@@ -702,6 +707,10 @@ function isLocalProjectControlResponse(value) {
       (value.result.outcome === 'started' || value.result.outcome === 'current') &&
       typeof value.result.version === 'string'
     );
+  }
+
+  if (value.type === 'lan/restart-machine') {
+    return isObjectRecord(value.result) && value.result.outcome === 'started';
   }
 
   if (value.type === 'lan/install-agent') {

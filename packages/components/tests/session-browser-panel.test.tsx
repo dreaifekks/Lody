@@ -19,6 +19,7 @@ import type {
 } from '@lody/shared';
 
 import { runtimeAtom, userAtom, type WorkspaceRuntime } from '../src/atoms';
+import { localProbeResultAtom, type LocalProbeResult } from '../src/atoms/local-probe';
 import { SessionBrowserPanel } from '../src/components/sessions/session-browser-panel';
 import { SessionPreviewPreload } from '../src/components/sessions/session-preview-preload';
 import { clearManagedPreviewFrame } from '../src/components/sessions/managed-preview-frame-cache';
@@ -452,9 +453,17 @@ describe('SessionBrowserPanel controller', () => {
       candidateNavigationRequestId?: number;
       panelSession?: SessionMeta;
       onCandidateNavigationRequestHandled?: (requestId: number) => void;
+      /** The local platform, whose previews cannot be shared. */
+      local?: boolean;
+      /** The machine of this desktop, as its agent service says. */
+      localMachineId?: string;
     }
   ) => {
     const store = createStore();
+    if (options?.localMachineId)
+      store.set(localProbeResultAtom, {
+        machineId: options.localMachineId,
+      } as unknown as LocalProbeResult);
     store.set(userAtom, { id: 'user-1', name: 'Browser User', email: 'browser@example.com' });
     store.set(runtimeAtom, runtime);
     container = document.createElement('div');
@@ -463,13 +472,21 @@ describe('SessionBrowserPanel controller', () => {
     await act(async () => {
       root?.render(
         createElement(
-          Provider,
-          { store },
-          createElement(SessionBrowserPanel, {
-            session: options?.panelSession ?? session,
-            candidateNavigationRequestId: options?.candidateNavigationRequestId,
-            onCandidateNavigationRequestHandled: options?.onCandidateNavigationRequestHandled,
-          })
+          PlatformContext.Provider,
+          {
+            value: options?.local
+              ? { ...TEST_CLOUD_PLATFORM, capabilities: LOCAL_PLATFORM_CAPABILITIES }
+              : TEST_CLOUD_PLATFORM,
+          },
+          createElement(
+            Provider,
+            { store },
+            createElement(SessionBrowserPanel, {
+              session: options?.panelSession ?? session,
+              candidateNavigationRequestId: options?.candidateNavigationRequestId,
+              onCandidateNavigationRequestHandled: options?.onCandidateNavigationRequestHandled,
+            })
+          )
         )
       );
       await flushMicrotasks();
@@ -531,6 +548,40 @@ describe('SessionBrowserPanel controller', () => {
       'http://127.0.0.1:5173/dashboard?mode=dev'
     );
     expect(testRuntime.requestSessionPreviewCreate).not.toHaveBeenCalled();
+  });
+
+  it('serves the preview of a session another LAN member runs from this desktop', async () => {
+    window.__LODY_ELECTRON__ = true;
+    const testRuntime = createRuntime({ plane: 'cloud' });
+    const rendered = await renderPanel(testRuntime.runtime, {
+      local: true,
+      localMachineId: 'this-desk',
+    });
+    await enterAddress(rendered, '127.0.0.1:5173/dashboard?mode=dev');
+    // This desktop's agent service carries the member's port; no public tunnel.
+    expect(testRuntime.requestSessionPreviewEndpointAcquire).toHaveBeenCalledWith(
+      'this-desk',
+      session.id,
+      'user-1',
+      localTarget
+    );
+    expect(testRuntime.requestSessionPreviewCreate).not.toHaveBeenCalled();
+    expect(
+      rendered.querySelector('[data-testid="managed-preview"]')?.getAttribute('data-viewer-url')
+    ).toBe(localEndpoint.viewerUrl);
+  });
+
+  it('offers no share where previews cannot be shared', async () => {
+    window.__LODY_ELECTRON__ = true;
+    const shared = await renderPanel(createRuntime({ plane: 'local' }).runtime);
+    await enterAddress(shared, '127.0.0.1:5173/dashboard?mode=dev');
+    expect(shared.querySelector('button[aria-label="Share preview"]')).not.toBeNull();
+    act(() => root?.unmount());
+    shared.remove();
+    const local = await renderPanel(createRuntime({ plane: 'local' }).runtime, { local: true });
+    await enterAddress(local, '127.0.0.1:5173/dashboard?mode=dev');
+    expect(local.querySelector('[data-testid="managed-preview"]')).not.toBeNull();
+    expect(local.querySelector('button[aria-label="Share preview"]')).toBeNull();
   });
 
   it('expires visibly and restores the exact page with a new share capability', async () => {
@@ -847,9 +898,13 @@ describe('SessionBrowserPanel controller', () => {
       await act(async () => {
         root?.render(
           createElement(
-            Provider,
-            { store },
-            createElement(SessionBrowserPanel, { session: nextSession })
+            PlatformContext.Provider,
+            { value: TEST_CLOUD_PLATFORM },
+            createElement(
+              Provider,
+              { store },
+              createElement(SessionBrowserPanel, { session: nextSession })
+            )
           )
         );
         await flushMicrotasks();

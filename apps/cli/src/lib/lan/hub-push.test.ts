@@ -243,24 +243,27 @@ describe('LAN host push', () => {
       expect(fs.statSync(copy).mode & 0o777).toBe(0o700);
 
       const direct: ApnsPush[] = [];
-      const away = createLanNotificationsPort({
-        resolveHub: () => lan,
-        machineId: 'machine-1',
+      const fallback = createLanPushFallback({
         logger: { debug: () => {} } as never,
-        fetch: () => Promise.reject(new TypeError('fetch failed')),
-        fallback: createLanPushFallback({
-          logger: { debug: () => {} } as never,
-          dataDir: memberDir,
-          createSender: () =>
-            Object.assign(
-              async (push: ApnsPush) => {
-                direct.push(push);
-                return { ok: true as const };
-              },
-              { close: () => {} }
-            ),
-        }),
+        dataDir: memberDir,
+        createSender: () =>
+          Object.assign(
+            async (push: ApnsPush) => {
+              direct.push(push);
+              return { ok: true as const };
+            },
+            { close: () => {} }
+          ),
       });
+      const memberPort = (fetch: typeof globalThis.fetch) =>
+        createLanNotificationsPort({
+          resolveHub: () => lan,
+          machineId: 'machine-1',
+          logger: { debug: () => {} } as never,
+          fetch,
+          fallback,
+        });
+      const away = memberPort(() => Promise.reject(new TypeError('fetch failed')));
       const base = { workspaceId: WORKSPACE as never, workspaceSlug: 'lan', userId: USER };
       await away.notifySessionCompleted({
         ...base,
@@ -284,6 +287,31 @@ describe('LAN host push', () => {
         collapseId: 'done-session-1',
         payload: { aps: { alert: { title: 'Fix the build', body: 'Finished' } } },
       });
+
+      // A hub that hands over (503) or moved away (410) sent nothing either.
+      for (const [status, sessionId] of [
+        [503, 'session-2'],
+        [410, 'session-3'],
+      ] as const) {
+        await memberPort(async () => new Response('{}', { status })).notifySessionCompleted({
+          ...base,
+          sessionId: sessionId as never,
+          occurrenceId: 'turn-1',
+          sessionTitle: 'Fix the build',
+        });
+      }
+      // A hub without push holds no key this member could have copied.
+      await memberPort(async () => new Response('{}', { status: 404 })).notifySessionCompleted({
+        ...base,
+        sessionId: 'session-4' as never,
+        occurrenceId: 'turn-1',
+        sessionTitle: 'Fix the build',
+      });
+      expect(direct.map((push) => push.collapseId)).toEqual([
+        'done-session-1',
+        'done-session-2',
+        'done-session-3',
+      ]);
 
       // A removal reaches the copy, and a LAN left takes its copy with it.
       expect((await call('DELETE', LAN_HUB_CREDENTIALS_GITHUB_PATH)).body).toEqual({

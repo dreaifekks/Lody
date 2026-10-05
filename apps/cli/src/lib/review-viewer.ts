@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 import {
   reviewViewerFileName,
@@ -22,8 +23,9 @@ import { getLodyDataDir } from '@lody/shared/node/installation-profile';
  *
  * Resolution order:
  *   1. valid cached copy for this version,
- *   2. `LODY_REVIEW_VIEWER` override (a local file path or URL), else
- *   3. jsDelivr, then unpkg.
+ *   2. the copy a build carries beside its bundle,
+ *   3. `LODY_REVIEW_VIEWER` override (a local file path or URL), else
+ *   4. jsDelivr, then unpkg.
  * Every non-cache source is sha256-verified against the manifest.
  */
 
@@ -68,8 +70,26 @@ async function writeCache(buffer: Buffer): Promise<void> {
   }
 }
 
+/** Name of the viewer a build copies beside its bundle (`scripts/copy-review-viewer.js`). */
+const BUNDLED_VIEWER_FILE_NAME = 'code-review-viewer.html';
+
+/**
+ * Where a build may carry its own viewer: beside the entry it was started
+ * from, or beside or above the chunk this module was bundled into.
+ */
+function bundledViewerPaths(): string[] {
+  const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    ...(process.argv[1] ? [path.dirname(path.resolve(process.argv[1]))] : []),
+    moduleDirectory,
+    path.dirname(moduleDirectory),
+  ].map((directory) => path.join(directory, BUNDLED_VIEWER_FILE_NAME));
+}
+
 /** Returns the verified viewer HTML, fetching + caching it if necessary. */
-export async function resolveReviewViewerTemplate(): Promise<string> {
+export async function resolveReviewViewerTemplate(
+  options: { bundledPaths?: readonly string[] } = {}
+): Promise<string> {
   // 1. Reuse a cached copy whose hash still matches the expected viewer.
   try {
     const cached = await readFile(cachePath());
@@ -78,6 +98,17 @@ export async function resolveReviewViewerTemplate(): Promise<string> {
     }
   } catch {
     /* no usable cache */
+  }
+
+  // A build that publishes no viewer package (a fork) carries the one it was
+  // built with, under the same hash.
+  for (const bundled of options.bundledPaths ?? bundledViewerPaths()) {
+    try {
+      const buffer = await readFile(bundled);
+      if (sha256(buffer) === reviewViewerSha256) return buffer.toString('utf8');
+    } catch {
+      /* not carried here */
+    }
   }
 
   // 2. Build the source list: explicit override wins, else the CDN fallbacks.

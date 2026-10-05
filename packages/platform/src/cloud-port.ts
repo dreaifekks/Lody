@@ -182,6 +182,12 @@ export interface CloudNotificationsPort {
    * permission request someone answered. Only self-hosted LANs set it.
    */
   alertGraceMs?: number;
+  /**
+   * Delivers alerts while the data plane is offline, so a turn does not skip
+   * them then. Only self-hosted LANs set it: a member sends them itself while
+   * its hub is away.
+   */
+  deliversOffline?: boolean;
   notifySessionCompleted(input: {
     sessionId: SessionId;
     occurrenceId: string;

@@ -415,6 +415,9 @@ export async function answerLanMemberControl(options: {
     if (request.type === 'lan/update-machine') {
       return { ok: true, type: request.type, result: await control.startUpdate() };
     }
+    if (request.type === 'lan/restart-machine') {
+      return { ok: true, type: request.type, result: control.restartService() };
+    }
     if (request.type === 'lan/install-agent') {
       return {
         ok: true,

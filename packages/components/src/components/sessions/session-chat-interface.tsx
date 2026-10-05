@@ -5,6 +5,7 @@ import {
   type SessionAttachmentDraft,
 } from '@/lib/session-attachment-draft';
 import { useSchedules } from '@/hooks/use-schedules';
+import { useWorkspaceGitHubRepositories } from '@/hooks/use-workspace-github-repositories';
 import { windowPreparationAtom } from '@/lib/window-preparation';
 import { conversationCopyRange } from '@/lib/conversation-copy-range';
 import { describeCopiedConversation } from '@/lib/describe-copied-conversation';
@@ -2450,10 +2451,7 @@ export const SessionChatInterface = memo(
     const [resolvingConflictsSessionId, setResolvingConflictsSessionId] =
       useState<SessionId | null>(null);
     const isResolvingConflicts = resolvingConflictsSessionId === session.id;
-    const repositories = useCloudQuery(
-      cloudOperations.github.getWorkspaceRepositories,
-      workspaceId ? { workspaceId } : 'skip'
-    );
+    const repositories = useWorkspaceGitHubRepositories(workspaceId);
     const isRepoPublic = useMemo(() => {
       if (!repoFullName || !repositories) return undefined;
       const repo = repositories.find((r) => r.fullName === repoFullName);

@@ -23,6 +23,7 @@ import {
 } from '@lody/shared';
 import { createLogger } from '@/utils/logger';
 import { PreviewService } from './preview-service';
+import type { LanMemberPorts } from './lan-member-ports';
 import { ensureCloudflaredBinary } from './cloudflared-binary';
 import { CloudflaredError, startCloudflaredProcess } from './cloudflared-process';
 import { verifyPreviewTunnelRoundTrip } from './preview-tunnel-readiness';
@@ -43,7 +44,7 @@ const sessionId = 'session-preview' as SessionId;
 const userId = 'user-preview';
 const logger = createLogger({ level: 'silent', transports: 'console' });
 
-function fixture(workspace = workspaceId) {
+function fixture(workspace = workspaceId, options: { memberPorts?: LanMemberPorts } = {}) {
   let preview: SessionPreviewDocState = {};
   let meta: SessionMeta = {
     id: sessionId,
@@ -84,6 +85,7 @@ function fixture(workspace = workspaceId) {
       getOrCreateSessionDoc: async () => sessionDoc,
       repo,
     },
+    ...(options.memberPorts ? { memberPorts: options.memberPorts } : {}),
   });
   return { service, changes, sessionDoc, repo, state: () => preview, meta: () => meta };
 }
@@ -159,8 +161,8 @@ describe('PreviewService Quick Tunnel lifecycle', () => {
     vi.clearAllMocks();
   });
 
-  function setup(workspace = workspaceId) {
-    const result = fixture(workspace);
+  function setup(workspace = workspaceId, options: { memberPorts?: LanMemberPorts } = {}) {
+    const result = fixture(workspace, options);
     services.push(result.service);
     return result;
   }
@@ -423,6 +425,52 @@ describe('PreviewService Quick Tunnel lifecycle', () => {
     await expect(fetch(proxyOrigin)).rejects.toThrow();
     expect(await (await fetch(local.endpoint?.viewerUrl ?? '')).text()).toBe('development server');
     expect(await (await fetch(`http://127.0.0.1:${port}`)).text()).toBe('development server');
+  });
+
+  it('previews a session another member of a LAN runs through a port of this machine', async () => {
+    const member = 'machine-member' as MachineId;
+    const memberTarget = { protocol: 'http' as const, host: 'localhost', port: 5173 };
+    const request = {
+      ...createRequest(),
+      type: 'session/preview-endpoint-acquire' as const,
+      target: memberTarget,
+    };
+
+    // Outside a LAN a session of another machine is not previewed here.
+    const alone = setup();
+    await alone.repo.upsertDocMeta('', { machineId: member });
+    expect(await alone.service.acquireEndpoint(request)).toMatchObject({
+      success: false,
+      error: 'session_mismatch',
+    });
+
+    const asked: string[] = [];
+    const memberPorts = {
+      open: async (id: SessionId, machine: MachineId, target: { host: string; port: number }) => {
+        asked.push(`open ${id} ${machine} ${target.host}:${target.port}`);
+        // The test's server stands in for the port that carries the member's.
+        return port;
+      },
+      release: async (id: SessionId) => {
+        asked.push(`release ${id}`);
+      },
+      closeAll: async () => {},
+    } as unknown as LanMemberPorts;
+    const { service, repo } = setup(workspaceId, { memberPorts });
+    await repo.upsertDocMeta('', { machineId: member });
+    const acquired = await service.acquireEndpoint(request);
+    expect(acquired.success, JSON.stringify(acquired)).toBe(true);
+    expect(asked).toEqual([`open ${sessionId} ${member} localhost:5173`]);
+    // The page still names the member's port: the renderer matches it.
+    expect(acquired.endpoint?.target).toMatchObject({ host: 'localhost', port: 5173 });
+    expect(await (await fetch(acquired.endpoint?.viewerUrl ?? '')).text()).toBe(
+      'development server'
+    );
+    await service.releaseEndpoint({
+      ...request,
+      endpointId: acquired.endpoint?.endpointId ?? '',
+    });
+    expect(asked.at(-1)).toBe(`release ${sessionId}`);
   });
 
   it('rejects stale consent, changed origins, unsafe hosts, and unauthorized revoke without altering active state', async () => {

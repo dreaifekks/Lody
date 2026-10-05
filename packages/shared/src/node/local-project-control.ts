@@ -7,6 +7,7 @@ import {
   LanAgentInstallResultSchema,
   LanUsageReportSchema,
   LanMachineUpdateResultSchema,
+  LanMachineRestartResultSchema,
   LAN_MACHINE_ALIAS_MAX,
   LanMachinesSchema,
   isLanMemberControlType,
@@ -504,7 +505,7 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     );
   }
 
-  if (value.type === 'lan/update-machine') {
+  if (value.type === 'lan/update-machine' || value.type === 'lan/restart-machine') {
     return typeof value.workspaceId === 'string';
   }
 
@@ -687,6 +688,10 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'lan/update-machine') {
     return LanMachineUpdateResultSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/restart-machine') {
+    return LanMachineRestartResultSchema.safeParse(value.result).success;
   }
 
   if (value.type === 'lan/install-agent') {

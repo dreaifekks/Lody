@@ -666,6 +666,7 @@ describe('what the members of a LAN ask of each other', () => {
     categories: ['agentConfigs', 'localProjects'],
   };
   const usage = { type: 'lan/usage', ...member, sinceMs: 1_700_000_000_000 };
+  const restart = { type: 'lan/restart-machine', ...member };
 
   it('reads each request the same way at every boundary', () => {
     for (const request of [
@@ -675,6 +676,7 @@ describe('what the members of a LAN ask of each other', () => {
       importing,
       usage,
       { ...usage, sinceMs: undefined },
+      restart,
     ]) {
       expect(accepts(request)).toEqual(all(true));
       expect(accepts({ type: 'lan/forward', machineId: 'machine-1', request })).toEqual(all(true));
@@ -692,6 +694,7 @@ describe('what the members of a LAN ask of each other', () => {
     expect(accepts({ ...install, agentType: undefined })).toEqual(all(false));
     expect(accepts({ ...importing, categories: ['sessions'] })).toEqual(all(false));
     expect(accepts({ type: 'lan/update-machine', machineId: 'machine-2' })).toEqual(all(false));
+    expect(accepts({ type: 'lan/restart-machine', machineId: 'machine-2' })).toEqual(all(false));
     expect(accepts({ ...usage, sinceMs: -1 })).toEqual(all(false));
     expect(accepts({ ...usage, sinceMs: 1.5 })).toEqual(all(false));
   });
@@ -780,6 +783,7 @@ describe('what the members of a LAN ask of each other', () => {
       { ok: true, type: 'lan/forward', result: { response: started } },
       { ok: true, type: 'lan/forward', result: { response: refused } },
       { ok: true, type: 'lan/usage', result: { rows: [usageRow] } },
+      { ok: true, type: 'lan/restart-machine', result: { outcome: 'started' } },
       {
         ok: true,
         type: 'lan/forward',
@@ -791,6 +795,9 @@ describe('what the members of a LAN ask of each other', () => {
 
     expect(
       answers({ ok: true, type: 'lan/update-machine', result: { outcome: 'done', version: '1' } })
+    ).toEqual(all(false));
+    expect(
+      answers({ ok: true, type: 'lan/restart-machine', result: { outcome: 'current' } })
     ).toEqual(all(false));
     expect(answers({ ok: true, type: 'lan/forward', result: { response: machines } })).toEqual(
       all(false)

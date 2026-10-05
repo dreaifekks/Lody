@@ -1632,10 +1632,12 @@ export const LoroSidebar = memo(function LoroSidebar({
                   <MessageSquareMore className="h-4 w-4" />
                   {mergedLabels.feedback}
                 </Menu.Item>
-                <Menu.Item onClick={() => onBugReportClicked?.()}>
-                  <Bug className="h-4 w-4" />
-                  {mergedLabels.bugReport}
-                </Menu.Item>
+                {onBugReportClicked ? (
+                  <Menu.Item onClick={onBugReportClicked}>
+                    <Bug className="h-4 w-4" />
+                    {mergedLabels.bugReport}
+                  </Menu.Item>
+                ) : null}
               </Menu.Content>
             </Menu.Root>
 

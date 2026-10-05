@@ -353,10 +353,12 @@ export function ChatLandingView({
             {isDaemonStartingHint ? hintDaemonStartingMessage : hintDownloadClientMessage}
           </p>
           {isDaemonStartingHint ? (
-            <button type="button" onClick={onReportBug} className={hintButtonClassName}>
-              <Bug className="h-3.5 w-3.5 opacity-70" />
-              <span>{hintReportBugLabel}</span>
-            </button>
+            onReportBug ? (
+              <button type="button" onClick={onReportBug} className={hintButtonClassName}>
+                <Bug className="h-3.5 w-3.5 opacity-70" />
+                <span>{hintReportBugLabel}</span>
+              </button>
+            ) : null
           ) : (
             <button type="button" onClick={onDownloadClient} className={hintButtonClassName}>
               <span>{hintDownloadClientLabel}</span>

@@ -889,6 +889,7 @@ export function ProjectSettingsComponent({
   initialProjectKey?: string | null;
 } = {}) {
   const { openSettings } = useOpenSettings();
+  const githubIntegrationAvailable = useAppCapability('githubIntegration');
   const workspaceSlug = useAtomValue(currentWorkspaceSlugAtom);
   const modalMachineTarget = useAtomValue(settingsSelectedMachineIdAtom);
   const modalProjectTarget = useAtomValue(settingsSelectedProjectKeyAtom);
@@ -1082,8 +1083,12 @@ export function ProjectSettingsComponent({
         onGithubWorktreeCleanupChange={onGithubWorktreeCleanupChange}
         addableMachines={addableMachines}
         onAddLocalProject={handleAddLocalProject}
-        onAddGitHubProject={workspaceSlug ? handleAddGitHubProject : undefined}
-        onOpenGitHubSettings={workspaceSlug ? handleAddGitHubProject : undefined}
+        onAddGitHubProject={
+          workspaceSlug && githubIntegrationAvailable ? handleAddGitHubProject : undefined
+        }
+        onOpenGitHubSettings={
+          workspaceSlug && githubIntegrationAvailable ? handleAddGitHubProject : undefined
+        }
         canRemoveLocalProject={canRemoveLocalProject}
         onRequestRemoveLocalProject={handleRequestRemoveLocalProject}
         localProjectRemovalStateByKey={localProjectRemovalStateByKey}

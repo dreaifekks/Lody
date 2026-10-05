@@ -9,13 +9,16 @@ import type {
   ElectronLanState,
   ElectronLanSummary,
 } from '@lody/shared/electron-ipc';
-import type { MachineId } from '@lody/shared';
+import type { MachineId, MachineMeta } from '@lody/shared';
 import type { LanMachine } from '@lody/shared/lan-control';
 import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
+import { userAtom } from '@/atoms';
+import { localMachineIdAtom } from '@/atoms/local-probe';
 import { useDialogExitSnapshot } from '@/hooks/use-dialog-exit-snapshot';
 import { useElectronUpdaterState } from '@/hooks/use-electron-updater-state';
 import { useLanHubLatency } from '@/hooks/use-lan-hub-latency';
 import { useLanMachines } from '@/hooks/use-lan-machines';
+import { useMachineActions } from '@/hooks/use-machine-actions';
 import { useMachineLatency } from '@/hooks/use-machine-latency';
 import { useLanSettings, type LanSettings, type LanSettingsResult } from '@/hooks/use-lan-settings';
 import { UpdateChangelogDialog } from '@/components/update-changelog-dialog';
@@ -37,6 +40,7 @@ import { CompactRow, CompactSection, SettingsEmptyList } from './compact-layout'
 import { Field, FormMessage } from './form-primitives';
 import { LanAppUpdate } from './lan-app-update';
 import { LanMachinesView } from './lan-machines';
+import { LanMachineProcesses } from './lan-machine-processes';
 import { SettingsPageActions, SettingsPageLead, useSettingsPane } from './settings-page-header';
 import {
   SETTINGS_EDITOR_DIALOG_LAYOUT,
@@ -167,16 +171,46 @@ function LanApplication() {
 
 /** The machines of the LANs, wired to the agent service of this machine. */
 function LanMachinesOfThisMachine() {
+  const { t } = useTranslation();
   const { inventory, ...control } = useLanMachines();
   const sshEntries = useMachineSshEntries();
+  const workspaceId = useAtomValue(currentWorkspaceIdAtom);
+  const user = useAtomValue(userAtom);
+  const localMachineId = useAtomValue(localMachineIdAtom);
+  // Every member of a LAN is the same user, who may remove any of its machines.
+  const { deleteMachine } = useMachineActions({
+    currentUserId: user?.id ?? null,
+    localMachineId,
+    canManageAllMachines: true,
+  });
+  const [processesOf, setProcessesOf] = useState<LanMachine | null>(null);
+  // The window reaches the machines of the LAN it shows; another LAN keeps its own record.
+  const inShownLan = (machine: LanMachine) =>
+    machine.lans.some((lan) => lan.workspaceId === workspaceId);
+  const removeMachine = async (machine: LanMachine) => {
+    if (!inShownLan(machine)) throw new Error(t('settings.lan.machines.otherLan'));
+    await deleteMachine({
+      id: machine.machineId as MachineId,
+      name: machine.name,
+    } as MachineMeta);
+  };
+  const showProcesses = (machine: LanMachine) => {
+    if (inShownLan(machine)) setProcessesOf(machine);
+    else toast.info(t('settings.lan.machines.otherLan'));
+  };
   return inventory ? (
-    <LanMachinesView
-      inventory={inventory}
-      {...control}
-      sshEntries={sshEntries}
-      onSshEntryChange={(machine, entry) => writeMachineSshEntry(machine.machineId, entry)}
-      Latency={LanMachineLatency}
-    />
+    <>
+      <LanMachinesView
+        inventory={inventory}
+        {...control}
+        removeMachine={removeMachine}
+        onShowProcesses={showProcesses}
+        sshEntries={sshEntries}
+        onSshEntryChange={(machine, entry) => writeMachineSshEntry(machine.machineId, entry)}
+        Latency={LanMachineLatency}
+      />
+      <LanMachineProcesses machine={processesOf} onClose={() => setProcessesOf(null)} />
+    </>
   ) : null;
 }
 

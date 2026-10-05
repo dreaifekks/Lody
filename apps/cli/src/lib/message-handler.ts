@@ -393,6 +393,7 @@ import {
 import { resolveSessionLiveStatus } from './session-live-status';
 import type { MemoryPressureEvictionResult } from './session-gc-manager';
 import { PreviewService } from '@/preview/preview-service';
+import { LanMemberPorts } from '@/preview/lan-member-ports';
 import { LocalProjectHistorySyncService } from '@/lib/local-project-history-sync-service';
 import { precheckLocalProjectHistoryRequest } from '@/lib/local-project-history-precheck';
 import {
@@ -1120,14 +1121,16 @@ export class MessageHandler {
    *
    * Scope note: this gates LODY-cloud effects only. Third-party reachability
    * (GitHub, model APIs) is a different domain and is bounded by its own
-   * tooling, never by this signal.
+   * tooling, never by this signal. An effect that has its own way while the
+   * plane is offline (`whileOffline`) still runs then, with the same bound.
    */
   private async runTurnCloudSideEffect(
     sessionId: SessionId,
     label: string,
-    run: () => Promise<void>
+    run: () => Promise<void>,
+    options: { whileOffline?: boolean } = {}
   ): Promise<void> {
-    if (!this.workspaceDocument.isTransportConnected()) {
+    if (!options.whileOffline && !this.workspaceDocument.isTransportConnected()) {
       this.logger.debug(`[${sessionId}] Skipping ${label}: cloud plane is offline`);
       return;
     }
@@ -1140,6 +1143,20 @@ export class MessageHandler {
     } catch (error) {
       this.logger.debug(`[${sessionId}] ${label} did not complete: ${formatErrorMessage(error)}`);
     }
+  }
+
+  /**
+   * A turn's alert. A LAN's notifications port reaches the phones while its
+   * hub is away, so the alert is not skipped then.
+   */
+  private async runTurnAlert(
+    sessionId: SessionId,
+    label: string,
+    run: () => Promise<void>
+  ): Promise<void> {
+    await this.runTurnCloudSideEffect(sessionId, label, run, {
+      whileOffline: this.notificationService?.deliversOffline === true,
+    });
   }
 
   private async flushSessionUsage(sessionId: SessionId): Promise<void> {
@@ -1754,7 +1771,7 @@ export class MessageHandler {
     const notify = this.notificationService?.notifySessionFailed;
     if (!notify) return;
     const sessionId = sessionDoc.sessionId;
-    await this.runTurnCloudSideEffect(sessionId, 'failure notification', async () => {
+    await this.runTurnAlert(sessionId, 'failure notification', async () => {
       const meta = await sessionDoc.getMetaState();
       await notify.call(this.notificationService, {
         sessionId,
@@ -3336,6 +3353,7 @@ export class MessageHandler {
       userId: this.userId,
       runtimeBaseUrl: this.cloudPort.runtimeArtifacts.baseUrl,
       remotePreview: this.cloudPort.remotePreview,
+      ...(this.lanWorkspace ? { memberPorts: new LanMemberPorts({ logger: this.logger }) } : {}),
     });
     this.iosSimulatorService = new IosSimulatorService({
       onAgentPreviewStarted: async (sessionId, operationId) => {
@@ -6686,7 +6704,12 @@ export class MessageHandler {
           cancelSession: async (sessionId, turnId) => {
             const owner = await this.readSessionOwner(sessionId);
             if (owner.machineId && owner.machineId !== this.machineId && this.lanWorkspace) {
-              const remoteTurnId = turnId ?? owner.latestUserMsgId;
+              // A cancel names the running assistant turn, as the machine's own does.
+              const remoteTurnId =
+                turnId ??
+                (owner.latestUserMsgId
+                  ? this.getAssistantEntryIdForUserTurn(owner.latestUserMsgId)
+                  : undefined);
               if (!remoteTurnId) return { success: false, error: 'Session has no active turn' };
               const response = await this.withRemoteMachineRpcClient(
                 owner.machineId as MachineId,
@@ -10393,7 +10416,7 @@ export class MessageHandler {
     }
     const notificationService = this.notificationService;
     this.liveActivityDetail?.clear(sessionId);
-    await this.runTurnCloudSideEffect(sessionId, 'completion notification', async () => {
+    await this.runTurnAlert(sessionId, 'completion notification', async () => {
       const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
       const meta = await sessionDoc.getMetaState();
       const workspaceSlug = this.workspaceSlug?.trim() || this.workspaceId;

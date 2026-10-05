@@ -6,7 +6,7 @@ import { SettingsEmptyList, settingsRecordsCard } from './compact-layout';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { usePostHog } from '@posthog/react';
-import { useCloudQuery, usePlatformCapability } from '@lody/platform/react';
+import { usePlatformCapability } from '@lody/platform/react';
 import { getServerNow, type LocalProjectId, type MachineId, type WorkspaceId } from '@lody/shared';
 import {
   getShortcutEmoji,
@@ -18,12 +18,12 @@ import {
 import { Plus, Trash2 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { getAllAgentConfigAtom } from '@/atoms/agents';
-import { cloudOperations } from '@/lib/cloud-api-operations';
 import { withClassName } from '@/lib/stylex';
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
 import { getPromptShortcutAnalyticsProperties } from '@/lib/prompt-shortcut-analytics';
 import { usePromptShortcuts } from '../../providers/prompt-shortcut-provider';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
+import { useWorkspaceGitHubRepositories } from '@/hooks/use-workspace-github-repositories';
 import { useDialogExitSnapshot } from '@/hooks/use-dialog-exit-snapshot';
 import { useVisibleLocalProjectsFromMachineIndex } from '@/hooks/use-visible-local-projects';
 import { useMachineFlockAgentConfigsForMachineIds } from '@/hooks/use-machine-flock-agent-configs';
@@ -622,10 +622,7 @@ function useShortcutScopeOptions(workspaceIdInput?: string) {
     workspaceId ? { workspaceId } : undefined
   );
   const configs = useAtomValue(getAllAgentConfigAtom);
-  const repositories = useCloudQuery(
-    cloudOperations.github.getWorkspaceRepositories,
-    workspaceId ? { workspaceId } : 'skip'
-  );
+  const repositories = useWorkspaceGitHubRepositories(workspaceId);
   const providers = useMemo(
     () =>
       new Map(
@@ -677,8 +674,10 @@ function ShortcutEditor({
   onCancel(): void;
   onSave(value: PromptShortcut): Promise<void>;
 }) {
-  const allowMachineSelection = usePlatformCapability('remoteMachines');
   const { options, providers, repositories, workspaceId } = scope;
+  // A LAN lists every member's machines; only a lone machine is a yes/no switch.
+  const allowMachineSelection =
+    usePlatformCapability('remoteMachines') || options.machines.length > 1;
   const renderPrompt = (editor: ShortcutPromptEditorProps) => {
     const { project } = editor.scope;
     const mentionSource: MentionProjectSource | undefined =

@@ -186,6 +186,9 @@ describe('LoroSidebar pinned section', () => {
       onFeedbackClicked: () => {
         destination = 'feedback';
       },
+      onBugReportClicked: () => {
+        destination = 'bug report';
+      },
       onSettingsClicked: () => {
         destination = 'settings';
       },
@@ -232,6 +235,21 @@ describe('LoroSidebar pinned section', () => {
     );
     await act(async () => feedback?.click());
     expect(destination).toBe('feedback');
+  });
+
+  it('leaves Report bug out of Help where the platform has no bug reports', async () => {
+    renderSidebar({ onFeedbackClicked: () => {} });
+    const help = Array.from(container?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.trim() === 'Help'
+    );
+    await act(async () => help?.click());
+    const items = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    expect(items.map((item) => item.textContent?.trim())).toEqual([
+      'Docs',
+      'GitHub',
+      'Join community',
+      'Feedback',
+    ]);
   });
 
   it('keeps Help and Settings around the Archive exit while Archive is open', () => {

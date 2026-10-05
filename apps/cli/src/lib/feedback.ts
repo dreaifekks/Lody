@@ -5,6 +5,10 @@ import { LODY_AUTH_URL } from '@/utils/const';
 
 export const MAX_AGENT_FEEDBACK_LENGTH = 4_000;
 
+/** Why the local platform sends no feedback: it goes to the hosted Lody alone. */
+export const LOCAL_FEEDBACK_UNAVAILABLE =
+  'Feedback goes to the hosted Lody, which this build never contacts. Open an issue on the repository it was built from instead.';
+
 export type AgentFeedbackSource = 'cli' | 'mcp';
 
 export type AgentFeedbackSystemInfo = {
