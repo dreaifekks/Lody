@@ -3890,7 +3890,8 @@ export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServe
           );
         }
 
-        const uploadedCount = result.images?.length ?? 0;
+        // Without a relay store the images are kept as files of this machine.
+        const uploadedCount = result.images?.length ?? result.files?.length ?? 0;
         const suffix =
           result.message !== undefined && result.message.length > 0 ? ` ${result.message}` : '';
         return textResult(

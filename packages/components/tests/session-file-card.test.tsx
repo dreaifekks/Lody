@@ -207,13 +207,29 @@ describe('SessionFileCard download action', () => {
       machineId: 'machine-1',
     });
 
-    const kept = await render({ file: held, pendingMachineName: 'devbox', uploads: false });
+    const kept = await render({
+      file: held,
+      pendingMachineName: 'devbox',
+      uploads: false,
+      onDownload: undefined,
+    });
     expect(kept.textContent).toContain('On devbox · 15.9 KB');
     expect(kept.textContent).not.toContain('Uploading');
-    // The machine holds the bytes; this window has none to preview or download.
+    // The machine holds the bytes; a window that cannot read them has nothing to offer.
     expect(
       kept.querySelector<HTMLButtonElement>('button[aria-label="screenshot.png"]')?.disabled
     ).toBe(true);
+
+    // A window that can read them from that machine downloads them on a click.
+    const readable = await render({ file: held, pendingMachineName: 'devbox', uploads: false });
+    expect(readable.textContent).toContain('On devbox · 15.9 KB');
+    const card = readable.querySelector<HTMLButtonElement>('button[aria-label="screenshot.png"]');
+    expect(card?.disabled).toBe(false);
+    await act(async () => {
+      card?.click();
+    });
+    expect(onDownload).toHaveBeenCalledWith(held);
+    expect(onPreview).not.toHaveBeenCalled();
 
     const pending = await render({ file: held, pendingMachineName: 'devbox' });
     expect(pending.textContent).toContain('Uploading from devbox');

@@ -216,6 +216,13 @@ An image over the 5 MB image limit travels as a file from the new-chat page
 too, as it does in a conversation. That limit stays: it is what the agent
 receives as an image.
 
+What an agent sends the other way (`lody_upload_images`, `lody_upload_files`,
+a Codex generated image, an image or file in its ACP output) is kept the same
+way. Without a relay store the agent service stores it as it stores a handed
+over file and writes a file block that names its own machine; an image becomes
+a file of an image type, which is shown as one. Any file card a desktop can
+read that way downloads on a click, through the same `session/file-read-local`.
+
 ## Folders of other members
 
 An editor opens the folder of a session: its worktree, or the folder of its
@@ -755,8 +762,9 @@ does not.
 - Terminals and files of other members need a direct path between the
   machines, which an overlay network gives; a hub reached through a proxy does
   not.
-- A file stays on the machine that runs its session. Other members see its
-  card and cannot open it, and it is gone with that machine's data directory.
+- A file stays on the machine that runs its session. Other members download it
+  from there but cannot preview it, and it is gone with that machine's data
+  directory.
 - A folder of another member opens in an editor only. It takes an SSH server
   on that machine and a POSIX path. A machine that reaches its hub over IPv6
   names its server with `LODY_LAN_SSH`, by a host name or an IPv4 address:

@@ -1015,6 +1015,15 @@ function isLocalSessionControlResponse(value) {
               isObjectRecord(item) &&
               isSessionImagePayload(item) &&
               typeof item.downloadUrl === 'string'
+          ))) &&
+      // Without a relay store the images are kept as local-transport files.
+      (typeof value.files === 'undefined' ||
+        (Array.isArray(value.files) &&
+          value.files.length > 0 &&
+          value.files.length <= SESSION_IMAGE_MAX_COUNT &&
+          value.files.every(
+            (item) =>
+              isObjectRecord(item) && isSessionFilePayload(item) && item.transport === 'local'
           )))
     );
   }
@@ -1038,7 +1047,9 @@ function isLocalSessionControlResponse(value) {
             (item) =>
               isObjectRecord(item) &&
               isSessionFilePayload(item) &&
-              typeof item.downloadUrl === 'string'
+              // Local-transport blocks, kept where no relay store exists,
+              // carry no downloadUrl.
+              (typeof item.downloadUrl === 'string' || item.transport === 'local')
           )))
     );
   }

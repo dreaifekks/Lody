@@ -707,6 +707,11 @@ export interface SessionImageUploadResponse {
       downloadUrl: string;
     }
   >;
+  /**
+   * Without a relay store the images are kept by the machine that runs the
+   * session and published as local-transport file blocks instead of `images`.
+   */
+  files?: SessionFilePayload[];
 }
 
 export interface SessionFileUploadRequest {
@@ -726,10 +731,14 @@ export interface SessionFileUploadResponse {
   message?: string;
   historyEntryId?: string;
   attachedTo?: 'active_turn' | 'new_entry';
-  /** The file blocks that were uploaded and appended to the session history. */
+  /**
+   * The file blocks that were uploaded and appended to the session history.
+   * Without a relay store they stay on the machine that runs the session as
+   * local-transport blocks, which carry no downloadUrl.
+   */
   files?: Array<
     SessionFilePayload & {
-      downloadUrl: string;
+      downloadUrl?: string;
     }
   >;
 }

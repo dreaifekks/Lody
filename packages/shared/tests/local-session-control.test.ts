@@ -1,7 +1,11 @@
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 
-import { safeParseLocalSessionControlRequest } from '../src/message-schemas';
+import {
+  safeParseLocalSessionControlRequest,
+  SessionFileUploadResponseSchema,
+  SessionImageUploadResponseSchema,
+} from '../src/message-schemas';
 import {
   isLocalSessionControlRequest,
   isLocalSessionControlResponse,
@@ -382,6 +386,43 @@ describe('local session control node validators', () => {
     };
     expect(isLocalSessionControlResponse(response)).toBe(false);
     expect(isLocalSessionControlResponseCjs(response)).toBe(false);
+  });
+
+  it('accepts files kept by the machine where no relay store exists (ts + cjs + zod)', () => {
+    const kept = {
+      type: 'file',
+      fileId: 'file-1',
+      fileName: 'shot.png',
+      mimeType: 'image/png',
+      sizeBytes: 2048,
+      sha256: 'a'.repeat(64),
+      textPreview: false,
+      transport: 'local',
+      machineId: 'machine-1',
+      uploadedAt: 1_700_000_000_000,
+    };
+    const fileResponse = {
+      type: 'session/file-upload_response',
+      sessionId: 'session-1',
+      success: true,
+      files: [kept],
+    };
+    const imageResponse = {
+      type: 'session/image-upload_response',
+      sessionId: 'session-1',
+      success: true,
+      files: [kept],
+    };
+    // A relay upload still has to say where it can be downloaded.
+    const relayWithoutUrl = { ...fileResponse, files: [{ ...kept, transport: 'r2' }] };
+    for (const validate of [isLocalSessionControlResponse, isLocalSessionControlResponseCjs]) {
+      expect(validate(fileResponse)).toBe(true);
+      expect(validate(imageResponse)).toBe(true);
+      expect(validate(relayWithoutUrl)).toBe(false);
+    }
+    expect(SessionFileUploadResponseSchema.safeParse(fileResponse).success).toBe(true);
+    expect(SessionImageUploadResponseSchema.safeParse(imageResponse).success).toBe(true);
+    expect(SessionFileUploadResponseSchema.safeParse(relayWithoutUrl).success).toBe(false);
   });
 
   it('accepts file-send-local requests like file-upload (ts + cjs)', () => {

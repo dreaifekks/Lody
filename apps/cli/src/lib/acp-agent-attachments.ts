@@ -30,7 +30,8 @@ import {
 } from '@/lib/session-file-attachments';
 
 type UploadedACPAgentSessionImage = NonNullable<SessionImageUploadResponse['images']>[number];
-type UploadedACPAgentSessionFile = SessionFilePayload & { downloadUrl: string };
+// A file kept by this machine, where no relay store exists, has no downloadUrl.
+type UploadedACPAgentSessionFile = SessionFilePayload & { downloadUrl?: string };
 
 export type ACPAgentUploadableImageFile = {
   absolutePath: string;
@@ -55,6 +56,12 @@ type MaterializeACPAgentRichContentOptions = {
   notification: AcpSessionNotification;
   logger: Pick<Logger, 'debug' | 'warn'>;
   resolveSessionWorkspaceRoot: (sessionId: SessionId) => string | null;
+  /**
+   * Whether images can be published as image blocks, which need the relay
+   * store. Without it they are published as files; the files of an image type
+   * are shown as images.
+   */
+  uploadsImages: boolean;
   validateSessionImageUploadPath: (filePath: string) => Promise<ACPAgentUploadableImageFile>;
   uploadSessionImageFile: (args: {
     workspaceId: WorkspaceId;
@@ -319,7 +326,7 @@ const materializeACPImageContent = async (
     mimeType,
   });
 
-  if (shouldUploadACPBytesAsImage(mimeType, bytes.byteLength)) {
+  if (options.uploadsImages && shouldUploadACPBytesAsImage(mimeType, bytes.byteLength)) {
     const uploaded = await uploadACPBytesAsSessionImage(options, {
       fileName,
       mimeType,
@@ -375,7 +382,7 @@ const materializeACPResourceLinkContent = async (
   const containedPath = await resolveContainedUploadPath(localPath, workspaceRoot);
   const mimeType = normalizeACPMimeType(content.mimeType);
 
-  if (shouldTreatACPPathAsImage(containedPath, mimeType)) {
+  if (options.uploadsImages && shouldTreatACPPathAsImage(containedPath, mimeType)) {
     try {
       const image = await options.validateSessionImageUploadPath(containedPath);
       const uploaded = await options.uploadSessionImageFile({
@@ -431,7 +438,7 @@ const materializeACPEmbeddedResourceContent = async (
     mimeType,
   });
 
-  if (shouldUploadACPBytesAsImage(mimeType, bytes.byteLength)) {
+  if (options.uploadsImages && shouldUploadACPBytesAsImage(mimeType, bytes.byteLength)) {
     const uploaded = await uploadACPBytesAsSessionImage(options, {
       fileName,
       mimeType,

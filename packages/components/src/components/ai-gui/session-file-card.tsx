@@ -259,18 +259,23 @@ export function SessionFileCard({
   const Icon = KIND_ICON[kind];
 
   const sizeLabel = formatFileSize(file.sizeBytes);
-  const isInteractive = state === 'previewable' || state === 'downloadable';
+  // A kept file is downloaded from the machine that keeps it, given a way to read it.
+  const keptDownload = state === 'kept' && !!onDownload;
+  const isInteractive = state === 'previewable' || state === 'downloadable' || keptDownload;
 
   const handleClick = () => {
     if (state === 'previewable') {
       onPreview?.(file);
-    } else if (state === 'downloadable') {
+    } else if (state === 'downloadable' || keptDownload) {
       onDownload?.(file);
     }
   };
 
   const subtitle = buildSubtitle({ state, sizeLabel, pendingMachineName, t });
-  const actionIcon = buildActionIcon({ state, isDownloading });
+  const actionIcon = buildActionIcon({
+    state: keptDownload ? 'downloadable' : state,
+    isDownloading,
+  });
 
   const isMuted = state === 'expired' || state === 'pending';
 

@@ -672,6 +672,11 @@ type UploadableImageFile = {
 };
 
 type UploadedSessionImage = NonNullable<SessionImageUploadResponse['images']>[number];
+/**
+ * What an image an agent publishes becomes in history: an image group in the
+ * relay store, or a file of an image type kept by this machine without one.
+ */
+type AgentPublishedImageItem = SessionImageGroupContent | SessionFilePayload;
 type SessionImageUploadAttachTarget =
   | { kind: 'active_turn'; turnId: string }
   | { kind: 'new_entry' }
@@ -689,7 +694,8 @@ type ValidatedUploadFile = {
   textPreview: boolean;
 };
 
-type UploadedSessionFile = SessionFilePayload & { downloadUrl: string };
+// A file kept by this machine, where no relay store exists, has no downloadUrl.
+type UploadedSessionFile = SessionFilePayload & { downloadUrl?: string };
 
 /**
  * Persist workspace-relative attachment provenance with one cross-platform
@@ -1447,18 +1453,20 @@ export class MessageHandler {
       notification,
       logger: this.logger,
       resolveSessionWorkspaceRoot: (sessionId) => this.resolveSessionWorkspaceRoot(sessionId),
+      uploadsImages: this.hasAttachmentRelay(),
       validateSessionImageUploadPath: async (filePath) =>
         await this.validateSessionImageUploadPath(filePath),
       uploadSessionImageFile: async (uploadArgs) => await this.uploadSessionImageFile(uploadArgs),
       validateSessionFileUploadPath: async (filePath, options) =>
         await this.validateSessionFileUploadPath(filePath, options),
       uploadValidatedSessionFile: async (uploadArgs) =>
-        await this.uploadValidatedSessionFile(uploadArgs),
+        await this.storeAgentSessionFile(uploadArgs),
     });
-    const content = contents.find(
-      (item): item is SessionImageGroupContent => item.type === 'image_group'
+    // Without a relay store the image is a file of an image type.
+    const items = contents.filter(
+      (item): item is AgentPublishedImageItem => item.type === 'image_group' || item.type === 'file'
     );
-    if (!content) {
+    if (items.length === 0) {
       throw new Error('Codex inline image could not be materialized as an image');
     }
 
@@ -1472,7 +1480,7 @@ export class MessageHandler {
       const appended = await this.appendAssistantImageGroupToActiveTurn({
         sessionDoc,
         turnId: initialTarget.turnId,
-        content,
+        items,
       });
       if (appended) {
         historyEntryId = initialTarget.turnId;
@@ -1487,14 +1495,14 @@ export class MessageHandler {
         historyEntryId = await this.createAssistantImageGroupEntry({
           sessionId: args.sessionId,
           sessionDoc,
-          content,
+          items,
         });
       }
     } else if (initialTarget.kind === 'new_entry') {
       historyEntryId = await this.createAssistantImageGroupEntry({
         sessionId: args.sessionId,
         sessionDoc,
-        content,
+        items,
       });
     } else {
       throw new Error(`Session is ${initialTarget.statusType}; image upload is unavailable`);
@@ -1928,7 +1936,7 @@ export class MessageHandler {
   private async appendAssistantImageGroupToActiveTurn(args: {
     sessionDoc: SessionDocument;
     turnId: string;
-    content: SessionImageGroupContent;
+    items: AgentPublishedImageItem[];
   }): Promise<boolean> {
     let appended = false;
     const backend = await this.getSessionBackend(args.sessionDoc);
@@ -1937,7 +1945,7 @@ export class MessageHandler {
         kind: 'assistant-items',
         turnId: args.turnId,
         mode: 'append',
-        items: [args.content],
+        items: args.items,
       })
       .then((result) => {
         appended = result.matched ?? false;
@@ -1948,7 +1956,7 @@ export class MessageHandler {
   private async createAssistantImageGroupEntry(args: {
     sessionId: SessionId;
     sessionDoc: SessionDocument;
-    content?: SessionImageGroupContent;
+    items?: AgentPublishedImageItem[];
   }): Promise<string> {
     // Pushes a new history entry — subject to the same fast-path ordering gate.
     await this.awaitTurnHistoryGate(args.sessionId);
@@ -1958,9 +1966,7 @@ export class MessageHandler {
     await backend.appendHistoryTurn({
       id: entryId,
       role: 'assistant',
-      items: args.content
-        ? ([args.content] as unknown as SessionHistoryInput['items'])
-        : ([] as unknown as SessionHistoryInput['items']),
+      items: (args.items ?? []) as unknown as SessionHistoryInput['items'],
       timestamp: new Date().toISOString(),
       userId: undefined,
       read: undefined,
@@ -1974,7 +1980,7 @@ export class MessageHandler {
   private async replaceAssistantEntryItems(args: {
     sessionDoc: SessionDocument;
     entryId: string;
-    content: SessionImageGroupContent;
+    items: AgentPublishedImageItem[];
   }): Promise<boolean> {
     let replaced = false;
     const backend = await this.getSessionBackend(args.sessionDoc);
@@ -1983,7 +1989,7 @@ export class MessageHandler {
         kind: 'assistant-items',
         turnId: args.entryId,
         mode: 'replace',
-        items: [args.content],
+        items: args.items,
       })
       .then((result) => {
         replaced = result.matched ?? false;
@@ -5143,6 +5149,7 @@ export class MessageHandler {
           notification,
           logger: this.logger,
           resolveSessionWorkspaceRoot: (sessionId) => this.resolveSessionWorkspaceRoot(sessionId),
+          uploadsImages: this.hasAttachmentRelay(),
           validateSessionImageUploadPath: async (filePath) =>
             await this.validateSessionImageUploadPath(filePath),
           uploadSessionImageFile: async (uploadArgs) =>
@@ -5150,7 +5157,7 @@ export class MessageHandler {
           validateSessionFileUploadPath: async (filePath, options) =>
             await this.validateSessionFileUploadPath(filePath, options),
           uploadValidatedSessionFile: async (uploadArgs) =>
-            await this.uploadValidatedSessionFile(uploadArgs),
+            await this.storeAgentSessionFile(uploadArgs),
         }));
       update.materializedContents = contents;
       try {
@@ -7279,24 +7286,31 @@ export class MessageHandler {
       return;
     }
 
+    const relay = this.hasAttachmentRelay();
     const uploadedImages: UploadedSessionImage[] = [];
+    const keptFiles: SessionFilePayload[] = [];
     let uploadError: unknown = null;
     for (const file of files) {
       try {
-        uploadedImages.push(
-          await this.uploadSessionImageFile({
-            workspaceId: this.workspaceId,
-            sessionId,
-            file,
-          })
-        );
+        if (relay) {
+          uploadedImages.push(
+            await this.uploadSessionImageFile({
+              workspaceId: this.workspaceId,
+              sessionId,
+              file,
+            })
+          );
+        } else {
+          keptFiles.push(await this.keepSessionImageLocally(sessionId, file));
+        }
       } catch (error) {
         uploadError = error;
         break;
       }
     }
+    const publishedCount = uploadedImages.length + keptFiles.length;
 
-    if (uploadedImages.length === 0) {
+    if (publishedCount === 0) {
       if (reservedEntryId) {
         await this.removeHistoryEntryById({
           sessionDoc,
@@ -7312,10 +7326,13 @@ export class MessageHandler {
       return;
     }
 
-    const content: SessionImageGroupContent = {
-      type: 'image_group',
-      images: uploadedImages.map(({ downloadUrl: _downloadUrl, ...image }) => image),
-    };
+    const content: SessionImageGroupContent | undefined = relay
+      ? {
+          type: 'image_group',
+          images: uploadedImages.map(({ downloadUrl: _downloadUrl, ...image }) => image),
+        }
+      : undefined;
+    const items: AgentPublishedImageItem[] = content ? [content] : keptFiles;
 
     let historyEntryId: string;
     let attachedTo: SessionImageUploadResponse['attachedTo'];
@@ -7324,7 +7341,7 @@ export class MessageHandler {
       const appended = await this.appendAssistantImageGroupToActiveTurn({
         sessionDoc,
         turnId: initialAttachTarget.turnId,
-        content,
+        items,
       });
 
       if (appended) {
@@ -7339,7 +7356,7 @@ export class MessageHandler {
           historyEntryId = await this.createAssistantImageGroupEntry({
             sessionId,
             sessionDoc,
-            content,
+            items,
           });
           attachedTo = 'new_entry';
         } else {
@@ -7367,7 +7384,7 @@ export class MessageHandler {
       const replaced = await this.replaceAssistantEntryItems({
         sessionDoc,
         entryId: targetEntryId,
-        content,
+        items,
       });
 
       if (!replaced) {
@@ -7396,10 +7413,10 @@ export class MessageHandler {
 
     await sessionDoc.setLastMessageAt();
 
-    const remainingUploads = files.length - uploadedImages.length;
+    const remainingUploads = files.length - publishedCount;
     const partialUploadMessage =
       uploadError && remainingUploads > 0
-        ? `Uploaded ${uploadedImages.length} of ${files.length} images; failed to upload the remaining ${remainingUploads}: ${formatErrorMessage(
+        ? `Uploaded ${publishedCount} of ${files.length} images; failed to upload the remaining ${remainingUploads}: ${formatErrorMessage(
             uploadError
           )}`
         : undefined;
@@ -7410,8 +7427,7 @@ export class MessageHandler {
       ...(partialUploadMessage ? { message: partialUploadMessage } : {}),
       historyEntryId,
       attachedTo,
-      content,
-      images: uploadedImages,
+      ...(content ? { content, images: uploadedImages } : { files: keptFiles }),
     });
   }
 
@@ -7734,6 +7750,85 @@ export class MessageHandler {
     return await this.uploadSessionFileMultipart(args);
   }
 
+  /**
+   * Whether a relay store takes attachments. Without one (the local platform
+   * and its LANs) a file stays on the machine that runs the session, and the
+   * other devices read it from there.
+   */
+  private hasAttachmentRelay(): boolean {
+    return this.cloudPort.attachmentUpload !== null;
+  }
+
+  /** Copy a validated file into the local blob store as a local-transport block. */
+  private async keepSessionFileLocally(
+    sessionId: SessionId,
+    file: ValidatedUploadFile,
+    uploadedAt: number = getServerNow()
+  ): Promise<SessionFilePayload> {
+    const fileId = `file-${uuidV4()}`;
+    const copied = await copyIntoSessionFileBlobStore({
+      workspaceId: this.workspaceId,
+      sessionId,
+      fileId,
+      sourcePath: file.absolutePath,
+    });
+    if (copied.warn) {
+      this.logger.warn(
+        `Local session file blob store is ${Math.round(
+          (copied.usedBytes / copied.quotaBytes) * 100
+        )}% full; pending offline attachments are never evicted`
+      );
+    }
+    return {
+      type: 'file',
+      fileId,
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      sizeBytes: file.sizeBytes,
+      sha256: file.sha256,
+      textPreview: file.textPreview,
+      transport: 'local',
+      machineId: this.machineId,
+      uploadedAt,
+    };
+  }
+
+  /**
+   * Keep an image an agent publishes, from the bytes its validation read, so
+   * a path swapped after validation cannot change what is kept.
+   */
+  private async keepSessionImageLocally(
+    sessionId: SessionId,
+    image: UploadableImageFile
+  ): Promise<SessionFilePayload> {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lody-agent-image-'));
+    try {
+      const absolutePath = path.join(dir, image.fileName);
+      await fs.promises.writeFile(absolutePath, image.bytes, { mode: 0o600 });
+      return await this.keepSessionFileLocally(sessionId, {
+        absolutePath,
+        fileName: image.fileName,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+        sha256: crypto.createHash('sha256').update(image.bytes).digest('hex'),
+        textPreview: false,
+      });
+    } finally {
+      await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  /** Publish a file an agent produced: to the relay store, or kept on this machine. */
+  private async storeAgentSessionFile(args: {
+    workspaceId: WorkspaceId;
+    sessionId: SessionId;
+    file: ValidatedUploadFile;
+  }): Promise<UploadedSessionFile> {
+    return this.hasAttachmentRelay()
+      ? await this.uploadValidatedSessionFile(args)
+      : await this.keepSessionFileLocally(args.sessionId, args.file);
+  }
+
   /** Append uploaded file blocks to an assistant turn's items (active turn). */
   private async appendAssistantFileBlocksToActiveTurn(args: {
     sessionDoc: SessionDocument;
@@ -7877,7 +7972,7 @@ export class MessageHandler {
     const canonicalWorkspaceRoot = await fs.promises.realpath(workspaceRoot);
     for (const file of validatedFiles) {
       try {
-        const uploaded = await this.uploadValidatedSessionFile({
+        const uploaded = await this.storeAgentSessionFile({
           workspaceId: this.workspaceId,
           sessionId,
           file,
@@ -8027,37 +8122,11 @@ export class MessageHandler {
     const localBlocks: SessionFilePayload[] = [];
     const failures: string[] = [];
     for (const file of validatedFiles) {
-      const fileId = `file-${uuidV4()}`;
       try {
-        const copied = await copyIntoSessionFileBlobStore({
-          workspaceId: this.workspaceId,
-          sessionId,
-          fileId,
-          sourcePath: file.absolutePath,
-        });
-        if (copied.warn) {
-          this.logger.warn(
-            `Local session file blob store is ${Math.round(
-              (copied.usedBytes / copied.quotaBytes) * 100
-            )}% full; pending offline attachments are never evicted`
-          );
-        }
+        localBlocks.push(await this.keepSessionFileLocally(sessionId, file, uploadedAt));
       } catch (error) {
         failures.push(`${file.fileName}: ${formatErrorMessage(error)}`);
-        continue;
       }
-      localBlocks.push({
-        type: 'file',
-        fileId,
-        fileName: file.fileName,
-        mimeType: file.mimeType,
-        sizeBytes: file.sizeBytes,
-        sha256: file.sha256,
-        textPreview: file.textPreview,
-        transport: 'local',
-        machineId: this.machineId,
-        uploadedAt,
-      });
     }
 
     if (localBlocks.length === 0) {

@@ -1715,6 +1715,13 @@ export const SessionCodeCollabHostStartResponseSchema = z
   })
   .strict();
 
+// A file block kept by the machine that runs the session, published where no
+// relay store exists.
+const KeptSessionFileBlockSchema = SessionFileBlockObjectSchema.extend({
+  transport: z.literal('local'),
+  machineId: z.string().min(1),
+}).strict();
+
 export const SessionImageUploadRequestSchema = z
   .object({
     type: z.literal('session/image-upload'),
@@ -1745,6 +1752,9 @@ export const SessionImageUploadResponseSchema = z
       .min(1)
       .max(SESSION_IMAGE_MAX_COUNT)
       .optional(),
+    // Without a relay store the images stay on the machine that runs the
+    // session, as local-transport file blocks.
+    files: z.array(KeptSessionFileBlockSchema).min(1).max(SESSION_IMAGE_MAX_COUNT).optional(),
   })
   .strict();
 
@@ -1770,12 +1780,15 @@ export const SessionFileUploadResponseSchema = z
     attachedTo: z.enum(['active_turn', 'new_entry']).optional(),
     files: z
       .array(
-        // Cloud uploads are always relay-stored; only the send-local response
-        // may carry transport 'local'.
-        SessionFileBlockObjectSchema.extend({
-          downloadUrl: z.string().url(),
-          transport: z.literal('r2'),
-        }).strict()
+        // Relay uploads carry a downloadUrl. Without a relay store the files
+        // stay on the machine that runs the session as local-transport blocks.
+        z.union([
+          SessionFileBlockObjectSchema.extend({
+            downloadUrl: z.string().url(),
+            transport: z.literal('r2'),
+          }).strict(),
+          KeptSessionFileBlockSchema,
+        ])
       )
       .min(1)
       .max(SESSION_FILE_MAX_COUNT)
