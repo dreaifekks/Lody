@@ -1,5 +1,4 @@
 import { useIosSimulatorPreviewRequest } from './ios-simulator/use-ios-simulator-preview-request';
-import { resolveVoiceLatestReply } from './session-voice-controls';
 import { SessionPendingMessages } from '@/components/chat/session-pending-messages';
 import {
   buildDraftUserHistoryEntry,
@@ -2203,10 +2202,6 @@ export const SessionChatInterface = memo(
     const { turns: sessionTailHistory, from: sessionTailFrom } = useConversationTail(
       conversationView,
       { extendToLastUserTurn: true }
-    );
-    const voiceLatestReply = useMemo(
-      () => resolveVoiceLatestReply(sessionTailHistory),
-      [sessionTailHistory]
     );
     const conversationConfigSources = useMemo(
       () =>
@@ -6740,7 +6735,7 @@ export const SessionChatInterface = memo(
                           onModelChange={handleModelChange}
                           onConfigOptionChange={handleConfigOptionChange}
                           onSendMessage={handleSendMessage}
-                          voiceLatestReply={voiceLatestReply}
+                          voiceTurns={sessionTailHistory}
                           onStop={() => {
                             void handleStop();
                           }}

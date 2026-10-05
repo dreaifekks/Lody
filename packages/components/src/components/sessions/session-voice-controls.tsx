@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { AudioLines, Mic } from 'lucide-react';
@@ -10,9 +10,15 @@ import { voiceFeatureEnabledAtom } from '@/atoms/settings';
 import { useVoiceCall } from '@/hooks/use-voice-call';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-
-/** The most recent finished assistant reply, keyed so a newer one is recognizable. */
-export type VoiceLatestReply = { key: string; text: string };
+import {
+  appendVoiceTranscript,
+  buildVoiceRelay,
+  buildVoiceSessionContext,
+  buildVoiceTurnMessage,
+  resolveVoiceLatestReply,
+  VOICE_CONVERSATION_INSTRUCTIONS,
+  type VoiceTranscriptLine,
+} from '@/lib/voice-conversation';
 
 /**
  * The voice hands off at a pause, so one sentence said with a breath in it can
@@ -20,37 +26,19 @@ export type VoiceLatestReply = { key: string; text: string };
  */
 const REQUEST_MERGE_WINDOW_MS = 2_000;
 
-/** Longest reply handed to the voice; it summarizes rather than reads it out. */
-const MAX_REPLY_CHARS = 6_000;
-
-const CONVERSATION_INSTRUCTIONS =
-  'Reply in the language the user speaks. You are the voice of a coding session: hand every request that needs work to the background agent, then tell the user its outcome briefly. Never read code, paths or long lists aloud; summarize them.';
-
-/** The text of the last finished assistant turn in the hydrated tail, if any. */
-export function resolveVoiceLatestReply(turns: readonly SessionHistory[]): VoiceLatestReply | null {
-  for (let i = turns.length - 1; i >= 0; i -= 1) {
-    const turn = turns[i];
-    if (!turn || turn.role !== 'assistant' || turn.finished !== true) continue;
-    const texts: string[] = [];
-    const items = (turn.items ?? []) as ReadonlyArray<{ type?: unknown; text?: unknown }>;
-    // The final message is the text after the last tool call or other step.
-    for (let j = items.length - 1; j >= 0; j -= 1) {
-      const item = items[j];
-      if (item?.type === 'text' && typeof item.text === 'string') texts.unshift(item.text);
-      else if (item?.type !== 'thought') break;
-    }
-    const text = texts.join('').trim();
-    return { key: turn.id, text };
-  }
-  return null;
-}
+/**
+ * The user's own words are transcribed separately and may land just after the
+ * hand-off; a voice turn with none of them waits this much longer, once.
+ */
+const USER_TRANSCRIPT_GRACE_MS = 1_500;
 
 type SessionVoiceControlsProps = {
   disabled: boolean;
   /** Which buttons to show; the new-chat composer has no session to talk with. */
   modes?: readonly ('dictation' | 'conversation')[];
   isAgentBusy?: boolean;
-  latestReply?: VoiceLatestReply | null;
+  /** The session's hydrated tail: the voice starts from it and relays its new replies. */
+  turns?: readonly SessionHistory[];
   buttonClassName: string;
   iconClassName: string;
   /** Dictation started; the composer remembers its current draft. */
@@ -60,6 +48,8 @@ type SessionVoiceControlsProps = {
   /** Send a spoken request as an ordinary message of this session. */
   onVoiceRequest?: (text: string) => Promise<boolean>;
 };
+
+const NO_TURNS: readonly SessionHistory[] = [];
 
 /**
  * Experimental voice for the session composer: dictation into the draft, and a
@@ -75,7 +65,7 @@ function SessionVoiceControlsInner({
   disabled,
   modes = ['dictation', 'conversation'],
   isAgentBusy = false,
-  latestReply = null,
+  turns = NO_TURNS,
   buttonClassName,
   iconClassName,
   onDictationStart,
@@ -83,43 +73,71 @@ function SessionVoiceControlsInner({
   onVoiceRequest,
 }: SessionVoiceControlsProps) {
   const { t } = useTranslation();
+  const latestReply = useMemo(() => resolveVoiceLatestReply(turns), [turns]);
+  const turnsRef = useRef(turns);
+  turnsRef.current = turns;
   const latestReplyRef = useRef(latestReply);
   latestReplyRef.current = latestReply;
-  const pendingRef = useRef<{ baselineKey: string | null; request: string } | null>(null);
+  /** The newest reply the voice already knows: present at call start, or relayed since. */
+  const relayedKeyRef = useRef<string | null>(null);
+  /** Paraphrases of the voice turns sent and not yet answered by a relayed reply. */
+  const awaitingRef = useRef<string[]>([]);
+  /** Everything said in the call since the last voice turn was sent. */
+  const spokenRef = useRef<VoiceTranscriptLine[]>([]);
   const modeRef = useRef<'conversation' | 'dictation' | null>(null);
-  const requestBufferRef = useRef<{ texts: string[]; timer: ReturnType<typeof setTimeout> } | null>(
-    null
-  );
+  const requestBufferRef = useRef<{
+    understanding: string[];
+    timer: ReturnType<typeof setTimeout>;
+    graceUsed: boolean;
+  } | null>(null);
   const appendRef = useRef<(text: string) => Promise<void>>(async () => {});
 
-  const sendRequest = (text: string) => {
-    pendingRef.current = { baselineKey: latestReplyRef.current?.key ?? null, request: text };
+  const sendVoiceTurn = (understanding: string[]) => {
+    const spoken = spokenRef.current;
+    spokenRef.current = [];
+    const message = buildVoiceTurnMessage({ spoken, understanding });
+    awaitingRef.current = [...awaitingRef.current, ...understanding];
     if (!onVoiceRequest) return;
-    void onVoiceRequest(text).then((accepted) => {
+    void onVoiceRequest(message).then((accepted) => {
       if (accepted) return;
-      pendingRef.current = null;
+      awaitingRef.current = awaitingRef.current.filter((text) => !understanding.includes(text));
       void appendRef.current(
-        `The request "${text}" could not be sent to the session. Tell the user.`
+        `The request "${understanding.join(' ')}" could not be sent to the background agent. Tell the user.`
       );
     });
   };
-  const sendRequestRef = useRef(sendRequest);
-  sendRequestRef.current = sendRequest;
+  const sendVoiceTurnRef = useRef(sendVoiceTurn);
+  sendVoiceTurnRef.current = sendVoiceTurn;
+
+  const flushRequestsRef = useRef<() => void>(() => {});
+  flushRequestsRef.current = () => {
+    const buffer = requestBufferRef.current;
+    if (!buffer) return;
+    const heardUser = spokenRef.current.some((line) => line.role === 'user');
+    if (!heardUser && !buffer.graceUsed) {
+      buffer.graceUsed = true;
+      buffer.timer = setTimeout(() => flushRequestsRef.current(), USER_TRANSCRIPT_GRACE_MS);
+      return;
+    }
+    requestBufferRef.current = null;
+    sendVoiceTurnRef.current(buffer.understanding);
+  };
 
   const voice = useVoiceCall({
     onUserTranscript: (text) => {
       if (modeRef.current === 'dictation') onDictationText(text);
     },
+    onTranscript: (line) => {
+      if (modeRef.current !== 'conversation') return;
+      spokenRef.current = appendVoiceTranscript(spokenRef.current, line);
+    },
     onRequest: (text) => {
       const buffer = requestBufferRef.current;
       if (buffer) clearTimeout(buffer.timer);
-      const texts = [...(buffer?.texts ?? []), text];
       requestBufferRef.current = {
-        texts,
-        timer: setTimeout(() => {
-          requestBufferRef.current = null;
-          sendRequestRef.current(texts.join(' '));
-        }, REQUEST_MERGE_WINDOW_MS),
+        understanding: [...(buffer?.understanding ?? []), text],
+        timer: setTimeout(() => flushRequestsRef.current(), REQUEST_MERGE_WINDOW_MS),
+        graceUsed: buffer?.graceUsed ?? false,
       };
     },
     onError: (message) => {
@@ -136,22 +154,22 @@ function SessionVoiceControlsInner({
     if (!buffer) return;
     clearTimeout(buffer.timer);
     requestBufferRef.current = null;
-    sendRequestRef.current(buffer.texts.join(' '));
+    sendVoiceTurnRef.current(buffer.understanding);
   }, [voice.state]);
 
-  // Hand the session's answer back to the voice once a newer reply has finished.
+  // Every reply that finishes during the call goes back to the voice, answered
+  // requests first; one already present at call start is in its context.
   const { append } = voice;
+  const callLive = voice.mode === 'conversation' && voice.state === 'active';
   useEffect(() => {
-    const pending = pendingRef.current;
-    if (!pending || isAgentBusy || !latestReply || latestReply.key === pending.baselineKey) return;
-    pendingRef.current = null;
-    const reply = latestReply.text.slice(0, MAX_REPLY_CHARS);
-    void append(
-      reply
-        ? `The background agent finished the request "${pending.request}". Its reply:\n${reply}`
-        : `The background agent finished the request "${pending.request}" without a written reply.`
-    );
-  }, [append, isAgentBusy, latestReply]);
+    if (!callLive || isAgentBusy || !latestReply) return;
+    if (latestReply.key === relayedKeyRef.current) return;
+    relayedKeyRef.current = latestReply.key;
+    // A typed turn that finishes first leaves the spoken requests waiting for their own reply.
+    const requests = latestReply.answersVoiceTurn ? awaitingRef.current : [];
+    if (latestReply.answersVoiceTurn) awaitingRef.current = [];
+    void append(buildVoiceRelay(latestReply, requests));
+  }, [append, callLive, isAgentBusy, latestReply]);
 
   const toggle = useCallback(
     (mode: 'conversation' | 'dictation') => {
@@ -163,9 +181,18 @@ function SessionVoiceControlsInner({
         toast.error(t('sessions.voice.noAgent', 'Choose a Codex agent for voice in Settings'));
         return;
       }
-      if (mode === 'dictation') onDictationStart();
-      pendingRef.current = null;
-      void voice.start(mode, mode === 'conversation' ? CONVERSATION_INSTRUCTIONS : undefined);
+      if (mode === 'dictation') {
+        onDictationStart();
+        void voice.start(mode);
+        return;
+      }
+      relayedKeyRef.current = latestReplyRef.current?.key ?? null;
+      awaitingRef.current = [];
+      spokenRef.current = [];
+      void voice.start(mode, {
+        instructions: VOICE_CONVERSATION_INSTRUCTIONS,
+        context: buildVoiceSessionContext(turnsRef.current) ?? undefined,
+      });
     },
     [onDictationStart, t, voice]
   );

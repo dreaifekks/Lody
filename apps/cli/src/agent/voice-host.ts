@@ -143,6 +143,7 @@ export class VoiceHost {
       mode: request.mode,
       sdp: request.sdp,
       ...(request.instructions ? { instructions: request.instructions } : {}),
+      ...(request.context ? { context: request.context } : {}),
     })) as Partial<LodyVoiceStartResponse>;
     if (typeof response.voiceSessionId !== 'string' || typeof response.sdp !== 'string') {
       throw new Error('The agent returned no voice call');

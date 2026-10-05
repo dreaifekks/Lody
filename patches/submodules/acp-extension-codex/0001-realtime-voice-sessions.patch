@@ -131,10 +131,10 @@ index 9e7c2a5..0a6fec8 100644
          this.codexEventHandlers.push(callback);
 diff --git a/src/VoiceExtension.ts b/src/VoiceExtension.ts
 new file mode 100644
-index 0000000..4a2a0e7
+index 0000000..c721f3d
 --- /dev/null
 +++ b/src/VoiceExtension.ts
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,265 @@
 +import {mkdtempSync, rmSync} from "node:fs";
 +import os from "node:os";
 +import path from "node:path";
@@ -166,6 +166,7 @@ index 0000000..4a2a0e7
 +    mode: z.enum(["conversation", "dictation"]),
 +    sdp: z.string().min(1),
 +    instructions: z.string().optional(),
++    context: z.string().optional(),
 +}).passthrough();
 +
 +const voiceAppendParamsParser = z.object({
@@ -268,7 +269,14 @@ index 0000000..4a2a0e7
 +                });
 +            });
 +            this.sessions.set(session.id, session);
-+            const instructions = request.instructions?.trim();
++            // Developer items, not appended context: appending after the start
++            // can make the voice speak up before the user has said anything.
++            const initialItems = request.mode === "conversation"
++                ? [request.instructions, request.context]
++                    .map((text) => text?.trim())
++                    .filter((text): text is string => Boolean(text))
++                    .map((text) => ({role: "developer", text}))
++                : [];
 +            await appServer.experimentalRequest("thread/realtime/start", {
 +                threadId: session.threadId,
 +                version: "v3",
@@ -278,9 +286,7 @@ index 0000000..4a2a0e7
 +                includeStartupContext: false,
 +                clientManagedHandoffs: true,
 +                ...(request.mode === "dictation" ? {prompt: DICTATION_PROMPT} : {}),
-+                ...(request.mode === "conversation" && instructions
-+                    ? {initialItems: [{role: "developer", text: instructions}]}
-+                    : {}),
++                ...(initialItems.length > 0 ? {initialItems} : {}),
 +                transport: {type: "webrtc", sdp: request.sdp},
 +            });
 +            const sdp = await answer;
@@ -432,10 +438,10 @@ index d7c2375..54c38af 100644
      }
 diff --git a/src/__tests__/VoiceExtension.test.ts b/src/__tests__/VoiceExtension.test.ts
 new file mode 100644
-index 0000000..9045a37
+index 0000000..58eae3c
 --- /dev/null
 +++ b/src/__tests__/VoiceExtension.test.ts
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,185 @@
 +import {existsSync} from "node:fs";
 +import {describe, expect, it} from "vitest";
 +import type {LodyVoiceEventNotification} from "acp-extension-core";
@@ -532,6 +538,34 @@ index 0000000..9045a37
 +            event: {type: "request", requestId: "h1", text: "list the files"},
 +        });
 +        expect(appServer.interrupts).toEqual([{threadId: "thread-1", turnId: "turn-1"}]);
++    });
++
++    it("starts a conversation from the client's background as a second developer item", async () => {
++        const appServer = new FakeAppServer(sdpAnswer);
++        const {sessions} = createSessions(appServer);
++
++        await sessions.start({
++            mode: "conversation",
++            sdp: "offer-sdp",
++            instructions: "Hand work off.",
++            context: " User: fix the build\nAgent: done ",
++        });
++
++        const start = appServer.requests.find((request) => request.method === "thread/realtime/start");
++        expect(start?.params["initialItems"]).toEqual([
++            {role: "developer", text: "Hand work off."},
++            {role: "developer", text: "User: fix the build\nAgent: done"},
++        ]);
++    });
++
++    it("gives dictation no background even when the client sends some", async () => {
++        const appServer = new FakeAppServer(sdpAnswer);
++        const {sessions} = createSessions(appServer);
++
++        await sessions.start({mode: "dictation", sdp: "offer-sdp", context: "User: secret plan"});
++
++        const start = appServer.requests.find((request) => request.method === "thread/realtime/start");
++        expect(start?.params).not.toHaveProperty("initialItems");
 +    });
 +
 +    it("relays a result to the voice as developer context", async () => {
