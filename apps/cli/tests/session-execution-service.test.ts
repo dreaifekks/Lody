@@ -2386,6 +2386,8 @@ describe('SessionExecutionService', () => {
     sessionId: string;
     attempts?: number;
     hasPromptOutputForTurn: boolean;
+    promptError?: Error;
+    isShuttingDown?: boolean;
     dispatchSource?: 'delivery';
     onTurnClaimed?: () => Promise<boolean>;
     onTurnStarted?: () => Promise<boolean>;
@@ -2404,7 +2406,10 @@ describe('SessionExecutionService', () => {
     const agentClient = {
       isCreated: vi.fn(() => true),
       cancel: vi.fn(async () => {}),
-      prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+      prompt: vi.fn(async () => {
+        if (options.promptError) throw options.promptError;
+        return { stopReason: 'end_turn' };
+      }),
       currentModel: undefined,
     };
     const activeSession = {
@@ -2477,6 +2482,13 @@ describe('SessionExecutionService', () => {
         }),
       },
       observePromptOutputForTurn: vi.fn(() => options.hasPromptOutputForTurn),
+      ...(options.isShuttingDown !== undefined
+        ? { isShuttingDown: () => options.isShuttingDown === true }
+        : {}),
+      // A failed prompt that already streamed output is not retried in place.
+      ...(options.promptError
+        ? { hasPromptOutputForTurn: vi.fn(() => options.hasPromptOutputForTurn) }
+        : {}),
     });
 
     const service = new SessionExecutionService(deps);
@@ -2543,6 +2555,61 @@ describe('SessionExecutionService', () => {
         lastHandledUserMsgId: 'turn-user-1',
         processingUserMsgId: undefined,
       })
+    );
+  });
+
+  it('records a disconnect during daemon shutdown as a restart the user can continue', async () => {
+    const { deps, sessionDoc, getHistory } = await runSilentPromptTurn({
+      sessionId: 'session-shutdown-turn',
+      hasPromptOutputForTurn: true,
+      promptError: new Error('ACP connection closed'),
+      isShuttingDown: true,
+    });
+
+    expect(deps.recordChatFailure).toHaveBeenCalledWith(
+      sessionDoc,
+      'daemon_restart',
+      expect.stringContaining('restarted')
+    );
+    expect(deps.recordChatFailure).not.toHaveBeenCalledWith(
+      sessionDoc,
+      'agent_disconnected',
+      expect.anything()
+    );
+    expect(getHistory()[0]?.status).toBe('failed');
+  });
+
+  it('does not restore the agent for a silent turn cut off by shutdown', async () => {
+    const { deps, sessionDoc } = await runSilentPromptTurn({
+      sessionId: 'session-shutdown-silent-turn',
+      hasPromptOutputForTurn: false,
+      promptError: new Error('ACP connection closed'),
+      isShuttingDown: true,
+    });
+
+    const sessionManager = deps.sessionManager as unknown as {
+      createSession: ReturnType<typeof vi.fn>;
+    };
+    expect(sessionManager.createSession).not.toHaveBeenCalled();
+    expect(deps.recordChatFailure).toHaveBeenCalledWith(
+      sessionDoc,
+      'daemon_restart',
+      expect.any(String)
+    );
+  });
+
+  it('still reports a disconnect outside shutdown as an agent failure', async () => {
+    const { deps, sessionDoc } = await runSilentPromptTurn({
+      sessionId: 'session-crashed-turn',
+      hasPromptOutputForTurn: true,
+      promptError: new Error('ACP connection closed'),
+      isShuttingDown: false,
+    });
+
+    expect(deps.recordChatFailure).toHaveBeenCalledWith(
+      sessionDoc,
+      'agent_disconnected',
+      expect.stringContaining('disconnected unexpectedly')
     );
   });
 

@@ -84,7 +84,8 @@ export function historyWriterTypeContract(writer: HistoryWriter, entry: SessionH
   writer.copyFrom({ history: [entry] }, [entry]);
   writer.setField('turn', 'finished', true);
   writer.setField('turn', 'inputConfig', { _lodyDeliveryKind: 'steer' });
-  // @ts-expect-error local delivery provenance has one explicit value
+  writer.setField('turn', 'inputConfig', { _lodyDeliveryKind: 'continue' });
+  // @ts-expect-error local delivery provenance has explicit values only
   writer.setField('turn', 'inputConfig', { _lodyDeliveryKind: 'normal' });
   // @ts-expect-error missing required text
   writer.append({ ...entry, items: [{ type: 'text' }] });

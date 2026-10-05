@@ -73,3 +73,19 @@ keeps that row in both cases.
 - A visible countdown keeps consent reversible without a second control —
   reveal stop-auto-retry on hover or keyboard focus, and show it directly on
   touch devices.
+- The notice usually folds onto the assistant row before it, so the control is
+  handed to the row whose id is the notice's OR its `hostMessageId`.
+
+## Interrupted rounds continue from the composer
+
+A round cut off by Stop, a daemon restart (`daemon_restart`) or a lost agent
+(`agent_disconnected`) adds no control to its notice. Instead the empty
+composer's send arrow becomes a Continue triangle that sends a short
+continuation turn (`sessions/session-continue.ts`). Any other failure, or a
+newer user message, removes it.
+
+That turn is marked `_lodyDeliveryKind: 'continue'`: the agent still receives
+its prompt (an empty prompt is no option — Antigravity rejects it and Claude
+only idles on it), but the conversation renders a thin "Continued" separator
+in its place and the outline keeps it inside the round it continues
+(`lib/continue-delivery.ts`).

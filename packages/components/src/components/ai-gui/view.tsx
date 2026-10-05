@@ -263,6 +263,7 @@ import { UserAvatar } from '../user-avatar';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { SessionPlanBar } from '@/components/sessions/session-plan-bar';
+import { isContinueDeliveryTurn } from '@/lib/continue-delivery';
 import { ContainerQueryProvider } from './container-query-provider';
 import { ScheduleProposalNotice } from '@/components/schedules/schedule-proposal-notice';
 import { shouldRenderSystemRowItem } from './message-content-guards';
@@ -498,6 +499,8 @@ export interface AssistantMessageAction {
 
 export interface CapacityRetryControl {
   noticeId: string;
+  /** Assistant row the notice folds onto at render time, when there is one. */
+  hostMessageId: string | null;
   retryInSeconds: number | null;
   retryRemainingRatio: number | null;
   pending: boolean;
@@ -2556,6 +2559,10 @@ export const MessageRowView = memo(function MessageRowView({
     );
   }
 
+  if (isContinueDeliveryTurn(message)) {
+    return <ContinueMarkerRow />;
+  }
+
   if (message.role === 'user') {
     return (
       <UserMessageRowView
@@ -2578,6 +2585,22 @@ export const MessageRowView = memo(function MessageRowView({
   // is only ever a system or user message.
   return null;
 });
+
+/** Where the composer's Continue action picked an interrupted round back up. */
+const ContinueMarkerRow = () => {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center gap-3 py-2" role="separator">
+      <div className="h-px flex-1 bg-border/60" />
+      <span
+        className={cn(stylex.props(activityTypography.footnote).className, 'text-muted-foreground')}
+      >
+        {t('sessions.continuedMarker', 'Continued')}
+      </span>
+      <div className="h-px flex-1 bg-border/60" />
+    </div>
+  );
+};
 
 /**
  * Renders system messages (e.g., system notices like resume_from_external_chat_history)
@@ -3240,6 +3263,11 @@ const ChatFailedNoticeView = ({
           'sessions.systemNotices.chatFailed.agentDisconnected',
           'Agent disconnected unexpectedly'
         );
+      case 'daemon_restart':
+        return t(
+          'sessions.systemNotices.chatFailed.daemonRestart',
+          'Interrupted because Lody restarted'
+        );
       case 'agent_no_output':
         return t(
           'sessions.systemNotices.chatFailed.agentNoOutput',
@@ -3324,6 +3352,7 @@ const ChatFailedNoticeView = ({
   // reading.
   const hasDetail = Boolean(rawMessage && rawMessage.trim() !== reasonMessage);
   const isProviderOverloaded = meta?.reason === 'acp_provider_overloaded';
+  const isDaemonRestart = meta?.reason === 'daemon_restart';
 
   const retryInSeconds = capacityRetry?.retryInSeconds ?? null;
   const isRetryCountdown = retryInSeconds !== null;
@@ -3399,7 +3428,7 @@ const ChatFailedNoticeView = ({
   // Keep copy visible on touch screens, separately from the capacity retry action.
   const noticeRow = (
     <AgentNoticeBanner
-      tone={isProviderOverloaded ? 'muted' : 'error'}
+      tone={isProviderOverloaded || isDaemonRestart ? 'muted' : 'error'}
       label={reasonMessage}
       // The readable extract first, then the untouched payload behind it.
       detail={

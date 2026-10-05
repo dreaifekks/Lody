@@ -55,6 +55,23 @@ describe('buildConversationOutline', () => {
     expect(outline[1]).toMatchObject({ title: 'Ship it', preview: 'Shipped.' });
   });
 
+  it('keeps a Continue turn inside the round it picks back up', () => {
+    const outline = buildConversationOutline([
+      message('user', [text('Refactor the parser')]),
+      message('assistant', [text('Starting on the parser.')]),
+      message('user', [text('Continue.')], {
+        inputConfig: { _lodyDeliveryKind: 'continue' },
+      } as Partial<SessionHistoryParsed>),
+      message('assistant', [text('Picking up where I stopped.')]),
+    ]);
+
+    expect(outline).toHaveLength(1);
+    expect(outline[0]).toMatchObject({
+      title: 'Refactor the parser',
+      preview: 'Starting on the parser.',
+    });
+  });
+
   it('anchors each entry at the index of the message its round starts at', () => {
     const outline = buildConversationOutline([
       message('user', [text('first')]),

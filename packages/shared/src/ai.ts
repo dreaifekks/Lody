@@ -1366,6 +1366,9 @@ export type ChatFailedReason =
   | 'memory_pressure'
   | 'acp_not_ready'
   | 'agent_disconnected'
+  // The daemon shut down (restart or self-update) while the turn was running:
+  // the agent was stopped on purpose, so the work can continue in a new turn.
+  | 'daemon_restart'
   // The prompt returned normally but the agent never emitted a single ACP
   // update, so the turn produced nothing the user can see. Adapters are meant
   // to surface an upstream failure as a JSON-RPC error; some swallow it and

@@ -296,7 +296,12 @@ const SessionChatStreamImpl = forwardRef<SessionChatStreamHandle, SessionChatStr
             onEditLastUser={message.id === lastUserMessageId ? handleEditLastUser : undefined}
             editMentionContext={editMentionContext}
             onResendUndelivered={onResendUndelivered}
-            capacityRetry={message.id === capacityRetry?.noticeId ? capacityRetry : undefined}
+            capacityRetry={
+              capacityRetry &&
+              (message.id === capacityRetry.noticeId || message.id === capacityRetry.hostMessageId)
+                ? capacityRetry
+                : undefined
+            }
             conversationFontSize={conversationFontSize}
           />
         );

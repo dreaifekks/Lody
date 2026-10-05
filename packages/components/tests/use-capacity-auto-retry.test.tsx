@@ -4,7 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  findLatestCapacityFailureNoticeId,
+  findLatestCapacityFailure,
   type CapacityRetryControl,
   useCapacityAutoRetry,
 } from '../src/components/sessions/use-capacity-auto-retry';
@@ -51,18 +51,25 @@ describe('capacity auto retry', () => {
   });
 
   it('only selects a capacity failure when no newer user turn supersedes it', () => {
-    expect(findLatestCapacityFailureNoticeId([capacityFailure('capacity-1')])).toBe('capacity-1');
+    expect(findLatestCapacityFailure([capacityFailure('capacity-1')])).toEqual({
+      noticeId: 'capacity-1',
+      hostMessageId: null,
+    });
+    // The notice folds onto the assistant row before it, so that row needs the control.
     expect(
-      findLatestCapacityFailureNoticeId([
+      findLatestCapacityFailure([
+        { id: 'assistant-1', role: 'assistant', items: [] },
+        capacityFailure('capacity-1'),
+      ])
+    ).toEqual({ noticeId: 'capacity-1', hostMessageId: 'assistant-1' });
+    expect(
+      findLatestCapacityFailure([
         capacityFailure('capacity-1'),
         { id: 'user-2', role: 'user', items: [] },
       ])
     ).toBeNull();
     expect(
-      findLatestCapacityFailureNoticeId([
-        capacityFailure('capacity-1'),
-        ordinaryFailure('failure-2'),
-      ])
+      findLatestCapacityFailure([capacityFailure('capacity-1'), ordinaryFailure('failure-2')])
     ).toBeNull();
   });
 

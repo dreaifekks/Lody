@@ -71,6 +71,7 @@ function renderRow(args: React.ComponentProps<typeof MessageRowView>) {
 
 const firstConsentControl = {
   noticeId,
+  hostMessageId: null,
   retryInSeconds: null,
   retryRemainingRatio: null,
   pending: false,
@@ -251,6 +252,26 @@ export const DisconnectedOnMobile: Story = {
       if (original) Object.defineProperty(navigator, 'clipboard', original);
       else Reflect.deleteProperty(navigator, 'clipboard');
     }
+  },
+};
+
+/** The Continue action's turn renders as a marker, never as a user message. */
+export const ContinuedMarker: Story = {
+  args: {
+    sessionId,
+    message: {
+      id: 'continue-turn',
+      role: 'user',
+      timestamp: '2026-08-31T09:01:00.000Z',
+      read: true,
+      items: [{ type: 'text', text: 'Continue.' }],
+      inputConfig: { prompt: 'Continue.', _lodyDeliveryKind: 'continue' },
+    } as SessionHistoryParsed,
+  },
+  render: renderRow,
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).queryByText('Continue.')).toBeNull();
+    await expect(within(canvasElement).getByRole('separator')).toBeVisible();
   },
 };
 

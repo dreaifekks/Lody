@@ -1,5 +1,6 @@
 import type { MessageContent, SessionHistoryParsed } from '@lody/shared';
 import type { TurnIndexRow } from './conversation-view/types';
+import { isContinueDeliveryTurn } from './continue-delivery';
 import { getSearchableMarkdownText } from './session-chat-search';
 
 /**
@@ -256,17 +257,22 @@ export function buildConversationOutline(
     let key: string;
     let role: string;
     let digest: MessageDigest;
+    let continuesRound: boolean;
     if (item.type === 'message' && item.message) {
       key = item.message.id;
       role = item.message.role;
       digest = getMessageDigest(item.message);
+      continuesRound = isContinueDeliveryTurn(item.message);
     } else if (item.type === 'placeholder' && item.row) {
       key = item.row.id;
       role = item.row.role;
       digest = getRowDigest(item.row);
+      continuesRound = isContinueDeliveryTurn(item.row);
     } else {
       continue;
     }
+    // A Continue turn picks the interrupted round back up instead of opening one.
+    if (continuesRound && openRound !== undefined) continue;
     const messageIndex = item.turnIndex ?? position;
     const isUser = role === 'user';
 
