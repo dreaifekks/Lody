@@ -71,6 +71,10 @@ export type VoiceHostDeps = {
  */
 export class VoiceHost {
   private readonly hosts = new Map<AgentConfigId, Promise<VoiceHostProcess>>();
+  /** Hosts whose process exists; only these are waited for on dispose. */
+  private readonly startedHosts = new Set<VoiceHostProcess>();
+  /** Aborts every start still downloading, queued or initializing when the daemon stops. */
+  private readonly shutdown = new AbortController();
   private readonly calls = new Map<string, VoiceCall>();
   private readonly now: () => number;
   private sweepTimer: NodeJS.Timeout | null = null;
@@ -114,14 +118,21 @@ export class VoiceHost {
     }
   }
 
+  /**
+   * Never waits for a start in progress: it may be downloading the runtime or
+   * queued behind other agents, and daemon shutdown must not wait for that.
+   * Aborting it makes the start fail before it spawns anything, or terminate
+   * the process it already spawned.
+   */
   async dispose(): Promise<void> {
+    this.shutdown.abort();
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.sweepTimer = null;
     for (const call of [...this.calls.values()]) this.closeCall(call, 'shutdown');
-    for (const host of this.hosts.values()) {
-      await host.then((h) => terminateChildProcess(h.process)).catch(() => {});
-    }
     this.hosts.clear();
+    const started = [...this.startedHosts];
+    this.startedHosts.clear();
+    await Promise.all(started.map((host) => terminateChildProcess(host.process).catch(() => {})));
   }
 
   private async start(
@@ -241,6 +252,9 @@ export class VoiceHost {
   }
 
   private getHost(configId: AgentConfigId): Promise<VoiceHostProcess> {
+    if (this.shutdown.signal.aborted) {
+      return Promise.reject(new Error('The machine is shutting down'));
+    }
     const existing = this.hosts.get(configId);
     if (existing) return existing;
     const created = this.startHost(configId);
@@ -252,7 +266,9 @@ export class VoiceHost {
   }
 
   private async startHost(configId: AgentConfigId): Promise<VoiceHostProcess> {
+    const signal = this.shutdown.signal;
     const config = await this.deps.getAgentConfig(configId);
+    signal.throwIfAborted();
     if (!config) throw new Error('The selected agent no longer exists on this machine');
     if (config.cliType !== 'builtin' || config.agentType !== 'codex') {
       throw new Error('Voice needs a built-in Codex agent');
@@ -270,8 +286,10 @@ export class VoiceHost {
       customAcp: config.customAcp,
       runtimeOverrides: config.runtimeOverrides,
       env: config.env,
+      signal,
     };
     const launch = await resolveACPProcessLaunchAsync(provider);
+    signal.throwIfAborted();
     const env = withDefaultAcpPathEntries(
       mergeLoginShellEnv(
         mergeACPProcessEnv(launch, { ...process.env, ...config.env }),
@@ -280,8 +298,9 @@ export class VoiceHost {
       config.agentType
     );
     return await withAcpSessionStartSlot(
-      { label: 'codex-voice', logger: this.deps.logger },
+      { label: 'codex-voice', logger: this.deps.logger, abortSignal: signal },
       async () => {
+        signal.throwIfAborted();
         const releaseProfile =
           codexProfile?.profile.mode === 'chatgpt'
             ? await registerCodexProfileProcess(codexProfile)
@@ -298,6 +317,7 @@ export class VoiceHost {
             : { env, close: undefined };
           closeBroker = prepared.close;
           if (releaseProfile) prepared.env.LODY_CODEX_PROCESS_TOKEN = releaseProfile.token;
+          signal.throwIfAborted();
           child = spawnAcpProcess({
             cliType: config.cliType,
             agentType: config.agentType,
@@ -327,7 +347,13 @@ export class VoiceHost {
           connection: null as unknown as acp.ClientSideConnection,
           calls: new Set(),
         };
+        this.startedHosts.add(host);
+        // A shutdown during `initialize` ends the process, which fails the handshake.
+        const stopOnShutdown = () => void terminateChildProcess(child).catch(() => {});
+        signal.addEventListener('abort', stopOnShutdown, { once: true });
         child.once('exit', () => {
+          signal.removeEventListener('abort', stopOnShutdown);
+          this.startedHosts.delete(host);
           void release().catch(() => {});
           if (this.hosts.has(configId)) this.hosts.delete(configId);
           for (const id of [...host.calls]) {
@@ -366,6 +392,7 @@ export class VoiceHost {
           if (voice?.version !== 1) {
             throw new Error('This Codex agent build does not support voice');
           }
+          signal.throwIfAborted();
         } catch (error) {
           await terminateChildProcess(child);
           throw error;
