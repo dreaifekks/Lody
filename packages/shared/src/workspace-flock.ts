@@ -1,9 +1,6 @@
 import { normalizeAgentRole, type AgentRole } from './agent-role';
-import type { AgentRoleId, McpServerId, WorkspaceId } from './ids';
-import {
-  isWorkspaceMcpServerMeta,
-  type WorkspaceMcpServerMeta,
-} from './workspace-mcp';
+import type { AgentConfigId, AgentRoleId, MachineId, McpServerId, WorkspaceId } from './ids';
+import { isWorkspaceMcpServerMeta, type WorkspaceMcpServerMeta } from './workspace-mcp';
 
 export const WORKSPACE_FLOCK_DOC_STREAM_SEGMENT = 'wf';
 const WORKSPACE_FLOCK_DOC_NAME = 'workspace';
@@ -13,7 +10,31 @@ export const getWorkspaceFlockDocId = (workspaceId: WorkspaceId): string =>
 
 export type WorkspaceFlockMcpServerKey = ['mcpServer', McpServerId];
 export type WorkspaceFlockAgentRoleKey = ['agentRole', AgentRoleId];
-export type WorkspaceFlockKey = WorkspaceFlockMcpServerKey | WorkspaceFlockAgentRoleKey;
+/** One row per workspace-wide setting; only `voice` exists. */
+export type WorkspaceFlockSettingKey = ['setting', 'voice'];
+export type WorkspaceFlockKey =
+  | WorkspaceFlockMcpServerKey
+  | WorkspaceFlockAgentRoleKey
+  | WorkspaceFlockSettingKey;
+
+/** The Codex agent config every device of the workspace uses for experimental voice. */
+export type WorkspaceVoiceSetting = {
+  version: 1;
+  configId: AgentConfigId;
+  machineId: MachineId;
+};
+
+export const isWorkspaceVoiceSetting = (value: unknown): value is WorkspaceVoiceSetting => {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record['version'] === 1 &&
+    typeof record['configId'] === 'string' &&
+    record['configId'].length > 0 &&
+    typeof record['machineId'] === 'string' &&
+    record['machineId'].length > 0
+  );
+};
 
 /**
  * Every family stored in the one workspace document.
@@ -24,11 +45,12 @@ export type WorkspaceFlockKey = WorkspaceFlockMcpServerKey | WorkspaceFlockAgent
  * data moved between documents and no window where a Role exists in both or
  * neither.
  */
-export const WORKSPACE_FLOCK_ROW_FAMILIES = ['mcpServer', 'agentRole'] as const;
+export const WORKSPACE_FLOCK_ROW_FAMILIES = ['mcpServer', 'agentRole', 'setting'] as const;
 
 export const workspaceFlockKeys = {
   mcpServer: (id: McpServerId): WorkspaceFlockMcpServerKey => ['mcpServer', id],
   agentRole: (id: AgentRoleId): WorkspaceFlockAgentRoleKey => ['agentRole', id],
+  voiceSetting: (): WorkspaceFlockSettingKey => ['setting', 'voice'],
 } as const;
 
 export type ParsedWorkspaceFlockKey =
@@ -41,6 +63,10 @@ export type ParsedWorkspaceFlockKey =
       kind: 'agentRole';
       key: WorkspaceFlockAgentRoleKey;
       agentRoleId: AgentRoleId;
+    }
+  | {
+      kind: 'voiceSetting';
+      key: WorkspaceFlockSettingKey;
     };
 
 export const parseWorkspaceFlockKey = (
@@ -61,6 +87,9 @@ export const parseWorkspaceFlockKey = (
     const agentRoleId = id as AgentRoleId;
     return { kind: 'agentRole', key: workspaceFlockKeys.agentRole(agentRoleId), agentRoleId };
   }
+  if (key[0] === 'setting' && id === 'voice') {
+    return { kind: 'voiceSetting', key: workspaceFlockKeys.voiceSetting() };
+  }
   return undefined;
 };
 
@@ -72,7 +101,14 @@ export type WorkspaceFlockAgentRoleRow = {
   key: WorkspaceFlockAgentRoleKey;
   value: AgentRole;
 };
-export type WorkspaceFlockRow = WorkspaceFlockMcpServerRow | WorkspaceFlockAgentRoleRow;
+export type WorkspaceFlockVoiceSettingRow = {
+  key: WorkspaceFlockSettingKey;
+  value: WorkspaceVoiceSetting;
+};
+export type WorkspaceFlockRow =
+  | WorkspaceFlockMcpServerRow
+  | WorkspaceFlockAgentRoleRow
+  | WorkspaceFlockVoiceSettingRow;
 export type WorkspaceFlockRowId = string & { __brand: 'WorkspaceFlockRowId' };
 export type WorkspaceFlockRowMap = Record<WorkspaceFlockRowId, WorkspaceFlockRow>;
 
@@ -107,6 +143,13 @@ export const parseWorkspaceFlockRow = (
       return undefined;
     }
     return { key: parsedKey.key, value };
+  }
+  if (parsedKey.kind === 'voiceSetting') {
+    if (!isWorkspaceVoiceSetting(value)) return undefined;
+    return {
+      key: parsedKey.key,
+      value: { version: 1, configId: value.configId, machineId: value.machineId },
+    };
   }
   // Normalized rather than merely validated: an option key an older client
   // should never have written must not survive into a Session config just
@@ -149,6 +192,13 @@ export const getWorkspaceMcpCatalog = (
     }
   }
   return catalog;
+};
+
+export const getWorkspaceVoiceSetting = (
+  rows: WorkspaceFlockRowMap
+): WorkspaceVoiceSetting | null => {
+  const row = rows[serializeWorkspaceFlockKey(workspaceFlockKeys.voiceSetting())];
+  return row && row.key[0] === 'setting' ? (row.value as WorkspaceVoiceSetting) : null;
 };
 
 export const listWorkspaceMcpServers = (rows: WorkspaceFlockRowMap): WorkspaceMcpServerMeta[] =>

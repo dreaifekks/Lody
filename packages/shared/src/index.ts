@@ -91,6 +91,7 @@ export * from './presence';
 export * from './machine-monitor';
 export * from './machine-protocol-capabilities';
 export * from './pi-extensions';
+export * from './machine-voice';
 export * from './repo-doc-meta';
 export * from './session-input';
 export * from './session-preparation';

@@ -110,6 +110,8 @@ export interface ChatLandingViewProps {
   submissionPending?: boolean;
   /** Callback when submit button is clicked */
   onSubmit?: () => void;
+  /** Extra composer actions shown just before the send button (e.g. voice dictation). */
+  extraActions?: ReactNode;
   /** Label for submit button when submitting */
   submitLabel?: string;
   /** Label for submit button when idle */
@@ -228,6 +230,7 @@ export function ChatLandingView({
   submitDisabled = false,
   submissionPending = false,
   onSubmit,
+  extraActions = null,
   submitLabel = 'Send',
   submittingLabel = 'Sending...',
   hintType = null,
@@ -387,6 +390,7 @@ export function ChatLandingView({
 
   const primaryActionNode = (
     <ErrorBoundary name="ChatLandingPrimaryAction" variant="inline" resetKeys={resetKeys}>
+      {extraActions}
       <Button
         type="button"
         variant="primary"

@@ -31,6 +31,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   lanFiles: 'lanFiles',
   lanShell: 'lanShell',
   lanTunnel: 'lanTunnel',
+  realtimeVoice: 'realtimeVoice',
 } as const;
 
 export const MCP_TOOL_DISCOVERY_PROTOCOL_VERSION = 1;
@@ -192,6 +193,19 @@ export function machineSupportsLocalFileResourcesProtocol(
     machine,
     MACHINE_PROTOCOL_CAPABILITIES.localFileResources,
     LOCAL_FILE_RESOURCES_PROTOCOL_VERSION
+  );
+}
+
+export const REALTIME_VOICE_PROTOCOL_VERSION = 1;
+
+/** Whether the daemon hosts experimental realtime voice calls (`machine/voice`). */
+export function machineSupportsRealtimeVoice(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice,
+    REALTIME_VOICE_PROTOCOL_VERSION
   );
 }
 

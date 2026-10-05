@@ -9,6 +9,7 @@ import {
   listWorkspaceAgentRoles,
   writeWorkspaceAgentRoleToFlock,
   getWorkspaceFlockDocId,
+  getWorkspaceVoiceSetting,
   listWorkspaceMcpServers,
   parseWorkspaceFlockRow,
   readWorkspaceFlockRowsFromFlock,
@@ -89,7 +90,32 @@ describe('workspace Flock helpers', () => {
     expect(rows[serializeWorkspaceFlockKey(key)]).toEqual({ key, value: valid });
     expect(Object.keys(rows)).toHaveLength(1);
     // One prefixed scan per family, never an unprefixed full-document scan.
-    expect(flock.scanOptions).toEqual([{ prefix: ['mcpServer'] }, { prefix: ['agentRole'] }]);
+    expect(flock.scanOptions).toEqual([
+      { prefix: ['mcpServer'] },
+      { prefix: ['agentRole'] },
+      { prefix: ['setting'] },
+    ]);
+  });
+
+  it('keeps one workspace voice agent and drops a malformed or unknown setting', () => {
+    const key = workspaceFlockKeys.voiceSetting();
+    const setting = {
+      version: 1 as const,
+      configId: 'config-1' as AgentConfigId,
+      machineId: 'machine-1' as MachineId,
+    };
+    expect(parseWorkspaceFlockRow(key, { ...setting, extra: true })).toEqual({
+      key,
+      value: setting,
+    });
+    expect(parseWorkspaceFlockRow(key, { ...setting, version: 2 })).toBeUndefined();
+    expect(parseWorkspaceFlockRow(key, { ...setting, configId: '' })).toBeUndefined();
+    expect(parseWorkspaceFlockRow(['setting', 'theme'], setting)).toBeUndefined();
+
+    const flock = new FakeWorkspaceFlock();
+    flock.set(key, setting);
+    expect(getWorkspaceVoiceSetting(readWorkspaceFlockRowsFromFlock(flock))).toEqual(setting);
+    expect(getWorkspaceVoiceSetting({})).toBeNull();
   });
 
   it('does not commit unchanged writes and deletes only once', () => {

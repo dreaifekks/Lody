@@ -331,3 +331,34 @@ export const reviewAgentExperimentEnabledAtom = atomWithStorage<boolean>(
 export const reviewAgentFeatureEnabledAtom = atom(
   (get) => get(experimentalFeaturesEnabledAtom) && get(reviewAgentExperimentEnabledAtom)
 );
+
+/** Opt-in for realtime voice (dictation and voice conversation) through a Codex agent. */
+export const voiceExperimentEnabledAtom = atomWithStorage<boolean>(
+  'lody-voice-experiment-enabled',
+  false,
+  undefined,
+  { getOnInit: true }
+);
+
+/**
+ * Whether this device follows the workspace-wide voice agent (`shared`, the
+ * default) or its own choice below (`device`).
+ */
+export const voiceAgentScopeAtom = atomWithStorage<'shared' | 'device'>(
+  'lody-voice-agent-scope',
+  'shared',
+  undefined,
+  { getOnInit: true }
+);
+
+/** This device's own voice agent, as `${configId}:${machineId}`. */
+export const voiceAgentSelectionAtom = atomWithStorage<string | null>(
+  'lody-voice-agent',
+  null,
+  undefined,
+  { getOnInit: true }
+);
+
+export const voiceFeatureEnabledAtom = atom(
+  (get) => get(experimentalFeaturesEnabledAtom) && get(voiceExperimentEnabledAtom)
+);

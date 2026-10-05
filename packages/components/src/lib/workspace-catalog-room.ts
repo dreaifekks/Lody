@@ -1,6 +1,7 @@
 import {
   applyWorkspaceFlockRowEvents,
   getWorkspaceFlockDocId,
+  getWorkspaceVoiceSetting,
   listWorkspaceAgentRoles,
   listWorkspaceMcpServers,
   readWorkspaceFlockRowsFromFlock,
@@ -8,6 +9,7 @@ import {
   type WorkspaceFlockEvent,
   type WorkspaceFlockRowMap,
   type WorkspaceMcpServerMeta,
+  type WorkspaceVoiceSetting,
 } from '@lody/shared';
 import type { WorkspaceRuntime } from '@/atoms/runtime';
 
@@ -22,6 +24,8 @@ import type { WorkspaceRuntime } from '@/atoms/runtime';
 export type WorkspaceCatalogSnapshot = {
   servers: WorkspaceMcpServerMeta[];
   roles: AgentRole[];
+  /** The Codex agent every device uses for experimental voice, when shared. */
+  voice: WorkspaceVoiceSetting | null;
   /** True once the first remote sync landed, which makes an empty catalog authoritative. */
   synced: boolean;
 };
@@ -33,6 +37,7 @@ const EMPTY_ROWS = Object.freeze({}) as WorkspaceFlockRowMap;
 export const EMPTY_WORKSPACE_CATALOG: WorkspaceCatalogSnapshot = Object.freeze({
   servers: Object.freeze([]) as unknown as WorkspaceMcpServerMeta[],
   roles: Object.freeze([]) as unknown as AgentRole[],
+  voice: null,
   synced: false,
 });
 
@@ -62,7 +67,7 @@ const ROOMS = new WeakMap<WorkspaceRuntime, SharedCatalogRoom>();
  * (and vice versa). Rows are identity-stable across
  * `applyWorkspaceFlockRowEvents`, so element identity is the whole comparison.
  */
-const reuseUnchanged = <T,>(previous: T[], next: T[]): T[] =>
+const reuseUnchanged = <T>(previous: T[], next: T[]): T[] =>
   previous.length === next.length && previous.every((item, index) => item === next[index])
     ? previous
     : next;
@@ -72,14 +77,23 @@ function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: bo
   room.rows = rows;
   const servers = reuseUnchanged(room.snapshot.servers, listWorkspaceMcpServers(rows));
   const roles = reuseUnchanged(room.snapshot.roles, listWorkspaceAgentRoles(rows));
+  const nextVoice = getWorkspaceVoiceSetting(rows);
+  const voice =
+    nextVoice &&
+    room.snapshot.voice &&
+    nextVoice.configId === room.snapshot.voice.configId &&
+    nextVoice.machineId === room.snapshot.voice.machineId
+      ? room.snapshot.voice
+      : nextVoice;
   if (
     servers === room.snapshot.servers &&
     roles === room.snapshot.roles &&
+    voice === room.snapshot.voice &&
     room.snapshot.synced === synced
   ) {
     return;
   }
-  room.snapshot = { servers, roles, synced };
+  room.snapshot = { servers, roles, voice, synced };
   for (const listener of room.listeners) {
     listener(room.snapshot);
   }

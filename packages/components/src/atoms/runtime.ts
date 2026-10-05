@@ -34,6 +34,8 @@ import type {
   MachineId,
   AgentConfigId,
   MachinePiExtensionsResponse,
+  MachineVoiceRequest,
+  MachineVoiceResponse,
   MachinePingResponse,
   MachineRestartResponse,
   MachineStatusResponse,
@@ -516,6 +518,11 @@ export type WorkspaceRuntime = {
     machineId: MachineId,
     options?: { configId?: AgentConfigId }
   ) => Promise<MachinePiExtensionsResponse>;
+  /** Experimental realtime voice hosted by a machine's Codex agent config. */
+  requestMachineVoice: (
+    machineId: MachineId,
+    request: MachineVoiceRequest
+  ) => Promise<MachineVoiceResponse>;
   /**
    * The one `ios-simulator/control` Machine RPC. Local machines are reached
    * directly; remote ones with a preview-control proof for the exact command.

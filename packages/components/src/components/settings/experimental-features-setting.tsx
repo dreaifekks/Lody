@@ -4,8 +4,10 @@ import { Switch } from '@lody/ui/switch';
 import {
   experimentalFeaturesEnabledAtom,
   reviewAgentExperimentEnabledAtom,
+  voiceExperimentEnabledAtom,
 } from '@/atoms/settings';
 import { CompactRow, CompactSection } from './compact-layout';
+import { VoiceAgentRows } from './voice-agent-select';
 
 /**
  * User-facing experimental features.
@@ -29,6 +31,7 @@ export function ExperimentalFeatureRows() {
   const { t } = useTranslation();
   const [experimentalEnabled, setExperimentalEnabled] = useAtom(experimentalFeaturesEnabledAtom);
   const [reviewAgentEnabled, setReviewAgentEnabled] = useAtom(reviewAgentExperimentEnabledAtom);
+  const [voiceEnabled, setVoiceEnabled] = useAtom(voiceExperimentEnabledAtom);
 
   return (
     <>
@@ -41,19 +44,35 @@ export function ExperimentalFeatureRows() {
       </CompactRow>
 
       {experimentalEnabled ? (
-        <CompactRow
-          label={t('settings.experimental.reviewAgent', 'Review agent')}
-          helper={t(
-            'settings.experimental.reviewAgentHelper',
-            'Let a review agent check a branch, hand fixes back to the session, and merge once CI is green. You choose per session.'
-          )}
-        >
-          <Switch
-            checked={reviewAgentEnabled}
-            onCheckedChange={setReviewAgentEnabled}
-            aria-label={t('settings.experimental.reviewAgent', 'Review agent')}
-          />
-        </CompactRow>
+        <>
+          <CompactRow
+            label={t('settings.experimental.reviewAgent', 'Review agent')}
+            helper={t(
+              'settings.experimental.reviewAgentHelper',
+              'Let a review agent check a branch, hand fixes back to the session, and merge once CI is green. You choose per session.'
+            )}
+          >
+            <Switch
+              checked={reviewAgentEnabled}
+              onCheckedChange={setReviewAgentEnabled}
+              aria-label={t('settings.experimental.reviewAgent', 'Review agent')}
+            />
+          </CompactRow>
+          <CompactRow
+            label={t('settings.experimental.voice', 'Voice')}
+            helper={t(
+              'settings.experimental.voiceHelper',
+              'Dictate into the composer, or talk with a session out loud. Runs on the Codex agent you choose and uses its account.'
+            )}
+          >
+            <Switch
+              checked={voiceEnabled}
+              onCheckedChange={setVoiceEnabled}
+              aria-label={t('settings.experimental.voice', 'Voice')}
+            />
+          </CompactRow>
+          {voiceEnabled ? <VoiceAgentRows /> : null}
+        </>
       ) : null}
     </>
   );

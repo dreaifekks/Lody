@@ -60,7 +60,7 @@ function signalChildProcess(child: ChildProcess, signal: NodeJS.Signals): void {
   child.kill(signal);
 }
 
-async function terminateChildProcess(child: ChildProcess): Promise<void> {
+export async function terminateChildProcess(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null) {
     return;
   }

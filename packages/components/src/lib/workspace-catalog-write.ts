@@ -6,6 +6,7 @@ import {
   type McpServerId,
   type WorkspaceId,
   type WorkspaceMcpServerMeta,
+  type WorkspaceVoiceSetting,
 } from '@lody/shared';
 import type { WorkspaceRuntime } from '@/atoms/runtime';
 
@@ -93,3 +94,12 @@ export const deleteWorkspaceAgentRole = (
   deps: WorkspaceCatalogWriteDeps,
   id: AgentRoleId
 ): Promise<void> => deleteRow(deps, workspaceFlockKeys.agentRole(id));
+
+/** Share one Codex agent for voice with every device of the workspace, or stop sharing. */
+export const writeWorkspaceVoiceSetting = (
+  deps: WorkspaceCatalogWriteDeps,
+  setting: WorkspaceVoiceSetting | null
+): Promise<void> =>
+  setting
+    ? putRow(deps, workspaceFlockKeys.voiceSetting(), setting)
+    : deleteRow(deps, workspaceFlockKeys.voiceSetting());

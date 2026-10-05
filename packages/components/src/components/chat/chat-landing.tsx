@@ -317,6 +317,7 @@ import { MobileWorkspaceSwitcherSheet } from '@/components/mobile/mobile-workspa
 import { MobileCreateWorkspaceSheet } from '@/components/mobile/mobile-create-workspace-sheet';
 import { MobileSessionRunConfig } from '@/components/mobile/mobile-session-run-config';
 import { ChatComposer } from '@/components/chat/chat-composer';
+import { SessionVoiceControls } from '@/components/sessions/session-voice-controls';
 import { useSessionMcpSelection } from '@/hooks/use-session-mcp-selection';
 import {
   MobileProjectFileBrowser,
@@ -1004,6 +1005,7 @@ function WorkspaceChatLanding({
     message: ReactNode;
     tone: 'error' | 'warning' | 'info';
   } | null>(null);
+  const landingDictationBaseRef = useRef('');
   const setPrompt = useCallback(
     (value: string) => {
       setSessionState((prev) => ({ ...prev, prompt: value }));
@@ -6679,6 +6681,22 @@ function WorkspaceChatLanding({
         onSubmit={() => {
           void handleSubmit();
         }}
+        extraActions={
+          <SessionVoiceControls
+            modes={['dictation']}
+            disabled={submitting}
+            buttonClassName="h-8 w-8"
+            iconClassName="h-4 w-4"
+            onDictationStart={() => {
+              landingDictationBaseRef.current = promptTextareaRef.current?.value ?? prompt;
+            }}
+            onDictationText={(text) => {
+              const base = landingDictationBaseRef.current;
+              const separator = base && !/\s$/.test(base) ? ' ' : '';
+              setPrompt(base + separator + text.trimStart());
+            }}
+          />
+        }
         submitLabel={t('chat.send')}
         submittingLabel={t('chat.submitting')}
         hintType={hintType}
