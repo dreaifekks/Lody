@@ -45,6 +45,12 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
   const [state, setState] = useState<VoiceCallState>('idle');
   const [mode, setMode] = useState<MachineVoiceMode | null>(null);
   const callRef = useRef<ActiveCall | null>(null);
+  /**
+   * Identifies the newest start. `getUserMedia` cannot be aborted, so a stop
+   * or unmount while permission is pending invalidates the token instead, and
+   * the late start then releases the microphone without touching the state.
+   */
+  const startTokenRef = useRef(0);
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
 
@@ -73,8 +79,14 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
   }, []);
 
   const stop = useCallback(async () => {
+    // Also cancels a start still waiting for microphone permission, which has no call yet.
+    startTokenRef.current += 1;
     const call = callRef.current;
-    if (!call) return;
+    if (!call) {
+      setState('idle');
+      setMode(null);
+      return;
+    }
     teardown(call);
     if (call.voiceSessionId) {
       await request(call.machineId, { action: 'stop', voiceSessionId: call.voiceSessionId });
@@ -130,6 +142,7 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
         handlersRef.current.onError?.('Choose a Codex agent for voice in Settings first.');
         return;
       }
+      const token = ++startTokenRef.current;
       setState('connecting');
       setMode(nextMode);
       let microphone: MediaStream;
@@ -138,9 +151,14 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         });
       } catch (error) {
+        if (token !== startTokenRef.current) return;
         setState('idle');
         setMode(null);
         handlersRef.current.onError?.(error instanceof Error ? error.message : String(error));
+        return;
+      }
+      if (token !== startTokenRef.current) {
+        microphone.getTracks().forEach((track) => track.stop());
         return;
       }
       const peer = new RTCPeerConnection();

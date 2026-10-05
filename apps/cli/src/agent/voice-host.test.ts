@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentConfigId, AgentConfigMeta } from '@lody/shared';
 
@@ -7,6 +9,8 @@ const launchGate = vi.hoisted(() => ({
   sawSignal: null as AbortSignal | null,
   respectSignal: true,
   spawned: 0,
+  /** When set, spawning returns this child instead of failing. */
+  child: null as null | (() => unknown),
 }));
 
 vi.mock('@/agent/setting', async (importOriginal) => {
@@ -31,9 +35,28 @@ vi.mock('@/agent/setting', async (importOriginal) => {
 vi.mock('@/agent/acp-runner', () => ({
   spawnAcpProcess: () => {
     launchGate.spawned += 1;
+    if (launchGate.child) return launchGate.child();
     throw new Error('spawned after shutdown');
   },
 }));
+
+vi.mock('@/agent/login-shell-env', () => ({ getLoginShellEnv: async () => ({}) }));
+
+/** An adapter process that starts but never answers `initialize`. */
+class SilentAdapter extends EventEmitter {
+  readonly pid = undefined;
+  exitCode: number | null = null;
+  readonly stdin = new PassThrough();
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  kill(signal?: NodeJS.Signals): boolean {
+    if (this.exitCode !== null) return false;
+    this.exitCode = 0;
+    this.stdout.end();
+    this.emit('exit', 0, signal ?? null);
+    return true;
+  }
+}
 
 const { VoiceHost } = await import('./voice-host');
 
@@ -77,6 +100,7 @@ afterEach(() => {
   launchGate.sawSignal = null;
   launchGate.respectSignal = true;
   launchGate.spawned = 0;
+  launchGate.child = null;
 });
 
 describe('VoiceHost shutdown', () => {
@@ -104,6 +128,26 @@ describe('VoiceHost shutdown', () => {
 
     await expect(started).resolves.toMatchObject({ success: false });
     expect(launchGate.spawned).toBe(0);
+  });
+
+  it('ends an adapter still in its handshake instead of waiting for it', async () => {
+    const adapters: SilentAdapter[] = [];
+    launchGate.child = () => {
+      const adapter = new SilentAdapter();
+      adapters.push(adapter);
+      return adapter;
+    };
+    const host = createHost();
+    const started = host.handle(startRequest);
+    await vi.waitFor(() => expect(launchGate.finish).not.toBeNull());
+    launchGate.finish?.();
+    await vi.waitFor(() => expect(adapters).toHaveLength(1));
+
+    await host.dispose();
+
+    expect(adapters[0]?.exitCode).not.toBeNull();
+    await expect(started).resolves.toMatchObject({ success: false });
+    expect(launchGate.spawned).toBe(1);
   });
 
   it('refuses new calls once shut down', async () => {
