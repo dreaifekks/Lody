@@ -345,13 +345,14 @@ sidebar and the list draw it in its color, and a member puts the short name in
 the alerts it reports to the hub in place of that name.
 
 How a LAN answers is shown where a member looks for it. The sidebar's nameplate
-adds a dot and the hub's round trip while the workspace is connected, and Settings
-
-> LAN adds it to each LAN. The shell measures it every ten seconds on one kept
-> connection, from the request to the first byte (`measureLanHubLatency`). A
-> machine's round trip is a `machine/ping` through the hub, measured while its
-> sidebar card is open or Settings > LAN shows it, every fifteen seconds; one that
-> does not answer within six seconds says so.
+adds the hub's round trip in quiet ink while the workspace is connected, and
+the LAN settings add it after the address of each LAN. What answers is the
+resting state and gets no mark of its own: a LAN or a machine is marked only
+when it does not answer. The shell measures the hub's round trip every ten
+seconds on one kept connection, from the request to the first byte
+(`measureLanHubLatency`). A machine's round trip is a `machine/ping` through
+the hub, measured while its sidebar card is open or the LAN settings show it,
+every fifteen seconds; one that does not answer within six seconds says so.
 
 Listing asks nothing of a machine. What a member asks of one is a
 project-control request, and four of them cross machines: `lan/update-machine`,

@@ -82,6 +82,7 @@ const machines: LanMachines = {
       name: 'home-server-ubuntu-2404-lts',
       alias: 'home',
       color: 'teal',
+      hub: { part: 'hub', term: 3, snapshotAt: null, rttMs: 0 },
       agents: [
         { agentType: 'claude', name: 'Claude Code', version: '2.1.280', state: 'current' },
         {
@@ -98,6 +99,12 @@ const machines: LanMachines = {
       version: NEWEST,
       update: null,
       build: { version: NEWEST, update: 'service', source },
+      hub: {
+        part: 'standby',
+        term: 3,
+        snapshotAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+        rttMs: 4,
+      },
     }),
     machine({
       machineId: 'render-farm',
@@ -154,6 +161,7 @@ const machinesView = (
     })}
     sshEntries={{ 'home-server': 'ts:home-server' }}
     onSshEntryChange={() => {}}
+    Latency={({ machine: of }) => <> · {of.self ? 18 : 12} ms</>}
   />
 );
 

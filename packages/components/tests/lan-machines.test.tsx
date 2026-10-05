@@ -293,27 +293,51 @@ describe('the machines of the LANs', () => {
     const own = rowOf('desk').textContent ?? '';
     expect(own).toContain('This machine');
     expect(own).toContain(`${RUNNING} · macOS · Home, Office`);
-    expect(own).toContain(`${NEWEST} is out. It comes with this application.`);
-    expect(own).toContain('Claude Code 2.1.280');
+    // This application installs what this machine runs, and offers it beside
+    // its own build; a runtime an agent already runs with is not worth a word.
+    expect(own).not.toContain(`${NEWEST} is out`);
+    expect(own).not.toContain('Claude Code');
+    expect(buttonIn(rowOf('desk'), 'Update')).toBeUndefined();
 
+    // A machine that answers is the resting state: what is said is what is out.
     const member = rowOf('server').textContent ?? '';
-    expect(member).toContain('Online');
+    expect(member).not.toContain('Online');
     expect(member).toContain(`${NEWEST} is out`);
     expect(member).toContain('Codex 0.155.0 → 0.156.0');
     expect(buttonIn(rowOf('server'), 'Update')).toBeTruthy();
 
-    // A machine that is away, or that would not understand, is asked nothing;
-    // only its short name, which no one asks it for, can still be given.
+    // A machine that is away, or that would not understand, is asked nothing:
+    // its row keeps the one menu, for what is set on this side.
     const asked = (name: string) =>
       [...rowOf(name).querySelectorAll('button')].map((button) =>
         button.getAttribute('aria-label')
       );
     expect(rowOf('laptop').textContent).toContain('Offline');
-    expect(asked('laptop')).toEqual(['Short name for laptop']);
-    expect(rowOf('old').textContent).toContain('takes no requests from other machines');
-    expect(asked('old')).toEqual(['Short name for old']);
-    // This application installs what this machine runs.
-    expect(buttonIn(rowOf('desk'), 'Update')).toBeUndefined();
+    expect(asked('laptop')).toEqual(['More for laptop']);
+    expect(rowOf('old').textContent).toContain(
+      `${NEWEST} is out. It is updated on the machine itself.`
+    );
+    expect(asked('old')).toEqual(['More for old']);
+  });
+
+  it('names the LANs of a machine only where they tell machines apart', async () => {
+    await render(inventoryOf([server, machine({ machineId: 'spare' })]));
+    expect(rowOf('server').textContent).toContain(`${RUNNING} · Linux`);
+    expect(rowOf('server').textContent).not.toContain('Home');
+
+    await render(inventoryOf([server, machine({ machineId: 'spare', lans: [home, office] })]));
+    expect(rowOf('server').textContent).toContain(`${RUNNING} · Linux · Home`);
+    expect(rowOf('spare').textContent).toContain(`${RUNNING} · Linux · Home, Office`);
+  });
+
+  it('says how long a machine that answers takes to, after its facts', async () => {
+    await render(inventoryOf([desk, server, machine({ machineId: 'laptop', online: false })]), {
+      Latency: ({ machine: of }) => <> · {of.machineId} answers</>,
+    });
+
+    expect(rowOf('desk').textContent).toContain('Home, Office · desk answers');
+    expect(rowOf('server').textContent).toContain('Home · server answers');
+    expect(rowOf('laptop').textContent).not.toContain('answers');
   });
 
   it('marks the machine that hosts the hub and the standby, and says why on hover', async () => {
@@ -329,16 +353,21 @@ describe('the machines of the LANs', () => {
           lans: [office],
           build: { ...desk.build!, update: 'desktop' },
         }),
+        machine({
+          machineId: 'spare',
+          hub: { part: 'candidate', term: 1, snapshotAt: null, rttMs: 9 },
+        }),
       ])
     );
+    // The glyph leads the row; it carries the hint, where there is one.
     const hint = (name: string) =>
-      rowOf(name).querySelector('[aria-label]')?.getAttribute('aria-label') ?? '';
+      rowOf(name).querySelector('span')?.getAttribute('aria-label') ?? null;
 
-    expect(hint('server')).toBe("Hosts the LAN's hub · Term 1");
-    expect(hint('desk')).toBe(
-      'Standby: keeps a copy of the hub and takes over if it stays away · Copy taken 0 minutes ago · 5 ms to the hub'
-    );
-    expect(hint('laptop')).toBe('Member; a desktop does not host the hub');
+    expect(hint('server')).toBe('Hosts the hub · Term 1');
+    expect(hint('desk')).toBe('Hub standby · Copy taken 0 minutes ago · 5 ms to the hub');
+    // A machine with no part in keeping the hub has nothing to say about it.
+    expect(hint('laptop')).toBeNull();
+    expect(hint('spare')).toBeNull();
   });
 
   it('says where an update stands, and how one ended that failed', async () => {
@@ -358,7 +387,7 @@ describe('the machines of the LANs', () => {
     expect(rowOf('busy').textContent).toContain(`Installing ${NEWEST}…`);
     expect(buttonIn(rowOf('busy'), 'Update')).toBeUndefined();
     expect(rowOf('broken').textContent).toContain(
-      `The update to ${NEWEST} failed.npm could not install`
+      `The update to ${NEWEST} failed. npm could not install`
     );
     expect(buttonIn(rowOf('broken'), 'Update')).toBeTruthy();
   });
@@ -449,11 +478,10 @@ describe('the machines of the LANs', () => {
 
     it('is named for a machine, as the configuration of this computer writes it', async () => {
       await render(inventoryOf([desk, server]), { ...naming, sshEntries: {} });
-      expect(rowOf('server').textContent).not.toContain('Editors reach it');
 
       await openMenuOf('server');
       await click(menuItem('SSH entry for editors'));
-      expect(text()).toContain('How editors reach server');
+      expect(text()).toContain('SSH entry for server');
       expect(save()?.disabled).toBe(true);
 
       await write('  ts:home-devNuc ');
@@ -464,13 +492,14 @@ describe('the machines of the LANs', () => {
       expect(document.body.querySelector('[role="dialog"] input')).toBeNull();
     });
 
-    it('is shown with the machine, changed, and taken back', async () => {
+    it('is kept for the machine, changed, and taken back', async () => {
       await render(inventoryOf([desk, server]), {
         ...naming,
         sshEntries: { server: 'me@nuc', desk: 'never-shown' },
       });
-      expect(rowOf('server').textContent).toContain('Editors reach it as me@nuc');
-      expect(rowOf('desk').textContent).not.toContain('never-shown');
+      // A setting of this computer is read where it is set, not in the list.
+      expect(text()).not.toContain('me@nuc');
+      expect(text()).not.toContain('never-shown');
 
       await openMenuOf('server');
       await click(menuItem('SSH entry for editors'));
@@ -549,6 +578,10 @@ describe('the machines of the LANs', () => {
       });
     };
     const save = () => buttonIn(document.body.querySelector('[role="dialog"]')!, 'Save');
+    const nameIt = async (name: string) => {
+      await openMenuOf(name);
+      await click(menuItem('Short name and color'));
+    };
 
     it('comes before the machine name, which stays beside it', async () => {
       const nas = machine({ machineId: 'nas', name: 'home-nas-ubuntu-2404', alias: 'nas' });
@@ -565,7 +598,7 @@ describe('the machines of the LANs', () => {
       const laptop = machine({ machineId: 'laptop', online: false, controllable: false });
       await render(inventoryOf([desk, laptop]));
 
-      await click(buttonIn(rowOf('laptop'), 'Short name for laptop'));
+      await nameIt('laptop');
       expect(text()).toContain('Short name and color for laptop');
       expect(save()?.disabled).toBe(true);
       await write('  old   one ');
@@ -574,14 +607,14 @@ describe('the machines of the LANs', () => {
       expect(field()).toBeNull();
 
       await render(inventoryOf([desk, { ...laptop, alias: 'old one' }]));
-      await click(buttonIn(rowOf('laptop'), 'Short name for laptop'));
+      await nameIt('laptop');
       expect(field()?.value).toBe('old one');
       expect(save()?.disabled).toBe(true);
       await write('');
       await click(save());
       expect(aliased().at(-1)).toEqual(['laptop', null]);
 
-      await click(buttonIn(rowOf('desk'), 'Short name for desk'));
+      await nameIt('desk');
       await write('me');
       await click(save());
       expect(aliased().at(-1)).toEqual(['desk', 'me']);
@@ -589,7 +622,7 @@ describe('the machines of the LANs', () => {
 
     it('gives the name a color, which the row shows, and takes it back', async () => {
       await render(inventoryOf([desk, server]));
-      await click(buttonIn(rowOf('server'), 'Short name for server'));
+      await nameIt('server');
       expect(swatch('No color')?.getAttribute('aria-pressed')).toBe('true');
       await click(swatch('Teal'));
       expect(swatch('Teal')?.getAttribute('aria-pressed')).toBe('true');
@@ -600,11 +633,12 @@ describe('the machines of the LANs', () => {
       expect(colored().at(-1)).toEqual(['server', 'teal']);
 
       await render(inventoryOf([desk, { ...server, color: 'teal' }]));
+      // The name itself, not the line it leads.
       const name = [...rowOf('server').querySelectorAll<HTMLElement>('span')].find(
-        (span) => span.textContent === 'server'
+        (span) => span.textContent === 'server' && span.childElementCount === 0
       );
       expect(name?.style.color).toBe('hsl(var(--lan-machine-teal))');
-      await click(buttonIn(rowOf('server'), 'Short name for server'));
+      await nameIt('server');
       expect(swatch('Teal')?.getAttribute('aria-pressed')).toBe('true');
       expect(save()?.disabled).toBe(true);
       await click(swatch('No color'));
@@ -619,7 +653,7 @@ describe('the machines of the LANs', () => {
         reason: null,
       };
       await render(inventoryOf([server]));
-      await click(buttonIn(rowOf('server'), 'Short name for server'));
+      await nameIt('server');
       await write('nuc');
       await click(save());
       expect(toasts.error).toEqual([

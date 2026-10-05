@@ -52,7 +52,7 @@ export function SidebarUpdateBanner({
           : isAvailable
             ? t(
                 'sidebar.updateAvailable.description',
-                'Version {{version}} is out. Updating downloads it and restarts Lody.',
+                'Version {{version}} is out. Updating restarts Lody.',
                 { version }
               )
             : t('sidebar.updateReady.description', 'Restart to update to {{version}}.', {
