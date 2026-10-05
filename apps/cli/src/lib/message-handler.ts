@@ -3236,6 +3236,7 @@ export class MessageHandler {
       },
       recordChatFailure: async (sessionDoc, reason, message, code) =>
         await this.recordChatFailure(sessionDoc, reason, message, code),
+      isShuttingDown: () => this.cleanedUp,
       maybeGenerateAndStoreSessionTitle: async (
         sessionId,
         cliType,

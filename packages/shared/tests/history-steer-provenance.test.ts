@@ -63,7 +63,28 @@ describe('stored steer provenance', () => {
     }
   });
 
-  it('only projects the known marker from historical configs', () => {
+  it('persists the Continue marker the composer sends after an interruption', () => {
+    const doc = new LoroDoc();
+    const mirror = createSessionMirror({
+      doc,
+      initialState: { session: { id: 'synthetic' as SessionId }, history: [] },
+    });
+    try {
+      mirror.historyWriter.append({
+        ...entry(),
+        id: 'continue',
+        inputConfig: { prompt: 'Continue.', _lodyDeliveryKind: 'continue' },
+      });
+      const stored = doc.getList('history').toJSON()[0];
+      expect(normalizeSessionTurnInputConfig(stored.inputConfig)?._lodyDeliveryKind).toBe(
+        'continue'
+      );
+    } finally {
+      mirror.dispose();
+    }
+  });
+
+  it('only projects the known markers from historical configs', () => {
     expect(normalizeSessionTurnInputConfig({ _lodyDeliveryKind: 'steer' })).toEqual({
       _lodyDeliveryKind: 'steer',
     });

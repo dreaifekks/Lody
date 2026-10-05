@@ -67,6 +67,8 @@ type StoryShellProps = {
   isAgentBusy: boolean;
   initialInputText?: string;
   showFreeTurnLimitNotice?: boolean;
+  /** The latest round was interrupted, so the empty composer offers Continue. */
+  continuable?: boolean;
   onSendMessage?: SessionChatInputAreaProps['onSendMessage'];
   disableImageUpload?: boolean;
   claimNavigationFocus?: () => boolean;
@@ -86,6 +88,7 @@ function StoryShell({
   isAgentBusy,
   initialInputText = '',
   showFreeTurnLimitNotice = false,
+  continuable = false,
   onSendMessage = async () => true,
   claimNavigationFocus,
   disableImageUpload = true,
@@ -148,6 +151,7 @@ function StoryShell({
               onModelChange={() => {}}
               onSendMessage={onSendMessage}
               onStop={() => {}}
+              onContinue={continuable ? () => {} : undefined}
               onRemoveQueueItem={async () => {}}
               initialInputText={initialInputText}
               disableImageUpload={disableImageUpload}
@@ -194,6 +198,15 @@ export const RunningDark: Story = {
 export const DraftDark: Story = {
   args: {
     initialInputText: 'Audit the theme token mapping for the current session input controls.',
+  },
+  globals: {
+    theme: 'dark',
+  },
+};
+
+export const InterruptedDark: Story = {
+  args: {
+    continuable: true,
   },
   globals: {
     theme: 'dark',

@@ -605,6 +605,11 @@ export type SessionExecutionServiceDeps = {
     message?: string,
     code?: ChatFailedCode
   ) => Promise<void>;
+  /**
+   * True once the daemon has begun shutting down. Shutdown stops every agent on
+   * purpose, so a disconnect seen then is a restart, not an agent crash.
+   */
+  isShuttingDown?: () => boolean;
   maybeGenerateAndStoreSessionTitle: (
     sessionId: SessionId,
     cliType: AgentConfigCliType,
@@ -3361,8 +3366,28 @@ export class SessionExecutionService {
     );
     await this.deps.turnFinalization.flushSessionUsage(sessionId);
 
+    const interruptedByShutdown =
+      (providerDisconnected ||
+        (acpError !== null && mapACPErrorToFailureReason(acpError) === 'agent_disconnected')) &&
+      this.deps.isShuttingDown?.() === true;
+
     if (error) {
-      if (acpError) {
+      if (interruptedByShutdown) {
+        // The agent is already being stopped with the rest of the daemon, so
+        // there is nothing to terminate here.
+        this.deps.logger.info(`[${sessionId}] Turn interrupted by daemon shutdown`);
+        this.captureTurnFailed(
+          sessionId,
+          this.currentTurnBySession.get(sessionId),
+          'daemon_restart',
+          false
+        );
+        await this.deps.recordChatFailure(
+          sessionDoc,
+          'daemon_restart',
+          'Lody restarted while the agent was working.'
+        );
+      } else if (acpError) {
         const failureReason = mapACPErrorToFailureReason(acpError);
         const userMessage = getACPErrorUserMessage(acpError);
         const recordedMessage =
@@ -5258,6 +5283,9 @@ export class SessionExecutionService {
                   self.deps.hasPromptOutputForTurn?.(sessionId, runtime.turnId) ?? false;
                 if (
                   runtime.turnId !== turnId ||
+                  // Shutdown closed the connection on purpose; restoring the
+                  // agent now would only race the exit.
+                  self.deps.isShuttingDown?.() === true ||
                   !shouldRecoverStaleACPConnectionPrompt({
                     error,
                     alreadyAttempted: staleAcpPromptRecoveryAttempted,

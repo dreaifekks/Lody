@@ -407,8 +407,12 @@ export const ACPSessionConfigSchema = ACPTurnConfigSchema.extend({
   runtimeOverrides: BuiltinRuntimeOverridesSchema.optional(),
 });
 
-/** Local history provenance, not an additional ACP request option. */
-export const SessionHistoryDeliveryKindSchema = z.literal('steer');
+/**
+ * Local history provenance, not an additional ACP request option. `continue`
+ * marks the short turn the composer's Continue action sends after an
+ * interrupted round; the conversation shows it as a marker, not a message.
+ */
+export const SessionHistoryDeliveryKindSchema = z.enum(['steer', 'continue']);
 export type SessionHistoryDeliveryKind = z.infer<typeof SessionHistoryDeliveryKindSchema>;
 
 export const SessionHistoryInputConfigSchema = ACPTurnConfigSchema.partial()
@@ -3463,6 +3467,7 @@ export const ChatFailedReasonSchema = z.enum([
   'memory_pressure',
   'acp_not_ready',
   'agent_disconnected',
+  'daemon_restart',
   'agent_no_output',
   'turn_pre_prompt_failed',
   'message_delivery_failed',

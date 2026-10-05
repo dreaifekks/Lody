@@ -1094,6 +1094,7 @@ const renderMessageRow = (
       message.id === 'capacity-failure'
         ? {
             noticeId: message.id,
+            hostMessageId: null,
             retryInSeconds: 4,
             retryRemainingRatio: 0.8,
             pending: false,

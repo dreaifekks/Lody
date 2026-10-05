@@ -411,6 +411,57 @@ describe('SessionChatInputArea submission feedback', () => {
     expect(container.textContent).not.toContain('Upgrade to Plus');
   });
 
+  it('turns the empty composer send action into Continue after an interruption', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const onContinue = vi.fn();
+    const onSendMessage = vi.fn(async () => true);
+    const render = async (continuable: boolean) =>
+      await act(async () => {
+        root?.render(
+          createElement(SessionChatInputArea, {
+            session: {
+              id: 'session-continue',
+              userId: 'user-1',
+              machineId: 'machine-1',
+              cliType: 'builtin',
+              agentType: 'codex',
+              status: { type: 'idle' },
+              isArchived: false,
+              createdAt: '2026-07-19T00:00:00.000Z',
+            } as SessionMeta,
+            sessionLocalProjectRootPath: null,
+            isMachineRemoved: false,
+            isAgentBusy: false,
+            isDark: false,
+            isEmptyConversation: false,
+            selectedModeId: null,
+            selectedModelId: null,
+            modeOptions: [],
+            modelOptions: [],
+            onModeChange: () => undefined,
+            onModelChange: () => undefined,
+            onSendMessage,
+            onStop: () => undefined,
+            ...(continuable ? { onContinue } : {}),
+            onRemoveQueueItem: async () => undefined,
+          })
+        );
+      });
+
+    await render(false);
+    const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
+    expect(send?.disabled).toBe(true);
+
+    await render(true);
+    const resume = container.querySelector<HTMLButtonElement>('button[aria-label="Continue"]');
+    expect(resume?.disabled).toBe(false);
+    await act(async () => resume?.click());
+    expect(onContinue).toHaveBeenCalledTimes(1);
+    expect(onSendMessage).not.toHaveBeenCalled();
+  });
+
   let nextSession = 0;
   async function renderComposer({
     sessionId = `focus-${++nextSession}`,

@@ -264,6 +264,11 @@ import {
 } from './session-goal-control';
 import { resolveSessionMessageSubmitRoute } from './session-message-submit-route';
 import {
+  CONTINUE_PROMPT,
+  INTERRUPTED_CONTINUE_PROMPT,
+  findContinuableInterruption,
+} from './session-continue';
+import {
   CAPACITY_RETRY_CONTINUATION_PROMPT,
   useCapacityAutoRetry,
 } from './use-capacity-auto-retry';
@@ -1950,6 +1955,8 @@ export type DispatchInputBlocksOptions = {
   configOptionValuesOverride?: Record<string, AcpConfigOptionValue>;
   /** Role identity frozen beside this Turn's run config; null is explicit None. */
   agentRole?: SessionTurnAgentRoleSelection;
+  /** Sent by the composer's Continue action; shown as a marker, not a message. */
+  deliveryKind?: 'continue';
 };
 
 function buildEditedMessageQueueItem(
@@ -3856,6 +3863,7 @@ export const SessionChatInterface = memo(
           modelIdOverride?: string | null;
           configOptionValuesOverride?: Record<string, AcpConfigOptionValue>;
           agentRole?: SessionTurnAgentRoleSelection;
+          deliveryKind?: 'continue';
         }
       ): Promise<boolean> => {
         try {
@@ -3869,7 +3877,7 @@ export const SessionChatInterface = memo(
           const issuePRMentions = prompt
             ? extractIssuePRMentionsFromText(prompt, knownIssuePrItems, repoFullName)
             : undefined;
-          const inputConfig = buildSessionTurnInputConfig({
+          const builtInputConfig = buildSessionTurnInputConfig({
             inputBlocks,
             cliType: session.cliType,
             agentType: session.agentType,
@@ -3883,6 +3891,9 @@ export const SessionChatInterface = memo(
             agentRoleRevision: options?.agentRole?.agentRoleRevision,
             resume: session.acpSessionId ?? undefined,
           });
+          const inputConfig = options?.deliveryKind
+            ? { ...builtInputConfig, _lodyDeliveryKind: options.deliveryKind }
+            : builtInputConfig;
 
           let userTurnId = options?.existingUserTurnId?.trim() || null;
           if (!userTurnId && options?.createHistory) {
@@ -4104,6 +4115,7 @@ export const SessionChatInterface = memo(
           | 'configOptionValuesOverride'
           | 'agentRole'
           | 'attachments'
+          | 'deliveryKind'
         >
       ): Promise<boolean> => {
         const turnConfigOptionValues = options?.configOptionValuesOverride ?? configOptionValues;
@@ -4115,6 +4127,7 @@ export const SessionChatInterface = memo(
           configOptionValuesOverride: turnConfigOptionValues,
           agentRole: options?.agentRole,
           attachments: options?.attachments,
+          deliveryKind: options?.deliveryKind,
         });
       },
       [configOptionValues, enqueueInputBlocks]
@@ -4236,6 +4249,7 @@ export const SessionChatInterface = memo(
           configOptionValuesOverride: turnConfigOptionValues,
           agentRole: options?.agentRole,
           attachments: options?.attachments,
+          deliveryKind: options?.deliveryKind,
         });
         // A held send (attachments still preparing) dispatches itself later;
         // the composer is free again now.
@@ -4334,6 +4348,36 @@ export const SessionChatInterface = memo(
           pending_attempt: pendingAttempt,
         }),
     });
+
+    // An interrupted round (Stop, a daemon restart, a lost agent) is picked up
+    // again from the empty composer: its send action becomes Continue, which
+    // sends a short continuation turn. Nothing is replayed.
+    const interruption = useMemo(
+      () => findContinuableInterruption(sessionHistory),
+      [sessionHistory]
+    );
+    const continueInFlightRef = useRef(false);
+    const canContinue =
+      interruption !== null &&
+      sessionDocReady &&
+      !isAgentBusy &&
+      !isMachineRemoved &&
+      !isArchivedSession &&
+      !isExternalHistoryRefreshing;
+    const handleContinue = useCallback(async () => {
+      if (!interruption || continueInFlightRef.current) return;
+      continueInFlightRef.current = true;
+      try {
+        await dispatchPrompt(
+          interruption === 'stopped'
+            ? t('sessions.continuePrompt.stopped', CONTINUE_PROMPT)
+            : t('sessions.continuePrompt.interrupted', INTERRUPTED_CONTINUE_PROMPT),
+          { deliveryKind: 'continue' }
+        );
+      } finally {
+        continueInFlightRef.current = false;
+      }
+    }, [dispatchPrompt, interruption, t]);
 
     // Resend a user turn the missing-history recovery negatively acknowledged:
     // the row's "Not delivered" label opens a confirmation dialog that calls
@@ -6696,6 +6740,7 @@ export const SessionChatInterface = memo(
                           onStop={() => {
                             void handleStop();
                           }}
+                          onContinue={canContinue ? handleContinue : undefined}
                           onRemoveQueueItem={handleRemoveQueueItem}
                           onAgentConfigChange={isChildSession ? handleAgentConfigChange : undefined}
                           onNavigateToComment={onNavigateToComment}

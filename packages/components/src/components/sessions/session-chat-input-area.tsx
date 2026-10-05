@@ -15,7 +15,7 @@ import {
   useImperativeHandle,
 } from 'react';
 import { useAtomValue } from 'jotai';
-import { ArrowUp } from 'lucide-react';
+import { ArrowUp, Play } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { Button } from '@lody/ui/button';
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
@@ -409,6 +409,11 @@ export interface SessionChatInputAreaProps {
     options?: SessionSendMessageOptions
   ) => Promise<boolean>;
   onStop: () => void | Promise<void>;
+  /**
+   * Present only while the latest round was interrupted and can be picked up
+   * again: an empty composer's send action becomes Continue.
+   */
+  onContinue?: () => void | Promise<void>;
   onRemoveQueueItem: (itemId: string) => Promise<void>;
   /** When provided and conversation is empty, the agent config badge becomes a selector. */
   onAgentConfigChange?: (selection: AgentSelection) => void;
@@ -506,6 +511,7 @@ export const SessionChatInputArea = memo(
       onConfigOptionChange,
       onSendMessage,
       onStop,
+      onContinue,
       onRemoveQueueItem: _onRemoveQueueItem,
       onAgentConfigChange,
       agentRoleControl,
@@ -2029,6 +2035,7 @@ export const SessionChatInputArea = memo(
     ) : null;
     /* Keep desktop actions compact while preserving the mobile touch target. */
     const primaryActionSizeClassName = isMobile ? 'h-8 w-8' : 'h-7 w-7';
+    const showContinueAction = !showStopButton && !hasSendableContent && Boolean(onContinue);
     const primaryActionNode = showStopButton ? (
       <Button
         onClick={() => {
@@ -2054,13 +2061,16 @@ export const SessionChatInputArea = memo(
         icon
         variant="ghost"
         onClick={() => {
-          void sendMessage();
+          if (showContinueAction) void onContinue?.();
+          else void sendMessage();
         }}
-        disabled={!hasSendableContent || isSendActionDisabled}
+        disabled={(!hasSendableContent && !showContinueAction) || isSendActionDisabled}
         aria-label={
           isExternalHistoryRefreshing && externalHistorySyncLabel
             ? externalHistorySyncLabel
-            : t('sessions.send')
+            : showContinueAction
+              ? t('sessions.continue', 'Continue')
+              : t('sessions.send')
         }
         className={cn(
           primaryActionSizeClassName,
@@ -2070,6 +2080,11 @@ export const SessionChatInputArea = memo(
       >
         {submissionPending || isExternalHistoryRefreshing ? (
           <Spinner className={isMobile ? 'h-5 w-5' : 'h-4 w-4'} />
+        ) : showContinueAction ? (
+          <Play
+            className={cn('fill-current', isMobile ? 'h-4 w-4' : 'h-3.5 w-3.5')}
+            aria-hidden="true"
+          />
         ) : (
           <ArrowUp className={isMobile ? 'h-5 w-5' : 'h-4 w-4'} />
         )}

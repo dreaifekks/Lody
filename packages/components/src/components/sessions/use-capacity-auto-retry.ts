@@ -9,6 +9,11 @@ const MAX_AUTOMATIC_RETRIES = 3;
 
 export type CapacityRetryControl = {
   noticeId: string;
+  /**
+   * The assistant row right before the notice. The conversation folds the
+   * notice onto that row at render time, so the control must reach it there.
+   */
+  hostMessageId: string | null;
   retryInSeconds: number | null;
   retryRemainingRatio: number | null;
   pending: boolean;
@@ -25,9 +30,9 @@ type CapacityRetryHistoryEntry = {
   items?: readonly ({ type: string; name?: string; meta?: unknown } | null | undefined)[];
 };
 
-export function findLatestCapacityFailureNoticeId(
+export function findLatestCapacityFailure(
   history: readonly CapacityRetryHistoryEntry[] | null | undefined
-): string | null {
+): { noticeId: string; hostMessageId: string | null } | null {
   if (!history) return null;
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const entry = history[index];
@@ -38,7 +43,12 @@ export function findLatestCapacityFailureNoticeId(
     for (const item of entry.items ?? []) {
       if (item?.type !== 'system_notice' || item.name !== 'chat_failed') continue;
       const reason = (item.meta as { reason?: unknown } | undefined)?.reason;
-      return reason === 'acp_provider_overloaded' ? entry.id : null;
+      if (reason !== 'acp_provider_overloaded') return null;
+      const previous = history[index - 1];
+      return {
+        noticeId: entry.id,
+        hostMessageId: previous?.role === 'assistant' ? previous.id : null,
+      };
     }
   }
   return null;
@@ -57,7 +67,8 @@ export function useCapacityAutoRetry(options: {
   const { sessionId, history, canRetry, onRetry } = options;
   const onRetryAttemptRef = useRef(options.onRetryAttempt);
   const onAutoRetryCancelledRef = useRef(options.onAutoRetryCancelled);
-  const noticeId = useMemo(() => findLatestCapacityFailureNoticeId(history), [history]);
+  const target = useMemo(() => findLatestCapacityFailure(history), [history]);
+  const noticeId = target?.noticeId ?? null;
   const handledNoticeIdsRef = useRef(new Set<string>());
   const automaticAttemptsRef = useRef(0);
   const retryInFlightRef = useRef(false);
@@ -176,6 +187,7 @@ export function useCapacityAutoRetry(options: {
   if (!noticeId) return null;
   return {
     noticeId,
+    hostMessageId: target?.hostMessageId ?? null,
     retryInSeconds,
     retryRemainingRatio,
     pending,
