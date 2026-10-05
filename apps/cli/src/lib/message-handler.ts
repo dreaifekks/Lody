@@ -177,6 +177,8 @@ import {
   isLanMemberControlType,
   LAN_CONTROL_PROTOCOL_VERSION,
   LAN_FILES_PROTOCOL_VERSION,
+  LAN_SHELL_PROTOCOL_VERSION,
+  LAN_TUNNEL_PROTOCOL_VERSION,
   MACHINE_PROTOCOL_CAPABILITIES,
   type LanMemberControlRequest,
   type LanMemberControlResponse,
@@ -6087,6 +6089,9 @@ export class MessageHandler {
     }
     if (this.acceptsLanMemberFiles) {
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanFiles] = LAN_FILES_PROTOCOL_VERSION;
+      // The same listener opens the shells and ports of this machine to the members.
+      capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanShell] = LAN_SHELL_PROTOCOL_VERSION;
+      capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanTunnel] = LAN_TUNNEL_PROTOCOL_VERSION;
     }
     return capabilities;
   }
@@ -6708,6 +6713,15 @@ export class MessageHandler {
    */
   async handleDirectMachineRpc(raw: unknown): Promise<unknown[] | null> {
     return (await this.machineRpcServer?.handleDirectRequest(raw)) ?? null;
+  }
+
+  /**
+   * Runs work of this machine's own, such as auto review, as a session command
+   * of this workspace: on the local platform it is checked against the
+   * workspace's members rather than a hosted account.
+   */
+  async runAsSessionCommand<T>(run: () => Promise<T>): Promise<T> {
+    return await this.withSessionCommandEnvironment(run);
   }
 
   async handleLocalMachineRpc(

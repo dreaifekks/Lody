@@ -42,9 +42,11 @@ describe('resolvePlatformKind', () => {
 
 describe('capabilities', () => {
   it('local set holds only machine-backed capabilities; cloud set covers every capability', () => {
-    expect(LOCAL_PLATFORM_CAPABILITIES.list()).toEqual(['githubPullRequests']);
+    expect(LOCAL_PLATFORM_CAPABILITIES.list()).toEqual(['githubPullRequests', 'localUsage']);
     for (const capability of PLATFORM_CAPABILITIES) {
-      expect(LOCAL_PLATFORM_CAPABILITIES.has(capability)).toBe(capability === 'githubPullRequests');
+      expect(LOCAL_PLATFORM_CAPABILITIES.has(capability)).toBe(
+        capability === 'githubPullRequests' || capability === 'localUsage'
+      );
       expect(CLOUD_PLATFORM_CAPABILITIES.has(capability)).toBe(true);
     }
   });
@@ -135,7 +137,7 @@ describe('createLocalPlatformProvider', () => {
     });
     expect(provider.kind).toBe('local');
     expect(provider.sync.mode).toBe('local');
-    expect(provider.capabilities.list()).toEqual(['githubPullRequests']);
+    expect(provider.capabilities.list()).toEqual(['githubPullRequests', 'localUsage']);
     expect(provider.cloudApi).toBeNull();
     expect(provider.identity.session.get()).toEqual({ status: 'loading' });
     session.set({ status: 'authenticated', user });
@@ -173,7 +175,7 @@ describe('createLocalPlatformProvider', () => {
     await expect(provider.workspaces.setActive('lw_gone')).rejects.toThrow(/no workspace lw_gone/);
     expect(workspaces.get()).toMatchObject({ activeWorkspaceId: office.id });
     // Still no capability that needs an account.
-    expect(provider.capabilities.list()).toEqual(['githubPullRequests']);
+    expect(provider.capabilities.list()).toEqual(['githubPullRequests', 'localUsage']);
   });
 
   it('syncs each workspace through the gateway of its own LAN', () => {

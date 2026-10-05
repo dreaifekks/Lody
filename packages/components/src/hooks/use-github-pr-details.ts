@@ -113,6 +113,12 @@ export interface UseGitHubPrDetailsInput {
    * `loading` and flash on reopen.
    */
   visible?: boolean;
+  /**
+   * Whether reviews and comments are polled too while the consumer is on
+   * screen. Only where no webhook tells the client they changed, which is the
+   * local platform; the PR panel asks for it, the info bar does not.
+   */
+  watchConversation?: boolean;
 }
 
 const EMPTY_CHECK_RUNS: GitHubCheckRunsSummary = {
@@ -134,6 +140,10 @@ const READY_FOR_REVIEW_SETTLE_TIMEOUT_MS = 15000;
 // stop at the first settled verdict; it only tears down when the PR merges/closes
 // or the tab is hidden.
 const CHECK_RUNS_POLL_INTERVAL_MS = 15000;
+// Reviews and comments without the webhook fan-out. A conditional request that
+// GitHub answers with 304 does not count against the token's rate limit.
+const CONVERSATION_POLL_INTERVAL_MS = 60_000;
+const CONVERSATION_SLICES = ['reviewComments', 'reviews', 'issueComments'] as const;
 
 /**
  * Thrown when GitHub is still reporting the PR as a draft after the
@@ -277,6 +287,7 @@ export function useGitHubPrDetails({
   headCommitSha,
   enabled = true,
   visible = true,
+  watchConversation = false,
 }: UseGitHubPrDetailsInput): UseGitHubPrDetailsResult {
   const identity = useGitHubPrIdentity({
     workspaceId,
@@ -819,6 +830,43 @@ export function useGitHubPrDetails({
       stop();
     };
   }, [cacheKey, canFetch, fetchSlice, prMerged, prState, visible]);
+
+  // Without the webhook fan-out nothing says a review or comment arrived, so
+  // the panel asks GitHub itself while it is watched, open PR or not.
+  const conversationPollPausedRef = useRef(false);
+  useEffect(() => {
+    if (!canFetch || !cacheKey || !watchConversation || hostedGitHub) return undefined;
+
+    let intervalId: number | null = null;
+    const poll = () => {
+      for (const slice of CONVERSATION_SLICES) void fetchSlice(slice, { cache: 'no-cache' });
+    };
+    const stop = () => {
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
+    const onWatchedChange = () => {
+      if (!visible || document.hidden) {
+        conversationPollPausedRef.current = true;
+        stop();
+        return;
+      }
+      if (conversationPollPausedRef.current) {
+        conversationPollPausedRef.current = false;
+        poll();
+      }
+      if (intervalId === null) intervalId = window.setInterval(poll, CONVERSATION_POLL_INTERVAL_MS);
+    };
+
+    onWatchedChange();
+    document.addEventListener('visibilitychange', onWatchedChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onWatchedChange);
+      stop();
+    };
+  }, [cacheKey, canFetch, fetchSlice, hostedGitHub, visible, watchConversation]);
 
   // --- Per-slice invalidation from Convex ---------------------------------
   useEffect(() => {

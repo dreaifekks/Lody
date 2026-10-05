@@ -64,6 +64,8 @@ macOS、Windows 和 Linux 的桌面安装包附在[滚动发布](https://github.
 | 托管配置导入       | 读取托管版 Lody 在某台机器上的配置                                                                                                                            |
 | hub 迁移与热备     | `lody-lan lan take-over` 把 hub 迁到另一台服务器；热备服务器保存一份副本，hub 长时间离线时自动接管；Settings > LAN 会标出两者                                 |
 | 其他机器上的 Agent | 会话里的 Lody 工具可以在同一 LAN 的其他机器上创建并驱动会话                                                                                                   |
+| 用量               | 每台机器记录自己的 Agent 用量；Settings > AI Usage 向所有成员收集，按模型和按机器展示                                                                         |
+| Shell 和端口       | `lody-lan lan shell <机器>` 在成员上开 shell，`lody-lan lan forward <机器> <端口>` 访问它的端口，都走成员直连                                                 |
 
 ### 实现方式不同的功能
 
@@ -74,7 +76,7 @@ macOS、Windows 和 Linux 的桌面安装包附在[滚动发布](https://github.
 | 机器之间的请求 | Lody 的服务器                     | 机器之间直接连接；连不上时经 hub 排队，最多等两分钟                       |
 | 附件           | 上传到所有设备都能读取的存储      | 留在运行会话的机器上；其他成员能看到卡片，但打不开                        |
 | GitHub 凭证    | Lody 的 GitHub App 和你关联的账号 | hub 为整个 LAN 保存一个 token；Agent 只在本机没有 `gh` 登录时才用它       |
-| PR 面板刷新    | GitHub webhook                    | 面板打开时轮询；新的 review 和评论要刷新后才出现                          |
+| PR 面板刷新    | GitHub webhook                    | 面板打开时轮询：CI 每 15 秒，review 和评论每分钟                          |
 | 手机和网页端   | Lody 的 iOS、Android 和网页应用   | 这些应用需要 Lody 账号，连不上 LAN；手机通过 hub 接收提醒                 |
 | 更新           | Lody 的更新服务                   | 本仓库的滚动发布；上游的更新器保持关闭                                    |
 
@@ -82,8 +84,7 @@ macOS、Windows 和 Linux 的桌面安装包附在[滚动发布](https://github.
 
 - 与团队共享，以及会话的公开分享链接。
 - GitHub App 相关：仓库注册、Settings > GitHub、在云端克隆的仓库，以及以你关联的 GitHub 身份操作。
-- 远程预览：Agent 在其他机器上启动的开发服务器，不能在本机的浏览器面板里打开。
-- 跨机器的用量报告。
+- 远程预览：Agent 在其他机器上启动的开发服务器，不能在本机的浏览器面板里打开；可以用 `lody-lan lan forward <机器> <端口>` 转发到本机访问。
 - Settings > Machines 和快捷指令的机器选择；改由 Settings > LAN 列出机器。
 - 在桌面应用里托管 LAN，因为桌面应用不包含 hub。
 - 计费、Bug 报告上传和遥测，这些按设计关闭。
@@ -91,7 +92,7 @@ macOS、Windows 和 Linux 的桌面安装包附在[滚动发布](https://github.
 ## 路线图
 
 - **走向点对点：** 机器之间的请求已改走直连通道，hub 可以用 `lody-lan lan take-over` 迁移，长时间离线时由热备服务器自动接管。每个成员都保存一份 GitHub token、APNs 密钥和手机注册信息，hub 不在时 PR 和提醒照常可用。剩下的：手机在 hub 迁移后自动跟随。hub 保留为中转，暂存离线成员还没收到的内容。
-- **待补的功能：** 通过成员直连通道实现远程预览、跨机器用量汇总，以及 PR 面板中 review 和评论的定时刷新。
+- **待补的功能：** 浏览器面板里的远程预览，基于 `lody-lan lan forward` 已经能访问的端口。
 
 ## 与 Lody 共有的功能
 

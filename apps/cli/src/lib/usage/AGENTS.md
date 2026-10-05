@@ -22,4 +22,5 @@
   turn writes at finalization; late reports add to the finished entry. Never
   derive them from cumulative totals; an adapter without `delta` shows none.
 - The queue is process-local; it is not a restart-safe ledger. Local composition still
-  has no cloud usage service. See [delivery Spec](../../../../../specs/usage-delivery.md).
+  has no cloud usage service: its usage port is `LocalUsageLedger`, a disk ledger that
+  counts each scope's growth past its highest reading and answers members' `lan/usage`. See [delivery Spec](../../../../../specs/usage-delivery.md).

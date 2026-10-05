@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { useUsageMemberLabel } from './usage-member-label';
 import { cn } from '@/lib/utils';
 import { Skeleton } from '@lody/ui/skeleton';
 import type { SettingsUsageRange } from './settings-data-cache';
@@ -106,7 +107,8 @@ function HeatLegendSkeleton() {
 /** One composition rule + its legend (UsageCompositionBar), times two. */
 function CompositionSkeleton({ className }: { className?: string }) {
   const { t } = useTranslation();
-  const columns = [t('workspace.usage.byModel'), t('workspace.usage.byUser')];
+  const memberLabel = useUsageMemberLabel();
+  const columns = [t('workspace.usage.byModel'), memberLabel];
   return (
     <div
       className={cn(
@@ -204,7 +206,11 @@ function RingSkeleton() {
       <div className="relative w-[9.5rem] max-w-full sm:w-[10.5rem]">
         {/* Ring, not a filled disc: border carries the pulse so the centre stays
            open like the real donut (RING_VIEWBOX 168 / RING_STROKE 26). */}
-        <Skeleton shape="circle" width="100%" className="aspect-square border-[26px] border-primary/10 bg-transparent" />
+        <Skeleton
+          shape="circle"
+          width="100%"
+          className="aspect-square border-[26px] border-primary/10 bg-transparent"
+        />
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
           <Skeleton width={48} height={16} />
           <Skeleton width={36} height={8} />

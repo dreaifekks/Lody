@@ -353,6 +353,11 @@ export class Lody {
     return await this.runtime.handleDirectMachineRpc(raw);
   }
 
+  /** Work of this machine's own, run as a session command of this workspace. */
+  async runAsSessionCommand<T>(run: () => Promise<T>): Promise<T> {
+    return await this.runtime.runAsSessionCommand(run);
+  }
+
   isControlPlaneReady(): boolean {
     // Ready == nothing needs recovering. Deliberately NOT gated on
     // `isTransportConnected()`: that is the raw aggregate status, which reads

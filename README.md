@@ -95,6 +95,8 @@ Both desktop apps can run side by side.
 | Hosted import               | Reads a machine's configuration from the hosted Lody                                                                                                                                             |
 | Moving and standby hub      | `lody-lan lan take-over` moves the hub to another server; a standby server keeps a copy and takes over when the hub stays away; Settings > LAN marks both                                        |
 | Agents on other machines    | Lody's tools inside a session start and drive sessions on the other machines of its LAN                                                                                                          |
+| Usage                       | Each machine keeps what its agents used; Settings > AI Usage gathers it from every member, by model and by machine                                                                               |
+| Shells and ports            | `lody-lan lan shell <machine>` opens a shell on a member, `lody-lan lan forward <machine> <port>` reaches one of its ports, both over the members' direct connections                            |
 
 ### Works differently
 
@@ -105,7 +107,7 @@ Both desktop apps can run side by side.
 | Requests between machines | Lody's servers                              | Go directly between the machines; through the hub, for up to two minutes, when they cannot connect           |
 | Attachments               | Uploaded to a store every device reads      | Stay on the machine that runs the session; other members see the card but cannot open it                     |
 | GitHub tokens             | The Lody GitHub App and your linked account | One token the hub keeps for the LAN; an Agent uses it only on a machine without a `gh` login                 |
-| PR panel freshness        | GitHub webhooks                             | Polling while the panel is open; new reviews and comments appear on refresh                                  |
+| PR panel freshness        | GitHub webhooks                             | Polling while the panel is open: CI every 15 seconds, reviews and comments every minute                      |
 | Phone and web             | Lody's iOS, Android and web apps            | Those apps need a Lody account and do not reach a LAN; phones get alerts from the hub                        |
 | Updates                   | Lody's update service                       | This repository's rolling release; upstream's updater stays off                                              |
 
@@ -115,8 +117,8 @@ Both desktop apps can run side by side.
 - The GitHub App: repository registry, Settings > GitHub, repositories cloned
   in the cloud, and acting under your linked GitHub identity.
 - Remote preview: a dev server an Agent starts on another machine does not
-  open in this machine's browser panel.
-- Usage reports across machines.
+  open in this machine's browser panel; `lody-lan lan forward <machine> <port>`
+  makes it reachable here.
 - Settings > Machines and the machine picker of Prompt Shortcuts; Settings >
   LAN lists the machines instead.
 - Hosting a LAN from the desktop app, which does not ship the hub.
@@ -131,9 +133,8 @@ Both desktop apps can run side by side.
   working while the hub is away. Left: let a phone follow the hub when it
   moves. The hub stays as a relay that stores what an offline member has not
   seen yet.
-- **Missing pieces:** remote preview over the members' direct connections,
-  usage across machines, and periodic refresh of reviews and comments in the
-  PR panel.
+- **Missing pieces:** remote preview in the browser panel, over the ports
+  `lody-lan lan forward` already reaches.
 
 ## Shared with Lody
 

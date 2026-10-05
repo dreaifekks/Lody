@@ -42,12 +42,17 @@ export async function listLanMachinesOfThisMachine(machineId: MachineId): Promis
   return response.result;
 }
 
-/** A machine by its id, or by its name when only one machine has it. */
+/** A machine by its id, or by its name or short name when only one machine has it. */
 export function findLanMachine(machines: readonly LanMachine[], selector: string): LanMachine {
   const wanted = selector.trim();
   const byId = machines.find((machine) => machine.machineId === wanted);
   if (byId) return byId;
-  const named = machines.filter((machine) => machine.name.toLowerCase() === wanted.toLowerCase());
+  const lower = wanted.toLowerCase();
+  const byName = machines.filter((machine) => machine.name.toLowerCase() === lower);
+  const named =
+    byName.length > 0
+      ? byName
+      : machines.filter((machine) => machine.alias?.toLowerCase() === lower);
   if (named.length === 1 && named[0]) return named[0];
   const candidates = machines.map((machine) => `${machine.name} (${machine.machineId})`);
   throw new Error(

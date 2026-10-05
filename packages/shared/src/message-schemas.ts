@@ -9,6 +9,7 @@ import {
   LanAgentInstallResultSchema,
   LanMachineUpdateResultSchema,
   LanMachinesSchema,
+  LanUsageReportSchema,
 } from './lan-control';
 import { z } from 'zod';
 import { SubagentTaskPayloadSchema } from './acp/claude-subagent-task';
@@ -2393,12 +2394,22 @@ export const LanInstallAgentRequestSchema = z
   })
   .strict();
 
+export const LanUsageRequestSchema = z
+  .object({
+    type: z.literal('lan/usage'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    sinceMs: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
 /** What the members of a LAN ask of each other's machines. */
 export const LanMemberControlRequestSchema = z.discriminatedUnion('type', [
   LanUpdateMachineRequestSchema,
   LanInstallAgentRequestSchema,
   HostedConfigPreviewRequestSchema,
   HostedConfigImportRequestSchema,
+  LanUsageRequestSchema,
 ]);
 
 export const LanMachinesRequestSchema = z
@@ -2464,6 +2475,7 @@ export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   HostedConfigImportRequestSchema,
   LanUpdateMachineRequestSchema,
   LanInstallAgentRequestSchema,
+  LanUsageRequestSchema,
   LanMachinesRequestSchema,
   LanAliasMachineRequestSchema,
   LanForwardRequestSchema,
@@ -2726,6 +2738,7 @@ const LocalProjectControlErrorResponseSchema = z
       'hosted-config/import',
       'lan/update-machine',
       'lan/install-agent',
+      'lan/usage',
       'lan/machines',
       'lan/alias-machine',
       'lan/forward',
@@ -2768,12 +2781,21 @@ const LanInstallAgentResponseSchema = z
   })
   .strict();
 
+const LanUsageResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    type: z.literal('lan/usage'),
+    result: LanUsageReportSchema,
+  })
+  .strict();
+
 /** What a member answers, which is also what a forwarded request brings back. */
 export const LanMemberControlResponseSchema = z.union([
   HostedConfigPreviewResponseSchema,
   HostedConfigImportResponseSchema,
   LanUpdateMachineResponseSchema,
   LanInstallAgentResponseSchema,
+  LanUsageResponseSchema,
   LocalProjectControlErrorResponseSchema,
 ]);
 
@@ -2984,6 +3006,7 @@ export const LocalProjectControlResponseSchema = z.union([
   HostedConfigImportResponseSchema,
   LanUpdateMachineResponseSchema,
   LanInstallAgentResponseSchema,
+  LanUsageResponseSchema,
   z
     .object({
       ok: z.literal(true),

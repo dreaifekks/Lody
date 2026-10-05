@@ -8,6 +8,7 @@ import type {
   LanMachineColor,
   LanMachineUpdateResult,
   LanMachines,
+  LanUsageReport,
 } from './lan-control';
 import type {
   MachineId,
@@ -1011,6 +1012,13 @@ export type LanMemberControlRequest =
       workspaceId: WorkspaceId;
       sourceWorkspaceId: string;
       categories: HostedConfigCategory[];
+    }
+  | {
+      /** The usage the machine counted in the workspace, from `sinceMs` on. */
+      type: 'lan/usage';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      sinceMs?: number;
     };
 
 export type LocalProjectControlRequest =
@@ -1237,7 +1245,8 @@ type LanMemberControlOkResponse =
   | LocalProjectControlOkResponse<'hosted-config/preview', HostedConfigPreview>
   | LocalProjectControlOkResponse<'hosted-config/import', HostedConfigImportResult>
   | LocalProjectControlOkResponse<'lan/update-machine', LanMachineUpdateResult>
-  | LocalProjectControlOkResponse<'lan/install-agent', LanAgentInstallResult>;
+  | LocalProjectControlOkResponse<'lan/install-agent', LanAgentInstallResult>
+  | LocalProjectControlOkResponse<'lan/usage', LanUsageReport>;
 
 /** What a member answers, which is also what a forwarded request brings back. */
 export type LanMemberControlResponse =

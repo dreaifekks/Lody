@@ -4,6 +4,7 @@ import type {
   CloudPortIdentity,
   CloudGithubTokenPort,
   CloudStreamsTokenPort,
+  CloudUsagePort,
   RuntimeArtifactsPort,
 } from './cloud-port';
 import type {
@@ -149,6 +150,8 @@ export interface LocalCloudPortOptions {
    * `streamsTokens`; the hubs are then the only peers it reaches.
    */
   githubTokens?: CloudGithubTokenPort;
+  /** A ledger on this machine's disk; usage goes nowhere else. */
+  usage?: CloudUsagePort;
 }
 
 function isWorkspaceStore(
@@ -197,7 +200,7 @@ export function createLocalCloudPort(options: LocalCloudPortOptions): CloudPort 
     },
     streamsTokens: options.streamsTokens ?? null,
     notifications: null,
-    usage: null,
+    usage: options.usage ?? null,
     billing: null,
     githubTokens: options.githubTokens ?? null,
     bugReports: null,

@@ -29,6 +29,8 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   acpCapabilityRefreshCache: 'acpCapabilityRefreshCache',
   lanControl: 'lanControl',
   lanFiles: 'lanFiles',
+  lanShell: 'lanShell',
+  lanTunnel: 'lanTunnel',
 } as const;
 
 export const MCP_TOOL_DISCOVERY_PROTOCOL_VERSION = 1;
@@ -50,6 +52,8 @@ export const PI_EXTENSIONS_PROTOCOL_VERSION = 1;
 export const ACP_CAPABILITY_REFRESH_CACHE_PROTOCOL_VERSION = 1;
 export const LAN_CONTROL_PROTOCOL_VERSION = 1;
 export const LAN_FILES_PROTOCOL_VERSION = 1;
+export const LAN_SHELL_PROTOCOL_VERSION = 1;
+export const LAN_TUNNEL_PROTOCOL_VERSION = 1;
 
 type MachineProtocolCapabilityCarrier = {
   protocolCapabilities?: MachineProtocolCapabilities;
@@ -321,6 +325,39 @@ export function machineSupportsLanFiles(
     machine,
     MACHINE_PROTOCOL_CAPABILITIES.lanFiles,
     LAN_FILES_PROTOCOL_VERSION
+  );
+}
+
+/**
+ * Whether the target daemon opens a shell of its own, one that belongs to no
+ * session, for the other members of a LAN at the endpoint it publishes for
+ * them. A daemon without it answers such a request as an unknown session.
+ *
+ * Like `lanControl` it is said only by a daemon that was assembled to accept.
+ */
+export function machineSupportsLanShell(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.lanShell,
+    LAN_SHELL_PROTOCOL_VERSION
+  );
+}
+
+/**
+ * Whether the target daemon connects the other members of a LAN to the ports
+ * it reaches, such as a dev server an agent started there.
+ *
+ * Like `lanControl` it is said only by a daemon that was assembled to accept.
+ */
+export function machineSupportsLanTunnel(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.lanTunnel,
+    LAN_TUNNEL_PROTOCOL_VERSION
   );
 }
 

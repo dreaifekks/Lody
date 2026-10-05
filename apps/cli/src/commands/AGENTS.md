@@ -76,9 +76,6 @@ Command entrypoints, the daemon runner, and session dispatch from the CLI/MCP bo
 
 ## Session create and dispatch (`session.ts`)
 
-- Local platform: workspace command bodies run on the daemon via `cli/command`
-  (`terminal-daemon.ts`, `runWorkspaceCommand`) as its user; never its own `LODY_SESSION_ID`.
-
 - `--local-project … --worktree` sets `ProjectRef.useWorktree`; daemon startup consumes it in
   `../session/session-execution-service.ts` and worktree creation happens in
   `../session/session-manager.ts`.

@@ -136,7 +136,9 @@ import type {
 
 const { getAuthRecoveryBackoffMs, useGitHubPrDetails } =
   await import('../src/hooks/use-github-pr-details');
-const { TestCloudPlatformProvider } = await import('./test-platform');
+const { TEST_CLOUD_PLATFORM, TestCloudPlatformProvider } = await import('./test-platform');
+const { LOCAL_PLATFORM_CAPABILITIES } = await import('@lody/platform');
+const { PlatformContext } = await import('@lody/platform/react');
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -470,6 +472,62 @@ describe('useGitHubPrDetails target isolation', () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect((await refreshed)?.pullRequest.title).toBe('After merge');
+  });
+
+  it('asks GitHub for new reviews and comments while the PR panel is watched, where no webhook says so', async () => {
+    vi.useFakeTimers();
+    // The local platform: no GitHub App, so no webhook fan-out.
+    const localPlatform = { ...TEST_CLOUD_PLATFORM, capabilities: LOCAL_PLATFORM_CAPABILITIES };
+    const base: UseGitHubPrDetailsInput = {
+      workspaceId: 'workspace-1',
+      repoFullName: 'loro-dev/lody',
+      prNumber: 1,
+    };
+    const render = async (panel: UseGitHubPrDetailsInput, infoBar: UseGitHubPrDetailsInput) => {
+      await act(async () => {
+        root?.render(
+          createElement(
+            PlatformContext.Provider,
+            { value: localPlatform },
+            createElement(Probe, { input: panel, onResult }),
+            createElement(Probe, { input: infoBar, onResult: () => {} })
+          )
+        );
+      });
+    };
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const panel = { ...base, watchConversation: true };
+    await render(panel, base);
+    await waitForResult((result) => result.state === 'ready');
+    githubMocks.githubFetchPullRequestReviews.mockClear();
+    githubMocks.githubFetchPRIssueComments.mockClear();
+    githubMocks.githubFetchPRReviewComments.mockClear();
+    githubMocks.githubFetchPRIssueComments.mockResolvedValue([
+      { id: 7, body: 'A new comment', user: null, createdAt: '', updatedAt: '', htmlUrl: '' },
+    ]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    // One read each, from the panel only; the info bar asks for none.
+    expect(githubMocks.githubFetchPullRequestReviews).toHaveBeenCalledTimes(1);
+    expect(githubMocks.githubFetchPRReviewComments).toHaveBeenCalledTimes(1);
+    expect(githubMocks.githubFetchPRIssueComments).toHaveBeenCalledTimes(1);
+    expect(githubMocks.githubFetchPRIssueComments.mock.calls[0]?.[3]).toEqual({
+      cache: 'no-cache',
+    });
+    await waitForResult((result) => result.data?.issueComments.length === 1);
+
+    // A collapsed panel asks for nothing.
+    await render({ ...panel, visible: false }, base);
+    githubMocks.githubFetchPRIssueComments.mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180_000);
+    });
+    expect(githubMocks.githubFetchPRIssueComments).not.toHaveBeenCalled();
   });
 
   it('bypasses the browser cache when manually refreshing an idle PR tab', async () => {

@@ -1,8 +1,9 @@
-import type {
-  TerminalOpenParams,
-  TerminalOpenResult,
-  TerminalServerEvent,
-  TerminalSnapshot,
+import {
+  parseMachineShellScope,
+  type TerminalOpenParams,
+  type TerminalOpenResult,
+  type TerminalServerEvent,
+  type TerminalSnapshot,
 } from '@lody/shared';
 import type { TerminalReplay, TerminalService } from '@/lib/terminal-connection';
 import type { TerminalPtyServiceApi } from '@/lib/terminal-pty-service';
@@ -193,8 +194,8 @@ export class TerminalRouter implements TerminalService {
 
 /**
  * The terminals of this machine as another member of one LAN reaches them:
- * only sessions of that LAN's workspace owned by this machine, and only
- * terminals this connection listed, opened or attached.
+ * only sessions of that LAN's workspace owned by this machine, the shells of
+ * this machine, and only terminals this connection listed, opened or attached.
  */
 export class ScopedTerminalService implements TerminalService {
   private readonly admittedSessions = new Set<string>();
@@ -203,7 +204,13 @@ export class ScopedTerminalService implements TerminalService {
   constructor(
     private readonly pty: TerminalPtyServiceApi,
     /** Throws the terminal error to answer with when the session is not reachable. */
-    private readonly verifySession: (sessionId: string) => Promise<void>
+    private readonly verifySession: (sessionId: string) => Promise<void>,
+    /**
+     * This machine, whose shells a member may open: it holds the LAN's key and
+     * could open a shell in any session of the machine already. Absent where
+     * no shell of the machine is opened.
+     */
+    private readonly shellMachineId?: string
   ) {}
 
   async list(sessionId: string): Promise<TerminalSnapshot[]> {
@@ -254,7 +261,15 @@ export class ScopedTerminalService implements TerminalService {
 
   private async admitSession(sessionId: string): Promise<void> {
     if (this.admittedSessions.has(sessionId)) return;
-    await this.verifySession(sessionId);
+    const shellMachineId = parseMachineShellScope(sessionId);
+    if (shellMachineId !== null) {
+      if (!this.shellMachineId) throw new Error(`session_not_found:${sessionId}`);
+      if (shellMachineId !== this.shellMachineId) {
+        throw new Error(`session_machine_mismatch:${sessionId}:${shellMachineId}`);
+      }
+    } else {
+      await this.verifySession(sessionId);
+    }
     this.admittedSessions.add(sessionId);
   }
 

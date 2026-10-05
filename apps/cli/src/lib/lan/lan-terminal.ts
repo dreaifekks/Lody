@@ -48,7 +48,14 @@ export function deriveLanTerminalKey(token: string): Buffer {
  * named in its hello; one that names none is a terminal connection, as every
  * connection was before there was anything else.
  */
-export const LAN_MEMBER_SERVICES = ['terminal', 'files', 'control', 'hub', 'rpc'] as const;
+export const LAN_MEMBER_SERVICES = [
+  'terminal',
+  'files',
+  'control',
+  'hub',
+  'rpc',
+  'tunnel',
+] as const;
 export type LanMemberService = (typeof LAN_MEMBER_SERVICES)[number];
 
 /**
@@ -70,7 +77,7 @@ const HelloRefusalSchema = z.object({
   message: z.string(),
 });
 
-function writeLine(socket: net.Socket, value: unknown): void {
+export function writeLine(socket: net.Socket, value: unknown): void {
   if (!socket.destroyed) socket.write(`${JSON.stringify(value)}\n`);
 }
 
@@ -78,7 +85,7 @@ function writeLine(socket: net.Socket, value: unknown): void {
  * The first line of a connection, and whatever followed it in the same chunk.
  * The socket is paused afterwards so nothing is lost before the next reader.
  */
-function readFirstLine(socket: net.Socket): Promise<{ line: string; rest: Buffer }> {
+export function readFirstLine(socket: net.Socket): Promise<{ line: string; rest: Buffer }> {
   return new Promise((resolve, reject) => {
     let received = Buffer.alloc(0);
     const timer = setTimeout(() => finish(new Error('hello timed out')), HANDSHAKE_TIMEOUT_MS);
@@ -246,7 +253,11 @@ type PendingEntry = Pending extends infer Entry
     : never
   : never;
 
-class LanTerminalLink implements RemoteTerminalLink {
+/**
+ * A client of the terminal protocol on one connection: a member's terminals
+ * over TLS, or this machine's agent service over its local terminal socket.
+ */
+class TerminalLink implements RemoteTerminalLink {
   closed = false;
   private sequence = 0;
   private buffer = '';
@@ -257,7 +268,7 @@ class LanTerminalLink implements RemoteTerminalLink {
   private closeReason = 'connection closed';
 
   constructor(
-    private readonly socket: tls.TLSSocket,
+    private readonly socket: net.Socket,
     initial: Buffer
   ) {
     socket.setKeepAlive(true, KEEPALIVE_MS);
@@ -281,8 +292,17 @@ class LanTerminalLink implements RemoteTerminalLink {
     return new Promise((resolve, reject) => {
       const requestId = this.register({ kind: 'open', resolve, reject });
       // Only the fields of an open: the caller's message may carry its own request id.
-      const { sessionId, cols, rows } = params;
-      this.write({ type: 'open', requestId, sessionId, cols, rows });
+      const { sessionId, cols, rows, cwd, command, attach } = params;
+      this.write({
+        type: 'open',
+        requestId,
+        sessionId,
+        cols,
+        rows,
+        ...(cwd ? { cwd } : {}),
+        ...(command ? { command } : {}),
+        ...(attach ? { attach } : {}),
+      });
     });
   }
 
@@ -388,7 +408,11 @@ class LanTerminalLink implements RemoteTerminalLink {
       pending.resolve(event.terminals);
     } else if (pending.kind === 'open' && event.type === 'opened') {
       this.settle(event.requestId, pending);
-      pending.resolve({ terminalId: event.terminalId, ...(event.cwd ? { cwd: event.cwd } : {}) });
+      pending.resolve({
+        terminalId: event.terminalId,
+        ...(event.cwd ? { cwd: event.cwd } : {}),
+        ...(event.attached ? { attached: true } : {}),
+      });
     }
   }
 
@@ -477,7 +501,12 @@ export async function connectLanTerminal(
   options: LanMemberConnectOptions
 ): Promise<RemoteTerminalLink> {
   const { socket, rest } = await connectLanMember({ ...options, service: 'terminal' });
-  return new LanTerminalLink(socket, rest);
+  return new TerminalLink(socket, rest);
+}
+
+/** Speaks the terminal protocol on a connection that is already open. */
+export function createTerminalLink(socket: net.Socket): RemoteTerminalLink {
+  return new TerminalLink(socket, Buffer.alloc(0));
 }
 
 /**

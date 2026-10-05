@@ -31,6 +31,8 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | Desktop update | `apps/electron/src/main/services/lan-updater-*.ts`                                          | A desktop application that replaces itself with the newest build                                                              |
 | GitHub         | `apps/cli/src/lib/lan/hub-github.ts`, `lan-github-tokens.ts`, `lan-agent-github.ts`         | One GitHub token on the host for members that have no `gh` login                                                              |
 | Credentials    | `apps/cli/src/lib/lan/hub-credentials.ts`, `lan-credential-sync.ts`, `lan-push-fallback.ts` | Every member keeps a copy of the GitHub token, the APNs key and the phones, and uses it while the hub is away                 |
+| Ports          | `apps/cli/src/lib/lan/lan-tunnel.ts`, `apps/cli/src/lib/local-tunnel-server.ts`             | A program of one member reaches a port another member reaches                                                                 |
+| Usage          | `apps/cli/src/lib/usage/local-usage-ledger.ts`, `packages/components/src/lib/lan-usage.ts`  | Each machine counts what its agents used; the usage page gathers it from every member                                         |
 
 ```text
  server                                   desktop
@@ -114,6 +116,55 @@ member is online and publishes an endpoint. A dropped connection ends its
 terminals on the desktop; the shells keep running over there, and listing the
 session again finds them. `LODY_LAN_TERMINAL_PORT` chooses another port, `0`
 any port, and `off` closes a machine's terminals to members.
+
+A shell can also belong to a machine rather than to a session. Its terminals
+are opened, listed and attached under the scope `lody-shell:<machine id>` in
+place of a session id (`machineShellScope` in
+`packages/shared/src/terminal-protocol.ts`); an `open` in that scope may name
+the directory to start in, the home directory by default, and a command to run
+instead of a login shell. The agent service routes the scope by its machine as
+it routes a session by its owner, and a member opens only the shells of its own
+machine (`ScopedTerminalService`). That grants nothing new: a member that holds
+the LAN's key could open a shell in any session of the machine already. A
+machine says it opens them with the `lanShell` protocol capability; a build
+without it would answer the scope as an unknown session, so it is not asked.
+
+`lody-lan lan shell <machine>` is the client. The command connects to the local
+terminal socket, as a desktop does, so the LAN's credential stays in the agent
+service. Enter, `~` and `.` leaves the shell running, `--attach` brings it
+back, `--list` and `--kill` manage what runs there, and words after `--` run
+as a command whose exit code the command returns. The command opens with
+`attach`, so the connection receives the terminal's events from the moment it
+exists: a command that ends before a second request could cross the network
+still reports its output and exit. A machine whose answer does not say
+`attached` is attached afterwards, as before. The command runs in a
+terminal there, like `ssh -t`, so piped input is echoed.
+
+## Ports of other members
+
+A dev server an agent starts on another member often listens on that
+machine's loopback interface only. A connection that asks for `tunnel` names
+one port, and optionally a host, in its first line
+(`apps/cli/src/lib/lan/lan-tunnel.ts`); the member connects to that port of
+its own loopback interface, or of the host as it reaches it, answers
+`connected` or the reason it could not, and from then on the connection carries
+the port's bytes both ways. The host is not restricted, as `ssh -L` restricts
+none: a member that holds the LAN's key can run anything on the machine, and
+so reach whatever the machine reaches, already. A machine says it serves them
+with the `lanTunnel` protocol capability.
+
+```text
+ program ─▶ local tunnel socket ─▶ agent service ─ TLS-PSK ─▶ agent service ─▶ <host>:<port>
+ of this    names machine, host,   of this machine            of the member      localhost unless
+ machine    port                                                                 a host is named
+```
+
+Programs of this machine reach it through the agent service's local tunnel
+socket (`getLocalTunnelSocketPath`, beside the terminal socket), which takes the
+same first line plus the machine; this machine's own ports are connected
+directly. `lody-lan lan forward <machine> [<local>:][<host>:]<port>...`
+listens on `127.0.0.1` (`--bind` for another address) and carries every
+connection there until it ends.
 
 ## Files of a message
 
@@ -638,6 +689,32 @@ of the LAN from any member; `--data-dir` writes into a hub's data directory on
 the machine instead. The renderer never reaches these routes: the bridge
 forwards `/ds/` alone, as the standby copy and the credentials route carry
 what only a member may hold.
+
+## Usage
+
+The hosted service counts what every agent used from what each machine reports
+to it. A LAN has no such service, so each machine counts for itself: on the
+local platform the agent service's usage port is a ledger on its own disk
+(`apps/cli/src/lib/usage/local-usage-ledger.ts`, `<data dir>/usage-ledger.json`).
+It receives the cumulative per-model counters an agent reports, adds what a
+reading grew by since the highest one of its accounting scope, which is how the
+hosted service counts too, and files the growth under the hour it arrived and
+the workspace of the session. Hours older than a week are kept as days.
+
+```text
+ Settings > AI Usage ─ lan/machines ─▶ agent service ─ lan/usage ─▶ every member of the LAN
+                      lan/usage (self)  of this machine   (direct, else the hub)  answers from its ledger
+```
+
+The page asks every machine of the workspace's LAN with `lan/usage`, a request
+members put to each other like `lan/update-machine`, and builds the hosted
+page's timeline, calendar and day views from the answers
+(`packages/components/src/lib/lan-usage.ts`). Every member of a LAN is one user,
+so the second chart splits by machine where the hosted page splits by member.
+A machine that is offline or runs a build without `lan/usage` is named under
+the header and left out; its usage is on its own disk until it answers again.
+The `localUsage` platform capability shows the page where `usageAnalytics`
+does not.
 
 ## Limits
 

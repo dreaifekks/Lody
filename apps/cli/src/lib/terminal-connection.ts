@@ -39,6 +39,10 @@ type TerminalSocketState = {
   subscribedTerminalIds: Set<string>;
   replayingTerminalIds: Set<string>;
   replayBuffers: Map<string, TerminalServerEvent[]>;
+  /** Opens with `attach` under way: their terminals are not known yet. */
+  attachingOpens: number;
+  /** Events of terminals nobody here attached, kept while such an open is under way. */
+  openBuffer: TerminalServerEvent[];
 };
 
 // Outbound events are built by trusted internal code (each `send()` call site is
@@ -70,6 +74,8 @@ function publishTerminalEvent(
     return;
   }
   if (!state.subscribedTerminalIds.has(terminalId)) {
+    // It may be the terminal an open with `attach` is creating.
+    if (state.attachingOpens > 0) state.openBuffer.push(event);
     return;
   }
   if (state.replayingTerminalIds.has(terminalId)) {
@@ -154,13 +160,41 @@ async function handleMessage(
         return;
       }
       case 'open': {
-        const result = await service.open(message);
+        if (!message.attach) {
+          const result = await service.open(message);
+          send(socket, {
+            type: 'opened',
+            requestId: message.requestId,
+            terminalId: result.terminalId,
+            ...(result.cwd ? { cwd: result.cwd } : {}),
+          });
+          return;
+        }
+        state.attachingOpens += 1;
+        let result: TerminalOpenResult;
+        try {
+          result = await service.open(message);
+        } finally {
+          state.attachingOpens -= 1;
+        }
+        const { terminalId } = result;
+        const early = state.openBuffer.filter((event) => getEventTerminalId(event) === terminalId);
+        state.openBuffer =
+          state.attachingOpens > 0
+            ? state.openBuffer.filter((event) => getEventTerminalId(event) !== terminalId)
+            : [];
+        // A service that cannot say its events reach here leaves it to `attach`.
+        if (result.attached) state.subscribedTerminalIds.add(terminalId);
         send(socket, {
           type: 'opened',
           requestId: message.requestId,
-          terminalId: result.terminalId,
+          terminalId,
           ...(result.cwd ? { cwd: result.cwd } : {}),
+          ...(result.attached ? { attached: true } : {}),
         });
+        if (result.attached) {
+          for (const event of early) publishTerminalEvent(socket, state, event);
+        }
         return;
       }
       case 'attach': {
@@ -243,6 +277,8 @@ export function serveTerminalConnection(
     subscribedTerminalIds: new Set<string>(),
     replayingTerminalIds: new Set<string>(),
     replayBuffers: new Map<string, TerminalServerEvent[]>(),
+    attachingOpens: 0,
+    openBuffer: [],
   };
   const unsubscribe = service.onEvent((event) => {
     publishTerminalEvent(socket, state, event);

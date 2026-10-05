@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import os from 'os';
@@ -90,6 +91,8 @@ import {
 import { consumeElectronBootstrapCredentials } from '../electron-bootstrap-env';
 import { createLocalCloudPort, type CloudPort, type PlatformKind } from '@lody/platform';
 import { createCloudCliPort } from '@/lib/cloud-cli-port';
+import { LocalUsageLedger } from '@/lib/usage/local-usage-ledger';
+import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import { configureManagedAgentRuntimeManager } from '@/agent/managed-agent-runtime';
 import { configureManagedRuntimeUpdateCoordinator } from '@/agent/managed-runtime-update-coordinator';
 
@@ -628,7 +631,12 @@ async function startAgentService(
 
   let cloudPort: CloudPort;
   let lanMembership: LanMembership | null = null;
+  let usageLedger: LocalUsageLedger | null = null;
   if (platformKind === 'local') {
+    usageLedger = new LocalUsageLedger({
+      file: path.join(getLodyDataDir(), 'usage-ledger.json'),
+      logger,
+    });
     lanMembership = new LanMembership({
       settings: localStart?.lanSettings ?? { hubs: [], machineName: null, source: 'none' },
       logger,
@@ -643,6 +651,7 @@ async function startAgentService(
       runtimeArtifactsBaseUrl: process.env.LODY_RUNTIME_BASE_URL,
       ...(streamsTokens ? { streamsTokens } : {}),
       ...(streamsTokens && githubTokens ? { githubTokens } : {}),
+      usage: usageLedger,
     });
   } else {
     if (!LODY_AUTH_URL) {
@@ -731,6 +740,7 @@ async function startAgentService(
       // A service without a LAN has no member to reach, and joining one restarts it.
       ...(lanMembership?.streamsTokens ? { lan: lanMembership } : {}),
       ...(lanControl ? { lanControl } : {}),
+      ...(usageLedger ? { usageLedger } : {}),
     });
   } catch (error) {
     await managedRuntimeUpdates.shutdown();

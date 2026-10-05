@@ -7,7 +7,8 @@ telemetry, or managed-runtime downloads, as routed by the root instructions.
 
 ## Composition and capabilities
 
-- Settings must represent real platform support: local hides cloud usage and
+- Settings must represent real platform support: local hides cloud usage
+  (`usageAnalytics`), shows what its machines count themselves (`localUsage`), and
   omits machine selection when `remoteMachines` is absent. PR details, actions
   and PR-driven auto-archive follow `githubPullRequests`, which the local
   desktop backs with its machine's own `gh` login; the hosted repository

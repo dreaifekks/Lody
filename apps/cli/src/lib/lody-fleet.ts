@@ -1,3 +1,4 @@
+import type net from 'node:net';
 import { Effect } from 'effect';
 import { initCliAnalytics } from '@/lib/analytics/posthog';
 import {
@@ -11,6 +12,10 @@ import {
   getSessionRoomId,
   getServerNow,
   isLoroRepoDocDeleted,
+  machineShellScope,
+  machineSupportsLanShell,
+  machineSupportsLanTunnel,
+  parseMachineShellScope,
   syncTime,
   type LanMemberControlRequest,
   type LocalProjectControlErrorCode,
@@ -36,6 +41,11 @@ import { startLodyMcpHttpServer, stopLodyMcpHttpServer } from '@/mcp/lody-mcp-ht
 import type { LocalProbeConfig } from '@/lib/local-probe';
 import type { LocalSessionControlConfig } from '@/lib/local-session-control';
 import { startLocalTerminalServer, stopLocalTerminalServer } from '@/lib/local-terminal-server';
+import { LocalTunnelServer } from '@/lib/local-tunnel-server';
+import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
+import type { LocalUsageLedger } from '@/lib/usage/local-usage-ledger';
+import type { LanHub } from '@lody/shared/node/lan-hub';
+import { connectPort, openLanTunnel } from '@/lib/lan/lan-tunnel';
 import {
   startLocalLoroDataPlaneServer,
   stopLocalLoroDataPlaneServer,
@@ -90,6 +100,7 @@ import {
 } from '@/session/worktree/worktree-setup-config-store';
 import { formatErrorMessage } from '@/utils/format-error';
 import {
+  resolveMachineShellWorkdir,
   resolveTerminalWorkdirFromMetadata,
   type TerminalSessionMetaLookup,
 } from '@/lib/terminal-workdir-resolver';
@@ -189,6 +200,8 @@ export class LodyFleet {
   private readonly runtimeStateReporter: CliRuntimeStateReporter;
   private readonly terminalPtyService: TerminalPtyServiceApi;
   private readonly terminalRouter: TerminalRouter;
+  private readonly localTunnelServer: LocalTunnelServer;
+  private readonly usageLedger: LocalUsageLedger | null;
   private readonly lan: LanTerminalMembership | null;
   private readonly lanFileHandoff: LanFileHandoff;
   private lanTerminalHost: LanTerminalHost | null = null;
@@ -256,6 +269,8 @@ export class LodyFleet {
     lan?: LanTerminalMembership;
     /** What this machine tells the members of its LANs, and does when they ask. */
     lanControl?: LanMachineControl;
+    /** What this machine's agents used, which the members of its LANs ask for. */
+    usageLedger?: LocalUsageLedger;
   }) {
     this.logger = options.logger;
     this.builtinAgentConfigCliTypes = options.builtinAgentConfigCliTypes;
@@ -307,6 +322,13 @@ export class LodyFleet {
       logger: this.logger,
       resolveSessionWorkdir: async (sessionId) =>
         await this.resolveTerminalSessionWorkdir(sessionId),
+      resolveShellWorkdir: async (machineId, requested) => {
+        // Every caller routes another machine's shell away before it gets here.
+        if (machineId !== this.machineId) {
+          throw new Error(`session_machine_mismatch:${machineShellScope(machineId)}:${machineId}`);
+        }
+        return resolveMachineShellWorkdir(requested);
+      },
     });
     this.lan = options.lan ?? null;
     this.lanFleetControl = options.lanControl
@@ -315,6 +337,7 @@ export class LodyFleet {
           machineId: this.machineId,
           machineName: this.machineName,
           control: options.lanControl,
+          ...(options.usageLedger ? { usage: options.usageLedger } : {}),
           ssh: createLanSshDescriber({ logger: this.logger }),
           hubs: () => this.lan?.hubs ?? [],
           workspaces: () =>
@@ -370,6 +393,16 @@ export class LodyFleet {
       locate: async (sessionId) => await this.locateTerminalSession(sessionId as SessionId),
       ...(this.lan ? { connect: async (location) => await this.connectLanTerminal(location) } : {}),
     });
+    this.usageLedger = options.usageLedger ?? null;
+    this.localTunnelServer = new LocalTunnelServer({
+      logger: this.logger,
+      connect: async (request) =>
+        await this.openMachineTunnel(
+          request.machineId ?? this.machineId,
+          request.port,
+          request.host
+        ),
+    });
     this.prStatusPoller = makePrStatusPoller({
       config: loadPrPollerConfig(),
       stateStore: new PrPollerStateStore({ logger: this.logger }),
@@ -379,7 +412,7 @@ export class LodyFleet {
   }
 
   async start(): Promise<void> {
-    if (this.cloudPort.usage) {
+    if (this.cloudPort.kind !== 'local' && this.cloudPort.usage) {
       // Start the analytics poster before any events fire (idempotent; no-op
       // without a key). Local platform: telemetry is off by contract (D-O12).
       initCliAnalytics();
@@ -457,6 +490,12 @@ export class LodyFleet {
         await startLocalLoroDataPlaneServer({
           logger: this.logger,
           getWorkspaceServer: (workspaceId) => this.getWorkspaceLoroDataPlaneServer(workspaceId),
+        });
+      }),
+      traceAsync(this.logger, 'startup.local_tunnel', undefined, async () => {
+        // Never fatal: only `lan forward` needs it.
+        await this.localTunnelServer.start().catch((error: unknown) => {
+          this.logger.warn(`[lan-tunnel] ${formatErrorMessage(error)}`);
         });
       }),
       traceAsync(this.logger, 'startup.mcp_http', undefined, async () => {
@@ -710,6 +749,7 @@ export class LodyFleet {
     const localServicesStopped = Promise.allSettled([
       stopLocalIpcSocketServers(),
       stopLocalTerminalServer(),
+      this.localTunnelServer.stop(),
       this.lanTerminalHost?.close(),
       this.lanFleetControl?.close(),
       this.lanHubStandby?.close(),
@@ -747,6 +787,8 @@ export class LodyFleet {
       }
     }
     await this.workspaceWatchCoordinator.dispose();
+    // After the runtimes: their sessions report their last usage as they stop.
+    this.usageLedger?.close();
     await this.cloudPort.dispose();
 
     for (const result of await localServicesStopped) {
@@ -1029,6 +1071,10 @@ export class LodyFleet {
         // the orchestration chain-depth guard caps a chain at five hops from the
         // last human input, and because CI and GitHub state are explicitly
         // outside that contract.
+        const asSessionCommand =
+          <A extends unknown[], R>(run: (...args: A) => Promise<R>) =>
+          async (...args: A) =>
+            await startedLody.runAsSessionCommand(() => run(...args));
         const reviewAutomation = this.cloudPort.githubTokens
           ? createReviewAutomation({
               documentManager: startedLody.documentManager,
@@ -1045,11 +1091,14 @@ export class LodyFleet {
                 ).resolve(repoFullName);
                 return credential?.token ?? null;
               },
-              createReviewerSession: async (args) => {
+              // On the local platform there is no hosted account to check the
+              // reviewer's machine against; the workspace's session command
+              // environment checks it against the members instead.
+              createReviewerSession: asSessionCommand(async (args) => {
                 const { createSessionResult, resolveTurnDispatchConfig } =
                   await import('@/commands/session');
                 const created = await createSessionResult(
-                  this.reviewAuthContext(),
+                  this.reviewAuth(),
                   workspace,
                   startedLody.documentManager,
                   args.prompt,
@@ -1081,12 +1130,12 @@ export class LodyFleet {
                   }
                 );
                 return { sessionId: created.sessionId };
-              },
-              sendChat: async (sessionId, prompt) => {
+              }),
+              sendChat: asSessionCommand(async (sessionId: SessionId, prompt: string) => {
                 const { sendSessionChatResult, resolveTurnDispatchConfig } =
                   await import('@/commands/session');
                 const sent = await sendSessionChatResult(
-                  this.reviewAuthContext(),
+                  this.reviewAuth(),
                   workspace,
                   startedLody.documentManager,
                   sessionId,
@@ -1094,7 +1143,7 @@ export class LodyFleet {
                   resolveTurnDispatchConfig({})
                 );
                 return { userTurnId: sent.userTurnId };
-              },
+              }),
             })
           : null;
         this.runtimes.set(workspace.id, {
@@ -1335,6 +1384,14 @@ export class LodyFleet {
       machineId: this.machineId,
       machineName: this.machineName,
     };
+  }
+
+  /**
+   * Who auto review acts as: the session command environment's identity where
+   * one runs (the local platform), the CLI token's otherwise.
+   */
+  private reviewAuth(): ReturnType<LodyFleet['reviewAuthContext']> {
+    return getSessionCommandEnvironment()?.auth ?? this.reviewAuthContext();
   }
 
   /** One resolver per workspace, so the credential cache is shared across runs. */
@@ -1689,7 +1746,8 @@ export class LodyFleet {
           ? new ScopedTerminalService(
               this.terminalPtyService,
               async (sessionId) =>
-                await this.verifyLanTerminalSession(workspaceId, sessionId as SessionId)
+                await this.verifyLanTerminalSession(workspaceId, sessionId as SessionId),
+              this.machineId
             )
           : null,
       filesFor: (workspaceId) => this.lanFileHandoff.receiverFor(workspaceId),
@@ -1707,6 +1765,7 @@ export class LodyFleet {
               this.lanHubStandby?.peerHandlerFor(workspaceId) ?? null,
           }
         : {}),
+      tunnels: true,
       rpcFor: (workspaceId: string) => {
         const runtime = this.runtimes.get(workspaceId);
         if (!runtime) return null;
@@ -1763,6 +1822,8 @@ export class LodyFleet {
   private async locateTerminalSession(
     sessionId: SessionId
   ): Promise<TerminalSessionLocation | null> {
+    const shellMachineId = parseMachineShellScope(sessionId);
+    if (shellMachineId !== null) return await this.locateMachineShell(shellMachineId);
     for (const runtime of this.runtimes.values()) {
       const lookup = await this.lookupTerminalSessionMeta(runtime, sessionId);
       if (lookup.type !== 'found') continue;
@@ -1772,6 +1833,65 @@ export class LodyFleet {
       return { workspaceId: runtime.workspace.id, machineId };
     }
     return null;
+  }
+
+  /**
+   * The LAN through which another machine's shell is reached; `null` for this
+   * machine. A machine no LAN of this one reaches is refused rather than
+   * answered with a shell here.
+   */
+  private async locateMachineShell(machineId: string): Promise<TerminalSessionLocation | null> {
+    if (machineId === this.machineId) return null;
+    const member = await this.findLanMember(machineId, machineSupportsLanShell, 'opens no shell');
+    return { workspaceId: member.workspaceId, machineId };
+  }
+
+  /**
+   * A LAN of this machine in which another machine publishes where members
+   * reach it and says it serves what `supports` asks; refused otherwise.
+   */
+  private async findLanMember(
+    machineId: string,
+    supports: (meta: MachineMeta) => boolean,
+    refusal: string
+  ): Promise<{ workspaceId: string; hub: LanHub; endpoint: LanTerminalEndpoint }> {
+    let found: MachineMeta | undefined;
+    for (const runtime of this.runtimes.values()) {
+      const hub = this.lan?.hubs.find(
+        (candidate) => getLanHubWorkspaceId(candidate.id) === runtime.workspace.id
+      );
+      if (!hub) continue;
+      const meta = (
+        await runtime.lody.documentManager.repo.getDocMeta(getMachineRoomId(machineId as MachineId))
+      )?.meta as MachineMeta | undefined;
+      if (!meta) continue;
+      found ??= meta;
+      const endpoint = parseLanTerminalEndpoint(meta.lanTerminal);
+      if (endpoint && supports(meta)) return { workspaceId: runtime.workspace.id, hub, endpoint };
+    }
+    throw new Error(
+      found
+        ? `remote_unreachable:${found.name ?? machineId} ${refusal} to members; update it`
+        : `remote_unreachable:no LAN of this machine reaches ${machineId}`
+    );
+  }
+
+  /** A port a machine reaches: this machine directly, a member over its LAN. */
+  private async openMachineTunnel(
+    machineId: string,
+    port: number,
+    host?: string
+  ): Promise<net.Socket> {
+    if (machineId === this.machineId) return await connectPort(port, host);
+    const member = await this.findLanMember(machineId, machineSupportsLanTunnel, 'opens no port');
+    return await openLanTunnel({
+      endpoint: member.endpoint,
+      lanId: member.hub.id,
+      key: deriveLanTerminalKey(member.hub.token),
+      machineId,
+      port,
+      ...(host ? { host } : {}),
+    });
   }
 
   private async connectLanTerminal(location: TerminalSessionLocation): Promise<RemoteTerminalLink> {

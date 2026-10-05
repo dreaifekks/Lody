@@ -23,6 +23,7 @@ import {
   type LanHubPeerHandler,
 } from './lan-hub-peers';
 import { serveLanFileConnection, type LanFileToRead, type ReceivedLanFile } from './lan-files';
+import { serveTunnelRequest } from './lan-tunnel';
 import {
   createLanTerminalServer,
   deriveLanTerminalKey,
@@ -101,6 +102,12 @@ export class LanTerminalHost {
       hubFor?: (workspaceId: string) => LanHubPeerHandler | null;
       /** Absent on a machine that takes no machine RPC requests directly. */
       rpcFor?: (workspaceId: string) => ((request: unknown) => Promise<unknown[]>) | null;
+      /**
+       * Whether a member may reach the ports this machine reaches, as through
+       * `ssh -L`: a member that holds the LAN's key can run anything here
+       * already. Absent where no port is reached.
+       */
+      tunnels?: boolean;
       /** Records where this machine accepts terminals; `undefined` withdraws it. */
       publish: (workspaceId: string, endpoint: LanTerminalEndpoint | undefined) => Promise<void>;
       /** The port to prefer; `0` for any. */
@@ -223,7 +230,7 @@ export class LanTerminalHost {
   }
 
   private async listen(address: string): Promise<Listener | null> {
-    const { filesFor, controlFor, hubFor, rpcFor } = this.options;
+    const { filesFor, controlFor, hubFor, rpcFor, tunnels } = this.options;
     const server = createLanTerminalServer({
       machineId: this.options.machineId,
       services: [
@@ -232,6 +239,7 @@ export class LanTerminalHost {
         ...(controlFor ? (['control'] as const) : []),
         ...(hubFor ? (['hub'] as const) : []),
         ...(rpcFor ? (['rpc'] as const) : []),
+        ...(tunnels ? (['tunnel'] as const) : []),
       ],
       logger: this.options.logger,
       keyFor: (lanId) => {
@@ -245,7 +253,8 @@ export class LanTerminalHost {
         const control = service === 'control' ? (controlFor?.(workspaceId) ?? null) : null;
         const hub = service === 'hub' ? (hubFor?.(workspaceId) ?? null) : null;
         const rpc = service === 'rpc' ? (rpcFor?.(workspaceId) ?? null) : null;
-        if (!terminals && !files && !control && !hub && !rpc) {
+        const tunnel = service === 'tunnel' && tunnels === true;
+        if (!terminals && !files && !control && !hub && !rpc && !tunnel) {
           socket.end(
             `${JSON.stringify({
               type: 'error',
@@ -257,6 +266,10 @@ export class LanTerminalHost {
         }
         this.sockets.add(socket);
         socket.once('close', () => this.sockets.delete(socket));
+        if (tunnel) {
+          void serveTunnelRequest(socket, { initial, logger: this.options.logger });
+          return;
+        }
         if (rpc) {
           void serveLanRpcConnection(socket, {
             initial,

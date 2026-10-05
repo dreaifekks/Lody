@@ -13,6 +13,7 @@ import {
   type StackedAreaSeriesMarkerRender,
 } from './usage-stacked-area-chart';
 import { UsageCalendarSkeleton } from './usage-calendar-skeleton';
+import { useUsageMemberLabel } from './usage-member-label';
 import type {
   SettingsUsageCalendarData,
   SettingsUsageDayData,
@@ -58,6 +59,8 @@ export type StatsSettingsViewProps = {
    * an action it cannot perform nor pulls the capture pipeline into its bundle.
    */
   shareCard?: boolean;
+  /** Said under the header, such as which machines did not answer. */
+  notice?: ReactNode;
 };
 
 const RANGE_ORDER: SettingsUsageRange[] = ['day', 'week', 'month', 'total'];
@@ -208,8 +211,10 @@ export function StatsSettingsView({
   tintMemberSeriesLabel,
   costFractionDigits = 2,
   shareCard = false,
+  notice,
 }: StatsSettingsViewProps) {
   const { t, i18n } = useTranslation();
+  const memberLabel = useUsageMemberLabel();
   const [shareOpen, setShareOpen] = useState(false);
   const locale = toIntlLocaleOrEn(i18n.resolvedLanguage ?? i18n.language);
   const windowCaption = t(`workspace.usage.window.${range}.long`);
@@ -228,19 +233,24 @@ export function StatsSettingsView({
             {workspaceName || t('workspace.usage.title')}
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">{windowCaption}</p>
+          {notice ? <p className="mt-0.5 text-xs text-muted-foreground">{notice}</p> : null}
         </div>
         <div className="flex items-center gap-1.5">
           <RangeSelector range={range} onRangeChange={onRangeChange} />
           {shareCard && usageCalendar ? (
             <Tooltip.Root>
-              <Tooltip.Trigger render={<Button
-                  icon
-                  variant="ghost"
-                  aria-label={t('workspace.usage.shareImage.action')}
-                  onClick={() => setShareOpen(true)}
-                >
-                  <Share2 />
-                </Button>}/>
+              <Tooltip.Trigger
+                render={
+                  <Button
+                    icon
+                    variant="ghost"
+                    aria-label={t('workspace.usage.shareImage.action')}
+                    onClick={() => setShareOpen(true)}
+                  >
+                    <Share2 />
+                  </Button>
+                }
+              />
               <Tooltip.Content>{t('workspace.usage.shareImage.action')}</Tooltip.Content>
             </Tooltip.Root>
           ) : null}
@@ -327,7 +337,7 @@ export function StatsSettingsView({
         loadingText={t('workspace.usage.loading', 'Loading usage data...')}
       />
       <UsageStackedAreaChart
-        title={t('workspace.usage.byUser')}
+        title={memberLabel}
         buckets={byMemberBuckets}
         emptyText={t('workspace.usage.empty', 'No usage data in this range')}
         valueFormatter={tokensCompact}
