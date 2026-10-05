@@ -18,7 +18,7 @@ import { useAtomValue } from 'jotai';
 import { ArrowUp, Play } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { Button } from '@lody/ui/button';
-import { SessionVoiceControls, type VoiceLatestReply } from './session-voice-controls';
+import { SessionVoiceControls } from './session-voice-controls';
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
 import { useSessionAgentRole, type SessionAgentRoleControl } from '@/hooks/use-session-agent-role';
 import { buildAgentRoleFormValueFromRunConfig } from '@/lib/agent-role-form';
@@ -69,6 +69,7 @@ import type {
   AgentRole,
   AgentRoleId,
   CommentReferencePayload,
+  SessionHistory,
   SessionMeta,
   SessionId,
   SessionInputBlock,
@@ -409,8 +410,8 @@ export interface SessionChatInputAreaProps {
     agentRole: SessionTurnAgentRoleSelection,
     options?: SessionSendMessageOptions
   ) => Promise<boolean>;
-  /** The last finished assistant reply; experimental voice speaks it back. */
-  voiceLatestReply?: VoiceLatestReply | null;
+  /** The session's hydrated tail; experimental voice starts from it and speaks new replies back. */
+  voiceTurns?: readonly SessionHistory[];
   onStop: () => void | Promise<void>;
   /**
    * Present only while the latest round was interrupted and can be picked up
@@ -514,7 +515,7 @@ export const SessionChatInputArea = memo(
       onModelChange,
       onConfigOptionChange,
       onSendMessage,
-      voiceLatestReply = null,
+      voiceTurns,
       onStop,
       onContinue,
       onRemoveQueueItem: _onRemoveQueueItem,
@@ -2045,7 +2046,7 @@ export const SessionChatInputArea = memo(
       <SessionVoiceControls
         disabled={isArchived || isMachineRemoved}
         isAgentBusy={isAgentBusy}
-        latestReply={voiceLatestReply}
+        turns={voiceTurns}
         buttonClassName={primaryActionSizeClassName}
         iconClassName={isMobile ? 'h-5 w-5' : 'h-4 w-4'}
         onDictationStart={() => {

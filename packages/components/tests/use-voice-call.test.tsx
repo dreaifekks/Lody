@@ -142,3 +142,74 @@ describe('useVoiceCall while microphone permission is pending', () => {
     root = createRoot(container);
   });
 });
+
+describe('useVoiceCall conversation', () => {
+  it('starts with the given background and reports both sides of the call in order', async () => {
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      class {
+        localDescription: { sdp: string } | null = null;
+        iceGatheringState = 'complete';
+        addTrack() {}
+        createDataChannel() {
+          return {};
+        }
+        async createOffer() {
+          return { type: 'offer', sdp: 'offer-sdp' };
+        }
+        async setLocalDescription() {
+          this.localDescription = { sdp: 'offer-sdp' };
+        }
+        async setRemoteDescription() {}
+        close() {}
+      }
+    );
+    const microphone = pendingMicrophone();
+    getUserMedia.mockReturnValueOnce(microphone.promise);
+    const reported: string[] = [];
+    requestMachineVoice.mockImplementation(async (_machineId: string, body: { action: string }) => {
+      if (body.action === 'start') {
+        return { success: true, action: 'start', voiceSessionId: 'voice-1', sdp: 'answer-sdp' };
+      }
+      if (body.action === 'poll') {
+        return {
+          success: true,
+          action: 'poll',
+          closed: true,
+          events: [
+            { seq: 1, event: { type: 'transcript', role: 'user', text: '跑一下测试' } },
+            { seq: 2, event: { type: 'transcript', role: 'assistant', text: '好的' } },
+            { seq: 3, event: { type: 'request', requestId: 'h1', text: 'Run the tests.' } },
+            { seq: 4, event: { type: 'closed', reason: null } },
+          ],
+        };
+      }
+      return { success: true, action: 'stop' };
+    });
+    function ConversationProbe() {
+      latest = useVoiceCall({
+        onTranscript: ({ role, text }) => reported.push(`${role}: ${text}`),
+        onRequest: (text) => reported.push(`request: ${text}`),
+      });
+      return null;
+    }
+    act(() => root.render(createElement(ConversationProbe)));
+
+    await act(async () => {
+      const started = latest.start('conversation', {
+        instructions: 'Hand work off.',
+        context: 'User: fix the build',
+      });
+      microphone.grant();
+      await started;
+    });
+
+    expect(requestMachineVoice.mock.calls[0]![1]).toMatchObject({
+      action: 'start',
+      mode: 'conversation',
+      instructions: 'Hand work off.',
+      context: 'User: fix the build',
+    });
+    expect(reported).toEqual(['user: 跑一下测试', 'assistant: 好的', 'request: Run the tests.']);
+  });
+});

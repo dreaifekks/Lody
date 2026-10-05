@@ -87,10 +87,10 @@ index c8ca0cd..da988ec 100644
 +} from './voice.js';
 diff --git a/src/voice.ts b/src/voice.ts
 new file mode 100644
-index 0000000..81bd9fa
+index 0000000..3395f47
 --- /dev/null
 +++ b/src/voice.ts
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,46 @@
 +/**
 + * Experimental realtime voice, hosted by an agent process without an ACP
 + * session. The client owns the microphone and the WebRTC peer; the agent only
@@ -107,6 +107,8 @@ index 0000000..81bd9fa
 +  sdp: string;
 +  /** Extra instructions for the voice, e.g. the language to answer in. */
 +  instructions?: string | undefined;
++  /** Background the voice starts from, e.g. the conversation so far (conversation only). */
++  context?: string | undefined;
 +};
 +
 +export type LodyVoiceStartResponse = {

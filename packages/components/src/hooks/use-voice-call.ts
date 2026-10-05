@@ -19,6 +19,8 @@ export type VoiceCallState = 'idle' | 'connecting' | 'active';
 export type VoiceCallHandlers = {
   /** Words the user has said so far in this call, as they arrive. */
   onUserTranscript?: (text: string) => void;
+  /** A finished utterance of either side, transcribed by the voice (conversation only). */
+  onTranscript?: (line: { role: 'user' | 'assistant'; text: string }) => void;
   /** A spoken request the voice handed off (conversation only). */
   onRequest?: (text: string) => void;
   onError?: (message: string) => void;
@@ -123,6 +125,9 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
         if (response.action !== 'poll') return;
         for (const { seq, event } of response.events) {
           after = seq;
+          if (event.type === 'transcript') {
+            handlersRef.current.onTranscript?.({ role: event.role, text: event.text });
+          }
           if (event.type === 'request') handlersRef.current.onRequest?.(event.text);
           if (event.type === 'error') handlersRef.current.onError?.(event.message);
         }
@@ -136,7 +141,16 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
   );
 
   const start = useCallback(
-    async (nextMode: MachineVoiceMode, instructions?: string) => {
+    async (
+      nextMode: MachineVoiceMode,
+      options: {
+        /** Standing instructions for the voice. */
+        instructions?: string | undefined;
+        /** What the voice should know before the user speaks, e.g. the session so far. */
+        context?: string | undefined;
+      } = {}
+    ) => {
+      const { instructions, context } = options;
       if (callRef.current) return;
       if (!selection) {
         handlersRef.current.onError?.('Choose a Codex agent for voice in Settings first.');
@@ -212,6 +226,7 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
           mode: nextMode,
           sdp: offer,
           ...(instructions ? { instructions } : {}),
+          ...(context ? { context } : {}),
         });
         if (!response.success) throw new Error(response.error);
         if (response.action !== 'start') throw new Error('The machine answered no voice call.');

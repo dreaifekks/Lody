@@ -22,6 +22,8 @@ export const MachineVoiceRequestSchema = z.discriminatedUnion('action', [
       mode: MachineVoiceModeSchema,
       sdp: z.string().min(1).max(64_000),
       instructions: z.string().max(4_000).optional(),
+      /** Background the voice starts from, e.g. the session's recent turns (protocol v2). */
+      context: z.string().max(16_000).optional(),
     })
     .strict(),
   z

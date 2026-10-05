@@ -17,6 +17,7 @@ import {
   machineSupportsLocalFileResourcesProtocol,
   machineSupportsPiExtensions,
   machineSupportsRealtimeVoice,
+  machineSupportsRealtimeVoiceContext,
   machineSupportsSubagentCancellation,
   machineSupportsIosSimulatorProtocol,
   machineSupportsPreviewControlProtocol,
@@ -1402,8 +1403,9 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
 
   const requestMachineVoice = async (
     machineId: MachineId,
-    request: MachineVoiceRequest
+    voiceRequest: MachineVoiceRequest
   ): Promise<MachineVoiceResponse> => {
+    let request = voiceRequest;
     const fail = (error: string): MachineVoiceResponse => ({ success: false, error });
     // `start` may first download the Codex runtime; `poll` waits up to its own limit.
     const timeoutMs = request.action === 'start' ? 180_000 : 30_000;
@@ -1418,6 +1420,15 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
       const protocolCapabilities = await deps.getMachineProtocolCapabilities(machineId);
       if (!machineSupportsRealtimeVoice({ protocolCapabilities })) {
         return fail('This machine does not support voice. Update the local agent.');
+      }
+      if (
+        request.action === 'start' &&
+        request.context !== undefined &&
+        !machineSupportsRealtimeVoiceContext({ protocolCapabilities })
+      ) {
+        // An older machine still holds the call, only without the session's background.
+        const { context: _context, ...rest } = request;
+        request = rest;
       }
       if (plane === 'local') {
         const sender = getLocalMachineRpcSender();
