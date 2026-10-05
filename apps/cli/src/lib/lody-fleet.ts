@@ -742,7 +742,6 @@ export class LodyFleet {
     this.memoryPressure.stop();
     Effect.runSync(this.prStatusPoller.stop);
     this.lanPushFallback?.close();
-    this.usageLedger?.close();
 
     // Stop accepting local work before draining workspace runtimes. Endpoint
     // teardown must not sit behind slow agent/session cleanup, and the owning
@@ -788,6 +787,8 @@ export class LodyFleet {
       }
     }
     await this.workspaceWatchCoordinator.dispose();
+    // After the runtimes: their sessions report their last usage as they stop.
+    this.usageLedger?.close();
     await this.cloudPort.dispose();
 
     for (const result of await localServicesStopped) {

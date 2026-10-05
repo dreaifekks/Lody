@@ -135,6 +135,17 @@ describe('LocalUsageLedger', () => {
     ]);
   });
 
+  it('saves at once what arrives after it closed, as sessions report while they stop', () => {
+    const clock = { now: START };
+    const { make } = open(clock);
+    const ledger = make();
+    ledger.recordSessionUsageUpdate(update({ 'claude-opus': counters(100, 0) }));
+    ledger.close();
+    ledger.recordSessionUsageUpdate(update({ 'claude-opus': counters(200, 0) }));
+
+    expect(make().report(WORKSPACE)).toEqual([expect.objectContaining({ inputTokens: 200 })]);
+  });
+
   it('keeps an unreadable ledger aside instead of writing over it', async () => {
     const clock = { now: START };
     const { file, make } = open(clock);

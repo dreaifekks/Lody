@@ -91,6 +91,7 @@ export class LocalUsageLedger implements CloudUsagePort {
   private readonly workspaces = new Map<string, Map<string, LanUsageRow>>();
   private saveTimer: NodeJS.Timeout | null = null;
   private dirty = false;
+  private closed = false;
 
   constructor(
     private readonly options: {
@@ -167,7 +168,12 @@ export class LocalUsageLedger implements CloudUsagePort {
       .map((row) => ({ ...row }));
   }
 
+  /**
+   * Saves what is pending. What sessions still report while they shut down
+   * is saved at once, as no timer is left to outlive the process.
+   */
   close(): void {
+    this.closed = true;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = null;
     if (this.dirty) this.save();
@@ -188,6 +194,10 @@ export class LocalUsageLedger implements CloudUsagePort {
 
   private scheduleSave(): void {
     this.dirty = true;
+    if (this.closed) {
+      this.save();
+      return;
+    }
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
