@@ -89,3 +89,13 @@ its prompt (an empty prompt is no option — Antigravity rejects it and Claude
 only idles on it), but the conversation renders a thin "Continued" separator
 in its place and the outline keeps it inside the round it continues
 (`lib/continue-delivery.ts`).
+
+A folded-on notice never counts as a turn's answer when deciding the "Worked
+for …" fold (`segmentHasVisibleFinalContent`): a turn cut off mid-step keeps
+its steps and reasoning in view.
+
+A LAN self-update restarts the hub before the member daemon stops, so the
+`daemon_restart` notice is written while the room is down. The daemon waits
+for the cut-off turns to record it, remembers those sessions, and pushes them
+once Streams is back after its restart (`apps/cli/src/lib/interrupted-session-sync.ts`);
+the notice no longer waits for the user's next send.
