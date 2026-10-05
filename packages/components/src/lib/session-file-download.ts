@@ -33,12 +33,16 @@ const downloadSessionFileInBrowser = async (
   if (!response.ok) {
     throw new Error(`Failed to download file (${response.status})`);
   }
-  const blob = await response.blob();
+  saveBlobAsFile(await response.blob(), fileName || fileId);
+};
+
+/** Hand bytes already read to the browser's download. */
+export const saveBlobAsFile = (blob: Blob, fileName: string): void => {
   const objectUrl = URL.createObjectURL(blob);
   try {
     const anchor = document.createElement('a');
     anchor.href = objectUrl;
-    anchor.download = fileName || fileId;
+    anchor.download = fileName;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();

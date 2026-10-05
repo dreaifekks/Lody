@@ -5,6 +5,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   MessageContent,
+  SessionFileUploadResponse,
   SessionId,
   SessionImageUploadResponse,
   SessionStatus,
@@ -54,7 +55,7 @@ type TestHarness = {
   };
 };
 
-const createHarness = (): TestHarness => {
+const createHarness = ({ relay = true }: { relay?: boolean } = {}): TestHarness => {
   const logger = createSilentLogger();
   const state = {
     history: [] as Array<Record<string, unknown>>,
@@ -118,7 +119,9 @@ const createHarness = (): TestHarness => {
       machineId: 'machine-1',
       machineName: 'machine',
       cliVersion: '0.0.0',
-      cloudPort: createTestCloudPort(),
+      cloudPort: createTestCloudPort(
+        relay ? { attachmentUpload: { serverBaseUrl: 'https://relay.example' } } : {}
+      ),
     }
   );
 
@@ -605,5 +608,162 @@ describe('MessageHandler image upload flow', () => {
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
+  });
+
+  describe('without a relay store', () => {
+    let root: string;
+    let previousDataDir: string | undefined;
+
+    beforeEach(async () => {
+      root = await fs.mkdtemp(path.join(os.tmpdir(), 'lody-kept-agent-files-'));
+      previousDataDir = process.env.LODY_DATA_DIR;
+      process.env.LODY_DATA_DIR = path.join(root, 'data');
+    });
+
+    afterEach(async () => {
+      if (previousDataDir === undefined) delete process.env.LODY_DATA_DIR;
+      else process.env.LODY_DATA_DIR = previousDataDir;
+      await fs.rm(root, { recursive: true, force: true });
+    });
+
+    const keptBytes = async (sessionId: SessionId, fileId: string): Promise<string> =>
+      await fs.readFile(
+        path.join(root, 'data', 'session-files', 'ws-1', sessionId, fileId),
+        'utf8'
+      );
+
+    it('keeps the images an agent sends on this machine as files', async () => {
+      const harness = createHarness({ relay: false });
+      handlers.push(harness.handler);
+      const imagePath = path.join(root, 'shot.png');
+      await fs.writeFile(imagePath, 'png bytes');
+
+      const responses: SessionImageUploadResponse[] = [];
+      await harness.host.handleSessionImageUpload(
+        {
+          type: 'session/image-upload',
+          machineId: 'machine-1',
+          sessionId: 'session-1' as SessionId,
+          paths: [imagePath],
+        },
+        {
+          source: 'local-control',
+          send: (message: unknown) => {
+            responses.push(message as SessionImageUploadResponse);
+          },
+        }
+      );
+
+      expect(responses).toHaveLength(1);
+      const response = responses[0];
+      expect(response).toMatchObject({
+        success: true,
+        attachedTo: 'new_entry',
+        files: [
+          {
+            type: 'file',
+            fileName: 'shot.png',
+            mimeType: 'image/png',
+            sizeBytes: 9,
+            transport: 'local',
+            machineId: 'machine-1',
+          },
+        ],
+      });
+      expect(response?.images).toBeUndefined();
+      expect(harness.history).toHaveLength(1);
+      expect(harness.history[0]?.items).toEqual(response?.files);
+      expect(await keptBytes('session-1' as SessionId, response!.files![0]!.fileId)).toBe(
+        'png bytes'
+      );
+    });
+
+    it('keeps a Codex inline image on this machine as a file', async () => {
+      const harness = createHarness({ relay: false });
+      handlers.push(harness.handler);
+
+      const sessionId = 'session-inline-image' as SessionId;
+      const turnId = (harness.host.beginConversationTurn as (sessionId: SessionId) => string)(
+        sessionId
+      );
+      await (
+        harness.host.createAssistantEntryForTurn as (
+          sessionId: SessionId,
+          sessionDoc: TestHarness['sessionDoc'],
+          turnId: string,
+          modelInfo: undefined
+        ) => Promise<void>
+      )(sessionId, harness.sessionDoc, turnId, undefined);
+      (harness.host.handleImageGenerationBegin as (sessionId: SessionId, event: unknown) => void)(
+        sessionId,
+        { acpSessionId: 'acp-inline', callId: 'ig-inline' }
+      );
+      (harness.host.handleImageGenerationEnd as (sessionId: SessionId, event: unknown) => void)(
+        sessionId,
+        {
+          acpSessionId: 'acp-inline',
+          callId: 'ig-inline',
+          status: 'completed',
+          image: { data: 'aGVsbG8=', mimeType: 'image/png' },
+        }
+      );
+      await (
+        harness.host.flushCodexGeneratedImageUploads as (sessionId: SessionId) => Promise<void>
+      )(sessionId);
+
+      expect(harness.history).toHaveLength(1);
+      expect(harness.history[0]?.id).toBe(turnId);
+      const items = harness.history[0]?.items as MessageContent[] | undefined;
+      expect(items).toEqual([
+        expect.objectContaining({
+          type: 'file',
+          mimeType: 'image/png',
+          sizeBytes: 5,
+          transport: 'local',
+          machineId: 'machine-1',
+        }),
+      ]);
+      const file = items?.[0] as Extract<MessageContent, { type: 'file' }>;
+      expect(await keptBytes(sessionId, file.fileId)).toBe('hello');
+    });
+
+    it('keeps the files an agent sends on this machine', async () => {
+      const harness = createHarness({ relay: false });
+      handlers.push(harness.handler);
+      const workspace = path.join(root, 'workspace');
+      await fs.mkdir(workspace);
+      await fs.writeFile(path.join(workspace, 'report.txt'), 'the report');
+      vi.spyOn(harness.host, 'resolveSessionWorkspaceRoot').mockReturnValue(workspace);
+
+      const responses: SessionFileUploadResponse[] = [];
+      await harness.host.handleSessionFileUpload(
+        {
+          type: 'session/file-upload',
+          machineId: 'machine-1',
+          sessionId: 'session-1' as SessionId,
+          paths: [path.join(workspace, 'report.txt')],
+        },
+        {
+          source: 'local-control',
+          send: (message: unknown) => {
+            responses.push(message as SessionFileUploadResponse);
+          },
+        }
+      );
+
+      expect(responses).toHaveLength(1);
+      const file = responses[0]?.files?.[0];
+      expect(responses[0]).toMatchObject({ success: true, attachedTo: 'new_entry' });
+      expect(file).toMatchObject({
+        fileName: 'report.txt',
+        sourcePath: 'report.txt',
+        transport: 'local',
+        machineId: 'machine-1',
+        textPreview: true,
+      });
+      expect(file?.downloadUrl).toBeUndefined();
+      expect(harness.history[0]?.items).toEqual([file]);
+      expect(await keptBytes('session-1' as SessionId, file!.fileId)).toBe('the report');
+    });
   });
 });

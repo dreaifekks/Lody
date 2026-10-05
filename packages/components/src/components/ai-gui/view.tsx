@@ -236,7 +236,12 @@ import { Button } from '@lody/ui/button';
 import { stripRecommended } from '@/components/shared/acp-selector-options';
 import { DiffViewer } from '@/ui/diff-viewer/diff-viewer';
 import { Skeleton } from '@lody/ui/skeleton';
-import { isKeptImageFile, SessionKeptImageFile } from './session-local-image-file';
+import {
+  isKeptImageFile,
+  isReadableKeptFile,
+  readKeptFile,
+  SessionKeptImageFile,
+} from './session-local-image-file';
 import {
   getSessionImageBlobUrl,
   getSessionImageDataUrl,
@@ -248,7 +253,11 @@ import {
   SessionFilePreviewDialog,
   type SessionFilePreviewStatus,
 } from './session-file-preview-dialog';
-import { downloadSessionFile, fetchSessionFilePreview } from '@/lib/session-file-download';
+import {
+  downloadSessionFile,
+  fetchSessionFilePreview,
+  saveBlobAsFile,
+} from '@/lib/session-file-download';
 import { getMachineMetaByIdAtomFamily } from '@/atoms/machines';
 import { isHtmlSessionFile } from '@/lib/session-file-presentation';
 import type {
@@ -6406,28 +6415,42 @@ const WorkspaceSessionFileGroup = ({
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const previewRequestRef = useRef<string | null>(null);
 
+  const uploads = useAppCapabilityCheck()('cloudSync');
   const handleDownload = useCallback(
     (file: SessionFilePayload) => {
-      if (!workspaceId || !authToken) return;
+      if (!workspaceId) return;
+      const storageSessionId = file.storageSessionId ?? sessionId;
+      // Where nothing uploads a file, it is read from the machine that keeps it.
+      const download =
+        !uploads && isReadableKeptFile(file)
+          ? () =>
+              readKeptFile(file, workspaceId, storageSessionId).then((blob) =>
+                saveBlobAsFile(blob, file.fileName || file.fileId)
+              )
+          : authToken
+            ? () =>
+                downloadSessionFile({
+                  workspaceId,
+                  sessionId: storageSessionId,
+                  fileId: file.fileId,
+                  token: authToken,
+                  fileName: file.fileName,
+                  mimeType: file.mimeType,
+                })
+            : null;
+      if (!download) return;
       capturePostHogEvent(postHog, 'file_preview/downloaded', {
         file_kind: getAnalyticsFileKind(file.fileName),
         source: 'attachment',
       });
       setDownloadingId(file.fileId);
-      void downloadSessionFile({
-        workspaceId,
-        sessionId: file.storageSessionId ?? sessionId,
-        fileId: file.fileId,
-        token: authToken,
-        fileName: file.fileName,
-        mimeType: file.mimeType,
-      })
+      void download()
         .catch(() => {
           toast.error(t('sessions.fileDownloadFailed', { name: file.fileName }));
         })
         .finally(() => setDownloadingId((current) => (current === file.fileId ? null : current)));
     },
-    [authToken, postHog, sessionId, t, workspaceId]
+    [authToken, postHog, sessionId, t, uploads, workspaceId]
   );
 
   const handlePreview = useCallback(
@@ -6557,7 +6580,10 @@ const SessionFileBlockCard = ({
       pendingMachineName={machineMeta?.name ?? file.machineId}
       uploads={uploads}
       onPreview={onPreview}
-      onDownload={onDownload}
+      // A kept file this desktop cannot read offers nothing to click.
+      onDownload={
+        !uploads && file.transport === 'local' && !isReadableKeptFile(file) ? undefined : onDownload
+      }
       isDownloading={isDownloading}
     />
   );

@@ -91,20 +91,7 @@ function readImage(file: SessionFilePayload, workspaceId: string, sessionId: str
   }
   const entry: Cached & { promise: Promise<Blob> } = {
     bytes: file.sizeBytes,
-    promise: (async () => {
-      const ipc = getIpcServices();
-      if (!ipc) throw new Error('unavailable');
-      const result = await ipc.localProjects.readSessionFileLocal({
-        workspaceId,
-        sessionId,
-        machineId: file.machineId!,
-        fileId: file.fileId,
-        sizeBytes: file.sizeBytes,
-        sha256: file.sha256,
-      });
-      if (!result.ok) throw new Error(result.error);
-      return new Blob([result.bytes], { type: file.mimeType });
-    })(),
+    promise: readKeptFile(file, workspaceId, sessionId),
   };
   entry.promise.catch(() => {
     // A failure is not kept: the next attempt reads again.
@@ -121,12 +108,34 @@ function readImage(file: SessionFilePayload, workspaceId: string, sessionId: str
   return entry.promise;
 }
 
+/** Whether this desktop can read a file block from the machine that keeps it. */
+export const isReadableKeptFile = (file: SessionFilePayload): boolean =>
+  file.transport === 'local' && !!file.machineId && canUseElectronLocalFileSend();
+
 /** Whether a file block is an image this desktop can read from the machine that keeps it. */
 export const isKeptImageFile = (file: SessionFilePayload): boolean =>
-  file.transport === 'local' &&
-  !!file.machineId &&
-  (SESSION_IMAGE_ALLOWED_MIME_TYPES as readonly string[]).includes(file.mimeType) &&
-  canUseElectronLocalFileSend();
+  isReadableKeptFile(file) &&
+  (SESSION_IMAGE_ALLOWED_MIME_TYPES as readonly string[]).includes(file.mimeType);
+
+/** Read a file block through the agent service, from the machine that keeps it. */
+export async function readKeptFile(
+  file: SessionFilePayload,
+  workspaceId: string,
+  sessionId: string
+): Promise<Blob> {
+  const ipc = getIpcServices();
+  if (!ipc || !file.machineId) throw new Error('unavailable');
+  const result = await ipc.localProjects.readSessionFileLocal({
+    workspaceId,
+    sessionId,
+    machineId: file.machineId,
+    fileId: file.fileId,
+    sizeBytes: file.sizeBytes,
+    sha256: file.sha256,
+  });
+  if (!result.ok) throw new Error(result.error);
+  return new Blob([result.bytes], { type: file.mimeType });
+}
 
 type State =
   | { status: 'idle' | 'loading' }
