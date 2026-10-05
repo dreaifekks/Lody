@@ -172,6 +172,7 @@ import {
 import {
   buildAssistantTurnRenderLayout,
   isCommandToolCall,
+  segmentHasVisibleFinalContent,
   type AssistantActivityRenderItem,
   type AssistantActivitySummary,
   type AssistantToolCallRenderItem,
@@ -1270,14 +1271,7 @@ export const buildChatVirtualRows = ({
       const isLastSegment = segmentIndex === lastSegmentIndex;
       const segmentSubagentTasks = isLastSegment ? subagentTasks : EMPTY_SUBAGENT_TASKS;
 
-      let hasVisibleFinalContent = false;
-      for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
-        const block = blocks[blockIndex];
-        if (block && !segment.workBlockKeys.has(block.key)) {
-          hasVisibleFinalContent = true;
-          break;
-        }
-      }
+      const hasVisibleFinalContent = segmentHasVisibleFinalContent(blocks, segment);
       const shouldUseWorkedGroup =
         isTurnFinished &&
         (segment.workBlockKeys.size > 0 || segmentSubagentTasks.length > 0) &&

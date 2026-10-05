@@ -288,6 +288,10 @@ import {
 import type { RateLimit, SessionUsageUpdate } from 'acp-extension-core';
 import { getWorktreeManager } from '@/session/worktree/worktree-manager';
 import { WorktreeGarbageCollector, type WorktreeOwnerState } from '@/session/worktree/worktree-gc';
+import {
+  createInterruptedSessionSync,
+  type InterruptedSessionSync,
+} from '@/lib/interrupted-session-sync';
 import { createWorktreeScriptHistoryRecorder } from '@/session/worktree/worktree-script-history';
 import { runWorktreeCleanup } from '@/session/worktree/worktree-setup-runner';
 import {
@@ -567,6 +571,9 @@ function buildMachineCommandSnapshot(
 const LEGACY_SESSION_COMMAND_FAMILIES = ['archiveSessionCommand', 'deleteSessionCommand'] as const;
 
 const WORKTREE_GC_INTERVAL_MS = 10 * 60_000;
+// Inside the 15 s graceful-shutdown budget, which also covers the flushes after it.
+const INTERRUPTED_TURN_SETTLE_TIMEOUT_MS = 5_000;
+const INTERRUPTED_SESSION_PUSH_TIMEOUT_MS = 10_000;
 
 type LiveActivitySummary = {
   activityId: string;
@@ -832,6 +839,8 @@ export class MessageHandler {
   private readonly worktreeGc: WorktreeGarbageCollector;
   private worktreeGcTimer: NodeJS.Timeout | null = null;
   private detachWorktreeGcSyncListener: (() => void) | null = null;
+  private interruptedSessionSync: InterruptedSessionSync | null = null;
+  private detachInterruptedSessionSyncListener: (() => void) | null = null;
   private antigravityQuotaPoller: AntigravityQuotaPoller | null = null;
   private readonly deleteLocalProjectInFlight = new Set<LocalProjectId>();
   private machineFlockCommandWatcher: MachineFlockCommandWatcher;
@@ -3759,6 +3768,7 @@ export class MessageHandler {
     // This prevents dispatch from racing ahead of local session startup prerequisites.
     this.setupSessionLifecycleWatchers();
     this.startWorktreeGc();
+    this.startInterruptedSessionSync();
     this.startAntigravityQuota();
     void this.machineFlockCommandWatcher.start();
     void this.discardLegacySessionCommands();
@@ -4179,6 +4189,45 @@ export class MessageHandler {
       .then(() => this.workspaceDocument.waitForInitialMetaSync())
       .then(() => poller.poll())
       .catch(() => undefined);
+  }
+
+  /**
+   * Pushes the sessions the last shutdown cut off as soon as the Streams plane
+   * is usable (see `interrupted-session-sync.ts`). Without Streams the local
+   * store is the only copy, so there is nothing to push.
+   */
+  private startInterruptedSessionSync(): void {
+    if (this.cloudPort.streamsTokens === null) {
+      return;
+    }
+    const sync = createInterruptedSessionSync({
+      filePath: path.join(
+        getLodyDataDir(),
+        'interrupted-sessions',
+        `${encodeURIComponent(this.workspaceId)}.json`
+      ),
+      logger: this.logger,
+      pushSession: async (sessionId) => {
+        const record = await this.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId));
+        // A session deleted meanwhile has nothing left to show.
+        if (!record?.meta || isLoroRepoDocDeleted(record)) return true;
+        const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
+        await sessionDoc.ensureDocRoomJoined();
+        return await sessionDoc.waitUntilSynced({ timeoutMs: INTERRUPTED_SESSION_PUSH_TIMEOUT_MS });
+      },
+    });
+    this.interruptedSessionSync = sync;
+    this.detachInterruptedSessionSyncListener = this.workspaceDocument.onStreamsOnline(() => {
+      void sync.flush();
+    });
+    void this.workspaceDocument
+      .waitForInitialMetaSync()
+      .then(() => sync.flush())
+      .catch((error: unknown) => {
+        this.logger.debug(
+          `Interrupted sessions not pushed at startup: ${formatErrorMessage(error)}`
+        );
+      });
   }
 
   private startWorktreeGc(): void {
@@ -10213,11 +10262,24 @@ export class MessageHandler {
     this.machineFlockCommandWatcher.stop();
     this.providerSetupManager.stop();
     this.sessionActivePresence.clearAll();
+    this.detachInterruptedSessionSyncListener?.();
+    this.detachInterruptedSessionSyncListener = null;
+    // The turns still running are about to be cut off. Remember them first so
+    // the next daemon pushes how they ended even if the hub is restarting too.
+    const interruptedTurns = this.executionService.getActiveTurnIds();
+    await this.interruptedSessionSync
+      ?.record(interruptedTurns.map(({ sessionId }) => sessionId))
+      .catch((error: unknown) => {
+        this.logger.debug(`Failed to remember interrupted sessions: ${formatErrorMessage(error)}`);
+      });
     // Terminating sessions is the producer barrier: agent callbacks may still
     // enqueue their final ACP notifications while termination is in progress,
     // but none can arrive after this await. Keep the document manager open so
     // those callbacks can be flushed below.
     await this.sessionManager.cleanUp({ keepWorkspaceDocumentOpen: true });
+    // Each cut-off turn records "Lody restarted" on its own fiber; give those
+    // a bounded moment to land before the documents close below.
+    await this.waitForInterruptedTurnsToSettle(interruptedTurns);
     await this.flushAllACPUpdates();
     // Wait for any in-flight flushes to complete
     const inFlightPromises = this.store
@@ -10229,6 +10291,30 @@ export class MessageHandler {
     await this.codeCollabV2DiffStore.close();
     await this.previewService.closeAllActiveTunnelsForCleanup('Message handler cleanup');
     await this.sessionManager.cleanUp();
+  }
+
+  private async waitForInterruptedTurnsToSettle(
+    turns: ReadonlyArray<{ sessionId: SessionId; turnId: string }>
+  ): Promise<void> {
+    if (turns.length === 0) return;
+    let timer: NodeJS.Timeout | undefined;
+    const settled = await Promise.race([
+      Promise.all(
+        turns.map(({ sessionId, turnId }) =>
+          this.executionService.waitForTurnRelease(sessionId, turnId)
+        )
+      ).then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), INTERRUPTED_TURN_SETTLE_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!settled) {
+      this.logger.debug(
+        `Shutting down before ${turns.length} interrupted turn(s) finished recording how they ended`
+      );
+    }
   }
 
   private startLiveActivityDetail(notificationService: CloudNotificationsPort | null): void {

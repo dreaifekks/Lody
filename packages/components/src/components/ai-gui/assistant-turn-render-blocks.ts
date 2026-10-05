@@ -293,6 +293,25 @@ const collectSegmentEntries = (
   return entries;
 };
 
+/**
+ * Whether a segment leaves an answer showing outside its work blocks — the
+ * condition for folding the rest into "Worked for …". A folded-on notice is
+ * not an answer: counted, a turn cut off mid-step ("Lody restarted", "Agent
+ * disconnected") would fold away everything it did before it.
+ */
+export const segmentHasVisibleFinalContent = (
+  blocks: readonly AssistantTurnRenderBlock[],
+  segment: Pick<AssistantTurnRenderSegment, 'blockRange' | 'workBlockKeys'>
+): boolean => {
+  for (let index = segment.blockRange[0]; index < segment.blockRange[1]; index += 1) {
+    const block = blocks[index];
+    if (!block || segment.workBlockKeys.has(block.key)) continue;
+    if (block.kind === 'content' && block.entry.content.type === 'system_notice') continue;
+    return true;
+  }
+  return false;
+};
+
 export const buildAssistantTurnRenderLayout = (
   messageId: string,
   items: readonly MessageContent[],

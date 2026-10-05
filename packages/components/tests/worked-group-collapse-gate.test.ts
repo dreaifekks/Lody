@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { MessageContent } from '@lody/shared';
-import { buildAssistantTurnRenderLayout } from '../src/components/ai-gui/assistant-turn-render-blocks';
+import {
+  buildAssistantTurnRenderLayout,
+  segmentHasVisibleFinalContent,
+} from '../src/components/ai-gui/assistant-turn-render-blocks';
 
 // Guards the load-bearing invariant behind view.tsx `shouldUseWorkedGroup`: a finished
 // turn is folded into a "Worked for …" summary ONLY when it has a genuine visible final
@@ -19,10 +22,17 @@ const toolCall = (): MessageContent =>
     title: 'ran a tool',
   }) as unknown as MessageContent;
 
-// Mirror of the gate predicate in view.tsx.
+// The notice the stream folds onto the turn it interrupted.
+const chatFailed = (reason: string): MessageContent =>
+  ({
+    type: 'system_notice',
+    name: 'chat_failed',
+    meta: { reason },
+  }) as unknown as MessageContent;
+
 const hasVisibleFinalContent = (items: MessageContent[], isTurnFinished: boolean): boolean => {
-  const { blocks, workBlockKeys } = buildAssistantTurnRenderLayout('m1', items, isTurnFinished);
-  return blocks.some((block) => !workBlockKeys.has(block.key));
+  const { blocks, segments } = buildAssistantTurnRenderLayout('m1', items, isTurnFinished);
+  return segments.some((segment) => segmentHasVisibleFinalContent(blocks, segment));
 };
 
 describe('Worked for … collapse gate (buildAssistantTurnRenderLayout)', () => {
@@ -38,6 +48,18 @@ describe('Worked for … collapse gate (buildAssistantTurnRenderLayout)', () => 
   it('trailing tool after the text answer (no closing text) leaves no visible tail → do not collapse', () => {
     // Intended edge behavior: erring toward showing more, never an empty "Worked for …".
     expect(hasVisibleFinalContent([text('working on it'), toolCall()], true)).toBe(false);
+  });
+
+  it('a failure notice folded onto a turn cut off mid-step is not an answer → do not collapse', () => {
+    expect(
+      hasVisibleFinalContent([text('checking'), toolCall(), chatFailed('daemon_restart')], true)
+    ).toBe(false);
+  });
+
+  it('an answer followed by a notice still collapses the work before it', () => {
+    expect(
+      hasVisibleFinalContent([toolCall(), text('all done'), chatFailed('agent_disconnected')], true)
+    ).toBe(true);
   });
 
   it('streaming turn folds nothing (workBlockKeys empty), so it never collapses', () => {
