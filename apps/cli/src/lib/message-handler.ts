@@ -6439,6 +6439,19 @@ export class MessageHandler {
       };
     }
 
+    // A chat without a project runs in its own directory under the data root. Once
+    // its agent process is gone, that directory is the only record of where it ran,
+    // and previews of the files the agent wrote there must keep working.
+    const chatWorkdir = path.join(getLodyDataDir(), 'chats', ownerSessionId);
+    if (fs.existsSync(chatWorkdir)) {
+      return {
+        ok: true,
+        workspaceRoot: chatWorkdir,
+        source: `chat-workdir:${ownerSessionId}`,
+        ...ownerSessionIdField(ownerSessionId),
+      };
+    }
+
     return {
       ok: false,
       error: 'workspace_unavailable',
