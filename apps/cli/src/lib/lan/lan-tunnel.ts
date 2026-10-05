@@ -82,18 +82,27 @@ export function connectPort(port: number, host = 'localhost'): Promise<net.Socke
   });
 }
 
-/** Carries bytes both ways until either side ends; one side's failure ends both. */
+/**
+ * Carries bytes both ways. A side that finishes sending passes its end on and
+ * still receives the answer, as `ssh -L` does; a side that breaks off or
+ * fails takes the other down with it.
+ */
 export function joinSockets(left: net.Socket, right: net.Socket): void {
+  for (const socket of [left, right]) socket.allowHalfOpen = true;
   left.pipe(right);
   right.pipe(left);
-  const end = () => {
-    left.destroy();
-    right.destroy();
+  const follow = (from: net.Socket, to: net.Socket) => {
+    let ended = false;
+    from.once('end', () => {
+      ended = true;
+    });
+    from.once('close', () => {
+      if (!ended) to.destroy();
+    });
+    from.on('error', () => to.destroy());
   };
-  left.once('close', end);
-  right.once('close', end);
-  left.on('error', end);
-  right.on('error', end);
+  follow(left, right);
+  follow(right, left);
   left.resume();
   right.resume();
 }

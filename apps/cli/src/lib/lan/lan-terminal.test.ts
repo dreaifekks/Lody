@@ -24,7 +24,7 @@ import { askLanHubPeer, type LanHubPeerHandler } from './lan-hub-peers';
 import { askLanMemberRpc, LanRpcNotSentError } from './lan-rpc-channel';
 import { createDetachFilter, runMachineShell, type ShellIo } from './lan-shell';
 import { connectLanTerminal, createTerminalLink, deriveLanTerminalKey } from './lan-terminal';
-import { openLanTunnel } from './lan-tunnel';
+import { joinSockets, openLanTunnel } from './lan-tunnel';
 import { LanTerminalHost, resolveLanTerminalPort } from './lan-terminal-host';
 
 const silentLogger = (): Logger => ({
@@ -682,6 +682,66 @@ describe('terminals between LAN members', () => {
       closed.open({ sessionId: machineShellScope(SERVER), cols: 80, rows: 24 })
     ).rejects.toThrow(/^session_not_found:/);
     expect(pty.opened).toEqual([]);
+  });
+
+  /** A server that answers only once its client finished sending, like `nc -N` expects. */
+  async function answerAfterEnd() {
+    const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+      let received = '';
+      socket.on('data', (chunk: Buffer) => {
+        received += chunk.toString('utf8');
+      });
+      socket.on('end', () => socket.end(`got ${received}`));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    return (server.address() as net.AddressInfo).port;
+  }
+
+  function askAndFinish(socket: net.Socket, request: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let answer = '';
+      socket.on('data', (chunk: Buffer) => {
+        answer += chunk.toString('utf8');
+      });
+      socket.once('close', () => resolve(answer));
+      socket.once('error', reject);
+      socket.resume();
+      socket.end(request);
+    });
+  }
+
+  it("brings back a member's answer after the client finished sending", async () => {
+    const port = await answerAfterEnd();
+    const { published } = await startServer({ tunnels: true });
+    const tunnel = await openLanTunnel({
+      endpoint: published.get(HOME)!,
+      lanId: home.id,
+      key: deriveLanTerminalKey(home.token),
+      machineId: SERVER,
+      port,
+    });
+
+    expect(await askAndFinish(tunnel, 'request')).toBe('got request');
+  });
+
+  it('passes the end of a forwarded connection on and keeps its answer', async () => {
+    const port = await answerAfterEnd();
+    // What `lan forward` listens with, joined to the port as each hop joins its two sides.
+    const forward = net.createServer({ pauseOnConnect: true }, (client) => {
+      const upstream = net.connect({ port, host: '127.0.0.1' });
+      upstream.once('connect', () => joinSockets(client, upstream));
+    });
+    await new Promise<void>((resolve) => forward.listen(0, '127.0.0.1', () => resolve()));
+    cleanups.push(() => new Promise<void>((resolve) => forward.close(() => resolve())));
+    const client = net.connect({
+      port: (forward.address() as net.AddressInfo).port,
+      host: '127.0.0.1',
+      allowHalfOpen: true,
+    });
+    await new Promise<void>((resolve) => client.once('connect', () => resolve()));
+
+    expect(await askAndFinish(client, 'GET / HTTP/1.0\r\n\r\n')).toBe('got GET / HTTP/1.0\r\n\r\n');
   });
 
   it('carries a connection to a port the member reaches both ways', async () => {
