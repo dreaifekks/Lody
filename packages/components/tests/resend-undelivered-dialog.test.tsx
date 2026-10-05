@@ -127,6 +127,36 @@ describe('UserMessageRowView undelivered resend dialog', () => {
     expect(document.body.textContent).not.toContain('did not run');
   });
 
+  it('keeps the resend entry on a Continue turn that recovery refused', async () => {
+    const continueMessage = {
+      ...undeliveredMessage,
+      inputConfig: { ...undeliveredMessage.inputConfig, _lodyDeliveryKind: 'continue' },
+    } as unknown as SessionHistoryParsed;
+    const onResendUndelivered = vi.fn(async () => true);
+    await renderRow(onResendUndelivered, continueMessage);
+
+    await click(queryBodyButton('Not delivered'));
+    await click(queryBodyButton('Resend message'));
+    expect(onResendUndelivered).toHaveBeenCalledWith(
+      missingTurnId,
+      buildResendInputBlocks(continueMessage)
+    );
+  });
+
+  it('renders a delivered Continue turn as a marker, not a message', async () => {
+    await renderRow(async () => true, {
+      ...undeliveredMessage,
+      id: 'continue-delivered',
+      status: 'handled',
+      read: true,
+      inputConfig: { ...undeliveredMessage.inputConfig, _lodyDeliveryKind: 'continue' },
+    } as unknown as SessionHistoryParsed);
+
+    expect(container?.querySelector('[role="separator"]')).not.toBeNull();
+    expect(container?.textContent).not.toContain('resend me from the dialog');
+    expect(container?.textContent).not.toContain('Not delivered');
+  });
+
   it('cancels without resending', async () => {
     const onResendUndelivered = vi.fn(async () => true);
     await renderRow(onResendUndelivered);

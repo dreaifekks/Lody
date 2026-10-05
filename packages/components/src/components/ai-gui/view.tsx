@@ -2,6 +2,7 @@ import * as stylex from '@stylexjs/stylex';
 import { space, text as textScale } from '@lody/ui/tokens/scales.stylex';
 import { writeTextToClipboard } from '@/lib/clipboard';
 import {
+  type ComponentProps,
   type ComponentPropsWithoutRef,
   type ComponentType,
   type ElementType,
@@ -2559,13 +2560,10 @@ export const MessageRowView = memo(function MessageRowView({
     );
   }
 
-  if (isContinueDeliveryTurn(message)) {
-    return <ContinueMarkerRow />;
-  }
-
   if (message.role === 'user') {
+    const UserRow = isContinueDeliveryTurn(message) ? ContinueTurnRowView : UserMessageRowView;
     return (
-      <UserMessageRowView
+      <UserRow
         message={message}
         sessionId={sessionId}
         user={user}
@@ -2585,6 +2583,18 @@ export const MessageRowView = memo(function MessageRowView({
   // is only ever a system or user message.
   return null;
 });
+
+/**
+ * A Continue turn renders as a marker. One that recovery refused or whose
+ * delivery is unknown keeps the ordinary row: its label is the only resend entry.
+ */
+const ContinueTurnRowView = (props: ComponentProps<typeof UserMessageRowView>) => {
+  const sessionMeta = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(props.sessionId)));
+  const needsRecovery =
+    props.message.status === 'delivery_unknown' ||
+    isUndeliveredUserTurnEntry(sessionMeta?.lastMissingHistoryUserMsgId, props.message);
+  return needsRecovery ? <UserMessageRowView {...props} /> : <ContinueMarkerRow />;
+};
 
 /** Where the composer's Continue action picked an interrupted round back up. */
 const ContinueMarkerRow = () => {
