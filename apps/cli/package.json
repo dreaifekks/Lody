@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "pnpm run prepare:acp-adapters && node scripts/dev-build.mjs && node --enable-source-maps dist-dev/index.js",
     "dev:build": "node scripts/dev-build.mjs",
-    "build": "pnpm run clean && pnpm run prepare:acp-adapters && pnpm run typecheck && pnpm run build:bundle && pnpm run copy:dsh-presets && pnpm run check:published-bundle-imports && pnpm run copy:wasm",
+    "build": "pnpm run clean && pnpm run prepare:acp-adapters && pnpm run typecheck && pnpm run build:bundle && pnpm run copy:dsh-presets && pnpm run check:published-bundle-imports && pnpm run copy:wasm && pnpm run copy:review-viewer",
     "build:watch": "pnpm run prepare:review-assets && vite build --watch",
     "build:bundle": "pnpm run prepare:review-assets && vite build",
     "prepare:acp-adapters": "node ../../scripts/apply-submodule-patches.mjs && corepack pnpm --dir ../.. --filter acp-extension-claude build && corepack pnpm --dir ../.. --filter acp-extension-codex build && corepack pnpm --dir ../.. --filter acp-extension-devin build && corepack pnpm --dir ../.. --filter acp-extension-grok build && corepack pnpm --dir ../.. --filter acp-extension-dsh build",
@@ -18,6 +18,7 @@
     "check:published-bundle-imports": "node scripts/check-published-bundle-imports.js",
     "copy:dsh-presets": "node scripts/copy-deepseek-presets.js",
     "copy:wasm": "node scripts/copy-loro-wasm.js",
+    "copy:review-viewer": "node scripts/copy-review-viewer.js",
     "clean": "rimraf dist dist-dev",
     "format": "oxfmt 'src/**/*.ts'",
     "format:check": "oxfmt --check 'src/**/*.ts'",

@@ -3204,6 +3204,8 @@ export function LoroAppSidebar({
   }, [closeMobileDrawer]);
 
   const setBugReportDialogOpen = useSetAtom(bugReportDialogOpenAtom);
+  // Reports go to the hosted service; where there is none the entry is left out.
+  const canReportBug = useAppCapability('bugReport');
   const handleBugReportClicked = useCallback(() => {
     closeMobileDrawer();
     setBugReportDialogOpen(true);
@@ -3774,7 +3776,7 @@ export function LoroAppSidebar({
         onGithubClicked={handleGithubClicked}
         onJoinCommunityClicked={handleJoinCommunityClicked}
         onFeedbackClicked={handleFeedbackClicked}
-        onBugReportClicked={handleBugReportClicked}
+        onBugReportClicked={canReportBug ? handleBugReportClicked : undefined}
         onSettingsClicked={handleSettingsClicked}
         onInviteClicked={handleInviteClicked}
         onLinkRepoClicked={handleLinkRepoClicked}

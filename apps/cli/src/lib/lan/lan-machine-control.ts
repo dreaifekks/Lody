@@ -9,6 +9,7 @@ import {
   type LanAgentInstallResult,
   type LanAgentRuntime,
   type LanControlRefusal,
+  type LanMachineRestartResult,
   type LanMachineUpdateResult,
 } from '@lody/shared';
 import {
@@ -130,6 +131,7 @@ export type LanMachineControlOptions = {
 export class LanMachineControl {
   private reported: LanMachineUpdate | null = null;
   private updating = false;
+  private restarting = false;
   private readonly installing = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private newest: { readAt: number; release: LanReleaseSummary | null } | null = null;
@@ -237,6 +239,28 @@ export class LanMachineControl {
       this.updating = false;
       this.report('failed', manifest.version, message);
     }
+  }
+
+  /**
+   * Starts this agent service again once the member has its answer, as an
+   * update does at its end. Agents running here are interrupted; the machine
+   * is back once it registers again.
+   */
+  restartService(): LanMachineRestartResult {
+    if (this.options.build.update === 'manual') {
+      throw new LanControlRefused(
+        'manual',
+        'Nothing would start this agent service again; restart it where it runs'
+      );
+    }
+    if (this.updating || this.restarting) {
+      throw new LanControlRefused('busy', 'This machine is already starting again');
+    }
+    this.restarting = true;
+    void (this.options.settle ?? settle)(REPORT_SETTLE_MS).then(() =>
+      this.options.restart('a member of the LAN asked')
+    );
+    return { outcome: 'started' };
   }
 
   async installAgent(agentType: string): Promise<LanAgentInstallResult> {

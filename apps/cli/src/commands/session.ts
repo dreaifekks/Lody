@@ -2735,15 +2735,27 @@ export async function readLocalProjectGitStateOnMachine(args: {
     }
   }
 
-  const response = await withMachineRpcClient(
-    args,
-    async (client) =>
-      await client.requestLocalProjectGitState({
-        localProjectId: args.localProjectId as LocalProjectId,
-        requestedByUserId: args.requesterUserId,
-        timeoutMs: 30_000,
-      })
-  );
+  const request = async (client: LoroStreamsMachineRpcClient) =>
+    await client.requestLocalProjectGitState({
+      localProjectId: args.localProjectId as LocalProjectId,
+      requestedByUserId: args.requesterUserId,
+      timeoutMs: 30_000,
+    });
+  const environment = getSessionCommandEnvironment();
+  let response: Awaited<ReturnType<typeof request>>;
+  if (environment) {
+    // The agent service reaches another machine of its LAN through the LAN.
+    const remote = environment.host.remote;
+    if (!remote)
+      return { success: false, error: 'Target machine is unavailable in this workspace' };
+    try {
+      response = await remote.withClient(args.machineId, request);
+    } catch (error) {
+      return { success: false, error: formatErrorMessage(error) };
+    }
+  } else {
+    response = await withMachineRpcClient(args, request);
+  }
   if (!response) {
     return {
       success: false,

@@ -10,7 +10,6 @@ import { useNavigate } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
 import { v4 as uuid } from 'uuid';
 import { AlertTriangle } from 'lucide-react';
-import { useCloudQuery } from '@lody/platform/react';
 import {
   DEFAULT_SCHEDULE_DESTINATION,
   getDeviceTimeZone,
@@ -48,7 +47,8 @@ import { useScheduleDocument, useSchedules } from '@/hooks/use-schedules';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useVisibleLocalProjects } from '@/hooks/use-visible-local-projects';
 import { useOpenSettings } from '@/hooks/use-open-settings';
-import { cloudOperations } from '@/lib/cloud-api-operations';
+import { useWorkspaceGitHubRepositories } from '@/hooks/use-workspace-github-repositories';
+import { useAppCapability } from '@/lib/app-platform';
 import { DesktopMachineMenu } from '@/components/sessions/desktop-run-config-menu';
 import { ProjectRefSelector } from '@/components/shared/project-ref-selector';
 import { WorktreeCheckboxPill } from '@/components/shared/workdir-mode-selector';
@@ -417,11 +417,12 @@ function ScheduleEditor({
   const agents = useAtomValue(getAllAgentConfigAtom) as AgentConfigMeta[];
   const { machines } = useVisibleMachineMetas({ includeMachineFlock: true });
   const local = useVisibleLocalProjects({ includeMachineFlock: true });
-  const repos = useCloudQuery(
-    cloudOperations.github.getWorkspaceRepositories,
-    runtime ? { workspaceId: runtime.workspaceId } : 'skip'
-  ) as { repoFullName?: string; fullName?: string }[] | null | undefined;
+  const repos = useWorkspaceGitHubRepositories(runtime?.workspaceId) as
+    | { repoFullName?: string; fullName?: string }[]
+    | null
+    | undefined;
   const { openSettings } = useOpenSettings();
+  const githubIntegrationAvailable = useAppCapability('githubIntegration');
   const [agent, setAgent] = useState<AgentRunRef | null>(
     document
       ? {
@@ -714,7 +715,9 @@ function ScheduleEditor({
                     : []
                 )}
                 onAddLocalProject={() => openSettings('projects')}
-                onConnectGitRepo={() => openSettings('github')}
+                onConnectGitRepo={
+                  githubIntegrationAvailable ? () => openSettings('github') : undefined
+                }
               />
             </>
           ) : null}

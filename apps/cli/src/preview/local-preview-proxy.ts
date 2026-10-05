@@ -58,6 +58,12 @@ type LocalPreviewProxyManagerDeps = {
 type AcquireLocalPreviewEndpointOptions = {
   sessionId: SessionId;
   target: PreviewTarget;
+  /**
+   * Where the proxy connects when the target is reached through another port
+   * of this machine, such as one that carries a LAN member's dev server. The
+   * endpoint still names `target`.
+   */
+  connectTo?: PreviewTarget;
   connectionAddress?: string;
   shareUrl?: string;
   resourceLimits?: PreviewResourceLimits;
@@ -207,7 +213,8 @@ export class LocalPreviewProxyManager {
     if (
       existing &&
       existing.endpoint.target &&
-      sameTargetOrigin(existing.endpoint.target, options.target)
+      sameTargetOrigin(existing.endpoint.target, options.target) &&
+      existing.localOrigin.href === buildLocalOrigin(options.connectTo ?? options.target).href
     ) {
       existing.endpoint = {
         ...existing.endpoint,
@@ -230,12 +237,14 @@ export class LocalPreviewProxyManager {
     return record.endpoint;
   }
 
-  async release(sessionId: SessionId, endpointId: string): Promise<void> {
+  /** Whether the endpoint was the session's and is now closed. */
+  async release(sessionId: SessionId, endpointId: string): Promise<boolean> {
     const record = this.records.get(sessionId);
     if (!record || record.endpoint.endpointId !== endpointId) {
-      return;
+      return false;
     }
     await this.closeRecord(sessionId, record, 'Preview endpoint released');
+    return true;
   }
 
   async closeSession(sessionId: SessionId, reason: string): Promise<void> {
@@ -265,8 +274,9 @@ export class LocalPreviewProxyManager {
   ): Promise<LocalPreviewProxyRecord> {
     const endpointId = randomUUID();
     const token = randomBytes(32).toString('base64url');
-    const localOrigin = buildLocalOrigin(options.target);
-    const transport = createPreviewTargetTransport(options.target, options.connectionAddress);
+    const upstream = options.connectTo ?? options.target;
+    const localOrigin = buildLocalOrigin(upstream);
+    const transport = createPreviewTargetTransport(upstream, options.connectionAddress);
     const resourceLimits = resolveResourceLimits(options.resourceLimits);
     const server = http.createServer();
     const webSocketServer = new WebSocketServer({

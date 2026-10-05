@@ -100,6 +100,7 @@ import { activeWorkspaceRuntimeAtom, authTokenAtom, runtimeAtom } from '@/atoms/
 import { toast } from '@/lib/toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useOpenSettings } from '@/hooks/use-open-settings';
+import { useWorkspaceGitHubRepositories } from '@/hooks/use-workspace-github-repositories';
 import {
   focusFirstChatLandingOption,
   useChatLandingKeyboardNav,
@@ -579,6 +580,10 @@ function WorkspaceChatLanding({
   const workspaceRuntime = useAtomValue(runtimeAtom);
   const postHog = usePostHog();
   const multiWorkspaceAvailable = useAppCapability('multiWorkspace');
+  const canReportBug = useAppCapability('bugReport');
+  const machinePairingAvailable = useAppCapability('remoteMachines');
+  // The hosted repository registry; GitHub settings exist only with it.
+  const githubIntegrationAvailable = useAppCapability('githubIntegration');
   const currentUser = useAtomValue(userAtom);
   const userId = currentUser?.id;
   const { activeOrganization, organizations, switchOrganization } = useOrganization({
@@ -757,10 +762,7 @@ function WorkspaceChatLanding({
     (machineId: string) => onlineMachineIds.has(machineId as MachineId),
     [onlineMachineIds]
   );
-  const freshRepositories = useCloudQuery(
-    cloudOperations.github.getWorkspaceRepositories,
-    workspaceId ? { workspaceId } : 'skip'
-  );
+  const freshRepositories = useWorkspaceGitHubRepositories(workspaceId);
   const billingEntitlement = useCloudQuery(
     cloudOperations.billing.getWorkspaceBillingEntitlement,
     workspaceId ? { workspaceId } : 'skip'
@@ -2005,6 +2007,8 @@ function WorkspaceChatLanding({
     }
     void createNewMachinePairing();
   }, [createNewMachinePairing, machinePairing, machinePairingStatus]);
+  // Without the hosted pairing a machine joins with a LAN's invite, which Settings > LAN gives.
+  const handleAddLanMachine = useCallback(() => openSettings('lan'), [openSettings]);
 
   useEffect(() => {
     if (
@@ -3805,7 +3809,7 @@ function WorkspaceChatLanding({
           options={desktopMachineOptions}
           onChange={handleMachineChange}
           disabled={isInitialDataLoading}
-          onAddMachine={handleAddMachine}
+          onAddMachine={machinePairingAvailable ? handleAddMachine : handleAddLanMachine}
         />
         <UnifiedProjectSelectorView
           value={desktopProjectSelection}
@@ -3813,7 +3817,7 @@ function WorkspaceChatLanding({
           localProjects={desktopLocalProjectOptions}
           repositories={repositories}
           latestMessageAtByRepo={mobileSheetRecency.byRepo}
-          onConnectGitRepo={handleConnectGitRepo}
+          onConnectGitRepo={githubIntegrationAvailable ? handleConnectGitRepo : undefined}
           onAddLocalProject={handleAddLocalProject}
           onShareLocalProjectWithTeam={
             showProjectSharing ? handleShareLocalProjectWithTeam : undefined
@@ -6365,7 +6369,7 @@ function WorkspaceChatLanding({
           selectedProjectsSubTab={selectedProjectsSubTab}
           onProjectsSubTabSelect={handleMobileHomeProjectsSubTabSelect}
           onAddLocalProject={() => openAddProjectDialog()}
-          onAddGitHubRepository={handleConnectGitRepo}
+          onAddGitHubRepository={githubIntegrationAvailable ? handleConnectGitRepo : undefined}
           localProjects={mobileHomeLocalProjects}
           recentLocalProjects={mobileHomeRecentLocalProjects}
           githubRepositories={mobileHomeGitHubRepositories}
@@ -6691,7 +6695,7 @@ function WorkspaceChatLanding({
         )}
         hintDiscordLabel={t('chat.cliHint.discordLink', 'Discord')}
         onDownloadClient={handleDownloadClient}
-        onReportBug={handleReportBug}
+        onReportBug={canReportBug ? handleReportBug : undefined}
         onGoToAgentSettings={handleGoToAgentSettings}
         onOpenMobileDrawer={() => openMobileDrawer(true)}
         leftSidebarExpandSlot={

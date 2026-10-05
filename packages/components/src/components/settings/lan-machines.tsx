@@ -6,11 +6,14 @@ import {
   Download,
   Laptop,
   MoreHorizontal,
+  Activity,
   PencilLine,
   RefreshCw,
+  RotateCcw,
   Server,
   ServerCog,
   SquareTerminal,
+  Trash2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type {
@@ -107,19 +110,27 @@ const styles = stylex.create({
 export type LanMachinesViewProps = Pick<
   LanMachinesControl,
   'updateMachine' | 'installAgent' | 'previewHostedImport' | 'importHostedConfig' | 'setAlias'
-> & {
-  inventory: LanMachines;
-  /**
-   * The entry of this computer's SSH configuration the user named for a
-   * machine, by machine id and as it is written. Editors reach the machine
-   * through it; one without an entry is reached through what answers first.
-   */
-  sshEntries?: Readonly<Record<string, string>>;
-  /** Absent where no entry can be named, such as outside the desktop. */
-  onSshEntryChange?: (machine: LanMachine, entry: SshDestination | null) => void;
-  /** How long a machine that answers takes to, after its facts; absent outside the desktop. */
-  Latency?: ComponentType<{ machine: LanMachine }>;
-};
+> &
+  Partial<Pick<LanMachinesControl, 'restartMachine'>> & {
+    inventory: LanMachines;
+    /**
+     * Takes a machine that is gone for good out of the LAN this window shows;
+     * absent where machines cannot be removed.
+     */
+    removeMachine?: (machine: LanMachine) => Promise<void>;
+    /** Shows the agent processes of a machine; absent where they cannot be shown. */
+    onShowProcesses?: (machine: LanMachine) => void;
+    /**
+     * The entry of this computer's SSH configuration the user named for a
+     * machine, by machine id and as it is written. Editors reach the machine
+     * through it; one without an entry is reached through what answers first.
+     */
+    sshEntries?: Readonly<Record<string, string>>;
+    /** Absent where no entry can be named, such as outside the desktop. */
+    onSshEntryChange?: (machine: LanMachine, entry: SshDestination | null) => void;
+    /** How long a machine that answers takes to, after its facts; absent outside the desktop. */
+    Latency?: ComponentType<{ machine: LanMachine }>;
+  };
 
 const OS_NAMES: Record<string, string> = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' };
 
@@ -184,12 +195,19 @@ export function LanMachinesView({
   previewHostedImport,
   importHostedConfig,
   setAlias,
+  restartMachine,
+  removeMachine,
+  onShowProcesses,
   sshEntries,
   onSshEntryChange,
   Latency,
 }: LanMachinesViewProps) {
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState<LanMachine | null>(null);
+  const [pending, setPending] = useState<{
+    action: 'restart' | 'remove';
+    machine: LanMachine;
+  } | null>(null);
   const [importing, setImporting] = useState<LanMachine | null>(null);
   const [naming, setNaming] = useState<LanMachine | null>(null);
   const [aliasing, setAliasing] = useState<LanMachine | null>(null);
@@ -245,6 +263,39 @@ export function LanMachinesView({
       );
     });
 
+  const restart = (machine: LanMachine) =>
+    asking(machine.machineId, async () => {
+      if (!restartMachine) return;
+      const answer = await restartMachine(machine);
+      if (!answer.ok) {
+        toast.error(
+          t(
+            answer.reason === 'manual' || answer.reason === 'busy'
+              ? `settings.lan.machines.restart.refused.${answer.reason}`
+              : 'settings.lan.machines.refused.other',
+            { name: machine.name, message: answer.message }
+          )
+        );
+        return;
+      }
+      toast.success(t('settings.lan.machines.restart.started', { name: machine.name }));
+    });
+
+  const remove = (machine: LanMachine) =>
+    asking(machine.machineId, async () => {
+      if (!removeMachine) return;
+      try {
+        await removeMachine(machine);
+      } catch (error) {
+        toast.error(
+          t('settings.lan.machines.remove.failed', {
+            name: machine.name,
+            message: error instanceof Error ? error.message : String(error),
+          })
+        );
+      }
+    });
+
   const alias = (machine: LanMachine, next: string | null, color: LanMachineColor | null) =>
     asking(machine.machineId, async () => {
       const answer = await setAlias(machine, next, color);
@@ -270,6 +321,11 @@ export function LanMachinesView({
             onAlias={() => setAliasing(machine)}
             onInstallAgent={(agent) => install(machine, agent)}
             onNameSshEntry={onSshEntryChange ? () => setNaming(machine) : undefined}
+            onRestart={
+              restartMachine ? () => setPending({ action: 'restart', machine }) : undefined
+            }
+            onRemove={removeMachine ? () => setPending({ action: 'remove', machine }) : undefined}
+            onProcesses={onShowProcesses ? () => onShowProcesses(machine) : undefined}
             Latency={Latency}
           />
         ))}
@@ -307,6 +363,39 @@ export function LanMachinesView({
         </AlertDialog.Content>
       </AlertDialog.Root>
 
+      <AlertDialog.Root
+        open={pending !== null}
+        onOpenChange={(next) => {
+          if (!next) setPending(null);
+        }}
+      >
+        <AlertDialog.Content>
+          <AlertDialog.Header>
+            <AlertDialog.Title>
+              {t(`settings.lan.machines.${pending?.action ?? 'restart'}.confirmTitle`, {
+                name: pending?.machine.name ?? '',
+              })}
+            </AlertDialog.Title>
+            <AlertDialog.Description>
+              {t(`settings.lan.machines.${pending?.action ?? 'restart'}.confirm`)}
+            </AlertDialog.Description>
+          </AlertDialog.Header>
+          <AlertDialog.Footer>
+            <AlertDialog.Cancel>{t('common.cancel')}</AlertDialog.Cancel>
+            <Button
+              variant={pending?.action === 'remove' ? 'destructive' : undefined}
+              onClick={() => {
+                if (pending?.action === 'restart') restart(pending.machine);
+                if (pending?.action === 'remove') remove(pending.machine);
+                setPending(null);
+              }}
+            >
+              {t(`settings.lan.machines.${pending?.action ?? 'restart'}.button`)}
+            </Button>
+          </AlertDialog.Footer>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
+
       <LanHostedImport
         machine={importing}
         onClose={() => setImporting(null)}
@@ -338,6 +427,9 @@ function MachineRow({
   onAlias,
   onInstallAgent,
   onNameSshEntry,
+  onRestart,
+  onRemove,
+  onProcesses,
   Latency,
 }: {
   machine: LanMachine;
@@ -351,6 +443,9 @@ function MachineRow({
   onInstallAgent: (agent: LanAgentRuntime) => void;
   /** Absent for this machine, and where no entry can be named. */
   onNameSshEntry?: () => void;
+  onRestart?: () => void;
+  onRemove?: () => void;
+  onProcesses?: () => void;
   Latency?: ComponentType<{ machine: LanMachine }>;
 }) {
   const { t } = useTranslation();
@@ -358,6 +453,10 @@ function MachineRow({
   const reachable = takesRequests(machine);
   // An entry is named on this computer, whether the machine answers or not.
   const nameSshEntry = machine.self ? undefined : onNameSshEntry;
+  // Only a service something starts again can be asked to; manual ones are started by hand.
+  const restart = reachable && machine.build?.update !== 'manual' ? onRestart : undefined;
+  // A machine that is gone, not one that answers or this one.
+  const remove = !machine.self && machine.online === false ? onRemove : undefined;
   const runtimes = reachable ? machine.agents.filter(needsRuntime) : [];
   const hub = machine.hub ?? null;
   const Glyph =
@@ -493,6 +592,21 @@ function MachineRow({
                 })}
               </Menu.Item>
             ))}
+            {reachable && onProcesses ? (
+              <Menu.Item icon={<Activity />} onClick={onProcesses}>
+                {t('settings.lan.machines.processes.menu')}
+              </Menu.Item>
+            ) : null}
+            {restart ? (
+              <Menu.Item icon={<RotateCcw />} disabled={busy} onClick={restart}>
+                {t('settings.lan.machines.restart.menu')}
+              </Menu.Item>
+            ) : null}
+            {remove ? (
+              <Menu.Item icon={<Trash2 />} disabled={busy} onClick={remove}>
+                {t('settings.lan.machines.remove.menu')}
+              </Menu.Item>
+            ) : null}
           </Menu.Content>
         </Menu.Root>
       </div>

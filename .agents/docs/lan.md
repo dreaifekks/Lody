@@ -166,6 +166,20 @@ directly. `lody-lan lan forward <machine> [<local>:][<host>:]<port>...`
 listens on `127.0.0.1` (`--bind` for another address) and carries every
 connection there until it ends.
 
+The Browser panel of a desktop previews the dev server of a session another
+member runs the same way. There is no hosted preview on the local platform, so
+the desktop asks the agent service of its own machine for the endpoint, as for
+a session of its own: that service listens on the same port of its loopback
+interface, or, when this machine already uses it, on a free one picked at
+random between 10000 and 19999 (`apps/cli/src/preview/lan-member-ports.ts`).
+It carries each connection to the member through its tunnel socket and proxies
+that port as one of this machine. Keeping the number keeps working the
+addresses a page spells out itself; a random port does not. The endpoint names
+the member's port either way, which the Browser panel matches against what it
+asked for. Sessions previewing the same port of the
+same member share one carrying port, which closes once none previews through
+it.
+
 ## Files of a message
 
 An image or a file a message carries has to be on the machine that runs the
@@ -362,8 +376,11 @@ the hub, measured while its sidebar card is open or the LAN settings show it,
 every fifteen seconds; one that does not answer within six seconds says so.
 
 Listing asks nothing of a machine. What a member asks of one is a
-project-control request, and four of them cross machines: `lan/update-machine`,
-`lan/install-agent`, `hosted-config/preview` and `hosted-config/import`.
+project-control request, and these cross machines: `lan/update-machine`,
+`lan/restart-machine`, `lan/install-agent`, `lan/usage`,
+`hosted-config/preview` and `hosted-config/import`. A restart is refused by a
+service nothing would start again (update channel `manual`), and answered
+before the service exits.
 
 ```text
  window ─ lan/forward ─▶ agent service ─ TLS-PSK ─────────────────▶ agent service
@@ -392,6 +409,11 @@ The runtime of an agent is pinned by the build of the agent service. A machine
 reports the version it has and the one its build runs agents with, and
 `lan/install-agent` installs the pinned one; a later runtime arrives with a
 later build.
+
+Settings > LAN offers a machine's agent processes, which the machine monitor
+of the LAN's workspace shows and a member may end, and removes a machine that
+is gone for good from the LAN the window shows. Neither is a request between
+members: the monitor and the machine's record are in the workspace.
 
 ## Updates
 
@@ -504,6 +526,11 @@ of the platform nor the one of the framework accepts, so every fork build
 The update service of the publisher stays off on the local platform: a fork
 build is never replaced by an upstream release.
 
+A fork publishes no `lody-code-review-viewer` package, so the CLI build copies
+the viewer it pinned beside its bundle (`code-review-viewer.html`), and
+`lody review` reads it from there before it asks a CDN; the hash it was built
+with still decides.
+
 A fork that stores a code-signing certificate as the secrets
 `LAN_MAC_SIGNING_P12` and `LAN_MAC_SIGNING_PASSWORD` signs its macOS builds
 with it: macOS keys the permissions a user grants to the identity an
@@ -593,8 +620,9 @@ that wait for a second one, such as a cancellation, or that report progress
 ## Sessions agents start on other machines
 
 An agent asks for a session on another machine of its LAN through Lody's
-tools (`lody_session_create`, `lody_session_chat`, `lody_session_status`,
-`lody_session_cancel`) as the desktop does. The agent service of its own
+tools (`lody_session_create`, `lody_session_chat`, `lody_session_status_many`,
+`lody_session_cancel`) as the desktop does. A session in a local project of
+that machine reads the project's git state from it over the LAN. The agent service of its own
 machine writes the session's document and dispatch pointer into the LAN's
 workspace, which the other machine reads through the hub, and asks that
 machine over the hub's request streams to take the turn now rather than
@@ -677,8 +705,11 @@ Three places ask the host:
   remote still needs a key of the machine. A session keeps the token it
   started with.
 
-There is no personal identity, no per-repository scoping and no webhook: the
-panel refreshes when opened and by polling.
+There is no repository registry either: the repositories an agent's
+discovery tools and the desktop's pickers offer are the ones the credential
+reads (GitHub's `/user/repos`), with the machine's `gh` login before the
+host's token. There is no personal identity, no per-repository scoping and no
+webhook: the panel refreshes when opened and by polling.
 
 ## Credentials on every member
 
@@ -696,9 +727,12 @@ and a hub that has none of them yet:
 - The GitHub token port and the desktop's pull request panel use the copy
   while the hub cannot be reached. A hub that answers it keeps no token is
   believed; its copy follows within ten minutes.
-- A member whose report cannot reach the hub sends the alert itself, from its
-  copy of the key and the phones (`lan-push-fallback.ts`): finished, failed,
-  waiting for approval, scheduled. Live Activities stay with the hub, which alone
+- A member whose report the hub does not take sends the alert itself, from
+  its copy of the key and the phones (`lan-push-fallback.ts`): finished,
+  failed, waiting for approval, scheduled. That includes a hub that cannot be
+  reached, one that hands over (503) or moved (410), and a turn that ends
+  while the member's own connection to the hub is down; only a hub without
+  push (404) is left at that. Live Activities stay with the hub, which alone
   merges what every member reports. The hub gives every alert a collapse id, so
   an alert sent by both shows once.
 - A hub started from a standby copy takes what that copy lacks from the
@@ -749,11 +783,13 @@ does not.
   leaves the LAN without a hub until someone takes it over by hand. Phones registered for push keep the address they were given; the iOS
   client has to be pointed to the new host by hand. Alerts still reach them,
   as the new hub and every member send from the copied registrations.
-- Settings > Machines and the machine picker of Prompt Shortcuts depend on the
-  `remoteMachines` capability, which a LAN does not grant. Settings > LAN lists
-  the machines instead.
+- Settings > Machines depends on the `remoteMachines` capability, which a LAN
+  does not grant. Settings > LAN lists the machines instead, with their
+  processes, restart and removal; Prompt Shortcuts pick a machine wherever
+  more than one is listed.
 - A desktop application is updated from its own window, and an agent service
-  that nothing starts again by whoever started it; no member can ask either.
+  that nothing starts again by whoever started it; no member can ask either to
+  update, nor the latter to restart.
 - A request between members that cannot connect to each other waits in the hub
   for up to two minutes. Anyone who holds the credential can read it there, as
   they can read everything else.

@@ -159,6 +159,7 @@ export const LAN_MEMBER_CONTROL_TYPES = [
   'hosted-config/preview',
   'hosted-config/import',
   'lan/usage',
+  'lan/restart-machine',
 ] as const;
 export type LanMemberControlType = (typeof LAN_MEMBER_CONTROL_TYPES)[number];
 
@@ -177,6 +178,13 @@ export const LanMachineUpdateResultSchema = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('current'), version: z.string().min(1) }).strict(),
 ]);
 export type LanMachineUpdateResult = z.infer<typeof LanMachineUpdateResultSchema>;
+
+/**
+ * The machine starts its agent service again once it has answered, which
+ * interrupts the agents running there; it is back once it registers again.
+ */
+export const LanMachineRestartResultSchema = z.object({ outcome: z.literal('started') }).strict();
+export type LanMachineRestartResult = z.infer<typeof LanMachineRestartResultSchema>;
 
 export const LanAgentInstallResultSchema = z
   .object({ agentType: z.string().min(1), outcome: z.enum(['started', 'current']) })

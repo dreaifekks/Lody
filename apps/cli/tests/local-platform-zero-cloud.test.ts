@@ -15,6 +15,7 @@ import {
   isLoroRepoDocDeleted,
   writeWorkspaceAgentRoleToFlock,
   type AgentRoleId,
+  type LocalProjectId,
   type MachineId,
   type SessionId,
   type SessionMeta,
@@ -42,6 +43,7 @@ import {
   loadOrCreateLocalIdentity,
 } from '../src/lib/cli-platform';
 import { LoroDocumentManager } from '../src/lib/loro/doc';
+import { upsertMachineLocalProject } from '../src/lib/local-project-meta';
 import { makeLocalWorkspaceCatalog } from '../src/lib/local-workspace-catalog';
 import type { Logger } from '../src/utils/logger';
 
@@ -315,6 +317,14 @@ describe('local platform zero-cloud integration', () => {
       await expect(call('lody_feedback', { feedback: 'not allowed' })).rejects.toThrow(
         'Unsupported daemon Session tool'
       );
+      // An MCP server the user asked for lands in the workspace catalog on the daemon's replica.
+      const configured = await call('lody_mcp_configure', {
+        name: 'Docs',
+        connection: { transport: 'stdio', command: 'docs-mcp' },
+      });
+      expect(configured.isError, JSON.stringify(configured)).not.toBe(true);
+      const mcpServers = await call('lody_mcp_list', {});
+      expect(mcpServers.content[0]?.text).toContain('Docs');
       expect(cloudConnectionAttempts).toBe(0);
     } finally {
       await manager.cleanUp({ fast: true, preserveSessionStatus: true });
@@ -330,6 +340,8 @@ describe('local platform zero-cloud integration', () => {
     const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
     const dispatchedHere: SessionId[] = [];
     const askedPeer: Array<{ machineId: MachineId; method: string; sessionId: SessionId }> = [];
+    const gitStateAsked: Array<{ machineId: MachineId; localProjectId: string }> = [];
+    const cancelRequests: Array<{ sessionId: SessionId; turnId: string | undefined }> = [];
     let peerOnline: boolean | null = true;
     try {
       await manager.registerMachine(machineId, {
@@ -349,6 +361,12 @@ describe('local platform zero-cloud integration', () => {
         } as Parameters<typeof manager.repo.upsertDocMeta>[1]);
       }
       const peerConfigId = await manager.createAgentConfig('custom', 'claude', peerId, 'Synthetic');
+      await upsertMachineLocalProject(manager.repo, workspaceId, peerId, {
+        id: 'peer-project' as LocalProjectId,
+        name: 'Peer project',
+        rootPath: '/srv/peer-project',
+        createdAtMs: 1,
+      });
       const sessionId = await manager.createSession(machineId, 'custom', 'claude');
       const catalog = await manager.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
       writeWorkspaceAgentRoleToFlock(catalog.flock, {
@@ -382,7 +400,10 @@ describe('local platform zero-cloud integration', () => {
             inputConfig: { cliType: 'custom', agentType: 'claude' },
           }),
           readLiveStatus: async (id) => ({ sessionId: id, machineOnline: true, fresh: true }),
-          cancelSession: async () => ({ success: true }),
+          cancelSession: async (id, turnId) => {
+            cancelRequests.push({ sessionId: id, turnId });
+            return { success: true };
+          },
           dispatchSession: async (id) => {
             dispatchedHere.push(id);
           },
@@ -397,6 +418,31 @@ describe('local platform zero-cloud integration', () => {
                     sessionId: options.sessionId,
                   });
                   return null;
+                },
+                requestLocalProjectGitState: async (options: { localProjectId: string }) => {
+                  gitStateAsked.push({ machineId: target, localProjectId: options.localProjectId });
+                  return {
+                    type: 'local-project/git-state_response',
+                    machineId: target,
+                    workspaceId,
+                    localProjectId: options.localProjectId,
+                    success: true,
+                    state: {
+                      git: true,
+                      currentBranch: 'feature',
+                      defaultBranch: 'main',
+                      branches: ['main', 'feature'],
+                      githubRepoFullName: null,
+                      workingTree: {
+                        clean: true,
+                        staged: false,
+                        unstaged: false,
+                        untracked: false,
+                        conflicted: false,
+                      },
+                    },
+                    observedAtMs: 1,
+                  };
                 },
               } as unknown as Parameters<typeof fn>[0]),
           },
@@ -427,6 +473,46 @@ describe('local platform zero-cloud integration', () => {
       expect(target?.meta).toMatchObject({ machineId: peerId, openedBySessionId: sessionId });
       expect(typeof target?.meta.latestUserMsgId).toBe('string');
 
+      // A project of the other machine: its git state is read from that machine over the LAN.
+      const inProject = await call('lody_session_create', {
+        operationId: 'peer-project-create',
+        machineId: peerId,
+        agentConfigId: peerConfigId,
+        prompt: 'Work in the project.',
+        workContext: { kind: 'local', projectId: 'peer-project', worktree: true },
+      });
+      expect(inProject.isError, JSON.stringify(inProject)).not.toBe(true);
+      expect(gitStateAsked).toContainEqual({ machineId: peerId, localProjectId: 'peer-project' });
+      expect(gitStateAsked.every((ask) => ask.machineId === peerId)).toBe(true);
+      expect(askedPeer).toHaveLength(2);
+      const projectSession = await manager.repo.getDocMeta(
+        getSessionRoomId(askedPeer[1]!.sessionId)
+      );
+      expect(projectSession?.meta).toMatchObject({
+        machineId: peerId,
+        project: {
+          kind: 'local',
+          localProjectId: 'peer-project',
+          branch: 'feature',
+          useWorktree: true,
+        },
+      });
+
+      // A turn the other machine runs is cancelled through this machine's agent service.
+      const peerSessionId = askedPeer[0]!.sessionId;
+      const cancelled = await call('lody_session_cancel', { sessionId: peerSessionId });
+      expect(cancelled.isError, JSON.stringify(cancelled)).not.toBe(true);
+      expect(cancelRequests).toEqual([{ sessionId: peerSessionId, turnId: undefined }]);
+      // Cancelling the Operation names the target's assistant turn, the id a machine matches.
+      const operation = await call('lody_operation_cancel', { operationId: 'peer-create' });
+      expect(operation.isError, JSON.stringify(operation)).not.toBe(true);
+      const peerMeta = await manager.repo.getDocMeta(getSessionRoomId(peerSessionId));
+      const peerUserTurnId = (peerMeta?.meta as SessionMeta | undefined)?.latestUserMsgId;
+      expect(cancelRequests[1]).toEqual({
+        sessionId: peerSessionId,
+        turnId: `assistant:${peerUserTurnId}`,
+      });
+
       peerOnline = false;
       const offline = await call('lody_session_create', {
         operationId: 'peer-create-offline',
@@ -434,7 +520,7 @@ describe('local platform zero-cloud integration', () => {
         prompt: 'Check it again.',
       });
       expect(JSON.stringify(offline)).toContain('offline');
-      expect(askedPeer).toHaveLength(1);
+      expect(askedPeer).toHaveLength(2);
 
       expect(
         (
@@ -709,6 +795,13 @@ describe('local platform zero-cloud integration', () => {
       expect(await run({ command: 'github-list' })).toMatchObject({
         repositories: [{ fullName: 'acme/tool', private: true }],
       });
+      // Agents find the same repositories; the local platform keeps no registry of them.
+      const githubProjects = await runWithSessionCommandEnvironment(environment, () =>
+        executeDaemonTerminalTool({ machineId, workspaceId }, 'lody_project_list', {
+          kind: 'github',
+        })
+      );
+      expect(githubProjects.content[0]?.text).toContain('acme/tool');
       const repoSession = (await run({ command: 'create', prompt: 'Fix it.', repo: 'acme/tool' }))
         .sessionId as SessionId;
       expect((await meta(repoSession))?.project).toMatchObject({

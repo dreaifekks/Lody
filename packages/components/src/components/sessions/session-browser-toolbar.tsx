@@ -23,6 +23,8 @@ type SessionBrowserToolbarProps = {
   annotationAvailable: boolean;
   sharing: boolean;
   shareAvailable: boolean;
+  /** False where a preview cannot be shared at all; the button is then left out. */
+  shareSupported?: boolean;
   hasShareUrl: boolean;
   busy: boolean;
   onAddressChange: (address: string) => void;
@@ -76,6 +78,7 @@ export function SessionBrowserToolbar({
   annotationAvailable,
   sharing,
   shareAvailable,
+  shareSupported = true,
   hasShareUrl,
   busy,
   onAddressChange,
@@ -181,17 +184,23 @@ export function SessionBrowserToolbar({
         >
           <MessageCircle className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton
-          label={
-            hasShareUrl
-              ? t('sessions.browser.copyShareUrl', 'Copy share URL')
-              : t('sessions.browser.share', 'Share preview')
-          }
-          disabled={!shareAvailable || busy}
-          onClick={onShare}
-        >
-          {sharing ? <Spinner label={null} className="h-4 w-4" /> : <Share2 className="h-4 w-4" />}
-        </ToolbarButton>
+        {shareSupported ? (
+          <ToolbarButton
+            label={
+              hasShareUrl
+                ? t('sessions.browser.copyShareUrl', 'Copy share URL')
+                : t('sessions.browser.share', 'Share preview')
+            }
+            disabled={!shareAvailable || busy}
+            onClick={onShare}
+          >
+            {sharing ? (
+              <Spinner label={null} className="h-4 w-4" />
+            ) : (
+              <Share2 className="h-4 w-4" />
+            )}
+          </ToolbarButton>
+        ) : null}
         {hasShareUrl ? (
           <ToolbarButton
             label={t('sessions.browser.stopSharing', 'Stop sharing')}

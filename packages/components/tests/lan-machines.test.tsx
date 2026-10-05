@@ -419,6 +419,45 @@ describe('the machines of the LANs', () => {
     expect(toasts.error.at(-1)).toBe('server: the hub is away');
   });
 
+  it('starts the agent service of a machine again, and removes one that is gone', async () => {
+    const gone = machine({ machineId: 'old-box', online: false });
+    const byHand = machine({
+      machineId: 'laptop',
+      build: { version: RUNNING, update: 'manual', source },
+    });
+    await render(inventoryOf([desk, server, gone, byHand]), {
+      restartMachine: async (target) => {
+        calls.push(['restart', target.machineId]);
+        return { ok: true, result: { outcome: 'started' } };
+      },
+      removeMachine: async (target) => {
+        calls.push(['remove', target.machineId]);
+      },
+    });
+
+    await openMenuOf('server');
+    // A machine that answers stays.
+    expect(menuItem('Remove…')).toBeUndefined();
+    await click(menuItem('Restart agent service…'));
+    expect(text()).toContain('Restart the agent service of server?');
+    expect(calls).toEqual([]);
+    await click(buttonIn(document.body.querySelector('[role="alertdialog"]')!, 'Restart'));
+    expect(calls).toEqual([['restart', 'server']]);
+    expect(toasts.success).toEqual(['server is starting its agent service again.']);
+
+    // Nothing would start a service run by hand again.
+    await openMenuOf('laptop');
+    expect(menuItem('Restart agent service…')).toBeUndefined();
+
+    // One that is gone takes no request, and can be removed.
+    await openMenuOf('old-box');
+    expect(menuItem('Restart agent service…')).toBeUndefined();
+    await click(menuItem('Remove…'));
+    expect(text()).toContain('Remove old-box?');
+    await click(buttonIn(document.body.querySelector('[role="alertdialog"]')!, 'Remove'));
+    expect(calls.at(-1)).toEqual(['remove', 'old-box']);
+  });
+
   it('installs the runtime of an agent that is behind', async () => {
     await render(inventoryOf([desk, server]));
 

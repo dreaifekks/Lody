@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
+import { usePlatformCapability } from '@lody/platform/react';
 import {
   BrowserAddressError,
   formatPreviewTargetUrl,
@@ -22,6 +23,7 @@ import {
 import { activeWorkspaceRuntimeAtom, userAtom } from '@/atoms';
 import { getMachineMetaByIdAtomFamily } from '@/atoms/machines';
 import { machineOnlineStatusAtomFamily } from '@/atoms/presence';
+import { localMachineIdAtom } from '@/atoms/local-probe';
 import { toast } from '@/lib/toast';
 import { writeTextToClipboard } from '@/lib/clipboard';
 import { isElectronRenderer } from '@/lib/electron';
@@ -72,6 +74,18 @@ const approvalFor = (
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+/**
+ * Whether this desktop serves the preview of a session: one its own machine
+ * runs, or, where no hosted preview exists, one another member of its LAN
+ * runs, whose port its agent service carries over the LAN.
+ */
+function servesPreviewHere(
+  plane: 'local' | 'cloud' | null,
+  remotePreviewAvailable: boolean
+): boolean {
+  return isElectronRenderer() && (plane === 'local' || (plane !== null && !remotePreviewAvailable));
+}
+
 export function SessionBrowserPanel(props: SessionBrowserPanelProps) {
   return <SessionBrowserPanelController key={props.session.id} {...props} />;
 }
@@ -88,6 +102,8 @@ function SessionBrowserPanelController({
   onToggleVisualAnnotationInChat,
 }: SessionBrowserPanelProps) {
   const { t } = useTranslation();
+  const remotePreviewAvailable = usePlatformCapability('remotePreview');
+  const localMachineId = useAtomValue(localMachineIdAtom);
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const user = useAtomValue(userAtom);
   const sessionMachine = useAtomValue(getMachineMetaByIdAtomFamily(session.machineId));
@@ -150,7 +166,13 @@ function SessionBrowserPanelController({
   const restoreAttemptKeyRef = useRef<string | null>(null);
   const handledCandidateNavigationRequestRef = useRef(0);
 
-  const isLocalDesktopSession = isElectronRenderer() && machinePlane === 'local';
+  const isLocalDesktopSession = servesPreviewHere(machinePlane, remotePreviewAvailable);
+  // Where the endpoint is served: the session's machine, or this desktop's for
+  // a session another member of a LAN runs, whose port this machine carries.
+  const endpointMachineId =
+    machinePlane === 'local' || remotePreviewAvailable || !localMachineId
+      ? session.machineId
+      : localMachineId;
   const foregroundEndpointRef = useRef<string | undefined>(undefined);
   foregroundEndpointRef.current =
     !isLocalDesktopSession && currentAddress?.engine === 'managed-preview' && viewerUrl
@@ -269,7 +291,7 @@ function SessionBrowserPanelController({
       return;
     }
     const response = await runtime.requestSessionPreviewEndpointRelease(
-      session.machineId,
+      endpointMachineId,
       session.id,
       endpoint.endpointId
     );
@@ -280,7 +302,7 @@ function SessionBrowserPanelController({
         response,
       });
     }
-  }, [runtime, session.id, session.machineId]);
+  }, [runtime, session.id, endpointMachineId]);
 
   // A cached frame keeps its viewer URL — and the capability token in it — alive
   // in this renderer. Once an address is open without a managed viewer URL, that
@@ -532,7 +554,11 @@ function SessionBrowserPanelController({
       }
       if (sequence !== navigationSequenceRef.current) return;
       setMachinePlane(resolvedPlane);
-      const useLocalEndpoint = isElectronRenderer() && resolvedPlane === 'local';
+      const useLocalEndpoint = servesPreviewHere(resolvedPlane, remotePreviewAvailable);
+      const hostMachineId =
+        resolvedPlane === 'local' || remotePreviewAvailable || !localMachineId
+          ? session.machineId
+          : localMachineId;
       const connection = effectivePreview.connection;
       if (
         !useLocalEndpoint &&
@@ -578,7 +604,7 @@ function SessionBrowserPanelController({
 
         const previousEndpoint = localEndpointRef.current;
         const response = await runtime.requestSessionPreviewEndpointAcquire(
-          session.machineId,
+          hostMachineId,
           session.id,
           user.id,
           managedAddress.target
@@ -586,7 +612,7 @@ function SessionBrowserPanelController({
         if (sequence !== navigationSequenceRef.current) {
           if (response?.success && response.endpoint) {
             void runtime.requestSessionPreviewEndpointRelease(
-              session.machineId,
+              hostMachineId,
               session.id,
               response.endpoint.endpointId
             );
@@ -616,7 +642,7 @@ function SessionBrowserPanelController({
             )
           );
           void runtime.requestSessionPreviewEndpointRelease(
-            session.machineId,
+            hostMachineId,
             session.id,
             response.endpoint.endpointId
           );
@@ -626,7 +652,7 @@ function SessionBrowserPanelController({
         setLocalEndpoint(response.endpoint);
         if (previousEndpoint && previousEndpoint.endpointId !== response.endpoint.endpointId) {
           void runtime.requestSessionPreviewEndpointRelease(
-            session.machineId,
+            hostMachineId,
             session.id,
             previousEndpoint.endpointId
           );
@@ -650,7 +676,9 @@ function SessionBrowserPanelController({
       commitOpenedAddress,
       createRemotePreview,
       effectivePreview.connection,
+      localMachineId,
       releaseLocalEndpoint,
+      remotePreviewAvailable,
       resolveMachinePlane,
       runtime,
       session.id,
@@ -1112,6 +1140,8 @@ function SessionBrowserPanelController({
         annotationAvailable: annotationAvailable,
         sharing: sharing,
         shareAvailable: currentAddress !== null,
+        // A shared preview is a public tunnel the hosted service authorizes.
+        shareSupported: remotePreviewAvailable,
         hasShareUrl: currentAddress?.engine === 'managed-preview' && !!activeShareUrl,
         busy: navigationBusy,
         onAddressChange: setAddress,

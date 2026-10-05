@@ -7,7 +7,7 @@ import {
   type CommonCommandOptions,
 } from '@/lib/command-runtime';
 import { getCliPlatformKind } from '@/lib/cli-platform';
-import { submitAgentFeedback } from '@/lib/feedback';
+import { LOCAL_FEEDBACK_UNAVAILABLE, submitAgentFeedback } from '@/lib/feedback';
 
 type FeedbackCommandOptions = Pick<CommonCommandOptions, 'json' | 'debug'>;
 
@@ -51,10 +51,7 @@ export const feedbackCommand = new Command('feedback')
   .option('--debug', 'Enable debug output')
   .action(async (feedbackParts: string[], options: FeedbackOptions) => {
     await runOneShotCommand('feedback', options, async () => {
-      if (getCliPlatformKind() === 'local')
-        throw new Error(
-          'Feedback goes to the hosted Lody, which this build never contacts. Open an issue on the repository it was built from instead.'
-        );
+      if (getCliPlatformKind() === 'local') throw new Error(LOCAL_FEEDBACK_UNAVAILABLE);
       const auth = getAuthContextOrThrow('feedback');
       const feedback = resolveFeedbackText({
         feedbackParts,

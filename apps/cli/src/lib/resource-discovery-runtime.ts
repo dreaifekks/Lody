@@ -16,6 +16,7 @@ import { readSessionMachineAccess, type DelegatedSessionRequester } from '@/comm
 import { listMergedAgentConfigs } from './agent-config-machine-flock';
 import { readMachineLocalProjects } from './local-project-meta';
 import { listWorkspaceGitHubRepositoriesForCliToken } from './workspace';
+import { listLocalGitHubRepositories } from './lan/lan-github-repos';
 import { listWorkspaceMcpCatalog } from './workspace-mcp-store';
 import { ResourceDiscovery } from './resource-discovery';
 import { getCliPlatformKind } from './cli-platform';
@@ -85,7 +86,8 @@ export async function createResourceDiscovery(args: {
       return listWorkspaceMcpCatalog(manager.repo, workspaceId);
     },
     repositories: async () => {
-      if (getCliPlatformKind() === 'local') return [];
+      // No registry here: the repositories are the ones this machine's GitHub credential reads.
+      if (getCliPlatformKind() === 'local') return await listLocalGitHubRepositories();
       if (args.offline)
         throw new Error(
           'GitHub repository discovery requires an online query; use --kind local with --offline.'

@@ -6,6 +6,7 @@ import type {
 import type {
   LanAgentInstallResult,
   LanMachineColor,
+  LanMachineRestartResult,
   LanMachineUpdateResult,
   LanMachines,
   LanUsageReport,
@@ -1028,6 +1029,11 @@ export type LanMemberControlRequest =
       machineId: MachineId;
       workspaceId: WorkspaceId;
       sinceMs?: number;
+    }
+  | {
+      type: 'lan/restart-machine';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
     };
 
 export type LocalProjectControlRequest =
@@ -1255,7 +1261,8 @@ type LanMemberControlOkResponse =
   | LocalProjectControlOkResponse<'hosted-config/import', HostedConfigImportResult>
   | LocalProjectControlOkResponse<'lan/update-machine', LanMachineUpdateResult>
   | LocalProjectControlOkResponse<'lan/install-agent', LanAgentInstallResult>
-  | LocalProjectControlOkResponse<'lan/usage', LanUsageReport>;
+  | LocalProjectControlOkResponse<'lan/usage', LanUsageReport>
+  | LocalProjectControlOkResponse<'lan/restart-machine', LanMachineRestartResult>;
 
 /** What a member answers, which is also what a forwarded request brings back. */
 export type LanMemberControlResponse =

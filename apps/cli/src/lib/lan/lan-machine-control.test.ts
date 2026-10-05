@@ -199,6 +199,43 @@ describe('a machine that a member asks to update', () => {
   });
 });
 
+describe('a machine that a member asks to start again', () => {
+  it('answers first, then starts its agent service again once', async () => {
+    const restarted = gate();
+    const { control, events } = createControl({
+      build: build({ update: 'desktop' }),
+      restart: (reason) => {
+        events.push(`restart:${reason}`);
+        restarted.open();
+      },
+    });
+
+    expect(control.restartService()).toEqual({ outcome: 'started' });
+    expect(() => control.restartService()).toThrow(LanControlRefused);
+    await restarted.passed;
+    expect(events).toEqual(['restart:a member of the LAN asked']);
+  });
+
+  it('refuses where nothing would start it again, or while it updates', async () => {
+    const manual = createControl({ build: build({ update: 'manual' }) }).control;
+    expect((await refusal(Promise.resolve().then(() => manual.restartService()))).reason).toBe(
+      'manual'
+    );
+
+    const installing = gate();
+    const updating = createControl({
+      applyUpdate: async () => {
+        await installing.passed;
+      },
+    }).control;
+    await updating.startUpdate();
+    expect((await refusal(Promise.resolve().then(() => updating.restartService()))).reason).toBe(
+      'busy'
+    );
+    installing.open();
+  });
+});
+
 describe('the newest build a machine knows of', () => {
   it('reads the release once for a while, and again soon after it could not', async () => {
     let reads = 0;

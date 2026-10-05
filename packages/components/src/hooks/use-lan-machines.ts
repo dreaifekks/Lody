@@ -7,6 +7,7 @@ import type {
   LanAgentInstallResult,
   LanMachine,
   LanMachineColor,
+  LanMachineRestartResult,
   LanMachineUpdateResult,
   LanMachines,
   LanMemberControlRequest,
@@ -29,6 +30,8 @@ export type LanMachinesControl = {
   loading: boolean;
   refresh: () => Promise<void>;
   updateMachine: (machine: LanMachine) => Promise<LanMachineAnswer<LanMachineUpdateResult>>;
+  /** Starts the agent service of the machine again, which interrupts its agents. */
+  restartMachine: (machine: LanMachine) => Promise<LanMachineAnswer<LanMachineRestartResult>>;
   installAgent: (
     machine: LanMachine,
     agentType: string
@@ -212,6 +215,7 @@ export function useLanMachines(): LanMachinesControl {
     refresh,
     setAlias,
     updateMachine: useCallback((machine) => ask(machine, { type: 'lan/update-machine' }), [ask]),
+    restartMachine: useCallback((machine) => ask(machine, { type: 'lan/restart-machine' }), [ask]),
     installAgent: useCallback(
       (machine, agentType) => ask(machine, { type: 'lan/install-agent', agentType }),
       [ask]

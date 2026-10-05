@@ -47,6 +47,7 @@ export function createLanNotificationsPort(options: {
   const report = async (event: LanPushEvent): Promise<LanPushLiveActivityResult | null> => {
     const hub = options.resolveHub();
     if (!hub) return null;
+    let failure: string;
     try {
       const response = await request(`${hub.url}${LAN_PUSH_EVENTS_PATH}`, {
         method: 'POST',
@@ -55,26 +56,31 @@ export function createLanNotificationsPort(options: {
         redirect: 'error',
         signal: AbortSignal.timeout(REPORT_TIMEOUT_MS),
       });
-      if (!response.ok) {
-        options.logger.debug(`[lan-push] ${event.type} answered ${response.status}`);
+      if (response.ok) return (await response.json()) as LanPushLiveActivityResult;
+      // A hub without push keeps no key this machine could have copied.
+      if (response.status === 404) {
+        options.logger.debug(`[lan-push] ${event.type} answered 404`);
         return null;
       }
-      return (await response.json()) as LanPushLiveActivityResult;
+      // Any other answer, such as 503 while the hub hands over or 410 once it
+      // moved, means the hub did not send it.
+      failure = `answered ${response.status}`;
     } catch (error) {
-      // The hub cannot be reached, which is when this machine sends alerts itself.
-      const sent = await options.fallback?.deliver(hub, event).catch((fallbackError: unknown) => {
-        options.logger.debug(
-          `[lan-push] ${event.type} not sent from here either: ${formatErrorMessage(fallbackError)}`
-        );
-        return false;
-      });
-      options.logger.debug(
-        `[lan-push] ${event.type} not delivered to the hub: ${formatErrorMessage(error)}${
-          sent ? '; sent from this machine' : ''
-        }`
-      );
-      return null;
+      failure = formatErrorMessage(error);
     }
+    // The hub did not take it, which is when this machine sends alerts itself.
+    const sent = await options.fallback?.deliver(hub, event).catch((fallbackError: unknown) => {
+      options.logger.debug(
+        `[lan-push] ${event.type} not sent from here either: ${formatErrorMessage(fallbackError)}`
+      );
+      return false;
+    });
+    options.logger.debug(
+      `[lan-push] ${event.type} not delivered to the hub: ${failure}${
+        sent ? '; sent from this machine' : ''
+      }`
+    );
+    return null;
   };
 
   const send = async (event: Report) =>
@@ -86,6 +92,7 @@ export function createLanNotificationsPort(options: {
 
   return {
     alertGraceMs: LAN_ALERT_GRACE_MS,
+    deliversOffline: true,
     notifySessionCompleted: async (input) => {
       await send({
         type: 'session-completed',

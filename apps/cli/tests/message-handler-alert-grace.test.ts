@@ -23,12 +23,16 @@ const createSilentLogger = (): Logger => ({
 
 const sessionId = 's-1' as SessionId;
 
-function createHandler(alertGraceMs: number | undefined) {
+function createHandler(
+  alertGraceMs: number | undefined,
+  options: { deliversOffline?: boolean; connected?: boolean } = {}
+) {
   let meta: Record<string, unknown> = { title: 'Fix the build', lastMessageAt: 1_000 };
   const sessionDoc = { getMetaState: vi.fn(async () => meta) };
   const notifySessionCompleted = vi.fn(async () => {});
   const notifications: CloudNotificationsPort = {
     ...(alertGraceMs ? { alertGraceMs } : {}),
+    ...(options.deliversOffline ? { deliversOffline: true } : {}),
     notifySessionCompleted,
     notifyPermissionRequested: async () => {},
     recordPermissionRequested: async () => {},
@@ -39,7 +43,7 @@ function createHandler(alertGraceMs: number | undefined) {
     sessions: new Map<SessionId, unknown>(),
     repo: { watch: vi.fn(() => ({ unsubscribe: vi.fn() })) },
     getOrCreateSessionDoc: vi.fn(async () => sessionDoc),
-    isTransportConnected: vi.fn(() => true),
+    isTransportConnected: vi.fn(() => options.connected ?? true),
   };
   const sessionManager = {
     on: vi.fn(),
@@ -94,6 +98,18 @@ describe('MessageHandler held completion alerts', () => {
     readOnAnotherDevice(1_500);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(notifySessionCompleted).not.toHaveBeenCalled();
+  });
+
+  it('skips a completion while the plane is offline, unless the port reaches phones itself', async () => {
+    const hosted = createHandler(undefined, { connected: false });
+    await hosted.complete();
+    expect(hosted.notifySessionCompleted).not.toHaveBeenCalled();
+    // A LAN member alerts the phones from its own copy while its hub is away.
+    const lan = createHandler(undefined, { connected: false, deliversOffline: true });
+    await lan.complete();
+    expect(lan.notifySessionCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId, occurrenceId: 'turn-1' })
+    );
   });
 
   it('sends a held completion nobody read', async () => {
