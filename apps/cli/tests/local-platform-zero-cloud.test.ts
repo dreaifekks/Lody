@@ -748,6 +748,7 @@ describe('local platform zero-cloud integration', () => {
     const userId = 'local:auto-review';
     const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
     const dispatched: SessionId[] = [];
+    let reviewerTurnRunning = false;
     try {
       await manager.registerMachine(machineId, {
         id: machineId,
@@ -763,11 +764,17 @@ describe('local platform zero-cloud integration', () => {
         machineName: 'Desk',
         userId,
         host: {
-          readInvocation: (id) => ({
-            type: 'session/active-invocation-context',
-            sessionId: id,
-            active: false,
-          }),
+          readInvocation: (id) =>
+            reviewerTurnRunning
+              ? {
+                  type: 'session/active-invocation-context',
+                  active: true,
+                  sessionId: id,
+                  requesterUserId: userId,
+                  sourceTurnId: 'review-turn',
+                  inputConfig: { cliType: 'custom', agentType: 'claude' },
+                }
+              : { type: 'session/active-invocation-context', sessionId: id, active: false },
           readLiveStatus: async (id) => ({ sessionId: id, machineOnline: true, fresh: true }),
           cancelSession: async () => ({ success: true }),
           dispatchSession: async (id) => {
@@ -830,6 +837,24 @@ describe('local platform zero-cloud integration', () => {
           )
         )
       ).rejects.toThrow('identity mismatch');
+
+      // The reviewer reports through the daemon, which answers from the workspace's
+      // review runs instead of a hosted account; this one belongs to no run.
+      reviewerTurnRunning = true;
+      const submitted = await runWithSessionCommandEnvironment(environment, () =>
+        executeDaemonSessionTool(
+          {
+            machineId,
+            workspaceId,
+            sessionId: reviewer.sessionId as SessionId,
+            localControlSocketPath: undefined,
+            workdir: os.tmpdir(),
+          },
+          'lody_review_submit',
+          { verdict: 'approve' }
+        )
+      );
+      expect(submitted.content[0]?.text).toContain('REVIEW_RUN_NOT_FOUND');
       expect(cloudConnectionAttempts).toBe(0);
     } finally {
       await manager.cleanUp({ fast: true, preserveSessionStatus: true });

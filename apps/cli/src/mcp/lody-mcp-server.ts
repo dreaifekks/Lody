@@ -4417,7 +4417,9 @@ export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServe
     }
   );
 
-  server.registerTool(
+  // A Session tool like the others, so the local platform answers it on the
+  // daemon's replica instead of a hosted account.
+  registerSessionTool(
     REVIEW_SUBMIT_TOOL_NAME,
     {
       title: 'Submit a code review',
