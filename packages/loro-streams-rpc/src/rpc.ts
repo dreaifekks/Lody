@@ -50,6 +50,8 @@ import type {
   MachineAcpAuthenticationProgressMessage,
   MachineAcpCapabilitiesRefreshResponse,
   MachinePiExtensionsResponse,
+  MachineVoiceRequest,
+  MachineVoiceResponse,
   RpcSecretEnvelope,
   RpcSecretPublicKey,
   PreviewTarget,
@@ -104,6 +106,8 @@ import {
   MachineAcpAuthenticationProgressMessageSchema,
   MachineAcpCapabilitiesRefreshResponseSchema,
   MachinePiExtensionsResponseSchema,
+  MachineVoiceRequestSchema,
+  MachineVoiceResponseSchema,
   RpcSecretEnvelopeSchema,
   PreviewTargetSchema,
   MachineBugReportResponseSchema,
@@ -202,6 +206,7 @@ export const LoroStreamsRpcMethodSchema = z.enum([
   'machine/acp-binary-status',
   'machine/acp-binary-install',
   'machine/pi-extensions',
+  'machine/voice',
   'machine/bug-report',
   'code-collab/open-text',
   'code-collab/refresh-text',
@@ -230,6 +235,7 @@ export const LoroStreamsRpcMethodSchema = z.enum([
   'session/preview-status',
   'local-project/git-state',
   'local-project/control',
+  'machine/voice',
 ]);
 
 export type LoroStreamsRpcMethod = z.infer<typeof LoroStreamsRpcMethodSchema>;
@@ -380,6 +386,11 @@ export const LoroMachinePiExtensionsRpcRequestSchema = BaseRpcRequestSchema.exte
       configId: AgentConfigIdSchema.optional(),
     })
     .strict(),
+}).strict();
+
+export const LoroMachineVoiceRpcRequestSchema = BaseRpcRequestSchema.extend({
+  method: z.literal('machine/voice'),
+  params: MachineVoiceRequestSchema,
 }).strict();
 
 export const LoroMachineBugReportRpcRequestSchema = BaseRpcRequestSchema.extend({
@@ -651,6 +662,7 @@ export const LoroStreamsRpcRequestSchema = z.discriminatedUnion('method', [
   LoroMachineAcpBinaryStatusRpcRequestSchema,
   LoroMachineAcpBinaryInstallRpcRequestSchema,
   LoroMachinePiExtensionsRpcRequestSchema,
+  LoroMachineVoiceRpcRequestSchema,
   LoroMachineBugReportRpcRequestSchema,
   LoroCodeCollabV2OpenTextRpcRequestSchema,
   LoroCodeCollabV2RefreshTextRpcRequestSchema,
@@ -1511,6 +1523,7 @@ export type LoroMachineRpcResult =
   | MachineAcpBinaryInstallResponse
   | MachineAcpBinaryProgressMessage
   | MachinePiExtensionsResponse
+  | MachineVoiceResponse
   | MachineBugReportResponse
   | SessionCancelResponse
   | LoroSessionLiveStatusRpcResponse
@@ -1653,7 +1666,7 @@ const toLegacyRpcErrorResponse = (
     };
   }
 
-  if (method === 'machine/pi-extensions') {
+  if (method === 'machine/pi-extensions' || method === 'machine/voice') {
     return { success: false, error: error.message };
   }
 
@@ -1917,6 +1930,10 @@ const parseRpcSuccessResult = async (
   if (response.method === 'machine/pi-extensions') {
     const parsed = MachinePiExtensionsResponseSchema.safeParse(response.result);
     return parsed.success ? (parsed.data as MachinePiExtensionsResponse) : null;
+  }
+  if (response.method === 'machine/voice') {
+    const parsed = MachineVoiceResponseSchema.safeParse(response.result);
+    return parsed.success ? parsed.data : null;
   }
   if (response.method === 'machine/bug-report') {
     const parsed = MachineBugReportResponseSchema.safeParse(response.result);
@@ -2814,6 +2831,17 @@ export class LoroStreamsMachineRpcClient {
     })) as MachinePiExtensionsResponse | null;
   }
 
+  async requestMachineVoice(options: {
+    request: MachineVoiceRequest;
+    timeoutMs: number;
+  }): Promise<MachineVoiceResponse | null> {
+    return (await this.sendRequest({
+      method: 'machine/voice',
+      timeoutMs: options.timeoutMs,
+      params: options.request,
+    })) as MachineVoiceResponse | null;
+  }
+
   async requestMachineBugReport(options: {
     description: string;
     reporterUserId: string;
@@ -3394,6 +3422,11 @@ export class LoroStreamsMachineRpcClient {
           };
         }
       | {
+          method: 'machine/voice';
+          timeoutMs: number;
+          params: MachineVoiceRequest;
+        }
+      | {
           method: 'machine/bug-report';
           timeoutMs: number;
           params: {
@@ -3777,6 +3810,9 @@ export class LoroStreamsMachineRpcClient {
           request = { ...envelope, method: args.method, params: args.params };
           break;
         case 'machine/pi-extensions':
+          request = { ...envelope, method: args.method, params: args.params };
+          break;
+        case 'machine/voice':
           request = { ...envelope, method: args.method, params: args.params };
           break;
         case 'machine/bug-report':

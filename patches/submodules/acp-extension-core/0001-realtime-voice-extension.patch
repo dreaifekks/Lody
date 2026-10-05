@@ -1,0 +1,137 @@
+diff --git a/src/capabilities.ts b/src/capabilities.ts
+index 8e52be4..91e1b56 100644
+--- a/src/capabilities.ts
++++ b/src/capabilities.ts
+@@ -55,6 +55,11 @@ export type LodyRateLimitsCapability = LodyVersionOneCapability & {
+   query?: true;
+ };
+ 
++/** Experimental realtime voice, see `voice.ts`. */
++export type LodyVoiceCapability = LodyVersionOneCapability & {
++  modes: readonly ('conversation' | 'dictation')[];
++};
++
+ export type LodyExtensionCapabilities = {
+   subagentEvents?: LodyVersionOneCapability;
+   /** Owns title generation; pushes tagged session_info_update titles without a client request. */
+@@ -69,4 +74,5 @@ export type LodyExtensionCapabilities = {
+   compaction?: LodyVersionOneCapability;
+   sessionHistory?: LodyVersionOneCapability;
+   worktreeProject?: LodyVersionOneCapability;
++  voice?: LodyVoiceCapability;
+ };
+diff --git a/src/index.ts b/src/index.ts
+index 5fdb070..2e7d453 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -4,6 +4,7 @@ export * from './methods.js';
+ export * from './rate-limits.js';
+ export * from './session.js';
+ export * from './usage.js';
++export * from './voice.js';
+ export * from './plan-mode.js';
+ export * from './subagent-events.js';
+ export * from './subagent-emitter.js';
+diff --git a/src/methods.ts b/src/methods.ts
+index c8ca0cd..da988ec 100644
+--- a/src/methods.ts
++++ b/src/methods.ts
+@@ -12,6 +12,10 @@ export const LODY_EXTENSION_METHODS = {
+   subagentsList: '_lody/subagents/list',
+   subagentsCancel: '_lody/subagents/cancel',
+   subagentsOutput: '_lody/subagents/output',
++  voiceStart: '_lody/voice/start',
++  voiceAppend: '_lody/voice/append',
++  voiceStop: '_lody/voice/stop',
++  voiceEvent: '_lody/voice/event',
+ } as const;
+ 
+ export type LodyExtensionMethod =
+@@ -46,6 +50,18 @@ export type LodyExtensionRequestMap<TPrompt = unknown> = {
+     params: LodySubagentOutputRequest;
+     result: LodySubagentOutputResponse;
+   };
++  [LODY_EXTENSION_METHODS.voiceStart]: {
++    params: LodyVoiceStartRequest;
++    result: LodyVoiceStartResponse;
++  };
++  [LODY_EXTENSION_METHODS.voiceAppend]: {
++    params: LodyVoiceAppendRequest;
++    result: Record<string, never>;
++  };
++  [LODY_EXTENSION_METHODS.voiceStop]: {
++    params: LodyVoiceStopRequest;
++    result: Record<string, never>;
++  };
+ };
+ 
+ export type LodyExtensionNotificationMap = {
+@@ -53,6 +69,7 @@ export type LodyExtensionNotificationMap = {
+   [LODY_EXTENSION_METHODS.sessionUsageUpdate]: SessionUsageUpdate;
+   [LODY_EXTENSION_METHODS.rateLimitsUpdate]: RateLimitsUpdate;
+   [LODY_EXTENSION_METHODS.sessionSteerApplied]: LodySteerApplied;
++  [LODY_EXTENSION_METHODS.voiceEvent]: LodyVoiceEventNotification;
+ };
+ 
+ export type LodyExtensionRequestMethod = keyof LodyExtensionRequestMap;
+@@ -91,3 +108,10 @@ import type {
+   LodySubagentsListResponse,
+ } from './session.js';
+ import type { SessionUsageUpdate } from './usage.js';
++import type {
++  LodyVoiceAppendRequest,
++  LodyVoiceEventNotification,
++  LodyVoiceStartRequest,
++  LodyVoiceStartResponse,
++  LodyVoiceStopRequest,
++} from './voice.js';
+diff --git a/src/voice.ts b/src/voice.ts
+new file mode 100644
+index 0000000..81bd9fa
+--- /dev/null
++++ b/src/voice.ts
+@@ -0,0 +1,44 @@
++/**
++ * Experimental realtime voice, hosted by an agent process without an ACP
++ * session. The client owns the microphone and the WebRTC peer; the agent only
++ * negotiates the call and reports what was heard. A spoken request never
++ * starts work inside the agent: it comes back as a `request` event, the client
++ * sends it through its own prompt path, and returns the result with
++ * `_lody/voice/append` so the voice can speak it.
++ */
++export type LodyVoiceMode = 'conversation' | 'dictation';
++
++export type LodyVoiceStartRequest = {
++  mode: LodyVoiceMode;
++  /** SDP offer of a peer with one audio track and an `oai-events` data channel. */
++  sdp: string;
++  /** Extra instructions for the voice, e.g. the language to answer in. */
++  instructions?: string | undefined;
++};
++
++export type LodyVoiceStartResponse = {
++  voiceSessionId: string;
++  /** SDP answer for the client's peer. */
++  sdp: string;
++};
++
++export type LodyVoiceAppendRequest = {
++  voiceSessionId: string;
++  /** Context the voice should relay, typically the result of a request. */
++  text: string;
++};
++
++export type LodyVoiceStopRequest = {
++  voiceSessionId: string;
++};
++
++export type LodyVoiceEvent =
++  | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
++  | { type: 'request'; requestId: string; text: string }
++  | { type: 'closed'; reason: string | null }
++  | { type: 'error'; message: string };
++
++export type LodyVoiceEventNotification = {
++  voiceSessionId: string;
++  event: LodyVoiceEvent;
++};

@@ -16,6 +16,7 @@ import {
   getServerNow,
   machineSupportsLocalFileResourcesProtocol,
   machineSupportsPiExtensions,
+  machineSupportsRealtimeVoice,
   machineSupportsSubagentCancellation,
   machineSupportsIosSimulatorProtocol,
   machineSupportsPreviewControlProtocol,
@@ -54,6 +55,8 @@ import {
   type MachineBugReportResponse,
   type MachineId,
   type MachinePiExtensionsResponse,
+  type MachineVoiceRequest,
+  type MachineVoiceResponse,
   type SendLocalMachineRpcResult,
   type SessionCancelResponse,
   type SessionDispatchTurnResponse,
@@ -1397,6 +1400,51 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
     }
   };
 
+  const requestMachineVoice = async (
+    machineId: MachineId,
+    request: MachineVoiceRequest
+  ): Promise<MachineVoiceResponse> => {
+    const fail = (error: string): MachineVoiceResponse => ({ success: false, error });
+    // `start` may first download the Codex runtime; `poll` waits up to its own limit.
+    const timeoutMs = request.action === 'start' ? 180_000 : 30_000;
+    try {
+      await targetRouter.resolvePlaneForMachine(machineId, {
+        timeoutMs: LOCAL_MACHINE_ID_READY_TIMEOUT_MS,
+      });
+      const plane = targetRouter.getPlaneForMachine(machineId);
+      if (plane === null) {
+        return fail('Machine RPC routing is not available.');
+      }
+      const protocolCapabilities = await deps.getMachineProtocolCapabilities(machineId);
+      if (!machineSupportsRealtimeVoice({ protocolCapabilities })) {
+        return fail('This machine does not support voice. Update the local agent.');
+      }
+      if (plane === 'local') {
+        const sender = getLocalMachineRpcSender();
+        if (!sender) {
+          return fail('Local Machine RPC is not available.');
+        }
+        const response = await sender({
+          machineId,
+          workspaceId,
+          method: 'machine/voice',
+          params: request,
+          timeoutMs,
+        });
+        if (!response.ok) {
+          return fail(response.error);
+        }
+        return response.result as MachineVoiceResponse;
+      }
+      const result = await (
+        await getMachineRpcClient(machineId)
+      ).requestMachineVoice({ request, timeoutMs });
+      return result ?? fail('Voice request timed out.');
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const requestMachineBugReport = async (
     machineId: MachineId,
     args: { description: string; reporterUserId: string; requestToken: string },
@@ -1474,5 +1522,6 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
     requestLocalProjectControl,
     requestMachineBugReport,
     requestMachinePiExtensions,
+    requestMachineVoice,
   };
 }

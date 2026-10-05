@@ -35,6 +35,8 @@ import type {
   MachineBugReportResponse,
   MachineId,
   MachinePiExtensionsResponse,
+  MachineVoiceRequest,
+  MachineVoiceResponse,
   MachinePingResponse,
   MachineRestartResponse,
   MachineStatusResponse,
@@ -361,6 +363,7 @@ type RpcServerDeps = {
   listMachinePiExtensions?: (args: {
     configId?: AgentConfigId;
   }) => Promise<MachinePiExtensionsResponse>;
+  handleMachineVoice?: (request: MachineVoiceRequest) => Promise<MachineVoiceResponse>;
   submitBugReport?: (args: {
     description: string;
     reporterUserId: string;
@@ -1121,6 +1124,18 @@ export class LoroStreamsMachineRpcServer {
           await this.appendResultResponse(request.replyTo, request.id, request.method, response);
           return;
         }
+        case 'machine/voice': {
+          if (!this.deps.handleMachineVoice) {
+            await this.appendErrorResponse(request.replyTo, request.id, request.method, {
+              code: LORO_STREAMS_RPC_ERROR_CODES.methodUnavailable,
+              message: 'Voice is not available on this machine.',
+            });
+            return;
+          }
+          const response = await this.deps.handleMachineVoice(request.params);
+          await this.appendResultResponse(request.replyTo, request.id, request.method, response);
+          return;
+        }
         case 'machine/bug-report': {
           if (!this.deps.submitBugReport) {
             await this.appendErrorResponse(request.replyTo, request.id, request.method, {
@@ -1743,6 +1758,7 @@ export class LoroStreamsMachineRpcServer {
       | MachineAcpBinaryProgressMessage
       | MachineBugReportResponse
       | MachinePiExtensionsResponse
+      | MachineVoiceResponse
       | SessionCancelResponse
       | LoroSessionLiveStatusRpcResponse
       | SessionSteerResponse

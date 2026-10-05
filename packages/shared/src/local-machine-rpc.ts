@@ -6,6 +6,7 @@ import {
 import { isWorkspaceMcpServerMeta, type WorkspaceMcpServerMeta } from './workspace-mcp';
 import { LocalFileResolutionSchema } from './local-file-preview';
 import { MachinePiExtensionsResponseSchema } from './pi-extensions';
+import { MachineVoiceRequestSchema, MachineVoiceResponseSchema } from './machine-voice';
 import { z } from 'zod';
 import { SESSION_GOAL_ACTIONS } from './goal';
 import {
@@ -565,6 +566,9 @@ export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
         configId: AgentConfigIdSchema.optional(),
       })
       .strict(),
+  }).strict(),  BaseLocalMachineRpcRequestSchema.extend({
+    method: z.literal('machine/voice'),
+    params: MachineVoiceRequestSchema,
   }).strict(),
 ]);
 
@@ -588,6 +592,8 @@ export type LanRpcForwardResult = z.infer<typeof LanRpcForwardResultSchema>;
 
 export const LocalMachineRpcResultSchema = z.union([
   LanRpcForwardResultSchema,
+  // Before the looser session responses, which would strip its fields.
+  MachineVoiceResponseSchema,
   IosSimulatorResponseSchema,
   McpToolListResultSchema,
   SessionToolResultSchema,

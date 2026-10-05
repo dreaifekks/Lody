@@ -179,6 +179,7 @@ import {
   LAN_FILES_PROTOCOL_VERSION,
   LAN_SHELL_PROTOCOL_VERSION,
   LAN_TUNNEL_PROTOCOL_VERSION,
+  REALTIME_VOICE_PROTOCOL_VERSION,
   MACHINE_PROTOCOL_CAPABILITIES,
   type LanMemberControlRequest,
   type LanMemberControlResponse,
@@ -268,6 +269,7 @@ import {
 } from '@/lib/acp/history';
 import type { AcpAgentEditEvidence, AcpStandardDiffBlockEvidence } from '@/lib/acp/history';
 import { mergeAcpRuntimeConfigUpdates } from '@/lib/acp/runtime-config';
+import { VoiceHost } from '@/agent/voice-host';
 import { generateTitleIsolated, sanitizeTitle } from '@/agent/title-generator';
 import type { AgentSessionWarning } from '@/agent/agent-client';
 import {
@@ -808,6 +810,7 @@ export class MessageHandler {
   private sessionManager: SessionManager;
   private logger: Logger;
   private machineId: MachineId;
+  private voiceHostInstance: VoiceHost | null = null;
   private token: string;
   private userId: string;
   private workspaceId: WorkspaceId;
@@ -3488,6 +3491,7 @@ export class MessageHandler {
           }),
         listMachinePiExtensions: async ({ configId }) =>
           await this.executionService.listMachinePiExtensions(configId),
+        handleMachineVoice: async (request) => await this.voiceHost.handle(request),
         installMachineAcpBinary: async ({ agentType, onAcpBinaryProgress }) =>
           await this.executionService.installMachineAcpBinary(
             {
@@ -6138,9 +6142,21 @@ export class MessageHandler {
     await registration;
   }
 
+  private get voiceHost(): VoiceHost {
+    this.voiceHostInstance ??= new VoiceHost({
+      workspaceId: this.workspaceId,
+      machineId: this.machineId,
+      getAgentConfig: async (configId) =>
+        await this.workspaceDocument.getAgentConfigForMachineLaunch(configId, this.machineId),
+      logger: this.logger,
+    });
+    return this.voiceHostInstance;
+  }
+
   /** What this daemon answers, which is more than what its build could. */
   private describeProtocolCapabilities(): MachineProtocolCapabilities {
     const capabilities: MachineProtocolCapabilities = getHostMachineProtocolCapabilities();
+    capabilities[MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice] = REALTIME_VOICE_PROTOCOL_VERSION;
     if (this.answerLanMemberControl) {
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanControl] = LAN_CONTROL_PROTOCOL_VERSION;
     }
@@ -7068,6 +7084,8 @@ export class MessageHandler {
         return await this.executionService.listMachinePiExtensions(
           request.params.configId as AgentConfigId | undefined
         );
+      case 'machine/voice':
+        return await this.voiceHost.handle(request.params);
       case 'session/fork':
         return await this.forkSessionWithAccessCheck(request.params);
       case 'session/edit-and-resend': {
@@ -10229,6 +10247,7 @@ export class MessageHandler {
    */
   async cleanup(): Promise<void> {
     await this.iosSimulatorService.closeAll();
+    await this.voiceHostInstance?.dispose();
     for (const timer of this.alertGraceTimers) clearTimeout(timer);
     this.alertGraceTimers.clear();
     this.stopPermissionAnswers?.();

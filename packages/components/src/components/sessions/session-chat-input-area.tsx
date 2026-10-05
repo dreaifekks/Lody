@@ -18,6 +18,7 @@ import { useAtomValue } from 'jotai';
 import { ArrowUp, Play } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { Button } from '@lody/ui/button';
+import { SessionVoiceControls, type VoiceLatestReply } from './session-voice-controls';
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
 import { useSessionAgentRole, type SessionAgentRoleControl } from '@/hooks/use-session-agent-role';
 import { buildAgentRoleFormValueFromRunConfig } from '@/lib/agent-role-form';
@@ -408,6 +409,8 @@ export interface SessionChatInputAreaProps {
     agentRole: SessionTurnAgentRoleSelection,
     options?: SessionSendMessageOptions
   ) => Promise<boolean>;
+  /** The last finished assistant reply; experimental voice speaks it back. */
+  voiceLatestReply?: VoiceLatestReply | null;
   onStop: () => void | Promise<void>;
   /**
    * Present only while the latest round was interrupted and can be picked up
@@ -480,6 +483,7 @@ export const SessionChatInputArea = memo(
       claimNavigationFocus,
       sessionLocalProjectRootPath,
       isMachineRemoved,
+      isAgentBusy,
       canStopAgent = false,
       isExternalHistoryRefreshing = false,
       externalHistorySyncLabel,
@@ -510,6 +514,7 @@ export const SessionChatInputArea = memo(
       onModelChange,
       onConfigOptionChange,
       onSendMessage,
+      voiceLatestReply = null,
       onStop,
       onContinue,
       onRemoveQueueItem: _onRemoveQueueItem,
@@ -549,6 +554,7 @@ export const SessionChatInputArea = memo(
       }
     }, [claimNavigationFocus, usesMobileKeyboardAction]);
     const agentRoleTurnSelectionRef = useRef<SessionTurnAgentRoleSelection>(undefined);
+    const dictationBaseRef = useRef('');
     const selectedAgentRoleRef = useRef<AgentRole | undefined>(undefined);
     /** Readable Roles, for attributing accepted `@Role` mentions in analytics. */
     const workspaceAgentRolesRef = useRef<readonly AgentRole[]>([]);
@@ -2035,6 +2041,26 @@ export const SessionChatInputArea = memo(
     ) : null;
     /* Keep desktop actions compact while preserving the mobile touch target. */
     const primaryActionSizeClassName = isMobile ? 'h-8 w-8' : 'h-7 w-7';
+    const voiceControlsNode = (
+      <SessionVoiceControls
+        disabled={isArchived || isMachineRemoved}
+        isAgentBusy={isAgentBusy}
+        latestReply={voiceLatestReply}
+        buttonClassName={primaryActionSizeClassName}
+        iconClassName={isMobile ? 'h-5 w-5' : 'h-4 w-4'}
+        onDictationStart={() => {
+          dictationBaseRef.current = textareaRef.current?.value ?? userInput;
+        }}
+        onDictationText={(text) => {
+          const base = dictationBaseRef.current;
+          const separator = base && !/\s$/.test(base) ? ' ' : '';
+          setUserInput(base + separator + text.trimStart());
+        }}
+        onVoiceRequest={async (text) =>
+          await onSendMessage([{ type: 'text', text }], agentRoleTurnSelectionRef.current)
+        }
+      />
+    );
     const showContinueAction = !showStopButton && !hasSendableContent && Boolean(onContinue);
     const primaryActionNode = showStopButton ? (
       <Button
@@ -2158,7 +2184,12 @@ export const SessionChatInputArea = memo(
         onFileRetry={submissionPending || isArchived ? undefined : handleRetryFile}
         footerSelector={footerSelectorNode}
         bottomBar={bottomBarNode}
-        primaryAction={primaryActionNode}
+        primaryAction={
+          <>
+            {voiceControlsNode}
+            {primaryActionNode}
+          </>
+        }
         autoResize
         maxRows={11}
         focusOnContainerClick
