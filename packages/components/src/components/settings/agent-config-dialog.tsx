@@ -4166,7 +4166,7 @@ function AntigravityThirdPartyModelsSection({
       <p {...stylex.props(styles.note)}>
         {t(
           'settings.agent.dialog.antigravityThirdParty.hint',
-          'Antigravity lists these models only to clients that identify as Zed. When on, Lody identifies as Zed to this agent. Start a new session after changing this.'
+          'When on, Lody identifies as Zed to this agent. Applies to new sessions.'
         )}
       </p>
       <AlertDialog.Root open={confirming} onOpenChange={setConfirming}>

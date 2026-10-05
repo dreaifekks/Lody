@@ -103,7 +103,10 @@ describe('LAN settings', () => {
     const found = [...document.body.querySelectorAll('label')].find(
       (candidate) => candidate.textContent?.trim() === label
     );
-    const input = found ? document.getElementById(found.htmlFor) : null;
+    // A field its tab names carries the name itself.
+    const input = found
+      ? document.getElementById(found.htmlFor)
+      : document.body.querySelector(`input[aria-label="${label}"]`);
     if (!(input instanceof HTMLInputElement)) throw new Error(`No field "${label}" in: ${text()}`);
     return input;
   };
@@ -158,7 +161,8 @@ describe('LAN settings', () => {
 
     expect(text()).toContain('Home');
     expect(text()).toContain('http://100.64.0.1:8788');
-    expect(text()).toContain('Connected');
+    // A LAN that answers is the resting state: only one that does not is marked.
+    expect(text()).not.toContain('Connected');
     expect(text()).toContain('Office');
     expect(text()).toContain('https://hub.example.com');
     expect(text()).toContain('Unreachable');
@@ -273,7 +277,7 @@ describe('LAN settings', () => {
 
   it('names the machine, and follows the host name again on request', async () => {
     await render({ state: stateWith({ machineName: { name: 'Studio Mac', explicit: true } }) });
-    expect(text()).toContain('Shown in every LAN this machine belongs to.');
+    expect(text()).toContain('Studio Mac');
 
     await click('Rename');
     await type('Name', 'devnuc');
@@ -288,7 +292,6 @@ describe('LAN settings', () => {
 
   it('does not offer to follow the host name to a machine that already does', async () => {
     await render();
-    expect(text()).toContain('Taken from the host name of this machine');
 
     await click('Rename');
 
@@ -297,6 +300,16 @@ describe('LAN settings', () => {
         (candidate) => candidate.textContent?.trim() === 'Follow the host name'
       )
     ).toBe(false);
+  });
+
+  it('puts the build of this application beside the name of this machine', async () => {
+    await render({ application: <p>Lody OSS 0.100.0-lan.4</p> });
+
+    const group = [...container.querySelectorAll('section')].find((section) =>
+      section.textContent?.includes('macbook')
+    );
+    expect(group?.textContent).toContain('This machine');
+    expect(group?.textContent).toContain('Lody OSS 0.100.0-lan.4');
   });
 
   it('allows no edit while the environment sets the LAN', async () => {

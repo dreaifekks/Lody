@@ -34,7 +34,7 @@ import { Input } from '@lody/ui/input';
 import { Spinner } from '@lody/ui/spinner';
 import { Tabs } from '@lody/ui/tabs';
 import { CompactRow, CompactSection, SettingsEmptyList } from './compact-layout';
-import { Field, FormMessage, Section } from './form-primitives';
+import { Field, FormMessage } from './form-primitives';
 import { LanAppUpdate } from './lan-app-update';
 import { LanMachinesView } from './lan-machines';
 import { SettingsPageActions, SettingsPageLead, useSettingsPane } from './settings-page-header';
@@ -44,6 +44,11 @@ import {
   settingsCatalog as catalog,
   settingsSurface as surface,
 } from './surface';
+
+const styles = stylex.create({
+  /** A fact after a LAN's address: it keeps its width, the address gives way. */
+  fact: { flexShrink: 0, whiteSpace: 'nowrap' },
+});
 
 type Editor =
   | { mode: 'join' }
@@ -58,7 +63,7 @@ export type LanSettingViewProps = Pick<
   reachability: Readonly<Record<string, ElectronLanReachability>>;
   /** The workspaces the agent service serves; a LAN without one is still starting. */
   servedWorkspaceIds: ReadonlySet<string>;
-  /** The build of this application, above what it is a member of. */
+  /** The build of this application, a row beside the name of this machine. */
   application?: ReactNode;
   /** The machines the LANs reach, below them. */
   machines?: ReactNode;
@@ -98,7 +103,11 @@ export function LanSetting() {
   );
 }
 
-/** The build of this application, wired to what keeps it current. */
+/**
+ * The build of this application, wired to what keeps it current. A leaf, so
+ * the progress of a download re-renders only its row; where it shows nothing
+ * its line of the group has no height and draws no rule.
+ */
 function LanApplication() {
   const updater = useElectronUpdaterState();
   const { i18n } = useTranslation();
@@ -288,17 +297,8 @@ export function LanSettingView({
         <FormMessage tone="warning">{t('settings.lan.notEditable')}</FormMessage>
       ) : null}
 
-      {application}
-
       <CompactSection title={t('settings.lan.thisMachine')}>
-        <CompactRow
-          label={state.machineName.name}
-          helper={
-            state.machineName.explicit
-              ? t('settings.lan.machineNameHelper')
-              : t('settings.lan.machineNameFromHostHelper')
-          }
-        >
+        <CompactRow label={state.machineName.name}>
           <Button
             size="small"
             variant="secondary"
@@ -314,6 +314,7 @@ export function LanSettingView({
             {t('settings.lan.rename')}
           </Button>
         </CompactRow>
+        {application}
       </CompactSection>
 
       {state.lans.length === 0 ? (
@@ -459,15 +460,18 @@ function LanRow({
         <span {...stylex.props(catalog.body)}>
           <span {...stylex.props(catalog.titleLine)}>
             <span {...stylex.props(catalog.name)}>{lan.name}</span>
-            {status === undefined ? null : (
-              <Badge tone={status === 'reachable' ? 'success' : undefined}>
-                {t(`settings.lan.status.${status}`)}
-                {status === 'reachable' ? <LanHubLatency lanId={lan.id} /> : null}
-              </Badge>
+            {/* A LAN that answers is the resting state: only one that does not is marked. */}
+            {status === undefined || status === 'reachable' ? null : (
+              <Badge>{t(`settings.lan.status.${status}`)}</Badge>
             )}
           </span>
           <span {...stylex.props(catalog.meta)}>
             <span {...stylex.props(catalog.truncate, catalog.mono)}>{lan.url}</span>
+            {status === 'reachable' ? (
+              <span {...stylex.props(styles.fact)}>
+                <LanHubLatency lanId={lan.id} />
+              </span>
+            ) : null}
           </span>
         </span>
       </button>
@@ -563,72 +567,59 @@ function JoinLanForm({
     <form {...withClassName(stylex.props(catalog.editorForm))} onSubmit={submit}>
       <div {...withClassName(stylex.props(catalog.editorBody), 'scrollbar-pro')}>
         {error ? <FormMessage tone="error">{error}</FormMessage> : null}
-        <Section title={t('settings.lan.form.sectionLan')}>
-          <Tabs.Root value={how} onValueChange={(next) => setHow(next as typeof how)}>
-            <Tabs.List aria-label={t('settings.lan.form.how')}>
-              <Tabs.Tab value="invite">{t('settings.lan.form.byInvite')}</Tabs.Tab>
-              <Tabs.Tab value="address">{t('settings.lan.form.byAddress')}</Tabs.Tab>
-            </Tabs.List>
-          </Tabs.Root>
-          {how === 'invite' ? (
-            <Field
-              htmlFor={`${fieldId}-invite`}
-              label={t('settings.lan.form.invite')}
-              hint={t('settings.lan.form.inviteHint')}
-            >
+        <Tabs.Root value={how} onValueChange={(next) => setHow(next as typeof how)}>
+          <Tabs.List aria-label={t('settings.lan.form.how')}>
+            <Tabs.Tab value="invite">{t('settings.lan.form.byInvite')}</Tabs.Tab>
+            <Tabs.Tab value="address">{t('settings.lan.form.byAddress')}</Tabs.Tab>
+          </Tabs.List>
+        </Tabs.Root>
+        {how === 'invite' ? (
+          // The tab above names this field; a label under it would say it twice.
+          <Input
+            aria-label={t('settings.lan.form.invite')}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="lody-lan://…"
+            value={invite}
+            onChange={(event) => setInvite(event.target.value)}
+          />
+        ) : (
+          <>
+            <Field htmlFor={`${fieldId}-url`} label={t('settings.lan.form.address')}>
               <Input
-                id={`${fieldId}-invite`}
+                id={`${fieldId}-url`}
                 autoComplete="off"
                 spellCheck={false}
-                placeholder="lody-lan://…"
-                value={invite}
-                onChange={(event) => setInvite(event.target.value)}
+                placeholder="100.64.0.1:8788"
+                value={url}
+                onChange={(event) => setUrl(event.target.value)}
               />
             </Field>
-          ) : (
-            <>
-              <Field
-                htmlFor={`${fieldId}-url`}
-                label={t('settings.lan.form.address')}
-                hint={t('settings.lan.form.addressHint')}
-              >
-                <Input
-                  id={`${fieldId}-url`}
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="100.64.0.1:8788"
-                  value={url}
-                  onChange={(event) => setUrl(event.target.value)}
-                />
-              </Field>
-              <Field htmlFor={`${fieldId}-token`} label={t('settings.lan.form.token')}>
-                <Input
-                  id={`${fieldId}-token`}
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={token}
-                  onChange={(event) => setToken(event.target.value)}
-                />
-              </Field>
-            </>
-          )}
-        </Section>
-        <Section title={t('settings.lan.form.sectionName')}>
-          <Field
-            htmlFor={`${fieldId}-name`}
-            label={t('settings.lan.form.name')}
-            hint={t('settings.lan.form.nameHint')}
-          >
-            <Input
-              id={`${fieldId}-name`}
-              autoComplete="off"
-              placeholder={t('settings.lan.form.namePlaceholder')}
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </Field>
-        </Section>
+            <Field htmlFor={`${fieldId}-token`} label={t('settings.lan.form.token')}>
+              <Input
+                id={`${fieldId}-token`}
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={token}
+                onChange={(event) => setToken(event.target.value)}
+              />
+            </Field>
+          </>
+        )}
+        <Field
+          htmlFor={`${fieldId}-name`}
+          label={t('settings.lan.form.name')}
+          hint={t('settings.lan.form.nameHint')}
+        >
+          <Input
+            id={`${fieldId}-name`}
+            autoComplete="off"
+            placeholder={t('settings.lan.form.namePlaceholder')}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </Field>
       </div>
       <FormFooter
         submitting={submitting}
@@ -669,35 +660,25 @@ function EditLanForm({
         {moved ? (
           <FormMessage tone="warning">{t('settings.lan.form.moveWarning')}</FormMessage>
         ) : null}
-        <Section title={t('settings.lan.form.sectionLan')}>
-          <Field
-            htmlFor={`${fieldId}-name`}
-            label={t('settings.lan.form.name')}
-            hint={t('settings.lan.form.nameHint')}
-          >
-            <Input
-              id={`${fieldId}-name`}
-              required
-              autoComplete="off"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </Field>
-          <Field
-            htmlFor={`${fieldId}-url`}
-            label={t('settings.lan.form.address')}
-            hint={t('settings.lan.form.addressHint')}
-          >
-            <Input
-              id={`${fieldId}-url`}
-              required
-              autoComplete="off"
-              spellCheck={false}
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-            />
-          </Field>
-        </Section>
+        <Field htmlFor={`${fieldId}-name`} label={t('settings.lan.form.name')}>
+          <Input
+            id={`${fieldId}-name`}
+            required
+            autoComplete="off"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </Field>
+        <Field htmlFor={`${fieldId}-url`} label={t('settings.lan.form.address')}>
+          <Input
+            id={`${fieldId}-url`}
+            required
+            autoComplete="off"
+            spellCheck={false}
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+          />
+        </Field>
       </div>
       <FormFooter
         submitting={submitting}
@@ -737,34 +718,28 @@ function MachineNameForm({
       <div {...withClassName(stylex.props(catalog.editorBody), 'scrollbar-pro')}>
         {error ? <FormMessage tone="error">{error}</FormMessage> : null}
         <FormMessage tone="warning">{t('settings.lan.form.machineNameWarning')}</FormMessage>
-        <Section title={t('settings.lan.thisMachine')}>
-          <Field
-            htmlFor={`${fieldId}-machine-name`}
-            label={t('settings.lan.form.machineName')}
-            hint={t('settings.lan.form.machineNameHint')}
-          >
-            <Input
-              id={`${fieldId}-machine-name`}
-              required
-              autoComplete="off"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </Field>
-          {explicit ? (
-            <div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="small"
-                disabled={submitting}
-                onClick={() => onSubmit(null)}
-              >
-                {t('settings.lan.form.followHostName')}
-              </Button>
-            </div>
-          ) : null}
-        </Section>
+        <Field htmlFor={`${fieldId}-machine-name`} label={t('settings.lan.form.machineName')}>
+          <Input
+            id={`${fieldId}-machine-name`}
+            required
+            autoComplete="off"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </Field>
+        {explicit ? (
+          <div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="small"
+              disabled={submitting}
+              onClick={() => onSubmit(null)}
+            >
+              {t('settings.lan.form.followHostName')}
+            </Button>
+          </div>
+        ) : null}
       </div>
       <FormFooter
         submitting={submitting}

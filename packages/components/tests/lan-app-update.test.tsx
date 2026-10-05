@@ -68,8 +68,7 @@ describe('the build of this application', () => {
     await render(updater({ phase: 'up_to_date' }));
 
     expect(container.textContent).toContain('Lody OSS 0.100.0-lan.4');
-    expect(container.textContent).toContain('Follows the releases of someone/Lody (lan-latest).');
-    expect(container.textContent).toContain('Up to date');
+    expect(container.textContent).toContain('Up to date · Follows someone/Lody (lan-latest)');
 
     await click('Check for updates');
     expect(asked).toEqual(['check']);
@@ -79,6 +78,8 @@ describe('the build of this application', () => {
     await render(updater({ phase: 'available', availableVersion: '0.100.0-lan.5' }));
 
     expect(container.textContent).toContain('0.100.0-lan.5 is out');
+    // One statement at rest: what is on offer takes the place of where it comes from.
+    expect(container.textContent).not.toContain('Follows');
     expect(button('Check for updates')).toBeUndefined();
 
     await click('What changed');

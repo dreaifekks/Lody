@@ -29,8 +29,6 @@ const styles = stylex.create({
   /** No color: the name keeps the color of the text around it. */
   swatchNone: { boxShadow: `inset 0 0 0 1.5px ${colors.tertiaryLabel}` },
   swatchColor: (color: string) => ({ backgroundColor: color }),
-  preview: { fontSize: '13px', fontWeight: 500, color: colors.label },
-  previewColor: (color: string) => ({ color }),
 });
 
 const NO_COLOR = 'none';
@@ -119,11 +117,7 @@ function AliasForm({
       }}
     >
       <div {...withClassName(stylex.props(catalog.editorBody), 'scrollbar-pro')}>
-        <Field
-          htmlFor={`${fieldId}-alias`}
-          label={t('settings.lan.machines.alias.label')}
-          hint={t('settings.lan.machines.alias.hint', { max: LAN_MACHINE_ALIAS_MAX })}
-        >
+        <Field htmlFor={`${fieldId}-alias`} label={t('settings.lan.machines.alias.label')}>
           <Input
             id={`${fieldId}-alias`}
             autoComplete="off"
@@ -135,19 +129,7 @@ function AliasForm({
             onChange={(event) => setWritten(event.target.value)}
           />
         </Field>
-        <Field
-          label={t('settings.lan.machines.alias.colorLabel')}
-          hint={
-            <span
-              {...stylex.props(
-                styles.preview,
-                chosen && styles.previewColor(lanMachineColorValue(chosen))
-              )}
-            >
-              {next ?? placeholder}
-            </span>
-          }
-        >
+        <Field label={t('settings.lan.machines.alias.colorLabel')}>
           <ToggleGroup<ColorChoice>
             size="small"
             wrap

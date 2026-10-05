@@ -5,24 +5,19 @@ import { useLanHubLatency, useLanOfWorkspace } from '@/hooks/use-lan-hub-latency
 
 const styles = stylex.create({
   root: {
-    display: 'inline-flex',
     flexShrink: 0,
-    alignItems: 'center',
-    gap: '4px',
     fontSize: '0.75em',
     fontVariantNumeric: 'tabular-nums',
     color: colors.tertiaryLabel,
   },
-  dot: { width: '6px', height: '6px', borderRadius: '50%', backgroundColor: colors.success },
-  silent: { backgroundColor: colors.destructive },
-  silentText: { color: colors.destructive },
+  silent: { color: colors.destructive },
 });
 
 /**
  * How the hub of the workspace's LAN answers, after the LAN's name while the
- * workspace is connected: a dot and the hub's round trip, or that it does not
- * answer. Nothing for a workspace no LAN carries. A leaf, so each measurement
- * re-renders only this.
+ * workspace is connected: the hub's round trip in quiet ink, or that it does
+ * not answer. Nothing for a workspace no LAN carries. A leaf, so each
+ * measurement re-renders only this.
  */
 export function LanConnectionIndicator({ workspaceId }: { workspaceId: string | null }) {
   const { t } = useTranslation();
@@ -39,13 +34,15 @@ export function LanConnectionIndicator({ workspaceId }: { workspaceId: string | 
           ms: latency,
         });
   return (
-    <span {...stylex.props(styles.root)} title={label} aria-label={label} data-lan-latency>
-      <span aria-hidden="true" {...stylex.props(styles.dot, latency === null && styles.silent)} />
-      <span aria-hidden="true" {...stylex.props(latency === null && styles.silentText)}>
-        {latency === null
-          ? t('sidebar.lanStatus.noAnswerShort', 'No answer')
-          : t('sidebar.lanStatus.ms', '{{ms}} ms', { ms: latency })}
-      </span>
+    <span
+      {...stylex.props(styles.root, latency === null && styles.silent)}
+      title={label}
+      aria-label={label}
+      data-lan-latency
+    >
+      {latency === null
+        ? t('sidebar.lanStatus.noAnswerShort', 'No answer')
+        : t('sidebar.lanStatus.ms', '{{ms}} ms', { ms: latency })}
     </span>
   );
 }

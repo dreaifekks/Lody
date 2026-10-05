@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { describeLanHubPart, type LanHubRole } from '@lody/shared/lan-hub-role';
-import { Activity, DatabaseBackup, Folder, Monitor, Server, ServerCog, User } from 'lucide-react';
+import { Activity, DatabaseBackup, Folder, Monitor, ServerCog, User } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MachineId } from '@lody/shared';
 import { useMachineLatency } from '@/hooks/use-machine-latency';
@@ -161,11 +161,10 @@ function SidebarMachineCard({ machine }: { machine: SidebarMachineInfo }) {
       value: <span className="min-w-0 truncate text-foreground">{activityDescription}</span>,
     });
   }
+  // A machine that only could host the hub has no part in it worth a row.
   const hubPart = describeLanHubPart(machine.hubRole ?? null, Date.now());
-  if (hubPart) {
-    const HubGlyph =
-      hubPart === 'hub' ? ServerCog : hubPart === 'standby' ? DatabaseBackup : Server;
-    const term = machine.hubRole?.term;
+  if (hubPart === 'hub' || hubPart === 'standby') {
+    const HubGlyph = hubPart === 'hub' ? ServerCog : DatabaseBackup;
     rows.push({
       key: 'hub',
       icon: <HubGlyph className="h-3.5 w-3.5" aria-hidden="true" />,
@@ -173,9 +172,6 @@ function SidebarMachineCard({ machine }: { machine: SidebarMachineInfo }) {
       value: (
         <span className="min-w-0 truncate text-foreground">
           {t(`settings.lan.machines.hub.part.${hubPart}`)}
-          {hubPart === 'hub' && term !== undefined
-            ? ` · ${t('settings.lan.machines.hub.term', { term })}`
-            : null}
         </span>
       ),
     });

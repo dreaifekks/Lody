@@ -1,4 +1,4 @@
-import { useState, type ComponentType } from 'react';
+import { useState, type ComponentType, type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import {
@@ -38,34 +38,26 @@ import { settingsCatalog as catalog } from './surface';
 
 /**
  * What a machine does for the LAN's hub, a line each, for the hint over its
- * glyph: hosting it, keeping the standby copy, able to take over, or neither.
+ * glyph: hosting it, or keeping the standby copy. A machine with neither part
+ * has no hint: its glyph says all there is.
  */
 function describeHubPart(machine: LanMachine, t: ReturnType<typeof useTranslation>['t']): string[] {
   const hub = machine.hub ?? null;
-  if (!hub) {
-    return [
-      t(
-        machine.build?.update === 'desktop'
-          ? 'settings.lan.machines.hub.desktop'
-          : 'settings.lan.machines.hub.member'
-      ),
-    ];
-  }
+  if (!hub || hub.part === 'candidate') return [];
   const lines = [t(`settings.lan.machines.hub.part.${hub.part}`)];
-  if (hub.term !== null && hub.part === 'hub') {
-    lines.push(t('settings.lan.machines.hub.term', { term: hub.term }));
+  if (hub.part === 'hub') {
+    if (hub.term !== null) lines.push(t('settings.lan.machines.hub.term', { term: hub.term }));
+    return lines;
   }
-  if (hub.part === 'standby' && hub.snapshotAt) {
+  if (hub.snapshotAt) {
     const minutes = Math.max(0, Math.round((Date.now() - Date.parse(hub.snapshotAt)) / 60_000));
     lines.push(t('settings.lan.machines.hub.copiedAgo', { count: minutes }));
   }
-  if (hub.part !== 'hub') {
-    lines.push(
-      hub.rttMs === null
-        ? t('settings.lan.machines.hub.unreachable')
-        : t('settings.lan.machines.hub.rtt', { ms: hub.rttMs })
-    );
-  }
+  lines.push(
+    hub.rttMs === null
+      ? t('settings.lan.machines.hub.unreachable')
+      : t('settings.lan.machines.hub.rtt', { ms: hub.rttMs })
+  );
   return lines;
 }
 
@@ -96,8 +88,20 @@ const styles = stylex.create({
     lineHeight: 1.45,
     color: colors.tertiaryLabel,
   },
-  /** One fact after another, each as long as it is; a long line wraps between facts. */
-  facts: { display: 'flex', flexWrap: 'wrap', rowGap: '2px', minWidth: 0, whiteSpace: 'pre' },
+  /**
+   * One fact after another, set apart by the separator alone. A long line
+   * wraps between facts first, and a fact longer than the line inside itself.
+   */
+  facts: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    columnGap: 0,
+    rowGap: '2px',
+    minWidth: 0,
+    whiteSpace: 'pre-wrap',
+  },
+  /** What is under way on a machine: its mark, then what it is. */
+  progress: { display: 'inline-flex', alignItems: 'center', gap: '6px' },
 });
 
 export type LanMachinesViewProps = Pick<
@@ -113,7 +117,7 @@ export type LanMachinesViewProps = Pick<
   sshEntries?: Readonly<Record<string, string>>;
   /** Absent where no entry can be named, such as outside the desktop. */
   onSshEntryChange?: (machine: LanMachine, entry: SshDestination | null) => void;
-  /** How long a machine that answers takes to, after its status; absent outside the desktop. */
+  /** How long a machine that answers takes to, after its facts; absent outside the desktop. */
   Latency?: ComponentType<{ machine: LanMachine }>;
 };
 
@@ -156,6 +160,22 @@ function needsRuntime(agent: LanAgentRuntime): boolean {
   return agent.state === 'outdated' || agent.state === 'missing';
 }
 
+/**
+ * Whether the names of a machine's LANs tell machines apart: they do once the
+ * machines listed are not all in the same LANs.
+ */
+function lansDiffer(machines: readonly LanMachine[]): boolean {
+  const said = new Set(
+    machines.map((machine) =>
+      machine.lans
+        .map((lan) => lan.workspaceId)
+        .sort()
+        .join(' ')
+    )
+  );
+  return said.size > 1;
+}
+
 /** Desktop Settings > LAN: the machines this machine reaches through its LANs. */
 export function LanMachinesView({
   inventory,
@@ -175,6 +195,7 @@ export function LanMachinesView({
   const [aliasing, setAliasing] = useState<LanMachine | null>(null);
   const [asked, setAsked] = useState<ReadonlySet<string>>(new Set());
   const newest = inventory.newest?.version ?? null;
+  const showLans = lansDiffer(inventory.machines);
 
   const asking = (machineId: string, run: () => Promise<void>) => {
     setAsked((current) => new Set(current).add(machineId));
@@ -243,7 +264,7 @@ export function LanMachinesView({
             machine={machine}
             newest={newest}
             busy={asked.has(machine.machineId)}
-            sshEntry={sshEntries?.[machine.machineId] ?? null}
+            showLans={showLans}
             onUpdate={() => setConfirming(machine)}
             onImport={() => setImporting(machine)}
             onAlias={() => setAliasing(machine)}
@@ -311,7 +332,7 @@ function MachineRow({
   machine,
   newest,
   busy,
-  sshEntry,
+  showLans,
   onUpdate,
   onImport,
   onAlias,
@@ -322,7 +343,8 @@ function MachineRow({
   machine: LanMachine;
   newest: string | null;
   busy: boolean;
-  sshEntry: string | null;
+  /** Whether the LANs of a machine are worth naming. */
+  showLans: boolean;
   onUpdate: () => void;
   onImport: () => void;
   onAlias: () => void;
@@ -351,31 +373,38 @@ function MachineRow({
   const facts = [
     machine.version,
     machine.os ? (OS_NAMES[machine.os] ?? machine.os) : null,
-    machine.lans.map((lan) => lan.name).join(t('settings.hostedImport.separator')),
+    showLans
+      ? machine.lans.map((lan) => lan.name).join(t('settings.hostedImport.separator'))
+      : null,
   ].filter(Boolean);
+  const notes = describeMachineNotes(machine, build, newest, t);
+  const glyph = (
+    <span
+      {...stylex.props(catalog.glyph, hub?.part === 'hub' && styles.hubGlyph)}
+      aria-label={hubLines.length > 0 ? hubLines.join(' · ') : undefined}
+      aria-hidden={hubLines.length > 0 ? undefined : true}
+    >
+      <Glyph {...stylex.props(catalog.icon)} aria-hidden="true" />
+    </span>
+  );
 
   return (
     <div {...stylex.props(catalog.row)}>
       <div {...stylex.props(styles.body)}>
-        <Tooltip.Root>
-          <Tooltip.Trigger
-            render={
-              <span
-                {...stylex.props(catalog.glyph, hub?.part === 'hub' && styles.hubGlyph)}
-                aria-label={hubLines.join(' · ')}
-              >
-                <Glyph {...stylex.props(catalog.icon)} aria-hidden="true" />
-              </span>
-            }
-          />
-          <Tooltip.Content side="right">
-            {hubLines.map((line, position) => (
-              <span key={position} {...stylex.props(styles.hubLine)}>
-                {line}
-              </span>
-            ))}
-          </Tooltip.Content>
-        </Tooltip.Root>
+        {hubLines.length > 0 ? (
+          <Tooltip.Root>
+            <Tooltip.Trigger render={glyph} />
+            <Tooltip.Content side="right">
+              {hubLines.map((line, position) => (
+                <span key={position} {...stylex.props(styles.hubLine)}>
+                  {line}
+                </span>
+              ))}
+            </Tooltip.Content>
+          </Tooltip.Root>
+        ) : (
+          glyph
+        )}
         <span {...stylex.props(catalog.body)}>
           <span {...stylex.props(catalog.titleLine)}>
             <span {...stylex.props(catalog.name)} style={lanMachineNameStyle(machine.color)}>
@@ -384,29 +413,12 @@ function MachineRow({
             {machine.alias ? (
               <span {...stylex.props(styles.machineName)}>{machine.name}</span>
             ) : null}
-            <Button
-              variant="ghost"
-              size="mini"
-              icon
-              aria-label={t('settings.lan.machines.alias.action', { name: machine.name })}
-              title={t('settings.lan.machines.alias.action', { name: machine.name })}
-              onClick={onAlias}
-            >
-              <PencilLine {...stylex.props(catalog.iconSmall)} />
-            </Button>
+            {/* A machine that answers is the resting state: only one that is away is marked. */}
             {machine.self ? (
-              <Badge>
-                {t('settings.lan.machines.self')}
-                {Latency ? <Latency machine={machine} /> : null}
-              </Badge>
-            ) : machine.online === null ? null : (
-              <Badge tone={machine.online ? 'success' : undefined}>
-                {t(
-                  machine.online ? 'settings.lan.machines.online' : 'settings.lan.machines.offline'
-                )}
-                {machine.online && Latency ? <Latency machine={machine} /> : null}
-              </Badge>
-            )}
+              <Badge>{t('settings.lan.machines.self')}</Badge>
+            ) : machine.online === false ? (
+              <Badge>{t('settings.lan.machines.offline')}</Badge>
+            ) : null}
           </span>
           <span {...stylex.props(catalog.meta, styles.facts)}>
             {facts.map((fact, position) => (
@@ -415,32 +427,20 @@ function MachineRow({
                 {fact}
               </span>
             ))}
+            {Latency && (machine.self || machine.online) ? (
+              <span>
+                <Latency machine={machine} />
+              </span>
+            ) : null}
           </span>
-          <MachineBuildLine machine={machine} build={build} newest={newest} />
-          {machine.agents.length > 0 ? (
+          {notes.length > 0 ? (
             <span {...stylex.props(catalog.meta, styles.facts)}>
-              {machine.agents.map((agent, position) => (
-                <span key={agent.agentType}>
+              {notes.map((note, position) => (
+                <span key={position}>
                   {position > 0 ? separator : null}
-                  <span {...stylex.props(needsRuntime(agent) && catalog.metaWarning)}>
-                    {t(`settings.lan.machines.agent.${agent.state}`, {
-                      name: agent.name,
-                      version: agent.version ?? '',
-                      target: agent.target ?? '',
-                    })}
-                  </span>
+                  {note}
                 </span>
               ))}
-            </span>
-          ) : null}
-          {!machine.self && sshEntry ? (
-            <span {...stylex.props(catalog.meta)}>
-              {t('settings.lan.machines.sshEntry.named', { entry: sshEntry })}
-            </span>
-          ) : null}
-          {!machine.self && !machine.controllable ? (
-            <span {...stylex.props(catalog.meta, catalog.metaHint)}>
-              {t('settings.lan.machines.tooOld')}
             </span>
           ) : null}
         </span>
@@ -453,94 +453,104 @@ function MachineRow({
             {t('settings.lan.machines.updateAction')}
           </Button>
         ) : null}
-        {reachable || nameSshEntry ? (
-          <Menu.Root>
-            <Menu.Trigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="small"
-                  icon
-                  aria-label={t('settings.lan.machines.more', { name: machine.name })}
-                >
-                  <MoreHorizontal {...stylex.props(catalog.icon)} />
-                </Button>
-              }
-            />
-            <Menu.Content align="end">
-              {reachable ? (
-                <Menu.Item icon={<Download />} onClick={onImport}>
-                  {t('settings.lan.machines.importHosted')}
-                </Menu.Item>
-              ) : null}
-              {nameSshEntry ? (
-                <Menu.Item icon={<SquareTerminal />} onClick={nameSshEntry}>
-                  {t('settings.lan.machines.sshEntry.action')}
-                </Menu.Item>
-              ) : null}
-              {runtimes.map((agent) => (
-                <Menu.Item
-                  key={agent.agentType}
-                  icon={<RefreshCw />}
-                  disabled={busy}
-                  onClick={() => onInstallAgent(agent)}
-                >
-                  {t(`settings.lan.machines.agentAction.${agent.state}`, {
-                    name: agent.name,
-                    target: agent.target ?? '',
-                  })}
-                </Menu.Item>
-              ))}
-            </Menu.Content>
-          </Menu.Root>
-        ) : null}
+        <Menu.Root>
+          <Menu.Trigger
+            render={
+              <Button
+                variant="ghost"
+                size="small"
+                icon
+                aria-label={t('settings.lan.machines.more', { name: machine.name })}
+              >
+                <MoreHorizontal {...stylex.props(catalog.icon)} />
+              </Button>
+            }
+          />
+          <Menu.Content align="end">
+            <Menu.Item icon={<PencilLine />} onClick={onAlias}>
+              {t('settings.lan.machines.alias.action')}
+            </Menu.Item>
+            {nameSshEntry ? (
+              <Menu.Item icon={<SquareTerminal />} onClick={nameSshEntry}>
+                {t('settings.lan.machines.sshEntry.action')}
+              </Menu.Item>
+            ) : null}
+            {reachable ? (
+              <Menu.Item icon={<Download />} onClick={onImport}>
+                {t('settings.lan.machines.importHosted')}
+              </Menu.Item>
+            ) : null}
+            {runtimes.map((agent) => (
+              <Menu.Item
+                key={agent.agentType}
+                icon={<RefreshCw />}
+                disabled={busy}
+                onClick={() => onInstallAgent(agent)}
+              >
+                {t(`settings.lan.machines.agentAction.${agent.state}`, {
+                  name: agent.name,
+                  target: agent.target ?? '',
+                })}
+              </Menu.Item>
+            ))}
+          </Menu.Content>
+        </Menu.Root>
       </div>
     </div>
   );
 }
 
-function MachineBuildLine({
-  machine,
-  build,
-  newest,
-}: {
-  machine: LanMachine;
-  build: ReturnType<typeof describeLanMachineBuild>;
-  newest: string | null;
-}) {
-  const { t } = useTranslation();
-  if (build.state === 'unknown') return null;
+/**
+ * What a machine's row says beyond its facts, one after another on a line of
+ * its own: where an update stands or what is out, and each runtime that is not
+ * the one its agent runs with. A machine with nothing to say has no such line.
+ */
+function describeMachineNotes(
+  machine: LanMachine,
+  build: ReturnType<typeof describeLanMachineBuild>,
+  newest: string | null,
+  t: ReturnType<typeof useTranslation>['t']
+): ReactNode[] {
+  const notes: ReactNode[] = [];
 
   if (build.state === 'updating' && machine.update) {
-    return (
-      <span {...stylex.props(catalog.meta)}>
+    notes.push(
+      <span {...stylex.props(styles.progress)}>
         <Spinner size="small" aria-hidden="true" />
         {t(`settings.lan.machines.phase.${machine.update.phase}`, {
           version: machine.update.version,
         })}
       </span>
     );
-  }
-
-  const offer =
-    build.by === null
-      ? null
-      : t(`settings.lan.machines.available.${machine.self ? 'self' : 'member'}.${build.by}`, {
+  } else if (build.state === 'failed' && machine.update) {
+    notes.push(
+      <span {...stylex.props(catalog.metaWarning)}>
+        {t('settings.lan.machines.failed', { version: machine.update.version })}
+        {machine.update.error ? ` ${machine.update.error}` : null}
+      </span>
+    );
+  } else if (build.by !== null && !(machine.self && build.by === 'application')) {
+    // What this application installs is offered beside its own build, above.
+    notes.push(
+      <span {...stylex.props(catalog.metaWarning)}>
+        {t(`settings.lan.machines.available.${machine.self ? 'self' : 'member'}.${build.by}`, {
           version: newest ?? '',
-        });
-  if (build.state === 'failed' && machine.update) {
-    return (
-      <span {...stylex.props(catalog.meta, catalog.metaWarning, styles.facts)}>
-        <span title={machine.update.error}>
-          {t('settings.lan.machines.failed', { version: machine.update.version })}
-        </span>
-        {machine.update.error ? <span>{machine.update.error}</span> : null}
+        })}
       </span>
     );
   }
-  return (
-    <span {...stylex.props(catalog.meta, offer ? catalog.metaWarning : catalog.metaHint)}>
-      {offer ?? t('settings.lan.machines.newest')}
-    </span>
-  );
+
+  for (const agent of machine.agents) {
+    if (agent.state === 'current') continue;
+    notes.push(
+      <span {...stylex.props(needsRuntime(agent) && catalog.metaWarning)}>
+        {t(`settings.lan.machines.agent.${agent.state}`, {
+          name: agent.name,
+          version: agent.version ?? '',
+          target: agent.target ?? '',
+        })}
+      </span>
+    );
+  }
+  return notes;
 }

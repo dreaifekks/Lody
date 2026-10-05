@@ -9,6 +9,7 @@ import {
   type LodyPresenceInstanceId,
   type MachineId,
 } from '@lody/shared';
+import type { LanHubRole } from '@lody/shared/lan-hub-role';
 import { lodyPresenceStatesAtom, lodyPresenceSyncStateAtom } from '../src/atoms/presence';
 import {
   SidebarMachineHoverCard,
@@ -171,6 +172,59 @@ describe('sidebar machine group', () => {
       vi.advanceTimersByTime(1000);
     });
     expect(cardShown()).toBe(true);
+  });
+
+  it.each<[string, LanHubRole, string | null]>([
+    ['hosts it', { capable: true, hosting: true, hubRttMs: 0, term: 3 }, 'Hosts the hub'],
+    [
+      'keeps the standby copy',
+      { capable: true, hosting: false, hubRttMs: 5, snapshotAt: '2026-09-30T23:55:00.000Z' },
+      'Hub standby',
+    ],
+    // A machine that only could host the hub takes no part in it worth a row.
+    ['only could host it', { capable: true, hosting: false, hubRttMs: 5 }, null],
+  ])("names a machine's part in keeping the hub when it %s", async (_part, hubRole, said) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-01T00:00:00.000Z'));
+    store.set(lodyPresenceSyncStateAtom, 'synced');
+    await render(
+      <SidebarSectionHeader
+        label="Nuc"
+        collapsed={false}
+        onToggleCollapsed={() => undefined}
+        toggleLabel="Toggle Nuc"
+        wrapToggle={(toggle) => (
+          <SidebarMachineHoverCard
+            machine={{
+              machineId,
+              name: 'nuc',
+              isOwn: true,
+              isCurrent: false,
+              os: 'linux',
+              projectCount: 1,
+              hubRole,
+            }}
+          >
+            {toggle}
+          </SidebarMachineHoverCard>
+        )}
+      />
+    );
+
+    const trigger = container.querySelector('[aria-label="Toggle Nuc"]') as HTMLElement;
+    await act(async () => {
+      pointer('pointerover', trigger, { relatedTarget: document.body });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    const card = [...document.body.children].find((node) => node !== container);
+    expect(card?.textContent).toContain('1 project');
+    if (said) expect(card?.textContent).toContain(said);
+    else expect(card?.textContent).not.toMatch(/hub/i);
+    // How often the hub moved is not said at a glance.
+    expect(card?.textContent).not.toContain('Term');
   });
 
   it("draws the hidden Sessions' status on a folded section header only", async () => {
