@@ -237,12 +237,14 @@ export class LocalPreviewProxyManager {
     return record.endpoint;
   }
 
-  async release(sessionId: SessionId, endpointId: string): Promise<void> {
+  /** Whether the endpoint was the session's and is now closed. */
+  async release(sessionId: SessionId, endpointId: string): Promise<boolean> {
     const record = this.records.get(sessionId);
     if (!record || record.endpoint.endpointId !== endpointId) {
-      return;
+      return false;
     }
     await this.closeRecord(sessionId, record, 'Preview endpoint released');
+    return true;
   }
 
   async closeSession(sessionId: SessionId, reason: string): Promise<void> {

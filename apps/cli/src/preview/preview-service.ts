@@ -774,17 +774,31 @@ export class PreviewService {
       };
     }
 
+    let memberTarget: PreviewTarget | undefined;
     let connectTo: PreviewTarget | undefined;
     if (session.meta.machineId !== this.deps.machineId && this.deps.memberPorts) {
+      // The member's loopback is held to the rule this machine's is: the
+      // tunnel reaches any host the member reaches.
+      const normalized = normalizeTarget(request.target);
+      if (isValidationFailure(normalized)) {
+        return {
+          type: 'session/preview-endpoint-acquire_response',
+          sessionId: request.sessionId,
+          success: false,
+          error: normalized.code,
+          message: normalized.message,
+        };
+      }
+      memberTarget = normalized;
       // The dev server runs on another member: a port of this machine carries
       // every connection there, and is proxied as one of this machine.
       try {
         const port = await this.deps.memberPorts.open(
           request.sessionId,
           session.meta.machineId as MachineId,
-          request.target
+          memberTarget
         );
-        connectTo = { ...request.target, host: '127.0.0.1', port };
+        connectTo = { ...memberTarget, host: '127.0.0.1', port };
       } catch (error) {
         return {
           type: 'session/preview-endpoint-acquire_response',
@@ -817,8 +831,8 @@ export class PreviewService {
     const endpoint = await this.localProxyManager.acquire({
       sessionId: request.sessionId,
       // The page keeps the address the member serves it at.
-      target: connectTo
-        ? { ...validation.normalizedTarget, host: request.target.host, port: request.target.port }
+      target: memberTarget
+        ? { ...validation.normalizedTarget, host: memberTarget.host, port: memberTarget.port }
         : validation.normalizedTarget,
       ...(connectTo ? { connectTo: validation.normalizedTarget } : {}),
       connectionAddress: validation.connectionAddress,
@@ -849,8 +863,10 @@ export class PreviewService {
         message: scopeFailure.message,
       };
     }
-    await this.localProxyManager.release(request.sessionId, request.endpointId);
-    await this.deps.memberPorts?.release(request.sessionId);
+    // A stale endpoint's release must not close the port the current one uses.
+    if (await this.localProxyManager.release(request.sessionId, request.endpointId)) {
+      await this.deps.memberPorts?.release(request.sessionId);
+    }
     return {
       type: 'session/preview-endpoint-release_response',
       sessionId: request.sessionId,

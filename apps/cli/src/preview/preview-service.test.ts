@@ -466,11 +466,29 @@ describe('PreviewService Quick Tunnel lifecycle', () => {
     expect(await (await fetch(acquired.endpoint?.viewerUrl ?? '')).text()).toBe(
       'development server'
     );
-    await service.releaseEndpoint({
+
+    // Moving to another port, the page releases the endpoint it left only
+    // after the new one is up: that must not close the new one's port.
+    const moved = await service.acquireEndpoint({
       ...request,
-      endpointId: acquired.endpoint?.endpointId ?? '',
+      target: { ...memberTarget, port: 5174 },
     });
+    expect(moved.success, JSON.stringify(moved)).toBe(true);
+    await service.releaseEndpoint({ ...request, endpointId: acquired.endpoint?.endpointId ?? '' });
+    expect(asked).not.toContain(`release ${sessionId}`);
+    expect(await (await fetch(moved.endpoint?.viewerUrl ?? '')).text()).toBe('development server');
+    await service.releaseEndpoint({ ...request, endpointId: moved.endpoint?.endpointId ?? '' });
     expect(asked.at(-1)).toBe(`release ${sessionId}`);
+
+    // The member's loopback is the only place it reaches, as for this machine.
+    asked.length = 0;
+    expect(
+      await service.acquireEndpoint({
+        ...request,
+        target: { ...memberTarget, host: '192.168.50.10' },
+      })
+    ).toMatchObject({ success: false, error: 'host_not_loopback' });
+    expect(asked).toEqual([]);
   });
 
   it('rejects stale consent, changed origins, unsafe hosts, and unauthorized revoke without altering active state', async () => {
