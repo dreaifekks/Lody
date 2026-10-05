@@ -397,6 +397,18 @@ installed. Every file is checked against the size and the SHA-256 the manifest
 names. A release replaces its files one by one, so a mismatch is what a
 download meets while a newer build is being published.
 
+A download has no limit on how long it takes, only on how long it receives
+nothing (a minute): a desktop bundle is around 180 MB, which a slow connection
+abroad takes half an hour for. A connection that breaks off or stalls is asked
+again, with a range, for what is missing, as long as each try still receives
+something; a few in a row that receive nothing end it. What arrived stays as
+`<file>.partial` beside the digest of the file it belongs to, so the desktop
+application continues it with its next download of the same file, also after it
+was started again, and discards the part of another build. An agent service
+discards it with its staging directory, its file being small. A host that ignores
+the range sends the whole file, which replaces the part. The file is checked as
+a whole once it is complete.
+
 Who replaces the agent service of a machine is its update channel:
 
 | Channel   | The agent service                                                                     | Who updates it                       |
