@@ -81,6 +81,24 @@ export function findMachineShell(
 }
 
 /**
+ * What ends piped input in a terminal: Ctrl-D at the start of a line. A last
+ * line without its newline takes one Ctrl-D to be read and another to end.
+ */
+export function endOfInput(lastInput: string): string {
+  return lastInput === '' || lastInput.endsWith('\n') ? '\u0004' : '\u0004\u0004';
+}
+
+/**
+ * The status a shell's end gives this command: its exit code, or 128 plus
+ * the signal that ended it, as a shell reports one.
+ */
+export function shellExitStatus(outcome: { exitCode: number; signal?: string }): number {
+  const signal = Number(outcome.signal);
+  if (Number.isInteger(signal) && signal > 0) return 128 + signal;
+  return outcome.exitCode >= 0 && outcome.exitCode < 256 ? outcome.exitCode : 255;
+}
+
+/**
  * Typing Enter, `~` and `.` leaves a shell running and ends this command, as
  * it ends a connection in ssh; `~~` types one `~`.
  */
@@ -219,13 +237,17 @@ export async function runMachineShell(
     cleanups.push(link.onClose((reason) => finish({ type: 'disconnected', terminalId, reason })));
 
     const filter = createDetachFilter(() => finish({ type: 'detached', terminalId }));
+    let lastInput = '';
     const onInput = (chunk: Buffer | string) => {
       const data = interactive ? filter(chunk.toString()) : chunk.toString();
-      if (data) link.send({ type: 'input', terminalId, data });
+      if (!data) return;
+      lastInput = data;
+      link.send({ type: 'input', terminalId, data });
     };
     // A command given input from a pipe sees its end as an end of file.
     const onEnd = () => {
-      if (!interactive) link.send({ type: 'input', terminalId, data: '\u0004' });
+      if (interactive) return;
+      link.send({ type: 'input', terminalId, data: endOfInput(lastInput) });
     };
     if (interactive) {
       io.stdin.setRawMode(true);

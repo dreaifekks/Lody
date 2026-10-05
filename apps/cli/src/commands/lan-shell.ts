@@ -11,6 +11,7 @@ import {
   findMachineShell,
   listMachineShells,
   runMachineShell,
+  shellExitStatus,
 } from '@/lib/lan/lan-shell';
 import { renderTerminalTable } from '@/lib/terminal-table';
 
@@ -125,10 +126,9 @@ export const shellCommand = new Command('shell')
           throw new Error(describeTerminalError(error));
         });
         if (outcome.type === 'exited') {
-          if (outcome.exitCode === 0) return;
-          throw new ShellExit(
-            outcome.exitCode > 0 && outcome.exitCode < 256 ? outcome.exitCode : 255
-          );
+          const status = shellExitStatus(outcome);
+          if (status === 0) return;
+          throw new ShellExit(status);
         }
         const again = ['lody-lan lan shell', selector?.trim(), '--attach', outcome.terminalId]
           .filter(Boolean)
