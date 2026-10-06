@@ -359,6 +359,11 @@ export const voiceAgentSelectionAtom = atomWithStorage<string | null>(
   { getOnInit: true }
 );
 
+/** This device's own voice for calls, a name from the agent's list; null follows Codex's default. */
+export const voiceNameAtom = atomWithStorage<string | null>('lody-voice-name', null, undefined, {
+  getOnInit: true,
+});
+
 export const voiceFeatureEnabledAtom = atom(
   (get) => get(experimentalFeaturesEnabledAtom) && get(voiceExperimentEnabledAtom)
 );

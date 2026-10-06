@@ -6,6 +6,7 @@ import {
   LODY_EXTENSION_METHODS,
   type LodyVoiceEventNotification,
   type LodyVoiceStartResponse,
+  type LodyVoiceVoicesResponse,
 } from 'acp-extension-core';
 import {
   MACHINE_VOICE_POLL_MAX_WAIT_MS,
@@ -53,7 +54,16 @@ type VoiceHostProcess = {
   process: ChildProcess;
   connection: acp.ClientSideConnection;
   calls: Set<string>;
+  /** Requests in flight that have no call yet: a start, or a voice list. */
+  leases: number;
+  modes: readonly string[];
+  /** Whether the adapter lists voices and honours `voice` on start. */
+  voices: boolean;
+  /** This host's entry in `hosts`, so a newer host of the config is never dropped. */
+  entry?: Promise<VoiceHostProcess>;
 };
+
+type VoiceStartRequest = Extract<MachineVoiceRequest, { action: 'start' }>;
 
 export type VoiceHostDeps = {
   workspaceId: string;
@@ -110,6 +120,8 @@ export class VoiceHost {
         }
         case 'poll':
           return await this.poll(request.voiceSessionId, request.after, request.waitMs ?? 0);
+        case 'voices':
+          return await this.listVoices(request.configId as AgentConfigId);
         default:
           return { success: false, error: 'Unknown voice action' };
       }
@@ -135,21 +147,72 @@ export class VoiceHost {
     await Promise.all(started.map((host) => terminateChildProcess(host.process).catch(() => {})));
   }
 
-  private async start(
-    request: Extract<MachineVoiceRequest, { action: 'start' }>
-  ): Promise<MachineVoiceResponse> {
-    const host = await this.getHost(request.configId as AgentConfigId);
-    const response = (await host.connection.request(LODY_EXTENSION_METHODS.voiceStart, {
-      mode: request.mode,
-      sdp: request.sdp,
-      ...(request.instructions ? { instructions: request.instructions } : {}),
-      ...(request.context ? { context: request.context } : {}),
-    })) as Partial<LodyVoiceStartResponse>;
-    if (typeof response.voiceSessionId !== 'string' || typeof response.sdp !== 'string') {
-      throw new Error('The agent returned no voice call');
+  private async start(request: VoiceStartRequest): Promise<MachineVoiceResponse> {
+    return await this.withHost(request.configId as AgentConfigId, async (host) => {
+      if (!host.modes.includes(request.mode)) {
+        throw new Error(`This Codex agent build cannot start a ${request.mode} voice call`);
+      }
+      const response = (await host.connection.request(LODY_EXTENSION_METHODS.voiceStart, {
+        mode: request.mode,
+        sdp: request.sdp,
+        ...(request.instructions ? { instructions: request.instructions } : {}),
+        ...(request.context ? { context: request.context } : {}),
+        // An adapter that predates voices would ignore it; the default voice then plays.
+        ...(request.voice && host.voices ? { voice: request.voice } : {}),
+      })) as Partial<LodyVoiceStartResponse>;
+      if (typeof response.voiceSessionId !== 'string' || typeof response.sdp !== 'string') {
+        throw new Error('The agent returned no voice call');
+      }
+      return this.openCall(host, response.voiceSessionId, response.sdp);
+    });
+  }
+
+  private async listVoices(configId: AgentConfigId): Promise<MachineVoiceResponse> {
+    return await this.withHost(configId, async (host) => {
+      if (!host.voices) throw new Error('This Codex agent build cannot list voices');
+      const response = (await host.connection.request(
+        LODY_EXTENSION_METHODS.voiceVoices,
+        {}
+      )) as Partial<LodyVoiceVoicesResponse>;
+      if (!Array.isArray(response.voices) || typeof response.defaultVoice !== 'string') {
+        throw new Error('The agent returned no voice list');
+      }
+      return {
+        success: true,
+        action: 'voices',
+        voices: response.voices.filter((voice): voice is string => typeof voice === 'string'),
+        defaultVoice: response.defaultVoice,
+      };
+    });
+  }
+
+  /**
+   * Runs `run` on the config's adapter, holding it open meanwhile; an adapter
+   * left with no call afterwards (a voice list, a failed start) exits.
+   */
+  private async withHost<T>(
+    configId: AgentConfigId,
+    run: (host: VoiceHostProcess) => Promise<T>
+  ): Promise<T> {
+    const host = await this.getHost(configId);
+    host.leases += 1;
+    try {
+      return await run(host);
+    } finally {
+      host.leases -= 1;
+      this.releaseIfIdle(host);
     }
+  }
+
+  private releaseIfIdle(host: VoiceHostProcess): void {
+    if (host.calls.size > 0 || host.leases > 0) return;
+    if (this.hosts.get(host.configId) === host.entry) this.hosts.delete(host.configId);
+    void terminateChildProcess(host.process).catch(() => {});
+  }
+
+  private openCall(host: VoiceHostProcess, voiceSessionId: string, sdp: string) {
     const call: VoiceCall = {
-      id: response.voiceSessionId,
+      id: voiceSessionId,
       host,
       events: [],
       closed: false,
@@ -160,10 +223,10 @@ export class VoiceHost {
     host.calls.add(call.id);
     this.ensureSweep();
     return {
-      success: true,
-      action: 'start',
+      success: true as const,
+      action: 'start' as const,
       voiceSessionId: call.id,
-      sdp: response.sdp,
+      sdp,
     };
   }
 
@@ -212,10 +275,7 @@ export class VoiceHost {
     this.pushEvent(call, { type: 'closed', reason });
     call.closed = true;
     call.host.calls.delete(call.id);
-    if (call.host.calls.size === 0) {
-      this.hosts.delete(call.host.configId);
-      void terminateChildProcess(call.host.process).catch(() => {});
-    }
+    this.releaseIfIdle(call.host);
   }
 
   private handleVoiceEvent(params: LodyVoiceEventNotification): void {
@@ -260,6 +320,12 @@ export class VoiceHost {
     if (existing) return existing;
     const created = this.startHost(configId);
     this.hosts.set(configId, created);
+    void created.then(
+      (host) => {
+        host.entry = created;
+      },
+      () => {}
+    );
     created.catch(() => {
       if (this.hosts.get(configId) === created) this.hosts.delete(configId);
     });
@@ -347,6 +413,9 @@ export class VoiceHost {
           process: child,
           connection: null as unknown as acp.ClientSideConnection,
           calls: new Set(),
+          leases: 0,
+          modes: [],
+          voices: false,
         };
         this.startedHosts.add(host);
         // A shutdown during `initialize` ends the process, which fails the handshake.
@@ -356,7 +425,7 @@ export class VoiceHost {
           signal.removeEventListener('abort', stopOnShutdown);
           this.startedHosts.delete(host);
           void release().catch(() => {});
-          if (this.hosts.has(configId)) this.hosts.delete(configId);
+          if (this.hosts.get(configId) === host.entry) this.hosts.delete(configId);
           for (const id of [...host.calls]) {
             const call = this.calls.get(id);
             if (call) this.closeCall(call, 'agent exited');
@@ -388,11 +457,17 @@ export class VoiceHost {
             },
           });
           const voice = (
-            init.agentCapabilities?._meta as { lody?: { voice?: { version?: number } } }
+            init.agentCapabilities?._meta as {
+              lody?: { voice?: { version?: number; modes?: unknown; voices?: unknown } };
+            }
           )?.lody?.voice;
           if (voice?.version !== 1) {
             throw new Error('This Codex agent build does not support voice');
           }
+          host.modes = Array.isArray(voice.modes)
+            ? voice.modes.filter((mode): mode is string => typeof mode === 'string')
+            : ['conversation', 'dictation'];
+          host.voices = voice.voices === true;
           signal.throwIfAborted();
         } catch (error) {
           await terminateChildProcess(child);

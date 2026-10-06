@@ -11,8 +11,22 @@ import { AgentConfigIdSchema } from './message-schemas';
  */
 export const MACHINE_VOICE_POLL_MAX_WAIT_MS = 15_000;
 
-export const MachineVoiceModeSchema = z.enum(['conversation', 'dictation']);
+/**
+ * The renderer's answer, without asking, to a voice list, preview or chosen
+ * voice for a machine whose protocol predates them (`realtimeVoice` < 3).
+ */
+export const MACHINE_VOICE_SELECTION_UNSUPPORTED =
+  'This machine cannot choose voices yet. Update Lody on it.';
+
+/** `preview` (protocol v3) plays a voice once so the user can hear it; no session is involved. */
+export const MachineVoiceModeSchema = z.enum(['conversation', 'dictation', 'preview']);
 export type MachineVoiceMode = z.infer<typeof MachineVoiceModeSchema>;
+
+export const MachineVoiceNameSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9_-]+$/);
 
 export const MachineVoiceRequestSchema = z.discriminatedUnion('action', [
   z
@@ -24,8 +38,12 @@ export const MachineVoiceRequestSchema = z.discriminatedUnion('action', [
       instructions: z.string().max(4_000).optional(),
       /** Background the voice starts from, e.g. the session's recent turns (protocol v2). */
       context: z.string().max(16_000).optional(),
+      /** A name from the `voices` action (protocol v3); an unknown one falls back to the default. */
+      voice: MachineVoiceNameSchema.optional(),
     })
     .strict(),
+  /** The voices the config's Codex offers for calls (protocol v3). */
+  z.object({ action: z.literal('voices'), configId: AgentConfigIdSchema }).strict(),
   z
     .object({
       action: z.literal('append'),
@@ -74,6 +92,14 @@ export const MachineVoiceResponseSchema = z.union([
       action: z.literal('poll'),
       events: z.array(z.object({ seq: z.number().int(), event: MachineVoiceEventSchema }).strict()),
       closed: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      success: z.literal(true),
+      action: z.literal('voices'),
+      voices: z.array(MachineVoiceNameSchema).max(100),
+      defaultVoice: MachineVoiceNameSchema,
     })
     .strict(),
   z.object({ success: z.literal(true), action: z.enum(['append', 'stop']) }).strict(),

@@ -1,20 +1,22 @@
 diff --git a/src/capabilities.ts b/src/capabilities.ts
-index 8e52be4..91e1b56 100644
+index 8e52be4..70dcd11 100644
 --- a/src/capabilities.ts
 +++ b/src/capabilities.ts
-@@ -55,6 +55,11 @@ export type LodyRateLimitsCapability = LodyVersionOneCapability & {
+@@ -55,6 +55,13 @@ export type LodyRateLimitsCapability = LodyVersionOneCapability & {
    query?: true;
  };
  
 +/** Experimental realtime voice, see `voice.ts`. */
 +export type LodyVoiceCapability = LodyVersionOneCapability & {
-+  modes: readonly ('conversation' | 'dictation')[];
++  modes: readonly ('conversation' | 'dictation' | 'preview')[];
++  /** Answers `_lody/voice/voices` and honours `voice` on start. */
++  voices?: true;
 +};
 +
  export type LodyExtensionCapabilities = {
    subagentEvents?: LodyVersionOneCapability;
    /** Owns title generation; pushes tagged session_info_update titles without a client request. */
-@@ -69,4 +74,5 @@ export type LodyExtensionCapabilities = {
+@@ -69,4 +76,5 @@ export type LodyExtensionCapabilities = {
    compaction?: LodyVersionOneCapability;
    sessionHistory?: LodyVersionOneCapability;
    worktreeProject?: LodyVersionOneCapability;
@@ -33,21 +35,22 @@ index 5fdb070..2e7d453 100644
  export * from './subagent-events.js';
  export * from './subagent-emitter.js';
 diff --git a/src/methods.ts b/src/methods.ts
-index c8ca0cd..da988ec 100644
+index c8ca0cd..554609b 100644
 --- a/src/methods.ts
 +++ b/src/methods.ts
-@@ -12,6 +12,10 @@ export const LODY_EXTENSION_METHODS = {
+@@ -12,6 +12,11 @@ export const LODY_EXTENSION_METHODS = {
    subagentsList: '_lody/subagents/list',
    subagentsCancel: '_lody/subagents/cancel',
    subagentsOutput: '_lody/subagents/output',
 +  voiceStart: '_lody/voice/start',
 +  voiceAppend: '_lody/voice/append',
 +  voiceStop: '_lody/voice/stop',
++  voiceVoices: '_lody/voice/voices',
 +  voiceEvent: '_lody/voice/event',
  } as const;
  
  export type LodyExtensionMethod =
-@@ -46,6 +50,18 @@ export type LodyExtensionRequestMap<TPrompt = unknown> = {
+@@ -46,6 +51,22 @@ export type LodyExtensionRequestMap<TPrompt = unknown> = {
      params: LodySubagentOutputRequest;
      result: LodySubagentOutputResponse;
    };
@@ -63,10 +66,14 @@ index c8ca0cd..da988ec 100644
 +    params: LodyVoiceStopRequest;
 +    result: Record<string, never>;
 +  };
++  [LODY_EXTENSION_METHODS.voiceVoices]: {
++    params: Record<string, never>;
++    result: LodyVoiceVoicesResponse;
++  };
  };
  
  export type LodyExtensionNotificationMap = {
-@@ -53,6 +69,7 @@ export type LodyExtensionNotificationMap = {
+@@ -53,6 +74,7 @@ export type LodyExtensionNotificationMap = {
    [LODY_EXTENSION_METHODS.sessionUsageUpdate]: SessionUsageUpdate;
    [LODY_EXTENSION_METHODS.rateLimitsUpdate]: RateLimitsUpdate;
    [LODY_EXTENSION_METHODS.sessionSteerApplied]: LodySteerApplied;
@@ -74,7 +81,7 @@ index c8ca0cd..da988ec 100644
  };
  
  export type LodyExtensionRequestMethod = keyof LodyExtensionRequestMap;
-@@ -91,3 +108,10 @@ import type {
+@@ -91,3 +113,11 @@ import type {
    LodySubagentsListResponse,
  } from './session.js';
  import type { SessionUsageUpdate } from './usage.js';
@@ -84,13 +91,14 @@ index c8ca0cd..da988ec 100644
 +  LodyVoiceStartRequest,
 +  LodyVoiceStartResponse,
 +  LodyVoiceStopRequest,
++  LodyVoiceVoicesResponse,
 +} from './voice.js';
 diff --git a/src/voice.ts b/src/voice.ts
 new file mode 100644
-index 0000000..3395f47
+index 0000000..fbdfefd
 --- /dev/null
 +++ b/src/voice.ts
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,62 @@
 +/**
 + * Experimental realtime voice, hosted by an agent process without an ACP
 + * session. The client owns the microphone and the WebRTC peer; the agent only
@@ -99,7 +107,11 @@ index 0000000..3395f47
 + * sends it through its own prompt path, and returns the result with
 + * `_lody/voice/append` so the voice can speak it.
 + */
-+export type LodyVoiceMode = 'conversation' | 'dictation';
++/**
++ * `preview` plays a voice once, e.g. a sample sentence the client appends: no
++ * microphone input is needed and nothing is handed off.
++ */
++export type LodyVoiceMode = 'conversation' | 'dictation' | 'preview';
 +
 +export type LodyVoiceStartRequest = {
 +  mode: LodyVoiceMode;
@@ -109,6 +121,11 @@ index 0000000..3395f47
 +  instructions?: string | undefined;
 +  /** Background the voice starts from, e.g. the conversation so far (conversation only). */
 +  context?: string | undefined;
++  /**
++   * A name from `_lody/voice/voices`. One the agent does not offer falls back
++   * to its default voice instead of failing the call.
++   */
++  voice?: string | undefined;
 +};
 +
 +export type LodyVoiceStartResponse = {
@@ -121,6 +138,13 @@ index 0000000..3395f47
 +  voiceSessionId: string;
 +  /** Context the voice should relay, typically the result of a request. */
 +  text: string;
++};
++
++/** The voices a call can use; requires `voice.voices` in the capability. */
++export type LodyVoiceVoicesResponse = {
++  voices: string[];
++  /** The voice a call without `voice` uses. */
++  defaultVoice: string;
 +};
 +
 +export type LodyVoiceStopRequest = {

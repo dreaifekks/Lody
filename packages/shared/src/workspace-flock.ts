@@ -22,7 +22,15 @@ export type WorkspaceVoiceSetting = {
   version: 1;
   configId: AgentConfigId;
   machineId: MachineId;
+  /**
+   * The voice calls use, a name the agent's Codex lists; absent follows Codex's
+   * default. Optional so clients that predate it keep reading the row.
+   */
+  voice?: string;
 };
+
+const isVoiceName = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-z0-9_-]{1,64}$/.test(value);
 
 export const isWorkspaceVoiceSetting = (value: unknown): value is WorkspaceVoiceSetting => {
   if (typeof value !== 'object' || value === null) return false;
@@ -148,7 +156,13 @@ export const parseWorkspaceFlockRow = (
     if (!isWorkspaceVoiceSetting(value)) return undefined;
     return {
       key: parsedKey.key,
-      value: { version: 1, configId: value.configId, machineId: value.machineId },
+      value: {
+        version: 1,
+        configId: value.configId,
+        machineId: value.machineId,
+        // A malformed voice is dropped, not the agent choice that carries it.
+        ...(isVoiceName(value.voice) ? { voice: value.voice } : {}),
+      },
     };
   }
   // Normalized rather than merely validated: an option key an older client

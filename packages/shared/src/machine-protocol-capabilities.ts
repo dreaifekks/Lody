@@ -196,8 +196,11 @@ export function machineSupportsLocalFileResourcesProtocol(
   );
 }
 
-/** v2: `start` accepts `context`, background the voice starts from. */
-export const REALTIME_VOICE_PROTOCOL_VERSION = 2;
+/**
+ * v2: `start` accepts `context`, background the voice starts from.
+ * v3: `start` accepts `voice` and the `preview` mode; the `voices` action lists voices.
+ */
+export const REALTIME_VOICE_PROTOCOL_VERSION = 3;
 
 /** Whether the daemon hosts experimental realtime voice calls (`machine/voice`). */
 export function machineSupportsRealtimeVoice(
@@ -211,6 +214,16 @@ export function machineSupportsRealtimeVoiceContext(
   machine: MachineProtocolCapabilityCarrier | null | undefined
 ): boolean {
   return machineSupportsProtocolCapability(machine, MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice, 2);
+}
+
+/**
+ * Whether the machine lists voices, previews them and starts a call with a chosen
+ * one; older daemons reject `voice`, `preview` and `voices`.
+ */
+export function machineSupportsRealtimeVoiceSelection(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(machine, MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice, 3);
 }
 
 export function machineSupportsPiExtensions(

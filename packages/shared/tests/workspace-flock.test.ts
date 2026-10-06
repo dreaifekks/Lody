@@ -111,6 +111,14 @@ describe('workspace Flock helpers', () => {
     expect(parseWorkspaceFlockRow(key, { ...setting, version: 2 })).toBeUndefined();
     expect(parseWorkspaceFlockRow(key, { ...setting, configId: '' })).toBeUndefined();
     expect(parseWorkspaceFlockRow(['setting', 'theme'], setting)).toBeUndefined();
+    expect(parseWorkspaceFlockRow(key, { ...setting, voice: 'maple' })).toEqual({
+      key,
+      value: { ...setting, voice: 'maple' },
+    });
+    expect(parseWorkspaceFlockRow(key, { ...setting, voice: 'Not a voice' })).toEqual({
+      key,
+      value: setting,
+    });
 
     const flock = new FakeWorkspaceFlock();
     flock.set(key, setting);

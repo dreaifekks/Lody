@@ -18,6 +18,8 @@ import {
   machineSupportsPiExtensions,
   machineSupportsRealtimeVoice,
   machineSupportsRealtimeVoiceContext,
+  machineSupportsRealtimeVoiceSelection,
+  MACHINE_VOICE_SELECTION_UNSUPPORTED,
   machineSupportsSubagentCancellation,
   machineSupportsIosSimulatorProtocol,
   machineSupportsPreviewControlProtocol,
@@ -1407,8 +1409,8 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
   ): Promise<MachineVoiceResponse> => {
     let request = voiceRequest;
     const fail = (error: string): MachineVoiceResponse => ({ success: false, error });
-    // `start` may first download the Codex runtime; `poll` waits up to its own limit.
-    const timeoutMs = request.action === 'start' ? 180_000 : 30_000;
+    // `start` and `voices` may first download the Codex runtime; `poll` waits up to its own limit.
+    const timeoutMs = request.action === 'start' || request.action === 'voices' ? 180_000 : 30_000;
     try {
       await targetRouter.resolvePlaneForMachine(machineId, {
         timeoutMs: LOCAL_MACHINE_ID_READY_TIMEOUT_MS,
@@ -1429,6 +1431,19 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
         // An older machine still holds the call, only without the session's background.
         const { context: _context, ...rest } = request;
         request = rest;
+      }
+      if (!machineSupportsRealtimeVoiceSelection({ protocolCapabilities })) {
+        if (
+          request.action === 'voices' ||
+          (request.action === 'start' && request.mode === 'preview')
+        ) {
+          return fail(MACHINE_VOICE_SELECTION_UNSUPPORTED);
+        }
+        if (request.action === 'start' && request.voice !== undefined) {
+          // An older machine still holds the call, in Codex's default voice.
+          const { voice: _voice, ...rest } = request;
+          request = rest;
+        }
       }
       if (plane === 'local') {
         const sender = getLocalMachineRpcSender();
