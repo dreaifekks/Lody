@@ -6,10 +6,14 @@ import {
   buildVoiceSessionContext,
   buildVoiceTurnMessage,
   extractVoiceSay,
+  looksUnfinished,
   parseVoiceTurn,
   resolveVoiceLatestReply,
   stripVoiceSay,
+  VOICE_MERGE_WINDOW_MS,
+  VOICE_MERGE_WINDOW_UNFINISHED_MS,
   VOICE_RELAY_MAX_CHARS,
+  voiceMergeWindowMs,
   voiceTurnDisplayText,
 } from '../src/lib/voice-conversation';
 
@@ -270,5 +274,71 @@ describe('buildVoiceRelay', () => {
     expect(buildVoiceRelay({ key: 'a1', text: '', answersVoiceTurn: true }, ['Do it.'])).toContain(
       'finished without a written reply'
     );
+  });
+});
+
+describe('merge window', () => {
+  it('reads trailing dashes, commas, ellipses and filler or connective words as unfinished', () => {
+    for (const text of [
+      '那么对于我们现在这个实践而言，它是如何',
+      '我想看一下 -',
+      '就是—',
+      '先这样，',
+      '然后……',
+      '这个问题就是',
+      '如果可以的话',
+      'check the build and',
+    ]) {
+      expect(looksUnfinished(text), text).toBe(true);
+    }
+    for (const text of ['跑一下测试', '它是如何实现的？', '好的。', 'Run it', '', '  ']) {
+      expect(looksUnfinished(text), text).toBe(false);
+    }
+  });
+
+  it('is judged by the last thing the user said, not by the voice', () => {
+    expect(voiceMergeWindowMs([])).toBe(VOICE_MERGE_WINDOW_MS);
+    expect(
+      voiceMergeWindowMs([
+        { role: 'user', text: '它是如何' },
+        { role: 'assistant', text: '嗯，' },
+      ])
+    ).toBe(VOICE_MERGE_WINDOW_UNFINISHED_MS);
+    expect(
+      voiceMergeWindowMs([
+        { role: 'user', text: '它是如何' },
+        { role: 'user', text: '落地的' },
+      ])
+    ).toBe(VOICE_MERGE_WINDOW_MS);
+  });
+});
+
+describe('voice understanding that repeats the user', () => {
+  const spoken = [
+    { role: 'user' as const, text: '帮我看一下邮件，' },
+    { role: 'assistant' as const, text: '好，我看一下。' },
+    { role: 'user' as const, text: '顺便  回复一下 Alice' },
+  ];
+
+  it('is left out when every paraphrase is already in the user words', () => {
+    const message = buildVoiceTurnMessage({
+      spoken,
+      understanding: [' 帮我看一下邮件。', '顺便回复一下alice!'],
+    });
+
+    expect(message).not.toContain('<voice_understanding>');
+    expect(parseVoiceTurn(message)).toEqual({
+      userWords: ['帮我看一下邮件，', '顺便 回复一下 Alice'],
+      understanding: [],
+    });
+  });
+
+  it('is kept whole when any paraphrase says something else', () => {
+    const message = buildVoiceTurnMessage({
+      spoken,
+      understanding: ['帮我看一下邮件', 'Reply to Alice.'],
+    });
+
+    expect(parseVoiceTurn(message)?.understanding).toEqual(['帮我看一下邮件', 'Reply to Alice.']);
   });
 });

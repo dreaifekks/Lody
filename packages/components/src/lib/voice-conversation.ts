@@ -28,6 +28,40 @@ export const VOICE_CONTEXT_MAX_CHARS = 6_000;
 const CONTEXT_USER_MAX_CHARS = 600;
 const CONTEXT_AGENT_MAX_CHARS = 1_200;
 
+/** How long hand-offs keep merging after the last fragment when the user ended a sentence. */
+export const VOICE_MERGE_WINDOW_MS = 2_000;
+
+/** The same, when the user's last words trail off mid-sentence and more is likely coming. */
+export const VOICE_MERGE_WINDOW_UNFINISHED_MS = 3_500;
+
+const TRAILING_MARKS = /(?:-|—|–|…|\.\.\.|,|，|、)$/;
+const TRAILING_WORDS =
+  /(?:就是|那个|这个|然后|嗯|啊|呃|额|如何|怎么|的话|因为|所以|但是|而且|还有|或者|比如|对于|关于)$|\b(?:and|or|but|so|because|um|uh)$/i;
+
+/**
+ * Whether a transcribed utterance seems cut off mid-sentence: it ends on a
+ * dash, ellipsis or comma, or on a filler or connective word. A plain
+ * heuristic; the voice hands off at pauses, and hesitant speech pauses often.
+ */
+export function looksUnfinished(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return TRAILING_MARKS.test(trimmed) || TRAILING_WORDS.test(trimmed);
+}
+
+/** The merge window after the latest fragment, judged by the user's last words so far. */
+export function voiceMergeWindowMs(spoken: readonly VoiceTranscriptLine[]): number {
+  for (let i = spoken.length - 1; i >= 0; i -= 1) {
+    const line = spoken[i];
+    if (line?.role !== 'user') continue;
+    return looksUnfinished(line.text) ? VOICE_MERGE_WINDOW_UNFINISHED_MS : VOICE_MERGE_WINDOW_MS;
+  }
+  return VOICE_MERGE_WINDOW_MS;
+}
+
+/** Text compared without case, whitespace or punctuation. */
+const comparable = (text: string) => text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+
 /** Spoken lines carried into one `<voice_turn>`; older ones are dropped first. */
 export const VOICE_TURN_SPOKEN_MAX_CHARS = 4_000;
 
@@ -44,7 +78,8 @@ export const VOICE_CONVERSATION_INSTRUCTIONS = [
   'Do yourself: keep the conversation flowing, acknowledge briefly when the user finishes (for example "嗯，我看一下"), pick up right away when interrupted, ask a short question when a request is ambiguous, and answer what the shared context already answers, such as what has been done or what the agent said last.',
   'Hand off: every substantive question about the code, the project or facts you do not have, and every request to do something, goes to the background agent at once. Corrections and additions to a running request go to it too. Do not decide or conclude anything in its place.',
   'Results: when the background agent reports back with talking points, tell the user in your own spoken words, say what it marks as necessary and ask what it marks for confirmation. Never read code, file paths, commands, URLs or long lists aloud; summarize them.',
-  'Never make up results, progress or details. If you do not know, say the agent is still on it or that you will ask it.',
+  'While waiting: until a handed-off request reports back, say only waiting words (checking, one moment, still in progress) or repeat the question to confirm it. Give no conclusion, cause or precondition about it; if asked how it is going, say it is still in progress. 等结果期间只说"在查/稍等/还在处理"，不对请求内容下任何结论。',
+  'Never make up results, progress or details.',
   'Reply in the language the user speaks; the user mostly speaks Chinese. Keep spoken replies short.',
 ].join('\n\n');
 
@@ -180,7 +215,20 @@ export function buildVoiceTurnMessage(input: {
     parts.push(`<conversation>\n${lines.join('\n')}\n</conversation>`);
   }
   const understanding = input.understanding.map(collapseWhitespace).filter(Boolean);
-  if (understanding.length > 0) {
+  // A paraphrase that only repeats the user's words adds nothing for the agent.
+  const userWords = comparable(
+    input.spoken
+      .filter((line) => line.role === 'user')
+      .map((line) => line.text)
+      .join(' ')
+  );
+  const repeatsUser =
+    userWords.length > 0 &&
+    understanding.every((text) => {
+      const paraphrase = comparable(text);
+      return paraphrase.length > 0 && userWords.includes(paraphrase);
+    });
+  if (understanding.length > 0 && !repeatsUser) {
     parts.push(
       `<voice_understanding>\n${UNDERSTANDING_NOTE}\n${understanding.map((text) => `- ${text}`).join('\n')}\n</voice_understanding>`
     );

@@ -33,7 +33,8 @@ vi.mock('@/hooks/use-voice-call', () => ({
 }));
 
 const { SessionVoiceControls } = await import('../src/components/sessions/session-voice-controls');
-const { parseVoiceTurn } = await import('../src/lib/voice-conversation');
+const { parseVoiceTurn, VOICE_MERGE_WINDOW_MS, VOICE_MERGE_WINDOW_UNFINISHED_MS } =
+  await import('../src/lib/voice-conversation');
 
 const userTurn = (id: string, text: string) =>
   ({ id, role: 'user', items: [{ type: 'text', text }] }) as unknown as SessionHistory;
@@ -115,6 +116,8 @@ describe('SessionVoiceControls conversation', () => {
     const [mode, options] = call.start.mock.calls[0]!;
     expect(mode).toBe('conversation');
     expect(options.instructions).toContain('background agent');
+    // Until a result is back, the voice may only stall, never answer for the agent.
+    expect(options.instructions).toContain('until a handed-off request reports back');
     expect(options.context).toContain('User: Fix the flaky auth test');
     expect(options.context).toContain('Agent: 修好了。');
     expect(call.append).not.toHaveBeenCalled();
@@ -157,6 +160,49 @@ describe('SessionVoiceControls conversation', () => {
     wait(1_500);
 
     expect(parseVoiceTurn(sent[0]!)?.userWords).toEqual(['列一下文件']);
+  });
+
+  it('holds the window open while the user trails off and closes it soon after they finish', () => {
+    startConversation();
+    heard('user', '那么对于我们现在这个实践而言，它是如何');
+    handedOff('How does this apply to our practice?');
+    wait(3_000);
+    expect(sent).toEqual([]);
+
+    // The rest of the sentence restarts the window, now the ordinary length.
+    heard('user', '落地的');
+    wait(1_999);
+    expect(sent).toEqual([]);
+    wait(1);
+
+    expect(sent).toHaveLength(1);
+    expect(parseVoiceTurn(sent[0]!)?.userWords).toEqual([
+      '那么对于我们现在这个实践而言，它是如何',
+      '落地的',
+    ]);
+  });
+
+  it('sends an unfinished sentence after the longer window when nothing follows', () => {
+    startConversation();
+    heard('user', '就是 -');
+    handedOff('Something about this.');
+    wait(VOICE_MERGE_WINDOW_UNFINISHED_MS - 1);
+    expect(sent).toEqual([]);
+    wait(1);
+
+    expect(parseVoiceTurn(sent[0]!)?.userWords).toEqual(['就是 -']);
+  });
+
+  it('judges a new hand-off by the words said just before it', () => {
+    startConversation();
+    heard('user', '帮我查一下，');
+    handedOff('Look something up.');
+    wait(1_000);
+    heard('user', '昨天的构建为什么失败');
+    handedOff("Why did yesterday's build fail?");
+    wait(VOICE_MERGE_WINDOW_MS);
+
+    expect(sent).toHaveLength(1);
   });
 
   it('sends the paraphrase alone when the user words never arrive', () => {

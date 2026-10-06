@@ -17,14 +17,9 @@ import {
   buildVoiceTurnMessage,
   resolveVoiceLatestReply,
   VOICE_CONVERSATION_INSTRUCTIONS,
+  voiceMergeWindowMs,
   type VoiceTranscriptLine,
 } from '@/lib/voice-conversation';
-
-/**
- * The voice hands off at a pause, so one sentence said with a breath in it can
- * arrive as two requests. Fragments this close together become one message.
- */
-const REQUEST_MERGE_WINDOW_MS = 2_000;
 
 /**
  * The user's own words are transcribed separately and may land just after the
@@ -130,13 +125,26 @@ function SessionVoiceControlsInner({
     onTranscript: (line) => {
       if (modeRef.current !== 'conversation') return;
       spokenRef.current = appendVoiceTranscript(spokenRef.current, line);
+      // The user is still talking: keep merging, judged by how these words end.
+      // The transcript grace, once started, keeps its own deadline.
+      const buffer = requestBufferRef.current;
+      if (buffer && !buffer.graceUsed && line.role === 'user') {
+        clearTimeout(buffer.timer);
+        buffer.timer = setTimeout(
+          () => flushRequestsRef.current(),
+          voiceMergeWindowMs(spokenRef.current)
+        );
+      }
     },
     onRequest: (text) => {
+      // The voice hands off at a pause, so one sentence said with a breath in it
+      // can arrive as two requests; fragments close together become one message,
+      // and words that trail off mid-sentence hold the window open longer.
       const buffer = requestBufferRef.current;
       if (buffer) clearTimeout(buffer.timer);
       requestBufferRef.current = {
         understanding: [...(buffer?.understanding ?? []), text],
-        timer: setTimeout(() => flushRequestsRef.current(), REQUEST_MERGE_WINDOW_MS),
+        timer: setTimeout(() => flushRequestsRef.current(), voiceMergeWindowMs(spokenRef.current)),
         graceUsed: buffer?.graceUsed ?? false,
       };
     },
