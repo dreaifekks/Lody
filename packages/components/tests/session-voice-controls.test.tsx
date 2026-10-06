@@ -95,7 +95,7 @@ beforeEach(() => {
   props = {
     turns: [
       userTurn('u1', 'Fix the flaky auth test'),
-      replyTurn('a1', 'Fixed. <say>修好了。</say>'),
+      replyTurn('a1', 'Fixed. <lody-voice-say>修好了。</lody-voice-say>'),
     ],
     isAgentBusy: false,
   };
@@ -223,7 +223,10 @@ describe('SessionVoiceControls conversation', () => {
     props = {
       turns: [
         ...props.turns,
-        replyTurn('a2', '42 passed, 0 failed in `pkg/a`.\n<say>测试全过了。</say>'),
+        replyTurn(
+          'a2',
+          '42 passed, 0 failed in `pkg/a`.\n<lody-voice-say>测试全过了。</lody-voice-say>'
+        ),
       ],
       isAgentBusy: false,
     };
@@ -258,7 +261,11 @@ describe('SessionVoiceControls conversation', () => {
     expect(call.append.mock.calls[0]![0]).not.toContain('Run the tests.');
 
     props = {
-      turns: [...props.turns, userTurn('u3', sent[0]!), replyTurn('a3', '<say>都过了。</say>')],
+      turns: [
+        ...props.turns,
+        userTurn('u3', sent[0]!),
+        replyTurn('a3', '<lody-voice-say>都过了。</lody-voice-say>'),
+      ],
       isAgentBusy: false,
     };
     render();
@@ -280,7 +287,7 @@ describe('SessionVoiceControls conversation', () => {
       turns: [
         ...props.turns,
         userTurn('u2', sent[0]!),
-        replyTurn('a2', '<say>测试都过了。</say>'),
+        replyTurn('a2', '<lody-voice-say>测试都过了。</lody-voice-say>'),
         userTurn('u3', sent[1]!),
       ],
       isAgentBusy: false,
@@ -291,7 +298,10 @@ describe('SessionVoiceControls conversation', () => {
     expect(first).not.toContain('README');
 
     props = {
-      turns: [...props.turns, replyTurn('a3', '<say>README 更新好了。</say>')],
+      turns: [
+        ...props.turns,
+        replyTurn('a3', '<lody-voice-say>README 更新好了。</lody-voice-say>'),
+      ],
       isAgentBusy: false,
     };
     render();
@@ -315,7 +325,7 @@ describe('SessionVoiceControls conversation', () => {
       turns: [
         ...props.turns,
         userTurn('u2', sent[0]!),
-        replyTurn('a2', '<say>测试都过了。</say>'),
+        replyTurn('a2', '<lody-voice-say>测试都过了。</lody-voice-say>'),
         userTurn('u3', sent[1]!),
       ],
       isAgentBusy: false,
@@ -326,7 +336,7 @@ describe('SessionVoiceControls conversation', () => {
     );
 
     props = {
-      turns: [...props.turns, replyTurn('a3', '<say>还是都过了。</say>')],
+      turns: [...props.turns, replyTurn('a3', '<lody-voice-say>还是都过了。</lody-voice-say>')],
       isAgentBusy: false,
     };
     render();

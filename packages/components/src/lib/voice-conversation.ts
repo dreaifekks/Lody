@@ -8,10 +8,14 @@ import type { SessionHistory } from '@lody/shared';
  * thinking and the work. Three pieces of text connect them:
  *
  * - at call start, a summary of the session's recent turns for the voice;
- * - for every spoken request, a `<voice_turn>` message to the agent with the
- *   user's own words, the voice's paraphrase and what the voice already said;
+ * - for every spoken request, a `<lody-voice-turn>` message to the agent with
+ *   the user's own words, the voice's paraphrase and what the voice already said;
  * - for every finished reply, a relay back to the voice, taken from the
- *   reply's `<say>` talking points when the agent wrote them.
+ *   reply's `<lody-voice-say>` talking points when the agent wrote them.
+ *
+ * Both tags carry a fork prefix so that ordinary text never matches them.
+ * Sessions recorded before the rename hold `<voice_turn>` and `<say>`; see
+ * `parseVoiceTurn` and `stripVoiceSay` for how those are still read.
  */
 
 /** One finished utterance of the call, as transcribed by the realtime model. */
@@ -69,14 +73,19 @@ export function voiceMergeWindowMs(spoken: readonly VoiceTranscriptLine[]): numb
 /** Text compared without case, whitespace or punctuation. */
 const comparable = (text: string) => text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
 
-/** Spoken lines carried into one `<voice_turn>`; older ones are dropped first. */
+/** Spoken lines carried into one voice turn message; older ones are dropped first. */
 export const VOICE_TURN_SPOKEN_MAX_CHARS = 4_000;
 
 /** Longest reply handed to the voice when the agent wrote no talking points. */
 export const VOICE_RELAY_MAX_CHARS = 6_000;
 
-const VOICE_TURN_OPEN = '<voice_turn>';
-const VOICE_TURN_CLOSE = '</voice_turn>';
+const VOICE_TURN_OPEN = '<lody-voice-turn>';
+const VOICE_TURN_CLOSE = '</lody-voice-turn>';
+/** The wrapper of voice turns recorded before the rename. */
+const LEGACY_VOICE_TURN_OPEN = '<voice_turn>';
+const LEGACY_VOICE_TURN_CLOSE = '</voice_turn>';
+const SAY_OPEN = '<lody-voice-say>';
+const SAY_CLOSE = '</lody-voice-say>';
 const USER_LINE_PREFIX = 'User: ';
 const VOICE_LINE_PREFIX = 'Voice: ';
 
@@ -90,8 +99,7 @@ export const VOICE_CONVERSATION_INSTRUCTIONS = [
   'Reply in the language the user speaks; the user mostly speaks Chinese. Keep spoken replies short.',
 ].join('\n\n');
 
-const REPLY_INSTRUCTIONS =
-  'The user is listening, not reading. Reply as usual, then end your reply with a <say>…</say> block for the voice assistant: two to four short spoken sentences in the language the user speaks, with the conclusion, anything that must be said, and anything the user has to confirm. No code, paths, commands or lists inside it.';
+const REPLY_INSTRUCTIONS = `The user is listening, not reading. Reply as usual, then end your reply with a ${SAY_OPEN}…${SAY_CLOSE} block for the voice assistant: two to four short spoken sentences in the language the user speaks, with the conclusion, anything that must be said, and anything the user has to confirm. No code, paths, commands or lists inside it.`;
 
 const UNDERSTANDING_NOTE =
   "How the voice assistant understood the request. For reference only: where it differs from the user's words above, the user's words win.";
@@ -254,12 +262,22 @@ export function buildVoiceTurnMessage(input: {
   return parts.join('\n\n');
 }
 
-/** What a `<voice_turn>` message holds, or null for any other text. */
+/**
+ * What a voice turn message holds, or null for any other text. Messages
+ * recorded before the rename, wrapped in `<voice_turn>`, are read the same way.
+ */
 export function parseVoiceTurn(
   text: string
 ): { userWords: string[]; understanding: string[] } | null {
   const trimmed = text.trim();
-  if (!trimmed.startsWith(VOICE_TURN_OPEN) || !trimmed.endsWith(VOICE_TURN_CLOSE)) return null;
+  const wrapped = (open: string, close: string) =>
+    trimmed.startsWith(open) && trimmed.endsWith(close);
+  if (
+    !wrapped(VOICE_TURN_OPEN, VOICE_TURN_CLOSE) &&
+    !wrapped(LEGACY_VOICE_TURN_OPEN, LEGACY_VOICE_TURN_CLOSE)
+  ) {
+    return null;
+  }
   const section = (tag: string) => {
     const match = new RegExp(`<${tag}>\\n?([\\s\\S]*?)\\n?</${tag}>`).exec(trimmed);
     return match?.[1] ?? '';
@@ -285,35 +303,170 @@ export function voiceTurnDisplayText(text: string): string | null {
   return words.join('\n');
 }
 
-const SAY_BLOCK = /<say>([\s\S]*?)<\/say>/g;
+const FENCE = /^[ \t]*(`{3,}|~{3,})/;
+const BLANK_LINE = /\n[ \t]*\n/;
 
-/** The reply's last `<say>` talking points, and the reply without any of them. */
-export function extractVoiceSay(text: string): { say: string | null; rest: string } {
-  if (!text.includes('<say>')) return { say: null, rest: text };
-  let say: string | null = null;
-  for (const match of text.matchAll(SAY_BLOCK)) {
-    const body = match[1]?.trim();
-    if (body) say = body;
+/**
+ * The text with fenced code blocks and inline code spans filled with a
+ * placeholder, keeping offsets and line breaks, so tags written as code are
+ * not mistaken for real ones. An unclosed fence runs to the end, as Markdown
+ * renders it; an unmatched backtick stays literal.
+ */
+function maskMarkdownCode(text: string): string {
+  const out = text.split('');
+  const fill = (from: number, to: number) => {
+    for (let i = from; i < to; i += 1) if (out[i] !== '\n') out[i] = 'x';
+  };
+  const maskInline = (from: number, to: number) => {
+    const runs = /`+/g;
+    runs.lastIndex = from;
+    for (let run = runs.exec(text); run && run.index < to; run = runs.exec(text)) {
+      // A code span ends at the next backtick run of the same length within its paragraph.
+      const paragraphEnd = BLANK_LINE.exec(text.slice(run.index, to));
+      const limit = paragraphEnd ? run.index + paragraphEnd.index : to;
+      const closing = new RegExp(`(?<!\`)${run[0]}(?!\`)`, 'g');
+      closing.lastIndex = run.index + run[0].length;
+      const match = closing.exec(text);
+      if (!match || match.index + match[0].length > limit) continue;
+      fill(run.index, match.index + match[0].length);
+      runs.lastIndex = match.index + match[0].length;
+    }
+  };
+  let fence: string | null = null;
+  let proseStart = 0;
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    const newline = text.indexOf('\n', lineStart);
+    const lineEnd = newline === -1 ? text.length : newline;
+    const marker = FENCE.exec(text.slice(lineStart, lineEnd))?.[1];
+    if (fence === null && marker !== undefined) {
+      maskInline(proseStart, lineStart);
+      fence = marker;
+      proseStart = lineStart;
+    } else if (
+      fence !== null &&
+      marker?.[0] === fence[0] &&
+      marker.length >= fence.length &&
+      text.slice(lineStart, lineEnd).trim() === marker
+    ) {
+      fill(proseStart, lineEnd);
+      fence = null;
+      proseStart = lineEnd;
+    }
+    if (newline === -1) break;
+    lineStart = newline + 1;
   }
-  return { say, rest: stripVoiceSay(text).trim() };
+  if (fence === null) maskInline(proseStart, text.length);
+  else fill(proseStart, text.length);
+  return out.join('');
+}
+
+/** A talking-point block in a reply: its span and, when it is closed here, its body. */
+type VoiceSayBlock = { start: number; end: number; body: string | null };
+
+/**
+ * Where the text ends in the start of an opening tag still being streamed,
+ * such as `<lody-voi`, or -1.
+ */
+function partialSayOpenAt(text: string): number {
+  for (let length = Math.min(SAY_OPEN.length - 1, text.length); length > 0; length -= 1) {
+    if (SAY_OPEN.startsWith(text.slice(-length))) return text.length - length;
+  }
+  return -1;
 }
 
 /**
- * Hides `<say>` talking points from a rendered reply. A block still streaming
- * (no closing tag yet) is hidden to the end, and the tail of a block split
- * across two text items is hidden from the start.
+ * A talking-points block of a reply recorded before the rename: only a
+ * `<say>` that starts a line and whose block ends the text. Anywhere else
+ * `<say>` is ordinary text.
+ */
+const LEGACY_SAY_AT_END = /(?:^|\n)[ \t]*(<say>)(?:(?!<\/?say>)[\s\S])*<\/say>\s*$/;
+
+/**
+ * The talking-point blocks of a reply, ignoring tags inside code. A block
+ * runs from `<lody-voice-say>` to the next closing tag or, while it is still
+ * streaming, to the end; an opening tag only partly streamed is hidden as
+ * well. A text item that continues a block from the previous one starts with
+ * its tail, up to the closing tag. Without any of these, a legacy `<say>`
+ * block at the very end counts.
+ */
+function findVoiceSayBlocks(text: string): VoiceSayBlock[] {
+  const mayHold =
+    text.includes(SAY_OPEN) ||
+    text.includes(SAY_CLOSE) ||
+    text.includes('</say>') ||
+    partialSayOpenAt(text) !== -1;
+  if (!mayHold) return [];
+  const masked = maskMarkdownCode(text);
+  const blocks: VoiceSayBlock[] = [];
+  let position = 0;
+  const firstOpen = masked.indexOf(SAY_OPEN);
+  const tail = masked.indexOf(SAY_CLOSE);
+  if (tail !== -1 && (firstOpen === -1 || tail < firstOpen)) {
+    position = tail + SAY_CLOSE.length;
+    blocks.push({ start: 0, end: position, body: null });
+  }
+  for (
+    let open = masked.indexOf(SAY_OPEN, position);
+    open !== -1;
+    open = masked.indexOf(SAY_OPEN, position)
+  ) {
+    const bodyStart = open + SAY_OPEN.length;
+    const close = masked.indexOf(SAY_CLOSE, bodyStart);
+    if (close === -1) {
+      blocks.push({ start: open, end: text.length, body: null });
+      return blocks;
+    }
+    position = close + SAY_CLOSE.length;
+    blocks.push({ start: open, end: position, body: text.slice(bodyStart, close) });
+  }
+  const partial = partialSayOpenAt(masked);
+  if (partial >= position) blocks.push({ start: partial, end: text.length, body: null });
+  if (blocks.length > 0) return blocks;
+  const legacy = LEGACY_SAY_AT_END.exec(masked);
+  if (legacy) {
+    const start = legacy.index + legacy[0].indexOf('<say>');
+    blocks.push({ start, end: text.length, body: null });
+  }
+  return blocks;
+}
+
+const withoutBlocks = (text: string, blocks: readonly VoiceSayBlock[]) => {
+  let result = '';
+  let position = 0;
+  for (const block of blocks) {
+    result += text.slice(position, block.start);
+    position = block.end;
+  }
+  return result + text.slice(position);
+};
+
+/**
+ * The reply's last `<lody-voice-say>` talking points, and the reply without
+ * any talking points. Legacy `<say>` blocks are removed from the reply but
+ * never returned as talking points.
+ */
+export function extractVoiceSay(text: string): { say: string | null; rest: string } {
+  const blocks = findVoiceSayBlocks(text);
+  if (blocks.length === 0) return { say: null, rest: text };
+  let say: string | null = null;
+  for (const block of blocks) {
+    const body = block.body?.trim();
+    if (body) say = body;
+  }
+  return { say, rest: withoutBlocks(text, blocks).trim() };
+}
+
+/**
+ * Hides talking points from a rendered reply. A block still streaming (no
+ * closing tag yet) is hidden to the end, a half-streamed opening tag is
+ * hidden, and the tail of a block split across two text items is hidden from
+ * the start. Tags inside code stay visible, and so does a legacy `<say>`
+ * anywhere but a block that starts a line and ends the reply.
  */
 export function stripVoiceSay(text: string): string {
-  if (!text.includes('<say>') && !text.includes('</say>')) return text;
-  let result = text.replace(SAY_BLOCK, '');
-  const close = result.indexOf('</say>');
-  const open = result.indexOf('<say>');
-  if (close !== -1 && (open === -1 || close < open)) {
-    result = result.slice(close + '</say>'.length);
-  }
-  const dangling = result.indexOf('<say>');
-  if (dangling !== -1) result = result.slice(0, dangling);
-  return result.trimEnd();
+  const blocks = findVoiceSayBlocks(text);
+  return blocks.length === 0 ? text : withoutBlocks(text, blocks).trimEnd();
 }
 
 /**
