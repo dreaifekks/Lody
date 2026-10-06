@@ -180,6 +180,12 @@ asked for. Sessions previewing the same port of the
 same member share one carrying port, which closes once none previews through
 it.
 
+Nothing else in the panel asks for the hosted preview service there, which
+authorizes every preview control on another machine and creates the shared
+tunnels. The panel reads no preview status, and Share, Restore preview and
+Stop sharing are hidden (`remotePreview` capability). The iOS Simulator of
+another member is not offered either, for the same reason.
+
 ## Files of a message
 
 An image or a file a message carries has to be on the machine that runs the

@@ -190,6 +190,13 @@ function SessionBrowserPanelController({
 
   useEffect(() => {
     if (!active || !runtime || !user?.id) return undefined;
+    // Status reports a shared tunnel, which only the hosted service creates and
+    // authorizes on another machine. Without it there is none to read, and a
+    // LAN member's session would ask that service anyway.
+    if (!remotePreviewAvailable) {
+      setCheckingPreview(false);
+      return undefined;
+    }
     let disposed = false;
     let requestSequence = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -258,6 +265,7 @@ function SessionBrowserPanelController({
     };
   }, [
     active,
+    remotePreviewAvailable,
     runtime,
     session.id,
     session.machineId,
@@ -1122,8 +1130,9 @@ function SessionBrowserPanelController({
     error: previewStatusError,
     remoteMachineName,
     hasShareUrl,
-    onRestore: () => void restorePreview(),
-    onStopSharing: () => void stopSharing(),
+    // Restoring and stopping act on a shared tunnel, as Share does.
+    onRestore: remotePreviewAvailable ? () => void restorePreview() : undefined,
+    onStopSharing: remotePreviewAvailable ? () => void stopSharing() : undefined,
   };
 
   return (
