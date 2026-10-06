@@ -7,6 +7,7 @@ import {
   type AgentRoleId,
   type MachineId,
   type WorkspaceMcpServerMeta,
+  type WorkspaceVoiceSetting,
 } from '@lody/shared';
 import type { WorkspaceRuntime } from '../src/atoms/runtime';
 import {
@@ -50,7 +51,11 @@ const settle = async (): Promise<void> => {
  * Minimal stand-in for the workspace runtime: one Flock document whose rows,
  * events, and first remote sync are driven by the test rather than a transport.
  */
-function createRuntime(workspaceId: string, rows: WorkspaceMcpServerMeta[], roles: AgentRole[] = []) {
+function createRuntime(
+  workspaceId: string,
+  rows: WorkspaceMcpServerMeta[],
+  roles: AgentRole[] = []
+) {
   const listeners: Array<(batch: unknown) => void> = [];
   let completeFirstSync!: () => void;
   const firstSyncedWithRemote = new Promise<void>((resolve) => {
@@ -84,6 +89,11 @@ function createRuntime(workspaceId: string, rows: WorkspaceMcpServerMeta[], role
       current.push(value);
       for (const listener of listeners) {
         listener({ events: [{ key: workspaceFlockKeys.mcpServer(value.id), value }] });
+      }
+    },
+    emitVoice: (value: WorkspaceVoiceSetting) => {
+      for (const listener of listeners) {
+        listener({ events: [{ key: workspaceFlockKeys.voiceSetting(), value }] });
       }
     },
     completeFirstSync: () => completeFirstSync(),
@@ -147,9 +157,11 @@ describe('workspace MCP catalog room', () => {
   });
 
   it('publishes both row families of the one workspace document', async () => {
-    const harness = createRuntime('workspace-families', [entry('server-1', 'Files')], [
-      roleRow('role-1', 'Reviewer'),
-    ]);
+    const harness = createRuntime(
+      'workspace-families',
+      [entry('server-1', 'Files')],
+      [roleRow('role-1', 'Reviewer')]
+    );
     const seen: WorkspaceCatalogSnapshot[] = [];
     const lease = acquireWorkspaceCatalog(harness.runtime, (snapshot) => seen.push(snapshot));
     await settle();
@@ -158,6 +170,38 @@ describe('workspace MCP catalog room', () => {
     expect(harness.openFlockDoc).toHaveBeenCalledTimes(1);
     expect(seen.at(-1)?.servers.map(({ name }) => name)).toEqual(['Files']);
     expect(seen.at(-1)?.roles.map(({ name }) => name)).toEqual(['Reviewer']);
+
+    lease.release();
+  });
+
+  it('publishes a new voice for the same shared voice agent', async () => {
+    const harness = createRuntime('workspace-voice', []);
+    const seen: WorkspaceCatalogSnapshot[] = [];
+    const lease = acquireWorkspaceCatalog(harness.runtime, (snapshot) => seen.push(snapshot));
+    await settle();
+    const agent = {
+      version: 1 as const,
+      configId: 'config-1' as AgentConfigId,
+      machineId: 'machine-1' as MachineId,
+    };
+
+    harness.emitVoice({ ...agent, voice: 'maple' });
+    expect(seen.at(-1)?.voice).toEqual({ ...agent, voice: 'maple' });
+    const stable = seen.at(-1)?.voice;
+
+    // Only the voice moves; Settings must show the new one, and calls must use it.
+    harness.emitVoice({ ...agent, voice: 'sol' });
+    expect(seen.at(-1)?.voice).toEqual({ ...agent, voice: 'sol' });
+
+    harness.emitVoice(agent);
+    expect(seen.at(-1)?.voice).toEqual(agent);
+
+    // An unchanged row still keeps its identity for memos keyed on it.
+    harness.emitVoice({ ...agent, voice: 'sol' });
+    const sol = seen.at(-1)?.voice;
+    harness.emitVoice({ ...agent, voice: 'sol' });
+    expect(seen.at(-1)?.voice).toBe(sol);
+    expect(stable).not.toBe(sol);
 
     lease.release();
   });

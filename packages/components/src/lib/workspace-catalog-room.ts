@@ -78,11 +78,13 @@ function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: bo
   const servers = reuseUnchanged(room.snapshot.servers, listWorkspaceMcpServers(rows));
   const roles = reuseUnchanged(room.snapshot.roles, listWorkspaceAgentRoles(rows));
   const nextVoice = getWorkspaceVoiceSetting(rows);
+  // Every field counts: a row that only changes `voice` must reach Settings and calls.
   const voice =
     nextVoice &&
     room.snapshot.voice &&
     nextVoice.configId === room.snapshot.voice.configId &&
-    nextVoice.machineId === room.snapshot.voice.machineId
+    nextVoice.machineId === room.snapshot.voice.machineId &&
+    nextVoice.voice === room.snapshot.voice.voice
       ? room.snapshot.voice
       : nextVoice;
   if (
