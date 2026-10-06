@@ -12,14 +12,19 @@ import { AgentConfigIdSchema } from './message-schemas';
 export const MACHINE_VOICE_POLL_MAX_WAIT_MS = 15_000;
 
 /**
- * The renderer's answer, without asking, to a voice list, preview or chosen
- * voice for a machine whose protocol predates them (`realtimeVoice` < 3).
+ * The renderer's answer, without asking, to a voice list or chosen voice for a
+ * machine whose protocol predates them (`realtimeVoice` < 3).
  */
 export const MACHINE_VOICE_SELECTION_UNSUPPORTED =
   'This machine cannot choose voices yet. Update Lody on it.';
 
-/** `preview` (protocol v3) plays a voice once so the user can hear it; no session is involved. */
-export const MachineVoiceModeSchema = z.enum(['conversation', 'dictation', 'preview']);
+/**
+ * Lody builds lan.25 and lan.26 also sent a `preview` mode, a call that only
+ * said a sample sentence. It never spoke (realtime v3 stays silent without
+ * microphone audio) and is gone: Settings plays bundled clips instead, and a
+ * host now rejects such a start like any malformed request.
+ */
+export const MachineVoiceModeSchema = z.enum(['conversation', 'dictation']);
 export type MachineVoiceMode = z.infer<typeof MachineVoiceModeSchema>;
 
 export const MachineVoiceNameSchema = z

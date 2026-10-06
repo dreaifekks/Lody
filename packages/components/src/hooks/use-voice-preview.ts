@@ -9,6 +9,7 @@ import {
   type VoicePreview,
   type VoicePreviewFailure,
 } from '@/lib/voice-preview';
+import { voicePreviewClip } from '@/lib/voice-preview-clips';
 
 export type VoiceList = { voices: string[]; defaultVoice: string };
 
@@ -77,24 +78,19 @@ export function useVoiceList(
   return state?.key === key ? state.value : { status: 'loading' };
 }
 
-export type VoicePreviewState =
-  | { status: 'idle' }
-  | { status: 'connecting' | 'playing'; voice: string };
+export type VoicePreviewState = { status: 'idle' } | { status: 'playing'; voice: string };
 
 /**
- * Plays one voice at a time on the given agent. Starting another voice, a
- * voice call starting, or the caller unmounting ends the current preview.
+ * Plays the bundled sample of a voice, one at a time. Starting another voice,
+ * a voice call starting, or the caller unmounting ends the current one.
  */
 export function useVoicePreview(options: {
-  agent: { machineId: MachineId; configId: AgentConfigId } | null;
-  sentence: string;
   onError: (failure: VoicePreviewFailure, message: string) => void;
 }) {
-  const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const [state, setState] = useState<VoicePreviewState>({ status: 'idle' });
   const previewRef = useRef<VoicePreview | null>(null);
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
+  const onErrorRef = useRef(options.onError);
+  onErrorRef.current = options.onError;
   const callActive = useSyncExternalStore(
     subscribeVoiceActivity,
     isVoiceCallActive,
@@ -105,42 +101,30 @@ export function useVoicePreview(options: {
     previewRef.current?.stop();
   }, []);
 
-  const play = useCallback(
-    (voice: string) => {
-      const { agent, sentence } = optionsRef.current;
-      if (!agent || !runtime) return;
-      previewRef.current?.stop();
-      const preview = playVoicePreview({
-        machineId: agent.machineId,
-        configId: agent.configId,
-        voice,
-        sentence,
-        request: (machineId, body) => runtime.requestMachineVoice(machineId, body),
-        onPlaying: () => {
-          if (previewRef.current === preview) setState({ status: 'playing', voice });
-        },
-      });
-      previewRef.current = preview;
-      setState({ status: 'connecting', voice });
-      preview.finished.then(
-        () => {
-          if (previewRef.current !== preview) return;
+  const play = useCallback((voice: string) => {
+    const url = voicePreviewClip(voice);
+    if (!url) return;
+    previewRef.current?.stop();
+    const preview = playVoicePreview(url);
+    previewRef.current = preview;
+    setState({ status: 'playing', voice });
+    preview.finished.then(
+      () => {
+        if (previewRef.current !== preview) return;
+        previewRef.current = null;
+        setState({ status: 'idle' });
+      },
+      (error: unknown) => {
+        if (previewRef.current === preview) {
           previewRef.current = null;
           setState({ status: 'idle' });
-        },
-        (error: unknown) => {
-          if (previewRef.current === preview) {
-            previewRef.current = null;
-            setState({ status: 'idle' });
-          }
-          const failure = error instanceof VoicePreviewError ? error.failure : 'machine';
-          const message = error instanceof Error ? error.message : String(error);
-          optionsRef.current.onError(failure, message);
         }
-      );
-    },
-    [runtime]
-  );
+        const failure = error instanceof VoicePreviewError ? error.failure : 'playback';
+        const message = error instanceof Error ? error.message : String(error);
+        onErrorRef.current(failure, message);
+      }
+    );
+  }, []);
 
   useEffect(() => () => previewRef.current?.stop(), []);
 

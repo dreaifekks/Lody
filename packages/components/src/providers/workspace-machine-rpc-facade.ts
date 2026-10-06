@@ -1433,12 +1433,7 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
         request = rest;
       }
       if (!machineSupportsRealtimeVoiceSelection({ protocolCapabilities })) {
-        if (
-          request.action === 'voices' ||
-          (request.action === 'start' && request.mode === 'preview')
-        ) {
-          return fail(MACHINE_VOICE_SELECTION_UNSUPPORTED);
-        }
+        if (request.action === 'voices') return fail(MACHINE_VOICE_SELECTION_UNSUPPORTED);
         if (request.action === 'start' && request.voice !== undefined) {
           // An older machine still holds the call, in Codex's default voice.
           const { voice: _voice, ...rest } = request;
