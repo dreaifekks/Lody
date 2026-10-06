@@ -136,7 +136,7 @@ describe('buildVoiceSessionContext', () => {
       userTurn('u1', 'Fix the flaky test in   auth.ts'),
       replyTurn('a1', 'Fixed it by awaiting the token refresh.'),
       userTurn('u2', spoken),
-      replyTurn('a2', 'CI passed on all jobs.\n\n<say>CI 全部通过了。</say>'),
+      replyTurn('a2', 'CI passed on all jobs.\n\n<lody-voice-say>CI 全部通过了。</lody-voice-say>'),
       userTurn('u3', 'Now open a PR'),
       replyTurn('a3', 'Pushing the branch', false),
     ]);
@@ -149,7 +149,7 @@ describe('buildVoiceSessionContext', () => {
       'User: Now open a PR',
       'Agent (still working): Pushing the branch',
     ]);
-    expect(context).not.toContain('<voice_turn>');
+    expect(context).not.toContain('<lody-voice-turn>');
   });
 
   it('shortens long messages and keeps the newest turns within the limit', () => {
@@ -196,7 +196,7 @@ describe('voice turn messages', () => {
     });
 
     const sections = message.split('\n\n');
-    expect(sections[0]).toBe('<voice_turn>');
+    expect(sections[0]).toBe('<lody-voice-turn>');
     expect(sections[2]).toBe(
       [
         '<conversation>',
@@ -217,8 +217,10 @@ describe('voice turn messages', () => {
         '</voice_understanding>',
       ].join('\n')
     );
-    expect(sections.at(-1)).toBe('</voice_turn>');
-    expect(message).toMatch(/<reply_instructions>\n.*<say>…<\/say>.*\n<\/reply_instructions>/s);
+    expect(sections.at(-1)).toBe('</lody-voice-turn>');
+    expect(message).toMatch(
+      /<reply_instructions>\n.*<lody-voice-say>…<\/lody-voice-say>.*\n<\/reply_instructions>/s
+    );
     expect(parseVoiceTurn(message)).toEqual({
       userWords: ['进展到哪了', '嗯……帮我看一下那个 PR，啊不对，是十二号那个', '顺便看下 CI'],
       understanding: ['Look at PR #12.', 'Also check its CI.'],
@@ -235,20 +237,40 @@ describe('voice turn messages', () => {
     expect(voiceTurnDisplayText(message)).toBe('List the files.');
   });
 
+  it('still reads voice turns recorded before the rename', () => {
+    const legacy = buildVoiceTurnMessage({
+      spoken: [{ role: 'user', text: '跑一下测试' }],
+      understanding: ['Run the tests.'],
+    })
+      .replace('<lody-voice-turn>', '<voice_turn>')
+      .replace('</lody-voice-turn>', '</voice_turn>');
+
+    expect(voiceTurnDisplayText(legacy)).toBe('跑一下测试');
+    expect(
+      resolveVoiceLatestReply([userTurn('u1', legacy), replyTurn('a1', 'Done.')])?.answersVoiceTurn
+    ).toBe(true);
+  });
+
   it('leaves ordinary messages alone', () => {
     expect(parseVoiceTurn('please fix <voice_turn> handling')).toBeNull();
+    expect(parseVoiceTurn('please fix <lody-voice-turn> handling')).toBeNull();
     expect(voiceTurnDisplayText('hello')).toBeNull();
   });
 });
 
 describe('talking points', () => {
-  it('takes the last <say> block and hides every one from the reply', () => {
-    const reply =
-      'Draft.\n<say>old</say>\nDone: 3 files changed.\n\n<say>\n改好了，三个文件。需要你确认要不要推送。\n</say>';
+  const say = (body: string) => `<lody-voice-say>${body}</lody-voice-say>`;
+
+  it('takes the last block and hides every one from the reply', () => {
+    const reply = `Draft.\n${say('old')}\nDone: 3 files changed.\n\n${say('\n改好了，三个文件。需要你确认要不要推送。\n')}`;
 
     expect(extractVoiceSay(reply)).toEqual({
       say: '改好了，三个文件。需要你确认要不要推送。',
       rest: 'Draft.\n\nDone: 3 files changed.',
+    });
+    expect(extractVoiceSay(`Fixed. ${say('修好了。')}`)).toEqual({
+      say: '修好了。',
+      rest: 'Fixed.',
     });
   });
 
@@ -256,20 +278,21 @@ describe('talking points', () => {
     expect(extractVoiceSay('Just text.')).toEqual({ say: null, rest: 'Just text.' });
   });
 
-  it('hides a block that is still streaming and the tail of a block split across items', () => {
-    expect(stripVoiceSay('Answer.\n\n<say>改好')).toBe('Answer.');
-    expect(stripVoiceSay('了。</say>')).toBe('');
+  it('hides a block still streaming, a half-written opening tag and the tail of a split block', () => {
+    expect(stripVoiceSay('Answer.\n\n<lody-voice-say>改好')).toBe('Answer.');
+    expect(stripVoiceSay('Answer. <lody-voi')).toBe('Answer.');
+    expect(stripVoiceSay('Answer.\n<')).toBe('Answer.');
+    expect(stripVoiceSay('了。</lody-voice-say>')).toBe('');
     expect(stripVoiceSay('No points here.')).toBe('No points here.');
   });
 
-  it('keeps a reply that only mentions the tags, in prose or in code', () => {
+  it('leaves the tags alone inside code', () => {
     const reply = [
-      '- **语音对话**：带上 session 的上下文、你的原话会传给主模型、主模型回复里的 `<say>` 会交给语音念出来、结束时再用 `</say>` 收尾。',
-      '- 正文里也可以直接写 <say> 和 </say> 这两个词。',
+      '主模型回复里的 `<lody-voice-say>` 会交给语音念出来，用 `</lody-voice-say>` 收尾。',
       '',
       '```xml',
-      '<say>',
-      '代码块里的讲稿示例',
+      say('代码块里的讲稿示例'),
+      '<lody-voice-say>',
       '```',
       '',
       '后面还有好几段。',
@@ -277,26 +300,49 @@ describe('talking points', () => {
 
     expect(stripVoiceSay(reply)).toBe(reply);
     expect(extractVoiceSay(reply)).toEqual({ say: null, rest: reply });
+    expect(stripVoiceSay('示例：\n```\n<lody-voi')).toBe('示例：\n```\n<lody-voi');
+    expect(stripVoiceSay(`用 \`<lody-voice-say>\` 写讲稿。\n\n${say('讲稿。')}`)).toBe(
+      '用 `<lody-voice-say>` 写讲稿。'
+    );
   });
 
-  it('hides only the real block of a reply that also mentions the tags', () => {
-    const reply =
-      '用 `<say>` 写讲稿。\n\n~~~\n<say>示例</say>\n~~~\n\n<say>\n讲稿在这里。\n</say>\n';
+  it('hides a legacy <say> block only when it starts a line and ends the reply', () => {
+    expect(stripVoiceSay('CI passed.\n\n<say>CI 全部通过了。</say>\n')).toBe('CI passed.');
+    expect(stripVoiceSay('Done.\n  <say>\n改好了。\n</say>')).toBe('Done.');
 
-    expect(stripVoiceSay(reply)).toBe('用 `<say>` 写讲稿。\n\n~~~\n<say>示例</say>\n~~~');
-    expect(extractVoiceSay(reply).say).toBe('讲稿在这里。');
-    expect(stripVoiceSay('提到 `<say>` 之后。\n\n<say>还在说')).toBe('提到 `<say>` 之后。');
+    for (const text of [
+      'Fixed. <say>修好了。</say>',
+      'Draft.\n<say>old</say>\nDone: 3 files changed.',
+      'Answer.\n\n<say>改好',
+      '了。</say>',
+      '回复里的 <say> 会交给语音念出来，最后用 </say> 收尾。',
+    ]) {
+      expect(stripVoiceSay(text), text).toBe(text);
+    }
   });
 
-  it('takes a block written after prose on the same line, but not a tag named in a sentence', () => {
-    expect(extractVoiceSay('Fixed. <say>修好了。</say>')).toEqual({
-      say: '修好了。',
-      rest: 'Fixed.',
+  it('keeps the reply that only mentions <say>, whole', () => {
+    const reply = [
+      '- **语音对话**：带上 session 的上下文、你的原话会传给主模型、主模型回复里的 `<say>` 会交给语音念出来、结束时再用 `</say>` 收尾。',
+      '- 正文里也可以直接写 <say> 和 </say> 这两个词。',
+      '',
+      '```xml',
+      '<say>',
+      '代码块里的讲稿示例',
+      '</say>',
+      '```',
+      '',
+      '后面还有好几段。',
+    ].join('\n');
+
+    expect(stripVoiceSay(reply)).toBe(reply);
+  });
+
+  it('never hands a legacy <say> block to the voice', () => {
+    expect(extractVoiceSay('CI passed.\n<say>CI 全部通过了。</say>')).toEqual({
+      say: null,
+      rest: 'CI passed.',
     });
-    expect(stripVoiceSay('Fixed. <say>修好')).toBe('Fixed.');
-    expect(stripVoiceSay('了。</say>')).toBe('');
-    const prose = '回复里的 <say> 会交给语音念出来。\n\n后面还有好几段。';
-    expect(stripVoiceSay(prose)).toBe(prose);
   });
 });
 
@@ -305,7 +351,7 @@ describe('buildVoiceRelay', () => {
     const relay = buildVoiceRelay(
       {
         key: 'a1',
-        text: 'Long diff summary with `src/a.ts`.\n<say>改好了。</say>',
+        text: 'Long diff summary with `src/a.ts`.\n<lody-voice-say>改好了。</lody-voice-say>',
         answersVoiceTurn: true,
         voiceTurns: [],
       },
@@ -335,7 +381,12 @@ describe('buildVoiceRelay', () => {
   it('frames a typed turn as a background update and an empty reply as such', () => {
     expect(
       buildVoiceRelay(
-        { key: 'a1', text: '<say>好了</say>', answersVoiceTurn: false, voiceTurns: [] },
+        {
+          key: 'a1',
+          text: '<lody-voice-say>好了</lody-voice-say>',
+          answersVoiceTurn: false,
+          voiceTurns: [],
+        },
         []
       )
     ).toMatch(/^The background agent finished a turn the user typed/);
