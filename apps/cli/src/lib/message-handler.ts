@@ -871,6 +871,8 @@ export class MessageHandler {
   private stopPermissionAnswers: (() => void) | null = null;
   /** Alerts held for `alertGraceMs`; cleared on cleanup. */
   private readonly alertGraceTimers = new Set<NodeJS.Timeout>();
+  /** The next repeat of each user's Live Activity summary while work runs. */
+  private readonly liveActivityHeartbeats = new Map<string, NodeJS.Timeout>();
   private usageTrackingService: CloudUsagePort | null;
   private readonly turnTokenUsage = new TurnTokenUsageLedger();
   // Backstop bound on how long turn finalization waits for a cloud side
@@ -10273,6 +10275,8 @@ export class MessageHandler {
     await this.voiceHostInstance?.dispose();
     for (const timer of this.alertGraceTimers) clearTimeout(timer);
     this.alertGraceTimers.clear();
+    for (const timer of this.liveActivityHeartbeats.values()) clearTimeout(timer);
+    this.liveActivityHeartbeats.clear();
     this.stopPermissionAnswers?.();
     this.stopPermissionAnswers = null;
     this.liveActivityDetail?.dispose();
@@ -10536,6 +10540,7 @@ export class MessageHandler {
 
     try {
       const summary = await this.buildLiveActivitySummary(userId, options);
+      this.scheduleLiveActivityHeartbeat(userId, summary);
       return await this.notificationService.syncLiveActivitySummary({
         workspaceId: this.workspaceId,
         userId,
@@ -10547,6 +10552,28 @@ export class MessageHandler {
       );
       return { sent: false, reason: 'summary_build_failed' };
     }
+  }
+
+  /**
+   * While work runs, the summary goes out again now and then, built afresh:
+   * the receiver ends an activity whose machine stopped reporting, and a
+   * report that was lost is made good. Work that stopped ends the repeats.
+   */
+  private scheduleLiveActivityHeartbeat(userId: string, summary: LiveActivitySummary): void {
+    const intervalMs = this.notificationService?.liveActivityHeartbeatMs;
+    if (!intervalMs || this.cleanedUp) return;
+    const pending = this.liveActivityHeartbeats.get(userId);
+    if (pending) clearTimeout(pending);
+    this.liveActivityHeartbeats.delete(userId);
+    const { permission, question, running } = summary.statusCounts;
+    if (permission + question + running === 0) return;
+    const timer = setTimeout(() => {
+      this.liveActivityHeartbeats.delete(userId);
+      // A request still waiting keeps its alert on the activity.
+      void this.syncLiveActivitySummary(userId, { permissionAlert: true });
+    }, intervalMs);
+    timer.unref?.();
+    this.liveActivityHeartbeats.set(userId, timer);
   }
 
   /**

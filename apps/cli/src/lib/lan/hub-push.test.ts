@@ -4,13 +4,16 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { createApnsProviderToken, readApnsConfig, writeApnsConfig, type ApnsPush } from './apns';
+import { createLanHubPush, LAN_PUSH_SWEEP_INTERVAL_MS, type LanHubPush } from './hub-push';
 import { startLanHubServer, type LanHubServer, type LanHubUpstream } from './hub-server';
 import { createLanNotificationsPort } from './lan-push-notifier';
 import { createLanCredentialSync } from './lan-credential-sync';
 import { createLanPushFallback } from './lan-push-fallback';
+import type { LanPushEvent } from './lan-push-protocol';
 import {
   LAN_HUB_CREDENTIALS_APNS_PATH,
   LAN_HUB_CREDENTIALS_GITHUB_PATH,
@@ -383,6 +386,11 @@ describe('LAN host push', () => {
     // The phone reports the activity it started and is brought up to date.
     await register({ activities: { [ACTIVITY]: ACTIVITY_TOKEN } });
     await vi.waitFor(() => expect(sent).toHaveLength(2));
+    // The same state again changes nothing on the phone and costs no push.
+    await notifications.syncLiveActivitySummary(summary('running'));
+    expect(sent).toHaveLength(2);
+    // Past ten minutes it is pushed again, quietly, to move its stale date.
+    clock += 10 * 60_000;
     await notifications.syncLiveActivitySummary(summary('running'));
     expect(sent[2]).toMatchObject({
       deviceToken: ACTIVITY_TOKEN,
@@ -492,10 +500,13 @@ describe('LAN host push', () => {
       (sent[index]!.payload as Pushed).aps['content-state'].items[0]?.startedAt;
 
     await notifications.syncLiveActivitySummary(summary('running', clock - 600_000));
+    await notifications.syncLiveActivitySummary(summary('permission', clock - 120_000));
     // The agent resumes after approval and stamps a later lastRunningSeen.
     await notifications.syncLiveActivitySummary(summary('running', clock - 60_000));
+    expect(sent).toHaveLength(3);
     expect(startedAtOf(0)).toBe(clock - 600_000);
     expect(startedAtOf(1)).toBe(clock - 600_000);
+    expect(startedAtOf(2)).toBe(clock - 600_000);
   });
 
   it('ends an activity whose token arrives after its turn already finished', async () => {
@@ -625,6 +636,236 @@ describe('LAN host push', () => {
     }
   });
 
+  const sessionItem = (status: 'running' | 'permission' | 'unread', title = 'Deploy') => ({
+    id: 'session-1',
+    status,
+    statusLabel: status,
+    agentLogoKind: 'claude' as const,
+    agentLogoText: 'CC',
+    title,
+    updatedAt: clock,
+    updatedAtLabel: '',
+  });
+  const sessionSummary = (
+    status: 'running' | 'permission' | 'unread',
+    extra: { title?: string; permissionAlert?: { title: string; body: string } } = {}
+  ) => ({
+    activityId: ACTIVITY,
+    workspaceId: WORKSPACE as never,
+    userId: USER,
+    totalCount: 1,
+    statusCounts: { permission: 0, question: 0, running: 0, unread: 0, [status]: 1 },
+    items: [sessionItem(status, extra.title)],
+    updatedAt: clock,
+    ...(extra.permissionAlert ? { permissionAlert: extra.permissionAlert } : {}),
+  });
+  type ContentState = {
+    statusCounts: Record<string, number>;
+    items: Record<string, unknown>[];
+    permissionAlert?: unknown;
+  };
+  const contentOf = (push: ApnsPush) =>
+    (push.payload as { aps: { 'content-state': ContentState } }).aps['content-state'];
+
+  it('shows at once a permission request answered on another device', async () => {
+    await register({ activities: { [ACTIVITY]: ACTIVITY_TOKEN } });
+    const notifications = port();
+    const base = { workspaceId: WORKSPACE as never, userId: USER };
+    const alertCopy = { title: 'Permission Required', body: 'Deploy' };
+
+    await notifications.syncLiveActivitySummary(
+      sessionSummary('permission', { permissionAlert: alertCopy })
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ priority: 10 });
+    expect(contentOf(sent[0]!)).toMatchObject({
+      statusCounts: { permission: 1 },
+      permissionAlert: alertCopy,
+    });
+    await notifications.syncLiveActivityDetail({
+      ...base,
+      sessionId: 'session-1' as never,
+      permission: {
+        requestId: 'req-1',
+        command: 'git push',
+        options: [{ id: 'once', label: 'Allow', kind: 'allow_once' }],
+      },
+    });
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+
+    // Approved on the desktop. The member clears the request first and sends
+    // its next summary only once the session runs again.
+    await notifications.syncLiveActivityDetail({
+      ...base,
+      sessionId: 'session-1' as never,
+      permission: null,
+    });
+    await vi.waitFor(() => expect(sent).toHaveLength(3));
+    expect(sent[2]).toMatchObject({ priority: 10, payload: { aps: { event: 'update' } } });
+    expect(contentOf(sent[2]!)).toMatchObject({
+      statusCounts: { permission: 0, running: 1 },
+      items: [{ id: 'session-1', status: 'running', statusLabel: '运行中' }],
+    });
+    expect(contentOf(sent[2]!)).not.toHaveProperty('permissionAlert');
+    expect(contentOf(sent[2]!).items[0]).not.toHaveProperty('permissionRequestId');
+
+    // The summary that follows agrees with what the phone shows already.
+    await notifications.syncLiveActivitySummary(sessionSummary('running'));
+    expect(sent).toHaveLength(3);
+    // Later changes to running work go out quietly again.
+    await notifications.syncLiveActivitySummary(sessionSummary('running', { title: 'Deploy v2' }));
+    expect(sent).toHaveLength(4);
+    expect(sent[3]).toMatchObject({ priority: 5 });
+  });
+
+  it('pushes leaving a permission request at high priority', async () => {
+    await register({ activities: { [ACTIVITY]: ACTIVITY_TOKEN } });
+    const notifications = port();
+    await notifications.syncLiveActivitySummary(sessionSummary('running'));
+    await notifications.syncLiveActivitySummary(
+      sessionSummary('permission', { permissionAlert: { title: 'Permission Required', body: '' } })
+    );
+    await notifications.syncLiveActivitySummary(sessionSummary('running'));
+    expect(sent.map((push) => push.priority)).toEqual([5, 10, 10]);
+    expect(contentOf(sent[2]!)).toMatchObject({ statusCounts: { permission: 0, running: 1 } });
+  });
+
+  it('withdraws a permission alert once the request is answered', async () => {
+    await register({ locale: 'en-US' });
+    const notifications = port();
+    const request = {
+      workspaceId: WORKSPACE as never,
+      workspaceSlug: 'lan',
+      userId: USER,
+      sessionId: 'session-1' as never,
+      sessionTitle: 'Deploy',
+      requestId: 'req-1',
+      toolCallId: 'tool-1',
+      toolTitle: 'git push',
+    };
+
+    // Answered before its alert went out: nothing to withdraw, and an alert
+    // arriving after the answer is not sent at all.
+    await notifications.resolvePermissionRequested({ ...request, requestId: 'req-0' });
+    await notifications.notifyPermissionRequested({ ...request, requestId: 'req-0' });
+    expect(sent).toHaveLength(0);
+
+    await notifications.notifyPermissionRequested(request);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      pushType: 'alert',
+      priority: 10,
+      collapseId: 'permission-req-1',
+      payload: {
+        aps: {
+          alert: { title: 'Deploy', body: 'Needs your approval: git push' },
+          sound: 'default',
+        },
+        lodyKind: 'permission-requested',
+        requestId: 'req-1',
+        sessionId: 'session-1',
+      },
+    });
+
+    await notifications.resolvePermissionRequested(request);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual({
+      deviceToken: PHONE,
+      environment: 'development',
+      topic: 'com.example.lody',
+      pushType: 'alert',
+      priority: 5,
+      collapseId: 'permission-req-1',
+      payload: {
+        aps: {
+          alert: { title: 'Deploy', body: 'Handled on another device' },
+          'interruption-level': 'passive',
+          'thread-id': 'session-1',
+        },
+        lodyKind: 'permission-resolved',
+        sessionId: 'session-1',
+        requestId: 'req-1',
+        recipientUserId: USER,
+        route: '/lan/sessions/session-1',
+      },
+    });
+
+    // Withdrawn once.
+    await notifications.resolvePermissionRequested(request);
+    expect(sent).toHaveLength(2);
+  });
+
+  it('withdraws an alert a member sent itself while the hub was away', async () => {
+    await register();
+    const pem = crypto
+      .generateKeyPairSync('ec', { namedCurve: 'P-256' })
+      .privateKey.export({ type: 'pkcs8', format: 'pem' })
+      .toString();
+    const apns = { keyId: 'ABCDEFGHIJ', teamId: 'TEAM123456', privateKey: pem };
+    expect((await call('PUT', LAN_HUB_CREDENTIALS_APNS_PATH, apns)).status).toBe(200);
+    const memberDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-member-'));
+    try {
+      const lan = { ...member(), id: 'd'.repeat(32) };
+      await createLanCredentialSync({
+        hubs: () => [lan],
+        logger: { debug: () => {}, info: () => {}, warn: () => {} } as never,
+        dataDir: memberDir,
+      }).syncNow();
+      const direct: ApnsPush[] = [];
+      let away = true;
+      const notifications = createLanNotificationsPort({
+        resolveHub: () => lan,
+        machineId: 'machine-1',
+        logger: { debug: () => {} } as never,
+        fetch: (input, init) =>
+          away ? Promise.reject(new TypeError('fetch failed')) : fetch(input, init),
+        fallback: createLanPushFallback({
+          logger: { debug: () => {} } as never,
+          dataDir: memberDir,
+          createSender: () =>
+            Object.assign(
+              async (push: ApnsPush) => {
+                direct.push(push);
+                return { ok: true as const };
+              },
+              { close: () => {} }
+            ),
+        }),
+      });
+      const request = {
+        workspaceId: WORKSPACE as never,
+        workspaceSlug: 'lan',
+        userId: USER,
+        sessionId: 'session-1' as never,
+        requestId: 'req-1',
+        toolCallId: 'tool-1',
+      };
+      await notifications.notifyPermissionRequested(request);
+      expect(direct).toHaveLength(1);
+
+      // The hub is back but never heard of the alert; the member withdraws its own.
+      away = false;
+      await notifications.resolvePermissionRequested(request);
+      expect(sent).toHaveLength(0);
+      expect(direct).toHaveLength(2);
+      expect(direct[1]).toMatchObject({
+        priority: 5,
+        collapseId: 'permission-req-1',
+        payload: {
+          aps: {
+            alert: { title: '新任务', body: '已在其他设备处理' },
+            'interruption-level': 'passive',
+          },
+          lodyKind: 'permission-resolved',
+          requestId: 'req-1',
+        },
+      });
+      expect((direct[1]!.payload as { aps: object }).aps).not.toHaveProperty('sound');
+    } finally {
+      fs.rmSync(memberDir, { recursive: true, force: true });
+    }
+  });
+
   it('forgets a token APNs no longer accepts', async () => {
     await register();
     refuse.add(PHONE);
@@ -636,6 +877,209 @@ describe('LAN host push', () => {
       userId: USER,
     });
     expect((await call('GET', '/push/status')).body.devices).toBe(0);
+  });
+});
+
+describe('LAN hub push sweep', () => {
+  const START = 1_800_000_000_000;
+  let dataDir: string;
+  let sent: ApnsPush[];
+  let failing: Set<string>;
+  let pushes: LanHubPush[];
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: START });
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-sweep-'));
+    sent = [];
+    failing = new Set();
+    pushes = [];
+  });
+
+  afterEach(() => {
+    for (const push of pushes) push.close();
+    vi.useRealTimers();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** A phone the hub remembers from before it started. */
+  const storePhone = (activities: Record<string, string>) =>
+    fs.writeFileSync(
+      path.join(dataDir, 'push-devices.json'),
+      JSON.stringify({
+        devices: [
+          {
+            deviceToken: PHONE,
+            environment: 'development',
+            bundleId: 'com.example.lody',
+            userId: USER,
+            workspaceId: WORKSPACE,
+            workspaceSlug: 'lan',
+            workspaceName: 'Home',
+            locale: 'en-US',
+            pushToStartToken: null,
+            activities,
+            updatedAt: START,
+          },
+        ],
+      })
+    );
+  const start = (options: { sweepIntervalMs?: number; isServing?: () => boolean } = {}) => {
+    const push = createLanHubPush({
+      dataDir,
+      send: async (message) => {
+        sent.push(message);
+        return failing.has(message.deviceToken)
+          ? { ok: false, status: 500, reason: 'InternalServerError', unregistered: false }
+          : { ok: true };
+      },
+      isConfigured: () => true,
+      sweepIntervalMs: LAN_PUSH_SWEEP_INTERVAL_MS,
+      ...options,
+    });
+    pushes.push(push);
+    return push;
+  };
+  const register = async (push: LanHubPush, activities: Record<string, string>) => {
+    const request = Object.assign(
+      Readable.from([
+        Buffer.from(
+          JSON.stringify({
+            deviceToken: PHONE,
+            environment: 'development',
+            bundleId: 'com.example.lody',
+            userId: USER,
+            workspaceId: WORKSPACE,
+            locale: 'en-US',
+            activities,
+          })
+        ),
+      ]),
+      { url: '/push/devices', method: 'PUT', headers: {} }
+    ) as unknown as http.IncomingMessage;
+    let status = 0;
+    const response = {
+      headersSent: false,
+      writeHead: (code: number) => (status = code),
+      end: () => {},
+    } as unknown as http.ServerResponse;
+    await push.handle(request, response);
+    expect(status).toBe(200);
+  };
+  const summary = (status: 'running' | 'unread'): LanPushEvent => ({
+    type: 'live-activity',
+    machineId: 'machine-1',
+    workspaceId: WORKSPACE,
+    workspaceSlug: WORKSPACE,
+    userId: USER,
+    activityId: ACTIVITY,
+    totalCount: 1,
+    statusCounts: { permission: 0, question: 0, running: 0, unread: 0, [status]: 1 },
+    items: [
+      {
+        id: 'session-1',
+        status,
+        statusLabel: status,
+        agentLogoKind: 'claude',
+        agentLogoText: 'CC',
+        title: 'Deploy',
+        updatedAt: START,
+        updatedAtLabel: '',
+      },
+    ],
+    updatedAt: Date.now(),
+  });
+  const events = () =>
+    sent.map((message) => (message.payload as { aps: { event: string } }).aps.event);
+  const minutes = (count: number) => vi.advanceTimersByTimeAsync(count * 60_000);
+
+  it('ends an activity once the member running it stops reporting', async () => {
+    storePhone({ [ACTIVITY]: ACTIVITY_TOKEN });
+    const push = start();
+    await push.deliver(summary('running'));
+    expect(events()).toEqual(['update']);
+
+    await minutes(7);
+    expect(events()).toEqual(['update']);
+    await minutes(2);
+    expect(events()).toEqual(['update', 'end']);
+    expect(sent[1]).toMatchObject({
+      deviceToken: ACTIVITY_TOKEN,
+      priority: 10,
+      payload: { aps: { 'content-state': { items: [{ id: 'session-1', status: 'unread' }] } } },
+    });
+    expect(push.devices()[0]!.activities).toEqual({});
+    await minutes(10);
+    expect(sent).toHaveLength(2);
+  });
+
+  it('keeps an activity its member keeps reporting, and refreshes it quietly', async () => {
+    storePhone({ [ACTIVITY]: ACTIVITY_TOKEN });
+    const push = start();
+    await push.deliver(summary('running'));
+    for (let beat = 0; beat < 12; beat += 1) {
+      await minutes(2);
+      await push.deliver(summary('running'));
+    }
+    // Nothing changed: pushed when it began and to move its stale date since.
+    expect(events()).toEqual(['update', 'update', 'update']);
+    expect(sent.map((message) => message.priority)).toEqual([5, 5, 5]);
+  });
+
+  it('ends after a restart an activity no member reports, once they had time to', async () => {
+    storePhone({ [ACTIVITY]: ACTIVITY_TOKEN });
+    const push = start();
+    await minutes(4);
+    expect(sent).toHaveLength(0);
+    await minutes(1);
+    expect(events()).toEqual(['end']);
+    expect(sent[0]).toMatchObject({
+      deviceToken: ACTIVITY_TOKEN,
+      payload: { aps: { 'content-state': { totalCount: 0, items: [] } } },
+    });
+    expect(push.devices()[0]!.activities).toEqual({});
+  });
+
+  it('gives a member time to report an activity the phone just started', async () => {
+    storePhone({});
+    const push = start();
+    await minutes(10);
+    await register(push, { [ACTIVITY]: ACTIVITY_TOKEN });
+    await minutes(4);
+    expect(sent).toHaveLength(0);
+    await minutes(1);
+    expect(events()).toEqual(['end']);
+  });
+
+  it('leaves activities alone where it does not serve the LAN or only sends alerts', async () => {
+    storePhone({ [ACTIVITY]: ACTIVITY_TOKEN });
+    start({ isServing: () => false });
+    // A member's copy, for alerts while the hub is away.
+    start({ sweepIntervalMs: undefined });
+    await minutes(30);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('keeps the token of an end APNs did not take, and ends it later', async () => {
+    storePhone({ [ACTIVITY]: ACTIVITY_TOKEN });
+    const push = start();
+    await push.deliver(summary('running'));
+    failing.add(ACTIVITY_TOKEN);
+    await push.deliver(summary('unread'));
+    expect(events()).toEqual(['update', 'end']);
+    expect(push.devices()[0]!.activities).toEqual({ [ACTIVITY]: ACTIVITY_TOKEN });
+    // The phone still lists the activity and registers it again; it stays.
+    await register(push, { [ACTIVITY]: ACTIVITY_TOKEN });
+    expect(push.devices()[0]!.activities).toEqual({ [ACTIVITY]: ACTIVITY_TOKEN });
+
+    failing.clear();
+    await minutes(1);
+    expect(events()).toEqual(['update', 'end', 'end']);
+    expect(push.devices()[0]!.activities).toEqual({});
+    // Ended for good: registering it again does not bring it back.
+    await register(push, { [ACTIVITY]: ACTIVITY_TOKEN });
+    expect(push.devices()[0]!.activities).toEqual({});
+    await minutes(10);
+    expect(sent).toHaveLength(3);
   });
 });
 

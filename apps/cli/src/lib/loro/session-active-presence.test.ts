@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionStatusFactory, type MachineId, type SessionId } from '@lody/shared';
+import {
+  buildLiveActivityConversationItems,
+  SessionStatusFactory,
+  type MachineId,
+  type SessionId,
+  type SessionMeta,
+  type SessionStatus,
+} from '@lody/shared';
 import type { Logger } from '@/utils/logger';
-import type { LoroDocumentManager } from './doc';
+import { LoroDocumentManager } from './doc';
 import { SessionActivePresenceController } from './session-active-presence';
 import { captureCli } from '../analytics/posthog';
 
@@ -199,5 +206,135 @@ describe('SessionActivePresenceController', () => {
     expect(controller.activeSessionCount()).toBe(0);
     expect(workspaceDocument.clearSessionPresence).toHaveBeenCalledWith(sessionId);
     expect(workspaceDocument.clearSessionPresence).toHaveBeenCalledWith(otherSessionId);
+  });
+});
+
+describe('SessionActivePresenceController lastRunningSeen', () => {
+  const START = 1_800_000_000_000;
+  const HEARTBEAT_TTL_MS = 180_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: START });
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  /** A workspace whose session meta lives in memory, written the way the repo writes it. */
+  const createWorkspace = (status: SessionStatus) => {
+    let meta: Partial<SessionMeta> = {
+      id: sessionId,
+      userId: 'owner',
+      title: 'Long build',
+      createdAt: START,
+      status,
+      lastRunningSeen: START,
+    };
+    const upserts: Partial<SessionMeta>[] = [];
+    const repo = {
+      getDocMeta: vi.fn(async () => ({ meta })),
+      upsertDocMeta: vi.fn(async (_roomId: string, patch: Partial<SessionMeta>) => {
+        upserts.push(patch);
+        meta = { ...meta, ...patch };
+      }),
+    };
+    const workspaceDocument = {
+      publishSessionPresence: vi.fn(),
+      clearSessionPresence: vi.fn(),
+      refreshSessionRunningSeen: (id: SessionId, stillActive?: () => boolean) =>
+        LoroDocumentManager.prototype.refreshSessionRunningSeen.call(
+          { repo } as unknown as LoroDocumentManager,
+          id,
+          stillActive
+        ),
+    } as unknown as LoroDocumentManager;
+    return {
+      workspaceDocument,
+      upserts,
+      meta: () => meta,
+      setStatus: (next: SessionStatus) => {
+        meta = { ...meta, status: next, lastRunningSeen: Date.now() };
+      },
+    };
+  };
+  const liveActivityStatus = (meta: Partial<SessionMeta>) =>
+    buildLiveActivityConversationItems({
+      sessions: [meta as SessionMeta],
+      currentUserId: 'owner',
+      defaultTitle: 'New Task',
+      statusLabels: {
+        permission: 'Permission',
+        question: 'Question',
+        running: 'Running',
+        unread: 'Completed',
+      },
+      formatUpdatedAt: () => '',
+    })[0]?.status ?? null;
+
+  it('re-stamps a running session every minute and stops once presence is released', async () => {
+    const workspace = createWorkspace(SessionStatusFactory.running());
+    const controller = new SessionActivePresenceController(
+      workspace.workspaceDocument,
+      machineId,
+      createLogger()
+    );
+    controller.start(sessionId);
+    // The status write at turn start stamped it already.
+    expect(workspace.upserts).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(4 * HEARTBEAT_TTL_MS);
+    expect(workspace.upserts).toHaveLength(12);
+    // Only the stamp is written: never the status, never awaitingUserSince.
+    for (const patch of workspace.upserts) expect(Object.keys(patch)).toEqual(['lastRunningSeen']);
+    expect(Date.now() - workspace.meta().lastRunningSeen!).toBeLessThanOrEqual(60_000);
+    // A turn that ran far past the heartbeat TTL without a status change still runs.
+    expect(liveActivityStatus(workspace.meta())).toBe('running');
+
+    controller.clear(sessionId);
+    await vi.advanceTimersByTimeAsync(4 * HEARTBEAT_TTL_MS);
+    expect(workspace.upserts).toHaveLength(12);
+  });
+
+  it('keeps a session waiting for permission a permission request', async () => {
+    const workspace = createWorkspace(SessionStatusFactory.running());
+    const controller = new SessionActivePresenceController(
+      workspace.workspaceDocument,
+      machineId,
+      createLogger()
+    );
+    controller.start(sessionId);
+    await vi.advanceTimersByTimeAsync(30_000);
+    workspace.setStatus(SessionStatusFactory.requestPermission());
+    controller.setPhase(sessionId, 'requestPermission');
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(workspace.meta().status).toEqual(SessionStatusFactory.requestPermission());
+    expect(liveActivityStatus(workspace.meta())).toBe('permission');
+
+    controller.clear(sessionId);
+  });
+
+  it('never writes once the session went idle, and leaves its status alone', async () => {
+    const workspace = createWorkspace(SessionStatusFactory.running());
+    const controller = new SessionActivePresenceController(
+      workspace.workspaceDocument,
+      machineId,
+      createLogger()
+    );
+    controller.start(sessionId);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(workspace.upserts).toHaveLength(1);
+
+    // The turn ended; its presence has not been released yet.
+    workspace.setStatus(SessionStatusFactory.idle());
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(workspace.upserts).toHaveLength(1);
+    expect(workspace.meta().status).toEqual(SessionStatusFactory.idle());
+    expect(liveActivityStatus(workspace.meta())).toBeNull();
+
+    controller.clear(sessionId);
   });
 });

@@ -1370,6 +1370,25 @@ export class LoroDocumentManager {
     this.presenceRuntime?.clearSessionPresence(sessionId);
   }
 
+  /**
+   * Re-stamps `lastRunningSeen` of a session this machine is working on, and
+   * nothing else: a turn that runs or waits for a long time without changing
+   * status would otherwise read as stale (`isSessionActiveWithHeartbeat`) to
+   * Live Activity summaries and other devices. A session that is gone or
+   * already idle is left alone. Call only from SessionActivePresenceController.
+   */
+  async refreshSessionRunningSeen(
+    sessionId: SessionId,
+    stillActive: () => boolean = () => true
+  ): Promise<void> {
+    const roomId = getSessionRoomId(sessionId);
+    const current = await this.repo.getDocMeta(roomId);
+    if (!current || isLoroRepoDocDeleted(current)) return;
+    const status = (current.meta as SessionMeta | undefined)?.status;
+    if (status?.type === 'idle' || !stillActive()) return;
+    await this.repo.upsertDocMeta(roomId, { lastRunningSeen: getServerNow() });
+  }
+
   async hasAgentConfig(
     cliType: AgentConfigCliType,
     agentType: string,

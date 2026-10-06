@@ -30,7 +30,7 @@ import {
   type LanHubMoved,
 } from './hub-handover';
 import { readLanHubEpoch, readsBeforeLanHubEpoch, type LanHubEpoch } from './hub-failover';
-import { createLanHubPush, type LanHubPush } from './hub-push';
+import { createLanHubPush, LAN_PUSH_SWEEP_INTERVAL_MS, type LanHubPush } from './hub-push';
 import {
   LAN_HUB_SNAPSHOT_PATH,
   LanHubSnapshotRequestSchema,
@@ -606,18 +606,20 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     }
   };
   const apns = createApnsSender({ loadConfig: loadApnsConfig });
-  const push = createLanHubPush({
-    dataDir,
-    send: options.sendPush ?? apns,
-    isConfigured: () => Boolean(options.sendPush) || loadApnsConfig() !== null,
-    log: options.log,
-  });
 
   let server: http.Server | https.Server | null = null;
   let closing = false;
   let resolveStopped: (result: { error: Error | null }) => void = () => {};
   const stopped = new Promise<{ error: Error | null }>((resolve) => (resolveStopped = resolve));
   let state: HubState = { kind: 'starting' };
+  const push = createLanHubPush({
+    dataDir,
+    send: options.sendPush ?? apns,
+    isConfigured: () => Boolean(options.sendPush) || loadApnsConfig() !== null,
+    log: options.log,
+    sweepIntervalMs: LAN_PUSH_SWEEP_INTERVAL_MS,
+    isServing: () => state.kind === 'serving',
+  });
 
   const close = async (error: Error | null = null): Promise<void> => {
     if (closing) {
@@ -633,6 +635,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
         listening.closeAllConnections();
       });
     }
+    push.close();
     apns.close();
     if (state.kind === 'serving') {
       state.upstream.stop();

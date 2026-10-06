@@ -51,6 +51,16 @@ export type LanPushEvent =
       requestKind?: 'permission' | 'ask_user_question';
     })
   | (LanPushEventBase & {
+      /**
+       * The request was answered, here or on another device. The phone's alert
+       * for it, if one went out, is replaced by a quiet one saying so.
+       */
+      type: 'permission-resolved';
+      sessionId: string;
+      requestId: string;
+      sessionTitle?: string | null;
+    })
+  | (LanPushEventBase & {
       type: 'schedule';
       phase: 'dispatched' | 'blocked' | 'skipped';
       scheduleId: string;

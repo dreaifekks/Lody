@@ -17,6 +17,16 @@ import {
 
 const REPORT_TIMEOUT_MS = 8_000;
 /**
+ * While work runs, a member repeats its Live Activity summary this often. The
+ * hub ends an activity whose members all stopped reporting, and a summary that
+ * changes nothing costs no push.
+ */
+export const LAN_LIVE_ACTIVITY_HEARTBEAT_MS = 2 * 60_000;
+/** A summary the hub did not take is sent again, the latest one only. */
+const SUMMARY_RETRY_MIN_MS = 5_000;
+const SUMMARY_RETRY_MAX_MS = LAN_LIVE_ACTIVITY_HEARTBEAT_MS;
+const SUMMARY_RETRY_ATTEMPTS = 30;
+/**
  * Long enough for a device showing the conversation to mark the reply read,
  * or for someone at a desktop to answer a permission request first.
  */
@@ -44,10 +54,14 @@ export function createLanNotificationsPort(options: {
 }): Required<CloudNotificationsPort> {
   const request = options.fetch ?? fetch;
 
-  const report = async (event: LanPushEvent): Promise<LanPushLiveActivityResult | null> => {
+  /** `retry` when the hub may take the same report later. */
+  const deliver = async (
+    event: LanPushEvent
+  ): Promise<{ result: LanPushLiveActivityResult | null; retry: boolean }> => {
     const hub = options.resolveHub();
-    if (!hub) return null;
+    if (!hub) return { result: null, retry: false };
     let failure: string;
+    let retry: boolean;
     try {
       const response = await request(`${hub.url}${LAN_PUSH_EVENTS_PATH}`, {
         method: 'POST',
@@ -56,17 +70,27 @@ export function createLanNotificationsPort(options: {
         redirect: 'error',
         signal: AbortSignal.timeout(REPORT_TIMEOUT_MS),
       });
-      if (response.ok) return (await response.json()) as LanPushLiveActivityResult;
-      // A hub without push keeps no key this machine could have copied.
+      if (response.ok) {
+        return { result: (await response.json()) as LanPushLiveActivityResult, retry: false };
+      }
+      // A hub without push keeps no key this machine could have copied, and
+      // always will answer 404.
       if (response.status === 404) {
         options.logger.debug(`[lan-push] ${event.type} answered 404`);
-        return null;
+        return { result: null, retry: false };
       }
       // Any other answer, such as 503 while the hub hands over or 410 once it
-      // moved, means the hub did not send it.
+      // moved, means the hub did not send it; one that is moving or busy
+      // answers again soon.
       failure = `answered ${response.status}`;
+      retry =
+        response.status >= 500 ||
+        response.status === 408 ||
+        response.status === 410 ||
+        response.status === 429;
     } catch (error) {
       failure = formatErrorMessage(error);
+      retry = true;
     }
     // The hub did not take it, which is when this machine sends alerts itself.
     const sent = await options.fallback?.deliver(hub, event).catch((fallbackError: unknown) => {
@@ -80,7 +104,39 @@ export function createLanNotificationsPort(options: {
         sent ? '; sent from this machine' : ''
       }`
     );
-    return null;
+    return { result: null, retry };
+  };
+  const report = async (event: LanPushEvent) => (await deliver(event)).result;
+
+  /**
+   * The summary each activity last reported, and its retry. A newer summary
+   * replaces the one waiting, so the hub hears only the latest.
+   */
+  const summaryRetries = new Map<
+    string,
+    { generation: number; attempt: number; timer: NodeJS.Timeout | null }
+  >();
+  let generations = 0;
+  const reportSummary = async (
+    event: Extract<LanPushEvent, { type: 'live-activity' }>,
+    generation: number,
+    attempt: number
+  ): Promise<LanPushLiveActivityResult | null> => {
+    const { result, retry } = await deliver(event);
+    const current = summaryRetries.get(event.activityId);
+    if (current?.generation !== generation) return result;
+    if (!retry || attempt >= SUMMARY_RETRY_ATTEMPTS) {
+      summaryRetries.delete(event.activityId);
+      return result;
+    }
+    const delay = Math.min(SUMMARY_RETRY_MIN_MS * 2 ** attempt, SUMMARY_RETRY_MAX_MS);
+    current.attempt = attempt + 1;
+    current.timer = setTimeout(() => {
+      current.timer = null;
+      void reportSummary(event, generation, attempt + 1);
+    }, delay);
+    current.timer.unref?.();
+    return result;
   };
 
   const send = async (event: Report) =>
@@ -122,7 +178,27 @@ export function createLanNotificationsPort(options: {
     },
     // A LAN has no inbox to record into; the alert is the whole effect.
     recordPermissionRequested: () => Promise.resolve(),
-    resolvePermissionRequested: () => Promise.resolve(),
+    resolvePermissionRequested: async (input) => {
+      const event: LanPushEvent = {
+        type: 'permission-resolved',
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+        sessionTitle: input.sessionTitle,
+        workspaceId: input.workspaceId,
+        workspaceSlug: input.workspaceSlug ?? input.workspaceId,
+        userId: input.userId,
+        machineId: options.machineId,
+        machineName: (await options.machineName?.()) ?? null,
+      };
+      const { result } = await deliver(event);
+      // An alert this machine sent while the hub was away is withdrawn from
+      // here as well; the hub never heard of it. `deliver` already offered
+      // the event when the hub could not be reached.
+      const hub = options.resolveHub();
+      if (result && hub) {
+        await options.fallback?.deliver(hub, event).catch(() => false);
+      }
+    },
     notifyScheduleEvent: async (input) => {
       await send({ type: 'schedule', ...input });
     },
@@ -179,13 +255,21 @@ export function createLanNotificationsPort(options: {
         controller?.abort();
       };
     },
+    liveActivityHeartbeatMs: LAN_LIVE_ACTIVITY_HEARTBEAT_MS,
     syncLiveActivitySummary: async (input) => {
-      const result = await send({
-        type: 'live-activity',
+      const event = {
+        type: 'live-activity' as const,
         ...input,
         // The member does not know the LAN's slug; the phone supplies its own.
         workspaceSlug: input.workspaceId,
-      });
+        machineId: options.machineId,
+        machineName: (await options.machineName?.()) ?? null,
+      };
+      const previous = summaryRetries.get(event.activityId);
+      if (previous?.timer) clearTimeout(previous.timer);
+      const generation = ++generations;
+      summaryRetries.set(event.activityId, { generation, attempt: 0, timer: null });
+      const result = await reportSummary(event, generation, 0);
       return result && 'sent' in result ? result : { sent: false, reason: 'hub_unavailable' };
     },
   };

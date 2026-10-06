@@ -17,6 +17,12 @@ import { captureCli } from '../analytics/posthog';
 // so this lib module does not depend on the commands layer.
 const ACTIVE_PING_MIN_INTERVAL_MS = 60_000;
 const DEFAULT_SLOW_THRESHOLD_MS = 120_000;
+/**
+ * How often an active session re-stamps its durable `lastRunningSeen`. Readers
+ * treat a stamp older than `SESSION_HEARTBEAT_TTL_MS` (180s) as a session that
+ * stopped. Checked on each presence tick (every 30s), so stamps land every 60s.
+ */
+export const RUNNING_SEEN_REFRESH_MS = 50_000;
 
 export type SessionActivePresencePhase =
   | 'thinking'
@@ -83,6 +89,8 @@ type ActivePresenceState = {
   lastProgressMs: number;
   /** Latched once the watchdog fired, so a stall is reported exactly once. */
   stallReported: boolean;
+  /** Last durable `lastRunningSeen` stamp; the status write at turn start counts. */
+  runningSeenAtMs: number;
 };
 
 type SessionActivePresenceOptions = {
@@ -197,6 +205,7 @@ export class SessionActivePresenceController {
       lastActivePingAtMs: nowMs,
       lastProgressMs: nowMs,
       stallReported: false,
+      runningSeenAtMs: nowMs,
     };
     state.timer?.unref?.();
     this.active.set(sessionId, state);
@@ -269,6 +278,7 @@ export class SessionActivePresenceController {
     if (this.maybeReportInitializationStall(sessionId, state)) return;
 
     this.publish(sessionId, state);
+    this.maybeRefreshRunningSeen(sessionId, state);
     void this.updateMonitoring(sessionId, state).catch((error: unknown) => {
       this.logger.debug(
         `[${sessionId}] Session active presence monitoring failed: ${formatErrorMessage(error)}`
@@ -316,6 +326,30 @@ export class SessionActivePresenceController {
     );
     this.options.onInitializationStalled?.(sessionId, stall);
     return true;
+  }
+
+  /**
+   * Presence is ephemeral; `lastRunningSeen` in the durable meta is what other
+   * readers judge a session's liveness by. Only that field is written, so a
+   * stamp racing a status change never changes the status back.
+   */
+  private maybeRefreshRunningSeen(sessionId: SessionId, state: ActivePresenceState): void {
+    const nowMs = this.now();
+    if (nowMs - state.runningSeenAtMs < RUNNING_SEEN_REFRESH_MS) return;
+    state.runningSeenAtMs = nowMs;
+    const { epoch } = state;
+    void Promise.resolve()
+      .then(() =>
+        this.workspaceDocument.refreshSessionRunningSeen(
+          sessionId,
+          () => this.active.get(sessionId)?.epoch === epoch
+        )
+      )
+      .catch((error: unknown) => {
+        this.logger.debug(
+          `[${sessionId}] Refreshing lastRunningSeen failed: ${formatErrorMessage(error)}`
+        );
+      });
   }
 
   private publish(sessionId: SessionId, state: ActivePresenceState): void {

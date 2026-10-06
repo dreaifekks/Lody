@@ -159,6 +159,9 @@ export interface CloudPermissionRequestResolutionInput {
   userId: string;
   requestId: string;
   toolCallId: string;
+  /** Titles the notice that replaces the request's alert on a LAN. */
+  sessionTitle?: string | null;
+  workspaceSlug?: string;
 }
 
 export interface CloudLiveActivityDetailInput {
@@ -188,6 +191,12 @@ export interface CloudNotificationsPort {
    * its hub is away.
    */
   deliversOffline?: boolean;
+  /**
+   * Send the Live Activity summary again this often while work is active, so
+   * the receiver can end an activity whose machine stopped reporting. Only
+   * self-hosted LANs set it.
+   */
+  liveActivityHeartbeatMs?: number;
   notifySessionCompleted(input: {
     sessionId: SessionId;
     occurrenceId: string;

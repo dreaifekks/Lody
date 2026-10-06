@@ -15,6 +15,8 @@ const ALERT_EVENTS = new Set<LanPushEvent['type']>([
   'session-completed',
   'session-failed',
   'permission-requested',
+  // Only an alert this copy sent itself is withdrawn; it never saw the rest.
+  'permission-resolved',
   'schedule',
 ]);
 

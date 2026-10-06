@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import type http from 'node:http';
 import path from 'node:path';
-import type { LiveActivityConversationItem } from '@lody/shared';
+import type { LiveActivityConversationItem, LiveActivityStatusCounts } from '@lody/shared';
 import { isApnsDeviceToken, type ApnsPush, type ApnsSender } from './apns';
 import {
   LAN_PUSH_DEVICES_PATH,
@@ -24,8 +24,25 @@ export const LAN_PUSH_DEVICES_FILE_NAME = 'push-devices.json';
 const MAX_BODY_BYTES = 512 * 1024;
 const MAX_DEVICES = 32;
 const SEEN_EVENT_LIMIT = 512;
-/** A member that stopped reporting no longer speaks for its sessions. */
-const SUMMARY_TTL_MS = 30 * 60_000;
+/**
+ * A member that stopped reporting no longer speaks for its sessions. Members
+ * repeat their summary every two minutes while work runs
+ * (`LAN_LIVE_ACTIVITY_HEARTBEAT_MS`); several missed in a row mean it is gone.
+ */
+const SUMMARY_TTL_MS = 8 * 60_000;
+/** How often the hub looks for activities nobody speaks for any more. */
+export const LAN_PUSH_SWEEP_INTERVAL_MS = 60_000;
+/**
+ * An activity the hub has a token for but no report about is left alone this
+ * long after the hub starts or first hears of the token, so its members can
+ * report again before it is ended.
+ */
+const ORPHAN_GRACE_MS = 5 * 60_000;
+/**
+ * A summary that changes nothing on the phone is not pushed again, except to
+ * move the activity's stale date before it comes due.
+ */
+const UNCHANGED_REFRESH_MS = 10 * 60_000;
 /** Finished work stays on the activity briefly, then leaves. */
 const UNREAD_WINDOW_MS = 15 * 60_000;
 const STALE_AFTER_S = 30 * 60;
@@ -52,6 +69,7 @@ type Copy = {
   failed: (detail: string) => string;
   permission: (tool: string) => string;
   permissionNoTool: string;
+  permissionResolved: string;
   question: string;
   scheduleStarted: string;
   scheduleBlocked: (code: string) => string;
@@ -65,6 +83,7 @@ const COPY: Record<Language, Copy> = {
     failed: (detail) => (detail ? `Failed: ${detail}` : 'Failed'),
     permission: (tool) => `Needs your approval: ${tool}`,
     permissionNoTool: 'Needs your approval',
+    permissionResolved: 'Handled on another device',
     question: 'Waiting for your answer',
     scheduleStarted: 'Scheduled task started',
     scheduleBlocked: (code) => `Scheduled task could not run (${code})`,
@@ -77,6 +96,7 @@ const COPY: Record<Language, Copy> = {
     failed: (detail) => (detail ? `失败：${detail}` : '失败'),
     permission: (tool) => `需要你批准：${tool}`,
     permissionNoTool: '需要你批准',
+    permissionResolved: '已在其他设备处理',
     question: '在等你回答',
     scheduleStarted: '定时任务开始运行',
     scheduleBlocked: (code) => `定时任务没能运行（${code}）`,
@@ -170,6 +190,7 @@ const EVENT_TYPES = new Set([
   'session-completed',
   'session-failed',
   'permission-requested',
+  'permission-resolved',
   'schedule',
   'session-detail',
   'live-activity',
@@ -192,6 +213,8 @@ function parseEvent(body: unknown): LanPushEvent {
     }
   } else if (typeof body.sessionId !== 'string') {
     throw new BadRequest('missing sessionId');
+  } else if (body.type === 'permission-resolved' && typeof body.requestId !== 'string') {
+    throw new BadRequest('missing requestId');
   }
   return {
     ...body,
@@ -201,12 +224,27 @@ function parseEvent(body: unknown): LanPushEvent {
 
 type Summary = Extract<LanPushEvent, { type: 'live-activity' }>;
 type ContentItem = LiveActivityConversationItem;
+/** What an activity shows, merged from what every member reported. */
+type ActivityState = {
+  items: ContentItem[];
+  statusCounts: LiveActivityStatusCounts;
+  active: boolean;
+  permissionAlert?: Summary['permissionAlert'];
+};
+type PushOutcome = 'ok' | 'failed' | 'unregistered';
 
 export type LanHubPush = {
   /** Answers `/push/*`; `false` for every other path. */
   handle(request: http.IncomingMessage, response: http.ServerResponse): Promise<boolean>;
   deliver(event: LanPushEvent): Promise<LanPushLiveActivityResult | null>;
   devices(): readonly LanPushDevice[];
+  /**
+   * Brings every activity a phone still holds a token for up to date: ends
+   * those no member speaks for any more and those whose end did not reach
+   * APNs. Runs on its own every `sweepIntervalMs`.
+   */
+  sweep(): Promise<void>;
+  close(): void;
 };
 
 export function createLanHubPush(options: {
@@ -215,9 +253,17 @@ export function createLanHubPush(options: {
   isConfigured: () => boolean;
   now?: () => number;
   log?: (line: string) => void;
+  /**
+   * Sweep this often. Only the hub sweeps: a member's copy for alerts hears
+   * none of the reports that keep an activity alive.
+   */
+  sweepIntervalMs?: number;
+  /** A hub that handed its LAN over leaves the activities to the new one. */
+  isServing?: () => boolean;
 }): LanHubPush {
   const now = options.now ?? Date.now;
   const log = options.log ?? (() => {});
+  const hubStartedAt = now();
   const devicesPath = path.join(options.dataDir, LAN_PUSH_DEVICES_FILE_NAME);
   const devices = new Map<string, LanPushDevice>();
   try {
@@ -254,8 +300,17 @@ export function createLanHubPush(options: {
     if (seen.size > SEEN_EVENT_LIMIT) seen.delete(seen.values().next().value as string);
     return true;
   };
+  /** Keeps a map from growing without bound; the oldest entry goes first. */
+  const bound = <K, V>(map: Map<K, V>) => {
+    if (map.size > SEEN_EVENT_LIMIT) map.delete(map.keys().next().value as K);
+  };
 
-  const summaries = new Map<string, Map<string, { summary: Summary; receivedAt: number }>>();
+  /** Orders reports, which can arrive within the same millisecond. */
+  let sequence = 0;
+  const summaries = new Map<
+    string,
+    Map<string, { summary: Summary; receivedAt: number; sequence: number }>
+  >();
   /** Whether a phone last saw active work, so a remote start fires once per wave. */
   const wasActive = new Map<string, boolean>();
   /**
@@ -265,15 +320,38 @@ export function createLanHubPush(options: {
   const workStarts = new Map<string, number>();
   /** Activities already ended; a phone lists them until they are dismissed. */
   const endedTokens = new Set<string>();
+  /** When the hub first heard of an activity token, for `ORPHAN_GRACE_MS`. */
+  const tokenSeenAt = new Map<string, number>();
+  /**
+   * What each activity token was last sent, so an unchanged state is not
+   * pushed again and leaving a permission request goes out at once.
+   */
+  const lastPushed = new Map<
+    string,
+    { signature: string; at: number; attention: number; alert: boolean }
+  >();
   /** What each activity last showed as running, so its end shows those as done. */
   const lastActiveItems = new Map<string, ContentItem[]>();
   const recentFailures = new Map<string, number>();
+  /**
+   * Permission alerts sent, by request id, with the phones they reached. Only
+   * those are withdrawn once the request is answered.
+   */
+  const permissionAlerts = new Map<
+    string,
+    { delivered: Promise<string[]>; sessionTitle: string | null }
+  >();
   type Detail = {
     machineId: string;
     machineName: string | null;
     activity: string | null;
     thought: string | null;
     permission: Extract<LanPushEvent, { type: 'session-detail' }>['permission'] | null;
+    /**
+     * When, in report order, a permission request of the session was last
+     * answered. A summary reported before it still shows the request.
+     */
+    answeredSequence: number | null;
     updatedAt: number;
   };
   /** What each running session is doing, as the member running it reported. */
@@ -297,31 +375,36 @@ export function createLanHubPush(options: {
   const senderName = (event: { machineId: string; machineName?: string | null }) =>
     namesMembers() && event.machineName ? truncate(event.machineName, 60) : null;
 
-  const push = async (device: LanPushDevice, message: Omit<ApnsPush, 'environment'>) => {
+  const pushTo = async (
+    device: LanPushDevice,
+    message: Omit<ApnsPush, 'environment'>
+  ): Promise<PushOutcome> => {
     const result = await options.send({ ...message, environment: device.environment });
-    if (result.ok) return true;
+    if (result.ok) return 'ok';
     log(
       `[push] ${message.pushType} to ${device.deviceToken.slice(0, 8)}… failed: ${result.reason}`
     );
-    if (result.unregistered) {
-      const current = devices.get(device.deviceToken);
-      if (current) {
-        if (message.deviceToken === current.deviceToken) devices.delete(current.deviceToken);
-        else if (message.deviceToken === current.pushToStartToken) current.pushToStartToken = null;
-        else {
-          for (const [id, token] of Object.entries(current.activities)) {
-            if (token === message.deviceToken) delete current.activities[id];
-          }
+    if (!result.unregistered) return 'failed';
+    const current = devices.get(device.deviceToken);
+    if (current) {
+      if (message.deviceToken === current.deviceToken) devices.delete(current.deviceToken);
+      else if (message.deviceToken === current.pushToStartToken) current.pushToStartToken = null;
+      else {
+        for (const [id, token] of Object.entries(current.activities)) {
+          if (token === message.deviceToken) delete current.activities[id];
         }
-        persist();
       }
+      persist();
     }
-    return false;
+    return 'unregistered';
   };
+  const push = async (device: LanPushDevice, message: Omit<ApnsPush, 'environment'>) =>
+    (await pushTo(device, message)) === 'ok';
 
   const recipients = (userId: string) =>
     [...devices.values()].filter((device) => !device.userId || device.userId === userId);
 
+  /** The phones that took the alert. */
   const alert = async (
     event: {
       userId: string;
@@ -330,16 +413,17 @@ export function createLanHubPush(options: {
       machineName?: string | null;
     },
     compose: (copy: Copy) => { title: string; body: string },
-    target: { sessionId?: string | null; collapseId?: string }
-  ) => {
+    target: { sessionId?: string | null; collapseId?: string; payload?: Record<string, unknown> }
+  ): Promise<string[]> => {
     const subtitle = senderName(event);
+    const delivered: string[] = [];
     await Promise.all(
       recipients(event.userId)
         .filter((device) => device.alerts)
-        .map((device) => {
+        .map(async (device) => {
           const { title, body } = compose(COPY[languageOf(device.locale)]);
           const slug = device.workspaceSlug || event.workspaceSlug;
-          return push(device, {
+          const ok = await push(device, {
             deviceToken: device.deviceToken,
             topic: device.bundleId,
             pushType: 'alert',
@@ -359,37 +443,100 @@ export function createLanHubPush(options: {
               ...(target.sessionId
                 ? { route: routeFor(slug, target.sessionId), sessionId: target.sessionId }
                 : {}),
+              ...target.payload,
             },
           });
+          if (ok) delivered.push(device.deviceToken);
         })
+    );
+    return delivered;
+  };
+
+  /**
+   * Replaces a permission alert on the phones it reached with a quiet one:
+   * the same collapse id is the same notification on the phone.
+   */
+  const withdrawPermissionAlert = async (
+    event: Extract<LanPushEvent, { type: 'permission-resolved' }>,
+    deviceTokens: readonly string[],
+    sessionTitle: string | null
+  ) => {
+    await Promise.all(
+      deviceTokens.map(async (deviceToken) => {
+        const device = devices.get(deviceToken);
+        if (!device?.alerts) return;
+        const copy = COPY[languageOf(device.locale)];
+        const slug = device.workspaceSlug || event.workspaceSlug;
+        await push(device, {
+          deviceToken: device.deviceToken,
+          topic: device.bundleId,
+          pushType: 'alert',
+          priority: 5,
+          collapseId: `permission-${event.requestId}`,
+          payload: {
+            aps: {
+              alert: {
+                title: truncate(event.sessionTitle || sessionTitle || copy.untitled, 120),
+                body: copy.permissionResolved,
+              },
+              'interruption-level': 'passive',
+              'thread-id': event.sessionId,
+            },
+            lodyKind: 'permission-resolved',
+            sessionId: event.sessionId,
+            requestId: event.requestId,
+            recipientUserId: event.userId,
+            route: routeFor(slug, event.sessionId),
+          },
+        });
+      })
+    );
+  };
+
+  /** A request answered on another device, after its summary said it waits. */
+  const answeredSince = (item: ContentItem, reportedAt: number) => {
+    if (item.status !== 'permission') return false;
+    const detail = details.get(item.id);
+    return (
+      detail !== undefined &&
+      detail.permission === null &&
+      detail.answeredSequence !== null &&
+      detail.answeredSequence > reportedAt
     );
   };
 
   const mergedState = (activityId: string) => {
     const bySource = summaries.get(activityId);
     if (!bySource) return null;
+    // Any report from a member shows it is still there to speak for its sessions.
     const cutoff = now() - SUMMARY_TTL_MS;
     const sources = [...bySource.entries()]
       .filter(([machineId, entry]) => {
-        if (entry.receivedAt >= cutoff) return true;
+        if (Math.max(entry.receivedAt, machinesSeen.get(machineId) ?? 0) >= cutoff) return true;
         bySource.delete(machineId);
         return false;
       })
-      .sort((a, b) => a[1].receivedAt - b[1].receivedAt);
+      .sort((a, b) => a[1].sequence - b[1].sequence);
     // The latest report about a session wins.
-    const items = new Map<string, ContentItem>();
+    const items = new Map<string, { item: ContentItem; sequence: number }>();
     let permissionAlert: Summary['permissionAlert'];
     let latest: Summary | null = null;
-    for (const [, { summary }] of sources) {
-      for (const item of summary.items) items.set(item.id, item);
+    for (const [, { summary, sequence: reportedAt }] of sources) {
+      for (const item of summary.items) items.set(item.id, { item, sequence: reportedAt });
       permissionAlert = summary.permissionAlert ?? permissionAlert;
       latest = summary;
     }
     if (!latest) return null;
     const recentUnread = now() - UNREAD_WINDOW_MS;
-    const kept = [...items.values()].filter(
-      (item) => ACTIVE_STATUSES.has(item.status) || item.updatedAt >= recentUnread
-    );
+    const kept = [...items.values()]
+      .map(({ item, sequence: reportedAt }) =>
+        // The member sends its next summary only after the answer; until then
+        // the session is back at work, not waiting.
+        answeredSince(item, reportedAt)
+          ? { ...item, status: 'running' as const, statusLabel: 'Running' }
+          : item
+      )
+      .filter((item) => ACTIVE_STATUSES.has(item.status) || item.updatedAt >= recentUnread);
     const starts = new Map<string, number>();
     const pinned = kept.map((item) => {
       if (!ACTIVE_STATUSES.has(item.status) || item.startedAt === undefined) return item;
@@ -408,10 +555,15 @@ export function createLanHubPush(options: {
         pinned.filter((item) => ACTIVE_STATUSES.has(item.status))
       );
     }
-    return { latest, items: pinned, statusCounts, active, permissionAlert };
+    const waiting = statusCounts.permission + statusCounts.question > 0;
+    return {
+      latest,
+      items: pinned,
+      statusCounts,
+      active,
+      permissionAlert: waiting ? permissionAlert : undefined,
+    };
   };
-
-  type MergedState = NonNullable<ReturnType<typeof mergedState>>;
 
   /**
    * The same state the phone builds for itself while it is open
@@ -419,7 +571,7 @@ export function createLanHubPush(options: {
    * the focus and one more; an ending activity turns what was running into
    * finished rows with their durations.
    */
-  const contentStateFor = (device: LanPushDevice, activityId: string, state: MergedState) => {
+  const contentStateFor = (device: LanPushDevice, activityId: string, state: ActivityState) => {
     const labels = device.liveActivityLabels ?? {};
     const copy = device.liveActivityCopy ?? {};
     const shared = {
@@ -486,46 +638,89 @@ export function createLanHubPush(options: {
     };
   };
 
-  /** Brings one running activity up to date, or ends it when the work stopped. */
+  /** What a phone would see; when a session last changed does not show. */
+  const signatureOf = (contentState: ReturnType<typeof contentStateFor>) =>
+    JSON.stringify({
+      ...contentState,
+      items: contentState.items.map(({ updatedAt: _updatedAt, ...item }) => item),
+    });
+
+  /** The token is spent: the activity ended, or APNs no longer knows it. */
+  const forgetToken = (device: LanPushDevice, activityId: string, token: string) => {
+    endedTokens.add(token);
+    if (endedTokens.size > SEEN_EVENT_LIMIT) {
+      endedTokens.delete(endedTokens.values().next().value as string);
+    }
+    lastPushed.delete(token);
+    tokenSeenAt.delete(token);
+    const current = devices.get(device.deviceToken) ?? device;
+    if (current.activities[activityId] === token) {
+      delete current.activities[activityId];
+      persist();
+    }
+  };
+
+  /**
+   * Brings one running activity up to date, or ends it when the work stopped.
+   * `true` when the phone shows the state, whether pushed now or before.
+   */
   const updateActivity = async (
     device: LanPushDevice,
     activityId: string,
-    state: MergedState
+    state: ActivityState
   ): Promise<boolean> => {
     const token = device.activities[activityId];
     if (!token) return false;
     const timestamp = Math.floor(now() / 1000);
     const contentState = contentStateFor(device, activityId, state);
+    if (!state.active) {
+      const outcome = await pushTo(device, {
+        deviceToken: token,
+        topic: `${device.bundleId}.push-type.liveactivity`,
+        pushType: 'liveactivity',
+        priority: 10,
+        payload: {
+          aps: {
+            timestamp,
+            event: 'end',
+            'content-state': contentState,
+            'dismissal-date': timestamp + DISMISS_AFTER_S,
+          },
+        },
+      });
+      // An end that did not arrive keeps the token, and the sweep ends it later.
+      if (outcome !== 'failed') forgetToken(device, activityId, token);
+      return outcome === 'ok';
+    }
+    const signature = signatureOf(contentState);
+    const attention = state.statusCounts.permission + state.statusCounts.question;
+    const alerting = Boolean(state.permissionAlert);
+    const previous = lastPushed.get(token);
+    const unchanged = previous?.signature === signature;
+    // The stale date still lies ahead; the phone already shows all of it.
+    if (unchanged && now() - previous.at < UNCHANGED_REFRESH_MS) return true;
+    // Leaving a permission request matters as much as entering one: a phone
+    // left showing "needs you" sends the user to a request already answered.
+    const settled =
+      previous !== undefined && (attention < previous.attention || (previous.alert && !alerting));
     const ok = await push(device, {
       deviceToken: token,
       topic: `${device.bundleId}.push-type.liveactivity`,
       pushType: 'liveactivity',
-      priority: state.active && !state.permissionAlert ? 5 : 10,
+      priority: !unchanged && (alerting || settled) ? 10 : 5,
       payload: {
-        aps: state.active
-          ? {
-              timestamp,
-              event: 'update',
-              'content-state': contentState,
-              'stale-date': timestamp + STALE_AFTER_S,
-            }
-          : {
-              timestamp,
-              event: 'end',
-              'content-state': contentState,
-              'dismissal-date': timestamp + DISMISS_AFTER_S,
-            },
+        aps: {
+          timestamp,
+          event: 'update',
+          'content-state': contentState,
+          'stale-date': timestamp + STALE_AFTER_S,
+        },
       },
     });
-    if (!state.active) {
-      endedTokens.add(token);
-      if (endedTokens.size > SEEN_EVENT_LIMIT) {
-        endedTokens.delete(endedTokens.values().next().value as string);
-      }
-      if (device.activities[activityId] === token) {
-        delete device.activities[activityId];
-        persist();
-      }
+    if (ok) {
+      lastPushed.delete(token);
+      lastPushed.set(token, { signature, at: now(), attention, alert: alerting });
+      bound(lastPushed);
     }
     return ok;
   };
@@ -548,7 +743,7 @@ export function createLanHubPush(options: {
   const liveActivity = async (summary: Summary): Promise<LanPushLiveActivityResult> => {
     let bySource = summaries.get(summary.activityId);
     if (!bySource) summaries.set(summary.activityId, (bySource = new Map()));
-    bySource.set(summary.machineId, { summary, receivedAt: now() });
+    bySource.set(summary.machineId, { summary, receivedAt: now(), sequence: ++sequence });
     const state = mergedState(summary.activityId);
     if (!state) return { sent: false, reason: 'no_state' };
     const timestamp = Math.floor(now() / 1000);
@@ -609,6 +804,48 @@ export function createLanHubPush(options: {
     return delivered > 0 ? { sent: true, ended } : { sent: false, reason: 'no_activity' };
   };
 
+  let sweeping = false;
+  const sweep = async () => {
+    if (sweeping || !options.isConfigured() || options.isServing?.() === false) return;
+    sweeping = true;
+    try {
+      const activityIds = new Set(summaries.keys());
+      for (const device of devices.values()) {
+        for (const activityId of Object.keys(device.activities)) activityIds.add(activityId);
+      }
+      for (const activityId of activityIds) {
+        const state = mergedState(activityId);
+        if (!state && summaries.get(activityId)?.size === 0) summaries.delete(activityId);
+        const holders = [...devices.values()].filter((device) => device.activities[activityId]);
+        // Nobody speaks for these sessions any more: the member that ran them
+        // stopped reporting, or the hub restarted and none reported since.
+        const ending: ActivityState = state ?? {
+          items: [],
+          statusCounts: { permission: 0, question: 0, running: 0, unread: 0 },
+          active: false,
+        };
+        await Promise.all(
+          holders.map(async (device) => {
+            if (ending.active && !device.liveActivities) return;
+            const token = device.activities[activityId]!;
+            const since = Math.max(hubStartedAt, tokenSeenAt.get(token) ?? hubStartedAt);
+            if (!state && now() - since < ORPHAN_GRACE_MS) return;
+            wasActive.set(`${device.deviceToken}:${activityId}`, ending.active);
+            await updateActivity(device, activityId, ending);
+          })
+        );
+      }
+    } catch (error) {
+      log(`[push] sweeping activities failed: ${String(error)}`);
+    } finally {
+      sweeping = false;
+    }
+  };
+  const sweepTimer = options.sweepIntervalMs
+    ? setInterval(() => void sweep(), options.sweepIntervalMs)
+    : null;
+  sweepTimer?.unref?.();
+
   const pushDetail = async (activityId: string, userId: string) => {
     detailTimers.delete(activityId);
     const state = mergedState(activityId);
@@ -628,23 +865,24 @@ export function createLanHubPush(options: {
     }
     const previous = details.get(event.sessionId);
     details.delete(event.sessionId);
+    const changesPermission = 'permission' in event;
     details.set(event.sessionId, {
       machineId: event.machineId,
       machineName: event.machineName ?? null,
       activity: event.activity ?? null,
       thought: event.thought ?? null,
-      permission:
-        'permission' in event ? (event.permission ?? null) : (previous?.permission ?? null),
+      permission: changesPermission ? (event.permission ?? null) : (previous?.permission ?? null),
+      answeredSequence:
+        changesPermission && !event.permission ? ++sequence : (previous?.answeredSequence ?? null),
       updatedAt: now(),
     });
     if (details.size > DETAIL_LIMIT) details.delete(details.keys().next().value as string);
     const activityId = `lody-conversations:v5:${event.workspaceId}:${event.userId}`;
     if (!summaries.has(activityId)) return;
     // A permission request is waited on; everything else can wait its turn.
-    const wait =
-      'permission' in event
-        ? 0
-        : Math.max(0, (detailPushedAt.get(activityId) ?? 0) + DETAIL_INTERVAL_MS - now());
+    const wait = changesPermission
+      ? 0
+      : Math.max(0, (detailPushedAt.get(activityId) ?? 0) + DETAIL_INTERVAL_MS - now());
     if (wait === 0) {
       const pending = detailTimers.get(activityId);
       if (pending) clearTimeout(pending);
@@ -745,12 +983,33 @@ export function createLanHubPush(options: {
         if (event.toolTitle) return copy.permission(event.toolTitle);
         return copy.permissionNoTool;
       };
-      await alert(
+      const delivered = alert(
         event,
         (copy) => ({ title: event.sessionTitle || copy.untitled, body: body(copy) }),
         // A member whose hub was away may have sent it as well.
-        { sessionId: event.sessionId, collapseId: `permission-${event.requestId}` }
+        {
+          sessionId: event.sessionId,
+          collapseId: `permission-${event.requestId}`,
+          payload: { lodyKind: 'permission-requested', requestId: event.requestId },
+        }
       );
+      permissionAlerts.set(event.requestId, {
+        delivered: delivered.catch(() => []),
+        sessionTitle: event.sessionTitle ?? null,
+      });
+      bound(permissionAlerts);
+      await delivered;
+    } else if (event.type === 'permission-resolved') {
+      // Answered before its alert went out: the alert is no longer needed.
+      firstTime(`permission:${event.requestId}`);
+      const sent = permissionAlerts.get(event.requestId);
+      if (!sent) return null;
+      permissionAlerts.delete(event.requestId);
+      // Withdrawn only after it went out, or the alert would replace the withdrawal.
+      const deviceTokens = await sent.delivered;
+      if (deviceTokens.length > 0) {
+        await withdrawPermissionAlert(event, deviceTokens, sent.sessionTitle);
+      }
     } else {
       if (!firstTime(`schedule:${event.runKey}:${event.phase}`)) return null;
       await alert(
@@ -792,6 +1051,10 @@ export function createLanHubPush(options: {
         const previous = devices.get(device.deviceToken)?.activities ?? {};
         for (const [activityId, token] of Object.entries(device.activities)) {
           if (endedTokens.has(token)) delete device.activities[activityId];
+          else if (!tokenSeenAt.has(token)) {
+            tokenSeenAt.set(token, now());
+            bound(tokenSeenAt);
+          }
         }
         devices.set(device.deviceToken, device);
         persist();
@@ -875,5 +1138,15 @@ export function createLanHubPush(options: {
     return true;
   };
 
-  return { handle, deliver, devices: () => [...devices.values()] };
+  return {
+    handle,
+    deliver,
+    devices: () => [...devices.values()],
+    sweep,
+    close: () => {
+      if (sweepTimer) clearInterval(sweepTimer);
+      for (const timer of detailTimers.values()) clearTimeout(timer);
+      detailTimers.clear();
+    },
+  };
 }
