@@ -375,6 +375,12 @@ export class LoroDocumentManager {
   private remoteTransportOpQueue: Promise<unknown> = Promise.resolve();
   private readonly streamsTokens: CloudStreamsTokenPort | null;
   public readonly cloudBilling: CloudBillingPort | null;
+  /**
+   * The machine whose sessions this process executes, or null in processes that
+   * only read (commands, viewers). Closing a session document finishes only
+   * sessions of this machine; see {@link setLocalMachineId}.
+   */
+  private localMachineId: MachineId | null = null;
 
   static async create(
     workspaceId: WorkspaceId,
@@ -1356,6 +1362,16 @@ export class LoroDocumentManager {
     return sessionId;
   }
 
+  /**
+   * Names the machine this process executes sessions for. A session left
+   * running/initializing when its document closes is set idle only when it runs
+   * on this machine: a LAN member that merely opened another member's session
+   * must never end it by quitting or updating.
+   */
+  setLocalMachineId(machineId: MachineId): void {
+    this.localMachineId = machineId;
+  }
+
   /** Low-level session presence publish. Call only from SessionActivePresenceController. */
   publishSessionPresence(sessionId: SessionId, machineId: MachineId, status: SessionStatus): void {
     this.presenceRuntime?.setSessionPresence({
@@ -1371,22 +1387,48 @@ export class LoroDocumentManager {
   }
 
   /**
-   * Re-stamps `lastRunningSeen` of a session this machine is working on, and
-   * nothing else: a turn that runs or waits for a long time without changing
-   * status would otherwise read as stale (`isSessionActiveWithHeartbeat`) to
-   * Live Activity summaries and other devices. A session that is gone or
-   * already idle is left alone. Call only from SessionActivePresenceController.
+   * Keeps the durable status of a session this machine is working on honest.
+   * Call only from SessionActivePresenceController, on its presence tick.
+   *
+   * - With `stamp`, re-stamps `lastRunningSeen` and nothing else: a turn that
+   *   runs or waits for a long time without changing status would otherwise read
+   *   as stale (`isSessionActiveWithHeartbeat`) to Live Activity summaries and
+   *   other devices.
+   * - When the session reads idle although the turn still runs here, another
+   *   writer ended it (an older LAN member closing a document it had only
+   *   viewed). The live status is written back, unless this process wrote that
+   *   idle itself: then the turn ended here and its presence is about to go.
+   *
+   * `liveStatus` returns null once presence was released; nothing is written then.
    */
   async refreshSessionRunningSeen(
     sessionId: SessionId,
-    stillActive: () => boolean = () => true
+    options: {
+      machineId: MachineId;
+      liveStatus: () => SessionStatus | null;
+      stamp: boolean;
+    }
   ): Promise<void> {
     const roomId = getSessionRoomId(sessionId);
     const current = await this.repo.getDocMeta(roomId);
     if (!current || isLoroRepoDocDeleted(current)) return;
-    const status = (current.meta as SessionMeta | undefined)?.status;
-    if (status?.type === 'idle' || !stillActive()) return;
-    await this.repo.upsertDocMeta(roomId, { lastRunningSeen: getServerNow() });
+    const meta = current.meta as SessionMeta | undefined;
+    // Read after the await and before any write: a turn that ended meanwhile wins.
+    const live = options.liveStatus();
+    if (!live) return;
+    if (meta?.status?.type !== 'idle') {
+      if (options.stamp) {
+        await this.repo.upsertDocMeta(roomId, { lastRunningSeen: getServerNow() });
+      }
+      return;
+    }
+    if (meta.isArchived === true || meta.machineId !== options.machineId) return;
+    const restored = await this.sessions.get(sessionId)?.reassertActiveStatus(live);
+    if (restored) {
+      this.logger.debug(
+        `[${sessionId}] Another writer set the session idle while its turn runs here; restored ${live.type}`
+      );
+    }
   }
 
   async hasAgentConfig(
@@ -1696,7 +1738,10 @@ export class LoroDocumentManager {
     for (const [sessionId, pending] of this.pendingSessionDocs) {
       try {
         const doc = await pending;
-        await doc.destroy({ preserveStatus: options.preserveSessionStatus });
+        await doc.destroy({
+          preserveStatus: options.preserveSessionStatus,
+          localMachineId: this.localMachineId,
+        });
         this.sessions.delete(sessionId);
       } catch {
         // Init failed — nothing to clean up
@@ -1710,7 +1755,10 @@ export class LoroDocumentManager {
     this.localFlockRoomBridges.clear();
 
     for (const sessionDoc of this.sessions.values()) {
-      await sessionDoc.destroy({ preserveStatus: options.preserveSessionStatus });
+      await sessionDoc.destroy({
+        preserveStatus: options.preserveSessionStatus,
+        localMachineId: this.localMachineId,
+      });
     }
     await this.machine?.destroy();
     this.machine = null;
@@ -1742,7 +1790,10 @@ export class LoroDocumentManager {
     if (pending) {
       try {
         const doc = await pending;
-        await doc.destroy({ preserveStatus: options.preserveStatus });
+        await doc.destroy({
+          preserveStatus: options.preserveStatus,
+          localMachineId: this.localMachineId,
+        });
         this.sessions.delete(sessionId);
       } catch {
         // Init failed — nothing to clean up
@@ -1752,7 +1803,10 @@ export class LoroDocumentManager {
 
     const sessionDoc = this.sessions.get(sessionId);
     if (sessionDoc) {
-      await sessionDoc.destroy({ preserveStatus: options.preserveStatus });
+      await sessionDoc.destroy({
+        preserveStatus: options.preserveStatus,
+        localMachineId: this.localMachineId,
+      });
       this.sessions.delete(sessionId);
     }
   }
@@ -1844,6 +1898,12 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
   private historyAutoReadHandle: AutoMarkLatestUserHistoryAsReadHandle | null = null;
   private modelSummary: ReturnType<typeof attachSessionModelSummary> | null = null;
   private destroyed = false;
+  /**
+   * Type of the last status this process wrote for the session, undefined until
+   * it writes one. Tells an idle this process wrote (its turn ended) from an
+   * idle another writer wrote; see {@link reassertActiveStatus}.
+   */
+  private statusWrittenHere: SessionStatus['type'] | undefined;
   /** Backend bound during initialization; subscriptions must use this instance. */
   private sessionBackendInstance: SessionBackend | null = null;
   /**
@@ -2851,6 +2911,9 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
     if (status.type !== 'idle') {
       patch.lastRunningSeen = getServerNow();
     }
+    // Recorded before the write starts, with no await in between, so a
+    // concurrent `reassertActiveStatus` never writes over an idle issued here.
+    this.statusWrittenHere = status.type;
     await withSlowOperationWarning(
       this.repo.upsertDocMeta(this.roomId, patch),
       this.logger,
@@ -3128,7 +3191,30 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
     });
   }
 
-  async destroy(options: { preserveStatus?: boolean } = {}) {
+  /**
+   * Writes back the status of a turn this process still runs after another
+   * writer set the session idle. Writes nothing, and returns false, when this
+   * process has not written a status yet or wrote idle last: an idle of its own
+   * means the turn ended here, and its presence is being released.
+   */
+  async reassertActiveStatus(status: SessionStatus): Promise<boolean> {
+    if (!this.mirror || this.destroyed) return false;
+    if (this.statusWrittenHere === undefined || this.statusWrittenHere === 'idle') return false;
+    if (status.type === 'idle') return false;
+    this.statusWrittenHere = status.type;
+    await this.repo.upsertDocMeta(this.roomId, { status, lastRunningSeen: getServerNow() });
+    return true;
+  }
+
+  /**
+   * Releases the document. A session still marked running, waiting for
+   * permission or initializing is set idle only when it runs on
+   * `localMachineId`, the machine this process executes for: its turn dies with
+   * the process. A session of another machine is never touched, so a LAN member
+   * that viewed it cannot end a turn running elsewhere by quitting or updating.
+   * `preserveStatus` keeps the status even for sessions of this machine.
+   */
+  async destroy(options: { preserveStatus?: boolean; localMachineId?: MachineId | null } = {}) {
     if (!this.mirror) {
       return;
     }
@@ -3144,14 +3230,17 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
     this.historyAutoReadHandle?.dispose();
     this.historyAutoReadHandle = null;
 
-    const status = await this.getStatus();
-    if (
-      !options.preserveStatus &&
-      (status?.type === 'running' ||
-        status?.type === 'requestPermission' ||
-        status?.type === 'initializing')
-    ) {
-      await this.setStatus(SessionStatusFactory.idle());
+    if (!options.preserveStatus && options.localMachineId) {
+      const meta = await getAliveDocMeta<SessionMeta>(this.repo, this.roomId);
+      const status = meta?.status;
+      if (
+        meta?.machineId === options.localMachineId &&
+        (status?.type === 'running' ||
+          status?.type === 'requestPermission' ||
+          status?.type === 'initializing')
+      ) {
+        await this.setStatus(SessionStatusFactory.idle());
+      }
     }
     // Release the repo room BEFORE evicting the doc. loro-repo binds the
     // `LoroDoc` instance into a room's transport attachment once, at attach

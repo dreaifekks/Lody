@@ -329,25 +329,31 @@ export class SessionActivePresenceController {
   }
 
   /**
-   * Presence is ephemeral; `lastRunningSeen` in the durable meta is what other
-   * readers judge a session's liveness by. Only that field is written, so a
-   * stamp racing a status change never changes the status back.
+   * Presence is ephemeral; the durable meta is what other readers judge a
+   * session by. Every tick checks that it still reads active and puts the live
+   * status back if another writer set it idle; `lastRunningSeen` is re-stamped
+   * once it is due. Neither write happens once this presence was released, and
+   * an idle this process wrote itself (its turn ended) is left alone.
    */
   private maybeRefreshRunningSeen(sessionId: SessionId, state: ActivePresenceState): void {
     const nowMs = this.now();
-    if (nowMs - state.runningSeenAtMs < RUNNING_SEEN_REFRESH_MS) return;
-    state.runningSeenAtMs = nowMs;
+    const stamp = nowMs - state.runningSeenAtMs >= RUNNING_SEEN_REFRESH_MS;
+    if (stamp) state.runningSeenAtMs = nowMs;
     const { epoch } = state;
     void Promise.resolve()
       .then(() =>
-        this.workspaceDocument.refreshSessionRunningSeen(
-          sessionId,
-          () => this.active.get(sessionId)?.epoch === epoch
-        )
+        this.workspaceDocument.refreshSessionRunningSeen(sessionId, {
+          machineId: this.machineId,
+          liveStatus: () => {
+            const current = this.active.get(sessionId);
+            return current?.epoch === epoch ? phaseToStatus(current.phase, current.detail) : null;
+          },
+          stamp,
+        })
       )
       .catch((error: unknown) => {
         this.logger.debug(
-          `[${sessionId}] Refreshing lastRunningSeen failed: ${formatErrorMessage(error)}`
+          `[${sessionId}] Refreshing the durable session status failed: ${formatErrorMessage(error)}`
         );
       });
   }

@@ -86,6 +86,9 @@ export class MachineRuntime {
       this.options.handlerConfig
     );
     const machineId = this.options.handlerConfig.machineId as MachineId;
+    // This process executes this machine's sessions: closing their documents
+    // finishes them, and sessions of other LAN members are never touched.
+    this.options.workspaceDocument.setLocalMachineId(machineId);
     this.resourceMonitor = new CliResourceMonitor(
       machineId,
       this.sessionManager,
