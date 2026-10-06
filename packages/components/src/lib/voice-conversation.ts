@@ -285,35 +285,151 @@ export function voiceTurnDisplayText(text: string): string | null {
   return words.join('\n');
 }
 
-const SAY_BLOCK = /<say>([\s\S]*?)<\/say>/g;
+const SAY_OPEN = '<say>';
+const SAY_CLOSE = '</say>';
+const FENCE = /^[ \t]*(`{3,}|~{3,})/;
+const BLANK_LINE = /\n[ \t]*\n/;
+
+/**
+ * The text with fenced code blocks and inline code spans filled with a
+ * placeholder, keeping offsets and line breaks, so tags written as code are
+ * not mistaken for real ones. An unclosed fence runs to the end, as Markdown
+ * renders it; an unmatched backtick stays literal.
+ */
+function maskMarkdownCode(text: string): string {
+  const out = text.split('');
+  const fill = (from: number, to: number) => {
+    for (let i = from; i < to; i += 1) if (out[i] !== '\n') out[i] = 'x';
+  };
+  const maskInline = (from: number, to: number) => {
+    const runs = /`+/g;
+    runs.lastIndex = from;
+    for (let run = runs.exec(text); run && run.index < to; run = runs.exec(text)) {
+      // A code span ends at the next backtick run of the same length within its paragraph.
+      const paragraphEnd = BLANK_LINE.exec(text.slice(run.index, to));
+      const limit = paragraphEnd ? run.index + paragraphEnd.index : to;
+      const closing = new RegExp(`(?<!\`)${run[0]}(?!\`)`, 'g');
+      closing.lastIndex = run.index + run[0].length;
+      const match = closing.exec(text);
+      if (!match || match.index + match[0].length > limit) continue;
+      fill(run.index, match.index + match[0].length);
+      runs.lastIndex = match.index + match[0].length;
+    }
+  };
+  let fence: string | null = null;
+  let proseStart = 0;
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    const newline = text.indexOf('\n', lineStart);
+    const lineEnd = newline === -1 ? text.length : newline;
+    const marker = FENCE.exec(text.slice(lineStart, lineEnd))?.[1];
+    if (fence === null && marker !== undefined) {
+      maskInline(proseStart, lineStart);
+      fence = marker;
+      proseStart = lineStart;
+    } else if (
+      fence !== null &&
+      marker?.[0] === fence[0] &&
+      marker.length >= fence.length &&
+      text.slice(lineStart, lineEnd).trim() === marker
+    ) {
+      fill(proseStart, lineEnd);
+      fence = null;
+      proseStart = lineEnd;
+    }
+    if (newline === -1) break;
+    lineStart = newline + 1;
+  }
+  if (fence === null) maskInline(proseStart, text.length);
+  else fill(proseStart, text.length);
+  return out.join('');
+}
+
+/** A `<say>` block in a reply: its span and, when it is closed here, its body. */
+type VoiceSayBlock = { start: number; end: number; body: string | null };
+
+/**
+ * The talking-point blocks of a reply. Only a `<say>` outside code and after
+ * whitespace or a line start can open one. It opens a block when it starts its
+ * line or ends it; one inside a line of prose opens a block only when its
+ * `</say>` ends a line, or while it is still being written on the last line.
+ * A block runs to the next `</say>` or, while it is still streaming, to the
+ * end. A text item that continues a block from the previous one starts with
+ * its tail: a first paragraph ending its line with `</say>`. Other mentions
+ * of the tags are left alone.
+ */
+function findVoiceSayBlocks(text: string): VoiceSayBlock[] {
+  if (!text.includes(SAY_OPEN) && !text.includes(SAY_CLOSE)) return [];
+  const masked = maskMarkdownCode(text);
+  const blocks: VoiceSayBlock[] = [];
+  const opening = /(?<!\S)<say>/g;
+  const endsLine = (from: number) => /^[ \t]*(?:\n|$)/.test(masked.slice(from));
+  const nextOpen = (from: number) => {
+    opening.lastIndex = from;
+    for (let match = opening.exec(masked); match; match = opening.exec(masked)) {
+      const open = match.index;
+      const bodyStart = open + SAY_OPEN.length;
+      const lineStart = masked.lastIndexOf('\n', open - 1) + 1;
+      if (masked.slice(lineStart, open).trim() === '' || endsLine(bodyStart)) return open;
+      const close = masked.indexOf(SAY_CLOSE, bodyStart);
+      const real =
+        close === -1 ? !masked.includes('\n', bodyStart) : endsLine(close + SAY_CLOSE.length);
+      if (real) return open;
+    }
+    return -1;
+  };
+  let position = 0;
+  const firstOpen = nextOpen(0);
+  const head = masked.slice(0, firstOpen === -1 ? masked.length : firstOpen);
+  const tail = /<\/say>[ \t]*(?:\n|$)/.exec(head);
+  if (tail && !BLANK_LINE.test(head.slice(0, tail.index))) {
+    position = tail.index + SAY_CLOSE.length;
+    blocks.push({ start: 0, end: position, body: null });
+  }
+  for (let open = nextOpen(position); open !== -1; open = nextOpen(position)) {
+    const bodyStart = open + SAY_OPEN.length;
+    const close = masked.indexOf(SAY_CLOSE, bodyStart);
+    if (close === -1) {
+      blocks.push({ start: open, end: text.length, body: null });
+      break;
+    }
+    position = close + SAY_CLOSE.length;
+    blocks.push({ start: open, end: position, body: text.slice(bodyStart, close) });
+  }
+  return blocks;
+}
+
+const withoutBlocks = (text: string, blocks: readonly VoiceSayBlock[]) => {
+  let result = '';
+  let position = 0;
+  for (const block of blocks) {
+    result += text.slice(position, block.start);
+    position = block.end;
+  }
+  return result + text.slice(position);
+};
 
 /** The reply's last `<say>` talking points, and the reply without any of them. */
 export function extractVoiceSay(text: string): { say: string | null; rest: string } {
-  if (!text.includes('<say>')) return { say: null, rest: text };
+  const blocks = findVoiceSayBlocks(text);
+  if (blocks.length === 0) return { say: null, rest: text };
   let say: string | null = null;
-  for (const match of text.matchAll(SAY_BLOCK)) {
-    const body = match[1]?.trim();
+  for (const block of blocks) {
+    const body = block.body?.trim();
     if (body) say = body;
   }
-  return { say, rest: stripVoiceSay(text).trim() };
+  return { say, rest: withoutBlocks(text, blocks).trim() };
 }
 
 /**
  * Hides `<say>` talking points from a rendered reply. A block still streaming
  * (no closing tag yet) is hidden to the end, and the tail of a block split
- * across two text items is hidden from the start.
+ * across two text items is hidden from the start. Tags the reply only
+ * mentions, in prose or in code, stay visible with everything around them.
  */
 export function stripVoiceSay(text: string): string {
-  if (!text.includes('<say>') && !text.includes('</say>')) return text;
-  let result = text.replace(SAY_BLOCK, '');
-  const close = result.indexOf('</say>');
-  const open = result.indexOf('<say>');
-  if (close !== -1 && (open === -1 || close < open)) {
-    result = result.slice(close + '</say>'.length);
-  }
-  const dangling = result.indexOf('<say>');
-  if (dangling !== -1) result = result.slice(0, dangling);
-  return result.trimEnd();
+  const blocks = findVoiceSayBlocks(text);
+  return blocks.length === 0 ? text : withoutBlocks(text, blocks).trimEnd();
 }
 
 /**

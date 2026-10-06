@@ -261,6 +261,43 @@ describe('talking points', () => {
     expect(stripVoiceSay('了。</say>')).toBe('');
     expect(stripVoiceSay('No points here.')).toBe('No points here.');
   });
+
+  it('keeps a reply that only mentions the tags, in prose or in code', () => {
+    const reply = [
+      '- **语音对话**：带上 session 的上下文、你的原话会传给主模型、主模型回复里的 `<say>` 会交给语音念出来、结束时再用 `</say>` 收尾。',
+      '- 正文里也可以直接写 <say> 和 </say> 这两个词。',
+      '',
+      '```xml',
+      '<say>',
+      '代码块里的讲稿示例',
+      '```',
+      '',
+      '后面还有好几段。',
+    ].join('\n');
+
+    expect(stripVoiceSay(reply)).toBe(reply);
+    expect(extractVoiceSay(reply)).toEqual({ say: null, rest: reply });
+  });
+
+  it('hides only the real block of a reply that also mentions the tags', () => {
+    const reply =
+      '用 `<say>` 写讲稿。\n\n~~~\n<say>示例</say>\n~~~\n\n<say>\n讲稿在这里。\n</say>\n';
+
+    expect(stripVoiceSay(reply)).toBe('用 `<say>` 写讲稿。\n\n~~~\n<say>示例</say>\n~~~');
+    expect(extractVoiceSay(reply).say).toBe('讲稿在这里。');
+    expect(stripVoiceSay('提到 `<say>` 之后。\n\n<say>还在说')).toBe('提到 `<say>` 之后。');
+  });
+
+  it('takes a block written after prose on the same line, but not a tag named in a sentence', () => {
+    expect(extractVoiceSay('Fixed. <say>修好了。</say>')).toEqual({
+      say: '修好了。',
+      rest: 'Fixed.',
+    });
+    expect(stripVoiceSay('Fixed. <say>修好')).toBe('Fixed.');
+    expect(stripVoiceSay('了。</say>')).toBe('');
+    const prose = '回复里的 <say> 会交给语音念出来。\n\n后面还有好几段。';
+    expect(stripVoiceSay(prose)).toBe(prose);
+  });
 });
 
 describe('buildVoiceRelay', () => {
