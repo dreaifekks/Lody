@@ -23,6 +23,7 @@ import { localProbeResultAtom, type LocalProbeResult } from '../src/atoms/local-
 import { SessionBrowserPanel } from '../src/components/sessions/session-browser-panel';
 import { SessionPreviewPreload } from '../src/components/sessions/session-preview-preload';
 import { clearManagedPreviewFrame } from '../src/components/sessions/managed-preview-frame-cache';
+import { mintPreviewControlProof } from '../src/lib/preview-control-api';
 import { PlatformContext } from '@lody/platform/react';
 import { LOCAL_PLATFORM_CAPABILITIES } from '@lody/platform';
 import { TEST_CLOUD_PLATFORM } from './test-platform';
@@ -566,6 +567,56 @@ describe('SessionBrowserPanel controller', () => {
       localTarget
     );
     expect(testRuntime.requestSessionPreviewCreate).not.toHaveBeenCalled();
+    expect(
+      rendered.querySelector('[data-testid="managed-preview"]')?.getAttribute('data-viewer-url')
+    ).toBe(localEndpoint.viewerUrl);
+  });
+
+  it('reads no hosted preview status for a LAN member session', async () => {
+    window.__LODY_ELECTRON__ = true;
+    const testRuntime = createRuntime({ plane: 'cloud' });
+    // The machine RPC facade asks the hosted service to authorize every status
+    // read on another machine; the local platform installs no such service.
+    testRuntime.requestSessionPreviewStatus.mockImplementation(async () => {
+      try {
+        await mintPreviewControlProof(
+          {
+            workspaceId: 'workspace-browser-id',
+            machineId: session.machineId,
+            sessionId: session.id,
+            requesterUserId: 'user-1',
+            runtimeNonce: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            operation: { action: 'status' },
+          },
+          null
+        );
+      } catch (error) {
+        return {
+          type: 'session/preview-status_response' as const,
+          sessionId: session.id,
+          success: false,
+          error: 'internal_error',
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+      throw new Error('Expected the local platform to refuse a hosted authorization');
+    });
+    const rendered = await renderPanel(testRuntime.runtime, {
+      local: true,
+      localMachineId: 'this-desk',
+    });
+    await enterAddress(rendered, '127.0.0.1:5173/dashboard?mode=dev');
+    const status = rendered.querySelector<HTMLButtonElement>(
+      '[data-testid="preview-status-trigger"]'
+    );
+    expect(status?.getAttribute('aria-label')).toBe('Preview status: Local direct');
+    await act(async () => {
+      status?.click();
+      await flushMicrotasks();
+    });
+    expect(document.body.textContent).toContain('Direct preview on this machine.');
+    expect(document.body.textContent).not.toContain('Cloud capability');
     expect(
       rendered.querySelector('[data-testid="managed-preview"]')?.getAttribute('data-viewer-url')
     ).toBe(localEndpoint.viewerUrl);

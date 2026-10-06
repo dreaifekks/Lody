@@ -19,14 +19,18 @@ export type IosSimulatorPanelAvailability = 'hidden' | 'upgrade-required' | 'ava
  * The tab exists only for a Session whose TARGET machine is a Mac. That machine
  * may be too old to answer the simulator RPC; the tab still appears so it can
  * say so, rather than silently missing on the one machine that could run it.
+ *
+ * `reachable: false` hides it too: another machine's simulator is controlled
+ * through the hosted preview service, which not every platform has.
  */
 export function getIosSimulatorPanelAvailability(
   machine:
     | { os?: string | null; protocolCapabilities?: MachineProtocolCapabilities }
     | null
-    | undefined
+    | undefined,
+  options: { reachable?: boolean } = {}
 ): IosSimulatorPanelAvailability {
-  if (machine?.os !== 'darwin') return 'hidden';
+  if (machine?.os !== 'darwin' || options.reachable === false) return 'hidden';
   return machineSupportsIosSimulatorProtocol(machine) ? 'available' : 'upgrade-required';
 }
 

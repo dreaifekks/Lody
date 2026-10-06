@@ -66,6 +66,12 @@ describe('iOS Simulator availability', () => {
       getIosSimulatorPanelAvailability({ os: 'darwin', protocolCapabilities: { iosSimulator: 1 } })
     ).toBe('available');
   });
+
+  it('hides the tab for a Mac this desktop cannot control', () => {
+    const mac = { os: 'darwin', protocolCapabilities: { iosSimulator: 1 } };
+    expect(getIosSimulatorPanelAvailability(mac, { reachable: false })).toBe('hidden');
+    expect(getIosSimulatorPanelAvailability(mac, { reachable: true })).toBe('available');
+  });
 });
 
 describe('catalog', () => {

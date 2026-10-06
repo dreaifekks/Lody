@@ -175,6 +175,7 @@ import { PrTabContainer } from './pr-tab-container';
 import { SessionBrowserPanel } from './session-browser-panel';
 import { SessionIosSimulatorPanel } from './ios-simulator/session-ios-simulator-panel';
 import { getIosSimulatorPanelAvailability } from '@/lib/ios-simulator/ios-simulator-model';
+import { usePlatformCapability } from '@lody/platform/react';
 import { getMachineMetaByIdAtomFamily } from '@/atoms/machines';
 import { deletePrCacheEntriesForSession } from '@/lib/github-pr-cache';
 import { FileTreeView } from './components/file-tree-view';
@@ -1589,8 +1590,16 @@ const SessionDetail = ({
   const iosSimulatorMachine = useAtomValue(
     getMachineMetaByIdAtomFamily(simulatorOwnerSession?.machineId)
   );
+  const remotePreviewAvailable = usePlatformCapability('remotePreview');
+  // Another machine's simulator is controlled through the hosted preview
+  // service. Until this desktop knows its machine, keep a restored tab open.
+  const iosSimulatorReachable = (machineId: string | undefined) =>
+    remotePreviewAvailable || localMachineId === null || machineId === localMachineId;
   const activeIosSimulatorSession =
-    simulatorOwnerSession && getIosSimulatorPanelAvailability(iosSimulatorMachine) !== 'hidden'
+    simulatorOwnerSession &&
+    getIosSimulatorPanelAvailability(iosSimulatorMachine, {
+      reachable: iosSimulatorReachable(simulatorOwnerSession.machineId),
+    }) !== 'hidden'
       ? simulatorOwnerSession
       : null;
   const workspaceOwnerSession =
@@ -5814,7 +5823,11 @@ const SessionDetail = ({
                   )}
                   onOpenPrTab={handleOpenPrTab}
                   onOpenAllChanges={handleOpenAllChanges}
-                  onOpenIosSimulator={() => handleOpenIosSimulatorForSession(tabSession.id)}
+                  onOpenIosSimulator={
+                    iosSimulatorReachable(tabSession.machineId)
+                      ? () => handleOpenIosSimulatorForSession(tabSession.id)
+                      : undefined
+                  }
                   onOpenBrowser={() => handleOpenBrowser(tabSession.id, true)}
                   onOpenExistingBrowser={() => handleOpenBrowser(tabSession.id, false)}
                   changesDiffStat={changesDiffStat}
@@ -6520,7 +6533,9 @@ const SessionDetail = ({
       onFileDiffClick: handleOpenFileDiffForChat,
       onFilePathClick: handleOpenFile,
       onOpenHtmlFile: handleOpenHtmlFile,
-      onOpenIosSimulator: () => handleOpenIosSimulatorForSession(chatSession.id),
+      onOpenIosSimulator: iosSimulatorReachable(chatSession.machineId)
+        ? () => handleOpenIosSimulatorForSession(chatSession.id)
+        : undefined,
       onOpenBrowser: () => handleOpenBrowser(chatSession.id, true),
       onOpenExistingBrowser: () => handleOpenBrowser(chatSession.id, false),
       onNavigateToComment: handleNavigateToComment,
