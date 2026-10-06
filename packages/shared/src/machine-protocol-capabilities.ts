@@ -196,17 +196,21 @@ export function machineSupportsLocalFileResourcesProtocol(
   );
 }
 
-export const REALTIME_VOICE_PROTOCOL_VERSION = 1;
+/** v2: `start` accepts `context`, background the voice starts from. */
+export const REALTIME_VOICE_PROTOCOL_VERSION = 2;
 
 /** Whether the daemon hosts experimental realtime voice calls (`machine/voice`). */
 export function machineSupportsRealtimeVoice(
   machine: MachineProtocolCapabilityCarrier | null | undefined
 ): boolean {
-  return machineSupportsProtocolCapability(
-    machine,
-    MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice,
-    REALTIME_VOICE_PROTOCOL_VERSION
-  );
+  return machineSupportsProtocolCapability(machine, MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice, 1);
+}
+
+/** Whether a voice `start` may carry `context`; v1 daemons reject the unknown key. */
+export function machineSupportsRealtimeVoiceContext(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(machine, MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice, 2);
 }
 
 export function machineSupportsPiExtensions(

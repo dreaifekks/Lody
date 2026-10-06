@@ -9,10 +9,14 @@ import {
   machineSupportsAcpCapabilityRefreshCacheProtocol,
   machineSupportsLocalFileResourcesProtocol,
   machineSupportsProtocolCapability,
+  machineSupportsRealtimeVoice,
+  machineSupportsRealtimeVoiceContext,
   machineSupportsSubagentEvents,
   machineSupportsIosSimulatorControls,
   negotiatedAcpCapabilitiesRefreshForce,
+  REALTIME_VOICE_PROTOCOL_VERSION,
 } from '../src/machine-protocol-capabilities';
+import { MachineVoiceRequestSchema } from '../src/machine-voice';
 import {
   MachineAcpCapabilitiesRefreshRequestSchema,
   safeParseLocalSessionControlRequest,
@@ -158,4 +162,25 @@ it('negotiates private simulator controls independently of preview support', () 
       protocolCapabilities: CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
     })
   ).toBe(true);
+});
+
+describe('realtime voice protocol capability', () => {
+  it('lets a v1 daemon keep hosting calls but only a v2 daemon receive their background', () => {
+    const v1 = { protocolCapabilities: { realtimeVoice: 1 } };
+    const current = { protocolCapabilities: { realtimeVoice: REALTIME_VOICE_PROTOCOL_VERSION } };
+    expect(machineSupportsRealtimeVoice(v1)).toBe(true);
+    expect(machineSupportsRealtimeVoiceContext(v1)).toBe(false);
+    expect(machineSupportsRealtimeVoice(current)).toBe(true);
+    expect(machineSupportsRealtimeVoiceContext(current)).toBe(true);
+  });
+
+  it('accepts a start with background, which the v1 schema would reject', () => {
+    const start = { action: 'start', configId: 'cfg', mode: 'conversation', sdp: 'offer' };
+    expect(MachineVoiceRequestSchema.safeParse({ ...start, context: 'User: hi' }).success).toBe(
+      true
+    );
+    expect(
+      MachineVoiceRequestSchema.safeParse({ ...start, context: 'x'.repeat(16_001) }).success
+    ).toBe(false);
+  });
 });

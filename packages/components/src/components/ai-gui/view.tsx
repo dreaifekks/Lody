@@ -97,6 +97,7 @@ import { scrollDebug } from '@/hooks/scroll-debug-log';
 import { readSessionTurnTokenUsage, type SessionTurnTokenUsage } from '@lody/shared/session-data';
 import { formatCompactNumber } from '@/lib/format-compact-number';
 import { toIntlLocaleOrEn } from '@/lib/intl-locale';
+import { stripVoiceSay, voiceTurnDisplayText } from '@/lib/voice-conversation';
 import type { EngineRow } from '@/lib/conversation-scroll/types';
 import { EngineConversationScroller } from './conversation-list/engine-conversation-scroller';
 import type {
@@ -5825,7 +5826,8 @@ const renderAssistantContent = (
     case 'text':
       return (
         <MarkdownBlock
-          text={content.text}
+          // Talking points written for the voice are not part of the visible reply.
+          text={stripVoiceSay(content.text)}
           size={conversationFontSize}
           isStreaming={options?.isStreaming}
           onFilePathClick={options?.onFilePathClick}
@@ -6605,15 +6607,18 @@ const renderUserContent = (
   }
 ) => {
   switch (content.type) {
-    case 'text':
+    case 'text': {
+      // A spoken request shows the user's own words; the rest is for the agent.
+      const voiceText = voiceTurnDisplayText(content.text);
       return (
         <UserPlainTextBlock
-          text={content.text}
-          spans={content.spans}
+          text={voiceText ?? content.text}
+          spans={voiceText === null ? content.spans : undefined}
           fontSize={options.conversationFontSize}
           searchBlockId={getTextSearchBlockId(options.messageId, options.itemIndex)}
         />
       );
+    }
     case 'image':
       return (
         <div className="flex w-full justify-end px-2 pt-1">
