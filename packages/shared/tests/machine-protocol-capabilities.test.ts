@@ -175,7 +175,7 @@ describe('realtime voice protocol capability', () => {
     expect(machineSupportsRealtimeVoiceContext(current)).toBe(true);
   });
 
-  it('lets only a v3 daemon choose, list and preview voices', () => {
+  it('lets only a v3 daemon choose and list voices', () => {
     const v2 = { protocolCapabilities: { realtimeVoice: 2 } };
     const current = { protocolCapabilities: { realtimeVoice: REALTIME_VOICE_PROTOCOL_VERSION } };
     expect(machineSupportsRealtimeVoiceSelection(v2)).toBe(false);
@@ -183,10 +183,11 @@ describe('realtime voice protocol capability', () => {
     expect(machineSupportsRealtimeVoiceSelection(current)).toBe(true);
   });
 
-  it('accepts a voice, a preview and a voice list request, which the v2 schema would reject', () => {
+  it('accepts a voice and a voice list request, which the v2 schema would reject', () => {
     const start = { action: 'start', configId: 'cfg', mode: 'conversation', sdp: 'offer' };
     expect(MachineVoiceRequestSchema.safeParse({ ...start, voice: 'cove' }).success).toBe(true);
-    expect(MachineVoiceRequestSchema.safeParse({ ...start, mode: 'preview' }).success).toBe(true);
+    // The removed preview call of builds lan.25-26 is an invalid request now.
+    expect(MachineVoiceRequestSchema.safeParse({ ...start, mode: 'preview' }).success).toBe(false);
     expect(MachineVoiceRequestSchema.safeParse({ action: 'voices', configId: 'cfg' }).success).toBe(
       true
     );

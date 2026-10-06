@@ -198,7 +198,7 @@ export function machineSupportsLocalFileResourcesProtocol(
 
 /**
  * v2: `start` accepts `context`, background the voice starts from.
- * v3: `start` accepts `voice` and the `preview` mode; the `voices` action lists voices.
+ * v3: `start` accepts `voice`; the `voices` action lists voices.
  */
 export const REALTIME_VOICE_PROTOCOL_VERSION = 3;
 
@@ -217,8 +217,8 @@ export function machineSupportsRealtimeVoiceContext(
 }
 
 /**
- * Whether the machine lists voices, previews them and starts a call with a chosen
- * one; older daemons reject `voice`, `preview` and `voices`.
+ * Whether the machine lists voices and starts a call with a chosen one; older
+ * daemons reject `voice` and `voices`.
  */
 export function machineSupportsRealtimeVoiceSelection(
   machine: MachineProtocolCapabilityCarrier | null | undefined

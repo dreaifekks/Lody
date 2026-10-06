@@ -101,7 +101,7 @@ class VoiceAdapter extends SilentAdapter {
 
 const currentVoice = {
   version: 1,
-  modes: ['conversation', 'dictation', 'preview'],
+  modes: ['conversation', 'dictation'],
   voices: true,
 };
 
@@ -196,22 +196,7 @@ describe('VoiceHost voices', () => {
     await host.dispose();
   });
 
-  it('plays a preview as its own call, which stop ends along with the adapter', async () => {
-    const adapters = useAdapters(currentVoice);
-    const host = createHost();
-
-    const started = await host.handle({ ...startRequest, mode: 'preview', voice: 'juniper' });
-    if (!started.success || started.action !== 'start') throw new Error('no preview call');
-    expect(adapters[0]?.received[0]?.params).toMatchObject({ mode: 'preview', voice: 'juniper' });
-    expect(adapters[0]?.exitCode).toBeNull();
-
-    await host.handle({ action: 'stop', voiceSessionId: started.voiceSessionId });
-
-    await vi.waitFor(() => expect(adapters[0]?.exitCode).not.toBeNull());
-    await host.dispose();
-  });
-
-  it('keeps an adapter that predates voices working: no voice, no list, no preview', async () => {
+  it('keeps an adapter that predates voices working: no voice, no list', async () => {
     const adapters = useAdapters({ version: 1, modes: ['conversation', 'dictation'] });
     const host = createHost();
 
@@ -221,10 +206,6 @@ describe('VoiceHost voices', () => {
     await expect(
       host.handle({ action: 'voices', configId: 'config-1' as AgentConfigId })
     ).resolves.toEqual({ success: false, error: 'This Codex agent build cannot list voices' });
-    await expect(host.handle({ ...startRequest, mode: 'preview' })).resolves.toEqual({
-      success: false,
-      error: 'This Codex agent build cannot start a preview voice call',
-    });
     await host.dispose();
   });
 });

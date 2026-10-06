@@ -1,107 +1,78 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentConfigId, MachineId, MachineVoiceRequest } from '@lody/shared';
-import { beginVoiceCall } from '../src/lib/voice-activity';
-import { playVoicePreview, VoicePreviewError } from '../src/lib/voice-preview';
+import { act, createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { createStore, Provider } from 'jotai';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { beginVoiceCall, claimVoicePreview } from '../src/lib/voice-activity';
+import {
+  playVoicePreview,
+  VoicePreviewError,
+  type VoicePreviewAudio,
+} from '../src/lib/voice-preview';
+import { voicePreviewClip } from '../src/lib/voice-preview-clips';
 
-/** A WebRTC peer whose connection and remote audio level the test drives. */
-class FakePeer {
-  static all: FakePeer[] = [];
-  connectionState = 'new';
-  iceGatheringState = 'complete';
-  localDescription: { sdp: string } | null = null;
-  onconnectionstatechange: (() => void) | null = null;
-  ontrack: ((event: { track: unknown }) => void) | null = null;
-  closed = false;
-  level = 0;
+const selection = vi.hoisted(() => ({ voice: 'maple' }));
+vi.mock('@/hooks/use-voice-agent-selection', () => ({
+  useVoiceAgentSelection: () => ({
+    configId: 'config-1',
+    machineId: 'machine-1',
+    voice: selection.voice,
+  }),
+}));
+vi.mock('@/hooks/use-workspace-catalog', () => ({ useWorkspaceCatalog: () => ({ voice: null }) }));
+vi.mock('@/hooks/use-voice-preview', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/hooks/use-voice-preview')>()),
+  // `aurora` stands for a voice Codex adds after this build.
+  useVoiceList: () => ({
+    status: 'ready',
+    list: { voices: ['cove', 'maple', 'aurora'], defaultVoice: 'cove' },
+  }),
+}));
 
-  constructor() {
-    FakePeer.all.push(this);
+const { VoiceNameRow } = await import('../src/components/settings/voice-agent-select');
+
+/** An audio element whose playback the test drives. */
+class FakeAudio implements VoicePreviewAudio {
+  static all: FakeAudio[] = [];
+  playing = false;
+  error: { message?: string } | null = null;
+  private readonly listeners = new Map<string, Set<() => void>>();
+  private rejectPlay: ((error: Error) => void) | null = null;
+
+  constructor(readonly url: string) {
+    FakeAudio.all.push(this);
   }
-  addTransceiver() {}
-  createDataChannel() {
-    return {};
+  play() {
+    this.playing = true;
+    return new Promise<void>((_, reject) => {
+      this.rejectPlay = reject;
+    });
   }
-  async createOffer() {
-    return { type: 'offer', sdp: 'offer-sdp' };
+  pause() {
+    this.playing = false;
+    // A browser rejects a pending play() that a pause interrupts.
+    this.rejectPlay?.(new DOMException('The play() request was interrupted', 'AbortError'));
   }
-  async setLocalDescription() {
-    this.localDescription = { sdp: 'offer-sdp' };
+  addEventListener(type: string, listener: () => void) {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type)?.add(listener);
   }
-  async setRemoteDescription() {}
-  getReceivers() {
-    return [
-      { track: { kind: 'audio' }, getSynchronizationSources: () => [{ audioLevel: this.level }] },
-    ];
+  removeEventListener(type: string, listener: () => void) {
+    this.listeners.get(type)?.delete(listener);
   }
-  connect(state = 'connected') {
-    this.connectionState = state;
-    this.onconnectionstatechange?.();
+  fire(type: 'ended' | 'error') {
+    if (type === 'ended') this.playing = false;
+    for (const listener of [...(this.listeners.get(type) ?? [])]) listener();
   }
-  close() {
-    this.closed = true;
+  failPlay(message: string) {
+    this.rejectPlay?.(new Error(message));
   }
 }
 
-/** A machine that answers every preview call and holds polls open until the call stops. */
-function createMachine() {
-  const requests: MachineVoiceRequest[] = [];
-  const openPolls = new Map<string, () => void>();
-  let calls = 0;
-  let startError: string | null = null;
-  const request = async (_machineId: MachineId, body: MachineVoiceRequest) => {
-    requests.push(body);
-    switch (body.action) {
-      case 'start':
-        if (startError) return { success: false as const, error: startError };
-        calls += 1;
-        return {
-          success: true as const,
-          action: 'start' as const,
-          voiceSessionId: `preview-${calls}`,
-          sdp: 'answer-sdp',
-        };
-      case 'poll':
-        return await new Promise<{
-          success: true;
-          action: 'poll';
-          events: [];
-          closed: boolean;
-        }>((resolve) => {
-          openPolls.set(body.voiceSessionId, () =>
-            resolve({ success: true, action: 'poll', events: [], closed: true })
-          );
-        });
-      case 'stop':
-        openPolls.get(body.voiceSessionId)?.();
-        return { success: true as const, action: 'stop' as const };
-      default:
-        return { success: true as const, action: 'append' as const };
-    }
-  };
-  return {
-    request,
-    requests,
-    failStarts: (error: string) => {
-      startError = error;
-    },
-    stopped: () =>
-      requests.flatMap((body) => (body.action === 'stop' ? [body.voiceSessionId] : [])),
-  };
-}
+const audioFor = (url: string) => new FakeAudio(url);
 
-const settle = () => vi.advanceTimersByTimeAsync(0);
-
-function play(machine: ReturnType<typeof createMachine>, voice = 'maple') {
-  const playing: string[] = [];
-  const preview = playVoicePreview({
-    machineId: 'machine-1' as MachineId,
-    configId: 'config-1' as AgentConfigId,
-    voice,
-    sentence: '你好，我是这个声音，听起来怎么样？',
-    request: machine.request,
-    onPlaying: () => playing.push(voice),
-  });
+function play(url = 'maple.webm') {
+  const preview = playVoicePreview(url, audioFor);
   let outcome: 'pending' | 'done' | VoicePreviewError = 'pending';
   preview.finished.then(
     () => {
@@ -111,182 +82,150 @@ function play(machine: ReturnType<typeof createMachine>, voice = 'maple') {
       outcome = error;
     }
   );
-  return { preview, playing, outcome: () => outcome };
+  return { preview, outcome: () => outcome };
 }
 
-beforeEach(() => {
-  vi.useFakeTimers();
-  FakePeer.all = [];
-  vi.stubGlobal('RTCPeerConnection', FakePeer);
-  vi.stubGlobal(
-    'Audio',
-    class {
-      autoplay = false;
-      srcObject: unknown = null;
-      play() {
-        return Promise.resolve();
-      }
-      pause() {}
-    }
-  );
-  vi.stubGlobal(
-    'MediaStream',
-    class {
-      constructor(readonly tracks: unknown[]) {}
-    }
-  );
-});
+const settle = () => new Promise<void>((resolve) => queueMicrotask(resolve));
 
 afterEach(() => {
-  vi.useRealTimers();
-  vi.unstubAllGlobals();
+  FakeAudio.all = [];
 });
 
 describe('playVoicePreview', () => {
-  it('asks the chosen voice for the sentence and hangs up once it falls silent', async () => {
-    const machine = createMachine();
-    const run = play(machine);
+  it('plays the sample to its end and then frees the speakers', async () => {
+    const run = play('cove.webm');
+    expect(FakeAudio.all[0]?.url).toBe('cove.webm');
+    expect(FakeAudio.all[0]?.playing).toBe(true);
+
+    FakeAudio.all[0]?.fire('ended');
     await settle();
-    const peer = FakePeer.all[0]!;
-
-    expect(machine.requests[0]).toMatchObject({
-      action: 'start',
-      mode: 'preview',
-      voice: 'maple',
-      sdp: 'offer-sdp',
-    });
-    // Nothing is asked until audio can flow, or the start of the sentence is lost.
-    expect(machine.requests.some((body) => body.action === 'append')).toBe(false);
-
-    peer.connect();
-    await settle();
-    expect(run.playing).toEqual(['maple']);
-    expect(machine.requests.find((body) => body.action === 'append')).toMatchObject({
-      voiceSessionId: 'preview-1',
-      text: expect.stringContaining('你好，我是这个声音，听起来怎么样？'),
-    });
-
-    peer.level = 0.3;
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(run.outcome()).toBe('pending');
-    peer.level = 0;
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(run.outcome()).toBe('pending');
-    await vi.advanceTimersByTimeAsync(800);
 
     expect(run.outcome()).toBe('done');
-    expect(peer.closed).toBe(true);
-    expect(machine.stopped()).toEqual(['preview-1']);
+    // The slot is free again: a new preview may take it.
+    const release = claimVoicePreview(() => {});
+    expect(release).not.toBeNull();
+    release?.();
   });
 
-  it('plays one preview at a time: a second one ends the first', async () => {
-    const machine = createMachine();
-    const first = play(machine, 'maple');
-    await settle();
-    const second = play(machine, 'cove');
+  it('plays one preview at a time', async () => {
+    const first = play('maple.webm');
+    const second = play('sol.webm');
     await settle();
 
     expect(first.outcome()).toBe('done');
-    expect(FakePeer.all[0]?.closed).toBe(true);
-    expect(machine.stopped()).toEqual(['preview-1']);
-    expect(second.outcome()).toBe('pending');
-    expect(FakePeer.all[1]?.closed).toBe(false);
+    expect(FakeAudio.all[0]?.playing).toBe(false);
+    expect(FakeAudio.all[1]?.playing).toBe(true);
 
     second.preview.stop();
     await settle();
-    expect(machine.stopped()).toEqual(['preview-1', 'preview-2']);
+    expect(second.outcome()).toBe('done');
+    expect(FakeAudio.all[1]?.playing).toBe(false);
   });
 
-  it('gives way to a voice call, and starts none while a call runs', async () => {
-    const machine = createMachine();
-    const run = play(machine);
+  it('stops when a voice call starts, and does not start during one', async () => {
+    const run = play();
+    const endCall = beginVoiceCall();
     await settle();
 
-    const releaseCall = beginVoiceCall();
-    await settle();
     expect(run.outcome()).toBe('done');
-    expect(FakePeer.all[0]?.closed).toBe(true);
-    expect(machine.stopped()).toEqual(['preview-1']);
+    expect(FakeAudio.all[0]?.playing).toBe(false);
 
-    const blocked = play(machine);
+    const refused = play();
     await settle();
-    expect(blocked.outcome()).toMatchObject({ failure: 'call-active' });
-    expect(FakePeer.all).toHaveLength(1);
+    expect(refused.outcome()).toMatchObject({ failure: 'call-active' });
+    expect(FakeAudio.all).toHaveLength(1);
 
-    releaseCall();
-    const later = play(machine);
-    await settle();
-    expect(later.outcome()).toBe('pending');
-    later.preview.stop();
+    endCall();
   });
 
-  it('reports a refused start and leaves nothing behind', async () => {
-    const machine = createMachine();
-    machine.failStarts('realtime voice is not available for this account');
-    const run = play(machine);
+  it('reports a sample that cannot be played', async () => {
+    const broken = play();
+    FakeAudio.all[0]!.error = { message: 'MEDIA_ERR_SRC_NOT_SUPPORTED' };
+    FakeAudio.all[0]?.fire('error');
     await settle();
-
-    expect(run.outcome()).toMatchObject({
-      failure: 'machine',
-      message: 'realtime voice is not available for this account',
+    expect(broken.outcome()).toMatchObject({
+      failure: 'playback',
+      message: 'MEDIA_ERR_SRC_NOT_SUPPORTED',
     });
-    expect(FakePeer.all[0]?.closed).toBe(true);
-    expect(machine.stopped()).toEqual([]);
-    // The slot is free again.
-    const next = play(createMachine());
+
+    const refused = play();
+    FakeAudio.all[1]?.failPlay('NotAllowedError');
     await settle();
-    expect(next.outcome()).toBe('pending');
-    next.preview.stop();
+    expect(refused.outcome()).toMatchObject({ failure: 'playback', message: 'NotAllowedError' });
+  });
+});
+
+describe('voicePreviewClip', () => {
+  it('bundles a sample of every realtime v3 voice and none of a voice it does not know', () => {
+    for (const voice of [
+      'juniper',
+      'maple',
+      'spruce',
+      'ember',
+      'vale',
+      'breeze',
+      'arbor',
+      'sol',
+      'cove',
+    ]) {
+      expect(voicePreviewClip(voice)).toMatch(new RegExp(`${voice}\\.webm`));
+    }
+    expect(voicePreviewClip('aurora')).toBeNull();
+    expect(voicePreviewClip('toString')).toBeNull();
+  });
+});
+
+describe('Speaking voice row', () => {
+  let root: Root | null = null;
+  let container: HTMLElement;
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    root = null;
+    container.remove();
+    vi.restoreAllMocks();
   });
 
-  it('gives up when the voice never speaks, and hangs up', async () => {
-    const machine = createMachine();
-    const run = play(machine);
-    await settle();
-    FakePeer.all[0]!.connect();
-    await settle();
+  function render(voice: string) {
+    selection.voice = voice;
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    act(() =>
+      root?.render(createElement(Provider, { store: createStore() }, createElement(VoiceNameRow)))
+    );
+    const button = container.querySelector<HTMLButtonElement>('button[aria-pressed]');
+    if (!button) throw new Error('No preview button');
+    return button;
+  }
 
-    await vi.advanceTimersByTimeAsync(15_000);
+  it('keeps a voice without a sample selectable but cannot play it', () => {
+    const button = render('aurora');
 
-    expect(run.outcome()).toMatchObject({ failure: 'no-speech' });
-    expect(machine.stopped()).toEqual(['preview-1']);
+    expect(container.textContent).toContain('Aurora');
+    expect(button.disabled).toBe(true);
   });
 
-  it('gives up when the audio connection never comes up', async () => {
-    const machine = createMachine();
-    const run = play(machine);
-    await settle();
+  it('plays the bundled sample of the chosen voice', async () => {
+    const played: string[] = [];
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(
+      function (this: HTMLMediaElement) {
+        played.push(this.src);
+        return Promise.resolve();
+      }
+    );
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+    const button = render('maple');
+    expect(button.disabled).toBe(false);
 
-    await vi.advanceTimersByTimeAsync(15_000);
+    await act(async () => button.click());
 
-    expect(run.outcome()).toMatchObject({ failure: 'no-connection' });
-    expect(FakePeer.all[0]?.closed).toBe(true);
-    expect(machine.stopped()).toEqual(['preview-1']);
-    expect(machine.requests.some((body) => body.action === 'append')).toBe(false);
-  });
+    expect(played).toHaveLength(1);
+    expect(played[0]).toMatch(/maple\.webm/);
+    expect(button.getAttribute('aria-pressed')).toBe('true');
 
-  it('stops a preview the user ends while the machine is still answering', async () => {
-    const machine = createMachine();
-    let answer!: () => void;
-    const slowRequest: typeof machine.request = async (machineId, body) => {
-      if (body.action === 'start') await new Promise<void>((resolve) => (answer = resolve));
-      return await machine.request(machineId, body);
-    };
-    const preview = playVoicePreview({
-      machineId: 'machine-1' as MachineId,
-      configId: 'config-1' as AgentConfigId,
-      voice: 'maple',
-      sentence: 'Hi',
-      request: slowRequest,
-    });
-    await settle();
-
-    preview.stop();
-    await expect(preview.finished).resolves.toBeUndefined();
-    answer();
-    await settle();
-
-    // The call the machine opened after the stop is ended too.
-    expect(machine.stopped()).toEqual(['preview-1']);
+    // Pressing again stops it.
+    await act(async () => button.click());
+    expect(button.getAttribute('aria-pressed')).toBe('false');
   });
 });

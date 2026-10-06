@@ -1,5 +1,5 @@
 diff --git a/src/capabilities.ts b/src/capabilities.ts
-index 8e52be4..70dcd11 100644
+index 8e52be4..64c7922 100644
 --- a/src/capabilities.ts
 +++ b/src/capabilities.ts
 @@ -55,6 +55,13 @@ export type LodyRateLimitsCapability = LodyVersionOneCapability & {
@@ -8,7 +8,7 @@ index 8e52be4..70dcd11 100644
  
 +/** Experimental realtime voice, see `voice.ts`. */
 +export type LodyVoiceCapability = LodyVersionOneCapability & {
-+  modes: readonly ('conversation' | 'dictation' | 'preview')[];
++  modes: readonly ('conversation' | 'dictation')[];
 +  /** Answers `_lody/voice/voices` and honours `voice` on start. */
 +  voices?: true;
 +};
@@ -95,10 +95,10 @@ index c8ca0cd..554609b 100644
 +} from './voice.js';
 diff --git a/src/voice.ts b/src/voice.ts
 new file mode 100644
-index 0000000..fbdfefd
+index 0000000..7db0530
 --- /dev/null
 +++ b/src/voice.ts
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,58 @@
 +/**
 + * Experimental realtime voice, hosted by an agent process without an ACP
 + * session. The client owns the microphone and the WebRTC peer; the agent only
@@ -107,11 +107,7 @@ index 0000000..fbdfefd
 + * sends it through its own prompt path, and returns the result with
 + * `_lody/voice/append` so the voice can speak it.
 + */
-+/**
-+ * `preview` plays a voice once, e.g. a sample sentence the client appends: no
-+ * microphone input is needed and nothing is handed off.
-+ */
-+export type LodyVoiceMode = 'conversation' | 'dictation' | 'preview';
++export type LodyVoiceMode = 'conversation' | 'dictation';
 +
 +export type LodyVoiceStartRequest = {
 +  mode: LodyVoiceMode;

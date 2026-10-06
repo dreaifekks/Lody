@@ -9,15 +9,13 @@ import type {
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { useVoiceAgentSelection } from '@/hooks/use-voice-agent-selection';
 import { beginVoiceCall } from '@/lib/voice-activity';
-import { waitForIceGathering } from '@/lib/voice-preview';
 
 /** How long the machine holds one poll open while nothing happens. */
 const POLL_WAIT_MS = 12_000;
+/** A slow network still finishes ICE gathering well inside this; send what exists after. */
+const ICE_GATHERING_LIMIT_MS = 4_000;
 
 export type VoiceCallState = 'idle' | 'connecting' | 'active';
-
-/** A call the user speaks in; previews belong to `lib/voice-preview.ts`. */
-export type VoiceCallMode = Exclude<MachineVoiceMode, 'preview'>;
 
 export type VoiceCallHandlers = {
   /** Words the user has said so far in this call, as they arrive. */
@@ -48,7 +46,7 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const selection = useVoiceAgentSelection();
   const [state, setState] = useState<VoiceCallState>('idle');
-  const [mode, setMode] = useState<VoiceCallMode | null>(null);
+  const [mode, setMode] = useState<MachineVoiceMode | null>(null);
   const callRef = useRef<ActiveCall | null>(null);
   /**
    * Identifies the newest start. `getUserMedia` cannot be aborted, so a stop
@@ -159,7 +157,7 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
 
   const start = useCallback(
     async (
-      nextMode: VoiceCallMode,
+      nextMode: MachineVoiceMode,
       options: {
         /** Standing instructions for the voice. */
         instructions?: string | undefined;
@@ -289,4 +287,20 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
   );
 
   return { state, mode, available: selection !== null, start, stop, append };
+}
+
+function waitForIceGathering(peer: RTCPeerConnection): Promise<void> {
+  if (peer.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      peer.removeEventListener('icegatheringstatechange', onChange);
+      resolve();
+    };
+    const onChange = () => {
+      if (peer.iceGatheringState === 'complete') done();
+    };
+    const timer = setTimeout(done, ICE_GATHERING_LIMIT_MS);
+    peer.addEventListener('icegatheringstatechange', onChange);
+  });
 }

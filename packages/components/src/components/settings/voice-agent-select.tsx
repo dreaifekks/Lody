@@ -5,7 +5,6 @@ import * as stylex from '@stylexjs/stylex';
 import { Play, Square } from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import { Select } from '@lody/ui/select';
-import { Spinner } from '@lody/ui/spinner';
 import { Tooltip } from '@lody/ui/tooltip';
 import {
   MACHINE_VOICE_SELECTION_UNSUPPORTED,
@@ -20,6 +19,7 @@ import { useVoiceList, useVoicePreview } from '@/hooks/use-voice-preview';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import type { VoicePreviewFailure } from '@/lib/voice-preview';
+import { voicePreviewClip } from '@/lib/voice-preview-clips';
 import { writeWorkspaceVoiceSetting } from '@/lib/workspace-catalog-write';
 import { toast } from '@/lib/toast';
 import { CompactRow } from './compact-layout';
@@ -187,9 +187,9 @@ export function VoiceAgentRows() {
 
 /**
  * Which voice calls speak in, kept where the agent choice is kept, and a
- * button that lets the user hear the selected voice first.
+ * button that plays the selected voice's bundled sample.
  */
-function VoiceNameRow() {
+export function VoiceNameRow() {
   const { t } = useTranslation();
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const scope = useAtomValue(voiceAgentScopeAtom);
@@ -204,25 +204,12 @@ function VoiceNameRow() {
   );
   const list = useVoiceList(agent);
   const preview = useVoicePreview({
-    agent,
-    sentence: t(
-      'settings.experimental.voicePreviewSentence',
-      'Hi, this is how I sound. What do you think?'
-    ),
     onError: (failure: VoicePreviewFailure, message: string) => {
-      const description =
-        failure === 'call-active'
-          ? t('settings.experimental.voicePreviewCallActive', 'End the voice call first.')
-          : failure === 'no-connection'
-            ? t(
-                'settings.experimental.voicePreviewNoConnection',
-                'The audio connection did not come up.'
-              )
-            : failure === 'no-speech'
-              ? t('settings.experimental.voicePreviewNoSpeech', 'The voice did not say anything.')
-              : message;
       toast.error(t('settings.experimental.voicePreviewFailed', 'Could not play this voice'), {
-        description,
+        description:
+          failure === 'call-active'
+            ? t('settings.experimental.voicePreviewCallActive', 'End the voice call first.')
+            : message,
       });
     },
   });
@@ -282,12 +269,16 @@ function VoiceNameRow() {
   }
 
   const target = chosen ?? defaultVoice;
+  // A voice Codex added after this build has no sample; it can still be chosen.
+  const hasSample = target !== null && voicePreviewClip(target) !== null;
   const previewing = preview.state.status !== 'idle' && preview.state.voice === target;
   const previewLabel = previewing
     ? t('settings.experimental.voicePreviewStop', 'Stop')
-    : preview.callActive
-      ? t('settings.experimental.voicePreviewCallActive', 'End the voice call first.')
-      : t('settings.experimental.voicePreview', 'Hear this voice');
+    : target !== null && !hasSample
+      ? t('settings.experimental.voicePreviewNoSample', 'No sample of this voice yet')
+      : preview.callActive
+        ? t('settings.experimental.voicePreviewCallActive', 'End the voice call first.')
+        : t('settings.experimental.voicePreview', 'Hear this voice');
   return (
     <CompactRow label={label}>
       <div {...stylex.props(styles.voiceControl)}>
@@ -324,19 +315,13 @@ function VoiceNameRow() {
                 size="small"
                 aria-label={previewLabel}
                 aria-pressed={previewing}
-                disabled={!target || (preview.callActive && !previewing)}
+                disabled={!hasSample || (preview.callActive && !previewing)}
                 onClick={() => {
                   if (previewing) preview.stop();
                   else if (target) preview.play(target);
                 }}
               >
-                {previewing && preview.state.status === 'connecting' ? (
-                  <Spinner size="small" />
-                ) : previewing ? (
-                  <Square />
-                ) : (
-                  <Play />
-                )}
+                {previewing ? <Square /> : <Play />}
               </Button>
             }
           />

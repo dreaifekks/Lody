@@ -682,16 +682,13 @@ describe('local MCP discovery routing', () => {
       expect(sent).toEqual([withoutVoice]);
     });
 
-    it('refuses a voice list or a preview on an older machine without asking it', async () => {
+    it('refuses a voice list on an older machine without asking it', async () => {
       const { facade, sent } = facadeFor(2);
       await expect(
         facade.requestMachineVoice(remoteMachineId, {
           action: 'voices',
           configId: 'config-1' as never,
         })
-      ).resolves.toEqual({ success: false, error: MACHINE_VOICE_SELECTION_UNSUPPORTED });
-      await expect(
-        facade.requestMachineVoice(remoteMachineId, { ...start, mode: 'preview' })
       ).resolves.toEqual({ success: false, error: MACHINE_VOICE_SELECTION_UNSUPPORTED });
       expect(sent).toEqual([]);
     });
