@@ -56,8 +56,9 @@ Managed preview tunnels and the local proxy. [apps/cli/AGENTS.md](../../AGENTS.m
   use the trusted local route without cloud authorization; no remote fallback.
 - Endpoint capabilities are checked on every HTTP request and WS upgrade. There
   is no global unlock: a matching Origin/tokenless Referer never grants access.
-  Local and remote listeners use different random tokens; remote token cookies
-  are Secure, HttpOnly, SameSite=None and Partitioned. A remote viewer origin must
+  Local and remote listeners use different random tokens; all token cookies are
+  Secure, HttpOnly, SameSite=None and Partitioned (the desktop frames local ones
+  cross-site too); a local one is named after its port. A remote viewer origin must
   be explicitly bound, never inferred from Host or forwarded headers.
 - A WS upgrade is acknowledged only after the upstream selects its subprotocol.
   Preserve text/binary frames and close shape; use socket backpressure, not an

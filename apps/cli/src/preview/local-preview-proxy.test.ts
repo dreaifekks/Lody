@@ -528,6 +528,79 @@ describe('LocalPreviewProxyManager', () => {
     await expect(fetch(endpoint.viewerUrl)).rejects.toThrow();
   });
 
+  it('keeps a client-routed page authorized by its own cross-site capability cookie', async () => {
+    // A Next page is loaded with the token, then client-side routing replaces the
+    // URL, so its later fetch carries neither a query token nor a token Referer.
+    const app: http.RequestListener = (request, response) => {
+      if (request.url?.startsWith('/api/bars')) {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ bars: [1, 2, 3] }));
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end('<html><body>market</body></html>');
+    };
+    const endpoint = await fixture(app);
+    const other = await fixture(app);
+    const proxyOrigin = new URL(endpoint.viewerUrl).origin;
+    const routedFetch = (cookie?: string) =>
+      fetch(new URL('/api/bars?symbol=7203', proxyOrigin), {
+        headers: {
+          referer: new URL('/stocks/7203', proxyOrigin).href,
+          'sec-fetch-site': 'same-origin',
+          ...(cookie === undefined ? {} : { cookie }),
+        },
+      });
+    const capabilityCookie = async (viewerUrl: string) => {
+      const page = await fetch(viewerUrl);
+      await page.text();
+      const [setCookie, ...rest] = page.headers.getSetCookie();
+      expect(rest).toEqual([]);
+      return setCookie ?? '';
+    };
+
+    const setCookie = await capabilityCookie(endpoint.viewerUrl);
+    const attributes = setCookie.split(';').map((part) => part.trim());
+    // The desktop frames the endpoint cross-site: Chromium drops a Lax cookie there.
+    expect(attributes.slice(1)).toEqual([
+      'Path=/',
+      'HttpOnly',
+      'Secure',
+      'SameSite=None',
+      'Partitioned',
+    ]);
+    const cookie = attributes[0] ?? '';
+    expect(cookie.startsWith(`lody_preview_${new URL(proxyOrigin).port}=`)).toBe(true);
+
+    const routed = await routedFetch(cookie);
+    expect(routed.status).toBe(200);
+    expect(await routed.json()).toEqual({ bars: [1, 2, 3] });
+
+    const otherCookie = (await capabilityCookie(other.viewerUrl)).split(';')[0] ?? '';
+    expect(otherCookie.split('=')[0]).not.toBe(cookie.split('=')[0]);
+    const token = cookie.slice(cookie.indexOf('=') + 1);
+    const otherToken = otherCookie.slice(otherCookie.indexOf('=') + 1);
+    for (const denied of [
+      undefined,
+      otherCookie,
+      `${cookie.split('=')[0]}=${otherToken}`,
+      `lody_preview=${token}`,
+    ]) {
+      const response = await routedFetch(denied);
+      expect(response.status).toBe(403);
+      expect(await response.text()).toBe('Preview endpoint token is missing or invalid.');
+    }
+
+    // Both previews stay open in one cookie jar; neither capability overwrites the other.
+    const jar = `${otherCookie}; ${cookie}`;
+    expect((await routedFetch(jar)).status).toBe(200);
+    const otherRouted = await fetch(new URL('/api/bars', other.viewerUrl), {
+      headers: { cookie: jar },
+    });
+    expect(otherRouted.status).toBe(200);
+    await otherRouted.text();
+  });
+
   it('keeps one session-owned proxy endpoint until it is explicitly released', async () => {
     const { server, target } = await listenHtmlServer();
     servers.push(server);
@@ -594,8 +667,11 @@ describe('LocalPreviewProxyManager', () => {
     const response = await fetch(remoteEndpoint.viewerUrl);
     expect(response.status).toBe(200);
     await response.text();
-    expect(response.headers.get('set-cookie')).toContain('Secure; SameSite=None; Partitioned');
-    expect(response.headers.getSetCookie()).toHaveLength(1);
+    expect(response.headers.getSetCookie()).toEqual([
+      expect.stringMatching(
+        /^lody_preview=[\w-]+; Path=\/; HttpOnly; Secure; SameSite=None; Partitioned$/
+      ),
+    ]);
     expect(response.headers.get('set-cookie')).not.toContain('private');
     expect(response.headers.get('x-preview-values')).toBe('first, second');
     expect(response.headers.get('cache-control')).toBe('no-store');

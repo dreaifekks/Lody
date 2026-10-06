@@ -37,6 +37,8 @@ type LocalPreviewProxyRecord = {
   transport: ReturnType<typeof createPreviewTargetTransport>;
   endpoint: SessionPreviewEndpoint;
   token: string;
+  /** The capability cookie this endpoint sets and accepts; see `capabilityCookieName`. */
+  cookieName: string;
   active: boolean;
   remote: boolean;
   visualAnnotation: boolean;
@@ -73,7 +75,17 @@ type AcquireLocalPreviewEndpointOptions = {
 };
 
 const LOCAL_PREVIEW_TOKEN_QUERY_PARAM = PREVIEW_ACCESS_TOKEN_QUERY_PARAM;
-const LOCAL_PREVIEW_TOKEN_COOKIE = PREVIEW_ACCESS_TOKEN_COOKIE;
+
+/**
+ * Cookies are scoped by host, not port, so every local endpoint on 127.0.0.1
+ * shares one cookie jar. A shared name would let the endpoint opened last
+ * overwrite the capability of every other open preview. Each local listener
+ * port is unique while it is open, so the port names the cookie; a later
+ * endpoint on a reused port overwrites a cookie whose token is already dead.
+ * A remote endpoint has its own Quick Tunnel host and keeps the shared name.
+ */
+const capabilityCookieName = (remote: boolean, proxyPort: number): string =>
+  remote ? PREVIEW_ACCESS_TOKEN_COOKIE : `${PREVIEW_ACCESS_TOKEN_COOKIE}_${proxyPort}`;
 
 const toUrlHost = (host: string): string => (host.includes(':') ? `[${host}]` : host);
 
@@ -111,24 +123,19 @@ const incomingHeadersToEntries = (headers: IncomingHttpHeaders): HeaderEntry[] =
   return entries;
 };
 
-const parseCookieHeader = (value: string | undefined): Map<string, string> => {
-  const cookies = new Map<string, string>();
-  if (!value) {
-    return cookies;
-  }
-  for (const part of value.split(';')) {
+/**
+ * Every value sent under `name`. A browser can send one name twice, such as a
+ * partitioned and an unpartitioned cookie, in an order the server cannot rely on.
+ */
+const cookieValues = (header: string | undefined, name: string): string[] => {
+  const values: string[] = [];
+  for (const part of header?.split(';') ?? []) {
     const index = part.indexOf('=');
-    if (index < 0) {
-      continue;
+    if (index >= 0 && part.slice(0, index).trim() === name) {
+      values.push(part.slice(index + 1).trim());
     }
-    const name = part.slice(0, index).trim();
-    const rawValue = part.slice(index + 1).trim();
-    if (!name) {
-      continue;
-    }
-    cookies.set(name, rawValue);
   }
-  return cookies;
+  return values;
 };
 
 const rawDataToBuffer = (value: RawData): Buffer => {
@@ -358,6 +365,7 @@ export class LocalPreviewProxyManager {
       transport,
       endpoint,
       token,
+      cookieName: capabilityCookieName(options.remote ?? false, port),
       active: true,
       remote: options.remote ?? false,
       visualAnnotation: options.visualAnnotation ?? true,
@@ -587,9 +595,7 @@ export class LocalPreviewProxyManager {
     if (options?.queryOnly) {
       return false;
     }
-    if (
-      parseCookieHeader(request.headers.cookie).get(LOCAL_PREVIEW_TOKEN_COOKIE) === record.token
-    ) {
+    if (cookieValues(request.headers.cookie, record.cookieName).includes(record.token)) {
       return true;
     }
     if (this.isAuthorizedByTokenReferer(record, request)) {
@@ -632,11 +638,19 @@ export class LocalPreviewProxyManager {
     sanitized.push(['cache-control', 'no-store']);
     sanitized.push(...applyPreviewEmbeddingHeaders(new Headers()).entries());
     if (setTokenCookie) {
+      // The desktop embeds every preview, local or remote, in an iframe under its
+      // own top-level page, a different site from the endpoint. Chromium neither
+      // stores nor sends a SameSite=Lax cookie in that cross-site frame, so after
+      // client-side routing drops the query token, the frame's fetches carried no
+      // capability at all. SameSite=None requires Secure, which Chromium accepts
+      // from http://127.0.0.1 as a potentially trustworthy origin; Partitioned keys
+      // the cookie to the embedding top-level site, so no other site's frame of
+      // this endpoint is sent it.
       sanitized.push([
         'set-cookie',
-        `${LOCAL_PREVIEW_TOKEN_COOKIE}=${encodeURIComponent(
+        `${record.cookieName}=${encodeURIComponent(
           record.token
-        )}; Path=/; HttpOnly; ${record.remote ? 'Secure; SameSite=None; Partitioned' : 'SameSite=Lax'}`,
+        )}; Path=/; HttpOnly; Secure; SameSite=None; Partitioned`,
       ]);
     }
     // Fetch Headers already combined repeated names; upstream cookies were
