@@ -300,6 +300,41 @@ describe('SessionVoiceControls conversation', () => {
     expect(second).not.toContain('Check the tests.');
   });
 
+  it('settles a request said twice one reply at a time', () => {
+    startConversation();
+    heard('user', '检查一下测试');
+    handedOff('Check the tests.');
+    wait(2_000);
+    heard('user', '检查一下测试');
+    handedOff('Check the tests.');
+    wait(2_000);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toBe(sent[1]);
+
+    props = {
+      turns: [
+        ...props.turns,
+        userTurn('u2', sent[0]!),
+        replyTurn('a2', '<say>测试都过了。</say>'),
+        userTurn('u3', sent[1]!),
+      ],
+      isAgentBusy: false,
+    };
+    render();
+    expect(call.append.mock.calls[0]![0]).toContain(
+      'finished the spoken request "Check the tests.".'
+    );
+
+    props = {
+      turns: [...props.turns, replyTurn('a3', '<say>还是都过了。</say>')],
+      isAgentBusy: false,
+    };
+    render();
+    expect(call.append.mock.calls[1]![0]).toContain(
+      'finished the spoken request "Check the tests.".'
+    );
+  });
+
   it('sends what was said when the user hangs up inside the merge window', () => {
     startConversation();
     heard('user', '最后帮我提交一下');

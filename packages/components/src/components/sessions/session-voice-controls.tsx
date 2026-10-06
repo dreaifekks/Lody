@@ -175,10 +175,16 @@ function SessionVoiceControlsInner({
     if (latestReply.key === relayedKeyRef.current) return;
     relayedKeyRef.current = latestReply.key;
     // Only the requests this reply answers are done; queued ones keep waiting
-    // for their own reply, and so do all of them behind a typed turn.
-    const answered = awaitingRef.current.filter((entry) =>
-      latestReply.voiceTurns.includes(entry.message)
-    );
+    // for their own reply, and so do all of them behind a typed turn. Each
+    // answered message settles one batch, oldest first: a request said twice
+    // sends the same text twice, and only the first copy is answered here.
+    const unmatched = [...latestReply.voiceTurns];
+    const answered = awaitingRef.current.filter((entry) => {
+      const index = unmatched.indexOf(entry.message);
+      if (index === -1) return false;
+      unmatched.splice(index, 1);
+      return true;
+    });
     awaitingRef.current = awaitingRef.current.filter((entry) => !answered.includes(entry));
     const requests = answered.flatMap((entry) => entry.understanding);
     void append(buildVoiceRelay(latestReply, requests));
