@@ -265,6 +265,41 @@ describe('SessionVoiceControls conversation', () => {
     expect(call.append.mock.calls[1]![0]).toContain('"Run the tests."');
   });
 
+  it('marks only the request a reply answers as done while a queued one keeps waiting', () => {
+    startConversation();
+    heard('user', '检查一下测试');
+    handedOff('Check the tests.');
+    wait(2_000);
+    heard('user', '再更新一下 README');
+    handedOff('Update the README.');
+    wait(2_000);
+    expect(sent).toHaveLength(2);
+
+    // The second message is queued behind the first turn, which finishes alone.
+    props = {
+      turns: [
+        ...props.turns,
+        userTurn('u2', sent[0]!),
+        replyTurn('a2', '<say>测试都过了。</say>'),
+        userTurn('u3', sent[1]!),
+      ],
+      isAgentBusy: false,
+    };
+    render();
+    const first = call.append.mock.calls[0]![0];
+    expect(first).toContain('"Check the tests."');
+    expect(first).not.toContain('README');
+
+    props = {
+      turns: [...props.turns, replyTurn('a3', '<say>README 更新好了。</say>')],
+      isAgentBusy: false,
+    };
+    render();
+    const second = call.append.mock.calls[1]![0];
+    expect(second).toContain('"Update the README."');
+    expect(second).not.toContain('Check the tests.');
+  });
+
   it('sends what was said when the user hangs up inside the merge window', () => {
     startConversation();
     heard('user', '最后帮我提交一下');

@@ -75,8 +75,8 @@ function SessionVoiceControlsInner({
   latestReplyRef.current = latestReply;
   /** The newest reply the voice already knows: present at call start, or relayed since. */
   const relayedKeyRef = useRef<string | null>(null);
-  /** Paraphrases of the voice turns sent and not yet answered by a relayed reply. */
-  const awaitingRef = useRef<string[]>([]);
+  /** Voice turns sent and not yet answered by a relayed reply, with their paraphrases. */
+  const awaitingRef = useRef<{ message: string; understanding: string[] }[]>([]);
   /** Everything said in the call since the last voice turn was sent. */
   const spokenRef = useRef<VoiceTranscriptLine[]>([]);
   const modeRef = useRef<'conversation' | 'dictation' | null>(null);
@@ -91,11 +91,12 @@ function SessionVoiceControlsInner({
     const spoken = spokenRef.current;
     spokenRef.current = [];
     const message = buildVoiceTurnMessage({ spoken, understanding });
-    awaitingRef.current = [...awaitingRef.current, ...understanding];
+    const batch = { message, understanding };
+    awaitingRef.current = [...awaitingRef.current, batch];
     if (!onVoiceRequest) return;
     void onVoiceRequest(message).then((accepted) => {
       if (accepted) return;
-      awaitingRef.current = awaitingRef.current.filter((text) => !understanding.includes(text));
+      awaitingRef.current = awaitingRef.current.filter((entry) => entry !== batch);
       void appendRef.current(
         `The request "${understanding.join(' ')}" could not be sent to the background agent. Tell the user.`
       );
@@ -173,9 +174,13 @@ function SessionVoiceControlsInner({
     if (!callLive || isAgentBusy || !latestReply) return;
     if (latestReply.key === relayedKeyRef.current) return;
     relayedKeyRef.current = latestReply.key;
-    // A typed turn that finishes first leaves the spoken requests waiting for their own reply.
-    const requests = latestReply.answersVoiceTurn ? awaitingRef.current : [];
-    if (latestReply.answersVoiceTurn) awaitingRef.current = [];
+    // Only the requests this reply answers are done; queued ones keep waiting
+    // for their own reply, and so do all of them behind a typed turn.
+    const answered = awaitingRef.current.filter((entry) =>
+      latestReply.voiceTurns.includes(entry.message)
+    );
+    awaitingRef.current = awaitingRef.current.filter((entry) => !answered.includes(entry));
+    const requests = answered.flatMap((entry) => entry.understanding);
     void append(buildVoiceRelay(latestReply, requests));
   }, [append, callLive, isAgentBusy, latestReply]);
 

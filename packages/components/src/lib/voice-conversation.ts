@@ -19,9 +19,16 @@ export type VoiceTranscriptLine = { role: 'user' | 'assistant'; text: string };
 
 /**
  * The most recent finished assistant reply, keyed so a newer one is
- * recognizable. `answersVoiceTurn` says the user message it follows was spoken.
+ * recognizable. `answersVoiceTurn` says the user message it follows was spoken;
+ * `voiceTurns` holds the exact text of every spoken message it answers (those
+ * since the previous reply), so their requests can be matched.
  */
-export type VoiceLatestReply = { key: string; text: string; answersVoiceTurn: boolean };
+export type VoiceLatestReply = {
+  key: string;
+  text: string;
+  answersVoiceTurn: boolean;
+  voiceTurns: string[];
+};
 
 /** Upper bound of the call-start summary; Codex caps all initial items at 8192 tokens. */
 export const VOICE_CONTEXT_MAX_CHARS = 6_000;
@@ -122,14 +129,23 @@ export function resolveVoiceLatestReply(turns: readonly SessionHistory[]): Voice
     // A reopened entry finishes again under the same id with a new end time.
     const endedAt = (turn as { endedAt?: unknown }).endedAt;
     const key = typeof endedAt === 'number' ? `${turn.id}@${endedAt}` : turn.id;
-    let answersVoiceTurn = false;
+    let answersVoiceTurn: boolean | null = null;
+    const voiceTurns: string[] = [];
     for (let j = i - 1; j >= 0; j -= 1) {
       const previous = turns[j];
+      if (previous?.role === 'assistant') break;
       if (previous?.role !== 'user') continue;
-      answersVoiceTurn = parseVoiceTurn(userTurnText(previous)) !== null;
-      break;
+      const text = userTurnText(previous);
+      const spoken = parseVoiceTurn(text) !== null;
+      answersVoiceTurn ??= spoken;
+      if (spoken) voiceTurns.unshift(text);
     }
-    return { key, text: finalAssistantText(turn), answersVoiceTurn };
+    return {
+      key,
+      text: finalAssistantText(turn),
+      answersVoiceTurn: answersVoiceTurn ?? false,
+      voiceTurns,
+    };
   }
   return null;
 }

@@ -42,7 +42,12 @@ describe('resolveVoiceLatestReply', () => {
       }),
     ]);
 
-    expect(reply).toEqual({ key: 'a1', text: 'There are three files.', answersVoiceTurn: false });
+    expect(reply).toEqual({
+      key: 'a1',
+      text: 'There are three files.',
+      answersVoiceTurn: false,
+      voiceTurns: [],
+    });
   });
 
   it('skips a reply that is still running', () => {
@@ -52,7 +57,7 @@ describe('resolveVoiceLatestReply', () => {
       replyTurn('a2', 'Partial', false),
     ]);
 
-    expect(reply).toEqual({ key: 'a1', text: 'Old.', answersVoiceTurn: false });
+    expect(reply).toEqual({ key: 'a1', text: 'Old.', answersVoiceTurn: false, voiceTurns: [] });
   });
 
   it('reports a finished reply that ends in a tool call as having no text', () => {
@@ -68,7 +73,7 @@ describe('resolveVoiceLatestReply', () => {
       }),
     ]);
 
-    expect(reply).toEqual({ key: 'a1', text: '', answersVoiceTurn: false });
+    expect(reply).toEqual({ key: 'a1', text: '', answersVoiceTurn: false, voiceTurns: [] });
   });
 
   it('says whether the reply follows a spoken or a typed message', () => {
@@ -85,6 +90,23 @@ describe('resolveVoiceLatestReply', () => {
         replyTurn('a2', 'Ok.'),
       ])?.answersVoiceTurn
     ).toBe(false);
+  });
+
+  it('lists the spoken messages the reply answers, back to the previous reply', () => {
+    const first = buildVoiceTurnMessage({ spoken: [], understanding: ['Run CI.'] });
+    const second = buildVoiceTurnMessage({ spoken: [], understanding: ['Open a PR.'] });
+    const third = buildVoiceTurnMessage({ spoken: [], understanding: ['Merge it.'] });
+
+    expect(
+      resolveVoiceLatestReply([
+        userTurn('u1', first),
+        replyTurn('a1', 'Green.'),
+        userTurn('u2', second),
+        userTurn('u3', 'typed aside'),
+        userTurn('u4', third),
+        replyTurn('a2', 'Done.'),
+      ])?.voiceTurns
+    ).toEqual([second, third]);
   });
 
   it('tells a reopened reply that finished again from its first finish', () => {
@@ -248,6 +270,7 @@ describe('buildVoiceRelay', () => {
         key: 'a1',
         text: 'Long diff summary with `src/a.ts`.\n<say>改好了。</say>',
         answersVoiceTurn: true,
+        voiceTurns: [],
       },
       ['Fix the test.', 'Run CI.']
     );
@@ -259,7 +282,12 @@ describe('buildVoiceRelay', () => {
 
   it('falls back to the shortened written reply without talking points', () => {
     const relay = buildVoiceRelay(
-      { key: 'a1', text: '字'.repeat(VOICE_RELAY_MAX_CHARS + 50), answersVoiceTurn: true },
+      {
+        key: 'a1',
+        text: '字'.repeat(VOICE_RELAY_MAX_CHARS + 50),
+        answersVoiceTurn: true,
+        voiceTurns: [],
+      },
       ['Fix it.']
     );
 
@@ -269,11 +297,14 @@ describe('buildVoiceRelay', () => {
 
   it('frames a typed turn as a background update and an empty reply as such', () => {
     expect(
-      buildVoiceRelay({ key: 'a1', text: '<say>好了</say>', answersVoiceTurn: false }, [])
+      buildVoiceRelay(
+        { key: 'a1', text: '<say>好了</say>', answersVoiceTurn: false, voiceTurns: [] },
+        []
+      )
     ).toMatch(/^The background agent finished a turn the user typed/);
-    expect(buildVoiceRelay({ key: 'a1', text: '', answersVoiceTurn: true }, ['Do it.'])).toContain(
-      'finished without a written reply'
-    );
+    expect(
+      buildVoiceRelay({ key: 'a1', text: '', answersVoiceTurn: true, voiceTurns: [] }, ['Do it.'])
+    ).toContain('finished without a written reply');
   });
 });
 
