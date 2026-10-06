@@ -43,13 +43,17 @@ import {
   getSessionRoomId,
   LOCAL_LORO_DATA_PLANE_PROTOCOL_VERSION,
   sessionDocSchema,
+  SessionStatusFactory,
   type LocalLoroDataPlaneRoom,
   type LocalLoroDataPlaneServer,
   type LocalLoroDataPlaneServerMessage,
+  type MachineId,
   type Role,
   type SessionDoc,
   type SessionHistoryInput,
   type SessionId,
+  type SessionMeta,
+  type SessionStatus,
   type WorkspaceId,
 } from '@lody/shared';
 
@@ -547,5 +551,109 @@ describe('session GC unloads the repo doc and invalidates its local data-plane r
     } finally {
       await harness.dispose();
     }
+  });
+});
+
+/**
+ * Closing a session document (daemon exit, update restart, session GC) ends a
+ * turn left running only when this process executes it. Two LAN members share
+ * one replica of the session meta; each "machine" below is a real manager over
+ * the same SQLite data directory, reopened between steps so every assertion
+ * reads what was persisted.
+ */
+describe('closing a session document finishes only sessions of its own machine', () => {
+  let tempDir: string;
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(async () => {
+    originalEnv = { ...process.env };
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lody-doc-close-status-'));
+    process.env.LODY_PLATFORM = 'local';
+    process.env.LODY_DATA_DIR = path.join(tempDir, '.lody-oss');
+  });
+
+  afterEach(async () => {
+    process.env = originalEnv;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const openManager = async (
+    localMachineId: string
+  ): Promise<{ manager: LoroDocumentManager; dispose: () => Promise<void> }> => {
+    applyLocalPlatformEnv();
+    const logger = createSilentLogger();
+    const identity = await loadOrCreateLocalIdentity(logger);
+    const catalog = makeLocalWorkspaceCatalog({
+      filePath: path.join(tempDir, '.lody-oss', 'workspace-catalog.json'),
+      lockName: `doc-close-status-${process.pid}`,
+      cacheTtlMs: Number.POSITIVE_INFINITY,
+    });
+    const workspace = await ensureImplicitLocalWorkspace({
+      catalog,
+      identity,
+      machineId: localMachineId,
+      machineName: localMachineId,
+      logger,
+    });
+    const cloudPort = createLocalCloudPort({
+      identity: { userId: identity.userId },
+      workspaces: [workspace],
+    });
+    const manager = await LoroDocumentManager.create(
+      workspace.id as WorkspaceId,
+      identity.userId,
+      logger,
+      { streamsTokens: cloudPort.streamsTokens, cloudBilling: cloudPort.billing }
+    );
+    manager.setLocalMachineId(localMachineId as MachineId);
+    return { manager, dispose: async () => await cloudPort.dispose() };
+  };
+
+  const persistedStatus = async (sessionId: SessionId): Promise<SessionStatus | undefined> => {
+    const reader = await openManager('reader');
+    try {
+      const meta = await reader.manager.repo.getDocMeta(getSessionRoomId(sessionId));
+      return (meta?.meta as Partial<SessionMeta> | undefined)?.status;
+    } finally {
+      await reader.manager.cleanUp({ fast: true, preserveSessionStatus: true });
+      await reader.dispose();
+    }
+  };
+
+  it('leaves a turn running on another machine alone when a member that viewed it quits', async () => {
+    const memberB = await openManager('machine-b');
+    let sessionId: SessionId;
+    try {
+      sessionId = await memberB.manager.createSession('machine-a', 'builtin', 'claude');
+      // Machine A's turn start, as replicated to B.
+      await memberB.manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
+        status: SessionStatusFactory.running(),
+      } satisfies Partial<SessionMeta>);
+
+      // B views the session, its GC collects it, B views it again and quits.
+      await memberB.manager.getOrCreateSessionDoc(sessionId);
+      await memberB.manager.cleanSessionDoc(sessionId);
+      await memberB.manager.getOrCreateSessionDoc(sessionId);
+      await memberB.manager.cleanUp();
+    } finally {
+      await memberB.dispose();
+    }
+
+    expect(await persistedStatus(sessionId)).toEqual(SessionStatusFactory.running());
+  });
+
+  it('still ends a turn of its own machine when the executing daemon quits', async () => {
+    const machineA = await openManager('machine-a');
+    let sessionId: SessionId;
+    try {
+      sessionId = await machineA.manager.createSession('machine-a', 'builtin', 'claude');
+      const sessionDoc = await machineA.manager.getOrCreateSessionDoc(sessionId);
+      await sessionDoc.setStatus(SessionStatusFactory.running());
+      await machineA.manager.cleanUp();
+    } finally {
+      await machineA.dispose();
+    }
+
+    expect(await persistedStatus(sessionId)).toEqual(SessionStatusFactory.idle());
   });
 });

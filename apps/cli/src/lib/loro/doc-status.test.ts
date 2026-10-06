@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { getSessionRoomId, SessionStatusFactory, type SessionId } from '@lody/shared';
+import {
+  getSessionRoomId,
+  SessionStatusFactory,
+  type MachineId,
+  type SessionId,
+} from '@lody/shared';
 import { LoroDoc, LoroMap } from 'loro-crdt';
 import type { LoroRepo } from 'loro-repo';
 
@@ -171,7 +176,7 @@ describe('SessionDocument status metadata', () => {
     expect(doc.getAssistantHistoryEntryTurnStorageMetadata('missing')).toBeUndefined();
   });
 
-  it('resets initializing status to idle during destroy without publishing presence', async () => {
+  it('resets a status of its own machine to idle during destroy without publishing presence', async () => {
     const upsertDocMeta = vi.fn(async () => {});
     const unloadDoc = vi.fn(async () => {});
     // Destroy must go through the injected unloader, never `repo.unloadDoc`
@@ -193,7 +198,7 @@ describe('SessionDocument status metadata', () => {
       unloadDocRoom
     );
 
-    await doc.destroy();
+    await doc.destroy({ localMachineId: 'machine-1' as MachineId });
 
     expect(upsertDocMeta).toHaveBeenCalledWith(
       doc.roomId,
@@ -204,4 +209,29 @@ describe('SessionDocument status metadata', () => {
     expect(unloadDocRoom).toHaveBeenCalledWith(doc.roomId);
     expect(unloadDoc).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['runs on another machine', 'machine-2' as MachineId],
+    ['is closed by a process that executes no machine', null],
+  ])(
+    'leaves the status of a session that %s alone during destroy',
+    async (_case, localMachineId) => {
+      const upsertDocMeta = vi.fn(async () => {});
+      const unloadDocRoom = vi.fn(async () => {});
+      const doc = createSessionDocument(
+        {
+          getDocMeta: vi.fn(async () => ({
+            meta: { machineId: 'machine-1', status: SessionStatusFactory.running() },
+          })),
+          upsertDocMeta,
+        },
+        unloadDocRoom
+      );
+
+      await doc.destroy({ localMachineId });
+
+      expect(upsertDocMeta).not.toHaveBeenCalled();
+      expect(unloadDocRoom).toHaveBeenCalledWith(doc.roomId);
+    }
+  );
 });

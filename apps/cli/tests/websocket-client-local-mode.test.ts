@@ -68,6 +68,7 @@ function createRuntimeForLocalModeTest() {
     restoreMachineDocument: vi.fn(async () => {}),
     watchMachineDocumentExistence: vi.fn(() => {}),
     registerMachine: vi.fn(async () => {}),
+    setLocalMachineId: vi.fn(() => {}),
     configureMachineMonitor: vi.fn(() => {}),
     clearMachineMonitorProvider: vi.fn(() => {}),
     repo: {
