@@ -1,9 +1,12 @@
 import { useAtomValue } from 'jotai';
 import type { AgentConfigId, MachineId } from '@lody/shared';
-import { voiceAgentScopeAtom, voiceAgentSelectionAtom } from '@/atoms/settings';
+import { voiceAgentScopeAtom, voiceAgentSelectionAtom, voiceNameAtom } from '@/atoms/settings';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 
 export type VoiceAgentSelection = { configId: AgentConfigId; machineId: MachineId };
+
+/** The agent plus the voice its calls use; `voice` null follows Codex's default. */
+export type VoiceCallSelection = VoiceAgentSelection & { voice: string | null };
 
 export function parseVoiceAgentSelection(value: string | null): VoiceAgentSelection | null {
   if (!value) return null;
@@ -15,11 +18,20 @@ export function parseVoiceAgentSelection(value: string | null): VoiceAgentSelect
   };
 }
 
-/** The Codex agent that hosts voice on this device: the workspace's, or this device's own. */
-export function useVoiceAgentSelection(): VoiceAgentSelection | null {
+/**
+ * The Codex agent that hosts voice on this device and the voice it speaks in:
+ * both the workspace's, or both this device's own.
+ */
+export function useVoiceAgentSelection(): VoiceCallSelection | null {
   const scope = useAtomValue(voiceAgentScopeAtom);
   const deviceSelection = useAtomValue(voiceAgentSelectionAtom);
-  const { voice } = useWorkspaceCatalog();
-  if (scope === 'device') return parseVoiceAgentSelection(deviceSelection);
-  return voice ? { configId: voice.configId, machineId: voice.machineId } : null;
+  const deviceVoice = useAtomValue(voiceNameAtom);
+  const { voice: shared } = useWorkspaceCatalog();
+  if (scope === 'device') {
+    const parsed = parseVoiceAgentSelection(deviceSelection);
+    return parsed ? { ...parsed, voice: deviceVoice } : null;
+  }
+  return shared
+    ? { configId: shared.configId, machineId: shared.machineId, voice: shared.voice ?? null }
+    : null;
 }

@@ -11,6 +11,7 @@ import {
   machineSupportsProtocolCapability,
   machineSupportsRealtimeVoice,
   machineSupportsRealtimeVoiceContext,
+  machineSupportsRealtimeVoiceSelection,
   machineSupportsSubagentEvents,
   machineSupportsIosSimulatorControls,
   negotiatedAcpCapabilitiesRefreshForce,
@@ -172,6 +173,26 @@ describe('realtime voice protocol capability', () => {
     expect(machineSupportsRealtimeVoiceContext(v1)).toBe(false);
     expect(machineSupportsRealtimeVoice(current)).toBe(true);
     expect(machineSupportsRealtimeVoiceContext(current)).toBe(true);
+  });
+
+  it('lets only a v3 daemon choose, list and preview voices', () => {
+    const v2 = { protocolCapabilities: { realtimeVoice: 2 } };
+    const current = { protocolCapabilities: { realtimeVoice: REALTIME_VOICE_PROTOCOL_VERSION } };
+    expect(machineSupportsRealtimeVoiceSelection(v2)).toBe(false);
+    expect(machineSupportsRealtimeVoiceContext(v2)).toBe(true);
+    expect(machineSupportsRealtimeVoiceSelection(current)).toBe(true);
+  });
+
+  it('accepts a voice, a preview and a voice list request, which the v2 schema would reject', () => {
+    const start = { action: 'start', configId: 'cfg', mode: 'conversation', sdp: 'offer' };
+    expect(MachineVoiceRequestSchema.safeParse({ ...start, voice: 'cove' }).success).toBe(true);
+    expect(MachineVoiceRequestSchema.safeParse({ ...start, mode: 'preview' }).success).toBe(true);
+    expect(MachineVoiceRequestSchema.safeParse({ action: 'voices', configId: 'cfg' }).success).toBe(
+      true
+    );
+    expect(MachineVoiceRequestSchema.safeParse({ ...start, voice: 'Cove; rm' }).success).toBe(
+      false
+    );
   });
 
   it('accepts a start with background, which the v1 schema would reject', () => {

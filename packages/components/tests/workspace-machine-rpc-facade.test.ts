@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
+  MACHINE_VOICE_SELECTION_UNSUPPORTED,
   type MachineId,
   type McpServerId,
   type SessionId,
@@ -638,4 +639,61 @@ describe('local MCP discovery routing', () => {
       else await expect(result).rejects.toThrow('requires a supported local daemon');
     }
   );
+
+  describe('voice requests to machines of different protocol versions', () => {
+    const start = {
+      action: 'start' as const,
+      configId: 'config-1' as never,
+      mode: 'conversation' as const,
+      sdp: 'offer',
+      context: 'User: hi',
+      voice: 'maple',
+    };
+    const facadeFor = (realtimeVoice: number) => {
+      const sent: unknown[] = [];
+      const facade = createWorkspaceMachineRpcFacade({
+        workspaceId,
+        getMachineProtocolCapabilities: async () => ({ realtimeVoice }),
+        targetRouter: {
+          getPlaneForMachine: () => 'cloud',
+          resolvePlaneForMachine: async () => 'cloud',
+        },
+        getMachineRpcClient: async () =>
+          ({
+            requestMachineVoice: async ({ request }: { request: unknown }) => {
+              sent.push(request);
+              return { success: true, action: 'voices', voices: ['cove'], defaultVoice: 'cove' };
+            },
+          }) as never,
+      });
+      return { facade, sent };
+    };
+
+    it('sends the chosen voice to a current machine', async () => {
+      const { facade, sent } = facadeFor(3);
+      await facade.requestMachineVoice(remoteMachineId, start);
+      expect(sent).toEqual([start]);
+    });
+
+    it('drops the voice for an older machine, which still holds the call', async () => {
+      const { facade, sent } = facadeFor(2);
+      await facade.requestMachineVoice(remoteMachineId, start);
+      const { voice: _voice, ...withoutVoice } = start;
+      expect(sent).toEqual([withoutVoice]);
+    });
+
+    it('refuses a voice list or a preview on an older machine without asking it', async () => {
+      const { facade, sent } = facadeFor(2);
+      await expect(
+        facade.requestMachineVoice(remoteMachineId, {
+          action: 'voices',
+          configId: 'config-1' as never,
+        })
+      ).resolves.toEqual({ success: false, error: MACHINE_VOICE_SELECTION_UNSUPPORTED });
+      await expect(
+        facade.requestMachineVoice(remoteMachineId, { ...start, mode: 'preview' })
+      ).resolves.toEqual({ success: false, error: MACHINE_VOICE_SELECTION_UNSUPPORTED });
+      expect(sent).toEqual([]);
+    });
+  });
 });
