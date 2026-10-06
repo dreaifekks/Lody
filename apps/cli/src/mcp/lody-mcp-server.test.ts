@@ -187,6 +187,34 @@ describe('Lody MCP tool catalog', () => {
     expect(names.filter((name) => name.startsWith('lody_task_'))).toEqual([]);
   });
 
+  it('sends every connected agent bounded mention and delegation guidance at initialize', async () => {
+    const server = buildLodyMcpServer();
+    const client = new Client({ name: 'mcp-instructions-test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const instructions = client.getInstructions() ?? '';
+      // Session mentions stay resolvable.
+      expect(instructions).toContain('session://');
+      expect(instructions).toContain('lody_session_history');
+      // Delegation guidance names only tools and fields this server publishes.
+      const published = new Set((await client.listTools()).tools.map((tool) => tool.name));
+      const namedTools = instructions.match(/\blody_[a-z_]+/g) ?? [];
+      expect(namedTools.length).toBeGreaterThan(0);
+      expect(namedTools.filter((name) => !published.has(name))).toEqual([]);
+      expect(instructions).toContain('lody_session_create');
+      expect(instructions).toContain('worktree: true');
+      expect(instructions).toMatch(/foreground/);
+      expect(instructions).toMatch(/commit but never push/);
+      expect(instructions).toMatch(/automatic review/);
+      // Sent to every agent in every session: keep it to a few hundred tokens.
+      // Grok also truncates server instructions beyond 2048 characters.
+      expect(instructions.length).toBeLessThanOrEqual(2_048);
+    } finally {
+      await Promise.all([client.close(), server.close()]);
+    }
+  });
+
   it('always advertises only the bounded Schedule family', async () => {
     const names = await listPublishedToolNames();
     expect(names.filter((name) => name.startsWith('lody_schedule_')).sort()).toEqual([

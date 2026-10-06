@@ -3584,6 +3584,36 @@ export const __lodyMcpServerInternals = {
   resolveMcpSessionId,
 };
 
+// Every Agent connected to this server may see these instructions in every
+// session, and they exist only inside Lody, so keep them short and limited to
+// guidance that needs the lody_* tools. Grok truncates beyond 2048 characters
+// and joins paragraphs into one line, so every sentence must stand alone.
+const LODY_MCP_SERVER_INSTRUCTIONS = [
+  [
+    'Session mentions in user messages may appear as markdown links of the form [@Title](session://<sessionId>).',
+    'To read that conversation, call lody_session_history with sessionId set to the <sessionId> (the part after session://), or pass the full session:// URI.',
+    'Paginate with nextCursor when you need older turns.',
+  ],
+  [
+    'Delegate complex work: when a request spans several files, needs research then implementation then testing, or would clutter this conversation, prefer starting an execution session with lody_session_create and act as its coordinator instead of doing everything yourself.',
+    'For code changes use a local project with worktree: true.',
+    'Handle simple questions and small edits directly.',
+    'If another session delegated your task to you, do it yourself instead of delegating again.',
+  ],
+  [
+    'The execution session cannot see this conversation, so make its prompt self-contained: background, findings so far, what to do and not do, constraints, and a conclusion-first report format.',
+    'Tell it to run tests, type checks and lint in the foreground before ending its turn, because background jobs cannot wake it after the turn ends, and to commit but never push.',
+  ],
+  [
+    'When it reports back, verify before acting: read the diff and confirm it is based on the latest target branch, then push and open a PR if the task calls for one.',
+    "Merge, tag and other outward actions follow the user's instructions.",
+    'Do not message a session while its automatic review is running, because that pauses the review; start another session for parallel work.',
+    'Report only conclusions to the user, plus anything they need to decide or verify.',
+  ],
+]
+  .map((sentences) => sentences.join(' '))
+  .join('\n\n');
+
 export function buildLodyMcpServer(): McpServer {
   return buildSessionToolServer();
 }
@@ -3598,13 +3628,7 @@ export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServe
       name: 'lody',
       version: '0.1.0',
     },
-    {
-      instructions: [
-        'Session mentions in user messages may appear as markdown links of the form [@Title](session://<sessionId>).',
-        'To read that conversation, call lody_session_history with sessionId set to the <sessionId> (the part after session://), or pass the full session:// URI.',
-        'Paginate with nextCursor when you need older turns.',
-      ].join(' '),
-    }
+    { instructions: LODY_MCP_SERVER_INSTRUCTIONS }
   );
   registerScheduleTools(server, {
     execute: async (command) => {
