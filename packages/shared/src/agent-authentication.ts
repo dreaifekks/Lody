@@ -10,6 +10,7 @@
  */
 import { isManagedBuiltinAgentType, type AgentConfigCliType } from './ai';
 import { isAgentBrandId, type AgentBrandId } from './agent-brand';
+import { isCodexAuthRoutingEnvKey } from './codex-auth-profile';
 
 /**
  * Env vars that supply credentials directly or route Claude through a
@@ -44,6 +45,67 @@ export const hasBuiltinEnvAuthentication = (
   env: Record<string, string | undefined> | undefined
 ): boolean =>
   agentType === 'claude' && CLAUDE_ENV_AUTH_KEYS.some((key) => Boolean(env?.[key]?.trim()));
+
+// These can change Claude's account/provider without supplying API credentials.
+// Model selectors and cloud region settings alone do not change account identity.
+const CLAUDE_ACCOUNT_ROUTING_ENV_KEYS = new Set([
+  'CLAUDE_CONFIG_DIR',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
+  'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+  'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
+]);
+
+// Kimi's provider endpoint definitions and env-model configuration, plus its
+// credential-store location. Do not match every KIMI_ tool/update setting.
+const KIMI_AUTH_ROUTING_ENV_KEYS = new Set([
+  'KIMI_API_KEY',
+  'KIMI_BASE_URL',
+  'KIMI_CODE_HOME',
+  'KIMI_MODEL_API_KEY',
+  'KIMI_MODEL_BASE_URL',
+  'KIMI_MODEL_PROVIDER_TYPE',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
+  'GOOGLE_API_KEY',
+  'GOOGLE_GEMINI_BASE_URL',
+  'VERTEXAI_API_KEY',
+  'GOOGLE_VERTEX_BASE_URL',
+]);
+
+/**
+ * Whether explicit env overrides make a built-in subscription quota unsuitable
+ * for display. This is not a sign-in requirement probe; agents still report that.
+ * Empty values and unrelated transport/tool settings do not change eligibility.
+ */
+export function hasBuiltinEnvAuthRouting(
+  agentType: string,
+  env: Record<string, string | undefined> | undefined
+): boolean {
+  if (hasBuiltinEnvAuthentication(agentType, env)) return true;
+  return Object.entries(env ?? {}).some(([key, value]) => {
+    if (value === undefined || value.trim() === '') return false;
+    switch (agentType) {
+      case 'claude':
+        return CLAUDE_ACCOUNT_ROUTING_ENV_KEYS.has(key);
+      case 'codex':
+        return isCodexAuthRoutingEnvKey(key);
+      case 'grok':
+        // The adapter delegates auth to the official runtime. XAI_ is a
+        // conservative provider namespace; GROK_HOME selects its local store.
+        return /^XAI_/i.test(key) || ['GROK_HOME', 'GROK_API_KEY', 'GROK_BASE_URL'].includes(key);
+      case 'kimi':
+        // MOONSHOT_ is a conservative legacy-provider namespace: the pinned
+        // Kimi runtime exposes the explicit keys above rather than that prefix.
+        return KIMI_AUTH_ROUTING_ENV_KEYS.has(key) || /^MOONSHOT_/i.test(key);
+      default:
+        return false;
+    }
+  });
+}
 
 /**
  * True when the provider config can run (and re-run) the built-in interactive

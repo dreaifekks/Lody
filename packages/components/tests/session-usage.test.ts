@@ -257,33 +257,89 @@ describe('session usage', () => {
     ).toBeNull();
   });
 
-  it('hides subscription limits for custom providers and configured endpoints', () => {
+  it.each(['claude', 'codex', 'grok', 'kimi'])(
+    'shows %s limits with unrelated env',
+    (agentType) => {
+      const env = {
+        NMEM_AGENT_ID: 'lody',
+        HTTPS_PROXY: 'http://localhost:7890',
+        NODE_OPTIONS: '--max-old-space-size=4096',
+      };
+      expect(canShowSubscriptionRateLimits({ cliType: 'builtin', agentType })).toBe(true);
+      expect(
+        canShowSubscriptionRateLimits({
+          cliType: 'builtin',
+          agentType,
+          config: { env: { NMEM_AGENT_ID: 'lody' } },
+        })
+      ).toBe(true);
+      expect(
+        canShowSubscriptionRateLimits({ cliType: 'builtin', agentType, config: { env: {} } })
+      ).toBe(true);
+      expect(
+        canShowSubscriptionRateLimits({ cliType: 'builtin', agentType, config: { env } })
+      ).toBe(true);
+    }
+  );
+
+  it.each([
+    ['claude', 'ANTHROPIC_BASE_URL'],
+    ['claude', 'ANTHROPIC_API_KEY'],
+    ['codex', 'OPENAI_API_KEY'],
+    ['codex', 'CODEX_HOME'],
+    ['grok', 'XAI_API_KEY'],
+    ['grok', 'GROK_HOME'],
+    ['kimi', 'KIMI_API_KEY'],
+    ['kimi', 'KIMI_BASE_URL'],
+  ])('hides %s subscription limits only when %s is nonblank', (agentType, key) => {
+    const input = { cliType: 'builtin' as const, agentType };
     expect(
-      canShowSubscriptionRateLimits({
-        cliType: 'builtin',
-        agentType: 'codex',
-        config: { env: {} },
-      })
-    ).toBe(true);
-    expect(
-      canShowSubscriptionRateLimits({
-        cliType: 'builtin',
-        agentType: 'grok',
-        config: { env: {} },
-      })
-    ).toBe(true);
-    expect(
-      canShowSubscriptionRateLimits({
-        cliType: 'builtin',
-        agentType: 'claude',
-        config: { env: { ANTHROPIC_BASE_URL: 'https://example.com' } },
-      })
+      canShowSubscriptionRateLimits({ ...input, config: { env: { [key]: 'override' } } })
     ).toBe(false);
+    expect(canShowSubscriptionRateLimits({ ...input, config: { env: { [key]: ' \t\n' } } })).toBe(
+      true
+    );
+    expect(canShowSubscriptionRateLimits({ ...input, config: { env: { [key]: '' } } })).toBe(true);
+  });
+
+  it.each(['claude', 'codex', 'grok', 'kimi'])(
+    'still hides persisted or inferred %s brands',
+    (agentType) => {
+      expect(
+        canShowSubscriptionRateLimits({
+          cliType: 'builtin',
+          agentType,
+          config: { brandId: 'deepseek', env: { NMEM_AGENT_ID: 'lody' } },
+        })
+      ).toBe(false);
+      expect(
+        canShowSubscriptionRateLimits({
+          cliType: 'builtin',
+          agentType,
+          config: { env: { ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic' } },
+        })
+      ).toBe(false);
+    }
+  );
+
+  it('keeps Antigravity eligibility independent of env and brand', () => {
+    expect(
+      canShowSubscriptionRateLimits({
+        cliType: 'registry',
+        agentType: ANTIGRAVITY_AGENT_TYPE,
+        config: { brandId: 'deepseek', env: { OPENAI_API_KEY: 'override' } },
+      })
+    ).toBe(true);
+  });
+
+  it('hides subscription limits for unsupported providers', () => {
     expect(
       canShowSubscriptionRateLimits({
         cliType: 'custom',
         agentType: 'custom-agent',
       })
     ).toBe(false);
+    expect(canShowSubscriptionRateLimits({ cliType: 'registry', agentType: 'claude' })).toBe(false);
+    expect(canShowSubscriptionRateLimits({ cliType: 'builtin', agentType: 'pi' })).toBe(false);
   });
 });

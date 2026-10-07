@@ -24,8 +24,34 @@ The detail popover displays all valid reported windows in descending duration
 order, retaining provider-supplied labels and reset information. Compact indicator
 selection is independent of that presentation order.
 
+## Subscription eligibility
+
+Built-in Claude, Codex, Grok, and Kimi configurations may display subscription
+limits when explicit environment variables do not override the agent's account,
+credentials, or provider routing. Tool settings, proxies, and `NMEM_AGENT_ID`
+alone must not hide either the five-hour or weekly limits. Empty and whitespace-only
+values do not count as overrides. A persisted or environment-inferred provider
+brand still hides subscription limits. Registry Antigravity retains its existing
+eligibility because its quota comes from the ACP server's own sign-in.
+
+Claude credential/provider variables, OAuth token/config-directory overrides,
+and cloud auth-bypass switches hide limits; model selectors and cloud regions
+alone do not. Codex account/config locations, provider selectors, and variables
+with `CODEX_`, `OPENAI_`, or `LODY_CODEX_` prefixes hide limits, excluding unrelated
+transport and process settings. Grok account-store and endpoint/key overrides
+hide limits, with `XAI_` conservatively treated as provider configuration. Kimi
+account-store and known provider endpoint/key overrides hide limits, with
+`MOONSHOT_` conservatively treated as legacy provider configuration; ordinary
+`KIMI_` tool/update settings do not hide limits.
+
+This display heuristic does not determine whether an agent needs sign-in or
+change quota collection and Provider-scoped snapshot ownership.
+
 ## Evidence
 
 - [Indicator and detail popover](../packages/components/src/components/sessions/session-usage-popover.tsx)
 - [Behavioral tests](../packages/components/tests/session-usage-popover.test.tsx)
+- [Eligibility helper and tests](../packages/components/tests/session-usage.test.ts)
+- [Shared environment classification](../packages/shared/src/agent-authentication.ts)
+- [Eligibility decision](../.agents/notes/implemented/bug-fix/2026-10-07-subscription-env-eligibility.md)
 - [Decision](../.agents/notes/implemented/bug-fix/2026-10-01-five-hour-usage-indicator.md)
