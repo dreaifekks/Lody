@@ -36,7 +36,7 @@ const isNeverCollapsedAssistantItem = (content: MessageContent | undefined): boo
   (content?.type === 'tool_call' && content.kind === 'switch_mode');
 
 /**
- * The answer is the final contiguous run of text before the never-collapsed
+ * The closing text: the final contiguous run of text before the never-collapsed
  * tail, not necessarily the last item. Every adjacent text block in that run
  * stays visible; a non-text item is the boundary between work and the answer.
  * `items.length` when the turn ends in work rather than text.
@@ -78,6 +78,39 @@ const STRUCTURED_TEXT_PATTERN = /(?:^|\n)[ \t]*(?:[-*+] |\d+[.)] |\||#{1,6} )/;
 export const isSubstantiveAssistantText = (text: string): boolean =>
   text.trim().length >= SUBSTANTIVE_ASSISTANT_TEXT_MIN_CHARS || STRUCTURED_TEXT_PATTERN.test(text);
 
+/**
+ * Where the text that stays visible as the answer begins: the closing text run,
+ * or, when that run is thin, also the text run before the work preceding it.
+ *
+ * A substantive closing text is the answer. A thin one ("The background task
+ * has finished too.") has the shape of a postscript: a background task's
+ * followup or a one-line confirmation, appended after the text that actually
+ * answered and separated from it by the tool that read the task's output. So
+ * the run before that work stays visible with it, whatever its own length: a
+ * complete answer can be one sentence with a path in it. One run only; the
+ * narration before it is still narration. `items.length` when the turn ends
+ * in work rather than text.
+ */
+const getVisibleTextStart = (items: MessageContent[]): number => {
+  const finalTextRunStart = getFinalTextRunStart(items);
+  if (finalTextRunStart >= items.length) return finalTextRunStart;
+  const closingText = items
+    .slice(finalTextRunStart)
+    .flatMap((item) => (item.type === 'text' ? [item.text] : []))
+    .join('\n\n');
+  if (isSubstantiveAssistantText(closingText)) return finalTextRunStart;
+
+  let index = finalTextRunStart - 1;
+  while (index >= 0 && items[index]?.type !== 'text') {
+    index -= 1;
+  }
+  if (index < 0) return finalTextRunStart;
+  while (index > 0 && items[index - 1]?.type === 'text') {
+    index -= 1;
+  }
+  return index;
+};
+
 export const shouldCollapseAssistantMessageItem = ({
   content,
   index,
@@ -90,14 +123,14 @@ export const shouldCollapseAssistantMessageItem = ({
   isTurnFinished: boolean;
 }): boolean => {
   const itemCount = items.length;
-  const finalTextRunStart = getFinalTextRunStart(items);
+  const visibleTextStart = getVisibleTextStart(items);
   // Earlier text stays out too when it is substantive (see
   // `isSubstantiveAssistantText`), but only in a turn that closes in text: one
   // that ends mid-work folds nothing (see `segmentHasVisibleFinalContent`).
   const keepsText =
     content.type === 'text' &&
-    finalTextRunStart < itemCount &&
-    (index >= finalTextRunStart || isSubstantiveAssistantText(content.text));
+    visibleTextStart < itemCount &&
+    (index >= visibleTextStart || isSubstantiveAssistantText(content.text));
 
   return (
     isTurnFinished &&

@@ -15,6 +15,11 @@ import {
 } from '../src/components/ai-gui/message-copy';
 
 const text = (value: string): MessageContent => ({ type: 'text', text: value });
+/**
+ * A structured closing text. It is substantive, so the narration before its
+ * work folds; a thin closing text keeps that run too (`getVisibleTextStart`).
+ */
+const reply = (value: string): MessageContent => text(`${value}\n- detail`);
 
 describe('getTextContentFromMessageItems', () => {
   it('joins non-empty text items and keeps non-blank text intact', () => {
@@ -112,10 +117,10 @@ describe('getVisibleAssistantTextContent', () => {
     const items = [
       text('hidden progress'),
       { type: 'thought', text: 'hidden thought' } satisfies MessageContent,
-      text('visible response'),
+      reply('visible response'),
     ];
 
-    expect(getVisibleAssistantTextContent(items, true)).toBe('visible response');
+    expect(getVisibleAssistantTextContent(items, true)).toBe('visible response\n- detail');
   });
 
   it('keeps the final contiguous text run visible', () => {
@@ -123,11 +128,11 @@ describe('getVisibleAssistantTextContent', () => {
       text('hidden progress'),
       { type: 'thought', text: 'hidden thought' } satisfies MessageContent,
       text('visible response, part one'),
-      text('visible response, part two'),
+      reply('visible response, part two'),
     ];
 
     expect(getVisibleAssistantTextContent(items, true)).toBe(
-      'visible response, part one\n\nvisible response, part two'
+      'visible response, part one\n\nvisible response, part two\n- detail'
     );
   });
 
@@ -136,7 +141,7 @@ describe('getVisibleAssistantTextContent', () => {
       text('hidden progress'),
       { type: 'thought', text: 'hidden thought' } satisfies MessageContent,
       text('visible response, part one'),
-      text('visible response, part two'),
+      reply('visible response, part two'),
       {
         type: 'image_group',
         images: [
@@ -150,7 +155,7 @@ describe('getVisibleAssistantTextContent', () => {
     ] satisfies MessageContent[];
 
     expect(getVisibleAssistantTextContent(items, true)).toBe(
-      'visible response, part one\n\nvisible response, part two'
+      'visible response, part one\n\nvisible response, part two\n- detail'
     );
   });
 
@@ -191,6 +196,48 @@ describe('isSubstantiveAssistantText', () => {
   });
 });
 
+describe('a thin closing text', () => {
+  // A background task's followup: the agent answered in one sentence, then
+  // read the task's output and appended a note. Both sentences are the answer.
+  const backupAnswer = '备份已完成，文件保存在 /tmp/backup.tar.gz。';
+  const taskNote = '后台任务也已结束。';
+  const read = {
+    type: 'tool_call',
+    toolCallId: 'read-1',
+    status: 'completed',
+    kind: 'read',
+  } satisfies MessageContent;
+
+  it('keeps the short answer before the work it closes, in view and in copy', () => {
+    const items = [text(backupAnswer), read, text(taskNote)];
+
+    expect(getVisibleAssistantTextContent(items, true)).toBe(`${backupAnswer}\n\n${taskNote}`);
+    expect(
+      items.map((content, index) =>
+        shouldCollapseAssistantMessageItem({ content, index, items, isTurnFinished: true })
+      )
+    ).toEqual([false, true, false]);
+  });
+
+  it('reaches back one text run only', () => {
+    const items = [
+      text('Checking the backup first.'),
+      { type: 'tool_call', toolCallId: 'check-1', status: 'completed' } satisfies MessageContent,
+      text(backupAnswer),
+      read,
+      text(taskNote),
+    ];
+
+    expect(getVisibleAssistantTextContent(items, true)).toBe(`${backupAnswer}\n\n${taskNote}`);
+  });
+
+  it('does not reach back from a substantive closing text', () => {
+    const items = [text('Checking the backup first.'), read, reply(backupAnswer)];
+
+    expect(getVisibleAssistantTextContent(items, true)).toBe(`${backupAnswer}\n- detail`);
+  });
+});
+
 describe('shouldCollapseAssistantMessageItem', () => {
   it('uses the same finished-turn boundary as the message view', () => {
     const items = [
@@ -205,7 +252,7 @@ describe('shouldCollapseAssistantMessageItem', () => {
           },
         ],
       },
-      text('visible response'),
+      reply('visible response'),
     ] satisfies MessageContent[];
 
     expect(
@@ -225,7 +272,7 @@ describe('shouldCollapseAssistantMessageItem', () => {
       text('hidden progress'),
       { type: 'thought', text: 'hidden thought' } satisfies MessageContent,
       text('visible response, part one'),
-      text('visible response, part two'),
+      reply('visible response, part two'),
       {
         type: 'image_group',
         images: [
@@ -260,7 +307,7 @@ describe('shouldCollapseAssistantMessageItem', () => {
         kind: 'switch_mode',
         title: 'Exited Plan Mode',
       },
-      text('visible response'),
+      reply('visible response'),
     ] satisfies MessageContent[];
 
     expect(
@@ -317,7 +364,7 @@ describe('shouldCollapseAssistantMessageItem', () => {
         status: 'pending',
         kind: 'request_user_input',
       },
-      text('visible response'),
+      reply('visible response'),
     ] satisfies MessageContent[];
 
     expect(
@@ -344,7 +391,7 @@ describe('shouldCollapseAssistantMessageItem', () => {
         transport: 'r2',
         uploadedAt: 1_000,
       },
-      text('visible response'),
+      reply('visible response'),
     ] satisfies MessageContent[];
 
     expect(
@@ -374,7 +421,7 @@ describe('shouldCollapseAssistantMessageItem', () => {
         createdAt: 100,
         updatedAt: 200,
       },
-      text('visible response'),
+      reply('visible response'),
     ] satisfies MessageContent[];
 
     expect(
@@ -399,7 +446,7 @@ describe('shouldCollapseAssistantMessageItem', () => {
         status: 'completed',
         isLatest: true,
       },
-      text('visible response'),
+      reply('visible response'),
     ] satisfies MessageContent[];
 
     expect(

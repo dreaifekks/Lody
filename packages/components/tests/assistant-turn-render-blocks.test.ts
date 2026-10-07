@@ -119,7 +119,7 @@ describe('buildAssistantTurnRenderLayout', () => {
         tool('command-1', 'execute'),
         { type: 'text', text: 'I found the relevant component.' },
         tool('edit-1', 'edit'),
-        { type: 'text', text: 'The renderer now collapses completed work.' },
+        { type: 'text', text: 'The renderer now collapses completed work:\n- thoughts\n- tools' },
       ],
       true
     );
@@ -166,7 +166,7 @@ describe('buildAssistantTurnRenderLayout', () => {
         { type: 'text', text: 'Progress update.' },
         tool('command-1', 'execute'),
         { type: 'text', text: 'First part of the final response.' },
-        { type: 'text', text: 'Second part of the final response.' },
+        { type: 'text', text: 'Second part of the final response:\n- with a list' },
       ],
       true
     );
@@ -193,6 +193,28 @@ describe('buildAssistantTurnRenderLayout', () => {
     );
 
     expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
+      true,
+      false,
+      true,
+      false,
+    ]);
+  });
+
+  it('keeps a short earlier answer visible when the followup note after it is thin too', () => {
+    const layout = buildAssistantTurnRenderLayout(
+      'assistant-1',
+      [
+        { type: 'text', text: 'Checking the backup first.' },
+        tool('check-1', 'execute'),
+        { type: 'text', text: '备份已完成，文件保存在 /tmp/backup.tar.gz。' },
+        tool('read-1', 'read', { locations: [{ path: 'task-output.log' }] }),
+        { type: 'text', text: '后台任务也已结束。' },
+      ],
+      true
+    );
+
+    expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
+      true,
       true,
       false,
       true,

@@ -245,4 +245,21 @@ describe('finished turn text', () => {
       'text:The review agreed.',
     ]);
   });
+
+  it('shows a short answer and the thin followup note after it, hiding only the work between', () => {
+    const rows = buildRows(
+      [
+        { type: 'text', text: '备份已完成，文件保存在 /tmp/backup.tar.gz。' } as MessageContent,
+        tool('read-1', 'read', { locations: [{ path: 'task-output.log' }] }),
+        { type: 'text', text: '后台任务也已结束。' } as MessageContent,
+      ],
+      true
+    );
+
+    expect(readingOrder(rows)).toEqual([
+      'worked_group_header',
+      'text:备份已完成，文件保存在 /tmp/backup.tar.gz。',
+      'text:后台任务也已结束。',
+    ]);
+  });
 });
