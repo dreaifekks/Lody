@@ -606,6 +606,14 @@ export interface AgentClientOptions {
    * selector is applied once the agent has advertised its MCP capabilities.
    */
   loadExternalMcpServers?(): Promise<SessionMcpCatalogSelector>;
+  /**
+   * Whether the workspace turned on next-message suggestions. Read when a
+   * Claude session starts, after the catalog sync above, because Claude takes
+   * the option only at process start.
+   */
+  loadPromptSuggestionsEnabled?(): Promise<boolean>;
+  /** Claude's guess at the next user message, after a turn and while no prompt is running. */
+  onPromptSuggestion?(suggestion: string): void;
   onImageGenerationBegin?(event: ImageGenerationBeginEvent): void;
   onImageGenerationEnd?(event: ImageGenerationEndEvent): void;
   onWriteTextFile?(event: AcpWriteTextFileEvidence): void | Promise<void>;
@@ -641,6 +649,8 @@ export class AgentClient implements acp.Client {
   private steerApplicationBarrier: Promise<void> | null = null;
   private activePromptCompletion: ActivePromptCompletion | null = null;
   private readonly pendingPrompts = new Set<Promise<unknown>>();
+  /** Asked the agent for `_lody/session/prompt_suggestion` at session start. */
+  private promptSuggestionsRequested = false;
   private sessionWorkdir: string | null = null;
   private agentMcpCapabilities: acp.McpCapabilities | undefined;
   /** Session config options returned by the agent; the source of model/mode choices and names. */
@@ -1584,6 +1594,17 @@ export class AgentClient implements acp.Client {
           this.options.onRateLimitUpdate?.(rateLimit);
         }
         return;
+      case 'promptSuggestion':
+        // A prompt already in flight makes the guess stale.
+        if (
+          !this.promptSuggestionsRequested ||
+          !this.isCurrentAcpSession(event.sessionId) ||
+          this.pendingPrompts.size > 0
+        ) {
+          return;
+        }
+        this.options.onPromptSuggestion?.(event.suggestion);
+        return;
       case 'legacyProposedPlan':
         this.options.onUpdateMessage(
           parseSessionNotification({
@@ -1765,6 +1786,7 @@ export class AgentClient implements acp.Client {
       ...(forkSessionTurnId !== undefined
         ? { forkAtTurn: { version: 1 as const, turnId: forkSessionTurnId } }
         : {}),
+      ...(this.promptSuggestionsRequested ? { promptSuggestions: { version: 1 as const } } : {}),
       ...(Object.keys(this.configOptionValues).length > 0
         ? {
             sessionConfig: {
@@ -1781,6 +1803,24 @@ export class AgentClient implements acp.Client {
         ...(Object.keys(lody).length > 0 ? { lody } : {}),
       },
     };
+  }
+
+  /** Only Claude makes suggestions; other agents are never asked. */
+  private async loadPromptSuggestionsRequest(
+    catalogSync: Promise<unknown> | undefined
+  ): Promise<boolean> {
+    const load = this.options.loadPromptSuggestionsEnabled;
+    if (!load || this.options.agentConfig?.agentType !== 'claude') return false;
+    // The catalog sync brings the workspace setting in from other devices.
+    await catalogSync?.catch(() => undefined);
+    try {
+      return await load();
+    } catch (error) {
+      this.logger.debug(
+        `[${this.options.sessionId}] Prompt suggestions stay off: ${formatErrorMessage(error)}`
+      );
+      return false;
+    }
   }
 
   private isCurrentAcpSession(acpSessionId: string): boolean {
@@ -1907,6 +1947,7 @@ export class AgentClient implements acp.Client {
     // failure below would otherwise leave this promise unobserved.
     const externalMcpLoad = this.options.loadExternalMcpServers?.();
     externalMcpLoad?.catch(() => undefined);
+    const promptSuggestionsLoad = this.loadPromptSuggestionsRequest(externalMcpLoad);
 
     const initStart = performance.now();
     this.options.onStartupStage?.({ type: 'initialize_start' });
@@ -2033,6 +2074,7 @@ export class AgentClient implements acp.Client {
     ) {
       this.worktreeProject = await withAbort(this.options.resolveWorktreeProject(), startupAbort);
     }
+    this.promptSuggestionsRequested = await withAbort(promptSuggestionsLoad, startupAbort);
     const sessionStartMeta = this.getSessionStartMeta();
 
     this.logger.debug(`[${this.options.sessionId}] About to establish ACP session`);

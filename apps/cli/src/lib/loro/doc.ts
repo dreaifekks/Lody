@@ -38,6 +38,8 @@ import {
   getMachineRoomId,
   SessionStatus,
   SessionContextWindowUsage,
+  SESSION_PROMPT_SUGGESTION_MAX_LENGTH,
+  hasPendingUserTurnActivation,
   type ProjectRef,
   SessionPullRequestMeta,
   SessionPlanEntry,
@@ -2864,6 +2866,30 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
         used,
       },
     });
+  }
+
+  /**
+   * Offers Claude's guess at the next message. Written only while no turn is
+   * owed: a guess that arrives after the next message was sent is already stale.
+   * Returns whether it was written.
+   */
+  async setPromptSuggestion(text: string): Promise<boolean> {
+    if (!this.mirror) {
+      throw new Error('SessionDocument not initialized');
+    }
+    const suggestion = text.trim();
+    if (!suggestion || suggestion.length > SESSION_PROMPT_SUGGESTION_MAX_LENGTH) return false;
+    const current = await this.repo.getDocMeta(this.roomId);
+    if (isLoroRepoDocDeleted(current)) return false;
+    const meta = (current?.meta ?? {}) as SessionMeta;
+    if (hasPendingUserTurnActivation(meta)) return false;
+    await this.repo.upsertDocMeta(this.roomId, {
+      promptSuggestion: {
+        text: suggestion,
+        ...(meta.latestUserMsgId ? { afterUserMsgId: meta.latestUserMsgId } : {}),
+      },
+    });
+    return true;
   }
 
   async getStatus(): Promise<SessionStatus | undefined> {

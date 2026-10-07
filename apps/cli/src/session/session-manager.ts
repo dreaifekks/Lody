@@ -129,6 +129,7 @@ import type { AcpCapabilitiesResult } from '@/agent/acp-capability-normalization
 import { resolveWorkspaceLocalProjectRootPathWithRetry } from '@/lib/local-project-meta';
 import { readTimeoutEnv } from '@/lib/loro/timeout-utils';
 import { loadSessionMcpCatalog } from '@/agent/session-mcp-resolver';
+import { readWorkspacePromptSuggestionsEnabled } from '@/lib/workspace-mcp-store';
 import { SessionUserResolver } from './session-user-resolver';
 import {
   SessionPreparationService,
@@ -410,6 +411,8 @@ export interface CreateAgentConfig {
   onSessionTitleUpdate: (title: string) => void;
   onAgentWarning: (warning: AgentSessionWarning) => void;
   loadExternalMcpServers: NonNullable<AgentClientOptions['loadExternalMcpServers']>;
+  loadPromptSuggestionsEnabled?: AgentClientOptions['loadPromptSuggestionsEnabled'];
+  onPromptSuggestion?: (suggestion: string) => void;
   onImageGenerationBegin: (event: ImageGenerationBeginEvent) => void;
   onImageGenerationEnd: (event: ImageGenerationEndEvent) => void;
   onWriteTextFile: (event: AcpWriteTextFileEvidence) => void | Promise<void>;
@@ -461,6 +464,7 @@ interface SessionManagerEvents {
   ) => void;
   onThreadGoalCleared: (sessionId: SessionId, threadId: string) => void;
   onSessionTitleUpdate: (sessionId: SessionId, title: string) => void;
+  onPromptSuggestion: (sessionId: SessionId, suggestion: string) => void;
   onAgentWarning: (sessionId: SessionId, warning: AgentSessionWarning) => void;
   onImageGenerationBegin: (sessionId: SessionId, event: ImageGenerationBeginEvent) => void;
   onImageGenerationEnd: (sessionId: SessionId, event: ImageGenerationEndEvent) => void;
@@ -1415,6 +1419,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         dispatchEvent(() => this.emit('onThreadGoalCleared', sessionId, threadId)),
       onSessionTitleUpdate: (title) =>
         dispatchEvent(() => this.emit('onSessionTitleUpdate', sessionId, title)),
+      onPromptSuggestion: (suggestion) =>
+        dispatchEvent(() => this.emit('onPromptSuggestion', sessionId, suggestion)),
+      loadPromptSuggestionsEnabled: () =>
+        readWorkspacePromptSuggestionsEnabled(this.workspaceDocument.repo, this.workspaceId),
       onAgentWarning: (warning) =>
         dispatchEvent(() => this.emit('onAgentWarning', sessionId, warning)),
       loadExternalMcpServers: () =>

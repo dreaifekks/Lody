@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  getCurrentPromptSuggestion,
   getSessionRoomId,
   SessionStatusFactory,
   type MachineId,
   type SessionId,
+  type SessionMeta,
 } from '@lody/shared';
 import { LoroDoc, LoroMap } from 'loro-crdt';
 import type { LoroRepo } from 'loro-repo';
@@ -55,6 +57,32 @@ describe('SessionDocument status metadata', () => {
         lastRunningSeen: expect.any(Number),
       })
     );
+  });
+
+  it('offers a prompt suggestion only while no turn is owed, for the newest turn', async () => {
+    let meta = { latestUserMsgId: 'user-1', lastHandledUserMsgId: 'user-1' } as SessionMeta;
+    const doc = createSessionDocument({
+      getDocMeta: vi.fn(async () => ({ meta })),
+      upsertDocMeta: vi.fn(async (_roomId: string, patch: Partial<SessionMeta>) => {
+        meta = { ...meta, ...patch };
+      }),
+    });
+
+    await expect(doc.setPromptSuggestion('  run the tests ')).resolves.toBe(true);
+    expect(getCurrentPromptSuggestion(meta)).toBe('run the tests');
+    await expect(doc.setPromptSuggestion('x'.repeat(301))).resolves.toBe(false);
+    expect(getCurrentPromptSuggestion(meta)).toBe('run the tests');
+
+    // The next message is published: the old guess stops showing at once, and
+    // a guess that arrives late is not written.
+    meta = { ...meta, latestUserMsgId: 'user-2' };
+    expect(getCurrentPromptSuggestion(meta)).toBeUndefined();
+    await expect(doc.setPromptSuggestion('a late guess')).resolves.toBe(false);
+    expect(meta.promptSuggestion?.text).toBe('run the tests');
+
+    // Handled, but the turn produced no guess of its own: the old one stays hidden.
+    meta = { ...meta, lastHandledUserMsgId: 'user-2' };
+    expect(getCurrentPromptSuggestion(meta)).toBeUndefined();
   });
 
   it('does not refresh lastRunningSeen when setting idle', async () => {

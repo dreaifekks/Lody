@@ -4328,6 +4328,8 @@ export class SessionExecutionService {
       // own processing slot, so an awaited status write can never overwrite a
       // newer activation published by another peer.
       processingUserMsgId: userTurnId,
+      // A guess at this message is spent once the message runs.
+      promptSuggestion: undefined,
     });
     await this.acknowledgeSteerTurn(sessionId, userTurnId);
   }

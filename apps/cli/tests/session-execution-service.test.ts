@@ -1712,7 +1712,10 @@ describe('SessionExecutionService', () => {
   });
 
   it('leaves the producer-owned dispatch pointer untouched when execution takes ownership', async () => {
-    let meta: Partial<SessionMeta> = { latestUserMsgId: 'user-3' };
+    let meta: Partial<SessionMeta> = {
+      latestUserMsgId: 'user-3',
+      promptSuggestion: { text: 'run the tests', afterUserMsgId: 'user-1' },
+    };
     const upsertDocMeta = vi.fn(async (_room: string, patch: Partial<SessionMeta>) => {
       meta = { ...meta, ...patch };
     });
@@ -1744,8 +1747,11 @@ describe('SessionExecutionService', () => {
 
     expect(upsertDocMeta).toHaveBeenCalledWith(expect.any(String), {
       processingUserMsgId: 'user-2',
+      promptSuggestion: undefined,
     });
     expect(meta).toMatchObject({ latestUserMsgId: 'user-3', processingUserMsgId: 'user-2' });
+    // The turn that starts spends the guess at it.
+    expect(meta.promptSuggestion).toBeUndefined();
   });
 
   it('cannot overwrite a newer activation while an earlier turn becomes terminal', async () => {

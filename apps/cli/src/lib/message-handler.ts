@@ -210,6 +210,7 @@ import type {
 } from '@lody/platform';
 import { Logger } from '@/utils/logger';
 import { ProviderSetupManager } from './provider-setup-manager';
+import { readWorkspacePromptSuggestionsEnabled } from './workspace-mcp-store';
 import { MachineFlockCommandWatcher } from './loro/machine-flock-command-watcher';
 import {
   EXIT_CODE_REMOTE_RESTART,
@@ -3947,6 +3948,10 @@ export class MessageHandler {
 
     this.sessionManager.on('onSessionTitleUpdate', (sessionId, title) => {
       void this.maybeStoreAgentSessionTitle(sessionId, title);
+    });
+
+    this.sessionManager.on('onPromptSuggestion', (sessionId, suggestion) => {
+      void this.storePromptSuggestion(sessionId, suggestion);
     });
 
     this.sessionManager.on('onAgentWarning', (sessionId, warning) => {
@@ -9501,6 +9506,27 @@ export class MessageHandler {
    * its only generated source. Never overwrites a user-set title; the conditional
    * write guards against renames racing in via sync.
    */
+  /**
+   * Session meta, not history: the guess is latest state that the next turn
+   * clears, and meta reaches every device of the workspace. A running Claude
+   * keeps the option it started with, so the switch is checked again here.
+   */
+  private async storePromptSuggestion(sessionId: SessionId, suggestion: string): Promise<void> {
+    try {
+      const enabled = await readWorkspacePromptSuggestionsEnabled(
+        this.workspaceDocument.repo,
+        this.workspaceId
+      );
+      if (!enabled) return;
+      const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
+      await sessionDoc.setPromptSuggestion(suggestion);
+    } catch (error) {
+      this.logger.debug(
+        `[${sessionId}] Failed to store prompt suggestion: ${formatErrorMessage(error)}`
+      );
+    }
+  }
+
   private async maybeStoreAgentSessionTitle(sessionId: SessionId, title: string): Promise<void> {
     try {
       const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
