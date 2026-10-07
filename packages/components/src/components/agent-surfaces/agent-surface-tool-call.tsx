@@ -1,5 +1,6 @@
 import { matchAgentSurfaceToolCall, type MessageContent } from '@lody/shared';
 import { PlanReviewCard } from './plan-review-card';
+import { WidgetToolCall } from './widget-tool-call';
 
 type ToolCallMessage = Extract<MessageContent, { type: 'tool_call' }>;
 
@@ -8,6 +9,9 @@ export function AgentSurfaceToolCall({ toolCall }: { toolCall: ToolCallMessage }
   const match = matchAgentSurfaceToolCall(toolCall);
   if (match?.kind === 'review') {
     return <PlanReviewCard toolCallId={toolCall.toolCallId} input={match.input} />;
+  }
+  if (match?.kind === 'widget') {
+    return <WidgetToolCall input={match.input} />;
   }
   return null;
 }

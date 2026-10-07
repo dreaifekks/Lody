@@ -232,6 +232,7 @@ import {
   type AgentSurfaceKey,
 } from '@/components/agent-surfaces/agent-surface-context';
 import { AgentSurfaceToolCall } from '@/components/agent-surfaces/agent-surface-tool-call';
+import { AgentTextWidgets } from '@/components/agent-surfaces/agent-text-widgets';
 import { OperationReplyCard } from './operation-reply-card';
 import type { SessionNavigationTarget } from '@/lib/session-navigation';
 import { AcpAuthenticationPanel } from '@/components/settings/acp-authentication-panel';
@@ -5843,13 +5844,20 @@ const renderAssistantContent = (
   switch (content.type) {
     case 'text':
       return (
-        <MarkdownBlock
+        <AgentTextWidgets
           // Talking points written for the voice are not part of the visible reply.
           text={stripVoiceSay(content.text)}
-          size={conversationFontSize}
+          sessionId={sessionId}
           isStreaming={options?.isStreaming}
-          onFilePathClick={options?.onFilePathClick}
-          searchBlockId={getTextSearchBlockId(messageId, itemIndex)}
+          renderText={(text, whole) => (
+            <MarkdownBlock
+              text={text}
+              size={conversationFontSize}
+              isStreaming={options?.isStreaming}
+              onFilePathClick={options?.onFilePathClick}
+              searchBlockId={whole ? getTextSearchBlockId(messageId, itemIndex) : undefined}
+            />
+          )}
         />
       );
     case 'image':
