@@ -16,6 +16,8 @@ import {
   type SessionTurn,
 } from '../src/session-data';
 import type { SessionId } from '../src/ids';
+import { applyNotificationOnHistory } from '../src/acp/history-apply';
+import { parseSessionNotification } from '../src/acp/schema';
 
 const turn: SessionTurn = {
   id: 'u',
@@ -169,10 +171,10 @@ describe('versioned history import through the real port', () => {
   }
 
   /** Seed a doc exactly as an old client left it: v1 content, unversioned cursor/meta. */
-  async function seedLegacyDoc(roundsStored: number) {
+  async function seedLegacyDoc(seed: number | SessionTurn[]) {
     const doc = new LoroDoc();
     const port = openPort(doc);
-    const replay = replayOf(rounds(roundsStored), HASH_VERSION_V1);
+    const replay = replayOf(typeof seed === 'number' ? rounds(seed) : seed, HASH_VERSION_V1);
     const result = await port.data.commands.applyHistoryImport({
       mode: 'initialize',
       replay,
@@ -210,6 +212,45 @@ describe('versioned history import through the real port', () => {
     const baseline = JSON.parse(cursor!.storedHistoryBaseline!);
     expect(baseline.hashVersion).toBe(HASH_VERSION_V2);
     expect(baseline.turnHashes).toHaveLength(4);
+  });
+
+  it('appends onto a v1 cursor written before widget inputs were kept', async () => {
+    // What history-apply makes of a widget call now; clients before kept no rawInput.
+    const [applied] = applyNotificationOnHistory(
+      [],
+      [
+        parseSessionNotification({
+          sessionId: 'test',
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'w1',
+            title: 'show_widget',
+            status: 'completed',
+            rawInput: { title: 'Chart', widget_code: '<svg></svg>' },
+            _meta: { claudeCode: { toolName: 'mcp__visualize__show_widget' } },
+          },
+        }),
+      ]
+    );
+    const widgetTurn = { ...applied, id: 'a0', timestamp: 'synthetic' } as SessionTurn;
+    expect(widgetTurn.items).toEqual([
+      expect.objectContaining({ rawInput: { title: 'Chart', widget_code: '<svg></svg>' } }),
+    ]);
+    const legacyTurn = {
+      ...widgetTurn,
+      items: widgetTurn.items!.map((item) => ({ ...(item as object), rawInput: undefined })),
+    } as SessionTurn;
+    const { port, legacyMeta } = await seedLegacyDoc([userTurn(0), legacyTurn]);
+
+    const replay = replayOf([userTurn(0), widgetTurn, ...rounds(2).slice(2)], HASH_VERSION_V2);
+    const result = await port.data.commands.applyHistoryImport({
+      mode: 'refresh',
+      replay,
+      externalHistory: legacyMeta,
+    });
+    expect(result).toMatchObject({ status: 'accepted', appended: 2 });
+    expect(port.getCursor()?.hashVersion).toBe(HASH_VERSION_V2);
+    expect(port.getCursor()?.importedTurnHashes).toEqual(replay.turnHashes);
   });
 
   it('skips an unchanged v2 replay without rewriting history (already synced)', async () => {

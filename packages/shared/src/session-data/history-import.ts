@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { sha256Hex } from '../incremental-sha256';
+import { matchAgentSurfaceToolCall } from '../lody-agent-tools';
 import type { SessionTurn } from './domain';
 
 /**
@@ -319,6 +320,26 @@ export type HistoryImportReplayHashSource = {
 };
 
 /**
+ * A replay as clients before widget and plan-review inputs were kept in history
+ * wrote it: those tool calls without `rawInput`. v1 hashes items verbatim, so a
+ * v1 cursor is compared against this projection; the frozen v1 form is unchanged.
+ */
+function withoutAgentSurfaceInputs(entry: SessionTurn): SessionTurn {
+  if (!entry.items) return entry;
+  let changed = false;
+  const items = entry.items.map((item) => {
+    const record = isHashRecord(item) ? item : undefined;
+    if (record?.type !== 'tool_call' || record.rawInput === undefined) return item;
+    const match = matchAgentSurfaceToolCall(record);
+    if (!match || match.kind === 'notify') return item;
+    changed = true;
+    const { rawInput: _rawInput, ...rest } = record;
+    return rest;
+  });
+  return changed ? { ...entry, items } : entry;
+}
+
+/**
  * Express a replay's digest/turn hashes in an explicit canonical version. When the replay
  * was materialized with a newer canonical form than the stored cursor (a v1 cursor from an
  * older client versus a v2 replay), the stored-version hashes are recomputed from the
@@ -343,7 +364,10 @@ function resolveReplayHashesForStoredVersion(args: {
     );
   }
   const turnHashes = args.replayHistory.map((entry) =>
-    hashHistoryEntryForVersion(entry, args.storedHashVersion)
+    hashHistoryEntryForVersion(
+      args.storedHashVersion === HASH_VERSION_V1 ? withoutAgentSurfaceInputs(entry) : entry,
+      args.storedHashVersion
+    )
   );
   return { replayDigest: hashText(turnHashes.join('\n')), turnHashes };
 }

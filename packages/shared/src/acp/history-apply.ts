@@ -2,7 +2,7 @@ import type { MessageContent, ModelInfo, SubagentRunItem } from '../ai';
 import { isLodySubagentEvent, type LodySubagentEvent } from 'acp-extension-core';
 import type { SessionHistoryInput, SessionPlanEntry } from '../schema';
 import { sanitizeLodyInternalInstructions } from '../goal';
-import { matchAgentSurfaceToolCall } from '../lody-agent-tools';
+import { agentSurfaceStoredInput } from '../lody-agent-tools';
 
 import { parseCodexTerminalCommand, parseCodexTerminalOutput } from './codex-raw';
 import type { AcpSessionNotification } from './schema';
@@ -81,9 +81,9 @@ const asRecordOrUndefined = (value: unknown): Record<string, unknown> | undefine
 
 /**
  * A widget's or plan review's arguments ARE what the conversation shows, and the
- * conversation reads tool calls from history, so their `rawInput` is persisted
- * too — but only once complete and valid against the tool's schema, which also
- * bounds its size. Streaming, malformed or oversized input stays stripped. The
+ * conversation reads tool calls from history, so their input is persisted too —
+ * only once complete and valid, and only the validated fields, which the tool's
+ * schema bounds. Streaming, malformed or oversized input stays stripped. The
  * name comes from whatever this update or the earlier one carried (`toolName`,
  * title, or Codex's `{ server, tool, arguments }` envelope).
  */
@@ -93,9 +93,7 @@ const agentSurfaceRawInput = (
   toolName: string | undefined
 ): Record<string, unknown> | undefined => {
   const record = asRecordOrUndefined(rawInput);
-  if (!record) return undefined;
-  const match = matchAgentSurfaceToolCall({ title, toolName, rawInput: record });
-  return match && match.kind !== 'notify' && match.input ? record : undefined;
+  return record ? agentSurfaceStoredInput({ title, toolName, rawInput: record }) : undefined;
 };
 
 /**
