@@ -4,6 +4,7 @@ import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 
 import type { MessageContent } from '../src/ai';
+import { LODY_WIDGET_CODE_MAX_CHARS, matchAgentSurfaceToolCall } from '../src/lody-agent-tools';
 import {
   MAX_STORED_TERMINAL_OUTPUT_BYTES,
   applyMessageContentsBatch,
@@ -189,30 +190,46 @@ describe('acp history apply', () => {
   });
 
   it('stores ACP markdown plans beside their mode-switch card without duplicating updates', () => {
-    const plan = (content: string) => makeNotification({
-      sessionUpdate: 'plan_update',
-      plan: { type: 'markdown', planId: '1:submit_plan', content },
-      _meta: { lody: { turnId: '0' } },
-    });
-    const history = applyNotificationOnHistory([], [
+    const plan = (content: string) =>
       makeNotification({
-        sessionUpdate: 'tool_call', toolCallId: '1:submit_plan',
-        title: 'ExitPlanMode', kind: 'switch_mode', status: 'in_progress',
-      }),
-      plan('# Draft'),
-      plan('# Final plan\n\n- Verify the adapter.'),
-      makeNotification({
-        sessionUpdate: 'tool_call_update', toolCallId: '1:submit_plan', status: 'completed',
-      }),
-    ]);
+        sessionUpdate: 'plan_update',
+        plan: { type: 'markdown', planId: '1:submit_plan', content },
+        _meta: { lody: { turnId: '0' } },
+      });
+    const history = applyNotificationOnHistory(
+      [],
+      [
+        makeNotification({
+          sessionUpdate: 'tool_call',
+          toolCallId: '1:submit_plan',
+          title: 'ExitPlanMode',
+          kind: 'switch_mode',
+          status: 'in_progress',
+        }),
+        plan('# Draft'),
+        plan('# Final plan\n\n- Verify the adapter.'),
+        makeNotification({
+          sessionUpdate: 'tool_call_update',
+          toolCallId: '1:submit_plan',
+          status: 'completed',
+        }),
+      ]
+    );
     expect(history).toHaveLength(1);
     const items = history[0]!.items as unknown as MessageContent[];
-    expect(items.filter((item) => item.type === 'proposed_plan')).toEqual([{
-      type: 'proposed_plan', turnId: '1:submit_plan',
-      markdown: '# Final plan\n\n- Verify the adapter.', status: 'delta', isLatest: true,
-    }]);
+    expect(items.filter((item) => item.type === 'proposed_plan')).toEqual([
+      {
+        type: 'proposed_plan',
+        turnId: '1:submit_plan',
+        markdown: '# Final plan\n\n- Verify the adapter.',
+        status: 'delta',
+        isLatest: true,
+      },
+    ]);
     expect(items.find((item) => item.type === 'tool_call')).toMatchObject({
-      toolCallId: '1:submit_plan', kind: 'switch_mode', status: 'completed',
+      toolCallId: '1:submit_plan',
+      kind: 'switch_mode',
+      status: 'completed',
     });
   });
 
@@ -850,6 +867,165 @@ describe('acp history apply', () => {
       prompt: 'check CI',
     });
     expect(toolCall?.schedulingTimeZone?.length).toBeGreaterThan(0);
+  });
+
+  describe('agent surface inputs', () => {
+    const widget = { title: 'Water heater', widget_code: '<svg viewBox="0 0 680 200"></svg>' };
+    const plan = { title: 'Plan', markdown: '# Plan\n\n1. Do it' };
+    const storedCalls = (history: ReturnType<typeof applyNotificationOnHistory>) =>
+      history
+        .flatMap((entry) => (entry.items ?? []) as unknown as MessageContent[])
+        .filter(
+          (item): item is Extract<MessageContent, { type: 'tool_call' }> =>
+            item.type === 'tool_call'
+        );
+
+    it('keeps a widget input that arrives after the first report (Claude Code)', () => {
+      const history = replayInChunks(
+        [
+          makeNotification({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'w1',
+            title: 'mcp__lody__lody_show_widget',
+            status: 'pending',
+            rawInput: {},
+            _meta: { claudeCode: { toolName: 'mcp__lody__lody_show_widget' } },
+          }),
+          makeNotification({
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'w1',
+            rawInput: widget,
+            _meta: { claudeCode: { toolName: 'mcp__lody__lody_show_widget' } },
+          }),
+          makeNotification({
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'w1',
+            status: 'completed',
+            rawOutput: { ok: true },
+          }),
+        ],
+        [1]
+      );
+      const [call] = storedCalls(history);
+      expect(call?.status).toBe('completed');
+      expect(call?.rawOutput).toBeUndefined();
+      expect(matchAgentSurfaceToolCall(call!)).toEqual({
+        kind: 'widget',
+        source: 'lody',
+        input: widget,
+      });
+    });
+
+    it('keeps only the validated plan review from the Codex envelope', () => {
+      const history = applyNotificationOnHistory(
+        [],
+        [
+          makeNotification({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'r1',
+            title: 'mcp.lody.lody_request_review',
+            status: 'in_progress',
+            rawInput: {
+              server: 'lody',
+              tool: 'lody_request_review',
+              arguments: JSON.stringify({
+                ...plan,
+                markdown: `${plan.markdown}${' '.repeat(5000)}`,
+              }),
+              extra: 'y'.repeat(100_000),
+            },
+          }),
+          makeNotification({
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'r1',
+            status: 'completed',
+          }),
+        ]
+      );
+      const [call] = storedCalls(history);
+      expect(call?.rawInput).toEqual({
+        server: 'lody',
+        tool: 'lody_request_review',
+        arguments: plan,
+      });
+      expect(matchAgentSurfaceToolCall(call!)).toEqual({ kind: 'review', input: plan });
+    });
+
+    it('keeps only the validated Claude Desktop widget replayed as a single report', () => {
+      const input = { ...widget, loading_messages: ['x'.repeat(1_000_000)] };
+      const history = applyNotificationOnHistory(
+        [],
+        [
+          makeNotification({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'v1',
+            title: 'show_widget',
+            status: 'completed',
+            rawInput: input,
+            _meta: { claudeCode: { toolName: 'mcp__visualize__show_widget' } },
+          }),
+        ]
+      );
+      const [call] = storedCalls(history);
+      expect(call?.rawInput).toEqual(widget);
+      expect(matchAgentSurfaceToolCall(call!)).toEqual({
+        kind: 'widget',
+        source: 'visualize',
+        input: widget,
+      });
+    });
+
+    it('still strips other tools, notices and oversized surface input', () => {
+      const report = (toolCallId: string, toolName: string, rawInput: unknown, title = toolName) =>
+        makeNotification({
+          sessionUpdate: 'tool_call',
+          toolCallId,
+          title,
+          status: 'completed',
+          rawInput,
+          _meta: { claudeCode: { toolName } },
+        });
+      const history = applyNotificationOnHistory(
+        [],
+        [
+          report('other', 'mcp__other__lody_show_widget', widget),
+          // The server named by the canonical name wins over a bare-name title.
+          report('other-titled', 'mcp__other__lody_show_widget', widget, 'lody_show_widget'),
+          report('notice', 'mcp__lody__lody_notify_user', { body: 'Done' }),
+          report('big', 'mcp__lody__lody_show_widget', {
+            title: 'Too big',
+            widget_code: 'x'.repeat(LODY_WIDGET_CODE_MAX_CHARS + 1),
+          }),
+        ]
+      );
+      const calls = storedCalls(history);
+      expect(calls.map((call) => call.toolCallId)).toEqual([
+        'other',
+        'other-titled',
+        'notice',
+        'big',
+      ]);
+      for (const call of calls) expect(call.rawInput).toBeUndefined();
+      expect(matchAgentSurfaceToolCall(calls[1]!)).toBeNull();
+    });
+
+    it('takes the server from the Codex envelope over a bare-name title', () => {
+      const rawInput = { server: 'other', tool: 'lody_show_widget', arguments: widget };
+      expect(matchAgentSurfaceToolCall({ title: 'lody_show_widget', rawInput })).toBeNull();
+      const history = applyNotificationOnHistory(
+        [],
+        [
+          makeNotification({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'c1',
+            title: 'lody_show_widget',
+            status: 'completed',
+            rawInput,
+          }),
+        ]
+      );
+      expect(storedCalls(history)[0]?.rawInput).toBeUndefined();
+    });
   });
 
   it('stamps a scheduling tool call with its first-persisted time and never moves it', () => {

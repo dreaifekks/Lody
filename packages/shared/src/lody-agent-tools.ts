@@ -107,19 +107,29 @@ const splitToolName = (name: string): { server: string | null; tool: string } | 
   return { server, tool };
 };
 
+const isCodexEnvelope = (
+  raw: ToolCallLike['rawInput']
+): raw is { server: string; tool: string; [key: string]: unknown } =>
+  !!raw && typeof raw['server'] === 'string' && typeof raw['tool'] === 'string';
+
+/**
+ * A name that states its server decides alone: Codex's `{ server, tool, arguments }`
+ * envelope, then a canonical `toolName` such as `mcp__lody__x`. Only without one
+ * do a bare `toolName` and the title count, so another server's `lody_show_widget`
+ * titled by its bare name is never taken for Lody's.
+ */
 const toolNameCandidates = (
   toolCall: ToolCallLike
 ): Array<{ server: string | null; tool: string }> => {
-  const candidates: Array<{ server: string | null; tool: string }> = [];
   const raw = toolCall.rawInput;
-  // Codex reports MCP calls as `{ server, tool, arguments }`.
-  if (raw && typeof raw['server'] === 'string' && typeof raw['tool'] === 'string') {
-    candidates.push({ server: raw['server'], tool: raw['tool'] });
-  }
+  if (isCodexEnvelope(raw)) return [{ server: raw.server, tool: raw.tool }];
+  const candidates: Array<{ server: string | null; tool: string }> = [];
   for (const name of [toolCall.toolName, toolCall.title]) {
     if (typeof name !== 'string') continue;
     const split = splitToolName(name);
-    if (split) candidates.push(split);
+    if (!split) continue;
+    if (name === toolCall.toolName && split.server !== null) return [split];
+    candidates.push(split);
   }
   return candidates;
 };
@@ -127,7 +137,7 @@ const toolNameCandidates = (
 const toolArguments = (toolCall: ToolCallLike): unknown => {
   const raw = toolCall.rawInput;
   if (!raw) return undefined;
-  if (typeof raw['server'] === 'string' && typeof raw['tool'] === 'string') {
+  if (isCodexEnvelope(raw)) {
     const args = raw['arguments'];
     if (typeof args === 'string') {
       try {
@@ -192,6 +202,23 @@ export const matchAgentSurfaceToolCall = (toolCall: ToolCallLike): AgentSurfaceT
     }
   }
   return null;
+};
+
+/**
+ * The `rawInput` history keeps for a widget or plan review: only the validated
+ * input, inside a minimal Codex envelope when the call came as one, so the
+ * stored call is still recognized and nothing past the schema is stored.
+ * `undefined` for every other call and while the input is incomplete or invalid.
+ */
+export const agentSurfaceStoredInput = (
+  toolCall: ToolCallLike
+): { [key: string]: unknown } | undefined => {
+  const match = matchAgentSurfaceToolCall(toolCall);
+  if (!match || match.kind === 'notify' || !match.input) return undefined;
+  const raw = toolCall.rawInput;
+  return isCodexEnvelope(raw)
+    ? { server: raw.server, tool: raw.tool, arguments: match.input }
+    : match.input;
 };
 
 /* ------------------------------------------------------------------------ */

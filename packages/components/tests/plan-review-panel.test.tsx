@@ -4,6 +4,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionHistory } from '@lody/shared';
+import { isSurfaceToolCall } from '../src/components/agent-surfaces/agent-surface-context';
 import { PlanReviewPanelView } from '../src/components/agent-surfaces/plan-review-panel';
 import {
   buildPlanReviewIndex,
@@ -64,6 +65,28 @@ describe('plan review statuses', () => {
       turn('a1', 'assistant', [{ ...reviewCall('r1', 'x'), rawInput: { title: 'x' } }])
     );
     expect(fact.reviews).toEqual([]);
+  });
+});
+
+describe('surface or ordinary step', () => {
+  const widgetCall = {
+    type: 'tool_call' as const,
+    toolCallId: 'w1',
+    status: 'completed' as const,
+    toolName: 'mcp__visualize__show_widget',
+    rawInput: { title: 'Chart', widget_code: '<svg></svg>' },
+  };
+
+  it('waits for the input only while the call is running', () => {
+    const { rawInput: _plan, ...review } = reviewCall('r1', 'Plan');
+    const { rawInput: _widget, ...widget } = widgetCall;
+    for (const call of [review, widget]) {
+      expect(isSurfaceToolCall('review+widget', { ...call, status: 'in_progress' })).toBe(true);
+      // Records written before inputs were kept: nothing to draw, so an ordinary step.
+      expect(isSurfaceToolCall('review+widget', call)).toBe(false);
+    }
+    expect(isSurfaceToolCall('review+widget', reviewCall('r1', 'Plan'))).toBe(true);
+    expect(isSurfaceToolCall('review+widget', widgetCall)).toBe(true);
   });
 });
 

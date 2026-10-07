@@ -2,6 +2,7 @@ import type { MessageContent, ModelInfo, SubagentRunItem } from '../ai';
 import { isLodySubagentEvent, type LodySubagentEvent } from 'acp-extension-core';
 import type { SessionHistoryInput, SessionPlanEntry } from '../schema';
 import { sanitizeLodyInternalInstructions } from '../goal';
+import { agentSurfaceStoredInput } from '../lody-agent-tools';
 
 import { parseCodexTerminalCommand, parseCodexTerminalOutput } from './codex-raw';
 import type { AcpSessionNotification } from './schema';
@@ -77,6 +78,23 @@ const asRecordOrUndefined = (value: unknown): Record<string, unknown> | undefine
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+
+/**
+ * A widget's or plan review's arguments ARE what the conversation shows, and the
+ * conversation reads tool calls from history, so their input is persisted too —
+ * only once complete and valid, and only the validated fields, which the tool's
+ * schema bounds. Streaming, malformed or oversized input stays stripped. The
+ * name comes from whatever this update or the earlier one carried (`toolName`,
+ * title, or Codex's `{ server, tool, arguments }` envelope).
+ */
+const agentSurfaceRawInput = (
+  rawInput: unknown,
+  title: string | null | undefined,
+  toolName: string | undefined
+): Record<string, unknown> | undefined => {
+  const record = asRecordOrUndefined(rawInput);
+  return record ? agentSurfaceStoredInput({ title, toolName, rawInput: record }) : undefined;
+};
 
 /**
  * IANA timezone of THIS machine — the one processing the ACP notification, i.e. the machine
@@ -934,8 +952,9 @@ const mergeToolCallMessage = (
         ? []
         : prev.content,
     locations: incoming.locations !== undefined ? incoming.locations : prev.locations,
-    // Scheduling tools split rawInput and the terminal `completed` across updates; keep
-    // whichever update carried each (see SCHEDULING_TOOL_NAMES).
+    // Scheduling and agent-surface tools split rawInput and the terminal `completed`
+    // across updates; keep whichever update carried each (see SCHEDULING_TOOL_NAMES,
+    // agentSurfaceRawInput).
     rawInput: incoming.rawInput !== undefined ? incoming.rawInput : prev.rawInput,
     rawOutput: incoming.rawOutput !== undefined ? incoming.rawOutput : prev.rawOutput,
     schedulingTimeZone:
@@ -1244,8 +1263,11 @@ export const buildMessageContentFromNotification = (
           content: content.length ? content : undefined,
           locations,
           // Generic ACP rawInput/rawOutput is excluded because it is unstructured by spec;
-          // scheduling tools keep theirs (see SCHEDULING_TOOL_NAMES).
-          rawInput: isSchedulingTool ? asRecordOrUndefined(update.rawInput) : undefined,
+          // scheduling tools keep theirs (see SCHEDULING_TOOL_NAMES), widgets and plan
+          // reviews their input (see agentSurfaceRawInput).
+          rawInput: isSchedulingTool
+            ? asRecordOrUndefined(update.rawInput)
+            : agentSurfaceRawInput(update.rawInput, update.title ?? previousTool?.title, toolName),
           rawOutput: isSchedulingTool ? asRecordOrUndefined(update.rawOutput) : undefined,
           // Cron is local-time to this machine — record its zone so the panel resolves the
           // fire time in the right timezone regardless of where it is later viewed.
