@@ -119,7 +119,7 @@ export function PlanReviewPanel({
   toolCallId: string;
   canAct: boolean;
   /** Sends the message; resolves false when it was not accepted. */
-  onSubmit: (text: string) => Promise<boolean>;
+  onSubmit: (decision: PlanReviewDecision, text: string) => Promise<boolean>;
 }) {
   const index = useAtomValue(planReviewIndexAtomFamily(sessionId));
   const entry = index.byId.get(toolCallId);
@@ -145,7 +145,7 @@ export function PlanReviewPanelView({
   input: LodyRequestReviewInput;
   status: PlanReviewStatus;
   canAct: boolean;
-  onSubmit: (text: string) => Promise<boolean>;
+  onSubmit: (decision: PlanReviewDecision, text: string) => Promise<boolean>;
 }) {
   const { t } = useTranslation();
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -219,7 +219,10 @@ export function PlanReviewPanelView({
           );
     setSending(true);
     try {
-      const accepted = await onSubmit(buildPlanReviewDecisionMessage({ lead, comments, note }));
+      const accepted = await onSubmit(
+        decision,
+        buildPlanReviewDecisionMessage({ lead, comments, note })
+      );
       if (accepted) {
         setComments([]);
         setNote('');

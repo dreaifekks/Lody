@@ -3,6 +3,7 @@ import { getSessionRoomId, type SessionId } from '@lody/shared';
 import { userAtom } from '@/atoms';
 import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
 import { PlanReviewPanel } from './plan-review-panel';
+import type { PlanReviewDecision } from './plan-review-model';
 
 /**
  * The side panel's plan review for one session. Buttons only for the
@@ -16,7 +17,7 @@ export function SessionPlanReviewPanel({
 }: {
   sessionId: SessionId;
   toolCallId: string;
-  onSubmit: (text: string) => Promise<boolean>;
+  onSubmit: (decision: PlanReviewDecision, text: string) => Promise<boolean>;
 }) {
   const session = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(sessionId)));
   const user = useAtomValue(userAtom);

@@ -410,7 +410,10 @@ import {
 } from '@/lib/session-workspace-path';
 import { isNativeAppShell } from '@/lib/native-platform';
 import { shouldShowCodexProposedPlanDecision } from '@/lib/codex-plan-decision';
-import { buildExecutionTurnConfigOverrides } from '@/lib/execution-turn-config';
+import {
+  buildExecutionTurnConfigOverrides,
+  buildPlanReviewTurnConfigOverrides,
+} from '@/lib/execution-turn-config';
 import { canShowSubscriptionRateLimits } from '@/lib/session-usage';
 import { canShowCodexResetForecast } from '@/lib/codex-reset-forecast';
 
@@ -1946,8 +1949,14 @@ export type SessionChatInterfaceHandle = {
   cancelShareImageSelection: () => void;
   openSearch: () => void;
   getLastAssistantTurnId: () => string | null;
-  /** Sends text as the user's next message, as the composer would; false when not accepted. */
-  sendPrompt: (text: string) => Promise<boolean>;
+  /**
+   * Sends a plan review's answer as the user's next message; false when not
+   * accepted. Approving leaves planning, like "Implement the plan".
+   */
+  sendPlanReviewDecision: (
+    decision: 'approve' | 'request_changes',
+    text: string
+  ) => Promise<boolean>;
   insertSessionMention: (
     sessionId: string,
     options?: { at?: number; replaceEnd?: number }
@@ -2719,16 +2728,19 @@ export const SessionChatInterface = memo(
       existingSession: true,
       disabled: isArchivedSession,
     });
-    const executionTurnConfigOverrides = useMemo(
-      () =>
-        buildExecutionTurnConfigOverrides({
-          selectedModeId,
-          defaultModeId,
-          modeOptions,
-          configOptionSelectors,
-          configOptionValues,
-        }),
+    const executionTurnConfigInput = useMemo(
+      () => ({
+        selectedModeId,
+        defaultModeId,
+        modeOptions,
+        configOptionSelectors,
+        configOptionValues,
+      }),
       [configOptionSelectors, configOptionValues, defaultModeId, modeOptions, selectedModeId]
+    );
+    const executionTurnConfigOverrides = useMemo(
+      () => buildExecutionTurnConfigOverrides(executionTurnConfigInput),
+      [executionTurnConfigInput]
     );
 
     // Session status strip above the composer: one priority-ordered slot for
@@ -5273,7 +5285,11 @@ export const SessionChatInterface = memo(
         cancelShareImageSelection: shareSelection.cancel,
         openSearch,
         getLastAssistantTurnId: () => lastCompletedAssistantMessageId,
-        sendPrompt: async (text) => await dispatchPrompt(text),
+        sendPlanReviewDecision: async (decision, text) =>
+          await dispatchPrompt(
+            text,
+            buildPlanReviewTurnConfigOverrides(decision, executionTurnConfigInput)
+          ),
         insertSessionMention: (sessionId, options) => {
           return inputAreaRef.current?.insertSessionMention(sessionId, options) ?? false;
         },
@@ -5288,6 +5304,7 @@ export const SessionChatInterface = memo(
         sessionAgentConfig?.name,
         conversationView,
         dispatchPrompt,
+        executionTurnConfigInput,
       ]
     );
 

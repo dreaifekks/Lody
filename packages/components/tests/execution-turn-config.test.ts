@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { buildExecutionTurnConfigOverrides } from '../src/lib/execution-turn-config';
+import {
+  buildExecutionTurnConfigOverrides,
+  buildPlanReviewTurnConfigOverrides,
+} from '../src/lib/execution-turn-config';
 
 describe('execution turn config', () => {
   it.each([undefined, true, false])(
@@ -113,5 +116,40 @@ describe('execution turn config', () => {
         configOptionValues: { reasoning_effort: 'low' },
       }).configOptionValuesOverride
     ).toEqual({ collaboration_mode: 'default', reasoning_effort: 'low' });
+  });
+});
+
+describe('plan review answer', () => {
+  const planning = {
+    selectedModeId: 'plan',
+    defaultModeId: 'default',
+    modeOptions: [{ value: 'default' }, { value: 'plan' }],
+    configOptionSelectors: [
+      { configId: 'plan_mode', type: 'boolean' as const, currentValue: true, options: [] },
+    ],
+    configOptionValues: { plan_mode: true, reasoning_effort: 'high' },
+  };
+
+  it('leaves planning when the plan is approved', () => {
+    expect(buildPlanReviewTurnConfigOverrides('approve', planning)).toEqual({
+      modeIdOverride: 'default',
+      configOptionValuesOverride: { plan_mode: false, reasoning_effort: 'high' },
+    });
+  });
+
+  it('leaves a legacy Codex plan collaboration mode when approved', () => {
+    expect(
+      buildPlanReviewTurnConfigOverrides('approve', {
+        selectedModeId: null,
+        defaultModeId: null,
+        modeOptions: [],
+        configOptionSelectors: [],
+        configOptionValues: { collaboration_mode: 'plan' },
+      })?.configOptionValuesOverride
+    ).toEqual({ collaboration_mode: 'default' });
+  });
+
+  it('keeps planning, inheriting the current configuration, when changes are requested', () => {
+    expect(buildPlanReviewTurnConfigOverrides('request_changes', planning)).toBeUndefined();
   });
 });

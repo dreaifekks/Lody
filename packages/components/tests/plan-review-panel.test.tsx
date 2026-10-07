@@ -97,8 +97,8 @@ describe('PlanReviewPanelView', () => {
           },
           status: 'pending',
           canAct: true,
-          onSubmit: async (text: string) => {
-            sent.push(text);
+          onSubmit: async (decision: string, text: string) => {
+            sent.push(`${decision}: ${text}`);
             return true;
           },
           ...props,
@@ -143,12 +143,13 @@ describe('PlanReviewPanelView', () => {
     });
 
     expect(sent).toEqual([
-      [
-        'Please revise the plan "Cache the index" and submit it for review again:',
-        '> write it to disk.',
-        'Use the cache directory instead.',
-        'Also add a test.',
-      ].join('\n\n'),
+      'request_changes: ' +
+        [
+          'Please revise the plan "Cache the index" and submit it for review again:',
+          '> write it to disk.',
+          'Use the cache directory instead.',
+          'Also add a test.',
+        ].join('\n\n'),
     ]);
     // Sent: the comments are cleared for the next round.
     expect(container.querySelectorAll('[data-plan-review-comment]')).toHaveLength(0);
@@ -159,7 +160,9 @@ describe('PlanReviewPanelView', () => {
     await act(async () => {
       button('Approve')?.click();
     });
-    expect(sent).toEqual(['I approve the plan "Cache the index". Go ahead and implement it.']);
+    expect(sent).toEqual([
+      'approve: I approve the plan "Cache the index". Go ahead and implement it.',
+    ]);
   });
 
   it('shows no buttons on an answered plan or someone else’s conversation', async () => {

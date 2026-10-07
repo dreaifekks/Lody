@@ -175,6 +175,7 @@ import { PrTabContainer } from './pr-tab-container';
 import { SessionBrowserPanel } from './session-browser-panel';
 import { SessionIosSimulatorPanel } from './ios-simulator/session-ios-simulator-panel';
 import { SessionPlanReviewPanel } from '@/components/agent-surfaces/session-plan-review-panel';
+import type { PlanReviewDecision } from '@/components/agent-surfaces/plan-review-model';
 import { getIosSimulatorPanelAvailability } from '@/lib/ios-simulator/ios-simulator-model';
 import { usePlatformCapability } from '@lody/platform/react';
 import { getMachineMetaByIdAtomFamily } from '@/atoms/machines';
@@ -3648,11 +3649,16 @@ const SessionDetail = ({
   );
   const planReviewTargetRef = useRef(activePlanReview);
   planReviewTargetRef.current = activePlanReview;
-  const submitPlanReview = useCallback(async (text: string): Promise<boolean> => {
-    if (!planReviewTargetRef.current) return false;
-    const chatRef = chatRefsMap.current.get(planReviewTargetRef.current.sessionId);
-    return chatRef && 'sendPrompt' in chatRef ? await chatRef.sendPrompt(text) : false;
-  }, []);
+  const submitPlanReview = useCallback(
+    async (decision: PlanReviewDecision, text: string): Promise<boolean> => {
+      if (!planReviewTargetRef.current) return false;
+      const chatRef = chatRefsMap.current.get(planReviewTargetRef.current.sessionId);
+      return chatRef && 'sendPlanReviewDecision' in chatRef
+        ? await chatRef.sendPlanReviewDecision(decision, text)
+        : false;
+    },
+    []
+  );
   const planReviewPanel = activePlanReview ? (
     <SessionPlanReviewPanel
       sessionId={activePlanReview.sessionId}

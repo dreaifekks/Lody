@@ -58,7 +58,7 @@ function PanelHarness({ status, canAct }: { status: 'pending' | 'answered'; canA
           }}
           status={status}
           canAct={canAct}
-          onSubmit={async (text) => {
+          onSubmit={async (_decision, text) => {
             setSent(text);
             return true;
           }}
