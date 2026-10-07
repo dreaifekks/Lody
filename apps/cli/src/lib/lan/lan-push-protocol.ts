@@ -43,6 +43,15 @@ export type LanPushEvent =
       message?: string | null;
     })
   | (LanPushEventBase & {
+      /** A message the agent sent the user through `lody_notify_user`. */
+      type: 'agent-message';
+      sessionId: string;
+      noticeId: string;
+      sessionTitle?: string | null;
+      title?: string | null;
+      body: string;
+    })
+  | (LanPushEventBase & {
       type: 'permission-requested';
       sessionId: string;
       sessionTitle?: string | null;

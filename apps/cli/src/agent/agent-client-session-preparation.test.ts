@@ -15,6 +15,7 @@ const connectionMocks = vi.hoisted(() => ({
   unstable_forkSession: vi.fn(),
   closeSession: vi.fn(),
   cancel: vi.fn(),
+  prompt: vi.fn(),
 }));
 
 vi.mock('@agentclientprotocol/sdk', async (importOriginal) => ({
@@ -30,6 +31,7 @@ vi.mock('@agentclientprotocol/sdk', async (importOriginal) => ({
     readonly unstable_forkSession = connectionMocks.unstable_forkSession;
     readonly closeSession = connectionMocks.closeSession;
     readonly cancel = connectionMocks.cancel;
+    readonly prompt = connectionMocks.prompt;
   },
 }));
 
@@ -165,6 +167,60 @@ describe('AgentClient session preparation gate', () => {
       );
     }
   );
+
+  it.each([
+    { agentType: 'claude', enabled: true, asked: true },
+    { agentType: 'claude', enabled: false, asked: false },
+    { agentType: 'codex', enabled: true, asked: false },
+  ])(
+    'asks $agentType for prompt suggestions only when Claude and the switch is on (on: $enabled)',
+    async ({ agentType, enabled, asked }) => {
+      const client = new AgentClient({
+        logger: createLogger(),
+        sessionId: 'session-1' as SessionId,
+        terminalManager: {} as never,
+        agentConfig: { cliType: 'builtin', agentType },
+        // No MCP servers selected: the switch is still read.
+        loadPromptSuggestionsEnabled: async () => enabled,
+        onUpdateMessage: vi.fn(),
+        onRequestPermission: vi.fn(),
+      });
+      await client.startSession({} as never, '/worktree');
+
+      const [request] = connectionMocks.newSession.mock.calls.at(-1) ?? [];
+      expect(request?._meta?.lody?.promptSuggestions).toEqual(asked ? { version: 1 } : undefined);
+    }
+  );
+
+  it('passes on a suggestion only for its own session and only while no prompt runs', async () => {
+    const suggestions: string[] = [];
+    const client = new AgentClient({
+      logger: createLogger(),
+      sessionId: 'session-1' as SessionId,
+      terminalManager: {} as never,
+      agentConfig: { cliType: 'builtin', agentType: 'claude' },
+      loadPromptSuggestionsEnabled: async () => true,
+      onPromptSuggestion: (suggestion) => suggestions.push(suggestion),
+      onUpdateMessage: vi.fn(),
+      onRequestPermission: vi.fn(),
+    });
+    await client.startSession({} as never, '/worktree');
+    const suggest = (sessionId: string, suggestion: string) =>
+      client.extNotification?.('_lody/session/prompt_suggestion', { sessionId, suggestion });
+
+    await suggest('acp-session-1', 'run the tests');
+    await suggest('another-session', 'not ours');
+
+    const running = deferred<{ stopReason: 'end_turn' }>();
+    connectionMocks.prompt.mockReturnValueOnce(running.promise);
+    const turn = client.prompt('acp-session-1' as never, [{ type: 'text', text: 'next' }]);
+    await suggest('acp-session-1', 'stale while the next message runs');
+    running.resolve({ stopReason: 'end_turn' });
+    await turn;
+    await suggest('acp-session-1', 'commit it');
+
+    expect(suggestions).toEqual(['run the tests', 'commit it']);
+  });
 
   it('keeps project lookup disabled when the agent does not advertise support', async () => {
     const client = new AgentClient({

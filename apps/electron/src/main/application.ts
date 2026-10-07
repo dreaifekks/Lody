@@ -1,5 +1,6 @@
 import { handleWindowContentReady } from './window-target'
 import { installLocalFileResourceProtocol } from './services/local-file-resource-protocol'
+import { installWidgetFrameGuard } from './services/widget-frame-guard'
 import { installLanHubProtocol } from './services/lan-hub-protocol'
 import { LanHubStore } from '@lody/shared/node/lan-hub-store'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
@@ -163,6 +164,9 @@ export function startApplication(executionHost?: DesktopExecutionHost): void {
     iconPath: icon,
     log: logDeepLinkDebug
   })
+
+  // Before any window exists, so every renderer keeps widgets on their page.
+  app.on('web-contents-created', (_event, contents) => installWidgetFrameGuard(contents))
 
   recordE2EBootDiagnostic('waiting-for-app-ready')
   const appReady = app.whenReady().then(async () => {

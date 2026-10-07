@@ -1,6 +1,7 @@
 import { normalizeAgentRole, type AgentRole } from './agent-role';
 import type { AgentConfigId, AgentRoleId, MachineId, McpServerId, WorkspaceId } from './ids';
 import { isWorkspaceMcpServerMeta, type WorkspaceMcpServerMeta } from './workspace-mcp';
+import { LODY_AGENT_TOOL_IDS, type LodyAgentToolId } from './lody-agent-tools';
 
 export const WORKSPACE_FLOCK_DOC_STREAM_SEGMENT = 'wf';
 const WORKSPACE_FLOCK_DOC_NAME = 'workspace';
@@ -10,8 +11,14 @@ export const getWorkspaceFlockDocId = (workspaceId: WorkspaceId): string =>
 
 export type WorkspaceFlockMcpServerKey = ['mcpServer', McpServerId];
 export type WorkspaceFlockAgentRoleKey = ['agentRole', AgentRoleId];
-/** One row per workspace-wide setting; only `voice` exists. */
-export type WorkspaceFlockSettingKey = ['setting', 'voice'];
+/** One row per workspace-wide setting. */
+export type WorkspaceFlockVoiceSettingKey = ['setting', 'voice'];
+export type WorkspaceFlockPromptSuggestionsSettingKey = ['setting', 'promptSuggestions'];
+export type WorkspaceFlockAgentToolsSettingKey = ['setting', 'agentTools'];
+export type WorkspaceFlockSettingKey =
+  | WorkspaceFlockVoiceSettingKey
+  | WorkspaceFlockPromptSuggestionsSettingKey
+  | WorkspaceFlockAgentToolsSettingKey;
 export type WorkspaceFlockKey =
   | WorkspaceFlockMcpServerKey
   | WorkspaceFlockAgentRoleKey
@@ -27,6 +34,32 @@ export type WorkspaceVoiceSetting = {
    * default. Optional so clients that predate it keep reading the row.
    */
   voice?: string;
+};
+
+/**
+ * Experimental next-message suggestions for Claude sessions. The row exists
+ * only while the feature is on. It is workspace-wide because the machine that
+ * runs a session decides when Claude starts, whichever device sent the message.
+ */
+export type WorkspacePromptSuggestionsSetting = { version: 1 };
+
+/**
+ * The experimental Lody MCP tools agents of this workspace are offered. Read by
+ * each machine when it starts an agent; a tool missing here is not listed.
+ */
+export type WorkspaceAgentToolsSetting = {
+  version: 1;
+  tools: LodyAgentToolId[];
+};
+
+const normalizeAgentTools = (value: unknown): WorkspaceAgentToolsSetting | null => {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  if (record['version'] !== 1 || !Array.isArray(record['tools'])) return null;
+  return {
+    version: 1,
+    tools: LODY_AGENT_TOOL_IDS.filter((id) => (record['tools'] as unknown[]).includes(id)),
+  };
 };
 
 const isVoiceName = (value: unknown): value is string =>
@@ -58,7 +91,12 @@ export const WORKSPACE_FLOCK_ROW_FAMILIES = ['mcpServer', 'agentRole', 'setting'
 export const workspaceFlockKeys = {
   mcpServer: (id: McpServerId): WorkspaceFlockMcpServerKey => ['mcpServer', id],
   agentRole: (id: AgentRoleId): WorkspaceFlockAgentRoleKey => ['agentRole', id],
-  voiceSetting: (): WorkspaceFlockSettingKey => ['setting', 'voice'],
+  voiceSetting: (): WorkspaceFlockVoiceSettingKey => ['setting', 'voice'],
+  promptSuggestionsSetting: (): WorkspaceFlockPromptSuggestionsSettingKey => [
+    'setting',
+    'promptSuggestions',
+  ],
+  agentToolsSetting: (): WorkspaceFlockAgentToolsSettingKey => ['setting', 'agentTools'],
 } as const;
 
 export type ParsedWorkspaceFlockKey =
@@ -74,7 +112,15 @@ export type ParsedWorkspaceFlockKey =
     }
   | {
       kind: 'voiceSetting';
-      key: WorkspaceFlockSettingKey;
+      key: WorkspaceFlockVoiceSettingKey;
+    }
+  | {
+      kind: 'promptSuggestionsSetting';
+      key: WorkspaceFlockPromptSuggestionsSettingKey;
+    }
+  | {
+      kind: 'agentToolsSetting';
+      key: WorkspaceFlockAgentToolsSettingKey;
     };
 
 export const parseWorkspaceFlockKey = (
@@ -98,6 +144,15 @@ export const parseWorkspaceFlockKey = (
   if (key[0] === 'setting' && id === 'voice') {
     return { kind: 'voiceSetting', key: workspaceFlockKeys.voiceSetting() };
   }
+  if (key[0] === 'setting' && id === 'agentTools') {
+    return { kind: 'agentToolsSetting', key: workspaceFlockKeys.agentToolsSetting() };
+  }
+  if (key[0] === 'setting' && id === 'promptSuggestions') {
+    return {
+      kind: 'promptSuggestionsSetting',
+      key: workspaceFlockKeys.promptSuggestionsSetting(),
+    };
+  }
   return undefined;
 };
 
@@ -110,13 +165,23 @@ export type WorkspaceFlockAgentRoleRow = {
   value: AgentRole;
 };
 export type WorkspaceFlockVoiceSettingRow = {
-  key: WorkspaceFlockSettingKey;
+  key: WorkspaceFlockVoiceSettingKey;
   value: WorkspaceVoiceSetting;
+};
+export type WorkspaceFlockPromptSuggestionsSettingRow = {
+  key: WorkspaceFlockPromptSuggestionsSettingKey;
+  value: WorkspacePromptSuggestionsSetting;
+};
+export type WorkspaceFlockAgentToolsSettingRow = {
+  key: WorkspaceFlockAgentToolsSettingKey;
+  value: WorkspaceAgentToolsSetting;
 };
 export type WorkspaceFlockRow =
   | WorkspaceFlockMcpServerRow
   | WorkspaceFlockAgentRoleRow
-  | WorkspaceFlockVoiceSettingRow;
+  | WorkspaceFlockVoiceSettingRow
+  | WorkspaceFlockPromptSuggestionsSettingRow
+  | WorkspaceFlockAgentToolsSettingRow;
 export type WorkspaceFlockRowId = string & { __brand: 'WorkspaceFlockRowId' };
 export type WorkspaceFlockRowMap = Record<WorkspaceFlockRowId, WorkspaceFlockRow>;
 
@@ -152,6 +217,10 @@ export const parseWorkspaceFlockRow = (
     }
     return { key: parsedKey.key, value };
   }
+  if (parsedKey.kind === 'agentToolsSetting') {
+    const setting = normalizeAgentTools(value);
+    return setting ? { key: parsedKey.key, value: setting } : undefined;
+  }
   if (parsedKey.kind === 'voiceSetting') {
     if (!isWorkspaceVoiceSetting(value)) return undefined;
     return {
@@ -164,6 +233,11 @@ export const parseWorkspaceFlockRow = (
         ...(isVoiceName(value.voice) ? { voice: value.voice } : {}),
       },
     };
+  }
+  if (parsedKey.kind === 'promptSuggestionsSetting') {
+    if (typeof value !== 'object' || value === null) return undefined;
+    if ((value as Record<string, unknown>)['version'] !== 1) return undefined;
+    return { key: parsedKey.key, value: { version: 1 } };
   }
   // Normalized rather than merely validated: an option key an older client
   // should never have written must not survive into a Session config just
@@ -213,6 +287,15 @@ export const getWorkspaceVoiceSetting = (
 ): WorkspaceVoiceSetting | null => {
   const row = rows[serializeWorkspaceFlockKey(workspaceFlockKeys.voiceSetting())];
   return row && row.key[0] === 'setting' ? (row.value as WorkspaceVoiceSetting) : null;
+};
+
+export const isWorkspacePromptSuggestionsEnabled = (rows: WorkspaceFlockRowMap): boolean =>
+  rows[serializeWorkspaceFlockKey(workspaceFlockKeys.promptSuggestionsSetting())] !== undefined;
+
+/** The experimental agent tools the workspace offers; none when the row is absent. */
+export const getWorkspaceAgentTools = (rows: WorkspaceFlockRowMap): LodyAgentToolId[] => {
+  const row = rows[serializeWorkspaceFlockKey(workspaceFlockKeys.agentToolsSetting())];
+  return row && row.key[1] === 'agentTools' ? (row.value as WorkspaceAgentToolsSetting).tools : [];
 };
 
 export const listWorkspaceMcpServers = (rows: WorkspaceFlockRowMap): WorkspaceMcpServerMeta[] =>

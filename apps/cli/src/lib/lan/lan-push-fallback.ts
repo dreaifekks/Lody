@@ -14,6 +14,7 @@ import type { LanPushEvent } from './lan-push-protocol';
 const ALERT_EVENTS = new Set<LanPushEvent['type']>([
   'session-completed',
   'session-failed',
+  'agent-message',
   'permission-requested',
   // Only an alert this copy sent itself is withdrawn; it never saw the rest.
   'permission-resolved',

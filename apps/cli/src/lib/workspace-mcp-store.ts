@@ -1,6 +1,7 @@
 import {
   deleteWorkspaceMcpServerFromFlock,
   getWorkspaceFlockDocId,
+  isWorkspacePromptSuggestionsEnabled,
   listWorkspaceMcpServers,
   readWorkspaceFlockRowsFromFlock,
   writeWorkspaceMcpServerToFlock,
@@ -51,6 +52,15 @@ export async function listWorkspaceMcpCatalog(
 ): Promise<WorkspaceMcpServerMeta[]> {
   const handle = await repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
   return listWorkspaceMcpServers(readWorkspaceFlockRowsFromFlock(handle.flock));
+}
+
+/** The experimental prompt-suggestions switch, from this machine's copy of the workspace document. */
+export async function readWorkspacePromptSuggestionsEnabled(
+  repo: WorkspaceMcpReadableRepo,
+  workspaceId: WorkspaceId
+): Promise<boolean> {
+  const handle = await repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
+  return isWorkspacePromptSuggestionsEnabled(readWorkspaceFlockRowsFromFlock(handle.flock));
 }
 
 /**

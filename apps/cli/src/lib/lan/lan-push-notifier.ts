@@ -163,6 +163,9 @@ export function createLanNotificationsPort(options: {
     notifySessionFailed: async (input) => {
       await send({ type: 'session-failed', ...input });
     },
+    notifyAgentMessage: async (input) => {
+      await send({ type: 'agent-message', ...input });
+    },
     notifyPermissionRequested: async (input) => {
       await send({
         type: 'permission-requested',

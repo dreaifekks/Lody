@@ -17,6 +17,7 @@ import { PublicBrowserIpc } from './services/public-browser-ipc'
 import { SessionControlIpc } from './services/session-control-ipc'
 import { TerminalIpc } from './services/terminal-ipc'
 import { UpdaterIpc } from './services/updater-ipc'
+import { WidgetsIpc } from './services/widgets-ipc'
 import { setIpcServiceDeps, type IpcServiceDeps } from './ipc-service-deps'
 
 type TerminalFireAndForgetType = 'attach' | 'input' | 'resize' | 'close' | 'close_session'
@@ -35,7 +36,8 @@ export const IPC_SERVICE_CONSTRUCTORS = [
   PublicBrowserIpc,
   SessionControlIpc,
   TerminalIpc,
-  UpdaterIpc
+  UpdaterIpc,
+  WidgetsIpc
 ] as const
 
 function createRegisteredIpcServices() {

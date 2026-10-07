@@ -128,7 +128,11 @@ import { resolveGitHubRepoWorktreeConfig } from './worktree/worktree-config-reso
 import type { AcpCapabilitiesResult } from '@/agent/acp-capability-normalization';
 import { resolveWorkspaceLocalProjectRootPathWithRetry } from '@/lib/local-project-meta';
 import { readTimeoutEnv } from '@/lib/loro/timeout-utils';
-import { loadSessionMcpCatalog } from '@/agent/session-mcp-resolver';
+import {
+  loadSessionMcpCatalog,
+  loadSessionWorkspaceSettings,
+  type SessionWorkspaceSettings,
+} from '@/agent/session-mcp-resolver';
 import { SessionUserResolver } from './session-user-resolver';
 import {
   SessionPreparationService,
@@ -410,6 +414,9 @@ export interface CreateAgentConfig {
   onSessionTitleUpdate: (title: string) => void;
   onAgentWarning: (warning: AgentSessionWarning) => void;
   loadExternalMcpServers: NonNullable<AgentClientOptions['loadExternalMcpServers']>;
+  loadLodyAgentTools: NonNullable<AgentClientOptions['loadLodyAgentTools']>;
+  loadPromptSuggestionsEnabled?: AgentClientOptions['loadPromptSuggestionsEnabled'];
+  onPromptSuggestion?: (suggestion: string) => void;
   onImageGenerationBegin: (event: ImageGenerationBeginEvent) => void;
   onImageGenerationEnd: (event: ImageGenerationEndEvent) => void;
   onWriteTextFile: (event: AcpWriteTextFileEvidence) => void | Promise<void>;
@@ -461,6 +468,7 @@ interface SessionManagerEvents {
   ) => void;
   onThreadGoalCleared: (sessionId: SessionId, threadId: string) => void;
   onSessionTitleUpdate: (sessionId: SessionId, title: string) => void;
+  onPromptSuggestion: (sessionId: SessionId, suggestion: string) => void;
   onAgentWarning: (sessionId: SessionId, warning: AgentSessionWarning) => void;
   onImageGenerationBegin: (sessionId: SessionId, event: ImageGenerationBeginEvent) => void;
   onImageGenerationEnd: (sessionId: SessionId, event: ImageGenerationEndEvent) => void;
@@ -1338,6 +1346,20 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     const dispatchEvent = options?.dispatchEvent ?? ((event: () => void) => event());
     const localProjectId =
       config.project?.kind === 'local' ? config.project.localProjectId : undefined;
+    // One workspace sync per agent start serves every setting it reads.
+    let workspaceSettings: Promise<SessionWorkspaceSettings> | undefined;
+    const loadWorkspaceSettings = () =>
+      (workspaceSettings ??= loadSessionWorkspaceSettings({
+        repo: this.workspaceDocument.repo,
+        syncFlockDoc: (docId, { timeoutMs }) =>
+          this.workspaceDocument.syncFlockDocOrThrow(docId, {
+            timeoutMs,
+            reason: 'session-workspace-settings-start',
+          }),
+        workspaceId: this.workspaceId,
+        sessionId,
+        logger: this.logger,
+      }));
     return {
       cliType: config.agentCliType,
       agentType: config.agentType,
@@ -1415,6 +1437,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         dispatchEvent(() => this.emit('onThreadGoalCleared', sessionId, threadId)),
       onSessionTitleUpdate: (title) =>
         dispatchEvent(() => this.emit('onSessionTitleUpdate', sessionId, title)),
+      onPromptSuggestion: (suggestion) =>
+        dispatchEvent(() => this.emit('onPromptSuggestion', sessionId, suggestion)),
+      loadPromptSuggestionsEnabled: async () => (await loadWorkspaceSettings()).promptSuggestions,
       onAgentWarning: (warning) =>
         dispatchEvent(() => this.emit('onAgentWarning', sessionId, warning)),
       loadExternalMcpServers: () =>
@@ -1430,6 +1455,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
           selectedIds: config.mcpServerIds,
           logger: this.logger,
         }),
+      loadLodyAgentTools: async () => (await loadWorkspaceSettings()).agentTools,
       onImageGenerationBegin: (event) =>
         dispatchEvent(() => this.emit('onImageGenerationBegin', sessionId, event)),
       onImageGenerationEnd: (event) =>

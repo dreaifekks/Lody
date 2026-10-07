@@ -13,6 +13,20 @@ export type ExecutionTurnConfigOverrides = {
   configOptionValuesOverride: Record<string, AcpConfigOptionValue>;
 };
 
+export type ExecutionTurnConfigInput = Parameters<typeof buildExecutionTurnConfigOverrides>[0];
+
+/**
+ * The run config of a plan review's answer. Approving starts the work, so it
+ * leaves planning the way "Implement the plan" does; asking for changes keeps
+ * planning, so the turn inherits the current configuration (`undefined`).
+ */
+export function buildPlanReviewTurnConfigOverrides(
+  decision: 'approve' | 'request_changes',
+  current: ExecutionTurnConfigInput
+): ExecutionTurnConfigOverrides | undefined {
+  return decision === 'approve' ? buildExecutionTurnConfigOverrides(current) : undefined;
+}
+
 export function buildExecutionTurnConfigOverrides(args: {
   selectedModeId: string | null;
   defaultModeId: string | null;

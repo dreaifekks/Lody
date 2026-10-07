@@ -12,7 +12,8 @@ export const IPC_INVOKE_SERVICE_GROUPS = [
   'publicBrowser',
   'sessionControl',
   'terminal',
-  'updater'
+  'updater',
+  'widgets'
 ] as const
 
 const INVOKE_SERVICE_GROUP_VALUES = new Set<string>(IPC_INVOKE_SERVICE_GROUPS)

@@ -3,7 +3,10 @@ import type { Meta, StoryObj } from '@storybook/react';
 import { createStore, Provider, useAtomValue } from 'jotai';
 import { ExperimentalFeaturesSection } from '@/components/settings/experimental-features-setting';
 import {
+  agentNotifyExperimentEnabledAtom,
   experimentalFeaturesEnabledAtom,
+  inlineWidgetExperimentEnabledAtom,
+  planReviewExperimentEnabledAtom,
   reviewAgentExperimentEnabledAtom,
   reviewAgentFeatureEnabledAtom,
 } from '@/atoms/settings';
@@ -30,9 +33,12 @@ function GateReadout() {
 function Harness({
   experimental,
   reviewAgent,
+  agentTools = false,
 }: {
   experimental: boolean;
   reviewAgent: boolean;
+  /** The three agent-tool switches together. */
+  agentTools?: boolean;
 }) {
   // Seeded once per story: rebuilding the store on every render would discard
   // the switch the viewer just clicked.
@@ -40,6 +46,9 @@ function Harness({
     const created = createStore();
     created.set(experimentalFeaturesEnabledAtom, experimental);
     created.set(reviewAgentExperimentEnabledAtom, reviewAgent);
+    created.set(agentNotifyExperimentEnabledAtom, agentTools);
+    created.set(planReviewExperimentEnabledAtom, agentTools);
+    created.set(inlineWidgetExperimentEnabledAtom, agentTools);
     return created;
   });
 
@@ -70,6 +79,11 @@ export const Collapsed: Story = {
 /** Master switch on, feature not yet opted into. */
 export const Expanded: Story = {
   args: { experimental: true, reviewAgent: false },
+};
+
+/** The agent tools on: agents started afterwards are offered them. */
+export const AgentToolsEnabled: Story = {
+  args: { experimental: true, reviewAgent: false, agentTools: true },
 };
 
 /** Both on — the state in which the session menu grows its checkbox. */

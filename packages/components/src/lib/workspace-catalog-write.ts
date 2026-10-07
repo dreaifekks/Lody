@@ -7,6 +7,7 @@ import {
   type WorkspaceId,
   type WorkspaceMcpServerMeta,
   type WorkspaceVoiceSetting,
+  type LodyAgentToolId,
 } from '@lody/shared';
 import type { WorkspaceRuntime } from '@/atoms/runtime';
 
@@ -95,6 +96,15 @@ export const deleteWorkspaceAgentRole = (
   id: AgentRoleId
 ): Promise<void> => deleteRow(deps, workspaceFlockKeys.agentRole(id));
 
+/** Turn experimental prompt suggestions on or off for every device of the workspace. */
+export const writeWorkspacePromptSuggestionsSetting = (
+  deps: WorkspaceCatalogWriteDeps,
+  enabled: boolean
+): Promise<void> =>
+  enabled
+    ? putRow(deps, workspaceFlockKeys.promptSuggestionsSetting(), { version: 1 })
+    : deleteRow(deps, workspaceFlockKeys.promptSuggestionsSetting());
+
 /** Share one Codex agent for voice with every device of the workspace, or stop sharing. */
 export const writeWorkspaceVoiceSetting = (
   deps: WorkspaceCatalogWriteDeps,
@@ -103,3 +113,10 @@ export const writeWorkspaceVoiceSetting = (
   setting
     ? putRow(deps, workspaceFlockKeys.voiceSetting(), setting)
     : deleteRow(deps, workspaceFlockKeys.voiceSetting());
+
+/** The experimental Lody tools every machine of the workspace offers its agents. */
+export const writeWorkspaceAgentTools = (
+  deps: WorkspaceCatalogWriteDeps,
+  tools: readonly LodyAgentToolId[]
+): Promise<void> =>
+  putRow(deps, workspaceFlockKeys.agentToolsSetting(), { version: 1, tools: [...tools] });

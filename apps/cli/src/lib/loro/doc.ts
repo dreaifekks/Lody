@@ -28,6 +28,7 @@ import {
   isCodeCollabFileIndexSignalFlockDocId,
   CODE_COLLAB_FILE_INDEX_FLOCK_TTL_MS,
   SessionMeta,
+  type SessionAgentNoticeMeta,
   type SessionHistoryBackendKind,
   type SessionQueuePromotionRecord,
   type SessionSteerOperationRecord,
@@ -38,6 +39,8 @@ import {
   getMachineRoomId,
   SessionStatus,
   SessionContextWindowUsage,
+  SESSION_PROMPT_SUGGESTION_MAX_LENGTH,
+  getPendingUserTurnActivationId,
   type ProjectRef,
   SessionPullRequestMeta,
   SessionPlanEntry,
@@ -2787,6 +2790,17 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
     });
   }
 
+  /** Records a `lody_notify_user` message and makes the session unread. */
+  async setAgentNotice(notice: SessionAgentNoticeMeta) {
+    if (!this.mirror) {
+      throw new Error('SessionDocument not initialized');
+    }
+    const current = await this.repo.getDocMeta(this.roomId);
+    if (isLoroRepoDocDeleted(current)) return;
+    await this.repo.upsertDocMeta(this.roomId, { agentNotice: notice });
+    await this.setLastMessageAt(notice.at);
+  }
+
   async setLastMessageAt(timestamp?: number) {
     if (!this.mirror) {
       throw new Error('SessionDocument not initialized');
@@ -2864,6 +2878,33 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
         used,
       },
     });
+  }
+
+  /**
+   * Offers Claude's guess at the message after `sourceUserTurnId`. It is
+   * written while that turn is still wrapping up (Git, PR and document sync
+   * run after the provider answered) and dropped only once a newer turn has
+   * taken its place; `getCurrentPromptSuggestion` shows it when the turn is done.
+   * Returns whether it was written.
+   */
+  async setPromptSuggestion(text: string, sourceUserTurnId: string): Promise<boolean> {
+    if (!this.mirror) {
+      throw new Error('SessionDocument not initialized');
+    }
+    const suggestion = text.trim();
+    if (!suggestion || suggestion.length > SESSION_PROMPT_SUGGESTION_MAX_LENGTH) return false;
+    const current = await this.repo.getDocMeta(this.roomId);
+    if (isLoroRepoDocDeleted(current)) return false;
+    const meta = (current?.meta ?? {}) as SessionMeta;
+    const owed = getPendingUserTurnActivationId(meta);
+    if (owed !== undefined && owed !== sourceUserTurnId) return false;
+    if (meta.latestUserMsgId !== undefined && meta.latestUserMsgId !== sourceUserTurnId) {
+      return false;
+    }
+    await this.repo.upsertDocMeta(this.roomId, {
+      promptSuggestion: { text: suggestion, afterUserMsgId: sourceUserTurnId },
+    });
+    return true;
   }
 
   async getStatus(): Promise<SessionStatus | undefined> {

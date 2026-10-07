@@ -19,6 +19,7 @@ import { ArrowUp, Play } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { Button } from '@lody/ui/button';
 import { SessionVoiceControls } from './session-voice-controls';
+import { useSessionPromptSuggestion } from './use-session-prompt-suggestion';
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
 import { useSessionAgentRole, type SessionAgentRoleControl } from '@/hooks/use-session-agent-role';
 import { buildAgentRoleFormValueFromRunConfig } from '@/lib/agent-role-form';
@@ -453,6 +454,8 @@ export type SessionSendMessageOptions = {
 
 export type SessionChatInputAreaHandle = {
   setInputText: (text: string) => void;
+  /** Adds text after the current draft, keeping the draft; never sends. */
+  appendInputText: (text: string) => void;
   focusInput: () => void;
   addCommentReference: (reference: CommentReferencePayload) => boolean;
   toggleCommentReference: (reference: CommentReferencePayload) => boolean;
@@ -908,6 +911,17 @@ export const SessionChatInputArea = memo(
         updatePastedTextDraftsForSession(session.id, () => []);
       },
       [isArchived, session.id, setUserInput, updatePastedTextDraftsForSession]
+    );
+
+    const userInputRef = useRef(userInput);
+    userInputRef.current = userInput;
+    const appendInputText = useCallback(
+      (value: string) => {
+        if (isArchived) return;
+        const current = userInputRef.current.replace(/\s+$/u, '');
+        setUserInput(current ? `${current}\n\n${value}` : value);
+      },
+      [isArchived, setUserInput]
     );
 
     const updatePendingImage = useCallback(
@@ -1413,6 +1427,7 @@ export const SessionChatInputArea = memo(
       ref,
       () => ({
         setInputText,
+        appendInputText,
         focusInput: () => {
           textareaRef.current?.focus();
         },
@@ -1433,6 +1448,7 @@ export const SessionChatInputArea = memo(
       }),
       [
         setInputText,
+        appendInputText,
         addCommentReference,
         toggleCommentReference,
         addVisualAnnotationReference,
@@ -1752,6 +1768,10 @@ export const SessionChatInputArea = memo(
     // For non-archived sessions, ChatComposer auto-resolves the placeholder from
     // mentionSource + availableCommands; we only override when archived.
     const promptPlaceholder = isArchived ? t('sessions.archivedInputDisabled') : undefined;
+    const promptSuggestion = useSessionPromptSuggestion(session, {
+      inputEmpty: userInput.length === 0,
+      agentBusy: isAgentBusy,
+    });
     const imageItems = useMemo<ChatComposerImageItem[]>(
       () =>
         pendingImages.map((image) => ({
@@ -2145,6 +2165,7 @@ export const SessionChatInputArea = memo(
         // a merely offline machine still accepts input (deferred execution).
         imageDropDisabled={submissionPending || isArchived || isMachineRemoved}
         promptPlaceholder={promptPlaceholder}
+        promptSuggestion={isArchived ? null : promptSuggestion}
         compactPlaceholderName={compactPlaceholderName}
         promptDisabled={submissionPending || isArchived}
         promptRows={2}

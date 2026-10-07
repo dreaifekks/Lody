@@ -8,6 +8,7 @@ import {
   electronSessionCompletionNotificationsEnabledAtom,
   userAtom,
 } from '@/atoms';
+import { agentNotifyFeatureEnabledAtom } from '@/atoms/settings';
 import { useVisibleSessionMetas } from '@/hooks/use-visible-session-metas';
 import {
   isAppForeground,
@@ -57,7 +58,10 @@ export function ElectronSessionCompletionNotifier() {
   const workspaceSlug = useAtomValue(currentWorkspaceSlugAtom);
   const enabled = useAtomValue(electronSessionCompletionNotificationsEnabledAtom);
   const isElectron = typeof window !== 'undefined' && window.__LODY_ELECTRON__ === true;
+  const agentNoticesEnabled = useAtomValue(agentNotifyFeatureEnabledAtom);
   const previousStatusBySessionRef = useRef<Map<string, SessionStatusType>>(new Map());
+  /** The last `lody_notify_user` message seen per session; a new id alerts once. */
+  const previousNoticeBySessionRef = useRef<Map<string, string | undefined>>(new Map());
   const pendingCompletionTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const latestSessionsByIdRef = useRef<Map<string, SessionListEntry>>(new Map());
   const initializedRef = useRef(false);
@@ -68,8 +72,22 @@ export function ElectronSessionCompletionNotifier() {
     if (!owner || !isElectron || typeof window === 'undefined') {
       initializedRef.current = false;
       previousStatusBySessionRef.current.clear();
+      previousNoticeBySessionRef.current.clear();
       return undefined;
     }
+
+    // The agent's own words, so the title is the conversation and the body is the message.
+    const showAgentNotice = (session: SessionListEntry): void => {
+      const notice = session.agentNotice;
+      if (!notice) return;
+      const sessionTitle = typeof session.title === 'string' ? session.title.trim() : '';
+      void getIpcServices()?.notifications.showSessionCompletion({
+        sessionId: session.id,
+        workspaceSlug: workspaceSlug ?? undefined,
+        title: notice.title || sessionTitle || t('notifications.desktopCompletion.title'),
+        body: notice.body,
+      });
+    };
 
     const showCompletionNotification = (session: SessionListEntry): void => {
       const sessionTitle = typeof session.title === 'string' ? session.title.trim() : '';
@@ -164,11 +182,26 @@ export function ElectronSessionCompletionNotifier() {
       }
 
       previousStatusBySessionRef.current.set(session.id, currentStatusType);
+
+      const noticeId = session.agentNotice?.id;
+      if (
+        initializedRef.current &&
+        enabled &&
+        agentNoticesEnabled &&
+        noticeId !== undefined &&
+        previousNoticeBySessionRef.current.has(session.id) &&
+        previousNoticeBySessionRef.current.get(session.id) !== noticeId &&
+        !isAppForeground()
+      ) {
+        showAgentNotice(session);
+      }
+      previousNoticeBySessionRef.current.set(session.id, noticeId);
     }
 
     for (const sessionId of Array.from(previousStatusBySessionRef.current.keys())) {
       if (!activeSessionIds.has(sessionId)) {
         previousStatusBySessionRef.current.delete(sessionId);
+        previousNoticeBySessionRef.current.delete(sessionId);
         clearTimerForSession(sessionId);
       }
     }
@@ -177,7 +210,7 @@ export function ElectronSessionCompletionNotifier() {
       initializedRef.current = true;
     }
     return undefined;
-  }, [owner, currentUserId, enabled, isElectron, sessions, t, workspaceSlug]);
+  }, [owner, currentUserId, enabled, agentNoticesEnabled, isElectron, sessions, t, workspaceSlug]);
 
   useEffect(() => {
     if (!isElectron || typeof window === 'undefined') {

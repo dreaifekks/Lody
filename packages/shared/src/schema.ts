@@ -8,6 +8,7 @@ import { InferInputType, InferType, schema } from 'loro-mirror';
 // Type-only, so the cycle with `review.ts` (which needs
 // `SessionPullRequestStateMeta` for the merge gate) is erased at compile time.
 import type { SessionAutoReviewMeta } from './review';
+import type { SessionAgentNoticeMeta } from './lody-agent-tools';
 import {
   ACPSessionId,
   AcpConfigOptionValue,
@@ -819,6 +820,20 @@ export type SessionContextWindowUsage = {
   used: number;
 };
 
+/** Longest prompt suggestion kept; Claude asks itself for 2 to 12 words. */
+export const SESSION_PROMPT_SUGGESTION_MAX_LENGTH = 300;
+
+/**
+ * Experimental: Claude's guess at the user's next message, written by the
+ * machine after a turn and cleared when the next turn starts. Latest state
+ * only; it never enters the conversation history.
+ */
+export type SessionPromptSuggestion = {
+  text: string;
+  /** The user turn the guess follows. */
+  afterUserMsgId?: string;
+};
+
 export type SessionTitleSource = 'user' | 'generated' | 'draft';
 
 const DRAFT_SESSION_TITLE_MAX_CHARS = 50;
@@ -1049,6 +1064,7 @@ export type SessionMeta = {
    */
   pullRequestState?: Record<string, SessionPullRequestStateMeta>;
   contextWindowUsage?: SessionContextWindowUsage;
+  promptSuggestion?: SessionPromptSuggestion;
   /**
    * Latest user history entry published for dispatch. Owned by dispatch
    * producers; execution terminal bookkeeping must never rewrite it.
@@ -1139,6 +1155,11 @@ export type SessionMeta = {
    * authority would make the whole gate decorative.
    */
   autoReview?: SessionAutoReviewMeta;
+  /**
+   * The latest message the agent sent the user through `lody_notify_user`.
+   * Desktops alert once per id; the phone alert goes out from the machine.
+   */
+  agentNotice?: SessionAgentNoticeMeta;
 };
 
 /**
@@ -1183,6 +1204,18 @@ export function getPendingUserTurnActivationId(meta: SessionMeta): string | unde
 
 export function hasPendingUserTurnActivation(meta: SessionMeta): boolean {
   return getPendingUserTurnActivationId(meta) !== undefined;
+}
+
+/**
+ * The prompt suggestion to offer now: only while no turn is owed and only for
+ * the newest user turn, so a guess that outlived its turn is never shown.
+ */
+export function getCurrentPromptSuggestion(meta: SessionMeta): string | undefined {
+  const suggestion = meta.promptSuggestion;
+  if (!suggestion?.text) return undefined;
+  if (hasPendingUserTurnActivation(meta)) return undefined;
+  if (suggestion.afterUserMsgId !== meta.latestUserMsgId) return undefined;
+  return suggestion.text;
 }
 
 export type SessionLegacyMetaFields = {

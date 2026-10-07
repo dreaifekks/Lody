@@ -4,7 +4,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
-import { atom } from 'jotai';
+import { atom, getDefaultStore, type PrimitiveAtom } from 'jotai';
 import type { SessionId, SessionMeta } from '@lody/shared';
 import { ElectronSessionCompletionNotifier } from '../src/components/electron-session-completion-notifier';
 
@@ -17,6 +17,16 @@ vi.mock('../src/atoms', () => ({
   electronSessionCompletionNotificationsEnabledAtom: atom<boolean>(true),
   userAtom: atom<{ id: string } | null>({ id: 'user-1' }),
 }));
+
+const agentNoticesEnabledAtom = vi.hoisted(() => ({ current: null as unknown }));
+vi.mock('../src/atoms/settings', async () => {
+  const { atom: createAtom } = await import('jotai');
+  const enabled = createAtom(true);
+  agentNoticesEnabledAtom.current = enabled;
+  return { agentNotifyFeatureEnabledAtom: enabled };
+});
+const setAgentNoticesEnabled = (value: boolean) =>
+  getDefaultStore().set(agentNoticesEnabledAtom.current as PrimitiveAtom<boolean>, value);
 
 vi.mock('@tanstack/react-router', () => ({
   useRouter: () => ({
@@ -247,5 +257,92 @@ describe('ElectronSessionCompletionNotifier', () => {
     });
 
     expect(showSessionCompletionNotification).not.toHaveBeenCalled();
+  });
+  describe('agent messages', () => {
+    const notice = (id: string, body: string, title?: string) => ({
+      id,
+      body,
+      at: 1,
+      ...(title ? { title } : {}),
+    });
+    const background = () => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'hidden',
+      });
+      hasFocusSpy?.mockReturnValue(false);
+    };
+
+    afterEach(() => {
+      setAgentNoticesEnabled(true);
+    });
+
+    it('alerts each new message once, in the agent words, while the app is in the background', async () => {
+      const initial = [
+        createSession('s1', { type: 'running' }, { agentNotice: notice('n0', 'old') }),
+      ];
+      mockedUseVisibleSessionMetas.mockReturnValue({
+        sessions: initial,
+        allActiveSessions: initial,
+        visibleMachineIds: new Set(),
+        visibleLocalProjectKeys: new Set(),
+        isLoading: false,
+      });
+      await renderComponent();
+      background();
+
+      // A message that was already there when the window opened stays quiet.
+      expect(showSessionCompletionNotification).not.toHaveBeenCalled();
+
+      const next = createSession(
+        's1',
+        { type: 'running' },
+        { agentNotice: notice('n1', 'CI is green; may I merge?') }
+      );
+      await updateSessions([next]);
+      await updateSessions([next]);
+      expect(showSessionCompletionNotification).toHaveBeenCalledTimes(1);
+      expect(showSessionCompletionNotification).toHaveBeenCalledWith({
+        sessionId: 's1',
+        workspaceSlug: 'ws-1',
+        title: 'Session s1',
+        body: 'CI is green; may I merge?',
+      });
+
+      await updateSessions([
+        createSession(
+          's1',
+          { type: 'running' },
+          { agentNotice: notice('n2', 'Blocked', 'Need a key') }
+        ),
+      ]);
+      expect(showSessionCompletionNotification).toHaveBeenLastCalledWith(
+        expect.objectContaining({ title: 'Need a key', body: 'Blocked' })
+      );
+    });
+
+    it('stays quiet in the foreground and while the experiment is off', async () => {
+      const initial = [createSession('s1', { type: 'running' })];
+      mockedUseVisibleSessionMetas.mockReturnValue({
+        sessions: initial,
+        allActiveSessions: initial,
+        visibleMachineIds: new Set(),
+        visibleLocalProjectKeys: new Set(),
+        isLoading: false,
+      });
+      await renderComponent();
+
+      await updateSessions([
+        createSession('s1', { type: 'running' }, { agentNotice: notice('n1', 'seen') }),
+      ]);
+      expect(showSessionCompletionNotification).not.toHaveBeenCalled();
+
+      background();
+      act(() => setAgentNoticesEnabled(false));
+      await updateSessions([
+        createSession('s1', { type: 'running' }, { agentNotice: notice('n2', 'off') }),
+      ]);
+      expect(showSessionCompletionNotification).not.toHaveBeenCalled();
+    });
   });
 });

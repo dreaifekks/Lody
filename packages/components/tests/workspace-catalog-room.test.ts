@@ -96,6 +96,18 @@ function createRuntime(
         listener({ events: [{ key: workspaceFlockKeys.voiceSetting(), value }] });
       }
     },
+    emitPromptSuggestions: (enabled: boolean) => {
+      for (const listener of listeners) {
+        listener({
+          events: [
+            {
+              key: workspaceFlockKeys.promptSuggestionsSetting(),
+              value: enabled ? { version: 1 } : undefined,
+            },
+          ],
+        });
+      }
+    },
     completeFirstSync: () => completeFirstSync(),
   };
 }
@@ -170,6 +182,21 @@ describe('workspace MCP catalog room', () => {
     expect(harness.openFlockDoc).toHaveBeenCalledTimes(1);
     expect(seen.at(-1)?.servers.map(({ name }) => name)).toEqual(['Files']);
     expect(seen.at(-1)?.roles.map(({ name }) => name)).toEqual(['Reviewer']);
+
+    lease.release();
+  });
+
+  it('publishes the prompt suggestions switch on its own', async () => {
+    const harness = createRuntime('workspace-prompt-suggestions', []);
+    const seen: WorkspaceCatalogSnapshot[] = [];
+    const lease = acquireWorkspaceCatalog(harness.runtime, (snapshot) => seen.push(snapshot));
+    await settle();
+    expect(lease.snapshot.promptSuggestions).toBe(false);
+
+    harness.emitPromptSuggestions(true);
+    expect(seen.at(-1)?.promptSuggestions).toBe(true);
+    harness.emitPromptSuggestions(false);
+    expect(seen.at(-1)?.promptSuggestions).toBe(false);
 
     lease.release();
   });

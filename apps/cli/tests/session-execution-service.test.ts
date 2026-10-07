@@ -22,6 +22,7 @@ import {
   ACP_CAPABILITY_CACHE_VERSION,
   ACP_CAPABILITY_REFRESH_CACHE_TTL_MS,
   type AcpCapabilityCacheEntry,
+  getCurrentPromptSuggestion,
   getMachineRoomId,
   getSessionRoomId,
   parseSessionNotification,
@@ -1712,7 +1713,10 @@ describe('SessionExecutionService', () => {
   });
 
   it('leaves the producer-owned dispatch pointer untouched when execution takes ownership', async () => {
-    let meta: Partial<SessionMeta> = { latestUserMsgId: 'user-3' };
+    let meta: Partial<SessionMeta> = {
+      latestUserMsgId: 'user-3',
+      promptSuggestion: { text: 'run the tests', afterUserMsgId: 'user-1' },
+    };
     const upsertDocMeta = vi.fn(async (_room: string, patch: Partial<SessionMeta>) => {
       meta = { ...meta, ...patch };
     });
@@ -1744,8 +1748,11 @@ describe('SessionExecutionService', () => {
 
     expect(upsertDocMeta).toHaveBeenCalledWith(expect.any(String), {
       processingUserMsgId: 'user-2',
+      promptSuggestion: undefined,
     });
     expect(meta).toMatchObject({ latestUserMsgId: 'user-3', processingUserMsgId: 'user-2' });
+    // The turn that starts spends the guess at it.
+    expect(meta.promptSuggestion).toBeUndefined();
   });
 
   it('cannot overwrite a newer activation while an earlier turn becomes terminal', async () => {
@@ -6802,6 +6809,100 @@ describe('SessionExecutionService', () => {
       sessionDoc.mirror?.dispose();
     }
   );
+
+  it('keeps a prompt suggestion that arrives while the turn is still wrapping up', async () => {
+    const sessionId = 'session-guess-wrap-up' as SessionId;
+    let meta: Partial<SessionMeta> = { latestUserMsgId: 'turn-guess' };
+    const repo = {
+      getDocMeta: vi.fn(async () => ({ meta })),
+      upsertDocMeta: vi.fn(async (_roomId: string, patch: Partial<SessionMeta>) => {
+        meta = { ...meta, ...patch };
+      }),
+    };
+    // What the machine writes the guess through, on the same session meta.
+    const guessDoc = new SessionDocument(
+      repo as unknown as LoroRepo,
+      sessionId,
+      async () => {},
+      createSilentLogger()
+    );
+    composeTestSessionDoc(guessDoc);
+    const sessionDoc = withHistoryPort({
+      getMetaState: vi.fn(async () => ({ isArchived: false })),
+      setStatus: vi.fn(async () => {}),
+      setBaseBranch: vi.fn(async () => {}),
+      getHistory: vi.fn(() => []),
+      updateHistory: vi.fn(async () => {}),
+    });
+    const agentClient = {
+      isCreated: vi.fn(() => true),
+      cancel: vi.fn(async () => {}),
+      prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+      currentModel: undefined,
+    };
+    const session = {
+      sessionId,
+      acpSessionId: 'acp-guess-wrap-up' as ACPSessionId,
+      agentClient,
+      terminalManager: {} as unknown,
+      getWorkdir: () => '/tmp',
+      getHostWorkdir: () => '/tmp',
+      getParentSessionId: () => undefined,
+      exec: vi.fn(async () => ''),
+      terminate: vi.fn(async () => {}),
+      updateGitIdentity: vi.fn(),
+      createAgent: vi.fn(async () => 'acp-guess-wrap-up'),
+      applyExecutionPlaneLimits: vi.fn(async () => {}),
+    };
+    const sessionManager = {
+      getSession: vi.fn(() => session),
+      getPendingSession: vi.fn(() => null),
+      createSession: vi.fn(),
+      setSessionError: vi.fn(),
+      terminateSession: vi.fn(),
+      refreshGhTokenForSession: vi.fn(async () => {}),
+    } as unknown as SessionManager;
+    let stillOwedWhenWritten: boolean | undefined;
+    let written: Promise<boolean> | undefined;
+    const deps = createBaseDeps({
+      sessionManager,
+      beginConversationTurn: vi.fn(() => 'assistant-guess-wrap-up'),
+      // The guess lands as soon as the provider answered, before wrap-up ends.
+      notePromptReturned: (_sessionId, userTurnId) => {
+        stillOwedWhenWritten = meta.processingUserMsgId === userTurnId;
+        // Its meta read happens in this call, while the turn is still owed.
+        written = guessDoc.setPromptSuggestion('run the tests', userTurnId);
+      },
+      workspaceDocument: {
+        repo,
+        getOrCreateSessionDoc: vi.fn(async () => sessionDoc),
+        updateAcpCapabilities: vi.fn(async () => {}),
+      } as unknown as LoroDocumentManager,
+      buildAcpPromptBlocks: vi.fn(async () => [{ type: 'text', text: 'hello' }] as any),
+      processMessageQueue: vi.fn(async () => {}),
+    });
+
+    const service = new SessionExecutionService(deps);
+    await service.continueSession({
+      type: 'session/chat',
+      sessionId,
+      machineId: 'machine-1',
+      workspaceId: 'workspace-1' as WorkspaceId,
+      project: { kind: 'github', repoFullName: 'owner/repo', branch: 'main' },
+      acpSessionConfig: { prompt: 'hello', cliType: 'builtin', agentType: 'claude' },
+      userTurnId: 'turn-guess',
+      userId: 'user-1',
+      userName: 'User',
+      userEmail: 'user@example.com',
+    });
+
+    expect(stillOwedWhenWritten).toBe(true);
+    await expect(written).resolves.toBe(true);
+    expect(meta).toMatchObject({ lastHandledUserMsgId: 'turn-guess' });
+    expect(meta.processingUserMsgId).toBeUndefined();
+    expect(getCurrentPromptSuggestion(meta as SessionMeta)).toBe('run the tests');
+    guessDoc.mirror?.dispose();
+  });
 
   it('stops a turn before prompt starts when the matching active turn is cancelled', async () => {
     const sessionDoc = withHistoryPort({

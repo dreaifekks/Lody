@@ -150,6 +150,11 @@ const LegacyProposedPlanSchema = z.object({
   isLatest: z.boolean(),
 });
 
+const PromptSuggestionSchema = z.object({
+  sessionId: z.string().min(1),
+  suggestion: z.string().min(1),
+});
+
 const MessagePhaseSchema = z.enum(['commentary', 'final_answer']);
 
 const LEGACY_METHODS = {
@@ -164,6 +169,7 @@ export type LodyExtensionEvent =
   | { readonly type: 'subagent'; readonly event: LodySubagentEvent }
   | { readonly type: 'usage'; readonly update: SessionUsageUpdate; readonly accountingId?: string }
   | { readonly type: 'rateLimits'; readonly snapshot: RateLimitsSnapshot }
+  | { readonly type: 'promptSuggestion'; readonly sessionId: string; readonly suggestion: string }
   | {
       readonly type: 'legacyProposedPlan';
       readonly plan: z.infer<typeof LegacyProposedPlanSchema>;
@@ -260,6 +266,10 @@ export function parseLodyExtensionMessage(args: {
   }
   if (method === LODY_EXTENSION_METHODS.rateLimitsUpdate) {
     return { type: 'rateLimits', snapshot: parseRateLimitsSnapshot(args.params) };
+  }
+  if (method === LODY_EXTENSION_METHODS.sessionPromptSuggestion) {
+    const parsed = PromptSuggestionSchema.parse(args.params);
+    return { type: 'promptSuggestion', ...parsed };
   }
 
   // One-release compatibility for pre-Core-v0.1 managed runtimes.

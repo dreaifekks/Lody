@@ -6,7 +6,7 @@ import type {
   WorkspaceFlockReadableFlock,
   WorkspaceId,
 } from '@lody/shared';
-import { loadSessionMcpCatalog } from './session-mcp-resolver';
+import { loadSessionMcpCatalog, loadSessionWorkspaceSettings } from './session-mcp-resolver';
 
 const workspaceId = 'workspace-1' as WorkspaceId;
 const sessionId = 'session-1' as SessionId;
@@ -124,5 +124,96 @@ describe('loadSessionMcpCatalog', () => {
     expect(order).toEqual(['sync', 'open']);
     expect(syncFlockDoc).toHaveBeenCalledWith('workspace-1:wf:workspace', { timeoutMs: 5_000 });
     expect(select(undefined).servers).toHaveLength(1);
+  });
+});
+
+describe('loadSessionWorkspaceSettings', () => {
+  const switchRow = { key: ['setting', 'promptSuggestions'], value: { version: 1 } };
+
+  /** This machine's copy of the workspace document, which a sync brings up to date. */
+  const workspaceCopy = (local: boolean, remote: boolean | Error) => {
+    let rows = local ? [switchRow] : [];
+    return {
+      repo: { openFlockDoc: vi.fn(async () => ({ flock: flockWithRows(rows) })) },
+      syncFlockDoc: vi.fn(async () => {
+        if (remote instanceof Error) throw remote;
+        rows = remote ? [switchRow] : [];
+      }),
+    };
+  };
+
+  it.each([
+    { local: false, remote: true, expected: true },
+    { local: true, remote: false, expected: false },
+  ])(
+    'syncs before reading even with no MCP servers selected ($local -> $remote)',
+    async ({ local, remote, expected }) => {
+      const copy = workspaceCopy(local, remote);
+      // The MCP catalog skips its sync for an empty selection...
+      await loadSessionMcpCatalog({
+        ...copy,
+        workspaceId,
+        sessionId,
+        selectedIds: [],
+        logger: { debug: vi.fn() },
+      });
+      // ...and the switch still reads what other devices set.
+      await expect(
+        loadSessionWorkspaceSettings({
+          ...copy,
+          workspaceId,
+          sessionId,
+          logger: { debug: vi.fn() },
+        })
+      ).resolves.toMatchObject({ promptSuggestions: expected });
+    }
+  );
+
+  it('reads the local copy when the sync fails', async () => {
+    const copy = workspaceCopy(true, new Error('offline'));
+    await expect(
+      loadSessionWorkspaceSettings({
+        ...copy,
+        workspaceId,
+        sessionId,
+        logger: { debug: vi.fn() },
+      })
+    ).resolves.toMatchObject({ promptSuggestions: true });
+  });
+
+  it('reads the offered agent tools from the synced copy, with no MCP servers selected', async () => {
+    const toolsRow = (tools: string[]) => ({
+      key: ['setting', 'agentTools'],
+      value: { version: 1, tools },
+    });
+    // Another device turned notifications on; this machine still holds them off.
+    let rows = [toolsRow([])];
+    const copy = {
+      repo: { openFlockDoc: vi.fn(async () => ({ flock: flockWithRows(rows) })) },
+      syncFlockDoc: vi.fn(async () => {
+        rows = [toolsRow(['notify', 'widget']), switchRow];
+      }),
+    };
+    await loadSessionMcpCatalog({
+      ...copy,
+      workspaceId,
+      sessionId,
+      selectedIds: [],
+      logger: { debug: vi.fn() },
+    });
+    await expect(
+      loadSessionWorkspaceSettings({ ...copy, workspaceId, sessionId, logger: { debug: vi.fn() } })
+    ).resolves.toEqual({ promptSuggestions: true, agentTools: ['notify', 'widget'] });
+  });
+
+  it('reports everything off when the document cannot be read', async () => {
+    await expect(
+      loadSessionWorkspaceSettings({
+        repo: { openFlockDoc: vi.fn(async () => Promise.reject(new Error('closed'))) },
+        workspaceId,
+        sessionId,
+        logger: { debug: vi.fn() },
+      })
+    ).resolves.toEqual({ promptSuggestions: false, agentTools: [] });
   });
 });

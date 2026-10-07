@@ -3,7 +3,10 @@ import {
   buildAssistantMessageRenderItems,
   type AssistantMessageRenderItem,
 } from './assistant-message-render-items';
-import { shouldCollapseAssistantMessageItem } from './message-copy';
+import {
+  shouldCollapseAssistantMessageItem,
+  type StandaloneToolCallPredicate,
+} from './message-copy';
 
 type ToolCallMessage = Extract<MessageContent, { type: 'tool_call' }>;
 type ThoughtMessage = Extract<MessageContent, { type: 'thought' }>;
@@ -178,12 +181,14 @@ export const summarizeAssistantActivity = (
 };
 
 const isActivityGroupEntry = (
-  entry: AssistantMessageRenderItem
+  entry: AssistantMessageRenderItem,
+  isStandaloneToolCall?: StandaloneToolCallPredicate
 ): entry is AssistantActivityRenderItem =>
   entry.content.type === 'thought' ||
   (entry.content.type === 'tool_call' &&
     entry.content.kind !== 'switch_mode' &&
-    entry.content.activityKind === undefined);
+    entry.content.activityKind === undefined &&
+    isStandaloneToolCall?.(entry.content) !== true);
 
 const buildActivityGroupKey = (messageId: string, first: AssistantActivityRenderItem): string => {
   const suffix = first.content.type === 'tool_call' ? first.content.toolCallId : first.itemIndex;
@@ -192,7 +197,8 @@ const buildActivityGroupKey = (messageId: string, first: AssistantActivityRender
 
 const buildAssistantTurnRenderBlocksFromEntries = (
   messageId: string,
-  entries: readonly AssistantMessageRenderItem[]
+  entries: readonly AssistantMessageRenderItem[],
+  isStandaloneToolCall?: StandaloneToolCallPredicate
 ): AssistantTurnRenderBlock[] => {
   const blocks: AssistantTurnRenderBlock[] = [];
   let pendingActivityEntries: AssistantActivityRenderItem[] = [];
@@ -213,7 +219,7 @@ const buildAssistantTurnRenderBlocksFromEntries = (
     if (entry.content.type === 'available_commands') {
       continue;
     }
-    if (isActivityGroupEntry(entry)) {
+    if (isActivityGroupEntry(entry, isStandaloneToolCall)) {
       pendingActivityEntries.push(entry);
       continue;
     }
@@ -312,10 +318,15 @@ export const segmentHasVisibleFinalContent = (
 export const buildAssistantTurnRenderLayout = (
   messageId: string,
   items: readonly MessageContent[],
-  isTurnFinished: boolean
+  isTurnFinished: boolean,
+  isStandaloneToolCall?: StandaloneToolCallPredicate
 ): AssistantTurnRenderLayout => {
   const entries = buildAssistantMessageRenderItems(items);
-  const blocks = buildAssistantTurnRenderBlocksFromEntries(messageId, entries);
+  const blocks = buildAssistantTurnRenderBlocksFromEntries(
+    messageId,
+    entries,
+    isStandaloneToolCall
+  );
   const ranges = buildSegmentBlockRanges(blocks);
 
   // Nothing folds while the turn streams, but the segment shape does not depend
@@ -339,6 +350,7 @@ export const buildAssistantTurnRenderLayout = (
           index: indexInSegment,
           items: segmentContents,
           isTurnFinished,
+          isStandaloneToolCall,
         })
       ) {
         collapsibleItemIndexes.add(entry.itemIndex);

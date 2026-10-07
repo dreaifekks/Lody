@@ -361,3 +361,43 @@ describe('buildAssistantTurnRenderLayout plan segments', () => {
     expect(layout.workBlockKeys.size).toBe(0);
   });
 });
+
+describe('experimental agent surfaces in a finished turn', () => {
+  const review = tool('review-1', 'other', {
+    toolName: 'mcp__lody__lody_request_review',
+    rawInput: { title: 'Plan', markdown: '# Plan' },
+  });
+  const items: MessageContent[] = [
+    tool('read-1', 'read', { locations: [{ path: 'a.ts' }] }),
+    review,
+    tool('read-2', 'read', { locations: [{ path: 'b.ts' }] }),
+    { type: 'text', text: 'The plan is ready for your review.' },
+  ];
+
+  it('folds the call with the other steps while surfaces are off', () => {
+    const layout = buildAssistantTurnRenderLayout('assistant-1', items, true);
+    expect(layout.blocks.map((block) => block.kind)).toEqual(['activity_group', 'content']);
+    expect([...layout.workBlockKeys]).toContain(layout.blocks[0]?.key);
+  });
+
+  it('stands the call apart and keeps it out of the fold while surfaces are on', () => {
+    const layout = buildAssistantTurnRenderLayout(
+      'assistant-1',
+      items,
+      true,
+      (toolCall) => toolCall.toolCallId === 'review-1'
+    );
+    expect(layout.blocks.map((block) => block.kind)).toEqual([
+      'activity_group',
+      'content',
+      'activity_group',
+      'content',
+    ]);
+    const card = layout.blocks[1];
+    expect(card?.kind === 'content' && card.entry.content).toBe(review);
+    expect(layout.workBlockKeys.has(card?.key ?? '')).toBe(false);
+    // The steps around it still fold.
+    expect(layout.workBlockKeys.has(layout.blocks[0]?.key ?? '')).toBe(true);
+    expect(layout.workBlockKeys.has(layout.blocks[2]?.key ?? '')).toBe(true);
+  });
+});

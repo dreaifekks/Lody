@@ -1,6 +1,6 @@
 import { atom } from 'jotai';
 import { atomWithStorage } from 'jotai/utils';
-import type { MachineId, SupportedLanguage } from '@lody/shared';
+import type { LodyAgentToolId, MachineId, SupportedLanguage } from '@lody/shared';
 import type { MobileKeyboardAction } from '@/lib/mobile-keyboard-action';
 import { isSymbolFontFamily } from '@/lib/local-fonts';
 import { SETTINGS_DEFAULT_TAB, type SettingsTabId } from '@/components/settings/settings-tabs';
@@ -367,3 +367,49 @@ export const voiceNameAtom = atomWithStorage<string | null>('lody-voice-name', n
 export const voiceFeatureEnabledAtom = atom(
   (get) => get(experimentalFeaturesEnabledAtom) && get(voiceExperimentEnabledAtom)
 );
+
+/*
+ * Experimental Lody agent tools. Each switch is this device's view (cards,
+ * panels, alerts); flipping one also tells every machine of the workspace which
+ * tools to offer agents it starts (`writeWorkspaceAgentTools`).
+ */
+
+/** Opt-in for `lody_notify_user`: agents may alert the user. */
+export const agentNotifyExperimentEnabledAtom = atomWithStorage<boolean>(
+  'lody-agent-notify-experiment-enabled',
+  false,
+  undefined,
+  { getOnInit: true }
+);
+export const agentNotifyFeatureEnabledAtom = atom(
+  (get) => get(experimentalFeaturesEnabledAtom) && get(agentNotifyExperimentEnabledAtom)
+);
+
+/** Opt-in for `lody_request_review`: plans open in a review panel. */
+export const planReviewExperimentEnabledAtom = atomWithStorage<boolean>(
+  'lody-plan-review-experiment-enabled',
+  false,
+  undefined,
+  { getOnInit: true }
+);
+export const planReviewFeatureEnabledAtom = atom(
+  (get) => get(experimentalFeaturesEnabledAtom) && get(planReviewExperimentEnabledAtom)
+);
+
+/** Opt-in for interactive widgets in the conversation. */
+export const inlineWidgetExperimentEnabledAtom = atomWithStorage<boolean>(
+  'lody-inline-widget-experiment-enabled',
+  false,
+  undefined,
+  { getOnInit: true }
+);
+export const inlineWidgetFeatureEnabledAtom = atom(
+  (get) => get(experimentalFeaturesEnabledAtom) && get(inlineWidgetExperimentEnabledAtom)
+);
+
+/** The agent tools this device has switched on, as written to the workspace. */
+export const enabledAgentToolsAtom = atom((get): LodyAgentToolId[] => [
+  ...(get(agentNotifyFeatureEnabledAtom) ? (['notify'] as const) : []),
+  ...(get(planReviewFeatureEnabledAtom) ? (['review'] as const) : []),
+  ...(get(inlineWidgetFeatureEnabledAtom) ? (['widget'] as const) : []),
+]);

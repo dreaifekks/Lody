@@ -1,8 +1,11 @@
 import {
+  getWorkspaceAgentTools,
   getWorkspaceFlockDocId,
   getWorkspaceMcpCatalog,
+  isWorkspacePromptSuggestionsEnabled,
   readWorkspaceFlockRowsFromFlock,
   resolveSessionMcpServers,
+  type LodyAgentToolId,
   type McpServerId,
   type ResolveSessionMcpServersResult,
   type ResolveSessionMcpServersInput,
@@ -76,5 +79,47 @@ export const loadSessionMcpCatalog = async (
     const reason = formatErrorMessage(error);
     logger.debug(`[${sessionId}] Workspace MCP catalog read failed: ${reason}`);
     return () => ({ servers: [], problems: [{ kind: 'catalog_unavailable', reason }] });
+  }
+};
+
+export type SessionWorkspaceSettings = {
+  promptSuggestions: boolean;
+  agentTools: LodyAgentToolId[];
+};
+
+/**
+ * The workspace settings an agent start needs: whether Claude should suggest
+ * the next message, and which experimental Lody tools the agent is offered.
+ *
+ * Syncs the workspace document once first, whatever the MCP selection is: a
+ * daemon without a desktop has no other reader of that document, so its local
+ * copy is only as new as its last sync. Best effort: a failed sync reads the
+ * local copy, and a failed read reports everything off.
+ */
+export const loadSessionWorkspaceSettings = async (
+  input: Omit<LoadSessionMcpCatalogInput, 'selectedIds' | 'env'>
+): Promise<SessionWorkspaceSettings> => {
+  const docId = getWorkspaceFlockDocId(input.workspaceId);
+  if (input.syncFlockDoc) {
+    try {
+      await input.syncFlockDoc(docId, { timeoutMs: CATALOG_SYNC_TIMEOUT_MS });
+    } catch (error) {
+      input.logger.debug(
+        `[${input.sessionId}] Workspace settings refresh failed; using local rows: ${formatErrorMessage(error)}`
+      );
+    }
+  }
+  try {
+    const handle = await input.repo.openFlockDoc(docId);
+    const rows = readWorkspaceFlockRowsFromFlock(handle.flock);
+    return {
+      promptSuggestions: isWorkspacePromptSuggestionsEnabled(rows),
+      agentTools: getWorkspaceAgentTools(rows),
+    };
+  } catch (error) {
+    input.logger.debug(
+      `[${input.sessionId}] Workspace settings read failed; experimental settings stay off: ${formatErrorMessage(error)}`
+    );
+    return { promptSuggestions: false, agentTools: [] };
   }
 };

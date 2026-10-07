@@ -570,6 +570,11 @@ export type SessionExecutionServiceDeps = {
   clearConversationTurn: (sessionId: SessionId, turnId: string) => void;
   getActiveTurnId: (sessionId: SessionId) => string | undefined;
   clearActiveTurnId: (sessionId: SessionId, turnId: string) => void;
+  /**
+   * The provider answered the prompt of this user turn (the last steered one,
+   * if steers moved it). Turn wrap-up such as Git and PR sync still follows.
+   */
+  notePromptReturned?: (sessionId: SessionId, userTurnId: string) => void;
   buildAcpPromptBlocks: (args: {
     workspaceId: WorkspaceId;
     sessionId: SessionId;
@@ -4072,6 +4077,9 @@ export class SessionExecutionService {
                     })
                 );
                 self.deps.clearActiveTurnId(sessionId, runtime.turnId);
+                if (runtime.userTurnId) {
+                  self.deps.notePromptReturned?.(sessionId, runtime.userTurnId);
+                }
                 return undefined;
               });
 
@@ -4328,6 +4336,8 @@ export class SessionExecutionService {
       // own processing slot, so an awaited status write can never overwrite a
       // newer activation published by another peer.
       processingUserMsgId: userTurnId,
+      // A guess at this message is spent once the message runs.
+      promptSuggestion: undefined,
     });
     await this.acknowledgeSteerTurn(sessionId, userTurnId);
   }
