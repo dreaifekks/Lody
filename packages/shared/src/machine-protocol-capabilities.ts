@@ -32,6 +32,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   lanShell: 'lanShell',
   lanTunnel: 'lanTunnel',
   realtimeVoice: 'realtimeVoice',
+  sessionCancelActiveTurn: 'sessionCancelActiveTurn',
 } as const;
 
 export const MCP_TOOL_DISCOVERY_PROTOCOL_VERSION = 1;
@@ -55,6 +56,7 @@ export const LAN_CONTROL_PROTOCOL_VERSION = 1;
 export const LAN_FILES_PROTOCOL_VERSION = 1;
 export const LAN_SHELL_PROTOCOL_VERSION = 1;
 export const LAN_TUNNEL_PROTOCOL_VERSION = 1;
+export const SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION = 1;
 
 type MachineProtocolCapabilityCarrier = {
   protocolCapabilities?: MachineProtocolCapabilities;
@@ -114,6 +116,8 @@ export const CURRENT_MACHINE_PROTOCOL_CAPABILITIES: MachineProtocolCapabilities 
   [MACHINE_PROTOCOL_CAPABILITIES.iosSimulatorExterior]: 1,
   [MACHINE_PROTOCOL_CAPABILITIES.acpCapabilityRefreshCache]:
     ACP_CAPABILITY_REFRESH_CACHE_PROTOCOL_VERSION,
+  [MACHINE_PROTOCOL_CAPABILITIES.sessionCancelActiveTurn]:
+    SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION,
 };
 
 export function machineSupportsSubagentEvents(
@@ -292,6 +296,21 @@ export function negotiatedAcpCapabilitiesRefreshForce(
   return force === true && machineSupportsAcpCapabilityRefreshCacheProtocol(machine)
     ? { force: true }
     : {};
+}
+
+/**
+ * Whether the target daemon takes a Machine RPC `session/cancel` without a
+ * `turnId` and cancels the turn it runs now. A daemon without it drops such a
+ * request unanswered, so it must be sent the turn to cancel.
+ */
+export function machineSupportsSessionCancelActiveTurn(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.sessionCancelActiveTurn,
+    SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION
+  );
 }
 
 export function machineSupportsIosSimulatorProtocol(

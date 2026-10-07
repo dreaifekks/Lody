@@ -371,7 +371,7 @@ type RpcServerDeps = {
   }) => Promise<MachineBugReportResponse>;
   cancelSession?: (args: {
     sessionId: SessionId;
-    turnId: string;
+    turnId?: string;
     subagentTaskId?: string;
   }) => Promise<SessionCancelResponse>;
   getSessionLiveStatus?: (args: {

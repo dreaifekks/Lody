@@ -26,6 +26,7 @@ import {
   getMachineRoomId,
   getSessionRoomId,
   parseSessionNotification,
+  SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
   SessionStatusFactory,
   type ACPSessionId,
   type AgentConfigMeta,
@@ -8274,6 +8275,69 @@ describe('SessionExecutionService', () => {
     });
     expect(upsertDocMeta).toHaveBeenCalledWith('session-session-queued-cancel', {
       lastCanceledTurn: undefined,
+    });
+  });
+
+  it('cancels the running turn, not a newer queued one, when the request names no turn', async () => {
+    const upsertDocMeta = vi.fn(async () => {});
+    const sessionDoc = withHistoryPort({
+      getHistory: vi.fn(() => []),
+      setStatus: vi.fn(async () => {}),
+      updateHistory: vi.fn(async () => {}),
+    });
+    const session = {
+      acpSessionId: 'acp-unnamed-cancel' as ACPSessionId,
+      agentClient: {
+        isCreated: vi.fn(() => true),
+        cancel: vi.fn(async () => {}),
+      },
+    };
+    const sessionManager = {
+      getSession: vi.fn(() => session),
+      getPendingSession: vi.fn(() => null),
+      createSession: vi.fn(),
+      setSessionError: vi.fn(),
+      terminateSession: vi.fn(),
+      refreshGhTokenForSession: vi.fn(async () => {}),
+    } as unknown as SessionManager;
+    let activeTurnId: string | undefined = 'assistant-turn-running';
+    const deps = createBaseDeps({
+      sessionManager,
+      getActiveTurnId: vi.fn(() => activeTurnId),
+      workspaceDocument: {
+        repo: {
+          upsertDocMeta,
+          // Another machine reading this meta would guess the queued turn.
+          getDocMeta: vi.fn(async () => ({
+            meta: {
+              latestUserMsgId: 'turn-queued',
+              processingUserMsgId: 'turn-running',
+            },
+          })),
+        },
+        getOrCreateSessionDoc: vi.fn(async () => sessionDoc),
+        updateAcpCapabilities: vi.fn(async () => {}),
+      } as unknown as LoroDocumentManager,
+    });
+    const service = new SessionExecutionService(deps);
+    const request = {
+      type: 'session/cancel' as const,
+      sessionId: 'session-unnamed-cancel' as SessionId,
+      machineId: 'machine-1',
+      workspaceId: 'workspace-1' as WorkspaceId,
+    };
+
+    expect(await service.cancelSession(request)).toEqual({ success: true });
+    expect(session.agentClient.cancel).toHaveBeenCalledWith('acp-unnamed-cancel');
+    expect(upsertDocMeta).toHaveBeenCalledWith('session-session-unnamed-cancel', {
+      lastHandledUserMsgId: 'turn-running',
+      processingUserMsgId: undefined,
+    });
+
+    activeTurnId = undefined;
+    expect(await service.cancelSession(request)).toEqual({
+      success: false,
+      error: SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
     });
   });
 

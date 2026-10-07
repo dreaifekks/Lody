@@ -483,7 +483,9 @@ export const LoroSessionCancelRpcRequestSchema = BaseRpcRequestSchema.extend({
   params: z
     .object({
       sessionId: SessionIdSchema,
-      turnId: z.string().trim().min(1),
+      // Absent: the turn the machine runs now. Ask only a machine that advertises
+      // `sessionCancelActiveTurn`; an older one drops the request unanswered.
+      turnId: z.string().trim().min(1).optional(),
       subagentTaskId: z.string().trim().min(1).optional(),
     })
     .strict(),
@@ -2861,7 +2863,7 @@ export class LoroStreamsMachineRpcClient {
 
   async requestSessionCancel(options: {
     sessionId: SessionId;
-    turnId: string;
+    turnId?: string;
     subagentTaskId?: string;
     timeoutMs?: number;
   }): Promise<SessionCancelResponse | null> {
@@ -3440,7 +3442,7 @@ export class LoroStreamsMachineRpcClient {
           timeoutMs: number;
           params: {
             sessionId: SessionId;
-            turnId: string;
+            turnId?: string;
             subagentTaskId?: string;
           };
         }
