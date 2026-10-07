@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as stylex from '@stylexjs/stylex';
 import { AlertDialog } from '@lody/ui/alert-dialog';
@@ -9,8 +9,13 @@ import { isElectronRenderer } from '@/lib/electron';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { openExternalUrl } from '@/lib/native-browser';
 import { useResolvedTheme } from '@/theme-provider';
-import { useAgentSurfaceActions } from './agent-surface-context';
+import {
+  AgentSurfaceTurnContext,
+  useAgentSurfaceActions,
+  widgetPromptKey,
+} from './agent-surface-context';
 import { createWidgetBridge, readWidgetThemeVars, WIDGET_MAX_HEIGHT_PX } from './widget-bridge';
+import { takeUserClickInFrame } from './widget-gesture';
 
 const styles = stylex.create({
   root: { display: 'block', width: '100%', minWidth: 0 },
@@ -53,20 +58,21 @@ const INITIAL_HEIGHT_PX = 160;
 /**
  * One widget, isolated: a sandboxed frame (`allow-scripts` only, so an
  * opaque origin) under the widget page's own policy. The bridge takes
- * messages only from this frame, fills the composer instead of sending, and
- * asks before any link leaves the app.
+ * messages only from this frame, asks a question only right after the user
+ * clicked into it, and asks before any link leaves the app.
  */
 export function WidgetFrame({ code, title }: { code: string; title: string }) {
   const { t } = useTranslation();
   const actions = useAgentSurfaceActions();
+  const turnId = useContext(AgentSurfaceTurnContext);
   const resolvedTheme = useResolvedTheme();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [source, setSource] = useState<HostSource | null>(null);
   const [height, setHeight] = useState(INITIAL_HEIGHT_PX);
   const [pendingLink, setPendingLink] = useState<string | null>(null);
   const readyRef = useRef(false);
-  const latest = useRef({ code, resolvedTheme, fillComposer: actions?.fillComposer });
-  latest.current = { code, resolvedTheme, fillComposer: actions?.fillComposer };
+  const latest = useRef({ code, resolvedTheme, turnId, send: actions?.sendWidgetPrompt });
+  latest.current = { code, resolvedTheme, turnId, send: actions?.sendWidgetPrompt };
 
   useEffect(() => {
     let cancelled = false;
@@ -95,7 +101,14 @@ export function WidgetFrame({ code, title }: { code: string; title: string }) {
         });
       },
       onHeight: setHeight,
-      onPrompt: (text) => latest.current.fillComposer?.(text),
+      onPrompt: (text) =>
+        latest.current.send?.({
+          text,
+          turnId: latest.current.turnId,
+          key: widgetPromptKey(latest.current.code, text),
+        }),
+      takeUserClick: async () =>
+        frameRef.current ? await takeUserClickInFrame(frameRef.current) : false,
       onLink: setPendingLink,
     });
     const onMessage = (event: MessageEvent) => {

@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { atom, useAtomValue, useSetAtom } from 'jotai';
 import { getCurrentPromptSuggestion, type SessionMeta } from '@lody/shared';
-import { experimentalFeaturesEnabledAtom } from '@/atoms/settings';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 
 /**
@@ -21,13 +20,12 @@ export function useSessionPromptSuggestion(
   session: SessionMeta,
   { inputEmpty, agentBusy }: { inputEmpty: boolean; agentBusy: boolean }
 ): string | null {
-  const experimentalEnabled = useAtomValue(experimentalFeaturesEnabledAtom);
   const { promptSuggestions } = useWorkspaceCatalog();
   const dismissed = useAtomValue(dismissedPromptSuggestionsAtom);
   const setDismissed = useSetAtom(dismissedPromptSuggestionsAtom);
 
   const current =
-    experimentalEnabled && promptSuggestions && session.agentType === 'claude' && !agentBusy
+    promptSuggestions && session.agentType === 'claude' && !agentBusy
       ? (getCurrentPromptSuggestion(session) ?? null)
       : null;
   const offered = current !== null && dismissed[session.id] !== current ? current : null;

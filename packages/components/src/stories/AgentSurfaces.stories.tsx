@@ -1,10 +1,15 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react';
 import type { SessionId } from '@lody/shared';
-import { AgentSurfaceContext } from '@/components/agent-surfaces/agent-surface-context';
+import {
+  AgentSurfaceContext,
+  routeWidgetPrompt,
+  widgetSideChatTitle,
+} from '@/components/agent-surfaces/agent-surface-context';
 import { PlanReviewCardView } from '@/components/agent-surfaces/plan-review-card';
 import { PlanReviewPanelView } from '@/components/agent-surfaces/plan-review-panel';
 import { WidgetFrame } from '@/components/agent-surfaces/widget-frame';
+import { SessionSidePanelTabBar } from '@/components/sessions/session-side-panel-tab-bar';
 
 /**
  * Experimental surfaces agents open through the lody MCP server: the plan
@@ -90,26 +95,67 @@ const FLOW = `<svg width="100%" viewBox="0 0 680 220" role="img">
 <text class="ts" x="340" y="180" text-anchor="middle">Click a step to ask about it</text>
 </svg>`;
 
+/**
+ * A widget beside the session's right panel. Questions route the way a
+ * conversation that can fork routes them (`routeWidgetPrompt`): each new
+ * question opens a side chat tab named by it, with it as the first message;
+ * the same question again selects its tab. The conversation pane is a
+ * stand-in. A question counts only for a click the desktop's main process saw
+ * land in the widget, so outside the desktop clicks ask nothing unless a
+ * stand-in desktop bridge answers `widgets.takeClick`.
+ */
 function WidgetHarness() {
-  const [composer, setComposer] = useState('');
+  const [tabs, setTabs] = useState<{ id: string; key: string; question: string }[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const active = tabs.find((tab) => tab.id === activeTabId);
   return (
     <AgentSurfaceContext.Provider
       value={{
         sessionId: 'story-session' as SessionId,
         canAct: true,
-        fillComposer: (text) =>
-          setComposer((previous) => (previous ? `${previous}\n\n${text}` : text)),
+        sendWidgetPrompt: (request) => {
+          const route = routeWidgetPrompt({
+            inSideChat: false,
+            canAskInSideChat: true,
+            widgetTurnId: request.turnId,
+            latestTurnId: 'turn-1',
+          });
+          if (route.kind !== 'side-chat') return;
+          const asked = tabs.find((tab) => tab.key === request.key);
+          if (asked) {
+            setActiveTabId(asked.id);
+            return;
+          }
+          const id = `side-session:${tabs.length + 1}`;
+          setTabs((current) => [...current, { id, key: request.key, question: request.text }]);
+          setActiveTabId(id);
+        },
       }}
     >
-      <div style={{ maxWidth: 720, display: 'grid', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '720px 420px', gap: 16, height: 360 }}>
         <WidgetFrame code={FLOW} title="Request flow" />
-        <textarea
-          aria-label="Composer"
-          readOnly
-          value={composer}
-          placeholder="Composer"
-          style={{ minHeight: 48, fontSize: 13 }}
-        />
+        <div className="flex h-full flex-col overflow-hidden border-l border-border/70 bg-background">
+          <SessionSidePanelTabBar
+            tabs={tabs.map((tab) => ({
+              id: tab.id,
+              label: widgetSideChatTitle(tab.question),
+              kind: 'session' as const,
+              closeable: true,
+            }))}
+            activeTabId={activeTabId}
+            availablePanels={[]}
+            onTabSelect={setActiveTabId}
+            onTabClose={(tabId) => setTabs((current) => current.filter((tab) => tab.id !== tabId))}
+            addPanelLabel="Add panel"
+            closeTabLabel={(label) => `Close ${label}`}
+            className="border-b border-border/60"
+          />
+          {active ? (
+            <div className="flex justify-end p-4">
+              <div className="rounded-lg bg-muted px-3 py-2 text-sm">{active.question}</div>
+            </div>
+          ) : null}
+        </div>
       </div>
     </AgentSurfaceContext.Provider>
   );

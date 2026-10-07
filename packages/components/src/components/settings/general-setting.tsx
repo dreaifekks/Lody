@@ -23,7 +23,8 @@ import { useAtom, useAtomValue } from 'jotai';
 import { CompactRow, CompactSection } from './compact-layout';
 import { settingContainerClass } from '.';
 import { AutoArchiveSection } from './auto-archive-setting';
-import { ExperimentalFeatureRows } from './experimental-features-setting';
+import { AgentFeaturesSection } from './agent-features-setting';
+import { ExperimentalFeaturesSection } from './experimental-features-setting';
 import {
   getOneSignalPermissionState,
   getOneSignalPushSubscriptionOptedIn,
@@ -762,6 +763,7 @@ export function GeneralSettingsComponent() {
             )}
           </CompactRow>
         </CompactSection>
+        <AgentFeaturesSection />
         {isElectron && (
           <CompactSection title={t('settings.general.sections.thisComputer', 'This computer')}>
             <div id="cli-auto-start" {...stylex.props(styles.anchor)}>
@@ -817,9 +819,10 @@ export function GeneralSettingsComponent() {
 
         {prAutoArchiveAvailable ? <AutoArchiveSection /> : null}
 
+        <ExperimentalFeaturesSection />
+
         {/* Clear local cache stays last in General settings. */}
         <CompactSection title={t('settings.general.sections.advanced', 'Advanced')}>
-          <ExperimentalFeatureRows />
           <CompactRow
             label={t('settings.cache.clearCache.label')}
             helper={t('settings.cache.clearCache.description')}

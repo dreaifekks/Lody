@@ -18,6 +18,8 @@ import {
   mergeTabOrderGroup,
   readPersistedDraftTabs,
   readStoredLastActiveTabState,
+  readWidgetSideChat,
+  rememberWidgetSideChat,
   removeTabOrderId,
   replaceTabOrderId,
   writePersistedDraftTabs,
@@ -426,6 +428,27 @@ describe('session draft tabs', () => {
         sideSessionId: 'side-session-1',
       },
     });
+  });
+
+  it('remembers which side chat each widget question opened, per conversation', () => {
+    installWindowStorage();
+
+    rememberWidgetSideChat('session-1' as SessionId, 'why', 'side-1' as SessionId);
+    rememberWidgetSideChat('session-1' as SessionId, 'how', 'side-2' as SessionId);
+    // Asked again after its side chat was closed: the new one replaces it.
+    rememberWidgetSideChat('session-1' as SessionId, 'why', 'side-3' as SessionId);
+
+    expect(readWidgetSideChat('session-1' as SessionId, 'why')).toBe('side-3');
+    expect(readWidgetSideChat('session-1' as SessionId, 'how')).toBe('side-2');
+    expect(readWidgetSideChat('session-1' as SessionId, 'what')).toBeNull();
+    expect(readWidgetSideChat('session-2' as SessionId, 'why')).toBeNull();
+
+    // Only the newest fifty questions are kept.
+    for (let index = 0; index < 50; index += 1) {
+      rememberWidgetSideChat('session-1' as SessionId, `q${index}`, `side-q${index}` as SessionId);
+    }
+    expect(readWidgetSideChat('session-1' as SessionId, 'why')).toBeNull();
+    expect(readWidgetSideChat('session-1' as SessionId, 'q0')).toBe('side-q0');
   });
 
   it('persists the Browser and iOS Simulator side panels as separate tabs', () => {

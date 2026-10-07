@@ -303,6 +303,56 @@ export const writeStoredLastActiveTabState = (
   }
 };
 
+const getWidgetSideChatsStorageKey = (parentSessionId: SessionId): string =>
+  `lody:widget-side-chats:${parentSessionId}`;
+/** Questions remembered per conversation; the oldest go first. */
+const MAX_WIDGET_SIDE_CHATS = 50;
+
+const readWidgetSideChats = (parentSessionId: SessionId): [string, SessionId][] => {
+  try {
+    const value: unknown = JSON.parse(
+      windowStorage().getItem(getWidgetSideChatsStorageKey(parentSessionId)) ?? '[]'
+    );
+    return Array.isArray(value)
+      ? value.filter(
+          (entry): entry is [string, SessionId] =>
+            Array.isArray(entry) &&
+            entry.length === 2 &&
+            typeof entry[0] === 'string' &&
+            typeof entry[1] === 'string'
+        )
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * The side chat a widget question was asked in (`widgetPromptKey`), kept on
+ * this device only, like the panel's tabs. The caller checks it is still open.
+ */
+export const readWidgetSideChat = (parentSessionId: SessionId, key: string): SessionId | null => {
+  if (typeof window === 'undefined') return null;
+  return readWidgetSideChats(parentSessionId).find(([entryKey]) => entryKey === key)?.[1] ?? null;
+};
+
+export const rememberWidgetSideChat = (
+  parentSessionId: SessionId,
+  key: string,
+  sideSessionId: SessionId
+): void => {
+  if (typeof window === 'undefined') return;
+  const entries = [
+    ...readWidgetSideChats(parentSessionId).filter(([entryKey]) => entryKey !== key),
+    [key, sideSessionId] as [string, SessionId],
+  ].slice(-MAX_WIDGET_SIDE_CHATS);
+  try {
+    windowStorage().setItem(getWidgetSideChatsStorageKey(parentSessionId), JSON.stringify(entries));
+  } catch {
+    // ignore
+  }
+};
+
 export const replaceTabOrderId = (
   tabOrder: string[],
   currentId: string,

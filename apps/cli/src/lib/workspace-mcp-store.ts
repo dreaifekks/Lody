@@ -54,7 +54,7 @@ export async function listWorkspaceMcpCatalog(
   return listWorkspaceMcpServers(readWorkspaceFlockRowsFromFlock(handle.flock));
 }
 
-/** The experimental prompt-suggestions switch, from this machine's copy of the workspace document. */
+/** The prompt-suggestions switch, from this machine's copy of the workspace document. */
 export async function readWorkspacePromptSuggestionsEnabled(
   repo: WorkspaceMcpReadableRepo,
   workspaceId: WorkspaceId

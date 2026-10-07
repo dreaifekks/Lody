@@ -12,7 +12,6 @@ vi.mock('@/hooks/use-workspace-catalog', () => ({
 
 const { useSessionPromptSuggestion } =
   await import('../src/components/sessions/use-session-prompt-suggestion');
-const { experimentalFeaturesEnabledAtom } = await import('../src/atoms/settings');
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -42,12 +41,6 @@ function render(store: ReturnType<typeof createStore>, props: Parameters<typeof 
   act(() => root.render(createElement(Provider, { store }, createElement(Probe, props))));
 }
 
-function storeWithExperiments(): ReturnType<typeof createStore> {
-  const store = createStore();
-  store.set(experimentalFeaturesEnabledAtom, true);
-  return store;
-}
-
 beforeEach(() => {
   catalog.promptSuggestions = true;
   shown = null;
@@ -60,8 +53,9 @@ afterEach(() => {
 });
 
 describe('useSessionPromptSuggestion', () => {
-  it('offers the guess only for Claude, with both switches on, while idle', () => {
-    const store = storeWithExperiments();
+  it('offers the guess only for Claude, with the switch on, while idle', () => {
+    // Not an experimental feature: the experimental switch does not gate it.
+    const store = createStore();
     render(store, { session: session('a', 'run the tests') });
     expect(shown).toBe('run the tests');
 
@@ -73,15 +67,10 @@ describe('useSessionPromptSuggestion', () => {
     catalog.promptSuggestions = false;
     render(store, { session: session('a', 'run the tests') });
     expect(shown).toBeNull();
-
-    catalog.promptSuggestions = true;
-    store.set(experimentalFeaturesEnabledAtom, false);
-    render(store, { session: session('a', 'run the tests') });
-    expect(shown).toBeNull();
   });
 
   it('lets the guess go once something is typed, even if the text is cleared again', () => {
-    const store = storeWithExperiments();
+    const store = createStore();
     render(store, { session: session('a', 'run the tests') });
     render(store, { session: session('a', 'run the tests'), inputEmpty: false });
     render(store, { session: session('a', 'run the tests') });
@@ -93,7 +82,7 @@ describe('useSessionPromptSuggestion', () => {
   });
 
   it('lets the guess go when the composer switches to another session', () => {
-    const store = storeWithExperiments();
+    const store = createStore();
     render(store, { session: session('a', 'run the tests') });
     render(store, { session: session('b', 'open a PR') });
     expect(shown).toBe('open a PR');
