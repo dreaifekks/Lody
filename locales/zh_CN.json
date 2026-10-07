@@ -4195,7 +4195,7 @@
   "settings.experimental.planReview": "计划审阅",
   "settings.experimental.planReviewHelper": "agent 可以把计划发到侧栏，你在那里批注，然后批准或要求修改。",
   "settings.experimental.inlineWidget": "交互小部件",
-  "settings.experimental.inlineWidgetHelper": "agent 可以在对话里画可点击的图示和图表。",
+  "settings.experimental.inlineWidgetHelper": "agent 可以在对话里画可点击的图示和图表，点击后在侧边对话里提问。",
   "settings.experimental.agentToolsSaveFailed": "没能更新 agent 工具设置",
   "agentSurfaces.planReview.label": "计划",
   "agentSurfaces.planReview.open": "打开计划",

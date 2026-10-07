@@ -4195,7 +4195,7 @@
   "settings.experimental.planReview": "Plan review",
   "settings.experimental.planReviewHelper": "Agents can send a plan to a side panel, where you comment on it and approve it or ask for changes.",
   "settings.experimental.inlineWidget": "Interactive widgets",
-  "settings.experimental.inlineWidgetHelper": "Agents can draw clickable diagrams and charts in the conversation.",
+  "settings.experimental.inlineWidgetHelper": "Agents can draw clickable diagrams and charts in the conversation. Clicking one asks about it in a side chat.",
   "settings.experimental.agentToolsSaveFailed": "Could not update agent tools",
   "agentSurfaces.planReview.label": "Plan",
   "agentSurfaces.planReview.open": "Open plan",

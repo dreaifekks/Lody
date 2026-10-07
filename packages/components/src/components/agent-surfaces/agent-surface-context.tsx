@@ -33,6 +33,15 @@ export const isSurfaceToolCall = (key: AgentSurfaceKey, toolCall: ToolCallMessag
   return match.input !== null || toolCall.status !== 'completed';
 };
 
+/** A question the user clicked in a widget. */
+export type WidgetPromptRequest = {
+  text: string;
+  /** The widget's turn when a fork can start there, else null. */
+  turnId: string | null;
+  /** The same widget and question, wherever it is drawn; see `widgetPromptKey`. */
+  key: string;
+};
+
 /**
  * What a conversation lets its surfaces do. Absent on read-only presentation
  * (shares): cards still render, nothing acts.
@@ -42,11 +51,54 @@ export type AgentSurfaceActions = {
   /** The viewer may answer: their own, unarchived conversation. */
   canAct: boolean;
   openPlanReview?: (toolCallId: string) => void;
-  /** Puts text into the composer and focuses it; never sends. */
-  fillComposer?: (text: string) => void;
+  /** Asks a widget's question; see `routeWidgetPrompt`. */
+  sendWidgetPrompt?: (request: WidgetPromptRequest) => void;
 };
 
 export const AgentSurfaceContext = createContext<AgentSurfaceActions | null>(null);
+
+/**
+ * The assistant turn a surface is drawn in, when a fork can start there:
+ * finished, and either the latest or carrying the agent's own turn id.
+ */
+export const AgentSurfaceTurnContext = createContext<string | null>(null);
+
+export type WidgetPromptRoute =
+  | { kind: 'send' }
+  | { kind: 'side-chat'; turnId: string }
+  | { kind: 'fill' };
+
+/**
+ * Where a widget's question goes. A side chat asks it itself; a conversation
+ * that can fork asks it in a side chat forked at the widget's turn (the latest
+ * finished turn when the widget's cannot be forked); anything else only puts
+ * it in the composer.
+ */
+export const routeWidgetPrompt = (input: {
+  inSideChat: boolean;
+  canAskInSideChat: boolean;
+  widgetTurnId: string | null;
+  latestTurnId: string | null;
+}): WidgetPromptRoute => {
+  if (input.inSideChat) return { kind: 'send' };
+  const turnId = input.widgetTurnId ?? input.latestTurnId;
+  return input.canAskInSideChat && turnId ? { kind: 'side-chat', turnId } : { kind: 'fill' };
+};
+
+/** Names a widget by its code and the question asked, compactly (cyrb53). */
+export const widgetPromptKey = (code: string, text: string): string => {
+  const input = `${code}\u0000${text}`;
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input.charCodeAt(index);
+    h1 = Math.imul(h1 ^ char, 2654435761);
+    h2 = Math.imul(h2 ^ char, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+};
 
 export const useAgentSurfaceActions = (): AgentSurfaceActions | null =>
   useContext(AgentSurfaceContext);

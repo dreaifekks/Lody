@@ -3,7 +3,8 @@ import { parseLodyWidgetFrameMessage, type LodyWidgetFrameMessage } from '@lody/
 /**
  * The conversation's side of one widget frame: which messages it takes, from
  * whom, and how often. A widget is agent-written code, so nothing it says is
- * acted on directly — a prompt only fills the composer, a link only asks.
+ * acted on directly — a prompt counts only right after the user clicked into
+ * the widget, a link only asks.
  *
  * Kept free of React and the DOM so a later host (MCP Apps, for one) can reuse it.
  */
@@ -12,7 +13,7 @@ import { parseLodyWidgetFrameMessage, type LodyWidgetFrameMessage } from '@lody/
 export const WIDGET_MAX_HEIGHT_PX = 1_200;
 export const WIDGET_MIN_HEIGHT_PX = 24;
 
-/** A burst of clicks fills the composer once; a runaway script stops quickly. */
+/** A burst of clicks sends once; a runaway script stops quickly. */
 const PROMPT_MIN_INTERVAL_MS = 750;
 const PROMPTS_PER_MINUTE = 12;
 const LINK_MIN_INTERVAL_MS = 1_000;
@@ -23,6 +24,8 @@ export type WidgetBridgeHandlers = {
   onReady: () => void;
   onHeight: (height: number) => void;
   onPrompt: (text: string) => void;
+  /** Whether the user just clicked into the frame; prompts without that are dropped. */
+  isUserGesture: () => boolean;
   onLink: (url: string) => void;
   now?: () => number;
 };
@@ -62,6 +65,8 @@ export function createWidgetBridge(handlers: WidgetBridgeHandlers): WidgetBridge
         );
         return true;
       case 'lody-widget:prompt': {
+        // Before the limits, so refused attempts spend none of them.
+        if (!handlers.isUserGesture()) return false;
         const at = now();
         promptTimes = promptTimes.filter((time) => at - time < 60_000);
         if (

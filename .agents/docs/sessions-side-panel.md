@@ -63,6 +63,13 @@ this page is the full text of the rules summarised there.
   would open a Loro session doc per side chat even for a user who never expands the panel: mount one
   when it is first selected (`mountedSideSessionIds`), plus any fork target still waiting to report
   durable history, and keep it mounted after that.
+  A question clicked in an interactive widget (experimental) also opens a side chat: forked at the
+  widget's own turn when that turn is forkable (else the latest), with the question sent as its first
+  message once its history is ready. The same widget and question again selects that tab while it is
+  open (`readWidgetSideChat`, device-local per conversation); inside a side chat a click sends there.
+  Without fork support the question only fills the composer. A widget question counts only right
+  after a real click into its frame (`widget-gesture.ts`: focus plus user activation the host's own
+  input cannot explain), because a sandboxed frame can move focus into itself.
   Show the launcher only when the active conversation's provider has authoritative native-fork
   support; keep it visible but disabled when that conversation's machine is explicitly offline. That
   offline rule lives ONLY in `getSideChatLauncherState` — the shared fork entry point stays

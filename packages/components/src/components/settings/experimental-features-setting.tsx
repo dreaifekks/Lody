@@ -113,7 +113,7 @@ export function ExperimentalFeatureRows() {
             label={t('settings.experimental.inlineWidget', 'Interactive widgets')}
             helper={t(
               'settings.experimental.inlineWidgetHelper',
-              'Agents can draw clickable diagrams and charts in the conversation.'
+              'Agents can draw clickable diagrams and charts in the conversation. Clicking one asks about it in a side chat.'
             )}
           />
         </>

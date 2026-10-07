@@ -176,6 +176,7 @@ import { SessionBrowserPanel } from './session-browser-panel';
 import { SessionIosSimulatorPanel } from './ios-simulator/session-ios-simulator-panel';
 import { SessionPlanReviewPanel } from '@/components/agent-surfaces/session-plan-review-panel';
 import type { PlanReviewDecision } from '@/components/agent-surfaces/plan-review-model';
+import type { WidgetPromptRequest } from '@/components/agent-surfaces/agent-surface-context';
 import { getIosSimulatorPanelAvailability } from '@/lib/ios-simulator/ios-simulator-model';
 import { usePlatformCapability } from '@lody/platform/react';
 import { getMachineMetaByIdAtomFamily } from '@/atoms/machines';
@@ -235,6 +236,8 @@ import {
   readStoredTabOrder,
   removeTabOrderId,
   replaceTabOrderId,
+  readWidgetSideChat,
+  rememberWidgetSideChat,
   writePersistedDraftTabs,
   writeStoredLastActiveTabState,
   writeStoredTabOrder,
@@ -412,6 +415,8 @@ type PendingForkState = Record<
     targetSessionId: SessionId;
     phase: 'requesting' | 'awaiting-history';
     placement: 'tab' | 'side-panel' | 'worktree';
+    /** A widget question to send as the side chat's first message once it is ready. */
+    firstPrompt?: WidgetPromptRequest;
   }
 >;
 
@@ -1352,7 +1357,11 @@ const SessionDetail = ({
       source: SessionMeta,
       turnId: string,
       placement: 'tab' | 'side-panel' | 'worktree' = 'tab',
-      options: { targetSessionId?: SessionId; acknowledgeDirtySource?: true } = {}
+      options: {
+        targetSessionId?: SessionId;
+        acknowledgeDirtySource?: true;
+        firstPrompt?: WidgetPromptRequest;
+      } = {}
     ) => {
       if (
         !runtime ||
@@ -1364,7 +1373,13 @@ const SessionDetail = ({
       const targetSessionId = options.targetSessionId ?? (crypto.randomUUID() as SessionId);
       setPendingForks((current) => ({
         ...current,
-        [source.id]: { turnId, targetSessionId, phase: 'requesting', placement },
+        [source.id]: {
+          turnId,
+          targetSessionId,
+          phase: 'requesting',
+          placement,
+          ...(options.firstPrompt ? { firstPrompt: options.firstPrompt } : {}),
+        },
       }));
       const request = {
         sourceSessionId: source.id,
@@ -3014,6 +3029,19 @@ const SessionDetail = ({
     () => forkActiveConversation('side-panel'),
     [forkActiveConversation]
   );
+  // A widget question asked again goes back to its side chat while that is open.
+  const handleAskInSideChat = useCallback(
+    (source: SessionMeta, request: WidgetPromptRequest & { turnId: string }) => {
+      const asked = readWidgetSideChat(sessionId, request.key);
+      if (asked && visibleSideSessions.some((sideSession) => sideSession.id === asked)) {
+        selectSidePanelTab(getSideSessionPanelTabId(asked));
+        revealRightSidebar();
+        return;
+      }
+      void handleForkAssistant(source, request.turnId, 'side-panel', { firstPrompt: request });
+    },
+    [handleForkAssistant, revealRightSidebar, selectSidePanelTab, sessionId, visibleSideSessions]
+  );
 
   useEffect(() => {
     if (activeSidebarTab === 'pr' && (!latestPr || !repoFullName)) {
@@ -3891,6 +3919,12 @@ const SessionDetail = ({
       if (taken.placement === 'side-panel') {
         selectSidePanelTab(getSideSessionPanelTabId(targetSessionId));
         revealRightSidebar();
+        if (taken.firstPrompt) {
+          rememberWidgetSideChat(sessionId, taken.firstPrompt.key, targetSessionId);
+          const sideChat = chatRefsMap.current.get(targetSessionId);
+          if (sideChat && 'sendPrompt' in sideChat)
+            void sideChat.sendPrompt(taken.firstPrompt.text);
+        }
         return;
       }
       if (taken.placement === 'worktree') {
@@ -3909,6 +3943,7 @@ const SessionDetail = ({
       revealRightSidebar,
       router,
       selectSidePanelTab,
+      sessionId,
       takePendingFork,
       workspaceSlug,
     ]
@@ -6674,6 +6709,11 @@ const SessionDetail = ({
               onForkLastAssistant={
                 canForkSession(tabSession)
                   ? (turnId, destination) => handleForkDestination(tabSession, turnId, destination)
+                  : undefined
+              }
+              onAskInSideChat={
+                canForkSession(tabSession)
+                  ? (request) => handleAskInSideChat(tabSession, request)
                   : undefined
               }
               forkWorktreeAvailability={getForkWorktreeAvailability(tabSession)}

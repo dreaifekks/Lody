@@ -227,6 +227,7 @@ import type { TurnIndexRow } from '@/lib/conversation-view';
 import { TurnPlaceholderRow, estimatePlaceholderHeight } from './turn-placeholder-row';
 import { CreatedSessionOperationCard } from './created-session-operation-card';
 import {
+  AgentSurfaceTurnContext,
   agentSurfaceKeyAtom,
   isSurfaceToolCall,
   type AgentSurfaceKey,
@@ -2374,31 +2375,36 @@ export const SessionChatStreamView = forwardRef<
             id={row.item.message.id}
             first={virtualRows[rowIndex - 1]?.messageIndex !== row.messageIndex}
           >
-            <AssistantChatItem
-              row={row}
-              fileDiffOverride={fileDiffOverride}
-              assistantActions={resolveAssistantMessageActions(
-                row.item.message.id,
-                assistantActionsMessageId,
-                assistantActions
-              )}
-              onFork={canForkAssistantMessage ? onForkLastAssistant : undefined}
-              forkWorktreeAvailability={forkWorktreeAvailability}
-              onForkWorktreeMenuOpen={onForkWorktreeMenuOpen}
-              isForking={forkingAssistantMessageId === row.item.message.id}
-              onFileDiffClick={onFileDiffClick}
-              onFilePathClick={onFilePathClick}
-              onGroupExpandedChange={handleAssistantGroupExpandedChange}
-              onWorkedGroupExpandedChange={handleAssistantWorkedGroupExpandedChange}
-              isTurnHovered={hoveredAssistantMessageId === row.item.message.id}
-              onTurnHoverChange={handleAssistantTurnHoverChange}
-              conversationFontSize={conversationFontSize}
-              shimmerGroupHeader={row.key === liveGroupHeaderRowKey}
-              liveStatus={row.key === liveStatusRowKey ? liveTurnStatus : null}
-              liveStatusFollowsSurface={
-                row.key === liveStatusRowKey && assistantRowPaintsSurface(virtualRows[rowIndex - 1])
-              }
-            />
+            <AgentSurfaceTurnContext.Provider
+              value={canForkAssistantMessage ? row.item.message.id : null}
+            >
+              <AssistantChatItem
+                row={row}
+                fileDiffOverride={fileDiffOverride}
+                assistantActions={resolveAssistantMessageActions(
+                  row.item.message.id,
+                  assistantActionsMessageId,
+                  assistantActions
+                )}
+                onFork={canForkAssistantMessage ? onForkLastAssistant : undefined}
+                forkWorktreeAvailability={forkWorktreeAvailability}
+                onForkWorktreeMenuOpen={onForkWorktreeMenuOpen}
+                isForking={forkingAssistantMessageId === row.item.message.id}
+                onFileDiffClick={onFileDiffClick}
+                onFilePathClick={onFilePathClick}
+                onGroupExpandedChange={handleAssistantGroupExpandedChange}
+                onWorkedGroupExpandedChange={handleAssistantWorkedGroupExpandedChange}
+                isTurnHovered={hoveredAssistantMessageId === row.item.message.id}
+                onTurnHoverChange={handleAssistantTurnHoverChange}
+                conversationFontSize={conversationFontSize}
+                shimmerGroupHeader={row.key === liveGroupHeaderRowKey}
+                liveStatus={row.key === liveStatusRowKey ? liveTurnStatus : null}
+                liveStatusFollowsSurface={
+                  row.key === liveStatusRowKey &&
+                  assistantRowPaintsSurface(virtualRows[rowIndex - 1])
+                }
+              />
+            </AgentSurfaceTurnContext.Provider>
           </MessageSelectionRow>
         );
       }),

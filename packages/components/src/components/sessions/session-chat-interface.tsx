@@ -301,7 +301,9 @@ import { AutoReviewStatus } from './auto-review-status';
 import { useAutoReview } from '@/hooks/use-auto-review';
 import {
   AgentSurfaceContext,
+  routeWidgetPrompt,
   type AgentSurfaceActions,
+  type WidgetPromptRequest,
 } from '@/components/agent-surfaces/agent-surface-context';
 import { usePlanReviewIndexPublisher } from '@/components/agent-surfaces/use-plan-review-index';
 import { SessionAgentFileLinkMenuProvider } from './session-agent-file-link-menu';
@@ -1907,6 +1909,11 @@ interface SessionChatInterfaceProps {
   onOpenAllChanges?: () => void;
   /** Native ACP fork action for the latest completed assistant turn. */
   onForkLastAssistant?: (turnId: string, destination?: SessionForkDestination) => void;
+  /**
+   * Asks a widget's question in a side chat forked at `turnId`. Absent where
+   * this conversation cannot fork into one; the question then fills the composer.
+   */
+  onAskInSideChat?: (request: WidgetPromptRequest & { turnId: string }) => void;
   forkWorktreeAvailability?: SessionForkWorktreeAvailability;
   onForkWorktreeMenuOpen?: () => void;
   forkingAssistantMessageId?: string | null;
@@ -1957,6 +1964,8 @@ export type SessionChatInterfaceHandle = {
     decision: 'approve' | 'request_changes',
     text: string
   ) => Promise<boolean>;
+  /** Sends text as the user's next message, the way the composer would; false when not accepted. */
+  sendPrompt: (text: string) => Promise<boolean>;
   insertSessionMention: (
     sessionId: string,
     options?: { at?: number; replaceEnd?: number }
@@ -2063,6 +2072,7 @@ export const SessionChatInterface = memo(
       onOpenBrowser,
       onOpenIosSimulator,
       onOpenPlanReview,
+      onAskInSideChat,
       onOpenExistingBrowser,
       headerVariant = 'page',
       paintSessionMentionOverlay = true,
@@ -2503,24 +2513,6 @@ export const SessionChatInterface = memo(
     usePlanReviewIndexPublisher(session.id, conversationView);
     const canActOnAgentSurfaces =
       !isArchivedSession && Boolean(currentUser?.id) && session.userId === currentUser?.id;
-    const agentSurfaceActions = useMemo<AgentSurfaceActions>(
-      () => ({
-        sessionId: session.id,
-        canAct: canActOnAgentSurfaces,
-        ...(onOpenPlanReview
-          ? { openPlanReview: (toolCallId: string) => onOpenPlanReview(session.id, toolCallId) }
-          : {}),
-        ...(canActOnAgentSurfaces
-          ? {
-              fillComposer: (text: string) => {
-                inputAreaRef.current?.appendInputText(text);
-                inputAreaRef.current?.focusInput();
-              },
-            }
-          : {}),
-      }),
-      [canActOnAgentSurfaces, onOpenPlanReview, session.id]
-    );
     /* The edit-and-resend editor shares the composer's mention pipeline: same
        `@`/`$`/`/` sources, same before-send expansion. The provider is always
        enabled here (unlike the composer, which gates on the draft containing
@@ -4358,6 +4350,34 @@ export const SessionChatInterface = memo(
       ]
     );
 
+    const sendWidgetPrompt = useStableCallback((request: WidgetPromptRequest) => {
+      const route = routeWidgetPrompt({
+        inSideChat: session.childSessionPlacement === 'side-panel',
+        canAskInSideChat: onAskInSideChat !== undefined,
+        widgetTurnId: request.turnId,
+        latestTurnId: lastCompletedAssistantMessageId,
+      });
+      if (route.kind === 'send') {
+        void dispatchPrompt(request.text);
+      } else if (route.kind === 'side-chat') {
+        onAskInSideChat?.({ ...request, turnId: route.turnId });
+      } else {
+        inputAreaRef.current?.appendInputText(request.text);
+        inputAreaRef.current?.focusInput();
+      }
+    });
+    const agentSurfaceActions = useMemo<AgentSurfaceActions>(
+      () => ({
+        sessionId: session.id,
+        canAct: canActOnAgentSurfaces,
+        ...(onOpenPlanReview
+          ? { openPlanReview: (toolCallId: string) => onOpenPlanReview(session.id, toolCallId) }
+          : {}),
+        ...(canActOnAgentSurfaces ? { sendWidgetPrompt } : {}),
+      }),
+      [canActOnAgentSurfaces, onOpenPlanReview, sendWidgetPrompt, session.id]
+    );
+
     const handleSendMessage = useCallback(
       async (
         inputBlocks: SessionInputBlock[],
@@ -5290,6 +5310,7 @@ export const SessionChatInterface = memo(
             text,
             buildPlanReviewTurnConfigOverrides(decision, executionTurnConfigInput)
           ),
+        sendPrompt: async (text) => await dispatchPrompt(text),
         insertSessionMention: (sessionId, options) => {
           return inputAreaRef.current?.insertSessionMention(sessionId, options) ?? false;
         },

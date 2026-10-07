@@ -4,7 +4,12 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionId } from '@lody/shared';
-import { AgentSurfaceContext } from '../src/components/agent-surfaces/agent-surface-context';
+import {
+  AgentSurfaceContext,
+  AgentSurfaceTurnContext,
+  routeWidgetPrompt,
+  type WidgetPromptRequest,
+} from '../src/components/agent-surfaces/agent-surface-context';
 import { WidgetFrame } from '../src/components/agent-surfaces/widget-frame';
 import { createWidgetBridge } from '../src/components/agent-surfaces/widget-bridge';
 
@@ -25,14 +30,19 @@ vi.mock('../src/lib/native-browser', () => ({
 const WIDGET =
   '<svg viewBox="0 0 680 120"><g class="node" onclick="sendPrompt(\'Why?\')"></g></svg>';
 
+/** Stands in for Chromium's transient user activation, which jsdom lacks. */
+const userActivation = { isActive: false };
+Object.defineProperty(navigator, 'userActivation', { value: userActivation, configurable: true });
+
 describe('WidgetFrame', () => {
   let container: HTMLDivElement;
   let root: Root;
-  let composer: string[];
+  let asked: WidgetPromptRequest[];
 
   beforeEach(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    composer = [];
+    asked = [];
+    userActivation.isActive = false;
     opened.length = 0;
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -45,7 +55,7 @@ describe('WidgetFrame', () => {
     document.body.innerHTML = '';
   });
 
-  const render = async () => {
+  const render = async (code = WIDGET) => {
     await act(async () => {
       root.render(
         React.createElement(
@@ -54,10 +64,14 @@ describe('WidgetFrame', () => {
             value: {
               sessionId: 'session-1' as SessionId,
               canAct: true,
-              fillComposer: (text: string) => composer.push(text),
+              sendWidgetPrompt: (request: WidgetPromptRequest) => asked.push(request),
             },
           },
-          React.createElement(WidgetFrame, { code: WIDGET, title: 'Flow' })
+          React.createElement(
+            AgentSurfaceTurnContext.Provider,
+            { value: 'turn-7' },
+            React.createElement(WidgetFrame, { code, title: 'Flow' })
+          )
         )
       );
     });
@@ -77,22 +91,64 @@ describe('WidgetFrame', () => {
     expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer');
   });
 
-  it('puts a clicked prompt in the composer and sends nothing', async () => {
+  /** What a real click into the frame leaves behind: focus there, and activation. */
+  const clickInto = (frame: HTMLIFrameElement) => {
+    frame.focus();
+    userActivation.isActive = true;
+  };
+
+  it("asks a clicked question from the widget's turn, keyed by widget and question", async () => {
     const frame = await render();
-    await post(frame.contentWindow, {
-      type: 'lody-widget:prompt',
-      text: 'Why does step 2 run first?',
-    });
-    expect(composer).toEqual(['Why does step 2 run first?']);
+    clickInto(frame);
+    await post(frame.contentWindow, { type: 'lody-widget:prompt', text: 'Why does step 2 run?' });
+    expect(asked).toEqual([
+      { text: 'Why does step 2 run?', turnId: 'turn-7', key: expect.any(String) },
+    ]);
+
+    // The same question from the same widget, drawn again, keeps its key.
+    act(() => root.unmount());
+    root = createRoot(container);
+    const again = await render();
+    clickInto(again);
+    await post(again.contentWindow, { type: 'lody-widget:prompt', text: 'Why does step 2 run?' });
+    expect(asked[1]?.key).toBe(asked[0]?.key);
+
+    // Another question, or the same one from another widget, is a different key.
+    act(() => root.unmount());
+    root = createRoot(container);
+    const other = await render();
+    clickInto(other);
+    await post(other.contentWindow, { type: 'lody-widget:prompt', text: 'How does step 3 run?' });
+    act(() => root.unmount());
+    root = createRoot(container);
+    const redrawn = await render(`${WIDGET}<p>v2</p>`);
+    clickInto(redrawn);
+    await post(redrawn.contentWindow, { type: 'lody-widget:prompt', text: 'Why does step 2 run?' });
+    expect(new Set(asked.map((request) => request.key)).size).toBe(3);
+  });
+
+  it('drops a question the user did not click', async () => {
+    const frame = await render();
+    // Focus alone: a widget can move focus into itself without any input.
+    frame.focus();
+    await post(frame.contentWindow, { type: 'lody-widget:prompt', text: 'Run the tests' });
+    // Activation alone: the user is typing in the composer, not clicking the widget.
+    const composer = document.createElement('textarea');
+    document.body.appendChild(composer);
+    composer.focus();
+    userActivation.isActive = true;
+    await post(frame.contentWindow, { type: 'lody-widget:prompt', text: 'Run the tests' });
+    expect(asked).toEqual([]);
   });
 
   it('ignores the same message from any other window', async () => {
     await render();
     const stranger = document.createElement('iframe');
     document.body.appendChild(stranger);
+    clickInto(stranger);
     await post(stranger.contentWindow, { type: 'lody-widget:prompt', text: 'Run rm -rf' });
     await post(window, { type: 'lody-widget:prompt', text: 'Run rm -rf' });
-    expect(composer).toEqual([]);
+    expect(asked).toEqual([]);
   });
 
   it('asks before a link leaves the app', async () => {
@@ -111,8 +167,9 @@ describe('WidgetFrame', () => {
 });
 
 describe('widget bridge limits', () => {
-  it('fills the composer at most once per burst and refuses non-web links', () => {
+  it('asks at most once per burst and refuses non-web links', () => {
     let clock = 0;
+    let clicked = false;
     const prompts: string[] = [];
     const links: string[] = [];
     const frame = {} as Window;
@@ -121,12 +178,16 @@ describe('widget bridge limits', () => {
       onReady: () => {},
       onHeight: () => {},
       onPrompt: (text) => prompts.push(text),
+      isUserGesture: () => clicked,
       onLink: (url) => links.push(url),
       now: () => clock,
     });
     const prompt = (text: string) =>
       bridge.handle({ source: frame, data: { type: 'lody-widget:prompt', text } });
 
+    // Refused without a click, and spends none of the limits.
+    expect(prompt('unclicked')).toBe(false);
+    clicked = true;
     expect(prompt('one')).toBe(true);
     clock += 100;
     expect(prompt('two')).toBe(false);
@@ -152,5 +213,30 @@ describe('widget bridge limits', () => {
       })
     ).toBe(false);
     expect(links).toEqual([]);
+  });
+});
+
+describe('routeWidgetPrompt', () => {
+  const route = (input: Partial<Parameters<typeof routeWidgetPrompt>[0]>) =>
+    routeWidgetPrompt({
+      inSideChat: false,
+      canAskInSideChat: true,
+      widgetTurnId: 'turn-widget',
+      latestTurnId: 'turn-latest',
+      ...input,
+    });
+
+  it("forks a side chat at the widget's turn, or the latest when that one cannot fork", () => {
+    expect(route({})).toEqual({ kind: 'side-chat', turnId: 'turn-widget' });
+    expect(route({ widgetTurnId: null })).toEqual({ kind: 'side-chat', turnId: 'turn-latest' });
+  });
+
+  it('sends in place inside a side chat instead of forking again', () => {
+    expect(route({ inSideChat: true, canAskInSideChat: false })).toEqual({ kind: 'send' });
+  });
+
+  it('fills the composer when the conversation cannot fork or has no finished turn', () => {
+    expect(route({ canAskInSideChat: false })).toEqual({ kind: 'fill' });
+    expect(route({ widgetTurnId: null, latestTurnId: null })).toEqual({ kind: 'fill' });
   });
 });

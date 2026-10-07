@@ -41,7 +41,7 @@ export const AGENT_SURFACE_TOOL_DESCRIPTIONS = {
     'Use the host CSS variables so it works in light and dark mode: text --text-primary, --text-secondary, --text-muted; surfaces --surface-0/1/2; borders --border, --border-strong; status --text-accent, --text-danger, --text-success, --text-warning; also --radius, --font-sans, --font-mono.',
     'SVG: width="100%" with a viewBox (680 wide renders 1:1); helper classes t, ts, th for text, box for shapes, node for clickable groups, arr for arrows, and c-blue, c-teal, c-purple, c-coral, c-amber, c-green, c-red, c-pink, c-gray for colored groups.',
     'Height follows the content (capped): never use position: fixed, fullscreen, or nested scrolling.',
-    "Make nodes clickable with onclick=\"sendPrompt('a follow-up question')\"; this fills the user's message box for them to send. Open links with <a href> or openLink(url); the user confirms.",
+    'Make nodes clickable with onclick="sendPrompt(\'a follow-up question\')"; a click asks that question in a side conversation forked from this point, so write each as a complete question that stands on its own; it runs only on a real click. Open links with <a href> or openLink(url); the user confirms.',
     `External scripts, styles and fonts load only from ${CDN_HOSTS}; nothing else is reachable. Load a library with <script src> before the inline script that uses it.`,
   ].join(' '),
 } as const satisfies Record<LodyAgentToolId, string>;
