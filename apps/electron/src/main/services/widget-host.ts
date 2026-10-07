@@ -36,6 +36,53 @@ export function createWidgetHostServer(): http.Server {
 }
 
 let started: Promise<string> | null = null
+/** The page's URL once the server listens; navigation guards compare against it. */
+let startedUrl: string | null = null
+
+export function getStartedWidgetHostUrl(): string | null {
+  return startedUrl
+}
+
+const originOf = (url: string): string | null => {
+  try {
+    const origin = new URL(url).origin
+    return origin === 'null' ? null : origin
+  } catch {
+    return null
+  }
+}
+
+const isShellUrl = (url: string, shellUrl: string): boolean => {
+  try {
+    const target = new URL(url)
+    const shell = new URL(shellUrl)
+    return (
+      target.origin === shell.origin && target.pathname === shell.pathname && target.search === ''
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether a frame navigation (or redirect) must be stopped. A widget frame is
+ * sandboxed but may still navigate itself; `index.html` frames any loopback
+ * port and the page's own policy governs only frames it embeds, so this is the
+ * one place that keeps a widget on its page. Every navigation that leaves the
+ * page's origin, or enters it, must land exactly on the page.
+ */
+export function isBlockedWidgetFrameNavigation(input: {
+  /** The frame's current URL, before the navigation. */
+  currentUrl: string
+  targetUrl: string
+  shellUrl: string | null
+}): boolean {
+  if (!input.shellUrl) return false
+  const shellOrigin = originOf(input.shellUrl)
+  const governed =
+    originOf(input.currentUrl) === shellOrigin || originOf(input.targetUrl) === shellOrigin
+  return governed && !isShellUrl(input.targetUrl, input.shellUrl)
+}
 
 /** The page's URL, starting the server on first use. */
 export function getWidgetHostUrl(): Promise<string> {
@@ -54,7 +101,8 @@ export function getWidgetHostUrl(): Promise<string> {
       }
       // Never keeps the app alive on quit.
       server.unref()
-      resolve(`http://127.0.0.1:${address.port}${LODY_WIDGET_SHELL_PATH}`)
+      startedUrl = `http://127.0.0.1:${address.port}${LODY_WIDGET_SHELL_PATH}`
+      resolve(startedUrl)
     })
   })
   return started
