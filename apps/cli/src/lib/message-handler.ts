@@ -832,6 +832,8 @@ export class MessageHandler {
   private readonly lanWorkspace: boolean;
   private readonly askLanMemberDirect?: MessageHandlerConfig['askLanMemberDirect'];
   private readonly machineLifecycleCapability: MachineLifecycleCapability;
+  /** Per session, the user turn whose prompt the provider last answered. */
+  private readonly promptSuggestionSourceTurns = new Map<SessionId, string>();
   private pendingProcessLifecycleAction: MachineProcessLifecycleAction | null = null;
   private readonly store = new SessionTransientStore();
   private sessionActivePresence!: SessionActivePresenceController;
@@ -3231,6 +3233,8 @@ export class MessageHandler {
         this.clearConversationTurnIfMatches(sessionId, turnId),
       getActiveTurnId: (sessionId) => this.store.getActiveTurnId(sessionId),
       clearActiveTurnId: (sessionId, turnId) => this.clearActiveTurnIdIfMatches(sessionId, turnId),
+      notePromptReturned: (sessionId, userTurnId) =>
+        this.promptSuggestionSourceTurns.set(sessionId, userTurnId),
       hasPromptOutputForTurn: (sessionId, turnId) => this.hasPromptOutputForTurn(sessionId, turnId),
       observePromptOutputForTurn: (sessionId, turnId) =>
         this.observePromptOutputForTurn(sessionId, turnId),
@@ -9512,6 +9516,10 @@ export class MessageHandler {
    * keeps the option it started with, so the switch is checked again here.
    */
   private async storePromptSuggestion(sessionId: SessionId, suggestion: string): Promise<void> {
+    // Claude guesses after a turn it answered for this daemon; without that
+    // turn there is nothing to tie the guess to.
+    const sourceUserTurnId = this.promptSuggestionSourceTurns.get(sessionId);
+    if (!sourceUserTurnId) return;
     try {
       const enabled = await readWorkspacePromptSuggestionsEnabled(
         this.workspaceDocument.repo,
@@ -9519,7 +9527,7 @@ export class MessageHandler {
       );
       if (!enabled) return;
       const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
-      await sessionDoc.setPromptSuggestion(suggestion);
+      await sessionDoc.setPromptSuggestion(suggestion, sourceUserTurnId);
     } catch (error) {
       this.logger.debug(
         `[${sessionId}] Failed to store prompt suggestion: ${formatErrorMessage(error)}`

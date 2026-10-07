@@ -39,7 +39,7 @@ import {
   SessionStatus,
   SessionContextWindowUsage,
   SESSION_PROMPT_SUGGESTION_MAX_LENGTH,
-  hasPendingUserTurnActivation,
+  getPendingUserTurnActivationId,
   type ProjectRef,
   SessionPullRequestMeta,
   SessionPlanEntry,
@@ -2869,11 +2869,13 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
   }
 
   /**
-   * Offers Claude's guess at the next message. Written only while no turn is
-   * owed: a guess that arrives after the next message was sent is already stale.
+   * Offers Claude's guess at the message after `sourceUserTurnId`. It is
+   * written while that turn is still wrapping up (Git, PR and document sync
+   * run after the provider answered) and dropped only once a newer turn has
+   * taken its place; `getCurrentPromptSuggestion` shows it when the turn is done.
    * Returns whether it was written.
    */
-  async setPromptSuggestion(text: string): Promise<boolean> {
+  async setPromptSuggestion(text: string, sourceUserTurnId: string): Promise<boolean> {
     if (!this.mirror) {
       throw new Error('SessionDocument not initialized');
     }
@@ -2882,12 +2884,13 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
     const current = await this.repo.getDocMeta(this.roomId);
     if (isLoroRepoDocDeleted(current)) return false;
     const meta = (current?.meta ?? {}) as SessionMeta;
-    if (hasPendingUserTurnActivation(meta)) return false;
+    const owed = getPendingUserTurnActivationId(meta);
+    if (owed !== undefined && owed !== sourceUserTurnId) return false;
+    if (meta.latestUserMsgId !== undefined && meta.latestUserMsgId !== sourceUserTurnId) {
+      return false;
+    }
     await this.repo.upsertDocMeta(this.roomId, {
-      promptSuggestion: {
-        text: suggestion,
-        ...(meta.latestUserMsgId ? { afterUserMsgId: meta.latestUserMsgId } : {}),
-      },
+      promptSuggestion: { text: suggestion, afterUserMsgId: sourceUserTurnId },
     });
     return true;
   }

@@ -59,8 +59,13 @@ describe('SessionDocument status metadata', () => {
     );
   });
 
-  it('offers a prompt suggestion only while no turn is owed, for the newest turn', async () => {
-    let meta = { latestUserMsgId: 'user-1', lastHandledUserMsgId: 'user-1' } as SessionMeta;
+  it('keeps a prompt suggestion written during wrap-up and drops one a newer turn replaced', async () => {
+    // The provider answered user-1; Git and PR sync still hold the turn open.
+    let meta = {
+      latestUserMsgId: 'user-1',
+      processingUserMsgId: 'user-1',
+      lastHandledUserMsgId: 'user-0',
+    } as SessionMeta;
     const doc = createSessionDocument({
       getDocMeta: vi.fn(async () => ({ meta })),
       upsertDocMeta: vi.fn(async (_roomId: string, patch: Partial<SessionMeta>) => {
@@ -68,16 +73,19 @@ describe('SessionDocument status metadata', () => {
       }),
     });
 
-    await expect(doc.setPromptSuggestion('  run the tests ')).resolves.toBe(true);
-    expect(getCurrentPromptSuggestion(meta)).toBe('run the tests');
-    await expect(doc.setPromptSuggestion('x'.repeat(301))).resolves.toBe(false);
+    await expect(doc.setPromptSuggestion('  run the tests ', 'user-1')).resolves.toBe(true);
+    await expect(doc.setPromptSuggestion('x'.repeat(301), 'user-1')).resolves.toBe(false);
+    expect(getCurrentPromptSuggestion(meta)).toBeUndefined();
+
+    // Wrap-up ends: the guess shows.
+    meta = { ...meta, processingUserMsgId: undefined, lastHandledUserMsgId: 'user-1' };
     expect(getCurrentPromptSuggestion(meta)).toBe('run the tests');
 
     // The next message is published: the old guess stops showing at once, and
-    // a guess that arrives late is not written.
+    // a guess for the replaced turn that arrives late is not written.
     meta = { ...meta, latestUserMsgId: 'user-2' };
     expect(getCurrentPromptSuggestion(meta)).toBeUndefined();
-    await expect(doc.setPromptSuggestion('a late guess')).resolves.toBe(false);
+    await expect(doc.setPromptSuggestion('a late guess', 'user-1')).resolves.toBe(false);
     expect(meta.promptSuggestion?.text).toBe('run the tests');
 
     // Handled, but the turn produced no guess of its own: the old one stays hidden.

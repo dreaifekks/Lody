@@ -607,9 +607,9 @@ export interface AgentClientOptions {
    */
   loadExternalMcpServers?(): Promise<SessionMcpCatalogSelector>;
   /**
-   * Whether the workspace turned on next-message suggestions. Read when a
-   * Claude session starts, after the catalog sync above, because Claude takes
-   * the option only at process start.
+   * Whether the workspace turned on next-message suggestions, synced and read
+   * when a Claude session starts: Claude takes the option only at process start.
+   * Invoked BEFORE `initialize` so the sync overlaps the handshake.
    */
   loadPromptSuggestionsEnabled?(): Promise<boolean>;
   /** Claude's guess at the next user message, after a turn and while no prompt is running. */
@@ -1806,13 +1806,9 @@ export class AgentClient implements acp.Client {
   }
 
   /** Only Claude makes suggestions; other agents are never asked. */
-  private async loadPromptSuggestionsRequest(
-    catalogSync: Promise<unknown> | undefined
-  ): Promise<boolean> {
+  private async loadPromptSuggestionsRequest(): Promise<boolean> {
     const load = this.options.loadPromptSuggestionsEnabled;
     if (!load || this.options.agentConfig?.agentType !== 'claude') return false;
-    // The catalog sync brings the workspace setting in from other devices.
-    await catalogSync?.catch(() => undefined);
     try {
       return await load();
     } catch (error) {
@@ -1947,7 +1943,7 @@ export class AgentClient implements acp.Client {
     // failure below would otherwise leave this promise unobserved.
     const externalMcpLoad = this.options.loadExternalMcpServers?.();
     externalMcpLoad?.catch(() => undefined);
-    const promptSuggestionsLoad = this.loadPromptSuggestionsRequest(externalMcpLoad);
+    const promptSuggestionsLoad = this.loadPromptSuggestionsRequest();
 
     const initStart = performance.now();
     this.options.onStartupStage?.({ type: 'initialize_start' });

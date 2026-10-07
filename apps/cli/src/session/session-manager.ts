@@ -128,8 +128,10 @@ import { resolveGitHubRepoWorktreeConfig } from './worktree/worktree-config-reso
 import type { AcpCapabilitiesResult } from '@/agent/acp-capability-normalization';
 import { resolveWorkspaceLocalProjectRootPathWithRetry } from '@/lib/local-project-meta';
 import { readTimeoutEnv } from '@/lib/loro/timeout-utils';
-import { loadSessionMcpCatalog } from '@/agent/session-mcp-resolver';
-import { readWorkspacePromptSuggestionsEnabled } from '@/lib/workspace-mcp-store';
+import {
+  loadSessionMcpCatalog,
+  loadSessionPromptSuggestionsEnabled,
+} from '@/agent/session-mcp-resolver';
 import { SessionUserResolver } from './session-user-resolver';
 import {
   SessionPreparationService,
@@ -1422,7 +1424,17 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       onPromptSuggestion: (suggestion) =>
         dispatchEvent(() => this.emit('onPromptSuggestion', sessionId, suggestion)),
       loadPromptSuggestionsEnabled: () =>
-        readWorkspacePromptSuggestionsEnabled(this.workspaceDocument.repo, this.workspaceId),
+        loadSessionPromptSuggestionsEnabled({
+          repo: this.workspaceDocument.repo,
+          syncFlockDoc: (docId, { timeoutMs }) =>
+            this.workspaceDocument.syncFlockDocOrThrow(docId, {
+              timeoutMs,
+              reason: 'session-prompt-suggestions-start',
+            }),
+          workspaceId: this.workspaceId,
+          sessionId,
+          logger: this.logger,
+        }),
       onAgentWarning: (warning) =>
         dispatchEvent(() => this.emit('onAgentWarning', sessionId, warning)),
       loadExternalMcpServers: () =>

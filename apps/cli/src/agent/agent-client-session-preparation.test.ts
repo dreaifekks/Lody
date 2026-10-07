@@ -175,26 +175,17 @@ describe('AgentClient session preparation gate', () => {
   ])(
     'asks $agentType for prompt suggestions only when Claude and the switch is on (on: $enabled)',
     async ({ agentType, enabled, asked }) => {
-      const catalog = deferred<never>();
-      let catalogSynced = false;
       const client = new AgentClient({
         logger: createLogger(),
         sessionId: 'session-1' as SessionId,
         terminalManager: {} as never,
         agentConfig: { cliType: 'builtin', agentType },
-        loadExternalMcpServers: () => catalog.promise,
-        loadPromptSuggestionsEnabled: async () => {
-          // The switch is read only after the catalog sync brought it in.
-          expect(catalogSynced).toBe(true);
-          return enabled;
-        },
+        // No MCP servers selected: the switch is still read.
+        loadPromptSuggestionsEnabled: async () => enabled,
         onUpdateMessage: vi.fn(),
         onRequestPermission: vi.fn(),
       });
-      const start = client.startSession({} as never, '/worktree');
-      catalogSynced = true;
-      catalog.reject(new Error('catalog unavailable'));
-      await start;
+      await client.startSession({} as never, '/worktree');
 
       const [request] = connectionMocks.newSession.mock.calls.at(-1) ?? [];
       expect(request?._meta?.lody?.promptSuggestions).toEqual(asked ? { version: 1 } : undefined);

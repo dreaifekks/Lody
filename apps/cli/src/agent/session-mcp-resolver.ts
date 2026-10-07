@@ -1,6 +1,7 @@
 import {
   getWorkspaceFlockDocId,
   getWorkspaceMcpCatalog,
+  isWorkspacePromptSuggestionsEnabled,
   readWorkspaceFlockRowsFromFlock,
   resolveSessionMcpServers,
   type McpServerId,
@@ -76,5 +77,37 @@ export const loadSessionMcpCatalog = async (
     const reason = formatErrorMessage(error);
     logger.debug(`[${sessionId}] Workspace MCP catalog read failed: ${reason}`);
     return () => ({ servers: [], problems: [{ kind: 'catalog_unavailable', reason }] });
+  }
+};
+
+/**
+ * Reads the workspace's prompt-suggestions switch for a Claude session start.
+ *
+ * Syncs the workspace document first whatever the MCP selection is: a daemon
+ * without a desktop has no other reader of that document, so its local copy
+ * is only as new as its last sync. Best effort: a failed sync reads the local
+ * copy, and a failed read reports off.
+ */
+export const loadSessionPromptSuggestionsEnabled = async (
+  input: Omit<LoadSessionMcpCatalogInput, 'selectedIds' | 'env'>
+): Promise<boolean> => {
+  const docId = getWorkspaceFlockDocId(input.workspaceId);
+  if (input.syncFlockDoc) {
+    try {
+      await input.syncFlockDoc(docId, { timeoutMs: CATALOG_SYNC_TIMEOUT_MS });
+    } catch (error) {
+      input.logger.debug(
+        `[${input.sessionId}] Workspace settings refresh failed; using local rows: ${formatErrorMessage(error)}`
+      );
+    }
+  }
+  try {
+    const handle = await input.repo.openFlockDoc(docId);
+    return isWorkspacePromptSuggestionsEnabled(readWorkspaceFlockRowsFromFlock(handle.flock));
+  } catch (error) {
+    input.logger.debug(
+      `[${input.sessionId}] Workspace settings read failed; prompt suggestions stay off: ${formatErrorMessage(error)}`
+    );
+    return false;
   }
 };
