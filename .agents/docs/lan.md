@@ -603,7 +603,10 @@ behind its gate answer with the new address, signed with a key derived from
 the credential, and it stays a pointer across restarts. The agent service of
 every member asks each hub where it is once a minute (`LanMembership`), writes
 an address that carries a valid signature into `lan-hub.json`, and then
-[follows the change](#following-a-change) as it follows `lody lan move`. A
+[follows the change](#following-a-change) as it follows `lody lan move`. It
+also asks at once when a request to the hub is answered by such a pointer (a
+410 that says `moved`) or three requests in a row fail to reach it
+(`lan-hub-watch.ts`), but one hub at most once in ten seconds. A
 hub that is away has not moved, and an address without the signature is not
 followed: a member hands the credential to whatever address it follows.
 
