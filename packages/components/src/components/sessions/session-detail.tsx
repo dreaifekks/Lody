@@ -144,6 +144,7 @@ import {
   getSidePanelTabCloseFallback,
   getSidePanelTabStateAfterClose,
   getOpeningSideChats,
+  getSidePanelFallbackTabId,
   getSideSessionPanelTabId,
   isViewerTabId,
   parseSideSessionPanelTabId,
@@ -243,15 +244,23 @@ import {
   replaceTabOrderId,
   readWidgetSideChat,
   rememberWidgetSideChat,
-  forgetSideChatFirstPrompt,
-  readSideChatFirstPrompt,
-  saveSideChatFirstPrompt,
+  forgetWidgetSideChat,
   writePersistedDraftTabs,
   writeStoredLastActiveTabState,
   writeStoredTabOrder,
   type DraftSessionTab,
   type PersistedSidePanelTab,
 } from '@/lib/session-draft-tabs';
+import {
+  findWidgetSideChat,
+  forgetOpeningSideChats,
+  forgetSideChatFirstPrompt,
+  readOpeningSideChats,
+  readSideChatFirstPrompt,
+  rememberOpeningSideChat,
+  saveSideChatFirstPrompt,
+  type OpeningSideChat,
+} from '@/lib/side-chat-opening';
 import {
   getPullRequestNumber,
   getPullRequestRepoFullName,
@@ -1085,6 +1094,17 @@ const SessionDetail = ({
   const [askingSideSessionIds, setAskingSideSessionIds] = useState<ReadonlySet<SessionId>>(
     () => new Set()
   );
+  // Side chats this page opened that have not reached it, kept across visits
+  // (`readOpeningSideChats`); a pending fork of this page is one too.
+  const [storedOpeningSideChats, setStoredOpeningSideChats] = useState<OpeningSideChat[]>(() =>
+    readOpeningSideChats(sessionId)
+  );
+  const refreshOpeningSideChats = useStableCallback(() =>
+    setStoredOpeningSideChats(readOpeningSideChats(sessionId))
+  );
+  useEffect(() => {
+    refreshOpeningSideChats();
+  }, [refreshOpeningSideChats, sessionId]);
   const [tabOrder, setTabOrderState] = useState<string[]>(() => readStoredTabOrder(sessionId));
   const tabRestoreNavigationRequestIdRef = useRef(0);
   const [pendingTabRestoreNavigation, setPendingTabRestoreNavigation] = useState<{
@@ -1186,10 +1206,20 @@ const SessionDetail = ({
     () =>
       getOpeningSideChats(
         pendingForks,
+        storedOpeningSideChats,
         visibleSideSessions.map((sideSession) => sideSession.id)
       ),
-    [pendingForks, visibleSideSessions]
+    [pendingForks, storedOpeningSideChats, visibleSideSessions]
   );
+  // An opening side chat that reached the panel is a side chat like any other.
+  useEffect(() => {
+    const arrived = storedOpeningSideChats
+      .map((opening) => opening.sessionId)
+      .filter((id) => visibleSideSessions.some((sideSession) => sideSession.id === id));
+    if (arrived.length === 0) return;
+    forgetOpeningSideChats(sessionId, arrived);
+    refreshOpeningSideChats();
+  }, [refreshOpeningSideChats, sessionId, storedOpeningSideChats, visibleSideSessions]);
 
   const sessionGroupIds = useMemo(
     () => [
@@ -1422,6 +1452,14 @@ const SessionDetail = ({
         // The side chat opens now, as a pending tab until the fork lands; its
         // question waits for the side chat itself, which sends it once its
         // history has arrived, even if this page is left meanwhile.
+        rememberOpeningSideChat(sessionId, {
+          sessionId: targetSessionId,
+          startedAt: Date.now(),
+          ...(options.firstPrompt
+            ? { key: options.firstPrompt.key, question: options.firstPrompt.text }
+            : {}),
+        });
+        refreshOpeningSideChats();
         if (options.firstPrompt) {
           saveSideChatFirstPrompt(targetSessionId, options.firstPrompt.text);
           rememberWidgetSideChat(sessionId, options.firstPrompt.key, targetSessionId);
@@ -1465,7 +1503,12 @@ const SessionDetail = ({
           delete next[source.id];
           return next;
         });
-        forgetSideChatFirstPrompt(targetSessionId);
+        if (placement === 'side-panel') {
+          forgetOpeningSideChats(sessionId, [targetSessionId]);
+          forgetSideChatFirstPrompt(targetSessionId);
+          if (options.firstPrompt) forgetWidgetSideChat(sessionId, options.firstPrompt.key);
+          refreshOpeningSideChats();
+        }
         toast.error(response?.error?.message ?? t('sessions.forkFailed', 'Unable to fork session'));
         return;
       }
@@ -1498,6 +1541,7 @@ const SessionDetail = ({
       currentWorkspaceId,
       pendingForks,
       postHog,
+      refreshOpeningSideChats,
       revealRightSidebar,
       runtime,
       selectSidePanelTab,
@@ -3088,21 +3132,22 @@ const SessionDetail = ({
     }>()
   );
   // A widget question asked again goes back to its side chat while that is
-  // open; one asked while this conversation is forking waits for that fork.
+  // open or still opening, even from an earlier visit; one asked while this
+  // conversation is forking waits for that fork.
   const handleAskInSideChat = useCallback(
     (source: SessionMeta, request: WidgetPromptRequest & { turnId: string }) => {
-      const asked = readWidgetSideChat(sessionId, request.key);
-      if (asked && visibleSideSessions.some((sideSession) => sideSession.id === asked)) {
+      const asked = findWidgetSideChat({
+        key: request.key,
+        remembered: readWidgetSideChat(sessionId, request.key),
+        shownSessionIds: visibleSideSessions.map((sideSession) => sideSession.id),
+        openings: openingSideChats,
+      });
+      if (asked) {
         selectSidePanelTab(getSideSessionPanelTabId(asked));
         revealRightSidebar();
         return;
       }
       const forking = pendingForks[source.id];
-      if (forking?.firstPrompt?.key === request.key) {
-        selectSidePanelTab(getSideSessionPanelTabId(forking.targetSessionId));
-        revealRightSidebar();
-        return;
-      }
       if (forking) {
         widgetQuestionQueue.hold(
           sessionId,
@@ -3116,6 +3161,7 @@ const SessionDetail = ({
     },
     [
       handleForkAssistant,
+      openingSideChats,
       pendingForks,
       revealRightSidebar,
       selectSidePanelTab,
@@ -4844,12 +4890,21 @@ const SessionDetail = ({
       !docMetaCacheReady ||
       !activeSideSessionId ||
       effectiveActiveSideSessionId ||
-      Object.values(pendingForks).some((pending) => pending.targetSessionId === activeSideSessionId)
+      Object.values(pendingForks).some(
+        (pending) => pending.targetSessionId === activeSideSessionId
+      ) ||
+      openingSideChats.some((opening) => opening.sessionId === activeSideSessionId)
     ) {
       return;
     }
     setActiveSideSessionId(null);
-  }, [activeSideSessionId, docMetaCacheReady, effectiveActiveSideSessionId, pendingForks]);
+  }, [
+    activeSideSessionId,
+    docMetaCacheReady,
+    effectiveActiveSideSessionId,
+    openingSideChats,
+    pendingForks,
+  ]);
   const handleCloseSideSession = useCallback(
     async (sideSessionId: SessionId) => {
       if (!runtime || closingSideSessionIds.has(sideSessionId)) {
@@ -5032,21 +5087,19 @@ const SessionDetail = ({
   );
 
   useEffect(() => {
-    if (
-      activeSidebarTab !== null ||
-      effectiveActiveSideSessionId !== null ||
-      effectiveActiveViewerTabId !== null ||
-      sidePanelTabs.length === 0
-    ) {
-      return;
-    }
-    selectSidePanelTab(sidePanelTabs.at(-1)?.id ?? null);
+    const fallbackTabId = getSidePanelFallbackTabId({
+      activeSidebarTab,
+      activeSideChatId: activeSideChatTabSessionId,
+      activeViewerTabId: effectiveActiveViewerTabId,
+      tabIds: sidePanelTabIds,
+    });
+    if (fallbackTabId !== null) selectSidePanelTab(fallbackTabId);
   }, [
     activeSidebarTab,
-    effectiveActiveSideSessionId,
+    activeSideChatTabSessionId,
     effectiveActiveViewerTabId,
     selectSidePanelTab,
-    sidePanelTabs,
+    sidePanelTabIds,
   ]);
 
   // Mobile diff viewers still replace the conversation surface. File viewers

@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { SessionId } from '@lody/shared';
-import { takeSideChatFirstPrompt } from '@/lib/session-draft-tabs';
+import { claimSideChatFirstPrompt } from '@/lib/side-chat-opening';
 import { useStableCallback } from './use-stable-callback';
 
 /**
@@ -22,18 +22,14 @@ export function useSideChatFirstPrompt({
   fill: (text: string) => void;
   onSending?: (text: string) => void;
 }): void {
-  const deliver = useStableCallback(() => {
-    const text = takeSideChatFirstPrompt(sessionId);
+  const deliver = useStableCallback(async () => {
+    const text = await claimSideChatFirstPrompt(sessionId);
     if (text === null) return;
     onSending?.(text);
-    void send(text).then(
-      (sent) => {
-        if (!sent) fill(text);
-      },
-      () => fill(text)
-    );
+    const sent = await send(text).catch(() => false);
+    if (!sent) fill(text);
   });
   useEffect(() => {
-    if (ready) deliver();
+    if (ready) void deliver();
   }, [deliver, ready, sessionId]);
 }

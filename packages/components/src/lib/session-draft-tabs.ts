@@ -353,44 +353,14 @@ export const rememberWidgetSideChat = (
   }
 };
 
-const getSideChatFirstPromptStorageKey = (sideSessionId: SessionId): string =>
-  `lody:side-chat-first-prompt:${sideSessionId}`;
-
-/**
- * The question a side chat was opened to ask, kept on this device until the
- * side chat itself sends it. The side chat's history arrives only after the
- * fork, slowly over a weak link, and the page that asked may be left before
- * then; whichever surface of that side chat is ready first sends it.
- */
-export const saveSideChatFirstPrompt = (sideSessionId: SessionId, text: string): void => {
+/** A widget question whose side chat could not be opened. */
+export const forgetWidgetSideChat = (parentSessionId: SessionId, key: string): void => {
   if (typeof window === 'undefined') return;
   try {
-    windowStorage().setItem(getSideChatFirstPromptStorageKey(sideSessionId), text);
-  } catch {
-    // ignore
-  }
-};
-
-export const readSideChatFirstPrompt = (sideSessionId: SessionId): string | null => {
-  if (typeof window === 'undefined') return null;
-  try {
-    return windowStorage().getItem(getSideChatFirstPromptStorageKey(sideSessionId));
-  } catch {
-    return null;
-  }
-};
-
-/** Removes and returns the question, so only one surface or window sends it. */
-export const takeSideChatFirstPrompt = (sideSessionId: SessionId): string | null => {
-  const text = readSideChatFirstPrompt(sideSessionId);
-  if (text !== null) forgetSideChatFirstPrompt(sideSessionId);
-  return text;
-};
-
-export const forgetSideChatFirstPrompt = (sideSessionId: SessionId): void => {
-  if (typeof window === 'undefined') return;
-  try {
-    windowStorage().removeItem(getSideChatFirstPromptStorageKey(sideSessionId));
+    windowStorage().setItem(
+      getWidgetSideChatsStorageKey(parentSessionId),
+      JSON.stringify(readWidgetSideChats(parentSessionId).filter(([entryKey]) => entryKey !== key))
+    );
   } catch {
     // ignore
   }

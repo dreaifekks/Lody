@@ -58,25 +58,55 @@ export const parseSideSessionPanelTabId = (tabId: string): string | null =>
 
 /**
  * Side chats asked for that the panel cannot show yet: forks into the panel
- * whose new session is not among `shownSessionIds`, because the fork is under
- * way or the session has not reached this device. Each gets a pending tab.
+ * under way on this page (`pendingForks`) or remembered from an earlier visit
+ * (`stored`, `readOpeningSideChats`), whose session is not among
+ * `shownSessionIds`. Each gets a pending tab.
  */
-export const getOpeningSideChats = (
+export const getOpeningSideChats = <Id extends string>(
   pendingForks: Record<
     string,
-    { targetSessionId: string; placement: string; firstPrompt?: { text: string } }
+    {
+      targetSessionId: Id;
+      placement: string;
+      firstPrompt?: { text: string; key: string };
+    }
   >,
-  shownSessionIds: readonly string[]
-): { sessionId: string; question?: string }[] =>
-  Object.values(pendingForks)
-    .filter(
-      (pending) =>
-        pending.placement === 'side-panel' && !shownSessionIds.includes(pending.targetSessionId)
-    )
-    .map((pending) => ({
+  stored: readonly { sessionId: Id; key?: string; question?: string }[],
+  shownSessionIds: readonly Id[]
+): { sessionId: Id; key?: string; question?: string }[] => {
+  const openings = new Map<Id, { sessionId: Id; key?: string; question?: string }>();
+  for (const pending of Object.values(pendingForks)) {
+    if (pending.placement !== 'side-panel') continue;
+    openings.set(pending.targetSessionId, {
       sessionId: pending.targetSessionId,
-      ...(pending.firstPrompt ? { question: pending.firstPrompt.text } : {}),
-    }));
+      ...(pending.firstPrompt
+        ? { key: pending.firstPrompt.key, question: pending.firstPrompt.text }
+        : {}),
+    });
+  }
+  for (const opening of stored) {
+    if (!openings.has(opening.sessionId)) openings.set(opening.sessionId, opening);
+  }
+  return [...openings.values()].filter((opening) => !shownSessionIds.includes(opening.sessionId));
+};
+
+/**
+ * The tab the panel falls back to when nothing in it is selected: the last
+ * one. A side chat still opening is a selection, so a viewer opened earlier
+ * does not take its place while it forks.
+ */
+export const getSidePanelFallbackTabId = (state: {
+  activeSidebarTab: string | null;
+  /** The selected side chat, shown or still opening. */
+  activeSideChatId: string | null;
+  activeViewerTabId: string | null;
+  tabIds: readonly string[];
+}): string | null =>
+  state.activeSidebarTab !== null ||
+  state.activeSideChatId !== null ||
+  state.activeViewerTabId !== null
+    ? null
+    : (state.tabIds.at(-1) ?? null);
 
 export const isViewerTabId = (tabId: string): boolean =>
   tabId.startsWith('file:') || tabId.startsWith('diff:');
