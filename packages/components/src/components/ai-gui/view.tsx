@@ -1316,59 +1316,36 @@ export const buildChatVirtualRows = ({
         continue;
       }
 
-      // Collapsed is the default state, and the detail rows of a collapsed
-      // group are discarded unrendered — don't pay for building them. Initial
-      // mount of a long finished session hits this for every turn.
-      const workedRows: AssistantChatVirtualRow[] = [];
-      if (isWorkedGroupExpanded) {
-        for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
-          const block = blocks[blockIndex];
-          if (block && segment.workBlockKeys.has(block.key)) {
-            appendBlockRows(workedRows, block, blockIndex, true);
-          }
-        }
-        if (segmentSubagentTasks.length > 0) {
-          appendSubagentTasksRow(workedRows, true);
-        }
-      }
-
-      const insertWorkedGroup = () => {
-        assistantRows.push({
-          type: 'assistant',
-          key: `assistant:${message.id}:${segment.key}:worked-header`,
-          messageIndex,
-          item,
-          content: {
-            kind: 'worked_group_header',
-            segmentKey: segment.key,
-            expanded: isWorkedGroupExpanded,
-            // The turn's duration covers ALL its segments, so only the last one
-            // may claim it; earlier regions fall back to "Finished working".
-            durationMs: isLastSegment ? resolveSessionHistoryDurationMs(message) : null,
-          },
-          isLastRowForMessage: false,
-        });
-        if (isWorkedGroupExpanded) {
-          assistantRows.push(...workedRows);
-        }
-      };
-
-      const insertionBlockIndex =
-        segment.firstWorkBlockIndex === -1 ? segmentStart : segment.firstWorkBlockIndex;
-      let didInsertWorkedGroup = false;
+      // The header leads the segment. Collapsed, the segment's text follows it
+      // run after run with the work between them hidden; expanded, the work
+      // rows return to their places between those runs, so the turn reads in
+      // the order it happened. Collapsed is the default state, and the detail
+      // rows of a collapsed group are never built.
+      assistantRows.push({
+        type: 'assistant',
+        key: `assistant:${message.id}:${segment.key}:worked-header`,
+        messageIndex,
+        item,
+        content: {
+          kind: 'worked_group_header',
+          segmentKey: segment.key,
+          expanded: isWorkedGroupExpanded,
+          // The turn's duration covers ALL its segments, so only the last one
+          // may claim it; earlier regions fall back to "Finished working".
+          durationMs: isLastSegment ? resolveSessionHistoryDurationMs(message) : null,
+        },
+        isLastRowForMessage: false,
+      });
       for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
         const block = blocks[blockIndex];
         if (!block) continue;
-        if (!didInsertWorkedGroup && blockIndex === insertionBlockIndex) {
-          insertWorkedGroup();
-          didInsertWorkedGroup = true;
-        }
-        if (!segment.workBlockKeys.has(block.key)) {
-          appendBlockRows(assistantRows, block, blockIndex, false);
+        const isWork = segment.workBlockKeys.has(block.key);
+        if (!isWork || isWorkedGroupExpanded) {
+          appendBlockRows(assistantRows, block, blockIndex, isWork);
         }
       }
-      if (!didInsertWorkedGroup) {
-        insertWorkedGroup();
+      if (isWorkedGroupExpanded && segmentSubagentTasks.length > 0) {
+        appendSubagentTasksRow(assistantRows, true);
       }
     }
 

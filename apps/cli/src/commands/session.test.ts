@@ -2048,7 +2048,7 @@ describe('session command helpers', () => {
         id: 'assistant-entry',
         role: 'assistant',
         timestamp: '2026-03-12T00:00:00.000Z',
-        text: 'Second paragraph',
+        text: 'Final answer\n\nSecond paragraph',
       },
     ]);
   });
@@ -2102,7 +2102,7 @@ describe('session command helpers', () => {
     expect(renderSessionTranscript([])).toBe('No visible history found.');
   });
 
-  it('renders the visible assistant completion for human --wait output', () => {
+  it('renders every visible assistant text for human --wait output', () => {
     expect(
       renderAssistantTurnCompletion([
         { type: 'thought', text: 'internal' },
@@ -2110,7 +2110,7 @@ describe('session command helpers', () => {
         { type: 'tool_call', toolCallId: 'tool-1', status: 'completed' },
         { type: 'text', text: 'Final answer' },
       ])
-    ).toBe('Final answer');
+    ).toBe('First draft\n\nFinal answer');
     expect(renderAssistantTurnCompletion([{ type: 'tool_call', toolCallId: 'tool-1' }])).toBe(
       'No visible assistant reply found.'
     );

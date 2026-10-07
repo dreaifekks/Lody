@@ -503,21 +503,12 @@ function formatVisibleTranscriptItem(item: MessageContent): string | undefined {
   return undefined;
 }
 
-function extractTranscriptText(
-  items: MessageContent[] | undefined,
-  role: SessionTranscriptRole
-): string | undefined {
-  if (role === 'assistant') {
-    let lastVisible: string | undefined;
-    for (const item of items ?? []) {
-      const visible = formatVisibleTranscriptItem(item);
-      if (visible) {
-        lastVisible = visible;
-      }
-    }
-    return lastVisible;
-  }
-
+/**
+ * Every visible item of a turn, in order. An assistant turn reads the same way
+ * its reply reaches a delegating Session: text after text, so an answer written
+ * before a background task's followup is not dropped in favour of the followup.
+ */
+function extractTranscriptText(items: MessageContent[] | undefined): string | undefined {
   const parts: string[] = [];
   for (const item of items ?? []) {
     const visible = formatVisibleTranscriptItem(item);
@@ -547,9 +538,7 @@ export function isVisibleTranscriptTurn(
   ) {
     return false;
   }
-  return (
-    extractTranscriptText(entry.items as MessageContent[] | undefined, entry.role) !== undefined
-  );
+  return extractTranscriptText(entry.items as MessageContent[] | undefined) !== undefined;
 }
 
 /** Format one raw row at its raw position, or `undefined` when not displayable. */
@@ -558,7 +547,7 @@ export function toSessionTranscriptEntry(
   entry: SessionTurn
 ): SessionTranscriptEntry | undefined {
   if (!isVisibleTranscriptTurn(entry)) return undefined;
-  const text = extractTranscriptText(entry.items as MessageContent[] | undefined, entry.role);
+  const text = extractTranscriptText(entry.items as MessageContent[] | undefined);
   if (!text) return undefined;
   return {
     index,
@@ -603,7 +592,7 @@ export function renderSessionTranscript(entries: SessionTranscriptEntry[]): stri
 }
 
 export function renderAssistantTurnCompletion(content: MessageContent[]): string {
-  return extractTranscriptText(content, 'assistant') ?? 'No visible assistant reply found.';
+  return extractTranscriptText(content) ?? 'No visible assistant reply found.';
 }
 
 async function readStdinText(): Promise<string> {

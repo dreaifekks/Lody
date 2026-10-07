@@ -56,15 +56,12 @@ export type AssistantTurnRenderSegment = {
   key: string;
   blockRange: readonly [number, number];
   workBlockKeys: ReadonlySet<string>;
-  /** Index into `blocks` where this segment's work group goes; -1 if none. */
-  firstWorkBlockIndex: number;
 };
 
 export type AssistantTurnRenderLayout = {
   blocks: AssistantTurnRenderBlock[];
   segments: readonly AssistantTurnRenderSegment[];
   workBlockKeys: ReadonlySet<string>;
-  firstWorkBlockIndex: number;
   entries: readonly AssistantMessageRenderItem[];
 };
 
@@ -326,13 +323,12 @@ export const buildAssistantTurnRenderLayout = (
   const segments: AssistantTurnRenderSegment[] = ranges.map((blockRange, segmentIndex) => {
     const key = `segment:${messageId}:${segmentIndex}`;
     if (!isTurnFinished) {
-      return { key, blockRange, workBlockKeys: new Set<string>(), firstWorkBlockIndex: -1 };
+      return { key, blockRange, workBlockKeys: new Set<string>() };
     }
 
-    // The "keep the final contiguous text run visible" rule is applied PER
-    // SEGMENT: each region has its own answer tail. Applied across the whole
-    // turn, the plan would be demoted to process output just because
-    // implementation followed it.
+    // The fold rule is applied PER SEGMENT: whether a region closes in text
+    // is that region's own question, so a plan followed by implementation
+    // still keeps its plan visible.
     const segmentEntries = collectSegmentEntries(blocks, blockRange);
     const segmentContents = segmentEntries.map((entry) => entry.content);
     const collapsibleItemIndexes = new Set<number>();
@@ -350,18 +346,14 @@ export const buildAssistantTurnRenderLayout = (
     });
 
     const segmentWorkBlockKeys = new Set<string>();
-    let firstWorkBlockIndex = -1;
     for (let index = blockRange[0]; index < blockRange[1]; index += 1) {
       const block = blocks[index];
       if (!block) continue;
       if (block.kind === 'activity_group' || collapsibleItemIndexes.has(block.entry.itemIndex)) {
         segmentWorkBlockKeys.add(block.key);
-        if (firstWorkBlockIndex === -1) {
-          firstWorkBlockIndex = index;
-        }
       }
     }
-    return { key, blockRange, workBlockKeys: segmentWorkBlockKeys, firstWorkBlockIndex };
+    return { key, blockRange, workBlockKeys: segmentWorkBlockKeys };
   });
 
   const workBlockKeys = new Set<string>();
@@ -375,7 +367,6 @@ export const buildAssistantTurnRenderLayout = (
     blocks,
     segments,
     workBlockKeys,
-    firstWorkBlockIndex: blocks.findIndex((block) => workBlockKeys.has(block.key)),
     entries,
   };
 };
