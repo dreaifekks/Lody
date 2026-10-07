@@ -2396,6 +2396,7 @@
   "sessions.sidebar.show": "Show sidebar",
   "sessions.sidebar.team": "All Tasks",
   "sessions.sideSession.closeFailed": "Unable to close side chat",
+  "sessions.sideSession.opening": "Opening side chat…",
   "sessions.status.acp": "ACP",
   "sessions.status.askUserQuestion": "Question",
   "sessions.status.archived": "Archived",

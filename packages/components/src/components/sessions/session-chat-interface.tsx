@@ -142,6 +142,7 @@ import {
 } from '@lody/shared';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { useStableCallback } from '@/hooks/use-stable-callback';
+import { useSideChatFirstPrompt } from '@/hooks/use-side-chat-first-prompt';
 import { useAppCapability } from '@/lib/app-platform';
 import { SessionShareDialog } from '@/components/sharing/session-share-dialog';
 import { useSessionShareStatus } from '@/hooks/use-session-share-management';
@@ -301,6 +302,7 @@ import { AutoReviewStatus } from './auto-review-status';
 import { useAutoReview } from '@/hooks/use-auto-review';
 import {
   AgentSurfaceContext,
+  isSideChatSurface,
   routeWidgetPrompt,
   type AgentSurfaceActions,
   type WidgetPromptRequest,
@@ -1914,6 +1916,14 @@ interface SessionChatInterfaceProps {
    * this conversation cannot fork into one; the question then fills the composer.
    */
   onAskInSideChat?: (request: WidgetPromptRequest & { turnId: string }) => void;
+  /**
+   * Rendered as a side chat in the right panel: widget questions are sent here
+   * instead of forking again, and the question it was opened to ask
+   * (`saveSideChatFirstPrompt`) is sent once its history has arrived.
+   */
+  isSideChat?: boolean;
+  /** Called just before that first question is sent. */
+  onSideChatFirstPrompt?: (text: string) => void;
   forkWorktreeAvailability?: SessionForkWorktreeAvailability;
   onForkWorktreeMenuOpen?: () => void;
   forkingAssistantMessageId?: string | null;
@@ -2073,6 +2083,8 @@ export const SessionChatInterface = memo(
       onOpenIosSimulator,
       onOpenPlanReview,
       onAskInSideChat,
+      isSideChat = false,
+      onSideChatFirstPrompt,
       onOpenExistingBrowser,
       headerVariant = 'page',
       paintSessionMentionOverlay = true,
@@ -4352,7 +4364,7 @@ export const SessionChatInterface = memo(
 
     const sendWidgetPrompt = useStableCallback((request: WidgetPromptRequest) => {
       const route = routeWidgetPrompt({
-        inSideChat: session.childSessionPlacement === 'side-panel',
+        inSideChat: isSideChatSurface({ renderedAsSideChat: isSideChat, session }),
         canAskInSideChat: onAskInSideChat !== undefined,
         widgetTurnId: request.turnId,
         latestTurnId: lastCompletedAssistantMessageId,
@@ -4365,6 +4377,23 @@ export const SessionChatInterface = memo(
         inputAreaRef.current?.appendInputText(request.text);
         inputAreaRef.current?.focusInput();
       }
+    });
+    useSideChatFirstPrompt({
+      sessionId: session.id,
+      ready:
+        isSideChat &&
+        canActOnAgentSurfaces &&
+        resolveSessionConversationPreparationState({
+          docReady: sessionDocReady,
+          historyLength: sessionHistoryLength,
+          syncState: sessionDocSyncState,
+        }) === 'ready',
+      send: dispatchPrompt,
+      fill: (text) => {
+        inputAreaRef.current?.appendInputText(text);
+        inputAreaRef.current?.focusInput();
+      },
+      onSending: onSideChatFirstPrompt,
     });
     const agentSurfaceActions = useMemo<AgentSurfaceActions>(
       () => ({

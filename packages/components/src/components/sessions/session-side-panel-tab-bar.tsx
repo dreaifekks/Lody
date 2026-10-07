@@ -56,6 +56,28 @@ export const parseSideSessionPanelTabId = (tabId: string): string | null =>
     ? tabId.slice(SIDE_SESSION_PANEL_PREFIX.length)
     : null;
 
+/**
+ * Side chats asked for that the panel cannot show yet: forks into the panel
+ * whose new session is not among `shownSessionIds`, because the fork is under
+ * way or the session has not reached this device. Each gets a pending tab.
+ */
+export const getOpeningSideChats = (
+  pendingForks: Record<
+    string,
+    { targetSessionId: string; placement: string; firstPrompt?: { text: string } }
+  >,
+  shownSessionIds: readonly string[]
+): { sessionId: string; question?: string }[] =>
+  Object.values(pendingForks)
+    .filter(
+      (pending) =>
+        pending.placement === 'side-panel' && !shownSessionIds.includes(pending.targetSessionId)
+    )
+    .map((pending) => ({
+      sessionId: pending.targetSessionId,
+      ...(pending.firstPrompt ? { question: pending.firstPrompt.text } : {}),
+    }));
+
 export const isViewerTabId = (tabId: string): boolean =>
   tabId.startsWith('file:') || tabId.startsWith('diff:');
 

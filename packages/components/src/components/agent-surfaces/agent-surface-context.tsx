@@ -1,6 +1,11 @@
 import { createContext, useContext } from 'react';
 import { atom } from 'jotai';
-import { matchAgentSurfaceToolCall, type MessageContent, type SessionId } from '@lody/shared';
+import {
+  matchAgentSurfaceToolCall,
+  type MessageContent,
+  type SessionId,
+  type SessionMeta,
+} from '@lody/shared';
 import { inlineWidgetFeatureEnabledAtom, planReviewFeatureEnabledAtom } from '@/atoms/settings';
 
 type ToolCallMessage = Extract<MessageContent, { type: 'tool_call' }>;
@@ -67,6 +72,17 @@ export type WidgetPromptRoute =
   | { kind: 'send' }
   | { kind: 'side-chat'; turnId: string }
   | { kind: 'fill' };
+
+/**
+ * Whether a conversation is a side chat, where widget questions are asked in
+ * place. The right panel says so as it renders the conversation, before the
+ * forked session's `childSessionPlacement` may have reached this device; that
+ * field still marks a side chat shown anywhere else.
+ */
+export const isSideChatSurface = (input: {
+  renderedAsSideChat: boolean;
+  session: Pick<SessionMeta, 'childSessionPlacement'>;
+}): boolean => input.renderedAsSideChat || input.session.childSessionPlacement === 'side-panel';
 
 /**
  * Where a widget's question goes. A side chat asks it itself; a conversation

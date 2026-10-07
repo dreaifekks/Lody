@@ -8,6 +8,7 @@ import {
   AgentSurfaceContext,
   AgentSurfaceTurnContext,
   createWidgetQuestionQueue,
+  isSideChatSurface,
   routeWidgetPrompt,
   widgetSideChatTitle,
   type WidgetPromptRequest,
@@ -15,6 +16,9 @@ import {
 import { WidgetFrame } from '../src/components/agent-surfaces/widget-frame';
 import { createWidgetBridge } from '../src/components/agent-surfaces/widget-bridge';
 import { onHostPointerDown } from '../src/components/agent-surfaces/widget-gesture';
+import { getOpeningSideChats } from '../src/components/sessions/session-side-panel-tab-bar';
+import { useSideChatFirstPrompt } from '../src/hooks/use-side-chat-first-prompt';
+import { forgetSideChatFirstPrompt, saveSideChatFirstPrompt } from '../src/lib/session-draft-tabs';
 import {
   createWidgetClickLedger,
   type WidgetClickRect,
@@ -326,6 +330,31 @@ describe('routeWidgetPrompt', () => {
     expect(route({ inSideChat: true, canAskInSideChat: false })).toEqual({ kind: 'send' });
   });
 
+  it('tells a side chat from an ordinary fork by where it is shown, then by its metadata', () => {
+    // The metadata the agent service writes for a fork into the right panel
+    // (`session-fork-service.ts`), and for an ordinary fork into a top tab.
+    const sideChatFork = {
+      id: 'side' as SessionId,
+      title: '(fork) Diagram',
+      titleSource: 'generated',
+      isArchived: false,
+      parentSessionId: 'parent' as SessionId,
+      childSessionPlacement: 'side-panel' as const,
+    };
+    const tabFork = { ...sideChatFork, childSessionPlacement: undefined };
+    const lagging = { ...sideChatFork, childSessionPlacement: undefined };
+
+    const routeIn = (renderedAsSideChat: boolean, session: typeof tabFork) =>
+      route({ inSideChat: isSideChatSurface({ renderedAsSideChat, session }) }).kind;
+    // In the panel, a click asks there, even before the placement has synced.
+    expect(routeIn(true, sideChatFork)).toBe('send');
+    expect(routeIn(true, lagging)).toBe('send');
+    // A side chat opened anywhere else still asks in place.
+    expect(routeIn(false, sideChatFork)).toBe('send');
+    // An ordinary fork in a top tab forks a side chat of its own.
+    expect(routeIn(false, tabFork)).toBe('side-chat');
+  });
+
   it('fills the composer when the conversation cannot fork or has no finished turn', () => {
     expect(route({ canAskInSideChat: false })).toEqual({ kind: 'fill' });
     expect(route({ widgetTurnId: null, latestTurnId: null })).toEqual({ kind: 'fill' });
@@ -362,6 +391,108 @@ describe('widget side chats', () => {
     expect(queue.release('page-b', () => false)).toEqual([]);
     // Back on page A, it goes on.
     expect(queue.release('page-a', () => false)).toEqual([{ request: { key: 'b' } }]);
+  });
+
+  it('shows a side chat as opening from the click until its session reaches the panel', () => {
+    const pending = (phase: 'requesting' | 'awaiting-history') => ({
+      parent: {
+        turnId: 'turn-1',
+        targetSessionId: 'side',
+        phase,
+        placement: 'side-panel',
+        firstPrompt: { text: 'Why?', key: 'k', turnId: 'turn-1' },
+      },
+      other: { turnId: 'turn-2', targetSessionId: 'tab', phase, placement: 'tab' },
+    });
+    // Forking, and forked but not yet here: one pending tab, named by the question.
+    expect(getOpeningSideChats(pending('requesting'), [])).toEqual([
+      { sessionId: 'side', question: 'Why?' },
+    ]);
+    expect(getOpeningSideChats(pending('awaiting-history'), [])).toEqual([
+      { sessionId: 'side', question: 'Why?' },
+    ]);
+    // Once the side chat is in the panel, its own tab takes over.
+    expect(getOpeningSideChats(pending('awaiting-history'), ['side'])).toEqual([]);
+  });
+
+  describe('first question', () => {
+    let container: HTMLDivElement;
+    let roots: Root[];
+    const sent: string[] = [];
+    const filled: string[] = [];
+    const renamed: string[] = [];
+
+    function SideChat(props: { id: string; ready: boolean; accepts?: boolean }) {
+      useSideChatFirstPrompt({
+        sessionId: props.id as SessionId,
+        ready: props.ready,
+        send: async (text) => {
+          if (props.accepts === false) return false;
+          sent.push(`${props.id}: ${text}`);
+          return true;
+        },
+        fill: (text) => filled.push(`${props.id}: ${text}`),
+        onSending: (text) => renamed.push(widgetSideChatTitle(text)),
+      });
+      return null;
+    }
+    const mount = async (element: React.ReactElement) => {
+      const root = createRoot(container.appendChild(document.createElement('div')));
+      roots.push(root);
+      await act(async () => root.render(element));
+      return root;
+    };
+
+    beforeEach(() => {
+      container = document.body.appendChild(document.createElement('div'));
+      roots = [];
+      sent.length = 0;
+      filled.length = 0;
+      renamed.length = 0;
+    });
+    afterEach(() => {
+      for (const root of roots) act(() => root.unmount());
+      container.remove();
+      forgetSideChatFirstPrompt('side' as SessionId);
+    });
+
+    it('is sent by the side chat once its history arrives, after mounting late', async () => {
+      // The click hands the question over before the fork has even answered.
+      saveSideChatFirstPrompt('side' as SessionId, 'What is A?');
+      // The side chat mounts later, still loading its forked history.
+      const root = await mount(<SideChat id="side" ready={false} />);
+      expect(sent).toEqual([]);
+      await act(async () => root.render(<SideChat id="side" ready />));
+      expect(sent).toEqual(['side: What is A?']);
+      expect(renamed).toEqual(['What is A?']);
+      // Re-renders and later surfaces of it do not ask again.
+      await act(async () => root.render(<SideChat id="side" ready />));
+      await mount(<SideChat id="side" ready />);
+      expect(sent).toEqual(['side: What is A?']);
+    });
+
+    it('waits for a page that was left and is opened again', async () => {
+      saveSideChatFirstPrompt('side' as SessionId, 'What is B?');
+      const left = await mount(<SideChat id="side" ready={false} />);
+      act(() => left.unmount());
+      roots = roots.filter((root) => root !== left);
+      await mount(<SideChat id="side" ready />);
+      expect(sent).toEqual(['side: What is B?']);
+    });
+
+    it('is asked by one window only', async () => {
+      saveSideChatFirstPrompt('side' as SessionId, 'What is C?');
+      await mount(<SideChat id="side" ready />);
+      await mount(<SideChat id="side" ready />);
+      expect(sent).toEqual(['side: What is C?']);
+    });
+
+    it('goes into the composer when the side chat cannot send it', async () => {
+      saveSideChatFirstPrompt('side' as SessionId, 'What is D?');
+      await mount(<SideChat id="side" ready accepts={false} />);
+      expect(sent).toEqual([]);
+      expect(filled).toEqual(['side: What is D?']);
+    });
   });
 
   it('names a side chat by its question, shortened to fit a tab', () => {
