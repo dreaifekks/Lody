@@ -213,6 +213,48 @@ describe('LAN host push', () => {
     ]);
   });
 
+  it('alerts an agent message once, opening its conversation', async () => {
+    await register();
+    const notifications = port();
+    const message = {
+      sessionId: 'session-1' as never,
+      noticeId: 'notice-1',
+      sessionTitle: 'Fix the build',
+      body: 'CI is green; may I merge?',
+      workspaceId: WORKSPACE as never,
+      workspaceSlug: WORKSPACE,
+      userId: USER,
+    };
+    await notifications.notifyAgentMessage(message);
+    // The member sends it again after the hub was busy: still one alert.
+    await notifications.notifyAgentMessage(message);
+    await notifications.notifyAgentMessage({ ...message, noticeId: 'notice-2', title: 'Blocked' });
+
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toMatchObject({
+      collapseId: 'agent-notice-1',
+      payload: {
+        aps: { alert: { title: 'Fix the build', body: 'CI is green; may I merge?' } },
+        route: '/lan/sessions/session-1',
+        sessionId: 'session-1',
+        lodyKind: 'agent-message',
+      },
+    });
+    expect(sent[1]).toMatchObject({
+      payload: { aps: { alert: { title: 'Blocked' } } },
+    });
+    expect(
+      (
+        await call('POST', '/push/events', {
+          ...message,
+          type: 'agent-message',
+          machineId: 'm',
+          body: 1,
+        })
+      ).status
+    ).toBe(400);
+  });
+
   it('copies its credentials to members, which alert phones themselves while it is away', async () => {
     await register({ locale: 'en-US' });
     const pem = crypto

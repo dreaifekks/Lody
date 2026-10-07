@@ -217,6 +217,20 @@ export interface CloudNotificationsPort {
     reason: string;
     message?: string | null;
   }): Promise<void>;
+  /**
+   * A message the agent sent the user (`lody_notify_user`). Only self-hosted
+   * LANs implement it.
+   */
+  notifyAgentMessage?(input: {
+    sessionId: SessionId;
+    noticeId: string;
+    sessionTitle?: string | null;
+    title?: string | null;
+    body: string;
+    workspaceId: WorkspaceId;
+    workspaceSlug: string;
+    userId: string;
+  }): Promise<void>;
   /** A scheduled task fired or could not. Only self-hosted LANs implement it. */
   notifyScheduleEvent?(input: {
     phase: 'dispatched' | 'blocked' | 'skipped';

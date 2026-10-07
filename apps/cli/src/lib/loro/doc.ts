@@ -28,6 +28,7 @@ import {
   isCodeCollabFileIndexSignalFlockDocId,
   CODE_COLLAB_FILE_INDEX_FLOCK_TTL_MS,
   SessionMeta,
+  type SessionAgentNoticeMeta,
   type SessionHistoryBackendKind,
   type SessionQueuePromotionRecord,
   type SessionSteerOperationRecord,
@@ -2785,6 +2786,17 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
     await this.repo.upsertDocMeta(this.roomId, {
       baseBranch: sanitized,
     });
+  }
+
+  /** Records a `lody_notify_user` message and makes the session unread. */
+  async setAgentNotice(notice: SessionAgentNoticeMeta) {
+    if (!this.mirror) {
+      throw new Error('SessionDocument not initialized');
+    }
+    const current = await this.repo.getDocMeta(this.roomId);
+    if (isLoroRepoDocDeleted(current)) return;
+    await this.repo.upsertDocMeta(this.roomId, { agentNotice: notice });
+    await this.setLastMessageAt(notice.at);
   }
 
   async setLastMessageAt(timestamp?: number) {

@@ -8,6 +8,7 @@ import { InferInputType, InferType, schema } from 'loro-mirror';
 // Type-only, so the cycle with `review.ts` (which needs
 // `SessionPullRequestStateMeta` for the merge gate) is erased at compile time.
 import type { SessionAutoReviewMeta } from './review';
+import type { SessionAgentNoticeMeta } from './lody-agent-tools';
 import {
   ACPSessionId,
   AcpConfigOptionValue,
@@ -1139,6 +1140,11 @@ export type SessionMeta = {
    * authority would make the whole gate decorative.
    */
   autoReview?: SessionAutoReviewMeta;
+  /**
+   * The latest message the agent sent the user through `lody_notify_user`.
+   * Desktops alert once per id; the phone alert goes out from the machine.
+   */
+  agentNotice?: SessionAgentNoticeMeta;
 };
 
 /**

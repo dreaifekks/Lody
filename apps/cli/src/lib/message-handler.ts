@@ -137,6 +137,7 @@ import {
   type MessageContent,
   type AcpSessionNotification,
   getServerNow,
+  type LodyNotifyUserInput,
   CODE_COLLAB_V2_TEXT_LIMITS,
   isSessionGoalActive,
   type SessionGoalAction,
@@ -270,6 +271,13 @@ import {
 import type { AcpAgentEditEvidence, AcpStandardDiffBlockEvidence } from '@/lib/acp/history';
 import { mergeAcpRuntimeConfigUpdates } from '@/lib/acp/runtime-config';
 import { VoiceHost } from '@/agent/voice-host';
+import { loadWorkspaceAgentTools } from '@/agent/session-mcp-resolver';
+import {
+  AgentNoticeRateLimiter,
+  deliverAgentNotice,
+  isSessionReadThrough,
+  type AgentNoticeResult,
+} from './agent-notice';
 import { generateTitleIsolated, sanitizeTitle } from '@/agent/title-generator';
 import type { AgentSessionWarning } from '@/agent/agent-client';
 import {
@@ -509,17 +517,6 @@ async function withTimeoutOrUndefined<T>(
       clearTimeout(timeout);
     }
   }
-}
-
-/** Someone has read the session up to its latest reply. */
-function isSessionReadThrough(meta: SessionMeta | undefined): boolean {
-  const lastReadAt = meta?.lastReadAt;
-  const lastMessageAt = meta?.lastMessageAt;
-  return (
-    typeof lastReadAt === 'number' &&
-    typeof lastMessageAt === 'number' &&
-    lastReadAt >= lastMessageAt
-  );
 }
 
 function delay(ms: number): Promise<void> {
@@ -871,6 +868,8 @@ export class MessageHandler {
   private stopPermissionAnswers: (() => void) | null = null;
   /** Alerts held for `alertGraceMs`; cleared on cleanup. */
   private readonly alertGraceTimers = new Set<NodeJS.Timeout>();
+  /** `lody_notify_user` limits, per session and for this machine. */
+  private readonly agentNoticeLimiter = new AgentNoticeRateLimiter(() => Date.now());
   /** The next repeat of each user's Live Activity summary while work runs. */
   private readonly liveActivityHeartbeats = new Map<string, NodeJS.Timeout>();
   private usageTrackingService: CloudUsagePort | null;
@@ -6756,6 +6755,7 @@ export class MessageHandler {
             void this.sessionDispatchWatcher.enqueueSessionCheck(sessionId);
           },
           githubToken: async (repoFullName) => await this.readGitHubToken(repoFullName),
+          notifyUser: async (sessionId, input) => await this.notifyUserFromAgent(sessionId, input),
           ...(this.lanWorkspace
             ? {
                 remote: {
@@ -10427,6 +10427,52 @@ export class MessageHandler {
       if (isAnswered()) return;
       await notificationService.notifyPermissionRequested(input);
     });
+  }
+
+  /** `lody_notify_user`: see `agent-notice.ts`. */
+  private async notifyUserFromAgent(
+    sessionId: SessionId,
+    input: LodyNotifyUserInput
+  ): Promise<AgentNoticeResult> {
+    const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
+    // Re-read here, not trusted from the agent's tool list: the user may have
+    // switched the experiment off since the agent started.
+    const enabled = (
+      await loadWorkspaceAgentTools({
+        repo: this.workspaceDocument.repo,
+        workspaceId: this.workspaceId as WorkspaceId,
+      })
+    ).includes('notify');
+    const notificationService = this.notificationService;
+    const notifyAgentMessage = notificationService?.notifyAgentMessage?.bind(notificationService);
+    return deliverAgentNotice(
+      {
+        now: () => getServerNow(),
+        limiter: this.agentNoticeLimiter,
+        isEnabled: () => enabled,
+        writeNotice: async (_sessionId, notice) => await sessionDoc.setAgentNotice(notice),
+        readMeta: async () => await sessionDoc.getMetaState(),
+        push: notifyAgentMessage
+          ? async ({ notice, meta }) =>
+              await this.runTurnAlert(sessionId, 'agent message notification', async () =>
+                notifyAgentMessage({
+                  sessionId,
+                  noticeId: notice.id,
+                  sessionTitle: meta?.title,
+                  title: notice.title ?? null,
+                  body: notice.body,
+                  workspaceId: this.workspaceId as WorkspaceId,
+                  workspaceSlug: this.workspaceSlug?.trim() || this.workspaceId,
+                  userId: meta?.userId ?? this.userId,
+                })
+              )
+          : undefined,
+        graceMs: notificationService?.alertGraceMs,
+        afterGrace: (delayMs, run) => this.afterAlertGrace(delayMs, run),
+      },
+      sessionId,
+      input
+    );
   }
 
   private async notifySessionCompleted(

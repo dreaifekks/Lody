@@ -189,6 +189,7 @@ function parseDevice(body: unknown, now: number): LanPushDevice {
 const EVENT_TYPES = new Set([
   'session-completed',
   'session-failed',
+  'agent-message',
   'permission-requested',
   'permission-resolved',
   'schedule',
@@ -215,6 +216,11 @@ function parseEvent(body: unknown): LanPushEvent {
     throw new BadRequest('missing sessionId');
   } else if (body.type === 'permission-resolved' && typeof body.requestId !== 'string') {
     throw new BadRequest('missing requestId');
+  } else if (
+    body.type === 'agent-message' &&
+    (typeof body.noticeId !== 'string' || typeof body.body !== 'string')
+  ) {
+    throw new BadRequest('invalid agent message');
   }
   return {
     ...body,
@@ -975,6 +981,20 @@ export function createLanHubPush(options: {
           body: copy.failed(truncate(event.message || event.reason, 160)),
         }),
         { sessionId: event.sessionId, collapseId: `done-${event.sessionId}` }
+      );
+    } else if (event.type === 'agent-message') {
+      if (!firstTime(`agent:${event.noticeId}`)) return null;
+      await alert(
+        event,
+        (copy) => ({
+          title: event.title || event.sessionTitle || copy.untitled,
+          body: event.body,
+        }),
+        {
+          sessionId: event.sessionId,
+          collapseId: `agent-${event.noticeId}`,
+          payload: { lodyKind: 'agent-message' },
+        }
       );
     } else if (event.type === 'permission-requested') {
       if (!firstTime(`permission:${event.requestId}`)) return null;
