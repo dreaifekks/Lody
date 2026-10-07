@@ -3687,23 +3687,27 @@ export function buildSessionToolServer(
     },
   });
 
-  registerDiscoveryTools(registerSessionTool, async (read) => {
-    const ctx = getSessionContext();
-    const source = await resolveInvokingTurnSource();
-    const auth = getCliAuthContextOrThrow('mcp');
-    const workspace = await resolveWorkspaceOrThrow(auth, getMcpWorkspaceId(ctx));
-    return withWorkspaceManager(auth, workspace, 'mcp-discovery', async (manager) =>
-      read(
-        await createResourceDiscovery({
-          manager,
-          auth,
-          workspaceId: workspace.id as WorkspaceId,
-          delegatedRequester: { userId: source.userId },
-          selectedMcpServerIds: source.inputConfig.mcpServerIds,
-        })
-      )
-    );
-  });
+  registerDiscoveryTools(
+    registerSessionTool,
+    async (read) => {
+      const ctx = getSessionContext();
+      const source = await resolveInvokingTurnSource();
+      const auth = getCliAuthContextOrThrow('mcp');
+      const workspace = await resolveWorkspaceOrThrow(auth, getMcpWorkspaceId(ctx));
+      return withWorkspaceManager(auth, workspace, 'mcp-discovery', async (manager) =>
+        read(
+          await createResourceDiscovery({
+            manager,
+            auth,
+            workspaceId: workspace.id as WorkspaceId,
+            delegatedRequester: { userId: source.userId },
+            selectedMcpServerIds: source.inputConfig.mcpServerIds,
+          })
+        )
+      );
+    },
+    mcpErrorResult
+  );
 
   server.registerTool(
     FEEDBACK_TOOL_NAME,
@@ -4212,6 +4216,8 @@ export function buildSessionToolServer(
         const environment = getSessionCommandEnvironment();
         if (environment) {
           const sessionId = resolveMcpSessionId(args.sessionId, ctx) as SessionId;
+          // A session another machine started may not be in this replica yet.
+          await syncWorkspaceMetaForRead(environment.manager, `session.cancel:${sessionId}`);
           const session = await readCurrentSessionMeta(environment.manager, sessionId);
           // Another machine of a LAN runs its own sessions; its agent service cancels them.
           const reachable =

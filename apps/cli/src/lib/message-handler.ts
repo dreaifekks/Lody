@@ -54,6 +54,8 @@ import {
   SessionMeta,
   LocalProjectId,
   getMachineRoomId,
+  machineSupportsSessionCancelActiveTurn,
+  SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
   getSessionIdFromRoomId,
   getSessionRoomId,
   TerminalCommandResultSchema,
@@ -6730,32 +6732,41 @@ export class MessageHandler {
           cancelSession: async (sessionId, turnId) => {
             const owner = await this.readSessionOwner(sessionId);
             if (owner.machineId && owner.machineId !== this.machineId && this.lanWorkspace) {
-              // A cancel names the running assistant turn, as the machine's own does.
+              // The machine that runs the session knows its running turn. An older
+              // one must be told a turn and ignores any other, so it gets the turn
+              // its session was last asked for, as this replica has it.
+              const machine = (
+                await this.workspaceDocument.repo.getDocMeta(
+                  getMachineRoomId(owner.machineId as MachineId)
+                )
+              )?.meta as MachineMeta | undefined;
+              const picksOwnTurn = machineSupportsSessionCancelActiveTurn(machine);
               const remoteTurnId =
                 turnId ??
-                (owner.latestUserMsgId
-                  ? this.getAssistantEntryIdForUserTurn(owner.latestUserMsgId)
-                  : undefined);
-              if (!remoteTurnId) return { success: false, error: 'Session has no active turn' };
+                (picksOwnTurn || !owner.latestUserMsgId
+                  ? undefined
+                  : this.getAssistantEntryIdForUserTurn(owner.latestUserMsgId));
+              if (!remoteTurnId && !picksOwnTurn)
+                return { success: false, error: SESSION_CANCEL_NO_ACTIVE_TURN_ERROR };
               const response = await this.withRemoteMachineRpcClient(
                 owner.machineId as MachineId,
                 async (client) =>
-                  await client.requestSessionCancel({ sessionId, turnId: remoteTurnId })
+                  await client.requestSessionCancel({
+                    sessionId,
+                    ...(remoteTurnId ? { turnId: remoteTurnId } : {}),
+                  })
               );
               return response?.success
                 ? { success: true }
                 : { success: false, error: response?.error ?? 'The machine did not answer' };
             }
-            const targetTurnId =
-              turnId ?? this.executionService.getExecutionSnapshot(sessionId).activeTurnId;
-            if (!targetTurnId) return { success: false, error: 'Session has no active turn' };
             return this.executionService.cancelSession(
               {
                 type: 'session/cancel',
                 machineId: this.machineId,
                 workspaceId: this.workspaceId,
                 sessionId,
-                turnId: targetTurnId,
+                ...(turnId ? { turnId } : {}),
               },
               { pendingInput: 'promote', prePromptSession: 'discard' }
             );

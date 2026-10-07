@@ -10,7 +10,12 @@ import {
   type MachineMeta,
   type WorkspaceId,
 } from '@lody/shared';
-import { listAliveDocMetas, syncWorkspaceMetaForRead, type AuthContext } from './command-runtime';
+import {
+  listAliveDocMetas,
+  syncFlockDocForRead,
+  syncWorkspaceMetaForRead,
+  type AuthContext,
+} from './command-runtime';
 import type { LoroDocumentManager } from './loro/doc';
 import { readSessionMachineAccess, type DelegatedSessionRequester } from '@/commands/session';
 import { listMergedAgentConfigs } from './agent-config-machine-flock';
@@ -35,7 +40,7 @@ export async function createResourceDiscovery(args: {
   const synced = new Set<string>();
   async function sync(id: string) {
     if (!args.offline && !synced.has(id)) {
-      await manager.syncFlockDocOrThrow(id, { reason: 'resource.discovery' });
+      await syncFlockDocForRead(manager, id, 'resource.discovery');
       synced.add(id);
     }
   }
@@ -52,6 +57,8 @@ export async function createResourceDiscovery(args: {
       return args.offline ? null : manager.getOnlineMachineIds();
     },
     canAccess: async (machineId, localProjectId) =>
+      // On the local platform every project of a machine its user reaches is theirs.
+      (localProjectId !== undefined && getSessionCommandEnvironment() !== undefined) ||
       (
         await readSessionMachineAccess({
           auth,

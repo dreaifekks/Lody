@@ -337,6 +337,18 @@ export async function syncDocForRead(
   }
 }
 
+export async function syncFlockDocForRead(
+  manager: Pick<LoroDocumentManager, 'syncFlockDocOrThrow'>,
+  flockDocId: string,
+  reason: string
+): Promise<void> {
+  try {
+    await manager.syncFlockDocOrThrow(flockDocId, { reason });
+  } catch (error) {
+    throw reason.endsWith(':prewrite') ? buildPrewriteSyncError(error) : buildOfflineHint(error);
+  }
+}
+
 export async function listAliveDocMetas<Meta>(
   manager: LoroDocumentManager,
   predicate: (roomId: string) => boolean

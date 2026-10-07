@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
+  getMachineRoomId,
+  getSessionRoomId,
   type LocalProjectId,
   type MachineLegacyMetaFields,
   type MachineId,
@@ -8,6 +11,7 @@ import {
   type WorkspaceId,
 } from '@lody/shared';
 import { MessageHandler } from '../src/lib/message-handler';
+import { getSessionCommandEnvironment } from '../src/lib/session-command-environment';
 import { getHostMachineProtocolCapabilities } from '../src/agent/managed-agent-runtime';
 import type { LoroDocumentManager } from '../src/lib/loro/doc';
 import type { SessionManager } from '../src/session/session-manager';
@@ -204,6 +208,7 @@ describe('MessageHandler machine registration', () => {
       subagentEvents: 1,
       schedules: 1,
       preparedSessionInput: 1,
+      sessionCancelActiveTurn: 1,
       realtimeVoice: 3,
     });
 
@@ -276,6 +281,88 @@ describe('MessageHandler machine registration', () => {
     // Nor does it send files to a machine that would take them for terminal input.
     expect((await register(false, true)).protocolCapabilities).toMatchObject({ lanFiles: 1 });
     expect((await register(true)).protocolCapabilities).not.toHaveProperty('lanFiles');
+  });
+
+  it('lets another LAN machine pick the turn a cancel stops, and tells an older one a turn', async () => {
+    const peerId = 'machine-peer' as MachineId;
+    const sessionId = 'session-on-peer' as SessionId;
+    let peer: Partial<MachineMeta> = {
+      id: peerId,
+      protocolCapabilities: CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
+    };
+    const workspaceDocument = {
+      sessions: new Map<SessionId, unknown>(),
+      restoreMachineDocument: vi.fn(async () => {}),
+      watchMachineDocumentExistence: vi.fn(() => {}),
+      registerMachine: vi.fn(async () => {}),
+      repo: {
+        watch: vi.fn(() => ({ unsubscribe: vi.fn() })),
+        // The peer's session as this replica has it: a newer message queued behind the running turn.
+        getDocMeta: vi.fn(async (roomId: string) =>
+          roomId === getSessionRoomId(sessionId)
+            ? { meta: { machineId: peerId, latestUserMsgId: 'turn-queued' } }
+            : roomId === getMachineRoomId(peerId)
+              ? { meta: peer }
+              : undefined
+        ),
+      },
+    };
+    const sessionManager = {
+      on: vi.fn(),
+      setRequestPermissionHandler: vi.fn(),
+      getSession: vi.fn(),
+      finishSession: vi.fn(),
+      cleanUp: vi.fn(async () => {}),
+      setSessionError: vi.fn(),
+      terminateSession: vi.fn(),
+      hasSession: vi.fn(),
+      initialize: vi.fn(),
+      createSession: vi.fn(),
+      releaseGitHubRepoOwner: vi.fn(),
+    };
+    const handler = new MessageHandler(
+      sessionManager as unknown as SessionManager,
+      workspaceDocument as unknown as LoroDocumentManager,
+      createSilentLogger(),
+      {
+        token: 'token',
+        workspaceId: 'lw_home' as WorkspaceId,
+        userId: 'local:home',
+        machineId: 'machine-lan' as MachineId,
+        machineName: 'machine-name',
+        cliVersion: '0.100.0-lan.4',
+        cloudPort: createTestCloudPort(),
+        lanWorkspace: true,
+      }
+    );
+    const asked: unknown[] = [];
+    const internals = handler as unknown as {
+      withRemoteMachineRpcClient: (
+        machineId: MachineId,
+        fn: (client: unknown) => Promise<unknown>
+      ) => Promise<unknown>;
+      withSessionCommandEnvironment<T>(run: () => T): T;
+    };
+    internals.withRemoteMachineRpcClient = async (_machineId, fn) =>
+      await fn({
+        requestSessionCancel: async (options: unknown) => {
+          asked.push(options);
+          return { type: 'session/cancel_response', sessionId, success: true };
+        },
+      });
+    const cancel = async () =>
+      await internals.withSessionCommandEnvironment(
+        async () => await getSessionCommandEnvironment()!.host.cancelSession(sessionId)
+      );
+
+    expect(await cancel()).toEqual({ success: true });
+    expect(asked).toEqual([{ sessionId }]);
+    // A build without the capability would drop a cancel that names no turn.
+    peer = { id: peerId, protocolCapabilities: { schedules: 1 } };
+    expect(await cancel()).toEqual({ success: true });
+    expect(asked[1]).toEqual({ sessionId, turnId: 'assistant:turn-queued' });
+
+    await handler.cleanup();
   });
 
   it('contains backend access registration failures after remote services activate', async () => {

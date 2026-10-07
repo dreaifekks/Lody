@@ -5,6 +5,7 @@ import { v4 as uuidV4 } from 'uuid';
 import { z } from 'zod';
 import {
   MachineAcpCapabilitiesRefreshResponseSchema,
+  getMachineFlockDocId,
   isMachineDocRoomId,
   negotiatedAcpCapabilitiesRefreshForce,
   type AgentConfigCliType,
@@ -22,6 +23,8 @@ import {
   ensureWorkspaceMetaSynced,
   getAuthContextOrThrow,
   listAliveDocMetas,
+  syncFlockDocForRead,
+  syncWorkspaceMetaForRead,
   normalizeCliValue,
   printJson,
   resolveStructuredOutputMode,
@@ -366,22 +369,32 @@ function printHumanRefreshSummary(input: {
   }
 }
 
-async function listAgentConfigsForWorkspace(
+/**
+ * The workspace's machines and agent configs, synced first as
+ * `lody_agent_config_list` reads them: a daemon's replica may not yet hold what
+ * another machine of its LAN wrote.
+ */
+async function readAgentConfigCatalog(
   manager: import('@/lib/loro/doc').LoroDocumentManager,
-  workspaceId: WorkspaceId
-): Promise<AgentConfigMeta[]> {
-  const machines = await listMachineMetasForWorkspace(manager);
+  workspaceId: WorkspaceId,
+  reason: string
+): Promise<{ machines: MachineMeta[]; configs: AgentConfigMeta[] }> {
+  const machines = await listMachineMetasForWorkspace(manager, reason);
+  for (const machine of machines)
+    await syncFlockDocForRead(manager, getMachineFlockDocId(workspaceId, machine.id), reason);
   const configs = await listMergedAgentConfigs(
     manager.repo,
     workspaceId,
     machines.map((machine) => machine.id)
   );
-  return sortAgentConfigs(configs);
+  return { machines, configs: sortAgentConfigs(configs) };
 }
 
 async function listMachineMetasForWorkspace(
-  manager: import('@/lib/loro/doc').LoroDocumentManager
+  manager: import('@/lib/loro/doc').LoroDocumentManager,
+  reason: string
 ): Promise<MachineMeta[]> {
+  await syncWorkspaceMetaForRead(manager, reason);
   return (await listAliveDocMetas<MachineMeta>(manager, isMachineDocRoomId)).map(
     (entry) => entry.meta
   );
@@ -454,7 +467,8 @@ export async function showAgentConfig(
   input: AgentConfigInput<'agent-config-show'>
 ) {
   const config = resolveAgentConfigSelector(
-    await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
+    (await readAgentConfigCatalog(manager, workspace.id as WorkspaceId, 'agent-config.show'))
+      .configs,
     { selector: input.selector }
   );
   return {
@@ -467,11 +481,13 @@ export async function resolveAgentConfigTarget(
   { auth, workspace, manager }: WorkspaceCommandContext,
   input: AgentConfigInput<'agent-config-target'>
 ) {
-  const config = resolveAgentConfigSelector(
-    await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
-    { selector: input.selector }
+  const { machines, configs } = await readAgentConfigCatalog(
+    manager,
+    workspace.id as WorkspaceId,
+    'agent-config.target'
   );
-  const machine = resolveMachineOrThrow(await listMachineMetasForWorkspace(manager), {
+  const config = resolveAgentConfigSelector(configs, { selector: input.selector });
+  const machine = resolveMachineOrThrow(machines, {
     selector: input.machine,
     authMachineId: auth.machineId,
   });
@@ -489,10 +505,10 @@ export async function createAgentConfig(
   { auth, workspace, manager }: WorkspaceCommandContext,
   input: AgentConfigInput<'agent-config-create'>
 ) {
-  const machine = resolveMachineOrThrow(await listMachineMetasForWorkspace(manager), {
-    selector: input.machine,
-    authMachineId: auth.machineId,
-  });
+  const machine = resolveMachineOrThrow(
+    await listMachineMetasForWorkspace(manager, 'agent-config.create:prewrite'),
+    { selector: input.machine, authMachineId: auth.machineId }
+  );
   const config: AgentConfigMeta = {
     id: uuidV4() as AgentConfigId,
     machineId: machine.id,
@@ -526,7 +542,13 @@ export async function updateAgentConfig(
   input: AgentConfigInput<'agent-config-update'>
 ) {
   const current = resolveAgentConfigSelector(
-    await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
+    (
+      await readAgentConfigCatalog(
+        manager,
+        workspace.id as WorkspaceId,
+        'agent-config.update:prewrite'
+      )
+    ).configs,
     { selector: input.selector }
   );
   const nextConfig: AgentConfigMeta = {
@@ -557,7 +579,13 @@ export async function deleteAgentConfig(
   input: AgentConfigInput<'agent-config-delete'>
 ) {
   const config = resolveAgentConfigSelector(
-    await listAgentConfigsForWorkspace(manager, workspace.id as WorkspaceId),
+    (
+      await readAgentConfigCatalog(
+        manager,
+        workspace.id as WorkspaceId,
+        'agent-config.delete:prewrite'
+      )
+    ).configs,
     { selector: input.selector }
   );
   await deleteMachineAgentConfig(manager.repo, workspace.id as WorkspaceId, config);

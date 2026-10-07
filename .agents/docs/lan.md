@@ -640,6 +640,18 @@ A machine of the LAN is reached when it is the workspace user's, like every
 member; a machine the hub says is offline is refused, and one the hub cannot
 say anything about is left to the document, which waits for it.
 
+That is all the asking machine decides. What the other machine holds, such
+as whether a project is still there or which turn is running, is for that
+machine to answer: the copy of its documents here may be behind. A project
+missing from that copy does not refuse a chat; the machine reports it when it
+runs the turn. A cancel from an agent or from a terminal (`lody session
+cancel`) names no turn when the target advertises `sessionCancelActiveTurn`,
+and the target stops the turn it is running; an older build, which needs a
+turn named, is told the one its session was last asked for, as before. What
+another machine wrote (a session, its agent configs and projects, a
+schedule's target) is read after a sync, and a sync that fails is reported as
+one to retry (`SYNC_UNAVAILABLE`), not as something that does not exist.
+
 ## Standby and failover
 
 A machine that could host a hub, a server whose agent service the install

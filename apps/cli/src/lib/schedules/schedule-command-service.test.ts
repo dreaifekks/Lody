@@ -8,6 +8,7 @@ import {
   type ScheduleRepositoryPort,
 } from '@lody/shared';
 import { executeScheduleCommand, type ScheduleCommandContext } from './schedule-command-service';
+import { WorkspaceSyncUnavailableError } from '../command-runtime';
 
 async function fixture() {
   const docs = new Map<string, LoroDoc>();
@@ -61,6 +62,7 @@ async function fixture() {
   let history: any[] = [];
   let owner = 'owner';
   let machinePresent = false;
+  let agentPresent = true;
   const context = {
     manager: {
       repo: {
@@ -83,7 +85,7 @@ async function fixture() {
                     protocolCapabilities: { schedules: 1 },
                   },
                 }
-              : id === 'agent-agent'
+              : id === 'agent-agent' && agentPresent
                 ? {
                     meta: {
                       id: 'agent',
@@ -105,6 +107,8 @@ async function fixture() {
           },
         }),
       syncDocOrThrow: vi.fn(),
+      syncMetaOrThrow: vi.fn(async () => {}),
+      syncFlockDocOrThrow: vi.fn(async () => {}),
     },
     workspace: { id: 'workspace' },
     auth: { userId: 'owner', machineId: 'machine' },
@@ -123,6 +127,18 @@ async function fixture() {
     },
     addMachine: () => {
       machinePresent = true;
+    },
+    /** The target machine's record and Agent reach this replica only with a sync. */
+    deferTargetToSync: () => {
+      agentPresent = false;
+      const manager = context.manager as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      manager.syncMetaOrThrow!.mockImplementation(async () => {
+        machinePresent = true;
+      });
+      manager.syncFlockDocOrThrow!.mockImplementation(async () => {
+        agentPresent = true;
+      });
+      return manager;
     },
   };
 }
@@ -234,6 +250,35 @@ it('lets a LAN member create a schedule without a hosted access check', async ()
     })
   ).resolves.toEqual({ ok: true, scheduleId: 'lan' });
   expect((await h.repository.read('lan'))?.definition.title).toBe('From a LAN member');
+});
+
+it("reads the target machine's record and Agents after syncing them, and reports a failed sync as one", async () => {
+  const h = await fixture();
+  h.context.localOnly = false;
+  const manager = h.deferTargetToSync();
+  const { definition } = (await h.repository.read('schedule'))!;
+  const create = (scheduleId: string) =>
+    executeScheduleCommand(h.context, {
+      action: 'create',
+      scheduleId,
+      requestId: `${scheduleId}-create`,
+      draft: {
+        title: 'For another machine',
+        machineId: definition.machineId,
+        trigger: definition.trigger,
+        misfirePolicy: definition.misfirePolicy,
+        overlapPolicy: definition.overlapPolicy,
+        agent: definition.agent,
+        retryPolicy: definition.retryPolicy,
+        prompt: 'Synthetic prompt',
+      },
+    });
+  manager.syncFlockDocOrThrow!.mockRejectedValueOnce(new Error('hub unreachable'));
+  const failed = await create('unsynced').catch((error: unknown) => error);
+  expect(failed).toBeInstanceOf(WorkspaceSyncUnavailableError);
+  expect(String((failed as Error).message)).not.toContain('Agent is unavailable');
+  expect(await h.repository.read('unsynced')).toBeNull();
+  await expect(create('synced')).resolves.toEqual({ ok: true, scheduleId: 'synced' });
 });
 
 it('bounds MCP prompt output and returns usable Registry pagination metadata', async () => {

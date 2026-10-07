@@ -9,10 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLocalCloudPort } from '@lody/platform';
 import {
   AGENT_ROLE_VERSION,
+  getMachineFlockDocId,
   getMachineRoomId,
   getSessionRoomId,
   getWorkspaceFlockDocId,
   isLoroRepoDocDeleted,
+  SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
   writeWorkspaceAgentRoleToFlock,
   type AgentRoleId,
   type LocalProjectId,
@@ -44,6 +46,7 @@ import {
 } from '../src/lib/cli-platform';
 import { LoroDocumentManager } from '../src/lib/loro/doc';
 import { upsertMachineLocalProject } from '../src/lib/local-project-meta';
+import { WorkspaceSyncUnavailableError } from '../src/lib/command-runtime';
 import { makeLocalWorkspaceCatalog } from '../src/lib/local-workspace-catalog';
 import type { Logger } from '../src/utils/logger';
 
@@ -537,6 +540,157 @@ describe('local platform zero-cloud integration', () => {
     }
   });
 
+  it("leaves another machine's state to that machine and reports a failed sync as one", async () => {
+    applyLocalPlatformEnv();
+    const workspaceId = 'lw_lan_peer_state' as WorkspaceId;
+    const machineId = 'peer-state-desk' as MachineId;
+    const peerId = 'peer-state-server' as MachineId;
+    const userId = 'local:peer-state';
+    const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
+    const askedPeer: Array<{ method: string; sessionId: SessionId }> = [];
+    const cancelRequests: Array<{ sessionId: SessionId; turnId: string | undefined }> = [];
+    let peerAnswer: { success: boolean; error?: string } = { success: true };
+    try {
+      await manager.registerMachine(machineId, {
+        id: machineId,
+        name: 'Desk',
+        ownerUserId: userId,
+      });
+      await manager.repo.upsertDocMeta(getMachineRoomId(peerId), {
+        id: peerId,
+        name: 'Server',
+        ownerUserId: userId,
+      } as Parameters<typeof manager.repo.upsertDocMeta>[1]);
+      const sessionId = await manager.createSession(machineId, 'custom', 'claude');
+      // A session on the other machine, in a project this replica has not received yet.
+      const peerSessionId = await manager.createSession(peerId, 'custom', 'claude');
+      await manager.repo.upsertDocMeta(getSessionRoomId(peerSessionId), {
+        project: { kind: 'local', localProjectId: 'unsynced-project' },
+      } as Parameters<typeof manager.repo.upsertDocMeta>[1]);
+      await manager.repo.flush();
+      const environment = createLocalSessionCommandEnvironment({
+        manager,
+        workspaceId,
+        machineId,
+        machineName: 'Desk',
+        userId,
+        host: {
+          readInvocation: (id) => ({
+            type: 'session/active-invocation-context',
+            active: true,
+            sessionId: id,
+            requesterUserId: userId,
+            sourceTurnId: 'source-turn',
+            inputConfig: { cliType: 'custom', agentType: 'claude' },
+          }),
+          readLiveStatus: async (id) => ({ sessionId: id, machineOnline: true, fresh: true }),
+          cancelSession: async (id, turnId) => {
+            cancelRequests.push({ sessionId: id, turnId });
+            return peerAnswer;
+          },
+          dispatchSession: async () => {},
+          remote: {
+            isOnline: async () => true,
+            withClient: async (_target, fn) =>
+              await fn({
+                requestSessionDispatchTurn: async (options: { sessionId: SessionId }) => {
+                  askedPeer.push({ method: 'session/dispatch-turn', sessionId: options.sessionId });
+                  return null;
+                },
+              } as unknown as Parameters<typeof fn>[0]),
+          },
+        },
+      });
+      const call = (name: string, args: unknown) =>
+        runWithSessionCommandEnvironment(environment, () =>
+          executeDaemonSessionTool(
+            {
+              machineId,
+              workspaceId,
+              sessionId,
+              localControlSocketPath: undefined,
+              workdir: tempDir,
+            },
+            name,
+            args
+          )
+        );
+      const run = (command: Parameters<typeof executeTerminalCommand>[1]) =>
+        runWithSessionCommandEnvironment(environment, () =>
+          executeTerminalCommand({ machineId, workspaceId }, command)
+        );
+
+      // The project is the other machine's to know; this replica's copy does not decide.
+      const chatted = await call('lody_session_chat', {
+        operationId: 'peer-chat',
+        sessionId: peerSessionId,
+        prompt: 'Carry on.',
+      });
+      expect(chatted.isError, JSON.stringify(chatted)).not.toBe(true);
+      expect(askedPeer).toEqual([{ method: 'session/dispatch-turn', sessionId: peerSessionId }]);
+
+      // A terminal's cancel lets the machine that runs the session pick its turn,
+      // whatever this replica's copy of the history shows.
+      expect(await run({ command: 'cancel', sessionId: peerSessionId })).toMatchObject({
+        sessionId: peerSessionId,
+        response: { success: true },
+      });
+      expect(cancelRequests).toEqual([{ sessionId: peerSessionId, turnId: undefined }]);
+      peerAnswer = { success: false, error: SESSION_CANCEL_NO_ACTIVE_TURN_ERROR };
+      expect(await run({ command: 'cancel', sessionId: peerSessionId })).toEqual({
+        sessionId: peerSessionId,
+        alreadyStopped: true,
+      });
+
+      // A session the other machine just started reaches this replica with the sync.
+      const lateSessionId = 'peer-state-late-session' as SessionId;
+      vi.spyOn(manager, 'syncMetaOrThrow').mockImplementationOnce(async () => {
+        await manager.repo.upsertDocMeta(getSessionRoomId(lateSessionId), {
+          id: lateSessionId,
+          machineId: peerId,
+          userId,
+        } as Parameters<typeof manager.repo.upsertDocMeta>[1]);
+      });
+      peerAnswer = { success: true };
+      const cancelled = await call('lody_session_cancel', { sessionId: lateSessionId });
+      expect(cancelled.isError, JSON.stringify(cancelled)).not.toBe(true);
+      expect(cancelRequests.at(-1)).toEqual({ sessionId: lateSessionId, turnId: undefined });
+
+      // A sync that fails is reported as one, to retry, not as a session that is not there.
+      vi.spyOn(manager, 'syncMetaOrThrow').mockRejectedValueOnce(new Error('hub unreachable'));
+      const unsynced = await call('lody_session_cancel', { sessionId: peerSessionId });
+      expect(unsynced.isError).toBe(true);
+      expect(JSON.stringify(unsynced)).toContain('SYNC_UNAVAILABLE');
+      expect(JSON.stringify(unsynced)).not.toContain('not found');
+
+      // An agent config written on the other machine is read after its document syncs.
+      const peerFlockDocId = getMachineFlockDocId(workspaceId, peerId);
+      const syncFlock = manager.syncFlockDocOrThrow.bind(manager);
+      vi.spyOn(manager, 'syncFlockDocOrThrow').mockImplementation(async (id, options) => {
+        if (id === peerFlockDocId && !(await manager.hasAgentConfig('custom', 'claude', peerId)))
+          await manager.createAgentConfig('custom', 'claude', peerId, 'Server agent');
+        await syncFlock(id, options);
+      });
+      expect(await run({ command: 'agent-config-show', selector: 'Server agent' })).toMatchObject({
+        agentConfig: { name: 'Server agent', machineId: peerId },
+      });
+      vi.spyOn(manager, 'syncFlockDocOrThrow').mockRejectedValue(new Error('hub unreachable'));
+      await expect(
+        run({ command: 'agent-config-show', selector: 'Server agent' })
+      ).rejects.toBeInstanceOf(WorkspaceSyncUnavailableError);
+      const projects = await call('lody_project_list', { kind: 'local' });
+      expect(projects.isError).toBe(true);
+      expect(JSON.parse((projects.content as Array<{ text: string }>)[0]!.text)).toMatchObject({
+        ok: false,
+        error: { code: 'SYNC_UNAVAILABLE', retryable: true },
+      });
+      expect(cloudConnectionAttempts).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
+      await manager.cleanUp({ fast: true, preserveSessionStatus: true });
+    }
+  });
+
   it("answers a terminal's read-only tools as the machine's user, with no Turn driving them", async () => {
     applyLocalPlatformEnv();
     const workspaceId = 'lw_terminal_test' as WorkspaceId;
@@ -666,9 +820,10 @@ describe('local platform zero-cloud integration', () => {
                 }
               : { type: 'session/active-invocation-context', sessionId: id, active: false },
           readLiveStatus: async (id) => ({ sessionId: id, machineOnline: true, fresh: true }),
-          cancelSession: async () => {
-            throw new Error('No turn is running');
-          },
+          cancelSession: async () => ({
+            success: false,
+            error: SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
+          }),
           dispatchSession: async (id) => {
             dispatched.push(id);
           },
@@ -705,7 +860,7 @@ describe('local platform zero-cloud integration', () => {
         session: { id: sessionId, title: 'Renamed' },
         historyCount: 2,
       });
-      // Nothing runs, so cancelling asks no machine to stop anything.
+      // Nothing runs, so the machine answers that it has no turn to stop.
       expect(await run({ command: 'cancel', sessionId })).toEqual({
         sessionId,
         alreadyStopped: true,

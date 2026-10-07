@@ -160,6 +160,12 @@ export interface SessionCancelResponse {
   error?: string;
 }
 
+/**
+ * The `error` of a `session/cancel_response` from a machine that runs no turn of
+ * the session; it tells "already stopped" from a failed cancel, across builds.
+ */
+export const SESSION_CANCEL_NO_ACTIVE_TURN_ERROR = 'Session has no active turn';
+
 export interface SessionSteerRequest {
   type: 'session/steer';
   sessionId: SessionId;

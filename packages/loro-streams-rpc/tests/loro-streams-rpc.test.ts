@@ -140,6 +140,16 @@ describe('session preparation RPC schema', () => {
     ).toBe(true);
   });
 
+  it('accepts a session cancel that leaves the turn to the machine', () => {
+    expect(
+      LoroStreamsRpcRequestSchema.safeParse({
+        ...baseRequest,
+        method: 'session/cancel',
+        params: { sessionId: 'session-1' },
+      }).success
+    ).toBe(true);
+  });
+
   it('rejects preparation payloads containing draft content or secrets', () => {
     const result = LoroStreamsRpcRequestSchema.safeParse({
       ...baseRequest,

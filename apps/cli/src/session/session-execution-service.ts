@@ -49,6 +49,7 @@ import {
   SessionStatusFactory,
   SessionChatRequestValidated,
   SessionCancelRequestValidated,
+  SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
   type SessionSteerResponse,
   type WorkspaceId,
   hasRecentResumeNotice,
@@ -6166,8 +6167,12 @@ export class SessionExecutionService {
     };
   }
 
+  /**
+   * Cancels the named assistant turn, or without one the turn this machine is
+   * running now: only this machine knows which turn that is.
+   */
   async cancelSession(
-    message: SessionCancelRequestValidated,
+    message: Omit<SessionCancelRequestValidated, 'turnId'> & { turnId?: string },
     options: {
       pendingInput?: PendingInputCancellationPolicy;
       prePromptSession?: 'discard' | 'keep';
@@ -6176,7 +6181,12 @@ export class SessionExecutionService {
     success: boolean;
     error?: string;
   }> {
-    const { sessionId, turnId } = message;
+    const { sessionId } = message;
+    const turnId =
+      message.turnId ??
+      this.deps.getActiveTurnId(sessionId) ??
+      this.getExecutionSnapshot(sessionId).activeTurnId;
+    if (!turnId) return { success: false, error: SESSION_CANCEL_NO_ACTIVE_TURN_ERROR };
     const pendingInput = options.pendingInput ?? 'preserve';
     if (message.subagentTaskId) {
       // This control never writes lastCanceledTurn or interrupts the parent runtime.

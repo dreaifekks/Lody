@@ -1,11 +1,15 @@
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import type { createSessionToolRegistrar } from './session-tool-router';
 import { z } from 'zod';
 import { ResourceListSchemas, type DiscoveryQuery } from '@/lib/discovery-query';
 import type { ResourceDiscovery, DiscoveryResource } from '@/lib/resource-discovery';
+import { WorkspaceSyncUnavailableError } from '@/lib/command-runtime';
 
 export function registerDiscoveryTools(
   registerTool: ReturnType<typeof createSessionToolRegistrar>,
-  withDiscovery: <T>(read: (discovery: ResourceDiscovery) => Promise<T>) => Promise<T>
+  withDiscovery: <T>(read: (discovery: ResourceDiscovery) => Promise<T>) => Promise<T>,
+  /** The structured error result every Lody MCP tool returns. */
+  errorResult: (error: unknown) => CallToolResult
 ) {
   const descriptions: Record<DiscoveryResource, string> = {
     machine:
@@ -24,6 +28,7 @@ export function registerDiscoveryTools(
         content: [{ type: 'text' as const, text: JSON.stringify(await withDiscovery(read)) }],
       };
     } catch (error) {
+      if (error instanceof WorkspaceSyncUnavailableError) return errorResult(error);
       return {
         isError: true,
         content: [

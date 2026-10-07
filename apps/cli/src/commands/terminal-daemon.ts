@@ -10,14 +10,14 @@ import {
   getMachineRoomId,
   getSessionRoomId,
   negotiatedAcpCapabilitiesRefreshForce,
+  SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
   type SessionMeta,
 } from '@lody/shared';
-import { ensureWorkspaceMetaSynced } from '@/lib/command-runtime';
+import { ensureWorkspaceMetaSynced, syncWorkspaceMetaForRead } from '@/lib/command-runtime';
 import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
 import {
   buildSessionShowResult,
   createSessionResult,
-  resolveRunningAssistantTurnId,
   resolveSessionMetaOrThrow,
   resolveTurnDispatchConfig,
   runSessionOperationWithSyncedMetadata,
@@ -128,26 +128,19 @@ export async function executeTerminalCommand(
     }
     case 'cancel': {
       const sessionId = command.sessionId as SessionId;
+      await syncWorkspaceMetaForRead(manager, `session.cancel:${sessionId}`);
       const session = await resolveSessionMetaOrThrow(manager, sessionId);
       const access = await environment.checkMachineAccess({
         workspaceId: workspace.id as WorkspaceId,
         machineId: session.machineId as MachineId,
         requesterUserId: auth.userId,
-        ...(session.project?.kind === 'local'
-          ? { localProjectId: session.project.localProjectId }
-          : {}),
       });
       if (!access.allowed) throw new Error(`Machine ${session.machineId} is not available to you.`);
-      const turnId = await resolveRunningAssistantTurnId(manager, sessionId);
-      if (!turnId) return { sessionId, alreadyStopped: true };
-      if (command.turnId && command.turnId !== turnId)
-        return {
-          sessionId,
-          alreadyStopped: true,
-          expectedTurnId: command.turnId,
-          activeTurnId: turnId,
-        };
-      const response = await host.cancelSession(sessionId, turnId);
+      // The machine that runs the session picks its running turn; this replica of
+      // the session's history may be behind it.
+      const response = await host.cancelSession(sessionId, command.turnId);
+      if (response.error === SESSION_CANCEL_NO_ACTIVE_TURN_ERROR)
+        return { sessionId, alreadyStopped: true };
       if (!response.success) throw new Error(response.error ?? `Failed to cancel ${sessionId}.`);
       return { sessionId, response };
     }
