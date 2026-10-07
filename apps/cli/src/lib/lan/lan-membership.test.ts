@@ -36,6 +36,9 @@ const settings = (hubs: LanHub[], machineName: string | null = null): LanHubSett
   source: hubs.length > 0 ? 'file' : 'none',
 });
 
+const termsPath = () =>
+  path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-terms-')), 'terms.json');
+
 function createMembership(initial: LanHubSettings) {
   const restarts: string[] = [];
   const warnings: string[] = [];
@@ -163,13 +166,35 @@ describe('LanMembership', () => {
     const harness = createMembership(settings([home]));
     harness.membership.start();
 
-    harness.change(settings([{ ...home, url: 'http://10.0.0.2:8788' }]));
+    harness.change(settings([home], 'desk'));
     harness.change(settings([]));
 
-    expect(harness.restarts).toEqual(['Home moved to another address']);
+    expect(harness.restarts).toEqual(['this machine was renamed']);
     expect(harness.seen).toEqual([]);
-    // The running service keeps talking to the address it started with.
-    expect(gatewayOf(harness.membership, `lw_${home.id}`)?.url).toBe('http://10.0.0.1:8788');
+  });
+
+  it('follows a hub to another address without a restart', async () => {
+    const harness = createMembership(settings([home, office]));
+    // Built before the move, as the machine RPC client is.
+    const provider = harness.membership.streamsTokens?.createTokenProvider({
+      workspaceId: `lw_${home.id}` as never,
+    });
+    const moves: string[][] = [];
+    harness.membership.onMoved((hubs) => moves.push(hubs.map((moved) => moved.url)));
+    harness.membership.start();
+
+    harness.change(settings([{ ...home, url: 'http://10.0.0.2:8788' }, office]));
+
+    expect(harness.restarts).toEqual([]);
+    expect(moves).toEqual([['http://10.0.0.2:8788']]);
+    expect(provider?.getGatewayBaseUrl()).toBe('http://10.0.0.2:8788');
+    await expect(provider?.getToken()).resolves.toBe('home-token');
+    expect(gatewayOf(harness.membership, `lw_${home.id}`)?.url).toBe('http://10.0.0.2:8788');
+    expect(gatewayOf(harness.membership, `lw_${office.id}`)?.url).toBe('http://10.0.1.1:8788');
+    expect(harness.membership.workspaces.get().map((workspace) => workspace.name)).toEqual([
+      'Home',
+      'Office',
+    ]);
   });
 
   it('asks for a restart when the first LAN is joined', () => {
@@ -240,10 +265,7 @@ describe('LanMembership', () => {
           const url = options.movedTo[asked.name];
           return url ? { url, term: 1 } : null;
         },
-        termsPath: path.join(
-          fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-terms-')),
-          'terms.json'
-        ),
+        termsPath: termsPath(),
       });
       await membership.follow();
       return written;

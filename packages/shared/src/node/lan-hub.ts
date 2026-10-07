@@ -451,8 +451,14 @@ export type LanHubChange =
   /** LANs were added, removed or renamed; their workspaces can follow live. */
   | { kind: 'workspaces' }
   /**
+   * The hubs of these LANs moved to another address. A running process
+   * reconnects to them where they are now; LANs added, removed or renamed in
+   * the same change follow as with `workspaces`.
+   */
+  | { kind: 'moved'; hubIds: string[] }
+  /**
    * The process has to start again: it switches between local-only and LAN
-   * operation, a LAN moved to another address, or this machine was renamed.
+   * operation, its first LAN changed, or this machine was renamed.
    */
   | { kind: 'restart'; reason: string };
 
@@ -475,12 +481,11 @@ export function classifyLanHubChange(
   if ((previous.machineName ?? null) !== (next.machineName ?? null)) {
     return { kind: 'restart', reason: 'this machine was renamed' };
   }
-  for (const hub of next.hubs) {
+  const moved = next.hubs.flatMap((hub) => {
     const before = previous.hubs.find((entry) => entry.id === hub.id);
-    if (before && before.url !== hub.url) {
-      return { kind: 'restart', reason: `${hub.name} moved to another address` };
-    }
-  }
+    return before && before.url !== hub.url ? [hub.id] : [];
+  });
+  if (moved.length > 0) return { kind: 'moved', hubIds: moved };
   const before = summarizeLanHubs(previous.hubs);
   const after = summarizeLanHubs(next.hubs);
   const unchanged =

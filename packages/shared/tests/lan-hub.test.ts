@@ -408,13 +408,26 @@ describe('following a settings change', () => {
     expect(classifyLanHubChange(settings([]), settings([]))).toEqual({ kind: 'none' });
   });
 
-  it('restarts when a LAN moves or the machine is renamed', () => {
+  it('follows a LAN whose hub moved without a restart', () => {
     expect(
       classifyLanHubChange(
         settings([home, office]),
         settings([home, { ...office, url: 'http://10.0.1.2:8788' }])
       )
-    ).toEqual({ kind: 'restart', reason: 'Office moved to another address' });
+    ).toEqual({ kind: 'moved', hubIds: [office.id] });
+    // The first LAN moving changes neither who the process is nor its LANs.
+    expect(
+      classifyLanHubChange(settings([home]), settings([{ ...home, url: 'http://10.0.0.2:8788' }]))
+    ).toEqual({ kind: 'moved', hubIds: [home.id] });
+  });
+
+  it('restarts when the machine is renamed, even as a hub moves', () => {
+    expect(
+      classifyLanHubChange(
+        settings([home]),
+        settings([{ ...home, url: 'http://10.0.0.2:8788' }], 'devnuc')
+      )
+    ).toEqual({ kind: 'restart', reason: 'this machine was renamed' });
     expect(classifyLanHubChange(settings([home]), settings([home], 'devnuc'))).toEqual({
       kind: 'restart',
       reason: 'this machine was renamed',

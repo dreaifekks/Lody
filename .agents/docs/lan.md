@@ -490,7 +490,7 @@ watches it.
 | --------------------------------- | ------------------------------ | ------------------------------------------------- |
 | LAN joined, left or renamed       | Starts or stops that workspace | The switcher follows the next snapshot            |
 | First LAN changed, joined or left | Exits with the restart code    | Reloads, because the installation is another user |
-| LAN moved to another address      | Exits with the restart code    | The bridge resolves the new address per request   |
+| LAN moved to another address      | Reconnects that workspace      | The bridge resolves the new address per request   |
 | Machine renamed                   | Exits with the restart code    | Nothing                                           |
 
 The restart code is `CLI_EXIT_CODE_REMOTE_RESTART`. The daemon runner, the
@@ -498,6 +498,14 @@ desktop supervisor and the systemd unit all start the service again after it; a
 service started by hand in a terminal has to be started again by hand. Agents
 running on the machine are interrupted by a restart, so the editors warn before
 the two edits that cause one.
+
+A move restarts nothing. The fleet detaches that workspace's Streams transport
+and attaches a new one toward the new address (`followLanMoves` in
+`lody-fleet.ts`, the remote bridge transition the hosted build uses offline);
+presence and the machine monitor go with it. Machine RPC, push, credentials and
+GitHub requests read the address per request. Agents and their turns keep
+running on the local replica, and what they wrote meanwhile reaches the new hub
+when the transport catches up.
 
 ## Hosting and releases
 

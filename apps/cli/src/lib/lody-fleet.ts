@@ -234,6 +234,7 @@ export class LodyFleet {
   private invalidTokenReported = false;
   private lastCachedWorkspaceSignature: string | null = null;
   private remoteBridgeOfflineTimer: NodeJS.Timeout | null = null;
+  private unsubscribeLanMoves: (() => void) | null = null;
   // Last valid workspace list, retried after an apply/reconcile failure. The
   // Convex subscription only re-fires on actual list changes, so without this a
   // one-off reconcile failure (e.g. a catalog write error) could leave the fleet
@@ -507,6 +508,7 @@ export class LodyFleet {
     this.startLanTerminalHost();
     this.lanFleetControl?.start();
     this.lanHubStandby?.start();
+    this.unsubscribeLanMoves = this.lan?.onMoved?.((hubs) => this.followLanMoves(hubs)) ?? null;
 
     // Start the PR poller BEFORE any workspace runtime can connect: the
     // local-first catalog bootstrap below registers each workspace with the
@@ -742,6 +744,8 @@ export class LodyFleet {
     this.memoryPressure.stop();
     Effect.runSync(this.prStatusPoller.stop);
     this.lanPushFallback?.close();
+    this.unsubscribeLanMoves?.();
+    this.unsubscribeLanMoves = null;
 
     // Stop accepting local work before draining workspace runtimes. Endpoint
     // teardown must not sit behind slow agent/session cleanup, and the owning
@@ -1275,6 +1279,31 @@ export class LodyFleet {
       // The fleet owns the port; a workspace that stops must not dispose it.
       dispose: () => Promise.resolve(),
     };
+  }
+
+  /**
+   * Reconnects the workspaces of LANs whose hub now answers at another
+   * address. Only the Streams side is replaced: the agents and their turns
+   * keep running on the local replica, which the new connection catches up.
+   * Clients that read the address per request (machine RPC, push, GitHub)
+   * follow on their own.
+   */
+  private followLanMoves(hubs: readonly LanHub[]): void {
+    for (const hub of hubs) {
+      const workspaceId = getLanHubWorkspaceId(hub.id);
+      const runtime = this.runtimes.get(workspaceId);
+      if (!runtime || this.stopped) continue;
+      // Queued before anything can attach again, so the next attach builds
+      // its transport toward the new address.
+      void runtime.lody
+        .detachRemoteBridge()
+        .then(async () => await this.remoteBridge?.attachRuntimeIfAllowed(workspaceId))
+        .catch((error: unknown) => {
+          this.logger.warn(
+            `[lan] Could not reconnect ${hub.name} at ${hub.url}: ${formatErrorMessage(error)}`
+          );
+        });
+    }
   }
 
   private async stopWorkspace(workspaceId: string): Promise<void> {

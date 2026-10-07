@@ -41,6 +41,8 @@ export type LanTerminalMembership = {
   /** Follows a LAN's hub to where it is now; whether the settings changed. */
   adopt?: (hubId: string, location: LanHubLocation, reason: string) => boolean;
   termOf?: (hubId: string) => number;
+  /** Tells which LANs' hubs this process now reaches at another address. */
+  onMoved?: (listener: (hubs: readonly LanHub[]) => void) => () => void;
 };
 
 /**

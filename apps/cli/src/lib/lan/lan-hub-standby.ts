@@ -91,8 +91,7 @@ export async function doesThisMachineHostLanHub(
 
 /**
  * Starts a hub on this machine from a standby's copy, in `term`. `announce`
- * runs once the hub answers and before this machine follows it, which
- * restarts the agent service.
+ * runs once the hub answers and before this machine follows it.
  */
 export async function promoteToLanHub(options: {
   hub: LanHub;
@@ -371,7 +370,7 @@ export class LanHubStandby {
       credentials: getLanCredentialsDirectory(hub.id, this.options.dataDir),
       announce: async (url) => {
         const location = { url, term };
-        // Before anything else: the agent service starts again once it follows.
+        // Before anything else: once this machine follows, nothing here knows the old address.
         fs.writeFileSync(
           path.join(directory, FENCE_FILE_NAME),
           `${JSON.stringify({ oldUrl: hub.url, location })}\n`,

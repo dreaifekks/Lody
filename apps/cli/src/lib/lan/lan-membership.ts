@@ -59,6 +59,7 @@ export class LanMembership {
   private following: Promise<void> | null = null;
   private restartRequested = false;
   private readonly credentials: LanCredentialSync | null;
+  private readonly movedListeners = new Set<(hubs: readonly LanHub[]) => void>();
 
   constructor(
     private readonly options: {
@@ -102,18 +103,35 @@ export class LanMembership {
     if (this.options.settings.hubs.length === 0) return null;
     return {
       createTokenProvider: ({ workspaceId }) => {
-        const credentials = this.hubOf(workspaceId);
-        if (!credentials) {
+        const initial = this.hubOf(workspaceId);
+        if (!initial) {
           // Reached when a workspace outlives its LAN for a moment; the attach
           // fails and the fleet stops the workspace with the next list.
           throw new Error(`No LAN carries workspace ${workspaceId}`);
         }
-        return createStaticLoroStreamsTokenProvider({
-          gatewayBaseUrl: credentials.url,
-          token: credentials.token,
-        });
+        // A client that reads the address per request follows a moved hub;
+        // one that kept it is reconnected by `onMoved`.
+        const current = () => this.hubOf(workspaceId) ?? initial;
+        const provider = (hub: LanHub) =>
+          createStaticLoroStreamsTokenProvider({ gatewayBaseUrl: hub.url, token: hub.token });
+        return {
+          ...provider(initial),
+          getToken: () => provider(current()).getToken(),
+          getGatewayBaseUrl: () => current().url,
+          createAuthCallback: () => (context) => provider(current()).createAuthCallback()(context),
+        };
       },
     };
+  }
+
+  /**
+   * Tells `listener` which LANs' hubs this process follows to another
+   * address. What holds a connection to the old one reconnects; nothing
+   * else stops.
+   */
+  onMoved(listener: (hubs: readonly LanHub[]) => void): () => void {
+    this.movedListeners.add(listener);
+    return () => this.movedListeners.delete(listener);
   }
 
   /**
@@ -200,7 +218,7 @@ export class LanMembership {
    * Follows a LAN's hub to where it is now. A later term wins; within one
    * term, two hubs that both took over settle on the address that sorts
    * first, so every member ends up at the same one. Returns whether the
-   * settings changed, which restarts the agent service.
+   * settings changed, which the running service then follows.
    */
   adopt(
     hubId: string,
@@ -272,11 +290,20 @@ export class LanMembership {
     }
     this.settings = next;
     const workspaces = toLanWorkspaces(next.hubs);
-    this.options.logger.info(
-      `[lan] Now a member of ${workspaces.length} LAN(s): ${workspaces
-        .map((workspace) => workspace.name)
-        .join(', ')}`
-    );
+    if (change.kind === 'moved') {
+      const moved = next.hubs.filter((hub) => change.hubIds.includes(hub.id));
+      this.options.logger.info(
+        `[lan] Reconnecting to ${moved.map((hub) => `${hub.name} at ${hub.url}`).join(', ')}; running turns go on.`
+      );
+      for (const listener of this.movedListeners) listener(moved);
+    } else {
+      this.options.logger.info(
+        `[lan] Now a member of ${workspaces.length} LAN(s): ${workspaces
+          .map((workspace) => workspace.name)
+          .join(', ')}`
+      );
+    }
+    // Also for a move: the address this machine has toward the hub may have changed.
     this.workspaceStore.set(workspaces);
     // A LAN joined, left or followed elsewhere is copied from at once.
     void this.credentials?.syncNow();
