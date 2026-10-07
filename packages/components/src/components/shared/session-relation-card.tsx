@@ -29,7 +29,8 @@ const styles = stylex.create({
     fontSize: '12px',
     lineHeight: '16px',
     color: colors.secondaryLabel,
-    transitionProperty: 'color, background-color, border-color, text-decoration-color, fill, stroke',
+    transitionProperty:
+      'color, background-color, border-color, text-decoration-color, fill, stroke',
     transitionDuration: '150ms',
     transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
     cursor: { default: 'pointer', ':disabled': 'default' },
@@ -84,7 +85,8 @@ export function SessionRelationCard({
   icon?: ElementType<{ className?: string }>;
   actionIcon?: ElementType<{ className?: string }>;
   className?: string;
-  relation: 'opened' | 'opened-by';
+  /** Also reused by other one-line in-stream records, such as a plan review. */
+  relation: 'opened' | 'opened-by' | 'plan-review';
   status?: ReactNode;
   /** Optional one-glance context under the title (a reply preview, an error). */
   detail?: ReactNode;
@@ -92,7 +94,10 @@ export function SessionRelationCard({
   // One line: the info bar's related-Sessions chip is the persistent index,
   // so the in-stream record only needs what happened, to whom, and a way there.
   return (
-    <div data-session-relation-card={relation} {...withClassName(stylex.props(styles.root), className)}>
+    <div
+      data-session-relation-card={relation}
+      {...withClassName(stylex.props(styles.root), className)}
+    >
       <button
         type="button"
         data-session-relation-action
@@ -108,9 +113,7 @@ export function SessionRelationCard({
         {detail ? <span {...stylex.props(styles.detail)}>· {detail}</span> : null}
         <span {...stylex.props(styles.end)}>
           {status}
-          {onAction ? (
-            <ActionIcon {...stylex.props(styles.actionIcon)} aria-hidden="true" />
-          ) : null}
+          {onAction ? <ActionIcon {...stylex.props(styles.actionIcon)} aria-hidden="true" /> : null}
         </span>
       </button>
     </div>

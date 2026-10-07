@@ -299,6 +299,11 @@ import {
 import { ReviewAgentSetupDialog } from './auto-review-info';
 import { AutoReviewStatus } from './auto-review-status';
 import { useAutoReview } from '@/hooks/use-auto-review';
+import {
+  AgentSurfaceContext,
+  type AgentSurfaceActions,
+} from '@/components/agent-surfaces/agent-surface-context';
+import { usePlanReviewIndexPublisher } from '@/components/agent-surfaces/use-plan-review-index';
 import { SessionAgentFileLinkMenuProvider } from './session-agent-file-link-menu';
 import { ConversationColumn } from '@/components/shared/conversation-column';
 import { SessionRelationCard } from '@/components/shared/session-relation-card';
@@ -1876,6 +1881,8 @@ interface SessionChatInterfaceProps {
   /** Called when the user wants to open the Browser panel. */
   onOpenBrowser?: () => void;
   onOpenIosSimulator?: () => void;
+  /** Opens an experimental plan review (`lody_request_review`) of this session in the side panel. */
+  onOpenPlanReview?: (sessionId: SessionId, toolCallId: string) => void;
   /** Opens Browser without forcing a newly reported candidate navigation. */
   onOpenExistingBrowser?: () => void;
   /**
@@ -1939,6 +1946,8 @@ export type SessionChatInterfaceHandle = {
   cancelShareImageSelection: () => void;
   openSearch: () => void;
   getLastAssistantTurnId: () => string | null;
+  /** Sends text as the user's next message, as the composer would; false when not accepted. */
+  sendPrompt: (text: string) => Promise<boolean>;
   insertSessionMention: (
     sessionId: string,
     options?: { at?: number; replaceEnd?: number }
@@ -2044,6 +2053,7 @@ export const SessionChatInterface = memo(
       browserActionSession,
       onOpenBrowser,
       onOpenIosSimulator,
+      onOpenPlanReview,
       onOpenExistingBrowser,
       headerVariant = 'page',
       paintSessionMentionOverlay = true,
@@ -2481,6 +2491,27 @@ export const SessionChatInterface = memo(
       >
     >(new Map());
     const isArchivedSession = session.isArchived === true;
+    usePlanReviewIndexPublisher(session.id, conversationView);
+    const canActOnAgentSurfaces =
+      !isArchivedSession && Boolean(currentUser?.id) && session.userId === currentUser?.id;
+    const agentSurfaceActions = useMemo<AgentSurfaceActions>(
+      () => ({
+        sessionId: session.id,
+        canAct: canActOnAgentSurfaces,
+        ...(onOpenPlanReview
+          ? { openPlanReview: (toolCallId: string) => onOpenPlanReview(session.id, toolCallId) }
+          : {}),
+        ...(canActOnAgentSurfaces
+          ? {
+              fillComposer: (text: string) => {
+                inputAreaRef.current?.appendInputText(text);
+                inputAreaRef.current?.focusInput();
+              },
+            }
+          : {}),
+      }),
+      [canActOnAgentSurfaces, onOpenPlanReview, session.id]
+    );
     /* The edit-and-resend editor shares the composer's mention pipeline: same
        `@`/`$`/`/` sources, same before-send expansion. The provider is always
        enabled here (unlike the composer, which gates on the draft containing
@@ -5242,6 +5273,7 @@ export const SessionChatInterface = memo(
         cancelShareImageSelection: shareSelection.cancel,
         openSearch,
         getLastAssistantTurnId: () => lastCompletedAssistantMessageId,
+        sendPrompt: async (text) => await dispatchPrompt(text),
         insertSessionMention: (sessionId, options) => {
           return inputAreaRef.current?.insertSessionMention(sessionId, options) ?? false;
         },
@@ -5255,6 +5287,7 @@ export const SessionChatInterface = memo(
         session.cliType,
         sessionAgentConfig?.name,
         conversationView,
+        dispatchPrompt,
       ]
     );
 
@@ -6442,50 +6475,54 @@ export const SessionChatInterface = memo(
                         <MessageSendStatusContext.Provider value={sendingMessageIds}>
                           <MessageSelectionContext.Provider value={shareSelection.context}>
                             <SessionAgentFileLinkMenuProvider session={session}>
-                              <SessionChatStream
-                                key={session.id}
-                                ref={chatStreamRef}
-                                sessionId={session?.id}
-                                workspaceId={workspaceId}
-                                showSenderIdentity={isMultiMember}
-                                view={conversationView}
-                                isVisible={isVisible}
-                                sessionCreatedAt={session?.createdAt}
-                                dividerLabel={sessionDividerLabel}
-                                className="h-full"
-                                leadingContent={openedByConversationStart}
-                                emptyState={chatStreamEmptyState}
-                                trailingContent={unsentFirstMessage ? undefined : pendingMessages}
-                                agentActivityLabel={agentActivityLabel}
-                                agentActivityTone={agentActivityTone}
-                                agentActivityShimmer={agentActivityShimmer}
-                                onFileDiffClick={onFileDiffClick}
-                                onFilePathClick={onFilePathClick ? handleFilePathClick : undefined}
-                                onOpenHtmlFile={handleOpenHtmlAttachment}
-                                messageFileDiffEntriesByTurn={messageFileDiffEntriesByTurn}
-                                assistantActions={assistantQuickActions}
-                                assistantActionsMessageId={latestCompletedProposedPlan?.entryId}
-                                onCopyContext={(messageId) => {
-                                  void handleCopyConversationHistory(messageId);
-                                }}
-                                onForkLastAssistant={onForkLastAssistant}
-                                forkWorktreeAvailability={forkWorktreeAvailability}
-                                onForkWorktreeMenuOpen={onForkWorktreeMenuOpen}
-                                onEditLastUser={
-                                  editableLastUserMessageId ? handleEditLastUser : undefined
-                                }
-                                editMentionContext={editMentionContext}
-                                onResendUndelivered={handleResendUndelivered}
-                                capacityRetry={capacityRetry ?? undefined}
-                                forkingAssistantMessageId={forkingAssistantMessageId}
-                                onNavigateSession={onNavigateSession}
-                                onLastCompletedAssistantMessageIdChange={
-                                  handleLastCompletedAssistantMessageIdChange
-                                }
-                                conversationFontSize={conversationFontSize}
-                                suppressStickyAutoScrollRef={suppressStickyAutoScrollRef}
-                                outlineOverlayRoot={outlineOverlayRoot}
-                              />
+                              <AgentSurfaceContext.Provider value={agentSurfaceActions}>
+                                <SessionChatStream
+                                  key={session.id}
+                                  ref={chatStreamRef}
+                                  sessionId={session?.id}
+                                  workspaceId={workspaceId}
+                                  showSenderIdentity={isMultiMember}
+                                  view={conversationView}
+                                  isVisible={isVisible}
+                                  sessionCreatedAt={session?.createdAt}
+                                  dividerLabel={sessionDividerLabel}
+                                  className="h-full"
+                                  leadingContent={openedByConversationStart}
+                                  emptyState={chatStreamEmptyState}
+                                  trailingContent={unsentFirstMessage ? undefined : pendingMessages}
+                                  agentActivityLabel={agentActivityLabel}
+                                  agentActivityTone={agentActivityTone}
+                                  agentActivityShimmer={agentActivityShimmer}
+                                  onFileDiffClick={onFileDiffClick}
+                                  onFilePathClick={
+                                    onFilePathClick ? handleFilePathClick : undefined
+                                  }
+                                  onOpenHtmlFile={handleOpenHtmlAttachment}
+                                  messageFileDiffEntriesByTurn={messageFileDiffEntriesByTurn}
+                                  assistantActions={assistantQuickActions}
+                                  assistantActionsMessageId={latestCompletedProposedPlan?.entryId}
+                                  onCopyContext={(messageId) => {
+                                    void handleCopyConversationHistory(messageId);
+                                  }}
+                                  onForkLastAssistant={onForkLastAssistant}
+                                  forkWorktreeAvailability={forkWorktreeAvailability}
+                                  onForkWorktreeMenuOpen={onForkWorktreeMenuOpen}
+                                  onEditLastUser={
+                                    editableLastUserMessageId ? handleEditLastUser : undefined
+                                  }
+                                  editMentionContext={editMentionContext}
+                                  onResendUndelivered={handleResendUndelivered}
+                                  capacityRetry={capacityRetry ?? undefined}
+                                  forkingAssistantMessageId={forkingAssistantMessageId}
+                                  onNavigateSession={onNavigateSession}
+                                  onLastCompletedAssistantMessageIdChange={
+                                    handleLastCompletedAssistantMessageIdChange
+                                  }
+                                  conversationFontSize={conversationFontSize}
+                                  suppressStickyAutoScrollRef={suppressStickyAutoScrollRef}
+                                  outlineOverlayRoot={outlineOverlayRoot}
+                                />
+                              </AgentSurfaceContext.Provider>
                             </SessionAgentFileLinkMenuProvider>
                           </MessageSelectionContext.Provider>
                         </MessageSendStatusContext.Provider>

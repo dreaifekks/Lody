@@ -47,6 +47,7 @@ import {
   getTextContentFromMessageItems,
   getUserTextRenderSlice,
   getVisibleAssistantTextContent,
+  type StandaloneToolCallPredicate,
   hasTextContentFromMessageItems,
 } from './message-copy';
 import { useAtomValue, useStore } from 'jotai';
@@ -225,6 +226,12 @@ import { ConversationColumn } from '@/components/shared/conversation-column';
 import type { TurnIndexRow } from '@/lib/conversation-view';
 import { TurnPlaceholderRow, estimatePlaceholderHeight } from './turn-placeholder-row';
 import { CreatedSessionOperationCard } from './created-session-operation-card';
+import {
+  agentSurfaceKeyAtom,
+  isSurfaceToolCall,
+  type AgentSurfaceKey,
+} from '@/components/agent-surfaces/agent-surface-context';
+import { AgentSurfaceToolCall } from '@/components/agent-surfaces/agent-surface-tool-call';
 import { OperationReplyCard } from './operation-reply-card';
 import type { SessionNavigationTarget } from '@/lib/session-navigation';
 import { AcpAuthenticationPanel } from '@/components/settings/acp-authentication-panel';
@@ -1029,16 +1036,38 @@ const EMPTY_SUBAGENT_TASKS: ReturnType<typeof collectSubagentTasks> = [];
 // whenever the turn changes. Keying the cache by that reference lets only the
 // streaming turn recompute; without it, each streamed token re-runs these
 // O(items) passes for every turn in the whole conversation.
-const assistantTurnLayoutCache = new WeakMap<SessionHistoryParsed, AssistantTurnLayout>();
+const assistantTurnLayoutCache = new WeakMap<
+  SessionHistoryParsed,
+  { surfaceKey: AgentSurfaceKey; layout: AssistantTurnLayout }
+>();
 
-const getAssistantTurnLayout = (message: SessionHistoryParsed): AssistantTurnLayout => {
+const surfacePredicates = new Map<AgentSurfaceKey, StandaloneToolCallPredicate | undefined>();
+const getSurfacePredicate = (key: AgentSurfaceKey): StandaloneToolCallPredicate | undefined => {
+  if (!key) return undefined;
+  let predicate = surfacePredicates.get(key);
+  if (!predicate) {
+    predicate = (toolCall) => isSurfaceToolCall(key, toolCall);
+    surfacePredicates.set(key, predicate);
+  }
+  return predicate;
+};
+
+const getAssistantTurnLayout = (
+  message: SessionHistoryParsed,
+  surfaceKey: AgentSurfaceKey = ''
+): AssistantTurnLayout => {
   const cached = assistantTurnLayoutCache.get(message);
-  if (cached) return cached;
+  if (cached?.surfaceKey === surfaceKey) return cached.layout;
   const layout: AssistantTurnLayout = {
-    ...buildAssistantTurnRenderLayout(message.id, message.items, message.finished === true),
+    ...buildAssistantTurnRenderLayout(
+      message.id,
+      message.items,
+      message.finished === true,
+      getSurfacePredicate(surfaceKey)
+    ),
     subagentTasks: collectSubagentTasks(message.items),
   };
-  assistantTurnLayoutCache.set(message, layout);
+  assistantTurnLayoutCache.set(message, { surfaceKey, layout });
   return layout;
 };
 
@@ -1060,6 +1089,7 @@ type AssistantTurnRowsCacheEntry = {
   expansionVersion: number;
   copyContextAvailable: boolean;
   showThoughts: boolean;
+  surfaceKey: AgentSurfaceKey;
 };
 const assistantTurnRowsCache = new WeakMap<SessionMessageItem, AssistantTurnRowsCacheEntry>();
 
@@ -1075,7 +1105,10 @@ export const buildChatVirtualRows = ({
   copyContextAvailable = false,
   showThoughts = false,
   selectionLayouts,
+  surfaceKey = '',
 }: {
+  /** Experimental tool calls rendered as their own surface; see `agent-surfaces`. */
+  surfaceKey?: AgentSurfaceKey;
   selectionLayouts?: ReadonlyMap<string, SelectionTurnLayout>;
   items: ChatStreamItem[];
   lastAssistantMessageId: string | null;
@@ -1139,13 +1172,17 @@ export const buildChatVirtualRows = ({
       cachedRows.activeSearchBlockId === activeSearchBlockId &&
       cachedRows.copyContextAvailable === copyContextAvailable &&
       cachedRows.showThoughts === showThoughts &&
+      cachedRows.surfaceKey === surfaceKey &&
       cachedRows.expansionVersion === expansionVersion
     ) {
       rows.push(...cachedRows.rows);
       continue;
     }
 
-    const { blocks, segments, entries, subagentTasks } = getAssistantTurnLayout(message);
+    const { blocks, segments, entries, subagentTasks } = getAssistantTurnLayout(
+      message,
+      surfaceKey
+    );
     const cachedState = selectionLayout?.expandState ?? getExpandState(message.id);
     const cachedExpansion = cachedState.expandedGroups;
     // Collapse into a "Worked for …" summary ONLY when the turn both finished and
@@ -1387,6 +1424,7 @@ export const buildChatVirtualRows = ({
       expansionVersion,
       copyContextAvailable,
       showThoughts,
+      surfaceKey,
     });
     rows.push(...assistantRows);
   }
@@ -1687,6 +1725,7 @@ export const SessionChatStreamView = forwardRef<
     }, []);
 
     const copyContextAvailable = onCopyContext !== undefined;
+    const surfaceKey = useAtomValue(agentSurfaceKeyAtom);
     const selectionLayouts = selectionLayoutsRef.current;
     const virtualRows = useMemo(() => {
       // Expansion lives in the module cache so virtualized child rows retain
@@ -1703,8 +1742,10 @@ export const SessionChatStreamView = forwardRef<
         copyContextAvailable,
         showThoughts,
         selectionLayouts,
+        surfaceKey,
       });
     }, [
+      surfaceKey,
       showThoughts,
       selectionLayouts,
       activeSearchBlockId,
@@ -7338,7 +7379,28 @@ const PlanEntryRow = ({
 // terminals, permission blocks), and during streaming its parents re-render
 // per delta. `toolCall` identity is preserved by loro-mirror for unchanged
 // items, so a shallow compare skips completed tool calls entirely.
-const ToolCallCard = memo(function ToolCallCard({
+/**
+ * A tool call: an experimental surface (review card, widget) when this device
+ * renders those, otherwise the ordinary step.
+ */
+const ToolCallCard = memo(function ToolCallCard(props: ToolCallCardProps) {
+  const surfaceKey = useAtomValue(agentSurfaceKeyAtom);
+  if (isSurfaceToolCall(surfaceKey, props.toolCall)) {
+    return <AgentSurfaceToolCall toolCall={props.toolCall} />;
+  }
+  return <GenericToolCallCard {...props} />;
+});
+
+type ToolCallCardProps = {
+  toolCall: ToolCallMessage;
+  fontSize: ConversationFontSize;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
+  onFilePathClick?: (filePath: string) => void;
+  inlineOutput?: boolean;
+};
+
+const GenericToolCallCard = memo(function GenericToolCallCard({
   toolCall,
   fontSize,
   expanded,

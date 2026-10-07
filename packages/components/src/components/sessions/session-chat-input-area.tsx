@@ -453,6 +453,8 @@ export type SessionSendMessageOptions = {
 
 export type SessionChatInputAreaHandle = {
   setInputText: (text: string) => void;
+  /** Adds text after the current draft, keeping the draft; never sends. */
+  appendInputText: (text: string) => void;
   focusInput: () => void;
   addCommentReference: (reference: CommentReferencePayload) => boolean;
   toggleCommentReference: (reference: CommentReferencePayload) => boolean;
@@ -908,6 +910,17 @@ export const SessionChatInputArea = memo(
         updatePastedTextDraftsForSession(session.id, () => []);
       },
       [isArchived, session.id, setUserInput, updatePastedTextDraftsForSession]
+    );
+
+    const userInputRef = useRef(userInput);
+    userInputRef.current = userInput;
+    const appendInputText = useCallback(
+      (value: string) => {
+        if (isArchived) return;
+        const current = userInputRef.current.replace(/\s+$/u, '');
+        setUserInput(current ? `${current}\n\n${value}` : value);
+      },
+      [isArchived, setUserInput]
     );
 
     const updatePendingImage = useCallback(
@@ -1413,6 +1426,7 @@ export const SessionChatInputArea = memo(
       ref,
       () => ({
         setInputText,
+        appendInputText,
         focusInput: () => {
           textareaRef.current?.focus();
         },
@@ -1433,6 +1447,7 @@ export const SessionChatInputArea = memo(
       }),
       [
         setInputText,
+        appendInputText,
         addCommentReference,
         toggleCommentReference,
         addVisualAnnotationReference,

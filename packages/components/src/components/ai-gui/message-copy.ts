@@ -22,7 +22,20 @@ export const USER_TEXT_RENDER_CHAR_LIMIT = 900;
  * now sort BELOW the plan, which puts a `file` last far more often, so the two
  * lists have to agree.
  */
-const isNeverCollapsedAssistantItem = (content: MessageContent | undefined): boolean =>
+/**
+ * A tool call the conversation renders as its own surface (an experimental
+ * review card or widget, see `components/agent-surfaces`): it stays visible
+ * like an attachment. Absent, every tool call is a step.
+ */
+export type StandaloneToolCallPredicate = (
+  toolCall: Extract<MessageContent, { type: 'tool_call' }>
+) => boolean;
+
+const isNeverCollapsedAssistantItem = (
+  content: MessageContent | undefined,
+  isStandaloneToolCall?: StandaloneToolCallPredicate
+): boolean =>
+  (content?.type === 'tool_call' && isStandaloneToolCall?.(content) === true) ||
   content?.type === 'image_group' ||
   content?.type === 'image' ||
   content?.type === 'file' ||
@@ -41,10 +54,13 @@ const isNeverCollapsedAssistantItem = (content: MessageContent | undefined): boo
  * stays visible; a non-text item is the boundary between work and the answer.
  * `items.length` when the turn ends in work rather than text.
  */
-const getFinalTextRunStart = (items: MessageContent[]): number => {
+const getFinalTextRunStart = (
+  items: MessageContent[],
+  isStandaloneToolCall?: StandaloneToolCallPredicate
+): number => {
   let index = items.length - 1;
 
-  while (index >= 0 && isNeverCollapsedAssistantItem(items[index])) {
+  while (index >= 0 && isNeverCollapsedAssistantItem(items[index], isStandaloneToolCall)) {
     index -= 1;
   }
 
@@ -91,8 +107,11 @@ export const isSubstantiveAssistantText = (text: string): boolean =>
  * narration before it is still narration. `items.length` when the turn ends
  * in work rather than text.
  */
-const getVisibleTextStart = (items: MessageContent[]): number => {
-  const finalTextRunStart = getFinalTextRunStart(items);
+const getVisibleTextStart = (
+  items: MessageContent[],
+  isStandaloneToolCall?: StandaloneToolCallPredicate
+): number => {
+  const finalTextRunStart = getFinalTextRunStart(items, isStandaloneToolCall);
   if (finalTextRunStart >= items.length) return finalTextRunStart;
   const closingText = items
     .slice(finalTextRunStart)
@@ -116,14 +135,16 @@ export const shouldCollapseAssistantMessageItem = ({
   index,
   items,
   isTurnFinished,
+  isStandaloneToolCall,
 }: {
   content: MessageContent;
   index: number;
   items: MessageContent[];
   isTurnFinished: boolean;
+  isStandaloneToolCall?: StandaloneToolCallPredicate;
 }): boolean => {
   const itemCount = items.length;
-  const visibleTextStart = getVisibleTextStart(items);
+  const visibleTextStart = getVisibleTextStart(items, isStandaloneToolCall);
   // Earlier text stays out too when it is substantive (see
   // `isSubstantiveAssistantText`), but only in a turn that closes in text: one
   // that ends mid-work folds nothing (see `segmentHasVisibleFinalContent`).
@@ -137,7 +158,7 @@ export const shouldCollapseAssistantMessageItem = ({
     itemCount > 1 &&
     index < itemCount - 1 &&
     !keepsText &&
-    !isNeverCollapsedAssistantItem(content)
+    !isNeverCollapsedAssistantItem(content, isStandaloneToolCall)
   );
 };
 

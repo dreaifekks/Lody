@@ -7,6 +7,7 @@ import {
   MonitorPlay,
   Plus,
   Smartphone,
+  ClipboardCheck,
   X,
 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
@@ -21,7 +22,16 @@ import { TAB_PILL_ACTIVE_CLASS, TAB_PILL_INACTIVE_CLASS } from '@/components/sha
 export type SessionSidePanelTabItem = {
   id: string;
   label: string;
-  kind: 'files' | 'changes' | 'pr' | 'browser' | 'ios-simulator' | 'session' | 'file' | 'diff';
+  kind:
+    | 'files'
+    | 'changes'
+    | 'pr'
+    | 'browser'
+    | 'ios-simulator'
+    | 'plan-review'
+    | 'session'
+    | 'file'
+    | 'diff';
   filePath?: string;
   closeable?: boolean;
   dirty?: boolean;
@@ -32,8 +42,8 @@ export type SessionSidePanelTabItem = {
 };
 
 export type SessionSidePanelOption = Omit<SessionSidePanelTabItem, 'id' | 'kind'> & {
-  id: 'files' | 'changes' | 'pr' | 'browser' | 'ios-simulator' | 'side-session';
-  kind: 'files' | 'changes' | 'pr' | 'browser' | 'ios-simulator' | 'session';
+  id: 'files' | 'changes' | 'pr' | 'browser' | 'ios-simulator' | 'plan-review' | 'side-session';
+  kind: 'files' | 'changes' | 'pr' | 'browser' | 'ios-simulator' | 'plan-review' | 'session';
 };
 
 const SIDE_SESSION_PANEL_PREFIX = 'side-session:';
@@ -152,6 +162,8 @@ function SidePanelTabIcon({ tab }: { tab: SessionSidePanelTabItem }) {
       return <MonitorPlay className="h-3.5 w-3.5 opacity-70" />;
     case 'ios-simulator':
       return <Smartphone className="h-3.5 w-3.5 opacity-70" />;
+    case 'plan-review':
+      return <ClipboardCheck className="h-3.5 w-3.5 opacity-70" />;
     case 'session':
       return <MessageSquare className="h-3.5 w-3.5 opacity-70" />;
     case 'file':

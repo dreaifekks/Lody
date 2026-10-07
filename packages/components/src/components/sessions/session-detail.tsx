@@ -174,6 +174,7 @@ import { SessionFileQuickOpen } from './session-file-quick-open';
 import { PrTabContainer } from './pr-tab-container';
 import { SessionBrowserPanel } from './session-browser-panel';
 import { SessionIosSimulatorPanel } from './ios-simulator/session-ios-simulator-panel';
+import { SessionPlanReviewPanel } from '@/components/agent-surfaces/session-plan-review-panel';
 import { getIosSimulatorPanelAvailability } from '@/lib/ios-simulator/ios-simulator-model';
 import { usePlatformCapability } from '@lody/platform/react';
 import { getMachineMetaByIdAtomFamily } from '@/atoms/machines';
@@ -3625,6 +3626,48 @@ const SessionDetail = ({
     replaceSessionUrlSimulator(false);
   }, [replaceSessionUrlSimulator]);
 
+  // Experimental plan review: the plan a card asked to show, for this page's session.
+  const [planReviewTarget, setPlanReviewTarget] = useState<{
+    parentId: SessionId;
+    sessionId: SessionId;
+    toolCallId: string;
+  } | null>(null);
+  const activePlanReview = planReviewTarget?.parentId === sessionId ? planReviewTarget : null;
+  const [mobilePlanReviewOpen, setMobilePlanReviewOpen] = useState(false);
+  const handleOpenPlanReview = useCallback(
+    (targetSessionId: SessionId, toolCallId: string) => {
+      setPlanReviewTarget({ parentId: sessionId, sessionId: targetSessionId, toolCallId });
+      if (isMobile) {
+        setMobilePlanReviewOpen(true);
+      } else {
+        revealRightSidebar();
+        activateSidebarTab('plan-review');
+      }
+    },
+    [activateSidebarTab, isMobile, revealRightSidebar, sessionId]
+  );
+  const planReviewTargetRef = useRef(activePlanReview);
+  planReviewTargetRef.current = activePlanReview;
+  const submitPlanReview = useCallback(async (text: string): Promise<boolean> => {
+    if (!planReviewTargetRef.current) return false;
+    const chatRef = chatRefsMap.current.get(planReviewTargetRef.current.sessionId);
+    return chatRef && 'sendPrompt' in chatRef ? await chatRef.sendPrompt(text) : false;
+  }, []);
+  const planReviewPanel = activePlanReview ? (
+    <SessionPlanReviewPanel
+      sessionId={activePlanReview.sessionId}
+      toolCallId={activePlanReview.toolCallId}
+      onSubmit={submitPlanReview}
+    />
+  ) : null;
+
+  // A plan is opened from its card; a restored selection has none to show.
+  useEffect(() => {
+    if (activeSidebarTab === 'plan-review' && !activePlanReview) {
+      setActiveSidebarTab(null);
+    }
+  }, [activePlanReview, activeSidebarTab]);
+
   const handleOpenFile = useStableCallback(
     (filePath: string, options: SessionDetailOpenFileOptions = {}) => {
       setFileProviderRequestedByInteraction(true);
@@ -3987,8 +4030,23 @@ const SessionDetail = ({
         kind: 'pr',
       });
     }
+    if (activePlanReview) {
+      options.push({
+        id: 'plan-review',
+        label: t('sessions.detailTabs.planReview', 'Plan'),
+        kind: 'plan-review',
+      });
+    }
     return options;
-  }, [activeBrowserSession, activeIosSimulatorSession, latestPr, latestPrNumber, repoFullName, t]);
+  }, [
+    activeBrowserSession,
+    activeIosSimulatorSession,
+    activePlanReview,
+    latestPr,
+    latestPrNumber,
+    repoFullName,
+    t,
+  ]);
   const sideChatOption = useMemo<SessionSidePanelOption | null>(() => {
     const launcherState = getSideChatLauncherState({
       providerSupportsFork: Boolean(
@@ -5828,6 +5886,7 @@ const SessionDetail = ({
                       ? () => handleOpenIosSimulatorForSession(tabSession.id)
                       : undefined
                   }
+                  onOpenPlanReview={handleOpenPlanReview}
                   onOpenBrowser={() => handleOpenBrowser(tabSession.id, true)}
                   onOpenExistingBrowser={() => handleOpenBrowser(tabSession.id, false)}
                   changesDiffStat={changesDiffStat}
@@ -6222,6 +6281,22 @@ const SessionDetail = ({
             </VaulDrawerBody>
           </DrawerContent>
         </Drawer>
+        <Drawer
+          direction="right"
+          repositionInputs={isNativeAppShell()}
+          open={mobilePlanReviewOpen && planReviewPanel !== null}
+          onOpenChange={setMobilePlanReviewOpen}
+        >
+          <DrawerContent
+            className="w-full! max-w-none! inset-0 border-0 border-l-0! rounded-none"
+            data-sidebar-swipe-open-disabled
+          >
+            <DrawerTitle className="sr-only">
+              {t('sessions.detailTabs.planReview', 'Plan')}
+            </DrawerTitle>
+            <VaulDrawerBody topInset={MOBILE_DRAWER_HEADER_INSET}>{planReviewPanel}</VaulDrawerBody>
+          </DrawerContent>
+        </Drawer>
         {fileQuickOpenDialog}
         {deleteConfirmDialog}
         {archiveConfirmDialog}
@@ -6290,6 +6365,8 @@ const SessionDetail = ({
         // to be paused explicitly — same signal SessionBrowserPanel takes.
         visible={isSidebarVisible}
       />
+    ) : activeSidebarTab === 'plan-review' ? (
+      planReviewPanel
     ) : activeSidebarTab === 'changes' ? (
       <SessionChangesSidebar
         ready={sessionDiffReady}
@@ -6536,6 +6613,7 @@ const SessionDetail = ({
       onOpenIosSimulator: iosSimulatorReachable(chatSession.machineId)
         ? () => handleOpenIosSimulatorForSession(chatSession.id)
         : undefined,
+      onOpenPlanReview: handleOpenPlanReview,
       onOpenBrowser: () => handleOpenBrowser(chatSession.id, true),
       onOpenExistingBrowser: () => handleOpenBrowser(chatSession.id, false),
       onNavigateToComment: handleNavigateToComment,
