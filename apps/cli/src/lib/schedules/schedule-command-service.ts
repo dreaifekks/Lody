@@ -24,7 +24,11 @@ import {
   type SessionMeta,
   type WorkspaceId,
 } from '@lody/shared';
-import type { AuthContext } from '../command-runtime';
+import {
+  syncFlockDocForRead,
+  syncWorkspaceMetaForRead,
+  type AuthContext,
+} from '../command-runtime';
 import type { LoroDocumentManager } from '../loro/doc';
 import type { WorkspaceSummary } from '../workspace';
 import { createSessionBackend } from '@/session/session-backend';
@@ -166,9 +170,19 @@ export async function executeScheduleCommand(
       ? command.draft.machineId
       : (await repository.read(id))?.definition.machineId;
   if (!machineId) throw new Error('Schedule not found');
+  const needsTarget = command.action !== 'pause' && command.action !== 'delete';
+  if (needsTarget && !localOnly) {
+    // The target machine's record, Agents and Projects are its documents; read them current.
+    await syncWorkspaceMetaForRead(manager, 'schedule:command:prewrite');
+    if (command.action === 'create' || command.action === 'edit')
+      await syncFlockDocForRead(
+        manager,
+        getMachineFlockDocId(workspaceId, machineId as MachineId),
+        'schedule:command:prewrite'
+      );
+  }
   const machineRecord = await manager.repo.getDocMeta(getMachineRoomId(machineId as MachineId));
   const machine = machineRecord?.meta as MachineMeta | undefined;
-  const needsTarget = command.action !== 'pause' && command.action !== 'delete';
   if (
     needsTarget &&
     (!machine || isLoroRepoDocDeleted(machineRecord!) || machine.ownerUserId !== auth.userId)

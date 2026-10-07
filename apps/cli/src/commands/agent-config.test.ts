@@ -33,7 +33,7 @@ vi.mock('@/lib/command-runtime', async (importOriginal) => {
       _workspace: unknown,
       _name: string,
       action: (manager: object) => Promise<void>
-    ) => action({ repo: {} }),
+    ) => action({ repo: {}, syncMetaOrThrow: async () => {}, syncFlockDocOrThrow: async () => {} }),
     listAliveDocMetas: async () => [{ meta: { id: 'machine-id', name: 'Machine' } }],
     runOneShotCommand: async (_name: string, _options: unknown, action: () => Promise<void>) =>
       action(),

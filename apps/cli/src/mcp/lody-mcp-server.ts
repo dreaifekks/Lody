@@ -4212,6 +4212,8 @@ export function buildSessionToolServer(
         const environment = getSessionCommandEnvironment();
         if (environment) {
           const sessionId = resolveMcpSessionId(args.sessionId, ctx) as SessionId;
+          // A session another machine started may not be in this replica yet.
+          await syncWorkspaceMetaForRead(environment.manager, `session.cancel:${sessionId}`);
           const session = await readCurrentSessionMeta(environment.manager, sessionId);
           // Another machine of a LAN runs its own sessions; its agent service cancels them.
           const reachable =

@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
-  getMachineFlockDocId,
   getMachineRoomId,
   isLoroRepoDocDeleted,
   type MachineId,
@@ -104,22 +103,13 @@ export function createLocalSessionCommandEnvironment(args: {
         (row.meta as MachineMeta).ownerUserId !== userId
       )
         return { allowed: false, reason: 'not_visible' };
-      if (target.localProjectId) {
-        // Another machine's projects are in its document, which this replica may not hold yet.
-        if (target.machineId !== machineId) {
-          await manager
-            .syncFlockDocOrThrow(getMachineFlockDocId(workspaceId, target.machineId), {
-              reason: 'session.machine-access',
-            })
-            .catch(() => undefined);
-        }
-        const projects = await readMachineLocalProjects(
-          manager.repo,
-          workspaceId,
-          target.machineId
-        );
-        const project = Object.values(projects).find((entry) => entry.id === target.localProjectId);
-        if (!project) return { allowed: false, reason: 'project_not_shared' };
+      // Only this machine's own projects are known here. Another machine's are in
+      // its document, which this replica may hold an old copy of; that machine
+      // answers for them when it runs the request.
+      if (target.localProjectId && target.machineId === machineId) {
+        const projects = await readMachineLocalProjects(manager.repo, workspaceId, machineId);
+        if (!Object.values(projects).some((entry) => entry.id === target.localProjectId))
+          return { allowed: false, reason: 'project_not_shared' };
       }
       return { allowed: true };
     },
