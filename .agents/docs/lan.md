@@ -502,10 +502,14 @@ the two edits that cause one.
 A move restarts nothing. The fleet detaches that workspace's Streams transport
 and attaches a new one toward the new address (`followLanMoves` in
 `lody-fleet.ts`, the remote bridge transition the hosted build uses offline);
-presence and the machine monitor go with it. Machine RPC, push, credentials and
-GitHub requests read the address per request. Agents and their turns keep
-running on the local replica, and what they wrote meanwhile reaches the new hub
-when the transport catches up.
+presence and the machine monitor go with it. Machine RPC reads its request
+stream from the start, as at startup, and skips the requests it already read:
+after a failover the offset it held may lie past the copy's end of that JSON
+stream, which the [epoch](#standby-and-failover) does not cover, and the hub
+may answer it with an empty 200 rather than 410. Push, credentials and GitHub
+requests read the address per request and hold no offset. Agents and their
+turns keep running on the local replica, and what they wrote meanwhile reaches
+the new hub when the transport catches up.
 
 ## Hosting and releases
 

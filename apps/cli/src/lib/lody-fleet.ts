@@ -1283,16 +1283,18 @@ export class LodyFleet {
 
   /**
    * Reconnects the workspaces of LANs whose hub now answers at another
-   * address. Only the Streams side is replaced: the agents and their turns
-   * keep running on the local replica, which the new connection catches up.
-   * Clients that read the address per request (machine RPC, push, GitHub)
-   * follow on their own.
+   * address. Only what reads from the hub is replaced: the agents and their
+   * turns keep running on the local replica, which the new connection
+   * catches up. Machine RPC reads its request stream from the start, since
+   * the offset it held may name nothing in a hub started from a copy; push,
+   * GitHub and credentials read the address per request and hold no offset.
    */
   private followLanMoves(hubs: readonly LanHub[]): void {
     for (const hub of hubs) {
       const workspaceId = getLanHubWorkspaceId(hub.id);
       const runtime = this.runtimes.get(workspaceId);
       if (!runtime || this.stopped) continue;
+      runtime.lody.restartMachineRpcListener();
       // Queued before anything can attach again, so the next attach builds
       // its transport toward the new address.
       void runtime.lody
