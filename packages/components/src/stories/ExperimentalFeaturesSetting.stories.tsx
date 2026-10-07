@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react';
 import { createStore, Provider, useAtomValue } from 'jotai';
+import { AgentFeaturesSection } from '@/components/settings/agent-features-setting';
 import { ExperimentalFeaturesSection } from '@/components/settings/experimental-features-setting';
 import {
   agentNotifyExperimentEnabledAtom,
@@ -15,7 +16,9 @@ import { settingContainerClass } from '@/components/settings';
 /**
  * Two switches, one derived gate. Unlike the Developer-mode beta section the
  * master switch is always visible, so the "off" state is a real state a user
- * sees rather than an empty region.
+ * sees rather than an empty region. Agent features sit above it and stay put
+ * whatever the master switch says; without a workspace their switch is off
+ * and disabled here.
  */
 function GateReadout() {
   const enabled = useAtomValue(reviewAgentFeatureEnabledAtom);
@@ -55,6 +58,7 @@ function Harness({
   return (
     <Provider store={store}>
       <div className={settingContainerClass}>
+        <AgentFeaturesSection />
         <ExperimentalFeaturesSection />
         <GateReadout />
       </div>
@@ -76,7 +80,7 @@ export const Collapsed: Story = {
   args: { experimental: false, reviewAgent: false },
 };
 
-/** Master switch on, feature not yet opted into. */
+/** Master switch on, features not yet opted into: two groups, sessions and agent tools. */
 export const Expanded: Story = {
   args: { experimental: true, reviewAgent: false },
 };
