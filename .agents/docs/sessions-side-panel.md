@@ -72,7 +72,10 @@ this page is the full text of the rules summarised there.
   Without fork support the question only fills the composer. A question counts only against a real
   press the Electron main process saw land in that widget's frame (`before-mouse-event`, kept by
   `widget-clicks.ts`), and each press pays for one question: a sandboxed frame can move focus into
-  itself, and the page sees no presses inside frames. Builds without the main process ask nothing.
+  itself, and the page sees no presses inside frames. Every press the page receives itself (something
+  drawn over the widget, the composer where a clipped widget's box still runs) is disowned, so the box
+  alone never credits a widget. Questions waiting for a fork stay with the conversation page they were
+  asked on. Builds without the main process ask nothing.
   Show the launcher only when the active conversation's provider has authoritative native-fork
   support; keep it visible but disabled when that conversation's machine is explicitly offline. That
   offline rule lives ONLY in `getSideChatLauncherState` — the shared fork entry point stays

@@ -14,6 +14,7 @@ import {
 } from '../src/components/agent-surfaces/agent-surface-context';
 import { WidgetFrame } from '../src/components/agent-surfaces/widget-frame';
 import { createWidgetBridge } from '../src/components/agent-surfaces/widget-bridge';
+import { onHostPointerDown } from '../src/components/agent-surfaces/widget-gesture';
 import {
   createWidgetClickLedger,
   type WidgetClickRect,
@@ -47,6 +48,7 @@ vi.mock('../src/lib/electron-ipc-client', () => ({
     widgets: {
       getHostUrl: async () => 'http://127.0.0.1:1/widget',
       takeClick: async (rect: WidgetClickRect) => presses.take(rect, 1),
+      disownClick: async () => presses.disown(),
     },
   }),
 }));
@@ -199,6 +201,32 @@ describe('WidgetFrame', () => {
     expect(asked).toEqual([]);
   });
 
+  it('never credits a widget with a press the page received, even once it takes focus', async () => {
+    const frame = await render();
+    // A menu drawn over the widget: the page receives the press, then the
+    // widget moves focus into itself and asks.
+    presses.record(200, 360);
+    await act(async () => onHostPointerDown({ isTrusted: true, button: 0 }));
+    frame.focus();
+    await ask(frame, 'Run the tests');
+    // The composer showing where a widget clipped by its scroller still has its box.
+    later(1_000);
+    presses.record(200, 450);
+    await act(async () => onHostPointerDown({ isTrusted: true, button: 0 }));
+    frame.focus();
+    await ask(frame, 'Commit it');
+    expect(asked).toEqual([]);
+
+    // A page event made up by script disowns nothing: a real click in the widget still asks.
+    later(1_000);
+    clickInto(frame);
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent('pointerdown', { button: 0 }));
+    });
+    await ask(frame, 'Why does step 2 run?');
+    expect(asked.map((request) => request.text)).toEqual(['Why does step 2 run?']);
+  });
+
   it('ignores the same message from any other window', async () => {
     await render();
     const stranger = document.createElement('iframe');
@@ -308,22 +336,32 @@ describe('widget side chats', () => {
   it('holds questions asked while the conversation forks, one side chat each, in order', () => {
     const queue = createWidgetQuestionQueue<{ request: { key: string; text: string } }>();
     const forking = new Set(['parent']);
+    const isForking = (id: string) => forking.has(id);
     const question = (key: string) => ({ request: { key, text: `question ${key}` } });
 
     // A is being forked; B and C are asked meanwhile, B twice, A again.
-    queue.hold('parent', question('b'), 'a');
-    queue.hold('parent', question('b'), 'a');
-    queue.hold('parent', question('a'), 'a');
-    queue.hold('parent', question('c'), 'a');
-    expect(queue.release((id) => forking.has(id))).toEqual([]);
+    queue.hold('page-a', 'parent', question('b'), 'a');
+    queue.hold('page-a', 'parent', question('b'), 'a');
+    queue.hold('page-a', 'parent', question('a'), 'a');
+    queue.hold('page-a', 'parent', question('c'), 'a');
+    expect(queue.release('page-a', isForking)).toEqual([]);
 
     forking.delete('parent');
-    expect(queue.release((id) => forking.has(id))).toEqual([question('b')]);
+    expect(queue.release('page-a', isForking)).toEqual([question('b')]);
     forking.add('parent');
-    expect(queue.release((id) => forking.has(id))).toEqual([]);
+    expect(queue.release('page-a', isForking)).toEqual([]);
     forking.delete('parent');
-    expect(queue.release((id) => forking.has(id))).toEqual([question('c')]);
-    expect(queue.release((id) => forking.has(id))).toEqual([]);
+    expect(queue.release('page-a', isForking)).toEqual([question('c')]);
+    expect(queue.release('page-a', isForking)).toEqual([]);
+  });
+
+  it("keeps a page's questions for that page when the user moves to another conversation", () => {
+    const queue = createWidgetQuestionQueue<{ request: { key: string } }>();
+    queue.hold('page-a', 'session-a', { request: { key: 'b' } }, 'a');
+    // On page B nothing forks: A's question is neither forked nor answered there.
+    expect(queue.release('page-b', () => false)).toEqual([]);
+    // Back on page A, it goes on.
+    expect(queue.release('page-a', () => false)).toEqual([{ request: { key: 'b' } }]);
   });
 
   it('names a side chat by its question, shortened to fit a tab', () => {

@@ -11,6 +11,11 @@ import { getIpcServices } from '@/lib/electron-ipc-client';
  * paid for another question. Focus must be in the frame too, so a press on
  * something drawn over it does not count.
  *
+ * A press on the page itself (something drawn over the widget, or the
+ * composer where a clipped widget's box still runs) is the page's, and the
+ * page tells the main process so as it arrives; only presses the page never
+ * received, the ones inside frames, are left for widgets.
+ *
  * Builds without that process (the web app, Storybook) have no such signal
  * and accept no question.
  */
@@ -19,4 +24,15 @@ export async function takeUserClickInFrame(frame: HTMLIFrameElement): Promise<bo
   if (!ipc || frame.ownerDocument.activeElement !== frame) return false;
   const { left, top, right, bottom } = frame.getBoundingClientRect();
   return await ipc.widgets.takeClick({ left, top, right, bottom }).catch(() => false);
+}
+
+/** Disowns each press the page itself receives; see above. */
+export function onHostPointerDown(event: Pick<PointerEvent, 'isTrusted' | 'button'>): void {
+  if (!event.isTrusted || event.button !== 0) return;
+  const ipc = isElectronRenderer() ? getIpcServices() : null;
+  void ipc?.widgets.disownClick().catch(() => undefined);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointerdown', onHostPointerDown, { capture: true, passive: true });
 }

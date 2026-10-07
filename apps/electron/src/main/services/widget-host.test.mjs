@@ -3,7 +3,8 @@ import test from 'node:test'
 import {
   createWidgetClickLedger,
   isWidgetClickRect,
-  WIDGET_CLICK_MAX_AGE_MS
+  WIDGET_CLICK_MAX_AGE_MS,
+  WIDGET_CLICK_SETTLE_MS
 } from './widget-clicks.ts'
 import { createWidgetHostServer, isBlockedWidgetFrameNavigation } from './widget-host.ts'
 
@@ -96,6 +97,28 @@ void test('a widget question spends one real press inside its frame', () => {
   // Window coordinates are DIP; the frame's box is CSS pixels at the page zoom.
   ledger.record(300, 500)
   assert.equal(ledger.take(frame, 2), true)
+})
+
+void test('a press the page received itself is no widget press', () => {
+  let clock = 0
+  const ledger = createWidgetClickLedger(() => clock)
+  const frame = { left: 100, top: 200, right: 500, bottom: 360 }
+
+  // Something of the page drawn over the frame, or the composer where a
+  // clipped frame's box still runs: the page disowns the press it received.
+  ledger.record(150, 250)
+  // A widget asking at once waits until the page has had time to say so.
+  assert.equal(ledger.settlesIn(), WIDGET_CLICK_SETTLE_MS)
+  clock += 20
+  ledger.disown()
+  clock += WIDGET_CLICK_SETTLE_MS
+  assert.equal(ledger.take(frame, 1), false)
+
+  // A press inside the frame is never disowned and settles for the widget.
+  ledger.record(150, 250)
+  clock += WIDGET_CLICK_SETTLE_MS
+  assert.equal(ledger.settlesIn(), 0)
+  assert.equal(ledger.take(frame, 1), true)
 })
 
 void test('only a finite box is taken from the renderer', () => {

@@ -7,10 +7,19 @@ import type { WebContents } from 'electron'
  * the user makes in a window, including presses inside frames, and nothing a
  * page does produces one. So a widget question counts only against a press
  * the user made inside that widget's frame, and each press pays for one.
+ *
+ * The box alone does not say the press went into the frame: something of the
+ * page can be drawn over it, or the frame can be clipped by a scroller with
+ * the composer showing where the frame's box still runs. The page sees every
+ * press that lands on itself and none that land in a frame, so it disowns
+ * each press it receives; a press is taken only once it has had time to be
+ * disowned.
  */
 
 /** From press to the widget's click handler asking: a click, not a held button. */
 export const WIDGET_CLICK_MAX_AGE_MS = 3_000
+/** Time for the page to disown a press of its own before a widget may take it. */
+export const WIDGET_CLICK_SETTLE_MS = 150
 
 /** A frame's box in the page's CSS pixels, as `getBoundingClientRect` gives it. */
 export type WidgetClickRect = { left: number; top: number; right: number; bottom: number }
@@ -25,6 +34,10 @@ export type WidgetClickLedger = {
    * it when it did. `zoomFactor` converts DIP to the page's CSS pixels.
    */
   take: (rect: WidgetClickRect, zoomFactor: number) => boolean
+  /** The page received the latest press itself; no widget can take it. */
+  disown: () => void
+  /** How long until the latest press has settled; `take` waits that long. */
+  settlesIn: () => number
 }
 
 export function createWidgetClickLedger(now: () => number = Date.now): WidgetClickLedger {
@@ -40,7 +53,11 @@ export function createWidgetClickLedger(now: () => number = Date.now): WidgetCli
       if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) return false
       press = null
       return true
-    }
+    },
+    disown: () => {
+      press = null
+    },
+    settlesIn: () => (press ? Math.max(0, press.at + WIDGET_CLICK_SETTLE_MS - now()) : 0)
   }
 }
 
@@ -76,6 +93,17 @@ export function installWidgetClickWatch(
   })
 }
 
-export function takeWidgetClick(contents: WebContents, rect: WidgetClickRect): boolean {
-  return ledgers.get(contents)?.take(rect, contents.getZoomFactor()) ?? false
+export async function takeWidgetClick(
+  contents: WebContents,
+  rect: WidgetClickRect
+): Promise<boolean> {
+  const ledger = ledgers.get(contents)
+  if (!ledger) return false
+  const settlesIn = ledger.settlesIn()
+  if (settlesIn > 0) await new Promise((resolve) => setTimeout(resolve, settlesIn))
+  return ledger.take(rect, contents.getZoomFactor())
+}
+
+export function disownWidgetClick(contents: WebContents): void {
+  ledgers.get(contents)?.disown()
 }

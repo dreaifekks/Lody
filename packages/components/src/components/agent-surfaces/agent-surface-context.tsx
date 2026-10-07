@@ -117,27 +117,34 @@ export const widgetSideChatTitle = (text: string): string => {
  * Widget questions asked while a fork of the same conversation is under way:
  * a conversation forks one at a time, so each waits its turn and then gets its
  * own side chat, in the order asked. A question already waiting, or the one
- * being forked, is not held twice.
+ * being forked, is not held twice. Questions belong to the conversation page
+ * (`scopeId`) they were asked on and are released only there: leaving that
+ * page is not the end of its fork.
  */
 export function createWidgetQuestionQueue<T extends { request: { key: string } }>() {
-  const waiting = new Map<string, T[]>();
+  const waiting = new Map<string, Map<string, T[]>>();
   return {
-    hold: (sourceId: string, item: T, forkingKey: string | undefined): void => {
-      const queue = waiting.get(sourceId) ?? [];
+    hold: (scopeId: string, sourceId: string, item: T, forkingKey: string | undefined): void => {
+      const scope = waiting.get(scopeId) ?? new Map<string, T[]>();
+      const queue = scope.get(sourceId) ?? [];
       const key = item.request.key;
       if (key === forkingKey || queue.some((held) => held.request.key === key)) return;
-      waiting.set(sourceId, [...queue, item]);
+      scope.set(sourceId, [...queue, item]);
+      waiting.set(scopeId, scope);
     },
-    /** The next question of each conversation no longer forking. */
-    release: (isForking: (sourceId: string) => boolean): T[] => {
+    /** On `scopeId`'s page, the next question of each conversation no longer forking. */
+    release: (scopeId: string, isForking: (sourceId: string) => boolean): T[] => {
+      const scope = waiting.get(scopeId);
+      if (!scope) return [];
       const released: T[] = [];
-      for (const [sourceId, queue] of waiting) {
+      for (const [sourceId, queue] of scope) {
         if (isForking(sourceId)) continue;
         const [next, ...rest] = queue;
         if (next) released.push(next);
-        if (rest.length > 0) waiting.set(sourceId, rest);
-        else waiting.delete(sourceId);
+        if (rest.length > 0) scope.set(sourceId, rest);
+        else scope.delete(sourceId);
       }
+      if (scope.size === 0) waiting.delete(scopeId);
       return released;
     },
   };

@@ -1,6 +1,6 @@
 import { getIpcContext, IpcMethod, IpcService } from 'electron-ipc-decorator'
 import { assertProductWindowSender } from '../assert-sender'
-import { isWidgetClickRect, takeWidgetClick } from '../../services/widget-clicks'
+import { disownWidgetClick, isWidgetClickRect, takeWidgetClick } from '../../services/widget-clicks'
 import { getWidgetHostUrl } from '../../services/widget-host'
 
 export class WidgetsIpc extends IpcService {
@@ -20,6 +20,14 @@ export class WidgetsIpc extends IpcService {
   async takeClick(rect: unknown): Promise<boolean> {
     const { event } = getIpcContext()
     assertProductWindowSender(event)
-    return isWidgetClickRect(rect) && takeWidgetClick(event.sender, rect)
+    return isWidgetClickRect(rect) && (await takeWidgetClick(event.sender, rect))
+  }
+
+  /** The page itself received the user's latest press; no widget may take it. */
+  @IpcMethod()
+  async disownClick(): Promise<void> {
+    const { event } = getIpcContext()
+    assertProductWindowSender(event)
+    disownWidgetClick(event.sender)
   }
 }

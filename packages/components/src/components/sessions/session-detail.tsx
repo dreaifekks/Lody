@@ -3051,7 +3051,12 @@ const SessionDetail = ({
       }
       const forking = pendingForks[source.id];
       if (forking) {
-        widgetQuestionQueue.hold(source.id, { source, request }, forking.firstPrompt?.key);
+        widgetQuestionQueue.hold(
+          sessionId,
+          source.id,
+          { source, request },
+          forking.firstPrompt?.key
+        );
         return;
       }
       void handleForkAssistant(source, request.turnId, 'side-panel', { firstPrompt: request });
@@ -3066,11 +3071,13 @@ const SessionDetail = ({
       widgetQuestionQueue,
     ]
   );
+  // Only on the page they were asked on: switching conversations resets the
+  // pending forks without ending them. Back on that page, the fork it started
+  // is no longer followed, so its questions go on, each to its own fork.
   useEffect(() => {
-    for (const { source, request } of widgetQuestionQueue.release((id) => !!pendingForks[id])) {
-      handleAskInSideChat(source, request);
-    }
-  }, [handleAskInSideChat, pendingForks, widgetQuestionQueue]);
+    const released = widgetQuestionQueue.release(sessionId, (id) => !!pendingForks[id]);
+    for (const { source, request } of released) handleAskInSideChat(source, request);
+  }, [handleAskInSideChat, pendingForks, sessionId, widgetQuestionQueue]);
 
   useEffect(() => {
     if (activeSidebarTab === 'pr' && (!latestPr || !repoFullName)) {
