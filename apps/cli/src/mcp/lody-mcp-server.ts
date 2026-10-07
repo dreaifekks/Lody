@@ -3687,23 +3687,27 @@ export function buildSessionToolServer(
     },
   });
 
-  registerDiscoveryTools(registerSessionTool, async (read) => {
-    const ctx = getSessionContext();
-    const source = await resolveInvokingTurnSource();
-    const auth = getCliAuthContextOrThrow('mcp');
-    const workspace = await resolveWorkspaceOrThrow(auth, getMcpWorkspaceId(ctx));
-    return withWorkspaceManager(auth, workspace, 'mcp-discovery', async (manager) =>
-      read(
-        await createResourceDiscovery({
-          manager,
-          auth,
-          workspaceId: workspace.id as WorkspaceId,
-          delegatedRequester: { userId: source.userId },
-          selectedMcpServerIds: source.inputConfig.mcpServerIds,
-        })
-      )
-    );
-  });
+  registerDiscoveryTools(
+    registerSessionTool,
+    async (read) => {
+      const ctx = getSessionContext();
+      const source = await resolveInvokingTurnSource();
+      const auth = getCliAuthContextOrThrow('mcp');
+      const workspace = await resolveWorkspaceOrThrow(auth, getMcpWorkspaceId(ctx));
+      return withWorkspaceManager(auth, workspace, 'mcp-discovery', async (manager) =>
+        read(
+          await createResourceDiscovery({
+            manager,
+            auth,
+            workspaceId: workspace.id as WorkspaceId,
+            delegatedRequester: { userId: source.userId },
+            selectedMcpServerIds: source.inputConfig.mcpServerIds,
+          })
+        )
+      );
+    },
+    mcpErrorResult
+  );
 
   server.registerTool(
     FEEDBACK_TOOL_NAME,

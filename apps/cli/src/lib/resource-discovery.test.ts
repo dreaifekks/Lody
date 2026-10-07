@@ -327,7 +327,10 @@ describe('resource discovery across MCP and CLI', () => {
     const server = new McpServer({ name: 'synthetic-discovery', version: '1' });
     registerDiscoveryTools(
       createSessionToolRegistrar(server, (_name, _args, run) => run()),
-      (read) => read(discovery)
+      (read) => read(discovery),
+      () => {
+        throw new Error('Only a failed sync takes the shared error result');
+      }
     );
     const client = new Client({ name: 'synthetic-client', version: '1' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

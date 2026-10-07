@@ -680,7 +680,10 @@ describe('local platform zero-cloud integration', () => {
       ).rejects.toBeInstanceOf(WorkspaceSyncUnavailableError);
       const projects = await call('lody_project_list', { kind: 'local' });
       expect(projects.isError).toBe(true);
-      expect(JSON.stringify(projects)).toContain('hub unreachable');
+      expect(JSON.parse((projects.content as Array<{ text: string }>)[0]!.text)).toMatchObject({
+        ok: false,
+        error: { code: 'SYNC_UNAVAILABLE', retryable: true },
+      });
       expect(cloudConnectionAttempts).toBe(0);
     } finally {
       vi.restoreAllMocks();
