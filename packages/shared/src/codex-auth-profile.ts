@@ -64,12 +64,25 @@ export function normalizeCodexEndpoint(value: string): string {
   return endpoint.toString().replace(/\/+$/, '');
 }
 
-const PROTECTED_ENV = new Set([
+const CODEX_AUTH_ROUTING_ENV_KEYS = new Set([
   'HOME',
   'USERPROFILE',
   'APPDATA',
   'LOCALAPPDATA',
   'XDG_CONFIG_HOME',
+  'MODEL_PROVIDER',
+  'DEFAULT_AUTH_REQUEST',
+]);
+
+/** Account/config locations and provider overrides, excluding transport/tool settings. */
+export function isCodexAuthRoutingEnvKey(key: string): boolean {
+  return (
+    CODEX_AUTH_ROUTING_ENV_KEYS.has(key.toUpperCase()) || /^(CODEX_|OPENAI_|LODY_CODEX_)/i.test(key)
+  );
+}
+
+const PROTECTED_ENV = new Set([
+  ...CODEX_AUTH_ROUTING_ENV_KEYS,
   'DBUS_SESSION_BUS_ADDRESS',
   'HTTP_PROXY',
   'HTTPS_PROXY',
@@ -79,23 +92,9 @@ const PROTECTED_ENV = new Set([
   'SSL_CERT_DIR',
   'NODE_EXTRA_CA_CERTS',
   'NODE_TLS_REJECT_UNAUTHORIZED',
-  'MODEL_PROVIDER',
-  'DEFAULT_AUTH_REQUEST',
   'NODE_OPTIONS',
   'LD_PRELOAD',
   'LD_LIBRARY_PATH',
-  'CODEX_HOME',
-  'CODEX_PATH',
-  'CODEX_CONFIG',
-  'CODEX_API_KEY',
-  'CODEX_ACCESS_TOKEN',
-  'OPENAI_API_KEY',
-  'OPENAI_BASE_URL',
-  'OPENAI_IDENTITY_TOKEN_FILE',
-  'OPENAI_WORKLOAD_IDENTITY_CLIENT_ID',
-  'CODEX_REFRESH_TOKEN_URL_OVERRIDE',
-  'CODEX_AUTH_CLIENT_ID',
-  'LODY_CODEX_API_KEY',
 ]);
 
 export function assertManagedCodexProfileConfig(config: {
@@ -119,7 +118,7 @@ export function assertManagedCodexProfileConfig(config: {
   if (
     Object.keys(config.env ?? {}).some(
       (key) =>
-        PROTECTED_ENV.has(key.toUpperCase()) || /^(CODEX_|OPENAI_|LODY_CODEX_|DYLD_)/i.test(key)
+        PROTECTED_ENV.has(key.toUpperCase()) || isCodexAuthRoutingEnvKey(key) || /^DYLD_/i.test(key)
     )
   ) {
     throw new Error('Additional environment variables cannot override a Codex account connection');

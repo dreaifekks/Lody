@@ -1,6 +1,7 @@
 import {
   ANTIGRAVITY_AGENT_TYPE,
   CODEX_SPARK_LIMIT_ID,
+  hasBuiltinEnvAuthRouting,
   normalizePersistedRateLimit,
   parseRateLimitEntryKey,
   resolveAgentBrandId,
@@ -140,7 +141,7 @@ export function canShowSubscriptionRateLimits({
   if (!config) return true;
 
   return (
-    Object.keys(config.env).length === 0 &&
+    !hasBuiltinEnvAuthRouting(agentType, config.env) &&
     !resolveAgentBrandId({ brandId: config.brandId, env: config.env })
   );
 }
