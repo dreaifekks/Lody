@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import {
+  createWidgetClickLedger,
+  isWidgetClickRect,
+  WIDGET_CLICK_MAX_AGE_MS
+} from './widget-clicks.ts'
 import { createWidgetHostServer, isBlockedWidgetFrameNavigation } from './widget-host.ts'
 
 const listen = (server) =>
@@ -58,4 +63,44 @@ void test('keeps a widget frame on its page', () => {
   assert.equal(blocked('about:blank', 'http://127.0.0.1:3000/'), false)
   // Before the host starts there is no widget to keep.
   assert.equal(blocked(shellUrl, 'http://127.0.0.1:3000/', null), false)
+})
+
+void test('a widget question spends one real press inside its frame', () => {
+  let clock = 0
+  const ledger = createWidgetClickLedger(() => clock)
+  const frame = { left: 100, top: 200, right: 500, bottom: 360 }
+
+  // Nothing pressed: a widget asking on its own gets nothing.
+  assert.equal(ledger.take(frame, 1), false)
+
+  ledger.record(150, 250)
+  clock += 400
+  assert.equal(ledger.take(frame, 1), true)
+  // The same press does not pay for a second question.
+  assert.equal(ledger.take(frame, 1), false)
+
+  // A press elsewhere (the composer, another widget) is not this frame's.
+  ledger.record(50, 250)
+  assert.equal(ledger.take(frame, 1), false)
+
+  // A later press replaces an earlier one inside the frame.
+  ledger.record(150, 250)
+  ledger.record(600, 250)
+  assert.equal(ledger.take(frame, 1), false)
+
+  // Too old to be the click that asked.
+  ledger.record(150, 250)
+  clock += WIDGET_CLICK_MAX_AGE_MS + 1
+  assert.equal(ledger.take(frame, 1), false)
+
+  // Window coordinates are DIP; the frame's box is CSS pixels at the page zoom.
+  ledger.record(300, 500)
+  assert.equal(ledger.take(frame, 2), true)
+})
+
+void test('only a finite box is taken from the renderer', () => {
+  assert.equal(isWidgetClickRect({ left: 0, top: 0, right: 10, bottom: 10 }), true)
+  assert.equal(isWidgetClickRect({ left: 0, top: 0, right: Infinity, bottom: 10 }), false)
+  assert.equal(isWidgetClickRect({ left: 0, top: 0, right: '10', bottom: 10 }), false)
+  assert.equal(isWidgetClickRect(null), false)
 })

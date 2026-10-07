@@ -176,7 +176,11 @@ import { SessionBrowserPanel } from './session-browser-panel';
 import { SessionIosSimulatorPanel } from './ios-simulator/session-ios-simulator-panel';
 import { SessionPlanReviewPanel } from '@/components/agent-surfaces/session-plan-review-panel';
 import type { PlanReviewDecision } from '@/components/agent-surfaces/plan-review-model';
-import type { WidgetPromptRequest } from '@/components/agent-surfaces/agent-surface-context';
+import {
+  createWidgetQuestionQueue,
+  widgetSideChatTitle,
+  type WidgetPromptRequest,
+} from '@/components/agent-surfaces/agent-surface-context';
 import { getIosSimulatorPanelAvailability } from '@/lib/ios-simulator/ios-simulator-model';
 import { usePlatformCapability } from '@lody/platform/react';
 import { getMachineMetaByIdAtomFamily } from '@/atoms/machines';
@@ -3029,7 +3033,14 @@ const SessionDetail = ({
     () => forkActiveConversation('side-panel'),
     [forkActiveConversation]
   );
-  // A widget question asked again goes back to its side chat while that is open.
+  const [widgetQuestionQueue] = useState(() =>
+    createWidgetQuestionQueue<{
+      source: SessionMeta;
+      request: WidgetPromptRequest & { turnId: string };
+    }>()
+  );
+  // A widget question asked again goes back to its side chat while that is
+  // open; one asked while this conversation is forking waits for that fork.
   const handleAskInSideChat = useCallback(
     (source: SessionMeta, request: WidgetPromptRequest & { turnId: string }) => {
       const asked = readWidgetSideChat(sessionId, request.key);
@@ -3038,10 +3049,28 @@ const SessionDetail = ({
         revealRightSidebar();
         return;
       }
+      const forking = pendingForks[source.id];
+      if (forking) {
+        widgetQuestionQueue.hold(source.id, { source, request }, forking.firstPrompt?.key);
+        return;
+      }
       void handleForkAssistant(source, request.turnId, 'side-panel', { firstPrompt: request });
     },
-    [handleForkAssistant, revealRightSidebar, selectSidePanelTab, sessionId, visibleSideSessions]
+    [
+      handleForkAssistant,
+      pendingForks,
+      revealRightSidebar,
+      selectSidePanelTab,
+      sessionId,
+      visibleSideSessions,
+      widgetQuestionQueue,
+    ]
   );
+  useEffect(() => {
+    for (const { source, request } of widgetQuestionQueue.release((id) => !!pendingForks[id])) {
+      handleAskInSideChat(source, request);
+    }
+  }, [handleAskInSideChat, pendingForks, widgetQuestionQueue]);
 
   useEffect(() => {
     if (activeSidebarTab === 'pr' && (!latestPr || !repoFullName)) {
@@ -3921,6 +3950,11 @@ const SessionDetail = ({
         revealRightSidebar();
         if (taken.firstPrompt) {
           rememberWidgetSideChat(sessionId, taken.firstPrompt.key, targetSessionId);
+          // The tab keeps the fork's title if this fails.
+          void updateSessionTitle(
+            targetSessionId,
+            widgetSideChatTitle(taken.firstPrompt.text)
+          ).catch(() => undefined);
           const sideChat = chatRefsMap.current.get(targetSessionId);
           if (sideChat && 'sendPrompt' in sideChat)
             void sideChat.sendPrompt(taken.firstPrompt.text);
@@ -3945,6 +3979,7 @@ const SessionDetail = ({
       selectSidePanelTab,
       sessionId,
       takePendingFork,
+      updateSessionTitle,
       workspaceSlug,
     ]
   );

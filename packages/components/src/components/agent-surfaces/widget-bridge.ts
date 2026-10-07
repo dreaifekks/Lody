@@ -24,14 +24,20 @@ export type WidgetBridgeHandlers = {
   onReady: () => void;
   onHeight: (height: number) => void;
   onPrompt: (text: string) => void;
-  /** Whether the user just clicked into the frame; prompts without that are dropped. */
-  isUserGesture: () => boolean;
+  /**
+   * Whether the user's own click on the frame asked, spending that click;
+   * prompts without one are dropped.
+   */
+  takeUserClick: () => Promise<boolean>;
   onLink: (url: string) => void;
   now?: () => number;
 };
 
 export type WidgetBridge = {
-  /** Handles one `message` event; true when it was this frame's and accepted. */
+  /**
+   * Handles one `message` event; true when it was this frame's and accepted
+   * (a prompt still waits for `takeUserClick`).
+   */
   handle: (event: Pick<MessageEvent, 'source' | 'data'>) => boolean;
   /** `setWidgetState`, kept for the life of the frame and never persisted. */
   readonly widgetState: unknown;
@@ -65,8 +71,8 @@ export function createWidgetBridge(handlers: WidgetBridgeHandlers): WidgetBridge
         );
         return true;
       case 'lody-widget:prompt': {
-        // Before the limits, so refused attempts spend none of them.
-        if (!handlers.isUserGesture()) return false;
+        // The limits first, so a refused burst spends no click; a refused
+        // click spends none of the limits.
         const at = now();
         promptTimes = promptTimes.filter((time) => at - time < 60_000);
         if (
@@ -75,9 +81,13 @@ export function createWidgetBridge(handlers: WidgetBridgeHandlers): WidgetBridge
         ) {
           return false;
         }
-        lastPromptAt = at;
-        promptTimes.push(at);
-        handlers.onPrompt(message.text);
+        const { text } = message;
+        void handlers.takeUserClick().then((clicked) => {
+          if (!clicked) return;
+          lastPromptAt = at;
+          promptTimes.push(at);
+          handlers.onPrompt(text);
+        });
         return true;
       }
       case 'lody-widget:link': {

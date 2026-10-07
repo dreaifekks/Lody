@@ -15,7 +15,7 @@ import {
   widgetPromptKey,
 } from './agent-surface-context';
 import { createWidgetBridge, readWidgetThemeVars, WIDGET_MAX_HEIGHT_PX } from './widget-bridge';
-import { isUserGestureInFrame } from './widget-gesture';
+import { takeUserClickInFrame } from './widget-gesture';
 
 const styles = stylex.create({
   root: { display: 'block', width: '100%', minWidth: 0 },
@@ -107,7 +107,8 @@ export function WidgetFrame({ code, title }: { code: string; title: string }) {
           turnId: latest.current.turnId,
           key: widgetPromptKey(latest.current.code, text),
         }),
-      isUserGesture: () => !!frameRef.current && isUserGestureInFrame(frameRef.current),
+      takeUserClick: async () =>
+        frameRef.current ? await takeUserClickInFrame(frameRef.current) : false,
       onLink: setPendingLink,
     });
     const onMessage = (event: MessageEvent) => {

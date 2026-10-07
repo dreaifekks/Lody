@@ -4,6 +4,7 @@ import type { SessionId } from '@lody/shared';
 import {
   AgentSurfaceContext,
   routeWidgetPrompt,
+  widgetSideChatTitle,
 } from '@/components/agent-surfaces/agent-surface-context';
 import { PlanReviewCardView } from '@/components/agent-surfaces/plan-review-card';
 import { PlanReviewPanelView } from '@/components/agent-surfaces/plan-review-panel';
@@ -97,8 +98,11 @@ const FLOW = `<svg width="100%" viewBox="0 0 680 220" role="img">
 /**
  * A widget beside the session's right panel. Questions route the way a
  * conversation that can fork routes them (`routeWidgetPrompt`): each new
- * question opens a side chat tab with it as the first message, the same
- * question again selects its tab. The conversation pane is a stand-in.
+ * question opens a side chat tab named by it, with it as the first message;
+ * the same question again selects its tab. The conversation pane is a
+ * stand-in. A question counts only for a click the desktop's main process saw
+ * land in the widget, so outside the desktop clicks ask nothing unless a
+ * stand-in desktop bridge answers `widgets.takeClick`.
  */
 function WidgetHarness() {
   const [tabs, setTabs] = useState<{ id: string; key: string; question: string }[]>([]);
@@ -134,7 +138,7 @@ function WidgetHarness() {
           <SessionSidePanelTabBar
             tabs={tabs.map((tab) => ({
               id: tab.id,
-              label: '(fork) Request flow',
+              label: widgetSideChatTitle(tab.question),
               kind: 'session' as const,
               closeable: true,
             }))}

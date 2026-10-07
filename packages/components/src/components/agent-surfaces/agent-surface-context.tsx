@@ -102,3 +102,43 @@ export const widgetPromptKey = (code: string, text: string): string => {
 
 export const useAgentSurfaceActions = (): AgentSurfaceActions | null =>
   useContext(AgentSurfaceContext);
+
+const SIDE_CHAT_TITLE_MAX_CHARS = 60;
+
+/** A widget's side chat is named by its question, so its tab tells it apart. */
+export const widgetSideChatTitle = (text: string): string => {
+  const title = text.replace(/\s+/g, ' ').trim();
+  return title.length > SIDE_CHAT_TITLE_MAX_CHARS
+    ? `${title.slice(0, SIDE_CHAT_TITLE_MAX_CHARS - 1).trimEnd()}…`
+    : title;
+};
+
+/**
+ * Widget questions asked while a fork of the same conversation is under way:
+ * a conversation forks one at a time, so each waits its turn and then gets its
+ * own side chat, in the order asked. A question already waiting, or the one
+ * being forked, is not held twice.
+ */
+export function createWidgetQuestionQueue<T extends { request: { key: string } }>() {
+  const waiting = new Map<string, T[]>();
+  return {
+    hold: (sourceId: string, item: T, forkingKey: string | undefined): void => {
+      const queue = waiting.get(sourceId) ?? [];
+      const key = item.request.key;
+      if (key === forkingKey || queue.some((held) => held.request.key === key)) return;
+      waiting.set(sourceId, [...queue, item]);
+    },
+    /** The next question of each conversation no longer forking. */
+    release: (isForking: (sourceId: string) => boolean): T[] => {
+      const released: T[] = [];
+      for (const [sourceId, queue] of waiting) {
+        if (isForking(sourceId)) continue;
+        const [next, ...rest] = queue;
+        if (next) released.push(next);
+        if (rest.length > 0) waiting.set(sourceId, rest);
+        else waiting.delete(sourceId);
+      }
+      return released;
+    },
+  };
+}
