@@ -31,11 +31,10 @@ Edit `AGENTS.md`, not its `CLAUDE.md` symlink. Ownership: [README.md](README.md)
 
 ## Turn Folding And Layout
 
-- Finished turns keep the answer/result tail visible and fold earlier work;
-  streaming turns stay expanded.
-- The final answer is the final contiguous run of text before trailing
-  never-collapsed items, not always the last item: walk backward through
-  adjacent text blocks until a non-text boundary.
+- A finished turn ending in text (before never-collapsed items) keeps that final
+  run plus earlier text that `isSubstantiveAssistantText` accepts; narration
+  folds. One ending mid-work folds nothing; streaming turns stay expanded. The
+  worked header leads its segment; expanded work returns to its place.
 - A turn may hold several `AssistantTurnRenderSegment`s; a plan approval inside a
   running turn cuts a segment. Match ACP kind `switch_mode`, never a title
   (`plan-surface.ts`). Keep

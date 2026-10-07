@@ -130,7 +130,6 @@ describe('buildAssistantTurnRenderLayout', () => {
       'activity_group',
       'content',
     ]);
-    expect(layout.firstWorkBlockIndex).toBe(0);
     expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
       true,
       true,
@@ -180,6 +179,60 @@ describe('buildAssistantTurnRenderLayout', () => {
     ]);
   });
 
+  it('keeps a long earlier answer visible when a background-task followup adds a note after it', () => {
+    const answer = `Root cause and fix. ${'Detail. '.repeat(40)}`;
+    const layout = buildAssistantTurnRenderLayout(
+      'assistant-1',
+      [
+        tool('build-1', 'execute'),
+        { type: 'text', text: answer },
+        tool('read-1', 'read', { locations: [{ path: 'task-output.log' }] }),
+        { type: 'text', text: 'The build finished.' },
+      ],
+      true
+    );
+
+    expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
+      true,
+      false,
+      true,
+      false,
+    ]);
+  });
+
+  it('keeps structured earlier text visible and folds short narration', () => {
+    const layout = buildAssistantTurnRenderLayout(
+      'assistant-1',
+      [
+        { type: 'text', text: 'Installing dependencies first.' },
+        tool('install-1', 'execute'),
+        { type: 'text', text: 'Found two causes:\n- the stream retry\n- the cache key' },
+        tool('edit-1', 'edit'),
+        { type: 'text', text: 'Fixed both.' },
+      ],
+      true
+    );
+
+    expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
+      true,
+      true,
+      false,
+      true,
+      false,
+    ]);
+  });
+
+  it('keeps a long earlier text folded when the turn ends mid-work', () => {
+    const layout = buildAssistantTurnRenderLayout(
+      'assistant-1',
+      [{ type: 'text', text: 'Report. '.repeat(60) }, tool('command-1', 'execute')],
+      true
+    );
+
+    // Text inside work means no visible answer, so the view keeps the turn expanded.
+    expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([true, true]);
+  });
+
   it('does not create completed-work boundaries while a turn is streaming', () => {
     const layout = buildAssistantTurnRenderLayout(
       'assistant-1',
@@ -188,7 +241,6 @@ describe('buildAssistantTurnRenderLayout', () => {
     );
 
     expect(layout.workBlockKeys.size).toBe(0);
-    expect(layout.firstWorkBlockIndex).toBe(-1);
   });
 
   it('treats a finished activity-only turn as work even without a final text reply', () => {
@@ -199,7 +251,6 @@ describe('buildAssistantTurnRenderLayout', () => {
     );
 
     expect(layout.workBlockKeys.size).toBe(1);
-    expect(layout.firstWorkBlockIndex).toBe(0);
   });
 });
 

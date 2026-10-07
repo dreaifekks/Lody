@@ -7,6 +7,8 @@ import {
   getTextContentFromMessageItems,
   getVisibleAssistantTextContent,
   hasTextContentFromMessageItems,
+  isSubstantiveAssistantText,
+  SUBSTANTIVE_ASSISTANT_TEXT_MIN_CHARS,
   USER_TEXT_RENDER_CHAR_LIMIT,
   USER_TEXT_RENDER_LINE_LIMIT,
   shouldCollapseAssistantMessageItem,
@@ -159,6 +161,33 @@ describe('getVisibleAssistantTextContent', () => {
     ];
 
     expect(getVisibleAssistantTextContent(items, true)).toBe('');
+  });
+});
+
+describe('isSubstantiveAssistantText', () => {
+  it('treats short narration as process and long or structured text as content', () => {
+    expect(isSubstantiveAssistantText('Running the tests now.')).toBe(false);
+    expect(isSubstantiveAssistantText('x'.repeat(SUBSTANTIVE_ASSISTANT_TEXT_MIN_CHARS))).toBe(true);
+    expect(
+      isSubstantiveAssistantText(`  ${'x'.repeat(SUBSTANTIVE_ASSISTANT_TEXT_MIN_CHARS - 1)}  `)
+    ).toBe(false);
+    expect(isSubstantiveAssistantText('Two causes:\n- retry\n- cache')).toBe(true);
+    expect(isSubstantiveAssistantText('| a | b |\n|---|---|')).toBe(true);
+    expect(isSubstantiveAssistantText('## Result\nDone')).toBe(true);
+    expect(isSubstantiveAssistantText('Checked #12 and step 2.')).toBe(false);
+  });
+
+  it('copies a substantive earlier answer together with the final text', () => {
+    const answer = 'y'.repeat(SUBSTANTIVE_ASSISTANT_TEXT_MIN_CHARS);
+    const items = [
+      text('short narration'),
+      { type: 'tool_call', toolCallId: 'call-1', status: 'completed' } satisfies MessageContent,
+      text(answer),
+      { type: 'tool_call', toolCallId: 'call-2', status: 'completed' } satisfies MessageContent,
+      text('followup note'),
+    ];
+
+    expect(getVisibleAssistantTextContent(items, true)).toBe(`${answer}\n\nfollowup note`);
   });
 });
 

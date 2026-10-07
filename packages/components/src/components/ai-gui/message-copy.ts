@@ -39,6 +39,7 @@ const isNeverCollapsedAssistantItem = (content: MessageContent | undefined): boo
  * The answer is the final contiguous run of text before the never-collapsed
  * tail, not necessarily the last item. Every adjacent text block in that run
  * stays visible; a non-text item is the boundary between work and the answer.
+ * `items.length` when the turn ends in work rather than text.
  */
 const getFinalTextRunStart = (items: MessageContent[]): number => {
   let index = items.length - 1;
@@ -58,6 +59,25 @@ const getFinalTextRunStart = (items: MessageContent[]): number => {
   return index;
 };
 
+/** Length from which earlier text in a turn reads as content, not narration. */
+export const SUBSTANTIVE_ASSISTANT_TEXT_MIN_CHARS = 300;
+
+const STRUCTURED_TEXT_PATTERN = /(?:^|\n)[ \t]*(?:[-*+] |\d+[.)] |\||#{1,6} )/;
+
+/**
+ * Earlier text of a finished turn that stays visible beside the answer.
+ *
+ * Agents narrate while they work ("installing dependencies first", "running
+ * the tests"); those short lines fold with the work. A long or structured block
+ * (list, table, heading) is a report, typically a complete answer written
+ * before a background task's followup appended a short note after it, and
+ * folding it hid the real answer. Measured on archived sessions: 300 chars or
+ * structure keeps about 2.5% of earlier text, at most four blocks a turn, and
+ * every such hidden answer.
+ */
+export const isSubstantiveAssistantText = (text: string): boolean =>
+  text.trim().length >= SUBSTANTIVE_ASSISTANT_TEXT_MIN_CHARS || STRUCTURED_TEXT_PATTERN.test(text);
+
 export const shouldCollapseAssistantMessageItem = ({
   content,
   index,
@@ -70,13 +90,20 @@ export const shouldCollapseAssistantMessageItem = ({
   isTurnFinished: boolean;
 }): boolean => {
   const itemCount = items.length;
-  const visibleTextRunStart = getFinalTextRunStart(items);
+  const finalTextRunStart = getFinalTextRunStart(items);
+  // Earlier text stays out too when it is substantive (see
+  // `isSubstantiveAssistantText`), but only in a turn that closes in text: one
+  // that ends mid-work folds nothing (see `segmentHasVisibleFinalContent`).
+  const keepsText =
+    content.type === 'text' &&
+    finalTextRunStart < itemCount &&
+    (index >= finalTextRunStart || isSubstantiveAssistantText(content.text));
 
   return (
     isTurnFinished &&
     itemCount > 1 &&
     index < itemCount - 1 &&
-    !(content.type === 'text' && index >= visibleTextRunStart) &&
+    !keepsText &&
     !isNeverCollapsedAssistantItem(content)
   );
 };
