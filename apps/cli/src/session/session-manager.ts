@@ -128,7 +128,7 @@ import { resolveGitHubRepoWorktreeConfig } from './worktree/worktree-config-reso
 import type { AcpCapabilitiesResult } from '@/agent/acp-capability-normalization';
 import { resolveWorkspaceLocalProjectRootPathWithRetry } from '@/lib/local-project-meta';
 import { readTimeoutEnv } from '@/lib/loro/timeout-utils';
-import { loadSessionMcpCatalog } from '@/agent/session-mcp-resolver';
+import { loadSessionMcpCatalog, loadWorkspaceAgentTools } from '@/agent/session-mcp-resolver';
 import { SessionUserResolver } from './session-user-resolver';
 import {
   SessionPreparationService,
@@ -410,6 +410,7 @@ export interface CreateAgentConfig {
   onSessionTitleUpdate: (title: string) => void;
   onAgentWarning: (warning: AgentSessionWarning) => void;
   loadExternalMcpServers: NonNullable<AgentClientOptions['loadExternalMcpServers']>;
+  loadLodyAgentTools: NonNullable<AgentClientOptions['loadLodyAgentTools']>;
   onImageGenerationBegin: (event: ImageGenerationBeginEvent) => void;
   onImageGenerationEnd: (event: ImageGenerationEndEvent) => void;
   onWriteTextFile: (event: AcpWriteTextFileEvidence) => void | Promise<void>;
@@ -1429,6 +1430,11 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
           sessionId,
           selectedIds: config.mcpServerIds,
           logger: this.logger,
+        }),
+      loadLodyAgentTools: () =>
+        loadWorkspaceAgentTools({
+          repo: this.workspaceDocument.repo,
+          workspaceId: this.workspaceId,
         }),
       onImageGenerationBegin: (event) =>
         dispatchEvent(() => this.emit('onImageGenerationBegin', sessionId, event)),

@@ -3,7 +3,7 @@ import { writeSync } from 'node:fs';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { NodeStreamableHTTPServerTransport, toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler } from '@modelcontextprotocol/server';
-import { SessionIdSchema } from '@lody/shared';
+import { SessionIdSchema, parseLodyAgentToolIds } from '@lody/shared';
 import { getLocalControlSocketPath } from '@lody/shared/node/local-ipc';
 import { createFileLogger, type Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
@@ -14,6 +14,7 @@ import {
 } from './lody-mcp-server';
 import { canReadProcNetTcp, lookupLoopbackPeerUid } from './loopback-peer-uid';
 import {
+  MCP_HTTP_AGENT_TOOLS_HEADER,
   MCP_HTTP_MACHINE_ID_HEADER,
   MCP_HTTP_PREFERRED_PORT_ENV,
   MCP_HTTP_SESSION_ID_HEADER,
@@ -212,6 +213,7 @@ const parseSessionContextHeaders = (req: http.IncomingMessage): McpSessionContex
     machineId,
     workdir,
     localControlSocketPath: getLocalControlSocketPath(),
+    agentTools: parseLodyAgentToolIds(singleHeader(req, MCP_HTTP_AGENT_TOOLS_HEADER)),
   };
 };
 
@@ -293,7 +295,7 @@ async function handleRequest(
   }
 
   if (req.headers['mcp-protocol-version'] === '2026-07-28') {
-    const handler = createMcpHandler(buildLodyMcpServer);
+    const handler = createMcpHandler(() => buildLodyMcpServer(context));
     res.on('close', () => void handler.close());
     await runWithMcpSessionContext(context, () => toNodeHandler(handler)(req, res));
     return;
@@ -303,7 +305,7 @@ async function handleRequest(
   // down when the response closes. The MCP client re-initializes per
   // connection, and every tool call carries its full context in headers, so no
   // cross-request state is needed and concurrent sessions cannot interleave.
-  const server = buildLodyMcpServer();
+  const server = buildLodyMcpServer(context);
   const transport = new NodeStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,

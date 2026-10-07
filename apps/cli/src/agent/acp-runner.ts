@@ -110,6 +110,7 @@ export type CreateAcpClientOptions = {
   onSessionTitleUpdate?(title: string): void;
   onAgentWarning?(warning: AgentSessionWarning): void;
   loadExternalMcpServers?: AgentClientOptions['loadExternalMcpServers'];
+  loadLodyAgentTools?: AgentClientOptions['loadLodyAgentTools'];
   onImageGenerationBegin?(event: ImageGenerationBeginEvent): void;
   onImageGenerationEnd?(event: ImageGenerationEndEvent): void;
   onWriteTextFile?(event: AcpWriteTextFileEvidence): void | Promise<void>;
@@ -145,6 +146,7 @@ export const createAcpClient = async (options: CreateAcpClientOptions) => {
     onSessionTitleUpdate: options.onSessionTitleUpdate,
     onAgentWarning: options.onAgentWarning,
     loadExternalMcpServers: options.loadExternalMcpServers,
+    loadLodyAgentTools: options.loadLodyAgentTools,
     onImageGenerationBegin: options.onImageGenerationBegin,
     onImageGenerationEnd: options.onImageGenerationEnd,
     onWriteTextFile: options.onWriteTextFile,

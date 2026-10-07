@@ -9,6 +9,7 @@ import {
   listWorkspaceAgentRoles,
   writeWorkspaceAgentRoleToFlock,
   getWorkspaceFlockDocId,
+  getWorkspaceAgentTools,
   getWorkspaceVoiceSetting,
   listWorkspaceMcpServers,
   parseWorkspaceFlockRow,
@@ -124,6 +125,27 @@ describe('workspace Flock helpers', () => {
     flock.set(key, setting);
     expect(getWorkspaceVoiceSetting(readWorkspaceFlockRowsFromFlock(flock))).toEqual(setting);
     expect(getWorkspaceVoiceSetting({})).toBeNull();
+  });
+
+  it('keeps the offered agent tools, known ids only, in canonical order', () => {
+    const key = workspaceFlockKeys.agentToolsSetting();
+    expect(
+      parseWorkspaceFlockRow(key, { version: 1, tools: ['widget', 'bogus', 'notify'] })
+    ).toEqual({ key, value: { version: 1, tools: ['notify', 'widget'] } });
+    expect(parseWorkspaceFlockRow(key, { version: 2, tools: [] })).toBeUndefined();
+    expect(parseWorkspaceFlockRow(key, { version: 1 })).toBeUndefined();
+
+    const flock = new FakeWorkspaceFlock();
+    expect(getWorkspaceAgentTools(readWorkspaceFlockRowsFromFlock(flock))).toEqual([]);
+    flock.set(key, { version: 1, tools: ['review'] });
+    expect(getWorkspaceAgentTools(readWorkspaceFlockRowsFromFlock(flock))).toEqual(['review']);
+    // The voice row lives in the same family and does not read as tools.
+    flock.set(workspaceFlockKeys.voiceSetting(), {
+      version: 1,
+      configId: 'config-1',
+      machineId: 'machine-1',
+    });
+    expect(getWorkspaceAgentTools(readWorkspaceFlockRowsFromFlock(flock))).toEqual(['review']);
   });
 
   it('does not commit unchanged writes and deletes only once', () => {

@@ -8,6 +8,8 @@ import {
   type WorkspaceId,
   type SessionId,
   type SessionActiveInvocationContextResult,
+  type LodyNotifyUserInput,
+  type LodyNotifyUserResult,
 } from '@lody/shared';
 import type { LoroStreamsMachineRpcClient } from '@lody/loro-streams-rpc';
 import type { AuthContext } from './command-runtime';
@@ -29,6 +31,8 @@ export interface SessionCommandHost {
    * login, else the LAN host's token; `null` when it has neither.
    */
   githubToken?(repoFullName: string): Promise<string | null>;
+  /** `lody_notify_user`; absent where this machine sends no alerts. */
+  notifyUser?(sessionId: SessionId, input: LodyNotifyUserInput): Promise<LodyNotifyUserResult>;
   /**
    * The other machines of a LAN's workspace, reached through the LAN's hub.
    * Absent where the workspace has no machine but this one.

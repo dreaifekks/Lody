@@ -18,6 +18,10 @@ export const MCP_HTTP_WORKSPACE_ID_HEADER = 'x-lody-mcp-workspace-id';
 export const MCP_HTTP_MACHINE_ID_HEADER = 'x-lody-mcp-machine-id';
 // Base64url-encoded: workdir paths are arbitrary UTF-8, HTTP headers are not.
 export const MCP_HTTP_WORKDIR_B64_HEADER = 'x-lody-mcp-workdir-b64';
+/** Comma-separated experimental tools to list for this session; absent lists none. */
+export const MCP_HTTP_AGENT_TOOLS_HEADER = 'x-lody-mcp-agent-tools';
+/** The stdio server's counterpart of the header above. */
+export const LODY_MCP_AGENT_TOOLS_ENV = 'LODY_MCP_AGENT_TOOLS';
 
 /** Env vars the supervisor passes to the host subprocess. The token lives in
  * the child environment (owner-readable only), never on its command line. */
@@ -39,6 +43,7 @@ export const buildLodyMcpHttpHeaders = (
     workspaceId: string;
     machineId: string;
     workdir: string;
+    agentTools?: readonly string[];
   }
 ): Array<{ name: string; value: string }> => [
   { name: 'Authorization', value: `Bearer ${endpoint.token}` },
@@ -49,4 +54,7 @@ export const buildLodyMcpHttpHeaders = (
     name: MCP_HTTP_WORKDIR_B64_HEADER,
     value: Buffer.from(context.workdir, 'utf8').toString('base64url'),
   },
+  ...(context.agentTools && context.agentTools.length > 0
+    ? [{ name: MCP_HTTP_AGENT_TOOLS_HEADER, value: context.agentTools.join(',') }]
+    : []),
 ];

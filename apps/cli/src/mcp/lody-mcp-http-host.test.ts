@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Logger } from '@/utils/logger';
 import { createMcpHttpServer } from './lody-mcp-http-host';
 import {
+  MCP_HTTP_AGENT_TOOLS_HEADER,
   MCP_HTTP_MACHINE_ID_HEADER,
   MCP_HTTP_SESSION_ID_HEADER,
   MCP_HTTP_WORKDIR_B64_HEADER,
@@ -180,6 +181,85 @@ describe('MCP HTTP host wire behavior', () => {
       expect(payload.result).not.toHaveProperty('resultType');
     }
   );
+
+  describe('experimental agent tools', () => {
+    const legacyCall = async (body: unknown, extraHeaders: Record<string, string> = {}) => {
+      const response = await fetch(`${baseUrl}/mcp`, {
+        method: 'POST',
+        headers: {
+          accept: ACCEPT,
+          'content-type': 'application/json',
+          authorization: `Bearer ${TOKEN}`,
+          'mcp-protocol-version': '2025-06-18',
+          ...sessionContextHeaders(),
+          ...extraHeaders,
+        },
+        body: JSON.stringify(body),
+      });
+      return (await response.json()) as {
+        result?: { tools?: Array<{ name: string; description?: string }>; content?: unknown[] };
+        error?: unknown;
+      };
+    };
+    const listNames = async (extraHeaders: Record<string, string> = {}) =>
+      (
+        (
+          await legacyCall(
+            { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+            extraHeaders
+          )
+        ).result?.tools ?? []
+      ).map((tool) => tool.name);
+    const AGENT_TOOLS = ['lody_notify_user', 'lody_request_review', 'lody_show_widget'];
+
+    it('lists none of them while the experiments are off', async () => {
+      const names = await listNames();
+      expect(names).toContain('lody_feedback');
+      expect(names.filter((name) => AGENT_TOOLS.includes(name))).toEqual([]);
+      const refused = await legacyCall({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'lody_show_widget', arguments: { title: 'x', widget_code: '<svg/>' } },
+      });
+      expect(JSON.stringify(refused)).toMatch(/not found|isError/i);
+    });
+
+    it('lists exactly the offered ones, each saying when to use it', async () => {
+      const response = await legacyCall(
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        { [MCP_HTTP_AGENT_TOOLS_HEADER]: 'review,widget' }
+      );
+      const tools = (response.result?.tools ?? []).filter((tool) =>
+        AGENT_TOOLS.includes(tool.name)
+      );
+      expect(tools.map((tool) => tool.name).sort()).toEqual([
+        'lody_request_review',
+        'lody_show_widget',
+      ]);
+      const review = tools.find((tool) => tool.name === 'lody_request_review');
+      expect(review?.description).toMatch(/END YOUR TURN/);
+      const widget = tools.find((tool) => tool.name === 'lody_show_widget');
+      expect(widget?.description).toMatch(/sendPrompt/);
+      expect(widget?.description).toMatch(/cdn\.jsdelivr\.net/);
+    });
+
+    it('answers a review request at once without blocking the agent', async () => {
+      const response = await legacyCall(
+        {
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: {
+            name: 'lody_request_review',
+            arguments: { title: 'Plan', markdown: '# Plan\n\n1. Step' },
+          },
+        },
+        { [MCP_HTTP_AGENT_TOOLS_HEADER]: 'review' }
+      );
+      expect(JSON.stringify(response.result?.content)).toMatch(/End your turn now/);
+    });
+  });
 
   it('returns a modern tool validation error without executing the tool', async () => {
     const response = await fetch(`${baseUrl}/mcp`, {

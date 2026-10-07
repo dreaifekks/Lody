@@ -173,6 +173,23 @@ describe('AgentClient plan mode permission restoration', () => {
       }
     });
 
+    it('lists the experimental tools the workspace offers, and none otherwise', () => {
+      const { client } = createTestClient({
+        workspaceId: 'workspace-1' as WorkspaceId,
+        machineId: 'machine-1' as MachineId,
+      });
+
+      // @ts-expect-error - exercising private config builder for a focused regression test
+      const [offered] = client.buildBuiltinMcpServers('/tmp/lody-session', ['notify', 'widget']);
+      expect(offered.env).toContainEqual({ name: 'LODY_MCP_AGENT_TOOLS', value: 'notify,widget' });
+
+      // @ts-expect-error - exercising private config builder for a focused regression test
+      const [plain] = client.buildBuiltinMcpServers('/tmp/lody-session', []);
+      expect(plain.env).not.toContainEqual(
+        expect.objectContaining({ name: 'LODY_MCP_AGENT_TOOLS' })
+      );
+    });
+
     it('passes ELECTRON_RUN_AS_NODE through when the embedded Electron CLI is running as Node', () => {
       const previous = process.env.ELECTRON_RUN_AS_NODE;
       process.env.ELECTRON_RUN_AS_NODE = '1';

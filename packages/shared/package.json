@@ -144,6 +144,10 @@
       "types": "./src/lan-control.ts",
       "import": "./src/lan-control.ts"
     },
+    "./lody-widget-shell": {
+      "types": "./src/lody-widget-shell.ts",
+      "import": "./src/lody-widget-shell.ts"
+    },
     "./lan-release": {
       "types": "./src/lan-release.ts",
       "import": "./src/lan-release.ts"

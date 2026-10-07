@@ -1,8 +1,10 @@
 import {
+  getWorkspaceAgentTools,
   getWorkspaceFlockDocId,
   getWorkspaceMcpCatalog,
   readWorkspaceFlockRowsFromFlock,
   resolveSessionMcpServers,
+  type LodyAgentToolId,
   type McpServerId,
   type ResolveSessionMcpServersResult,
   type ResolveSessionMcpServersInput,
@@ -77,4 +79,17 @@ export const loadSessionMcpCatalog = async (
     logger.debug(`[${sessionId}] Workspace MCP catalog read failed: ${reason}`);
     return () => ({ servers: [], problems: [{ kind: 'catalog_unavailable', reason }] });
   }
+};
+
+/**
+ * The experimental Lody tools the workspace offers, from this machine's copy
+ * of the workspace document. Local and immediate: the setting changes rarely
+ * and an agent started a moment early simply sees the previous list.
+ */
+export const loadWorkspaceAgentTools = async (input: {
+  repo: { openFlockDoc(docId: string): Promise<{ flock: WorkspaceFlockReadableFlock }> };
+  workspaceId: WorkspaceId;
+}): Promise<LodyAgentToolId[]> => {
+  const handle = await input.repo.openFlockDoc(getWorkspaceFlockDocId(input.workspaceId));
+  return getWorkspaceAgentTools(readWorkspaceFlockRowsFromFlock(handle.flock));
 };

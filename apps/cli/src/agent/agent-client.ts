@@ -44,10 +44,11 @@ import {
   getDevinSubagentContextId,
   hasOtherDevinSubagentMeta,
   parseDevinSubagentTaskMeta,
+  type LodyAgentToolId,
 } from '@lody/shared';
 import { getLocalControlSocketPath } from '@lody/shared/node/local-ipc';
 import { getLodyMcpHttpEndpoint } from '@/mcp/lody-mcp-http-server';
-import { buildLodyMcpHttpHeaders } from '@/mcp/lody-mcp-http-protocol';
+import { LODY_MCP_AGENT_TOOLS_ENV, buildLodyMcpHttpHeaders } from '@/mcp/lody-mcp-http-protocol';
 import { TerminalManager, TerminalSpawnError } from '@/session/terminal-manager';
 import { reportError } from 'src/utils/telemetry';
 import { formatErrorMessage } from '@/utils/format-error';
@@ -606,6 +607,8 @@ export interface AgentClientOptions {
    * selector is applied once the agent has advertised its MCP capabilities.
    */
   loadExternalMcpServers?(): Promise<SessionMcpCatalogSelector>;
+  /** The experimental Lody tools the workspace offers, read when the agent starts. */
+  loadLodyAgentTools?(): Promise<readonly LodyAgentToolId[]>;
   onImageGenerationBegin?(event: ImageGenerationBeginEvent): void;
   onImageGenerationEnd?(event: ImageGenerationEndEvent): void;
   onWriteTextFile?(event: AcpWriteTextFileEvidence): void | Promise<void>;
@@ -677,7 +680,21 @@ export class AgentClient implements acp.Client {
     )}`;
   }
 
-  private buildBuiltinMcpServers(workdir: string): acp.McpServer[] {
+  private async readLodyAgentTools(): Promise<readonly LodyAgentToolId[]> {
+    try {
+      return (await this.options.loadLodyAgentTools?.()) ?? [];
+    } catch (error) {
+      this.logger.debug(
+        `[${this.options.sessionId}] Experimental Lody tools not read: ${formatErrorMessage(error)}`
+      );
+      return [];
+    }
+  }
+
+  private buildBuiltinMcpServers(
+    workdir: string,
+    agentTools: readonly LodyAgentToolId[] = []
+  ): acp.McpServer[] {
     if (!this.options.workspaceId || !this.options.machineId) {
       return [];
     }
@@ -700,6 +717,7 @@ export class AgentClient implements acp.Client {
               workspaceId: this.options.workspaceId,
               machineId: this.options.machineId,
               workdir,
+              agentTools,
             }),
           },
         ];
@@ -716,6 +734,9 @@ export class AgentClient implements acp.Client {
       { name: 'LODY_MCP_MACHINE_ID', value: this.options.machineId },
       { name: 'LODY_MCP_SOCKET_PATH', value: getLocalControlSocketPath() },
       { name: 'LODY_MCP_WORKDIR', value: workdir },
+      ...(agentTools.length > 0
+        ? [{ name: LODY_MCP_AGENT_TOOLS_ENV, value: agentTools.join(',') }]
+        : []),
     ];
 
     // ACP MCP config is an explicit environment allowlist. The MCP subprocess
@@ -753,7 +774,7 @@ export class AgentClient implements acp.Client {
     workdir: string,
     externalLoad: Promise<SessionMcpCatalogSelector> | undefined
   ): Promise<acp.McpServer[]> {
-    const builtin = this.buildBuiltinMcpServers(workdir);
+    const builtin = this.buildBuiltinMcpServers(workdir, await this.readLodyAgentTools());
     if (!externalLoad) {
       return builtin;
     }

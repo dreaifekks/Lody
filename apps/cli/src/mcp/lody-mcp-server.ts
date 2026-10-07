@@ -65,6 +65,8 @@ import {
   ReviewSubmissionSchema,
   hasPendingUserTurnActivation,
   normalizeSessionTurnInputConfig,
+  parseLodyAgentToolIds,
+  type LodyAgentToolId,
 } from '@lody/shared';
 import { makeLocalControlClientAuto } from '@lody/shared/node/local-ipc';
 import {
@@ -147,6 +149,8 @@ import { getSessionCommandEnvironment } from '@/lib/session-command-environment'
 import { createSessionToolRegistrar, type SessionToolHandlers } from './session-tool-router';
 
 import { registerIosSimulatorPreviewTool } from './ios-simulator-tool';
+import { registerAgentSurfaceTools } from './agent-surface-tools';
+import { LODY_MCP_AGENT_TOOLS_ENV } from './lody-mcp-http-protocol';
 
 const PREVIEW_TOOL_NAME = 'lody_report_preview_candidate';
 const IMAGE_UPLOAD_TOOL_NAME = 'lody_upload_images';
@@ -911,6 +915,8 @@ export interface McpSessionContext {
   workdir: string;
   /** A terminal command: `sessionId` is a placeholder and no Turn is active. */
   terminal?: true;
+  /** Experimental tools the daemon offered this agent when it started. */
+  agentTools?: readonly LodyAgentToolId[];
 }
 
 /** Stands in for the requester Session of a terminal command; never a real id. */
@@ -3584,11 +3590,20 @@ export const __lodyMcpServerInternals = {
   resolveMcpSessionId,
 };
 
-export function buildLodyMcpServer(): McpServer {
-  return buildSessionToolServer();
+/**
+ * `agentTools` are the experimental tools to list. The stdio server reads them
+ * from its environment; the HTTP host passes the requesting session's.
+ */
+export function buildLodyMcpServer(options?: {
+  agentTools?: readonly LodyAgentToolId[];
+}): McpServer {
+  return buildSessionToolServer(undefined, options);
 }
 
-export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServer {
+export function buildSessionToolServer(
+  handlers?: SessionToolHandlers,
+  surface?: { agentTools?: readonly LodyAgentToolId[] }
+): McpServer {
   // The HTTP host is long-lived and the stdio server normally lives for the
   // Agent session. Initialization is idempotent and local-platform telemetry
   // remains hard-disabled inside the analytics layer.
@@ -3653,6 +3668,24 @@ export function buildSessionToolServer(handlers?: SessionToolHandlers): McpServe
     },
     handlers
   );
+
+  // The daemon's handler table keeps every tool; the daemon re-checks the
+  // workspace setting when one is called.
+  const agentTools =
+    surface?.agentTools ?? parseLodyAgentToolIds(readOptionalEnv(LODY_MCP_AGENT_TOOLS_ENV));
+  registerAgentSurfaceTools(server, registerSessionTool, {
+    offered: (id) => handlers !== undefined || agentTools.includes(id),
+    notify: async (input) => {
+      try {
+        const notifyUser = getSessionCommandEnvironment()?.host.notifyUser;
+        if (!notifyUser) throw new Error('Notifications from agents need a local Lody workspace.');
+        const result = await notifyUser(getSessionContext().sessionId, input);
+        return jsonTextResult(result, !result.ok);
+      } catch (error) {
+        return mcpErrorResult(error);
+      }
+    },
+  });
 
   registerDiscoveryTools(registerSessionTool, async (read) => {
     const ctx = getSessionContext();

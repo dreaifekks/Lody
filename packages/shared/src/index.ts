@@ -125,6 +125,8 @@ export * from './machine-flock';
 export * from './workspace-mcp';
 export * from './agent-role';
 export * from './workspace-flock';
+export * from './lody-agent-tools';
+export * from './lody-widget-shell';
 export * from './local-machine-rpc';
 export * from './local-loro-data-plane';
 export * from './json-guards';

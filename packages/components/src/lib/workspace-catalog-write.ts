@@ -7,6 +7,7 @@ import {
   type WorkspaceId,
   type WorkspaceMcpServerMeta,
   type WorkspaceVoiceSetting,
+  type LodyAgentToolId,
 } from '@lody/shared';
 import type { WorkspaceRuntime } from '@/atoms/runtime';
 
@@ -103,3 +104,10 @@ export const writeWorkspaceVoiceSetting = (
   setting
     ? putRow(deps, workspaceFlockKeys.voiceSetting(), setting)
     : deleteRow(deps, workspaceFlockKeys.voiceSetting());
+
+/** The experimental Lody tools every machine of the workspace offers its agents. */
+export const writeWorkspaceAgentTools = (
+  deps: WorkspaceCatalogWriteDeps,
+  tools: readonly LodyAgentToolId[]
+): Promise<void> =>
+  putRow(deps, workspaceFlockKeys.agentToolsSetting(), { version: 1, tools: [...tools] });
