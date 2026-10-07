@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  getCurrentPromptSuggestion,
   getSessionRoomId,
   SessionStatusFactory,
   type MachineId,
   type SessionId,
+  type SessionMeta,
 } from '@lody/shared';
 import { LoroDoc, LoroMap } from 'loro-crdt';
 import type { LoroRepo } from 'loro-repo';
@@ -55,6 +57,40 @@ describe('SessionDocument status metadata', () => {
         lastRunningSeen: expect.any(Number),
       })
     );
+  });
+
+  it('keeps a prompt suggestion written during wrap-up and drops one a newer turn replaced', async () => {
+    // The provider answered user-1; Git and PR sync still hold the turn open.
+    let meta = {
+      latestUserMsgId: 'user-1',
+      processingUserMsgId: 'user-1',
+      lastHandledUserMsgId: 'user-0',
+    } as SessionMeta;
+    const doc = createSessionDocument({
+      getDocMeta: vi.fn(async () => ({ meta })),
+      upsertDocMeta: vi.fn(async (_roomId: string, patch: Partial<SessionMeta>) => {
+        meta = { ...meta, ...patch };
+      }),
+    });
+
+    await expect(doc.setPromptSuggestion('  run the tests ', 'user-1')).resolves.toBe(true);
+    await expect(doc.setPromptSuggestion('x'.repeat(301), 'user-1')).resolves.toBe(false);
+    expect(getCurrentPromptSuggestion(meta)).toBeUndefined();
+
+    // Wrap-up ends: the guess shows.
+    meta = { ...meta, processingUserMsgId: undefined, lastHandledUserMsgId: 'user-1' };
+    expect(getCurrentPromptSuggestion(meta)).toBe('run the tests');
+
+    // The next message is published: the old guess stops showing at once, and
+    // a guess for the replaced turn that arrives late is not written.
+    meta = { ...meta, latestUserMsgId: 'user-2' };
+    expect(getCurrentPromptSuggestion(meta)).toBeUndefined();
+    await expect(doc.setPromptSuggestion('a late guess', 'user-1')).resolves.toBe(false);
+    expect(meta.promptSuggestion?.text).toBe('run the tests');
+
+    // Handled, but the turn produced no guess of its own: the old one stays hidden.
+    meta = { ...meta, lastHandledUserMsgId: 'user-2' };
+    expect(getCurrentPromptSuggestion(meta)).toBeUndefined();
   });
 
   it('does not refresh lastRunningSeen when setting idle', async () => {

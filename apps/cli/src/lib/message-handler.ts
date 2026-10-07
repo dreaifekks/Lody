@@ -211,6 +211,7 @@ import type {
 } from '@lody/platform';
 import { Logger } from '@/utils/logger';
 import { ProviderSetupManager } from './provider-setup-manager';
+import { readWorkspacePromptSuggestionsEnabled } from './workspace-mcp-store';
 import { MachineFlockCommandWatcher } from './loro/machine-flock-command-watcher';
 import {
   EXIT_CODE_REMOTE_RESTART,
@@ -271,7 +272,7 @@ import {
 import type { AcpAgentEditEvidence, AcpStandardDiffBlockEvidence } from '@/lib/acp/history';
 import { mergeAcpRuntimeConfigUpdates } from '@/lib/acp/runtime-config';
 import { VoiceHost } from '@/agent/voice-host';
-import { loadWorkspaceAgentTools } from '@/agent/session-mcp-resolver';
+import { loadSessionWorkspaceSettings } from '@/agent/session-mcp-resolver';
 import {
   AgentNoticeRateLimiter,
   deliverAgentNotice,
@@ -828,6 +829,8 @@ export class MessageHandler {
   private readonly lanWorkspace: boolean;
   private readonly askLanMemberDirect?: MessageHandlerConfig['askLanMemberDirect'];
   private readonly machineLifecycleCapability: MachineLifecycleCapability;
+  /** Per session, the user turn whose prompt the provider last answered. */
+  private readonly promptSuggestionSourceTurns = new Map<SessionId, string>();
   private pendingProcessLifecycleAction: MachineProcessLifecycleAction | null = null;
   private readonly store = new SessionTransientStore();
   private sessionActivePresence!: SessionActivePresenceController;
@@ -3229,6 +3232,8 @@ export class MessageHandler {
         this.clearConversationTurnIfMatches(sessionId, turnId),
       getActiveTurnId: (sessionId) => this.store.getActiveTurnId(sessionId),
       clearActiveTurnId: (sessionId, turnId) => this.clearActiveTurnIdIfMatches(sessionId, turnId),
+      notePromptReturned: (sessionId, userTurnId) =>
+        this.promptSuggestionSourceTurns.set(sessionId, userTurnId),
       hasPromptOutputForTurn: (sessionId, turnId) => this.hasPromptOutputForTurn(sessionId, turnId),
       observePromptOutputForTurn: (sessionId, turnId) =>
         this.observePromptOutputForTurn(sessionId, turnId),
@@ -3946,6 +3951,10 @@ export class MessageHandler {
 
     this.sessionManager.on('onSessionTitleUpdate', (sessionId, title) => {
       void this.maybeStoreAgentSessionTitle(sessionId, title);
+    });
+
+    this.sessionManager.on('onPromptSuggestion', (sessionId, suggestion) => {
+      void this.storePromptSuggestion(sessionId, suggestion);
     });
 
     this.sessionManager.on('onAgentWarning', (sessionId, warning) => {
@@ -9501,6 +9510,31 @@ export class MessageHandler {
    * its only generated source. Never overwrites a user-set title; the conditional
    * write guards against renames racing in via sync.
    */
+  /**
+   * Session meta, not history: the guess is latest state that the next turn
+   * clears, and meta reaches every device of the workspace. A running Claude
+   * keeps the option it started with, so the switch is checked again here.
+   */
+  private async storePromptSuggestion(sessionId: SessionId, suggestion: string): Promise<void> {
+    // Claude guesses after a turn it answered for this daemon; without that
+    // turn there is nothing to tie the guess to.
+    const sourceUserTurnId = this.promptSuggestionSourceTurns.get(sessionId);
+    if (!sourceUserTurnId) return;
+    try {
+      const enabled = await readWorkspacePromptSuggestionsEnabled(
+        this.workspaceDocument.repo,
+        this.workspaceId
+      );
+      if (!enabled) return;
+      const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
+      await sessionDoc.setPromptSuggestion(suggestion, sourceUserTurnId);
+    } catch (error) {
+      this.logger.debug(
+        `[${sessionId}] Failed to store prompt suggestion: ${formatErrorMessage(error)}`
+      );
+    }
+  }
+
   private async maybeStoreAgentSessionTitle(sessionId: SessionId, title: string): Promise<void> {
     try {
       const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
@@ -10438,11 +10472,18 @@ export class MessageHandler {
     // Re-read here, not trusted from the agent's tool list: the user may have
     // switched the experiment off since the agent started.
     const enabled = (
-      await loadWorkspaceAgentTools({
+      await loadSessionWorkspaceSettings({
         repo: this.workspaceDocument.repo,
+        syncFlockDoc: (docId, { timeoutMs }) =>
+          this.workspaceDocument.syncFlockDocOrThrow(docId, {
+            timeoutMs,
+            reason: 'agent-notice',
+          }),
         workspaceId: this.workspaceId as WorkspaceId,
+        sessionId,
+        logger: this.logger,
       })
-    ).includes('notify');
+    ).agentTools.includes('notify');
     const notificationService = this.notificationService;
     const notifyAgentMessage = notificationService?.notifyAgentMessage?.bind(notificationService);
     return deliverAgentNotice(

@@ -11,6 +11,7 @@ import {
   getWorkspaceFlockDocId,
   getWorkspaceAgentTools,
   getWorkspaceVoiceSetting,
+  isWorkspacePromptSuggestionsEnabled,
   listWorkspaceMcpServers,
   parseWorkspaceFlockRow,
   readWorkspaceFlockRowsFromFlock,
@@ -146,6 +147,25 @@ describe('workspace Flock helpers', () => {
       machineId: 'machine-1',
     });
     expect(getWorkspaceAgentTools(readWorkspaceFlockRowsFromFlock(flock))).toEqual(['review']);
+  });
+
+  it('turns prompt suggestions on with their own row, apart from the voice agent', () => {
+    const key = workspaceFlockKeys.promptSuggestionsSetting();
+    expect(parseWorkspaceFlockRow(key, { version: 1, extra: true })).toEqual({
+      key,
+      value: { version: 1 },
+    });
+    expect(parseWorkspaceFlockRow(key, { version: 2 })).toBeUndefined();
+
+    const flock = new FakeWorkspaceFlock();
+    expect(isWorkspacePromptSuggestionsEnabled(readWorkspaceFlockRowsFromFlock(flock))).toBe(false);
+    flock.set(key, { version: 1 });
+    const rows = readWorkspaceFlockRowsFromFlock(flock);
+    expect(isWorkspacePromptSuggestionsEnabled(rows)).toBe(true);
+    expect(getWorkspaceVoiceSetting(rows)).toBeNull();
+
+    const off = applyWorkspaceFlockRowEvents(rows, [{ key, value: undefined }]);
+    expect(isWorkspacePromptSuggestionsEnabled(off)).toBe(false);
   });
 
   it('does not commit unchanged writes and deletes only once', () => {

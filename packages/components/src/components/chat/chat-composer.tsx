@@ -24,6 +24,7 @@ import {
   type VisualAnnotationReferenceChipItem,
 } from './visual-annotation-reference-chip';
 import { cn } from '@/lib/utils';
+import { isImeComposingKeyboardEvent } from '@/lib/ime';
 import { COMPOSER_ELEVATION_CLASS, COMPOSER_SESSION_SURFACE_CLASS } from './composer-surface';
 import {
   CombinedMentionTextarea,
@@ -123,6 +124,11 @@ export interface ChatComposerProps {
   onPromptKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onPromptPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
   promptPlaceholder?: string;
+  /**
+   * A guess at the next message. Shown in place of the placeholder while the
+   * prompt is empty; Tab fills it in without sending.
+   */
+  promptSuggestion?: string | null;
   /** Agent or role name for the compact-width placeholder ("Work with {{name}}"). */
   compactPlaceholderName?: string | null;
   promptDisabled?: boolean;
@@ -251,6 +257,7 @@ export function ChatComposer({
   onPromptKeyDown,
   onPromptPaste,
   promptPlaceholder,
+  promptSuggestion,
   compactPlaceholderName,
   promptDisabled = false,
   promptRows = 3,
@@ -366,6 +373,31 @@ export function ChatComposer({
               skillAgent,
             })
           )));
+  const visiblePromptSuggestion =
+    promptSuggestion && !promptDisabled && promptValue.length === 0 ? promptSuggestion : null;
+  const handlePromptKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      // Plain Tab only, and only while the guess is what the empty box shows:
+      // a mention menu, ⇧Tab mode cycling and focus moves keep their Tab.
+      if (
+        visiblePromptSuggestion &&
+        event.key === 'Tab' &&
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.defaultPrevented &&
+        !isImeComposingKeyboardEvent(event)
+      ) {
+        event.preventDefault();
+        onPromptChange(visiblePromptSuggestion);
+        return;
+      }
+      onPromptKeyDown?.(event);
+    },
+    [onPromptChange, onPromptKeyDown, visiblePromptSuggestion]
+  );
+  const promptPlaceholderText = visiblePromptSuggestion ?? resolvedPromptPlaceholder;
   const numberFormatter = useMemo(() => new Intl.NumberFormat(intlLocale), [intlLocale]);
   const previewPastedTextDraft =
     pastedTextDrafts.find((item) => item.id === previewPastedTextDraftId) ?? null;
@@ -996,13 +1028,13 @@ export function ChatComposer({
                 persistedMentions={persistedMentions}
                 draftKey={draftKey}
                 mentionActionsRef={mentionActionsRef}
-                onKeyDown={onPromptKeyDown}
+                onKeyDown={handlePromptKeyDown}
                 onPaste={onPromptPaste}
                 onCopy={handlePromptCopy}
                 disabled={promptDisabled}
                 rows={effectivePromptRows}
                 enterKeyHint={promptEnterKeyHint}
-                placeholder={resolvedPromptPlaceholder}
+                placeholder={promptPlaceholderText}
                 // While the ⌘L focus hint is shown the box is empty, so the (long)
                 // placeholder would otherwise run under the top-right ⌘L chip. Reserve
                 // room for it so the placeholder wraps before the chip; the padding is
@@ -1099,13 +1131,13 @@ export function ChatComposer({
               persistedMentions={persistedMentions}
               draftKey={draftKey}
               mentionActionsRef={mentionActionsRef}
-              onKeyDown={onPromptKeyDown}
+              onKeyDown={handlePromptKeyDown}
               onPaste={onPromptPaste}
               onCopy={handlePromptCopy}
               disabled={promptDisabled}
               rows={effectivePromptRows}
               enterKeyHint={promptEnterKeyHint}
-              placeholder={resolvedPromptPlaceholder}
+              placeholder={promptPlaceholderText}
               containerClassName={mentionContainerClassName}
               className={dialogTextareaClassName}
               data-keyboard-nav="composer"

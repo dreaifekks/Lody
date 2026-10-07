@@ -2,6 +2,7 @@ import {
   getWorkspaceAgentTools,
   getWorkspaceFlockDocId,
   getWorkspaceMcpCatalog,
+  isWorkspacePromptSuggestionsEnabled,
   readWorkspaceFlockRowsFromFlock,
   resolveSessionMcpServers,
   type LodyAgentToolId,
@@ -81,15 +82,44 @@ export const loadSessionMcpCatalog = async (
   }
 };
 
+export type SessionWorkspaceSettings = {
+  promptSuggestions: boolean;
+  agentTools: LodyAgentToolId[];
+};
+
 /**
- * The experimental Lody tools the workspace offers, from this machine's copy
- * of the workspace document. Local and immediate: the setting changes rarely
- * and an agent started a moment early simply sees the previous list.
+ * The workspace settings an agent start needs: whether Claude should suggest
+ * the next message, and which experimental Lody tools the agent is offered.
+ *
+ * Syncs the workspace document once first, whatever the MCP selection is: a
+ * daemon without a desktop has no other reader of that document, so its local
+ * copy is only as new as its last sync. Best effort: a failed sync reads the
+ * local copy, and a failed read reports everything off.
  */
-export const loadWorkspaceAgentTools = async (input: {
-  repo: { openFlockDoc(docId: string): Promise<{ flock: WorkspaceFlockReadableFlock }> };
-  workspaceId: WorkspaceId;
-}): Promise<LodyAgentToolId[]> => {
-  const handle = await input.repo.openFlockDoc(getWorkspaceFlockDocId(input.workspaceId));
-  return getWorkspaceAgentTools(readWorkspaceFlockRowsFromFlock(handle.flock));
+export const loadSessionWorkspaceSettings = async (
+  input: Omit<LoadSessionMcpCatalogInput, 'selectedIds' | 'env'>
+): Promise<SessionWorkspaceSettings> => {
+  const docId = getWorkspaceFlockDocId(input.workspaceId);
+  if (input.syncFlockDoc) {
+    try {
+      await input.syncFlockDoc(docId, { timeoutMs: CATALOG_SYNC_TIMEOUT_MS });
+    } catch (error) {
+      input.logger.debug(
+        `[${input.sessionId}] Workspace settings refresh failed; using local rows: ${formatErrorMessage(error)}`
+      );
+    }
+  }
+  try {
+    const handle = await input.repo.openFlockDoc(docId);
+    const rows = readWorkspaceFlockRowsFromFlock(handle.flock);
+    return {
+      promptSuggestions: isWorkspacePromptSuggestionsEnabled(rows),
+      agentTools: getWorkspaceAgentTools(rows),
+    };
+  } catch (error) {
+    input.logger.debug(
+      `[${input.sessionId}] Workspace settings read failed; experimental settings stay off: ${formatErrorMessage(error)}`
+    );
+    return { promptSuggestions: false, agentTools: [] };
+  }
 };

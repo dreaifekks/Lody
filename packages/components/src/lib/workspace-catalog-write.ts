@@ -96,6 +96,15 @@ export const deleteWorkspaceAgentRole = (
   id: AgentRoleId
 ): Promise<void> => deleteRow(deps, workspaceFlockKeys.agentRole(id));
 
+/** Turn experimental prompt suggestions on or off for every device of the workspace. */
+export const writeWorkspacePromptSuggestionsSetting = (
+  deps: WorkspaceCatalogWriteDeps,
+  enabled: boolean
+): Promise<void> =>
+  enabled
+    ? putRow(deps, workspaceFlockKeys.promptSuggestionsSetting(), { version: 1 })
+    : deleteRow(deps, workspaceFlockKeys.promptSuggestionsSetting());
+
 /** Share one Codex agent for voice with every device of the workspace, or stop sharing. */
 export const writeWorkspaceVoiceSetting = (
   deps: WorkspaceCatalogWriteDeps,

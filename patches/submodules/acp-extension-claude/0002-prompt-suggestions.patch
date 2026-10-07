@@ -1,0 +1,176 @@
+diff --git a/src/acp-agent.ts b/src/acp-agent.ts
+index 4a5e328..1244e7b 100644
+--- a/src/acp-agent.ts
++++ b/src/acp-agent.ts
+@@ -616,6 +616,19 @@ function getLodyForkTurnId(meta: unknown): string | undefined {
+   return version === 1 && typeof turnId === "string" && turnId.length > 0 ? turnId : undefined;
+ }
+ 
++/** Whether the client asked for a next-prompt guess after each turn
++ *  (`_meta.lody.promptSuggestions` on session start). Off unless asked: the
++ *  guess is an extra model call, cheap only while the prompt cache is warm. */
++export function lodyPromptSuggestionsRequested(meta: unknown): boolean {
++  if (!meta || typeof meta !== "object") return false;
++  const lody = (meta as Record<string, unknown>).lody;
++  if (!lody || typeof lody !== "object") return false;
++  const request = (lody as Record<string, unknown>).promptSuggestions;
++  return (
++    !!request && typeof request === "object" && (request as Record<string, unknown>).version === 1
++  );
++}
++
+ /** Stops one Claude background task without cancelling the parent prompt turn. */
+ const ASYNC_TASK_STOP_METHOD = "_session/async_task/stop";
+ 
+@@ -1572,6 +1585,7 @@ export function computeSessionFingerprint(params: {
+       systemPrompt: meta?.systemPrompt,
+       disableBuiltInTools: meta?.disableBuiltInTools,
+       emitRawSDKMessages: meta?.claudeCode?.emitRawSDKMessages,
++      promptSuggestions: lodyPromptSuggestionsRequested(meta) || undefined,
+       options,
+     }),
+   );
+@@ -6875,7 +6889,16 @@ export class ClaudeAcpAgent {
+             break;
+           }
+           case "tool_use_summary":
++            break;
+           case "prompt_suggestion":
++            // Arrives after the turn's `result`, so the turn is already settled;
++            // this loop keeps reading between turns, which is what delivers it.
++            if (message.suggestion.trim()) {
++              await this.client.extNotification(LODY_EXTENSION_METHODS.sessionPromptSuggestion, {
++                sessionId: params.sessionId,
++                suggestion: message.suggestion,
++              });
++            }
+             break;
+           case "auth_status":
+             if (!message.isAuthenticating && message.error === undefined) {
+@@ -9116,6 +9139,7 @@ export class ClaudeAcpAgent {
+       settingSources: ["user", "project", "local"],
+       ...(thinking !== undefined && { thinking }),
+       ...userProvidedOptions,
++      ...(lodyPromptSuggestionsRequested(sessionMeta) ? { promptSuggestions: true } : {}),
+       // Claude Code uses the same checkpoint store for /rewind. Enable it only
+       // for clients that negotiated per-turn file-change reports; this avoids
+       // snapshot I/O for every other session.
+diff --git a/src/tests/acp-agent.test.ts b/src/tests/acp-agent.test.ts
+index c87ec1b..f7cee85 100644
+--- a/src/tests/acp-agent.test.ts
++++ b/src/tests/acp-agent.test.ts
+@@ -14142,6 +14142,79 @@ describe("emitRawSDKMessages", () => {
+     expect(sdkMessages.length).toBeGreaterThanOrEqual(3);
+   });
+ 
++  it("forwards the prompt suggestion that arrives after the turn's result", async () => {
++    const extNotifications: { method: string; params: any }[] = [];
++    let suggestionDelivered!: () => void;
++    const delivered = new Promise<void>((resolve) => {
++      suggestionDelivered = resolve;
++    });
++    const agent = new ClaudeAcpAgent(
++      {
++        sessionUpdate: async () => {},
++        extNotification: async (method: string, params: any) => {
++          extNotifications.push({ method, params });
++          if (method === "_lody/session/prompt_suggestion") suggestionDelivered();
++        },
++      } as unknown as AcpClient,
++      { log: () => {}, error: () => {} },
++    );
++    let releaseSuggestion!: () => void;
++    const suggestionReady = new Promise<void>((resolve) => {
++      releaseSuggestion = resolve;
++    });
++    const input = new Pushable<any>();
++    async function* turnThenSuggestion() {
++      const { value: userMessage } = await input[Symbol.asyncIterator]().next();
++      yield {
++        type: "user",
++        message: userMessage.message,
++        parent_tool_use_id: null,
++        uuid: userMessage.uuid,
++        session_id: "test-session",
++        isReplay: true,
++      };
++      yield createResultMessage();
++      yield { type: "system", subtype: "session_state_changed", state: "idle" };
++      // The CLI forks the conversation for the guess once the turn is over.
++      await suggestionReady;
++      yield {
++        type: "prompt_suggestion",
++        suggestion: "  ",
++        uuid: randomUUID(),
++        session_id: "test-session",
++      };
++      yield {
++        type: "prompt_suggestion",
++        suggestion: "run the tests",
++        uuid: randomUUID(),
++        session_id: "test-session",
++      };
++    }
++    agent.sessions["test-session"] = mockSessionState({
++      query: wrapQuery(turnThenSuggestion()),
++      input,
++    });
++
++    const response = await agent.prompt({
++      sessionId: "test-session",
++      prompt: [{ type: "text", text: "fix the build" }],
++    });
++    expect(response.stopReason).toBe("end_turn");
++    expect(extNotifications.some((n) => n.method === "_lody/session/prompt_suggestion")).toBe(
++      false,
++    );
++
++    releaseSuggestion();
++    await delivered;
++
++    expect(extNotifications.filter((n) => n.method === "_lody/session/prompt_suggestion")).toEqual([
++      {
++        method: "_lody/session/prompt_suggestion",
++        params: { sessionId: "test-session", suggestion: "run the tests" },
++      },
++    ]);
++  });
++
+   it("emits task lifecycle notifications with full task payloads", async () => {
+     const { agent, updates, extNotifications } = createMockAgentWithExtNotification();
+     const taskStarted = {
+diff --git a/src/tests/create-session-options.test.ts b/src/tests/create-session-options.test.ts
+index 468539b..d17bf36 100644
+--- a/src/tests/create-session-options.test.ts
++++ b/src/tests/create-session-options.test.ts
+@@ -99,6 +99,30 @@ describe("createSession options merging", () => {
+     agent = new ClaudeAcpAgent(createMockClient());
+   });
+ 
++  it("asks the SDK for prompt suggestions only when Lody requests them", async () => {
++    const cwd = process.cwd();
++    const { sessionId } = await agent.newSession({ cwd, mcpServers: [] });
++    expect(capturedOptions?.promptSuggestions).toBeUndefined();
++
++    // Turning the request on for a live session rebuilds its query.
++    await agent.resumeSession({
++      sessionId,
++      cwd,
++      mcpServers: [],
++      _meta: { lody: { promptSuggestions: { version: 1 } } },
++    });
++    expect(capturedOptions?.promptSuggestions).toBe(true);
++    expect(capturedOptions?.resume).toBe(sessionId);
++
++    // An unknown request version is not a request.
++    await agent.newSession({
++      cwd,
++      mcpServers: [],
++      _meta: { lody: { promptSuggestions: { version: 2 } } },
++    });
++    expect(capturedOptions?.promptSuggestions).toBeUndefined();
++  });
++
+   for (const method of ["resumeSession", "loadSession"] as const) {
+     for (const limit of ["maxTurns", "maxBudgetUsd"] as const) {
+       it(`${method} applies added, tightened and removed ${limit} to the SDK query`, async () => {

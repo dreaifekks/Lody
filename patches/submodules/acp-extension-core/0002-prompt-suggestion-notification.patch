@@ -1,0 +1,58 @@
+diff --git a/src/methods.ts b/src/methods.ts
+index 554609b..439f512 100644
+--- a/src/methods.ts
++++ b/src/methods.ts
+@@ -7,6 +7,7 @@ export const LODY_EXTENSION_METHODS = {
+   rateLimitsUpdate: '_lody/rate_limits/update',
+   sessionSteer: '_lody/session/steer',
+   sessionSteerApplied: '_lody/session/steer_applied',
++  sessionPromptSuggestion: '_lody/session/prompt_suggestion',
+   sessionGoal: '_lody/session/goal',
+   sessionHistoryRead: '_lody/session/history/read',
+   subagentsList: '_lody/subagents/list',
+@@ -71,6 +72,7 @@ export type LodyExtensionRequestMap<TPrompt = unknown> = {
+ 
+ export type LodyExtensionNotificationMap = {
+   [LODY_EXTENSION_METHODS.subagentEvent]: LodySubagentEvent;
++  [LODY_EXTENSION_METHODS.sessionPromptSuggestion]: LodyPromptSuggestion;
+   [LODY_EXTENSION_METHODS.sessionUsageUpdate]: SessionUsageUpdate;
+   [LODY_EXTENSION_METHODS.rateLimitsUpdate]: RateLimitsUpdate;
+   [LODY_EXTENSION_METHODS.sessionSteerApplied]: LodySteerApplied;
+@@ -100,6 +102,7 @@ import type {
+ import type {
+   LodyGoalControlRequest,
+   LodyGoalControlResponse,
++  LodyPromptSuggestion,
+   LodySessionHistoryReadRequest,
+   LodySessionHistoryReadResponse,
+   LodySteerApplied,
+diff --git a/src/session.ts b/src/session.ts
+index 119bfee..b4752ab 100644
+--- a/src/session.ts
++++ b/src/session.ts
+@@ -105,6 +105,16 @@ export type LodySteerApplied = {
+   steerId: string;
+ };
+ 
++/**
++ * The agent's guess at the user's next message, sent after a turn ends. Only
++ * for a session started with `_meta.lody.promptSuggestions`. Ephemeral: the
++ * next prompt makes it stale.
++ */
++export type LodyPromptSuggestion = {
++  sessionId: string;
++  suggestion: string;
++};
++
+ export type LodySubagentTask = {
+   taskId: string;
+   description: string;
+@@ -162,6 +172,8 @@ export type LodySessionMeta = {
+   worktreeProject?: LodyWorktreeProject;
+   turnId?: string;
+   forkAtTurn?: { version: 1; turnId?: string };
++  /** Client→agent on session start: send a `LodyPromptSuggestion` after each turn. */
++  promptSuggestions?: { version: 1 };
+   steer?: LodySteerPromptMeta;
+   toolName?: string;
+   activity?: LodyActivityMeta;

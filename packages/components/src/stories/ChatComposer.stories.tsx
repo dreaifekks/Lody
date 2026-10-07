@@ -174,6 +174,7 @@ function DemoComposer({
   fileItems,
   initialPrompt,
   showMentionCommands = false,
+  promptSuggestion,
 }: {
   tone: 'light' | 'dark';
   variant: 'landing' | 'session' | 'dialog';
@@ -186,6 +187,7 @@ function DemoComposer({
   fileItems?: ChatComposerFileItem[];
   initialPrompt?: string;
   showMentionCommands?: boolean;
+  promptSuggestion?: string;
 }) {
   const inlinePastedTextLabel = `[Pasted ${getPastedTextCharacterCount(samplePastedText)} chars]`;
   const inlinePastedTextPrompt = `Investigate this context ${inlinePastedTextLabel} and help me extract the root cause.`;
@@ -316,6 +318,7 @@ function DemoComposer({
       onPromptChange={setPrompt}
       availableCommands={showMentionCommands ? mentionStressCommands : undefined}
       promptPlaceholder={samplePromptPlaceholder}
+      promptSuggestion={promptSuggestion}
       promptRows={promptRows ?? 3}
       pastedTextDrafts={pastedTextDrafts}
       onPastedTextDraftsChange={setPastedTextDrafts}
@@ -408,6 +411,22 @@ export const SessionDark: Story = {
     <div className="min-h-screen bg-[#050b1d] px-4 py-12 text-white">
       <div className="mx-auto w-full max-w-3xl">
         <DemoComposer tone="dark" variant="session" />
+      </div>
+    </div>
+  ),
+};
+
+/** Claude's guess at the next message in the empty box; Tab fills it in. */
+export const SessionPromptSuggestion: Story = {
+  render: () => (
+    <div className="flex min-h-screen flex-col justify-end bg-background px-4 pb-6">
+      <div className="mx-auto w-full max-w-3xl">
+        <DemoComposer
+          tone="light"
+          variant="session"
+          initialPrompt=""
+          promptSuggestion="run the tests and commit the fix"
+        />
       </div>
     </div>
   ),

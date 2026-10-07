@@ -2,6 +2,7 @@ import {
   applyWorkspaceFlockRowEvents,
   getWorkspaceFlockDocId,
   getWorkspaceVoiceSetting,
+  isWorkspacePromptSuggestionsEnabled,
   listWorkspaceAgentRoles,
   listWorkspaceMcpServers,
   readWorkspaceFlockRowsFromFlock,
@@ -26,6 +27,8 @@ export type WorkspaceCatalogSnapshot = {
   roles: AgentRole[];
   /** The Codex agent every device uses for experimental voice, when shared. */
   voice: WorkspaceVoiceSetting | null;
+  /** Experimental next-message suggestions for Claude sessions, on for every device. */
+  promptSuggestions: boolean;
   /** True once the first remote sync landed, which makes an empty catalog authoritative. */
   synced: boolean;
 };
@@ -38,6 +41,7 @@ export const EMPTY_WORKSPACE_CATALOG: WorkspaceCatalogSnapshot = Object.freeze({
   servers: Object.freeze([]) as unknown as WorkspaceMcpServerMeta[],
   roles: Object.freeze([]) as unknown as AgentRole[],
   voice: null,
+  promptSuggestions: false,
   synced: false,
 });
 
@@ -87,15 +91,17 @@ function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: bo
     nextVoice.voice === room.snapshot.voice.voice
       ? room.snapshot.voice
       : nextVoice;
+  const promptSuggestions = isWorkspacePromptSuggestionsEnabled(rows);
   if (
     servers === room.snapshot.servers &&
     roles === room.snapshot.roles &&
     voice === room.snapshot.voice &&
+    promptSuggestions === room.snapshot.promptSuggestions &&
     room.snapshot.synced === synced
   ) {
     return;
   }
-  room.snapshot = { servers, roles, voice, synced };
+  room.snapshot = { servers, roles, voice, promptSuggestions, synced };
   for (const listener of room.listeners) {
     listener(room.snapshot);
   }
