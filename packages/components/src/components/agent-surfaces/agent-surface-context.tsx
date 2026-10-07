@@ -25,7 +25,12 @@ export const isSurfaceToolCall = (key: AgentSurfaceKey, toolCall: ToolCallMessag
   // A call the server refused delivered nothing; it stays an ordinary step.
   if (!key || toolCall.status === 'failed') return false;
   const match = matchAgentSurfaceToolCall(toolCall);
-  return match !== null && match.kind !== 'notify' && surfaceKeyIncludes(key, match.kind);
+  if (match === null || match.kind === 'notify' || !surfaceKeyIncludes(key, match.kind)) {
+    return false;
+  }
+  // A finished call whose input history never kept (older records) has nothing
+  // left to draw; only a running call waits for its input.
+  return match.input !== null || toolCall.status !== 'completed';
 };
 
 /**
