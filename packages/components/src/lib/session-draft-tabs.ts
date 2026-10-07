@@ -353,6 +353,19 @@ export const rememberWidgetSideChat = (
   }
 };
 
+/** A widget question whose side chat could not be opened. */
+export const forgetWidgetSideChat = (parentSessionId: SessionId, key: string): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    windowStorage().setItem(
+      getWidgetSideChatsStorageKey(parentSessionId),
+      JSON.stringify(readWidgetSideChats(parentSessionId).filter(([entryKey]) => entryKey !== key))
+    );
+  } catch {
+    // ignore
+  }
+};
+
 export const replaceTabOrderId = (
   tabOrder: string[],
   currentId: string,

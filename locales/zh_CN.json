@@ -2396,6 +2396,7 @@
   "sessions.sidebar.show": "显示侧边栏",
   "sessions.sidebar.team": "全部任务",
   "sessions.sideSession.closeFailed": "无法关闭侧边对话",
+  "sessions.sideSession.opening": "正在打开侧边对话…",
   "sessions.status.acp": "启动 Agent",
   "sessions.status.askUserQuestion": "需要回答",
   "sessions.status.archived": "已归档",
