@@ -366,16 +366,45 @@ it('uses only associated identities in the Role picker and prevents selecting a 
   expect(button('Link').disabled).toBe(true);
 });
 
-it('uses the Agents machine pills and pane tabs and omits both on local-only platforms', async () => {
+it('uses the Agents machine pills and pane tabs on remote-machine platforms', async () => {
   await renderSetting();
   expect(
     [...container.querySelectorAll('button')].some((node) => node.textContent?.includes('This Mac'))
   ).toBe(true);
+  expect(container.textContent).toContain('Private');
   mocks.inPane = true;
   await renderSetting();
   expect(container.querySelector('[role="tablist"]')).not.toBeNull();
+});
+
+it('lets a LAN desktop manage the memories of another member and pins a lone machine', async () => {
   mocks.remote = false;
+  mocks.entries = [
+    { ...saved, machineId: remoteId, description: 'Build box lessons' },
+    { ...saved, machineId: localId, description: 'Mac lessons' },
+  ];
+  await renderSetting();
+  expect(container.textContent).toContain('Mac lessons');
+  expect(container.textContent).not.toContain('Private');
+  const member = [...container.querySelectorAll('button')].find((node) =>
+    node.textContent?.includes('Build box')
+  );
+  if (!member) throw new Error('Missing LAN member');
+  await act(async () => member.click());
+  expect(container.textContent).toContain('Build box lessons');
+  expect(container.textContent).not.toContain('Mac lessons');
+
+  mocks.inPane = true;
+  await renderSetting();
+  expect(container.querySelector('[role="tablist"]')?.textContent).toContain('Build box');
+
+  mocks.machines = new Map([[localId, machine(localId, 'This Mac')]]);
   await renderSetting();
   expect(container.querySelector('[role="tablist"]')).toBeNull();
-  expect(container.textContent).not.toContain('Build box');
+  mocks.inPane = false;
+  await renderSetting();
+  expect(
+    [...container.querySelectorAll('button')].some((node) => node.textContent?.includes('This Mac'))
+  ).toBe(false);
+  expect(container.textContent).toContain('Mac lessons');
 });

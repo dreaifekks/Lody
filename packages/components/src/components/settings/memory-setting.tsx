@@ -377,9 +377,11 @@ export function MemorySetting() {
   const localId = useAtomValue(localMachineIdAtom);
   const onlineIds = useOnlineMachineIds();
   const remote = useAppCapability('remoteMachines');
+  // A LAN lists every member's machines; a lone local machine has nothing to pick.
+  const selectable = remote || machines.size > 1;
   const inPane = useInSettingsPane();
   const [selected, setSelected] = useState<MachineId | null>(null);
-  const machineId = remote
+  const machineId = selectable
     ? selected && machines.has(selected)
       ? selected
       : localId
@@ -393,7 +395,8 @@ export function MemorySetting() {
           id: machine.id,
           label: machine.name || machine.id,
           online: onlineIds.has(machine.id),
-          private: !(accessByMachineId.get(machine.id)?.sharedWithTeam ?? false),
+          // LAN members are one user: no machine there is private to anyone.
+          private: remote && !(accessByMachineId.get(machine.id)?.sharedWithTeam ?? false),
         }))
         .sort(
           (a, b) =>
@@ -401,19 +404,19 @@ export function MemorySetting() {
             Number(b.online) - Number(a.online) ||
             a.label.localeCompare(b.label)
         ),
-    [machines, onlineIds, accessByMachineId, localId]
+    [machines, onlineIds, accessByMachineId, localId, remote]
   );
   return (
     <div {...stylex.props(surface.container, styles.stack)}>
       <SettingsPageLead>{t('settings.memory.description')}</SettingsPageLead>
-      {remote && !inPane ? (
+      {selectable && !inPane ? (
         <MachinePills
           pills={pills}
           selectedId={machineId}
           onSelect={(id) => setSelected(id as MachineId)}
         />
       ) : null}
-      {remote && inPane && pills.length > 1 ? (
+      {selectable && inPane && pills.length > 1 ? (
         <SettingsLineTabs
           tabs={pills.map((pill) => ({
             ...pill,

@@ -2113,6 +2113,7 @@ const DIRECT_RPC_METHODS: ReadonlySet<string> = new Set([
   'file/preview',
   'local-project/git-state',
   'local-project/control',
+  'machine/memory',
 ]);
 
 export function isDirectRpcMethod(method: string): boolean {

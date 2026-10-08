@@ -644,6 +644,35 @@ describe('LoroStreamsMachineRpcClient', () => {
       client.stop();
     });
 
+    it('carries a memory provider request, answered once, past the hub', async () => {
+      const fake = createFakeStreamClient();
+      const client = new LoroStreamsMachineRpcClient({
+        workspaceId: 'workspace-1',
+        machineId: 'machine-1',
+        streamClient: fake.streamClient,
+        directTransport: async (request) => [
+          {
+            jsonrpc: '2.0',
+            id: request.id,
+            method: 'machine/memory',
+            rpcVersion: '1',
+            machineId: 'machine-1',
+            result: {
+              type: 'machine/memory',
+              status: 'ready',
+              memories: [{ id: 'notes', name: 'Notes' }],
+            },
+          },
+        ],
+      });
+
+      await expect(
+        client.requestMemoryProvider({ action: 'list', providerId: 'nowledge-mem' })
+      ).resolves.toMatchObject({ status: 'ready', memories: [{ id: 'notes', name: 'Notes' }] });
+      expect(fake.appended).toEqual([]);
+      client.stop();
+    });
+
     it('leaves to the hub what it could not send, and what may be answered more than once', async () => {
       const fake = createFakeStreamClient();
       const carried: string[] = [];
