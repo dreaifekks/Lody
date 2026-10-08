@@ -42,6 +42,7 @@ import { Route as WorkspaceNameAuthSettingsProjectsRouteImport } from './routes/
 import { Route as WorkspaceNameAuthSettingsPreferencesRouteImport } from './routes/$workspaceName/_auth/settings/preferences';
 import { Route as WorkspaceNameAuthSettingsPeopleRouteImport } from './routes/$workspaceName/_auth/settings/people';
 import { Route as WorkspaceNameAuthSettingsMyMachinesRouteImport } from './routes/$workspaceName/_auth/settings/my-machines';
+import { Route as WorkspaceNameAuthSettingsMemoryRouteImport } from './routes/$workspaceName/_auth/settings/memory';
 import { Route as WorkspaceNameAuthSettingsMcpRouteImport } from './routes/$workspaceName/_auth/settings/mcp';
 import { Route as WorkspaceNameAuthSettingsMachinesRouteImport } from './routes/$workspaceName/_auth/settings/machines';
 import { Route as WorkspaceNameAuthSettingsLanRouteImport } from './routes/$workspaceName/_auth/settings/lan';
@@ -229,6 +230,11 @@ const WorkspaceNameAuthSettingsMyMachinesRoute =
     path: '/my-machines',
     getParentRoute: () => WorkspaceNameAuthSettingsRoute,
   } as any);
+const WorkspaceNameAuthSettingsMemoryRoute = WorkspaceNameAuthSettingsMemoryRouteImport.update({
+  id: '/memory',
+  path: '/memory',
+  getParentRoute: () => WorkspaceNameAuthSettingsRoute,
+} as any);
 const WorkspaceNameAuthSettingsMcpRoute = WorkspaceNameAuthSettingsMcpRouteImport.update({
   id: '/mcp',
   path: '/mcp',
@@ -367,6 +373,7 @@ export interface FileRoutesByFullPath {
   '/$workspaceName/settings/lan': typeof WorkspaceNameAuthSettingsLanRoute;
   '/$workspaceName/settings/machines': typeof WorkspaceNameAuthSettingsMachinesRoute;
   '/$workspaceName/settings/mcp': typeof WorkspaceNameAuthSettingsMcpRoute;
+  '/$workspaceName/settings/memory': typeof WorkspaceNameAuthSettingsMemoryRoute;
   '/$workspaceName/settings/my-machines': typeof WorkspaceNameAuthSettingsMyMachinesRoute;
   '/$workspaceName/settings/people': typeof WorkspaceNameAuthSettingsPeopleRoute;
   '/$workspaceName/settings/preferences': typeof WorkspaceNameAuthSettingsPreferencesRoute;
@@ -416,6 +423,7 @@ export interface FileRoutesByTo {
   '/$workspaceName/settings/lan': typeof WorkspaceNameAuthSettingsLanRoute;
   '/$workspaceName/settings/machines': typeof WorkspaceNameAuthSettingsMachinesRoute;
   '/$workspaceName/settings/mcp': typeof WorkspaceNameAuthSettingsMcpRoute;
+  '/$workspaceName/settings/memory': typeof WorkspaceNameAuthSettingsMemoryRoute;
   '/$workspaceName/settings/my-machines': typeof WorkspaceNameAuthSettingsMyMachinesRoute;
   '/$workspaceName/settings/people': typeof WorkspaceNameAuthSettingsPeopleRoute;
   '/$workspaceName/settings/preferences': typeof WorkspaceNameAuthSettingsPreferencesRoute;
@@ -470,6 +478,7 @@ export interface FileRoutesById {
   '/$workspaceName/_auth/settings/lan': typeof WorkspaceNameAuthSettingsLanRoute;
   '/$workspaceName/_auth/settings/machines': typeof WorkspaceNameAuthSettingsMachinesRoute;
   '/$workspaceName/_auth/settings/mcp': typeof WorkspaceNameAuthSettingsMcpRoute;
+  '/$workspaceName/_auth/settings/memory': typeof WorkspaceNameAuthSettingsMemoryRoute;
   '/$workspaceName/_auth/settings/my-machines': typeof WorkspaceNameAuthSettingsMyMachinesRoute;
   '/$workspaceName/_auth/settings/people': typeof WorkspaceNameAuthSettingsPeopleRoute;
   '/$workspaceName/_auth/settings/preferences': typeof WorkspaceNameAuthSettingsPreferencesRoute;
@@ -524,6 +533,7 @@ export interface FileRouteTypes {
     | '/$workspaceName/settings/lan'
     | '/$workspaceName/settings/machines'
     | '/$workspaceName/settings/mcp'
+    | '/$workspaceName/settings/memory'
     | '/$workspaceName/settings/my-machines'
     | '/$workspaceName/settings/people'
     | '/$workspaceName/settings/preferences'
@@ -573,6 +583,7 @@ export interface FileRouteTypes {
     | '/$workspaceName/settings/lan'
     | '/$workspaceName/settings/machines'
     | '/$workspaceName/settings/mcp'
+    | '/$workspaceName/settings/memory'
     | '/$workspaceName/settings/my-machines'
     | '/$workspaceName/settings/people'
     | '/$workspaceName/settings/preferences'
@@ -626,6 +637,7 @@ export interface FileRouteTypes {
     | '/$workspaceName/_auth/settings/lan'
     | '/$workspaceName/_auth/settings/machines'
     | '/$workspaceName/_auth/settings/mcp'
+    | '/$workspaceName/_auth/settings/memory'
     | '/$workspaceName/_auth/settings/my-machines'
     | '/$workspaceName/_auth/settings/people'
     | '/$workspaceName/_auth/settings/preferences'
@@ -891,6 +903,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceNameAuthSettingsMyMachinesRouteImport;
       parentRoute: typeof WorkspaceNameAuthSettingsRoute;
     };
+    '/$workspaceName/_auth/settings/memory': {
+      id: '/$workspaceName/_auth/settings/memory';
+      path: '/memory';
+      fullPath: '/$workspaceName/settings/memory';
+      preLoaderRoute: typeof WorkspaceNameAuthSettingsMemoryRouteImport;
+      parentRoute: typeof WorkspaceNameAuthSettingsRoute;
+    };
     '/$workspaceName/_auth/settings/mcp': {
       id: '/$workspaceName/_auth/settings/mcp';
       path: '/mcp';
@@ -1061,6 +1080,7 @@ interface WorkspaceNameAuthSettingsRouteChildren {
   WorkspaceNameAuthSettingsLanRoute: typeof WorkspaceNameAuthSettingsLanRoute;
   WorkspaceNameAuthSettingsMachinesRoute: typeof WorkspaceNameAuthSettingsMachinesRoute;
   WorkspaceNameAuthSettingsMcpRoute: typeof WorkspaceNameAuthSettingsMcpRoute;
+  WorkspaceNameAuthSettingsMemoryRoute: typeof WorkspaceNameAuthSettingsMemoryRoute;
   WorkspaceNameAuthSettingsMyMachinesRoute: typeof WorkspaceNameAuthSettingsMyMachinesRoute;
   WorkspaceNameAuthSettingsPeopleRoute: typeof WorkspaceNameAuthSettingsPeopleRoute;
   WorkspaceNameAuthSettingsPreferencesRoute: typeof WorkspaceNameAuthSettingsPreferencesRoute;
@@ -1088,6 +1108,7 @@ const WorkspaceNameAuthSettingsRouteChildren: WorkspaceNameAuthSettingsRouteChil
   WorkspaceNameAuthSettingsLanRoute: WorkspaceNameAuthSettingsLanRoute,
   WorkspaceNameAuthSettingsMachinesRoute: WorkspaceNameAuthSettingsMachinesRoute,
   WorkspaceNameAuthSettingsMcpRoute: WorkspaceNameAuthSettingsMcpRoute,
+  WorkspaceNameAuthSettingsMemoryRoute: WorkspaceNameAuthSettingsMemoryRoute,
   WorkspaceNameAuthSettingsMyMachinesRoute: WorkspaceNameAuthSettingsMyMachinesRoute,
   WorkspaceNameAuthSettingsPeopleRoute: WorkspaceNameAuthSettingsPeopleRoute,
   WorkspaceNameAuthSettingsPreferencesRoute: WorkspaceNameAuthSettingsPreferencesRoute,

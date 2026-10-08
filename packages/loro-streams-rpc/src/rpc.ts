@@ -1,4 +1,10 @@
 import {
+  MemoryProviderRequestSchema,
+  MemoryProviderResponseSchema,
+  type MemoryProviderRequest,
+  type MemoryProviderResponse,
+} from '@lody/shared';
+import {
   IosSimulatorRequestSchema,
   IosSimulatorResponseSchema,
   IosSimulatorRemoteResponseSchema,
@@ -205,6 +211,7 @@ export const LoroStreamsRpcMethodSchema = z.enum([
   'machine/acp-authenticate',
   'machine/acp-binary-status',
   'machine/acp-binary-install',
+  'machine/memory',
   'machine/pi-extensions',
   'machine/voice',
   'machine/bug-report',
@@ -377,6 +384,11 @@ export const LoroMachineAcpBinaryInstallRpcRequestSchema = BaseRpcRequestSchema.
       agentType: z.string().trim().min(1),
     })
     .strict(),
+}).strict();
+
+export const LoroMemoryProviderRpcRequestSchema = BaseRpcRequestSchema.extend({
+  method: z.literal('machine/memory'),
+  params: MemoryProviderRequestSchema,
 }).strict();
 
 export const LoroMachinePiExtensionsRpcRequestSchema = BaseRpcRequestSchema.extend({
@@ -663,6 +675,7 @@ export const LoroStreamsRpcRequestSchema = z.discriminatedUnion('method', [
   LoroMachineAcpAuthenticateRpcRequestSchema,
   LoroMachineAcpBinaryStatusRpcRequestSchema,
   LoroMachineAcpBinaryInstallRpcRequestSchema,
+  LoroMemoryProviderRpcRequestSchema,
   LoroMachinePiExtensionsRpcRequestSchema,
   LoroMachineVoiceRpcRequestSchema,
   LoroMachineBugReportRpcRequestSchema,
@@ -1524,6 +1537,7 @@ export type LoroMachineRpcResult =
   | MachineAcpBinaryStatusResponse
   | MachineAcpBinaryInstallResponse
   | MachineAcpBinaryProgressMessage
+  | MemoryProviderResponse
   | MachinePiExtensionsResponse
   | MachineVoiceResponse
   | MachineBugReportResponse
@@ -1667,6 +1681,9 @@ const toLegacyRpcErrorResponse = (
       error: `${error.code}: ${error.message}`,
     };
   }
+
+  if (method === 'machine/memory')
+    return { type: 'machine/memory', status: 'error', memories: [], error: error.message };
 
   if (method === 'machine/pi-extensions' || method === 'machine/voice') {
     return { success: false, error: error.message };
@@ -1928,6 +1945,10 @@ const parseRpcSuccessResult = async (
   if (response.method === 'machine/acp-binary-install') {
     const parsed = MachineAcpBinaryInstallResponseSchema.safeParse(response.result);
     return parsed.success ? (parsed.data as MachineAcpBinaryInstallResponse) : null;
+  }
+  if (response.method === 'machine/memory') {
+    const parsed = MemoryProviderResponseSchema.safeParse(response.result);
+    return parsed.success ? parsed.data : null;
   }
   if (response.method === 'machine/pi-extensions') {
     const parsed = MachinePiExtensionsResponseSchema.safeParse(response.result);
@@ -2820,6 +2841,16 @@ export class LoroStreamsMachineRpcClient {
     })) as MachineAcpBinaryInstallResponse | null;
   }
 
+  async requestMemoryProvider(
+    params: MemoryProviderRequest
+  ): Promise<MemoryProviderResponse | null> {
+    return (await this.sendRequest({
+      method: 'machine/memory',
+      timeoutMs: 60_000,
+      params,
+    })) as MemoryProviderResponse | null;
+  }
+
   async requestMachinePiExtensions(options: {
     configId?: AgentConfigId;
     timeoutMs: number;
@@ -3416,6 +3447,7 @@ export class LoroStreamsMachineRpcClient {
             agentType: string;
           };
         }
+      | { method: 'machine/memory'; timeoutMs: number; params: MemoryProviderRequest }
       | {
           method: 'machine/pi-extensions';
           timeoutMs: number;
@@ -3809,6 +3841,9 @@ export class LoroStreamsMachineRpcClient {
           request = { ...envelope, method: args.method, params: args.params };
           break;
         case 'machine/acp-binary-install':
+          request = { ...envelope, method: args.method, params: args.params };
+          break;
+        case 'machine/memory':
           request = { ...envelope, method: args.method, params: args.params };
           break;
         case 'machine/pi-extensions':

@@ -1,3 +1,4 @@
+import { MemoryProviderRequestSchema, MemoryProviderResponseSchema } from './memory-provider';
 import {
   IosSimulatorCommandSchema,
   IosSimulatorRequestSchema,
@@ -560,6 +561,10 @@ export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
       .strict(),
   }).strict(),
   BaseLocalMachineRpcRequestSchema.extend({
+    method: z.literal('machine/memory'),
+    params: MemoryProviderRequestSchema,
+  }).strict(),
+  BaseLocalMachineRpcRequestSchema.extend({
     method: z.literal('machine/pi-extensions'),
     params: z
       .object({
@@ -594,6 +599,7 @@ export const LocalMachineRpcResultSchema = z.union([
   LanRpcForwardResultSchema,
   // Before the looser session responses, which would strip its fields.
   MachineVoiceResponseSchema,
+  MemoryProviderResponseSchema,
   IosSimulatorResponseSchema,
   McpToolListResultSchema,
   SessionToolResultSchema,

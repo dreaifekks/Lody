@@ -1871,6 +1871,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
     requestLocalProjectControl,
     requestMachineBugReport,
     requestLocalMcpTools,
+    requestMemoryProvider,
     requestMachinePiExtensions,
     requestMachineVoice,
   } = createWorkspaceMachineRpcFacade({
@@ -5119,6 +5120,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
     requestLocalProjectControl,
     requestMachineBugReport,
     requestLocalMcpTools,
+    requestMemoryProvider,
     requestMachinePiExtensions,
     requestMachineVoice,
     dispose,

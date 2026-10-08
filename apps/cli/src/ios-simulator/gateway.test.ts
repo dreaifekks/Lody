@@ -8,6 +8,13 @@ import { LocalPreviewProxyManager } from '@/preview/local-preview-proxy';
 import type { SessionId } from '@lody/shared';
 import type { SimulatorHostControl } from './host-controls';
 const cleanups: Array<() => Promise<unknown>> = [];
+async function waitForGatewayHandshake(native: WebSocket) {
+  // The server's connection event precedes the gateway receiving the upgrade.
+  // Its automatic pong proves that input will see an OPEN upstream socket.
+  const pong = once(native, 'pong');
+  native.ping();
+  await pong;
+}
 afterEach(async () => {
   for (const cleanup of cleanups.reverse()) await cleanup();
   cleanups.length = 0;
@@ -85,6 +92,32 @@ async function setup(
   };
 }
 describe('simulator media boundary', () => {
+  it('joins an unfinished signaling request when stopping the gateway', async () => {
+    const f = await setup();
+    const origin = `http://127.0.0.1:${f.gateway.port}`;
+    const request = http.request(new URL(`${f.gateway.remotePath}rtc`, origin), {
+      method: 'POST',
+      headers: {
+        origin,
+        'content-type': 'application/json',
+        expect: '100-continue',
+        'content-length': '100',
+      },
+    });
+    const closed = new Promise<void>((resolve) => {
+      request.on('error', () => {});
+      request.once('close', resolve);
+    });
+    const continued = once(request, 'continue');
+    request.flushHeaders();
+    await continued;
+    // The server accepted the headers, but this client never completes its body.
+    cleanups.splice(cleanups.indexOf(f.gateway.close), 1);
+    await f.gateway.close();
+    await closed;
+    expect(request.destroyed).toBe(true);
+  });
+
   it('serves local and remote routes with independent media budgets and one control baseline', async () => {
     const f = await setup();
     const remoteEndpoint = await f.proxy.acquire({
@@ -334,6 +367,40 @@ describe('simulator media boundary', () => {
       y: 20,
     });
   });
+  it.each(['disconnect', 'invalid-coordinate', 'changed-finger-count'] as const)(
+    'forwards paired touches and releases both on %s',
+    async (reason) => {
+      const f = await setup();
+      const incoming = once(f.upstream, 'connection');
+      const client = new WebSocket(f.stream);
+      cleanups.push(async () => {
+        client.terminate();
+      });
+      await once(client, 'open');
+      const [native] = await incoming;
+      await waitForGatewayHandshake(native);
+      const point = { x1: 10, y1: 20, x2: 80, y2: 150, width: 100, height: 200 };
+      for (const type of ['touch2-down', 'touch2-move']) {
+        const received = once(native, 'message');
+        client.send(JSON.stringify({ ...point, type }));
+        expect(JSON.parse(String((await received)[0]))).toEqual({ ...point, type });
+      }
+      expect(f.renewals()).toBe(2);
+      const released = once(native, 'message');
+      const closed = once(client, 'close');
+      if (reason === 'disconnect') client.close();
+      else
+        client.send(
+          JSON.stringify(
+            reason === 'invalid-coordinate'
+              ? { ...point, type: 'touch2-move', x2: 101 }
+              : { type: 'touch1-move', x: 10, y: 20, width: 100, height: 200 }
+          )
+        );
+      expect(JSON.parse(String((await released)[0]))).toEqual({ ...point, type: 'touch2-up' });
+      await closed;
+    }
+  );
   it('forwards bottom-edge gestures and preserves their edge during disconnect cleanup', async () => {
     const f = await setup();
     const incoming = once(f.upstream, 'connection');
@@ -344,6 +411,7 @@ describe('simulator media boundary', () => {
     await once(client, 'open');
     client.send(JSON.stringify({ type: 'stream-config', width: 400, height: 800, dpr: 1 }));
     const [native] = (await incoming) as [WebSocket];
+    await waitForGatewayHandshake(native);
     for (const input of [
       { type: 'touch1-down', x: 50, y: 196, width: 100, height: 200, edge: 'bottom' },
       { type: 'touch1-move', x: 50, y: 100, width: 100, height: 200, edge: 'bottom' },
@@ -375,6 +443,7 @@ describe('simulator media boundary', () => {
     await once(client, 'open');
     client.send(JSON.stringify({ type: 'stream-config', width: 400, height: 800, dpr: 1 }));
     const [native] = (await incoming) as [WebSocket];
+    await waitForGatewayHandshake(native);
     if (scenario === 'change-edge') {
       const down = once(native, 'message');
       client.send(

@@ -1,3 +1,4 @@
+import { resolveSessionConversationConfig } from '@lody/shared';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -369,6 +370,7 @@ export class SessionForkService {
           agentConfigId: marker.cleanup.agentConfigId as never,
           agentCliType: marker.cleanup.cliType,
           agentType: marker.cleanup.agentType as never,
+          memory: resolveSessionConversationConfig(history).memory,
           mcpServerIds: resolveSessionMcpSelection(history),
           project: marker.cleanup.project as ProjectRef,
           sessionId: targetSessionId,
@@ -873,6 +875,7 @@ export class SessionForkService {
             agentConfigId: source.agentConfigId,
             agentCliType: source.cliType,
             agentType: source.agentType,
+            memory: resolveSessionConversationConfig(historyResult.history).memory,
             mcpServerIds: resolveSessionMcpSelection(historyResult.history),
             customAcp: agentConfig.customAcp,
             runtimeOverrides: agentConfig.runtimeOverrides,
@@ -1003,6 +1006,7 @@ export class SessionForkService {
       agentConfigId: source.agentConfigId,
       agentCliType: source.cliType,
       agentType: source.agentType,
+      memory: resolveSessionConversationConfig(historyResult.history).memory,
       mcpServerIds: resolveSessionMcpSelection(historyResult.history),
       customAcp: agentConfig.customAcp,
       runtimeOverrides: agentConfig.runtimeOverrides,

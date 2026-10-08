@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { RoleMemoryPicker } from './memory-setting';
+import { useEffect, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { usePostHog } from '@posthog/react';
 import { useTranslation } from 'react-i18next';
@@ -21,6 +22,7 @@ import {
   type AgentRoleFormValue,
 } from '@/lib/agent-role-form';
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
+import { Tabs } from '@lody/ui/tabs';
 import { Dialog } from '@/ui/dialog';
 import { AgentRoleForm } from './agent-role-form';
 import { useSettingsPane } from './settings-page-header';
@@ -94,6 +96,11 @@ export function AgentRoleEditorDialog({
   // panel fades out with its form rather than emptying first.
   const { shown: editor, onOpenChangeComplete } = useDialogExitSnapshot(openEditor);
 
+  const [tab, setTab] = useState<'configuration' | 'memory' | 'team'>('configuration');
+  const editorId = openEditor?.mode === 'edit' ? openEditor.role.id : openEditor?.roleId;
+  useEffect(() => {
+    setTab('configuration');
+  }, [editorId]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -219,6 +226,7 @@ export function AgentRoleEditorDialog({
         width={SETTINGS_EDITOR_DIALOG_WIDTH}
         centerOn={settingsPane}
         className={SETTINGS_EDITOR_DIALOG_LAYOUT}
+        style={{ height: 'min(680px, 88dvh)' }}
       >
         <Dialog.Header>
           <Dialog.Title>
@@ -228,9 +236,32 @@ export function AgentRoleEditorDialog({
           </Dialog.Title>
           <Dialog.Description>{t('settings.agentRoles.dialogDescription')}</Dialog.Description>
         </Dialog.Header>
+        <Tabs.Root
+          value={tab}
+          onValueChange={(value) => setTab(value as 'configuration' | 'memory' | 'team')}
+        >
+          <Tabs.List>
+            <Tabs.Tab value="configuration">{t('settings.agentRoles.configurationTab')}</Tabs.Tab>
+            <Tabs.Tab value="memory">{t('settings.agentRoles.form.memory')}</Tabs.Tab>
+            <Tabs.Tab value="team">{t('settings.agentRoles.teamTab')}</Tabs.Tab>
+          </Tabs.List>
+        </Tabs.Root>
         {editor && editorValue ? (
           <AgentRoleForm
+            tab={tab}
             value={editorValue}
+            memoryPicker={
+              editorValue.machineId ? (
+                <RoleMemoryPicker
+                  key={editorValue.machineId}
+                  machineId={editorValue.machineId}
+                  value={editorValue.memory}
+                  onChange={(memory) => {
+                    if (openEditor) onChange({ ...openEditor, value: { ...editorValue, memory } });
+                  }}
+                />
+              ) : undefined
+            }
             // A panel fading out is not edited: a change there would reopen it.
             onChange={(value) => {
               if (openEditor) onChange({ ...openEditor, value });

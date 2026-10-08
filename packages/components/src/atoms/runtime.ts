@@ -1,3 +1,4 @@
+import type { MemoryProviderRequest, MemoryProviderResponse } from '@lody/shared';
 import type { PendingSessionSends } from '../lib/session-pending-sends';
 import type { SessionSendResources } from '@/lib/session-send-resources';
 import type { LocalFilePreviewResource } from '@lody/shared/local-file-preview';
@@ -514,6 +515,10 @@ export type WorkspaceRuntime = {
     args: { description: string; reporterUserId: string; requestToken: string },
     options?: { timeoutMs?: number }
   ) => Promise<MachineBugReportResponse | null>;
+  requestMemoryProvider: (
+    machineId: MachineId,
+    request: MemoryProviderRequest
+  ) => Promise<MemoryProviderResponse>;
   requestMachinePiExtensions: (
     machineId: MachineId,
     options?: { configId?: AgentConfigId }

@@ -1,3 +1,4 @@
+import { MessageAuthorIdentity } from './message-author-identity';
 import * as stylex from '@stylexjs/stylex';
 import { space, text as textScale } from '@lody/ui/tokens/scales.stylex';
 import { writeTextToClipboard } from '@/lib/clipboard';
@@ -181,6 +182,8 @@ import {
   type AssistantTurnRenderBlock,
 } from './assistant-turn-render-blocks';
 import { SubagentTaskPanel, collectSubagentTasks, type SubagentTask } from './subagent-task-panel';
+import { SubagentRunMessageList } from './subagent-run-history';
+import { styles as subagentHistoryStyles } from './subagent-run-history.stylex';
 import { SessionReadonlyContext } from './session-readonly-context';
 import { UserMessageEditor } from './user-message-editor';
 import type { MentionProjectSource } from '@/components/mentions/mention-project-file-source';
@@ -222,6 +225,7 @@ import {
 } from '@/lib/session-history-duration';
 import { cn } from '@/lib/utils';
 import { withClassName } from '@/lib/stylex';
+import { conversationSurface } from './surface';
 import { ConversationColumn } from '@/components/shared/conversation-column';
 import type { TurnIndexRow } from '@/lib/conversation-view';
 import { TurnPlaceholderRow, estimatePlaceholderHeight } from './turn-placeholder-row';
@@ -296,6 +300,7 @@ import {
 import { DEFAULT_CONVERSATION_FONT_SIZE, type ConversationFontSize } from '@/atoms/settings';
 import {
   conversationTextFontSizeStyle,
+  conversationReadingFontSizeStyle,
   userTextCollapsedHeight,
 } from './conversation-font-size-classes';
 import { useSessionPin } from '@/components/sessions/session-pin-context';
@@ -445,6 +450,8 @@ type AssistantChatVirtualRow = {
   content: AssistantVirtualContent;
   isWorkedDetail?: boolean;
   isLastRowForMessage: boolean;
+  isFirstRowForMessage?: boolean;
+  endsRound?: boolean;
 };
 
 type StandardChatVirtualRow = {
@@ -934,7 +941,12 @@ const ChatItem = memo(function ChatItem({
       return null;
     }
     return (
-      <ConversationColumn className="py-2 sm:py-3">
+      <ConversationColumn
+        {...stylex.props(
+          conversationSurface.message,
+          msg.role === 'user' && conversationSurface.userMessage
+        )}
+      >
         {renderMessageRow({
           message: item.message,
           sessionId: item.sessionId,
@@ -1092,6 +1104,7 @@ type AssistantTurnRowsCacheEntry = {
   copyContextAvailable: boolean;
   showThoughts: boolean;
   surfaceKey: AgentSurfaceKey;
+  nextIsUser: boolean;
 };
 const assistantTurnRowsCache = new WeakMap<SessionMessageItem, AssistantTurnRowsCacheEntry>();
 
@@ -1149,6 +1162,11 @@ export const buildChatVirtualRows = ({
     }
 
     const message = item.message;
+    const nextItem = items[position + 1];
+    const nextIsUser =
+      nextItem?.type === 'message'
+        ? nextItem.message.role === 'user'
+        : nextItem?.type === 'placeholder' && nextItem.row.role === 'user';
     const fileDiffs =
       messageFileDiffEntriesByTurn === undefined
         ? (message.fileDiff ?? EMPTY_EDITED_FILE_ENTRIES)
@@ -1175,6 +1193,7 @@ export const buildChatVirtualRows = ({
       cachedRows.copyContextAvailable === copyContextAvailable &&
       cachedRows.showThoughts === showThoughts &&
       cachedRows.surfaceKey === surfaceKey &&
+      cachedRows.nextIsUser === nextIsUser &&
       cachedRows.expansionVersion === expansionVersion
     ) {
       rows.push(...cachedRows.rows);
@@ -1414,7 +1433,11 @@ export const buildChatVirtualRows = ({
     }
 
     const lastRow = assistantRows[assistantRows.length - 1];
-    if (lastRow) lastRow.isLastRowForMessage = true;
+    if (assistantRows[0]) assistantRows[0].isFirstRowForMessage = true;
+    if (lastRow) {
+      lastRow.isLastRowForMessage = true;
+      lastRow.endsRound = nextIsUser;
+    }
     assistantTurnRowsCache.set(item, {
       selectionLayout,
       rows: assistantRows,
@@ -1427,6 +1450,7 @@ export const buildChatVirtualRows = ({
       copyContextAvailable,
       showThoughts,
       surfaceKey,
+      nextIsUser,
     });
     rows.push(...assistantRows);
   }
@@ -3809,26 +3833,35 @@ const UserMessageRowView = ({
   );
 
   return (
-    <div className={cn('flex w-full flex-row-reverse', isMobile ? 'gap-2 pl-7' : 'gap-2.5')}>
-      <div className="mt-0.5 shrink-0 text-muted-foreground">
-        <UserMessageAuthorAvatar user={user} isMobile={isMobile} showProfile={showSenderIdentity} />
+    <div
+      {...stylex.props(conversationSurface.userRow, isMobile && conversationSurface.mobileUserRow)}
+    >
+      <div {...stylex.props(conversationSurface.author)}>
+        {message.author?.kind === 'agent' ? (
+          <MessageAuthorIdentity author={message.author} />
+        ) : (
+          <UserMessageAuthorAvatar
+            user={user}
+            isMobile={isMobile}
+            showProfile={showSenderIdentity}
+          />
+        )}
       </div>
       <div
-        className={cn(
-          'group/usermsg flex min-w-0 flex-1 flex-col items-end text-left',
-          isMobile
-            ? 'max-w-[min(100%,28rem)] gap-1'
-            : 'max-w-full gap-1.5 @[520px]:max-w-[80%] @[720px]:max-w-[70%]'
+        {...withClassName(
+          stylex.props(
+            conversationSurface.userStack,
+            isMobile && conversationSurface.mobileUserStack
+          ),
+          'group/usermsg'
         )}
       >
-        <div
-          className={cn(
-            stylex.props(activityTypography.caption).className,
-            'flex flex-row-reverse items-center gap-1.5 text-muted-foreground'
-          )}
-          data-testid="user-message-metadata"
-        >
-          {showSenderIdentity && user?.name ? (
+        <div {...stylex.props(conversationSurface.metadata)} data-testid="user-message-metadata">
+          {message.author?.kind === 'agent' ? (
+            <span title={message.author.role?.name ?? message.author.name}>
+              {message.author.role?.name ?? message.author.name}
+            </span>
+          ) : showSenderIdentity && user?.name ? (
             <span className="max-w-40 truncate font-medium" title={user.name}>
               {user.name}
             </span>
@@ -3932,7 +3965,7 @@ const UserMessageRowView = ({
         {/* While editing, the row's own actions (edit/pin/copy) would compete with
             the editor's Cancel / Save & resend — hide them until it closes. */}
         {(hasTextContent || copyContext) && !isEditing ? (
-          <div className="flex gap-0.5">
+          <div {...stylex.props(conversationSurface.userActions)} data-user-message-actions="">
             {copyContext && (
               <AssistantForkButton
                 turnId={message.id}
@@ -4399,40 +4432,23 @@ const activityTypography = stylex.create({
   footnote: { fontSize: textScale.footnoteSize, lineHeight: textScale.footnoteLeading },
   caption: { fontSize: textScale.captionSize, lineHeight: textScale.captionLeading },
 });
-const ACTIVITY_PROCESS_TEXT_CLASS = cn(
-  stylex.props(activityTypography.control).className,
-  'font-normal text-muted-foreground'
-);
+const ACTIVITY_PROCESS_TEXT_CLASS = cn(stylex.props(conversationSurface.processText).className);
 const ACTIVITY_PROCESS_ICON_CLASS = 'h-3.5 w-3.5 shrink-0 text-muted-foreground/70';
-/* Match the prose's fixed 4px inset, independent of the root font size. */
-const ACTIVITY_STEP_BUTTON_CLASS = cn(
-  /* As wide as its words: a step is a line of text, not a bar across the
-     column. Hover brightens the words (see the title class), not a fill. */
-  'w-fit max-w-full min-h-6 select-none items-start rounded-md px-[4px] py-0.5',
-  ACTIVITY_PROCESS_TEXT_CLASS
-);
 const ACTIVITY_STEP_TITLE_CLASS = cn(
   'min-w-0 flex-1 transition-colors group-hover:text-foreground',
   ACTIVITY_PROCESS_TEXT_CLASS
 );
-const ACTIVITY_STEP_BODY_CLASS = cn(
-  stylex.props(activityTypography.control).className,
-  'font-normal text-muted-foreground ' +
-    '[&_:is(h1,h2,h3,h4,h5,h6)]:!my-1 [&_:is(h1,h2,h3,h4,h5,h6)]:!text-[length:var(--markdown-body-font-size)] ' +
-    '[&_:is(h1,h2,h3,h4,h5,h6)]:!font-medium [&_:is(h1,h2,h3,h4,h5,h6)]:!text-muted-foreground ' +
-    '[&_:is(h1,h2,h3,h4,h5,h6):first-child]:!mt-0 ' +
-    '[&_p]:!mb-1 [&_p:last-child]:!mb-0 [&_li:not(:first-child)]:!mt-0.5'
-);
+const ACTIVITY_STEP_BODY_CLASS = cn(stylex.props(conversationSurface.processText).className);
 
 /* The collapsed activity group's label type; the live status row reuses it so
    "Working" reads as the next group label, not a separate widget. */
 /** A one-line process status ("Context compacted"): the group header's box and type. */
 const PROCESS_STATUS_LINE_CLASS = (isMobile: boolean) =>
   cn(
-    'flex w-full items-center py-0.5 text-muted-foreground',
+    stylex.props(conversationSurface.processLine).className,
     isMobile
       ? cn('gap-1.5 pr-1', ACTIVITY_PROCESS_TEXT_CLASS)
-      : cn('gap-1.5 px-[4px]', stylex.props(activityTypography.body).className)
+      : stylex.props(activityTypography.body).className
   );
 
 const ACTIVITY_GROUP_LABEL_CLASS = (isMobile: boolean) =>
@@ -4511,10 +4527,12 @@ function ProcessDisclosureButton({
     <button
       type="button"
       className={cn(
-        'group flex w-full items-center py-0.5 text-left',
-        isMobile
-          ? cn('gap-1.5 rounded-md pr-1 hover:bg-hover/40', ACTIVITY_PROCESS_TEXT_CLASS)
-          : 'justify-start gap-0.5 px-[4px] text-muted-foreground'
+        'group',
+        stylex.props(
+          conversationSurface.disclosure,
+          isMobile && conversationSurface.mobileDisclosure
+        ).className,
+        isMobile ? ACTIVITY_PROCESS_TEXT_CLASS : undefined
       )}
       onClick={() => {
         const next = !expanded;
@@ -4644,7 +4662,7 @@ function ActivityProcessStep({
     <div
       className={cn(
         /* Keep the leading icon on the same inset as tool steps and prose. */
-        'flex w-full min-h-6 items-start gap-1.5 px-[4px] py-0.5',
+        stylex.props(conversationSurface.processStep).className,
         ACTIVITY_PROCESS_TEXT_CLASS,
         className
       )}
@@ -4708,42 +4726,38 @@ const AssistantToolCallVirtualRow = memo(
     prev.fontSize === next.fontSize
 );
 
-/**
- * A subagent run's own steps, in its task dialog. They go through the turn
- * timeline's renderers, so a child's tool call reads exactly like the parent's.
- * Nothing here takes a `searchBlockId`: conversation search indexes the
- * conversation, and a dialog's content is not in it.
- */
-const SubagentRunHistory = ({
+/** Uses the parent conversation's content and activity renderers without search registration. */
+export const SubagentRunHistory = ({
   task,
   fontSize,
+  onFilePathClick,
 }: {
   task: SubagentTask;
   fontSize: ConversationFontSize;
+  onFilePathClick?: (filePath: string) => void;
 }) => {
   const { t } = useTranslation();
-  const run = task.run;
-  if (!run) return null;
-  const live = run.snapshot.state === 'running' || run.snapshot.state === 'pending';
-  const lastIndex = run.items.length - 1;
+  if (!task.run) return null;
   return (
-    <>
-      {run.items.map((item, index) => {
-        const streaming = live && index === lastIndex;
+    <SubagentRunMessageList
+      key={task.taskId}
+      task={task}
+      renderActivityHeader={(props) => <ActivityGroupHeader {...props} />}
+      renderItem={(item, streaming) => {
         switch (item.type) {
           case 'text':
             return (
               <MarkdownBlock
-                key={`text:${index}`}
                 text={item.text}
                 size={fontSize}
                 isStreaming={streaming}
+                onFilePathClick={onFilePathClick}
               />
             );
           case 'thought':
             return (
-              <ActivityProcessStep key={`thought:${index}`}>
-                <span className="sr-only">
+              <ActivityProcessStep>
+                <span {...stylex.props(subagentHistoryStyles.thoughtLabel)}>
                   {streaming
                     ? t('sessions.toolActivity.thinking', 'Thinking…')
                     : t('sessions.toolActivity.thought', 'Thought')}
@@ -4751,27 +4765,29 @@ const SubagentRunHistory = ({
                 <MarkdownRenderer
                   text={item.text}
                   size={fontSize}
+                  compact
                   className={ACTIVITY_STEP_BODY_CLASS}
                   isStreaming={streaming}
+                  onAgentFileLinkClick={onFilePathClick}
                 />
               </ActivityProcessStep>
             );
           case 'tool_call':
             return (
               <ToolCallCard
-                key={`tool:${item.toolCallId}`}
                 toolCall={item}
                 fontSize={fontSize}
                 inlineOutput
+                onFilePathClick={onFilePathClick}
               />
             );
           case 'plan':
-            return <PlanBlock key={`plan:${index}`} entries={item.entries} fontSize={fontSize} />;
+            return <PlanBlock entries={item.entries} fontSize={fontSize} />;
           default:
             return null;
         }
-      })}
-    </>
+      }}
+    />
   );
 };
 
@@ -4779,15 +4795,19 @@ const AssistantSubagentTasksRow = ({
   message,
   sessionId,
   fontSize,
+  onFilePathClick,
 }: {
   message: SessionHistoryParsed;
   sessionId: SessionId;
   fontSize: ConversationFontSize;
+  onFilePathClick?: (filePath: string) => void;
 }) => {
   const tasks = useMemo(() => collectSubagentTasks(message.items), [message.items]);
   const renderHistory = useCallback(
-    (task: SubagentTask) => <SubagentRunHistory task={task} fontSize={fontSize} />,
-    [fontSize]
+    (task: SubagentTask) => (
+      <SubagentRunHistory task={task} fontSize={fontSize} onFilePathClick={onFilePathClick} />
+    ),
+    [fontSize, onFilePathClick]
   );
   const runtime = useAtomValue(runtimeAtom);
   const session = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(sessionId)));
@@ -4812,6 +4832,7 @@ const AssistantSubagentTasksRow = ({
   return (
     <SubagentTaskPanel
       tasks={tasks}
+      fontSize={fontSize}
       onCancel={onCancel}
       runCancellation={machineSupportsSubagentEvents(machine)}
       renderHistory={renderHistory}
@@ -4898,6 +4919,7 @@ const AssistantThoughtVirtualRow = memo(function AssistantThoughtVirtualRow({
       <MarkdownRenderer
         text={text}
         size={fontSize}
+        compact
         className={ACTIVITY_STEP_BODY_CLASS}
         isStreaming={isStreaming}
         searchBlockId={getThoughtSearchBlockId(messageId, itemIndex)}
@@ -5151,7 +5173,8 @@ export const AssistantTurnFooter = ({
               'flex flex-wrap items-center justify-start text-muted-foreground'
             ),
             isMobile ? 'min-h-6 gap-1' : 'min-h-7 gap-2',
-            !isMobile && 'opacity-0 transition-opacity duration-150 focus-within:opacity-100',
+            !isMobile &&
+              'opacity-0 transition-opacity duration-150 focus-within:opacity-100',
             !isMobile && (isTurnHovered || (showFinishedMetadata && isForking)) && 'opacity-100'
           )}
           data-assistant-turn-actions
@@ -5410,6 +5433,8 @@ export const areAssistantChatVirtualRowsEqual = (
     a.itemIndex === b.itemIndex &&
     a.isWorkedDetail === b.isWorkedDetail &&
     a.isLastRowForMessage === b.isLastRowForMessage &&
+    a.isFirstRowForMessage === b.isFirstRowForMessage &&
+    a.endsRound === b.endsRound &&
     areAssistantVirtualContentsEqual(a.content, b.content));
 
 const areAssistantChatItemPropsEqual = (
@@ -5550,6 +5575,7 @@ const AssistantChatItem = memo(function AssistantChatItem({
               message={message}
               sessionId={row.item.sessionId}
               fontSize={conversationFontSize}
+              onFilePathClick={onFilePathClick}
             />
           </>
         );
@@ -5586,21 +5612,13 @@ const AssistantChatItem = memo(function AssistantChatItem({
     }
   })();
 
-  /* Hierarchy (L1 worked → L2 step → L3 detail → L4 result).
-     Shared gap for process/answer siblings; footer sits tighter under the
-     answer so edited-files is not double-spaced by line-height + pt-1. */
-  const turnSiblingGap = 'pt-1 pb-0';
-  const processSiblingGap = 'pt-0.5 pb-0.5';
-  /* A row that paints a surface needs a real gap, not the prose gap. `pt-1`
-     left cards 4-8px apart while their own padding was 10-12px, so the space
-     BETWEEN objects read tighter than the space inside one and the turn
-     collapsed into a stack of bordered strips. Prose keeps `pt-1`: its line
-     leading already supplies the separation. */
-  const cardSiblingGap = 'pt-3 pb-0';
+  // Progress prose keeps its reading gap even inside expanded work. Only
+  // individual activity details share the compact tool-row pitch.
+  const turnSiblingGap = conversationSurface.proseRow;
+  /* Surfaces need more separation than prose, whose leading already supplies
+     part of the visual gap. Keep both gaps in the conversation token group. */
+  const cardSiblingGap = conversationSurface.surfaceRow;
   const verticalClass = (() => {
-    if (isWorkedDetail) {
-      return processSiblingGap;
-    }
     switch (content.kind) {
       case 'content':
         return isCardContentBlock(content.block) ? cardSiblingGap : turnSiblingGap;
@@ -5608,7 +5626,7 @@ const AssistantChatItem = memo(function AssistantChatItem({
         return cardSiblingGap;
       case 'worked_group_header':
       case 'activity_group_header':
-        return processSiblingGap;
+        return turnSiblingGap;
       case 'subagent_tasks':
         return turnSiblingGap;
       case 'footer':
@@ -5618,9 +5636,9 @@ const AssistantChatItem = memo(function AssistantChatItem({
            card is a bordered surface and carries its own `pt-2` in
            `AssistantTurnFooter` — do not move that pad up here, it would
            re-open the empty band whenever the turn edited no files. */
-        return 'pt-0 pb-0';
+        return conversationSurface.footerRow;
       case 'activity_detail':
-        return 'pt-0 pb-0';
+        return conversationSurface.processRow;
       default:
         return turnSiblingGap;
     }
@@ -5635,11 +5653,14 @@ const AssistantChatItem = memo(function AssistantChatItem({
 
   return (
     <ConversationColumn
-      className={cn(
-        /* Horizontal gutter is CONVERSATION_GUTTER_X_CLASS on the column
-           (shared with composer / header). Never set margin-left here. */
+      {...stylex.props(
         verticalClass,
-        row.isLastRowForMessage && 'pb-2 sm:pb-3'
+        row.isFirstRowForMessage && conversationSurface.firstRow,
+        row.isLastRowForMessage && conversationSurface.lastRow,
+        row.endsRound &&
+          (content.kind === 'footer'
+            ? conversationSurface.roundFooterRow
+            : conversationSurface.roundLastRow)
       )}
       data-assistant-turn-id={message.id}
       onMouseEnter={() => onTurnHoverChange(message.id, true)}
@@ -5663,7 +5684,11 @@ const AssistantChatItem = memo(function AssistantChatItem({
           style={conversationTextFontSizeStyle(conversationFontSize)}
           data-native-selection-allow
         >
-          {rowBody}
+          {row.endsRound && content.kind === 'footer' ? (
+            <div {...stylex.props(conversationSurface.roundFooter)}>{rowBody}</div>
+          ) : (
+            rowBody
+          )}
         </div>
       </div>
     </ConversationColumn>
@@ -5799,14 +5824,14 @@ const UserChatBubble = ({
   if (variant === 'attachments') {
     if (attachmentGroups.length === 0) return null;
     return (
-      <div className="flex min-w-0 max-w-full flex-col items-end gap-2" data-native-selection-allow>
+      <div {...stylex.props(conversationSurface.attachments)} data-native-selection-allow>
         {attachmentGroups.map(renderGroup)}
       </div>
     );
   }
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col items-end gap-2" data-native-selection-allow>
+    <div {...stylex.props(conversationSurface.attachments)} data-native-selection-allow>
       {attachmentGroups.map(renderGroup)}
       {textGroups.map(renderGroup)}
     </div>
@@ -6875,20 +6900,20 @@ const UserPlainTextBlock = ({
   const renderedSpans = isFullTextVisible ? spans : renderSlice.spans;
 
   return (
-    <div className="flex max-w-full justify-end sm:pl-2">
-      <div className="min-w-0 max-w-full rounded-[1.15rem] bg-foreground/[0.05] px-3.5 py-2 sm:rounded-2xl sm:px-4 sm:py-2.5">
+    <div {...stylex.props(conversationSurface.bubbleRow)}>
+      <div {...stylex.props(conversationSurface.bubble)} data-user-message-bubble="">
         <div
-          className={cn(
+          {...stylex.props(
             // overflow-wrap:anywhere (not break-words) is load-bearing: only `anywhere`
             // reduces the min-content width so the w-fit bubble can shrink below a long
             // unbreakable token (e.g. a pasted log URL). `break-words`/`overflow-wrap:break-word`
             // wraps visually but does NOT shrink min-content, so it must not be set here —
             // it would win by source order and let the bubble overflow its column on every engine.
-            'min-w-0 max-w-full whitespace-pre-wrap text-reading [overflow-wrap:anywhere]',
-            isLong && !isFullTextVisible ? 'overflow-hidden' : ''
+            conversationSurface.userText,
+            isLong && !isFullTextVisible && conversationSurface.collapsed
           )}
           style={{
-            ...conversationTextFontSizeStyle(fontSize),
+            ...conversationReadingFontSizeStyle(fontSize),
             ...(isLong && !isFullTextVisible
               ? { maxHeight: userTextCollapsedHeight(fontSize) }
               : {}),
@@ -6909,7 +6934,7 @@ const UserPlainTextBlock = ({
           )}
         </div>
         {isLong ? (
-          <div className="mt-1 flex items-center justify-end">
+          <div {...stylex.props(conversationSurface.expand)}>
             <Button
               type="button"
               variant="ghost"
@@ -6941,6 +6966,7 @@ const CollapsibleCard = ({
   containerClassName,
   containerProps,
   buttonClassName,
+  buttonStyles,
   bodyClassName,
   onActivate,
 }: {
@@ -6955,6 +6981,7 @@ const CollapsibleCard = ({
   containerClassName?: string;
   containerProps?: SearchContainerProps;
   buttonClassName?: string;
+  buttonStyles?: stylex.StyleXStyles;
   bodyClassName?: string;
   /** What pressing the header does when there is no body to open. */
   onActivate?: () => void;
@@ -6980,10 +7007,13 @@ const CollapsibleCard = ({
     >
       <button
         type="button"
-        className={cn(
-          'group flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-left text-muted-foreground transition-colors hover:text-foreground',
-          canToggle || onActivate ? 'cursor-pointer' : 'cursor-default',
-          buttonClassName
+        {...withClassName(
+          stylex.props(conversationSurface.collapsible, buttonStyles),
+          cn(
+            'group transition-colors',
+            canToggle || onActivate ? 'cursor-pointer' : 'cursor-default',
+            buttonClassName
+          )
         )}
         onClick={canToggle ? () => setExpanded(!isExpanded) : onActivate}
         aria-expanded={canToggle ? isExpanded : undefined}
@@ -7692,16 +7722,9 @@ const GenericToolCallCard = memo(function GenericToolCallCard({
       expanded={expanded}
       onExpandedChange={onExpandedChange}
       containerClassName={cn(isActivityRow && 'rounded-md')}
-      buttonClassName={
-        isActivityRow
-          ? ACTIVITY_STEP_BUTTON_CLASS
-          : /* A top-level tool call (the plan-approval `switch_mode` card) is a
-               SIBLING of the worked headers and the answer prose, so it starts
-               on the turn's left rail. `CollapsibleCard`'s default `px-1` put
-               its title 4px right of every chevron in the same column — and 8px
-               right of its own `px-0` body. */
-            'px-0'
-      }
+      buttonClassName={isActivityRow ? ACTIVITY_PROCESS_TEXT_CLASS : undefined}
+      // Top-level tool cards share the turn rail, without the step's inset.
+      buttonStyles={isActivityRow ? conversationSurface.step : conversationSurface.flushCollapsible}
       bodyClassName={cn(
         /* An expanded body starts on the rail, like every other collapsible
            region in a turn. It still needs air under the title — they were 0px
@@ -7717,7 +7740,7 @@ const GenericToolCallCard = memo(function GenericToolCallCard({
         <div
           className={cn(
             'flex min-w-0 flex-1 items-start gap-1.5',
-            /* No leading margin: see `buttonClassName` — the rail is shared. */
+            /* The header and expanded body share the same rail. */
             titleColorClass
           )}
         >

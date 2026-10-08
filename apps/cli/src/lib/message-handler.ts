@@ -1,3 +1,6 @@
+import { handleMemoryProviderRequest } from './memory-providers';
+import { readMessageAuthor } from '@lody/shared';
+import { resolveSessionMessageAuthor } from '@/session/message-author';
 import { IosSimulatorService } from '@/ios-simulator/service';
 import { listMcpTools } from '@/mcp/list-mcp-tools';
 import { TurnTokenUsageLedger, turnTokenUsageFromUpdate } from './usage/turn-token-usage';
@@ -288,7 +291,7 @@ import {
   type SessionActivePresencePhase,
 } from './loro/session-active-presence';
 import {
-  resolveImageGenerationStatusWrite,
+  resolveImageGenerationPresencePhase,
   shouldRestoreRunningAfterPermission,
 } from './session-activity-status';
 import type { RepoWatchHandle } from 'loro-repo';
@@ -1099,8 +1102,26 @@ export class MessageHandler {
       // (assistant entry id reuse) and packages/components/src/components/ai-gui/AGENTS.md
       // ("Worked for …").
       const backend = await this.getSessionBackend(sessionDoc);
+      const existing = await backend.history.readTurn(turnId);
+      let author = existing.state === 'ready' ? readMessageAuthor(existing.turn.author) : undefined;
+      if (!author && userTurnId) {
+        const input = await backend.history.readTurn(userTurnId);
+        const meta = await sessionDoc.getMetaState();
+        if (meta)
+          author = await resolveSessionMessageAuthor(
+            this.workspaceDocument,
+            { ...meta, id: sessionId },
+            userTurnId,
+            input.state === 'ready'
+              ? normalizeSessionTurnInputConfig(input.turn.inputConfig)
+              : undefined,
+            modelInfo,
+            this.workspaceId
+          );
+      }
       await backend.openAssistantTurn({
         turnId,
+        ...(author ? { author } : {}),
         ...(userTurnId !== undefined ? { userTurnId } : {}),
         ...(modelInfo !== undefined ? { modelInfo } : {}),
         timestamp: new Date(getServerNow()).toISOString(),
@@ -1324,43 +1345,26 @@ export class MessageHandler {
     const state = this.store.get(sessionId);
     state.imageGenerationTurnIds.set(event.callId, turnId);
     state.imageGenerationActiveCallIds.add(event.callId);
-    this.enqueueImageGenerationActivityStatusSync(sessionId);
+    this.syncImageGenerationActivityPresence(sessionId);
     this.logger.debug(
       `[${sessionId}] Codex image generation started (callId=${event.callId} turnId=${turnId ?? 'none'})`
     );
   }
 
-  private enqueueImageGenerationActivityStatusSync(sessionId: SessionId): void {
-    const state = this.store.get(sessionId);
-    const task = state.imageGenerationActivityStatusChain
-      .catch(() => undefined)
-      .then(async () => {
-        const currentState = this.store.get(sessionId);
-        const hasActiveImageGeneration = currentState.imageGenerationActiveCallIds.size > 0;
-        const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
-        const status = (await sessionDoc.getMetaState())?.status;
-
-        // This chain rides on ACP events and can drain after the visible active
-        // scope ended; a working-status write is only sustainable while this
-        // session still has active presence.
-        const nextStatus = resolveImageGenerationStatusWrite({
-          hasActiveImageGeneration,
-          hasActivePresence: this.hasSessionActivePresence(sessionId),
-          status,
-        });
-        if (nextStatus) {
-          await sessionDoc.setStatus(nextStatus);
-          this.setSessionActivePresencePhase(
-            sessionId,
-            nextStatus.type === 'running' && nextStatus.activity === 'image_generation'
-              ? 'image_generation'
-              : 'thinking'
-          );
-        }
+  private syncImageGenerationActivityPresence(sessionId: SessionId): void {
+    try {
+      const state = this.store.get(sessionId);
+      // Presence-only and synchronous: image lifecycle events cannot leave a
+      // deferred status write that outlives the prompt. The phase owner dedupes
+      // unchanged activity and the resolver preserves finalizing/permission.
+      const nextPhase = resolveImageGenerationPresencePhase({
+        hasActiveImageGeneration: state.imageGenerationActiveCallIds.size > 0,
+        current: this.sessionActivePresence.getStatus(sessionId),
       });
-
-    state.imageGenerationActivityStatusChain = task;
-    void task.catch((error) => {
+      if (nextPhase) {
+        this.setSessionActivePresencePhase(sessionId, nextPhase);
+      }
+    } catch (error) {
       try {
         this.logger.debug(
           `[${sessionId}] Failed to sync Codex image generation activity: ${formatErrorMessage(
@@ -1368,9 +1372,9 @@ export class MessageHandler {
           )}`
         );
       } catch {
-        // Logging must never make the status chain fail recursively.
+        // Best-effort activity reporting must not interrupt image handling.
       }
-    });
+    }
   }
 
   private handleImageGenerationEnd(sessionId: SessionId, event: ImageGenerationEndEvent): void {
@@ -1378,7 +1382,7 @@ export class MessageHandler {
     const isTerminal = isImageGenerationTerminalStatus(event.status);
     if (isTerminal) {
       state.imageGenerationActiveCallIds.delete(event.callId);
-      this.enqueueImageGenerationActivityStatusSync(sessionId);
+      this.syncImageGenerationActivityPresence(sessionId);
     }
 
     if (state.imageGenerationUploadedCallIds.has(event.callId)) {
@@ -2975,7 +2979,7 @@ export class MessageHandler {
     }
     const requester = requesterRecord.meta as SessionMeta;
     const delegatedRequester = operation.frozenContinuationConfig.sourceTurnId
-      ? ({ userId: operation.requesterUserId } as const)
+      ? ({ userId: operation.requesterUserId, author: operation.author } as const)
       : undefined;
 
     if (operation.kind === 'session_create' || operation.kind === 'session_create_many') {
@@ -3010,6 +3014,7 @@ export class MessageHandler {
         defaultMachineId: requester.machineId,
         sessionId: item.target.sessionId,
         userTurnId: item.target.userTurnId,
+        agentRoleSnapshot: operation.targetRoleSnapshots?.[index] ?? undefined,
         chainDepth: operation.initiatorChainDepth + 1,
         bypassSessionQuota: shouldBypassSessionQuota(operation.kind),
       };
@@ -3367,6 +3372,33 @@ export class MessageHandler {
       ...(this.lanWorkspace ? { memberPorts: new LanMemberPorts({ logger: this.logger }) } : {}),
     });
     this.iosSimulatorService = new IosSimulatorService({
+      iceServers: this.cloudPort.remotePreview?.simulatorIceServers
+        ? async (sessionId) => {
+            const record = await this.workspaceDocument.repo.getDocMeta(
+              getSessionRoomId(sessionId as SessionId)
+            );
+            if (
+              !record?.meta ||
+              isLoroRepoDocDeleted(record) ||
+              record.meta.isArchived ||
+              record.meta.machineId !== this.machineId ||
+              typeof record.meta.userId !== 'string' ||
+              !record.meta.userId
+            )
+              throw new Error('Simulator session access denied.');
+            const provider = this.cloudPort.remotePreview?.simulatorIceServers;
+            if (!provider) throw new Error('Simulator relay is unavailable.');
+            return provider({
+              workspaceId: this.workspaceId,
+              machineId: this.machineId,
+              requesterUserId: record.meta.userId,
+              localProjectId:
+                typeof record.meta.localProjectId === 'string'
+                  ? record.meta.localProjectId
+                  : undefined,
+            });
+          }
+        : undefined,
       onAgentPreviewStarted: async (sessionId, operationId) => {
         await this.workspaceDocument.repo.upsertDocMeta(getSessionRoomId(sessionId as SessionId), {
           iosSimulatorPreviewRequestId: operationId,
@@ -3515,6 +3547,7 @@ export class MessageHandler {
             workspaceId: this.workspaceId,
             agentType,
           }),
+        memoryProvider: handleMemoryProviderRequest,
         listMachinePiExtensions: async ({ configId }) =>
           await this.executionService.listMachinePiExtensions(configId),
         handleMachineVoice: async (request) => await this.voiceHost.handle(request),
@@ -7125,6 +7158,8 @@ export class MessageHandler {
       case 'lan/rpc-forward':
         // The agent service routes these to the member before any workspace.
         throw new Error('A request for another member is not handled by a workspace');
+      case 'machine/memory':
+        return await handleMemoryProviderRequest(request.params);
       case 'machine/pi-extensions':
         return await this.executionService.listMachinePiExtensions(
           request.params.configId as AgentConfigId | undefined

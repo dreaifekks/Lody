@@ -13,6 +13,7 @@ beforeEach(() => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-native-git-'));
 });
 afterEach(() => {
+  vi.unstubAllEnvs();
   fs.rmSync(directory, { recursive: true, force: true });
 });
 function harness(
@@ -142,15 +143,20 @@ describe('native Git credential adapter', () => {
     expect(execFileSync('git', ['--git-dir', bare, 'for-each-ref'], { encoding: 'utf8' })).toBe('');
   });
   it('clones recursive native SSH submodules while cloud credentials fail', async () => {
+    // Pre-push hooks and editors export Git/SSH state. None of it belongs to
+    // these synthetic repositories or their native credential probes.
+    vi.stubEnv('GIT_DIR', path.join(directory, 'not-a-repository'));
+    vi.stubEnv('GIT_WORK_TREE', path.join(directory, 'unrelated-worktree'));
+    vi.stubEnv('GIT_ASKPASS', path.join(directory, 'unrelated-askpass'));
+    vi.stubEnv('SSH_ASKPASS', path.join(directory, 'unrelated-ssh-askpass'));
+    vi.stubEnv('GIT_SSH_VARIANT', 'plink');
     const realGit = path.join(
       execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(),
       'git'
     );
     const fixtureEnv = {
       ...Object.fromEntries(
-        Object.entries(process.env).filter(
-          ([key]) => !/^(GIT_CONFIG_|GIT_EXEC_PATH|LODY_GIT_)/.test(key)
-        )
+        Object.entries(process.env).filter(([key]) => !/^(GIT_|SSH_|LODY_GIT_)/.test(key))
       ),
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: '/dev/null',
@@ -160,7 +166,7 @@ describe('native Git credential adapter', () => {
       GIT_COMMITTER_EMAIL: 'fixture@example.test',
     };
     const git = (args: string[]) =>
-      execFileSync(realGit, args, { env: fixtureEnv, stdio: 'ignore' });
+      execFileSync(realGit, args, { cwd: directory, env: fixtureEnv, stdio: 'ignore' });
     const dependency = path.join(directory, 'dependency');
     const project = path.join(directory, 'project');
     git(['init', dependency]);
@@ -229,10 +235,13 @@ process.exit(child.status ?? 1);
         path.join(bin, 'git'),
         ['clone', '--recurse-submodules', 'git@github.com:org/project.git', checkout],
         {
+          // Credential probes must not discover the checkout running this test.
+          cwd: directory,
           env: {
             ...fixtureEnv,
             PATH: `${bin}:${process.env.PATH}`,
             GIT_SSH_COMMAND: `${JSON.stringify(process.execPath)} ${JSON.stringify(ssh)}`,
+            GIT_SSH_VARIANT: 'ssh',
             LODY_GIT_CRED_CONTEXT_TOKEN: 'requester',
             LODY_GIT_LOCAL_CONFIG: '{}',
             GIT_CONFIG_COUNT: '2',
@@ -249,10 +258,12 @@ process.exit(child.status ?? 1);
       );
       expect(
         execFileSync(realGit, ['-C', path.join(checkout, 'dependency'), 'rev-parse', 'HEAD'], {
+          env: fixtureEnv,
           encoding: 'utf8',
         }).trim()
       ).toBe(
         execFileSync(realGit, ['-C', dependency, 'rev-parse', 'HEAD'], {
+          env: fixtureEnv,
           encoding: 'utf8',
         }).trim()
       );

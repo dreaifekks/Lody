@@ -1614,12 +1614,13 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
   const [manuallyTested, setManuallyTested] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [probeTick, setProbeTick] = useState(0);
-  // Creation of a built-in provider is gated on a live probe for the exact
+  const [piExtensionsEdited, setPiExtensionsEdited] = useState(false);
+  // Built-in creation and Pi extension edits require a live probe for the exact
   // target machine + auth-affecting form revision. Cached capabilities make the
   // form renderable, but they do not prove that credentials still exist.
   const [builtinVerificationRevision, setBuiltinVerificationRevision] = useState(0);
   const [verifiedBuiltinContext, setVerifiedBuiltinContext] = useState<string | null>(null);
-  const [pendingCreateBuiltinContext, setPendingCreateBuiltinContext] = useState<string | null>(
+  const [pendingSubmitBuiltinContext, setPendingSubmitBuiltinContext] = useState<string | null>(
     null
   );
   // Custom providers probe manually only (the command doesn't exist until the
@@ -1676,9 +1677,10 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
       setAuthRequired(false);
       setProbeError(null);
       setProbeTick(0);
+      setPiExtensionsEdited(false);
       setBuiltinVerificationRevision((revision) => revision + 1);
       setVerifiedBuiltinContext(null);
-      setPendingCreateBuiltinContext(null);
+      setPendingSubmitBuiltinContext(null);
       setBinaryState(null);
       setInstallingBinary(false);
       setBinaryError(null);
@@ -1718,17 +1720,26 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
   const isManagedBuiltin =
     formData.cliType === 'builtin' && isManagedBuiltinAgentType(formData.agentType);
   const builtinVerificationContext = `${machine.id}:${builtinVerificationRevision}`;
-  const requiresBuiltinCreationVerification =
-    mode.kind === 'create' &&
-    !publishedSetupConfig &&
-    !isPreset &&
-    (isManagedBuiltin || isDeepSeekBuiltin || isQueuedBuiltin);
-  const builtinCreationVerified =
-    !requiresBuiltinCreationVerification || verifiedBuiltinContext === builtinVerificationContext;
-  const builtinCreationPending =
-    requiresBuiltinCreationVerification &&
-    !builtinCreationVerified &&
-    pendingCreateBuiltinContext === builtinVerificationContext;
+  // Saving a changed Pi extension selection must publish a matching catalog,
+  // including when removing the last extension. Use the same revision fence as
+  // creation so a late probe cannot complete a newer edit.
+  const piExtensionsChanged =
+    mode.kind === 'edit' &&
+    formData.cliType === 'builtin' &&
+    formData.agentType === 'pi' &&
+    piExtensionsEdited;
+  const requiresBuiltinVerification =
+    piExtensionsChanged ||
+    (mode.kind === 'create' &&
+      !publishedSetupConfig &&
+      !isPreset &&
+      (isManagedBuiltin || isDeepSeekBuiltin || isQueuedBuiltin));
+  const builtinVerified =
+    !requiresBuiltinVerification || verifiedBuiltinContext === builtinVerificationContext;
+  const builtinVerificationPending =
+    requiresBuiltinVerification &&
+    !builtinVerified &&
+    pendingSubmitBuiltinContext === builtinVerificationContext;
   // Editing an existing provider offers "Sign in again" whenever the provider
   // has a login of its own to run — this dialog is where re-authentication
   // lives, but preset / env-credential providers (DeepSeek, MiniMax, MiMo, GLM,
@@ -1773,7 +1784,9 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
               ? 'devinPath'
               : formData.agentType === 'grok'
                 ? 'grokPath'
-                : null;
+                : formData.agentType === 'pi'
+                  ? 'piPath'
+                  : null;
   const builtinRuntimeOverrideValue = builtinRuntimeOverrideKey
     ? (formData.runtimeOverrides?.[builtinRuntimeOverrideKey] ?? '')
     : '';
@@ -1844,8 +1857,9 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
   // providerSetup rows only launch the default managed runtime; any override
   // (a custom path or selected Pi extensions) must take the live-probe path.
   const backgroundBuiltinSetup =
+    mode.kind === 'create' &&
     supportsProviderSetup &&
-    requiresBuiltinCreationVerification &&
+    requiresBuiltinVerification &&
     (usesDefaultManagedRuntime || isQueuedBuiltin) &&
     !hasBuiltinRuntimeOverrideValues(formData.runtimeOverrides);
   const lastPersistedPayloadKeyRef = useRef<string | null>(null);
@@ -1952,9 +1966,7 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
   // checked sign-in, so missing credentials can be resolved inside this dialog.
   const builtinNeedsCredentialCheck =
     isManagedBuiltin &&
-    (requiresBuiltinCreationVerification
-      ? !builtinCreationVerified
-      : !manuallyTested && !hasCachedCaps);
+    (requiresBuiltinVerification ? !builtinVerified : !manuallyTested && !hasCachedCaps);
   const binaryProgressActive =
     binaryStatus === 'checking' ||
     binaryStatus === 'downloading' ||
@@ -2107,7 +2119,7 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
         }
         setAuthRequired(false);
         setManuallyTested(true);
-        if (requiresBuiltinCreationVerification) {
+        if (requiresBuiltinVerification) {
           setVerifiedBuiltinContext(builtinVerificationContext);
         }
       } catch (error) {
@@ -2136,7 +2148,7 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
     isCustom,
     binaryRequired,
     binaryReady,
-    requiresBuiltinCreationVerification,
+    requiresBuiltinVerification,
     builtinVerificationContext,
     persistConfigBeforeMachineLaunch,
     t,
@@ -2262,7 +2274,7 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
     setProbeTick(0);
     setBuiltinVerificationRevision((revision) => revision + 1);
     setVerifiedBuiltinContext(null);
-    setPendingCreateBuiltinContext(null);
+    setPendingSubmitBuiltinContext(null);
   };
 
   const updateEnvironment = (env: Record<string, string>) => {
@@ -2298,7 +2310,7 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
     setProbeTick(0);
     setBuiltinVerificationRevision((revision) => revision + 1);
     setVerifiedBuiltinContext(null);
-    setPendingCreateBuiltinContext(null);
+    setPendingSubmitBuiltinContext(null);
     setMobileView('form');
     setFormData((prev) => {
       const autoName =
@@ -2399,7 +2411,7 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
     setProbeTick(0);
     setBuiltinVerificationRevision((revision) => revision + 1);
     setVerifiedBuiltinContext(null);
-    setPendingCreateBuiltinContext(null);
+    setPendingSubmitBuiltinContext(null);
     setFormData((prev) => {
       const nextOverrides = { ...(prev.runtimeOverrides ?? {}) };
       if (value.trim()) {
@@ -2509,12 +2521,8 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
 
   const submit = async () => {
     if (disableReason || unsupportedCodexProfile || submitting || waitingForBuiltinSetup) return;
-    if (
-      requiresBuiltinCreationVerification &&
-      !backgroundBuiltinSetup &&
-      !builtinCreationVerified
-    ) {
-      setPendingCreateBuiltinContext(builtinVerificationContext);
+    if (requiresBuiltinVerification && !backgroundBuiltinSetup && !builtinVerified) {
+      setPendingSubmitBuiltinContext(builtinVerificationContext);
       setAuthRequired(false);
       setProbeError(null);
       setManuallyTested(false);
@@ -2526,25 +2534,25 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
   };
 
   useEffect(() => {
-    if (!requiresBuiltinCreationVerification || backgroundBuiltinSetup) return;
-    if (pendingCreateBuiltinContext !== builtinVerificationContext) return;
-    if (!builtinCreationVerified || probing || authRequired || submitting) return;
+    if (!requiresBuiltinVerification || backgroundBuiltinSetup) return;
+    if (pendingSubmitBuiltinContext !== builtinVerificationContext) return;
+    if (!builtinVerified || probing || authRequired || submitting) return;
     if (disableReason) {
-      setPendingCreateBuiltinContext(null);
+      setPendingSubmitBuiltinContext(null);
       return;
     }
-    setPendingCreateBuiltinContext(null);
+    setPendingSubmitBuiltinContext(null);
     void persistConfig();
   }, [
     authRequired,
     backgroundBuiltinSetup,
-    builtinCreationVerified,
+    builtinVerified,
     builtinVerificationContext,
     disableReason,
-    pendingCreateBuiltinContext,
+    pendingSubmitBuiltinContext,
     persistConfig,
     probing,
-    requiresBuiltinCreationVerification,
+    requiresBuiltinVerification,
     submitting,
   ]);
 
@@ -3035,10 +3043,12 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
                                   'settings.agent.dialog.runtimeOverride.grokPlaceholder',
                                   '/path/to/grok'
                                 )
-                              : t(
-                                  'settings.agent.dialog.runtimeOverride.claudePlaceholder',
-                                  '/path/to/claude'
-                                )
+                              : formData.agentType === 'pi'
+                                ? t('settings.agent.dialog.runtimeOverride.piPlaceholder', '/path/to/pi')
+                                : t(
+                                    'settings.agent.dialog.runtimeOverride.claudePlaceholder',
+                                    '/path/to/claude'
+                                  )
                     }
                     autoComplete="off"
                     spellCheck={false}
@@ -3125,7 +3135,7 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
                   if (isCustom && parsedCustomAcp) {
                     setTestedCustomKey(customAcpKey);
                   }
-                  if (requiresBuiltinCreationVerification) {
+                  if (requiresBuiltinVerification) {
                     setVerifiedBuiltinContext(builtinVerificationContext);
                   }
                 }}
@@ -3360,6 +3370,7 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
                   : undefined
               }
               onChange={(paths) => {
+                setPiExtensionsEdited(true);
                 invalidateBuiltinVerification();
                 setFormData((prev) => {
                   const runtimeOverrides = { ...prev.runtimeOverrides };
@@ -3408,10 +3419,11 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
                       !!disableReason ||
                       submitting ||
                       waitingForBuiltinSetup ||
-                      (builtinCreationPending && !probeError)
+                      (builtinVerificationPending && !probeError)
                     }
                   >
-                    {(submitting || (builtinCreationPending && !authRequired && !probeError)) && (
+                    {(submitting ||
+                      (builtinVerificationPending && !authRequired && !probeError)) && (
                       <Spinner size="small" />
                     )}
                     {mode.kind === 'edit' || publishedSetupConfig

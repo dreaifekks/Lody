@@ -1,8 +1,11 @@
+import { resolveSessionConversationConfig } from '@lody/shared';
+import type { MessageAuthor, AgentMessageAuthor } from '@lody/shared';
 import {
   ACP_CAPABILITY_ROW_FAMILIES,
   getDeclaredModelControls,
   getModelEffortChoices,
   machineSupportsPreparedSessionInputProtocol,
+  machineSupportsMemoryProviders,
 } from '@lody/shared';
 import {
   materializePreparedSessionInput,
@@ -155,6 +158,7 @@ type CommonOptions = CommonCommandOptions;
 
 export type DelegatedSessionRequester = {
   userId: string;
+  author?: AgentMessageAuthor;
 };
 
 type ResolvedSessionRequester = {
@@ -204,6 +208,7 @@ export type CreateOptions = CommonOptions &
     /** Agent Role provenance frozen when the create Operation is accepted. */
     agentRoleId?: string;
     agentRoleRevision?: number;
+    agentRoleSnapshot?: import('@lody/shared').AgentRoleSnapshot;
     /** Durable batch Operations intentionally bypass cooperative session quotas. */
     bypassSessionQuota?: boolean;
     /**
@@ -303,6 +308,7 @@ export type SessionTranscriptEntry = {
   index: number;
   id: string;
   role: SessionTranscriptRole;
+  author?: MessageAuthor;
   timestamp: string;
   text: string;
 };
@@ -553,6 +559,7 @@ export function toSessionTranscriptEntry(
     index,
     id: entry.id,
     role: entry.role,
+    ...(entry.author ? { author: entry.author } : {}),
     timestamp: entry.timestamp,
     text,
   };
@@ -1293,6 +1300,7 @@ async function appendUserPromptHistory(args: {
   prompt: string;
   userId: string;
   inputConfig?: SessionHistoryInput['inputConfig'];
+  author?: MessageAuthor;
   preallocatedId?: string;
   /** History the caller already read, so the idempotency check can skip a re-read. */
   knownHistory?: readonly SessionHistory[];
@@ -1324,6 +1332,7 @@ async function appendUserPromptHistory(args: {
   const entry: SessionHistoryInput = {
     id: historyId,
     role: 'user',
+    author: args.author ?? { v: 1, kind: 'human', userId },
     timestamp,
     status: 'pending',
     read: false,
@@ -1342,6 +1351,7 @@ async function appendUserPromptHistory(args: {
 }
 
 function buildCliHistoryInputConfig(args: {
+  memory?: import('@lody/shared').MemoryBinding;
   prompt: string;
   cliType: SessionMeta['cliType'];
   agentType: SessionMeta['agentType'];
@@ -1352,6 +1362,7 @@ function buildCliHistoryInputConfig(args: {
   chainDepth?: number;
 }): NonNullable<SessionHistoryInput['inputConfig']> {
   return {
+    memory: args.memory,
     prompt: args.prompt,
     cliType: args.cliType,
     agentType: args.agentType,
@@ -1367,6 +1378,7 @@ function buildCliHistoryInputConfig(args: {
 }
 
 export type ResolvedTurnDispatchConfig = {
+  memory?: import('@lody/shared').MemoryBinding;
   modeId?: string;
   modelId?: string;
   configOptionValues?: Record<string, string | boolean>;
@@ -1534,6 +1546,7 @@ function mergeTurnDispatchConfig(
   fallbackConfig: ResolvedTurnDispatchConfig | undefined
 ): ResolvedTurnDispatchConfig {
   return {
+    memory: explicitConfig.memory ?? fallbackConfig?.memory,
     modeId: explicitConfig.modeId ?? fallbackConfig?.modeId,
     modelId: explicitConfig.modelId ?? fallbackConfig?.modelId,
     configOptionValues: explicitConfig.configOptionValues ?? fallbackConfig?.configOptionValues,
@@ -1799,6 +1812,7 @@ export function resolveTurnDispatchConfigFromInputConfig(
     return undefined;
   }
   return {
+    ...(inputConfig.memory ? { memory: inputConfig.memory } : {}),
     ...(inputConfig.modeId ? { modeId: inputConfig.modeId } : {}),
     ...(inputConfig.modelId ? { modelId: inputConfig.modelId } : {}),
     ...(inputConfig.configOptionValues
@@ -1877,6 +1891,7 @@ export function resolveEffectiveSessionChatDispatchConfig(args: {
       }
     : undefined;
   const compatible = filterCompatibleInheritedTurnConfig(inherited, args.capability);
+  if (compatible && previous?.memory) compatible.memory = previous.memory;
   if (compatible) {
     compatible.configOptionValues = filterCompatibleTurnConfigOptionValues(
       inherited?.configOptionValues,
@@ -3142,6 +3157,13 @@ export async function resolveEffectiveSessionCreateDispatchConfig(args: {
   localOnly?: boolean;
 }): Promise<ResolvedTurnDispatchConfig> {
   const { frozenInheritedInputConfig, ...dispatchConfig } = args.dispatchConfig;
+  if (dispatchConfig.memory) {
+    const machine = (await listMachineMetasForWorkspace(args.manager)).find(
+      (entry) => entry.id === args.agentConfig.machineId
+    );
+    if (!machineSupportsMemoryProviders(machine))
+      throw new Error('Update the target machine to use memory providers.');
+  }
   const inheritedDispatchConfig =
     frozenInheritedInputConfig !== undefined
       ? resolveTurnDispatchConfigFromInputConfig(frozenInheritedInputConfig, args.agentConfig)
@@ -3329,16 +3351,27 @@ export async function prepareSessionInput(
         : 'pending',
     read: !!ownerTarget || machineSupportsPreparedSessionInputProtocol(targetMachine),
     userId: requesterUserId,
+    author: options.delegatedRequester?.author ?? { v: 1, kind: 'human', userId: requesterUserId },
     items: [{ type: 'text', text: prompt }],
-    inputConfig: buildCliHistoryInputConfig({
-      prompt: buildAgentPrompt(prompt, agentConfig.prompt ?? ''),
-      cliType: agentConfig.cliType,
-      agentType: agentConfig.agentType,
-      modeId: effectiveDispatchConfig.modeId ?? undefined,
-      modelId: effectiveDispatchConfig.modelId ?? undefined,
-      configOptionValues: effectiveDispatchConfig.configOptionValues,
-      chainDepth: options.chainDepth,
-    }),
+    inputConfig: {
+      ...(options.agentRoleId
+        ? {
+            agentRoleId: options.agentRoleId as AgentRoleId,
+            agentRoleRevision: options.agentRoleRevision,
+            agentRoleSnapshot: options.agentRoleSnapshot,
+          }
+        : {}),
+      ...buildCliHistoryInputConfig({
+        prompt: buildAgentPrompt(prompt, agentConfig.prompt ?? ''),
+        cliType: agentConfig.cliType,
+        agentType: agentConfig.agentType,
+        memory: effectiveDispatchConfig.memory,
+        modeId: effectiveDispatchConfig.modeId ?? undefined,
+        modelId: effectiveDispatchConfig.modelId ?? undefined,
+        configOptionValues: effectiveDispatchConfig.configOptionValues,
+        chainDepth: options.chainDepth,
+      }),
+    },
     fileDiff: [],
     finished: true,
   };
@@ -3590,20 +3623,36 @@ export async function sendSessionChatResult(
     target: session,
     capability,
   });
+  // An unconfigured follow-up retains the target's selected Role, never the sender's.
+  // Explicit execution changes clear it rather than claiming an unchanged preset.
+  const roleSelection =
+    !dispatchConfig.modeId &&
+    !dispatchConfig.modelId &&
+    !dispatchConfig.configOptionValues &&
+    !dispatchConfig.runConfig
+      ? resolveSessionConversationConfig(historyForDefaults)
+      : undefined;
   const userTurn = await appendUserPromptHistory({
     sessionDoc,
     prompt,
     userId: requesterUserId,
-    inputConfig: buildCliHistoryInputConfig({
-      prompt,
-      cliType: session.cliType,
-      agentType: session.agentType,
-      modeId: effectiveDispatchConfig.modeId,
-      modelId: effectiveDispatchConfig.modelId,
-      configOptionValues: effectiveDispatchConfig.configOptionValues,
-      resume: session.acpSessionId ?? undefined,
-      chainDepth: orchestration?.chainDepth,
-    }),
+    author: delegatedRequester?.author,
+    inputConfig: {
+      agentRoleId: roleSelection?.agentRoleId ?? null,
+      agentRoleRevision: roleSelection?.agentRoleRevision,
+      agentRoleSnapshot: roleSelection?.agentRoleSnapshot,
+      ...buildCliHistoryInputConfig({
+        prompt,
+        cliType: session.cliType,
+        agentType: session.agentType,
+        memory: effectiveDispatchConfig.memory,
+        modeId: effectiveDispatchConfig.modeId,
+        modelId: effectiveDispatchConfig.modelId,
+        configOptionValues: effectiveDispatchConfig.configOptionValues,
+        resume: session.acpSessionId ?? undefined,
+        chainDepth: orchestration?.chainDepth,
+      }),
+    },
     preallocatedId: orchestration?.userTurnId,
     knownHistory: quotaHistory,
   });

@@ -834,7 +834,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
         />
         {canTogglePinned ? (
           <ContextMenu.Item
-            icon={isPinned ? <PinOff /> : <Pin />}
+            icon={isPinned ? PinOff : Pin}
             onClick={() => {
               onTogglePinned?.(session.id, !isPinned);
             }}
@@ -844,7 +844,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
         ) : null}
         {canMarkUnread ? (
           <ContextMenu.Item
-            icon={<Mail />}
+            icon={Mail}
             onClick={() => {
               onMarkUnread?.(session.id);
             }}
@@ -853,7 +853,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
           </ContextMenu.Item>
         ) : null}
         {canRename ? (
-          <ContextMenu.Item icon={<Pencil />} onClick={beginRename}>
+          <ContextMenu.Item icon={Pencil} onClick={beginRename}>
             {contextMenuLabels.rename}
           </ContextMenu.Item>
         ) : null}
@@ -863,7 +863,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
         ) : null}
         {canCopyUrl ? (
           <ContextMenu.Item
-            icon={<Link2 />}
+            icon={Link2}
             onClick={() => {
               onCopyUrl?.(session.id);
             }}
@@ -877,11 +877,11 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
             disabled={shareMenuState !== 'share'}
             icon={
               shareMenuState === 'share' ? (
-                <Users />
+                Users
               ) : shareMenuState === 'loading' ? (
-                <Spinner />
+                <Spinner size="small" label={null} />
               ) : (
-                <LockKeyhole />
+                LockKeyhole
               )
             }
             onClick={() => {
@@ -928,7 +928,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
           <ContextMenu.Separator />
         ) : null}
         <ContextMenu.Item
-          icon={<Archive />}
+          icon={Archive}
           onClick={() => {
             onArchive(session.id);
           }}
@@ -1448,7 +1448,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
             <ContextMenu.Content className="min-w-[180px]">
               {onOpenProjectSettings ? (
                 <ContextMenu.Item
-                  icon={<Settings2 />}
+                  icon={Settings2}
                   onClick={() => {
                     onOpenProjectSettings(machineId, project.id);
                   }}
@@ -1458,7 +1458,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
               ) : null}
               {revealPath ? (
                 <ContextMenu.Item
-                  icon={<FolderOpen />}
+                  icon={FolderOpen}
                   onClick={() => {
                     onRevealProject?.(revealPath);
                   }}
@@ -1469,7 +1469,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
               {onArchiveProjectChats ? (
                 <ContextMenu.Item
                   disabled={archivableSessionIds.length === 0}
-                  icon={<Archive />}
+                  icon={Archive}
                   onClick={() => {
                     onArchiveProjectChats(archivableSessionIds);
                   }}
@@ -1483,7 +1483,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
               ) : null}
               {canRemoveProject ? (
                 <ContextMenu.Item
-                  icon={<Trash2 />}
+                  icon={Trash2}
                   onClick={() => {
                     onRequestRemoval({
                       machineId,

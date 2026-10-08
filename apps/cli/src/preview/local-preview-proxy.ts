@@ -37,8 +37,6 @@ type LocalPreviewProxyRecord = {
   transport: ReturnType<typeof createPreviewTargetTransport>;
   endpoint: SessionPreviewEndpoint;
   token: string;
-  /** The capability cookie this endpoint sets and accepts; see `capabilityCookieName`. */
-  cookieName: string;
   active: boolean;
   remote: boolean;
   visualAnnotation: boolean;
@@ -75,17 +73,14 @@ type AcquireLocalPreviewEndpointOptions = {
 };
 
 const LOCAL_PREVIEW_TOKEN_QUERY_PARAM = PREVIEW_ACCESS_TOKEN_QUERY_PARAM;
+const LOCAL_PREVIEW_TOKEN_COOKIE = PREVIEW_ACCESS_TOKEN_COOKIE;
 
-/**
- * Cookies are scoped by host, not port, so every local endpoint on 127.0.0.1
- * shares one cookie jar. A shared name would let the endpoint opened last
- * overwrite the capability of every other open preview. Each local listener
- * port is unique while it is open, so the port names the cookie; a later
- * endpoint on a reused port overwrites a cookie whose token is already dead.
- * A remote endpoint has its own Quick Tunnel host and keeps the shared name.
- */
-const capabilityCookieName = (remote: boolean, proxyPort: number): string =>
-  remote ? PREVIEW_ACCESS_TOKEN_COOKIE : `${PREVIEW_ACCESS_TOKEN_COOKIE}_${proxyPort}`;
+// Cookies ignore ports: each loopback listener needs its own name so opening
+// another Session cannot replace the credential for an existing module graph.
+const tokenCookieName = (record: LocalPreviewProxyRecord): string =>
+  record.remote
+    ? LOCAL_PREVIEW_TOKEN_COOKIE
+    : `${LOCAL_PREVIEW_TOKEN_COOKIE}_${record.endpoint.endpointId}`;
 
 const toUrlHost = (host: string): string => (host.includes(':') ? `[${host}]` : host);
 
@@ -365,7 +360,6 @@ export class LocalPreviewProxyManager {
       transport,
       endpoint,
       token,
-      cookieName: capabilityCookieName(options.remote ?? false, port),
       active: true,
       remote: options.remote ?? false,
       visualAnnotation: options.visualAnnotation ?? true,
@@ -595,7 +589,7 @@ export class LocalPreviewProxyManager {
     if (options?.queryOnly) {
       return false;
     }
-    if (cookieValues(request.headers.cookie, record.cookieName).includes(record.token)) {
+    if (cookieValues(request.headers.cookie, tokenCookieName(record)).includes(record.token)) {
       return true;
     }
     if (this.isAuthorizedByTokenReferer(record, request)) {
@@ -648,7 +642,7 @@ export class LocalPreviewProxyManager {
       // this endpoint is sent it.
       sanitized.push([
         'set-cookie',
-        `${record.cookieName}=${encodeURIComponent(
+        `${tokenCookieName(record)}=${encodeURIComponent(
           record.token
         )}; Path=/; HttpOnly; Secure; SameSite=None; Partitioned`,
       ]);
