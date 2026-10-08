@@ -2,7 +2,9 @@ import {
   lowerPermissionTier,
   resolvePermissionTier,
   type AcpConfigOptionValue,
+  type AcpCapabilityCacheEntry,
   type AgentConfigId,
+  type AgentConfigMeta,
   type MachineId,
   type PermissionTierRunConfig,
   type ResolvedPermissionTier,
@@ -13,21 +15,29 @@ import {
 import { readMergedAgentConfigById } from './agent-config-machine-flock';
 import type { LoroDocumentManager } from './loro/doc';
 
-/**
- * The tier a run configuration runs at on one Agent config once dispatched:
- * Lody's builtin default mode is applied exactly as dispatch applies it, and
- * the config's capability says which options are permission controls. A
- * config missing from that machine, or without a capability, is `unknown`,
- * which only a person may write.
- */
-export async function readAgentRunConfigTier(args: {
+type AgentTierTarget = {
   manager: LoroDocumentManager;
   workspaceId: WorkspaceId;
   machineId: MachineId;
   agentConfigId: AgentConfigId;
   runConfig: PermissionTierRunConfig;
   localOnly: boolean;
-}): Promise<ResolvedPermissionTier> {
+};
+
+/**
+ * Ranks a run configuration on one Agent config, its capability saying which
+ * options are permission controls. A config missing from that machine, or
+ * without a capability, is `unknown`, which only a person may write.
+ * `toDispatched` turns the configuration into what would actually run.
+ */
+async function rankOnAgent(
+  args: AgentTierTarget,
+  toDispatched?: (
+    runConfig: PermissionTierRunConfig,
+    config: AgentConfigMeta,
+    capability: AcpCapabilityCacheEntry | undefined
+  ) => PermissionTierRunConfig
+): Promise<ResolvedPermissionTier> {
   const { config } = await readMergedAgentConfigById(
     args.manager.repo,
     args.workspaceId,
@@ -35,7 +45,7 @@ export async function readAgentRunConfigTier(args: {
     args.agentConfigId
   );
   if (!config || config.machineId !== args.machineId) return 'unknown';
-  const { readAgentAcpCapability, withBuiltinDefaultTurnMode } = await import('@/commands/session');
+  const { readAgentAcpCapability } = await import('@/commands/session');
   const capability = await readAgentAcpCapability({
     manager: args.manager,
     workspaceId: args.workspaceId,
@@ -44,19 +54,38 @@ export async function readAgentRunConfigTier(args: {
     localOnly: args.localOnly,
   });
   return resolvePermissionTier({
-    runConfig: withBuiltinDefaultTurnMode(
+    runConfig: toDispatched ? toDispatched(args.runConfig, config, capability) : args.runConfig,
+    agent: config,
+    capability: capability ? { configOptions: capability.configOptions ?? [] } : undefined,
+  });
+}
+
+/**
+ * The tier a configuration still to be dispatched runs at (a Role, a Schedule,
+ * a Turn's dispatch config): Lody's builtin default mode is applied exactly as
+ * dispatch applies it.
+ */
+export async function readAgentRunConfigTier(
+  args: AgentTierTarget
+): Promise<ResolvedPermissionTier> {
+  const { withBuiltinDefaultTurnMode } = await import('@/commands/session');
+  return rankOnAgent(args, (runConfig, config, capability) =>
+    withBuiltinDefaultTurnMode(
       {
-        ...(args.runConfig.modeId ? { modeId: args.runConfig.modeId } : {}),
-        ...(args.runConfig.configOptionValues
-          ? { configOptionValues: args.runConfig.configOptionValues }
+        ...(runConfig.modeId ? { modeId: runConfig.modeId } : {}),
+        ...(runConfig.configOptionValues
+          ? { configOptionValues: runConfig.configOptionValues }
           : {}),
       },
       config,
       capability
-    ),
-    agent: config,
-    capability: capability ? { configOptions: capability.configOptions ?? [] } : undefined,
-  });
+    )
+  );
+}
+
+/** The tier of a state an Agent reported as current: ranked as it is, nothing filled in. */
+export function readAgentStateTier(args: AgentTierTarget): Promise<ResolvedPermissionTier> {
+  return rankOnAgent(args);
 }
 
 export type InvokingRunConfig = {
@@ -110,11 +139,11 @@ export async function readInvokingRunConfig(
 }
 
 /**
- * The tier the invoking Session runs at now. The live Agent's own report of
- * its mode and permission options is authoritative. Without one (no live
- * Agent here, or an Agent that reports no such option) the lower of the
- * driving Turn's dispatch config and the persisted report for that Turn is
- * used, since that report may have stopped following the Agent.
+ * The tier the invoking Session runs at now: the lowest of every source there
+ * is. The live Agent's options can lag a mode switch made through the legacy
+ * mode call, and the persisted report stops following a Turn once a newer one
+ * is queued, so no single one is trusted to raise the ceiling. Reported states
+ * are ranked as they are; the dispatch config as dispatch completed it.
  */
 export async function readInvokingPermissionTier(args: {
   manager: LoroDocumentManager;
@@ -125,39 +154,43 @@ export async function readInvokingPermissionTier(args: {
 }): Promise<ResolvedPermissionTier> {
   const { manager, workspaceId, session, turn } = args;
   if (!session.agentConfigId) return 'unknown';
-  const tierOf = (runConfig: PermissionTierRunConfig) =>
-    readAgentRunConfigTier({
-      manager,
-      workspaceId,
-      machineId: session.machineId as MachineId,
-      agentConfigId: session.agentConfigId as AgentConfigId,
-      runConfig,
-      localOnly: false,
-    });
+  const target = (runConfig: PermissionTierRunConfig): AgentTierTarget => ({
+    manager,
+    workspaceId,
+    machineId: session.machineId as MachineId,
+    agentConfigId: session.agentConfigId as AgentConfigId,
+    runConfig,
+    localOnly: false,
+  });
+  let tier = await readAgentRunConfigTier(
+    target({
+      ...(turn.inputConfig.modeId ? { modeId: turn.inputConfig.modeId } : {}),
+      ...(turn.inputConfig.configOptionValues
+        ? { configOptionValues: turn.inputConfig.configOptionValues }
+        : {}),
+    })
+  );
   const live = (args.runtimeConfigOptions ?? []).flatMap((option) =>
     (option.category === 'mode' || option.category === '_permission') &&
     (typeof option.currentValue === 'string' || typeof option.currentValue === 'boolean')
       ? [[option.id, option.currentValue] as const]
       : []
   );
-  if (live.length > 0) return tierOf({ configOptionValues: Object.fromEntries(live) });
-  const dispatched: PermissionTierRunConfig = {
-    ...(turn.inputConfig.modeId ? { modeId: turn.inputConfig.modeId } : {}),
-    ...(turn.inputConfig.configOptionValues
-      ? { configOptionValues: turn.inputConfig.configOptionValues }
-      : {}),
-  };
-  const dispatchedTier = await tierOf(dispatched);
+  if (live.length > 0)
+    tier = lowerPermissionTier(
+      tier,
+      await readAgentStateTier(target({ configOptionValues: Object.fromEntries(live) }))
+    );
   const reported = await readTurnRuntimeReport(manager, session.id as SessionId, turn.id);
-  if (!reported) return dispatchedTier;
-  return lowerPermissionTier(
-    dispatchedTier,
-    await tierOf({
-      modeId: reported.modeId ?? dispatched.modeId,
-      configOptionValues: {
-        ...(dispatched.configOptionValues ?? {}),
-        ...(reported.configOptionValues ?? {}),
-      },
-    })
-  );
+  if (reported)
+    tier = lowerPermissionTier(
+      tier,
+      await readAgentStateTier(
+        target({
+          ...(reported.modeId ? { modeId: reported.modeId } : {}),
+          configOptionValues: { ...(reported.configOptionValues ?? {}) },
+        })
+      )
+    );
+  return tier;
 }

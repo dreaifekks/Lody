@@ -18,7 +18,7 @@ import {
   scheduleDraftNow,
   type ScheduleCreateToolInput,
 } from '@/mcp/schedule-agent-writes';
-import { readInvokingPermissionTier } from '../agent-permission-tier';
+import { readInvokingPermissionTier, type RuntimeConfigOption } from '../agent-permission-tier';
 import { WorkspaceSyncUnavailableError } from '../command-runtime';
 
 async function fixture() {
@@ -794,5 +794,56 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
         runtimeConfigOptions: undefined,
       })
     ).resolves.toBe('auto');
+  });
+  it('never lets a live option that lags a mode switch raise the caller’s tier', async () => {
+    const h = await asAgent('edit');
+    const manager = h.context.manager;
+    const readTier = (
+      agentConfigId: string,
+      inputConfig: Record<string, unknown>,
+      runtimeConfigOptions: RuntimeConfigOption[]
+    ) =>
+      readInvokingPermissionTier({
+        manager,
+        workspaceId: 'workspace' as never,
+        session: { id: 'session', machineId: 'machine', agentConfigId },
+        turn: { id: 'turn', inputConfig },
+        runtimeConfigOptions,
+      });
+    // Codex switched to Read-only through the legacy mode call; its cached
+    // options still say Full access.
+    h.addAgent('codex', 'codex', staticCapability('codex'));
+    h.runtimeReport('session', { basedOnUserTurnId: 'turn', modeId: 'read-only' });
+    await expect(
+      readTier('codex', { modeId: 'read-only' }, [
+        { id: 'mode', category: 'mode', currentValue: 'agent-full-access' },
+      ])
+    ).resolves.toBe('ask');
+  });
+
+  it('ranks the state an Agent reports as it is, without a dispatch default', async () => {
+    const h = await asAgent('edit');
+    const manager = h.context.manager;
+    const readTier = (
+      agentConfigId: string,
+      inputConfig: Record<string, unknown>,
+      runtimeConfigOptions: RuntimeConfigOption[]
+    ) =>
+      readInvokingPermissionTier({
+        manager,
+        workspaceId: 'workspace' as never,
+        session: { id: 'session', machineId: 'machine', agentConfigId },
+        turn: { id: 'turn', inputConfig },
+        runtimeConfigOptions,
+      });
+    // Kimi asks for every step; a builtin default belongs to future dispatch,
+    // not to the state the Agent reports.
+    h.addAgent('kimi', 'kimi', staticCapability('kimi'));
+    h.runtimeReport('session', {});
+    await expect(
+      readTier('kimi', { configOptionValues: { permission_mode: 'default' } }, [
+        { id: 'permission_mode', category: '_permission', currentValue: 'default' },
+      ])
+    ).resolves.toBe('ask');
   });
 });

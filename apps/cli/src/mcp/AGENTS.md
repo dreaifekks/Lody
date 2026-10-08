@@ -44,9 +44,9 @@ Parent instructions apply. Background: [README.md](README.md).
   owner Machine and current authorization, not a frozen daemon account.
 - Agent Role and Schedule writes (`lody_agent_role_create/update`,
   `lody_schedule_create/update/resume`) are Session tools capped at the invoking
-  Session's permission tier: the live Agent's reported mode/permission options, else
-  the lower of the driving Turn's dispatch config and its persisted report, ranked
-  by shared `permission-tier.ts` after dispatch's builtin-default rule. The written
+  Session's permission tier: the lowest of the live Agent's options, its persisted
+  report (both ranked as reported) and the driving Turn's dispatch config; configs
+  to be dispatched get dispatch's builtin-default rule first (`permission-tier.ts`). The written
   config, the stored one, and a chat a Schedule sends into must all stay within it.
   Unknown (no capability, unset permission option beside the mode, unoffered
   default) is left to Settings or `lody_schedule_propose`. No credential option or
