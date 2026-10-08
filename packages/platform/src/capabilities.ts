@@ -24,6 +24,12 @@ export const PLATFORM_CAPABILITIES = [
   'localUsage',
   /** Sharing sessions/machines/projects with workspace members. */
   'teamSharing',
+  /**
+   * Publishing a conversation as a read-only copy that the hub of a LAN keeps
+   * and serves. Only in a workspace of a LAN, and only where `teamSharing`,
+   * which publishes through the hosted service, is not.
+   */
+  'lanSharing',
   /** GitHub App integration (repo registry, brokered tokens, PR status). */
   'githubIntegration',
   /**
@@ -65,6 +71,7 @@ export function createCapabilitySet(
 export const LOCAL_PLATFORM_CAPABILITIES: PlatformCapabilities = createCapabilitySet([
   'githubPullRequests',
   'localUsage',
+  'lanSharing',
 ]);
 
 /** The cloud platform baseline: every capability (entitlement gating happens elsewhere). */

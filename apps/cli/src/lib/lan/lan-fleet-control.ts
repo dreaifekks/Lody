@@ -27,6 +27,12 @@ import { getCliHttpFetch } from '@/utils/http-transport';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import { askLanMemberDirectly, LanMemberUnreachableError } from './lan-control-channel';
+import {
+  LanShareError,
+  listLanSharedConversations,
+  publishLanShare,
+  revokeLanShare,
+} from './lan-shares';
 import type { LanMachineControl } from './lan-machine-control';
 import { deriveLanTerminalKey } from './lan-terminal';
 import {
@@ -40,9 +46,16 @@ import {
   type LanMemberWorkspace,
 } from './lan-members';
 
+type LanShareControlRequest = Extract<
+  LocalProjectControlRequest,
+  { type: 'lan/shares' | 'lan/share-publish' | 'lan/share-revoke' }
+>;
+
 export type LanControlRequest = Extract<
   LocalProjectControlRequest,
-  { type: 'lan/machines' | 'lan/alias-machine' | 'lan/forward' } | LanMemberControlRequest
+  | { type: 'lan/machines' | 'lan/alias-machine' | 'lan/forward' }
+  | LanShareControlRequest
+  | LanMemberControlRequest
 >;
 
 // An agent runtime that the service installs by itself shows up without anyone
@@ -71,6 +84,9 @@ export function isLanControlRequest(
     message.type === 'lan/machines' ||
     message.type === 'lan/alias-machine' ||
     message.type === 'lan/forward' ||
+    message.type === 'lan/shares' ||
+    message.type === 'lan/share-publish' ||
+    message.type === 'lan/share-revoke' ||
     isLanMemberControlType(message.type)
   );
 }
@@ -271,7 +287,63 @@ export class LanFleetControl {
         },
       };
     }
+    if (
+      message.type === 'lan/shares' ||
+      message.type === 'lan/share-publish' ||
+      message.type === 'lan/share-revoke'
+    ) {
+      return await this.share(message);
+    }
     return await this.answer(message);
+  }
+
+  /** The shares of a workspace's LAN, which its hub keeps. */
+  private async share(message: LanShareControlRequest): Promise<LocalProjectControlResponse> {
+    const hub = this.options
+      .hubs()
+      .find((candidate) => getLanHubWorkspaceId(candidate.id) === message.workspaceId);
+    if (!hub) {
+      return {
+        ok: false,
+        type: message.type,
+        error: 'workspace_not_found',
+        message: `No LAN of this machine carries workspace ${message.workspaceId}`,
+      };
+    }
+    try {
+      if (message.type === 'lan/shares') {
+        return {
+          ok: true,
+          type: message.type,
+          result: { shares: await listLanSharedConversations(hub) },
+        };
+      }
+      if (message.type === 'lan/share-revoke') {
+        return {
+          ok: true,
+          type: message.type,
+          result: { revoked: await revokeLanShare(hub, message.shareId) },
+        };
+      }
+      const share = await publishLanShare(hub, {
+        directory: message.directory,
+        shareId: message.shareId,
+        expectedRevision: message.expectedRevision,
+        rootSourceId: message.rootSourceId,
+        sources: message.sources,
+      });
+      return { ok: true, type: message.type, result: { share } };
+    } catch (error) {
+      return {
+        ok: false,
+        type: message.type,
+        error: 'execution_failed',
+        message: formatErrorMessage(error),
+        ...(error instanceof LanShareError && error.status !== null
+          ? { data: { status: error.status } }
+          : {}),
+      };
+    }
   }
 
   /** What a member asked of this machine, from its own socket or through the hub. */

@@ -11,6 +11,7 @@ import type {
   LanMachines,
   LanUsageReport,
 } from './lan-control';
+import type { LanSharedConversation, LanShareSource, LanSharesResult } from './lan-share';
 import type {
   MachineId,
   ACPSessionConfig,
@@ -1234,6 +1235,29 @@ export type LocalProjectControlRequest =
       type: 'lan/forward';
       machineId: MachineId;
       request: LanMemberControlRequest;
+    }
+  | {
+      /** The conversations the LAN of a workspace shared. */
+      type: 'lan/shares';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+    }
+  | {
+      /** Publishes the package the shell wrote into `directory` to the LAN's hub. */
+      type: 'lan/share-publish';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      directory: string;
+      shareId?: string;
+      expectedRevision?: number;
+      rootSourceId: string;
+      sources: LanShareSource[];
+    }
+  | {
+      type: 'lan/share-revoke';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      shareId: string;
     };
 
 export type LocalProjectControlErrorCode =
@@ -1345,6 +1369,9 @@ export type LocalProjectControlResponse =
       { alias: string | null; color?: LanMachineColor | null }
     >
   | LocalProjectControlOkResponse<'lan/forward', { response: LanMemberControlResponse }>
+  | LocalProjectControlOkResponse<'lan/shares', LanSharesResult>
+  | LocalProjectControlOkResponse<'lan/share-publish', { share: LanSharedConversation }>
+  | LocalProjectControlOkResponse<'lan/share-revoke', { revoked: boolean }>
   | LocalProjectControlErrorResponse;
 
 // ============================================

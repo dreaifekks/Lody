@@ -12,7 +12,10 @@ telemetry, or managed-runtime downloads, as routed by the root instructions.
   omits machine selection when `remoteMachines` is absent. PR details, actions
   and PR-driven auto-archive follow `githubPullRequests`, which the local
   desktop backs with its machine's own `gh` login; the hosted repository
-  registry stays behind `githubIntegration`. Gate entries and their background work through capabilities rather
+  registry stays behind `githubIntegration`. Static conversation sharing
+  follows `teamSharing` through the hosted service, else `lanSharing` (local),
+  which publishes to a LAN's own hub and appears only in a LAN workspace;
+  `teamSharing` stays off locally, as it also gates team visibility. Gate entries and their background work through capabilities rather
   than build-kind or environment checks.
 - Shared packages stay platform-neutral. The public Electron composition
   selects `local` explicitly; private Web/mobile entries and cloud composition

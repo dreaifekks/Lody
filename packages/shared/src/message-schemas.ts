@@ -13,6 +13,7 @@ import {
   LanMachineRestartResultSchema,
 } from './lan-control';
 import { MemoryBindingSchema } from './memory-provider';
+import { LanShareIdSchema, LanShareSchema, LanShareSourceSchema } from './lan-share';
 import { AgentRoleSnapshotSchema } from './message-author';
 import { z } from 'zod';
 import { SubagentTaskPayloadSchema } from './acp/claude-subagent-task';
@@ -52,6 +53,8 @@ import {
   ACP_AUTHORIZATION_URL_MAX_LENGTH,
   isAcpAuthenticationFormWithinByteLimit,
 } from './acp-authentication-limits';
+
+const LanSharedConversationSchema = LanShareSchema.extend({ url: z.string().nullable() }).strict();
 
 // ============================================
 // BASE ID TYPE SCHEMAS
@@ -2490,6 +2493,42 @@ export const LanForwardRequestSchema = z
   })
   .strict();
 
+/** The conversations the LAN of a workspace shared, as its hub keeps them. */
+export const LanSharesRequestSchema = z
+  .object({
+    type: z.literal('lan/shares'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+  })
+  .strict();
+
+/**
+ * Publishes a frozen share package the shell wrote into `directory`
+ * (`manifest.json` and `objects/<object id>`) to the hub of the workspace's
+ * LAN: a new share, or a new deployment of `shareId`.
+ */
+export const LanSharePublishRequestSchema = z
+  .object({
+    type: z.literal('lan/share-publish'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    directory: z.string().min(1),
+    shareId: LanShareIdSchema.optional(),
+    expectedRevision: z.number().int().positive().optional(),
+    rootSourceId: z.string().min(1).max(256),
+    sources: z.array(LanShareSourceSchema).min(1).max(64),
+  })
+  .strict();
+
+export const LanShareRevokeRequestSchema = z
+  .object({
+    type: z.literal('lan/share-revoke'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    shareId: LanShareIdSchema,
+  })
+  .strict();
+
 export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LocalProjectAddRequestSchema,
   LocalProjectPrepareAddRequestSchema,
@@ -2523,6 +2562,9 @@ export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LanMachinesRequestSchema,
   LanAliasMachineRequestSchema,
   LanForwardRequestSchema,
+  LanSharesRequestSchema,
+  LanSharePublishRequestSchema,
+  LanShareRevokeRequestSchema,
 ]);
 
 const LocalProjectFileListResultSchema = z
@@ -2787,6 +2829,9 @@ const LocalProjectControlErrorResponseSchema = z
       'lan/machines',
       'lan/alias-machine',
       'lan/forward',
+      'lan/shares',
+      'lan/share-publish',
+      'lan/share-revoke',
     ]),
     error: LocalProjectControlErrorCodeSchema,
     message: z.string(),
@@ -3086,6 +3131,27 @@ export const LocalProjectControlResponseSchema = z.union([
       ok: z.literal(true),
       type: z.literal('lan/forward'),
       result: z.object({ response: LanMemberControlResponseSchema }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      type: z.literal('lan/shares'),
+      result: z.object({ shares: z.array(LanSharedConversationSchema) }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      type: z.literal('lan/share-publish'),
+      result: z.object({ share: LanSharedConversationSchema }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      type: z.literal('lan/share-revoke'),
+      result: z.object({ revoked: z.boolean() }).strict(),
     })
     .strict(),
   LocalProjectControlErrorResponseSchema,

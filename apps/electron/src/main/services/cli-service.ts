@@ -96,6 +96,7 @@ const LOCAL_SESSION_CONTROL_FILE_SEND_LOCAL_TIMEOUT_MS = 120_000
 const LOCAL_SESSION_CONTROL_FILE_SEND_MEMBER_TIMEOUT_MS = 900_000
 const LOCAL_PROJECT_CONTROL_TIMEOUT_MS = 20_000
 const LOCAL_PROJECT_CONTROL_LIST_FILES_TIMEOUT_MS = 120_000
+const LOCAL_PROJECT_CONTROL_SHARE_PUBLISH_TIMEOUT_MS = 600_000
 const LOCAL_PROBE_TIMEOUT_MS = 3000
 const LODY_DATA_DIR = getLodyDataDir(mainPlatformKind)
 const LOCAL_DAEMON_RUN_FILE = getLocalDaemonRunFilePath(mainPlatformKind)
@@ -258,6 +259,8 @@ function resolveLocalProjectControlTimeoutMs(type: LocalProjectControlRequest['t
   ) {
     return LOCAL_PROJECT_CONTROL_LIST_FILES_TIMEOUT_MS
   }
+  // A shared conversation uploads every history and image to the hub.
+  if (type === 'lan/share-publish') return LOCAL_PROJECT_CONTROL_SHARE_PUBLISH_TIMEOUT_MS
   return LOCAL_PROJECT_CONTROL_TIMEOUT_MS
 }
 
