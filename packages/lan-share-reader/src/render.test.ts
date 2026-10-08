@@ -39,7 +39,7 @@ describe('the reader page', () => {
     expect(page.textContent).toContain('<script>alert(1)</script>');
   });
 
-  it('folds thinking and tool calls, restoring a title from the first command', () => {
+  it('groups a run of steps under what it did and leaves thinking out', () => {
     const page = render([
       {
         id: 'a1',
@@ -59,12 +59,12 @@ describe('the reader page', () => {
       },
       { id: 's1', role: 'system', items: [{ type: 'text', text: 'not shown' }] },
     ]);
-    const folds = [...page.querySelectorAll('details')];
-    expect(folds.map((node) => node.open)).toEqual([false, false]);
-    expect(folds.map((node) => node.querySelector('summary')?.textContent)).toEqual([
-      'Thinking',
-      'ls -la',
-    ]);
+    const group = page.querySelector<HTMLDetailsElement>('details.group')!;
+    expect(group.open).toBe(false);
+    expect(group.querySelector(':scope > summary')?.textContent).toBe('Ran 1 command');
+    // The step inside restores its title from the first command.
+    expect(group.querySelector('details.tool > summary')?.textContent).toBe('ls -la');
+    expect(page.textContent).not.toContain('Let me look.');
     expect(page.querySelector('img')?.getAttribute('src')).toBe('/s/x/d/y/a1');
     expect(page.textContent).not.toContain('not shown');
     expect(page.textContent).not.toContain('ignored');
@@ -116,31 +116,30 @@ describe('the reader page', () => {
       expect(row.getAttribute('aria-expanded')).toBe('false');
       row.click();
       expect(row.getAttribute('aria-expanded')).toBe('true');
-      // Expanded, every step is back in its place, each still folded on its own.
+      // Expanded, the work is back in its place: each run of steps one folded row.
       expect(shown(page)).toEqual([
         'Worked for 1m 44s',
-        'Thinking',
         'Running the tests first.',
-        'pnpm test',
-        'vitest --repeat 200',
+        'Ran 2 commands',
         report,
-        'pnpm test',
+        'Ran 1 command',
         'Fixed: fake timers',
       ]);
-      expect([...page.querySelectorAll('details')].map((node) => node.open)).toEqual([
-        false,
-        false,
-        false,
-        false,
-      ]);
-      expect(page.querySelector('details.failed')?.textContent).toContain('vitest --repeat 200');
+      expect([...page.querySelectorAll('details')].every((node) => !node.open)).toBe(true);
+      const group = page.querySelector<HTMLDetailsElement>('details.group')!;
+      group.open = true;
+      expect(
+        [...group.querySelectorAll('details.tool > summary')].map((node) => node.textContent)
+      ).toEqual(['pnpm test', 'vitest --repeat 200']);
+      expect(group.querySelector('details.failed')?.textContent).toContain('vitest --repeat 200');
+      expect(page.textContent).not.toContain('Let me look.');
       row.click();
       expect(shown(page)).toHaveLength(3);
     });
 
     it('counts the steps when the history holds no duration, less any permission wait', () => {
       expect(render([turn({ finished: true })]).querySelector('.worked')?.textContent).toBe(
-        'Took 4 steps'
+        'Took 3 steps'
       );
       const waited = render([
         turn({ endedAt: Date.parse('2026-10-09T08:01:00.000Z'), permissionWaitMs: 50_000 }),
@@ -151,7 +150,13 @@ describe('the reader page', () => {
     it('folds nothing while the turn runs or when it ends in work', () => {
       const running = render([turn({})]);
       expect(running.querySelector('.worked')).toBeNull();
-      expect(shown(running)).toHaveLength(7);
+      expect(shown(running)).toEqual([
+        'Running the tests first.',
+        'Ran 2 commands',
+        report,
+        'Ran 1 command',
+        'Fixed: fake timers',
+      ]);
 
       const endsInWork = render([
         {
@@ -162,7 +167,7 @@ describe('the reader page', () => {
         },
       ]);
       expect(endsInWork.querySelector('.worked')).toBeNull();
-      expect(shown(endsInWork)).toEqual(['Checking.', 'pnpm test']);
+      expect(shown(endsInWork)).toEqual(['Checking.', 'Ran 1 command']);
     });
 
     it('keeps the answer a thin closing note follows', () => {
@@ -202,11 +207,64 @@ describe('the reader page', () => {
         }),
       ]);
       expect([...page.querySelectorAll('.worked')].map((row) => row.textContent)).toEqual([
-        'Took 1 step',
+        'Finished working',
         'Worked for 30s',
       ]);
       expect(shown(page)).toContain('Exited Plan Mode');
     });
+  });
+
+  it('counts what a group did as the desktop does, in the reader language', () => {
+    const tool = (kind: string, fields: { [key: string]: Json } = {}) => ({
+      type: 'tool_call',
+      toolCallId: kind,
+      kind,
+      status: 'completed',
+      title: kind,
+      ...fields,
+    });
+    const items = [
+      tool('read', { locations: [{ path: 'a.ts' }] }),
+      tool('read', { locations: [{ path: 'a.ts' }] }),
+      tool('edit', { content: [{ type: 'diff', path: 'a.ts', oldText: 'x', newText: 'y' }] }),
+      tool('write', { locations: [{ path: 'b.ts' }] }),
+      tool('search'),
+      tool('fetch'),
+      tool('other'),
+      tool('other', { content: [{ type: 'terminal_command', command: 'make' }] }),
+      tool('think'),
+    ];
+    const history = [{ id: 'a1', role: 'assistant', items }];
+    expect(render(history).querySelector('.group > summary')?.textContent).toBe(
+      'Ran 1 command · Read 1 file · Edited 2 files · Ran 1 search · Fetched 1 resource · Called 1 tool'
+    );
+    const zh = renderHistory(
+      { document, strings: STRINGS.zh, manifest, objectUrl: (id) => id },
+      history
+    );
+    expect(zh.querySelector('.group > summary')?.textContent).toBe(
+      '调用了 1 个命令 · 阅读了 1 个文件 · 编辑了 2 个文件 · 进行了 1 次搜索 · 获取了 1 项内容 · 调用了 1 个工具'
+    );
+    // Eight steps are shown; the `think` call is thinking.
+    expect(render(history).querySelectorAll('.group details.tool')).toHaveLength(8);
+  });
+
+  it('times a turn that only thought, with nothing to show inside', () => {
+    const page = render([
+      {
+        id: 'a1',
+        role: 'assistant',
+        timestamp: '2026-10-09T08:00:00.000Z',
+        endedAt: Date.parse('2026-10-09T08:00:05.000Z'),
+        items: [
+          { type: 'thought', text: 'Private reasoning.' },
+          { type: 'text', text: 'Yes.' },
+        ],
+      },
+    ]);
+    expect(page.querySelector('.worked')?.textContent).toBe('Worked for 5s');
+    expect(page.querySelector('.group')).toBeNull();
+    expect(page.textContent).not.toContain('Private reasoning.');
   });
 
   it('lists each conversation after the one that holds or opened it', () => {

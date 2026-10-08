@@ -19,8 +19,17 @@ export type Manifest = {
   attachments: Array<{ id: string; kind: 'image' | 'file'; objectId: string }>;
 };
 
+/** What a group of steps did, counted as the desktop counts it. */
+type Activity = {
+  commands: number;
+  readFiles: number;
+  editedFiles: number;
+  searches: number;
+  fetches: number;
+  tools: number;
+};
+
 export type Strings = {
-  thinking: string;
   tool: string;
   untitled: string;
   unavailable: string;
@@ -30,23 +39,37 @@ export type Strings = {
   workedFor: (duration: string) => string;
   /** That row when the history holds no duration for the turn. */
   steps: (count: number) => string;
+  /** That row when there is neither a duration nor a step to count. */
+  finished: string;
   units: { hour: string; minute: string; second: string; separator: string };
+  /** The row of a group of steps names each kind it did. */
+  activity: { [Kind in keyof Activity]: (count: number) => string };
 };
+
+const plural = (count: number, one: string, other: string) =>
+  (count === 1 ? one : other).replace('{n}', String(count));
 
 export const STRINGS: Record<'en' | 'zh', Strings> = {
   en: {
-    thinking: 'Thinking',
     tool: 'Tool',
     untitled: 'Untitled conversation',
     unavailable: 'This conversation is not available.',
     updated: 'Updated',
     image: 'Image',
     workedFor: (duration) => `Worked for ${duration}`,
-    steps: (count) => (count === 1 ? 'Took 1 step' : `Took ${count} steps`),
+    steps: (count) => plural(count, 'Took {n} step', 'Took {n} steps'),
+    finished: 'Finished working',
     units: { hour: 'h', minute: 'm', second: 's', separator: ' ' },
+    activity: {
+      commands: (count) => plural(count, 'Ran {n} command', 'Ran {n} commands'),
+      readFiles: (count) => plural(count, 'Read {n} file', 'Read {n} files'),
+      editedFiles: (count) => plural(count, 'Edited {n} file', 'Edited {n} files'),
+      searches: (count) => plural(count, 'Ran {n} search', 'Ran {n} searches'),
+      fetches: (count) => plural(count, 'Fetched {n} resource', 'Fetched {n} resources'),
+      tools: (count) => plural(count, 'Called {n} tool', 'Called {n} tools'),
+    },
   },
   zh: {
-    thinking: '思考',
     tool: '工具',
     untitled: '未命名对话',
     unavailable: '这个对话无法打开。',
@@ -54,7 +77,16 @@ export const STRINGS: Record<'en' | 'zh', Strings> = {
     image: '图片',
     workedFor: (duration) => `工作了${duration}`,
     steps: (count) => `已处理 ${count} 步`,
+    finished: '已完成工作',
     units: { hour: '时', minute: '分', second: '秒', separator: '' },
+    activity: {
+      commands: (count) => `调用了 ${count} 个命令`,
+      readFiles: (count) => `阅读了 ${count} 个文件`,
+      editedFiles: (count) => `编辑了 ${count} 个文件`,
+      searches: (count) => `进行了 ${count} 次搜索`,
+      fetches: (count) => `获取了 ${count} 项内容`,
+      tools: (count) => `调用了 ${count} 个工具`,
+    },
   },
 };
 
@@ -180,12 +212,6 @@ function renderItem(context: RenderContext, item: Json): HTMLElement | null {
       const text = str(item.text);
       return text?.trim() ? markdown(document, text) : null;
     }
-    case 'thought': {
-      const text = str(item.text);
-      return text?.trim()
-        ? folded(document, 'thought', strings.thinking, [markdown(document, text)])
-        : null;
-    }
     case 'proposed_plan': {
       const text = str(item.markdown);
       return text?.trim() && item.status !== 'cleared' ? markdown(document, text) : null;
@@ -257,11 +283,23 @@ const NEVER_FOLDED = new Set([
 const isNeverFolded = (item: JsonObject): boolean =>
   (typeof item.type === 'string' && NEVER_FOLDED.has(item.type)) || isPlanExit(item);
 
-/** A step of the work: it folds whenever the turn has an answer to show. */
-const isStep = (item: JsonObject): boolean =>
+/**
+ * Thinking and tool calls: a run of them is one group of steps. Thinking is
+ * counted but never shown, as the desktop's share page leaves it out.
+ */
+const isActivity = (item: JsonObject): boolean =>
   item.type === 'thought' ||
-  item.type === 'subagent_task' ||
   (item.type === 'tool_call' && !isPlanExit(item) && item.activityKind === undefined);
+
+const isShownStep = (item: JsonObject): boolean =>
+  item.type === 'tool_call' && item.kind !== 'think';
+
+/** A retry the agent already got past; the desktop shows none. */
+const isSettledRetry = (item: JsonObject): boolean =>
+  item.type === 'tool_call' &&
+  item.activityKind === 'codex_retry' &&
+  item.status !== 'pending' &&
+  item.status !== 'in_progress';
 
 const textOf = (item: JsonObject | undefined): string | null =>
   item?.type === 'text' ? (str(item.text) ?? '') : null;
@@ -291,7 +329,7 @@ function visibleTextStart(items: JsonObject[]): number {
   return index;
 }
 
-/** The indexes of a segment's items that fold, or none when no answer would remain. */
+/** The indexes of a finished segment's items that fold. */
 function workOf(items: JsonObject[]): Set<number> {
   const visibleStart = visibleTextStart(items);
   const work = new Set<number>();
@@ -302,12 +340,91 @@ function workOf(items: JsonObject[]): Set<number> {
       visibleStart < items.length &&
       (index >= visibleStart || isSubstantiveText(text));
     const folds =
-      isStep(item) ||
+      isActivity(item) ||
       (items.length > 1 && index < items.length - 1 && !keepsText && !isNeverFolded(item));
     if (folds) work.add(index);
   });
-  const answered = items.some((item, index) => !work.has(index) && item.type !== 'system_notice');
-  return answered ? work : new Set();
+  return work;
+}
+
+function toolPaths(item: JsonObject): string[] {
+  const paths = new Set<string>();
+  for (const location of Array.isArray(item.locations) ? item.locations : []) {
+    const at = isObject(location) ? str(location.path) : null;
+    if (at) paths.add(at);
+  }
+  for (const block of Array.isArray(item.content) ? item.content : []) {
+    const at = isObject(block) && block.type === 'diff' ? str(block.path) : null;
+    if (at) paths.add(at);
+  }
+  return [...paths];
+}
+
+const hasCommand = (item: JsonObject): boolean =>
+  (Array.isArray(item.content) ? item.content : []).some(
+    (block) => isObject(block) && block.type === 'terminal_command'
+  );
+
+/** What a group did; files read or edited more than once count once. */
+function summarize(items: JsonObject[]): Activity {
+  const read = new Set<string>();
+  const edited = new Set<string>();
+  const activity: Activity = {
+    commands: 0,
+    readFiles: 0,
+    editedFiles: 0,
+    searches: 0,
+    fetches: 0,
+    tools: 0,
+  };
+  for (const item of items) {
+    if (item.type !== 'tool_call' || item.kind === 'think') continue;
+    const paths = toolPaths(item);
+    switch (item.kind) {
+      case 'execute':
+      case 'bash':
+        activity.commands += 1;
+        break;
+      case 'read':
+        if (paths.length === 0) activity.readFiles += 1;
+        for (const at of paths) read.add(at);
+        break;
+      case 'edit':
+      case 'write':
+      case 'delete':
+      case 'move':
+        if (paths.length === 0) activity.editedFiles += 1;
+        for (const at of paths) edited.add(at);
+        break;
+      case 'search':
+        activity.searches += 1;
+        break;
+      case 'fetch':
+        activity.fetches += 1;
+        break;
+      default:
+        if (hasCommand(item)) activity.commands += 1;
+        else activity.tools += 1;
+    }
+  }
+  activity.readFiles += read.size;
+  activity.editedFiles += edited.size;
+  return activity;
+}
+
+/** A run of steps as one folded row; `null` when it holds nothing a reader is shown. */
+function activityGroup(context: RenderContext, items: JsonObject[]): HTMLElement | null {
+  const steps = items
+    .filter(isShownStep)
+    .map((item) => renderItem(context, item))
+    .filter((node): node is HTMLElement => node !== null);
+  if (steps.length === 0) return null;
+  const activity = summarize(items);
+  const label = (Object.keys(activity) as Array<keyof Activity>)
+    .filter((kind) => activity[kind] > 0)
+    .map((kind) => context.strings.activity[kind](activity[kind]))
+    .join(' · ');
+  return folded(context.document, 'group', label, steps);
 }
 
 function formatDuration(ms: number, units: Strings['units']): string {
@@ -350,19 +467,33 @@ function workedRow(document: Document, label: string, work: HTMLElement[]): HTML
 }
 
 function renderAssistant(context: RenderContext, entry: JsonObject, items: Json[]): HTMLElement[] {
-  const rendered = items.flatMap((item) => {
+  const nodes = new Map<JsonObject, HTMLElement>();
+  const kept: JsonObject[] = [];
+  const tasks: HTMLElement[] = [];
+  for (const item of items) {
+    if (!isObject(item) || isSettledRetry(item)) continue;
+    // Subagent tasks follow the turn's last segment, as on the desktop.
+    if (item.type === 'subagent_task') {
+      const node = renderItem(context, item);
+      if (node) tasks.push(node);
+      continue;
+    }
+    if (isActivity(item)) {
+      kept.push(item);
+      continue;
+    }
     const node = renderItem(context, item);
-    return node && isObject(item) ? [{ item, node }] : [];
-  });
-  if (entry.finished !== true && typeof entry.endedAt !== 'number') {
-    return rendered.map(({ node }) => node);
+    if (!node) continue;
+    nodes.set(item, node);
+    kept.push(item);
   }
+  const finished = entry.finished === true || typeof entry.endedAt === 'number';
   // A plan's exit card closes a segment of its own, folded on its own.
-  const segments: Array<typeof rendered> = [];
-  let current: typeof rendered = [];
-  for (const part of rendered) {
-    current.push(part);
-    if (isPlanExit(part.item)) {
+  const segments: JsonObject[][] = [];
+  let current: JsonObject[] = [];
+  for (const item of kept) {
+    current.push(item);
+    if (isPlanExit(item)) {
       segments.push(current);
       current = [];
     }
@@ -371,22 +502,42 @@ function renderAssistant(context: RenderContext, entry: JsonObject, items: Json[
   if (current.length > 0 || segments.length === 0) segments.push(current);
   const duration = durationOf(entry);
   return segments.flatMap((segment, index) => {
-    const work = workOf(segment.map(({ item }) => item));
-    const nodes = segment.map(({ node }) => node);
-    if (work.size === 0) return nodes;
+    const last = index === segments.length - 1;
+    const segmentTasks = last ? tasks : [];
+    const work = finished ? workOf(segment) : new Set<number>();
+    const shown: HTMLElement[] = [];
+    const folding: HTMLElement[] = [];
+    let steps = segmentTasks.length;
+    for (let at = 0; at < segment.length;) {
+      let end = at + 1;
+      let node: HTMLElement | null | undefined;
+      if (isActivity(segment[at])) {
+        while (end < segment.length && isActivity(segment[end])) end += 1;
+        const run = segment.slice(at, end);
+        node = activityGroup(context, run);
+        steps += run.filter(isShownStep).length;
+      } else {
+        node = nodes.get(segment[at]);
+      }
+      if (node) {
+        shown.push(node);
+        if (work.has(at)) folding.push(node);
+      }
+      at = end;
+    }
+    shown.push(...segmentTasks);
+    folding.push(...segmentTasks);
+    const answered = segment.some((item, at) => !work.has(at) && item.type !== 'system_notice');
+    // Thinking alone is work too: the row then says how long the turn took.
+    if (!finished || !answered || (work.size === 0 && segmentTasks.length === 0)) return shown;
     // The turn's duration covers every segment, so only the last claims it.
     const label =
-      duration !== null && index === segments.length - 1
+      duration !== null && last
         ? context.strings.workedFor(formatDuration(duration, context.strings.units))
-        : context.strings.steps(
-            segment.filter(({ item }, at) => work.has(at) && isStep(item)).length
-          );
-    const row = workedRow(
-      context.document,
-      label,
-      nodes.filter((_, at) => work.has(at))
-    );
-    return [row, ...nodes];
+        : steps > 0
+          ? context.strings.steps(steps)
+          : context.strings.finished;
+    return [workedRow(context.document, label, folding), ...shown];
   });
 }
 
