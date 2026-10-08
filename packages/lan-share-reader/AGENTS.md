@@ -3,7 +3,7 @@
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
 
 The page a LAN hub serves to readers of a shared conversation (fork-only, see
-[shared conversations](../../.agents/docs/lan.md#shared-conversations)).
+[shared conversations](../../.agents/docs/lan-sharing.md#shared-conversations)).
 
 ## Invariants
 

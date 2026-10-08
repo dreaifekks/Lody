@@ -1,7 +1,7 @@
 // What the agent service does for the window with the shares of a LAN: it
 // uploads a frozen package the shell wrote to disk, lists and revokes shares,
 // all with the hub's credential, which the window never holds.
-// See `.agents/docs/lan.md#shared-conversations`.
+// See `.agents/docs/lan-sharing.md#shared-conversations`.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';

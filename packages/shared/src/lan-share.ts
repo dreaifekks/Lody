@@ -1,7 +1,7 @@
 // Conversations a LAN publishes: the hub keeps the frozen copies and serves
 // them on a listener of their own. This is what the hub, the agent service
 // and the window agree on; none of it is a credential. See
-// `.agents/docs/lan.md#shared-conversations`.
+// `.agents/docs/lan-sharing.md#shared-conversations`.
 import { z } from 'zod';
 
 /** Management routes behind the hub's gate. */

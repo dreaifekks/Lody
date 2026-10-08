@@ -29,7 +29,7 @@ of its workspaces, and what it leaves behind.
 
 The machine that holds the hosted installation does the import, into its own
 installation. Another member of a LAN asks it the way it asks a machine to
-update: through the hub, as [LANs](lan.md#the-machines-of-a-lan) explains.
+update: through the hub, as [LANs](lan-machines.md#the-machines-of-a-lan) explains.
 
 ## Reading without an account
 

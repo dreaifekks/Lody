@@ -19,7 +19,7 @@ because the statements below bind those paths.
 persisted as `transport:'local'`.
 
 The handoff is also how a file arrives from another member of a
-[LAN](lan.md#files-of-a-message): the fleet receives it and hands it to the same
+[LAN](lan-member-connections.md#files-of-a-message): the fleet receives it and hands it to the same
 entry point. Where the port has no relay (`attachmentUpload` is `null`) the handoff
 is the only way in, so it takes files for a conversation that does not exist yet:
 a client prepares the files of a message before it writes the message, and the
