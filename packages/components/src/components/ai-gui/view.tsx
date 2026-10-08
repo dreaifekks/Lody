@@ -255,6 +255,7 @@ import {
   isKeptImageFile,
   isReadableKeptFile,
   readKeptFile,
+  readKeptFileBytes,
   SessionKeptImageFile,
 } from './session-local-image-file';
 import {
@@ -271,6 +272,7 @@ import {
 import {
   downloadSessionFile,
   fetchSessionFilePreview,
+  getSessionFilePreviewFromBytes,
   saveBlobAsFile,
 } from '@/lib/session-file-download';
 import { getMachineMetaByIdAtomFamily } from '@/atoms/machines';
@@ -5173,8 +5175,7 @@ export const AssistantTurnFooter = ({
               'flex flex-wrap items-center justify-start text-muted-foreground'
             ),
             isMobile ? 'min-h-6 gap-1' : 'min-h-7 gap-2',
-            !isMobile &&
-              'opacity-0 transition-opacity duration-150 focus-within:opacity-100',
+            !isMobile && 'opacity-0 transition-opacity duration-150 focus-within:opacity-100',
             !isMobile && (isTurnHovered || (showFinishedMetadata && isForking)) && 'opacity-100'
           )}
           data-assistant-turn-actions
@@ -6517,7 +6518,27 @@ const WorkspaceSessionFileGroup = ({
       }
       setPreviewFile(file);
       setPreviewStatus({ kind: 'loading' });
-      if (!workspaceId || !authToken) {
+      const storageSessionId = file.storageSessionId ?? sessionId;
+      // Where nothing uploads a file, it is read from the machine that keeps it.
+      const kept = !uploads && isReadableKeptFile(file);
+      const read = !workspaceId
+        ? null
+        : kept
+          ? () =>
+              readKeptFileBytes(file, workspaceId, storageSessionId).then((bytes) =>
+                getSessionFilePreviewFromBytes(bytes, file.sizeBytes)
+              )
+          : authToken
+            ? () =>
+                fetchSessionFilePreview({
+                  workspaceId,
+                  sessionId: storageSessionId,
+                  fileId: file.fileId,
+                  token: authToken,
+                  sizeBytes: file.sizeBytes,
+                })
+            : null;
+      if (!read) {
         setPreviewStatus({
           kind: 'error',
           message: t('sessions.filePreviewUnavailable', 'Preview unavailable'),
@@ -6527,13 +6548,7 @@ const WorkspaceSessionFileGroup = ({
       // Stale-response guard: rapid open/close or switching files must not let
       // an earlier fetch overwrite the state of the latest request.
       previewRequestRef.current = file.fileId;
-      void fetchSessionFilePreview({
-        workspaceId,
-        sessionId: file.storageSessionId ?? sessionId,
-        fileId: file.fileId,
-        token: authToken,
-        sizeBytes: file.sizeBytes,
-      })
+      void read()
         .then((result) => {
           if (previewRequestRef.current !== file.fileId) return;
           setPreviewStatus({
@@ -6542,16 +6557,18 @@ const WorkspaceSessionFileGroup = ({
             truncated: result.truncated,
           });
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           if (previewRequestRef.current !== file.fileId) return;
-          // 4xx / network → degrade to a downloadable error state.
+          // 4xx / network → degrade to a downloadable error state. A kept file
+          // says why, which names the machine when that one is out of reach.
+          const reason = kept && error instanceof Error ? error.message : '';
           setPreviewStatus({
             kind: 'error',
-            message: t('sessions.filePreviewFailed', 'Could not load preview'),
+            message: `${t('sessions.filePreviewFailed', 'Could not load preview')}${reason ? `: ${reason}` : ''}`,
           });
         });
     },
-    [authToken, openHtmlFile, postHog, sessionId, t, workspaceId]
+    [authToken, openHtmlFile, postHog, sessionId, t, uploads, workspaceId]
   );
 
   // The send path caps at 8 files/message, but a block list synced from another

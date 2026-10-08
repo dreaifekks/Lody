@@ -241,7 +241,11 @@ a Codex generated image, an image or file in its ACP output) is kept the same
 way. Without a relay store the agent service stores it as it stores a handed
 over file and writes a file block that names its own machine; an image becomes
 a file of an image type, which is shown as one. Any file card a desktop can
-read that way downloads on a click, through the same `session/file-read-local`.
+read that way downloads on a click, through the same `session/file-read-local`,
+and a file with a text preview opens the preview instead, as an uploaded one
+does: the desktop reads the whole file and shows its first bytes. The card
+still names the machine. When that machine cannot be reached the preview says
+why, with the machine's name, and offers the download.
 
 ## Folders of other members
 
@@ -864,9 +868,9 @@ machine.
 - Terminals and files of other members need a direct path between the
   machines, which an overlay network gives; a hub reached through a proxy does
   not.
-- A file stays on the machine that runs its session. Other members download it
-  from there but cannot preview it, and it is gone with that machine's data
-  directory.
+- A file stays on the machine that runs its session. Other members read it
+  from there, so they cannot while that machine is offline, and it is gone with
+  that machine's data directory.
 - A folder of another member opens in an editor only. It takes an SSH server
   on that machine and a POSIX path. A machine that reaches its hub over IPv6
   names its server with `LODY_LAN_SSH`, by a host name or an IPv4 address:

@@ -105,7 +105,7 @@ Both desktop apps can run side by side.
 | Identity                  | Lody accounts, teams and workspaces         | Whoever holds a LAN's invite is a member; all members act as one user; an invite cannot be rotated in place  |
 | Sync                      | Lody's servers                              | Your hub: one node on SQLite; a standby server copies it every ten minutes and takes over when it stays away |
 | Requests between machines | Lody's servers                              | Go directly between the machines; through the hub, for up to two minutes, when they cannot connect           |
-| Attachments               | Uploaded to a store every device reads      | Stay on the machine that runs the session; other members see the card but cannot open it                     |
+| Attachments               | Uploaded to a store every device reads      | Stay on the machine that runs the session; other members open them from there while it is online             |
 | GitHub tokens             | The Lody GitHub App and your linked account | One token the hub keeps for the LAN; an Agent uses it only on a machine without a `gh` login                 |
 | PR panel freshness        | GitHub webhooks                             | Polling while the panel is open: CI every 15 seconds, reviews and comments every minute                      |
 | Phone and web             | Lody's iOS, Android and web apps            | Those apps need a Lody account and do not reach a LAN; phones get alerts from the hub                        |

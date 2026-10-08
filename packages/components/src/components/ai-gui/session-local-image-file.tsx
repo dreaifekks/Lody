@@ -123,6 +123,17 @@ export async function readKeptFile(
   workspaceId: string,
   sessionId: string
 ): Promise<Blob> {
+  return new Blob([await readKeptFileBytes(file, workspaceId, sessionId)], {
+    type: file.mimeType,
+  });
+}
+
+/** The bytes of a file block, read as `readKeptFile` reads them. */
+export async function readKeptFileBytes(
+  file: SessionFilePayload,
+  workspaceId: string,
+  sessionId: string
+): Promise<Uint8Array<ArrayBuffer>> {
   const ipc = getIpcServices();
   if (!ipc || !file.machineId) throw new Error('unavailable');
   const result = await ipc.localProjects.readSessionFileLocal({
@@ -134,7 +145,7 @@ export async function readKeptFile(
     sha256: file.sha256,
   });
   if (!result.ok) throw new Error(result.error);
-  return new Blob([result.bytes], { type: file.mimeType });
+  return new Uint8Array(result.bytes);
 }
 
 type State =

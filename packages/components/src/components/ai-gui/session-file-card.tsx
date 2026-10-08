@@ -61,7 +61,7 @@ export type SessionFileCardProps = {
    * instead of promising an upload.
    */
   uploads?: boolean;
-  /** Click opens the in-app preview (text-previewable, available files only). */
+  /** Click opens the in-app preview (text-previewable files that are available or readable where kept). */
   onPreview?: (file: SessionFilePayload) => void;
   /**
    * Downloads the file. The card's primary action when the file is not
@@ -259,23 +259,26 @@ export function SessionFileCard({
   const Icon = KIND_ICON[kind];
 
   const sizeLabel = formatFileSize(file.sizeBytes);
-  // A kept file is downloaded from the machine that keeps it, given a way to read it.
-  const keptDownload = state === 'kept' && !!onDownload;
-  const isInteractive = state === 'previewable' || state === 'downloadable' || keptDownload;
+  // A kept file is read from the machine that keeps it, given a way to read it:
+  // it previews and downloads as an uploaded one does, and still says where it is.
+  const action =
+    state === 'kept' && onDownload
+      ? file.textPreview && onPreview
+        ? 'previewable'
+        : 'downloadable'
+      : state;
+  const isInteractive = action === 'previewable' || action === 'downloadable';
 
   const handleClick = () => {
-    if (state === 'previewable') {
+    if (action === 'previewable') {
       onPreview?.(file);
-    } else if (state === 'downloadable' || keptDownload) {
+    } else if (action === 'downloadable') {
       onDownload?.(file);
     }
   };
 
   const subtitle = buildSubtitle({ state, sizeLabel, pendingMachineName, t });
-  const actionIcon = buildActionIcon({
-    state: keptDownload ? 'downloadable' : state,
-    isDownloading,
-  });
+  const actionIcon = buildActionIcon({ state: action, isDownloading });
 
   const isMuted = state === 'expired' || state === 'pending';
 
@@ -284,7 +287,7 @@ export function SessionFileCard({
      card offers download as a second, always-visible action rather than hiding
      the source behind the preview it replaces. Every other previewable file
      opens the preview dialog, which already downloads from inside. */
-  const showDownloadAction = state === 'previewable' && isHtmlSessionFile(file) && !!onDownload;
+  const showDownloadAction = action === 'previewable' && isHtmlSessionFile(file) && !!onDownload;
   const downloadLabel = t('sessions.fileActions.download', 'Download file');
 
   return (
