@@ -824,7 +824,9 @@ gateway, the `lody-hub://<lan id>` origin the bridge forwards
 - The index is the directory: every member shows what it holds, and a
   tombstone removes the copy on the other members. When two members change one
   shortcut at once, the later publication wins.
-- A shortcut the index does not know is published again: one saved on this
+- Whenever a desktop reaches the hub again, it sends the shortcuts that waited
+  for it and uploads the bodies it published, which a restored hub may lack.
+  A shortcut the index does not know is published again: one saved on this
   machine before its build synced shortcuts, or one a restored hub lost.
 - There is nobody to share with, so the sharing switch is hidden and every
   shortcut stays private.

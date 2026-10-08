@@ -55,7 +55,9 @@ export function createSingleUserShortcutPublication(
 /**
  * Feeds the runtime the directory its user's index holds, and publishes again
  * an acknowledged shortcut the index has never seen: one saved before this
- * gateway carried shortcuts, or one a restored hub lost.
+ * gateway carried shortcuts, or one a restored hub lost. Each time the room
+ * opens, it uploads the bodies this machine published and sends what waited
+ * for the gateway.
  */
 export class SingleUserShortcutDirectory {
   private opening: Promise<void> | null = null;
@@ -116,13 +118,16 @@ export class SingleUserShortcutDirectory {
       await close();
       throw error;
     }
-    await this.publish(lease.flock);
+    await this.publish(lease.flock, true);
   }
 
-  private async publish(flock: PromptShortcutCatalog['flock']) {
+  /** `opened`: the room has just opened, and the hub may have lost bodies or
+   * missed publications while it was away. */
+  private async publish(flock: PromptShortcutCatalog['flock'], opened = false) {
     if (this.disposed) return;
     const { runtime } = this;
-    const rows: ShortcutDirectoryEntry[] = new PromptShortcutCatalog(flock).list().map((entry) => ({
+    const entries = new PromptShortcutCatalog(flock).list();
+    const rows: ShortcutDirectoryEntry[] = entries.map((entry) => ({
       shortcutId: entry.id,
       bodyDocId: entry.bodyDocId,
       ownerUserId: entry.ownerUserId,
@@ -141,13 +146,31 @@ export class SingleUserShortcutDirectory {
       });
     }
     const known = new Set(rows.map((row) => row.shortcutId));
-    const unpublished = runtime.store
-      .list()
-      .filter((record) => !record.deleted && !record.operation && !known.has(record.entry.id));
+    const records = runtime.store.list().filter((record) => !record.deleted && !record.operation);
+    const unpublished = records.filter((record) => !known.has(record.entry.id));
+    // The index can come back from this machine's own copy while the hub lost
+    // the body it points to; uploading a body the hub holds sends nothing new.
+    const listed = new Set(entries.map((entry) => entry.bodyDocId));
+    const bodies = opened
+      ? records.flatMap((record) =>
+          record.published && listed.has(record.published.bodyDocId)
+            ? [record.published.bodyDocId]
+            : []
+        )
+      : [];
     await runtime.setDirectory(rows);
-    if (unpublished.length === 0 || this.disposed) return;
+    for (const bodyDocId of bodies) {
+      if (this.disposed) return;
+      const body = await this.acquire({ kind: 'body', bodyDocId }, true);
+      try {
+        await body.sync();
+      } finally {
+        await body.release();
+      }
+    }
+    if (this.disposed) return;
     for (const record of unpublished) await runtime.store.republish(record.entry.id);
-    await runtime.flush();
+    if (opened || unpublished.length > 0) await runtime.flush();
   }
 
   async dispose() {

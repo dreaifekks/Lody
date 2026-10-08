@@ -283,7 +283,8 @@ function createGateway() {
     }
     return id;
   };
-  return (repo: LoroRepo): ShortcutPublicationPort['acquire'] =>
+  const attach =
+    (repo: LoroRepo): ShortcutPublicationPort['acquire'] =>
     async (resource) => {
       const pull = async () => void (await merge(repo, resource, false));
       let joinedId: string | undefined;
@@ -303,6 +304,16 @@ function createGateway() {
         },
       };
     };
+  return Object.assign(attach, {
+    /** What the hub holds now, to restore later as a backup would. */
+    backup: () => ({ bodies: new Map(bodies), indexes: new Map(indexes) }),
+    restore: (copy: { bodies: typeof bodies; indexes: typeof indexes }) => {
+      bodies.clear();
+      indexes.clear();
+      for (const [id, value] of copy.bodies) bodies.set(id, value);
+      for (const [id, value] of copy.indexes) indexes.set(id, value);
+    },
+  });
 }
 
 describe('Prompt Shortcuts through a single-user gateway', () => {
@@ -398,6 +409,48 @@ describe('Prompt Shortcuts through a single-user gateway', () => {
     late.reconnect();
     await vi.advanceTimersByTimeAsync(30_000);
     await vi.waitFor(() => expect(names(late.runtime)).toEqual(['Shortcut later']));
+  });
+
+  it('publishes what was saved while the gateway was unreachable once it opens', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    cleanups.push(async () => void vi.useRealTimers());
+    const attach = createGateway();
+    const repo = await LoroRepo.create({});
+    const offline = await openDesktop(attach, repo, true);
+    cleanups.push(async () => {
+      await offline.close();
+      await repo.destroy();
+    });
+    const value = privateShortcut('pending');
+    await offline.runtime.save({ value, base: null, bodyDocId: crypto.randomUUID() });
+    await offline.runtime.flush();
+    expect(offline.runtime.getSnapshot().pendingIds).toEqual(['pending']);
+
+    offline.reconnect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    const otherRepo = await LoroRepo.create({});
+    const other = await openDesktop(attach, otherRepo);
+    cleanups.push(async () => {
+      await other.close();
+      await otherRepo.destroy();
+    });
+    await vi.waitFor(() => expect(names(other.runtime)).toEqual(['Shortcut pending']));
+  });
+
+  it('uploads a published body again after the hub was restored without it', async () => {
+    const attach = createGateway();
+    const repo = await LoroRepo.create({});
+    const before = attach.backup();
+    const publisher = await openDesktop(attach, repo);
+    const value = privateShortcut('kept');
+    await publisher.runtime.save({ value, base: null, bodyDocId: crypto.randomUUID() });
+    await publisher.runtime.flush();
+    await publisher.close();
+    attach.restore(before);
+
+    const [, other] = await openTwoDesktops(attach, repo);
+    await vi.waitFor(() => expect(names(other)).toEqual(['Shortcut kept']));
+    await expect(other.read(other.getSnapshot().entries[0]!)).resolves.toEqual(value);
   });
 
   it('publishes a shortcut saved before the workspace synced shortcuts', async () => {
