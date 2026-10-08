@@ -1,6 +1,6 @@
 // The conversations a LAN published, kept by its hub. Members manage them
 // behind the gate; readers open them on a listener of their own that knows no
-// credential and serves nothing else. See `.agents/docs/lan.md#shared-conversations`.
+// credential and serves nothing else. See `.agents/docs/lan-sharing.md#shared-conversations`.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type http from 'node:http';

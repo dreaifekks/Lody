@@ -3,7 +3,7 @@
 // hands the package to the shell, whose agent service uploads it with the
 // hub's credential; the window never addresses the hub for a share. The hooks
 // return what the upstream share dialog renders, so it is the same dialog.
-// See `.agents/docs/lan.md#shared-conversations`.
+// See `.agents/docs/lan-sharing.md#shared-conversations`.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useAtomValue, useStore } from 'jotai';
 import { useTranslation } from 'react-i18next';

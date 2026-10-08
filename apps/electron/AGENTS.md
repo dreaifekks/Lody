@@ -25,8 +25,9 @@ Root rules apply. For `src/**`, read module, IPC and window contracts in
   relay disconnected until the setting is enabled again.
 - `localPlatform.getSnapshot` atomically supplies the `local:*` user and every
   active `lw_*` workspace of the CLI catalog: one, or one per
-  [LAN](../../.agents/docs/lan.md). Never split it into fallbacks. No active
-  workspace means provisioning; a malformed identity is an error.
+  [LAN](../../.agents/docs/lan.md#one-lan-one-workspace). Never split it into
+  fallbacks. No active workspace means provisioning; a malformed identity is an
+  error.
 - OSS local mode must not create a PostHog client, write an analytics install id, or
   upload source maps, even when unrelated analytics variables exist in the shell.
 - Use `pnpm --dir apps/electron preview:local` only when a smoke/E2E harness has
