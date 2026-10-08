@@ -869,8 +869,9 @@ object path under it answer 404 from that moment; objects no share names are
 deleted when the hub next collects, an upload younger than an hour excepted.
 Bytes a reader already downloaded cannot be recalled.
 
-**Reading.** The hub serves readers on a listener of its own, by default the
-port after the gate's (`lody lan hub --share-port`), on the same address and
+**Reading.** The hub serves readers on a listener of its own, by default port
+18790 (`lody lan hub --share-port`; the port after the gate's, 8789, is the
+member port of the agent service on the same machine), on the same address and
 with the same certificate. That listener knows no credential and has exactly
 these routes: `/s/<id>` (the reader page), `/s/<id>/share.json` (title,
 deployment and manifest), `/s/<id>/d/<deployment>/<object id>` (an object of

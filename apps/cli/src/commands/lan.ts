@@ -403,7 +403,7 @@ const hubCommand = new Command('hub')
   .option('--tls-key <path>', 'Private key of --tls-cert')
   .option(
     '--share-port <port>',
-    'Port readers open shared conversations on; "off" for none (default: the port after --port)'
+    'Port readers open shared conversations on; "off" for none (default: 18790)'
   )
   .action(async (options: HubOptions) => {
     try {

@@ -38,6 +38,13 @@ import {
   writeLanHubSnapshot,
 } from './hub-snapshot';
 
+/**
+ * Where a hub serves shared conversations unless told otherwise. Not the port
+ * after the gate's: that is the member port of the agent service
+ * (`LAN_TERMINAL_DEFAULT_PORT`), which runs on the hub's machine too.
+ */
+export const LAN_SHARE_DEFAULT_PORT = 18790;
+
 export const LAN_HUB_DEFAULT_PORT = 8788;
 export const LAN_HUB_LORO_CLI_PACKAGE = '@loro-dev/loro-cli';
 const UPSTREAM_START_TIMEOUT_MS = 15_000;
@@ -85,7 +92,7 @@ export type LanHubServerOptions = {
   sendPush?: ApnsSender;
   /**
    * Where readers open the conversations the LAN shared, on the same address:
-   * by default the port after `port`, `0` for any, `null` for none.
+   * by default {@link LAN_SHARE_DEFAULT_PORT}, `0` for any, `null` for none.
    */
   sharePort?: number | null;
   /** Replaces the reader page a build carries beside its bundle. */
@@ -954,7 +961,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       options.sharePort === undefined
         ? options.port === 0
           ? 0
-          : options.port + 1
+          : LAN_SHARE_DEFAULT_PORT
         : options.sharePort;
     if (sharePort !== null) {
       // Readers reach nothing but the shares here: no credential, no streams,
