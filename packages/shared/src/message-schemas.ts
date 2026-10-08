@@ -16,7 +16,7 @@ import {
   LanGitHubTokenResultSchema,
 } from './lan-control';
 import { MemoryBindingSchema } from './memory-provider';
-import { LanShareIdSchema, LanShareSchema, LanShareSourceSchema } from './lan-share';
+import { LanShareIdSchema, LanSharedConversationSchema, LanShareSourceSchema } from './lan-share';
 import { AgentRoleSnapshotSchema } from './message-author';
 import { z } from 'zod';
 import { SubagentTaskPayloadSchema } from './acp/claude-subagent-task';
@@ -56,8 +56,6 @@ import {
   ACP_AUTHORIZATION_URL_MAX_LENGTH,
   isAcpAuthenticationFormWithinByteLimit,
 } from './acp-authentication-limits';
-
-const LanSharedConversationSchema = LanShareSchema.extend({ url: z.string().nullable() }).strict();
 
 // ============================================
 // BASE ID TYPE SCHEMAS

@@ -38,6 +38,11 @@ export const LanShareSchema = z
   .strict();
 export type LanShare = z.infer<typeof LanShareSchema>;
 
+/** A share as the window lists it: the share and the link it opens at. */
+export const LanSharedConversationSchema = LanShareSchema.extend({
+  url: z.string().nullable(),
+}).strict();
+
 export const LanShareListSchema = z
   .object({
     shares: z.array(LanShareSchema),

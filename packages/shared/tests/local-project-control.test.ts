@@ -708,6 +708,23 @@ describe('what the members of a LAN ask of each other', () => {
     expect(accepts({ ...token, token: 'github_pat_1', workspaceId: undefined })).toEqual(
       all(false)
     );
+
+    const lan = { machineId: 'machine-1', workspaceId: 'lw_home' };
+    const shareId = 'A'.repeat(32);
+    const publish = {
+      type: 'lan/share-publish',
+      ...lan,
+      directory: '/tmp/share-1',
+      rootSourceId: 'root',
+      sources: [{ sourceId: 'root', conversationId: 'session-1' }],
+    };
+    expect(accepts({ type: 'lan/shares', ...lan })).toEqual(all(true));
+    expect(accepts(publish)).toEqual(all(true));
+    expect(accepts({ ...publish, shareId, expectedRevision: 2 })).toEqual(all(true));
+    expect(accepts({ ...publish, sources: [] })).toEqual(all(false));
+    expect(accepts({ ...publish, shareId: 'short' })).toEqual(all(false));
+    expect(accepts({ type: 'lan/share-revoke', ...lan, shareId })).toEqual(all(true));
+    expect(accepts({ type: 'lan/share-revoke', ...lan, shareId: '../x' })).toEqual(all(false));
   });
 
   it('forwards nothing but what members ask of each other', () => {
@@ -761,6 +778,18 @@ describe('what the members of a LAN ask of each other', () => {
       message: 'The desktop application updates this agent service',
       data: { reason: 'desktop' },
     };
+    const sharedConversation = {
+      shareId: 'A'.repeat(32),
+      title: 'A discussion',
+      rootSourceId: 'root',
+      sources: [{ sourceId: 'root', conversationId: 'session-1' }],
+      conversationCount: 1,
+      revision: 1,
+      deployment: 'a'.repeat(64),
+      createdAt: '2026-10-08T00:00:00.000Z',
+      updatedAt: '2026-10-08T00:00:00.000Z',
+      url: null,
+    };
     const machines = {
       ok: true,
       type: 'lan/machines',
@@ -803,6 +832,9 @@ describe('what the members of a LAN ask of each other', () => {
       { ok: true, type: 'lan/github', result: { own: null, lan: { login: null } } },
       { ok: true, type: 'lan/github-token', result: { login: 'octocat' } },
       { ok: true, type: 'lan/github-token', result: { login: null } },
+      { ok: true, type: 'lan/shares', result: { shares: [sharedConversation] } },
+      { ok: true, type: 'lan/share-publish', result: { share: sharedConversation } },
+      { ok: true, type: 'lan/share-revoke', result: { revoked: true } },
       {
         ok: true,
         type: 'lan/forward',
@@ -830,6 +862,7 @@ describe('what the members of a LAN ask of each other', () => {
       all(false)
     );
     expect(answers({ ok: true, type: 'lan/github-token', result: {} })).toEqual(all(false));
+    expect(answers({ ok: true, type: 'lan/share-revoke', result: {} })).toEqual(all(false));
     expect(
       answers({
         ok: true,
