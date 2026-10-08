@@ -4,6 +4,7 @@ import { withHistoryPort } from '../../../tests/history-port-fixture';
 import {
   ScheduleRepository,
   ScheduleDefinitionSchema,
+  SCHEDULES_PROTOCOL_VERSION,
   type ScheduleCommand,
   type ScheduleRepositoryPort,
 } from '@lody/shared';
@@ -82,7 +83,7 @@ async function fixture() {
                   meta: {
                     id: 'machine',
                     ownerUserId: 'owner',
-                    protocolCapabilities: { schedules: 1 },
+                    protocolCapabilities: { schedules: SCHEDULES_PROTOCOL_VERSION },
                   },
                 }
               : id === 'agent-agent' && agentPresent
