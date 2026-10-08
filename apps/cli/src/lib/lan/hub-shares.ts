@@ -291,7 +291,7 @@ const IMAGE_PATHS: Record<string, LanShareImageKind> = {
   '/_lody/preview': 'preview',
 };
 /** What a link preview says of any share: nothing of the conversation but its title. */
-const PREVIEW_DESCRIPTION = 'A read-only conversation shared from Lody.';
+const PREVIEW_DESCRIPTION = 'A read-only conversation shared from Lody LAN.';
 
 const HTML_ESCAPES: Record<string, string> = {
   '&': '&amp;',
@@ -316,7 +316,7 @@ function readerPage(page: {
   /** Whether the picture is one a member chose, which previews show large. */
   largePreview: boolean;
 }): string {
-  const title = `${page.title || 'Shared conversation'} · Lody`;
+  const title = `${page.title || 'Shared conversation'} · Lody LAN`;
   const meta = (key: 'name' | 'property', name: string, content: string) =>
     `<meta ${key}="${name}" content="${escapeHtml(content)}">`;
   return [
@@ -328,7 +328,7 @@ function readerPage(page: {
     `<title>${escapeHtml(title)}</title>`,
     `<link rel="icon" href="${escapeHtml(page.icon)}">`,
     meta('property', 'og:type', 'website'),
-    meta('property', 'og:site_name', 'Lody'),
+    meta('property', 'og:site_name', 'Lody LAN'),
     meta('property', 'og:title', title),
     meta('property', 'og:description', PREVIEW_DESCRIPTION),
     ...(page.baseUrl

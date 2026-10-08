@@ -192,11 +192,11 @@ describe('conversations a LAN shares', () => {
       new RegExp(`<meta (?:name|property)="${name}" content="([^"]*)">`).exec(html)?.[1];
 
     let html = await head();
-    const title = 'Fix &lt;the&gt; &quot;clock&quot; &amp; co · Lody';
+    const title = 'Fix &lt;the&gt; &quot;clock&quot; &amp; co · Lody LAN';
     expect(html).toContain(`<title>${title}</title>`);
     expect(html).toContain('<link rel="icon" href="/_lody/icon?v=lody">');
     expect(meta(html, 'og:title')).toBe(title);
-    expect(meta(html, 'og:description')).toBe('A read-only conversation shared from Lody.');
+    expect(meta(html, 'og:description')).toBe('A read-only conversation shared from Lody LAN.');
     // Without a public address, the address the reader came by.
     expect(meta(html, 'og:url')).toBe(`${hub.shareUrl}/s/${share.shareId}`);
     expect(meta(html, 'og:image')).toBe(`${hub.shareUrl}/_lody/preview?v=lody`);

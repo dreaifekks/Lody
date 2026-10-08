@@ -52,13 +52,13 @@ async function open(): Promise<void> {
   const titleOf = (id: string) => conversations.get(id)?.title || strings.untitled;
   const shareTitle = share.title || titleOf(share.manifest.rootConversationId);
   // The hub wrote the same title into the page it served.
-  document.title = `${shareTitle} · Lody`;
+  document.title = `${shareTitle} · Lody LAN`;
 
   const header = document.createElement('header');
   const brand = Object.assign(document.createElement('div'), { className: 'brand' });
   const tile = Object.assign(document.createElement('span'), { className: 'tile' });
   tile.append(Object.assign(document.createElement('img'), { src: LODY_ICON_PATH, alt: '' }));
-  brand.append(tile, 'Lody');
+  brand.append(tile, 'Lody LAN');
   const title = Object.assign(document.createElement('h1'), { textContent: shareTitle });
   const updated = Object.assign(document.createElement('p'), {
     className: 'meta',

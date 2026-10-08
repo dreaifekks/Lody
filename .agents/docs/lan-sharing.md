@@ -98,7 +98,7 @@ its place. The page leads with Lody's mark. The CLI build copies the page and
 the icon beside its bundle, where the hub reads them.
 
 **Page head.** The hub writes the head of `/s/<id>` itself, since a link
-preview runs no script: the title (`<title> · Lody`), the favicon, and Open
+preview runs no script: the title (`<title> · Lody LAN`), the favicon, and Open
 Graph and Twitter tags. `og:url` and `og:image` are absolute, on the public
 address, or else the address the request came by; the description is a fixed
 sentence, so a preview shows nothing of the conversation but its title. The
