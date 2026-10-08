@@ -16,7 +16,12 @@ import {
 } from '@lody/shared/electron-ipc'
 import { measureLanHubLatency, probeLanHub } from '@lody/shared/node/lan-hub'
 import type { LanHubStore } from '@lody/shared/node/lan-hub-store'
-import { LanShareIdSchema, LanShareSourceSchema } from '@lody/shared/lan-share'
+import {
+  LAN_SHARE_IMAGE_MAX_BYTES,
+  LanShareIdSchema,
+  LanShareImageKindSchema,
+  LanShareSourceSchema
+} from '@lody/shared/lan-share'
 import type { LocalProjectControlResponse, WorkspaceId } from '@lody/shared'
 import { z } from 'zod'
 import { assertProductWindowSender } from '../assert-sender'
@@ -55,6 +60,19 @@ const PublishShareInputSchema = z
   .strict()
 
 export type PublishLanShareInput = z.input<typeof PublishShareInputSchema>
+
+/** An image of the LAN's share pages the window read, or `null` to use Lody's again. */
+const ShareImageInputSchema = z
+  .object({
+    workspaceId: z.string().min(1),
+    kind: LanShareImageKindSchema,
+    bytes: BytesSchema.nullable()
+  })
+  .strict()
+  .refine(
+    (input) =>
+      input.bytes === null || input.bytes.byteLength <= LAN_SHARE_IMAGE_MAX_BYTES[input.kind]
+  )
 
 /**
  * The LANs of this installation. A summary never carries a credential; only
@@ -144,6 +162,39 @@ export class LanIpc extends IpcService {
         workspaceId: request.workspaceId as WorkspaceId,
         directory
       })
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  /**
+   * Hands an image of the share pages to the agent service of this machine,
+   * which gives it to the LAN's hub; as a file, as a share package goes.
+   */
+  @IpcMethod()
+  async setShareImage(input: unknown): Promise<LocalProjectControlResponse> {
+    assertProductWindowSender(getIpcContext().event)
+    const parsed = ShareImageInputSchema.safeParse(input)
+    if (!parsed.success) {
+      return {
+        ok: false,
+        type: 'lan/share-image',
+        error: 'invalid_request',
+        message: INVALID_INPUT.message
+      }
+    }
+    const { workspaceId, kind, bytes } = parsed.data
+    const request = {
+      type: 'lan/share-image' as const,
+      workspaceId: workspaceId as WorkspaceId,
+      kind
+    }
+    if (bytes === null) return await sendLocalProjectControl({ ...request, path: null })
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lody-lan-share-image-'))
+    try {
+      const filePath = path.join(directory, kind)
+      await fs.writeFile(filePath, toBuffer(bytes))
+      return await sendLocalProjectControl({ ...request, path: filePath })
     } finally {
       await fs.rm(directory, { recursive: true, force: true }).catch(() => undefined)
     }

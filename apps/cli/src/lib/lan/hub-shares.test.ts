@@ -20,7 +20,15 @@ import {
   readLanHubSharesCopy,
   writeLanHubSharesCopy,
 } from './hub-shares';
-import { listLanSharedConversations, publishLanShare, revokeLanShare } from './lan-shares';
+import {
+  LanShareError,
+  listLanSharedConversations,
+  publishLanShare,
+  readLanShareSettings,
+  revokeLanShare,
+  setLanShareImage,
+  setLanSharePublicUrl,
+} from './lan-shares';
 
 /** Stands in for the Streams server; it records what reached it. */
 async function startFakeStreams() {
@@ -49,9 +57,19 @@ async function startFakeStreams() {
   return { upstream, seen };
 }
 
-const READER = { script: Buffer.from('/* reader */'), style: Buffer.from('/* style */') };
+const READER = {
+  script: Buffer.from('/* reader */'),
+  style: Buffer.from('/* style */'),
+  icon: Buffer.from('lody icon'),
+};
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 4, 5, 6]);
 
-async function capture(text: string, extra: string[] = []): Promise<PreparedSharePackage> {
+async function capture(
+  text: string,
+  extra: string[] = [],
+  title = 'A discussion'
+): Promise<PreparedSharePackage> {
   const history = (body: string) => [
     { id: 'u1', role: 'user', items: [{ type: 'text', text: 'Question?' }] },
     { id: 'a1', role: 'assistant', items: [{ type: 'text', text: body }] },
@@ -59,7 +77,7 @@ async function capture(text: string, extra: string[] = []): Promise<PreparedShar
   return await prepareSharePackage({
     rootSourceId: 'session-root',
     conversations: [
-      { sourceId: 'session-root', title: 'A discussion', history: history(text) },
+      { sourceId: 'session-root', title, history: history(text) },
       ...extra.map((body, index) => ({
         sourceId: `session-child-${index}`,
         title: `Child ${index}`,
@@ -161,6 +179,103 @@ describe('conversations a LAN shares', () => {
     expect(json.deployment).toBe(share.deployment);
     expect(history[1]?.items[0]?.text).toBe('First answer.');
     expect(await listLanSharedConversations(hub)).toEqual([share]);
+  });
+
+  it('writes the head a link preview reads, naming nothing of the conversation but its title', async () => {
+    const share = await publish(await capture('A secret answer.', [], 'Fix <the> "clock" & co'));
+    const head = async () => {
+      const html = await (await read(`/s/${share.shareId}`)).text();
+      return html.slice(0, html.indexOf('</head>'));
+    };
+    const meta = (html: string, name: string) =>
+      new RegExp(`<meta (?:name|property)="${name}" content="([^"]*)">`).exec(html)?.[1];
+
+    let html = await head();
+    const title = 'Fix &lt;the&gt; &quot;clock&quot; &amp; co · Lody';
+    expect(html).toContain(`<title>${title}</title>`);
+    expect(html).toContain('<link rel="icon" href="/_lody/icon?v=lody">');
+    expect(meta(html, 'og:title')).toBe(title);
+    expect(meta(html, 'og:description')).toBe('A read-only conversation shared from Lody.');
+    // Without a public address, the address the reader came by.
+    expect(meta(html, 'og:url')).toBe(`${hub.shareUrl}/s/${share.shareId}`);
+    expect(meta(html, 'og:image')).toBe(`${hub.shareUrl}/_lody/preview?v=lody`);
+    expect(meta(html, 'twitter:card')).toBe('summary');
+    expect(html).not.toContain('A secret answer.');
+    expect(html).not.toContain('Question?');
+
+    await setLanSharePublicUrl(hub, 'https://share.example.com/');
+    html = await head();
+    expect(meta(html, 'og:url')).toBe(`https://share.example.com/s/${share.shareId}`);
+    expect(meta(html, 'og:image')).toBe('https://share.example.com/_lody/preview?v=lody');
+
+    // Lody's icon is the favicon, the preview and the page's mark.
+    for (const pathname of ['/_lody/icon', '/_lody/preview', '/_lody/lody-icon.png']) {
+      const image = await read(pathname);
+      expect(image.headers.get('content-type')).toBe('image/png');
+      expect(Buffer.from(await image.arrayBuffer())).toEqual(READER.icon);
+    }
+  });
+
+  it('keeps the images a member sets, refuses what is not one, and takes them back', async () => {
+    const share = await publish(await capture('First answer.'));
+    const file = (name: string, bytes: Buffer) => {
+      const filePath = path.join(root, name);
+      fs.writeFileSync(filePath, bytes);
+      return filePath;
+    };
+    const bytesOf = async (pathname: string) => {
+      const image = await read(pathname);
+      return {
+        type: image.headers.get('content-type'),
+        bytes: Buffer.from(await image.arrayBuffer()),
+      };
+    };
+    expect(await readLanShareSettings(hub)).toEqual({
+      publicUrl: null,
+      hubUrl: hub.shareUrl,
+      icon: false,
+      preview: false,
+    });
+
+    await setLanShareImage(hub, 'icon', file('icon.png', PNG));
+    expect(await readLanShareSettings(hub)).toMatchObject({ icon: true, preview: false });
+    expect(await bytesOf('/_lody/icon')).toEqual({ type: 'image/png', bytes: PNG });
+    // A preview nobody set shows the icon; the page's mark stays Lody's.
+    expect(await bytesOf('/_lody/preview')).toEqual({ type: 'image/png', bytes: PNG });
+    expect((await bytesOf('/_lody/lody-icon.png')).bytes).toEqual(READER.icon);
+    let html = await (await read(`/s/${share.shareId}`)).text();
+    expect(html).toMatch(/<link rel="icon" href="\/_lody\/icon\?v=[a-f0-9]{12}">/);
+    expect(html).toContain('<meta name="twitter:card" content="summary">');
+
+    await setLanShareImage(hub, 'preview', file('preview.jpg', JPEG));
+    expect(await bytesOf('/_lody/preview')).toEqual({ type: 'image/jpeg', bytes: JPEG });
+    html = await (await read(`/s/${share.shareId}`)).text();
+    expect(html).toContain('<meta name="twitter:card" content="summary_large_image">');
+
+    // An SVG can carry script; neither the member nor the hub takes one.
+    const svg = file('icon.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'));
+    await expect(setLanShareImage(hub, 'icon', svg)).rejects.toMatchObject({ status: 415 });
+    const large = file('large.png', Buffer.concat([PNG, Buffer.alloc(2 * 1024 * 1024)]));
+    await expect(setLanShareImage(hub, 'preview', large)).rejects.toBeInstanceOf(LanShareError);
+    const sent = await fetch(`${hub.url}/lan/shares/images/preview`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${hub.token}` },
+      body: fs.readFileSync(large),
+    });
+    expect(sent.status).toBe(413);
+    expect(await bytesOf('/_lody/preview')).toEqual({ type: 'image/jpeg', bytes: JPEG });
+    // Members ask for the settings with the credential only.
+    expect((await fetch(`${hub.url}/lan/shares/settings`)).status).toBe(401);
+
+    // The images are objects of the shares, so a new host gets them with the rest.
+    const objects = readLanHubShareFiles(dataDir)?.objects ?? [];
+    expect(objects).toHaveLength(4);
+
+    await setLanShareImage(hub, 'icon', null);
+    await setLanShareImage(hub, 'preview', null);
+    expect(await readLanShareSettings(hub)).toMatchObject({ icon: false, preview: false });
+    expect((await bytesOf('/_lody/icon')).bytes).toEqual(READER.icon);
+    expect(readLanHubShareFiles(dataDir)?.objects).toHaveLength(2);
   });
 
   it('keeps the link through an update and serves the new copy under it', async () => {

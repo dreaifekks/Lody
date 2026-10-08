@@ -64,7 +64,9 @@ member port of the agent service on the same machine), on the same address and
 with the same certificate. That listener knows no credential and has exactly
 these routes: `/s/<id>` (the reader page), `/s/<id>/share.json` (title,
 deployment and manifest), `/s/<id>/d/<deployment>/<object id>` (an object of
-that manifest) and the page's two assets under `/_lody/`. Everything else,
+that manifest), the page's script and style, Lody's icon (`/_lody/lody-icon.png`)
+and the pages' favicon and preview picture (`/_lody/icon`, `/_lody/preview`)
+under `/_lody/`. Everything else,
 `/ds/` included, answers 404, so a tunnel pointed at this port can reach
 nothing else of the hub; the gate, for its part, serves no `/s/` route. The
 id is 24 random bytes. Answers are `no-store`, `noindex`, never framed, and
@@ -73,12 +75,27 @@ in a conversation loads nothing from elsewhere; an object answers with
 `sandbox`. The reader (`packages/lan-share-reader`) is a small page of its
 own, no part of the desktop: it renders the messages as Markdown (micromark,
 which drops raw HTML and unsafe link targets) and lists the conversations
-when there are several. A finished turn reads like the desktop's: its answer
-shows (with earlier text of 300 characters or with structure), and the
-thinking, tool calls and short narration before it fold into one "Worked for
-…" row, or a step count when the history holds no duration; opened, each step
-returns to its place and stays folded on its own. The CLI build copies it
-beside its bundle, where the hub reads it.
+when there are several. It reads like the desktop's share page. A run of
+tool calls is one folded row that says what it did ("Ran 3 commands · Edited
+1 file", counted as the desktop counts); thinking is counted but never shown.
+A finished turn shows its answer (with earlier text of 300 characters or with
+structure), and the work before it folds into one "Worked for …" row, or a
+step count when the history holds no duration; opened, each group returns to
+its place. The page leads with Lody's mark. The CLI build copies the page and
+the icon beside its bundle, where the hub reads them.
+
+**Page head.** The hub writes the head of `/s/<id>` itself, since a link
+preview runs no script: the title (`<title> · Lody`), the favicon, and Open
+Graph and Twitter tags. `og:url` and `og:image` are absolute, on the public
+address, or else the address the request came by; the description is a fixed
+sentence, so a preview shows nothing of the conversation but its title. The
+favicon and the preview picture are Lody's icon until a member sets its own
+in Settings > Share management (`lan/share-image`, through the shell as a
+file, then `PUT /lan/shares/images/icon|preview`); a preview a member did not
+set shows their icon. The hub reads the type from the bytes and takes PNG,
+JPEG or WebP, ICO for an icon, never SVG (it can carry script), up to 256 KB
+for an icon and 2 MB for a preview. The images are objects named in
+`index.json`, so they follow the hub with the shares; `DELETE` takes one back.
 
 **Following the hub.** `shares/` travels with the hub. A take-over asks the
 current host for it (`/lan/handover?shares=1`) after the other files, so a
@@ -91,7 +108,9 @@ host. The standby copies it after each copy of the database
 copy; a failover starts the new hub with them. A hub that hands over, moved
 or was superseded serves no share, so a link revoked on the new hub does not
 live on at the old address. The public address of the links,
-`lody lan share-url <url>`, is kept in `index.json` too; without one, a link
+set with `lody lan share-url <url>` or in Settings > Share management
+(`lan/share-settings`, which reads it and the hub's own address from
+`GET /lan/shares/settings`), is kept in `index.json` too; without one, a link
 names the address of the hub with the share port. A tunnel has to follow the
 hub to its new machine; the links stay the same once it does.
 

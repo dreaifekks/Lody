@@ -48,6 +48,33 @@ main {
   padding: 32px 20px 64px;
 }
 
+/* The product mark, as the desktop's share page leads its header: the icon's
+   own black tile whatever the appearance. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 20px;
+  font-size: 14px;
+  letter-spacing: -0.025em;
+}
+
+.tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: #0d0d0f;
+  box-shadow: 0 0 0 1px color-mix(in oklab, transparent, var(--text) 10%);
+}
+
+.tile img {
+  width: 18px;
+  height: 18px;
+}
+
 header h1 {
   margin: 0;
   font-size: 22px;

@@ -15,7 +15,13 @@ import type {
   SessionMeta,
   WorkspaceId,
 } from '@lody/shared';
-import type { LanSharedConversation } from '@lody/shared/lan-share';
+import {
+  LAN_SHARE_IMAGE_MAX_BYTES,
+  sniffLanShareImage,
+  type LanSharedConversation,
+  type LanShareImageKind,
+  type LanShareSettingsResult,
+} from '@lody/shared/lan-share';
 import {
   mapShareConcurrent,
   prepareSharePackage,
@@ -300,6 +306,86 @@ export async function revokeLanShare(workspaceId: string, shareId: string): Prom
   });
   await refreshLanShares(workspaceId);
   if (!response?.ok) throw failure(response);
+}
+
+/** Why a change of the share pages' settings was refused, as the window words it. */
+export type LanShareSettingsErrorCode = 'too_large' | 'unsupported' | 'invalid_address' | 'failed';
+
+export class LanShareSettingsError extends Error {
+  constructor(readonly code: LanShareSettingsErrorCode) {
+    super(code);
+    this.name = 'LanShareSettingsError';
+  }
+}
+
+function settingsResult(response: LocalProjectControlResponse | null | undefined) {
+  if (
+    response?.ok &&
+    (response.type === 'lan/share-settings' || response.type === 'lan/share-image')
+  )
+    return response.result;
+  const status =
+    response && !response.ok && typeof response.data === 'object' && response.data !== null
+      ? (response.data as { status?: unknown }).status
+      : null;
+  throw new LanShareSettingsError(
+    status === 413
+      ? 'too_large'
+      : status === 415
+        ? 'unsupported'
+        : status === 400 && response?.type === 'lan/share-settings'
+          ? 'invalid_address'
+          : 'failed'
+  );
+}
+
+/** The settings of the share pages of a workspace's LAN. */
+export async function readLanShareSettings(workspaceId: string): Promise<LanShareSettingsResult> {
+  return settingsResult(
+    await control()
+      ?.control({
+        type: 'lan/share-settings',
+        machineId: THIS_MACHINE,
+        workspaceId: workspaceId as WorkspaceId,
+      })
+      .catch(() => null)
+  );
+}
+
+/** Sets where readers reach the shares, or `null` for the hub's own address; the links follow. */
+export async function saveLanSharePublicUrl(
+  workspaceId: string,
+  publicUrl: string | null
+): Promise<LanShareSettingsResult> {
+  const response = await control()
+    ?.control({
+      type: 'lan/share-settings',
+      machineId: THIS_MACHINE,
+      workspaceId: workspaceId as WorkspaceId,
+      publicUrl,
+    })
+    .catch(() => null);
+  const result = settingsResult(response);
+  await refreshLanShares(workspaceId);
+  return result;
+}
+
+/**
+ * Gives the hub an image of its share pages, or `null` for Lody's icon again.
+ * What the hub would refuse is refused here, before it is sent.
+ */
+export async function saveLanShareImage(
+  workspaceId: string,
+  kind: LanShareImageKind,
+  bytes: Uint8Array | null
+): Promise<LanShareSettingsResult> {
+  if (bytes) {
+    if (bytes.byteLength > LAN_SHARE_IMAGE_MAX_BYTES[kind])
+      throw new LanShareSettingsError('too_large');
+    if (!sniffLanShareImage(bytes, kind)) throw new LanShareSettingsError('unsupported');
+  }
+  const setShareImage = isElectronRenderer() ? getIpcServices()?.lan.setShareImage : undefined;
+  return settingsResult(await setShareImage?.({ workspaceId, kind, bytes }).catch(() => null));
 }
 
 /** What the upstream share dialog renders, for a conversation of a LAN workspace. */

@@ -6,14 +6,19 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  LAN_SHARES_IMAGES_PATH,
   LAN_SHARES_OBJECTS_PATH,
   LAN_SHARES_PATH,
   LAN_SHARES_SETTINGS_PATH,
+  LAN_SHARE_IMAGE_MAX_BYTES,
+  LanShareHubSettingsSchema,
   LanShareListSchema,
   LanShareSchema,
   formatLanShareUrl,
   resolveLanShareBaseUrl,
+  type LanShareImageKind,
   type LanShareList,
+  type LanShareSettingsResult,
   type LanShareSource,
   type LanSharedConversation,
 } from '@lody/shared/lan-share';
@@ -65,6 +70,13 @@ async function callHub(
   // A hub of a build without shares forwards the route to its Streams server.
   if (response.status === 404 && route === LAN_SHARES_PATH) {
     throw new LanShareError('The hub of this LAN runs a build without shares; update it', 404);
+  }
+  // One of a build before the images and the settings read refuses those routes.
+  if (
+    response.status === 404 &&
+    (route === LAN_SHARES_SETTINGS_PATH || route.startsWith(`${LAN_SHARES_IMAGES_PATH}/`))
+  ) {
+    throw new LanShareError('The hub of this LAN runs an older build; update it', 404);
   }
   throw new LanShareError(`The hub refused: ${reason}`, response.status);
 }
@@ -192,4 +204,51 @@ export async function setLanSharePublicUrl(
   );
   const body = (await response.json()) as { publicUrl?: unknown };
   return typeof body.publicUrl === 'string' ? body.publicUrl : null;
+}
+
+/** The settings of the share pages as the window shows them: no credential, addresses resolved. */
+export async function readLanShareSettings(
+  hub: Hub,
+  options: Options = {}
+): Promise<LanShareSettingsResult> {
+  const response = await callHub(hub, LAN_SHARES_SETTINGS_PATH, { method: 'GET' }, options);
+  const settings = LanShareHubSettingsSchema.parse(await response.json());
+  return {
+    publicUrl: settings.publicUrl,
+    hubUrl: resolveLanShareBaseUrl(hub.url, { sharePort: settings.sharePort, publicUrl: null }),
+    icon: settings.icon !== null,
+    preview: settings.preview !== null,
+  };
+}
+
+/** Gives the hub the image in `filePath` for its share pages, or takes it back with `null`. */
+export async function setLanShareImage(
+  hub: Hub,
+  kind: LanShareImageKind,
+  filePath: string | null,
+  options: Options = {}
+): Promise<void> {
+  const route = `${LAN_SHARES_IMAGES_PATH}/${kind}`;
+  if (filePath === null) {
+    await callHub(hub, route, { method: 'DELETE' }, options);
+    return;
+  }
+  const { size } = await fs.promises.stat(filePath);
+  // The hub refuses it too; this spares sending what it would refuse.
+  if (size > LAN_SHARE_IMAGE_MAX_BYTES[kind]) {
+    throw new LanShareError(
+      `The image is larger than ${LAN_SHARE_IMAGE_MAX_BYTES[kind] / 1024} KB`,
+      413
+    );
+  }
+  await callHub(
+    hub,
+    route,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: await fs.promises.readFile(filePath),
+    },
+    options
+  );
 }

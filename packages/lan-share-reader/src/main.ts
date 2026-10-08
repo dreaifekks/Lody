@@ -10,6 +10,9 @@ import {
   type RenderContext,
 } from './render';
 
+/** The packaged Lody icon, which the hub serves beside this script. */
+const LODY_ICON_PATH = '/_lody/lody-icon.png';
+
 type Share = { title: string; updatedAt: string; deployment: string; manifest: Manifest };
 
 const strings = navigator.language.toLowerCase().startsWith('zh') ? STRINGS.zh : STRINGS.en;
@@ -47,15 +50,21 @@ async function open(): Promise<void> {
   const conversations = new Map(share.manifest.conversations.map((entry) => [entry.id, entry]));
   const histories = new Map<string, Promise<Json>>();
   const titleOf = (id: string) => conversations.get(id)?.title || strings.untitled;
-  document.title = share.title || titleOf(share.manifest.rootConversationId);
+  const shareTitle = share.title || titleOf(share.manifest.rootConversationId);
+  // The hub wrote the same title into the page it served.
+  document.title = `${shareTitle} · Lody`;
 
   const header = document.createElement('header');
-  const title = Object.assign(document.createElement('h1'), { textContent: document.title });
+  const brand = Object.assign(document.createElement('div'), { className: 'brand' });
+  const tile = Object.assign(document.createElement('span'), { className: 'tile' });
+  tile.append(Object.assign(document.createElement('img'), { src: LODY_ICON_PATH, alt: '' }));
+  brand.append(tile, 'Lody');
+  const title = Object.assign(document.createElement('h1'), { textContent: shareTitle });
   const updated = Object.assign(document.createElement('p'), {
     className: 'meta',
     textContent: `${strings.updated} ${new Date(share.updatedAt).toLocaleString()}`,
   });
-  header.append(title, updated);
+  header.append(brand, title, updated);
 
   const order = orderConversations(share.manifest);
   const nav = document.createElement('nav');

@@ -13,11 +13,16 @@ import {
   LAN_SHARES_COPY_PATH,
   LAN_SHARES_PATH,
   LAN_SHARES_SETTINGS_PATH,
+  LAN_SHARE_IMAGE_MAX_BYTES,
   LanShareCommitSchema,
   LanShareIdSchema,
+  LanShareImageKindSchema,
   LanShareSettingsSchema,
   normalizeLanSharePublicUrl,
+  sniffLanShareImage,
   type LanShare,
+  type LanShareHubSettings,
+  type LanShareImageKind,
   type LanShareList,
   type LanShareSource,
 } from '@lody/shared/lan-share';
@@ -59,11 +64,21 @@ const StoredShareSchema = z
   .strict();
 type StoredShare = z.infer<typeof StoredShareSchema>;
 
+const StoredImageSchema = z
+  .object({ sha256: SHA256_SCHEMA, mediaType: z.string(), sizeBytes: z.number().int() })
+  .strict();
+type StoredImage = z.infer<typeof StoredImageSchema>;
+
 const IndexSchema = z
   .object({
     version: z.literal(1),
     publicUrl: z.string().nullable(),
     shares: z.record(LanShareIdSchema, StoredShareSchema),
+    /** The images a member set for the share pages, kept as objects. */
+    images: z
+      .object({ icon: StoredImageSchema.optional(), preview: StoredImageSchema.optional() })
+      .strict()
+      .optional(),
   })
   .strict();
 type Index = z.infer<typeof IndexSchema>;
@@ -115,6 +130,7 @@ function liveDeployments(share: StoredShare, now: number): string[] {
 /** Every object the shares of `index` still need, manifests included. */
 function referencedObjects(directory: string, index: Index, now: number): Set<string> {
   const referenced = new Set<string>();
+  for (const image of Object.values(index.images ?? {})) referenced.add(image.sha256);
   for (const share of Object.values(index.shares)) {
     for (const deployment of liveDeployments(share, now)) {
       referenced.add(deployment);
@@ -195,11 +211,12 @@ async function digestFile(filePath: string): Promise<string> {
   return hash.digest('hex');
 }
 
-/** The reader page's script and style, as a build carries them beside its bundle. */
-export type LanShareReaderAssets = { script: Buffer; style: Buffer };
+/** The reader page's script, style and the Lody icon, as a build carries them beside its bundle. */
+export type LanShareReaderAssets = { script: Buffer; style: Buffer; icon?: Buffer };
 
 const READER_SCRIPT_FILE_NAME = 'lan-share-reader.js';
 const READER_STYLE_FILE_NAME = 'lan-share-reader.css';
+const READER_ICON_FILE_NAME = 'lan-share-reader-icon.png';
 
 /**
  * Beside the entry the hub was started from, beside or above the chunk this
@@ -215,10 +232,15 @@ export function loadLanShareReaderAssets(): LanShareReaderAssets | null {
   ];
   for (const directory of directories) {
     try {
-      return {
-        script: fs.readFileSync(path.join(directory, READER_SCRIPT_FILE_NAME)),
-        style: fs.readFileSync(path.join(directory, READER_STYLE_FILE_NAME)),
-      };
+      const script = fs.readFileSync(path.join(directory, READER_SCRIPT_FILE_NAME));
+      const style = fs.readFileSync(path.join(directory, READER_STYLE_FILE_NAME));
+      let icon: Buffer | undefined;
+      try {
+        icon = fs.readFileSync(path.join(directory, READER_ICON_FILE_NAME));
+      } catch {
+        /* a build of the reader from before the icon */
+      }
+      return { script, style, ...(icon ? { icon } : {}) };
     } catch {
       /* not carried here */
     }
@@ -228,20 +250,83 @@ export function loadLanShareReaderAssets(): LanShareReaderAssets | null {
 
 const READER_SCRIPT_PATH = '/_lody/share-reader.js';
 const READER_STYLE_PATH = '/_lody/share-reader.css';
-const READER_HTML = `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lody</title>
-<link rel="stylesheet" href="${READER_STYLE_PATH}">
-</head>
-<body>
-<main id="app"></main>
-<script src="${READER_SCRIPT_PATH}"></script>
-</body>
-</html>
-`;
+/** The page's own mark, always Lody's. */
+const LODY_ICON_PATH = '/_lody/lody-icon.png';
+/** The favicon and the link preview's picture: a member's, or Lody's icon. */
+const IMAGE_PATHS: Record<string, LanShareImageKind> = {
+  '/_lody/icon': 'icon',
+  '/_lody/preview': 'preview',
+};
+/** What a link preview says of any share: nothing of the conversation but its title. */
+const PREVIEW_DESCRIPTION = 'A read-only conversation shared from Lody.';
+
+const HTML_ESCAPES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+const escapeHtml = (text: string) => text.replace(/[&<>"']/gu, (char) => HTML_ESCAPES[char] ?? '');
+
+/**
+ * The page of a share, its head written here: a link preview reads the
+ * title, picture and address without running the page's script.
+ */
+function readerPage(page: {
+  title: string;
+  /** Where readers reach the hub, or `null` when it cannot be told. */
+  baseUrl: string | null;
+  shareId: string;
+  icon: string;
+  preview: string;
+  /** Whether the picture is one a member chose, which previews show large. */
+  largePreview: boolean;
+}): string {
+  const title = `${page.title || 'Shared conversation'} · Lody`;
+  const meta = (key: 'name' | 'property', name: string, content: string) =>
+    `<meta ${key}="${name}" content="${escapeHtml(content)}">`;
+  return [
+    '<!doctype html>',
+    '<html>',
+    '<head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    `<title>${escapeHtml(title)}</title>`,
+    `<link rel="icon" href="${escapeHtml(page.icon)}">`,
+    meta('property', 'og:type', 'website'),
+    meta('property', 'og:site_name', 'Lody'),
+    meta('property', 'og:title', title),
+    meta('property', 'og:description', PREVIEW_DESCRIPTION),
+    ...(page.baseUrl
+      ? [
+          meta('property', 'og:url', `${page.baseUrl}/s/${page.shareId}`),
+          meta('property', 'og:image', `${page.baseUrl}${page.preview}`),
+        ]
+      : []),
+    meta('name', 'twitter:card', page.largePreview ? 'summary_large_image' : 'summary'),
+    `<link rel="stylesheet" href="${READER_STYLE_PATH}">`,
+    '</head>',
+    '<body>',
+    '<main id="app"></main>',
+    `<script src="${READER_SCRIPT_PATH}"></script>`,
+    '</body>',
+    '</html>',
+    '',
+  ].join('\n');
+}
+
+/** The origin a request reached, for a hub that was told no public address. */
+function requestOrigin(request: http.IncomingMessage): string | null {
+  const host = request.headers.host;
+  if (!host) return null;
+  try {
+    const url = new URL(`http://${host}`);
+    return url.host === host.toLowerCase() ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Every answer of the share listener: private, unindexed, never framed. */
 const READER_HEADERS = {
@@ -262,6 +347,7 @@ const SHARE_JSON_ROUTE = /^\/s\/([A-Za-z0-9_-]{32})\/share\.json$/u;
 const OBJECT_ROUTE = /^\/s\/([A-Za-z0-9_-]{32})\/d\/([a-f0-9]{64})\/([a-zA-Z0-9_-]{1,128})$/u;
 const MANAGE_OBJECT_ROUTE = /^\/lan\/shares\/objects\/([a-f0-9]{64})$/u;
 const MANAGE_SHARE_ROUTE = /^\/lan\/shares\/([A-Za-z0-9_-]{32})$/u;
+const MANAGE_IMAGE_ROUTE = /^\/lan\/shares\/images\/([a-z]+)$/u;
 
 /** The groups of a route pattern, or `null` when the route is another one. */
 function groups(pattern: RegExp, route: string): string[] | null {
@@ -504,6 +590,41 @@ export function createLanHubShares(options: {
       return publicUrl;
     });
 
+  const settings = (): LanShareHubSettings => {
+    const image = (stored: StoredImage | undefined) =>
+      stored ? { mediaType: stored.mediaType, sizeBytes: stored.sizeBytes } : null;
+    return {
+      publicUrl: index.publicUrl,
+      sharePort: options.sharePort(),
+      icon: image(index.images?.icon),
+      preview: image(index.images?.preview),
+    };
+  };
+
+  /** Keeps `bytes` as the `kind` image of the share pages, or takes it back with `null`. */
+  const setImage = (kind: LanShareImageKind, bytes: Buffer | null) =>
+    exclusive(() => {
+      const images = { ...index.images };
+      if (bytes) {
+        const mediaType = sniffLanShareImage(bytes, kind);
+        if (!mediaType) throw new HttpError(415, 'a PNG, JPEG or WebP image is required');
+        const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+        const target = objectPath(directory, sha256);
+        if (!fs.existsSync(target)) {
+          fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+          fs.writeFileSync(`${target}.tmp`, bytes, { mode: 0o600 });
+          fs.renameSync(`${target}.tmp`, target);
+        }
+        images[kind] = { sha256, mediaType, sizeBytes: bytes.length };
+      } else {
+        delete images[kind];
+      }
+      const next: Index = { ...index, images };
+      writeIndex(directory, next);
+      index = next;
+      return settings();
+    });
+
   const handle = async (
     request: http.IncomingMessage,
     response: http.ServerResponse
@@ -529,6 +650,30 @@ export function createLanHubShares(options: {
       if (route === LAN_SHARES_PATH && request.method === 'POST') {
         const share = await commit(await readJson(request, COMMIT_BODY_MAX_BYTES));
         sendJson(response, 200, share);
+        void collect().catch(() => undefined);
+        return;
+      }
+      if (route === LAN_SHARES_SETTINGS_PATH && request.method === 'GET') {
+        sendJson(response, 200, settings());
+        return;
+      }
+      const [imageKind] = groups(MANAGE_IMAGE_ROUTE, route) ?? [];
+      if (imageKind) {
+        const kind = LanShareImageKindSchema.safeParse(imageKind);
+        if (!kind.success) throw new HttpError(404, 'not found');
+        if (request.method === 'PUT') {
+          const max = LAN_SHARE_IMAGE_MAX_BYTES[kind.data];
+          // Said before reading, so a member hears why rather than a cut connection.
+          if (Number(request.headers['content-length'] ?? 0) > max) {
+            request.resume();
+            throw new HttpError(413, 'image too large');
+          }
+          const bytes = await readBody(request, max);
+          sendJson(response, 200, await setImage(kind.data, bytes));
+          return;
+        }
+        if (request.method !== 'DELETE') throw new HttpError(405, 'method not allowed');
+        sendJson(response, 200, await setImage(kind.data, null));
         void collect().catch(() => undefined);
         return;
       }
@@ -599,6 +744,36 @@ export function createLanHubShares(options: {
       response.writeHead(status, { ...READER_HEADERS, ...headers });
       response.end(request.method === 'HEAD' ? undefined : body);
     };
+    const imageKind = IMAGE_PATHS[route];
+    if (route === LODY_ICON_PATH || imageKind) {
+      // A preview a member did not set shows their icon, else Lody's.
+      const stored =
+        imageKind === 'preview'
+          ? (index.images?.preview ?? index.images?.icon)
+          : imageKind
+            ? index.images?.icon
+            : undefined;
+      let bytes: Buffer | undefined;
+      try {
+        bytes = stored ? fs.readFileSync(objectPath(directory, stored.sha256)) : undefined;
+      } catch {
+        bytes = undefined;
+      }
+      bytes ??= readerAssets()?.icon;
+      if (!bytes) {
+        notFound(response);
+        return;
+      }
+      send(
+        200,
+        {
+          'Content-Type': stored && bytes !== readerAssets()?.icon ? stored.mediaType : 'image/png',
+          'Content-Security-Policy': OBJECT_POLICY,
+        },
+        bytes
+      );
+      return;
+    }
     if (route === READER_SCRIPT_PATH || route === READER_STYLE_PATH) {
       const loaded = readerAssets();
       if (!loaded) {
@@ -622,10 +797,24 @@ export function createLanHubShares(options: {
         notFound(response);
         return;
       }
+      const share = index.shares[pageId];
+      // A query keeps a picture a preview cached from standing for a new one.
+      const version = (kind: LanShareImageKind) => {
+        const stored =
+          kind === 'preview' ? (index.images?.preview ?? index.images?.icon) : index.images?.icon;
+        return `/_lody/${kind}?v=${stored ? stored.sha256.slice(0, 12) : 'lody'}`;
+      };
       send(
         200,
         { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': PAGE_POLICY },
-        READER_HTML
+        readerPage({
+          title: share.title,
+          baseUrl: index.publicUrl ?? requestOrigin(request),
+          shareId: pageId,
+          icon: version('icon'),
+          preview: version('preview'),
+          largePreview: index.images?.preview !== undefined,
+        })
       );
       return;
     }
