@@ -41,6 +41,7 @@ import {
   removeLanHubGitHubConfig,
   writeLanHubGitHubConfig,
 } from '@/lib/lan/hub-github';
+import { callLanHubCredentials } from '@/lib/lan/lan-github-credential';
 import { LAN_PUSH_STATUS_PATH, LAN_PUSH_TEST_PATH } from '@/lib/lan/lan-push-protocol';
 import { listLanShares, setLanSharePublicUrl } from '@/lib/lan/lan-shares';
 import {
@@ -681,37 +682,6 @@ type PushSetupOptions = OutputOptions & {
   dataDir?: string;
 };
 
-/**
- * Sets or removes a credential on the hub of a LAN, which hands it to every
- * member. Only `--data-dir` writes the files of a hub on this machine instead.
- */
-async function callHubCredentials(
-  hub: LanHub,
-  method: 'PUT' | 'DELETE',
-  route: string,
-  body?: unknown
-): Promise<Record<string, unknown>> {
-  const response = await fetch(`${hub.url}${route}`, {
-    method,
-    headers: { Authorization: `Bearer ${hub.token}`, 'Content-Type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    redirect: 'error',
-    signal: AbortSignal.timeout(20_000),
-  });
-  const answer = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (response.status === 404) {
-    throw new Error(
-      `${hub.name} runs a host that takes no credentials from members; update it, or run this on the host with --data-dir`
-    );
-  }
-  if (!response.ok) {
-    throw new Error(
-      `${hub.name} refused: ${typeof answer.error === 'string' ? answer.error : response.status}`
-    );
-  }
-  return answer;
-}
-
 const pushSetupCommand = new Command('setup')
   .description('Give the LAN host an APNs key so it can push to phones')
   .argument('[lan]', 'Name or id of the LAN')
@@ -738,7 +708,7 @@ const pushSetupCommand = new Command('setup')
         writeApnsConfig(path.resolve(options.dataDir), config);
       } else {
         const hub = requireLan(readLanHubSettings(), selector);
-        await callHubCredentials(hub, 'PUT', LAN_HUB_CREDENTIALS_APNS_PATH, config);
+        await callLanHubCredentials(hub, 'PUT', LAN_HUB_CREDENTIALS_APNS_PATH, config);
         where = `${hub.name}`;
       }
       if (options.json) {
@@ -853,7 +823,7 @@ const githubSetupCommand = new Command('setup')
       if (!token) throw new Error('No token was given');
       const { login, userId } = await describeGitHubToken(token);
       if (hub) {
-        await callHubCredentials(hub, 'PUT', LAN_HUB_CREDENTIALS_GITHUB_PATH, {
+        await callLanHubCredentials(hub, 'PUT', LAN_HUB_CREDENTIALS_GITHUB_PATH, {
           token,
           login,
           userId,
@@ -910,7 +880,7 @@ const githubRemoveCommand = new Command('remove')
       const removed = options.dataDir
         ? removeLanHubGitHubConfig(path.resolve(options.dataDir))
         : (
-            await callHubCredentials(
+            await callLanHubCredentials(
               requireLan(readLanHubSettings(), selector),
               'DELETE',
               LAN_HUB_CREDENTIALS_GITHUB_PATH

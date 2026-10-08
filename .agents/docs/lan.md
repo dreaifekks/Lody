@@ -388,7 +388,7 @@ every fifteen seconds; one that does not answer within six seconds says so.
 
 Listing asks nothing of a machine. What a member asks of one is a
 project-control request, and these cross machines: `lan/update-machine`,
-`lan/restart-machine`, `lan/install-agent`, `lan/usage`,
+`lan/restart-machine`, `lan/install-agent`, `lan/usage`, `lan/github`,
 `hosted-config/preview` and `hosted-config/import`. A restart is refused by a
 service nothing would start again (update channel `manual`), and answered
 before the service exits.
@@ -754,6 +754,32 @@ discovery tools and the desktop's pickers offer are the ones the credential
 reads (GitHub's `/user/repos`), with the machine's `gh` login before the
 host's token. There is no personal identity, no per-repository scoping and no
 webhook: the panel refreshes when opened and by polling.
+
+Settings > GitHub of the desktop shows the same, behind the capability
+`localGitHubCredential` where hosted Lody has `githubIntegration`:
+
+```text
+ Settings > GitHub ─ lan/github-token ─▶ agent service ─ GitHub /user, then PUT/DELETE
+   (token in, login out)                 of this machine   /lan/credentials/github ─▶ hub
+                    ─ lan/github ───────▶ every member: its own gh login (and whose),
+                                          the hub's token as it gets it (and whose)
+```
+
+- The token row sets, replaces or removes the hub's token. The token goes from
+  the renderer to this machine's agent service once, which asks GitHub whose it
+  is and hands it to the hub as `lody lan github setup` does; what comes back
+  is the login alone. A token GitHub refuses leaves the hub as it was.
+- Each machine of the LAN says which credential its agents use: its own `gh`
+  login, else the hub's token (its copy while the hub is away), else none.
+  Offline machines are not asked; a machine of an earlier build does not answer.
+- The repositories are the ones the desktop's pickers offer, read with the
+  credential of the desktop (the hub's token first, then its `gh` login).
+
+The entries that open it are "Connect more GitHub projects" in the project
+picker and the empty repository picker of a schedule. "Add a GitHub
+repository" (Settings > Projects, the mobile home) and the GitHub step of
+onboarding stay hidden: a LAN has no registry to add to, and onboarding runs
+before a LAN is joined.
 
 ## Credentials on every member
 

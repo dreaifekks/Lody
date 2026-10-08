@@ -5,6 +5,9 @@ import {
 } from '../hosted-config';
 import {
   LanAgentInstallResultSchema,
+  LAN_GITHUB_TOKEN_MAX,
+  LanGitHubStateSchema,
+  LanGitHubTokenResultSchema,
   LanUsageReportSchema,
   LanMachineUpdateResultSchema,
   LanMachineRestartResultSchema,
@@ -505,8 +508,22 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     );
   }
 
-  if (value.type === 'lan/update-machine' || value.type === 'lan/restart-machine') {
+  if (
+    value.type === 'lan/update-machine' ||
+    value.type === 'lan/restart-machine' ||
+    value.type === 'lan/github'
+  ) {
     return typeof value.workspaceId === 'string';
+  }
+
+  if (value.type === 'lan/github-token') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      (value.token === null ||
+        (typeof value.token === 'string' &&
+          value.token.trim().length > 0 &&
+          value.token.length <= LAN_GITHUB_TOKEN_MAX))
+    );
   }
 
   if (value.type === 'lan/install-agent') {
@@ -700,6 +717,14 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'lan/usage') {
     return LanUsageReportSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/github') {
+    return LanGitHubStateSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/github-token') {
+    return LanGitHubTokenResultSchema.safeParse(value.result).success;
   }
 
   if (value.type === 'lan/machines') {

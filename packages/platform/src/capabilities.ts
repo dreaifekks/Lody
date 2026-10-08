@@ -37,6 +37,12 @@ export const PLATFORM_CAPABILITIES = [
    * with brokered tokens; the local desktop with its machine's own `gh` login.
    */
   'githubPullRequests',
+  /**
+   * The GitHub credentials the machines hold themselves: each machine's own
+   * `gh` login and the one token a LAN's hub keeps for its members, shown and
+   * set from Settings > GitHub. Shown where `githubIntegration` is not.
+   */
+  'localGitHubCredential',
   /** Dispatching work to machines other than the local one. */
   'remoteMachines',
   /** Push notifications / live activity. */
@@ -70,6 +76,7 @@ export function createCapabilitySet(
 /** The open-source local platform: only what the machine backs without a hosted service. */
 export const LOCAL_PLATFORM_CAPABILITIES: PlatformCapabilities = createCapabilitySet([
   'githubPullRequests',
+  'localGitHubCredential',
   'localUsage',
   'lanSharing',
 ]);

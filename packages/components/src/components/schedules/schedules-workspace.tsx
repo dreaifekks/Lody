@@ -551,6 +551,8 @@ function ScheduleEditor({
     | undefined;
   const { openSettings } = useOpenSettings();
   const githubIntegrationAvailable = useAppCapability('githubIntegration');
+  const localGitHubCredentialAvailable = useAppCapability('localGitHubCredential');
+  const githubSettingsAvailable = githubIntegrationAvailable || localGitHubCredentialAvailable;
   const [agent, setAgent] = useState<AgentRunRef | null>(
     document
       ? {
@@ -844,7 +846,7 @@ function ScheduleEditor({
                 )}
                 onAddLocalProject={() => openSettings('projects')}
                 onConnectGitRepo={
-                  githubIntegrationAvailable ? () => openSettings('github') : undefined
+                  githubSettingsAvailable ? () => openSettings('github') : undefined
                 }
               />
             </>

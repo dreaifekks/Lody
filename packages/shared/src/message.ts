@@ -5,6 +5,8 @@ import type {
 } from './hosted-config';
 import type {
   LanAgentInstallResult,
+  LanGitHubState,
+  LanGitHubTokenResult,
   LanMachineColor,
   LanMachineRestartResult,
   LanMachineUpdateResult,
@@ -1041,6 +1043,12 @@ export type LanMemberControlRequest =
       type: 'lan/restart-machine';
       machineId: MachineId;
       workspaceId: WorkspaceId;
+    }
+  | {
+      /** Which GitHub credentials the machine has for the workspace's LAN. */
+      type: 'lan/github';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
     };
 
 export type LocalProjectControlRequest =
@@ -1258,6 +1266,16 @@ export type LocalProjectControlRequest =
       machineId: MachineId;
       workspaceId: WorkspaceId;
       shareId: string;
+    }
+  | {
+      /**
+       * Gives the hub of the workspace's LAN the GitHub token its members use;
+       * `null` takes it back. No answer carries the token.
+       */
+      type: 'lan/github-token';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      token: string | null;
     };
 
 export type LocalProjectControlErrorCode =
@@ -1292,7 +1310,8 @@ type LanMemberControlOkResponse =
   | LocalProjectControlOkResponse<'lan/update-machine', LanMachineUpdateResult>
   | LocalProjectControlOkResponse<'lan/install-agent', LanAgentInstallResult>
   | LocalProjectControlOkResponse<'lan/usage', LanUsageReport>
-  | LocalProjectControlOkResponse<'lan/restart-machine', LanMachineRestartResult>;
+  | LocalProjectControlOkResponse<'lan/restart-machine', LanMachineRestartResult>
+  | LocalProjectControlOkResponse<'lan/github', LanGitHubState>;
 
 /** What a member answers, which is also what a forwarded request brings back. */
 export type LanMemberControlResponse =
@@ -1372,6 +1391,7 @@ export type LocalProjectControlResponse =
   | LocalProjectControlOkResponse<'lan/shares', LanSharesResult>
   | LocalProjectControlOkResponse<'lan/share-publish', { share: LanSharedConversation }>
   | LocalProjectControlOkResponse<'lan/share-revoke', { revoked: boolean }>
+  | LocalProjectControlOkResponse<'lan/github-token', LanGitHubTokenResult>
   | LocalProjectControlErrorResponse;
 
 // ============================================

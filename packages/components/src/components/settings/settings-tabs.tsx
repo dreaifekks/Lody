@@ -212,7 +212,7 @@ export const SETTINGS_TAB_CONFIGS: SettingsTabConfig[] = [
     labelKey: 'settings.tabs.github',
     descriptionKey: 'settings.categories.github.description',
     icon: Github,
-    capability: 'githubIntegration',
+    capability: ['githubIntegration', 'localGitHubCredential'],
     path: '/$workspaceName/settings/github',
   },
   {

@@ -667,6 +667,7 @@ describe('what the members of a LAN ask of each other', () => {
   };
   const usage = { type: 'lan/usage', ...member, sinceMs: 1_700_000_000_000 };
   const restart = { type: 'lan/restart-machine', ...member };
+  const github = { type: 'lan/github', ...member };
 
   it('reads each request the same way at every boundary', () => {
     for (const request of [
@@ -677,6 +678,7 @@ describe('what the members of a LAN ask of each other', () => {
       usage,
       { ...usage, sinceMs: undefined },
       restart,
+      github,
     ]) {
       expect(accepts(request)).toEqual(all(true));
       expect(accepts({ type: 'lan/forward', machineId: 'machine-1', request })).toEqual(all(true));
@@ -697,6 +699,15 @@ describe('what the members of a LAN ask of each other', () => {
     expect(accepts({ type: 'lan/restart-machine', machineId: 'machine-2' })).toEqual(all(false));
     expect(accepts({ ...usage, sinceMs: -1 })).toEqual(all(false));
     expect(accepts({ ...usage, sinceMs: 1.5 })).toEqual(all(false));
+
+    const token = { type: 'lan/github-token', machineId: 'machine-1', workspaceId: 'lw_home' };
+    expect(accepts({ ...token, token: 'github_pat_1' })).toEqual(all(true));
+    expect(accepts({ ...token, token: null })).toEqual(all(true));
+    expect(accepts({ ...token, token: '   ' })).toEqual(all(false));
+    expect(accepts({ ...token, token: 'x'.repeat(1_001) })).toEqual(all(false));
+    expect(accepts({ ...token, token: 'github_pat_1', workspaceId: undefined })).toEqual(
+      all(false)
+    );
   });
 
   it('forwards nothing but what members ask of each other', () => {
@@ -717,6 +728,10 @@ describe('what the members of a LAN ask of each other', () => {
       })
     ).toEqual(all(false));
     expect(forward({ type: 'lan/forward', machineId: 'machine-2', request: update })).toEqual(
+      all(false)
+    );
+    // A token goes to the hub from this machine; no member is handed one.
+    expect(forward({ type: 'lan/github-token', ...member, token: 'github_pat_1' })).toEqual(
       all(false)
     );
     expect(forward(undefined)).toEqual(all(false));
@@ -784,6 +799,15 @@ describe('what the members of a LAN ask of each other', () => {
       { ok: true, type: 'lan/forward', result: { response: refused } },
       { ok: true, type: 'lan/usage', result: { rows: [usageRow] } },
       { ok: true, type: 'lan/restart-machine', result: { outcome: 'started' } },
+      { ok: true, type: 'lan/github', result: { own: { login: 'me' }, lan: null } },
+      { ok: true, type: 'lan/github', result: { own: null, lan: { login: null } } },
+      { ok: true, type: 'lan/github-token', result: { login: 'octocat' } },
+      { ok: true, type: 'lan/github-token', result: { login: null } },
+      {
+        ok: true,
+        type: 'lan/forward',
+        result: { response: { ok: true, type: 'lan/github', result: { own: null, lan: null } } },
+      },
       {
         ok: true,
         type: 'lan/forward',
@@ -802,6 +826,10 @@ describe('what the members of a LAN ask of each other', () => {
     expect(answers({ ok: true, type: 'lan/forward', result: { response: machines } })).toEqual(
       all(false)
     );
+    expect(answers({ ok: true, type: 'lan/github', result: { own: 'me', lan: null } })).toEqual(
+      all(false)
+    );
+    expect(answers({ ok: true, type: 'lan/github-token', result: {} })).toEqual(all(false));
     expect(
       answers({
         ok: true,

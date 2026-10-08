@@ -255,7 +255,10 @@ function resolveLocalProjectControlTimeoutMs(type: LocalProjectControlRequest['t
     type === 'hosted-config/preview' ||
     type === 'hosted-config/import' ||
     // A forwarded request waits for another machine to answer through the hub.
-    type === 'lan/forward'
+    type === 'lan/forward' ||
+    // These ask GitHub and the hub before they answer.
+    type === 'lan/github' ||
+    type === 'lan/github-token'
   ) {
     return LOCAL_PROJECT_CONTROL_LIST_FILES_TIMEOUT_MS
   }

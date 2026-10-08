@@ -68,3 +68,8 @@ export function listLocalGitHubRepositories(
   repositories.catch(() => lists.delete(workspaceId));
   return repositories;
 }
+
+/** Reads the list again next time, for a credential that just changed. */
+export function forgetLocalGitHubRepositories(workspaceId: string): void {
+  lists.delete(workspaceId);
+}

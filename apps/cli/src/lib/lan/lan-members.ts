@@ -10,6 +10,7 @@ import {
   parseLanAgentRuntimes,
   sameLanAgentRuntimes,
   type LanAgentRuntime,
+  type LanGitHubState,
   type LanMachine,
   type LanMachineColor,
   type LanMachines,
@@ -402,9 +403,15 @@ export async function answerLanMemberControl(options: {
   machineId: MachineId;
   control: LanMachineControl;
   usage?: LanUsageSource;
+  /** The GitHub credentials of this machine for the workspace's LAN. */
+  github?: () => Promise<LanGitHubState>;
 }): Promise<LanMemberControlResponse> {
   const { request, workspace, control } = options;
   try {
+    if (request.type === 'lan/github') {
+      if (!options.github) throw new Error('This machine says nothing about GitHub');
+      return { ok: true, type: request.type, result: await options.github() };
+    }
     if (request.type === 'lan/usage') {
       return {
         ok: true,

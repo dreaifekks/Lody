@@ -44,12 +44,14 @@ describe('capabilities', () => {
   it('local set holds only machine-backed capabilities; cloud set covers every capability', () => {
     expect(LOCAL_PLATFORM_CAPABILITIES.list()).toEqual([
       'githubPullRequests',
+      'localGitHubCredential',
       'localUsage',
       'lanSharing',
     ]);
     for (const capability of PLATFORM_CAPABILITIES) {
       expect(LOCAL_PLATFORM_CAPABILITIES.has(capability)).toBe(
         capability === 'githubPullRequests' ||
+          capability === 'localGitHubCredential' ||
           capability === 'localUsage' ||
           capability === 'lanSharing'
       );
@@ -145,6 +147,7 @@ describe('createLocalPlatformProvider', () => {
     expect(provider.sync.mode).toBe('local');
     expect(provider.capabilities.list()).toEqual([
       'githubPullRequests',
+      'localGitHubCredential',
       'localUsage',
       'lanSharing',
     ]);
@@ -187,6 +190,7 @@ describe('createLocalPlatformProvider', () => {
     // Still no capability that needs an account.
     expect(provider.capabilities.list()).toEqual([
       'githubPullRequests',
+      'localGitHubCredential',
       'localUsage',
       'lanSharing',
     ]);

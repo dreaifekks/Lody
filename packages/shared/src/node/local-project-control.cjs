@@ -3,6 +3,8 @@ const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
 // Kept equal to LAN_MACHINE_ALIAS_MAX and LAN_MACHINE_COLORS of lan-control.ts.
 const LAN_MACHINE_ALIAS_MAX = 32;
 const LAN_MACHINE_COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink'];
+// Kept equal to LAN_GITHUB_TOKEN_MAX of lan-control.ts.
+const LAN_GITHUB_TOKEN_MAX = 1000;
 
 const LAN_MEMBER_CONTROL_TYPES = new Set([
   'lan/update-machine',
@@ -11,6 +13,7 @@ const LAN_MEMBER_CONTROL_TYPES = new Set([
   'hosted-config/import',
   'lan/usage',
   'lan/restart-machine',
+  'lan/github',
 ]);
 
 const HOSTED_CONFIG_CATEGORIES = new Set([
@@ -509,9 +512,20 @@ function isLocalProjectControlRequest(value) {
   if (
     value.type === 'hosted-config/preview' ||
     value.type === 'lan/update-machine' ||
-    value.type === 'lan/restart-machine'
+    value.type === 'lan/restart-machine' ||
+    value.type === 'lan/github'
   ) {
     return typeof value.workspaceId === 'string';
+  }
+
+  if (value.type === 'lan/github-token') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      (value.token === null ||
+        (typeof value.token === 'string' &&
+          value.token.trim().length > 0 &&
+          value.token.length <= LAN_GITHUB_TOKEN_MAX))
+    );
   }
 
   if (value.type === 'hosted-config/import') {
@@ -711,6 +725,22 @@ function isLocalProjectControlResponse(value) {
 
   if (value.type === 'lan/restart-machine') {
     return isObjectRecord(value.result) && value.result.outcome === 'started';
+  }
+
+  if (value.type === 'lan/github') {
+    const isAccount = (account) =>
+      account === null ||
+      (isObjectRecord(account) && (account.login === null || typeof account.login === 'string'));
+    return (
+      isObjectRecord(value.result) && isAccount(value.result.own) && isAccount(value.result.lan)
+    );
+  }
+
+  if (value.type === 'lan/github-token') {
+    return (
+      isObjectRecord(value.result) &&
+      (value.result.login === null || typeof value.result.login === 'string')
+    );
   }
 
   if (value.type === 'lan/install-agent') {

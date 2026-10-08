@@ -11,6 +11,9 @@ import {
   LanMachinesSchema,
   LanUsageReportSchema,
   LanMachineRestartResultSchema,
+  LAN_GITHUB_TOKEN_MAX,
+  LanGitHubStateSchema,
+  LanGitHubTokenResultSchema,
 } from './lan-control';
 import { MemoryBindingSchema } from './memory-provider';
 import { LanShareIdSchema, LanShareSchema, LanShareSourceSchema } from './lan-share';
@@ -2448,6 +2451,15 @@ export const LanRestartMachineRequestSchema = z
   })
   .strict();
 
+/** Which GitHub credentials the machine has for the workspace's LAN. */
+export const LanGitHubRequestSchema = z
+  .object({
+    type: z.literal('lan/github'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+  })
+  .strict();
+
 /** What the members of a LAN ask of each other's machines. */
 export const LanMemberControlRequestSchema = z.discriminatedUnion('type', [
   LanUpdateMachineRequestSchema,
@@ -2456,6 +2468,7 @@ export const LanMemberControlRequestSchema = z.discriminatedUnion('type', [
   HostedConfigImportRequestSchema,
   LanUsageRequestSchema,
   LanRestartMachineRequestSchema,
+  LanGitHubRequestSchema,
 ]);
 
 export const LanMachinesRequestSchema = z
@@ -2529,6 +2542,20 @@ export const LanShareRevokeRequestSchema = z
   })
   .strict();
 
+/**
+ * Gives the hub of the workspace's LAN the GitHub token its members use, or
+ * takes it back with `null`. The agent service of this machine asks GitHub
+ * who the token acts as and hands it to the hub; no answer carries it back.
+ */
+export const LanGitHubTokenRequestSchema = z
+  .object({
+    type: z.literal('lan/github-token'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    token: z.string().trim().min(1).max(LAN_GITHUB_TOKEN_MAX).nullable(),
+  })
+  .strict();
+
 export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LocalProjectAddRequestSchema,
   LocalProjectPrepareAddRequestSchema,
@@ -2559,12 +2586,14 @@ export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LanInstallAgentRequestSchema,
   LanUsageRequestSchema,
   LanRestartMachineRequestSchema,
+  LanGitHubRequestSchema,
   LanMachinesRequestSchema,
   LanAliasMachineRequestSchema,
   LanForwardRequestSchema,
   LanSharesRequestSchema,
   LanSharePublishRequestSchema,
   LanShareRevokeRequestSchema,
+  LanGitHubTokenRequestSchema,
 ]);
 
 const LocalProjectFileListResultSchema = z
@@ -2826,12 +2855,14 @@ const LocalProjectControlErrorResponseSchema = z
       'lan/install-agent',
       'lan/usage',
       'lan/restart-machine',
+      'lan/github',
       'lan/machines',
       'lan/alias-machine',
       'lan/forward',
       'lan/shares',
       'lan/share-publish',
       'lan/share-revoke',
+      'lan/github-token',
     ]),
     error: LocalProjectControlErrorCodeSchema,
     message: z.string(),
@@ -2887,6 +2918,14 @@ const LanRestartMachineResponseSchema = z
   })
   .strict();
 
+const LanGitHubResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    type: z.literal('lan/github'),
+    result: LanGitHubStateSchema,
+  })
+  .strict();
+
 /** What a member answers, which is also what a forwarded request brings back. */
 export const LanMemberControlResponseSchema = z.union([
   HostedConfigPreviewResponseSchema,
@@ -2895,6 +2934,7 @@ export const LanMemberControlResponseSchema = z.union([
   LanInstallAgentResponseSchema,
   LanUsageResponseSchema,
   LanRestartMachineResponseSchema,
+  LanGitHubResponseSchema,
   LocalProjectControlErrorResponseSchema,
 ]);
 
@@ -3107,6 +3147,7 @@ export const LocalProjectControlResponseSchema = z.union([
   LanInstallAgentResponseSchema,
   LanUsageResponseSchema,
   LanRestartMachineResponseSchema,
+  LanGitHubResponseSchema,
   z
     .object({
       ok: z.literal(true),
@@ -3152,6 +3193,13 @@ export const LocalProjectControlResponseSchema = z.union([
       ok: z.literal(true),
       type: z.literal('lan/share-revoke'),
       result: z.object({ revoked: z.boolean() }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      type: z.literal('lan/github-token'),
+      result: LanGitHubTokenResultSchema,
     })
     .strict(),
   LocalProjectControlErrorResponseSchema,
