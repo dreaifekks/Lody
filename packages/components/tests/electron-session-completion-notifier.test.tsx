@@ -344,5 +344,50 @@ describe('ElectronSessionCompletionNotifier', () => {
       ]);
       expect(showSessionCompletionNotification).not.toHaveBeenCalled();
     });
+
+    it('alerts that an Agent wrote a Role or Schedule with the experiment off', async () => {
+      const initial = [createSession('s1', { type: 'running' })];
+      mockedUseVisibleSessionMetas.mockReturnValue({
+        sessions: initial,
+        allActiveSessions: initial,
+        visibleMachineIds: new Set(),
+        visibleLocalProjectKeys: new Set(),
+        isLoading: false,
+      });
+      await renderComponent();
+      background();
+      act(() => setAgentNoticesEnabled(false));
+      await updateSessions([
+        createSession(
+          's1',
+          { type: 'running' },
+          {
+            agentNotice: {
+              ...notice('config:ws:schedule:a:create:r1', 'Nightly review', 'Created'),
+              kind: 'config_change' as const,
+            },
+          }
+        ),
+      ]);
+      expect(showSessionCompletionNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('alerts an id once, even when a retried write delivers it again after another', async () => {
+      const initial = [createSession('s1', { type: 'running' })];
+      mockedUseVisibleSessionMetas.mockReturnValue({
+        sessions: initial,
+        allActiveSessions: initial,
+        visibleMachineIds: new Set(),
+        visibleLocalProjectKeys: new Set(),
+        isLoading: false,
+      });
+      await renderComponent();
+      background();
+      for (const id of ['first', 'second', 'first'])
+        await updateSessions([
+          createSession('s1', { type: 'running' }, { agentNotice: notice(id, id) }),
+        ]);
+      expect(showSessionCompletionNotification).toHaveBeenCalledTimes(2);
+    });
   });
 });

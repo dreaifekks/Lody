@@ -68,10 +68,32 @@ export type LodyNotifyUserResult =
 export type SessionAgentNoticeMeta = {
   /** Unique per message; a device alerts once per id. */
   id: string;
+  /**
+   * `config_change`: Lody's own notice that an Agent wrote a Role or Schedule,
+   * shown whether or not the Agent notification experiment is on. Absent: a
+   * `lody_notify_user` message.
+   */
+  kind?: 'config_change';
   title?: string;
   body: string;
   at: number;
 };
+
+/**
+ * The id of the notice for one Agent write of a Role or Schedule: the same for
+ * a retry of that write, different for any other write. The conversation's
+ * system line and the device alerts share it, so devices alert once.
+ */
+export const agentConfigNoticeId = (write: {
+  workspaceId: string;
+  kind: 'schedule' | 'agent-role';
+  objectId: string;
+  action: string;
+  requestId: string;
+}): string =>
+  ['config', write.workspaceId, write.kind, write.objectId, write.action, write.requestId].join(
+    ':'
+  );
 
 /* ------------------------------------------------------------------------ */
 /* Recognizing calls in a transcript                                         */

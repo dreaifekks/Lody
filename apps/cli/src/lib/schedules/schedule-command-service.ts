@@ -7,6 +7,7 @@ import {
   getScheduleRoomId,
   getServerNow,
   getSessionRoomId,
+  agentConfigNoticeId,
   isLoroRepoDocDeleted,
   higherPermissionTier,
   isPermissionTierWithin,
@@ -388,7 +389,7 @@ export async function executeScheduleCommand(
     await (await manager.repo.openPersistedDoc(getScheduleRoomId(id))).syncOnce();
     await registry.syncOnce();
   }
-  let notice: { action: keyof typeof AGENT_NOTICES; title: string } | undefined;
+  let notice: { id: string; action: 'create' | 'edit' | 'resume'; title: string } | undefined;
   if (
     requesterSessionId &&
     (command.action === 'create' ||
@@ -406,12 +407,19 @@ export async function executeScheduleCommand(
     const entryId =
       action === 'pause'
         ? `schedule-paused-${command.requestId}`
-        : `schedule-${action}-${command.requestId}`;
+        : agentConfigNoticeId({
+            workspaceId,
+            kind: 'schedule',
+            objectId: id,
+            action,
+            requestId: command.requestId,
+          });
     const title = (await repository.read(id))?.definition.title ?? id;
+    // Every successful write, a retry included, hands its caller the notice to
+    // alert devices with; devices alert once per id.
+    if (action !== 'pause') notice = { id: entryId, action, title };
     const existing = await backend.readTurn(entryId);
     if (existing.state !== 'ready') {
-      // Only a first write leaves a notice, so its caller alerts the user once.
-      notice = { action, title };
       await backend.appendHistoryTurn({
         id: entryId,
         role: 'system',

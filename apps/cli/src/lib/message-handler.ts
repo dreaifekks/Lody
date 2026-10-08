@@ -10607,6 +10607,7 @@ export class MessageHandler {
     const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
     await sendAgentNotice(this.agentNoticeDelivery(sessionId, sessionDoc), sessionId, {
       ...notice,
+      kind: 'config_change',
       at: getServerNow(),
     });
   }

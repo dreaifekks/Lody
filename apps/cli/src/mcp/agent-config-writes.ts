@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import {
+  agentConfigNoticeId,
   canReadAgentRole,
   getMachineRoomId,
   getScheduleRoomId,
@@ -100,17 +101,23 @@ const readAgent = async (
   }
 };
 
-/** A system line in the calling conversation: the user sees what its Agent changed. */
-const appendNotice = async (
+/**
+ * A system line in the calling conversation, so the user sees what its Agent
+ * changed. With `append` false it only reports whether that line exists: a
+ * retry of a write that left it.
+ */
+const ensureNotice = async (
   manager: LoroDocumentManager,
   sessionId: SessionId,
   entryId: string,
-  text: string
-) => {
+  text: string,
+  append: boolean
+): Promise<boolean> => {
   const session = await manager.getOrCreateSessionDoc(sessionId);
   const record = await manager.repo.getDocMeta(session.roomId);
   const backend = await createSessionBackend(session, record?.meta as SessionMeta | undefined);
-  if ((await backend.readTurn(entryId)).state === 'ready') return false;
+  if ((await backend.readTurn(entryId)).state === 'ready') return true;
+  if (!append) return false;
   await backend.appendHistoryTurn({
     id: entryId,
     role: 'system',
@@ -126,7 +133,7 @@ const appendNotice = async (
 const SCHEDULE_VERBS = { create: 'created', edit: 'changed', resume: 'resumed' } as const;
 const ScheduleWriteResultSchema = z.object({
   notice: z
-    .object({ action: z.enum(['create', 'edit', 'pause', 'resume']), title: z.string() })
+    .object({ id: z.string(), action: z.enum(['create', 'edit', 'resume']), title: z.string() })
     .optional(),
 });
 
@@ -183,10 +190,11 @@ export function createAgentConfigWrites(deps: {
       const sendAndNotify = async (command: ScheduleCommand) => {
         const result = await send(command);
         const notice = ScheduleWriteResultSchema.parse(result).notice;
-        if (notice && notice.action !== 'pause')
+        // Every success alerts, a retry included; devices alert once per notice id.
+        if (notice)
           await notifyUser(
             invoking.session,
-            `schedule-${notice.action}-${request.input.requestId}`,
+            notice.id,
             `Scheduled task ${SCHEDULE_VERBS[notice.action]}`,
             notice.title
           );
@@ -309,15 +317,23 @@ export function createAgentConfigWrites(deps: {
           createId: () => randomUUID() as AgentRoleId,
         });
         const write = await upsertWorkspaceAgentRoleEntry(manager.repo, workspaceId, next);
-        const entryId = `agent-role-${next.id}-r${next.revision}`;
+        // The revision a write produced identifies it; an unchanged Role is
+        // either a retry (its line exists, so alert again) or a no-op.
+        const entryId = agentConfigNoticeId({
+          workspaceId,
+          kind: 'agent-role',
+          objectId: next.id,
+          action: request.action,
+          requestId: `r${next.revision}`,
+        });
         if (
-          write.changed &&
-          (await appendNotice(
+          await ensureNotice(
             manager,
             invoking.session.id as SessionId,
             entryId,
-            `${request.action === 'create' ? 'Created' : 'Changed'} Agent Role from this conversation: ${next.name} (${next.id}, revision ${next.revision}). Review or edit it in Settings → Agent Roles.`
-          ))
+            `${request.action === 'create' ? 'Created' : 'Changed'} Agent Role from this conversation: ${next.name} (${next.id}, revision ${next.revision}). Review or edit it in Settings → Agent Roles.`,
+            write.changed
+          )
         )
           await notifyUser(
             invoking.session,

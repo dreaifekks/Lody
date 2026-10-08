@@ -489,13 +489,23 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
 
   it('creates an enabled schedule with this conversation’s Agent and mode, attributed to it', async () => {
     const h = await asAgent('edit');
-    // The first write leaves a notice, which its caller turns into one alert; a retry leaves none.
+    // Every success, a retry included, hands back the one notice id devices alert on once.
+    const notice = {
+      id: 'config:workspace:schedule:nightly:create:nightly',
+      action: 'create',
+      title: 'Nightly review',
+    };
     await expect(create(h, 'nightly')).resolves.toEqual({
       ok: true,
       scheduleId: 'nightly',
-      notice: { action: 'create', title: 'Nightly review' },
+      notice,
     });
-    await expect(create(h, 'nightly')).resolves.toEqual({ ok: true, scheduleId: 'nightly' });
+    await expect(create(h, 'nightly')).resolves.toEqual({
+      ok: true,
+      scheduleId: 'nightly',
+      notice,
+    });
+    expect(h.history().filter((entry) => entry.id === notice.id)).toHaveLength(1);
     const saved = (await h.repository.read('nightly'))!;
     expect(saved.definition).toMatchObject({
       enabled: true,
@@ -877,5 +887,54 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
     expect((await h.repository.read('pi'))?.definition.enabled).toBe(true);
     // The exemption is Pi's, not its caller's: Claude stays capped.
     await expect(create(h, 'claude-from-unknown')).rejects.toThrow('more permissions');
+  });
+  it('names each write’s notice by its schedule, so equal request ids stay apart', async () => {
+    const h = await asAgent('edit');
+    await create(h, 'first');
+    await create(h, 'second');
+    const retitle = async (scheduleId: string) =>
+      executeScheduleCommand(h.context, {
+        action: 'edit',
+        scheduleId,
+        requestId: 'update-1',
+        draft: buildScheduleEditDraft(
+          { scheduleId, requestId: 'update-1', title: `Renamed ${scheduleId}` },
+          (await h.repository.read(scheduleId))!,
+          draftContext
+        ),
+      });
+    const ids = [
+      ((await retitle('first')) as { notice: { id: string } }).notice.id,
+      ((await retitle('second')) as { notice: { id: string } }).notice.id,
+    ];
+    expect(ids).toEqual([
+      'config:workspace:schedule:first:edit:update-1',
+      'config:workspace:schedule:second:edit:update-1',
+    ]);
+  });
+
+  it('hands back the notice again when a resume is retried after its notice failed to sync', async () => {
+    const h = await asAgent('edit');
+    await create(h, 'nightly');
+    h.context.requesterPermissionTier = undefined;
+    await executeScheduleCommand(h.context, {
+      action: 'pause',
+      scheduleId: 'nightly',
+      requestId: 'pause',
+    });
+    h.context.requesterPermissionTier = 'edit';
+    h.context.localOnly = false;
+    const resume = () =>
+      executeScheduleCommand(h.context, {
+        action: 'resume',
+        scheduleId: 'nightly',
+        requestId: 'resume',
+      });
+    await expect(resume()).rejects.toThrow('notification sync pending');
+    expect((await h.repository.read('nightly'))?.definition.enabled).toBe(true);
+    h.notificationSync.mockResolvedValue(true);
+    await expect(resume()).resolves.toMatchObject({
+      notice: { id: 'config:workspace:schedule:nightly:resume:resume', action: 'resume' },
+    });
   });
 });

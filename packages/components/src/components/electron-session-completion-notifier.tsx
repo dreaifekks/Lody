@@ -60,8 +60,11 @@ export function ElectronSessionCompletionNotifier() {
   const isElectron = typeof window !== 'undefined' && window.__LODY_ELECTRON__ === true;
   const agentNoticesEnabled = useAtomValue(agentNotifyFeatureEnabledAtom);
   const previousStatusBySessionRef = useRef<Map<string, SessionStatusType>>(new Map());
-  /** The last `lody_notify_user` message seen per session; a new id alerts once. */
-  const previousNoticeBySessionRef = useRef<Map<string, string | undefined>>(new Map());
+  /**
+   * Every Agent notice id seen per session: an id alerts once, also when it is
+   * delivered again after another notice (a retried write re-sends its own).
+   */
+  const seenNoticesBySessionRef = useRef<Map<string, Set<string>>>(new Map());
   const pendingCompletionTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const latestSessionsByIdRef = useRef<Map<string, SessionListEntry>>(new Map());
   const initializedRef = useRef(false);
@@ -72,7 +75,7 @@ export function ElectronSessionCompletionNotifier() {
     if (!owner || !isElectron || typeof window === 'undefined') {
       initializedRef.current = false;
       previousStatusBySessionRef.current.clear();
-      previousNoticeBySessionRef.current.clear();
+      seenNoticesBySessionRef.current.clear();
       return undefined;
     }
 
@@ -184,24 +187,27 @@ export function ElectronSessionCompletionNotifier() {
       previousStatusBySessionRef.current.set(session.id, currentStatusType);
 
       const noticeId = session.agentNotice?.id;
+      const seenNotices = seenNoticesBySessionRef.current.get(session.id);
       if (
         initializedRef.current &&
         enabled &&
-        agentNoticesEnabled &&
+        // A Role or Schedule an Agent wrote is Lody's notice, not the experiment's.
+        (agentNoticesEnabled || session.agentNotice?.kind === 'config_change') &&
         noticeId !== undefined &&
-        previousNoticeBySessionRef.current.has(session.id) &&
-        previousNoticeBySessionRef.current.get(session.id) !== noticeId &&
+        seenNotices !== undefined &&
+        !seenNotices.has(noticeId) &&
         !isAppForeground()
       ) {
         showAgentNotice(session);
       }
-      previousNoticeBySessionRef.current.set(session.id, noticeId);
+      if (!seenNotices) seenNoticesBySessionRef.current.set(session.id, new Set());
+      if (noticeId !== undefined) seenNoticesBySessionRef.current.get(session.id)!.add(noticeId);
     }
 
     for (const sessionId of Array.from(previousStatusBySessionRef.current.keys())) {
       if (!activeSessionIds.has(sessionId)) {
         previousStatusBySessionRef.current.delete(sessionId);
-        previousNoticeBySessionRef.current.delete(sessionId);
+        seenNoticesBySessionRef.current.delete(sessionId);
         clearTimerForSession(sessionId);
       }
     }
