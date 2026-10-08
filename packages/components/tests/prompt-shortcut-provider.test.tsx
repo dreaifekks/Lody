@@ -7,9 +7,16 @@ import { PromptShortcutRuntime } from '@lody/shared/prompt-shortcuts';
 
 const fixture = vi.hoisted(() => {
   const session = { status: 'authenticated', user: { id: 'user-a' } };
-  const makePlatform = () => ({
-    capabilities: new Set(['cloudAccount']),
+  const makePlatform = (
+    capabilities: string[] = ['cloudAccount'],
+    gateway?: { gatewayBaseUrl: string; token: string }
+  ) => ({
+    capabilities: new Set(capabilities),
     identity: { session: { get: () => session } },
+    sync: {
+      mode: 'local',
+      ...(gateway ? { resolve: () => ({ mode: 'dual', streams: gateway }) } : {}),
+    },
   });
   return {
     session,
@@ -21,6 +28,9 @@ const fixture = vi.hoisted(() => {
     openStore: vi.fn(),
     closeStore: vi.fn(),
     records: [] as unknown[],
+    syncs: [] as {
+      grant: (resource: unknown, write: boolean) => Promise<Record<string, unknown>>;
+    }[],
   };
 });
 
@@ -48,9 +58,16 @@ vi.mock('@lody/shared/prompt-shortcuts', async () => {
   const { PromptShortcutRuntime: ActualRuntime } =
     await import('../../shared/src/prompt-shortcuts/runtime');
   return {
+    ...(await import('../../shared/src/prompt-shortcuts/single-user')),
     PromptShortcutRuntime: ActualRuntime,
     LocalShortcutStore: { open: fixture.openStore },
     PromptShortcutSync: class {
+      constructor(options: (typeof fixture.syncs)[number]) {
+        fixture.syncs.push(options);
+      }
+      async acquire() {
+        throw new Error('offline');
+      }
       async dispose() {}
     },
     shortcutByteLength: (value: string) => value.length,
@@ -103,6 +120,7 @@ describe('PromptShortcutProvider lifecycle', () => {
     fixture.workspaceId = 'workspace-a';
     fixture.platform = fixture.makePlatform();
     fixture.records = [];
+    fixture.syncs = [];
     fixture.closeStore.mockReset().mockResolvedValue(undefined);
     fixture.createRepo.mockReset().mockImplementation(async () => ({ destroy: async () => {} }));
     fixture.openStore.mockReset().mockImplementation(async (identity) => ({
@@ -195,6 +213,23 @@ describe('PromptShortcutProvider lifecycle', () => {
     expect(current).not.toBeNull();
     expect(current).not.toBe(first);
     expect(container.textContent).toBe('workspace-a');
+  });
+
+  it('syncs a LAN workspace through its own gateway and keeps a lone machine local', async () => {
+    const gateway = { gatewayBaseUrl: 'lody-hub://lan-a', token: 'lan-hub' };
+    fixture.platform = fixture.makePlatform(['githubPullRequests'], gateway);
+    await render();
+    expect(current?.canShare).toBe(false);
+    expect(fixture.syncs).toHaveLength(1);
+    await expect(
+      fixture.syncs[0]!.grant({ kind: 'body', bodyDocId: 'body-a' }, false)
+    ).resolves.toMatchObject({ ...gateway, streamId: 'shortcut-body:body-a' });
+
+    fixture.syncs = [];
+    fixture.platform = fixture.makePlatform(['githubPullRequests']);
+    await render();
+    expect(current).not.toBeNull();
+    expect(fixture.syncs).toEqual([]);
   });
 
   it('warms visible shortcut bodies only after an idle window', async () => {

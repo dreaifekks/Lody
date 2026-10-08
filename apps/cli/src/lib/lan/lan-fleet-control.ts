@@ -27,6 +27,13 @@ import { getCliHttpFetch } from '@/utils/http-transport';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import { askLanMemberDirectly, LanMemberUnreachableError } from './lan-control-channel';
+import {
+  LanShareError,
+  listLanSharedConversations,
+  publishLanShare,
+  revokeLanShare,
+} from './lan-shares';
+import type { LanGitHubSource } from './lan-github-credential';
 import type { LanMachineControl } from './lan-machine-control';
 import { deriveLanTerminalKey } from './lan-terminal';
 import {
@@ -40,9 +47,16 @@ import {
   type LanMemberWorkspace,
 } from './lan-members';
 
+type LanShareControlRequest = Extract<
+  LocalProjectControlRequest,
+  { type: 'lan/shares' | 'lan/share-publish' | 'lan/share-revoke' }
+>;
+
 export type LanControlRequest = Extract<
   LocalProjectControlRequest,
-  { type: 'lan/machines' | 'lan/alias-machine' | 'lan/forward' } | LanMemberControlRequest
+  | { type: 'lan/machines' | 'lan/alias-machine' | 'lan/forward' | 'lan/github-token' }
+  | LanShareControlRequest
+  | LanMemberControlRequest
 >;
 
 // An agent runtime that the service installs by itself shows up without anyone
@@ -62,6 +76,7 @@ const ANSWER_TIMEOUT_MS: Record<LanMemberControlRequest['type'], number> = {
   'hosted-config/import': 100_000,
   'lan/usage': 20_000,
   'lan/restart-machine': 15_000,
+  'lan/github': 30_000,
 };
 
 export function isLanControlRequest(
@@ -71,6 +86,10 @@ export function isLanControlRequest(
     message.type === 'lan/machines' ||
     message.type === 'lan/alias-machine' ||
     message.type === 'lan/forward' ||
+    message.type === 'lan/shares' ||
+    message.type === 'lan/share-publish' ||
+    message.type === 'lan/share-revoke' ||
+    message.type === 'lan/github-token' ||
     isLanMemberControlType(message.type)
   );
 }
@@ -111,6 +130,8 @@ export type LanFleetControlOptions = {
   ssh?: (hub: LanHub) => Promise<LanSshDestination | null | undefined>;
   /** What this machine's agents used; absent where nothing counts it. */
   usage?: LanUsageSource;
+  /** The GitHub credentials of this machine, and the hubs' token; absent where none is told. */
+  github?: LanGitHubSource;
   now?: () => number;
 };
 
@@ -256,6 +277,25 @@ export class LanFleetControl {
         };
       }
     }
+    if (message.type === 'lan/github-token') {
+      try {
+        const hub = this.hubOf(message.workspaceId);
+        if (!hub) throw new Error('No LAN of this machine carries the workspace');
+        if (!this.options.github) throw new Error('This agent service keeps no GitHub token');
+        return {
+          ok: true,
+          type: message.type,
+          result: await this.options.github.save(hub, message.token),
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          type: message.type,
+          error: 'execution_failed',
+          message: formatErrorMessage(error),
+        };
+      }
+    }
     if (message.type === 'lan/forward') {
       const { request } = message;
       return {
@@ -271,7 +311,63 @@ export class LanFleetControl {
         },
       };
     }
+    if (
+      message.type === 'lan/shares' ||
+      message.type === 'lan/share-publish' ||
+      message.type === 'lan/share-revoke'
+    ) {
+      return await this.share(message);
+    }
     return await this.answer(message);
+  }
+
+  /** The shares of a workspace's LAN, which its hub keeps. */
+  private async share(message: LanShareControlRequest): Promise<LocalProjectControlResponse> {
+    const hub = this.options
+      .hubs()
+      .find((candidate) => getLanHubWorkspaceId(candidate.id) === message.workspaceId);
+    if (!hub) {
+      return {
+        ok: false,
+        type: message.type,
+        error: 'workspace_not_found',
+        message: `No LAN of this machine carries workspace ${message.workspaceId}`,
+      };
+    }
+    try {
+      if (message.type === 'lan/shares') {
+        return {
+          ok: true,
+          type: message.type,
+          result: { shares: await listLanSharedConversations(hub) },
+        };
+      }
+      if (message.type === 'lan/share-revoke') {
+        return {
+          ok: true,
+          type: message.type,
+          result: { revoked: await revokeLanShare(hub, message.shareId) },
+        };
+      }
+      const share = await publishLanShare(hub, {
+        directory: message.directory,
+        shareId: message.shareId,
+        expectedRevision: message.expectedRevision,
+        rootSourceId: message.rootSourceId,
+        sources: message.sources,
+      });
+      return { ok: true, type: message.type, result: { share } };
+    } catch (error) {
+      return {
+        ok: false,
+        type: message.type,
+        error: 'execution_failed',
+        message: formatErrorMessage(error),
+        ...(error instanceof LanShareError && error.status !== null
+          ? { data: { status: error.status } }
+          : {}),
+      };
+    }
   }
 
   /** What a member asked of this machine, from its own socket or through the hub. */
@@ -290,19 +386,22 @@ export class LanFleetControl {
         `This machine does not run workspace ${request.workspaceId}`
       );
     }
+    const { github } = this.options;
     const response = await answerLanMemberControl({
       request,
       workspace,
       machineId: this.options.machineId,
       control: this.options.control,
       usage: this.options.usage,
+      ...(github ? { github: () => github.describe(this.hubOf(request.workspaceId)) } : {}),
     });
     // What was imported or installed is something the members should see.
     if (
       response.ok &&
       request.type !== 'hosted-config/preview' &&
       request.type !== 'lan/usage' &&
-      request.type !== 'lan/restart-machine'
+      request.type !== 'lan/restart-machine' &&
+      request.type !== 'lan/github'
     ) {
       void this.publish();
     }
@@ -318,9 +417,7 @@ export class LanFleetControl {
     request: LanMemberControlRequest,
     machine: MachineMeta
   ): Promise<LocalProjectControlResponse | null> {
-    const hub = this.options
-      .hubs()
-      .find((candidate) => getLanHubWorkspaceId(candidate.id) === request.workspaceId);
+    const hub = this.hubOf(request.workspaceId);
     if (!hub) throw new Error('no LAN of this machine carries the workspace');
     const endpoint = parseLanTerminalEndpoint(machine.lanTerminal);
     if (endpoint) {
@@ -334,6 +431,13 @@ export class LanFleetControl {
       }
     }
     return await (this.options.sendThroughHub ?? sendThroughHub(this.options.logger))(hub, request);
+  }
+
+  private hubOf(workspaceId: string): LanHub | null {
+    return (
+      this.options.hubs().find((candidate) => getLanHubWorkspaceId(candidate.id) === workspaceId) ??
+      null
+    );
   }
 
   private now(): number {

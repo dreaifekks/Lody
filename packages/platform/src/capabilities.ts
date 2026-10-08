@@ -24,6 +24,12 @@ export const PLATFORM_CAPABILITIES = [
   'localUsage',
   /** Sharing sessions/machines/projects with workspace members. */
   'teamSharing',
+  /**
+   * Publishing a conversation as a read-only copy that the hub of a LAN keeps
+   * and serves. Only in a workspace of a LAN, and only where `teamSharing`,
+   * which publishes through the hosted service, is not.
+   */
+  'lanSharing',
   /** GitHub App integration (repo registry, brokered tokens, PR status). */
   'githubIntegration',
   /**
@@ -31,6 +37,12 @@ export const PLATFORM_CAPABILITIES = [
    * with brokered tokens; the local desktop with its machine's own `gh` login.
    */
   'githubPullRequests',
+  /**
+   * The GitHub credentials the machines hold themselves: each machine's own
+   * `gh` login and the one token a LAN's hub keeps for its members, shown and
+   * set from Settings > GitHub. Shown where `githubIntegration` is not.
+   */
+  'localGitHubCredential',
   /** Dispatching work to machines other than the local one. */
   'remoteMachines',
   /** Push notifications / live activity. */
@@ -64,7 +76,9 @@ export function createCapabilitySet(
 /** The open-source local platform: only what the machine backs without a hosted service. */
 export const LOCAL_PLATFORM_CAPABILITIES: PlatformCapabilities = createCapabilitySet([
   'githubPullRequests',
+  'localGitHubCredential',
   'localUsage',
+  'lanSharing',
 ]);
 
 /** The cloud platform baseline: every capability (entitlement gating happens elsewhere). */

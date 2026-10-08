@@ -55,7 +55,9 @@ export class PromptShortcutRuntime {
 
   constructor(
     readonly store: LocalShortcutStore,
-    private readonly remote?: ShortcutPublicationPort
+    private readonly remote?: ShortcutPublicationPort,
+    /** False where every member is the same user: there is nobody to share with. */
+    private readonly shareable = true
   ) {
     const cached = store.discovery();
     this.directory = cached.directory;
@@ -70,7 +72,7 @@ export class PromptShortcutRuntime {
     return this.store.userId;
   }
   get canShare() {
-    return !!this.remote;
+    return !!this.remote && this.shareable;
   }
   getSnapshot = (): ShortcutRuntimeSnapshot => this.snapshot;
   subscribe = (listener: () => void): (() => void) => {
@@ -397,7 +399,7 @@ export class PromptShortcutRuntime {
     bodyDocId: string;
   }): Promise<PromptShortcutIndexEntry> {
     this.assertActive();
-    if (!this.remote && input.value.visibility !== 'private')
+    if (!this.canShare && input.value.visibility !== 'private')
       throw new PromptShortcutError('forbidden', 'Sharing is not supported');
     if (
       input.base &&

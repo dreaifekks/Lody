@@ -404,6 +404,17 @@ export class LocalShortcutStore {
     });
   }
 
+  /** Queues an acknowledged shortcut for publication again, for a gateway
+   * that never received it. */
+  republish(id: string): Promise<void> {
+    return this.serialized(async () => {
+      await this.recover();
+      const current = this.get(id);
+      if (!current || current.deleted || current.operation) return;
+      await this.put({ ...current, operation: 'save' });
+    });
+  }
+
   async dispose() {
     await this.tail;
     await this.ledger.release();

@@ -3,6 +3,11 @@ const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
 // Kept equal to LAN_MACHINE_ALIAS_MAX and LAN_MACHINE_COLORS of lan-control.ts.
 const LAN_MACHINE_ALIAS_MAX = 32;
 const LAN_MACHINE_COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink'];
+// Kept equal to LAN_GITHUB_TOKEN_MAX of lan-control.ts.
+const LAN_GITHUB_TOKEN_MAX = 1000;
+// Kept equal to LAN_SHARE_ID_PATTERN and LanShareSourceSchema of lan-share.ts.
+const LAN_SHARE_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+const LAN_SHARE_CONVERSATION_ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 
 const LAN_MEMBER_CONTROL_TYPES = new Set([
   'lan/update-machine',
@@ -11,6 +16,7 @@ const LAN_MEMBER_CONTROL_TYPES = new Set([
   'hosted-config/import',
   'lan/usage',
   'lan/restart-machine',
+  'lan/github',
 ]);
 
 const HOSTED_CONFIG_CATEGORIES = new Set([
@@ -20,6 +26,33 @@ const HOSTED_CONFIG_CATEGORIES = new Set([
   'localProjects',
   'worktreeScripts',
 ]);
+
+function isLanShareId(value) {
+  return typeof value === 'string' && LAN_SHARE_ID_PATTERN.test(value);
+}
+
+function isLanShareSource(value) {
+  return (
+    isObjectRecord(value) &&
+    typeof value.sourceId === 'string' &&
+    value.sourceId.length > 0 &&
+    value.sourceId.length <= 256 &&
+    typeof value.conversationId === 'string' &&
+    LAN_SHARE_CONVERSATION_ID_PATTERN.test(value.conversationId)
+  );
+}
+
+function isLanSharedConversation(value) {
+  return (
+    isObjectRecord(value) &&
+    isLanShareId(value.shareId) &&
+    typeof value.title === 'string' &&
+    Array.isArray(value.sources) &&
+    value.sources.every(isLanShareSource) &&
+    Number.isInteger(value.revision) &&
+    (value.url === null || typeof value.url === 'string')
+  );
+}
 
 function isHostedConfigItems(value) {
   return (
@@ -509,9 +542,43 @@ function isLocalProjectControlRequest(value) {
   if (
     value.type === 'hosted-config/preview' ||
     value.type === 'lan/update-machine' ||
-    value.type === 'lan/restart-machine'
+    value.type === 'lan/restart-machine' ||
+    value.type === 'lan/github'
   ) {
     return typeof value.workspaceId === 'string';
+  }
+
+  if (value.type === 'lan/shares') {
+    return typeof value.workspaceId === 'string';
+  }
+
+  if (value.type === 'lan/share-publish') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      typeof value.directory === 'string' &&
+      value.directory.length > 0 &&
+      (value.shareId === undefined || isLanShareId(value.shareId)) &&
+      (value.expectedRevision === undefined ||
+        (Number.isInteger(value.expectedRevision) && value.expectedRevision > 0)) &&
+      typeof value.rootSourceId === 'string' &&
+      Array.isArray(value.sources) &&
+      value.sources.length > 0 &&
+      value.sources.every(isLanShareSource)
+    );
+  }
+
+  if (value.type === 'lan/share-revoke') {
+    return typeof value.workspaceId === 'string' && isLanShareId(value.shareId);
+  }
+
+  if (value.type === 'lan/github-token') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      (value.token === null ||
+        (typeof value.token === 'string' &&
+          value.token.trim().length > 0 &&
+          value.token.length <= LAN_GITHUB_TOKEN_MAX))
+    );
   }
 
   if (value.type === 'hosted-config/import') {
@@ -711,6 +778,38 @@ function isLocalProjectControlResponse(value) {
 
   if (value.type === 'lan/restart-machine') {
     return isObjectRecord(value.result) && value.result.outcome === 'started';
+  }
+
+  if (value.type === 'lan/github') {
+    const isAccount = (account) =>
+      account === null ||
+      (isObjectRecord(account) && (account.login === null || typeof account.login === 'string'));
+    return (
+      isObjectRecord(value.result) && isAccount(value.result.own) && isAccount(value.result.lan)
+    );
+  }
+
+  if (value.type === 'lan/github-token') {
+    return (
+      isObjectRecord(value.result) &&
+      (value.result.login === null || typeof value.result.login === 'string')
+    );
+  }
+
+  if (value.type === 'lan/shares') {
+    return (
+      isObjectRecord(value.result) &&
+      Array.isArray(value.result.shares) &&
+      value.result.shares.every(isLanSharedConversation)
+    );
+  }
+
+  if (value.type === 'lan/share-publish') {
+    return isObjectRecord(value.result) && isLanSharedConversation(value.result.share);
+  }
+
+  if (value.type === 'lan/share-revoke') {
+    return isObjectRecord(value.result) && typeof value.result.revoked === 'boolean';
   }
 
   if (value.type === 'lan/install-agent') {

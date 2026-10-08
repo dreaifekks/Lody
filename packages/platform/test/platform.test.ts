@@ -42,10 +42,18 @@ describe('resolvePlatformKind', () => {
 
 describe('capabilities', () => {
   it('local set holds only machine-backed capabilities; cloud set covers every capability', () => {
-    expect(LOCAL_PLATFORM_CAPABILITIES.list()).toEqual(['githubPullRequests', 'localUsage']);
+    expect(LOCAL_PLATFORM_CAPABILITIES.list()).toEqual([
+      'githubPullRequests',
+      'localGitHubCredential',
+      'localUsage',
+      'lanSharing',
+    ]);
     for (const capability of PLATFORM_CAPABILITIES) {
       expect(LOCAL_PLATFORM_CAPABILITIES.has(capability)).toBe(
-        capability === 'githubPullRequests' || capability === 'localUsage'
+        capability === 'githubPullRequests' ||
+          capability === 'localGitHubCredential' ||
+          capability === 'localUsage' ||
+          capability === 'lanSharing'
       );
       expect(CLOUD_PLATFORM_CAPABILITIES.has(capability)).toBe(true);
     }
@@ -137,7 +145,12 @@ describe('createLocalPlatformProvider', () => {
     });
     expect(provider.kind).toBe('local');
     expect(provider.sync.mode).toBe('local');
-    expect(provider.capabilities.list()).toEqual(['githubPullRequests', 'localUsage']);
+    expect(provider.capabilities.list()).toEqual([
+      'githubPullRequests',
+      'localGitHubCredential',
+      'localUsage',
+      'lanSharing',
+    ]);
     expect(provider.cloudApi).toBeNull();
     expect(provider.identity.session.get()).toEqual({ status: 'loading' });
     session.set({ status: 'authenticated', user });
@@ -175,7 +188,12 @@ describe('createLocalPlatformProvider', () => {
     await expect(provider.workspaces.setActive('lw_gone')).rejects.toThrow(/no workspace lw_gone/);
     expect(workspaces.get()).toMatchObject({ activeWorkspaceId: office.id });
     // Still no capability that needs an account.
-    expect(provider.capabilities.list()).toEqual(['githubPullRequests', 'localUsage']);
+    expect(provider.capabilities.list()).toEqual([
+      'githubPullRequests',
+      'localGitHubCredential',
+      'localUsage',
+      'lanSharing',
+    ]);
   });
 
   it('syncs each workspace through the gateway of its own LAN', () => {

@@ -5,12 +5,15 @@ import type {
 } from './hosted-config';
 import type {
   LanAgentInstallResult,
+  LanGitHubState,
+  LanGitHubTokenResult,
   LanMachineColor,
   LanMachineRestartResult,
   LanMachineUpdateResult,
   LanMachines,
   LanUsageReport,
 } from './lan-control';
+import type { LanSharedConversation, LanShareSource, LanSharesResult } from './lan-share';
 import type {
   MachineId,
   ACPSessionConfig,
@@ -1040,6 +1043,12 @@ export type LanMemberControlRequest =
       type: 'lan/restart-machine';
       machineId: MachineId;
       workspaceId: WorkspaceId;
+    }
+  | {
+      /** Which GitHub credentials the machine has for the workspace's LAN. */
+      type: 'lan/github';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
     };
 
 export type LocalProjectControlRequest =
@@ -1234,6 +1243,39 @@ export type LocalProjectControlRequest =
       type: 'lan/forward';
       machineId: MachineId;
       request: LanMemberControlRequest;
+    }
+  | {
+      /** The conversations the LAN of a workspace shared. */
+      type: 'lan/shares';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+    }
+  | {
+      /** Publishes the package the shell wrote into `directory` to the LAN's hub. */
+      type: 'lan/share-publish';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      directory: string;
+      shareId?: string;
+      expectedRevision?: number;
+      rootSourceId: string;
+      sources: LanShareSource[];
+    }
+  | {
+      type: 'lan/share-revoke';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      shareId: string;
+    }
+  | {
+      /**
+       * Gives the hub of the workspace's LAN the GitHub token its members use;
+       * `null` takes it back. No answer carries the token.
+       */
+      type: 'lan/github-token';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      token: string | null;
     };
 
 export type LocalProjectControlErrorCode =
@@ -1268,7 +1310,8 @@ type LanMemberControlOkResponse =
   | LocalProjectControlOkResponse<'lan/update-machine', LanMachineUpdateResult>
   | LocalProjectControlOkResponse<'lan/install-agent', LanAgentInstallResult>
   | LocalProjectControlOkResponse<'lan/usage', LanUsageReport>
-  | LocalProjectControlOkResponse<'lan/restart-machine', LanMachineRestartResult>;
+  | LocalProjectControlOkResponse<'lan/restart-machine', LanMachineRestartResult>
+  | LocalProjectControlOkResponse<'lan/github', LanGitHubState>;
 
 /** What a member answers, which is also what a forwarded request brings back. */
 export type LanMemberControlResponse =
@@ -1345,6 +1388,10 @@ export type LocalProjectControlResponse =
       { alias: string | null; color?: LanMachineColor | null }
     >
   | LocalProjectControlOkResponse<'lan/forward', { response: LanMemberControlResponse }>
+  | LocalProjectControlOkResponse<'lan/shares', LanSharesResult>
+  | LocalProjectControlOkResponse<'lan/share-publish', { share: LanSharedConversation }>
+  | LocalProjectControlOkResponse<'lan/share-revoke', { revoked: boolean }>
+  | LocalProjectControlOkResponse<'lan/github-token', LanGitHubTokenResult>
   | LocalProjectControlErrorResponse;
 
 // ============================================

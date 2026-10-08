@@ -5,6 +5,9 @@ import {
 } from '../hosted-config';
 import {
   LanAgentInstallResultSchema,
+  LAN_GITHUB_TOKEN_MAX,
+  LanGitHubStateSchema,
+  LanGitHubTokenResultSchema,
   LanUsageReportSchema,
   LanMachineUpdateResultSchema,
   LanMachineRestartResultSchema,
@@ -13,6 +16,7 @@ import {
   isLanMemberControlType,
   normalizeLanMachineColor,
 } from '../lan-control';
+import { LanShareIdSchema, LanSharedConversationSchema, LanShareSourceSchema } from '../lan-share';
 import type { LocalProjectControlRequest, LocalProjectControlResponse } from '../message';
 
 export const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
@@ -505,8 +509,47 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     );
   }
 
-  if (value.type === 'lan/update-machine' || value.type === 'lan/restart-machine') {
+  if (
+    value.type === 'lan/update-machine' ||
+    value.type === 'lan/restart-machine' ||
+    value.type === 'lan/github'
+  ) {
     return typeof value.workspaceId === 'string';
+  }
+
+  if (value.type === 'lan/github-token') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      (value.token === null ||
+        (typeof value.token === 'string' &&
+          value.token.trim().length > 0 &&
+          value.token.length <= LAN_GITHUB_TOKEN_MAX))
+    );
+  }
+
+  if (value.type === 'lan/shares') {
+    return typeof value.workspaceId === 'string';
+  }
+
+  if (value.type === 'lan/share-publish') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      typeof value.directory === 'string' &&
+      value.directory.length > 0 &&
+      (value.shareId === undefined || LanShareIdSchema.safeParse(value.shareId).success) &&
+      (value.expectedRevision === undefined ||
+        (Number.isInteger(value.expectedRevision) && Number(value.expectedRevision) > 0)) &&
+      typeof value.rootSourceId === 'string' &&
+      Array.isArray(value.sources) &&
+      value.sources.length > 0 &&
+      value.sources.every((source) => LanShareSourceSchema.safeParse(source).success)
+    );
+  }
+
+  if (value.type === 'lan/share-revoke') {
+    return (
+      typeof value.workspaceId === 'string' && LanShareIdSchema.safeParse(value.shareId).success
+    );
   }
 
   if (value.type === 'lan/install-agent') {
@@ -700,6 +743,33 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'lan/usage') {
     return LanUsageReportSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/github') {
+    return LanGitHubStateSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/github-token') {
+    return LanGitHubTokenResultSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/shares') {
+    return (
+      isObjectRecord(value.result) &&
+      Array.isArray(value.result.shares) &&
+      value.result.shares.every((share) => LanSharedConversationSchema.safeParse(share).success)
+    );
+  }
+
+  if (value.type === 'lan/share-publish') {
+    return (
+      isObjectRecord(value.result) &&
+      LanSharedConversationSchema.safeParse(value.result.share).success
+    );
+  }
+
+  if (value.type === 'lan/share-revoke') {
+    return isObjectRecord(value.result) && typeof value.result.revoked === 'boolean';
   }
 
   if (value.type === 'lan/machines') {

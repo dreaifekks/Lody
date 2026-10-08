@@ -97,6 +97,7 @@ Both desktop apps can run side by side.
 | Agents on other machines    | Lody's tools inside a session start and drive sessions on the other machines of its LAN                                                                                                          |
 | Usage                       | Each machine keeps what its agents used; Settings > AI Usage gathers it from every member, by model and by machine                                                                               |
 | Shells and ports            | `lody-lan lan shell <machine>` opens a shell on a member, `lody-lan lan forward <machine> <port>` reaches one of its ports, both over the members' direct connections                            |
+| Shared conversations        | The hub keeps a read-only copy of a conversation at a link of its own, on a port that serves nothing else                                                                                        |
 
 ### Works differently
 
@@ -105,22 +106,22 @@ Both desktop apps can run side by side.
 | Identity                  | Lody accounts, teams and workspaces         | Whoever holds a LAN's invite is a member; all members act as one user; an invite cannot be rotated in place  |
 | Sync                      | Lody's servers                              | Your hub: one node on SQLite; a standby server copies it every ten minutes and takes over when it stays away |
 | Requests between machines | Lody's servers                              | Go directly between the machines; through the hub, for up to two minutes, when they cannot connect           |
-| Attachments               | Uploaded to a store every device reads      | Stay on the machine that runs the session; other members see the card but cannot open it                     |
-| GitHub tokens             | The Lody GitHub App and your linked account | One token the hub keeps for the LAN; an Agent uses it only on a machine without a `gh` login                 |
+| Attachments               | Uploaded to a store every device reads      | Stay on the machine that runs the session; other members open them from there while it is online             |
+| GitHub tokens             | The Lody GitHub App and your linked account | One token the hub keeps for the LAN, set in Settings > GitHub; an Agent uses it only without a `gh` login    |
 | PR panel freshness        | GitHub webhooks                             | Polling while the panel is open: CI every 15 seconds, reviews and comments every minute                      |
 | Phone and web             | Lody's iOS, Android and web apps            | Those apps need a Lody account and do not reach a LAN; phones get alerts from the hub                        |
 | Updates                   | Lody's update service                       | This repository's rolling release; upstream's updater stays off                                              |
+| Prompt Shortcuts          | Shared with workspace members if you choose | Synced through the hub to every member; members are one user, so there is no sharing switch                  |
 
 ### Not available
 
-- Sharing with a team, and public links to a session.
-- The GitHub App: repository registry, Settings > GitHub, repositories cloned
-  in the cloud, and acting under your linked GitHub identity.
-- Remote preview: a dev server an Agent starts on another machine does not
-  open in this machine's browser panel; `lody-lan lan forward <machine> <port>`
-  makes it reachable here.
-- Settings > Machines and the machine picker of Prompt Shortcuts; Settings >
-  LAN lists the machines instead.
+- Sharing with a team.
+- The GitHub App: repository registry, repositories cloned in the cloud, and
+  acting under your linked GitHub identity. Settings > GitHub instead shows the
+  hub's token, the credential each machine uses and the repositories they read.
+- Sharing, restoring or stopping a preview from the browser panel; a dev
+  server on another machine opens there, but only for you.
+- Settings > Machines; Settings > LAN lists the machines instead.
 - Hosting a LAN from the desktop app, which does not ship the hub.
 - Billing, bug report upload and telemetry, which are off by design.
 
@@ -133,8 +134,6 @@ Both desktop apps can run side by side.
   working while the hub is away. Left: let a phone follow the hub when it
   moves. The hub stays as a relay that stores what an offline member has not
   seen yet.
-- **Missing pieces:** remote preview in the browser panel, over the ports
-  `lody-lan lan forward` already reaches.
 
 ## Shared with Lody
 

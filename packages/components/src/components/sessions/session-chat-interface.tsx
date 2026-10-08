@@ -144,6 +144,8 @@ import { useStableCallback } from '@/hooks/use-stable-callback';
 import { useSideChatFirstPrompt } from '@/hooks/use-side-chat-first-prompt';
 import { useAppCapability } from '@/lib/app-platform';
 import { SessionShareDialog } from '@/components/sharing/session-share-dialog';
+import { LanSessionShareDialog } from '@/components/sharing/lan-session-share-dialog';
+import { useLanSessionShareStatus, useLanSharing } from '@/lib/lan-session-share';
 import { useSessionShareStatus } from '@/hooks/use-session-share-management';
 import {
   conversationFontSizeAtom,
@@ -2503,13 +2505,24 @@ export const SessionChatInterface = memo(
     const localeObj = i18n.language?.startsWith('zh') ? zhCN : enUS;
     const workspaceId = useAtomValue(currentWorkspaceIdAtom);
     const publicSharingAvailable = useAppCapability('teamSharing');
+    // A LAN workspace publishes to its own hub instead (fork).
+    const lanSharing = useLanSharing(workspaceId);
     // One owner for the static-share editor, because both the header control
     // and the "…" menu open the same one.
-    const publicShareWorkspaceId = publicSharingAvailable && workspaceId ? workspaceId : undefined;
+    const publicShareWorkspaceId =
+      (publicSharingAvailable || lanSharing) && workspaceId ? workspaceId : undefined;
     // Keyed by session id, not a boolean: a tab that switches underneath an
     // open editor must not retarget it at the newly shown conversation.
     const [publicShareSessionId, setPublicShareSessionId] = useState<string | null>(null);
-    const publicShareStatus = useSessionShareStatus(publicShareWorkspaceId ?? null, session.id);
+    const hostedShareStatus = useSessionShareStatus(
+      publicSharingAvailable ? (publicShareWorkspaceId ?? null) : null,
+      session.id
+    );
+    const lanShareStatus = useLanSessionShareStatus(
+      lanSharing ? (workspaceId ?? null) : null,
+      session.id
+    );
+    const publicShareStatus = lanSharing ? lanShareStatus : hostedShareStatus;
     const currentUser = useAtomValue(userAtom);
     const { openSettings } = useOpenSettings();
     const billingEntitlement = useCloudQuery(
@@ -6991,7 +7004,9 @@ export const SessionChatInterface = memo(
                                   agentActivityTone={agentActivityTone}
                                   agentActivityShimmer={agentActivityShimmer}
                                   onFileDiffClick={onFileDiffClick}
-                                  onFilePathClick={onFilePathClick ? handleFilePathClick : undefined}
+                                  onFilePathClick={
+                                    onFilePathClick ? handleFilePathClick : undefined
+                                  }
                                   onOpenHtmlFile={handleOpenHtmlAttachment}
                                   messageFileDiffEntriesByTurn={messageFileDiffEntriesByTurn}
                                   assistantActions={assistantQuickActions}
@@ -7296,13 +7311,21 @@ export const SessionChatInterface = memo(
               target={renameDialogTarget?.sessionId === session.id ? renameDialogTarget : null}
               onClose={() => setRenameDialogTarget(null)}
             />
-            {publicShareWorkspaceId && publicShareSessionId === session.id && (
-              <SessionShareDialog
-                workspaceId={publicShareWorkspaceId}
-                session={session}
-                onClose={() => setPublicShareSessionId(null)}
-              />
-            )}
+            {publicShareWorkspaceId &&
+              publicShareSessionId === session.id &&
+              (lanSharing ? (
+                <LanSessionShareDialog
+                  workspaceId={publicShareWorkspaceId}
+                  session={session}
+                  onClose={() => setPublicShareSessionId(null)}
+                />
+              ) : (
+                <SessionShareDialog
+                  workspaceId={publicShareWorkspaceId}
+                  session={session}
+                  onClose={() => setPublicShareSessionId(null)}
+                />
+              ))}
             <AlertDialog.Root
               open={pendingRemoteHtmlFileName !== null}
               onOpenChange={(open) => {

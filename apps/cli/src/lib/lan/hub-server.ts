@@ -31,11 +31,19 @@ import {
 } from './hub-handover';
 import { readLanHubEpoch, readsBeforeLanHubEpoch, type LanHubEpoch } from './hub-failover';
 import { createLanHubPush, LAN_PUSH_SWEEP_INTERVAL_MS, type LanHubPush } from './hub-push';
+import { createLanHubShares, type LanHubShares, type LanShareReaderAssets } from './hub-shares';
 import {
   LAN_HUB_SNAPSHOT_PATH,
   LanHubSnapshotRequestSchema,
   writeLanHubSnapshot,
 } from './hub-snapshot';
+
+/**
+ * Where a hub serves shared conversations unless told otherwise. Not the port
+ * after the gate's: that is the member port of the agent service
+ * (`LAN_TERMINAL_DEFAULT_PORT`), which runs on the hub's machine too.
+ */
+export const LAN_SHARE_DEFAULT_PORT = 18790;
 
 export const LAN_HUB_DEFAULT_PORT = 8788;
 export const LAN_HUB_LORO_CLI_PACKAGE = '@loro-dev/loro-cli';
@@ -82,6 +90,13 @@ export type LanHubServerOptions = {
   handoverTimeoutMs?: number;
   /** Replaces APNs; push is tested without Apple. */
   sendPush?: ApnsSender;
+  /**
+   * Where readers open the conversations the LAN shared, on the same address:
+   * by default {@link LAN_SHARE_DEFAULT_PORT}, `0` for any, `null` for none.
+   */
+  sharePort?: number | null;
+  /** Replaces the reader page a build carries beside its bundle. */
+  shareReaderAssets?: () => LanShareReaderAssets | null;
   log?: (line: string) => void;
 };
 
@@ -89,6 +104,8 @@ export type LanHubServer = {
   /** Where this process listens; other devices may need another address. */
   url: string;
   port: number;
+  /** Where the share listener listens; `null` when the hub serves no shares. */
+  shareUrl: string | null;
   token: string;
   /** Resolves when the hub stopped, with the reason when it did not stop on request. */
   stopped: Promise<{ error: Error | null }>;
@@ -441,6 +458,7 @@ function createGate(options: {
   push: LanHubPush;
   github: LanHubGitHub;
   credentials: LanHubCredentialRoutes;
+  shares: LanHubShares;
 }): http.RequestListener {
   const expectedAuthorization = Buffer.from(`Bearer ${options.token}`);
   return (request, response) => {
@@ -484,6 +502,10 @@ function createGate(options: {
     }
     if (options.credentials.handles(request.url)) {
       void options.credentials.handle(request, response);
+      return;
+    }
+    if (options.shares.handles(request.url)) {
+      void options.shares.handle(request, response);
       return;
     }
 
@@ -620,6 +642,17 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     sweepIntervalMs: LAN_PUSH_SWEEP_INTERVAL_MS,
     isServing: () => state.kind === 'serving',
   });
+  let shareServer: http.Server | https.Server | null = null;
+  const shares = createLanHubShares({
+    dataDir,
+    sharePort: () => {
+      const address = shareServer?.address();
+      return typeof address === 'object' && address ? address.port : null;
+    },
+    readerAssets: options.shareReaderAssets,
+    isServing: () => state.kind === 'serving',
+    log: options.log,
+  });
 
   const close = async (error: Error | null = null): Promise<void> => {
     if (closing) {
@@ -627,8 +660,8 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       return;
     }
     closing = true;
-    const listening = server;
-    if (listening) {
+    for (const listening of [server, shareServer]) {
+      if (!listening) continue;
       await new Promise<void>((resolve) => {
         listening.close(() => resolve());
         // Live reads never end on their own.
@@ -636,6 +669,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       });
     }
     push.close();
+    shares.close();
     apns.close();
     if (state.kind === 'serving') {
       state.upstream.stop();
@@ -733,12 +767,16 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     options.log?.('[handover] A new host asked for this LAN; stopping the Streams server.');
     upstream.stop();
     await upstream.exited;
+    // A share being committed lands before its files are read.
+    await shares.idle();
     response.writeHead(200, {
       ...corsHeaders(request),
       'Content-Type': 'application/octet-stream',
     });
     try {
-      const files = await writeLanHubHandover(dataDir, response);
+      const files = await writeLanHubHandover(dataDir, response, {
+        shares: new URL(request.url ?? '/', 'http://hub.invalid').searchParams.has('shares'),
+      });
       response.end();
       options.log?.(`[handover] Sent ${files} file(s); waiting for the new host.`);
     } catch (error) {
@@ -897,6 +935,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
         devices: () => push.devices(),
         log: options.log,
       }),
+      shares,
     });
     const created = options.tls
       ? https.createServer({ cert: options.tls.cert, key: options.tls.key }, gate)
@@ -917,6 +956,44 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       });
     });
     server = created;
+
+    const sharePort =
+      options.sharePort === undefined
+        ? options.port === 0
+          ? 0
+          : LAN_SHARE_DEFAULT_PORT
+        : options.sharePort;
+    if (sharePort !== null) {
+      // Readers reach nothing but the shares here: no credential, no streams,
+      // and nothing at all while the LAN is served elsewhere.
+      const reader: http.RequestListener = (request, response) => {
+        if (state.kind !== 'serving') {
+          response.writeHead(state.kind === 'moved' ? 404 : 503, {
+            'Cache-Control': 'no-store',
+            'Content-Type': 'text/plain; charset=utf-8',
+          });
+          response.end(state.kind === 'moved' ? 'Not found\n' : 'Unavailable\n');
+          return;
+        }
+        shares.read(request, response);
+      };
+      const listening = options.tls
+        ? https.createServer({ cert: options.tls.cert, key: options.tls.key }, reader)
+        : http.createServer(reader);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          listening.once('error', reject);
+          listening.listen(sharePort, options.host, () => {
+            listening.off('error', reject);
+            resolve();
+          });
+        });
+        shareServer = listening;
+      } catch (error) {
+        // The LAN itself does not depend on its shares.
+        options.log?.(`[shares] Serving no shares: port ${sharePort} failed: ${String(error)}`);
+      }
+    }
   } catch (error) {
     await close();
     throw error;
@@ -925,9 +1002,14 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : options.port;
   const host = options.host.includes(':') ? `[${options.host}]` : options.host;
+  const shareAddress = shareServer?.address();
   return {
     url: `${options.tls ? 'https' : 'http'}://${host}:${port}`,
     port,
+    shareUrl:
+      typeof shareAddress === 'object' && shareAddress
+        ? `${options.tls ? 'https' : 'http'}://${host}:${shareAddress.port}`
+        : null,
     token,
     stopped,
     close: () => close(),

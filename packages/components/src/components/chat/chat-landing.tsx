@@ -586,6 +586,9 @@ function WorkspaceChatLanding({
   const machinePairingAvailable = useAppCapability('remoteMachines');
   // The hosted repository registry; GitHub settings exist only with it.
   const githubIntegrationAvailable = useAppCapability('githubIntegration');
+  const localGitHubCredentialAvailable = useAppCapability('localGitHubCredential');
+  // Settings > GitHub is where repositories come from on either platform.
+  const githubSettingsAvailable = githubIntegrationAvailable || localGitHubCredentialAvailable;
   const currentUser = useAtomValue(userAtom);
   const userId = currentUser?.id;
   const { activeOrganization, organizations, switchOrganization } = useOrganization({
@@ -3822,7 +3825,7 @@ function WorkspaceChatLanding({
           localProjects={desktopLocalProjectOptions}
           repositories={repositories}
           latestMessageAtByRepo={mobileSheetRecency.byRepo}
-          onConnectGitRepo={githubIntegrationAvailable ? handleConnectGitRepo : undefined}
+          onConnectGitRepo={githubSettingsAvailable ? handleConnectGitRepo : undefined}
           onAddLocalProject={handleAddLocalProject}
           onShareLocalProjectWithTeam={
             showProjectSharing ? handleShareLocalProjectWithTeam : undefined

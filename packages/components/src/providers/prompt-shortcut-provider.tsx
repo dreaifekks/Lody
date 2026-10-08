@@ -11,12 +11,16 @@ import { useAtomValue } from 'jotai';
 import { LoroRepo } from 'loro-repo';
 import { IndexedDBStorageAdaptor } from 'loro-repo/storage/indexeddb';
 import {
+  createSingleUserShortcutPublication,
+  getSingleUserShortcutGrant,
   LocalShortcutStore,
   PromptShortcutRuntime,
   PromptShortcutSync,
   shortcutByteLength,
+  SingleUserShortcutDirectory,
   type ShortcutRuntimeSnapshot,
 } from '@lody/shared/prompt-shortcuts';
+import { resolvePlatformSync } from '@lody/platform';
 import {
   useCloudAction,
   useCloudMutation,
@@ -92,6 +96,9 @@ export function PromptShortcutProvider({
   const workspaceId =
     scope.enabled && scope.workspaceId === workspaceRuntime?.workspaceId ? scope.workspaceId : null;
   const cloud = platform.capabilities.has('cloudAccount');
+  // A workspace shared through a fixed gateway (a LAN) is one user on every
+  // machine: its shortcuts sync through that gateway without hosted grants.
+  const gateway = cloud ? null : (resolvePlatformSync(platform.sync, workspaceId).streams ?? null);
   const stage = useCloudMutation(api.promptShortcuts.stageDocument);
   const activate = useCloudMutation(api.promptShortcuts.activateDocument);
   const revoke = useCloudMutation(api.promptShortcuts.revokeShortcut);
@@ -109,6 +116,7 @@ export function PromptShortcutProvider({
     generation: number;
     platform: typeof platform;
     cloud: boolean;
+    gateway: typeof gateway;
     isActive: () => boolean;
   } | null>(null);
   const [failure, setFailure] = useState<{
@@ -124,6 +132,7 @@ export function PromptShortcutProvider({
     instance.generation === generation &&
     instance.platform === platform &&
     instance.cloud === cloud &&
+    instance.gateway === gateway &&
     instance.isActive()
       ? instance.runtime
       : null;
@@ -138,6 +147,7 @@ export function PromptShortcutProvider({
     if (!workspaceId || !userId) return undefined;
     let disposed = false;
     let owned: PromptShortcutRuntime | undefined;
+    let ownIndex: SingleUserShortcutDirectory | undefined;
     let repo: LoroRepo | undefined;
     const databaseName = promptShortcutDatabaseName(workspaceId, userId);
     const previousClose = closingDatabases.get(databaseName);
@@ -152,6 +162,7 @@ export function PromptShortcutProvider({
       )
         throw new Error('Shortcut identity changed');
     };
+    const restartOwnIndex = () => void ownIndex?.start();
     const opening = (async () => {
       await previousClose;
       check();
@@ -185,6 +196,20 @@ export function PromptShortcutProvider({
             },
           })
         : undefined;
+      const lanSync = gateway
+        ? new PromptShortcutSync({
+            repo,
+            now: Date.now,
+            grant: async (resource) => {
+              check();
+              return getSingleUserShortcutGrant(gateway, resource);
+            },
+          })
+        : undefined;
+      const lanAcquire: PromptShortcutSync['acquire'] = (resource, write) => {
+        check();
+        return lanSync!.acquire(resource, write);
+      };
       owned = new PromptShortcutRuntime(
         store,
         sync
@@ -241,11 +266,29 @@ export function PromptShortcutProvider({
               },
               dispose: () => sync.dispose(),
             }
-          : undefined
+          : lanSync
+            ? createSingleUserShortcutPublication({
+                acquire: lanAcquire,
+                dispose: () => lanSync.dispose(),
+              })
+            : undefined,
+        cloud
       );
       check();
-      setInstance({ runtime: owned, generation, platform, cloud, isActive: () => !disposed });
+      setInstance({
+        runtime: owned,
+        generation,
+        platform,
+        cloud,
+        gateway,
+        isActive: () => !disposed,
+      });
       void owned.flush();
+      if (lanSync) {
+        ownIndex = new SingleUserShortcutDirectory(owned, lanAcquire);
+        void ownIndex.start();
+        window.addEventListener('online', restartOwnIndex);
+      }
     })().catch((error) => {
       if (!disposed) {
         console.error('Failed to open Prompt Shortcuts', error);
@@ -254,12 +297,14 @@ export function PromptShortcutProvider({
     });
     return () => {
       disposed = true;
+      window.removeEventListener('online', restartOwnIndex);
       // Identity can return before the replacement finishes opening. Retire this
       // effect's instance immediately, even while its durable close is pending.
       setInstance((value) => (value?.runtime === owned ? null : value));
       // Close a late initialization as well; no leaked IndexedDB/Streams leases.
       const closing = opening
         .then(async () => {
+          await ownIndex?.dispose();
           await owned?.dispose();
           await repo?.destroy();
         })
@@ -269,7 +314,7 @@ export function PromptShortcutProvider({
         if (closingDatabases.get(databaseName) === closing) closingDatabases.delete(databaseName);
       });
     };
-  }, [workspaceId, userId, cloud, platform, generation]);
+  }, [workspaceId, userId, cloud, gateway, platform, generation]);
 
   useEffect(() => {
     if (runtime && directory) void runtime.setDirectory(directory);

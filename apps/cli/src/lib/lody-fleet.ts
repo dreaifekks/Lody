@@ -70,6 +70,7 @@ import { askLanMemberRpc, LanRpcNotSentError } from '@/lib/lan/lan-rpc-channel';
 import { LanFileHandoff } from '@/lib/lan/lan-file-handoff';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-control';
+import { createLanGitHubSource } from '@/lib/lan/lan-github-credential';
 import {
   LanHubStandby,
   canThisMachineHostLanHub,
@@ -340,6 +341,7 @@ export class LodyFleet {
           control: options.lanControl,
           ...(options.usageLedger ? { usage: options.usageLedger } : {}),
           ssh: createLanSshDescriber({ logger: this.logger }),
+          github: createLanGitHubSource(),
           hubs: () => this.lan?.hubs ?? [],
           workspaces: () =>
             Array.from(this.runtimes.values(), (runtime) => this.toLanMemberWorkspace(runtime)),
