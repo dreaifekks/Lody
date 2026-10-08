@@ -26,6 +26,11 @@ export type Strings = {
   unavailable: string;
   updated: string;
   image: string;
+  /** The row a finished turn's work folds into, as the desktop words it. */
+  workedFor: (duration: string) => string;
+  /** That row when the history holds no duration for the turn. */
+  steps: (count: number) => string;
+  units: { hour: string; minute: string; second: string; separator: string };
 };
 
 export const STRINGS: Record<'en' | 'zh', Strings> = {
@@ -36,6 +41,9 @@ export const STRINGS: Record<'en' | 'zh', Strings> = {
     unavailable: 'This conversation is not available.',
     updated: 'Updated',
     image: 'Image',
+    workedFor: (duration) => `Worked for ${duration}`,
+    steps: (count) => (count === 1 ? 'Took 1 step' : `Took ${count} steps`),
+    units: { hour: 'h', minute: 'm', second: 's', separator: ' ' },
   },
   zh: {
     thinking: '思考',
@@ -44,6 +52,9 @@ export const STRINGS: Record<'en' | 'zh', Strings> = {
     unavailable: '这个对话无法打开。',
     updated: '更新于',
     image: '图片',
+    workedFor: (duration) => `工作了${duration}`,
+    steps: (count) => `已处理 ${count} 步`,
+    units: { hour: '时', minute: '分', second: '秒', separator: '' },
   },
 };
 
@@ -90,7 +101,9 @@ function pre(document: Document, text: string): HTMLElement {
 
 function folded(document: Document, className: string, summary: string, body: Node[]) {
   const details = element(document, 'details', className);
-  details.append(element(document, 'summary', undefined, summary), ...body);
+  const row = element(document, 'summary');
+  row.append(element(document, 'span', 'label', summary));
+  details.append(row, ...body);
   return details;
 }
 
@@ -215,6 +228,168 @@ function renderItem(context: RenderContext, item: Json): HTMLElement | null {
   }
 }
 
+// A finished turn reads like the desktop's: its answer shows, and the work
+// before it (thinking, tool calls, short narration) folds into one row. These
+// rules follow `ai-gui/message-copy.ts` and `assistant-turn-render-blocks.ts`
+// of `@lody/components`, which this page may not import.
+
+/** Length from which earlier text in a turn reads as content, not narration. */
+const SUBSTANTIVE_TEXT_MIN_CHARS = 300;
+const STRUCTURED_TEXT_PATTERN = /(?:^|\n)[ \t]*(?:[-*+] |\d+[.)] |\||#{1,6} )/;
+
+const isSubstantiveText = (text: string): boolean =>
+  text.trim().length >= SUBSTANTIVE_TEXT_MIN_CHARS || STRUCTURED_TEXT_PATTERN.test(text);
+
+const isPlanExit = (item: JsonObject): boolean =>
+  item.type === 'tool_call' && item.kind === 'switch_mode';
+
+/** Attachments, plans and notices trail the answer and never fold. */
+const NEVER_FOLDED = new Set([
+  'image',
+  'image_group',
+  'file',
+  'plan',
+  'goal',
+  'proposed_plan',
+  'system_notice',
+]);
+
+const isNeverFolded = (item: JsonObject): boolean =>
+  (typeof item.type === 'string' && NEVER_FOLDED.has(item.type)) || isPlanExit(item);
+
+/** A step of the work: it folds whenever the turn has an answer to show. */
+const isStep = (item: JsonObject): boolean =>
+  item.type === 'thought' ||
+  item.type === 'subagent_task' ||
+  (item.type === 'tool_call' && !isPlanExit(item) && item.activityKind === undefined);
+
+const textOf = (item: JsonObject | undefined): string | null =>
+  item?.type === 'text' ? (str(item.text) ?? '') : null;
+
+/** Where the closing run of text begins; `items.length` when the turn ends in work. */
+function finalTextRunStart(items: JsonObject[]): number {
+  let index = items.length - 1;
+  while (index >= 0 && isNeverFolded(items[index])) index -= 1;
+  if (textOf(items[index]) === null) return items.length;
+  while (index > 0 && textOf(items[index - 1]) !== null) index -= 1;
+  return index;
+}
+
+/** The closing text run, and the run before the last work too when the closing one is thin. */
+function visibleTextStart(items: JsonObject[]): number {
+  const start = finalTextRunStart(items);
+  if (start >= items.length) return start;
+  const closing = items
+    .slice(start)
+    .map((item) => textOf(item) ?? '')
+    .join('\n\n');
+  if (isSubstantiveText(closing)) return start;
+  let index = start - 1;
+  while (index >= 0 && textOf(items[index]) === null) index -= 1;
+  if (index < 0) return start;
+  while (index > 0 && textOf(items[index - 1]) !== null) index -= 1;
+  return index;
+}
+
+/** The indexes of a segment's items that fold, or none when no answer would remain. */
+function workOf(items: JsonObject[]): Set<number> {
+  const visibleStart = visibleTextStart(items);
+  const work = new Set<number>();
+  items.forEach((item, index) => {
+    const text = textOf(item);
+    const keepsText =
+      text !== null &&
+      visibleStart < items.length &&
+      (index >= visibleStart || isSubstantiveText(text));
+    const folds =
+      isStep(item) ||
+      (items.length > 1 && index < items.length - 1 && !keepsText && !isNeverFolded(item));
+    if (folds) work.add(index);
+  });
+  const answered = items.some((item, index) => !work.has(index) && item.type !== 'system_notice');
+  return answered ? work : new Set();
+}
+
+function formatDuration(ms: number, units: Strings['units']): string {
+  const total = Math.floor(ms / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const { hour, minute, second, separator } = units;
+  if (hours > 0)
+    return `${hours}${hour}${separator}${pad(minutes)}${minute}${separator}${pad(seconds)}${second}`;
+  if (minutes > 0) return `${minutes}${minute}${separator}${pad(seconds)}${second}`;
+  return `${seconds}${second}`;
+}
+
+/** The turn's working time, less any wait for permission; `null` when not recorded. */
+function durationOf(entry: JsonObject): number | null {
+  const endedAt = entry.endedAt;
+  const startedAt = Date.parse(str(entry.timestamp) ?? '');
+  if (typeof endedAt !== 'number' || !Number.isFinite(startedAt) || endedAt < startedAt) {
+    return null;
+  }
+  const wait = typeof entry.permissionWaitMs === 'number' ? entry.permissionWaitMs : 0;
+  return Math.max(0, endedAt - startedAt - Math.max(0, wait));
+}
+
+/** The row that shows or hides a segment's work, which stays in place between the answer's text. */
+function workedRow(document: Document, label: string, work: HTMLElement[]): HTMLElement {
+  const row = element(document, 'button', 'worked');
+  row.type = 'button';
+  row.append(element(document, 'span', 'label', label));
+  row.setAttribute('aria-expanded', 'false');
+  for (const node of work) node.hidden = true;
+  row.addEventListener('click', () => {
+    const expanded = row.getAttribute('aria-expanded') !== 'true';
+    row.setAttribute('aria-expanded', String(expanded));
+    for (const node of work) node.hidden = !expanded;
+  });
+  return row;
+}
+
+function renderAssistant(context: RenderContext, entry: JsonObject, items: Json[]): HTMLElement[] {
+  const rendered = items.flatMap((item) => {
+    const node = renderItem(context, item);
+    return node && isObject(item) ? [{ item, node }] : [];
+  });
+  if (entry.finished !== true && typeof entry.endedAt !== 'number') {
+    return rendered.map(({ node }) => node);
+  }
+  // A plan's exit card closes a segment of its own, folded on its own.
+  const segments: Array<typeof rendered> = [];
+  let current: typeof rendered = [];
+  for (const part of rendered) {
+    current.push(part);
+    if (isPlanExit(part.item)) {
+      segments.push(current);
+      current = [];
+    }
+  }
+  // A turn ending exactly on the card leaves no segment after it.
+  if (current.length > 0 || segments.length === 0) segments.push(current);
+  const duration = durationOf(entry);
+  return segments.flatMap((segment, index) => {
+    const work = workOf(segment.map(({ item }) => item));
+    const nodes = segment.map(({ node }) => node);
+    if (work.size === 0) return nodes;
+    // The turn's duration covers every segment, so only the last claims it.
+    const label =
+      duration !== null && index === segments.length - 1
+        ? context.strings.workedFor(formatDuration(duration, context.strings.units))
+        : context.strings.steps(
+            segment.filter(({ item }, at) => work.has(at) && isStep(item)).length
+          );
+    const row = workedRow(
+      context.document,
+      label,
+      nodes.filter((_, at) => work.has(at))
+    );
+    return [row, ...nodes];
+  });
+}
+
 /** One conversation's history; entries of other roles, and unknown items, are left out. */
 export function renderHistory(context: RenderContext, history: Json): HTMLElement {
   const list = element(context.document, 'div', 'history');
@@ -226,9 +401,12 @@ export function renderHistory(context: RenderContext, history: Json): HTMLElemen
       const blocks = entry.inputConfig.inputBlocks;
       if (Array.isArray(blocks)) items = blocks;
     }
-    const nodes = items
-      .map((item) => renderItem(context, item))
-      .filter((node): node is HTMLElement => node !== null);
+    const nodes =
+      entry.role === 'assistant'
+        ? renderAssistant(context, entry, items)
+        : items
+            .map((item) => renderItem(context, item))
+            .filter((node): node is HTMLElement => node !== null);
     if (nodes.length === 0) continue;
     const message = element(context.document, 'article', `message ${entry.role}`);
     message.append(...nodes);

@@ -72,8 +72,12 @@ the page runs under a CSP that allows only its own origin, so a link or image
 in a conversation loads nothing from elsewhere; an object answers with
 `sandbox`. The reader (`packages/lan-share-reader`) is a small page of its
 own, no part of the desktop: it renders the messages as Markdown (micromark,
-which drops raw HTML and unsafe link targets), folds tool calls and thinking,
-and lists the conversations when there are several. The CLI build copies it
+which drops raw HTML and unsafe link targets) and lists the conversations
+when there are several. A finished turn reads like the desktop's: its answer
+shows (with earlier text of 300 characters or with structure), and the
+thinking, tool calls and short narration before it fold into one "Worked for
+…" row, or a step count when the history holds no duration; opened, each step
+returns to its place and stays folded on its own. The CLI build copies it
 beside its bundle, where the hub reads it.
 
 **Following the hub.** `shares/` travels with the hub. A take-over asks the
