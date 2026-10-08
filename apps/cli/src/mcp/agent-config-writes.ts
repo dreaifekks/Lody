@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import {
   canReadAgentRole,
@@ -109,7 +110,7 @@ const appendNotice = async (
   const session = await manager.getOrCreateSessionDoc(sessionId);
   const record = await manager.repo.getDocMeta(session.roomId);
   const backend = await createSessionBackend(session, record?.meta as SessionMeta | undefined);
-  if ((await backend.readTurn(entryId)).state === 'ready') return;
+  if ((await backend.readTurn(entryId)).state === 'ready') return false;
   await backend.appendHistoryTurn({
     id: entryId,
     role: 'system',
@@ -119,7 +120,15 @@ const appendNotice = async (
     finished: true,
   });
   await manager.repo.flush();
+  return true;
 };
+
+const SCHEDULE_VERBS = { create: 'created', edit: 'changed', resume: 'resumed' } as const;
+const ScheduleWriteResultSchema = z.object({
+  notice: z
+    .object({ action: z.enum(['create', 'edit', 'pause', 'resume']), title: z.string() })
+    .optional(),
+});
 
 const jsonResult = (value: unknown): CallToolResult => ({
   content: [{ type: 'text', text: JSON.stringify(value) }],
@@ -133,7 +142,19 @@ const jsonResult = (value: unknown): CallToolResult => ({
 export function createAgentConfigWrites(deps: {
   readInvokingCall: (manager: LoroDocumentManager) => Promise<InvokingAgentCall>;
   errorResult: (error: unknown) => CallToolResult;
+  /** Desktop alert and phone push to the user; nothing where no port delivers them. */
+  notifyConfigChange: (
+    sessionId: SessionId,
+    notice: { id: string; title: string; body: string }
+  ) => Promise<void> | undefined;
 }) {
+  /** Who changed what, once per first write: the notice in the conversation marks it. */
+  const notifyUser = async (session: SessionMeta, id: string, title: string, name: string) =>
+    deps.notifyConfigChange(session.id as SessionId, {
+      id,
+      title,
+      body: `${name}, by an Agent in “${session.title || 'a conversation'}”`,
+    });
   const withManager = async <T>(
     workspaceSelector: string,
     run: (manager: LoroDocumentManager, workspaceId: WorkspaceId, userId: string) => Promise<T>
@@ -159,7 +180,19 @@ export function createAgentConfigWrites(deps: {
           requesterSessionId: invoking.session.id as SessionId,
           requesterPermissionTier: invoking.tier,
         });
-      if (request.action === 'resume') return send({ action: 'resume', ...request.input });
+      const sendAndNotify = async (command: ScheduleCommand) => {
+        const result = await send(command);
+        const notice = ScheduleWriteResultSchema.parse(result).notice;
+        if (notice && notice.action !== 'pause')
+          await notifyUser(
+            invoking.session,
+            `schedule-${notice.action}-${request.input.requestId}`,
+            `Scheduled task ${SCHEDULE_VERBS[notice.action]}`,
+            notice.title
+          );
+        return result;
+      };
+      if (request.action === 'resume') return sendAndNotify({ action: 'resume', ...request.input });
 
       const target: ScheduleProposalMeta['target'] = request.input.target;
       const discovery = await createResourceDiscovery({
@@ -218,13 +251,13 @@ export function createAgentConfigWrites(deps: {
         machineTimeZone: (machineId: string) => timeZones.get(machineId),
       };
       if (request.action === 'create')
-        return send({
+        return sendAndNotify({
           action: 'create',
           scheduleId: request.input.requestId,
           requestId: request.input.requestId,
           draft: buildScheduleCreateDraft(request.input, context),
         });
-      return send({
+      return sendAndNotify({
         action: 'edit',
         scheduleId: request.input.scheduleId,
         requestId: request.input.requestId,
@@ -276,12 +309,21 @@ export function createAgentConfigWrites(deps: {
           createId: () => randomUUID() as AgentRoleId,
         });
         const write = await upsertWorkspaceAgentRoleEntry(manager.repo, workspaceId, next);
-        if (write.changed)
-          await appendNotice(
+        const entryId = `agent-role-${next.id}-r${next.revision}`;
+        if (
+          write.changed &&
+          (await appendNotice(
             manager,
             invoking.session.id as SessionId,
-            `agent-role-${next.id}-r${next.revision}`,
+            entryId,
             `${request.action === 'create' ? 'Created' : 'Changed'} Agent Role from this conversation: ${next.name} (${next.id}, revision ${next.revision}). Review or edit it in Settings → Agent Roles.`
+          ))
+        )
+          await notifyUser(
+            invoking.session,
+            entryId,
+            `Agent Role ${request.action === 'create' ? 'created' : 'changed'}`,
+            next.name
           );
         return { write, role: next };
       })

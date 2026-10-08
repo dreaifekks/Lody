@@ -35,6 +35,11 @@ export interface SessionCommandHost {
   githubToken?(repoFullName: string): Promise<string | null>;
   /** `lody_notify_user`; absent where this machine sends no alerts. */
   notifyUser?(sessionId: SessionId, input: LodyNotifyUserInput): Promise<LodyNotifyUserResult>;
+  /** Desktop alert and phone push that an Agent changed a Role or Schedule; once per write. */
+  notifyConfigChange?(
+    sessionId: SessionId,
+    notice: { id: string; title: string; body: string }
+  ): Promise<void>;
   /**
    * The other machines of a LAN's workspace, reached through the LAN's hub.
    * Absent where the workspace has no machine but this one.

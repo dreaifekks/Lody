@@ -489,6 +489,12 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
 
   it('creates an enabled schedule with this conversation’s Agent and mode, attributed to it', async () => {
     const h = await asAgent('edit');
+    // The first write leaves a notice, which its caller turns into one alert; a retry leaves none.
+    await expect(create(h, 'nightly')).resolves.toEqual({
+      ok: true,
+      scheduleId: 'nightly',
+      notice: { action: 'create', title: 'Nightly review' },
+    });
     await expect(create(h, 'nightly')).resolves.toEqual({ ok: true, scheduleId: 'nightly' });
     const saved = (await h.repository.read('nightly'))!;
     expect(saved.definition).toMatchObject({
@@ -611,7 +617,7 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
         scheduleId: 'nightly',
         requestId: 'resume',
       })
-    ).resolves.toEqual({ ok: true, scheduleId: 'nightly' });
+    ).resolves.toMatchObject({ ok: true, scheduleId: 'nightly' });
     const resumed = (await h.repository.read('nightly'))!;
     expect(resumed.definition.enabled).toBe(true);
     expect(resumed.timeline.at(-1)).toMatchObject({
@@ -652,7 +658,7 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
       });
     await expect(intoChat('into-chat')).rejects.toThrow('the chat it sends into');
     h.runtimeReport('chat', { basedOnUserTurnId: 'turn', modeId: 'acceptEdits' });
-    await expect(intoChat('into-calm-chat')).resolves.toEqual({
+    await expect(intoChat('into-calm-chat')).resolves.toMatchObject({
       ok: true,
       scheduleId: 'into-calm-chat',
     });
@@ -742,7 +748,7 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
       });
     await attempt(draftContext.now);
     // The answer was lost; the Agent retries a minute later.
-    await expect(attempt(draftContext.now + 60_000)).resolves.toEqual({
+    await expect(attempt(draftContext.now + 60_000)).resolves.toMatchObject({
       ok: true,
       scheduleId: 'every-seven',
     });
@@ -863,11 +869,11 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
         requestId: 'pi',
         draft,
       })
-    ).resolves.toEqual({ ok: true, scheduleId: 'pi' });
+    ).resolves.toMatchObject({ ok: true, scheduleId: 'pi' });
     await executeScheduleCommand(h.context, { action: 'pause', scheduleId: 'pi', requestId: 'p' });
     await expect(
       executeScheduleCommand(h.context, { action: 'resume', scheduleId: 'pi', requestId: 'r' })
-    ).resolves.toEqual({ ok: true, scheduleId: 'pi' });
+    ).resolves.toMatchObject({ ok: true, scheduleId: 'pi' });
     expect((await h.repository.read('pi'))?.definition.enabled).toBe(true);
     // The exemption is Pi's, not its caller's: Claude stays capped.
     await expect(create(h, 'claude-from-unknown')).rejects.toThrow('more permissions');

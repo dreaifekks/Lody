@@ -388,6 +388,7 @@ export async function executeScheduleCommand(
     await (await manager.repo.openPersistedDoc(getScheduleRoomId(id))).syncOnce();
     await registry.syncOnce();
   }
+  let notice: { action: keyof typeof AGENT_NOTICES; title: string } | undefined;
   if (
     requesterSessionId &&
     (command.action === 'create' ||
@@ -408,7 +409,9 @@ export async function executeScheduleCommand(
         : `schedule-${action}-${command.requestId}`;
     const title = (await repository.read(id))?.definition.title ?? id;
     const existing = await backend.readTurn(entryId);
-    if (existing.state !== 'ready')
+    if (existing.state !== 'ready') {
+      // Only a first write leaves a notice, so its caller alerts the user once.
+      notice = { action, title };
       await backend.appendHistoryTurn({
         id: entryId,
         role: 'system',
@@ -425,11 +428,12 @@ export async function executeScheduleCommand(
         fileDiff: [],
         finished: true,
       });
+    }
     await manager.repo.flush();
     if (!localOnly && (!(await backend.waitUntilSynced()) || !(await session.waitUntilSynced())))
       throw new Error(
         `${AGENT_NOTICES[action]} schedule saved; notification sync pending. Retry with the same requestId.`
       );
   }
-  return { ok: true, scheduleId: id };
+  return { ok: true, scheduleId: id, ...(notice ? { notice } : {}) };
 }

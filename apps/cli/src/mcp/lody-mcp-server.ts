@@ -3719,6 +3719,9 @@ export function buildSessionToolServer(
       };
     },
     errorResult: mcpErrorResult,
+    // Read per call: only the daemon's Session tool scope has a notifications port.
+    notifyConfigChange: (sessionId, notice) =>
+      getSessionCommandEnvironment()?.host.notifyConfigChange?.(sessionId, notice),
   });
   registerScheduleTools(server, registerSessionTool, {
     execute: async (command) => {

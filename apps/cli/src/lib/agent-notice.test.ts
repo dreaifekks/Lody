@@ -6,6 +6,7 @@ import {
   AGENT_NOTICE_SESSION_MIN_INTERVAL_MS,
   AgentNoticeRateLimiter,
   deliverAgentNotice,
+  sendAgentNotice,
   type AgentNoticeDeps,
 } from './agent-notice';
 
@@ -143,5 +144,30 @@ describe('lody_notify_user delivery', () => {
     const env = setup({ graceMs: undefined });
     await deliverAgentNotice(env.deps, SESSION, { body: 'Done' });
     expect(env.pushed).toHaveLength(1);
+  });
+});
+
+describe('Lody notices of Agent configuration writes', () => {
+  it('alert desktops and the phone even with the Agent’s switch off and its rate limit spent', async () => {
+    const env = setup({ enabled: false });
+    for (let index = 0; index <= AGENT_NOTICE_SESSION_HOURLY_LIMIT; index += 1)
+      env.deps.limiter.take(SESSION);
+    expect(
+      await deliverAgentNotice(env.deps, SESSION, { body: 'refused, switched off' })
+    ).toMatchObject({ ok: false });
+    for (const id of ['schedule-create-a', 'agent-role-r-r2']) {
+      await sendAgentNotice(env.deps, SESSION, {
+        id,
+        title: 'Scheduled task created',
+        body: 'Nightly review, by an Agent in “Planning”',
+        at: 1,
+      });
+      expect(env.metas.get(SESSION)?.agentNotice?.id).toBe(id);
+    }
+    await env.advance(GRACE_MS);
+    expect(env.pushed.map((entry) => entry.notice.id)).toEqual([
+      'schedule-create-a',
+      'agent-role-r-r2',
+    ]);
   });
 });
