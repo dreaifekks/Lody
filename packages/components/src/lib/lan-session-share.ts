@@ -17,6 +17,7 @@ import type {
 } from '@lody/shared';
 import {
   LAN_SHARE_IMAGE_MAX_BYTES,
+  projectLanShareHistory,
   sniffLanShareImage,
   type LanSharedConversation,
   type LanShareImageKind,
@@ -197,8 +198,12 @@ export function toLanShareEntry(
  * Freezes the selected conversations with the upstream exporter. A LAN keeps
  * the picture of a message as a file, which sharing omits with every file;
  * a typed image only the hosted store backs, so it fails the capture.
+ *
+ * Only the answers are published: each history goes through
+ * `projectLanShareHistory` first, so thinking, tool calls, diffs and short
+ * narration never leave this window, whatever the reader page would fold.
  */
-async function captureLanSessionShare(options: {
+export async function captureLanSessionShare(options: {
   sessions: readonly SessionMeta[];
   rootSessionId: string;
   previousSourceIds?: readonly { sourceId: string; conversationId: string }[];
@@ -242,7 +247,7 @@ async function captureLanSessionShare(options: {
       conversations: options.sessions.map((meta, index) => ({
         sourceId: meta.id,
         title: meta.title ?? '',
-        history: histories[index],
+        history: projectLanShareHistory(histories[index]),
         parentSourceId: meta.parentSessionId ?? undefined,
         openedBySourceId: meta.openedBySessionId ?? undefined,
         childSessionPlacement:

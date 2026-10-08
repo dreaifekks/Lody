@@ -4,6 +4,8 @@
 // `.agents/docs/lan-sharing.md#shared-conversations`.
 import { z } from 'zod';
 
+export * from './lan-share-visible';
+
 /** Management routes behind the hub's gate. */
 export const LAN_SHARES_PATH = '/lan/shares';
 export const LAN_SHARES_OBJECTS_PATH = '/lan/shares/objects';

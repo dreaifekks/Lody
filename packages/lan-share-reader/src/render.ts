@@ -3,6 +3,12 @@
 // with raw HTML escaped and unsafe link targets dropped.
 import { micromark } from 'micromark';
 import { gfm, gfmHtml } from 'micromark-extension-gfm';
+import {
+  isLanShareActivity as isActivity,
+  lanShareAnswered,
+  lanShareSegments,
+  lanShareWorkOf as workOf,
+} from '../../shared/src/lan-share-visible';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type JsonObject = { [key: string]: Json };
@@ -255,41 +261,9 @@ function renderItem(context: RenderContext, item: Json): HTMLElement | null {
 }
 
 // A finished turn reads like the desktop's: its answer shows, and the work
-// before it (thinking, tool calls, short narration) folds into one row. These
-// rules follow `ai-gui/message-copy.ts` and `assistant-turn-render-blocks.ts`
-// of `@lody/components`, which this page may not import.
-
-/** Length from which earlier text in a turn reads as content, not narration. */
-const SUBSTANTIVE_TEXT_MIN_CHARS = 300;
-const STRUCTURED_TEXT_PATTERN = /(?:^|\n)[ \t]*(?:[-*+] |\d+[.)] |\||#{1,6} )/;
-
-const isSubstantiveText = (text: string): boolean =>
-  text.trim().length >= SUBSTANTIVE_TEXT_MIN_CHARS || STRUCTURED_TEXT_PATTERN.test(text);
-
-const isPlanExit = (item: JsonObject): boolean =>
-  item.type === 'tool_call' && item.kind === 'switch_mode';
-
-/** Attachments, plans and notices trail the answer and never fold. */
-const NEVER_FOLDED = new Set([
-  'image',
-  'image_group',
-  'file',
-  'plan',
-  'goal',
-  'proposed_plan',
-  'system_notice',
-]);
-
-const isNeverFolded = (item: JsonObject): boolean =>
-  (typeof item.type === 'string' && NEVER_FOLDED.has(item.type)) || isPlanExit(item);
-
-/**
- * Thinking and tool calls: a run of them is one group of steps. Thinking is
- * counted but never shown, as the desktop's share page leaves it out.
- */
-const isActivity = (item: JsonObject): boolean =>
-  item.type === 'thought' ||
-  (item.type === 'tool_call' && !isPlanExit(item) && item.activityKind === undefined);
+// before it (thinking, tool calls, short narration) folds into one row. The
+// rules are those the window publishes by, in `lan-share-visible.ts` of
+// `@lody/shared`, which imports nothing and is bundled by its path.
 
 const isShownStep = (item: JsonObject): boolean =>
   item.type === 'tool_call' && item.kind !== 'think';
@@ -300,52 +274,6 @@ const isSettledRetry = (item: JsonObject): boolean =>
   item.activityKind === 'codex_retry' &&
   item.status !== 'pending' &&
   item.status !== 'in_progress';
-
-const textOf = (item: JsonObject | undefined): string | null =>
-  item?.type === 'text' ? (str(item.text) ?? '') : null;
-
-/** Where the closing run of text begins; `items.length` when the turn ends in work. */
-function finalTextRunStart(items: JsonObject[]): number {
-  let index = items.length - 1;
-  while (index >= 0 && isNeverFolded(items[index])) index -= 1;
-  if (textOf(items[index]) === null) return items.length;
-  while (index > 0 && textOf(items[index - 1]) !== null) index -= 1;
-  return index;
-}
-
-/** The closing text run, and the run before the last work too when the closing one is thin. */
-function visibleTextStart(items: JsonObject[]): number {
-  const start = finalTextRunStart(items);
-  if (start >= items.length) return start;
-  const closing = items
-    .slice(start)
-    .map((item) => textOf(item) ?? '')
-    .join('\n\n');
-  if (isSubstantiveText(closing)) return start;
-  let index = start - 1;
-  while (index >= 0 && textOf(items[index]) === null) index -= 1;
-  if (index < 0) return start;
-  while (index > 0 && textOf(items[index - 1]) !== null) index -= 1;
-  return index;
-}
-
-/** The indexes of a finished segment's items that fold. */
-function workOf(items: JsonObject[]): Set<number> {
-  const visibleStart = visibleTextStart(items);
-  const work = new Set<number>();
-  items.forEach((item, index) => {
-    const text = textOf(item);
-    const keepsText =
-      text !== null &&
-      visibleStart < items.length &&
-      (index >= visibleStart || isSubstantiveText(text));
-    const folds =
-      isActivity(item) ||
-      (items.length > 1 && index < items.length - 1 && !keepsText && !isNeverFolded(item));
-    if (folds) work.add(index);
-  });
-  return work;
-}
 
 function toolPaths(item: JsonObject): string[] {
   const paths = new Set<string>();
@@ -489,17 +417,7 @@ function renderAssistant(context: RenderContext, entry: JsonObject, items: Json[
   }
   const finished = entry.finished === true || typeof entry.endedAt === 'number';
   // A plan's exit card closes a segment of its own, folded on its own.
-  const segments: JsonObject[][] = [];
-  let current: JsonObject[] = [];
-  for (const item of kept) {
-    current.push(item);
-    if (isPlanExit(item)) {
-      segments.push(current);
-      current = [];
-    }
-  }
-  // A turn ending exactly on the card leaves no segment after it.
-  if (current.length > 0 || segments.length === 0) segments.push(current);
+  const segments = lanShareSegments(kept);
   const duration = durationOf(entry);
   return segments.flatMap((segment, index) => {
     const last = index === segments.length - 1;
@@ -527,7 +445,7 @@ function renderAssistant(context: RenderContext, entry: JsonObject, items: Json[
     }
     shown.push(...segmentTasks);
     folding.push(...segmentTasks);
-    const answered = segment.some((item, at) => !work.has(at) && item.type !== 'system_notice');
+    const answered = lanShareAnswered(segment, work);
     // Thinking alone is work too: the row then says how long the turn took.
     if (!finished || !answered || (work.size === 0 && segmentTasks.length === 0)) return shown;
     // The turn's duration covers every segment, so only the last claims it.

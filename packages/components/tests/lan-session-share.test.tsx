@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LocalProjectControlResponse } from '@lody/shared';
 import type { LanSharedConversation, LanShareSettingsResult } from '@lody/shared/lan-share';
 
+import type { SessionDocStore } from '../src/atoms/runtime';
 import {
+  captureLanSessionShare,
   LanShareSettingsError,
   readLanShareSettings,
   revokeLanShare,
@@ -212,5 +214,126 @@ describe("the settings of a LAN workspace's share pages", () => {
     expect(shell.images).toHaveLength(1);
 
     expect(await saveLanShareImage('lw_home', 'icon', null)).toMatchObject({ icon: false });
+  });
+});
+
+describe('what a LAN share publishes of a conversation', () => {
+  const command = (id: string, line: string) => ({
+    type: 'tool_call',
+    toolCallId: id,
+    kind: 'execute',
+    status: 'completed',
+    title: line,
+    content: [
+      { type: 'terminal_command', command: line },
+      { type: 'content', content: { type: 'text', text: `output of ${id}` } },
+    ],
+  });
+  const report = `The cause: ${'the test waits on a real timer. '.repeat(10)}`.trim();
+  const turn = (id: string, answer: string) => [
+    {
+      id: `${id}-u`,
+      role: 'user',
+      timestamp: '2026-10-09T08:00:00.000Z',
+      items: [{ type: 'text', text: `Question ${id}?` }],
+    },
+    {
+      id: `${id}-a`,
+      role: 'assistant',
+      timestamp: '2026-10-09T08:00:01.000Z',
+      endedAt: Date.parse('2026-10-09T08:01:00.000Z'),
+      finished: true,
+      plan: [{ content: 'secret plan step', status: 'completed' }],
+      items: [
+        { type: 'thought', text: 'private reasoning' },
+        { type: 'text', text: 'Running the tests first.' },
+        command(`${id}1`, 'rm -rf ~/secret-dir'),
+        { type: 'text', text: report },
+        {
+          type: 'tool_call',
+          toolCallId: `${id}2`,
+          kind: 'edit',
+          status: 'completed',
+          title: 'Edit src/clock.ts',
+          content: [
+            { type: 'diff', path: 'src/clock.ts', oldText: 'old line', newText: 'new line' },
+          ],
+        },
+        { type: 'subagent_task', description: 'a helper' },
+        { type: 'proposed_plan', markdown: 'proposed plan text', status: 'pending' },
+        { type: 'text', text: answer },
+      ],
+    },
+    // Still running: no answer yet, so nothing of it but substantive text.
+    {
+      id: `${id}-r`,
+      role: 'assistant',
+      timestamp: '2026-10-09T08:02:00.000Z',
+      items: [{ type: 'text', text: 'Looking again.' }, command(`${id}3`, 'cat /etc/hosts')],
+    },
+  ];
+  const histories: Record<string, unknown[]> = {
+    root: turn('r', 'Fixed: use fake timers.'),
+    child: turn('c', 'The child answer.'),
+  };
+  const runtime = {
+    prepareSessionTarget: async () => undefined,
+    acquireSessionStore: async (sessionId: string) =>
+      ({
+        sessionId,
+        firstSynced: Promise.resolve(),
+        acquireSync: () => () => undefined,
+        sessionData: { history: { readAll: async () => histories[sessionId] } },
+      }) as unknown as SessionDocStore,
+    releaseSessionStoreRef: () => undefined,
+  };
+
+  it('carries the answers of every conversation and nothing of the work', async () => {
+    const prepared = await captureLanSessionShare({
+      sessions: [
+        { id: 'root', title: 'Root', machineId: 'm1' },
+        { id: 'child', title: 'Child', machineId: 'm1', parentSessionId: 'root' },
+      ] as never,
+      rootSessionId: 'root',
+      signal: new AbortController().signal,
+      runtime: runtime as never,
+    });
+    const decoded = prepared.manifest.conversations.map((conversation) => {
+      const bytes = prepared.objects.get(conversation.historyObjectId);
+      return new TextDecoder().decode(bytes);
+    });
+    expect(decoded).toHaveLength(2);
+    for (const [index, text] of decoded.entries()) {
+      for (const secret of [
+        'private reasoning',
+        'Running the tests first.',
+        'rm -rf',
+        'output of',
+        'old line',
+        'new line',
+        'src/clock.ts',
+        'a helper',
+        'proposed plan text',
+        'secret plan step',
+        'Looking again.',
+        'cat /etc/hosts',
+        '"thought"',
+        '"tool_call"',
+      ]) {
+        expect([index, text.includes(secret)]).toEqual([index, false]);
+      }
+      expect(text).toContain(report);
+      expect(text).toContain(index === 0 ? 'Fixed: use fake timers.' : 'The child answer.');
+      expect(text).toContain(index === 0 ? 'Question r?' : 'Question c?');
+    }
+    // The running turn had nothing to show, so it is gone; the times stay.
+    const root = JSON.parse(decoded[0]!) as Array<{
+      id: string;
+      endedAt?: number;
+      items: Array<{ type: string }>;
+    }>;
+    expect(root.map((entry) => entry.id)).toEqual(['r-u', 'r-a']);
+    expect(root[1]?.endedAt).toBe(Date.parse('2026-10-09T08:01:00.000Z'));
+    expect(root[1]?.items.map((item) => item.type)).toEqual(['text', 'text']);
   });
 });

@@ -17,7 +17,10 @@ The page a LAN hub serves to readers of a shared conversation (fork-only, see
 - It reads only `/s/<id>/share.json` and objects under the deployment that
   answer named; it holds no credential and writes nothing to storage.
 - It stays small and imports nothing of the desktop: no React, no
-  `@lody/components`, no Zstd (the hub refuses compressed histories).
+  `@lody/components`, no Zstd (the hub refuses compressed histories). Its one
+  import from another package is `packages/shared/src/lan-share-visible.ts`,
+  by path: the rule of what a turn shows, which the window also publishes by.
+  That file imports nothing; keep the two on it rather than copying it.
 
 ## Build
 

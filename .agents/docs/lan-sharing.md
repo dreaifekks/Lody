@@ -24,7 +24,18 @@ under it with the upstream exporter (`prepareSharePackage`), with file
 attachments omitted by the upstream switch and history left uncompressed, so
 the reader needs no Zstd. A picture of a LAN conversation is a file of an
 image type, so it is omitted too; a typed image block, which only the hosted
-store backs, fails the capture. The shell writes the frozen package to a
+store backs, fails the capture. Only the answers are published: before the
+exporter sees a history, `projectLanShareHistory`
+(`packages/shared/src/lan-share-visible.ts`) keeps the user's messages and,
+of each assistant turn, what the reader shows with the work folded (the
+closing text, earlier text of 300 characters or with structure, and the
+answer's pictures and files). Thinking, tool calls with their commands and
+diffs, short narration, subagent tasks, plans and notices never leave the
+window; a turn that shows no answer (still running, or ending in work) keeps
+only its substantive text, and one left empty is dropped. The times of a
+turn stay. The reader folds by the same file, so a published turn shows what
+it would have shown folded, and no row to open. A share published before
+this keeps its full history until it is updated. The shell writes the frozen package to a
 temporary directory and hands it to the agent service of its own machine
 (`lan/share-publish`), as it hands over the files of a message; the agent
 service uploads it to the hub of the workspace's LAN with the credential and

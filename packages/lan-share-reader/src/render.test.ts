@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
+import { projectLanShareHistory } from '../../shared/src/lan-share-visible';
 import { STRINGS, orderConversations, renderHistory, type Json, type Manifest } from './render';
 
 const manifest: Manifest = {
@@ -135,6 +136,15 @@ describe('the reader page', () => {
       expect(page.textContent).not.toContain('Let me look.');
       row.click();
       expect(shown(page)).toHaveLength(3);
+    });
+
+    it('shows of a published turn exactly what it shows folded, and no row to open', () => {
+      const finished = turn({ finished: true, endedAt: Date.parse('2026-10-09T08:01:44.000Z') });
+      const published = render(projectLanShareHistory([finished]) as Json);
+      expect(published.querySelector('.worked')).toBeNull();
+      expect(published.querySelector('details')).toBeNull();
+      // What a reader of the full history sees before opening the row.
+      expect(shown(published)).toEqual(shown(render([finished])).slice(1));
     });
 
     it('counts the steps when the history holds no duration, less any permission wait', () => {
