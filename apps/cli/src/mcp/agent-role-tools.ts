@@ -130,6 +130,8 @@ const FORM_ERRORS: Record<AgentRoleFormError, string> = {
 };
 
 const SETTINGS = 'Settings → Agent Roles';
+const UNKNOWN_HINT =
+  'Unknown means a mode Lody does not rank, an Agent without reported capabilities, or a permission option beside the mode (such as permission_mode) left unset: set each one explicitly.';
 
 /**
  * The Role an Agent asked for, checked the way Settings checks it and kept
@@ -196,13 +198,13 @@ export async function buildAgentRoleFromAgent(
   const tier = await deps.tierOf(role);
   if (!isPermissionTierWithin(tier, deps.callerTier))
     throw new Error(
-      `The Role would run with more permissions than this conversation (Role: ${tier}, conversation: ${deps.callerTier}). Only the user can set that, in ${SETTINGS}.`
+      `The Role would run with more permissions than this conversation (Role: ${tier}, conversation: ${deps.callerTier}). Only the user can set that, in ${SETTINGS}.${tier === 'unknown' ? ` ${UNKNOWN_HINT}` : ''}`
     );
   return role;
 }
 
 const ROLE_CEILING =
-  'The Role may run with at most the permissions this conversation runs with now (its permission mode); a higher or unrecognized mode is refused and only the user can set it in Settings → Agent Roles.';
+  'The Role may run with at most the permissions this conversation runs with now (its permission mode); a higher or unrecognized mode is refused and only the user can set it in Settings → Agent Roles. Set every permission option the Agent has beside its mode (such as permission_mode) explicitly.';
 
 export function registerAgentRoleWriteTools(
   registerSessionTool: ReturnType<typeof createSessionToolRegistrar>,

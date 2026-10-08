@@ -4,6 +4,7 @@ import { withHistoryPort } from '../../../tests/history-port-fixture';
 import {
   ScheduleRepository,
   ScheduleDefinitionSchema,
+  getStaticBuiltinAcpCapabilities,
   SCHEDULES_PROTOCOL_VERSION,
   type ResolvedPermissionTier,
   type ScheduleCommand,
@@ -14,8 +15,10 @@ import { executeScheduleCommand, type ScheduleCommandContext } from './schedule-
 import {
   buildScheduleCreateDraft,
   buildScheduleEditDraft,
+  scheduleDraftNow,
   type ScheduleCreateToolInput,
 } from '@/mcp/schedule-agent-writes';
+import { readInvokingPermissionTier } from '../agent-permission-tier';
 import { WorkspaceSyncUnavailableError } from '../command-runtime';
 
 async function fixture() {
@@ -71,6 +74,11 @@ async function fixture() {
   let owner = 'owner';
   let machinePresent = false;
   let agentPresent = true;
+  /** Further Agent configs on `machine`, by id. */
+  const agents = new Map<string, Record<string, unknown>>();
+  /** Fields of a Session meta beyond the invoking owner's, by Session id. */
+  const sessions = new Map<string, Record<string, unknown>>();
+  const runtimeReports = new Map<string, Record<string, unknown>>();
   const context = {
     manager: {
       repo: {
@@ -83,31 +91,35 @@ async function fixture() {
                   userId: owner,
                   machineId: 'machine',
                   processingUserMsgId: 'turn',
+                  ...sessions.get(id.slice('session-'.length)),
                 },
               }
-            : id === 'machine-machine' && machinePresent
-              ? {
-                  meta: {
-                    id: 'machine',
-                    ownerUserId: 'owner',
-                    protocolCapabilities: { schedules: SCHEDULES_PROTOCOL_VERSION },
-                  },
-                }
-              : id === 'agent-agent' && agentPresent
+            : id.startsWith('agent-') && agents.has(id.slice('agent-'.length))
+              ? { meta: agents.get(id.slice('agent-'.length)) }
+              : id === 'machine-machine' && machinePresent
                 ? {
                     meta: {
-                      id: 'agent',
-                      machineId: 'machine',
-                      name: 'Agent',
-                      cliType: 'builtin',
-                      agentType: 'claude',
+                      id: 'machine',
+                      ownerUserId: 'owner',
+                      protocolCapabilities: { schedules: SCHEDULES_PROTOCOL_VERSION },
                     },
                   }
-                : undefined,
+                : id === 'agent-agent' && agentPresent
+                  ? {
+                      meta: {
+                        id: 'agent',
+                        machineId: 'machine',
+                        name: 'Agent',
+                        cliType: 'builtin',
+                        agentType: 'claude',
+                      },
+                    }
+                  : undefined,
       },
-      getOrCreateSessionDoc: async () =>
+      getOrCreateSessionDoc: async (sessionId: string) =>
         withHistoryPort({
-          roomId: 'session-session',
+          roomId: `session-${sessionId}`,
+          getDocState: async () => ({ acpRuntimeConfig: runtimeReports.get(sessionId) }),
           waitUntilSynced: notificationSync,
           getHistory: () => [{ id: 'turn', role: 'user' }, ...history],
           updateHistory: async (update: (entries: any[]) => any[]) => {
@@ -135,6 +147,30 @@ async function fixture() {
     },
     addMachine: () => {
       machinePresent = true;
+    },
+    /** An Agent config and the capability its machine reported for it. */
+    addAgent: (agentConfigId: string, agentType: string, capability?: object) => {
+      if (agentConfigId !== 'agent')
+        agents.set(agentConfigId, {
+          id: agentConfigId,
+          machineId: 'machine',
+          name: agentType,
+          cliType: 'builtin',
+          agentType,
+        });
+      if (capability)
+        rows.set(JSON.stringify(['acpCapability', agentConfigId]), {
+          ...capability,
+          cliType: 'builtin',
+          agentType,
+          fetchedAt: 1,
+        });
+    },
+    session: (sessionId: string, meta: Record<string, unknown>) => {
+      sessions.set(sessionId, meta);
+    },
+    runtimeReport: (sessionId: string, report: Record<string, unknown>) => {
+      runtimeReports.set(sessionId, report);
     },
     /** The target machine's record and Agent reach this replica only with a sync. */
     deferTargetToSync: () => {
@@ -420,9 +456,12 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
     roles: [],
     machineTimeZone: () => 'Asia/Tokyo',
   };
+  const staticCapability = (agentType: string) =>
+    getStaticBuiltinAcpCapabilities('builtin', agentType)!;
   const asAgent = async (tier: ResolvedPermissionTier) => {
     const h = await fixture();
     h.addMachine();
+    h.addAgent('agent', 'claude', staticCapability('claude'));
     h.context.requesterSessionId = 'session' as never;
     h.context.requesterPermissionTier = tier;
     return h;
@@ -583,5 +622,177 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
     expect(h.history().at(-1)).toMatchObject({
       items: [{ type: 'text', text: expect.stringContaining('Resumed scheduled task') }],
     });
+  });
+  it('counts what a chat the runs go into keeps, and an unset permission option beside the mode', async () => {
+    const h = await asAgent('edit');
+    // The person's chat with this Agent was last switched to Bypass Permissions.
+    h.session('chat', { id: 'chat', agentConfigId: 'agent', latestUserMsgId: 'chat-turn' });
+    await (
+      await h.context.manager.getOrCreateSessionDoc('chat' as never)
+    ).updateHistory((entries: any[]) => [
+      ...entries,
+      { id: 'chat-turn', role: 'user', inputConfig: { modeId: 'acceptEdits' } },
+    ]);
+    h.runtimeReport('chat', { basedOnUserTurnId: 'turn', modeId: 'bypassPermissions' });
+    const intoChat = (requestId: string) =>
+      executeScheduleCommand(h.context, {
+        action: 'create',
+        scheduleId: requestId,
+        requestId,
+        draft: buildScheduleCreateDraft(
+          {
+            requestId,
+            title: 'Into the chat',
+            prompt: 'Summarize the day.',
+            rule: { kind: 'daily', hour: 21, minute: 0 },
+            destination: { kind: 'existing_session', sessionId: 'chat' },
+          },
+          draftContext
+        ),
+      });
+    await expect(intoChat('into-chat')).rejects.toThrow('the chat it sends into');
+    h.runtimeReport('chat', { basedOnUserTurnId: 'turn', modeId: 'acceptEdits' });
+    await expect(intoChat('into-calm-chat')).resolves.toEqual({
+      ok: true,
+      scheduleId: 'into-calm-chat',
+    });
+
+    // Grok keeps `permission_mode` apart from its mode; a run that does not set
+    // it inherits whatever the chat had, so it cannot be ranked.
+    h.addAgent('grok', 'grok', staticCapability('grok'));
+    const grok = (requestId: string, configOptionValues?: Record<string, string>) =>
+      executeScheduleCommand(h.context, {
+        action: 'create',
+        scheduleId: requestId,
+        requestId,
+        draft: {
+          ...buildScheduleCreateDraft(
+            { requestId, title: 'Grok', prompt: 'Review.', rule: { kind: 'manual' } },
+            draftContext
+          ),
+          agent: {
+            agentConfigId: 'grok',
+            modeId: 'default',
+            ...(configOptionValues ? { configOptionValues } : {}),
+          },
+        },
+      });
+    await expect(grok('grok-unset')).rejects.toThrow('permission_mode');
+    await expect(grok('grok-ask', { permission_mode: 'ask' })).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(grok('grok-approve', { permission_mode: 'always-approve' })).rejects.toThrow(
+      'more permissions'
+    );
+  });
+
+  it('refuses a builtin default mode the Agent does not offer instead of assuming it', async () => {
+    const h = await asAgent('auto');
+    // An older Codex adapter without Auto review starts in its own default mode.
+    const codex = staticCapability('codex');
+    const offered = (value: string) => value !== 'agent-auto-review';
+    h.addAgent('old-codex', 'codex', {
+      ...codex,
+      modes: codex.modes.filter((mode) => offered(mode.id)),
+      configOptions: codex.configOptions.map((option) =>
+        option.id === 'mode'
+          ? { ...option, options: option.options.filter((choice) => offered(choice.value)) }
+          : option
+      ),
+    });
+    h.addAgent('codex', 'codex', codex);
+    const withoutMode = (requestId: string, agentConfigId: string) =>
+      executeScheduleCommand(h.context, {
+        action: 'create',
+        scheduleId: requestId,
+        requestId,
+        draft: {
+          ...buildScheduleCreateDraft(
+            { requestId, title: 'Codex', prompt: 'Review.', rule: { kind: 'manual' } },
+            draftContext
+          ),
+          agent: { agentConfigId },
+        },
+      });
+    await expect(withoutMode('old', 'old-codex')).rejects.toThrow('more permissions');
+    // Where the default is offered, dispatch applies it and it ranks as Auto review.
+    await expect(withoutMode('current', 'codex')).resolves.toMatchObject({ ok: true });
+  });
+
+  it('completes a retried interval write with the same request id, and still refuses another', async () => {
+    const h = await asAgent('edit');
+    const input = {
+      requestId: 'every-seven',
+      title: 'Every seven minutes',
+      prompt: 'Check the queue.',
+      rule: { kind: 'minutes' as const, every: 7 },
+    };
+    const attempt = async (now: number, overrides: Partial<typeof input> = {}) =>
+      executeScheduleCommand(h.context, {
+        action: 'create',
+        scheduleId: input.requestId,
+        requestId: input.requestId,
+        draft: buildScheduleCreateDraft(
+          { ...input, ...overrides },
+          {
+            ...draftContext,
+            now: scheduleDraftNow(now, await h.repository.read(input.requestId), input.requestId),
+          }
+        ),
+      });
+    await attempt(draftContext.now);
+    // The answer was lost; the Agent retries a minute later.
+    await expect(attempt(draftContext.now + 60_000)).resolves.toEqual({
+      ok: true,
+      scheduleId: 'every-seven',
+    });
+    expect((await h.repository.read('every-seven'))?.definition.trigger).toEqual({
+      kind: 'interval',
+      everyMs: 7 * 60_000,
+      anchorAt: new Date(draftContext.now).toISOString(),
+    });
+    await expect(attempt(draftContext.now + 60_000, { title: 'Changed' })).rejects.toThrow(
+      'Idempotency'
+    );
+  });
+
+  it('takes the caller’s tier from its live Agent, else the lower of dispatch and report', async () => {
+    const h = await asAgent('edit');
+    const manager = h.context.manager;
+    const turn = { id: 'turn', inputConfig: { modeId: 'auto' } };
+    const session = { id: 'session', machineId: 'machine', agentConfigId: 'agent' };
+    // A newer Turn is queued, so the report for this one stayed at Auto while
+    // the Agent went into Plan; only the live Agent knows.
+    h.runtimeReport('session', { basedOnUserTurnId: 'turn', modeId: 'auto' });
+    await expect(
+      readInvokingPermissionTier({
+        manager,
+        workspaceId: 'workspace' as never,
+        session,
+        turn,
+        runtimeConfigOptions: [{ id: 'mode', category: 'mode', currentValue: 'plan' }],
+      })
+    ).resolves.toBe('ask');
+    // No live Agent here: the lower of the dispatch config and the report.
+    h.runtimeReport('session', { basedOnUserTurnId: 'turn', modeId: 'plan' });
+    await expect(
+      readInvokingPermissionTier({
+        manager,
+        workspaceId: 'workspace' as never,
+        session,
+        turn,
+        runtimeConfigOptions: undefined,
+      })
+    ).resolves.toBe('ask');
+    h.runtimeReport('session', { basedOnUserTurnId: 'turn', modeId: 'bypassPermissions' });
+    await expect(
+      readInvokingPermissionTier({
+        manager,
+        workspaceId: 'workspace' as never,
+        session,
+        turn,
+        runtimeConfigOptions: undefined,
+      })
+    ).resolves.toBe('auto');
   });
 });

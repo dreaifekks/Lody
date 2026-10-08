@@ -8,8 +8,10 @@ import {
   getServerNow,
   getSessionRoomId,
   isLoroRepoDocDeleted,
+  higherPermissionTier,
   isPermissionTierWithin,
   machineSupportsSchedulesProtocol,
+  normalizeSessionTurnInputConfig,
   ScheduleRuntimeRowSchema,
   previewSchedule,
   readMachineFlockRowsFromFlock,
@@ -20,6 +22,7 @@ import {
   type AgentConfigId,
   type MachineId,
   type MachineMeta,
+  type PermissionTierRunConfig,
   type ResolvedPermissionTier,
   type ScheduleCommand,
   type ScheduleDefinition,
@@ -80,6 +83,50 @@ export async function executeScheduleCommand(
   const repository = new ScheduleRepository(manager.repo, workspaceId);
   const sync = async (room: string) => {
     if (!localOnly) await manager.syncDocOrThrow(room, { reason: 'schedule:command' });
+  };
+  /**
+   * What an existing chat runs with now: its latest Turn's config, and what its
+   * runtime last reported, whichever is higher. A chat not created yet keeps
+   * nothing, so it adds no tier.
+   */
+  const readSessionTier = async (sessionId: SessionId): Promise<ResolvedPermissionTier> => {
+    await sync(getSessionRoomId(sessionId));
+    const record = await manager.repo.getDocMeta(getSessionRoomId(sessionId));
+    const meta = record?.meta as SessionMeta | undefined;
+    if (!meta || isLoroRepoDocDeleted(record!)) return 'ask';
+    if (!meta.agentConfigId) return 'unknown';
+    const session = await manager.getOrCreateSessionDoc(sessionId);
+    const latest = meta.latestUserMsgId
+      ? await (await createSessionBackend(session, meta)).readTurn(meta.latestUserMsgId)
+      : undefined;
+    const latestConfig =
+      (latest?.state === 'ready' ? normalizeSessionTurnInputConfig(latest.turn.inputConfig) : {}) ??
+      {};
+    const reported = (await session.getDocState())?.acpRuntimeConfig;
+    const tierOfSession = (runConfig: PermissionTierRunConfig) =>
+      readAgentRunConfigTier({
+        manager,
+        workspaceId,
+        machineId: meta.machineId as MachineId,
+        agentConfigId: meta.agentConfigId as AgentConfigId,
+        runConfig,
+        localOnly,
+      });
+    const dispatched = await tierOfSession({
+      modeId: latestConfig.modeId,
+      configOptionValues: latestConfig.configOptionValues,
+    });
+    if (!reported) return dispatched;
+    return higherPermissionTier(
+      dispatched,
+      await tierOfSession({
+        modeId: reported.modeId ?? latestConfig.modeId,
+        configOptionValues: {
+          ...latestConfig.configOptionValues,
+          ...(reported.configOptionValues ?? {}),
+        },
+      })
+    );
   };
   const requesterPermissionTier = context.requesterPermissionTier;
   if (requesterSessionId) {
@@ -224,23 +271,32 @@ export async function executeScheduleCommand(
   if (
     requesterSessionId &&
     requesterPermissionTier &&
-    (command.action === 'edit' || command.action === 'resume')
+    (command.action === 'create' || command.action === 'edit' || command.action === 'resume')
   ) {
-    const current = (await repository.read(id))?.definition;
+    const current =
+      command.action === 'create' ? undefined : (await repository.read(id))?.definition;
     if (current && !isPermissionTierWithin(await tierOf(current), requesterPermissionTier))
       throw new Error(
         'This schedule runs with more permissions than this conversation has. Only the user can change or resume it, in Schedules.'
       );
+    const result = command.action === 'resume' ? current : command.draft;
+    if (result) {
+      // A chat the runs go into keeps what its Agent was last set to for any
+      // option a run leaves alone, so that chat counts as well.
+      const destinationSessionId = scheduleDestinationSessionId(
+        id,
+        result.destination ?? DEFAULT_SCHEDULE_DESTINATION
+      );
+      const tier = higherPermissionTier(
+        await tierOf(result),
+        destinationSessionId ? await readSessionTier(destinationSessionId) : 'ask'
+      );
+      if (!isPermissionTierWithin(tier, requesterPermissionTier))
+        throw new Error(
+          'The schedule, or the chat it sends into, would run with more permissions than this conversation has. Unknown counts as more: set every permission option of the Agent (such as permission_mode) explicitly, or use lody_schedule_propose so the user can confirm it.'
+        );
+    }
   }
-  if (
-    requesterSessionId &&
-    requesterPermissionTier &&
-    (command.action === 'create' || command.action === 'edit') &&
-    !isPermissionTierWithin(await tierOf(command.draft), requesterPermissionTier)
-  )
-    throw new Error(
-      'The schedule would run with more permissions than this conversation has. Use lody_schedule_propose so the user can confirm it.'
-    );
   const now = getServerNow();
   if (command.action === 'create' || command.action === 'edit') {
     if (!machine) throw new Error('Target machine is unavailable');

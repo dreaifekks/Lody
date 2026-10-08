@@ -3710,7 +3710,13 @@ export function buildSessionToolServer(
         getSessionContext().sessionId as SessionId
       );
       if (!session) throw new Error('The invoking Session is unavailable');
-      return { session, turn: await resolveInvokingTurnSource() };
+      return {
+        session,
+        turn: await resolveInvokingTurnSource(),
+        runtimeConfigOptions: getSessionCommandEnvironment()?.host.readRuntimeConfigOptions?.(
+          session.id as SessionId
+        ),
+      };
     },
     errorResult: mcpErrorResult,
   });

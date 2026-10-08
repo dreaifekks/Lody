@@ -9,7 +9,6 @@ import {
   listWorkspaceAgentRoles,
   readWorkspaceFlockRowsFromFlock,
   ScheduleRepository,
-  type AgentConfigId,
   type AgentRole,
   type AgentRoleId,
   type MachineId,
@@ -34,8 +33,10 @@ import {
 } from '@/lib/command-runtime';
 import {
   readAgentRunConfigTier,
+  readInvokingPermissionTier,
   readInvokingRunConfig,
   type InvokingRunConfig,
+  type RuntimeConfigOption,
 } from '@/lib/agent-permission-tier';
 import type { LoroDocumentManager } from '@/lib/loro/doc';
 import { createResourceDiscovery } from '@/lib/resource-discovery-runtime';
@@ -43,7 +44,11 @@ import type { ResourceDiscovery } from '@/lib/resource-discovery';
 import { syncMcpCatalog, upsertWorkspaceAgentRoleEntry } from '@/lib/workspace-mcp-store';
 import { createSessionBackend } from '@/session/session-backend';
 import { buildAgentRoleFromAgent, type AgentRoleWrite } from './agent-role-tools';
-import { buildScheduleCreateDraft, buildScheduleEditDraft } from './schedule-agent-writes';
+import {
+  buildScheduleCreateDraft,
+  buildScheduleEditDraft,
+  scheduleDraftNow,
+} from './schedule-agent-writes';
 import type { ScheduleAgentWrite } from './schedule-tools';
 import { withWorkspaceConfigureLock } from './workspace-mcp-configure';
 
@@ -51,6 +56,8 @@ import { withWorkspaceConfigureLock } from './workspace-mcp-configure';
 export type InvokingAgentCall = {
   session: SessionMeta;
   turn: { id: string; userId: string; inputConfig: SessionTurnInputConfig };
+  /** The live Agent's current options, where this process runs it. */
+  runtimeConfigOptions: readonly RuntimeConfigOption[] | undefined;
 };
 
 type Invoking = InvokingAgentCall & { runConfig: InvokingRunConfig; tier: ResolvedPermissionTier };
@@ -61,16 +68,13 @@ const readInvoking = async (
   call: InvokingAgentCall
 ): Promise<Invoking> => {
   const runConfig = await readInvokingRunConfig(manager, call.session.id, call.turn);
-  const tier = call.session.agentConfigId
-    ? await readAgentRunConfigTier({
-        manager,
-        workspaceId,
-        machineId: call.session.machineId as MachineId,
-        agentConfigId: call.session.agentConfigId as AgentConfigId,
-        runConfig,
-        localOnly: false,
-      })
-    : 'unknown';
+  const tier = await readInvokingPermissionTier({
+    manager,
+    workspaceId,
+    session: call.session,
+    turn: call.turn,
+    runtimeConfigOptions: call.runtimeConfigOptions,
+  });
   return { ...call, runConfig, tier };
 };
 
@@ -181,6 +185,7 @@ export function createAgentConfigWrites(deps: {
         if (agent) agents.push(agent);
       }
 
+      const repository = new ScheduleRepository(manager.repo, workspaceId);
       const current =
         request.action === 'update'
           ? await (async () => {
@@ -189,13 +194,13 @@ export function createAgentConfigWrites(deps: {
                 getScheduleRoomId(request.input.scheduleId),
                 'mcp.schedule_write'
               );
-              const document = await new ScheduleRepository(manager.repo, workspaceId).read(
-                request.input.scheduleId
-              );
+              const document = await repository.read(request.input.scheduleId);
               if (!document) throw new Error('Schedule not found');
               return document;
             })()
           : undefined;
+      // The create's schedule id is its request id: a retry finds its own first write.
+      const stored = current ?? (await repository.read(request.input.requestId));
       const timeZones = new Map<string, string>();
       for (const machineId of new Set([
         ...agents.map((agent) => agent.machineId),
@@ -206,7 +211,7 @@ export function createAgentConfigWrites(deps: {
         if (meta?.timeZone) timeZones.set(machineId, meta.timeZone);
       }
       const context = {
-        now: getServerNow(),
+        now: scheduleDraftNow(getServerNow(), stored, request.input.requestId),
         conversation: { session: invoking.session, runConfig: invoking.runConfig },
         agents,
         roles,

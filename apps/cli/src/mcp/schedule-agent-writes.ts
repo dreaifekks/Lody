@@ -88,6 +88,21 @@ const resolveTarget = (
   return resolved.target;
 };
 
+/**
+ * The moment a draft is built at. An interval rule anchors on it, so a retry
+ * of a write that already landed rebuilds at that write's anchor and matches
+ * it exactly; anything else still conflicts on the same request id.
+ */
+export function scheduleDraftNow(
+  now: number,
+  stored: ScheduleDocument | null | undefined,
+  requestId: string
+): number {
+  if (!stored?.timeline.some((entry) => entry.id === requestId)) return now;
+  const { trigger } = stored.definition;
+  return trigger.kind === 'interval' ? Date.parse(trigger.anchorAt) : now;
+}
+
 /** The same defaults a confirmed proposal card creates with. */
 export function buildScheduleCreateDraft(
   input: ScheduleCreateToolInput,

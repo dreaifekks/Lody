@@ -6748,6 +6748,8 @@ export class MessageHandler {
                 }
               : { type: 'session/active-invocation-context', sessionId, active: false };
           },
+          readRuntimeConfigOptions: (sessionId) =>
+            this.executionService.getActiveRuntimeConfigOptions(sessionId),
           readLiveStatus: async (sessionId) => {
             const live = resolveSessionLiveStatus({
               presence: this.sessionActivePresence.getStatus(sessionId),

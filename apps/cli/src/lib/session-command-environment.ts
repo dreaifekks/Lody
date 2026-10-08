@@ -12,6 +12,7 @@ import {
 } from '@lody/shared';
 import type { LoroStreamsMachineRpcClient } from '@lody/loro-streams-rpc';
 import type { AuthContext } from './command-runtime';
+import type { RuntimeConfigOption } from './agent-permission-tier';
 import type { LoroDocumentManager } from './loro/doc';
 import type { MachineAccessCheckResult, WorkspaceSummary } from './workspace';
 import { readMachineLocalProjects } from './local-project-meta';
@@ -19,6 +20,8 @@ import type { SessionLiveStatusBatchItem } from '@/commands/session';
 
 export interface SessionCommandHost {
   readInvocation(sessionId: SessionId): SessionActiveInvocationContextResult;
+  /** The live Agent's current option values during an active Turn, as it last reported them. */
+  readRuntimeConfigOptions?(sessionId: SessionId): readonly RuntimeConfigOption[] | undefined;
   readLiveStatus(sessionId: SessionId): Promise<SessionLiveStatusBatchItem>;
   cancelSession(
     sessionId: SessionId,

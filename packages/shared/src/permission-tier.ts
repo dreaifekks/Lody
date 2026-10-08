@@ -1,4 +1,4 @@
-import { getBuiltinDefaultModeId, type AgentConfigCliType, type AgentType } from './ai';
+import type { AgentConfigCliType, AgentType } from './ai';
 
 /**
  * Coarse permission tiers, lowest first, for comparing run configurations of
@@ -57,45 +57,54 @@ export type PermissionTierRunConfig = {
   configOptionValues?: Record<string, string | boolean>;
 };
 
+/** The options of an Agent's capability: which are its mode and permission controls. */
+export type PermissionTierCapability = {
+  configOptions: readonly { id: string; category?: string | null }[];
+};
+
+const isPermissionOption = (option: { id: string; category?: string | null }) =>
+  option.category === 'mode' || option.category === '_permission' || option.id === '_permission';
+/** A permission control beside the mode (Grok `permission_mode`); a session keeps its last value. */
+const isIndependentPermissionOption = (option: { id: string; category?: string | null }) =>
+  option.category === '_permission' || option.id === '_permission';
+
 /**
- * The tier a run configuration runs at on the given Agent.
+ * The tier a run configuration runs at on the given Agent, as dispatched:
+ * callers apply Lody's builtin default mode the way dispatch does first.
  *
- * `permissionOptionIds` are the ids of the options the Agent's capability
- * declares as its mode or permission control. Without a capability
- * (`undefined`) any option outside the known permission ids could be one, so
- * such a configuration is `unknown`. With no selection at all the Agent runs at
- * Lody's builtin default mode, as dispatch applies it; a provider default Lody
- * does not set is `unknown`.
+ * Without the Agent's capability nothing is known about its controls, so the
+ * tier is `unknown`. So is a configuration that leaves a permission option
+ * beside the mode unset, since a reused session keeps whatever it had, and one
+ * with no selection at all on an Agent that has permission controls: the
+ * provider's own default is not something Lody can rank.
  */
 export function resolvePermissionTier(args: {
   runConfig: PermissionTierRunConfig;
   agent: { cliType?: AgentConfigCliType | null; agentType?: AgentType | null };
-  permissionOptionIds: readonly string[] | undefined;
+  capability: PermissionTierCapability | undefined;
 }): ResolvedPermissionTier {
-  const { runConfig, agent } = args;
-  const optionIds = Object.keys(runConfig.configOptionValues ?? {});
+  const { runConfig, agent, capability } = args;
+  if (agent.cliType === 'builtin' && agent.agentType && UNGATED_AGENT_TYPES.has(agent.agentType))
+    return 'full';
+  if (!capability) return 'unknown';
+  const values = runConfig.configOptionValues ?? {};
   if (
-    !args.permissionOptionIds &&
-    optionIds.some((optionId) => !PERMISSION_OPTION_IDS.includes(optionId))
+    capability.configOptions.some(
+      (option) => isIndependentPermissionOption(option) && values[option.id] === undefined
+    )
   )
     return 'unknown';
   const permissionOptionIds = new Set([
     ...PERMISSION_OPTION_IDS,
-    ...(args.permissionOptionIds ?? []),
+    ...capability.configOptions.filter(isPermissionOption).map((option) => option.id),
   ]);
   const selections: unknown[] = [
     ...(runConfig.modeId !== undefined ? [runConfig.modeId] : []),
-    ...optionIds
+    ...Object.keys(values)
       .filter((optionId) => permissionOptionIds.has(optionId))
-      .map((optionId) => runConfig.configOptionValues?.[optionId]),
+      .map((optionId) => values[optionId]),
   ];
-  if (selections.length === 0) {
-    if (agent.cliType === 'builtin' && agent.agentType && UNGATED_AGENT_TYPES.has(agent.agentType))
-      return 'full';
-    const builtinDefault = getBuiltinDefaultModeId(agent.cliType, agent.agentType);
-    if (!builtinDefault) return 'unknown';
-    selections.push(builtinDefault);
-  }
+  if (selections.length === 0) return 'unknown';
   let rank = 0;
   for (const selection of selections) {
     const tier = typeof selection === 'string' ? MODE_TIERS.get(selection) : undefined;
@@ -104,6 +113,17 @@ export function resolvePermissionTier(args: {
   }
   return PERMISSION_TIERS[rank]!;
 }
+
+const combineTiers =
+  (pick: (left: number, right: number) => number) =>
+  (left: ResolvedPermissionTier, right: ResolvedPermissionTier): ResolvedPermissionTier =>
+    left === 'unknown' || right === 'unknown'
+      ? 'unknown'
+      : PERMISSION_TIERS[pick(PERMISSION_TIERS.indexOf(left), PERMISSION_TIERS.indexOf(right))]!;
+/** The lower of two ceilings; an unknown ceiling is the lowest. */
+export const lowerPermissionTier = combineTiers(Math.min);
+/** The higher of two targets; an unknown target is above every tier. */
+export const higherPermissionTier = combineTiers(Math.max);
 
 /**
  * Whether `target` stays within `ceiling`. An unknown target is never within;
@@ -116,13 +136,4 @@ export function isPermissionTierWithin(
   if (target === 'unknown') return false;
   const ceilingRank = ceiling === 'unknown' ? 0 : PERMISSION_TIERS.indexOf(ceiling);
   return PERMISSION_TIERS.indexOf(target) <= ceilingRank;
-}
-
-/** The ids of the options a capability declares as mode or permission control. */
-export function permissionOptionIdsOf(
-  configOptions: readonly { id: string; category?: string | null }[]
-): string[] {
-  return configOptions
-    .filter((option) => option.category === 'mode' || option.category === '_permission')
-    .map((option) => option.id);
 }

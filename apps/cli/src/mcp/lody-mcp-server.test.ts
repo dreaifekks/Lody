@@ -13,7 +13,6 @@ import {
   SESSION_FILE_MAX_COUNT,
   getStaticBuiltinAcpCapabilities,
   listWorkspaceAgentRoles,
-  permissionOptionIdsOf,
   readWorkspaceFlockRowsFromFlock,
   resolvePermissionTier,
   type ResolvedPermissionTier,
@@ -44,6 +43,7 @@ import {
   resolveEffectiveSessionCreateDispatchConfig,
   validateTurnConfigOptionValues,
   validateTurnModeAndModel,
+  withBuiltinDefaultTurnMode,
 } from '@/commands/session';
 
 import {
@@ -232,7 +232,6 @@ describe('Lody MCP tool catalog', () => {
 
 describe('Agent Role writes from an Agent', () => {
   const claude = createCapability('claude');
-  const permissionOptionIds = permissionOptionIdsOf(claude.configOptions);
   /** An in-memory workspace catalog document behind the real catalog write path. */
   const catalog = () => {
     const rows = new Map<string, { key: unknown[]; value: unknown }>();
@@ -270,12 +269,15 @@ describe('Agent Role writes from an Agent', () => {
         if (agentConfigId !== 'claude-opus') throw new Error('No readable Agent config');
         return 'remote-machine' as MachineId;
       },
-      tierOf: async (role) =>
-        resolvePermissionTier({
-          runConfig: role.runConfig,
-          agent: { cliType: 'builtin', agentType: 'claude' },
-          permissionOptionIds,
-        }),
+      // As the daemon ranks it: Lody's builtin default first, then the capability.
+      tierOf: async (role) => {
+        const agent = { cliType: 'builtin' as const, agentType: 'claude' };
+        return resolvePermissionTier({
+          runConfig: withBuiltinDefaultTurnMode(role.runConfig, agent, claude),
+          agent,
+          capability: claude,
+        });
+      },
       now: () => 100,
       createId: () => `role-${++id}` as AgentRoleId,
     };

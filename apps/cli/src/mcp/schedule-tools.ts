@@ -75,8 +75,10 @@ export function registerScheduleTools(
   const write = (request: ScheduleAgentWrite) => respond(() => deps.write(request));
   const ceiling = [
     'The schedule may run with at most the permissions this conversation runs with now (its',
-    'permission mode); anything higher is refused, and then lody_schedule_propose lets the user',
-    'confirm it instead.',
+    'permission mode), and so may a chat it sends into; anything higher is refused, and then',
+    'lody_schedule_propose lets the user confirm it instead. A permission option the Agent has',
+    'beside its mode (such as permission_mode) must be set, by this conversation or by the',
+    'Agent Role in target, or the schedule cannot be ranked and is refused.',
   ].join(' ');
   registerSessionTool(
     'lody_schedule_create',

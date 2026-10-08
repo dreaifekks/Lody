@@ -1,18 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
   getStaticBuiltinAcpCapabilities,
+  higherPermissionTier,
   isPermissionTierWithin,
-  permissionOptionIdsOf,
+  lowerPermissionTier,
   resolvePermissionTier,
+  type PermissionTierCapability,
   type PermissionTierRunConfig,
 } from '../src';
 
 const builtin = (agentType: string) => ({ cliType: 'builtin' as const, agentType });
+/** A capability with only a mode option: no permission control beside it. */
+const modeOnly: PermissionTierCapability = { configOptions: [{ id: 'mode', category: 'mode' }] };
 const tierOf = (
   agentType: string,
   runConfig: PermissionTierRunConfig,
-  permissionOptionIds: readonly string[] | undefined = []
-) => resolvePermissionTier({ runConfig, agent: builtin(agentType), permissionOptionIds });
+  capability: PermissionTierCapability | undefined = modeOnly
+) => resolvePermissionTier({ runConfig, agent: builtin(agentType), capability });
 
 describe('permission tiers', () => {
   it('ranks every advertised mode of the built-in and registry providers', () => {
@@ -48,44 +52,46 @@ describe('permission tiers', () => {
         expect(tierOf(agentType, { modeId: mode.id })).not.toBe('unknown');
   });
 
-  it('takes the highest of the mode and every permission option', () => {
+  it('takes the highest selection and needs every permission option beside the mode set', () => {
     const grok = getStaticBuiltinAcpCapabilities('builtin', 'grok')!;
-    const ids = permissionOptionIdsOf(grok.configOptions);
-    expect(ids).toContain('permission_mode');
+    // A reused session keeps the permission option a run leaves unset.
+    expect(tierOf('grok', { modeId: 'default' }, grok)).toBe('unknown');
     expect(
-      tierOf('grok', { modeId: 'default', configOptionValues: { permission_mode: 'ask' } }, ids)
+      tierOf('grok', { modeId: 'default', configOptionValues: { permission_mode: 'ask' } }, grok)
     ).toBe('ask');
     expect(
       tierOf(
         'grok',
         { modeId: 'default', configOptionValues: { permission_mode: 'always-approve' } },
-        ids
+        grok
       )
     ).toBe('full');
     // A capability may name its own permission option.
     expect(
-      tierOf('custom', { modeId: 'default', configOptionValues: { approvals: 'yolo' } }, [
-        'approvals',
-      ])
+      tierOf(
+        'custom',
+        { modeId: 'default', configOptionValues: { approvals: 'yolo' } },
+        { configOptions: [{ id: 'approvals', category: '_permission' }] }
+      )
     ).toBe('full');
   });
 
-  it('falls back to what dispatch would run, and to unknown where Lody cannot tell', () => {
-    expect(tierOf('claude', {})).toBe('auto');
-    expect(tierOf('codex', {})).toBe('auto');
-    expect(tierOf('deepseek', {})).toBe('edit');
-    // Pi has no permission control: every tool call runs without asking.
-    expect(tierOf('pi', {})).toBe('full');
-    expect(tierOf('antigravity-acp', {})).toBe('unknown');
-    expect(tierOf('claude', { modeId: 'constructor' })).toBe('unknown');
-    // Without a capability, any other option could be a permission control.
+  it('is unknown where Lody cannot tell what runs', () => {
+    // No selection: the provider's own default (callers apply Lody's builtin default first).
+    expect(tierOf('claude', {})).toBe('unknown');
+    // No capability: nothing is known about the Agent's controls.
     expect(
       resolvePermissionTier({
-        runConfig: { modeId: 'default', configOptionValues: { effort: 'high' } },
+        runConfig: { modeId: 'default' },
         agent: builtin('claude'),
-        permissionOptionIds: undefined,
+        capability: undefined,
       })
     ).toBe('unknown');
+    expect(tierOf('claude', { modeId: 'constructor' })).toBe('unknown');
+    // Pi has no permission control: every tool call runs without asking.
+    expect(
+      resolvePermissionTier({ runConfig: {}, agent: builtin('pi'), capability: undefined })
+    ).toBe('full');
     expect(tierOf('claude', { modeId: 'default', configOptionValues: { effort: 'high' } })).toBe(
       'ask'
     );
@@ -98,5 +104,9 @@ describe('permission tiers', () => {
     expect(isPermissionTierWithin('unknown', 'full')).toBe(false);
     expect(isPermissionTierWithin('ask', 'unknown')).toBe(true);
     expect(isPermissionTierWithin('edit', 'unknown')).toBe(false);
+    expect(lowerPermissionTier('auto', 'ask')).toBe('ask');
+    expect(lowerPermissionTier('auto', 'unknown')).toBe('unknown');
+    expect(higherPermissionTier('edit', 'full')).toBe('full');
+    expect(higherPermissionTier('edit', 'unknown')).toBe('unknown');
   });
 });
