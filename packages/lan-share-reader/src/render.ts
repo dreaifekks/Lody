@@ -5,6 +5,7 @@ import { micromark } from 'micromark';
 import { gfm, gfmHtml } from 'micromark-extension-gfm';
 import {
   isLanShareActivity as isActivity,
+  isLanShareTurnFinished,
   lanShareAnswered,
   lanShareSegments,
   lanShareWorkOf as workOf,
@@ -415,7 +416,7 @@ function renderAssistant(context: RenderContext, entry: JsonObject, items: Json[
     nodes.set(item, node);
     kept.push(item);
   }
-  const finished = entry.finished === true || typeof entry.endedAt === 'number';
+  const finished = isLanShareTurnFinished(entry);
   // A plan's exit card closes a segment of its own, folded on its own.
   const segments = lanShareSegments(kept);
   const duration = durationOf(entry);

@@ -105,49 +105,104 @@ export function lanShareSegments<T extends LanShareTurnItem>(items: readonly T[]
   return segments;
 }
 
-const ATTACHMENTS = new Set(['image', 'image_group', 'file']);
+const isRecord = (value: unknown): value is { [key: string]: unknown } =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** `value` with only the `keys` it has, as a new object. */
+function pick(value: { readonly [key: string]: unknown }, keys: readonly string[]) {
+  const picked: { [key: string]: unknown } = {};
+  for (const key of keys) if (value[key] !== undefined) picked[key] = value[key];
+  return picked;
+}
+
+/** What the exporter reads of an attachment, and the reader shows of it. */
+const ATTACHMENT_KEYS = [
+  'type',
+  'imageId',
+  'fileId',
+  'fileName',
+  'mimeType',
+  'sha256',
+  'sizeBytes',
+  'storageSessionId',
+  'machineId',
+  'sourcePath',
+];
+
+/** An item kept for a reader, rebuilt from the fields a reader reads; `null` when none is. */
+function publicItem(item: LanShareTurnItem): LanShareTurnItem | null {
+  if (item.type === 'text') return { type: 'text', text: textOf(item) ?? '' };
+  if (item.type === 'image' || item.type === 'file') return pick(item, ATTACHMENT_KEYS);
+  if (item.type === 'image_group') {
+    const images = Array.isArray(item.images) ? item.images.filter(isRecord) : [];
+    return { type: 'image_group', images: images.map((image) => pick(image, ATTACHMENT_KEYS)) };
+  }
+  return null;
+}
 
 /**
- * The items of an assistant turn a LAN publishes: the text a reader sees with
- * the work folded, and the pictures and files of the answer. Thinking, tool
- * calls, short narration, subagent tasks, plans and notices stay home. A turn
- * that shows no answer (one still running, or ending in work) keeps only its
- * substantive text, so a share never carries the process.
+ * The items of an assistant turn a LAN publishes, rebuilt from their public
+ * fields: the text a reader sees with the work folded, and the pictures and
+ * files of the answer. Thinking, tool calls, short narration, subagent tasks,
+ * plans and notices stay home. A turn that shows no answer, one still running
+ * or one ending in work, keeps only its substantive text, so a share never
+ * carries the process.
  */
-export function projectLanShareTurnItems<T extends LanShareTurnItem>(items: readonly T[]): T[] {
+export function projectLanShareTurnItems(
+  items: readonly LanShareTurnItem[],
+  finished: boolean
+): LanShareTurnItem[] {
   return lanShareSegments(items.filter((item) => item.type !== 'subagent_task')).flatMap(
     (segment) => {
       const work = lanShareWorkOf(segment);
-      const answered = lanShareAnswered(segment, work);
-      return segment.filter((item, index) => {
-        if (typeof item.type === 'string' && ATTACHMENTS.has(item.type)) return true;
+      const answered = finished && lanShareAnswered(segment, work);
+      return segment.flatMap((item, index) => {
         const text = textOf(item);
-        if (text === null || !text.trim()) return false;
-        return answered ? !work.has(index) : isSubstantiveLanShareText(text);
+        const kept =
+          text === null
+            ? answered && !work.has(index)
+            : text.trim() !== '' && (answered ? !work.has(index) : isSubstantiveLanShareText(text));
+        const rebuilt = kept ? publicItem(item) : null;
+        return rebuilt ? [rebuilt] : [];
       });
     }
   );
 }
 
-const isRecord = (value: unknown): value is { [key: string]: unknown } =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
+/** Whether an assistant turn ended, as the reader tells it. */
+export const isLanShareTurnFinished = (entry: LanShareTurnItem): boolean =>
+  entry.finished === true || typeof entry.endedAt === 'number';
 
 /**
- * A conversation's history as a LAN publishes it: the messages of its user,
- * and of each assistant turn what {@link projectLanShareTurnItems} keeps, with
- * the turn's plan left out. Entries of other roles are dropped; an assistant
- * turn with nothing left is dropped too. The history itself is not changed.
+ * A conversation's history as a LAN publishes it, every entry rebuilt from the
+ * fields a reader reads: the user's messages as they were sent, and of each
+ * assistant turn what {@link projectLanShareTurnItems} keeps, with its times.
+ * Entries of other roles are dropped, and so is an assistant turn with nothing
+ * left. The history itself is not changed.
  */
 export function projectLanShareHistory(history: unknown): unknown[] {
   if (!Array.isArray(history)) return [];
-  return history.flatMap((entry: unknown) => {
+  return history.flatMap<unknown>((entry: unknown) => {
     if (!isRecord(entry)) return [];
-    if (entry.role === 'user') return [entry];
+    if (entry.role === 'user') {
+      const blocks = isRecord(entry.inputConfig) ? entry.inputConfig.inputBlocks : undefined;
+      return [
+        {
+          ...pick(entry, ['id', 'role', 'timestamp', 'items']),
+          // Older histories kept a message's content only in its input blocks.
+          ...(Array.isArray(blocks) ? { inputConfig: { inputBlocks: blocks } } : {}),
+        },
+      ];
+    }
     if (entry.role !== 'assistant') return [];
     const items = Array.isArray(entry.items) ? entry.items.filter(isRecord) : [];
-    const kept = projectLanShareTurnItems(items);
+    const kept = projectLanShareTurnItems(items, isLanShareTurnFinished(entry));
     if (kept.length === 0) return [];
-    const { plan: _plan, ...rest } = entry;
-    return [{ ...rest, items: kept }];
+    return [
+      {
+        ...pick(entry, ['id', 'role', 'timestamp', 'finished', 'endedAt', 'permissionWaitMs']),
+        items: kept,
+      },
+    ];
   });
 }

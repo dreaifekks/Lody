@@ -6,6 +6,7 @@ import path from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { prepareSharePackage, type PreparedSharePackage } from '@lody/shared/session-sharing';
 import {
   LAN_HUB_HANDOVER_COMPLETE_PATH,
@@ -270,12 +271,33 @@ describe('conversations a LAN shares', () => {
     // The images are objects of the shares, so a new host gets them with the rest.
     const objects = readLanHubShareFiles(dataDir)?.objects ?? [];
     expect(objects).toHaveLength(4);
+    // They stay out of the index, which a hub of a build before them reads as it always did.
+    const indexOfBefore = z
+      .object({
+        version: z.literal(1),
+        publicUrl: z.string().nullable(),
+        shares: z.record(z.string(), z.unknown()),
+      })
+      .strict();
+    const index = JSON.parse(fs.readFileSync(path.join(dataDir, 'shares', 'index.json'), 'utf8'));
+    expect(indexOfBefore.safeParse(index).success).toBe(true);
+
+    // A standby's copy carries them.
+    const stream = new PassThrough();
+    const sending = writeLanHubSharesCopy({ dataDir, have: [] }, stream).then(() => stream.end());
+    const standby = path.join(root, 'standby');
+    await readLanHubSharesCopy(stream, standby, null);
+    await sending;
+    const promoted = await start(standby);
+    const copied = await fetch(`${promoted.shareUrl}/_lody/preview`);
+    expect(Buffer.from(await copied.arrayBuffer())).toEqual(JPEG);
 
     await setLanShareImage(hub, 'icon', null);
     await setLanShareImage(hub, 'preview', null);
     expect(await readLanShareSettings(hub)).toMatchObject({ icon: false, preview: false });
     expect((await bytesOf('/_lody/icon')).bytes).toEqual(READER.icon);
     expect(readLanHubShareFiles(dataDir)?.objects).toHaveLength(2);
+    expect(fs.existsSync(path.join(dataDir, 'shares', 'images.json'))).toBe(false);
   });
 
   it('keeps the link through an update and serves the new copy under it', async () => {
@@ -381,6 +403,9 @@ describe('conversations a LAN shares', () => {
 
   it('hands its shares to a new host, and serves them no more once it moved', async () => {
     const share = await publish(await capture('First answer.'));
+    const icon = path.join(root, 'icon.png');
+    fs.writeFileSync(icon, PNG);
+    await setLanShareImage(hub, 'icon', icon);
     const credential = { Authorization: `Bearer ${hub.token}` };
     const handover = await fetch(`${hub.url}${LAN_HUB_HANDOVER_PATH}?shares=1`, {
       method: 'POST',
@@ -407,6 +432,8 @@ describe('conversations a LAN shares', () => {
     const moved = await start(incoming, (await startFakeStreams()).upstream);
     const reread = await fetch(`${moved.shareUrl}/s/${share.shareId}/share.json`);
     expect(((await reread.json()) as { deployment: string }).deployment).toBe(share.deployment);
+    const movedIcon = await fetch(`${moved.shareUrl}/_lody/icon`);
+    expect(Buffer.from(await movedIcon.arrayBuffer())).toEqual(PNG);
   });
 
   it('copies the shares to a standby, sending only the objects it lacks', async () => {
@@ -496,9 +523,21 @@ describe('the objects of shares', () => {
       }
       await shares.collect();
       expect(objects()).toBe(2);
+      // An image of the pages is no share's, and stays all the same.
+      const icon = path.join(dataDir, 'icon.png');
+      fs.writeFileSync(icon, PNG);
+      await setLanShareImage(hub, 'icon', icon);
+      const [iconObject] = listLanHubShareObjects(dataDir).filter((name) =>
+        fs.readFileSync(path.join(dataDir, 'shares', 'objects', name)).equals(PNG)
+      );
+      fs.utimesSync(
+        path.join(dataDir, 'shares', 'objects', iconObject!),
+        new Date(now - 2 * 60 * 60_000),
+        new Date(now - 2 * 60 * 60_000)
+      );
       await revokeLanShare(hub, first.shareId);
       await shares.collect();
-      expect(objects()).toBe(0);
+      expect(listLanHubShareObjects(dataDir)).toEqual([iconObject]);
     } finally {
       shares.close();
       server.closeAllConnections();

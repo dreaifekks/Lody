@@ -37,6 +37,11 @@ import { ByteReader } from './lan-files';
 
 export const LAN_HUB_SHARES_DIR = 'shares';
 const INDEX_FILE_NAME = 'index.json';
+/**
+ * The images a member set for the share pages, beside the index rather than in
+ * it: a hub of a build before them reads the index as it always did.
+ */
+const IMAGES_FILE_NAME = 'images.json';
 const OBJECTS_DIR = 'objects';
 /** A reader that opened the previous deployment keeps reading it this long. */
 const RETIRED_GRACE_MS = 10 * 60_000;
@@ -69,16 +74,16 @@ const StoredImageSchema = z
   .strict();
 type StoredImage = z.infer<typeof StoredImageSchema>;
 
+const ImagesSchema = z
+  .object({ icon: StoredImageSchema.optional(), preview: StoredImageSchema.optional() })
+  .strict();
+type Images = z.infer<typeof ImagesSchema>;
+
 const IndexSchema = z
   .object({
     version: z.literal(1),
     publicUrl: z.string().nullable(),
     shares: z.record(LanShareIdSchema, StoredShareSchema),
-    /** The images a member set for the share pages, kept as objects. */
-    images: z
-      .object({ icon: StoredImageSchema.optional(), preview: StoredImageSchema.optional() })
-      .strict()
-      .optional(),
   })
   .strict();
 type Index = z.infer<typeof IndexSchema>;
@@ -98,6 +103,29 @@ function readIndex(directory: string): Index {
     throw error;
   }
   return IndexSchema.parse(JSON.parse(raw));
+}
+
+function readImages(directory: string): Images {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(path.join(directory, IMAGES_FILE_NAME), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw error;
+  }
+  return ImagesSchema.parse(JSON.parse(raw));
+}
+
+/** Writes the images in one rename; none set leaves no file. */
+function writeImages(directory: string, images: Images): void {
+  const target = path.join(directory, IMAGES_FILE_NAME);
+  if (!images.icon && !images.preview) {
+    fs.rmSync(target, { force: true });
+    return;
+  }
+  const temporary = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(images)}\n`, { mode: 0o600 });
+  fs.renameSync(temporary, target);
 }
 
 function writeIndex(directory: string, index: Index): void {
@@ -127,10 +155,15 @@ function liveDeployments(share: StoredShare, now: number): string[] {
   ];
 }
 
-/** Every object the shares of `index` still need, manifests included. */
-function referencedObjects(directory: string, index: Index, now: number): Set<string> {
+/** Every object the shares of `index` and the `images` still need, manifests included. */
+function referencedObjects(
+  directory: string,
+  index: Index,
+  images: Images,
+  now: number
+): Set<string> {
   const referenced = new Set<string>();
-  for (const image of Object.values(index.images ?? {})) referenced.add(image.sha256);
+  for (const image of Object.values(images)) referenced.add(image.sha256);
   for (const share of Object.values(index.shares)) {
     for (const deployment of liveDeployments(share, now)) {
       referenced.add(deployment);
@@ -390,6 +423,7 @@ export function createLanHubShares(options: {
     return assets;
   };
   let index = readIndex(directory);
+  let images = readImages(directory);
 
   // Writes of the index one at a time, so a commit never reads what another
   // is about to replace and a handover waits for the last one.
@@ -414,7 +448,7 @@ export function createLanHubShares(options: {
         return;
       }
       const at = now();
-      const keep = referencedObjects(directory, index, at);
+      const keep = referencedObjects(directory, index, images, at);
       let removed = 0;
       for (const name of names) {
         if (keep.has(name)) continue;
@@ -596,15 +630,15 @@ export function createLanHubShares(options: {
     return {
       publicUrl: index.publicUrl,
       sharePort: options.sharePort(),
-      icon: image(index.images?.icon),
-      preview: image(index.images?.preview),
+      icon: image(images.icon),
+      preview: image(images.preview),
     };
   };
 
   /** Keeps `bytes` as the `kind` image of the share pages, or takes it back with `null`. */
   const setImage = (kind: LanShareImageKind, bytes: Buffer | null) =>
     exclusive(() => {
-      const images = { ...index.images };
+      const next: Images = { ...images };
       if (bytes) {
         const mediaType = sniffLanShareImage(bytes, kind);
         if (!mediaType) throw new HttpError(415, 'a PNG, JPEG or WebP image is required');
@@ -615,13 +649,15 @@ export function createLanHubShares(options: {
           fs.writeFileSync(`${target}.tmp`, bytes, { mode: 0o600 });
           fs.renameSync(`${target}.tmp`, target);
         }
-        images[kind] = { sha256, mediaType, sizeBytes: bytes.length };
+        next[kind] = { sha256, mediaType, sizeBytes: bytes.length };
       } else {
-        delete images[kind];
+        delete next[kind];
       }
-      const next: Index = { ...index, images };
-      writeIndex(directory, next);
-      index = next;
+      // A hub copies the shares only with an index, which one that never
+      // published has not written yet.
+      if (!fs.existsSync(path.join(directory, INDEX_FILE_NAME))) writeIndex(directory, index);
+      writeImages(directory, next);
+      images = next;
       return settings();
     });
 
@@ -749,9 +785,9 @@ export function createLanHubShares(options: {
       // A preview a member did not set shows their icon, else Lody's.
       const stored =
         imageKind === 'preview'
-          ? (index.images?.preview ?? index.images?.icon)
+          ? (images.preview ?? images.icon)
           : imageKind
-            ? index.images?.icon
+            ? images.icon
             : undefined;
       let bytes: Buffer | undefined;
       try {
@@ -800,8 +836,7 @@ export function createLanHubShares(options: {
       const share = index.shares[pageId];
       // A query keeps a picture a preview cached from standing for a new one.
       const version = (kind: LanShareImageKind) => {
-        const stored =
-          kind === 'preview' ? (index.images?.preview ?? index.images?.icon) : index.images?.icon;
+        const stored = kind === 'preview' ? (images.preview ?? images.icon) : images.icon;
         return `/_lody/${kind}?v=${stored ? stored.sha256.slice(0, 12) : 'lody'}`;
       };
       send(
@@ -813,7 +848,7 @@ export function createLanHubShares(options: {
           shareId: pageId,
           icon: version('icon'),
           preview: version('preview'),
-          largePreview: index.images?.preview !== undefined,
+          largePreview: images.preview !== undefined,
         })
       );
       return;
@@ -906,7 +941,7 @@ export function createLanHubShares(options: {
 export function readLanHubShareFiles(
   dataDir: string,
   now = Date.now()
-): { index: Buffer; objects: string[] } | null {
+): { index: Buffer; images: Buffer | null; objects: string[] } | null {
   const directory = getLanHubSharesDirectory(dataDir);
   let raw: Buffer;
   try {
@@ -916,9 +951,17 @@ export function readLanHubShareFiles(
     throw error;
   }
   const index = IndexSchema.parse(JSON.parse(raw.toString('utf8')));
+  let imagesRaw: Buffer | null = null;
+  try {
+    imagesRaw = fs.readFileSync(path.join(directory, IMAGES_FILE_NAME));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const images = imagesRaw ? ImagesSchema.parse(JSON.parse(imagesRaw.toString('utf8'))) : {};
   return {
     index: raw,
-    objects: [...referencedObjects(directory, index, now)]
+    images: imagesRaw,
+    objects: [...referencedObjects(directory, index, images, now)]
       .filter((sha256) => fs.existsSync(objectPath(directory, sha256)))
       .sort(),
   };
@@ -951,6 +994,7 @@ async function writeShareFile(
 }
 
 export const LAN_HUB_SHARES_INDEX_FILE = `${LAN_HUB_SHARES_DIR}/${INDEX_FILE_NAME}`;
+const LAN_HUB_SHARES_IMAGES_FILE = `${LAN_HUB_SHARES_DIR}/${IMAGES_FILE_NAME}`;
 
 /**
  * Sends the shares of a data directory that stands still, in the framing of
@@ -964,11 +1008,14 @@ export async function writeLanHubShareFiles(
   const shares = readLanHubShareFiles(dataDir);
   if (!shares) return 0;
   await writeShareFile(stream, dataDir, LAN_HUB_SHARES_INDEX_FILE, shares.index, type);
+  if (shares.images) {
+    await writeShareFile(stream, dataDir, LAN_HUB_SHARES_IMAGES_FILE, shares.images, type);
+  }
   for (const sha256 of shares.objects) {
     const name = `${LAN_HUB_SHARES_DIR}/${OBJECTS_DIR}/${sha256}`;
     await writeShareFile(stream, dataDir, name, null, type);
   }
-  return 1 + shares.objects.length;
+  return 1 + (shares.images ? 1 : 0) + shares.objects.length;
 }
 
 /** Whether `name` is a file of the shares as `listLanHubShareFiles` names one. */
@@ -977,7 +1024,7 @@ export function isLanHubShareFile(name: string): boolean {
   return (
     parts.length >= 2 &&
     parts[0] === LAN_HUB_SHARES_DIR &&
-    ((parts.length === 2 && parts[1] === INDEX_FILE_NAME) ||
+    ((parts.length === 2 && (parts[1] === INDEX_FILE_NAME || parts[1] === IMAGES_FILE_NAME)) ||
       (parts.length === 3 && parts[1] === OBJECTS_DIR && SHA256.test(parts[2] ?? '')))
   );
 }
@@ -1007,6 +1054,9 @@ export async function writeLanHubSharesCopy(
   writeLine(stream, { type: 'shares', objects: shares?.objects ?? [] });
   if (shares) {
     await writeShareFile(stream, options.dataDir, LAN_HUB_SHARES_INDEX_FILE, shares.index);
+    if (shares.images) {
+      await writeShareFile(stream, options.dataDir, LAN_HUB_SHARES_IMAGES_FILE, shares.images);
+    }
     const have = new Set(options.have);
     for (const sha256 of shares.objects) {
       if (have.has(sha256)) continue;
@@ -1097,6 +1147,13 @@ async function keepLanHubShares(from: string, to: string): Promise<void> {
     path.join(source, INDEX_FILE_NAME),
     path.join(target, INDEX_FILE_NAME)
   );
+  // A hub without images of its own has no images file.
+  if (fs.existsSync(path.join(source, IMAGES_FILE_NAME))) {
+    await fs.promises.copyFile(
+      path.join(source, IMAGES_FILE_NAME),
+      path.join(target, IMAGES_FILE_NAME)
+    );
+  }
   for (const sha256 of listLanHubShareObjects(from)) {
     const kept = path.join(source, OBJECTS_DIR, sha256);
     const copy = path.join(target, OBJECTS_DIR, sha256);

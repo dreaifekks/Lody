@@ -29,11 +29,13 @@ exporter sees a history, `projectLanShareHistory`
 (`packages/shared/src/lan-share-visible.ts`) keeps the user's messages and,
 of each assistant turn, what the reader shows with the work folded (the
 closing text, earlier text of 300 characters or with structure, and the
-answer's pictures and files). Thinking, tool calls with their commands and
-diffs, short narration, subagent tasks, plans and notices never leave the
-window; a turn that shows no answer (still running, or ending in work) keeps
-only its substantive text, and one left empty is dropped. The times of a
-turn stay. The reader folds by the same file, so a published turn shows what
+answer's pictures and files). Every entry and item is rebuilt from the
+fields the reader reads (a text keeps its text, an assistant turn its id and
+times, never its input configuration), so nothing rides along in another
+field. Thinking, tool calls with their commands and diffs, short narration,
+subagent tasks, plans and notices never leave the window; a turn that shows
+no answer (still running, or ending in work) keeps only its substantive
+text, and one left empty is dropped. The reader folds by the same file, so a published turn shows what
 it would have shown folded, and no row to open. A share published before
 this keeps its full history until it is updated. The shell writes the frozen package to a
 temporary directory and hands it to the agent service of its own machine
@@ -106,7 +108,10 @@ file, then `PUT /lan/shares/images/icon|preview`); a preview a member did not
 set shows their icon. The hub reads the type from the bytes and takes PNG,
 JPEG or WebP, ICO for an icon, never SVG (it can carry script), up to 256 KB
 for an icon and 2 MB for a preview. The images are objects named in
-`index.json`, so they follow the hub with the shares; `DELETE` takes one back.
+`images.json` beside `index.json`, which keeps the format a hub of an older
+build reads; the handover, the standby's copy and collection treat that file
+as part of the shares. `DELETE` takes one back, and with none set the file
+goes.
 
 **Following the hub.** `shares/` travels with the hub. A take-over asks the
 current host for it (`/lan/handover?shares=1`) after the other files, so a
@@ -115,7 +120,7 @@ before it hands over, and answers 503 to a commit, revoke or setting whose body
 arrives after the handover began, so whatever it answered 200 reached the new
 host. The standby copies it after each copy of the database
 (`POST /lan/shares/copy`): it says which objects it holds, receives
-`index.json` and the objects it lacks, and keeps the others from its previous
+`index.json`, `images.json` and the objects it lacks, and keeps the others from its previous
 copy; a failover starts the new hub with them. A hub that hands over, moved
 or was superseded serves no share, so a link revoked on the new hub does not
 live on at the old address. The public address of the links,

@@ -244,6 +244,10 @@ describe('what a LAN share publishes of a conversation', () => {
       endedAt: Date.parse('2026-10-09T08:01:00.000Z'),
       finished: true,
       plan: [{ content: 'secret plan step', status: 'completed' }],
+      // What the agent was sent can carry its own work too.
+      inputConfig: {
+        inputBlocks: [{ type: 'thought', text: 'block thought' }, command(`${id}4`, 'block-cmd')],
+      },
       items: [
         { type: 'thought', text: 'private reasoning' },
         { type: 'text', text: 'Running the tests first.' },
@@ -261,7 +265,14 @@ describe('what a LAN share publishes of a conversation', () => {
         },
         { type: 'subagent_task', description: 'a helper' },
         { type: 'proposed_plan', markdown: 'proposed plan text', status: 'pending' },
-        { type: 'text', text: answer },
+        // A kept text carries nothing but its text.
+        {
+          type: 'text',
+          text: answer,
+          _meta: { lody: 'meta secret' },
+          rawOutput: 'raw secret',
+          content: [{ type: 'terminal_command', command: 'hidden-cmd' }],
+        },
       ],
     },
     // Still running: no answer yet, so nothing of it but substantive text.
@@ -270,6 +281,14 @@ describe('what a LAN share publishes of a conversation', () => {
       role: 'assistant',
       timestamp: '2026-10-09T08:02:00.000Z',
       items: [{ type: 'text', text: 'Looking again.' }, command(`${id}3`, 'cat /etc/hosts')],
+    },
+    // Still running and closing in a short line: narration, not an answer.
+    {
+      id: `${id}-n`,
+      role: 'assistant',
+      timestamp: '2026-10-09T08:03:00.000Z',
+      finished: false,
+      items: [command(`${id}5`, 'tail private.log'), { type: 'text', text: '正在检查私有日志' }],
     },
   ];
   const histories: Record<string, unknown[]> = {
@@ -317,6 +336,15 @@ describe('what a LAN share publishes of a conversation', () => {
         'secret plan step',
         'Looking again.',
         'cat /etc/hosts',
+        'tail private.log',
+        '正在检查私有日志',
+        'meta secret',
+        'raw secret',
+        'hidden-cmd',
+        'block thought',
+        'block-cmd',
+        '"inputConfig"',
+        '"_meta"',
         '"thought"',
         '"tool_call"',
       ]) {
