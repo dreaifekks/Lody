@@ -66,6 +66,7 @@ macOS、Windows 和 Linux 的桌面安装包附在[滚动发布](https://github.
 | 其他机器上的 Agent | 会话里的 Lody 工具可以在同一 LAN 的其他机器上创建并驱动会话                                                                                                   |
 | 用量               | 每台机器记录自己的 Agent 用量；Settings > AI Usage 向所有成员收集，按模型和按机器展示                                                                         |
 | Shell 和端口       | `lody-lan lan shell <机器>` 在成员上开 shell，`lody-lan lan forward <机器> <端口>` 访问它的端口，都走成员直连                                                 |
+| 会话分享           | hub 保存对话的只读副本，链接独立，经一个只提供分享的端口访问                                                                                                  |
 
 ### 实现方式不同的功能
 
@@ -83,7 +84,7 @@ macOS、Windows 和 Linux 的桌面安装包附在[滚动发布](https://github.
 
 ### 暂不可用的功能
 
-- 与团队共享，以及会话的公开分享链接。
+- 与团队共享。
 - GitHub App 相关：仓库注册、Settings > GitHub、在云端克隆的仓库，以及以你关联的 GitHub 身份操作。
 - 远程预览：Agent 在其他机器上启动的开发服务器，不能在本机的浏览器面板里打开；可以用 `lody-lan lan forward <机器> <端口>` 转发到本机访问。
 - Settings > Machines；改由 Settings > LAN 列出机器。

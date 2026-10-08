@@ -97,6 +97,7 @@ Both desktop apps can run side by side.
 | Agents on other machines    | Lody's tools inside a session start and drive sessions on the other machines of its LAN                                                                                                          |
 | Usage                       | Each machine keeps what its agents used; Settings > AI Usage gathers it from every member, by model and by machine                                                                               |
 | Shells and ports            | `lody-lan lan shell <machine>` opens a shell on a member, `lody-lan lan forward <machine> <port>` reaches one of its ports, both over the members' direct connections                            |
+| Shared conversations        | The hub keeps a read-only copy of a conversation at a link of its own, on a port that serves nothing else                                                                                        |
 
 ### Works differently
 
@@ -114,7 +115,7 @@ Both desktop apps can run side by side.
 
 ### Not available
 
-- Sharing with a team, and public links to a session.
+- Sharing with a team.
 - The GitHub App: repository registry, Settings > GitHub, repositories cloned
   in the cloud, and acting under your linked GitHub identity.
 - Remote preview: a dev server an Agent starts on another machine does not
