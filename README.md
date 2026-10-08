@@ -217,6 +217,7 @@ replaces the [rolling release](https://github.com/dreaifekks/Lody/releases/tag/l
 - `packages/cloud-api` — Optional-cloud protocol names and DTOs
 - `packages/loro-streams-rpc` — RPC over Loro Streams
 - `packages/acp-extension-{core,kimi}` — ACP extension submodule workspaces
+- `packages/lan-share-reader` — The page readers of a LAN's shared conversations open
 - `scripts/lan` — Install scripts published with each release
 - `site-docs` — Upstream's website, documentation, and blog
 
