@@ -1,23 +1,36 @@
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from '@tanstack/react-router';
 import type { SessionId, WorkspaceId } from '@lody/shared';
-import type { LanSharedConversation } from '@lody/shared/lan-share';
+import type {
+  LanSharedConversation,
+  LanShareImageKind,
+  LanShareSettingsResult,
+} from '@lody/shared/lan-share';
 import { currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '@/atoms';
 import { settingsDialogOpenAtom } from '@/atoms/settings';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { LanSessionShareDialog } from '@/components/sharing/lan-session-share-dialog';
-import { refreshLanShares, revokeLanShare, useLanShares } from '@/lib/lan-session-share';
+import {
+  LanShareSettingsError,
+  readLanShareSettings,
+  refreshLanShares,
+  revokeLanShare,
+  saveLanShareImage,
+  saveLanSharePublicUrl,
+  useLanShares,
+} from '@/lib/lan-session-share';
 import { openExternalUrl } from '@/lib/native-browser';
 import { sessionShareErrorMessage } from '@/lib/session-share-errors';
 import { AlertDialog, Dialog } from '@/ui/dialog';
 import { Button } from '@lody/ui/button';
+import { Input } from '@lody/ui/input';
 import { Skeleton } from '@lody/ui/skeleton';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { focus, radius, space, text as uiText } from '@lody/ui/tokens/scales.stylex';
-import { SettingsEmptyList, settingsRecordsCard } from './compact-layout';
+import { CompactLinkRow, SettingsEmptyList, settingsRecordsCard } from './compact-layout';
 import { settingsSurface as surface } from './surface';
 
 const styles = stylex.create({
@@ -69,6 +82,17 @@ const styles = stylex.create({
   detailLabel: { flexShrink: 0, color: colors.secondaryLabel },
   detailValue: { minWidth: 0, textAlign: 'end', color: colors.label },
   actions: { display: 'flex', flexWrap: 'wrap', gap: space[2] },
+  imageRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: space[4],
+    paddingBlock: space[1.5],
+    fontSize: '12px',
+  },
+  imageLabel: { width: '64px', flexShrink: 0, color: colors.secondaryLabel },
+  imageValue: { flexGrow: 1, minWidth: 0, color: colors.label },
+  imageActions: { display: 'flex', gap: space[1], flexShrink: 0 },
+  file: { display: 'none' },
 });
 
 /** Settings > Share management in a LAN workspace: the shares its hub keeps. */
@@ -210,6 +234,7 @@ function LanShareList({ workspaceId }: { workspaceId: WorkspaceId }) {
         </p>
       )}
       {body}
+      {state.status === 'ready' && <LanSharePagesSetting workspaceId={workspaceId} />}
       {detail && (
         <Dialog.Root open onOpenChange={(open) => !open && setDetail(null)}>
           <Dialog.Content>
@@ -347,5 +372,235 @@ function DetailRow({
       <span {...stylex.props(styles.detailLabel)}>{label}</span>
       <span {...stylex.props(styles.detailValue)}>{children}</span>
     </div>
+  );
+}
+
+/**
+ * Where readers reach the shares, and the favicon and link-preview picture of
+ * the pages: what every share of this LAN's hub has in common.
+ */
+function LanSharePagesSetting({ workspaceId }: { workspaceId: WorkspaceId }) {
+  const { t } = useTranslation();
+  const [settings, setSettings] = useState<LanShareSettingsResult | null>(null);
+  const [editing, setEditing] = useState<'address' | 'images' | null>(null);
+  useEffect(() => {
+    let current = true;
+    readLanShareSettings(workspaceId).then(
+      (next) => current && setSettings(next),
+      () => undefined
+    );
+    return () => {
+      current = false;
+    };
+  }, [workspaceId]);
+  if (!settings) return null;
+
+  const imagesLabel =
+    settings.icon && settings.preview
+      ? t('settings.shares.customIconAndPreview', 'Custom icon and preview image')
+      : settings.icon
+        ? t('settings.shares.customIcon', 'Custom icon')
+        : settings.preview
+          ? t('settings.shares.customPreview', 'Custom preview image')
+          : 'Lody';
+  return (
+    <div {...stylex.props(settingsRecordsCard)}>
+      <div {...stylex.props(surface.line)}>
+        <CompactLinkRow
+          to="open"
+          label={t('settings.shares.address', 'Address')}
+          helper={settings.publicUrl ?? settings.hubUrl ?? '—'}
+          onClick={() => setEditing('address')}
+        />
+      </div>
+      <div {...stylex.props(surface.line, surface.lineRuled)}>
+        <CompactLinkRow
+          to="open"
+          label={t('settings.shares.images', 'Icon and preview image')}
+          helper={imagesLabel}
+          onClick={() => setEditing('images')}
+        />
+      </div>
+      {editing === 'address' && (
+        <LanShareAddressDialog
+          workspaceId={workspaceId}
+          settings={settings}
+          onSaved={setSettings}
+          onClose={() => setEditing(null)}
+        />
+      )}
+      {editing === 'images' && (
+        <LanShareImagesDialog
+          workspaceId={workspaceId}
+          settings={settings}
+          onSaved={setSettings}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+type SettingsDialogProps = {
+  workspaceId: WorkspaceId;
+  settings: LanShareSettingsResult;
+  onSaved: (settings: LanShareSettingsResult) => void;
+  onClose: () => void;
+};
+
+function useSettingsAction(onSaved: (settings: LanShareSettingsResult) => void) {
+  const { t } = useTranslation();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (action: () => Promise<LanShareSettingsResult>): Promise<boolean> => {
+    setBusy(true);
+    setError(null);
+    try {
+      onSaved(await action());
+      return true;
+    } catch (cause) {
+      const code = cause instanceof LanShareSettingsError ? cause.code : 'failed';
+      setError(
+        code === 'too_large'
+          ? t('settings.shares.imageTooLarge', 'The image is too large.')
+          : code === 'unsupported'
+            ? t('settings.shares.imageUnsupported', 'Use a PNG, JPEG or WebP image.')
+            : code === 'invalid_address'
+              ? t('settings.shares.addressInvalid', 'Enter an http or https address.')
+              : t('settings.shares.lanUnreachable', 'The host of this LAN did not answer.')
+      );
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, error, run };
+}
+
+function LanShareAddressDialog({ workspaceId, settings, onSaved, onClose }: SettingsDialogProps) {
+  const { t } = useTranslation();
+  const [value, setValue] = useState(settings.publicUrl ?? '');
+  const { busy, error, run } = useSettingsAction(onSaved);
+  const save = async (publicUrl: string | null) => {
+    if (await run(() => saveLanSharePublicUrl(workspaceId, publicUrl))) onClose();
+  };
+  return (
+    <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
+      <Dialog.Content>
+        <Dialog.Header>
+          <Dialog.Title>{t('settings.shares.address', 'Address')}</Dialog.Title>
+        </Dialog.Header>
+        <Input
+          aria-label={t('settings.shares.address', 'Address')}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder={settings.hubUrl ?? 'https://'}
+          spellCheck={false}
+          autoFocus
+        />
+        {error && (
+          <p role="alert" {...stylex.props(styles.error)}>
+            {error}
+          </p>
+        )}
+        <Dialog.Footer>
+          {settings.publicUrl && (
+            <Button
+              variant="secondary"
+              size="small"
+              disabled={busy}
+              onClick={() => void save(null)}
+            >
+              {t('settings.shares.useHostAddress', 'Use host address')}
+            </Button>
+          )}
+          <Button
+            size="small"
+            disabled={busy || value.trim() === (settings.publicUrl ?? '')}
+            onClick={() => void save(value.trim() || null)}
+          >
+            {t('common.save', 'Save')}
+          </Button>
+        </Dialog.Footer>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+const IMAGE_ACCEPT: Record<LanShareImageKind, string> = {
+  icon: 'image/png,image/jpeg,image/webp,image/x-icon,.ico',
+  preview: 'image/png,image/jpeg,image/webp',
+};
+
+function LanShareImagesDialog({ workspaceId, settings, onSaved, onClose }: SettingsDialogProps) {
+  const { t } = useTranslation();
+  const { busy, error, run } = useSettingsAction(onSaved);
+  const inputs = useRef<Partial<Record<LanShareImageKind, HTMLInputElement | null>>>({});
+  const choose = (kind: LanShareImageKind, file: File | undefined) => {
+    if (!file) return;
+    void run(async () =>
+      saveLanShareImage(workspaceId, kind, new Uint8Array(await file.arrayBuffer()))
+    );
+  };
+  const rows: Array<{ kind: LanShareImageKind; label: string }> = [
+    { kind: 'icon', label: t('settings.shares.icon', 'Icon') },
+    { kind: 'preview', label: t('settings.shares.preview', 'Preview image') },
+  ];
+  return (
+    <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
+      <Dialog.Content>
+        <Dialog.Header>
+          <Dialog.Title>{t('settings.shares.images', 'Icon and preview image')}</Dialog.Title>
+        </Dialog.Header>
+        <div>
+          {rows.map(({ kind, label }, index) => (
+            <div key={kind} {...stylex.props(styles.imageRow, index > 0 && surface.lineRuled)}>
+              <span {...stylex.props(styles.imageLabel)}>{label}</span>
+              <span {...stylex.props(styles.imageValue)}>
+                {settings[kind] ? t('settings.shares.custom', 'Custom') : 'Lody'}
+              </span>
+              <span {...stylex.props(styles.imageActions)}>
+                <input
+                  ref={(node) => {
+                    inputs.current[kind] = node;
+                  }}
+                  type="file"
+                  accept={IMAGE_ACCEPT[kind]}
+                  aria-label={label}
+                  {...stylex.props(styles.file)}
+                  onChange={(event) => {
+                    choose(kind, event.target.files?.[0]);
+                    event.target.value = '';
+                  }}
+                />
+                <Button
+                  variant="secondary"
+                  size="small"
+                  disabled={busy}
+                  onClick={() => inputs.current[kind]?.click()}
+                >
+                  {t('settings.shares.chooseImage', 'Choose…')}
+                </Button>
+                {settings[kind] && (
+                  <Button
+                    variant="ghost"
+                    size="small"
+                    disabled={busy}
+                    onClick={() => void run(() => saveLanShareImage(workspaceId, kind, null))}
+                  >
+                    {t('settings.shares.useLodyImage', 'Use Lody')}
+                  </Button>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+        {error && (
+          <p role="alert" {...stylex.props(styles.error)}>
+            {error}
+          </p>
+        )}
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }

@@ -31,7 +31,10 @@ import {
   LanShareError,
   listLanSharedConversations,
   publishLanShare,
+  readLanShareSettings,
   revokeLanShare,
+  setLanShareImage,
+  setLanSharePublicUrl,
 } from './lan-shares';
 import type { LanGitHubSource } from './lan-github-credential';
 import type { LanMachineControl } from './lan-machine-control';
@@ -49,7 +52,14 @@ import {
 
 type LanShareControlRequest = Extract<
   LocalProjectControlRequest,
-  { type: 'lan/shares' | 'lan/share-publish' | 'lan/share-revoke' }
+  {
+    type:
+      | 'lan/shares'
+      | 'lan/share-publish'
+      | 'lan/share-revoke'
+      | 'lan/share-settings'
+      | 'lan/share-image';
+  }
 >;
 
 export type LanControlRequest = Extract<
@@ -89,6 +99,8 @@ export function isLanControlRequest(
     message.type === 'lan/shares' ||
     message.type === 'lan/share-publish' ||
     message.type === 'lan/share-revoke' ||
+    message.type === 'lan/share-settings' ||
+    message.type === 'lan/share-image' ||
     message.type === 'lan/github-token' ||
     isLanMemberControlType(message.type)
   );
@@ -314,7 +326,9 @@ export class LanFleetControl {
     if (
       message.type === 'lan/shares' ||
       message.type === 'lan/share-publish' ||
-      message.type === 'lan/share-revoke'
+      message.type === 'lan/share-revoke' ||
+      message.type === 'lan/share-settings' ||
+      message.type === 'lan/share-image'
     ) {
       return await this.share(message);
     }
@@ -348,6 +362,14 @@ export class LanFleetControl {
           type: message.type,
           result: { revoked: await revokeLanShare(hub, message.shareId) },
         };
+      }
+      if (message.type === 'lan/share-settings') {
+        if (message.publicUrl !== undefined) await setLanSharePublicUrl(hub, message.publicUrl);
+        return { ok: true, type: message.type, result: await readLanShareSettings(hub) };
+      }
+      if (message.type === 'lan/share-image') {
+        await setLanShareImage(hub, message.kind, message.path);
+        return { ok: true, type: message.type, result: await readLanShareSettings(hub) };
       }
       const share = await publishLanShare(hub, {
         directory: message.directory,

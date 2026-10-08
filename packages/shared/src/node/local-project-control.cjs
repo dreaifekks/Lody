@@ -8,6 +8,9 @@ const LAN_GITHUB_TOKEN_MAX = 1000;
 // Kept equal to LAN_SHARE_ID_PATTERN and LanShareSourceSchema of lan-share.ts.
 const LAN_SHARE_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const LAN_SHARE_CONVERSATION_ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
+// Kept equal to LAN_SHARE_IMAGE_KINDS and LanShareSettingsResultSchema of lan-share.ts.
+const LAN_SHARE_IMAGE_KINDS = ['icon', 'preview'];
+const LAN_SHARE_SETTINGS_RESULT_KEYS = ['hubUrl', 'icon', 'preview', 'publicUrl'];
 
 const LAN_MEMBER_CONTROL_TYPES = new Set([
   'lan/update-machine',
@@ -51,6 +54,17 @@ function isLanSharedConversation(value) {
     value.sources.every(isLanShareSource) &&
     Number.isInteger(value.revision) &&
     (value.url === null || typeof value.url === 'string')
+  );
+}
+
+function isLanShareSettingsResult(value) {
+  return (
+    isObjectRecord(value) &&
+    Object.keys(value).sort().join() === LAN_SHARE_SETTINGS_RESULT_KEYS.join() &&
+    (value.publicUrl === null || typeof value.publicUrl === 'string') &&
+    (value.hubUrl === null || typeof value.hubUrl === 'string') &&
+    typeof value.icon === 'boolean' &&
+    typeof value.preview === 'boolean'
   );
 }
 
@@ -571,6 +585,23 @@ function isLocalProjectControlRequest(value) {
     return typeof value.workspaceId === 'string' && isLanShareId(value.shareId);
   }
 
+  if (value.type === 'lan/share-settings') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      (value.publicUrl === undefined ||
+        value.publicUrl === null ||
+        (typeof value.publicUrl === 'string' && value.publicUrl.length <= 2048))
+    );
+  }
+
+  if (value.type === 'lan/share-image') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      LAN_SHARE_IMAGE_KINDS.includes(value.kind) &&
+      (value.path === null || (typeof value.path === 'string' && value.path.length > 0))
+    );
+  }
+
   if (value.type === 'lan/github-token') {
     return (
       typeof value.workspaceId === 'string' &&
@@ -810,6 +841,10 @@ function isLocalProjectControlResponse(value) {
 
   if (value.type === 'lan/share-revoke') {
     return isObjectRecord(value.result) && typeof value.result.revoked === 'boolean';
+  }
+
+  if (value.type === 'lan/share-settings' || value.type === 'lan/share-image') {
+    return isLanShareSettingsResult(value.result);
   }
 
   if (value.type === 'lan/install-agent') {

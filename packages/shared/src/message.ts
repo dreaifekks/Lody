@@ -13,7 +13,13 @@ import type {
   LanMachines,
   LanUsageReport,
 } from './lan-control';
-import type { LanSharedConversation, LanShareSource, LanSharesResult } from './lan-share';
+import type {
+  LanSharedConversation,
+  LanShareImageKind,
+  LanShareSettingsResult,
+  LanShareSource,
+  LanSharesResult,
+} from './lan-share';
 import type {
   MachineId,
   ACPSessionConfig,
@@ -1268,6 +1274,21 @@ export type LocalProjectControlRequest =
       shareId: string;
     }
   | {
+      /** The settings of the LAN's share pages; `publicUrl` sets their address first. */
+      type: 'lan/share-settings';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      publicUrl?: string | null;
+    }
+  | {
+      /** Gives the hub an image of its share pages from the file at `path`; `null` takes it back. */
+      type: 'lan/share-image';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      kind: LanShareImageKind;
+      path: string | null;
+    }
+  | {
       /**
        * Gives the hub of the workspace's LAN the GitHub token its members use;
        * `null` takes it back. No answer carries the token.
@@ -1391,6 +1412,8 @@ export type LocalProjectControlResponse =
   | LocalProjectControlOkResponse<'lan/shares', LanSharesResult>
   | LocalProjectControlOkResponse<'lan/share-publish', { share: LanSharedConversation }>
   | LocalProjectControlOkResponse<'lan/share-revoke', { revoked: boolean }>
+  | LocalProjectControlOkResponse<'lan/share-settings', LanShareSettingsResult>
+  | LocalProjectControlOkResponse<'lan/share-image', LanShareSettingsResult>
   | LocalProjectControlOkResponse<'lan/github-token', LanGitHubTokenResult>
   | LocalProjectControlErrorResponse;
 

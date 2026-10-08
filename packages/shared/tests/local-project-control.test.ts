@@ -725,6 +725,16 @@ describe('what the members of a LAN ask of each other', () => {
     expect(accepts({ ...publish, shareId: 'short' })).toEqual(all(false));
     expect(accepts({ type: 'lan/share-revoke', ...lan, shareId })).toEqual(all(true));
     expect(accepts({ type: 'lan/share-revoke', ...lan, shareId: '../x' })).toEqual(all(false));
+    const settings = { type: 'lan/share-settings', ...lan };
+    expect(accepts(settings)).toEqual(all(true));
+    expect(accepts({ ...settings, publicUrl: 'https://share.example.com' })).toEqual(all(true));
+    expect(accepts({ ...settings, publicUrl: null })).toEqual(all(true));
+    expect(accepts({ ...settings, publicUrl: 1 })).toEqual(all(false));
+    const image = { type: 'lan/share-image', ...lan, kind: 'icon', path: '/tmp/icon.png' };
+    expect(accepts(image)).toEqual(all(true));
+    expect(accepts({ ...image, kind: 'preview', path: null })).toEqual(all(true));
+    expect(accepts({ ...image, kind: 'banner' })).toEqual(all(false));
+    expect(accepts({ ...image, path: '' })).toEqual(all(false));
   });
 
   it('forwards nothing but what members ask of each other', () => {
@@ -777,6 +787,12 @@ describe('what the members of a LAN ask of each other', () => {
       error: 'execution_failed',
       message: 'The desktop application updates this agent service',
       data: { reason: 'desktop' },
+    };
+    const shareSettings = {
+      publicUrl: 'https://share.example.com',
+      hubUrl: 'http://hub.lan:18790',
+      icon: true,
+      preview: false,
     };
     const sharedConversation = {
       shareId: 'A'.repeat(32),
@@ -835,6 +851,8 @@ describe('what the members of a LAN ask of each other', () => {
       { ok: true, type: 'lan/shares', result: { shares: [sharedConversation] } },
       { ok: true, type: 'lan/share-publish', result: { share: sharedConversation } },
       { ok: true, type: 'lan/share-revoke', result: { revoked: true } },
+      { ok: true, type: 'lan/share-settings', result: shareSettings },
+      { ok: true, type: 'lan/share-image', result: { ...shareSettings, publicUrl: null } },
       {
         ok: true,
         type: 'lan/forward',
@@ -863,6 +881,12 @@ describe('what the members of a LAN ask of each other', () => {
     );
     expect(answers({ ok: true, type: 'lan/github-token', result: {} })).toEqual(all(false));
     expect(answers({ ok: true, type: 'lan/share-revoke', result: {} })).toEqual(all(false));
+    expect(
+      answers({ ok: true, type: 'lan/share-settings', result: { ...shareSettings, icon: 'x' } })
+    ).toEqual(all(false));
+    expect(
+      answers({ ok: true, type: 'lan/share-image', result: { ...shareSettings, token: 't' } })
+    ).toEqual(all(false));
     expect(
       answers({
         ok: true,

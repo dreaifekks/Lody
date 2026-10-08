@@ -16,7 +16,13 @@ import {
   isLanMemberControlType,
   normalizeLanMachineColor,
 } from '../lan-control';
-import { LanShareIdSchema, LanSharedConversationSchema, LanShareSourceSchema } from '../lan-share';
+import {
+  LanShareIdSchema,
+  LanShareImageKindSchema,
+  LanSharedConversationSchema,
+  LanShareSettingsResultSchema,
+  LanShareSourceSchema,
+} from '../lan-share';
 import type { LocalProjectControlRequest, LocalProjectControlResponse } from '../message';
 
 export const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
@@ -552,6 +558,23 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     );
   }
 
+  if (value.type === 'lan/share-settings') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      (value.publicUrl === undefined ||
+        value.publicUrl === null ||
+        (typeof value.publicUrl === 'string' && value.publicUrl.length <= 2048))
+    );
+  }
+
+  if (value.type === 'lan/share-image') {
+    return (
+      typeof value.workspaceId === 'string' &&
+      LanShareImageKindSchema.safeParse(value.kind).success &&
+      (value.path === null || (typeof value.path === 'string' && value.path.length > 0))
+    );
+  }
+
   if (value.type === 'lan/install-agent') {
     return typeof value.workspaceId === 'string' && typeof value.agentType === 'string';
   }
@@ -770,6 +793,10 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'lan/share-revoke') {
     return isObjectRecord(value.result) && typeof value.result.revoked === 'boolean';
+  }
+
+  if (value.type === 'lan/share-settings' || value.type === 'lan/share-image') {
+    return LanShareSettingsResultSchema.safeParse(value.result).success;
   }
 
   if (value.type === 'lan/machines') {

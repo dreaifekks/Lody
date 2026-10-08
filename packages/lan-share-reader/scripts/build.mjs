@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Bundles the reader page into one script and one stylesheet, which the CLI
-// build copies beside its bundle for the hub to serve.
+// Bundles the reader page into one script, one stylesheet and the Lody icon,
+// which the CLI build copies beside its bundle for the hub to serve.
 import { copyFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,4 +22,10 @@ await build({
 await copyFile(
   path.join(packageDirectory, 'src/reader.css'),
   path.join(outputDirectory, 'lan-share-reader.css')
+);
+// The packaged Lody icon the desktop's share page leads with: the page's mark,
+// and the favicon and link preview of a hub that set none of its own.
+await copyFile(
+  path.join(packageDirectory, '../components/src/assets/lody-icon.png'),
+  path.join(outputDirectory, 'lan-share-reader-icon.png')
 );

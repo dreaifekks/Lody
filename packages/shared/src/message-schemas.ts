@@ -16,7 +16,13 @@ import {
   LanGitHubTokenResultSchema,
 } from './lan-control';
 import { MemoryBindingSchema } from './memory-provider';
-import { LanShareIdSchema, LanSharedConversationSchema, LanShareSourceSchema } from './lan-share';
+import {
+  LanShareIdSchema,
+  LanShareImageKindSchema,
+  LanSharedConversationSchema,
+  LanShareSettingsResultSchema,
+  LanShareSourceSchema,
+} from './lan-share';
 import { AgentRoleSnapshotSchema } from './message-author';
 import { z } from 'zod';
 import { SubagentTaskPayloadSchema } from './acp/claude-subagent-task';
@@ -2541,6 +2547,33 @@ export const LanShareRevokeRequestSchema = z
   .strict();
 
 /**
+ * The settings of the share pages of the workspace's LAN; with `publicUrl`,
+ * sets where readers reach them first (`null` takes it back).
+ */
+export const LanShareSettingsRequestSchema = z
+  .object({
+    type: z.literal('lan/share-settings'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    publicUrl: z.string().max(2048).nullable().optional(),
+  })
+  .strict();
+
+/**
+ * Gives the hub an image of its share pages, read from `path` (a file the
+ * shell wrote), or takes it back with `null`.
+ */
+export const LanShareImageRequestSchema = z
+  .object({
+    type: z.literal('lan/share-image'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    kind: LanShareImageKindSchema,
+    path: z.string().min(1).nullable(),
+  })
+  .strict();
+
+/**
  * Gives the hub of the workspace's LAN the GitHub token its members use, or
  * takes it back with `null`. The agent service of this machine asks GitHub
  * who the token acts as and hands it to the hub; no answer carries it back.
@@ -2591,6 +2624,8 @@ export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LanSharesRequestSchema,
   LanSharePublishRequestSchema,
   LanShareRevokeRequestSchema,
+  LanShareSettingsRequestSchema,
+  LanShareImageRequestSchema,
   LanGitHubTokenRequestSchema,
 ]);
 
@@ -2860,6 +2895,8 @@ const LocalProjectControlErrorResponseSchema = z
       'lan/shares',
       'lan/share-publish',
       'lan/share-revoke',
+      'lan/share-settings',
+      'lan/share-image',
       'lan/github-token',
     ]),
     error: LocalProjectControlErrorCodeSchema,
@@ -3191,6 +3228,20 @@ export const LocalProjectControlResponseSchema = z.union([
       ok: z.literal(true),
       type: z.literal('lan/share-revoke'),
       result: z.object({ revoked: z.boolean() }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      type: z.literal('lan/share-settings'),
+      result: LanShareSettingsResultSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      type: z.literal('lan/share-image'),
+      result: LanShareSettingsResultSchema,
     })
     .strict(),
   z

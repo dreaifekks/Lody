@@ -3,6 +3,13 @@
 // with raw HTML escaped and unsafe link targets dropped.
 import { micromark } from 'micromark';
 import { gfm, gfmHtml } from 'micromark-extension-gfm';
+import {
+  isLanShareActivity as isActivity,
+  isLanShareTurnFinished,
+  lanShareAnswered,
+  lanShareSegments,
+  lanShareWorkOf as workOf,
+} from '../../shared/src/lan-share-visible';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type JsonObject = { [key: string]: Json };
@@ -19,31 +26,74 @@ export type Manifest = {
   attachments: Array<{ id: string; kind: 'image' | 'file'; objectId: string }>;
 };
 
+/** What a group of steps did, counted as the desktop counts it. */
+type Activity = {
+  commands: number;
+  readFiles: number;
+  editedFiles: number;
+  searches: number;
+  fetches: number;
+  tools: number;
+};
+
 export type Strings = {
-  thinking: string;
   tool: string;
   untitled: string;
   unavailable: string;
   updated: string;
   image: string;
+  /** The row a finished turn's work folds into, as the desktop words it. */
+  workedFor: (duration: string) => string;
+  /** That row when the history holds no duration for the turn. */
+  steps: (count: number) => string;
+  /** That row when there is neither a duration nor a step to count. */
+  finished: string;
+  units: { hour: string; minute: string; second: string; separator: string };
+  /** The row of a group of steps names each kind it did. */
+  activity: { [Kind in keyof Activity]: (count: number) => string };
 };
+
+const plural = (count: number, one: string, other: string) =>
+  (count === 1 ? one : other).replace('{n}', String(count));
 
 export const STRINGS: Record<'en' | 'zh', Strings> = {
   en: {
-    thinking: 'Thinking',
     tool: 'Tool',
     untitled: 'Untitled conversation',
     unavailable: 'This conversation is not available.',
     updated: 'Updated',
     image: 'Image',
+    workedFor: (duration) => `Worked for ${duration}`,
+    steps: (count) => plural(count, 'Took {n} step', 'Took {n} steps'),
+    finished: 'Finished working',
+    units: { hour: 'h', minute: 'm', second: 's', separator: ' ' },
+    activity: {
+      commands: (count) => plural(count, 'Ran {n} command', 'Ran {n} commands'),
+      readFiles: (count) => plural(count, 'Read {n} file', 'Read {n} files'),
+      editedFiles: (count) => plural(count, 'Edited {n} file', 'Edited {n} files'),
+      searches: (count) => plural(count, 'Ran {n} search', 'Ran {n} searches'),
+      fetches: (count) => plural(count, 'Fetched {n} resource', 'Fetched {n} resources'),
+      tools: (count) => plural(count, 'Called {n} tool', 'Called {n} tools'),
+    },
   },
   zh: {
-    thinking: '思考',
     tool: '工具',
     untitled: '未命名对话',
     unavailable: '这个对话无法打开。',
     updated: '更新于',
     image: '图片',
+    workedFor: (duration) => `工作了${duration}`,
+    steps: (count) => `已处理 ${count} 步`,
+    finished: '已完成工作',
+    units: { hour: '时', minute: '分', second: '秒', separator: '' },
+    activity: {
+      commands: (count) => `调用了 ${count} 个命令`,
+      readFiles: (count) => `阅读了 ${count} 个文件`,
+      editedFiles: (count) => `编辑了 ${count} 个文件`,
+      searches: (count) => `进行了 ${count} 次搜索`,
+      fetches: (count) => `获取了 ${count} 项内容`,
+      tools: (count) => `调用了 ${count} 个工具`,
+    },
   },
 };
 
@@ -90,7 +140,9 @@ function pre(document: Document, text: string): HTMLElement {
 
 function folded(document: Document, className: string, summary: string, body: Node[]) {
   const details = element(document, 'details', className);
-  details.append(element(document, 'summary', undefined, summary), ...body);
+  const row = element(document, 'summary');
+  row.append(element(document, 'span', 'label', summary));
+  details.append(row, ...body);
   return details;
 }
 
@@ -167,12 +219,6 @@ function renderItem(context: RenderContext, item: Json): HTMLElement | null {
       const text = str(item.text);
       return text?.trim() ? markdown(document, text) : null;
     }
-    case 'thought': {
-      const text = str(item.text);
-      return text?.trim()
-        ? folded(document, 'thought', strings.thinking, [markdown(document, text)])
-        : null;
-    }
     case 'proposed_plan': {
       const text = str(item.markdown);
       return text?.trim() && item.status !== 'cleared' ? markdown(document, text) : null;
@@ -215,6 +261,205 @@ function renderItem(context: RenderContext, item: Json): HTMLElement | null {
   }
 }
 
+// A finished turn reads like the desktop's: its answer shows, and the work
+// before it (thinking, tool calls, short narration) folds into one row. The
+// rules are those the window publishes by, in `lan-share-visible.ts` of
+// `@lody/shared`, which imports nothing and is bundled by its path.
+
+const isShownStep = (item: JsonObject): boolean =>
+  item.type === 'tool_call' && item.kind !== 'think';
+
+/** A retry the agent already got past; the desktop shows none. */
+const isSettledRetry = (item: JsonObject): boolean =>
+  item.type === 'tool_call' &&
+  item.activityKind === 'codex_retry' &&
+  item.status !== 'pending' &&
+  item.status !== 'in_progress';
+
+function toolPaths(item: JsonObject): string[] {
+  const paths = new Set<string>();
+  for (const location of Array.isArray(item.locations) ? item.locations : []) {
+    const at = isObject(location) ? str(location.path) : null;
+    if (at) paths.add(at);
+  }
+  for (const block of Array.isArray(item.content) ? item.content : []) {
+    const at = isObject(block) && block.type === 'diff' ? str(block.path) : null;
+    if (at) paths.add(at);
+  }
+  return [...paths];
+}
+
+const hasCommand = (item: JsonObject): boolean =>
+  (Array.isArray(item.content) ? item.content : []).some(
+    (block) => isObject(block) && block.type === 'terminal_command'
+  );
+
+/** What a group did; files read or edited more than once count once. */
+function summarize(items: JsonObject[]): Activity {
+  const read = new Set<string>();
+  const edited = new Set<string>();
+  const activity: Activity = {
+    commands: 0,
+    readFiles: 0,
+    editedFiles: 0,
+    searches: 0,
+    fetches: 0,
+    tools: 0,
+  };
+  for (const item of items) {
+    if (item.type !== 'tool_call' || item.kind === 'think') continue;
+    const paths = toolPaths(item);
+    switch (item.kind) {
+      case 'execute':
+      case 'bash':
+        activity.commands += 1;
+        break;
+      case 'read':
+        if (paths.length === 0) activity.readFiles += 1;
+        for (const at of paths) read.add(at);
+        break;
+      case 'edit':
+      case 'write':
+      case 'delete':
+      case 'move':
+        if (paths.length === 0) activity.editedFiles += 1;
+        for (const at of paths) edited.add(at);
+        break;
+      case 'search':
+        activity.searches += 1;
+        break;
+      case 'fetch':
+        activity.fetches += 1;
+        break;
+      default:
+        if (hasCommand(item)) activity.commands += 1;
+        else activity.tools += 1;
+    }
+  }
+  activity.readFiles += read.size;
+  activity.editedFiles += edited.size;
+  return activity;
+}
+
+/** A run of steps as one folded row; `null` when it holds nothing a reader is shown. */
+function activityGroup(context: RenderContext, items: JsonObject[]): HTMLElement | null {
+  const steps = items
+    .filter(isShownStep)
+    .map((item) => renderItem(context, item))
+    .filter((node): node is HTMLElement => node !== null);
+  if (steps.length === 0) return null;
+  const activity = summarize(items);
+  const label = (Object.keys(activity) as Array<keyof Activity>)
+    .filter((kind) => activity[kind] > 0)
+    .map((kind) => context.strings.activity[kind](activity[kind]))
+    .join(' · ');
+  return folded(context.document, 'group', label, steps);
+}
+
+function formatDuration(ms: number, units: Strings['units']): string {
+  const total = Math.floor(ms / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const { hour, minute, second, separator } = units;
+  if (hours > 0)
+    return `${hours}${hour}${separator}${pad(minutes)}${minute}${separator}${pad(seconds)}${second}`;
+  if (minutes > 0) return `${minutes}${minute}${separator}${pad(seconds)}${second}`;
+  return `${seconds}${second}`;
+}
+
+/** The turn's working time, less any wait for permission; `null` when not recorded. */
+function durationOf(entry: JsonObject): number | null {
+  const endedAt = entry.endedAt;
+  const startedAt = Date.parse(str(entry.timestamp) ?? '');
+  if (typeof endedAt !== 'number' || !Number.isFinite(startedAt) || endedAt < startedAt) {
+    return null;
+  }
+  const wait = typeof entry.permissionWaitMs === 'number' ? entry.permissionWaitMs : 0;
+  return Math.max(0, endedAt - startedAt - Math.max(0, wait));
+}
+
+/** The row that shows or hides a segment's work, which stays in place between the answer's text. */
+function workedRow(document: Document, label: string, work: HTMLElement[]): HTMLElement {
+  const row = element(document, 'button', 'worked');
+  row.type = 'button';
+  row.append(element(document, 'span', 'label', label));
+  row.setAttribute('aria-expanded', 'false');
+  for (const node of work) node.hidden = true;
+  row.addEventListener('click', () => {
+    const expanded = row.getAttribute('aria-expanded') !== 'true';
+    row.setAttribute('aria-expanded', String(expanded));
+    for (const node of work) node.hidden = !expanded;
+  });
+  return row;
+}
+
+function renderAssistant(context: RenderContext, entry: JsonObject, items: Json[]): HTMLElement[] {
+  const nodes = new Map<JsonObject, HTMLElement>();
+  const kept: JsonObject[] = [];
+  const tasks: HTMLElement[] = [];
+  for (const item of items) {
+    if (!isObject(item) || isSettledRetry(item)) continue;
+    // Subagent tasks follow the turn's last segment, as on the desktop.
+    if (item.type === 'subagent_task') {
+      const node = renderItem(context, item);
+      if (node) tasks.push(node);
+      continue;
+    }
+    if (isActivity(item)) {
+      kept.push(item);
+      continue;
+    }
+    const node = renderItem(context, item);
+    if (!node) continue;
+    nodes.set(item, node);
+    kept.push(item);
+  }
+  const finished = isLanShareTurnFinished(entry);
+  // A plan's exit card closes a segment of its own, folded on its own.
+  const segments = lanShareSegments(kept);
+  const duration = durationOf(entry);
+  return segments.flatMap((segment, index) => {
+    const last = index === segments.length - 1;
+    const segmentTasks = last ? tasks : [];
+    const work = finished ? workOf(segment) : new Set<number>();
+    const shown: HTMLElement[] = [];
+    const folding: HTMLElement[] = [];
+    let steps = segmentTasks.length;
+    for (let at = 0; at < segment.length;) {
+      let end = at + 1;
+      let node: HTMLElement | null | undefined;
+      if (isActivity(segment[at])) {
+        while (end < segment.length && isActivity(segment[end])) end += 1;
+        const run = segment.slice(at, end);
+        node = activityGroup(context, run);
+        steps += run.filter(isShownStep).length;
+      } else {
+        node = nodes.get(segment[at]);
+      }
+      if (node) {
+        shown.push(node);
+        if (work.has(at)) folding.push(node);
+      }
+      at = end;
+    }
+    shown.push(...segmentTasks);
+    folding.push(...segmentTasks);
+    const answered = lanShareAnswered(segment, work);
+    // Thinking alone is work too: the row then says how long the turn took.
+    if (!finished || !answered || (work.size === 0 && segmentTasks.length === 0)) return shown;
+    // The turn's duration covers every segment, so only the last claims it.
+    const label =
+      duration !== null && last
+        ? context.strings.workedFor(formatDuration(duration, context.strings.units))
+        : steps > 0
+          ? context.strings.steps(steps)
+          : context.strings.finished;
+    return [workedRow(context.document, label, folding), ...shown];
+  });
+}
+
 /** One conversation's history; entries of other roles, and unknown items, are left out. */
 export function renderHistory(context: RenderContext, history: Json): HTMLElement {
   const list = element(context.document, 'div', 'history');
@@ -226,9 +471,12 @@ export function renderHistory(context: RenderContext, history: Json): HTMLElemen
       const blocks = entry.inputConfig.inputBlocks;
       if (Array.isArray(blocks)) items = blocks;
     }
-    const nodes = items
-      .map((item) => renderItem(context, item))
-      .filter((node): node is HTMLElement => node !== null);
+    const nodes =
+      entry.role === 'assistant'
+        ? renderAssistant(context, entry, items)
+        : items
+            .map((item) => renderItem(context, item))
+            .filter((node): node is HTMLElement => node !== null);
     if (nodes.length === 0) continue;
     const message = element(context.document, 'article', `message ${entry.role}`);
     message.append(...nodes);
