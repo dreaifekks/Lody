@@ -863,7 +863,9 @@ beside its bundle, where the hub reads it.
 **Following the hub.** `shares/` travels with the hub. A take-over asks the
 current host for it (`/lan/handover?shares=1`) after the other files, so a
 host of an older build simply sends none; the hub waits for a running commit
-before it hands over. The standby copies it after each copy of the database
+before it hands over, and answers 503 to a commit, revoke or setting whose body
+arrives after the handover began, so whatever it answered 200 reached the new
+host. The standby copies it after each copy of the database
 (`POST /lan/shares/copy`): it says which objects it holds, receives
 `index.json` and the objects it lacks, and keeps the others from its previous
 copy; a failover starts the new hub with them. A hub that hands over, moved

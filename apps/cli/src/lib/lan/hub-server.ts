@@ -643,6 +643,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       return typeof address === 'object' && address ? address.port : null;
     },
     readerAssets: options.shareReaderAssets,
+    isServing: () => state.kind === 'serving',
     log: options.log,
   });
 

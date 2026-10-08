@@ -16,6 +16,7 @@ import { startLanHubServer, type LanHubServer, type LanHubUpstream } from './hub
 import {
   createLanHubShares,
   listLanHubShareObjects,
+  readLanHubShareFiles,
   readLanHubSharesCopy,
   writeLanHubSharesCopy,
 } from './hub-shares';
@@ -329,6 +330,7 @@ describe('the objects of shares', () => {
       dataDir,
       sharePort: () => null,
       readerAssets: () => READER,
+      isServing: () => true,
       now: () => now,
     });
     const server = http.createServer((request, response) => {
@@ -382,6 +384,74 @@ describe('the objects of shares', () => {
       await revokeLanShare(hub, first.shareId);
       await shares.collect();
       expect(objects()).toBe(0);
+    } finally {
+      shares.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a share committed while the hub hands over', () => {
+  it('is refused, so a commit answered 200 is always in what the new host received', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-hub-shares-handover-'));
+    let serving = true;
+    const shares = createLanHubShares({
+      dataDir,
+      sharePort: () => null,
+      readerAssets: () => READER,
+      isServing: () => serving,
+    });
+    let arrived: () => void = () => {};
+    const commitArrived = new Promise<void>((resolve) => (arrived = resolve));
+    const server = http.createServer((request, response) => {
+      if (request.method === 'POST') arrived();
+      void shares.handle(request, response);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const prepared = await capture('First answer.');
+      for (const object of prepared.manifest.objects) {
+        const bytes = prepared.objects.get(object.id);
+        await fetch(`${base}/lan/shares/objects/${object.sha256}`, { method: 'PUT', body: bytes });
+      }
+      const body = Buffer.from(
+        JSON.stringify({
+          rootSourceId: 'session-root',
+          sources: prepared.sourceIds,
+          manifest: prepared.manifest,
+        })
+      );
+      let handedOver: ReturnType<typeof readLanHubShareFiles> | undefined;
+      const status = await new Promise<number>((resolve, reject) => {
+        const request = http.request(
+          `${base}/lan/shares`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': body.length },
+          },
+          (response) => {
+            response.resume();
+            resolve(response.statusCode ?? 0);
+          }
+        );
+        request.once('error', reject);
+        // The gate let the commit in; its body is still on the way when the
+        // handover begins and the new host copies the shares.
+        request.write(body.subarray(0, 16));
+        void commitArrived.then(async () => {
+          serving = false;
+          await shares.idle();
+          handedOver = readLanHubShareFiles(dataDir);
+          request.end(body.subarray(16));
+        });
+      });
+
+      expect(status).toBe(503);
+      expect(handedOver).toBeNull();
+      expect(readLanHubShareFiles(dataDir)).toBeNull();
     } finally {
       shares.close();
       server.closeAllConnections();

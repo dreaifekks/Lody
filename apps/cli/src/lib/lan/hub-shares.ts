@@ -288,6 +288,11 @@ export function createLanHubShares(options: {
   /** The port readers reach; `null` when the hub serves none. */
   sharePort: () => number | null;
   readerAssets?: () => LanShareReaderAssets | null;
+  /**
+   * Whether the hub still serves its LAN. A write whose body arrives after a
+   * handover began is refused: the new host already copied the shares.
+   */
+  isServing: () => boolean;
   now?: () => number;
   log?: (line: string) => void;
 }): LanHubShares {
@@ -304,7 +309,11 @@ export function createLanHubShares(options: {
   // is about to replace and a handover waits for the last one.
   let writing: Promise<unknown> = Promise.resolve();
   const exclusive = <T>(task: () => Promise<T> | T): Promise<T> => {
-    const run = writing.then(task, task);
+    const guarded = () => {
+      if (!options.isServing()) throw new HttpError(503, 'this LAN is served elsewhere');
+      return task();
+    };
+    const run = writing.then(guarded, guarded);
     writing = run.catch(() => undefined);
     return run;
   };
