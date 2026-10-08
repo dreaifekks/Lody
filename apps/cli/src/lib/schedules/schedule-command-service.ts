@@ -8,6 +8,7 @@ import {
   getServerNow,
   getSessionRoomId,
   isLoroRepoDocDeleted,
+  isPermissionTierWithin,
   machineSupportsSchedulesProtocol,
   ScheduleRuntimeRowSchema,
   previewSchedule,
@@ -19,7 +20,9 @@ import {
   type AgentConfigId,
   type MachineId,
   type MachineMeta,
+  type ResolvedPermissionTier,
   type ScheduleCommand,
+  type ScheduleDefinition,
   type SessionId,
   type SessionMeta,
   type WorkspaceId,
@@ -33,6 +36,7 @@ import type { LoroDocumentManager } from '../loro/doc';
 import type { WorkspaceSummary } from '../workspace';
 import { createSessionBackend } from '@/session/session-backend';
 import { readMergedAgentConfigById } from '../agent-config-machine-flock';
+import { readAgentRunConfigTier } from '../agent-permission-tier';
 import { publishScheduleProposal } from './schedule-proposal';
 import {
   destinationSessionProblem,
@@ -51,7 +55,19 @@ export type ScheduleCommandContext = {
    */
   hostedAccess: boolean;
   requesterSessionId?: SessionId;
+  /**
+   * The invoking Agent Session's permission tier. With it the Agent may also
+   * create, edit and resume, but only Schedules that run within that tier.
+   */
+  requesterPermissionTier?: ResolvedPermissionTier;
 };
+
+const AGENT_NOTICES = {
+  create: 'Created',
+  edit: 'Changed',
+  pause: 'Paused',
+  resume: 'Resumed',
+} as const;
 
 /** Same domain operations for human CLI and the bounded MCP surface, on either transport. */
 export async function executeScheduleCommand(
@@ -65,8 +81,12 @@ export async function executeScheduleCommand(
   const sync = async (room: string) => {
     if (!localOnly) await manager.syncDocOrThrow(room, { reason: 'schedule:command' });
   };
+  const requesterPermissionTier = context.requesterPermissionTier;
   if (requesterSessionId) {
-    if (!['list', 'show', 'pause', 'propose'].includes(command.action))
+    const agentWrite =
+      requesterPermissionTier !== undefined &&
+      ['create', 'edit', 'resume'].includes(command.action);
+    if (!agentWrite && !['list', 'show', 'pause', 'propose'].includes(command.action))
       throw new Error('Schedule enablement requires a human action');
     const record = await manager.repo.getDocMeta(getSessionRoomId(requesterSessionId));
     const meta = record?.meta as SessionMeta | undefined;
@@ -190,6 +210,37 @@ export async function executeScheduleCommand(
     throw new Error('Schedules can run only on a machine owned by the creator');
   if (needsTarget && !machineSupportsSchedulesProtocol(machine))
     throw new Error('Update the target machine CLI to manage schedules');
+  // An Agent changes only Schedules that run within its own Session's tier,
+  // and only into Schedules that do; the rest is the user's to decide.
+  const tierOf = (definition: Pick<ScheduleDefinition, 'machineId' | 'agent'>) =>
+    readAgentRunConfigTier({
+      manager,
+      workspaceId,
+      machineId: definition.machineId as MachineId,
+      agentConfigId: definition.agent.agentConfigId as AgentConfigId,
+      runConfig: definition.agent,
+      localOnly,
+    });
+  if (
+    requesterSessionId &&
+    requesterPermissionTier &&
+    (command.action === 'edit' || command.action === 'resume')
+  ) {
+    const current = (await repository.read(id))?.definition;
+    if (current && !isPermissionTierWithin(await tierOf(current), requesterPermissionTier))
+      throw new Error(
+        'This schedule runs with more permissions than this conversation has. Only the user can change or resume it, in Schedules.'
+      );
+  }
+  if (
+    requesterSessionId &&
+    requesterPermissionTier &&
+    (command.action === 'create' || command.action === 'edit') &&
+    !isPermissionTierWithin(await tierOf(command.draft), requesterPermissionTier)
+  )
+    throw new Error(
+      'The schedule would run with more permissions than this conversation has. Use lody_schedule_propose so the user can confirm it.'
+    );
   const now = getServerNow();
   if (command.action === 'create' || command.action === 'edit') {
     if (!machine) throw new Error('Target machine is unavailable');
@@ -256,6 +307,7 @@ export async function executeScheduleCommand(
       now,
       activationId: command.requestId,
       activityId: command.requestId,
+      requesterSessionId,
       create: command.action === 'create',
     });
   } else if (command.action === 'pause' || command.action === 'resume') {
@@ -280,14 +332,24 @@ export async function executeScheduleCommand(
     await (await manager.repo.openPersistedDoc(getScheduleRoomId(id))).syncOnce();
     await registry.syncOnce();
   }
-  if (command.action === 'pause' && requesterSessionId) {
+  if (
+    requesterSessionId &&
+    (command.action === 'create' ||
+      command.action === 'edit' ||
+      command.action === 'pause' ||
+      command.action === 'resume')
+  ) {
+    const action = command.action;
     const session = await manager.getOrCreateSessionDoc(requesterSessionId);
     const sessionRecord = await manager.repo.getDocMeta(getSessionRoomId(requesterSessionId));
     const backend = await createSessionBackend(
       session,
       sessionRecord?.meta as SessionMeta | undefined
     );
-    const entryId = `schedule-paused-${command.requestId}`;
+    const entryId =
+      action === 'pause'
+        ? `schedule-paused-${command.requestId}`
+        : `schedule-${action}-${command.requestId}`;
     const title = (await repository.read(id))?.definition.title ?? id;
     const existing = await backend.readTurn(entryId);
     if (existing.state !== 'ready')
@@ -298,7 +360,10 @@ export async function executeScheduleCommand(
         items: [
           {
             type: 'text',
-            text: `Paused scheduled task: ${title}. Future runs stop after the owner machine syncs. Already submitted Sessions continue.`,
+            text:
+              action === 'pause'
+                ? `Paused scheduled task: ${title}. Future runs stop after the owner machine syncs. Already submitted Sessions continue.`
+                : `${AGENT_NOTICES[action]} scheduled task from this conversation: ${title} (${id}). Review, pause or edit it in Schedules.`,
           },
         ],
         fileDiff: [],
@@ -306,7 +371,9 @@ export async function executeScheduleCommand(
       });
     await manager.repo.flush();
     if (!localOnly && (!(await backend.waitUntilSynced()) || !(await session.waitUntilSynced())))
-      throw new Error('Pause saved; notification sync pending. Retry with the same requestId.');
+      throw new Error(
+        `${AGENT_NOTICES[action]} schedule saved; notification sync pending. Retry with the same requestId.`
+      );
   }
   return { ok: true, scheduleId: id };
 }

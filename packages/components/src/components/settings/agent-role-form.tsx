@@ -7,6 +7,8 @@ import {
   normalizeAgentRoleDescription,
   DEFAULT_AGENT_ROLE_EMOJI,
   type AgentConfigId,
+  type AgentRoleFormError,
+  type AgentRoleFormValue,
   type MachineId,
 } from '@lody/shared';
 import type {
@@ -15,8 +17,6 @@ import type {
 } from '@/components/shared/acp-selector-options';
 import {
   selectAuthorableAgentRoleConfigOptions,
-  type AgentRoleFormError,
-  type AgentRoleFormValue,
   type AgentRoleRunConfigIssue,
 } from '@/lib/agent-role-form';
 import { withClassName } from '@/lib/stylex';

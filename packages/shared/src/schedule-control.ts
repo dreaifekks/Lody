@@ -4,6 +4,7 @@ import {
   ScheduleProposalRuleSchema,
   ScheduleProposalTargetSchema,
 } from './message-schemas';
+import { PERMISSION_TIERS } from './permission-tier';
 import { ScheduleDefinitionSchema } from './schedule-types';
 
 const id = z
@@ -75,6 +76,12 @@ export const ScheduleControlRequestSchema = z
     machineId: z.string().min(1),
     workspaceId: z.string().min(1),
     requesterSessionId: z.string().min(1).optional(),
+    /**
+     * The invoking Agent Session's permission tier, read by the daemon from its
+     * active Turn. With it an Agent may create, edit and resume Schedules up to
+     * that tier; a person's CLI sends neither field.
+     */
+    requesterPermissionTier: z.enum([...PERMISSION_TIERS, 'unknown']).optional(),
     command: ScheduleCommandSchema,
   })
   .strict();

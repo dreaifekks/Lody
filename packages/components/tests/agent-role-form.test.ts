@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { reconcileAgentRoleSchema } from '../src/lib/agent-role-schema-reconciliation';
 import {
   AGENT_ROLE_VERSION,
+  buildAgentRoleFormValue,
+  buildAgentRoleFromForm,
+  EMPTY_AGENT_ROLE_FORM_VALUE,
+  validateAgentRoleForm,
+  type AgentRoleFormValue,
   type AcpCapabilityCacheEntry,
   type AgentConfigId,
   type AgentRole,
@@ -12,14 +17,9 @@ import type { AcpSelectorOptions } from '../src/components/shared/acp-selector-o
 import {
   applyAgentRoleRunConfigDefaults,
   carryAgentRoleOptionsToModel,
-  buildAgentRoleFormValue,
   buildAgentRoleRunConfigSummary,
-  buildAgentRoleFromForm,
-  EMPTY_AGENT_ROLE_FORM_VALUE,
   findAgentRoleRunConfigIssues,
   selectAuthorableAgentRoleConfigOptions,
-  validateAgentRoleForm,
-  type AgentRoleFormValue,
 } from '../src/lib/agent-role-form';
 
 const role = (overrides: Partial<AgentRole> = {}): AgentRole => ({

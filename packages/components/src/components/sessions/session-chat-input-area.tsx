@@ -1,4 +1,4 @@
-import { snapshotAgentRole } from '@lody/shared';
+import { buildAgentRoleFormValueFromRunConfig, snapshotAgentRole } from '@lody/shared';
 import { useSessionMentionSource } from '@/hooks/use-session-mention-source';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
@@ -25,7 +25,6 @@ import { SessionVoiceControls } from './session-voice-controls';
 import { useSessionPromptSuggestion } from './use-session-prompt-suggestion';
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
 import { useSessionAgentRole, type SessionAgentRoleControl } from '@/hooks/use-session-agent-role';
-import { buildAgentRoleFormValueFromRunConfig } from '@/lib/agent-role-form';
 import {
   doesAgentRolePinPermissionMode,
   resolveTurnAgentRoleForRunConfig,

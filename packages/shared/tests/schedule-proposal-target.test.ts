@@ -5,8 +5,8 @@ import {
   type AgentRole,
   type ScheduleProposalMeta,
   type SessionMeta,
-} from '@lody/shared';
-import { resolveScheduleProposalTarget } from '../src/components/schedules/schedule-proposal-target';
+} from '../src';
+import { resolveScheduleProposalTarget } from '../src/schedule-proposal-target';
 
 const reviewer = {
   id: 'reviewer',

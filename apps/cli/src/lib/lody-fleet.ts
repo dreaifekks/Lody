@@ -462,6 +462,7 @@ export class LodyFleet {
               localOnly: this.localPlatform,
               hostedAccess: this.cloudPort.kind !== 'local',
               requesterSessionId: message.requesterSessionId as SessionId | undefined,
+              requesterPermissionTier: message.requesterPermissionTier,
             },
             message.command
           );

@@ -42,6 +42,13 @@ Parent instructions apply. Background: [README.md](README.md).
   Freeze `requesterUserId` and `sourceTurnId` at Operation acceptance; requester Session id
   already identifies the Session. Author snapshots are presentation only. Recovery uses the Operation
   owner Machine and current authorization, not a frozen daemon account.
+- Agent Role and Schedule writes (`lody_agent_role_create/update`,
+  `lody_schedule_create/update/resume`) are Session tools capped at the invoking
+  Session's permission tier: the driving Turn's dispatch config overlaid by the
+  runtime's report for that Turn, ranked by shared `permission-tier.ts`. The written
+  and the already stored configuration must both stay within it; unknown modes and
+  higher tiers are left to Settings or `lody_schedule_propose`. No credential option
+  or memory binding, no deletion. Each write leaves a system notice in that Session.
 - Direct Role creation stays on the ordinary `lody_session_create` and
   `lody_session_create_many` tools. When `agentRoleId` is present, tolerate manual Machine, Agent,
   and run-config fields but remove them before resolution: the current Role row is authoritative

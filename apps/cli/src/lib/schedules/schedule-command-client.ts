@@ -1,5 +1,5 @@
 import { Effect } from 'effect';
-import type { ScheduleCommand, SessionId } from '@lody/shared';
+import type { ResolvedPermissionTier, ScheduleCommand, SessionId } from '@lody/shared';
 import { makeLocalControlClientAuto } from '@lody/shared/node/local-ipc';
 import { makeLocalWorkspaceCatalog } from '../local-workspace-catalog';
 import {
@@ -13,7 +13,11 @@ import { LODY_AUTH_URL } from '@/utils/const';
 
 export async function sendScheduleCommand(
   command: ScheduleCommand,
-  options: { workspace?: string; requesterSessionId?: SessionId } = {}
+  options: {
+    workspace?: string;
+    requesterSessionId?: SessionId;
+    requesterPermissionTier?: ResolvedPermissionTier;
+  } = {}
 ): Promise<unknown> {
   if (LODY_AUTH_URL) {
     const auth = getAuthContextOrThrow('schedule');
@@ -27,6 +31,7 @@ export async function sendScheduleCommand(
           localOnly: false,
           hostedAccess: true,
           requesterSessionId: options.requesterSessionId,
+          requesterPermissionTier: options.requesterPermissionTier,
         },
         command
       )
@@ -50,6 +55,7 @@ export async function sendScheduleCommand(
         workspaceId: candidates[0]!.workspaceId,
         command,
         requesterSessionId: options.requesterSessionId,
+        requesterPermissionTier: options.requesterPermissionTier,
       })
       .pipe(Effect.either)
   );

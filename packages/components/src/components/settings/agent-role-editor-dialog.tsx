@@ -3,7 +3,17 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { usePostHog } from '@posthog/react';
 import { useTranslation } from 'react-i18next';
-import { getServerNow, type AgentRole, type AgentRoleId, type MachineId } from '@lody/shared';
+import {
+  buildAgentRoleFormValue,
+  buildAgentRoleFromForm,
+  buildAgentRoleRunConfig,
+  getServerNow,
+  validateAgentRoleForm,
+  type AgentRole,
+  type AgentRoleFormValue,
+  type AgentRoleId,
+  type MachineId,
+} from '@lody/shared';
 
 import { userAtom } from '@/atoms';
 import { getAllAgentConfigAtom } from '@/atoms/agents';
@@ -15,13 +25,8 @@ import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useWorkspaceAgentRoleActions } from '@/hooks/use-workspace-agent-roles';
 import {
   applyAgentRoleRunConfigDefaults,
-  buildAgentRoleFormValue,
-  buildAgentRoleFromForm,
-  buildAgentRoleRunConfig,
   carryAgentRoleOptionsToModel,
   findAgentRoleRunConfigIssues,
-  validateAgentRoleForm,
-  type AgentRoleFormValue,
 } from '@/lib/agent-role-form';
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
 import { Tabs } from '@lody/ui/tabs';

@@ -201,7 +201,8 @@ const defaultDeps: ConfigureWorkspaceMcpServerDeps = {
 
 const configureQueues = new Map<string, Promise<void>>();
 
-async function withWorkspaceConfigureLock<T>(
+/** Serializes Agent-authored catalog writes per workspace before their bounds are checked. */
+export async function withWorkspaceConfigureLock<T>(
   workspaceId: WorkspaceId,
   run: () => Promise<T>
 ): Promise<T> {

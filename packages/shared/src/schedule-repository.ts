@@ -163,6 +163,8 @@ export class ScheduleRepository {
     now: number;
     activationId: string;
     activityId: string;
+    /** The Agent Session that made this change; absent for a person's own edit. */
+    requesterSessionId?: string;
     create?: boolean;
   }): Promise<ScheduleDocument> {
     const previous = args.create
@@ -201,6 +203,7 @@ export class ScheduleRepository {
       };
       if (
         prior.actorId !== args.actorId ||
+        prior.requesterSessionId !== args.requesterSessionId ||
         previous!.definition.ownerId !== args.actorId ||
         prior.kind !== (args.create ? 'created' : 'edited') ||
         canonicalScheduleJson(draft) !== canonicalScheduleJson(incoming)
@@ -225,6 +228,7 @@ export class ScheduleRepository {
     });
     const activity = ScheduleActivitySchema.parse({
       id: args.activityId,
+      requesterSessionId: args.requesterSessionId,
       kind: previous ? 'edited' : 'created',
       actorId: args.actorId,
       createdAt: args.now,

@@ -5,10 +5,17 @@ import {
   ScheduleRepository,
   ScheduleDefinitionSchema,
   SCHEDULES_PROTOCOL_VERSION,
+  type ResolvedPermissionTier,
   type ScheduleCommand,
   type ScheduleRepositoryPort,
+  type SessionMeta,
 } from '@lody/shared';
 import { executeScheduleCommand, type ScheduleCommandContext } from './schedule-command-service';
+import {
+  buildScheduleCreateDraft,
+  buildScheduleEditDraft,
+  type ScheduleCreateToolInput,
+} from '@/mcp/schedule-agent-writes';
 import { WorkspaceSyncUnavailableError } from '../command-runtime';
 
 async function fixture() {
@@ -391,5 +398,190 @@ describe('proposing a schedule from a conversation', () => {
   it('requires an invoking conversation', async () => {
     const h = await fixture();
     await expect(propose(h)).rejects.toThrow('invoking Session');
+  });
+});
+
+describe('Agent writes within the invoking conversation’s permission tier', () => {
+  const conversation = {
+    session: {
+      id: 'session',
+      machineId: 'machine',
+      agentConfigId: 'agent',
+      cliType: 'builtin',
+      agentType: 'claude',
+    } as unknown as SessionMeta,
+    runConfig: { modeId: 'acceptEdits' },
+  };
+  const agents = [{ id: 'agent', machineId: 'machine', cliType: 'builtin', agentType: 'claude' }];
+  const draftContext = {
+    now: Date.parse('2026-10-09T00:00:00Z'),
+    conversation,
+    agents,
+    roles: [],
+    machineTimeZone: () => 'Asia/Tokyo',
+  };
+  const asAgent = async (tier: ResolvedPermissionTier) => {
+    const h = await fixture();
+    h.addMachine();
+    h.context.requesterSessionId = 'session' as never;
+    h.context.requesterPermissionTier = tier;
+    return h;
+  };
+  const create = (
+    h: Awaited<ReturnType<typeof fixture>>,
+    requestId: string,
+    target?: ScheduleCreateToolInput['target']
+  ) =>
+    executeScheduleCommand(h.context, {
+      action: 'create',
+      scheduleId: requestId,
+      requestId,
+      draft: buildScheduleCreateDraft(
+        {
+          requestId,
+          title: 'Nightly review',
+          prompt: 'Review today’s commits.',
+          rule: { kind: 'daily', hour: 21, minute: 0 },
+          ...(target ? { target } : {}),
+        },
+        draftContext
+      ),
+    });
+
+  it('creates an enabled schedule with this conversation’s Agent and mode, attributed to it', async () => {
+    const h = await asAgent('edit');
+    await expect(create(h, 'nightly')).resolves.toEqual({ ok: true, scheduleId: 'nightly' });
+    const saved = (await h.repository.read('nightly'))!;
+    expect(saved.definition).toMatchObject({
+      enabled: true,
+      machineId: 'machine',
+      agent: { agentConfigId: 'agent', modeId: 'acceptEdits' },
+      trigger: { kind: 'cron', expression: '0 21 * * *', timeZone: 'Asia/Tokyo' },
+    });
+    expect(saved.timeline).toMatchObject([
+      { id: 'nightly', kind: 'created', requesterSessionId: 'session' },
+    ]);
+    expect(h.history()).toMatchObject([
+      {
+        role: 'system',
+        items: [{ type: 'text', text: expect.stringContaining('Created scheduled task') }],
+      },
+    ]);
+  });
+
+  it('refuses a schedule above the conversation’s tier or with an unknown mode, writing nothing', async () => {
+    const h = await asAgent('edit');
+    conversation.runConfig = { modeId: 'bypassPermissions' };
+    try {
+      await expect(create(h, 'elevated')).rejects.toThrow('lody_schedule_propose');
+      conversation.runConfig = { modeId: 'experimental-mode' };
+      await expect(create(h, 'unknown')).rejects.toThrow('lody_schedule_propose');
+    } finally {
+      conversation.runConfig = { modeId: 'acceptEdits' };
+    }
+    expect(await h.repository.read('elevated')).toBeNull();
+    expect(await h.repository.read('unknown')).toBeNull();
+    expect(h.history()).toEqual([]);
+  });
+
+  it('still leaves create to a person when no tier came with the request', async () => {
+    const h = await asAgent('full');
+    h.context.requesterPermissionTier = undefined;
+    await expect(create(h, 'untiered')).rejects.toThrow('human');
+  });
+
+  it('edits only what was named, and not a schedule already above the tier', async () => {
+    const h = await asAgent('edit');
+    await create(h, 'nightly');
+    const current = (await h.repository.read('nightly'))!;
+    await executeScheduleCommand(h.context, {
+      action: 'edit',
+      scheduleId: 'nightly',
+      requestId: 'retitle',
+      draft: buildScheduleEditDraft(
+        { scheduleId: 'nightly', requestId: 'retitle', title: 'Evening review' },
+        current,
+        draftContext
+      ),
+    });
+    const edited = (await h.repository.read('nightly'))!;
+    expect(edited.definition).toMatchObject({
+      title: 'Evening review',
+      trigger: current.definition.trigger,
+      agent: current.definition.agent,
+    });
+    expect(edited.prompt).toBe(current.prompt);
+    expect(edited.timeline.at(-1)).toMatchObject({
+      kind: 'edited',
+      requesterSessionId: 'session',
+    });
+
+    // A person raised it; a lower-tier Agent may not touch it, not even to lower it.
+    await h.repository.save({
+      scheduleId: 'nightly',
+      draft: {
+        ...edited.definition,
+        agent: { agentConfigId: 'agent', modeId: 'bypassPermissions' },
+        prompt: edited.prompt,
+      },
+      actorId: 'owner',
+      now: 3,
+      activationId: 'raise',
+      activityId: 'raise',
+    });
+    const raised = (await h.repository.read('nightly'))!;
+    await expect(
+      executeScheduleCommand(h.context, {
+        action: 'edit',
+        scheduleId: 'nightly',
+        requestId: 'lower',
+        draft: buildScheduleEditDraft(
+          { scheduleId: 'nightly', requestId: 'lower', prompt: 'Something else.' },
+          {
+            ...raised,
+            definition: { ...raised.definition, agent: edited.definition.agent },
+          },
+          draftContext
+        ),
+      })
+    ).rejects.toThrow('Only the user');
+    expect((await h.repository.read('nightly'))?.prompt).toBe(edited.prompt);
+  });
+
+  it('resumes a paused schedule within the tier, and only that', async () => {
+    const h = await asAgent('edit');
+    await create(h, 'nightly');
+    h.context.requesterPermissionTier = undefined;
+    await executeScheduleCommand(h.context, {
+      action: 'pause',
+      scheduleId: 'nightly',
+      requestId: 'pause',
+    });
+    h.context.requesterPermissionTier = 'ask';
+    await expect(
+      executeScheduleCommand(h.context, {
+        action: 'resume',
+        scheduleId: 'nightly',
+        requestId: 'resume-low',
+      })
+    ).rejects.toThrow('Only the user');
+    h.context.requesterPermissionTier = 'edit';
+    await expect(
+      executeScheduleCommand(h.context, {
+        action: 'resume',
+        scheduleId: 'nightly',
+        requestId: 'resume',
+      })
+    ).resolves.toEqual({ ok: true, scheduleId: 'nightly' });
+    const resumed = (await h.repository.read('nightly'))!;
+    expect(resumed.definition.enabled).toBe(true);
+    expect(resumed.timeline.at(-1)).toMatchObject({
+      id: 'resume',
+      kind: 'resumed',
+      requesterSessionId: 'session',
+    });
+    expect(h.history().at(-1)).toMatchObject({
+      items: [{ type: 'text', text: expect.stringContaining('Resumed scheduled task') }],
+    });
   });
 });
