@@ -13,6 +13,7 @@ import Database from 'better-sqlite3';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { z } from 'zod';
 import { LAN_HUB_HANDOVER_FILES } from './hub-handover';
+import { pullLanHubSharesCopy } from './hub-shares';
 import { ByteReader } from './lan-files';
 
 export const LAN_HUB_SNAPSHOT_PATH = '/lan/snapshot';
@@ -274,6 +275,14 @@ export async function pullLanHubSnapshot(options: {
     await fs.promises.rm(next, { recursive: true, force: true });
     throw new Error('The copy does not match the hub after patching');
   }
+
+  // The shares travel beside the database, and only the objects the copy lacks.
+  await pullLanHubSharesCopy({
+    hub: options.hub,
+    next,
+    previous: kept?.path ?? null,
+    fetch: options.fetch,
+  });
 
   const current = path.join(directory, CURRENT);
   const previous = path.join(directory, PREVIOUS);

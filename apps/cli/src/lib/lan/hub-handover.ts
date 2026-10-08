@@ -10,6 +10,7 @@ import { pipeline } from 'node:stream/promises';
 import { normalizeLanHubUrl } from '@lody/shared/lan-hub';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { z } from 'zod';
+import { isLanHubShareFile, receiveFile, writeLanHubShareFiles } from './hub-shares';
 import { ByteReader } from './lan-files';
 
 export const LAN_HUB_HANDOVER_PATH = '/lan/handover';
@@ -68,6 +69,15 @@ const FileHeaderSchema = z
   .object({
     type: z.literal('file'),
     name: z.enum(LAN_HUB_HANDOVER_FILES),
+    sizeBytes: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+/** A file of the shares, sent only to a new host that asked for them. */
+const ShareFileHeaderSchema = z
+  .object({
+    type: z.literal('share-file'),
+    name: z.string().refine(isLanHubShareFile),
     sizeBytes: z.number().int().nonnegative(),
     sha256: z.string().regex(/^[0-9a-f]{64}$/),
   })
@@ -172,9 +182,15 @@ async function digest(filePath: string): Promise<string> {
 
 /**
  * Sends the files of a data directory that stands still: each as a line that
- * names it, its size and digest, followed by exactly its bytes.
+ * names it, its size and digest, followed by exactly its bytes. The shares
+ * follow for a new host that asked for them; one of an older build would
+ * refuse their lines.
  */
-export async function writeLanHubHandover(dataDir: string, stream: Writable): Promise<number> {
+export async function writeLanHubHandover(
+  dataDir: string,
+  stream: Writable,
+  options: { shares?: boolean } = {}
+): Promise<number> {
   let count = 0;
   for (const name of LAN_HUB_HANDOVER_FILES) {
     const filePath = path.join(dataDir, name);
@@ -192,6 +208,9 @@ export async function writeLanHubHandover(dataDir: string, stream: Writable): Pr
       });
     }
     count += 1;
+  }
+  if (options.shares) {
+    count += await writeLanHubShareFiles(dataDir, stream, 'share-file');
   }
   writeLine(stream, { type: 'end', files: count });
   return count;
@@ -214,6 +233,14 @@ export async function readLanHubHandover(stream: Readable, directory: string): P
         throw new Error('The hub sent fewer files than it said');
       if (!written.includes('token')) throw new Error('The hub sent no credential');
       return written;
+    }
+    const share = ShareFileHeaderSchema.safeParse(value);
+    if (share.success) {
+      if (written.includes(share.data.name))
+        throw new Error(`The hub sent ${share.data.name} twice`);
+      await receiveFile(reader, path.join(directory, share.data.name), share.data);
+      written.push(share.data.name);
+      continue;
     }
     const header = FileHeaderSchema.parse(value);
     if (written.includes(header.name)) throw new Error(`The hub sent ${header.name} twice`);

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Command } from 'commander';
 import { formatLanInvite, parseLanInvite } from '@lody/shared/lan-hub';
+import { resolveLanShareBaseUrl } from '@lody/shared/lan-share';
 import { fetchLanHubGitHubCredential } from '@lody/shared/node/lan-github';
 import {
   LAN_HUB_CREDENTIALS_APNS_PATH,
@@ -41,6 +42,7 @@ import {
   writeLanHubGitHubConfig,
 } from '@/lib/lan/hub-github';
 import { LAN_PUSH_STATUS_PATH, LAN_PUSH_TEST_PATH } from '@/lib/lan/lan-push-protocol';
+import { listLanShares, setLanSharePublicUrl } from '@/lib/lan/lan-shares';
 import {
   LAN_SERVICE_UNITS,
   LanServiceManager,
@@ -374,6 +376,7 @@ type HubOptions = {
   publicUrl?: string;
   tlsCert?: string;
   tlsKey?: string;
+  sharePort?: string;
 };
 
 function parsePort(value: string): number {
@@ -397,6 +400,10 @@ const hubCommand = new Command('hub')
   .option('--public-url <url>', 'Address other machines use, printed in the invite')
   .option('--tls-cert <path>', 'Serve HTTPS with this certificate (requires --tls-key)')
   .option('--tls-key <path>', 'Private key of --tls-cert')
+  .option(
+    '--share-port <port>',
+    'Port readers open shared conversations on; "off" for none (default: the port after --port)'
+  )
   .action(async (options: HubOptions) => {
     try {
       if (Boolean(options.tlsCert) !== Boolean(options.tlsKey)) {
@@ -405,6 +412,12 @@ const hubCommand = new Command('hub')
       const hub = await startLanHubServer({
         host: options.host,
         port: parsePort(options.port),
+        sharePort:
+          options.sharePort === undefined
+            ? undefined
+            : options.sharePort === 'off'
+              ? null
+              : parsePort(options.sharePort),
         dataDir: path.resolve(options.dataDir),
         log: (line) => console.log(line),
         tls:
@@ -413,6 +426,7 @@ const hubCommand = new Command('hub')
             : null,
       });
       console.log(`Lody LAN host listening on ${hub.url}`);
+      if (hub.shareUrl) console.log(`Shared conversations open on ${hub.shareUrl}`);
       console.log(`Data directory: ${path.resolve(options.dataDir)}`);
       // The invite carries the credential. Output that nobody watches, such as
       // a service's journal, is a log, and the credential never goes there.
@@ -916,6 +930,39 @@ const githubCommand = new Command('github')
   .addCommand(githubStatusCommand)
   .addCommand(githubRemoveCommand);
 
+const shareUrlCommand = new Command('share-url')
+  .description(
+    'Show or set the address readers open the conversations a LAN shared at, ' +
+      "such as a tunnel to the hub's share port"
+  )
+  .argument('[url]', 'An http(s) address; without one, prints the current one')
+  .option('--lan <lan>', 'Name or id of the LAN')
+  .option('--clear', 'Use the address of the hub again')
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(
+    async (url: string | undefined, options: OutputOptions & { lan?: string; clear?: boolean }) => {
+      await runOneShotCommand('lan', options, async () => {
+        const hub = requireLan(readLanHubSettings(), options.lan);
+        const publicUrl =
+          url || options.clear
+            ? await setLanSharePublicUrl(hub, options.clear ? null : (url ?? null))
+            : (await listLanShares(hub)).publicUrl;
+        const list = await listLanShares(hub);
+        const base = resolveLanShareBaseUrl(hub.url, list);
+        if (options.json) {
+          printJson({ ok: true, publicUrl, baseUrl: base });
+          return;
+        }
+        console.log(
+          base
+            ? `${hub.name}: shares open at ${base}/s/…${publicUrl ? '' : " (the hub's own address)"}`
+            : `${hub.name}: the hub serves no shares`
+        );
+      });
+    }
+  );
+
 export const lanCommand = new Command('lan')
   .description('Host and join LANs: machines that reach each other without an account')
   .addCommand(listCommand)
@@ -936,4 +983,5 @@ export const lanCommand = new Command('lan')
   .addCommand(shellCommand)
   .addCommand(forwardCommand)
   .addCommand(pushCommand)
-  .addCommand(githubCommand);
+  .addCommand(githubCommand)
+  .addCommand(shareUrlCommand);
