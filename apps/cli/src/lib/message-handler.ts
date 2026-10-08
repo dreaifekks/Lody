@@ -9741,6 +9741,23 @@ export class MessageHandler {
     this.startMachineRpcServerAttempt();
   }
 
+  /**
+   * Reads this machine's RPC requests from the hub's start again, as at
+   * startup, without stopping running work: the hub moved, and the offset
+   * read so far may name nothing there. A listener still waiting to start
+   * tries again now instead of after its backoff.
+   */
+  restartMachineRpcListener(): void {
+    if (this.cleanedUp || !this.machineRpcServer) return;
+    if (this.machineRpcServerRetryTimer) {
+      clearTimeout(this.machineRpcServerRetryTimer);
+      this.machineRpcServerRetryTimer = null;
+      this.startMachineRpcServerAttempt();
+      return;
+    }
+    this.machineRpcServer.restartRequestStream();
+  }
+
   async activateRemoteServices(): Promise<void> {
     this.startMachineRpcServer();
     await this.attemptMachineAccessRegistration();

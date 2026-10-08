@@ -505,6 +505,14 @@ export class LoroStreamsMachineRpcServer {
   } | null = null;
   private loopPromise: Promise<void> | null = null;
   private stopped = false;
+  /** Aborts only the read in flight, so a restart of the request stream takes effect now. */
+  private currentReadController: AbortController | null = null;
+  private requestStreamRestartRequested = false;
+  /**
+   * Requests read from the stream, until they expire: reading the stream
+   * again from its start must not run one twice.
+   */
+  private readonly readRequests = new Map<string, number>();
 
   constructor(private readonly deps: RpcServerDeps) {
     this.requestStreamId = getLoroMachineRpcRequestStreamId(deps.workspaceId, deps.machineId);
@@ -557,8 +565,33 @@ export class LoroStreamsMachineRpcServer {
     this.stopController.abort();
   }
 
+  /**
+   * Reads the request stream again from its start, as a server that just
+   * started does, without stopping what runs. For a hub that moved: the
+   * offset this server holds may name no message boundary in the new hub's
+   * stream, which it may never answer with 410. Requests already read are
+   * not run again.
+   */
+  restartRequestStream(): void {
+    if (this.stopped || !this.loopPromise) return;
+    this.requestStreamRestartRequested = true;
+    this.currentReadController?.abort();
+  }
+
   private async runLoop(): Promise<void> {
     while (!this.stopped) {
+      if (this.requestStreamRestartRequested) {
+        // Here rather than in `restartRequestStream`: a batch of the read just
+        // aborted may still be setting the offset.
+        this.requestStreamRestartRequested = false;
+        this.requestState.nextOffset = '-1';
+        this.requestState.cursor = undefined;
+      }
+      // One controller per read: `stop()` ends the loop, a restart only this read.
+      const readController = new AbortController();
+      const onStop = (): void => readController.abort();
+      this.stopController.signal.addEventListener('abort', onStop, { once: true });
+      this.currentReadController = readController;
       try {
         await this.deps.streamClient.readJsonLive(
           this.requestStreamId,
@@ -566,12 +599,15 @@ export class LoroStreamsMachineRpcServer {
           async (batch) => {
             await this.handleRequestBatch(batch);
           },
-          { signal: this.stopController.signal }
+          { signal: readController.signal }
         );
         this.logRequestLoopRecovered();
       } catch (error) {
         if (this.stopped) {
           return;
+        }
+        if (this.requestStreamRestartRequested) {
+          continue;
         }
 
         if (error instanceof LoroStreamsTokenAuthError) {
@@ -607,6 +643,9 @@ export class LoroStreamsMachineRpcServer {
         const message = error instanceof Error ? error.message : String(error);
         this.logRequestLoopError(message);
         await delay(REQUEST_LOOP_RETRY_DELAY_MS);
+      } finally {
+        this.stopController.signal.removeEventListener('abort', onStop);
+        if (this.currentReadController === readController) this.currentReadController = null;
       }
     }
   }
@@ -681,6 +720,9 @@ export class LoroStreamsMachineRpcServer {
       if (this.stopped) {
         return;
       }
+      if (!this.firstRead(raw)) {
+        continue;
+      }
       // Control-plane requests never wait for the shared semaphore at intake:
       // their tasks acquire from the dedicated control pool inside the task, so
       // a burst of slow code-collab handlers cannot delay a chat dispatch or a
@@ -706,6 +748,21 @@ export class LoroStreamsMachineRpcServer {
         this.inFlightRequests.delete(task);
       });
     }
+  }
+
+  /** Whether this server reads the request for the first time; remembers it until it expires. */
+  private firstRead(raw: unknown): boolean {
+    if (typeof raw !== 'object' || raw === null) return true;
+    const { id, expiresAt } = raw as { id?: unknown; expiresAt?: unknown };
+    // Not a request handleRawRequest would run; it reports it.
+    if (typeof id !== 'string' || typeof expiresAt !== 'number') return true;
+    const now = this.now();
+    for (const [seen, until] of this.readRequests) {
+      if (until <= now) this.readRequests.delete(seen);
+    }
+    if (this.readRequests.has(id)) return false;
+    if (expiresAt > now) this.readRequests.set(id, expiresAt);
+    return true;
   }
 
   private isControlRequest(raw: unknown): boolean {

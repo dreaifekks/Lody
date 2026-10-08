@@ -263,9 +263,9 @@ describe('LoroStreamsMachineRpcServer', () => {
       });
       const target = { protocol: 'http', host: '127.0.0.1', port: 5173 };
       fake.pushBatch({
-        messages: [undefined, { ...previewProof, requestId: 'invalid' }].map((proof) => ({
+        messages: [undefined, { ...previewProof, requestId: 'invalid' }].map((proof, index) => ({
           jsonrpc: '2.0',
-          id: 'invalid-preview',
+          id: `invalid-preview-${index}`,
           method,
           rpcVersion: '1',
           workspaceId: 'workspace-1',
@@ -2882,6 +2882,83 @@ describe('LoroStreamsMachineRpcServer', () => {
     expect(seenOffsets.slice(0, 2)).toEqual(['-1', '-1']);
     expect(getMachineStatus).toHaveBeenCalledTimes(1);
 
+    server.stop();
+  });
+
+  it('reads the request stream again from its start, without running a request twice', async () => {
+    const workspaceId = 'workspace-1' as WorkspaceId;
+    const machineId = 'machine-1' as MachineId;
+    const appended: string[] = [];
+    const seenOffsets: string[] = [];
+    const request = (id: string) => ({
+      jsonrpc: '2.0',
+      id,
+      method: 'machine/status',
+      rpcVersion: '1',
+      machineId,
+      workspaceId,
+      replyTo: 'workspace-1:rpc:res:client-1',
+      sentAt: Date.now(),
+      expiresAt: Date.now() + 30_000,
+      params: {},
+    });
+    // The old hub, then a hub started from a copy that holds the first
+    // request again and a new one; the old offset names nothing there.
+    const batches = [
+      { messages: [request('req-before-move')], nextOffset: '1000', upToDate: true },
+      {
+        messages: [request('req-before-move'), request('req-after-move')],
+        nextOffset: '1050',
+        upToDate: true,
+      },
+    ];
+    let firstReadHeld!: () => void;
+    const firstRead = new Promise<void>((resolve) => (firstReadHeld = resolve));
+    const streamClient: LoroStreamsJsonStreamClient = {
+      ensureJsonStream: vi.fn(async () => {}),
+      appendJson: vi.fn(async (_streamId: string, value: unknown) => {
+        appended.push((value as { id: string }).id);
+        return 'next-offset';
+      }),
+      readJsonLive: vi.fn(async (_streamId, state, onBatch, options) => {
+        seenOffsets.push(state.nextOffset ?? 'now');
+        const batch = batches.shift();
+        if (batch) await onBatch(batch);
+        if (seenOffsets.length === 1) firstReadHeld();
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+            once: true,
+          });
+        });
+      }),
+    };
+    const server = new LoroStreamsMachineRpcServer({
+      logger: createSilentLogger(),
+      workspaceId,
+      machineId,
+      streamClient,
+      getMachineStatus: async () => ({
+        type: 'machine/status_response' as const,
+        machineId,
+        success: true,
+        resources: {
+          totalMemoryGB: 16,
+          usedMemoryGB: 8,
+          freeMemoryGB: 8,
+          totalCpus: 8,
+          cpuUsagePercent: 25,
+        },
+      }),
+      refreshMachineAcpCapabilities: vi.fn(),
+    });
+
+    await server.start();
+    await firstRead;
+    server.restartRequestStream();
+
+    await vi.waitFor(() => expect(appended).toContain('req-after-move'));
+    expect(seenOffsets).toEqual(['-1', '-1']);
+    expect(appended).toEqual(['req-before-move', 'req-after-move']);
     server.stop();
   });
 

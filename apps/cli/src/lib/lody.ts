@@ -411,6 +411,11 @@ export class Lody {
     await this.runtime.detachRemoteBridge();
   }
 
+  /** The hub moved: machine RPC reads its requests there from the start. */
+  restartMachineRpcListener(): void {
+    this.runtime.getMessageHandler()?.restartMachineRpcListener();
+  }
+
   async handleRemoteAccessRevoked(): Promise<void> {
     await this.runtime.handleRemoteAccessRevoked();
   }
