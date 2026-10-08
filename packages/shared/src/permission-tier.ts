@@ -10,8 +10,13 @@ import type { AgentConfigCliType, AgentType } from './ai';
  */
 export const PERMISSION_TIERS = ['ask', 'edit', 'auto', 'full'] as const;
 export type PermissionTier = (typeof PERMISSION_TIERS)[number];
-/** A selection this table does not classify. Only a person may choose it. */
-export type ResolvedPermissionTier = PermissionTier | 'unknown';
+/**
+ * `unknown`: a selection this table does not classify; only a person may choose
+ * it. `exempt`: an Agent the user chose to leave outside the cap (Pi), which
+ * any Agent may write; as a ceiling it is `full`, since nothing there asks.
+ */
+export type ResolvedPermissionTier = PermissionTier | 'unknown' | 'exempt';
+export const RESOLVED_PERMISSION_TIERS = [...PERMISSION_TIERS, 'unknown', 'exempt'] as const;
 
 /**
  * Every mode and permission-option value the built-in and registry providers
@@ -47,10 +52,10 @@ const MODE_TIERS: ReadonlyMap<string, PermissionTier> = new Map([
 const PERMISSION_OPTION_IDS = ['mode', 'permission_mode', '_permission'];
 
 /**
- * Builtins without any permission control: every tool call runs without
- * asking, so their only tier is `full`. They need no synthetic mode.
+ * Builtins the user exempted from the cap. Pi has no permission control (every
+ * tool call runs without asking) and needs no synthetic mode.
  */
-const UNGATED_AGENT_TYPES: ReadonlySet<string> = new Set(['pi']);
+const EXEMPT_AGENT_TYPES: ReadonlySet<string> = new Set(['pi']);
 
 export type PermissionTierRunConfig = {
   modeId?: string;
@@ -84,8 +89,8 @@ export function resolvePermissionTier(args: {
   capability: PermissionTierCapability | undefined;
 }): ResolvedPermissionTier {
   const { runConfig, agent, capability } = args;
-  if (agent.cliType === 'builtin' && agent.agentType && UNGATED_AGENT_TYPES.has(agent.agentType))
-    return 'full';
+  if (agent.cliType === 'builtin' && agent.agentType && EXEMPT_AGENT_TYPES.has(agent.agentType))
+    return 'exempt';
   if (!capability) return 'unknown';
   const values = runConfig.configOptionValues ?? {};
   if (
@@ -114,26 +119,41 @@ export function resolvePermissionTier(args: {
   return PERMISSION_TIERS[rank]!;
 }
 
-const combineTiers =
-  (pick: (left: number, right: number) => number) =>
-  (left: ResolvedPermissionTier, right: ResolvedPermissionTier): ResolvedPermissionTier =>
-    left === 'unknown' || right === 'unknown'
-      ? 'unknown'
-      : PERMISSION_TIERS[pick(PERMISSION_TIERS.indexOf(left), PERMISSION_TIERS.indexOf(right))]!;
-/** The lower of two ceilings; an unknown ceiling is the lowest. */
-export const lowerPermissionTier = combineTiers(Math.min);
-/** The higher of two targets; an unknown target is above every tier. */
-export const higherPermissionTier = combineTiers(Math.max);
+const rankAsCeiling = (tier: PermissionTier | 'exempt') =>
+  PERMISSION_TIERS.indexOf(tier === 'exempt' ? 'full' : tier);
+
+/** The lower of two ceilings; an unknown ceiling is the lowest, an exempt one `full`. */
+export function lowerPermissionTier(
+  left: ResolvedPermissionTier,
+  right: ResolvedPermissionTier
+): ResolvedPermissionTier {
+  if (left === 'unknown' || right === 'unknown') return 'unknown';
+  return PERMISSION_TIERS[Math.min(rankAsCeiling(left), rankAsCeiling(right))]!;
+}
+
+/** The higher of two targets; an unknown target is above every tier, an exempt one adds none. */
+export function higherPermissionTier(
+  left: ResolvedPermissionTier,
+  right: ResolvedPermissionTier
+): ResolvedPermissionTier {
+  if (left === 'unknown' || right === 'unknown') return 'unknown';
+  if (left === 'exempt') return right;
+  if (right === 'exempt') return left;
+  return PERMISSION_TIERS[
+    Math.max(PERMISSION_TIERS.indexOf(left), PERMISSION_TIERS.indexOf(right))
+  ]!;
+}
 
 /**
- * Whether `target` stays within `ceiling`. An unknown target is never within;
- * an unknown ceiling counts as the lowest tier.
+ * Whether `target` stays within `ceiling`. An exempt target always is, an
+ * unknown one never; an unknown ceiling counts as the lowest tier.
  */
 export function isPermissionTierWithin(
   target: ResolvedPermissionTier,
   ceiling: ResolvedPermissionTier
 ): boolean {
+  if (target === 'exempt') return true;
   if (target === 'unknown') return false;
-  const ceilingRank = ceiling === 'unknown' ? 0 : PERMISSION_TIERS.indexOf(ceiling);
+  const ceilingRank = ceiling === 'unknown' ? 0 : rankAsCeiling(ceiling);
   return PERMISSION_TIERS.indexOf(target) <= ceilingRank;
 }

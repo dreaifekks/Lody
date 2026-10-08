@@ -204,7 +204,7 @@ export async function buildAgentRoleFromAgent(
 }
 
 const ROLE_CEILING =
-  'The Role may run with at most the permissions this conversation runs with now (its permission mode); a higher or unrecognized mode is refused and only the user can set it in Settings → Agent Roles. Set every permission option the Agent has beside its mode (such as permission_mode) explicitly.';
+  'The Role may run with at most the permissions this conversation runs with now (its permission mode); a higher or unrecognized mode is refused and only the user can set it in Settings → Agent Roles. Set every permission option the Agent has beside its mode (such as permission_mode) explicitly. Pi Roles are exempt.';
 
 export function registerAgentRoleWriteTools(
   registerSessionTool: ReturnType<typeof createSessionToolRegistrar>,

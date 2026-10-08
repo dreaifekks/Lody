@@ -846,4 +846,30 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
       ])
     ).resolves.toBe('ask');
   });
+  it('lets any caller write and resume a Pi schedule, the user having exempted Pi', async () => {
+    const h = await asAgent('unknown');
+    h.addAgent('pi', 'pi');
+    const draft = {
+      ...buildScheduleCreateDraft(
+        { requestId: 'pi', title: 'Pi', prompt: 'Tidy notes.', rule: { kind: 'manual' } },
+        draftContext
+      ),
+      agent: { agentConfigId: 'pi' },
+    };
+    await expect(
+      executeScheduleCommand(h.context, {
+        action: 'create',
+        scheduleId: 'pi',
+        requestId: 'pi',
+        draft,
+      })
+    ).resolves.toEqual({ ok: true, scheduleId: 'pi' });
+    await executeScheduleCommand(h.context, { action: 'pause', scheduleId: 'pi', requestId: 'p' });
+    await expect(
+      executeScheduleCommand(h.context, { action: 'resume', scheduleId: 'pi', requestId: 'r' })
+    ).resolves.toEqual({ ok: true, scheduleId: 'pi' });
+    expect((await h.repository.read('pi'))?.definition.enabled).toBe(true);
+    // The exemption is Pi's, not its caller's: Claude stays capped.
+    await expect(create(h, 'claude-from-unknown')).rejects.toThrow('more permissions');
+  });
 });

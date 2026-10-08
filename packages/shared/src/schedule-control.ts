@@ -4,7 +4,7 @@ import {
   ScheduleProposalRuleSchema,
   ScheduleProposalTargetSchema,
 } from './message-schemas';
-import { PERMISSION_TIERS } from './permission-tier';
+import { RESOLVED_PERMISSION_TIERS } from './permission-tier';
 import { ScheduleDefinitionSchema } from './schedule-types';
 
 const id = z
@@ -81,7 +81,7 @@ export const ScheduleControlRequestSchema = z
      * active Turn. With it an Agent may create, edit and resume Schedules up to
      * that tier; a person's CLI sends neither field.
      */
-    requesterPermissionTier: z.enum([...PERMISSION_TIERS, 'unknown']).optional(),
+    requesterPermissionTier: z.enum(RESOLVED_PERMISSION_TIERS).optional(),
     command: ScheduleCommandSchema,
   })
   .strict();

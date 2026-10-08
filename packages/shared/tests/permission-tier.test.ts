@@ -88,13 +88,30 @@ describe('permission tiers', () => {
       })
     ).toBe('unknown');
     expect(tierOf('claude', { modeId: 'constructor' })).toBe('unknown');
-    // Pi has no permission control: every tool call runs without asking.
-    expect(
-      resolvePermissionTier({ runConfig: {}, agent: builtin('pi'), capability: undefined })
-    ).toBe('full');
     expect(tierOf('claude', { modeId: 'default', configOptionValues: { effort: 'high' } })).toBe(
       'ask'
     );
+  });
+
+  it('exempts only the builtin Pi, and as a ceiling Pi is full', () => {
+    // The user's choice: Pi has no permission control and any Agent may write it.
+    expect(
+      resolvePermissionTier({ runConfig: {}, agent: builtin('pi'), capability: undefined })
+    ).toBe('exempt');
+    expect(
+      resolvePermissionTier({
+        runConfig: { modeId: 'yolo' },
+        agent: { cliType: 'custom', agentType: 'pi' },
+        capability: modeOnly,
+      })
+    ).toBe('full');
+    expect(isPermissionTierWithin('exempt', 'unknown')).toBe(true);
+    expect(isPermissionTierWithin('full', 'exempt')).toBe(true);
+    expect(isPermissionTierWithin('unknown', 'exempt')).toBe(false);
+    expect(lowerPermissionTier('exempt', 'edit')).toBe('edit');
+    expect(lowerPermissionTier('exempt', 'exempt')).toBe('full');
+    expect(higherPermissionTier('exempt', 'ask')).toBe('ask');
+    expect(higherPermissionTier('exempt', 'exempt')).toBe('exempt');
   });
 
   it('keeps unknown targets out and treats an unknown ceiling as the lowest', () => {
