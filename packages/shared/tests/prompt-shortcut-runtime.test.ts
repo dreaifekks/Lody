@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LoroRepo } from 'loro-repo';
-import { getShortcutBodyStreamId, type ShortcutResource } from '../src/prompt-shortcuts/access';
+import {
+  getShortcutBodyStreamId,
+  getShortcutIndexStreamId,
+  type ShortcutResource,
+} from '../src/prompt-shortcuts/access';
 import {
   projectShortcutIndex,
   type PromptShortcutIndexEntry,
@@ -12,6 +16,10 @@ import {
   PromptShortcutRuntime,
   type ShortcutPublicationPort,
 } from '../src/prompt-shortcuts/runtime';
+import {
+  createSingleUserShortcutPublication,
+  SingleUserShortcutDirectory,
+} from '../src/prompt-shortcuts/single-user';
 
 const workspaceId = 'workspace-a';
 const userId = 'user-a';
@@ -237,5 +245,171 @@ describe('PromptShortcutRuntime body warming', () => {
     await warming;
 
     expect(acquired).toEqual(['body-active']);
+  });
+});
+
+/**
+ * A Streams gateway in memory: `sync` merges both ways, and a joined replica
+ * receives what another one uploaded, as a live read would.
+ */
+function createGateway() {
+  type Flock = Awaited<ReturnType<LoroRepo['acquireFlockDoc']>>['flock'];
+  const bodies = new Map<string, Uint8Array>();
+  const indexes = new Map<string, Awaited<ReturnType<Flock['exportJson']>>>();
+  const live = new Map<string, Set<() => Promise<void>>>();
+  const merge = async (repo: LoroRepo, resource: ShortcutResource, upload: boolean) => {
+    if (resource.kind === 'body') {
+      const id = getShortcutBodyStreamId(resource.bodyDocId);
+      const lease = await repo.acquireDoc(id);
+      try {
+        const remote = bodies.get(id);
+        if (remote) lease.doc.import(remote);
+        if (upload) bodies.set(id, lease.doc.export({ mode: 'snapshot' }));
+        await repo.persistDocNow(id, lease.doc);
+      } finally {
+        await lease.release();
+      }
+      return id;
+    }
+    const id = getShortcutIndexStreamId(resource.domain);
+    const lease = await repo.acquireFlockDoc(id);
+    try {
+      const remote = indexes.get(id);
+      if (remote) lease.flock.importJson(remote);
+      if (upload) indexes.set(id, lease.flock.exportJson());
+      await repo.persistFlockDocNow(id, lease.flock);
+    } finally {
+      await lease.release();
+    }
+    return id;
+  };
+  return (repo: LoroRepo): ShortcutPublicationPort['acquire'] =>
+    async (resource) => {
+      const pull = async () => void (await merge(repo, resource, false));
+      let joinedId: string | undefined;
+      return {
+        sync: async () => {
+          const id = await merge(repo, resource, true);
+          for (const other of live.get(id) ?? []) if (other !== pull) await other();
+        },
+        join: async () => {
+          joinedId = await merge(repo, resource, false);
+          const pulls = live.get(joinedId) ?? new Set();
+          pulls.add(pull);
+          live.set(joinedId, pulls);
+        },
+        release: async () => {
+          if (joinedId) live.get(joinedId)?.delete(pull);
+        },
+      };
+    };
+}
+
+describe('Prompt Shortcuts through a single-user gateway', () => {
+  async function openDesktop(
+    attach: ReturnType<typeof createGateway> | null,
+    repo: LoroRepo,
+    unreachable = false
+  ) {
+    const reach = attach?.(repo);
+    let down = unreachable;
+    const acquire: ShortcutPublicationPort['acquire'] | undefined = reach
+      ? (resource, write) =>
+          down ? Promise.reject(new Error('gateway unreachable')) : reach(resource, write)
+      : undefined;
+    const store = await LocalShortcutStore.open({ repo, workspaceId, userId });
+    const runtime = new PromptShortcutRuntime(
+      store,
+      acquire
+        ? createSingleUserShortcutPublication({ acquire, dispose: async () => {} })
+        : undefined,
+      false
+    );
+    const directory = acquire ? new SingleUserShortcutDirectory(runtime, acquire) : null;
+    await directory?.start();
+    const close = async () => {
+      await directory?.dispose();
+      await runtime.dispose();
+    };
+    return { runtime, close, reconnect: () => void (down = false) };
+  }
+
+  async function openTwoDesktops(attach: ReturnType<typeof createGateway>, firstRepo?: LoroRepo) {
+    const repos = [firstRepo ?? (await LoroRepo.create({})), await LoroRepo.create({})];
+    const desktops = [];
+    for (const repo of repos) desktops.push(await openDesktop(attach, repo));
+    cleanups.push(async () => {
+      for (const desktop of desktops) await desktop.close();
+      for (const repo of repos) await repo.destroy();
+    });
+    return desktops.map((desktop) => desktop.runtime) as [
+      PromptShortcutRuntime,
+      PromptShortcutRuntime,
+    ];
+  }
+
+  const names = (runtime: PromptShortcutRuntime) =>
+    runtime.getSnapshot().entries.map((entry) => entry.name);
+  const privateShortcut = (id: string): PromptShortcut => ({
+    ...shortcut(id),
+    visibility: 'private',
+  });
+
+  it('shows what one desktop saves, edits and deletes on the other', async () => {
+    const [first, second] = await openTwoDesktops(createGateway());
+    expect(first.canShare).toBe(false);
+
+    const value = privateShortcut('review');
+    await first.save({ value, base: null, bodyDocId: crypto.randomUUID() });
+    await first.flush();
+    await vi.waitFor(() => expect(names(second)).toEqual(['Shortcut review']));
+    const seen = second.getSnapshot().entries[0]!;
+    await expect(second.read(seen)).resolves.toEqual(value);
+
+    const edited = { ...value, name: 'Edited', revision: 'revision-2', updatedAt: 2 };
+    await second.save({ value: edited, base: seen, bodyDocId: seen.bodyDocId });
+    await second.flush();
+    await vi.waitFor(() => expect(names(first)).toEqual(['Edited']));
+    await expect(first.read(first.getSnapshot().entries[0]!)).resolves.toEqual(edited);
+
+    await first.remove(first.getSnapshot().entries[0]!);
+    await first.flush();
+    await vi.waitFor(() => expect(names(second)).toEqual([]));
+    expect(names(first)).toEqual([]);
+  });
+
+  it('opens the index again after the gateway was unreachable', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    cleanups.push(async () => void vi.useRealTimers());
+    const attach = createGateway();
+    const [first] = await openTwoDesktops(attach);
+    const value = privateShortcut('later');
+    await first.save({ value, base: null, bodyDocId: crypto.randomUUID() });
+    await first.flush();
+
+    const repo = await LoroRepo.create({});
+    const late = await openDesktop(attach, repo, true);
+    cleanups.push(async () => {
+      await late.close();
+      await repo.destroy();
+    });
+    expect(names(late.runtime)).toEqual([]);
+
+    late.reconnect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() => expect(names(late.runtime)).toEqual(['Shortcut later']));
+  });
+
+  it('publishes a shortcut saved before the workspace synced shortcuts', async () => {
+    const repo = await LoroRepo.create({});
+    const offline = await openDesktop(null, repo);
+    const value = privateShortcut('older');
+    await offline.runtime.save({ value, base: null, bodyDocId: crypto.randomUUID() });
+    await offline.runtime.flush();
+    await offline.close();
+
+    const [, second] = await openTwoDesktops(createGateway(), repo);
+    await vi.waitFor(() => expect(names(second)).toEqual(['Shortcut older']));
+    await expect(second.read(second.getSnapshot().entries[0]!)).resolves.toEqual(value);
   });
 });

@@ -6,3 +6,4 @@ export * from './access';
 export * from './sync';
 export * from './local-store';
 export * from './runtime';
+export * from './single-user';

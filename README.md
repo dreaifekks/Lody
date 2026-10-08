@@ -110,6 +110,7 @@ Both desktop apps can run side by side.
 | PR panel freshness        | GitHub webhooks                             | Polling while the panel is open: CI every 15 seconds, reviews and comments every minute                      |
 | Phone and web             | Lody's iOS, Android and web apps            | Those apps need a Lody account and do not reach a LAN; phones get alerts from the hub                        |
 | Updates                   | Lody's update service                       | This repository's rolling release; upstream's updater stays off                                              |
+| Prompt Shortcuts          | Shared with workspace members if you choose | Synced through the hub to every member; members are one user, so there is no sharing switch                  |
 
 ### Not available
 
@@ -119,8 +120,7 @@ Both desktop apps can run side by side.
 - Remote preview: a dev server an Agent starts on another machine does not
   open in this machine's browser panel; `lody-lan lan forward <machine> <port>`
   makes it reachable here.
-- Settings > Machines and the machine picker of Prompt Shortcuts; Settings >
-  LAN lists the machines instead.
+- Settings > Machines; Settings > LAN lists the machines instead.
 - Hosting a LAN from the desktop app, which does not ship the hub.
 - Billing, bug report upload and telemetry, which are off by design.
 

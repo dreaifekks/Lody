@@ -79,13 +79,14 @@ macOS、Windows 和 Linux 的桌面安装包附在[滚动发布](https://github.
 | PR 面板刷新    | GitHub webhook                    | 面板打开时轮询：CI 每 15 秒，review 和评论每分钟                          |
 | 手机和网页端   | Lody 的 iOS、Android 和网页应用   | 这些应用需要 Lody 账号，连不上 LAN；手机通过 hub 接收提醒                 |
 | 更新           | Lody 的更新服务                   | 本仓库的滚动发布；上游的更新器保持关闭                                    |
+| 快捷指令       | 可以选择共享给工作空间成员        | 经 hub 同步到所有成员；成员是同一个用户，所以没有共享开关                 |
 
 ### 暂不可用的功能
 
 - 与团队共享，以及会话的公开分享链接。
 - GitHub App 相关：仓库注册、Settings > GitHub、在云端克隆的仓库，以及以你关联的 GitHub 身份操作。
 - 远程预览：Agent 在其他机器上启动的开发服务器，不能在本机的浏览器面板里打开；可以用 `lody-lan lan forward <机器> <端口>` 转发到本机访问。
-- Settings > Machines 和快捷指令的机器选择；改由 Settings > LAN 列出机器。
+- Settings > Machines；改由 Settings > LAN 列出机器。
 - 在桌面应用里托管 LAN，因为桌面应用不包含 hub。
 - 计费、Bug 报告上传和遥测，这些按设计关闭。
 
