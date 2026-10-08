@@ -4,6 +4,8 @@ import path from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { LAN_SHARES_COPY_PATH } from '@lody/shared/lan-share';
+import { writeLanHubSharesCopy } from './hub-shares';
 import { pullLanHubSnapshot, readKeptLanHubSnapshot, writeLanHubSnapshot } from './hub-snapshot';
 
 const BLOCK = 64 * 1024;
@@ -39,9 +41,13 @@ describe('a standby copy of a hub', () => {
 
   /** The hub, as a standby reaches it: the request is answered with what the hub writes. */
   const hubFetch = (options: { damage?: boolean } = {}) =>
-    (async (_url: string | URL | Request, init?: RequestInit) => {
+    (async (url: string | URL | Request, init?: RequestInit) => {
       const { have } = JSON.parse(String(init?.body)) as { have: string[] };
       const stream = new PassThrough();
+      if (String(url).endsWith(LAN_SHARES_COPY_PATH)) {
+        void writeLanHubSharesCopy({ dataDir: hubDir, have }, stream).then(() => stream.end());
+        return new Response(Readable.toWeb(stream) as ReadableStream, { status: 200 });
+      }
       const sending = writeLanHubSnapshot({ dataDir: hubDir, have, stream, blockBytes: BLOCK });
       void sending.then(() => stream.end());
       let body: Readable = stream;

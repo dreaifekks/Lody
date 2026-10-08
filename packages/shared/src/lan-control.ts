@@ -160,6 +160,7 @@ export const LAN_MEMBER_CONTROL_TYPES = [
   'hosted-config/import',
   'lan/usage',
   'lan/restart-machine',
+  'lan/github',
 ] as const;
 export type LanMemberControlType = (typeof LAN_MEMBER_CONTROL_TYPES)[number];
 
@@ -221,6 +222,32 @@ export const LanUsageReportSchema = z
   .object({ rows: z.array(LanUsageRowSchema).max(200_000) })
   .strict();
 export type LanUsageReport = z.infer<typeof LanUsageReportSchema>;
+
+/** The GitHub account a credential acts as; `login` is `null` where it could not be told. */
+const LanGitHubAccountSchema = z.object({ login: z.string().max(100).nullable() }).strict();
+
+/**
+ * The GitHub credentials a machine has for a LAN's workspace. Its agents use
+ * `own` first and `lan` only without it; neither carries the token.
+ */
+export const LanGitHubStateSchema = z
+  .object({
+    /** This machine's own `gh` login to github.com. */
+    own: LanGitHubAccountSchema.nullable(),
+    /** The token the LAN's hub keeps, as this machine gets it. */
+    lan: LanGitHubAccountSchema.nullable(),
+  })
+  .strict();
+export type LanGitHubState = z.infer<typeof LanGitHubStateSchema>;
+
+/** Who the token a desktop gave the hub acts as; `null` once it was removed. */
+export const LanGitHubTokenResultSchema = z
+  .object({ login: z.string().max(100).nullable() })
+  .strict();
+export type LanGitHubTokenResult = z.infer<typeof LanGitHubTokenResultSchema>;
+
+/** A GitHub token is far shorter; this only bounds what a request may carry. */
+export const LAN_GITHUB_TOKEN_MAX = 1_000;
 
 /**
  * Why a machine refuses what a member asks, as `data.reason` of the refusal:

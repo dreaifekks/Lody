@@ -1,0 +1,23 @@
+{
+  "name": "@lody/lan-share-reader",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The page a LAN hub serves to readers of a shared conversation.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "micromark": "^4.0.2",
+    "micromark-extension-gfm": "^3.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "jsdom": "^26.1.0",
+    "typescript": "catalog:",
+    "vitest": "^3.2.4"
+  }
+}

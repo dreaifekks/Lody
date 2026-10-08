@@ -33,6 +33,7 @@ them. This page explains how the pieces fit; the invariants stay in the scoped
 | Credentials    | `apps/cli/src/lib/lan/hub-credentials.ts`, `lan-credential-sync.ts`, `lan-push-fallback.ts` | Every member keeps a copy of the GitHub token, the APNs key and the phones, and uses it while the hub is away                 |
 | Ports          | `apps/cli/src/lib/lan/lan-tunnel.ts`, `apps/cli/src/lib/local-tunnel-server.ts`             | A program of one member reaches a port another member reaches                                                                 |
 | Usage          | `apps/cli/src/lib/usage/local-usage-ledger.ts`, `packages/components/src/lib/lan-usage.ts`  | Each machine counts what its agents used; the usage page gathers it from every member                                         |
+| Shares         | `apps/cli/src/lib/lan/hub-shares.ts`, `lan-shares.ts`, `packages/lan-share-reader`          | The hub keeps published conversations and serves them to readers on a port of their own                                       |
 
 ```text
  server                                   desktop
@@ -241,7 +242,11 @@ a Codex generated image, an image or file in its ACP output) is kept the same
 way. Without a relay store the agent service stores it as it stores a handed
 over file and writes a file block that names its own machine; an image becomes
 a file of an image type, which is shown as one. Any file card a desktop can
-read that way downloads on a click, through the same `session/file-read-local`.
+read that way downloads on a click, through the same `session/file-read-local`,
+and a file with a text preview opens the preview instead, as an uploaded one
+does: the desktop reads the whole file and shows its first bytes. The card
+still names the machine. When that machine cannot be reached the preview says
+why, with the machine's name, and offers the download.
 
 ## Folders of other members
 
@@ -383,7 +388,7 @@ every fifteen seconds; one that does not answer within six seconds says so.
 
 Listing asks nothing of a machine. What a member asks of one is a
 project-control request, and these cross machines: `lan/update-machine`,
-`lan/restart-machine`, `lan/install-agent`, `lan/usage`,
+`lan/restart-machine`, `lan/install-agent`, `lan/usage`, `lan/github`,
 `hosted-config/preview` and `hosted-config/import`. A restart is refused by a
 service nothing would start again (update channel `manual`), and answered
 before the service exits.
@@ -750,6 +755,32 @@ reads (GitHub's `/user/repos`), with the machine's `gh` login before the
 host's token. There is no personal identity, no per-repository scoping and no
 webhook: the panel refreshes when opened and by polling.
 
+Settings > GitHub of the desktop shows the same, behind the capability
+`localGitHubCredential` where hosted Lody has `githubIntegration`:
+
+```text
+ Settings > GitHub ─ lan/github-token ─▶ agent service ─ GitHub /user, then PUT/DELETE
+   (token in, login out)                 of this machine   /lan/credentials/github ─▶ hub
+                    ─ lan/github ───────▶ every member: its own gh login (and whose),
+                                          the hub's token as it gets it (and whose)
+```
+
+- The token row sets, replaces or removes the hub's token. The token goes from
+  the renderer to this machine's agent service once, which asks GitHub whose it
+  is and hands it to the hub as `lody lan github setup` does; what comes back
+  is the login alone. A token GitHub refuses leaves the hub as it was.
+- Each machine of the LAN says which credential its agents use: its own `gh`
+  login, else the hub's token (its copy while the hub is away), else none.
+  Offline machines are not asked; a machine of an earlier build does not answer.
+- The repositories are the ones the desktop's pickers offer, read with the
+  credential of the desktop (the hub's token first, then its `gh` login).
+
+The entries that open it are "Connect more GitHub projects" in the project
+picker and the empty repository picker of a schedule. "Add a GitHub
+repository" (Settings > Projects, the mobile home) and the GitHub step of
+onboarding stay hidden: a LAN has no registry to add to, and onboarding runs
+before a LAN is joined.
+
 ## Credentials on every member
 
 The hub holds three credentials: the GitHub token, the APNs key, and the
@@ -783,6 +814,98 @@ the machine instead. The renderer never reaches these routes: the bridge
 forwards `/ds/` alone, as the standby copy and the credentials route carry
 what only a member may hold.
 
+## Shared conversations
+
+The hosted product publishes a conversation as a frozen, read-only copy that
+anyone with its link opens ([static sharing](../../specs/session-sharing.md)).
+In a LAN the hub keeps that copy and serves it, to whoever reaches the hub
+and, through a tunnel such as Cloudflare's, to the internet.
+
+```text
+ window ── capture ─▶ shell ─ temp dir ─▶ agent service ─ credential ─▶ hub gate :8788
+ (upstream export,                       lan/share-publish            /lan/shares/…
+  attachments off)                                                    shares/ in its data dir
+                                                                           │
+ reader ◀──────────────── hub share listener :8789, no credential ─────────┘
+                          /s/<id>, /s/<id>/share.json, /s/<id>/d/<deployment>/<object>
+```
+
+**Publishing.** The window captures the conversation and the conversations
+under it with the upstream exporter (`prepareSharePackage`), with file
+attachments omitted by the upstream switch and history left uncompressed, so
+the reader needs no Zstd. A picture of a LAN conversation is a file of an
+image type, so it is omitted too; a typed image block, which only the hosted
+store backs, fails the capture. The shell writes the frozen package to a
+temporary directory and hands it to the agent service of its own machine
+(`lan/share-publish`), as it hands over the files of a message; the agent
+service uploads it to the hub of the workspace's LAN with the credential and
+answers with the link. The window never addresses the hub for a share and
+never holds the credential; it learns the share listener's address only as
+part of a link, which is what a reader needs. Settings > Share management lists the shares of
+the workspace (`lan/shares`) and revokes them (`lan/share-revoke`); the
+conversation header and the `…` menu open the upstream share dialog, which a
+fork hook (`packages/components/src/lib/lan-session-share.ts`) feeds instead of
+the hosted operations. Both appear on the `lanSharing` platform capability, in
+a workspace of a LAN only.
+
+**Storage.** A share is content-addressed in `shares/` of the hub's data
+directory: `objects/<sha256>` holds the manifest, each history and each image
+once, and `index.json` the shares, each with its title, the source
+conversations (for the next update), a revision and its current deployment,
+which is the digest of its manifest. An upload sends the objects the hub lacks
+(`PUT /lan/shares/objects/<sha256>`, checked against its digest) and then
+commits the manifest (`POST /lan/shares`); the hub checks the manifest with the
+upstream schema, refuses a compressed history or a file attachment, and
+requires every object it names. Nothing is published before the commit, which
+replaces `index.json` in one rename.
+
+**Update and revoke.** An update commits a new manifest to the same share id,
+so the link stays; it names the revision it replaces and is refused (409) when
+another update came first. A reader that opened the previous deployment keeps
+reading its objects for ten minutes, never a mix: the reader asks for objects
+under the deployment it started with. Revoking removes the share from
+`index.json` at once, with its retired deployments, so its link and every
+object path under it answer 404 from that moment; objects no share names are
+deleted when the hub next collects, an upload younger than an hour excepted.
+Bytes a reader already downloaded cannot be recalled.
+
+**Reading.** The hub serves readers on a listener of its own, by default port
+18790 (`lody lan hub --share-port`; the port after the gate's, 8789, is the
+member port of the agent service on the same machine), on the same address and
+with the same certificate. That listener knows no credential and has exactly
+these routes: `/s/<id>` (the reader page), `/s/<id>/share.json` (title,
+deployment and manifest), `/s/<id>/d/<deployment>/<object id>` (an object of
+that manifest) and the page's two assets under `/_lody/`. Everything else,
+`/ds/` included, answers 404, so a tunnel pointed at this port can reach
+nothing else of the hub; the gate, for its part, serves no `/s/` route. The
+id is 24 random bytes. Answers are `no-store`, `noindex`, never framed, and
+the page runs under a CSP that allows only its own origin, so a link or image
+in a conversation loads nothing from elsewhere; an object answers with
+`sandbox`. The reader (`packages/lan-share-reader`) is a small page of its
+own, no part of the desktop: it renders the messages as Markdown (micromark,
+which drops raw HTML and unsafe link targets), folds tool calls and thinking,
+and lists the conversations when there are several. The CLI build copies it
+beside its bundle, where the hub reads it.
+
+**Following the hub.** `shares/` travels with the hub. A take-over asks the
+current host for it (`/lan/handover?shares=1`) after the other files, so a
+host of an older build simply sends none; the hub waits for a running commit
+before it hands over, and answers 503 to a commit, revoke or setting whose body
+arrives after the handover began, so whatever it answered 200 reached the new
+host. The standby copies it after each copy of the database
+(`POST /lan/shares/copy`): it says which objects it holds, receives
+`index.json` and the objects it lacks, and keeps the others from its previous
+copy; a failover starts the new hub with them. A hub that hands over, moved
+or was superseded serves no share, so a link revoked on the new hub does not
+live on at the old address. The public address of the links,
+`lody lan share-url <url>`, is kept in `index.json` too; without one, a link
+names the address of the hub with the share port. A tunnel has to follow the
+hub to its new machine; the links stay the same once it does.
+
+The agent's `lody_session_share` tool stays unavailable on the local platform:
+upstream lets an agent only ask, and a person approve on a card in the app,
+and a LAN has no such card yet.
+
 ## Usage
 
 The hosted service counts what every agent used from what each machine reports
@@ -808,6 +931,33 @@ A machine that is offline or runs a build without `lan/usage` is named under
 the header and left out; its usage is on its own disk until it answers again.
 The `localUsage` platform capability shows the page where `usageAnalytics`
 does not.
+
+## Prompt Shortcuts
+
+The hosted service decides who may read a shortcut: it stages and activates
+each publication, revokes deleted ones, lists the documents a user may open
+and grants a token per document. A LAN needs none of it. Its members are one
+user, and whoever reaches the hub may read every document anyway. The desktop
+therefore syncs the shortcuts of a LAN workspace through that workspace's own
+gateway, the `lody-hub://<lan id>` origin the bridge forwards
+(`packages/shared/src/prompt-shortcuts/single-user.ts`):
+
+- A publication uploads its body, then writes its row in the user's private
+  index. A deletion is the row's tombstone.
+- The index is the directory: every member shows what it holds, and a
+  tombstone removes the copy on the other members. When two members change one
+  shortcut at once, the later publication wins.
+- Whenever a desktop reaches the hub again, it sends the shortcuts that waited
+  for it and uploads the bodies it published, which a restored hub may lack.
+  A shortcut the index does not know is published again: one saved on this
+  machine before its build synced shortcuts, or one a restored hub lost.
+- There is nobody to share with, so the sharing switch is hidden and every
+  shortcut stays private.
+
+The provider takes this path for a workspace whose platform sync resolves to
+a fixed gateway (`streams`) on a platform without `cloudAccount`; no
+capability changes. A workspace without a gateway keeps its shortcuts on the
+machine.
 
 ## Limits
 
@@ -837,9 +987,9 @@ does not.
 - Terminals and files of other members need a direct path between the
   machines, which an overlay network gives; a hub reached through a proxy does
   not.
-- A file stays on the machine that runs its session. Other members download it
-  from there but cannot preview it, and it is gone with that machine's data
-  directory.
+- A file stays on the machine that runs its session. Other members read it
+  from there, so they cannot while that machine is offline, and it is gone with
+  that machine's data directory.
 - A folder of another member opens in an editor only. It takes an SSH server
   on that machine and a POSIX path. A machine that reaches its hub over IPv6
   names its server with `LODY_LAN_SSH`, by a host name or an IPv4 address:

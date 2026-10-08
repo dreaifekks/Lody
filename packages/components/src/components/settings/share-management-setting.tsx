@@ -28,6 +28,7 @@ import { focus, radius, space } from '@lody/ui/tokens/scales.stylex';
 import { settingsSurface as surface } from './surface';
 import { SettingsEmptyList, settingsRecordsCard } from './compact-layout';
 import { settingsType as type } from './type.stylex';
+import { LanShareManagementSetting } from './lan-share-management-setting';
 
 const styles = stylex.create({
   lead: { margin: 0, fontSize: uiText.footnoteSize, color: colors.secondaryLabel },
@@ -178,8 +179,11 @@ function formatBytes(bytes: number): string {
 
 export function ShareManagementSetting() {
   const supported = useAppCapability('teamSharing');
+  // A LAN workspace keeps its shares on its own hub (fork).
+  const lanSharing = useAppCapability('lanSharing') && !supported;
   const scope = useResolvedWorkspaceScope({ enabled: supported });
   const userId = useAtomValue(userAtom)?.id;
+  if (lanSharing) return <LanShareManagementSetting />;
   if (!scope.enabled || !scope.workspaceId || !userId) return null;
   // No pagination, selection, or asynchronous result survives an identity switch.
   return (

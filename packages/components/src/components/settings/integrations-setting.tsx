@@ -15,6 +15,7 @@ import { toast } from '@/lib/toast';
 import { useSettingsDataCache, type SettingsWorkspaceRepoWithStatus } from './settings-data-cache';
 import { MobileIntegrationsSettings } from '@/components/mobile/mobile-integrations-settings';
 import { GitHubSettingsView } from './github-settings-view';
+import { LocalGitHubSettings } from './local-github-settings';
 import { isElectronRenderer } from '@/lib/electron';
 import { openExternalUrl } from '@/lib/native-browser';
 import { useAuthClient } from '../../providers/convex-provider';
@@ -209,13 +210,13 @@ export function GitHubPersonalIdentitySettingsCard({
  * 用于管理第三方服务集成，如 GitHub App，支持移动端响应式布局
  */
 export function IntegrationsSettingsComponent() {
-  // Registry-level gating already hides the GitHub tab without the
-  // 'githubIntegration' capability; safety net for deep links in local builds.
+  // Registry-level gating already hides the GitHub tab without either
+  // capability; safety net for deep links.
   const githubIntegrationAvailable = useAppCapability('githubIntegration');
-  if (!githubIntegrationAvailable) {
-    return null;
-  }
-  return <CloudIntegrationsSettings />;
+  const localGitHubCredentialAvailable = useAppCapability('localGitHubCredential');
+  if (githubIntegrationAvailable) return <CloudIntegrationsSettings />;
+  if (localGitHubCredentialAvailable) return <LocalGitHubSettings />;
+  return null;
 }
 
 function CloudIntegrationsSettings() {

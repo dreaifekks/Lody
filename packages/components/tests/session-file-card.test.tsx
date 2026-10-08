@@ -8,15 +8,26 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getServerNow, type SessionFilePayload } from '@lody/shared';
+import {
+  getServerNow,
+  type SessionFilePayload,
+  type SessionId,
+  type WorkspaceId,
+} from '@lody/shared';
+
+import { Provider, createStore } from 'jotai';
+import { PlatformContext } from '@lody/platform/react';
 
 import { SessionFileCard } from '../src/components/ai-gui/session-file-card';
+import { SessionFileGroup } from '../src/components/ai-gui/view';
+import { currentWorkspaceIdAtom } from '../src/atoms/workspace-context';
 import {
   isKeptImageFile,
   SessionKeptImageFile,
 } from '../src/components/ai-gui/session-local-image-file';
 import { SESSION_FILE_RETENTION_MS } from '../src/lib/session-file-presentation';
 import { initI18n } from '../src/i18n';
+import { TEST_CLOUD_PLATFORM } from './test-platform';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -32,7 +43,9 @@ let readKeptFile: (input: ReadInput) => Promise<ReadResult> = async () => ({
 vi.mock('../src/lib/electron-ipc-client', () => ({
   getIpcServices: () => ({
     localProjects: { readSessionFileLocal: (input: ReadInput) => readKeptFile(input) },
+    app: { getFullscreen: async () => false },
   }),
+  onIpcEvent: () => () => {},
 }));
 
 const file = (overrides: Partial<SessionFilePayload> = {}): SessionFilePayload => ({
@@ -234,6 +247,34 @@ describe('SessionFileCard download action', () => {
     const pending = await render({ file: held, pendingMachineName: 'devbox' });
     expect(pending.textContent).toContain('Uploading from devbox');
   });
+
+  it('previews a kept text file it can read, and still says where it is', async () => {
+    const notes = file({
+      fileName: 'notes.md',
+      mimeType: 'text/markdown',
+      transport: 'local',
+      machineId: 'machine-1',
+    });
+
+    const readable = await render({ file: notes, pendingMachineName: 'devbox', uploads: false });
+    expect(readable.textContent).toContain('On devbox · 15.9 KB');
+    await act(async () => {
+      readable.querySelector<HTMLButtonElement>('button[aria-label="notes.md"]')?.click();
+    });
+    expect(onPreview).toHaveBeenCalledWith(notes);
+    expect(onDownload).not.toHaveBeenCalled();
+
+    // A window that cannot read it from that machine opens nothing.
+    const unreadable = await render({
+      file: notes,
+      pendingMachineName: 'devbox',
+      uploads: false,
+      onDownload: undefined,
+    });
+    expect(
+      unreadable.querySelector<HTMLButtonElement>('button[aria-label="notes.md"]')?.disabled
+    ).toBe(true);
+  });
 });
 
 describe('an image a machine keeps', () => {
@@ -392,5 +433,92 @@ describe('an image a machine keeps', () => {
     root = undefined;
 
     expect(url && liveUrls.has(url)).toBe(false);
+  });
+});
+
+describe('previewing a file a machine keeps', () => {
+  let root: Root | undefined;
+  let container: HTMLDivElement | undefined;
+
+  beforeEach(async () => {
+    await initI18n('en');
+    (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__ = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root?.unmount();
+      });
+      root = undefined;
+    }
+    container?.remove();
+    container = undefined;
+    delete (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__;
+  });
+
+  const text = '# Notes\n\nkept on devnuc';
+  const notes = file({
+    fileId: 'notes',
+    fileName: 'notes.txt',
+    mimeType: 'text/plain',
+    sizeBytes: new TextEncoder().encode(text).byteLength,
+    transport: 'local',
+    machineId: 'devnuc',
+  });
+
+  // The local platform: nothing uploads a file, and there is no hosted token.
+  const open = async (shown: SessionFilePayload) => {
+    const store = createStore();
+    store.set(currentWorkspaceIdAtom, 'lan-home' as WorkspaceId);
+    await act(async () => {
+      root?.render(
+        createElement(
+          PlatformContext.Provider,
+          { value: { ...TEST_CLOUD_PLATFORM, kind: 'local', capabilities: new Set() } },
+          createElement(
+            Provider,
+            { store },
+            createElement(SessionFileGroup, {
+              files: [shown],
+              sessionId: 'session-1' as SessionId,
+            })
+          )
+        )
+      );
+    });
+    await act(async () => {
+      container
+        ?.querySelector<HTMLButtonElement>(`button[aria-label="${shown.fileName}"]`)
+        ?.click();
+    });
+    return document.body;
+  };
+
+  it('reads the text from the machine that keeps it', async () => {
+    const asked: ReadInput[] = [];
+    readKeptFile = async (input) => {
+      asked.push(input);
+      return { ok: true, bytes: new TextEncoder().encode(text).buffer as ArrayBuffer };
+    };
+
+    const page = await open(notes);
+
+    expect(asked).toEqual([
+      expect.objectContaining({ machineId: 'devnuc', fileId: 'notes', sha256: notes.sha256 }),
+    ]);
+    expect(page.querySelector('pre')?.textContent).toBe(text);
+  });
+
+  it('says why when that machine cannot be reached', async () => {
+    readKeptFile = async () => ({ ok: false, error: 'devnuc: connect ECONNREFUSED' });
+
+    const page = await open(notes);
+
+    expect(page.textContent).toContain('Could not load preview: devnuc: connect ECONNREFUSED');
+    expect(page.querySelector('pre')).toBeNull();
   });
 });

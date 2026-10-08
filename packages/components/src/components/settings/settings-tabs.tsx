@@ -212,7 +212,7 @@ export const SETTINGS_TAB_CONFIGS: SettingsTabConfig[] = [
     labelKey: 'settings.tabs.github',
     descriptionKey: 'settings.categories.github.description',
     icon: Github,
-    capability: 'githubIntegration',
+    capability: ['githubIntegration', 'localGitHubCredential'],
     path: '/$workspaceName/settings/github',
   },
   {
@@ -230,7 +230,7 @@ export const SETTINGS_TAB_CONFIGS: SettingsTabConfig[] = [
     labelKey: 'settings.tabs.shares',
     descriptionKey: 'settings.shares.description',
     icon: Share2,
-    capability: 'teamSharing',
+    capability: ['teamSharing', 'lanSharing'],
     path: '/$workspaceName/settings/shares',
   },
   {

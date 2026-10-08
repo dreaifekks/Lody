@@ -1,13 +1,18 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import type { LanGitHubCredential } from '@lody/shared/node/lan-github';
 import { GitHubCredentialResolver } from '@/lib/pr-poller/github-credential-resolver';
 import type { Logger } from '@/utils/logger';
+import { readLanHubGitHubConfig } from './hub-github';
+import { startLanHubServer, type LanHubServer, type LanHubUpstream } from './hub-server';
 import { applyLanGitHubCredentialEnv, createGhLoginProbe } from './lan-agent-github';
+import { createLanGitHubSource } from './lan-github-credential';
 import { createLanGitHubTokenPort } from './lan-github-tokens';
 
 const silentLogger = (): Logger => ({
@@ -243,5 +248,108 @@ describe('LAN GitHub token for agents', () => {
     clock.now = 60_000;
     await expect(probe()).resolves.toBe(true);
     expect(asked).toBe(2);
+  });
+});
+
+describe('GitHub credentials in Settings > GitHub', () => {
+  let dataDir: string;
+  let upstream: http.Server;
+  let server: LanHubServer;
+  let member: LanHub;
+  /** Who GitHub says each token acts as; a token it does not know is refused. */
+  let accounts: Record<string, { login: string; id: number }>;
+
+  beforeEach(async () => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-github-settings-'));
+    // The data plane the hub fronts; it only has to take the bucket.
+    upstream = http.createServer((request, response) =>
+      response.writeHead(request.method === 'PUT' ? 201 : 200).end()
+    );
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    let stopped: (code: number | null) => void = () => {};
+    server = await startLanHubServer({
+      host: '127.0.0.1',
+      port: 0,
+      dataDir,
+      startUpstream: async (): Promise<LanHubUpstream> => ({
+        port: (upstream.address() as AddressInfo).port,
+        exited: new Promise((resolve) => (stopped = resolve)),
+        stop: () => {
+          upstream.closeAllConnections();
+          upstream.close(() => stopped(0));
+        },
+      }),
+    });
+    member = { id: 'e'.repeat(32), name: 'Home', url: server.url, token: server.token };
+    accounts = {
+      github_pat_hub: { login: 'octocat', id: 583231 },
+      gho_own: { login: 'me', id: 7 },
+    };
+  });
+
+  afterEach(async () => {
+    await server.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** GitHub answers from `accounts`; everything else reaches the real hub. */
+  const request: typeof fetch = (input, init) => {
+    if (!String(input).startsWith('https://api.github.com/')) return fetch(input, init);
+    const token = new Headers(init?.headers).get('authorization')?.replace('Bearer ', '') ?? '';
+    const account = accounts[token];
+    return Promise.resolve(
+      account
+        ? new Response(JSON.stringify(account), { status: 200 })
+        : new Response('{}', { status: 401 })
+    );
+  };
+
+  it('hands the hub a token and tells only whose it is', async () => {
+    const source = createLanGitHubSource({ fetch: request, readOwnToken: async () => null });
+
+    const saved = await source.save(member, 'github_pat_hub');
+    expect(saved).toEqual({ login: 'octocat' });
+    expect(readLanHubGitHubConfig(dataDir)).toMatchObject({
+      token: 'github_pat_hub',
+      login: 'octocat',
+      userId: '583231',
+    });
+
+    const described = await source.describe(member);
+    expect(described).toEqual({ own: null, lan: { login: 'octocat' } });
+    expect(JSON.stringify([saved, described])).not.toContain('github_pat_hub');
+
+    await expect(source.save(member, null)).resolves.toEqual({ login: null });
+    expect(readLanHubGitHubConfig(dataDir)).toBeNull();
+    await expect(source.describe(member)).resolves.toEqual({ own: null, lan: null });
+  });
+
+  it('keeps the hub as it was when GitHub refuses the token', async () => {
+    const source = createLanGitHubSource({ fetch: request, readOwnToken: async () => null });
+    await source.save(member, 'github_pat_hub');
+
+    await expect(source.save(member, 'github_pat_typo')).rejects.toThrow(/does not accept/);
+    expect(readLanHubGitHubConfig(dataDir)?.token).toBe('github_pat_hub');
+  });
+
+  it("names the machine's own gh login, and the copy of the token while the hub is away", async () => {
+    const away: typeof fetch = (input, init) =>
+      String(input).startsWith(server.url)
+        ? Promise.reject(new TypeError('fetch failed'))
+        : request(input, init);
+    const source = createLanGitHubSource({
+      fetch: away,
+      readOwnToken: async () => 'gho_own',
+      readCopy: (hubId) =>
+        hubId === member.id ? { token: 'github_pat_copy', login: 'octocat', userId: null } : null,
+    });
+    await expect(source.describe(member)).resolves.toEqual({
+      own: { login: 'me' },
+      lan: { login: 'octocat' },
+    });
+
+    // A login GitHub cannot be asked about is still the one agents use.
+    accounts = {};
+    await expect(source.describe(null)).resolves.toEqual({ own: { login: null }, lan: null });
   });
 });

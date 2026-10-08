@@ -28,6 +28,9 @@ rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
   require the session in the local metadata cache; opening it closes the desktop
   settings overlay. Rationale:
   [share inventory jump](../../../../../.agents/notes/implemented/feature/2026-09-15-share-inventory-session-jump.md).
+  A LAN workspace (`lanSharing` without `teamSharing`) renders
+  `lan-share-management-setting.tsx` instead: the shares its hub keeps, which
+  every member manages; a LAN link is the address alone, with no credential.
 
 - Desktop Settings > Projects stacks every source (each machine, then GitHub
   owners) as a `CompactSection` of ruled project rows. Clicking a project opens

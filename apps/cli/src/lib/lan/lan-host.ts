@@ -247,7 +247,8 @@ export async function takeOverLan(
   fs.mkdirSync(incoming, { recursive: true, mode: 0o700 });
   let files: string[];
   try {
-    const response = await request(`${hub.url}${LAN_HUB_HANDOVER_PATH}`, {
+    // A host of an older build ignores the question and sends no shares.
+    const response = await request(`${hub.url}${LAN_HUB_HANDOVER_PATH}?shares=1`, {
       method: 'POST',
       headers: authorization,
     });

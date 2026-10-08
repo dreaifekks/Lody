@@ -107,6 +107,20 @@ const readBoundedBytes = async (response: Response, maxBytes: number): Promise<U
   return out;
 };
 
+const decodeSessionFilePreview = (
+  bytes: Uint8Array,
+  sizeBytes: number
+): SessionFilePreviewResult => {
+  const fetchedBytes = bytes.byteLength;
+  const text = new TextDecoder('utf-8').decode(bytes);
+  // When the total size is known, truncation means we hold fewer bytes than the
+  // file has (a file of exactly maxBytes is complete, not truncated). Only when
+  // the size is unknown do we infer truncation from hitting the fetch window.
+  const truncated =
+    sizeBytes > 0 ? sizeBytes > fetchedBytes : fetchedBytes >= SESSION_FILE_PREVIEW_FETCH_BYTES;
+  return { text, truncated, fetchedBytes };
+};
+
 /**
  * Fetch a bounded text prefix of a file's preview endpoint via an HTTP Range
  * request (`bytes=0-(N-1)`). The endpoint serves `text/plain`; we decode the
@@ -132,12 +146,12 @@ export const fetchSessionFilePreview = async (
   // Bound the read ourselves: if the server ignores Range and returns 200 with
   // the whole (up to 100MB) file, arrayBuffer() would buffer all of it. Read at
   // most maxBytes from the stream, then cancel.
-  const bytes = await readBoundedBytes(response, maxBytes);
-  const fetchedBytes = bytes.byteLength;
-  const text = new TextDecoder('utf-8').decode(bytes);
-  // When the total size is known, truncation means we hold fewer bytes than the
-  // file has (a file of exactly maxBytes is complete, not truncated). Only when
-  // the size is unknown do we infer truncation from hitting the fetch window.
-  const truncated = sizeBytes > 0 ? sizeBytes > fetchedBytes : fetchedBytes >= maxBytes;
-  return { text, truncated, fetchedBytes };
+  return decodeSessionFilePreview(await readBoundedBytes(response, maxBytes), sizeBytes);
 };
+
+/** The same bounded text prefix, of a file whose bytes were read whole. */
+export const getSessionFilePreviewFromBytes = (
+  bytes: Uint8Array,
+  sizeBytes: number
+): SessionFilePreviewResult =>
+  decodeSessionFilePreview(bytes.subarray(0, SESSION_FILE_PREVIEW_FETCH_BYTES), sizeBytes);

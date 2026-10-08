@@ -301,6 +301,48 @@ describe('what an agent service does for the members of its LANs', () => {
     expect(sent).toEqual([]);
   });
 
+  it("says which GitHub credentials it has for a LAN, and hands that LAN's hub a token", async () => {
+    // Stands in for GitHub and the hub; `lan-github.test.ts` covers the real round trip.
+    const held = new Map<string, string>();
+    const fleet = createFleetControl({
+      github: {
+        describe: async (hub) => ({
+          own: null,
+          lan: hub && held.has(hub.name) ? { login: `owner-of-${held.get(hub.name)}` } : null,
+        }),
+        save: async (hub, token) => {
+          if (token === null) held.delete(hub.name);
+          else held.set(hub.name, token);
+          return { login: token === null ? null : `owner-of-${token}` };
+        },
+      },
+    });
+
+    expect(
+      await fleet.dispatch({
+        type: 'lan/github-token',
+        machineId: THIS,
+        workspaceId: HOME,
+        token: 'github_pat_1',
+      })
+    ).toEqual({ ok: true, type: 'lan/github-token', result: { login: 'owner-of-github_pat_1' } });
+    expect(await fleet.answer({ type: 'lan/github', machineId: THIS, workspaceId: HOME })).toEqual({
+      ok: true,
+      type: 'lan/github',
+      result: { own: null, lan: { login: 'owner-of-github_pat_1' } },
+    });
+
+    expect(
+      await fleet.dispatch({
+        type: 'lan/github-token',
+        machineId: THIS,
+        workspaceId: 'lw_elsewhere' as WorkspaceId,
+        token: 'github_pat_2',
+      })
+    ).toMatchObject({ ok: false, type: 'lan/github-token', error: 'execution_failed' });
+    expect([...held]).toEqual([['Home', 'github_pat_1']]);
+  });
+
   it('tells the members what this machine runs, until it is closed', async () => {
     const fleet = createFleetControl();
 

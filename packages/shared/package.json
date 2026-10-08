@@ -140,6 +140,10 @@
       "types": "./src/lan-hub.ts",
       "import": "./src/lan-hub.ts"
     },
+    "./lan-share": {
+      "types": "./src/lan-share.ts",
+      "import": "./src/lan-share.ts"
+    },
     "./lan-control": {
       "types": "./src/lan-control.ts",
       "import": "./src/lan-control.ts"
