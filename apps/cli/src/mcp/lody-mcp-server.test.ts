@@ -60,6 +60,7 @@ import {
   type AgentRoleWriteDeps,
 } from './agent-role-tools';
 import { upsertWorkspaceAgentRoleEntry } from '@/lib/workspace-mcp-store';
+import { agentRoleWriteId } from './agent-config-writes';
 
 const {
   FeedbackToolInputSchema,
@@ -360,6 +361,17 @@ describe('Agent Role writes from an Agent', () => {
     expect(h.store.read()).toMatchObject([
       { runConfig: { modeId: 'bypassPermissions' }, revision: 1 },
     ]);
+  });
+
+  it('names a Role write by its revision and content, the same again on retry', async () => {
+    // Two daemons each made revision 2 of one Role, with other content.
+    const base = agentRole({ revision: 2, runConfig: { modeId: 'default' } });
+    const other = { ...base, promptPrefix: 'Be strict.' };
+    expect(agentRoleWriteId(base)).not.toBe(agentRoleWriteId(other));
+    expect(agentRoleWriteId(base)).toMatch(/^r2-[0-9a-f]{16}$/);
+    // A retry reads the stored row back, keys in another order: the same write.
+    const stored = Object.fromEntries(Object.entries(base).reverse()) as AgentRole;
+    expect(agentRoleWriteId(stored)).toBe(agentRoleWriteId(base));
   });
 
   it('never accepts credential or identity options, nor an Agent change without its run config', () => {

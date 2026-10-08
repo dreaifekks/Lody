@@ -53,6 +53,7 @@ Parent instructions apply. Background: [README.md](README.md).
   the user's choice: any caller may write it; as a caller it counts as full. No credential option or
   memory binding, no deletion. Each successful write, retries too, sends one notice id
   (`agentConfigNoticeId`) to the Session and devices, outside `lody_notify_user`'s gates.
+  MCP only: [CLI and known limits](README.md#agent-config-writes).
 - Direct Role creation stays on the ordinary `lody_session_create` and
   `lody_session_create_many` tools. When `agentRoleId` is present, tolerate manual Machine, Agent,
   and run-config fields but remove them before resolution: the current Role row is authoritative

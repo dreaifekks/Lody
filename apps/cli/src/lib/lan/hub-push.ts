@@ -2,6 +2,7 @@
 // report what their agents did, and the hub turns that into alerts and Live
 // Activity updates. A LAN has one user, so every registered phone hears about
 // every member.
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import type http from 'node:http';
 import path from 'node:path';
@@ -19,6 +20,14 @@ import {
   type LanPushEvent,
   type LanPushLiveActivityResult,
 } from './lan-push-protocol';
+
+/**
+ * APNs keeps the first 64 bytes of a collapse id, and a notice id names a
+ * whole operation (a Role or Schedule write) in more than that; a digest of
+ * the full id keeps every operation apart.
+ */
+export const agentNoticeCollapseId = (noticeId: string): string =>
+  `agent-${createHash('sha256').update(noticeId).digest('hex').slice(0, 40)}`;
 
 export const LAN_PUSH_DEVICES_FILE_NAME = 'push-devices.json';
 const MAX_BODY_BYTES = 512 * 1024;
@@ -992,7 +1001,7 @@ export function createLanHubPush(options: {
         }),
         {
           sessionId: event.sessionId,
-          collapseId: `agent-${event.noticeId}`,
+          collapseId: agentNoticeCollapseId(event.noticeId),
           payload: { lodyKind: 'agent-message' },
         }
       );

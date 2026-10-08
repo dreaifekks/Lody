@@ -37,7 +37,8 @@
   same `requestId` replays instead of conflicting. Each Agent write records `requesterSessionId` in the timeline and a
   system notice in that Session. The service re-checks that the caller owns the
   invoking Session on this machine. A proposal takes effect only after the person
-  confirms its card. Human commands are not a security boundary against an Agent with shell access.
+  confirms its card. Human commands are not a security boundary against an Agent with shell access:
+  the `lody schedule` CLI applies no tier cap ([why](../../mcp/README.md#agent-config-writes)).
   `propose` takes a NAMED rule (`ScheduleProposalRuleSchema`), never cron, and
   validates it as a trigger before writing; it publishes one idempotent
   `schedule_proposal` system notice per `requestId` through

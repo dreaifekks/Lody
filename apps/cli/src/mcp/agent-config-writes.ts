@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import {
   agentConfigNoticeId,
+  canonicalScheduleJson,
   canReadAgentRole,
   getMachineRoomId,
   getScheduleRoomId,
@@ -128,6 +129,31 @@ const ensureNotice = async (
   });
   await manager.repo.flush();
   return true;
+};
+
+/** A Role write's identity: its revision and a digest of what it holds. */
+export const agentRoleWriteId = (role: AgentRole): string => {
+  const {
+    name,
+    description,
+    emoji,
+    visibility,
+    machineId,
+    agentConfigId,
+    runConfig,
+    promptPrefix,
+  } = role;
+  const content = canonicalScheduleJson({
+    name,
+    description,
+    emoji,
+    visibility,
+    machineId,
+    agentConfigId,
+    runConfig,
+    promptPrefix,
+  });
+  return `r${role.revision}-${createHash('sha256').update(content).digest('hex').slice(0, 16)}`;
 };
 
 const SCHEDULE_VERBS = { create: 'created', edit: 'changed', resume: 'resumed' } as const;
@@ -317,14 +343,16 @@ export function createAgentConfigWrites(deps: {
           createId: () => randomUUID() as AgentRoleId,
         });
         const write = await upsertWorkspaceAgentRoleEntry(manager.repo, workspaceId, next);
-        // The revision a write produced identifies it; an unchanged Role is
-        // either a retry (its line exists, so alert again) or a no-op.
+        // The revision and the content a write produced identify it: two
+        // daemons may each make the same revision of one Role with other
+        // content. An unchanged Role is a retry (its line exists, so alert
+        // again) or a no-op.
         const entryId = agentConfigNoticeId({
           workspaceId,
           kind: 'agent-role',
           objectId: next.id,
           action: request.action,
-          requestId: `r${next.revision}`,
+          requestId: agentRoleWriteId(next),
         });
         if (
           await ensureNotice(

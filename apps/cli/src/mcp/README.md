@@ -75,3 +75,20 @@ and lifecycle decisions behind them; it does not introduce additional requiremen
   exact workspace/machine scope; never open a second local writer replica.
   Cloud keeps its authenticated command runtime and remote recovery confirmation.
 
+## Agent config writes
+
+The permission tier cap on Agent Role and Schedule writes covers the MCP tools only.
+`lody schedule` and the other CLI write commands are no boundary against an Agent:
+in the ask and edit tiers its shell commands already need the person's approval, in
+the auto and full tiers it already has everything its user has, and telling an
+Agent's process from the person's by process ancestry is defeated by `setsid` or an
+outside scheduler.
+
+Known limits of the alerts on these writes:
+
+- The hub marks a notice id seen before APNs answers, so a retry of the same id after
+  a transient APNs failure is dropped (as for every LAN alert).
+- The desktop remembers the ids it alerted on per session only while it runs.
+- `lody_agent_role_create` has no request id: if the Role landed but its alert did
+  not, a retry is refused as a duplicate name. Re-sending an alert also marks its
+  conversation unread again.
