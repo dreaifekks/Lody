@@ -8,7 +8,12 @@ import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { createApnsProviderToken, readApnsConfig, writeApnsConfig, type ApnsPush } from './apns';
-import { createLanHubPush, LAN_PUSH_SWEEP_INTERVAL_MS, type LanHubPush } from './hub-push';
+import {
+  agentNoticeCollapseId,
+  createLanHubPush,
+  LAN_PUSH_SWEEP_INTERVAL_MS,
+  type LanHubPush,
+} from './hub-push';
 import { startLanHubServer, type LanHubServer, type LanHubUpstream } from './hub-server';
 import { createLanNotificationsPort } from './lan-push-notifier';
 import { createLanCredentialSync } from './lan-credential-sync';
@@ -232,7 +237,7 @@ describe('LAN host push', () => {
 
     expect(sent).toHaveLength(2);
     expect(sent[0]).toMatchObject({
-      collapseId: 'agent-notice-1',
+      collapseId: agentNoticeCollapseId('notice-1'),
       payload: {
         aps: { alert: { title: 'Fix the build', body: 'CI is green; may I merge?' } },
         route: '/lan/sessions/session-1',
@@ -253,6 +258,27 @@ describe('LAN host push', () => {
         })
       ).status
     ).toBe(400);
+  });
+
+  it('keeps every Agent write apart in the 64 bytes APNs collapses on', async () => {
+    await register();
+    const notifications = port();
+    // Two revisions of one Role differ only past the first 64 bytes of their ids.
+    const noticeId = (revision: string) =>
+      `config:9b2f6c1e-4a7d-4f3b-8e21-5c0d7a9e3f14:agent-role:0e8d4c2a-6b1f-4e9a-9c37-2f5a8b1d6e40:update:${revision}`;
+    for (const revision of ['r2-1a2b3c4d5e6f7a8b', 'r3-9f8e7d6c5b4a3f2e'])
+      await notifications.notifyAgentMessage({
+        sessionId: 'session-1' as never,
+        noticeId: noticeId(revision),
+        body: 'Reviewer, by an Agent in “Planning”',
+        workspaceId: WORKSPACE as never,
+        workspaceSlug: WORKSPACE,
+        userId: USER,
+      });
+    // What reaches APNs: `apns.ts` sends the first 64 characters as the header.
+    const collapseIds = sent.map((push) => push.collapseId!.slice(0, 64));
+    expect(collapseIds).toHaveLength(2);
+    expect(collapseIds[0]).not.toBe(collapseIds[1]);
   });
 
   it('copies its credentials to members, which alert phones themselves while it is away', async () => {

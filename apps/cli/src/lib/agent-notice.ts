@@ -129,18 +129,35 @@ export async function deliverAgentNotice(
     body: input.body,
     at: deps.now(),
   };
-  await deps.writeNotice(sessionId, notice);
-
-  const push = deps.push;
-  if (push) {
-    const send = async () => {
-      const meta = await deps.readMeta(sessionId);
-      // A device showing the conversation marked it read: nobody needs a push.
-      if (deps.graceMs !== undefined && isSessionReadThrough(meta)) return;
-      await push({ sessionId, notice, meta });
-    };
-    if (deps.graceMs === undefined) await send();
-    else deps.afterGrace(deps.graceMs, send);
-  }
+  await sendAgentNotice(deps, sessionId, notice);
   return { ok: true, noticeId: notice.id };
+}
+
+export type AgentNoticeDelivery = Pick<
+  AgentNoticeDeps,
+  'writeNotice' | 'readMeta' | 'push' | 'graceMs' | 'afterGrace'
+>;
+
+/**
+ * The delivery alone: the notice desktops alert on, then the phone alert after
+ * the grace period unless someone read the conversation. Lody's own notices
+ * (an Agent changed a Role or Schedule) use it without the Agent's switch and
+ * rate limit.
+ */
+export async function sendAgentNotice(
+  deps: AgentNoticeDelivery,
+  sessionId: SessionId,
+  notice: SessionAgentNoticeMeta
+): Promise<void> {
+  await deps.writeNotice(sessionId, notice);
+  const push = deps.push;
+  if (!push) return;
+  const send = async () => {
+    const meta = await deps.readMeta(sessionId);
+    // A device showing the conversation marked it read: nobody needs a push.
+    if (deps.graceMs !== undefined && isSessionReadThrough(meta)) return;
+    await push({ sessionId, notice, meta });
+  };
+  if (deps.graceMs === undefined) await send();
+  else deps.afterGrace(deps.graceMs, send);
 }

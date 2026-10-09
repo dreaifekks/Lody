@@ -131,6 +131,8 @@ import {
   OperationListQuerySchema,
 } from '@/orchestration/operation-store';
 import { registerScheduleTools } from './schedule-tools';
+import { registerAgentRoleWriteTools } from './agent-role-tools';
+import { createAgentConfigWrites } from './agent-config-writes';
 import { truncateSessionHistoryText as truncateUtf8HeadTail } from '@/mcp/session-history-page';
 import { buildSessionHistoryForReader } from '@/mcp/session-history-handler';
 import { createSessionBackend } from '@/session/session-backend';
@@ -3664,17 +3666,6 @@ export function buildSessionToolServer(
       ].join(' '),
     }
   );
-  registerScheduleTools(server, {
-    execute: async (command) => {
-      const ctx = getSessionContext();
-      const { sendScheduleCommand } = await import('@/lib/schedules/schedule-command-client');
-      return sendScheduleCommand(command, {
-        workspace: getMcpWorkspaceId(ctx),
-        requesterSessionId: ctx.sessionId,
-      });
-    },
-  });
-
   const registerSessionTool = createSessionToolRegistrar(
     server,
     async (name, args, execute) => {
@@ -3710,6 +3701,41 @@ export function buildSessionToolServer(
       }
     },
     handlers
+  );
+
+  const agentConfigWrites = createAgentConfigWrites({
+    readInvokingCall: async (manager) => {
+      const session = await readCurrentSessionMeta(
+        manager,
+        getSessionContext().sessionId as SessionId
+      );
+      if (!session) throw new Error('The invoking Session is unavailable');
+      return {
+        session,
+        turn: await resolveInvokingTurnSource(),
+        runtimeConfigOptions: getSessionCommandEnvironment()?.host.readRuntimeConfigOptions?.(
+          session.id as SessionId
+        ),
+      };
+    },
+    errorResult: mcpErrorResult,
+    // Read per call: only the daemon's Session tool scope has a notifications port.
+    notifyConfigChange: (sessionId, notice) =>
+      getSessionCommandEnvironment()?.host.notifyConfigChange?.(sessionId, notice),
+  });
+  registerScheduleTools(server, registerSessionTool, {
+    execute: async (command) => {
+      const ctx = getSessionContext();
+      const { sendScheduleCommand } = await import('@/lib/schedules/schedule-command-client');
+      return sendScheduleCommand(command, {
+        workspace: getMcpWorkspaceId(ctx),
+        requesterSessionId: ctx.sessionId,
+      });
+    },
+    write: (request) => agentConfigWrites.schedule(getMcpWorkspaceId(getSessionContext()), request),
+  });
+  registerAgentRoleWriteTools(registerSessionTool, (request) =>
+    agentConfigWrites.role(getMcpWorkspaceId(getSessionContext()), request)
   );
 
   // The daemon's handler table keeps every tool; the daemon re-checks the

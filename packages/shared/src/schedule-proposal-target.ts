@@ -1,16 +1,25 @@
-import type { AgentRunRef } from '@/components/shared/agent-run-ref';
 import {
   getBuiltinDefaultModeId,
-  isSensitiveAcpConfigOptionId,
   type AcpConfigOptionValue,
-  type AgentConfigId,
-  type AgentConfigMeta,
-  type AgentRole,
-  type ProjectRef,
-  type ScheduleDestination,
   type ScheduleProposalMeta,
-  type SessionMeta,
-} from '@lody/shared';
+} from './ai';
+import type { AgentRole } from './agent-role';
+import type { AgentConfigId } from './ids';
+import type { AgentConfigMeta, SessionMeta } from './schema';
+import type { ProjectRef } from './project';
+import type { ScheduleDefinition, ScheduleDestination } from './schedule-types';
+import { isSensitiveAcpConfigOptionId } from './session-preparation';
+
+/** The Agent a schedule run is entrusted to; the machine follows from its config. */
+type ProposalRunRef = Omit<ScheduleDefinition['agent'], 'agentConfigId'> & {
+  agentConfigId: AgentConfigId;
+};
+
+/** What the resolver reads of an Agent config. */
+export type ProposalTargetAgent = Pick<
+  AgentConfigMeta,
+  'id' | 'machineId' | 'cliType' | 'agentType'
+>;
 
 /** What the conversation the proposal came from was running with. */
 export type ProposalConversation = {
@@ -28,7 +37,7 @@ export type ProposalConversation = {
  */
 function scheduleOptionValues(
   values: Record<string, AcpConfigOptionValue> | undefined
-): AgentRunRef['configOptionValues'] {
+): ProposalRunRef['configOptionValues'] {
   if (!values) return undefined;
   const entries = Object.entries(values).filter(
     ([id, value]) => value !== undefined && value !== null && !isSensitiveAcpConfigOptionId(id)
@@ -36,9 +45,9 @@ function scheduleOptionValues(
   return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
-export type ResolvedProposalTarget = {
-  agent: AgentRunRef;
-  agentConfig: AgentConfigMeta;
+export type ResolvedProposalTarget<A extends ProposalTargetAgent = AgentConfigMeta> = {
+  agent: ProposalRunRef;
+  agentConfig: A;
   project: ProjectRef | null;
   destination: ScheduleDestination;
   /** Where each value came from, for the card to say so. */
@@ -64,12 +73,14 @@ export type ProposalTargetProblem =
  * is the same Agent, otherwise Lody's builtin default for that Agent; never an
  * elevated mode the person did not choose somewhere.
  */
-export function resolveScheduleProposalTarget(args: {
-  meta: ScheduleProposalMeta;
+export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(args: {
+  meta: Pick<ScheduleProposalMeta, 'target' | 'destination'>;
   conversation: ProposalConversation | null;
-  agents: readonly AgentConfigMeta[];
+  agents: readonly A[];
   roles: readonly AgentRole[];
-}): { ok: true; target: ResolvedProposalTarget } | { ok: false; problem: ProposalTargetProblem } {
+}):
+  | { ok: true; target: ResolvedProposalTarget<A> }
+  | { ok: false; problem: ProposalTargetProblem } {
   const { meta, conversation, agents, roles } = args;
   const named = meta.target ?? {};
 
@@ -103,7 +114,7 @@ export function resolveScheduleProposalTarget(args: {
       : { modeId: getBuiltinDefaultModeId(agentConfig.cliType, agentConfig.agentType) };
 
   const configOptionValues = scheduleOptionValues(runConfig.configOptionValues);
-  const agent: AgentRunRef = {
+  const agent: ProposalRunRef = {
     memory: role?.runConfig.memory,
     agentConfigId: agentConfig.id as AgentConfigId,
     ...(runConfig.modeId ? { modeId: runConfig.modeId } : {}),

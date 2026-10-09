@@ -15,6 +15,9 @@ subdirectory; this file is the navigation index. Cross-module explanations live 
 - `resource-discovery-runtime.ts` — synchronized workspace readers and caller-specific
   authorization; it supplies the existing workspace command runtime to the query service.
   Intent and limits: [resource discovery](../../../../specs/resource-discovery.md).
+- `agent-permission-tier.ts` — the permission tier of a run config on one Agent config,
+  and the invoking Session's effective run config; bounds Agent-written Roles and
+  Schedules ([MCP rules](../mcp/AGENTS.md)).
 
 ## Message hub and transports
 

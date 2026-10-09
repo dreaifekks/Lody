@@ -6,6 +6,7 @@ import { Spinner } from '@lody/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import {
   canManageAgentRole,
+  EMPTY_AGENT_ROLE_FORM_VALUE,
   getAgentRoleEmoji,
   type AgentConfigMeta,
   type AgentRole,
@@ -22,7 +23,7 @@ import {
   useWorkspaceAgentRoles,
 } from '@/hooks/use-workspace-agent-roles';
 import { AgentIcon } from '@/components/icons/agent-icon';
-import { buildAgentRoleRunConfigSummary, EMPTY_AGENT_ROLE_FORM_VALUE } from '@/lib/agent-role-form';
+import { buildAgentRoleRunConfigSummary } from '@/lib/agent-role-form';
 import { AGENT_ROLE_UNAVAILABLE_REASON_KEYS } from '@/lib/composer-agent-roles';
 import { AlertDialog } from '@/ui/dialog';
 import { Badge } from '@lody/ui/badge';

@@ -42,6 +42,18 @@ Parent instructions apply. Background: [README.md](README.md).
   Freeze `requesterUserId` and `sourceTurnId` at Operation acceptance; requester Session id
   already identifies the Session. Author snapshots are presentation only. Recovery uses the Operation
   owner Machine and current authorization, not a frozen daemon account.
+- Agent Role and Schedule writes (`lody_agent_role_create/update`,
+  `lody_schedule_create/update/resume`) are Session tools capped at the invoking
+  Session's permission tier: the lowest of the live Agent's options, its persisted
+  report (both ranked as reported) and the driving Turn's dispatch config; configs
+  to be dispatched get dispatch's builtin-default rule first (`permission-tier.ts`). The written
+  config, the stored one, and a chat a Schedule sends into must all stay within it.
+  Unknown (no capability, unset permission option beside the mode, unoffered
+  default) is left to Settings or `lody_schedule_propose`. Builtin Pi is exempt by
+  the user's choice: any caller may write it; as a caller it counts as full. No credential option or
+  memory binding, no deletion. Each successful write, retries too, sends one notice id
+  (`agentConfigNoticeId`) to the Session and devices, outside `lody_notify_user`'s gates.
+  MCP only: [CLI and known limits](README.md#agent-config-writes).
 - Direct Role creation stays on the ordinary `lody_session_create` and
   `lody_session_create_many` tools. When `agentRoleId` is present, tolerate manual Machine, Agent,
   and run-config fields but remove them before resolution: the current Role row is authoritative

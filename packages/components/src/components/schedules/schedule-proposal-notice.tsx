@@ -20,6 +20,9 @@ import {
   scheduleProposalRuleToTrigger,
   getSessionRoomId,
   type AgentConfigMeta,
+  resolveScheduleProposalTarget,
+  type ProposalConversation,
+  type ProposalTargetProblem,
   type ScheduleProposalMeta,
   type SessionId,
 } from '@lody/shared';
@@ -38,11 +41,6 @@ import { Textarea } from '@lody/ui/textarea';
 import { settingsCard } from '@/components/settings/compact-layout';
 import { MarkdownRenderer } from '@/components/ai-gui/markdown-renderer';
 import { describeDestination, describeRecurrence } from './schedule-format';
-import {
-  resolveScheduleProposalTarget,
-  type ProposalConversation,
-  type ProposalTargetProblem,
-} from './schedule-proposal-target';
 import { PropertyRow, scheduleCardProps } from './schedule-property-row';
 import { ScheduleRecurrenceEditor } from './schedule-recurrence-editor';
 import { collectScheduleSaveBlockers } from './schedule-save-blockers';

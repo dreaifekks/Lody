@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react';
 import type { AgentConfigId, MachineId } from '@lody/shared';
 import { AgentRoleForm, type AgentRoleFormProps } from '@/components/settings/agent-role-form';
 import type { AcpSelectorOptions } from '@/components/shared/acp-selector-options';
-import { EMPTY_AGENT_ROLE_FORM_VALUE, type AgentRoleFormValue } from '@/lib/agent-role-form';
+import { EMPTY_AGENT_ROLE_FORM_VALUE, type AgentRoleFormValue } from '@lody/shared';
 
 const machines = [
   { machineId: 'machine-1' as MachineId, label: 'Studio', online: true },

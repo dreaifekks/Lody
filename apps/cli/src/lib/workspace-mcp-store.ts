@@ -4,7 +4,9 @@ import {
   isWorkspacePromptSuggestionsEnabled,
   listWorkspaceMcpServers,
   readWorkspaceFlockRowsFromFlock,
+  writeWorkspaceAgentRoleToFlock,
   writeWorkspaceMcpServerToFlock,
+  type AgentRole,
   type McpServerId,
   type WorkspaceFlockReadableFlock,
   type WorkspaceFlockWritableFlock,
@@ -108,5 +110,17 @@ export async function deleteWorkspaceMcpCatalogEntry(
 ): Promise<McpCatalogWriteResult> {
   return commitCatalogChange(repo, workspaceId, options, (flock) =>
     deleteWorkspaceMcpServerFromFlock(flock, mcpServerId)
+  );
+}
+
+/** One Role row in the same workspace catalog document, durable on local flush. */
+export async function upsertWorkspaceAgentRoleEntry(
+  repo: WorkspaceMcpRepo,
+  workspaceId: WorkspaceId,
+  role: AgentRole,
+  options: { sync?: boolean } = {}
+): Promise<McpCatalogWriteResult> {
+  return commitCatalogChange(repo, workspaceId, options, (flock) =>
+    writeWorkspaceAgentRoleToFlock(flock, role)
   );
 }

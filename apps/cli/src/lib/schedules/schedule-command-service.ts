@@ -7,8 +7,12 @@ import {
   getScheduleRoomId,
   getServerNow,
   getSessionRoomId,
+  agentConfigNoticeId,
   isLoroRepoDocDeleted,
+  higherPermissionTier,
+  isPermissionTierWithin,
   machineSupportsSchedulesProtocol,
+  normalizeSessionTurnInputConfig,
   ScheduleRuntimeRowSchema,
   previewSchedule,
   readMachineFlockRowsFromFlock,
@@ -19,7 +23,10 @@ import {
   type AgentConfigId,
   type MachineId,
   type MachineMeta,
+  type PermissionTierRunConfig,
+  type ResolvedPermissionTier,
   type ScheduleCommand,
+  type ScheduleDefinition,
   type SessionId,
   type SessionMeta,
   type WorkspaceId,
@@ -33,6 +40,7 @@ import type { LoroDocumentManager } from '../loro/doc';
 import type { WorkspaceSummary } from '../workspace';
 import { createSessionBackend } from '@/session/session-backend';
 import { readMergedAgentConfigById } from '../agent-config-machine-flock';
+import { readAgentRunConfigTier } from '../agent-permission-tier';
 import { publishScheduleProposal } from './schedule-proposal';
 import {
   destinationSessionProblem,
@@ -51,7 +59,19 @@ export type ScheduleCommandContext = {
    */
   hostedAccess: boolean;
   requesterSessionId?: SessionId;
+  /**
+   * The invoking Agent Session's permission tier. With it the Agent may also
+   * create, edit and resume, but only Schedules that run within that tier.
+   */
+  requesterPermissionTier?: ResolvedPermissionTier;
 };
+
+const AGENT_NOTICES = {
+  create: 'Created',
+  edit: 'Changed',
+  pause: 'Paused',
+  resume: 'Resumed',
+} as const;
 
 /** Same domain operations for human CLI and the bounded MCP surface, on either transport. */
 export async function executeScheduleCommand(
@@ -65,8 +85,56 @@ export async function executeScheduleCommand(
   const sync = async (room: string) => {
     if (!localOnly) await manager.syncDocOrThrow(room, { reason: 'schedule:command' });
   };
+  /**
+   * What an existing chat runs with now: its latest Turn's config, and what its
+   * runtime last reported, whichever is higher. A chat not created yet keeps
+   * nothing, so it adds no tier.
+   */
+  const readSessionTier = async (sessionId: SessionId): Promise<ResolvedPermissionTier> => {
+    await sync(getSessionRoomId(sessionId));
+    const record = await manager.repo.getDocMeta(getSessionRoomId(sessionId));
+    const meta = record?.meta as SessionMeta | undefined;
+    if (!meta || isLoroRepoDocDeleted(record!)) return 'ask';
+    if (!meta.agentConfigId) return 'unknown';
+    const session = await manager.getOrCreateSessionDoc(sessionId);
+    const latest = meta.latestUserMsgId
+      ? await (await createSessionBackend(session, meta)).readTurn(meta.latestUserMsgId)
+      : undefined;
+    const latestConfig =
+      (latest?.state === 'ready' ? normalizeSessionTurnInputConfig(latest.turn.inputConfig) : {}) ??
+      {};
+    const reported = (await session.getDocState())?.acpRuntimeConfig;
+    const tierOfSession = (runConfig: PermissionTierRunConfig) =>
+      readAgentRunConfigTier({
+        manager,
+        workspaceId,
+        machineId: meta.machineId as MachineId,
+        agentConfigId: meta.agentConfigId as AgentConfigId,
+        runConfig,
+        localOnly,
+      });
+    const dispatched = await tierOfSession({
+      modeId: latestConfig.modeId,
+      configOptionValues: latestConfig.configOptionValues,
+    });
+    if (!reported) return dispatched;
+    return higherPermissionTier(
+      dispatched,
+      await tierOfSession({
+        modeId: reported.modeId ?? latestConfig.modeId,
+        configOptionValues: {
+          ...latestConfig.configOptionValues,
+          ...(reported.configOptionValues ?? {}),
+        },
+      })
+    );
+  };
+  const requesterPermissionTier = context.requesterPermissionTier;
   if (requesterSessionId) {
-    if (!['list', 'show', 'pause', 'propose'].includes(command.action))
+    const agentWrite =
+      requesterPermissionTier !== undefined &&
+      ['create', 'edit', 'resume'].includes(command.action);
+    if (!agentWrite && !['list', 'show', 'pause', 'propose'].includes(command.action))
       throw new Error('Schedule enablement requires a human action');
     const record = await manager.repo.getDocMeta(getSessionRoomId(requesterSessionId));
     const meta = record?.meta as SessionMeta | undefined;
@@ -190,6 +258,46 @@ export async function executeScheduleCommand(
     throw new Error('Schedules can run only on a machine owned by the creator');
   if (needsTarget && !machineSupportsSchedulesProtocol(machine))
     throw new Error('Update the target machine CLI to manage schedules');
+  // An Agent changes only Schedules that run within its own Session's tier,
+  // and only into Schedules that do; the rest is the user's to decide.
+  const tierOf = (definition: Pick<ScheduleDefinition, 'machineId' | 'agent'>) =>
+    readAgentRunConfigTier({
+      manager,
+      workspaceId,
+      machineId: definition.machineId as MachineId,
+      agentConfigId: definition.agent.agentConfigId as AgentConfigId,
+      runConfig: definition.agent,
+      localOnly,
+    });
+  if (
+    requesterSessionId &&
+    requesterPermissionTier &&
+    (command.action === 'create' || command.action === 'edit' || command.action === 'resume')
+  ) {
+    const current =
+      command.action === 'create' ? undefined : (await repository.read(id))?.definition;
+    if (current && !isPermissionTierWithin(await tierOf(current), requesterPermissionTier))
+      throw new Error(
+        'This schedule runs with more permissions than this conversation has. Only the user can change or resume it, in Schedules.'
+      );
+    const result = command.action === 'resume' ? current : command.draft;
+    if (result) {
+      // A chat the runs go into keeps what its Agent was last set to for any
+      // option a run leaves alone, so that chat counts as well.
+      const destinationSessionId = scheduleDestinationSessionId(
+        id,
+        result.destination ?? DEFAULT_SCHEDULE_DESTINATION
+      );
+      const tier = higherPermissionTier(
+        await tierOf(result),
+        destinationSessionId ? await readSessionTier(destinationSessionId) : 'ask'
+      );
+      if (!isPermissionTierWithin(tier, requesterPermissionTier))
+        throw new Error(
+          'The schedule, or the chat it sends into, would run with more permissions than this conversation has. Unknown counts as more: set every permission option of the Agent (such as permission_mode) explicitly, or use lody_schedule_propose so the user can confirm it.'
+        );
+    }
+  }
   const now = getServerNow();
   if (command.action === 'create' || command.action === 'edit') {
     if (!machine) throw new Error('Target machine is unavailable');
@@ -256,6 +364,7 @@ export async function executeScheduleCommand(
       now,
       activationId: command.requestId,
       activityId: command.requestId,
+      requesterSessionId,
       create: command.action === 'create',
     });
   } else if (command.action === 'pause' || command.action === 'resume') {
@@ -280,17 +389,37 @@ export async function executeScheduleCommand(
     await (await manager.repo.openPersistedDoc(getScheduleRoomId(id))).syncOnce();
     await registry.syncOnce();
   }
-  if (command.action === 'pause' && requesterSessionId) {
+  let notice: { id: string; action: 'create' | 'edit' | 'resume'; title: string } | undefined;
+  if (
+    requesterSessionId &&
+    (command.action === 'create' ||
+      command.action === 'edit' ||
+      command.action === 'pause' ||
+      command.action === 'resume')
+  ) {
+    const action = command.action;
     const session = await manager.getOrCreateSessionDoc(requesterSessionId);
     const sessionRecord = await manager.repo.getDocMeta(getSessionRoomId(requesterSessionId));
     const backend = await createSessionBackend(
       session,
       sessionRecord?.meta as SessionMeta | undefined
     );
-    const entryId = `schedule-paused-${command.requestId}`;
+    const entryId =
+      action === 'pause'
+        ? `schedule-paused-${command.requestId}`
+        : agentConfigNoticeId({
+            workspaceId,
+            kind: 'schedule',
+            objectId: id,
+            action,
+            requestId: command.requestId,
+          });
     const title = (await repository.read(id))?.definition.title ?? id;
+    // Every successful write, a retry included, hands its caller the notice to
+    // alert devices with; devices alert once per id.
+    if (action !== 'pause') notice = { id: entryId, action, title };
     const existing = await backend.readTurn(entryId);
-    if (existing.state !== 'ready')
+    if (existing.state !== 'ready') {
       await backend.appendHistoryTurn({
         id: entryId,
         role: 'system',
@@ -298,15 +427,21 @@ export async function executeScheduleCommand(
         items: [
           {
             type: 'text',
-            text: `Paused scheduled task: ${title}. Future runs stop after the owner machine syncs. Already submitted Sessions continue.`,
+            text:
+              action === 'pause'
+                ? `Paused scheduled task: ${title}. Future runs stop after the owner machine syncs. Already submitted Sessions continue.`
+                : `${AGENT_NOTICES[action]} scheduled task from this conversation: ${title} (${id}). Review, pause or edit it in Schedules.`,
           },
         ],
         fileDiff: [],
         finished: true,
       });
+    }
     await manager.repo.flush();
     if (!localOnly && (!(await backend.waitUntilSynced()) || !(await session.waitUntilSynced())))
-      throw new Error('Pause saved; notification sync pending. Retry with the same requestId.');
+      throw new Error(
+        `${AGENT_NOTICES[action]} schedule saved; notification sync pending. Retry with the same requestId.`
+      );
   }
-  return { ok: true, scheduleId: id };
+  return { ok: true, scheduleId: id, ...(notice ? { notice } : {}) };
 }

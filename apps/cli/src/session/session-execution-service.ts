@@ -4305,6 +4305,14 @@ export class SessionExecutionService {
     return this.turnRuntimeBySession.get(sessionId)?.userTurnId;
   }
 
+  /** The live Agent's current option values while a Turn runs; its own reports keep them current. */
+  getActiveRuntimeConfigOptions(sessionId: SessionId) {
+    const runtime = this.turnRuntimeBySession.get(sessionId);
+    if (!runtime) return undefined;
+    const client = (runtime.session ?? this.deps.sessionManager.getSession(sessionId))?.agentClient;
+    return client?.isCreated() ? client.getConfigOptions() : undefined;
+  }
+
   getActiveInvocationContext(sessionId: SessionId):
     | {
         requesterUserId: string;

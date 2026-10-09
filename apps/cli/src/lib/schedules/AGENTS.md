@@ -28,10 +28,17 @@
   its fixed dispatch age. Only unprepared pending automatic runs may be superseded.
 - The command service is transport-neutral. Local CLI/MCP uses the authenticated
   user's private daemon socket; cloud one-shot commands use their workspace repo.
-  Official MCP has list/show/propose/pause only and is registered for every
-  Agent session; the service re-checks that the caller owns the invoking
-  Session on this machine. A proposal takes effect only after the person
-  confirms its card. Human commands are not a security boundary against an Agent with shell access.
+  Official MCP has list/show/propose/pause for every Agent session, plus
+  create/edit/resume when the daemon's Session tool path passes the invoking
+  Session's permission tier: the stored and the resulting definition, and an
+  existing chat it sends into (what that chat runs with now), must all run
+  within it (`permission-tier.ts`, unknown = person only), else the Agent
+  proposes. A retry rebuilds an interval rule at the stored write's anchor, so the
+  same `requestId` replays instead of conflicting. Each Agent write records `requesterSessionId` in the timeline and a
+  system notice in that Session. The service re-checks that the caller owns the
+  invoking Session on this machine. A proposal takes effect only after the person
+  confirms its card. Human commands are not a security boundary against an Agent with shell access:
+  the `lody schedule` CLI applies no tier cap ([why](../../mcp/README.md#agent-config-writes)).
   `propose` takes a NAMED rule (`ScheduleProposalRuleSchema`), never cron, and
   validates it as a trigger before writing; it publishes one idempotent
   `schedule_proposal` system notice per `requestId` through
@@ -43,7 +50,8 @@
   projected against target capability types at handoff, never migrated in the
   definition/ledger (their fingerprints authorize execution).
 - Schedules use ordinary Session run-config defaults and validation; do not add
-  a schedule-specific explicit-permission or capability-cache gate. No credentials
+  a schedule-specific explicit-permission or capability-cache gate beyond the
+  Agent tier bound above. No credentials
   or provider exception content may enter Registry runtime rows or Schedule logs.
 - `definition.project` is OPTIONAL. Absent means a chat-only run: no local-project
   ledger lookup, no `project` on the resolved target, and `buildProjectOptions`

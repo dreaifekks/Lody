@@ -12,6 +12,7 @@ import {
 } from '@lody/shared';
 import type { LoroStreamsMachineRpcClient } from '@lody/loro-streams-rpc';
 import type { AuthContext } from './command-runtime';
+import type { RuntimeConfigOption } from './agent-permission-tier';
 import type { LoroDocumentManager } from './loro/doc';
 import type { MachineAccessCheckResult, WorkspaceSummary } from './workspace';
 import { readMachineLocalProjects } from './local-project-meta';
@@ -19,6 +20,8 @@ import type { SessionLiveStatusBatchItem } from '@/commands/session';
 
 export interface SessionCommandHost {
   readInvocation(sessionId: SessionId): SessionActiveInvocationContextResult;
+  /** The live Agent's current option values during an active Turn, as it last reported them. */
+  readRuntimeConfigOptions?(sessionId: SessionId): readonly RuntimeConfigOption[] | undefined;
   readLiveStatus(sessionId: SessionId): Promise<SessionLiveStatusBatchItem>;
   cancelSession(
     sessionId: SessionId,
@@ -32,6 +35,11 @@ export interface SessionCommandHost {
   githubToken?(repoFullName: string): Promise<string | null>;
   /** `lody_notify_user`; absent where this machine sends no alerts. */
   notifyUser?(sessionId: SessionId, input: LodyNotifyUserInput): Promise<LodyNotifyUserResult>;
+  /** Desktop alert and phone push that an Agent changed a Role or Schedule; once per write. */
+  notifyConfigChange?(
+    sessionId: SessionId,
+    notice: { id: string; title: string; body: string }
+  ): Promise<void>;
   /**
    * The other machines of a LAN's workspace, reached through the LAN's hub.
    * Absent where the workspace has no machine but this one.

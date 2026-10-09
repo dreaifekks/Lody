@@ -281,6 +281,8 @@ import { loadSessionWorkspaceSettings } from '@/agent/session-mcp-resolver';
 import {
   AgentNoticeRateLimiter,
   deliverAgentNotice,
+  sendAgentNotice,
+  type AgentNoticeDelivery,
   isSessionReadThrough,
   type AgentNoticeResult,
 } from './agent-notice';
@@ -6748,6 +6750,8 @@ export class MessageHandler {
                 }
               : { type: 'session/active-invocation-context', sessionId, active: false };
           },
+          readRuntimeConfigOptions: (sessionId) =>
+            this.executionService.getActiveRuntimeConfigOptions(sessionId),
           readLiveStatus: async (sessionId) => {
             const live = resolveSessionLiveStatus({
               presence: this.sessionActivePresence.getStatus(sessionId),
@@ -6809,6 +6813,8 @@ export class MessageHandler {
           },
           githubToken: async (repoFullName) => await this.readGitHubToken(repoFullName),
           notifyUser: async (sessionId, input) => await this.notifyUserFromAgent(sessionId, input),
+          notifyConfigChange: async (sessionId, notice) =>
+            await this.notifyConfigChange(sessionId, notice),
           ...(this.lanWorkspace
             ? {
                 remote: {
@@ -10547,36 +10553,63 @@ export class MessageHandler {
         logger: this.logger,
       })
     ).agentTools.includes('notify');
-    const notificationService = this.notificationService;
-    const notifyAgentMessage = notificationService?.notifyAgentMessage?.bind(notificationService);
     return deliverAgentNotice(
       {
         now: () => getServerNow(),
         limiter: this.agentNoticeLimiter,
         isEnabled: () => enabled,
-        writeNotice: async (_sessionId, notice) => await sessionDoc.setAgentNotice(notice),
-        readMeta: async () => await sessionDoc.getMetaState(),
-        push: notifyAgentMessage
-          ? async ({ notice, meta }) =>
-              await this.runTurnAlert(sessionId, 'agent message notification', async () =>
-                notifyAgentMessage({
-                  sessionId,
-                  noticeId: notice.id,
-                  sessionTitle: meta?.title,
-                  title: notice.title ?? null,
-                  body: notice.body,
-                  workspaceId: this.workspaceId as WorkspaceId,
-                  workspaceSlug: this.workspaceSlug?.trim() || this.workspaceId,
-                  userId: meta?.userId ?? this.userId,
-                })
-              )
-          : undefined,
-        graceMs: notificationService?.alertGraceMs,
-        afterGrace: (delayMs, run) => this.afterAlertGrace(delayMs, run),
+        ...this.agentNoticeDelivery(sessionId, sessionDoc),
       },
       sessionId,
       input
     );
+  }
+
+  /** Desktop alert and phone push for one Session's notices, as `lody_notify_user` sends them. */
+  private agentNoticeDelivery(
+    sessionId: SessionId,
+    sessionDoc: SessionDocument
+  ): AgentNoticeDelivery {
+    const notificationService = this.notificationService;
+    const notifyAgentMessage = notificationService?.notifyAgentMessage?.bind(notificationService);
+    return {
+      writeNotice: async (_sessionId, notice) => await sessionDoc.setAgentNotice(notice),
+      readMeta: async () => await sessionDoc.getMetaState(),
+      push: notifyAgentMessage
+        ? async ({ notice, meta }) =>
+            await this.runTurnAlert(sessionId, 'agent message notification', async () =>
+              notifyAgentMessage({
+                sessionId,
+                noticeId: notice.id,
+                sessionTitle: meta?.title,
+                title: notice.title ?? null,
+                body: notice.body,
+                workspaceId: this.workspaceId as WorkspaceId,
+                workspaceSlug: this.workspaceSlug?.trim() || this.workspaceId,
+                userId: meta?.userId ?? this.userId,
+              })
+            )
+        : undefined,
+      graceMs: notificationService?.alertGraceMs,
+      afterGrace: (delayMs, run) => this.afterAlertGrace(delayMs, run),
+    };
+  }
+
+  /**
+   * An Agent changed a Role or Schedule: tell the user on every device. Not
+   * the Agent's own `lody_notify_user`, so neither its switch nor its rate
+   * limit applies; callers send it once per write.
+   */
+  private async notifyConfigChange(
+    sessionId: SessionId,
+    notice: { id: string; title: string; body: string }
+  ): Promise<void> {
+    const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
+    await sendAgentNotice(this.agentNoticeDelivery(sessionId, sessionDoc), sessionId, {
+      ...notice,
+      kind: 'config_change',
+      at: getServerNow(),
+    });
   }
 
   private async notifySessionCompleted(

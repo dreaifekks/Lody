@@ -1,4 +1,4 @@
-import { snapshotAgentRole } from '@lody/shared';
+import { buildAgentRoleFormValueFromRunConfig, snapshotAgentRole } from '@lody/shared';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import {
@@ -146,7 +146,6 @@ import {
   isComposerAgentRoleApplied,
   resolvePendingAgentRoleSelection,
 } from '@/lib/composer-agent-roles';
-import { buildAgentRoleFormValueFromRunConfig } from '@/lib/agent-role-form';
 import {
   AgentRoleEditorDialog,
   openAgentRoleEditorForCreate,
