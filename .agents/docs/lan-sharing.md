@@ -94,18 +94,24 @@ tool calls is one folded row that says what it did ("Ran 3 commands · Edited
 A finished turn shows its answer (with earlier text of 300 characters or with
 structure), and the work before it folds into one "Worked for …" row, or a
 step count when the history holds no duration; opened, each group returns to
-its place. The page leads with Lody's mark. The CLI build copies the page and
-the icon beside its bundle, where the hub reads them.
+its place. The page leads with Lody's mark. The CLI build copies the page, the
+icon and the default preview banner beside its bundle, where the hub reads them.
 
 **Page head.** The hub writes the head of `/s/<id>` itself, since a link
 preview runs no script: the title (`<title> · Lody LAN`), the favicon, and Open
 Graph and Twitter tags. `og:url` and `og:image` are absolute, on the public
 address, or else the address the request came by; the description is a fixed
 sentence, so a preview shows nothing of the conversation but its title. The
-favicon and the preview picture are Lody's icon until a member sets its own
-in Settings > Share management (`lan/share-image`, through the shell as a
-file, then `PUT /lan/shares/images/icon|preview`); a preview a member did not
-set shows their icon. The hub reads the type from the bytes and takes PNG,
+favicon is Lody's icon and the preview picture Lody's banner (1200×630, dark,
+icon and "Lody LAN") until a member sets its own in Settings > Share
+management (`lan/share-image`, through the shell as a file, then
+`PUT /lan/shares/images/icon|preview`); a preview a member did not set is the
+banner, never their icon. `twitter:card` is always `summary_large_image`; the
+banner also gets `og:image:width`/`og:image:height`, a member's preview does
+not (the hub does not read its size). A picture's `?v=` is the first 12 hex
+digits of its SHA-256: a member's bare, the banner's after `lody-` (Lody's icon
+is `lody`), so neither a new picture nor a new banner is read from a preview's
+cache. The hub reads the type from the bytes and takes PNG,
 JPEG or WebP, ICO for an icon, never SVG (it can carry script), up to 256 KB
 for an icon and 2 MB for a preview. The images are objects named in
 `images.json` beside `index.json`, which keeps the format a hub of an older

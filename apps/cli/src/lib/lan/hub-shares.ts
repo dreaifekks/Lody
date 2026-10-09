@@ -244,12 +244,16 @@ async function digestFile(filePath: string): Promise<string> {
   return hash.digest('hex');
 }
 
-/** The reader page's script, style and the Lody icon, as a build carries them beside its bundle. */
-export type LanShareReaderAssets = { script: Buffer; style: Buffer; icon?: Buffer };
+/**
+ * The reader page's script, style, the Lody icon and the default link preview
+ * banner, as a build carries them beside its bundle.
+ */
+export type LanShareReaderAssets = { script: Buffer; style: Buffer; icon?: Buffer; banner: Buffer };
 
 const READER_SCRIPT_FILE_NAME = 'lan-share-reader.js';
 const READER_STYLE_FILE_NAME = 'lan-share-reader.css';
 const READER_ICON_FILE_NAME = 'lan-share-reader-icon.png';
+const READER_BANNER_FILE_NAME = 'lan-share-reader-banner.png';
 
 /**
  * Beside the entry the hub was started from, beside or above the chunk this
@@ -267,13 +271,14 @@ export function loadLanShareReaderAssets(): LanShareReaderAssets | null {
     try {
       const script = fs.readFileSync(path.join(directory, READER_SCRIPT_FILE_NAME));
       const style = fs.readFileSync(path.join(directory, READER_STYLE_FILE_NAME));
+      const banner = fs.readFileSync(path.join(directory, READER_BANNER_FILE_NAME));
       let icon: Buffer | undefined;
       try {
         icon = fs.readFileSync(path.join(directory, READER_ICON_FILE_NAME));
       } catch {
         /* a build of the reader from before the icon */
       }
-      return { script, style, ...(icon ? { icon } : {}) };
+      return { script, style, banner, ...(icon ? { icon } : {}) };
     } catch {
       /* not carried here */
     }
@@ -285,13 +290,16 @@ const READER_SCRIPT_PATH = '/_lody/share-reader.js';
 const READER_STYLE_PATH = '/_lody/share-reader.css';
 /** The page's own mark, always Lody's. */
 const LODY_ICON_PATH = '/_lody/lody-icon.png';
-/** The favicon and the link preview's picture: a member's, or Lody's icon. */
+/** The favicon and the link preview's picture: a member's, or Lody's icon and banner. */
 const IMAGE_PATHS: Record<string, LanShareImageKind> = {
   '/_lody/icon': 'icon',
   '/_lody/preview': 'preview',
 };
 /** What a link preview says of any share: nothing of the conversation but its title. */
 const PREVIEW_DESCRIPTION = 'A read-only conversation shared from Lody LAN.';
+/** The size of the packaged banner, which a preview may lay out before fetching it. */
+const BANNER_WIDTH = 1200;
+const BANNER_HEIGHT = 630;
 
 const HTML_ESCAPES: Record<string, string> = {
   '&': '&amp;',
@@ -313,8 +321,8 @@ function readerPage(page: {
   shareId: string;
   icon: string;
   preview: string;
-  /** Whether the picture is one a member chose, which previews show large. */
-  largePreview: boolean;
+  /** Whether the picture is Lody's banner, whose size is known; a member's is not. */
+  bannerPreview: boolean;
 }): string {
   const title = `${page.title || 'Shared conversation'} · Lody LAN`;
   const meta = (key: 'name' | 'property', name: string, content: string) =>
@@ -335,9 +343,15 @@ function readerPage(page: {
       ? [
           meta('property', 'og:url', `${page.baseUrl}/s/${page.shareId}`),
           meta('property', 'og:image', `${page.baseUrl}${page.preview}`),
+          ...(page.bannerPreview
+            ? [
+                meta('property', 'og:image:width', String(BANNER_WIDTH)),
+                meta('property', 'og:image:height', String(BANNER_HEIGHT)),
+              ]
+            : []),
         ]
       : []),
-    meta('name', 'twitter:card', page.largePreview ? 'summary_large_image' : 'summary'),
+    meta('name', 'twitter:card', 'summary_large_image'),
     `<link rel="stylesheet" href="${READER_STYLE_PATH}">`,
     '</head>',
     '<body>',
@@ -782,20 +796,16 @@ export function createLanHubShares(options: {
     };
     const imageKind = IMAGE_PATHS[route];
     if (route === LODY_ICON_PATH || imageKind) {
-      // A preview a member did not set shows their icon, else Lody's.
-      const stored =
-        imageKind === 'preview'
-          ? (images.preview ?? images.icon)
-          : imageKind
-            ? images.icon
-            : undefined;
+      // A picture a member did not set is Lody's: the banner for a preview.
+      const stored = imageKind ? images[imageKind] : undefined;
+      const packaged = imageKind === 'preview' ? readerAssets()?.banner : readerAssets()?.icon;
       let bytes: Buffer | undefined;
       try {
         bytes = stored ? fs.readFileSync(objectPath(directory, stored.sha256)) : undefined;
       } catch {
         bytes = undefined;
       }
-      bytes ??= readerAssets()?.icon;
+      bytes ??= packaged;
       if (!bytes) {
         notFound(response);
         return;
@@ -803,7 +813,7 @@ export function createLanHubShares(options: {
       send(
         200,
         {
-          'Content-Type': stored && bytes !== readerAssets()?.icon ? stored.mediaType : 'image/png',
+          'Content-Type': stored && bytes !== packaged ? stored.mediaType : 'image/png',
           'Content-Security-Policy': OBJECT_POLICY,
         },
         bytes
@@ -835,9 +845,16 @@ export function createLanHubShares(options: {
       }
       const share = index.shares[pageId];
       // A query keeps a picture a preview cached from standing for a new one.
+      // Lody's banner is named by its bytes, so a new one is not read from a cache either.
       const version = (kind: LanShareImageKind) => {
-        const stored = kind === 'preview' ? (images.preview ?? images.icon) : images.icon;
-        return `/_lody/${kind}?v=${stored ? stored.sha256.slice(0, 12) : 'lody'}`;
+        const stored = images[kind];
+        const banner = kind === 'preview' ? readerAssets()?.banner : undefined;
+        const tag = stored
+          ? stored.sha256.slice(0, 12)
+          : banner
+            ? `lody-${crypto.createHash('sha256').update(banner).digest('hex').slice(0, 12)}`
+            : 'lody';
+        return `/_lody/${kind}?v=${tag}`;
       };
       send(
         200,
@@ -848,7 +865,7 @@ export function createLanHubShares(options: {
           shareId: pageId,
           icon: version('icon'),
           preview: version('preview'),
-          largePreview: images.preview !== undefined,
+          bannerPreview: images.preview === undefined,
         })
       );
       return;

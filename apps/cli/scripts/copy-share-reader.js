@@ -10,7 +10,12 @@ const readerDirectory = path.resolve(cliDirectory, '../../packages/lan-share-rea
 
 /** Copy the page a LAN hub serves to readers of a shared conversation beside the bundle. */
 export async function copyShareReader(outputDirectory) {
-  for (const name of ['lan-share-reader.js', 'lan-share-reader.css', 'lan-share-reader-icon.png']) {
+  for (const name of [
+    'lan-share-reader.js',
+    'lan-share-reader.css',
+    'lan-share-reader-icon.png',
+    'lan-share-reader-banner.png',
+  ]) {
     await copyFile(path.join(readerDirectory, name), path.join(outputDirectory, name));
   }
 }
