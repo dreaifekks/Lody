@@ -33,7 +33,10 @@ import {
   selectAgentRoleMentionCandidates,
   type AgentRoleMentionItem,
 } from '@/components/mentions/mention-agent-role-source';
-import { AGENT_ROLE_UNAVAILABLE_REASON_KEYS } from '@/lib/composer-agent-roles';
+import {
+  AGENT_ROLE_UNAVAILABLE_REASON_KEYS,
+  doesAgentRoleTitleNameAgent,
+} from '@/lib/composer-agent-roles';
 import type { AgentRoleDetailSubject } from '@/components/sessions/agent-role-detail-pane';
 import { parseMentionNamespaceSearch } from '@/ui/mention/mention-trigger';
 import type { MentionKind } from '@/ui/mention/index';
@@ -584,8 +587,9 @@ export function toAgentRoleCandidate(
     icon: 'agent_role',
     iconEmoji: emoji,
     title: item.title,
-    // Who does the work; every listed instance runs on this composer's machine.
-    hint: item.agentConfig?.name,
+    // Who does the work, unless the title already says it; the title also names
+    // the machine of an entry elsewhere.
+    hint: doesAgentRoleTitleNameAgent(item) ? undefined : item.agentConfig?.name,
     disabled: item.availability.kind !== 'available',
     subtitle: availabilityText,
     detail: {

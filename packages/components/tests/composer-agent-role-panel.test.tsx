@@ -10,6 +10,7 @@ import {
   type AgentRole,
   type CatalogAgentRole,
   type AgentRoleId,
+  type AgentRoleInstanceId,
   type MachineId,
 } from '@lody/shared';
 
@@ -101,6 +102,25 @@ describe('ComposerAgentRolePanel', () => {
     });
     return document.body;
   };
+
+  it('leaves the agent off a compact row whose title already names it', async () => {
+    const pairRole = singleMachineRole({
+      ...reviewerRole,
+      instances: [
+        { ...reviewerRole.instances[0]! },
+        { ...reviewerRole.instances[0]!, id: 'strict' as AgentRoleInstanceId, alias: 'Strict' },
+      ],
+    });
+    const rows = composerItemsOf(pairRole);
+    const view = await render({ items: rows, compact: true });
+    const rowText = [...view.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')].map(
+      (row) => row.textContent ?? ''
+    );
+    // Titled by its agent: the second line is the model alone.
+    expect(rowText.find((text) => text.includes('Code Reviewer · Codex'))).not.toContain('Codex ·');
+    // Titled by its alias: the second line still says which agent.
+    expect(rowText.find((text) => text.includes('Code Reviewer · Strict'))).toContain('Codex ·');
+  });
 
   it('states the whole binding a Role would run, not just its name', async () => {
     const view = await render();

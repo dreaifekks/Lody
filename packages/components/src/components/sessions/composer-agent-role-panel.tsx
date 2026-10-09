@@ -15,6 +15,7 @@ import { AgentRoleDetailPane } from '@/components/sessions/agent-role-detail-pan
 import { useAcpSelectorOptions } from '@/hooks/use-acp-selector-options';
 import {
   AGENT_ROLE_UNAVAILABLE_REASON_KEYS,
+  doesAgentRoleTitleNameAgent,
   findComposerAgentRoleItem,
   type ComposerAgentRoleItem,
 } from '@/lib/composer-agent-roles';
@@ -293,7 +294,10 @@ function RoleBindingSubtitle({
   const modelLabel = modelId
     ? (selectorOptions.modelOptions.find((option) => option.value === modelId)?.label ?? modelId)
     : null;
-  const agentName = agentConfig?.name ?? t('settings.agentRoles.unknownAgentConfig');
+  // The title already names the agent of an unaliased group.
+  const agentName = doesAgentRoleTitleNameAgent(item)
+    ? null
+    : (agentConfig?.name ?? t('settings.agentRoles.unknownAgentConfig'));
   const parts = [agentName, modelLabel].filter((part): part is string => Boolean(part));
   if (parts.length === 0) return null;
   return <span {...stylex.props(styles.subtitle)}>{parts.join(' · ')}</span>;
