@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { AGENT_ROLE_VERSION, type AgentRole } from '../src/agent-role';
+import { AGENT_ROLE_VERSION, withAgentRolePlacements, type AgentRole } from '../src/agent-role';
 import type { AgentConfigId, AgentRoleId, MachineId, McpServerId, WorkspaceId } from '../src/ids';
 import {
   applyWorkspaceFlockRowEvents,
@@ -24,20 +24,28 @@ import {
 import type { WorkspaceMcpServerMeta } from '../src/workspace-mcp';
 
 const id = (value: string): McpServerId => value as McpServerId;
-const agentRole = (roleId: string, overrides: Partial<AgentRole> = {}): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  id: roleId as AgentRoleId,
-  ownerUserId: 'user-1',
-  visibility: 'private',
-  name: roleId,
-  machineId: 'machine-1' as MachineId,
-  agentConfigId: 'config-1' as AgentConfigId,
-  runConfig: {},
-  revision: 1,
-  createdAt: 1,
-  updatedAt: 1,
-  ...overrides,
-});
+const agentRole = (roleId: string, overrides: Partial<AgentRole> = {}): AgentRole =>
+  withAgentRolePlacements(
+    {
+      v: AGENT_ROLE_VERSION,
+      id: roleId as AgentRoleId,
+      ownerUserId: 'user-1',
+      visibility: 'private',
+      name: roleId,
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      ...overrides,
+    },
+    overrides.placements ?? [
+      {
+        machineId: 'machine-1' as MachineId,
+        agentConfigId: 'config-1' as AgentConfigId,
+        enabled: true,
+        runConfig: {},
+      },
+    ]
+  );
 
 const entry = (serverId: string, name = serverId): WorkspaceMcpServerMeta => ({
   id: id(serverId),
@@ -228,6 +236,35 @@ describe('workspace Flock helpers', () => {
     expect(deleteWorkspaceAgentRoleFromFlock(flock, role.id)).toBe(false);
   });
 
+  it('writes the first enabled placement into the legacy fields older clients read', () => {
+    const flock = new FakeWorkspaceFlock();
+    const role = agentRole('role-1', {
+      placements: [
+        {
+          machineId: 'machine-1' as MachineId,
+          agentConfigId: 'config-1' as AgentConfigId,
+          enabled: false,
+          runConfig: {},
+        },
+        {
+          machineId: 'machine-2' as MachineId,
+          agentConfigId: 'config-2' as AgentConfigId,
+          enabled: true,
+          runConfig: { modelId: 'opus', memory: { providerId: 'nowledge-mem', memoryId: 'lody' } },
+        },
+      ],
+    });
+    // A row whose mirror went stale is rewritten from its placements on write.
+    writeWorkspaceAgentRoleToFlock(flock, { ...role, machineId: 'machine-1' as MachineId });
+    expect(
+      flock.rows.get(JSON.stringify(workspaceFlockKeys.agentRole(role.id)))?.value
+    ).toMatchObject({
+      machineId: 'machine-2',
+      agentConfigId: 'config-2',
+      runConfig: { modelId: 'opus', memory: { providerId: 'nowledge-mem', memoryId: 'lody' } },
+    });
+  });
+
   it('drops a role row whose stored value no longer validates', () => {
     const flock = new FakeWorkspaceFlock();
     const role = agentRole('role-1');
@@ -237,7 +274,8 @@ describe('workspace Flock helpers', () => {
 
   it('normalizes a secret-shaped option out of a stored role row', () => {
     const flock = new FakeWorkspaceFlock();
-    const role = agentRole('role-1');
+    // Written by a client that predates placements.
+    const { placements: _placements, ...role } = agentRole('role-1');
     flock.set(workspaceFlockKeys.agentRole(role.id), {
       ...role,
       runConfig: { modelId: 'gpt-5.6', configOptionValues: { api_key: 'sk-live', fast: true } },
