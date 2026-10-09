@@ -158,6 +158,7 @@ export function createLanNotificationsPort(options: {
         workspaceId: input.workspaceId,
         workspaceSlug: input.workspaceSlug,
         userId: input.userId,
+        projectId: input.projectId,
       });
     },
     notifySessionFailed: async (input) => {
@@ -177,6 +178,7 @@ export function createLanNotificationsPort(options: {
         workspaceId: input.workspaceId,
         workspaceSlug: input.workspaceSlug,
         userId: input.userId,
+        projectId: input.projectId,
       });
     },
     // A LAN has no inbox to record into; the alert is the whole effect.
@@ -190,6 +192,7 @@ export function createLanNotificationsPort(options: {
         workspaceId: input.workspaceId,
         workspaceSlug: input.workspaceSlug ?? input.workspaceId,
         userId: input.userId,
+        projectId: input.projectId,
         machineId: options.machineId,
         machineName: (await options.machineName?.()) ?? null,
       };

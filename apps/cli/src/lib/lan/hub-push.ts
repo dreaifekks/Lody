@@ -128,6 +128,19 @@ function routeFor(workspaceSlug: string, sessionId: string): string {
   return `/${encodeURIComponent(workspaceSlug)}/sessions/${encodeURIComponent(sessionId)}`;
 }
 
+/**
+ * The thread a phone groups an alert under: its project, one for every chat,
+ * and its session when the member is too old to name the project.
+ */
+function threadIdFor(
+  projectId: string | null | undefined,
+  sessionId: string | null | undefined
+): string | undefined {
+  if (projectId) return `project:${projectId}`;
+  if (projectId === null) return 'chat';
+  return sessionId ?? undefined;
+}
+
 class BadRequest extends Error {}
 
 async function readJson(request: http.IncomingMessage): Promise<unknown> {
@@ -426,11 +439,13 @@ export function createLanHubPush(options: {
       workspaceSlug: string;
       machineId: string;
       machineName?: string | null;
+      projectId?: string | null;
     },
     compose: (copy: Copy) => { title: string; body: string },
     target: { sessionId?: string | null; collapseId?: string; payload?: Record<string, unknown> }
   ): Promise<string[]> => {
     const subtitle = senderName(event);
+    const threadId = threadIdFor(event.projectId, target.sessionId);
     const delivered: string[] = [];
     await Promise.all(
       recipients(event.userId)
@@ -452,7 +467,7 @@ export function createLanHubPush(options: {
                   body: truncate(body, 240),
                 },
                 sound: 'default',
-                ...(target.sessionId ? { 'thread-id': target.sessionId } : {}),
+                ...(threadId ? { 'thread-id': threadId } : {}),
               },
               recipientUserId: event.userId,
               ...(target.sessionId
@@ -495,7 +510,7 @@ export function createLanHubPush(options: {
                 body: copy.permissionResolved,
               },
               'interruption-level': 'passive',
-              'thread-id': event.sessionId,
+              'thread-id': threadIdFor(event.projectId, event.sessionId),
             },
             lodyKind: 'permission-resolved',
             sessionId: event.sessionId,

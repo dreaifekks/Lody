@@ -1,9 +1,11 @@
 // What members of a LAN tell its hub so the hub can push to phones, and what
 // a phone registers. Both sides run from this package, so the shapes live here.
-import type {
-  LiveActivityConversationItem,
-  LiveActivityPermissionAlert,
-  LiveActivityStatusCounts,
+import {
+  resolveProjectGitHubRepo,
+  type LiveActivityConversationItem,
+  type LiveActivityPermissionAlert,
+  type LiveActivityStatusCounts,
+  type ProjectRef,
 } from '@lody/shared';
 
 export const LAN_PUSH_DEVICES_PATH = '/push/devices';
@@ -28,21 +30,46 @@ type LanPushEventBase = {
   userId: string;
 };
 
+type LanAlertEventBase = LanPushEventBase & {
+  /**
+   * The project of the alert's session, which groups alerts on a phone;
+   * `null` for a chat. Members older than this field leave it out.
+   */
+  projectId?: string | null;
+};
+
+/**
+ * A session's project as alerts name it: a local project of the machine that
+ * holds it, or a GitHub repository. A worktree session keeps its project's
+ * `localProjectId`, so it groups with the project.
+ */
+export function lanAlertProjectId(session: {
+  machineId: string;
+  project?: ProjectRef;
+  repoFullName?: string;
+}): string | null {
+  if (session.project?.kind === 'local') {
+    return `local:${session.machineId}:${session.project.localProjectId}`;
+  }
+  const repo = (resolveProjectGitHubRepo(session.project) ?? session.repoFullName)?.trim();
+  return repo ? `github:${repo.toLowerCase()}` : null;
+}
+
 export type LanPushEvent =
-  | (LanPushEventBase & {
+  | (LanAlertEventBase & {
       type: 'session-completed';
       sessionId: string;
       occurrenceId: string;
       sessionTitle?: string | null;
     })
-  | (LanPushEventBase & {
+  | (LanAlertEventBase & {
       type: 'session-failed';
       sessionId: string;
       sessionTitle?: string | null;
       reason: string;
       message?: string | null;
     })
-  | (LanPushEventBase & {
+  | (LanAlertEventBase & {
       /** A message the agent sent the user through `lody_notify_user`. */
       type: 'agent-message';
       sessionId: string;
@@ -51,7 +78,7 @@ export type LanPushEvent =
       title?: string | null;
       body: string;
     })
-  | (LanPushEventBase & {
+  | (LanAlertEventBase & {
       type: 'permission-requested';
       sessionId: string;
       sessionTitle?: string | null;
@@ -59,7 +86,7 @@ export type LanPushEvent =
       toolTitle?: string | null;
       requestKind?: 'permission' | 'ask_user_question';
     })
-  | (LanPushEventBase & {
+  | (LanAlertEventBase & {
       /**
        * The request was answered, here or on another device. The phone's alert
        * for it, if one went out, is replaced by a quiet one saying so.
@@ -69,7 +96,7 @@ export type LanPushEvent =
       requestId: string;
       sessionTitle?: string | null;
     })
-  | (LanPushEventBase & {
+  | (LanAlertEventBase & {
       type: 'schedule';
       phase: 'dispatched' | 'blocked' | 'skipped';
       scheduleId: string;

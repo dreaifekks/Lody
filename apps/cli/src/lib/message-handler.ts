@@ -229,6 +229,7 @@ import {
 import { resolveRegisteredMachineName } from './machine-name';
 import { formatErrorMessage } from '@/utils/format-error';
 import { readGhAuthToken } from '@/lib/lan/lan-agent-github';
+import { lanAlertProjectId } from '@/lib/lan/lan-push-protocol';
 import { LiveActivityDetailTracker } from './live-activity-detail';
 import { startTraceSpan, traceAsync } from '@/utils/trace-span';
 import { getCliHttpFetch } from '@/utils/http-transport';
@@ -1796,6 +1797,7 @@ export class MessageHandler {
         userId: meta?.userId ?? this.userId,
         reason,
         message,
+        projectId: meta ? lanAlertProjectId(meta) : undefined,
       });
     });
   }
@@ -9082,6 +9084,7 @@ export class MessageHandler {
     const backend = await this.getSessionBackend(doc);
     let sessionTitle: string | undefined;
     let metaUserId: string | undefined;
+    let projectId: string | null | undefined;
     let historyUserId: string | undefined;
     let permissionRequestPersisted = false;
 
@@ -9114,6 +9117,7 @@ export class MessageHandler {
       const meta = await backend.getMetaState();
       sessionTitle = meta?.title;
       metaUserId = meta?.userId;
+      projectId = meta ? lanAlertProjectId(meta) : undefined;
 
       const history = await backend.readHistory();
       for (let i = history.length - 1; i >= 0; i -= 1) {
@@ -9201,6 +9205,7 @@ export class MessageHandler {
       toolTitle: displayTitle ?? undefined,
       toolKind: request.toolCall.kind ?? undefined,
       requestKind: requestKind === 'ask_user_question' ? requestKind : undefined,
+      projectId,
     };
     const permissionInboxRecordPromise = notificationService
       ? notificationService.recordPermissionRequested(notificationInput)
@@ -10587,6 +10592,7 @@ export class MessageHandler {
                 workspaceId: this.workspaceId as WorkspaceId,
                 workspaceSlug: this.workspaceSlug?.trim() || this.workspaceId,
                 userId: meta?.userId ?? this.userId,
+                projectId: meta ? lanAlertProjectId(meta) : undefined,
               })
             )
         : undefined,
@@ -10635,6 +10641,7 @@ export class MessageHandler {
           workspaceId: this.workspaceId,
           workspaceSlug,
           userId,
+          projectId: meta ? lanAlertProjectId(meta) : undefined,
         });
       if (notificationService.alertGraceMs) {
         // A device showing the conversation marks the reply read; then no

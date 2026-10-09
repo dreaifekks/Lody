@@ -27,6 +27,7 @@ import type { WorkspaceSummary } from '../workspace';
 import type { LoroDocumentManager } from '../loro/doc';
 import type { Logger } from '@/utils/logger';
 import { createSessionBackend } from '@/session/session-backend';
+import { lanAlertProjectId } from '../lan/lan-push-protocol';
 import { streamsRoomBinding } from '../loro/streams-room-binding';
 import {
   buildScheduleRunTarget,
@@ -279,6 +280,7 @@ export async function createScheduleWorkspace(args: {
             workspaceId,
             workspaceSlug: workspace.slug?.trim() || workspaceId,
             userId: auth.userId,
+            projectId: lanAlertProjectId(run.definition),
           })
           .catch(() => {});
       }

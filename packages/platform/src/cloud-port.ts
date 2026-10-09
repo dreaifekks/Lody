@@ -151,6 +151,11 @@ export interface CloudPermissionRequestNotificationInput {
   toolTitle?: string | null;
   toolKind?: string | null;
   requestKind?: PermissionRequestKind;
+  /**
+   * Groups a self-hosted LAN's alerts on a phone by project; `null` for a
+   * chat. Hosted delivery ignores it.
+   */
+  projectId?: string | null;
 }
 
 export interface CloudPermissionRequestResolutionInput {
@@ -162,6 +167,11 @@ export interface CloudPermissionRequestResolutionInput {
   /** Titles the notice that replaces the request's alert on a LAN. */
   sessionTitle?: string | null;
   workspaceSlug?: string;
+  /**
+   * Groups a self-hosted LAN's alerts on a phone by project; `null` for a
+   * chat. Hosted delivery ignores it.
+   */
+  projectId?: string | null;
 }
 
 export interface CloudLiveActivityDetailInput {
@@ -205,6 +215,8 @@ export interface CloudNotificationsPort {
     workspaceId: WorkspaceId;
     workspaceSlug: string;
     userId: string;
+    /** See `CloudPermissionRequestNotificationInput.projectId`. */
+    projectId?: string | null;
   }): Promise<void>;
   notifyPermissionRequested(input: CloudPermissionRequestNotificationInput): Promise<void>;
   /** A turn that ended in a recorded failure. Only self-hosted LANs implement it. */
@@ -216,6 +228,7 @@ export interface CloudNotificationsPort {
     userId: string;
     reason: string;
     message?: string | null;
+    projectId?: string | null;
   }): Promise<void>;
   /**
    * A message the agent sent the user (`lody_notify_user`). Only self-hosted
@@ -230,6 +243,7 @@ export interface CloudNotificationsPort {
     workspaceId: WorkspaceId;
     workspaceSlug: string;
     userId: string;
+    projectId?: string | null;
   }): Promise<void>;
   /** A scheduled task fired or could not. Only self-hosted LANs implement it. */
   notifyScheduleEvent?(input: {
@@ -242,6 +256,7 @@ export interface CloudNotificationsPort {
     workspaceId: WorkspaceId;
     workspaceSlug: string;
     userId: string;
+    projectId?: string | null;
   }): Promise<void>;
   /**
    * What a running turn is doing, for Live Activities: its current step, the

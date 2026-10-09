@@ -18,7 +18,7 @@ import { startLanHubServer, type LanHubServer, type LanHubUpstream } from './hub
 import { createLanNotificationsPort } from './lan-push-notifier';
 import { createLanCredentialSync } from './lan-credential-sync';
 import { createLanPushFallback } from './lan-push-fallback';
-import type { LanPushEvent } from './lan-push-protocol';
+import { lanAlertProjectId, type LanPushEvent } from './lan-push-protocol';
 import {
   LAN_HUB_CREDENTIALS_APNS_PATH,
   LAN_HUB_CREDENTIALS_GITHUB_PATH,
@@ -279,6 +279,88 @@ describe('LAN host push', () => {
     const collapseIds = sent.map((push) => push.collapseId!.slice(0, 64));
     expect(collapseIds).toHaveLength(2);
     expect(collapseIds[0]).not.toBe(collapseIds[1]);
+  });
+
+  it('groups alerts by project, every chat together, and by session for an older member', async () => {
+    const local = { kind: 'local', localProjectId: 'proj-1' } as never;
+    const projectId = lanAlertProjectId({ machineId: 'machine-1', project: local })!;
+    // A worktree session of the project groups with it.
+    expect(
+      lanAlertProjectId({
+        machineId: 'machine-1',
+        project: { kind: 'local', localProjectId: 'proj-1', useWorktree: true } as never,
+      })
+    ).toBe(projectId);
+    expect(
+      lanAlertProjectId({
+        machineId: 'machine-1',
+        project: { kind: 'github', repoFullName: 'Octo/Repo', branch: 'main' } as never,
+      })
+    ).toBe('github:octo/repo');
+    expect(lanAlertProjectId({ machineId: 'machine-1' })).toBeNull();
+
+    await register({ locale: 'en-US' });
+    const notifications = port();
+    const base = { workspaceId: WORKSPACE as never, workspaceSlug: 'lan', userId: USER };
+    const completed = (sessionId: string, extra: { projectId?: string | null }) =>
+      notifications.notifySessionCompleted({
+        ...base,
+        sessionId: sessionId as never,
+        occurrenceId: 'turn-1',
+        ...extra,
+      });
+    await completed('session-1', { projectId });
+    await notifications.notifySessionFailed({
+      ...base,
+      sessionId: 'session-2' as never,
+      reason: 'agent_disconnected',
+      projectId,
+    });
+    await notifications.notifyScheduleEvent({
+      ...base,
+      phase: 'dispatched',
+      scheduleId: 'daily',
+      runKey: 'run-1',
+      title: 'Daily report',
+      projectId,
+    });
+    await notifications.notifyAgentMessage({
+      ...base,
+      sessionId: 'session-4' as never,
+      noticeId: 'notice-1',
+      body: 'CI is green',
+      projectId,
+    });
+    await completed('chat-1', { projectId: null });
+    await completed('chat-2', { projectId: null });
+    await completed('session-3', {});
+
+    const threads = sent.map(
+      (push) => (push.payload as { aps: Record<string, unknown> }).aps['thread-id']
+    );
+    expect(threads).toEqual([
+      'project:local:machine-1:proj-1',
+      'project:local:machine-1:proj-1',
+      'project:local:machine-1:proj-1',
+      'project:local:machine-1:proj-1',
+      'chat',
+      'chat',
+      'session-3',
+    ]);
+    // Opening an alert still goes to its own session.
+    expect(sent[0]!.payload).toMatchObject({
+      sessionId: 'session-1',
+      route: '/lan/sessions/session-1',
+    });
+    expect(sent.map((push) => push.collapseId)).toEqual([
+      'done-session-1',
+      'done-session-2',
+      'schedule-dispatched-run-1',
+      agentNoticeCollapseId('notice-1'),
+      'done-chat-1',
+      'done-chat-2',
+      'done-session-3',
+    ]);
   });
 
   it('copies its credentials to members, which alert phones themselves while it is away', async () => {
@@ -810,6 +892,7 @@ describe('LAN host push', () => {
       requestId: 'req-1',
       toolCallId: 'tool-1',
       toolTitle: 'git push',
+      projectId: 'github:octo/repo',
     };
 
     // Answered before its alert went out: nothing to withdraw, and an alert
@@ -828,6 +911,7 @@ describe('LAN host push', () => {
         aps: {
           alert: { title: 'Deploy', body: 'Needs your approval: git push' },
           sound: 'default',
+          'thread-id': 'project:github:octo/repo',
         },
         lodyKind: 'permission-requested',
         requestId: 'req-1',
@@ -848,7 +932,8 @@ describe('LAN host push', () => {
         aps: {
           alert: { title: 'Deploy', body: 'Handled on another device' },
           'interruption-level': 'passive',
-          'thread-id': 'session-1',
+          // The replacement stays in the alert's group.
+          'thread-id': 'project:github:octo/repo',
         },
         lodyKind: 'permission-resolved',
         sessionId: 'session-1',
@@ -907,9 +992,11 @@ describe('LAN host push', () => {
         sessionId: 'session-1' as never,
         requestId: 'req-1',
         toolCallId: 'tool-1',
+        projectId: null,
       };
       await notifications.notifyPermissionRequested(request);
       expect(direct).toHaveLength(1);
+      expect(direct[0]).toMatchObject({ payload: { aps: { 'thread-id': 'chat' } } });
 
       // The hub is back but never heard of the alert; the member withdraws its own.
       away = false;
@@ -923,6 +1010,7 @@ describe('LAN host push', () => {
           aps: {
             alert: { title: '新任务', body: '已在其他设备处理' },
             'interruption-level': 'passive',
+            'thread-id': 'chat',
           },
           lodyKind: 'permission-resolved',
           requestId: 'req-1',
