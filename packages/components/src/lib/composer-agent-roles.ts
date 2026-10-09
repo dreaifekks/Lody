@@ -107,6 +107,31 @@ export const findComposerAgentRoleItem = (
 };
 
 /**
+ * The entry a stored record names. A record with an instance names exactly
+ * that one: once it is deleted the record resolves to nothing, never to a
+ * stand-in that would bring another instance's memory along. Only a record
+ * made before instances, which names just its Role, means what a bare pick
+ * of that Role runs.
+ */
+export const findRecordedComposerAgentRoleItem = (
+  items: readonly ComposerAgentRoleItem[],
+  roleId: string,
+  instanceId: AgentRoleInstanceId | null | undefined
+): ComposerAgentRoleItem | undefined =>
+  instanceId
+    ? findComposerAgentRoleItem(items, instanceId)
+    : findDefaultComposerAgentRoleItem(items, roleId);
+
+/**
+ * Whether an entry's title already names its agent: an unaliased group of a
+ * Role with several groups is titled by its agent family, so a second mention
+ * of the agent beside it says one thing twice.
+ */
+export const doesAgentRoleTitleNameAgent = (
+  item: Pick<ComposerAgentRoleItem, 'instance' | 'hasSiblingGroups'>
+): boolean => item.hasSiblingGroups && !item.instance.alias;
+
+/**
  * What a Role picked without an instance runs: its groups in order, and in
  * each the composer's machine first, the first entry that can run — the same
  * rule a bare Role follows over MCP. Falls back to the Role's first entry so a

@@ -234,6 +234,52 @@ describe('useSessionAgentRole', () => {
     expect(control?.selectedInstanceId).toBeNull();
   });
 
+  it('drops a recorded instance once deleted or moved, never handing the Role to another', async () => {
+    const memory = (memoryId: string) => ({ providerId: 'nowledge-mem', memoryId });
+    const withInstances = (...instances: AgentRole['instances']) =>
+      singleMachineRole({ ...role('pair', 'model-1'), instances });
+    const first = {
+      id: 'pair:first' as AgentRoleInstanceId,
+      machineId: 'machine-1' as MachineId,
+      agentConfigId: 'agent-1' as AgentConfigId,
+      runConfig: { modelId: 'model-1', memory: memory('first') },
+    };
+    const second = {
+      ...first,
+      id: 'pair:second' as AgentRoleInstanceId,
+      alias: 'Second',
+      runConfig: { modelId: 'model-1', memory: memory('second') },
+    };
+    const recorded = {
+      durableRoleId: 'pair' as AgentRoleId,
+      durableRoleRevision: 1,
+      durableInstanceId: second.id,
+      durableSourceTurnKey: 'turn:turn-1',
+    };
+    catalog.roles = [withInstances(first, second)];
+    await render(recorded);
+    expect(control?.selectedInstanceId).toBe('pair:second');
+
+    // Deleted: same agent, model and mode remain in `first`, but it is not
+    // what was picked, and its memory must not ride along.
+    catalog.roles = [withInstances(first)];
+    await render(recorded);
+    expect(control?.selectedInstanceId).toBeNull();
+    expect(control?.turnSelection).toBeNull();
+
+    // Moved to another machine: listed there, disabled, and no longer picked.
+    catalog.roles = [
+      withInstances(first, {
+        ...second,
+        machineId: 'machine-2' as MachineId,
+        runConfig: { modelId: 'model-1', memory: memory('elsewhere') },
+      }),
+    ];
+    await render(recorded);
+    expect(control?.selectedInstanceId).toBeNull();
+    expect(control?.turnSelection).toBeNull();
+  });
+
   it('restores the instance a Turn recorded among two on this machine and config', async () => {
     const both = singleMachineRole({
       ...role('pair', 'model-1'),

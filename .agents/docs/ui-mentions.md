@@ -180,7 +180,8 @@ groups, `@<Role>:<group>`. The composer's machine is preferred, never required: 
 mention starts a new Session, so an entry elsewhere expands too, and a token or
 a bare `@<Role>` resolves the way a bare Role does over MCP — first group, this
 machine first. A range names an instance; when it cannot run, another of its
-group stands in. The menu keeps entries that are loading or unavailable, with
+group stands in. A token two entries produce stays text even while one cannot
+run, and the agent hint is left off an entry already titled by its agent. The menu keeps entries that are loading or unavailable, with
 an explanation below the name. They follow available matches and cannot be
 selected. Hydration and before-send expansion independently reject those rows,
 so showing a stale Role never creates a new dispatch instruction.

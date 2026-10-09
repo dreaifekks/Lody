@@ -309,6 +309,15 @@ describe('agent role mention tokens', () => {
     expect(buildAgentRoleMentionSlugMap(list).has('uiStyle:Claude')).toBe(false);
     expect(hydrateAgentRoleMentionsFromText('@uiStyle:Claude', list).mentions).toEqual([]);
     expect(buildAgentRoleMentionSlugMap(list).get('uiStyle:Gemini')).toBe('ui-gemini');
+    // Still a clash while the lookalike cannot run: it never falls to the other.
+    const lookalikeOffline = itemsWith([uiStyle, lookalike], (entry) =>
+      entry.id === lookalike.instances[0]!.id
+        ? { kind: 'unavailable', reason: 'machine_offline' }
+        : { kind: 'available' }
+    );
+    expect(hydrateAgentRoleMentionsFromText('@uiStyle:Claude', lookalikeOffline).mentions).toEqual(
+      []
+    );
   });
 });
 
@@ -419,6 +428,32 @@ describe('agent role menu rows', () => {
       expect(hydrateAgentRoleMentionsFromText('@Code-Reviewer', list).mentions).toEqual([]);
     }
   );
+
+  it('names the agent beside the title only where the title does not', () => {
+    const hints = (entry: CatalogAgentRole) =>
+      buildAgentRoleCandidates(items(entry), '').map((candidate) => [
+        candidate.title,
+        candidate.hint,
+      ]);
+    // One group: the title is the Role alone, so the agent is said beside it.
+    expect(hints(role())).toEqual([['Code Reviewer', 'Codex']]);
+    // Unaliased groups are titled by their agent; aliased ones are not.
+    expect(
+      hints(
+        role({
+          id: 'pair' as AgentRoleId,
+          name: 'Pair',
+          instances: [
+            { ...instance('p-1', '', 'config-1'), alias: undefined },
+            instance('p-2', 'Strict', 'config-strict'),
+          ],
+        })
+      )
+    ).toEqual([
+      ['Pair · Codex', undefined],
+      ['Pair · Strict', 'Agent strict'],
+    ]);
+  });
 
   it('falls back to the shared default mark', () => {
     const [candidate] = buildAgentRoleCandidates(items(role({ emoji: undefined })), '');

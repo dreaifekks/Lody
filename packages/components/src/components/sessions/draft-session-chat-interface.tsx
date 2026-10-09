@@ -69,7 +69,7 @@ import {
   buildAgentRoleTurnSelection,
   buildComposerAgentRoleItems,
   findComposerAgentRoleItem,
-  findDefaultComposerAgentRoleItem,
+  findRecordedComposerAgentRoleItem,
   isComposerAgentRoleApplied,
   pinComposerAgentRoleItemsToMachine,
   resolvePendingAgentRoleSelection,
@@ -192,9 +192,11 @@ export const DraftSessionChatInterface = memo(
          exact Agent Config the instance names. */
       const agentRolePreference = useMemo(() => {
         if (!draft.agentRoleId || !draft.agentConfigId) return null;
-        const item =
-          findComposerAgentRoleItem(composerAgentRoleItems, draft.agentRoleInstanceId) ??
-          findDefaultComposerAgentRoleItem(composerAgentRoleItems, draft.agentRoleId);
+        const item = findRecordedComposerAgentRoleItem(
+          composerAgentRoleItems,
+          draft.agentRoleId,
+          draft.agentRoleInstanceId
+        );
         if (!item || item.availability.kind !== 'available') return null;
         return item.instance.agentConfigId === draft.agentConfigId ? item : null;
       }, [

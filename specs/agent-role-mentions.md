@@ -19,7 +19,7 @@ A Role with one group is written `@<Role>`; one with several is written
 `@<Role>:<group>` per group (`@uiStyle:Claude`) and shown as `uiStyle · Claude`.
 A bare `@<Role>` runs the Role's first group that can run, the composer's machine
 first inside it — the rule a bare Role follows over MCP. A token two entries would
-both produce stays plain text. The committed range carries the instance id, so
+both produce stays plain text, even while one of them cannot run. The committed range carries the instance id, so
 renaming a Role or a group does not retarget a mention; when that instance cannot
 run, another of its group stands in. Agents dispatching Roles reach the machines
 the executing machine's owner may use, never more than the human driving the

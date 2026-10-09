@@ -241,20 +241,19 @@ export const hydrateAgentRoleMentionsFromText = (
  * instance that can (this machine first); a bare Role name names what a bare
  * pick of the Role runs. A token two entries would both produce — a Role named
  * `a:b` beside Role `a`'s group `b` — is left out, so it stays plain text
- * rather than picking one of them.
+ * rather than picking one of them; that holds while one of them cannot run.
  */
 export const buildAgentRoleMentionSlugMap = (
   items: readonly AgentRoleMentionItem[]
 ): Map<string, string> => {
-  const claims = new Map<string, Set<string>>();
-  const claim = (slug: string, instanceId: string) =>
-    claims.set(slug, (claims.get(slug) ?? new Set()).add(instanceId));
-  for (const item of items) {
-    const runs = item.group.find((entry) => entry.availability.kind === 'available');
-    if (runs) claim(item.slug, runs.instance.id);
-  }
+  const claims = new Map<string, AgentRoleMentionItem[]>();
+  for (const item of items) claims.set(item.slug, [...(claims.get(item.slug) ?? []), item]);
   const map = new Map<string, string>();
-  for (const [slug, ids] of claims) if (ids.size === 1) map.set(slug, [...ids][0]!);
+  for (const [slug, owners] of claims) {
+    if (owners.length !== 1) continue;
+    const runs = owners[0]!.group.find((entry) => entry.availability.kind === 'available');
+    if (runs) map.set(slug, runs.instance.id);
+  }
   for (const item of items) {
     const roleSlug = getAgentRoleMentionSlug(item.role);
     if (claims.has(roleSlug) || map.has(roleSlug)) continue;

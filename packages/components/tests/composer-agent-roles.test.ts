@@ -18,6 +18,7 @@ import {
   doesAgentRolePinPermissionMode,
   findComposerAgentRoleItem,
   findDefaultComposerAgentRoleItem,
+  findRecordedComposerAgentRoleItem,
   planNewChatAgentRolePick,
   isComposerAgentRoleApplied,
   resolveTurnAgentRoleForRunConfig,
@@ -278,6 +279,21 @@ describe('picking a Role without an instance', () => {
       ),
       'ui'
     )?.instance.id;
+
+  it('reads a record with an instance as exactly that one, and one without as a bare pick', () => {
+    const items = build([uiStyle], 'devnuc', configs);
+    expect(
+      findRecordedComposerAgentRoleItem(items, 'ui', 'gemini-devnuc' as AgentRoleInstanceId)
+        ?.instance.id
+    ).toBe('gemini-devnuc');
+    // Deleted: nothing, not another instance of the Role.
+    expect(
+      findRecordedComposerAgentRoleItem(items, 'ui', 'deleted' as AgentRoleInstanceId)
+    ).toBeUndefined();
+    expect(findRecordedComposerAgentRoleItem(items, 'ui', undefined)?.instance.id).toBe(
+      'claude-devnuc'
+    );
+  });
 
   it("runs the first group, this machine's instance first", () => {
     expect(pick('devnuc')).toBe('claude-devnuc');

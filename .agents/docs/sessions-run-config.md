@@ -96,6 +96,11 @@ this page is the full text of the rules summarised there.
   record all name the instance id. A Role picked without an instance (a restored
   default, a just-created Role) runs its first group that can run, this machine
   first inside it — the MCP bare-Role rule (`findDefaultComposerAgentRoleItem`).
+  Only a record without an instance reads that way: a recorded instance that is
+  deleted, or that a fixed composer finds on another machine, ends the selection
+  instead of handing it, and its memory, to another (`findRecordedComposerAgentRoleItem`).
+  An entry titled by its agent (an unaliased group of a Role with several) does
+  not repeat the agent beside the title.
   The callers split by whether a Session exists yet, and that difference is
   load-bearing:
 

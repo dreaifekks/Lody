@@ -24,7 +24,7 @@ import { captureAgentRoleApplied } from '@/lib/agent-role-analytics';
 import {
   buildAgentRoleTurnSelection,
   findComposerAgentRoleItem,
-  findDefaultComposerAgentRoleItem,
+  findRecordedComposerAgentRoleItem,
   isAgentRoleRunConfigApplied,
   mapComposerAgentRoleEntries,
   selectSessionAgentRoles,
@@ -242,12 +242,14 @@ export function useSessionAgentRole({
     }),
     [configOptionValues, selectedModeId, selectedModelId]
   );
-  /* The picked instance; a record made before instances names only its Role,
-     which then means what a bare pick of that Role runs here. */
-  const pickedItem = pickedRoleId
-    ? (findComposerAgentRoleItem(items, pickedInstanceId) ??
-      findDefaultComposerAgentRoleItem(items, pickedRoleId))
+  /* The picked instance, while it still exists on this Session's machine: a
+     deleted or moved instance ends the selection rather than handing it to
+     another. A record made before instances names only its Role, which then
+     means what a bare pick of that Role runs here. */
+  const recordedItem = pickedRoleId
+    ? findRecordedComposerAgentRoleItem(items, pickedRoleId, pickedInstanceId)
     : undefined;
+  const pickedItem = recordedItem?.local ? recordedItem : undefined;
   const selectedInstanceId = useMemo(() => {
     if (!pickedItem || pickedItem.role.id !== pickedRoleId) return null;
     return !durableRoleReady ||
@@ -275,12 +277,15 @@ export function useSessionAgentRole({
               : typeof storedPickedRevision === 'number'
                 ? { agentRoleId: pickedRoleId, agentRoleRevision: storedPickedRevision }
                 : undefined
-            : roles.some((role) => role.id === pickedRoleId)
-              ? typeof storedPickedRevision === 'number'
-                ? { agentRoleId: pickedRoleId, agentRoleRevision: storedPickedRevision }
-                : undefined
-              : // The synchronized catalog authoritatively no longer contains it.
-                null;
+            : pickedInstanceId
+              ? // Its instance is gone from this Session's machine: no stand-in.
+                null
+              : roles.some((role) => role.id === pickedRoleId)
+                ? typeof storedPickedRevision === 'number'
+                  ? { agentRoleId: pickedRoleId, agentRoleRevision: storedPickedRevision }
+                  : undefined
+                : // The synchronized catalog authoritatively no longer contains it.
+                  null;
 
   const onSelect = useCallback(
     (instanceId: AgentRoleInstanceId | null) => {

@@ -146,7 +146,7 @@ import {
   doesAgentRolePinPermissionMode,
   findComposerAgentRoleItem,
   describeComposerAgentRoleInstance,
-  findDefaultComposerAgentRoleItem,
+  findRecordedComposerAgentRoleItem,
   planNewChatAgentRolePick,
   isComposerAgentRoleApplied,
   resolvePendingAgentRoleSelection,
@@ -3719,12 +3719,13 @@ function WorkspaceChatLanding({
       setAgentRoleRestored(true);
       return;
     }
-    // The stored instance, or — stored before instances — what a bare pick runs.
-    const item =
-      findComposerAgentRoleItem(
-        composerAgentRoleItems,
-        stored.agentRoleInstanceId as AgentRoleInstanceId | undefined
-      ) ?? findDefaultComposerAgentRoleItem(composerAgentRoleItems, stored.agentRoleId);
+    // The stored instance — gone means gone — or, stored before instances,
+    // what a bare pick runs.
+    const item = findRecordedComposerAgentRoleItem(
+      composerAgentRoleItems,
+      stored.agentRoleId,
+      stored.agentRoleInstanceId as AgentRoleInstanceId | undefined
+    );
     if (!item) {
       if (agentRolesSynced) setAgentRoleRestored(true);
       return;
@@ -3790,11 +3791,11 @@ function WorkspaceChatLanding({
       // values are only half of it — the instruction and the provenance ride
       // with the Role, and re-running "the same knobs" would drop both.
       if (record.agentRoleId) {
-        const item =
-          findComposerAgentRoleItem(
-            selectableAgentRoleItems,
-            record.agentRoleInstanceId as AgentRoleInstanceId | undefined
-          ) ?? findDefaultComposerAgentRoleItem(selectableAgentRoleItems, record.agentRoleId);
+        const item = findRecordedComposerAgentRoleItem(
+          selectableAgentRoleItems,
+          record.agentRoleId,
+          record.agentRoleInstanceId as AgentRoleInstanceId | undefined
+        );
         if (item) handleAgentRoleSelect(item.instance.id);
         return;
       }
