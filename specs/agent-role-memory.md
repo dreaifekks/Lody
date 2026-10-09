@@ -1,7 +1,7 @@
 # Agent Role memory providers
 
 Status: draft
-Translation: current
+Translation: pending
 
 [中文](agent-role-memory.zh.md)
 
@@ -30,12 +30,14 @@ entry, focus and every 30 seconds while visible, skipping pending requests.
 Memory settings and the Role Memory tab keep saved cards visible during probing
 without a loading indicator; completed failures still show inline status.
 
-The Role editor has Configuration, Memory and Team tabs sharing one draft and save
-action. The Memory tab lists saved associations on the Role's exact machine,
-using the same logo/name/description cards as Memory settings. Clicking a card
-selects it; unlinking remains available. There is no inline Memory section in
-the Configuration tab. Workspace sharing is shown only in the Team tab. Role run configuration and turn input still store only
-`{ providerId, memoryId }`; changing the Role's machine clears its reference.
+The Role editor shows name, description, instruction and sharing above Machines
+and Memory tabs that share one draft and save action. A Role runs on several
+machines, so each enabled machine keeps its own memory reference: the Memory tab
+lists every enabled machine with the saved associations of that machine, using the
+same logo/name/description cards as Memory settings. Clicking a card selects it;
+unlinking remains available. A reference the machine has not imported is shown as
+missing, with a way to Memory settings. Each machine's run configuration and turn
+input still store only `{ providerId, memoryId }`.
 Removing a catalog association does not rewrite existing Roles or accepted turns.
 Unlinking a Role affects future turns; accepted turns and Operations keep their
 frozen configuration. Neither memory contents nor credentials enter the catalog.

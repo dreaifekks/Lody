@@ -6,6 +6,7 @@ import { createLocalPlatformProvider, createStaticStore } from '@lody/platform';
 import { PlatformContext } from '@lody/platform/react';
 import {
   AGENT_ROLE_VERSION,
+  withAgentRolePlacements,
   getAgentConfigRoomId,
   type AgentConfigId,
   type AgentConfigMeta,
@@ -163,18 +164,28 @@ const selectors: AcpConfigOptionSelector[] = [
   },
 ];
 
-const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  ownerUserId: 'user-storybook',
-  visibility: 'private',
-  machineId,
-  agentConfigId: codexId,
-  runConfig: {},
-  revision: 1,
-  createdAt: 1,
-  updatedAt: 1,
-  ...overrides,
-});
+const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole => {
+  const role: Omit<AgentRole, 'placements'> = {
+    v: AGENT_ROLE_VERSION,
+    ownerUserId: 'user-storybook',
+    visibility: 'private',
+    machineId,
+    agentConfigId: codexId,
+    runConfig: {},
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  };
+  return withAgentRolePlacements(role, [
+    {
+      machineId: role.machineId,
+      agentConfigId: role.agentConfigId,
+      enabled: true,
+      runConfig: role.runConfig,
+    },
+  ]);
+};
 
 const roleItems: ComposerAgentRoleItem[] = [
   {

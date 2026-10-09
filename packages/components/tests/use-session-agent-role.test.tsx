@@ -38,24 +38,26 @@ import {
   sessionAgentRoleDurableSnapshotAtomFamily,
   sessionAgentRoleSelectionAtomFamily,
 } from '../src/atoms/session-agent-roles';
+import { singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const role = (id: string, modelId: string): AgentRole => ({
-  v: 1,
-  id: id as AgentRoleId,
-  revision: 1,
-  name: id,
-  visibility: 'private',
-  ownerUserId: 'user-1',
-  machineId: 'machine-1' as MachineId,
-  agentConfigId: 'agent-1' as AgentConfigId,
-  runConfig: { modelId },
-  createdAt: Date.UTC(2026, 7, 25),
-  updatedAt: Date.UTC(2026, 7, 25),
-});
+const role = (id: string, modelId: string): AgentRole =>
+  singleMachineRole({
+    v: 1,
+    id: id as AgentRoleId,
+    revision: 1,
+    name: id,
+    visibility: 'private',
+    ownerUserId: 'user-1',
+    machineId: 'machine-1' as MachineId,
+    agentConfigId: 'agent-1' as AgentConfigId,
+    runConfig: { modelId },
+    createdAt: Date.UTC(2026, 7, 25),
+    updatedAt: Date.UTC(2026, 7, 25),
+  });
 
 const agentConfig = {
   id: 'agent-1',

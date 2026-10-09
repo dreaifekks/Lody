@@ -14,6 +14,7 @@ import {
   writeWorkspaceAgentRole,
   type WorkspaceCatalogWriteDeps,
 } from '../src/lib/workspace-catalog-write';
+import { singleMachineRole } from './agent-role-fixture';
 
 const workspaceId = 'workspace-1' as WorkspaceCatalogWriteDeps['workspaceId'];
 const entry: WorkspaceMcpServerMeta = {
@@ -24,7 +25,7 @@ const entry: WorkspaceMcpServerMeta = {
   createdAt: 1,
   updatedAt: 1,
 };
-const role: AgentRole = {
+const role: AgentRole = singleMachineRole({
   v: AGENT_ROLE_VERSION,
   id: 'role-1' as AgentRoleId,
   ownerUserId: 'user-1',
@@ -36,7 +37,7 @@ const role: AgentRole = {
   revision: 1,
   createdAt: 1,
   updatedAt: 1,
-};
+});
 
 /**
  * The upload hangs until the test releases it. That is the whole property under

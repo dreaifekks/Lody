@@ -2,7 +2,11 @@ import { Command } from 'commander';
 import { z } from 'zod';
 import type { WorkspaceId } from '@lody/shared';
 import { createResourceDiscovery } from '@/lib/resource-discovery-runtime';
-import type { DiscoveryResource, DiscoveryRow } from '@/lib/resource-discovery';
+import type {
+  AgentRoleDiscoveryPlacement,
+  DiscoveryResource,
+  DiscoveryRow,
+} from '@/lib/resource-discovery';
 import type { DiscoveryQuery } from '@/lib/discovery-query';
 import {
   getAuthContextOrThrow,
@@ -51,6 +55,15 @@ const LEGACY_LIST_KEYS: Record<DiscoveryResource, string> = {
   mcp: 'servers',
 };
 
+/** A Role's enabled machines, in dispatch order. */
+const roleMachines = (row: DiscoveryRow): string | undefined =>
+  Array.isArray(row.placements)
+    ? (row.placements as AgentRoleDiscoveryPlacement[])
+        .filter((placement) => placement.enabled)
+        .map((placement) => placement.machineId)
+        .join(', ')
+    : undefined;
+
 function printDiscoveryPage(
   resource: DiscoveryResource,
   page: DiscoveryPageResult,
@@ -72,7 +85,7 @@ function printDiscoveryPage(
       items.map((row) => [
         row.id,
         row.name,
-        row.machineId ?? String(row.kind ?? row.transport ?? '-'),
+        row.machineId ?? roleMachines(row) ?? String(row.kind ?? row.transport ?? '-'),
         row.availability?.reason ?? row.availability?.state ?? '-',
       ])
     )

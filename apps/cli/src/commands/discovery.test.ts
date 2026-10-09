@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentRole, MachineId, MachineMeta } from '@lody/shared';
+import {
+  withAgentRolePlacements,
+  type AgentRole,
+  type MachineId,
+  type MachineMeta,
+} from '@lody/shared';
 import { ResourceDiscovery, type DiscoverySource } from '@/lib/resource-discovery';
 import { discoveryListCommand, discoveryGetCommand } from './discovery';
 
@@ -65,22 +70,27 @@ function fixture(): ResourceDiscovery {
     repositories: async () => [],
     mcpServers: async () => [],
     roles: async () =>
-      Array.from(
-        { length: 25 },
-        (_, n) =>
-          ({
+      Array.from({ length: 25 }, (_, n) =>
+        withAgentRolePlacements(
+          {
             v: 1,
             id: `role-${n}`,
             name: `Role ${n}`,
-            machineId: 'machine',
-            agentConfigId: 'missing',
             visibility: 'workspace',
             ownerUserId: 'user',
             revision: 1,
-            runConfig: {},
             createdAt: 1,
             updatedAt: 1,
-          }) as AgentRole
+          } as AgentRole,
+          [
+            {
+              machineId: 'machine' as MachineId,
+              agentConfigId: 'missing' as AgentRole['agentConfigId'],
+              enabled: true,
+              runConfig: {},
+            },
+          ]
+        )
       ),
   };
   return new ResourceDiscovery(source);

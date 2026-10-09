@@ -133,24 +133,13 @@ const ensureNotice = async (
 
 /** A Role write's identity: its revision and a digest of what it holds. */
 export const agentRoleWriteId = (role: AgentRole): string => {
-  const {
-    name,
-    description,
-    emoji,
-    visibility,
-    machineId,
-    agentConfigId,
-    runConfig,
-    promptPrefix,
-  } = role;
+  const { name, description, emoji, visibility, placements, promptPrefix } = role;
   const content = canonicalScheduleJson({
     name,
     description,
     emoji,
     visibility,
-    machineId,
-    agentConfigId,
-    runConfig,
+    placements,
     promptPrefix,
   });
   return `r${role.revision}-${createHash('sha256').update(content).digest('hex').slice(0, 16)}`;
@@ -244,9 +233,11 @@ export function createAgentConfigWrites(deps: {
         : undefined;
       const agents: ProposalTargetAgent[] = [];
       for (const agentConfigId of new Set(
-        [role?.agentConfigId, target?.agentConfigId, invoking.session.agentConfigId].filter(
-          (value): value is string => Boolean(value)
-        )
+        [
+          ...(role?.placements.map((placement) => placement.agentConfigId) ?? []),
+          target?.agentConfigId,
+          invoking.session.agentConfigId,
+        ].filter((value): value is string => Boolean(value))
       )) {
         const agent = await readAgent(discovery, agentConfigId);
         if (agent) agents.push(agent);
@@ -398,9 +389,7 @@ export function createAgentConfigWrites(deps: {
 const summarizeRole = (role: AgentRole) => ({
   id: role.id,
   name: role.name,
-  machineId: role.machineId,
-  agentConfigId: role.agentConfigId,
   visibility: role.visibility,
   revision: role.revision,
-  runConfig: role.runConfig,
+  placements: role.placements,
 });

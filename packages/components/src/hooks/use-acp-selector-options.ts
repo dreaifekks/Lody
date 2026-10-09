@@ -1,11 +1,23 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   buildAcpSelectorOptions,
   type AcpSelectorOptions,
   type AcpSelectorTarget,
 } from '@/components/shared/acp-selector-options';
 import { localizeBuiltinGrokSelectorOptions } from '@/lib/grok-acp-selector-i18n';
+
+/** `useAcpSelectorOptions` outside a hook, for a surface that resolves several targets. */
+export function resolveAcpSelectorOptions(
+  target: AcpSelectorTarget | undefined,
+  t: TFunction
+): AcpSelectorOptions {
+  const options = buildAcpSelectorOptions(target);
+  return target?.cliType === 'builtin' && target.agentType?.toLowerCase() === 'grok'
+    ? localizeBuiltinGrokSelectorOptions(options, t)
+    : options;
+}
 
 /**
  * Hook that builds ACP selector options for the given target.
@@ -26,7 +38,7 @@ export function useAcpSelectorOptions(target?: AcpSelectorTarget): AcpSelectorOp
   const targetMachine = target?.machine;
 
   return useMemo(() => {
-    const options = buildAcpSelectorOptions(
+    return resolveAcpSelectorOptions(
       targetCliType && targetAgentType
         ? {
             configId: targetConfigId,
@@ -38,11 +50,9 @@ export function useAcpSelectorOptions(target?: AcpSelectorTarget): AcpSelectorOp
             runtimeOverrides: targetRuntimeOverrides,
             machine: targetMachine,
           }
-        : undefined
+        : undefined,
+      t
     );
-    return targetCliType === 'builtin' && targetAgentType?.toLowerCase() === 'grok'
-      ? localizeBuiltinGrokSelectorOptions(options, t)
-      : options;
   }, [
     targetConfigId,
     targetMachine,

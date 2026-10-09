@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { fn } from 'storybook/test';
 import {
   AGENT_ROLE_VERSION,
+  withAgentRolePlacements,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRole,
@@ -308,18 +309,28 @@ export const ManyModels: Story = {
   },
 };
 
-const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  ownerUserId: 'user-1',
-  visibility: 'private',
-  machineId,
-  agentConfigId: 'agent-codex' as AgentConfigId,
-  runConfig: {},
-  revision: 1,
-  createdAt: 1,
-  updatedAt: 1,
-  ...overrides,
-});
+const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole => {
+  const role: Omit<AgentRole, 'placements'> = {
+    v: AGENT_ROLE_VERSION,
+    ownerUserId: 'user-1',
+    visibility: 'private',
+    machineId,
+    agentConfigId: 'agent-codex' as AgentConfigId,
+    runConfig: {},
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  };
+  return withAgentRolePlacements(role, [
+    {
+      machineId: role.machineId,
+      agentConfigId: role.agentConfigId,
+      enabled: true,
+      runConfig: role.runConfig,
+    },
+  ]);
+};
 
 /**
  * The machine has no Roles yet. The row still renders and reads `None`; its

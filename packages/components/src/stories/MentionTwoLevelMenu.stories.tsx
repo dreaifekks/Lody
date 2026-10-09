@@ -22,6 +22,7 @@ import {
 } from '@/components/mentions/mention-registry';
 import {
   AGENT_ROLE_VERSION,
+  withAgentRolePlacements,
   type AgentConfigId,
   type AgentRole,
   type AgentRoleId,
@@ -158,21 +159,31 @@ const ROLE_AGENT_CONFIG = {
   name: 'Codex',
 } as const;
 
-const agentRole = (overrides: Partial<AgentRole>): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  id: 'role-1' as AgentRoleId,
-  ownerUserId: 'user-1',
-  visibility: 'workspace',
-  name: 'Code Reviewer',
-  emoji: '🔍',
-  machineId: 'machine-1' as MachineId,
-  agentConfigId: 'config-1' as AgentConfigId,
-  runConfig: { modelId: 'gpt-5.6-sol', configOptionValues: { reasoning_effort: 'high' } },
-  revision: 2,
-  createdAt: 1,
-  updatedAt: 2,
-  ...overrides,
-});
+const agentRole = (overrides: Partial<AgentRole>): AgentRole => {
+  const role: Omit<AgentRole, 'placements'> = {
+    v: AGENT_ROLE_VERSION,
+    id: 'role-1' as AgentRoleId,
+    ownerUserId: 'user-1',
+    visibility: 'workspace',
+    name: 'Code Reviewer',
+    emoji: '🔍',
+    machineId: 'machine-1' as MachineId,
+    agentConfigId: 'config-1' as AgentConfigId,
+    runConfig: { modelId: 'gpt-5.6-sol', configOptionValues: { reasoning_effort: 'high' } },
+    revision: 2,
+    createdAt: 1,
+    updatedAt: 2,
+    ...overrides,
+  };
+  return withAgentRolePlacements(role, [
+    {
+      machineId: role.machineId,
+      agentConfigId: role.agentConfigId,
+      enabled: true,
+      runConfig: role.runConfig,
+    },
+  ]);
+};
 
 const AGENT_ROLES: MentionCandidate[] = [
   toAgentRoleCandidate({

@@ -3,8 +3,8 @@ import {
   type AcpConfigOptionValue,
   type ScheduleProposalMeta,
 } from './ai';
-import type { AgentRole } from './agent-role';
-import type { AgentConfigId } from './ids';
+import { agentRoleOnMachine, selectAgentRolePlacement, type AgentRole } from './agent-role';
+import type { AgentConfigId, MachineId } from './ids';
 import type { AgentConfigMeta, SessionMeta } from './schema';
 import type { ProjectRef } from './project';
 import type { ScheduleDefinition, ScheduleDestination } from './schedule-types';
@@ -84,10 +84,30 @@ export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(arg
   const { meta, conversation, agents, roles } = args;
   const named = meta.target ?? {};
 
+  // The Role's machine follows the shared dispatch rules: the named machine,
+  // else the conversation's, else the first enabled one whose agent is known.
+  // `role` is then that machine's view of the Role.
   let role: AgentRole | undefined;
   if (named.agentRoleId) {
-    role = roles.find((entry) => entry.id === named.agentRoleId);
-    if (!role) return { ok: false, problem: 'role_not_found' };
+    const catalogRole = roles.find((entry) => entry.id === named.agentRoleId);
+    if (!catalogRole) return { ok: false, problem: 'role_not_found' };
+    const choice = selectAgentRolePlacement(
+      catalogRole,
+      {
+        machineId: named.machineId as MachineId | undefined,
+        callerMachineId: conversation?.session.machineId,
+      },
+      (placement) =>
+        agents.some(
+          (agent) => agent.id === placement.agentConfigId && agent.machineId === placement.machineId
+        )
+    );
+    if (choice.kind === 'rejected')
+      return {
+        ok: false,
+        problem: choice.reason === 'machine_not_enabled' ? 'machine_mismatch' : 'agent_not_found',
+      };
+    role = agentRoleOnMachine(catalogRole, choice.placement.machineId);
   }
 
   const agentConfigId =

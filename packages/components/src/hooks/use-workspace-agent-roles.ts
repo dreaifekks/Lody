@@ -3,6 +3,7 @@ import { useAtomValue } from 'jotai';
 import { selectAtom } from 'jotai/utils';
 import {
   listAccessibleAgentRoles,
+  listEnabledAgentRolePlacements,
   machineSupportsMemoryProviders,
   resolveAgentRoleAvailability,
   type AgentConfigId,
@@ -10,6 +11,7 @@ import {
   type AgentRoleAvailability,
   type AgentRoleAvailabilityContext,
   type AgentRoleId,
+  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 import { userAtom } from '@/atoms';
@@ -24,7 +26,7 @@ import { deleteWorkspaceAgentRole, writeWorkspaceAgentRole } from '@/lib/workspa
 
 export type WorkspaceAgentRolesSnapshot = {
   /** Roles this user may see: their own, plus every workspace-shared one. */
-  roles: AgentRole[];
+  roles: CatalogAgentRole[];
   /** True once the first remote sync landed, which makes an empty catalog authoritative. */
   synced: boolean;
 };
@@ -53,8 +55,8 @@ export type AgentRoleAvailabilityResolver = {
 /**
  * Whether each Role can still run, and why not when it cannot.
  *
- * Subscribes the agent configs of exactly the machines the given Roles point
- * at, so a Role bound to a machine no surface has opened yet still resolves
+ * Subscribes the agent configs of exactly the machines the given Roles are
+ * enabled on, so a Role bound to a machine no surface has opened yet still resolves
  * instead of reporting a missing config. Until those rows are read the
  * availability is `unknown`, never `unavailable` — reporting a Role broken
  * because its config list has not loaded is the same silent lie as falling back
@@ -64,7 +66,16 @@ export function useAgentRoleAvailability(
   roles: readonly AgentRole[]
 ): AgentRoleAvailabilityResolver {
   const roleMachineIdsKey = useMemo(
-    () => [...new Set(roles.map((role) => role.machineId))].filter(Boolean).sort().join('\0'),
+    () =>
+      [
+        ...new Set(
+          roles.flatMap((role) =>
+            listEnabledAgentRolePlacements(role).map((placement) => placement.machineId)
+          )
+        ),
+      ]
+        .sort()
+        .join('\0'),
     [roles]
   );
   const roleMachineIds = useMemo(
@@ -131,12 +142,12 @@ export function useWorkspaceAgentRoleActions(): {
    * on its own; no surface waits for it, because the row already exists and a
    * deferred upload is not something the user can act on.
    */
-  upsert: (role: AgentRole) => Promise<void>;
+  upsert: (role: CatalogAgentRole) => Promise<void>;
   remove: (id: AgentRoleId) => Promise<void>;
 } {
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const upsert = useCallback(
-    async (role: AgentRole) => {
+    async (role: CatalogAgentRole) => {
       if (!runtime) throw new Error('Workspace runtime is unavailable');
       await writeWorkspaceAgentRole(runtime, role);
     },

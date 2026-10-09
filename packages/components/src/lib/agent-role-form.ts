@@ -1,8 +1,6 @@
 import {
-  ACP_CONFIG_OPTION_OFF_VALUE,
-  isAcpThoughtLevelConfigOption,
   isSensitiveAgentRoleConfigOptionKey,
-  type AgentRoleFormValue,
+  type AgentRoleFormPlacement,
   type AgentRoleRunConfig,
 } from '@lody/shared';
 import {
@@ -12,7 +10,7 @@ import {
 } from '@/components/shared/acp-selector-options';
 
 /**
- * Seed a form value with what the selected agent actually defaults to.
+ * Seed one machine's row with what its selected agent actually defaults to.
  *
  * A Role has no "inherit" state: every run-config control shows a concrete
  * value, because "Agent default" tells a user nothing about what will run and
@@ -25,9 +23,9 @@ import {
  * incompatible value visible instead of silently replaced.
  */
 export const applyAgentRoleRunConfigDefaults = (
-  value: AgentRoleFormValue,
+  value: AgentRoleFormPlacement,
   selectorOptions: AcpSelectorOptions | null
-): AgentRoleFormValue => {
+): AgentRoleFormPlacement => {
   if (!selectorOptions || selectorOptions.capabilityAuthority === 'unavailable') return value;
 
   const modelId =
@@ -60,10 +58,10 @@ export const applyAgentRoleRunConfigDefaults = (
 };
 
 export const carryAgentRoleOptionsToModel = (
-  values: AgentRoleFormValue['configOptionValues'],
+  values: AgentRoleFormPlacement['configOptionValues'],
   outgoing: readonly AcpConfigOptionSelector[],
   incoming: readonly AcpConfigOptionSelector[]
-): AgentRoleFormValue['configOptionValues'] =>
+): AgentRoleFormPlacement['configOptionValues'] =>
   Object.fromEntries(
     Object.entries(values).filter(([configId, value]) => {
       if (!outgoing.some((selector) => selector.configId === configId)) return true;
@@ -141,43 +139,3 @@ export const findAgentRoleRunConfigIssues = (
 export const selectAuthorableAgentRoleConfigOptions = <T extends { configId: string }>(
   selectors: readonly T[]
 ): T[] => selectors.filter((selector) => !isSensitiveAgentRoleConfigOptionKey(selector.configId));
-
-// ---------------------------------------------------------------------------
-// Row summary
-// ---------------------------------------------------------------------------
-
-/**
- * What a Role's row says it will run, in reading order: model, reasoning, then
- * whatever else it pins.
- *
- * Values only, no `key=value`: the machine is in the group heading and the agent
- * is its icon, so this line is the part a user scans to tell two Roles on one
- * agent apart. An option left at the agent's own default still appears — a Role
- * pins concrete values, and hiding one would make two different Roles read the
- * same. A boolean that is OFF is dropped instead, because "fast mode: false"
- * says nothing a missing chip does not.
- */
-export const buildAgentRoleRunConfigSummary = (runConfig: AgentRoleRunConfig): string[] => {
-  // A Role stores option IDS only — the capability's `category` is not part of
-  // the row — so the id is tested as both, which also matches an agent whose
-  // reasoning option is literally named after the category.
-  const isReasoning = (configId: string) =>
-    isAcpThoughtLevelConfigOption({ id: configId, category: configId });
-  const options = Object.entries(runConfig.configOptionValues ?? {});
-  const reasoning = options.filter(([configId]) => isReasoning(configId));
-  const rest = options.filter(([configId]) => !isReasoning(configId));
-
-  const describe = (entries: [string, string | boolean][]): string[] =>
-    entries.flatMap(([configId, value]) => {
-      if (typeof value === 'boolean') return value ? [configId] : [];
-      if (value === ACP_CONFIG_OPTION_OFF_VALUE) return [];
-      return [value];
-    });
-
-  return [
-    ...(runConfig.modelId ? [runConfig.modelId] : []),
-    ...describe(reasoning),
-    ...(runConfig.modeId ? [runConfig.modeId] : []),
-    ...describe(rest),
-  ];
-};

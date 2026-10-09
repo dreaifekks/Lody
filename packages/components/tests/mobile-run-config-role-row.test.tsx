@@ -18,6 +18,7 @@ import { agentConfigMetaCacheAtom } from '../src/atoms/doc-meta';
 import { MobileRunConfigSheet } from '../src/components/mobile/mobile-run-config-sheet';
 import type { ComposerAgentRoleItem } from '../src/lib/composer-agent-roles';
 import { initI18n } from '../src/i18n';
+import { singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -37,18 +38,19 @@ const agentConfig: AgentConfigMeta = {
   env: {},
 };
 
-const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  ownerUserId: 'user-1',
-  visibility: 'private',
-  machineId,
-  agentConfigId: agentConfig.id,
-  runConfig: {},
-  revision: 1,
-  createdAt: 1,
-  updatedAt: 1,
-  ...overrides,
-});
+const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole =>
+  singleMachineRole({
+    v: AGENT_ROLE_VERSION,
+    ownerUserId: 'user-1',
+    visibility: 'private',
+    machineId,
+    agentConfigId: agentConfig.id,
+    runConfig: {},
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  });
 
 const reviewer: ComposerAgentRoleItem = {
   role: makeRole({ id: 'role-1' as AgentRoleId, name: 'Code Reviewer', emoji: '🔍' }),

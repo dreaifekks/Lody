@@ -15,9 +15,12 @@ import { isSensitiveAcpConfigOptionId } from './session-preparation';
  *   V1 therefore refuses to persist anything secret-shaped in the first place
  *   (`isSensitiveAgentRoleConfigOptionKey`), rather than pretending a private
  *   row is a safe place to put one.
- * - No silent fallback. `machineId + agentConfigId` bind the execution site
- *   exactly; when either is gone the Role stays in Settings marked unavailable
- *   with the precise reason, and never becomes a submittable mention.
+ * - One Role, several machines. A Role says WHAT to do; `placements` say where
+ *   it may run: an ordered list of machines, each with its own Agent Config,
+ *   run config, and memory binding (model ids and memories belong to a machine).
+ *   Dispatch picks one placement by explicit, ordered rules
+ *   (`selectAgentRolePlacement`) and reports which; it never swaps the agent
+ *   or config inside a placement.
  * - `id` is the stable identity. The mention token is DERIVED from the name and
  *   changes when the name does, so a mention range carries the id.
  */
@@ -38,6 +41,18 @@ export type AgentRoleRunConfig = {
   configOptionValues?: Record<string, string | boolean>;
 };
 
+/**
+ * Where a Role may run: one machine, the agent there, and that agent's run
+ * config. `enabled: false` keeps the entry so switching the machine back on
+ * restores it.
+ */
+export type AgentRolePlacement = {
+  machineId: MachineId;
+  agentConfigId: AgentConfigId;
+  enabled: boolean;
+  runConfig: AgentRoleRunConfig;
+};
+
 export type AgentRole = {
   v: typeof AGENT_ROLE_VERSION;
   id: AgentRoleId;
@@ -50,6 +65,17 @@ export type AgentRole = {
   /** Optional single glyph shown before the name wherever the Role is listed. */
   emoji?: string;
 
+  /**
+   * Ordered, one entry per machine, at least one enabled. The order is the
+   * order dispatch tries machines in when nothing else decides.
+   */
+  placements: AgentRolePlacement[];
+  /**
+   * The first enabled placement, also persisted so a client that predates
+   * `placements` still reads the Role as a single-machine one. Read
+   * `placements` for anything machine-specific; `agentRoleOnMachine` returns a
+   * view whose mirror IS the chosen placement.
+   */
   machineId: MachineId;
   agentConfigId: AgentConfigId;
   runConfig: AgentRoleRunConfig;
@@ -60,6 +86,17 @@ export type AgentRole = {
   createdAt: number;
   updatedAt: number;
 };
+
+declare const catalogAgentRoleBrand: unique symbol;
+
+/**
+ * A Role as the catalog holds it, with every placement. Only reading a stored
+ * row (`normalizeAgentRole`) produces one. A machine view
+ * (`agentRoleOnMachine`) is a plain `AgentRole`, so passing a view where a row
+ * is about to be edited or written back does not compile: a view would drop
+ * every other machine.
+ */
+export type CatalogAgentRole = AgentRole & { readonly [catalogAgentRoleBrand]: true };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -228,8 +265,155 @@ const serializeRunConfig = (value: AgentRoleRunConfig): string => {
   ]);
 };
 
-const runConfigsEqual = (left: AgentRoleRunConfig, right: AgentRoleRunConfig): boolean =>
-  serializeRunConfig(left) === serializeRunConfig(right);
+const serializePlacements = (placements: readonly AgentRolePlacement[]): string =>
+  JSON.stringify(
+    placements.map((placement) => [
+      placement.machineId,
+      placement.agentConfigId,
+      placement.enabled,
+      serializeRunConfig(placement.runConfig),
+    ])
+  );
+
+// ---------------------------------------------------------------------------
+// Placements
+// ---------------------------------------------------------------------------
+
+const readAgentRolePlacement = (value: unknown): AgentRolePlacement | undefined => {
+  if (
+    !isRecord(value) ||
+    !isNonEmptyString(value.machineId) ||
+    !isNonEmptyString(value.agentConfigId) ||
+    (value.runConfig !== undefined && !isRecord(value.runConfig)) ||
+    (isRecord(value.runConfig) &&
+      value.runConfig.memory !== undefined &&
+      !MemoryBindingSchema.safeParse(value.runConfig.memory).success)
+  )
+    return undefined;
+  return {
+    machineId: value.machineId.trim() as MachineId,
+    agentConfigId: value.agentConfigId.trim() as AgentConfigId,
+    enabled: value.enabled !== false,
+    runConfig: normalizeAgentRoleRunConfig(value.runConfig),
+  };
+};
+
+/**
+ * Normalize an authored placement list: valid entries only, one per machine
+ * (the first wins), order kept. `undefined` when no entry is enabled, because
+ * such a list cannot run anywhere and has no first enabled entry to mirror.
+ */
+export const normalizeAgentRolePlacements = (value: unknown): AgentRolePlacement[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const placements: AgentRolePlacement[] = [];
+  for (const entry of value) {
+    const placement = readAgentRolePlacement(entry);
+    if (!placement || seen.has(placement.machineId)) continue;
+    seen.add(placement.machineId);
+    placements.push(placement);
+  }
+  return placements.some((placement) => placement.enabled) ? placements : undefined;
+};
+
+const mirrorAgentRolePlacements = (
+  role: Omit<AgentRole, 'placements' | 'machineId' | 'agentConfigId' | 'runConfig'>,
+  placements: AgentRolePlacement[]
+): AgentRole => {
+  const primary = placements.find((placement) => placement.enabled) ?? placements[0]!;
+  return {
+    ...role,
+    placements,
+    machineId: primary.machineId,
+    agentConfigId: primary.agentConfigId,
+    runConfig: primary.runConfig,
+  };
+};
+
+/**
+ * Make a catalog row from a Role and its COMPLETE placement list, with the
+ * legacy mirror that goes with it. Every writer builds rows through here, so
+ * the mirror is always the first enabled placement. The caller guarantees one
+ * is enabled.
+ */
+export const withAgentRolePlacements = (
+  role: Omit<AgentRole, 'placements' | 'machineId' | 'agentConfigId' | 'runConfig'>,
+  placements: AgentRolePlacement[]
+): CatalogAgentRole => mirrorAgentRolePlacements(role, placements) as CatalogAgentRole;
+
+export const listEnabledAgentRolePlacements = (role: AgentRole): AgentRolePlacement[] =>
+  role.placements.filter((placement) => placement.enabled);
+
+/**
+ * The Role as it runs on one machine: a single-placement view whose mirror is
+ * that machine's placement, or `undefined` when the Role is not enabled there.
+ * A view, never a row to write back.
+ */
+export const agentRoleOnMachine = (
+  role: AgentRole,
+  machineId: MachineId
+): AgentRole | undefined => {
+  const placement = role.placements.find((entry) => entry.enabled && entry.machineId === machineId);
+  return placement ? mirrorAgentRolePlacements(role, [placement]) : undefined;
+};
+
+/**
+ * Which placement a Role-based create runs on. The rules, in order:
+ *
+ * 1. An explicitly requested machine must be one the Role is enabled on and
+ *    usable; otherwise the create fails — it is never silently moved.
+ * 2. A machine bound by the work (a local project, or a parent Session the new
+ *    one joins) is the only one that makes sense; it fails the same way.
+ * 3. Otherwise the caller's own machine, when the Role is enabled and usable there.
+ * 4. Otherwise the first usable enabled placement, in list order.
+ *
+ * The chosen rule is returned so callers can say which machine was picked and why.
+ */
+export type AgentRolePlacementRule = 'explicit' | 'work_context' | 'caller' | 'first_available';
+
+export type AgentRolePlacementChoice =
+  | { kind: 'selected'; placement: AgentRolePlacement; rule: AgentRolePlacementRule }
+  | {
+      kind: 'rejected';
+      reason: 'machine_not_enabled' | 'machine_unavailable' | 'no_machine_available';
+      machineId?: MachineId;
+      rule?: 'explicit' | 'work_context';
+      /** Enabled machines that could run the Role right now, in list order. */
+      usableMachineIds: MachineId[];
+    };
+
+export const selectAgentRolePlacement = (
+  role: AgentRole,
+  request: {
+    machineId?: MachineId;
+    workContextMachineId?: MachineId;
+    callerMachineId?: MachineId;
+  },
+  isUsable: (placement: AgentRolePlacement) => boolean
+): AgentRolePlacementChoice => {
+  const enabled = listEnabledAgentRolePlacements(role);
+  const usable = enabled.filter(isUsable);
+  const usableMachineIds = usable.map((placement) => placement.machineId);
+  const pinned: Array<['explicit' | 'work_context', MachineId | undefined]> = [
+    ['explicit', request.machineId],
+    ['work_context', request.workContextMachineId],
+  ];
+  for (const [rule, machineId] of pinned) {
+    if (!machineId) continue;
+    const placement = enabled.find((entry) => entry.machineId === machineId);
+    if (!placement)
+      return { kind: 'rejected', reason: 'machine_not_enabled', machineId, rule, usableMachineIds };
+    if (!usable.includes(placement))
+      return { kind: 'rejected', reason: 'machine_unavailable', machineId, rule, usableMachineIds };
+    return { kind: 'selected', placement, rule };
+  }
+  const caller = usable.find((entry) => entry.machineId === request.callerMachineId);
+  if (caller) return { kind: 'selected', placement: caller, rule: 'caller' };
+  const first = usable[0];
+  return first
+    ? { kind: 'selected', placement: first, rule: 'first_available' }
+    : { kind: 'rejected', reason: 'no_machine_available', usableMachineIds };
+};
 
 // ---------------------------------------------------------------------------
 // Role validation
@@ -261,6 +445,7 @@ export const isAgentRole = (value: unknown): value is AgentRole => {
   if (value.emoji !== undefined && typeof value.emoji !== 'string') return false;
   if (value.description !== undefined && typeof value.description !== 'string') return false;
   if (value.promptPrefix !== undefined && typeof value.promptPrefix !== 'string') return false;
+  if (value.placements !== undefined && !Array.isArray(value.placements)) return false;
   if (value.runConfig !== undefined && !isRecord(value.runConfig)) return false;
   if (
     isRecord(value.runConfig) &&
@@ -278,28 +463,39 @@ export const isAgentRole = (value: unknown): value is AgentRole => {
  *
  * Normalizing on read rather than trusting the row is what keeps a secret-named
  * option written by an older or buggy client from reaching a Session config.
+ * A row without a usable `placements` list — written before placements
+ * existed, or by a client that dropped them — is the single machine its
+ * legacy fields name.
  */
-export const normalizeAgentRole = (value: unknown): AgentRole | undefined => {
+export const normalizeAgentRole = (value: unknown): CatalogAgentRole | undefined => {
   if (!isAgentRole(value)) return undefined;
   const emoji = normalizeAgentRoleEmoji(value.emoji);
   const description = normalizeAgentRoleDescription(value.description);
   const promptPrefix = value.promptPrefix?.trim();
-  return {
-    v: AGENT_ROLE_VERSION,
-    id: value.id.trim() as AgentRoleId,
-    ownerUserId: value.ownerUserId.trim(),
-    visibility: value.visibility,
-    name: value.name.trim(),
-    ...(description ? { description } : {}),
-    ...(emoji ? { emoji } : {}),
-    machineId: value.machineId.trim() as MachineId,
-    agentConfigId: value.agentConfigId.trim() as AgentConfigId,
-    runConfig: normalizeAgentRoleRunConfig(value.runConfig),
-    ...(promptPrefix ? { promptPrefix } : {}),
-    revision: Math.max(1, Math.trunc(value.revision)),
-    createdAt: value.createdAt,
-    updatedAt: value.updatedAt,
-  };
+  const placements = normalizeAgentRolePlacements(value.placements) ?? [
+    {
+      machineId: value.machineId.trim() as MachineId,
+      agentConfigId: value.agentConfigId.trim() as AgentConfigId,
+      enabled: true,
+      runConfig: normalizeAgentRoleRunConfig(value.runConfig),
+    },
+  ];
+  return withAgentRolePlacements(
+    {
+      v: AGENT_ROLE_VERSION,
+      id: value.id.trim() as AgentRoleId,
+      ownerUserId: value.ownerUserId.trim(),
+      visibility: value.visibility,
+      name: value.name.trim(),
+      ...(description ? { description } : {}),
+      ...(emoji ? { emoji } : {}),
+      ...(promptPrefix ? { promptPrefix } : {}),
+      revision: Math.max(1, Math.trunc(value.revision)),
+      createdAt: value.createdAt,
+      updatedAt: value.updatedAt,
+    },
+    placements
+  );
 };
 
 /**
@@ -313,10 +509,8 @@ export const isAgentRoleContentEqual = (left: AgentRole, right: AgentRole): bool
   (left.description ?? '') === (right.description ?? '') &&
   (left.emoji ?? '') === (right.emoji ?? '') &&
   left.visibility === right.visibility &&
-  left.machineId === right.machineId &&
-  left.agentConfigId === right.agentConfigId &&
   (left.promptPrefix ?? '') === (right.promptPrefix ?? '') &&
-  runConfigsEqual(left.runConfig, right.runConfig);
+  serializePlacements(left.placements) === serializePlacements(right.placements);
 
 // ---------------------------------------------------------------------------
 // Visibility and ownership
@@ -332,10 +526,10 @@ export const canReadAgentRole = (role: AgentRole, userId: string | null | undefi
 export const canManageAgentRole = (role: AgentRole, userId: string | null | undefined): boolean =>
   Boolean(userId) && role.ownerUserId === userId;
 
-export const listAccessibleAgentRoles = (
-  roles: readonly AgentRole[],
+export const listAccessibleAgentRoles = <T extends AgentRole>(
+  roles: readonly T[],
   userId: string | null | undefined
-): AgentRole[] => roles.filter((role) => canReadAgentRole(role, userId));
+): T[] => roles.filter((role) => canReadAgentRole(role, userId));
 
 // ---------------------------------------------------------------------------
 // Availability
@@ -370,27 +564,46 @@ export type AgentRoleAvailabilityContext = {
   loadedAgentConfigMachineIds: ReadonlySet<MachineId>;
 };
 
+export const resolveAgentRolePlacementAvailability = (
+  placement: AgentRolePlacement,
+  context: AgentRoleAvailabilityContext
+): AgentRoleAvailability => {
+  const { machineId } = placement;
+  if (!context.authorizedMachineIds.has(machineId)) {
+    return { kind: 'unavailable', reason: 'machine_unknown' };
+  }
+  if (!context.loadedAgentConfigMachineIds.has(machineId)) {
+    return { kind: 'unknown' };
+  }
+  const configMachineId = context.agentConfigMachineIds.get(placement.agentConfigId);
+  if (configMachineId === undefined) {
+    return { kind: 'unavailable', reason: 'agent_config_missing' };
+  }
+  if (configMachineId !== machineId) {
+    return { kind: 'unavailable', reason: 'agent_config_machine_mismatch' };
+  }
+  if (!context.onlineMachineIds.has(machineId)) {
+    return { kind: 'unavailable', reason: 'machine_offline' };
+  }
+  if (placement.runConfig.memory && !context.memoryProviderMachineIds?.has(machineId))
+    return { kind: 'unavailable', reason: 'memory_unsupported' };
+  return { kind: 'available' };
+};
+
+/**
+ * A Role is available when any enabled placement is; otherwise `unknown` while
+ * some placement cannot be judged yet, else the first placement's reason.
+ */
 export const resolveAgentRoleAvailability = (
   role: AgentRole,
   context: AgentRoleAvailabilityContext
 ): AgentRoleAvailability => {
-  if (!context.authorizedMachineIds.has(role.machineId)) {
-    return { kind: 'unavailable', reason: 'machine_unknown' };
-  }
-  if (!context.loadedAgentConfigMachineIds.has(role.machineId)) {
-    return { kind: 'unknown' };
-  }
-  const configMachineId = context.agentConfigMachineIds.get(role.agentConfigId);
-  if (configMachineId === undefined) {
-    return { kind: 'unavailable', reason: 'agent_config_missing' };
-  }
-  if (configMachineId !== role.machineId) {
-    return { kind: 'unavailable', reason: 'agent_config_machine_mismatch' };
-  }
-  if (!context.onlineMachineIds.has(role.machineId)) {
-    return { kind: 'unavailable', reason: 'machine_offline' };
-  }
-  if (role.runConfig.memory && !context.memoryProviderMachineIds?.has(role.machineId))
-    return { kind: 'unavailable', reason: 'memory_unsupported' };
-  return { kind: 'available' };
+  const results = listEnabledAgentRolePlacements(role).map((placement) =>
+    resolveAgentRolePlacementAvailability(placement, context)
+  );
+  return (
+    results.find((result) => result.kind === 'available') ??
+    results.find((result) => result.kind === 'unknown') ??
+    results[0] ?? { kind: 'unknown' }
+  );
 };

@@ -21,6 +21,7 @@ import { MobileSessionRunConfig } from '../src/components/mobile/mobile-session-
 import type { ComposerAgentRoleItem } from '../src/lib/composer-agent-roles';
 import { initI18n } from '../src/i18n';
 import { Tooltip } from '@lody/ui/tooltip';
+import { singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -37,7 +38,7 @@ const agentConfig: AgentConfigMeta = {
   env: {},
 };
 
-const role: AgentRole = {
+const role: AgentRole = singleMachineRole({
   v: AGENT_ROLE_VERSION,
   id: 'role-1' as AgentRoleId,
   ownerUserId: 'user-1',
@@ -50,7 +51,7 @@ const role: AgentRole = {
   revision: 1,
   createdAt: 1,
   updatedAt: 1,
-};
+});
 
 const roleItem: ComposerAgentRoleItem = {
   role,

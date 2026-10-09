@@ -4,7 +4,12 @@ import { Provider } from 'jotai';
 import { useHydrateAtoms } from 'jotai/utils';
 import { settingsActiveTabAtom, settingsDialogOpenAtom, userAtom } from '@/atoms';
 import { runtimeAtom, type WorkspaceRuntime } from '@/atoms/runtime';
-import { AGENT_ROLE_VERSION, workspaceFlockKeys, type AgentRole } from '@lody/shared';
+import {
+  AGENT_ROLE_VERSION,
+  withAgentRolePlacements,
+  workspaceFlockKeys,
+  type AgentRole,
+} from '@lody/shared';
 import type { SettingsTabId } from '@/components/settings/settings-tabs';
 import { DesktopSettingsModal } from '@/components/settings/desktop-settings-modal';
 import { RoutedStory, SettingsStoryProviders } from './settings-story-shell';
@@ -23,21 +28,28 @@ function OpenModalAt({ tab, children }: { tab: SettingsTabId; children: ReactNod
   return <>{children}</>;
 }
 
-const storyRole: AgentRole = {
-  v: AGENT_ROLE_VERSION,
-  id: 'settings-story-role' as AgentRole['id'],
-  ownerUserId: 'settings-story-user',
-  visibility: 'private',
-  name: 'Code Reviewer',
-  emoji: '🔍',
-  machineId: 'settings-story-machine' as AgentRole['machineId'],
-  agentConfigId: 'settings-story-config' as AgentRole['agentConfigId'],
-  runConfig: {},
-  promptPrefix: 'Check correctness before style.',
-  revision: 1,
-  createdAt: 1,
-  updatedAt: 1,
-};
+const storyRole: AgentRole = withAgentRolePlacements(
+  {
+    v: AGENT_ROLE_VERSION,
+    id: 'settings-story-role' as AgentRole['id'],
+    ownerUserId: 'settings-story-user',
+    visibility: 'private',
+    name: 'Code Reviewer',
+    emoji: '🔍',
+    promptPrefix: 'Check correctness before style.',
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  },
+  [
+    {
+      machineId: 'settings-story-machine' as AgentRole['machineId'],
+      agentConfigId: 'settings-story-config' as AgentRole['agentConfigId'],
+      enabled: true,
+      runConfig: {},
+    },
+  ]
+);
 
 // A read-only catalog fixture: no transport or real workspace writes.
 const rolesStoryRuntime = {

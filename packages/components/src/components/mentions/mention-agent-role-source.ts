@@ -1,8 +1,10 @@
 import * as React from 'react';
 import { useAtomValue } from 'jotai';
 import {
+  agentRoleOnMachine,
   getAgentRoleEmoji,
   getAgentRoleMentionSlug,
+  listEnabledAgentRolePlacements,
   type AgentRole,
   type AgentRoleAvailability,
   type MachineId,
@@ -48,9 +50,9 @@ export type AgentRoleMentionItem = {
   role: AgentRole;
   availability: AgentRoleAvailability;
   /**
-   * The bound agent and the machine it runs on, carried so the detail pane can
-   * resolve this Role's stored ids into the labels that agent publishes, and
-   * name the machine it binds. The pane is shared with the composer, which
+   * The previewed machine's agent and the machine itself, carried so the
+   * detail pane can resolve this Role's stored ids into the labels that agent
+   * publishes. The pane is shared with the composer, which
    * passes the same pair.
    */
   agentConfig?: AgentRoleDetailSubject['agentConfig'];
@@ -90,13 +92,24 @@ export const buildAgentRoleMentionItems = (
 ): AgentRoleMentionItem[] =>
   [...roles]
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
-    .map((role) => ({
-      slug: getAgentRoleMentionSlug(role),
-      role,
-      availability: resolve.availability(role),
-      machine: resolve.machine(role.machineId) ?? null,
-      agentConfig: resolve.agentConfig(role),
-    }));
+    .map((catalogRole) => {
+      // The detail pane previews one machine: the first that can run the Role
+      // now, else the first enabled one. Dispatch still picks by its own rules.
+      const views = listEnabledAgentRolePlacements(catalogRole).flatMap(
+        (placement) => agentRoleOnMachine(catalogRole, placement.machineId) ?? []
+      );
+      const role =
+        views.find((view) => resolve.availability(view).kind === 'available') ??
+        views[0] ??
+        catalogRole;
+      return {
+        slug: getAgentRoleMentionSlug(role),
+        role,
+        availability: resolve.availability(catalogRole),
+        machine: resolve.machine(role.machineId) ?? null,
+        agentConfig: resolve.agentConfig(role),
+      };
+    });
 
 /**
  * Every readable Role, with execution availability retained for disabled menu

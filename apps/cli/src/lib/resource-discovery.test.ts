@@ -3,13 +3,14 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { z } from 'zod';
-import type {
-  AgentConfigMeta,
-  AgentRole,
-  LocalProjectMeta,
-  MachineId,
-  MachineMeta,
-  WorkspaceMcpServerMeta,
+import {
+  withAgentRolePlacements,
+  type AgentConfigMeta,
+  type AgentRole,
+  type LocalProjectMeta,
+  type MachineId,
+  type MachineMeta,
+  type WorkspaceMcpServerMeta,
 } from '@lody/shared';
 import { ResourceDiscovery, type DiscoverySource } from './resource-discovery';
 import { registerDiscoveryTools } from '@/mcp/discovery-tools';
@@ -72,8 +73,8 @@ const config = (id: string, machineId = 'one'): AgentConfigMeta =>
     cliType: 'builtin',
     agentType: 'codex',
   }) as AgentConfigMeta;
-const role = (id: string, overrides: Partial<AgentRole> = {}): AgentRole =>
-  ({
+const role = (id: string, overrides: Partial<AgentRole> = {}): AgentRole => {
+  const row = {
     v: 1,
     id,
     name: id,
@@ -86,7 +87,19 @@ const role = (id: string, overrides: Partial<AgentRole> = {}): AgentRole =>
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
-  }) as AgentRole;
+  } as AgentRole;
+  return withAgentRolePlacements(
+    row,
+    overrides.placements ?? [
+      {
+        machineId: row.machineId,
+        agentConfigId: row.agentConfigId,
+        enabled: true,
+        runConfig: row.runConfig,
+      },
+    ]
+  );
+};
 const source = (overrides: Partial<DiscoverySource> = {}): DiscoverySource => ({
   workspaceId: 'workspace',
   userId: 'user',
@@ -220,13 +233,67 @@ describe('resource discovery across MCP and CLI', () => {
     });
   });
 
-  it('filters Roles by their binding while retaining unavailable matches', async () => {
+  it('filters Roles by an enabled machine while retaining unavailable matches', async () => {
     const discovery = new ResourceDiscovery(
       source({ roles: async () => [role('one'), role('two', { machineId: 'two' as MachineId })] })
     );
     const page = await discovery.list('agent_role', { machineId: 'two' });
     expect(page.items.map((row) => row.id)).toEqual(['two']);
     expect(page.items[0]?.availability?.state).toBe('unavailable');
+  });
+
+  it('reports each machine of a Role with its own availability', async () => {
+    const both = role('both', {
+      placements: [
+        {
+          machineId: 'two' as MachineId,
+          agentConfigId: 'agent-two' as AgentRole['agentConfigId'],
+          enabled: true,
+          runConfig: {},
+        },
+        {
+          machineId: 'one' as MachineId,
+          agentConfigId: 'agent' as AgentRole['agentConfigId'],
+          enabled: true,
+          runConfig: { modelId: 'model', configOptionValues: { api_key: 'synthetic-secret' } },
+        },
+        {
+          machineId: 'hidden' as MachineId,
+          agentConfigId: 'agent-hidden' as AgentRole['agentConfigId'],
+          enabled: false,
+          runConfig: {},
+        },
+      ],
+    });
+    const discovery = new ResourceDiscovery(source({ roles: async () => [both] }));
+    const { item } = await discovery.get('agent_role', 'both');
+    expect(item.availability).toEqual({ state: 'available' });
+    expect(item.placements).toEqual([
+      {
+        machineId: 'two',
+        agentConfigId: 'agent-two',
+        enabled: true,
+        runConfig: {},
+        availability: { state: 'unavailable', reason: 'agent_config_missing' },
+      },
+      {
+        machineId: 'one',
+        agentConfigId: 'agent',
+        enabled: true,
+        runConfig: { modelId: 'model' },
+        availability: { state: 'available' },
+      },
+      { machineId: 'hidden', agentConfigId: 'agent-hidden', enabled: false, runConfig: {} },
+    ]);
+    // A machine filter keeps the Role with all its machines.
+    const page = await discovery.list('agent_role', { machineId: 'two' });
+    expect(page.items.map((row) => row.id)).toEqual(['both']);
+    expect(await discovery.list('agent_role', { machineId: 'hidden' })).toMatchObject({
+      items: [],
+    });
+    expect(
+      await discovery.localProjectMachineId('same-path', ['hidden', 'two'] as MachineId[])
+    ).toBe('hidden');
   });
 
   it('reads GitHub-only projects independently of the local machine catalog', async () => {

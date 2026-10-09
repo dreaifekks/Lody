@@ -6,7 +6,10 @@ import {
   normalizeAgentRoleEmoji,
   normalizeAgentRoleMentionSlug,
   normalizeAgentRoleRunConfig,
+  withAgentRolePlacements,
   type AgentRole,
+  type AgentRolePlacement,
+  type CatalogAgentRole,
   type AgentRoleRunConfig,
 } from './agent-role';
 import type { AgentConfigId, AgentRoleId, MachineId } from './ids';
@@ -18,16 +21,23 @@ import type { AgentConfigId, AgentRoleId, MachineId } from './ids';
  * Role may store, when `revision` moves, and whether a saved Role still matches
  * its agent's capabilities — are testable without rendering anything.
  */
-export type AgentRoleFormValue = {
-  name: string;
-  description: string;
-  emoji: string;
-  machineId: MachineId | null;
+/** One machine's row in the editor. A row with no agent chosen is not saved. */
+export type AgentRoleFormPlacement = {
+  machineId: MachineId;
+  enabled: boolean;
   agentConfigId: AgentConfigId | null;
   modeId: string | null;
   modelId: string | null;
   configOptionValues: Record<string, string | boolean>;
   memory?: AgentRoleRunConfig['memory'];
+};
+
+export type AgentRoleFormValue = {
+  name: string;
+  description: string;
+  emoji: string;
+  /** In dispatch order; see `AgentRole.placements`. */
+  placements: AgentRoleFormPlacement[];
   promptPrefix: string;
   /** Off by default: a new Role is private until its owner says otherwise. */
   shareWithWorkspace: boolean;
@@ -37,11 +47,7 @@ export const EMPTY_AGENT_ROLE_FORM_VALUE: AgentRoleFormValue = {
   name: '',
   description: '',
   emoji: '',
-  machineId: null,
-  agentConfigId: null,
-  modeId: null,
-  modelId: null,
-  configOptionValues: {},
+  placements: [],
   promptPrefix: '',
   shareWithWorkspace: false,
 };
@@ -69,24 +75,36 @@ export const buildAgentRoleFormValueFromRunConfig = (input: {
   });
   return {
     ...EMPTY_AGENT_ROLE_FORM_VALUE,
-    machineId: input.machineId ?? null,
-    agentConfigId: input.agentConfigId ?? null,
-    modeId: runConfig.modeId ?? null,
-    modelId: runConfig.modelId ?? null,
-    configOptionValues: { ...(runConfig.configOptionValues ?? {}) },
+    placements: input.machineId
+      ? [
+          {
+            machineId: input.machineId,
+            enabled: true,
+            agentConfigId: input.agentConfigId ?? null,
+            modeId: runConfig.modeId ?? null,
+            modelId: runConfig.modelId ?? null,
+            configOptionValues: { ...(runConfig.configOptionValues ?? {}) },
+          },
+        ]
+      : [],
   };
 };
 
-export const buildAgentRoleFormValue = (role: AgentRole): AgentRoleFormValue => ({
+const buildAgentRoleFormPlacement = (placement: AgentRolePlacement): AgentRoleFormPlacement => ({
+  machineId: placement.machineId,
+  enabled: placement.enabled,
+  agentConfigId: placement.agentConfigId,
+  modeId: placement.runConfig.modeId ?? null,
+  modelId: placement.runConfig.modelId ?? null,
+  configOptionValues: { ...(placement.runConfig.configOptionValues ?? {}) },
+  ...(placement.runConfig.memory ? { memory: placement.runConfig.memory } : {}),
+});
+
+export const buildAgentRoleFormValue = (role: CatalogAgentRole): AgentRoleFormValue => ({
   name: role.name,
   description: role.description ?? '',
   emoji: role.emoji ?? '',
-  machineId: role.machineId,
-  agentConfigId: role.agentConfigId,
-  modeId: role.runConfig.modeId ?? null,
-  modelId: role.runConfig.modelId ?? null,
-  configOptionValues: { ...(role.runConfig.configOptionValues ?? {}) },
-  memory: role.runConfig.memory,
+  placements: role.placements.map(buildAgentRoleFormPlacement),
   promptPrefix: role.promptPrefix ?? '',
   shareWithWorkspace: role.visibility === 'workspace',
 });
@@ -96,6 +114,16 @@ export type AgentRoleFormError =
   | 'name_taken'
   | 'machine_required'
   | 'agent_config_required';
+
+/** A blank row for a machine the editor lists but the Role does not use yet. */
+export const buildEmptyAgentRoleFormPlacement = (machineId: MachineId): AgentRoleFormPlacement => ({
+  machineId,
+  enabled: false,
+  agentConfigId: null,
+  modeId: null,
+  modelId: null,
+  configOptionValues: {},
+});
 
 /**
  * The name is the only authored label, so it carries both jobs: it is what the
@@ -123,8 +151,10 @@ export const validateAgentRoleForm = (
     errors.push('name_taken');
   }
 
-  if (!value.machineId) errors.push('machine_required');
-  if (!value.agentConfigId) errors.push('agent_config_required');
+  const enabled = value.placements.filter((placement) => placement.enabled);
+  if (enabled.length === 0) errors.push('machine_required');
+  else if (enabled.some((placement) => !placement.agentConfigId))
+    errors.push('agent_config_required');
   return errors;
 };
 
@@ -135,7 +165,7 @@ export const validateAgentRoleForm = (
  * authoring surface refuses exactly the option keys the reader would later
  * refuse — a Role never becomes a place a secret is stored.
  */
-export const buildAgentRoleRunConfig = (value: AgentRoleFormValue): AgentRoleRunConfig =>
+export const buildAgentRoleRunConfig = (value: AgentRoleFormPlacement): AgentRoleRunConfig =>
   normalizeAgentRoleRunConfig({
     memory: value.memory,
     modeId: value.modeId ?? undefined,
@@ -144,7 +174,9 @@ export const buildAgentRoleRunConfig = (value: AgentRoleFormValue): AgentRoleRun
   });
 
 /**
- * Turn an authored form into the row to persist.
+ * Turn an authored form into the row to persist. Expects a value that passed
+ * `validateAgentRoleForm`: rows without an agent are dropped, so at least one
+ * enabled placement remains.
  *
  * `revision` only moves when something actually changed: accepted Operations
  * and Session provenance record it, so a no-op save must not invent a new one.
@@ -152,31 +184,44 @@ export const buildAgentRoleRunConfig = (value: AgentRoleFormValue): AgentRoleRun
 export const buildAgentRoleFromForm = (
   value: AgentRoleFormValue,
   options: {
-    existing?: AgentRole;
+    /** The catalog row being edited; a machine view would drop every other machine. */
+    existing?: CatalogAgentRole;
     ownerUserId: string;
     now: number;
     createId: () => AgentRoleId;
   }
-): AgentRole => {
+): CatalogAgentRole => {
   const { existing, ownerUserId, now } = options;
   const emoji = normalizeAgentRoleEmoji(value.emoji);
   const promptPrefix = value.promptPrefix.trim();
-  const next: AgentRole = {
-    v: AGENT_ROLE_VERSION,
-    id: existing?.id ?? options.createId(),
-    ownerUserId: existing?.ownerUserId ?? ownerUserId,
-    visibility: value.shareWithWorkspace ? 'workspace' : 'private',
-    name: value.name.trim(),
-    description: normalizeAgentRoleDescription(value.description),
-    ...(emoji ? { emoji } : {}),
-    machineId: value.machineId as MachineId,
-    agentConfigId: value.agentConfigId as AgentConfigId,
-    runConfig: buildAgentRoleRunConfig(value),
-    ...(promptPrefix ? { promptPrefix } : {}),
-    revision: existing?.revision ?? 1,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: existing?.updatedAt ?? now,
-  };
+  const placements = value.placements.flatMap((placement): AgentRolePlacement[] =>
+    placement.agentConfigId
+      ? [
+          {
+            machineId: placement.machineId,
+            agentConfigId: placement.agentConfigId,
+            enabled: placement.enabled,
+            runConfig: buildAgentRoleRunConfig(placement),
+          },
+        ]
+      : []
+  );
+  const next = withAgentRolePlacements(
+    {
+      v: AGENT_ROLE_VERSION,
+      id: existing?.id ?? options.createId(),
+      ownerUserId: existing?.ownerUserId ?? ownerUserId,
+      visibility: value.shareWithWorkspace ? 'workspace' : 'private',
+      name: value.name.trim(),
+      description: normalizeAgentRoleDescription(value.description),
+      ...(emoji ? { emoji } : {}),
+      ...(promptPrefix ? { promptPrefix } : {}),
+      revision: existing?.revision ?? 1,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: existing?.updatedAt ?? now,
+    },
+    placements
+  );
 
   if (!existing) return next;
   if (isAgentRoleContentEqual(existing, next)) return existing;

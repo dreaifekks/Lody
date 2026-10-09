@@ -6,7 +6,7 @@ import {
   readWorkspaceFlockRowsFromFlock,
   writeWorkspaceAgentRoleToFlock,
   writeWorkspaceMcpServerToFlock,
-  type AgentRole,
+  type CatalogAgentRole,
   type McpServerId,
   type WorkspaceFlockReadableFlock,
   type WorkspaceFlockWritableFlock,
@@ -117,7 +117,7 @@ export async function deleteWorkspaceMcpCatalogEntry(
 export async function upsertWorkspaceAgentRoleEntry(
   repo: WorkspaceMcpRepo,
   workspaceId: WorkspaceId,
-  role: AgentRole,
+  role: CatalogAgentRole,
   options: { sync?: boolean } = {}
 ): Promise<McpCatalogWriteResult> {
   return commitCatalogChange(repo, workspaceId, options, (flock) =>

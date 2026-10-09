@@ -48,25 +48,27 @@ vi.mock('../src/components/mentions/mention-agent-role-source', async (importOri
 import { CombinedMentionTextarea } from '../src/components/mentions/combined-mention-textarea';
 import { getComposerMentionChip } from '../src/components/mentions/mention-chips';
 import { initI18n } from '../src/i18n';
+import { singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const role = (emoji?: string): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  id: 'role-1' as AgentRoleId,
-  ownerUserId: 'user-1',
-  visibility: 'private',
-  name: 'Code Reviewer',
-  ...(emoji ? { emoji } : {}),
-  machineId: 'machine-1' as MachineId,
-  agentConfigId: 'config-1' as AgentConfigId,
-  runConfig: {},
-  revision: 1,
-  createdAt: 1,
-  updatedAt: 1,
-});
+const role = (emoji?: string): AgentRole =>
+  singleMachineRole({
+    v: AGENT_ROLE_VERSION,
+    id: 'role-1' as AgentRoleId,
+    ownerUserId: 'user-1',
+    visibility: 'private',
+    name: 'Code Reviewer',
+    ...(emoji ? { emoji } : {}),
+    machineId: 'machine-1' as MachineId,
+    agentConfigId: 'config-1' as AgentConfigId,
+    runConfig: {},
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  });
 
 describe('agent role chip in the composer', () => {
   let root: Root | undefined;

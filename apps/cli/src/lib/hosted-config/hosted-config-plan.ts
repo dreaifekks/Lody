@@ -1,8 +1,9 @@
 import {
   CODEX_PROFILE_LEGACY_LAUNCH_GUARD,
+  withAgentRolePlacements,
   type AgentConfigId,
   type AgentConfigMeta,
-  type AgentRole,
+  type CatalogAgentRole,
   type HostedConfigCategory,
   type HostedConfigItem,
   type LocalProjectMeta,
@@ -16,7 +17,7 @@ export type HostedImportTarget = {
   userId: string;
   agentConfigs: readonly AgentConfigMeta[];
   mcpServers: readonly WorkspaceMcpServerMeta[];
-  agentRoles: readonly AgentRole[];
+  agentRoles: readonly CatalogAgentRole[];
   localProjects: readonly LocalProjectMeta[];
   worktreeScripts: readonly HostedWorktreeScript[];
 };
@@ -24,7 +25,7 @@ export type HostedImportTarget = {
 export type HostedImportWrites = {
   agentConfigs: AgentConfigMeta[];
   mcpServers: WorkspaceMcpServerMeta[];
-  agentRoles: AgentRole[];
+  agentRoles: CatalogAgentRole[];
   localProjects: LocalProjectMeta[];
   worktreeScripts: HostedWorktreeScript[];
 };
@@ -166,9 +167,9 @@ function planMcpServers(input: HostedImportPlanInput): {
 function planAgentRoles(
   input: HostedImportPlanInput,
   imported: ReadonlyMap<AgentConfigId, AgentConfigId>
-): { items: HostedConfigItem[]; writes: AgentRole[] } {
+): { items: HostedConfigItem[]; writes: CatalogAgentRole[] } {
   const items: HostedConfigItem[] = [];
-  const writes: AgentRole[] = [];
+  const writes: CatalogAgentRole[] = [];
   for (const hosted of input.source.agentRoles) {
     const item = { category: 'agentRoles' as const, id: hosted.id, name: hosted.name };
     // A Role names one agent of one machine and never falls back to another.
@@ -182,15 +183,24 @@ function planAgentRoles(
       continue;
     }
     const counterpart = input.target.agentRoles.find((role) => role.id === hosted.id);
-    const next: AgentRole = {
-      ...hosted,
-      machineId: input.target.machineId,
-      agentConfigId,
-      ownerUserId: input.target.userId,
-      revision: counterpart?.revision ?? hosted.revision,
-      createdAt: counterpart?.createdAt ?? hosted.createdAt,
-      updatedAt: counterpart?.updatedAt ?? hosted.updatedAt,
-    };
+    // A hosted Role is a single-machine one; it becomes one placement here.
+    const next = withAgentRolePlacements(
+      {
+        ...hosted,
+        ownerUserId: input.target.userId,
+        revision: counterpart?.revision ?? hosted.revision,
+        createdAt: counterpart?.createdAt ?? hosted.createdAt,
+        updatedAt: counterpart?.updatedAt ?? hosted.updatedAt,
+      },
+      [
+        {
+          machineId: input.target.machineId,
+          agentConfigId,
+          enabled: true,
+          runConfig: hosted.runConfig,
+        },
+      ]
+    );
     const action = !counterpart ? 'create' : same(next, counterpart) ? 'unchanged' : 'update';
     if (action !== 'unchanged') {
       writes.push({

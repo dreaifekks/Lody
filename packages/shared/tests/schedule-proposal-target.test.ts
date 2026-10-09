@@ -24,13 +24,29 @@ const writer = {
 } as unknown as AgentConfigMeta;
 const agents = [reviewer, writer];
 
+const writerRunConfig = {
+  modeId: 'plan',
+  modelId: 'sonnet',
+  configOptionValues: { verbose: true },
+};
 const role = {
   id: 'role-1',
   name: 'Release manager',
   emoji: '🚀',
   machineId: 'studio',
   agentConfigId: 'writer',
-  runConfig: { modeId: 'plan', modelId: 'sonnet', configOptionValues: { verbose: true } },
+  runConfig: writerRunConfig,
+  placements: [
+    { machineId: 'studio', agentConfigId: 'writer', enabled: true, runConfig: writerRunConfig },
+  ],
+} as unknown as AgentRole;
+/** Enabled on the studio and the MacBook, studio first. */
+const twoMachineRole = {
+  ...role,
+  placements: [
+    ...role.placements,
+    { machineId: 'macbook', agentConfigId: 'reviewer', enabled: true, runConfig: {} },
+  ],
 } as unknown as AgentRole;
 
 const session = {
@@ -119,6 +135,37 @@ describe('where a proposed schedule runs', () => {
         source: { agent: 'role' },
       },
     });
+  });
+
+  it('runs a Role on the conversation machine when it is enabled there', () => {
+    // The conversation runs on the MacBook, the second machine in the list.
+    const result = resolveScheduleProposalTarget({
+      meta: meta({ agentRoleId: 'role-1' }),
+      conversation,
+      agents,
+      roles: [twoMachineRole],
+    });
+    expect(result).toMatchObject({ ok: true, target: { agentConfig: reviewer } });
+    expect(result.ok && result.target.role?.machineId).toBe('macbook');
+  });
+
+  it('runs a Role on a named machine only where it is enabled', () => {
+    expect(
+      resolveScheduleProposalTarget({
+        meta: meta({ agentRoleId: 'role-1', machineId: 'studio' }),
+        conversation,
+        agents,
+        roles: [twoMachineRole],
+      })
+    ).toMatchObject({ ok: true, target: { agentConfig: writer } });
+    expect(
+      resolveScheduleProposalTarget({
+        meta: meta({ agentRoleId: 'role-1', machineId: 'macbook' }),
+        conversation,
+        agents,
+        roles: [role],
+      })
+    ).toEqual({ ok: false, problem: 'machine_mismatch' });
   });
 
   it('gives a named Agent the builtin default mode, never the conversation’s', () => {
