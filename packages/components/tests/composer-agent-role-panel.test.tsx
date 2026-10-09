@@ -17,7 +17,7 @@ import { ComposerAgentRolePanel } from '../src/components/sessions/composer-agen
 import type { ComposerAgentRoleItem } from '../src/lib/composer-agent-roles';
 import { Menu } from '../src/ui/menu';
 import { initI18n } from '../src/i18n';
-import { singleMachineRole } from './agent-role-fixture';
+import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -50,13 +50,7 @@ const reviewerRole = makeRole({
     configOptionValues: { thought_level: 'high', fast_mode: false },
   },
 });
-const reviewer: ComposerAgentRoleItem = {
-  role: reviewerRole,
-  instance: reviewerRole.instances[0]!,
-  title: reviewerRole.name,
-  availability: { kind: 'available' },
-  agentConfig: { name: 'Codex', cliType: 'builtin', agentType: 'codex', env: {} },
-};
+const reviewer: ComposerAgentRoleItem = composerItemsOf(reviewerRole)[0]!;
 const reviewerInstanceId = reviewerRole.instances[0]!.id;
 
 type PanelProps = ComponentProps<typeof ComposerAgentRolePanel>;

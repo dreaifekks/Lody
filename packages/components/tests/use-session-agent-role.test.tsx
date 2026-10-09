@@ -31,7 +31,9 @@ vi.mock('../src/hooks/use-workspace-agent-roles', () => ({
     resolve: () => ({ kind: 'available' }),
     resolveInstance: () => ({ kind: 'available' }),
   }),
+  useComposerAgentRoleNames: () => names,
 }));
+const names = { machine: () => undefined, unknownAgent: 'Unknown agent' };
 
 import {
   useSessionAgentRole,
@@ -182,20 +184,23 @@ describe('useSessionAgentRole', () => {
         instances: [
           {
             id: 'vision:devnuc' as AgentRoleInstanceId,
-            label: 'Codex',
             machineId: 'devnuc' as MachineId,
             agentConfigId: 'agent-devnuc' as AgentConfigId,
             runConfig: { modelId: 'model-other' },
           },
           {
             id: 'vision:here' as AgentRoleInstanceId,
-            label: 'Codex',
             machineId: 'machine-1' as MachineId,
             agentConfigId: 'agent-1' as AgentConfigId,
             runConfig: { modelId: 'model-1' },
           },
         ],
       }),
+    ];
+    // Both run Codex: one group, shown by this machine's instance.
+    catalog.agentConfigs = [
+      agentConfig,
+      { ...agentConfig, id: 'agent-devnuc', machineId: 'devnuc' } as AgentConfigMeta,
     ];
     await render({});
     expect(control?.items.map((item) => item.instance.id)).toEqual(['vision:here']);
@@ -207,12 +212,35 @@ describe('useSessionAgentRole', () => {
     });
   });
 
+  it('lists a Role on another machine but will not select it: the Session cannot move', async () => {
+    catalog.roles = [
+      singleMachineRole({
+        ...role('vision', 'model-1'),
+        instances: [
+          {
+            id: 'vision:devnuc' as AgentRoleInstanceId,
+            machineId: 'devnuc' as MachineId,
+            agentConfigId: 'agent-devnuc' as AgentConfigId,
+            runConfig: { modelId: 'model-1' },
+          },
+        ],
+      }),
+    ];
+    await render({});
+    expect(control?.items.map((item) => [item.instance.id, item.availability])).toEqual([
+      ['vision:devnuc', { kind: 'unavailable', reason: 'other_machine' }],
+    ]);
+    await act(async () => control?.onSelect('vision:devnuc' as AgentRoleInstanceId));
+    expect(control?.selectedInstanceId).toBeNull();
+  });
+
   it('restores the instance a Turn recorded among two on this machine and config', async () => {
     const both = singleMachineRole({
       ...role('pair', 'model-1'),
-      instances: ['first', 'second'].map((label) => ({
-        id: `pair:${label}` as AgentRoleInstanceId,
-        label,
+      // The second needs an alias to share this machine and agent with the first.
+      instances: ['first', 'second'].map((name) => ({
+        id: `pair:${name}` as AgentRoleInstanceId,
+        ...(name === 'second' ? { alias: 'Second' } : {}),
         machineId: 'machine-1' as MachineId,
         agentConfigId: 'agent-1' as AgentConfigId,
         runConfig: { modelId: 'model-1' },
@@ -347,7 +375,7 @@ describe('useSessionAgentRole', () => {
         name: 'role-special',
         emoji: DEFAULT_AGENT_ROLE_EMOJI,
         instanceId: 'role-special:machine-1',
-        instanceLabel: 'Default',
+        instanceLabel: 'Codex',
       },
     });
   });

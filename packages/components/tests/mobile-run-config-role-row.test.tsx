@@ -20,7 +20,7 @@ import { agentConfigMetaCacheAtom } from '../src/atoms/doc-meta';
 import { MobileRunConfigSheet } from '../src/components/mobile/mobile-run-config-sheet';
 import type { ComposerAgentRoleItem } from '../src/lib/composer-agent-roles';
 import { initI18n } from '../src/i18n';
-import { singleMachineRole } from './agent-role-fixture';
+import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -59,12 +59,7 @@ const makeRole = (
 const entryOf = (
   role: CatalogAgentRole,
   availability: ComposerAgentRoleItem['availability']
-): ComposerAgentRoleItem => ({
-  role,
-  instance: role.instances[0]!,
-  title: role.name,
-  availability,
-});
+): ComposerAgentRoleItem => composerItemsOf(role, { availability })[0]!;
 const reviewer: ComposerAgentRoleItem = {
   ...entryOf(makeRole({ id: 'role-1' as AgentRoleId, name: 'Code Reviewer', emoji: '🔍' }), {
     kind: 'available',
@@ -75,23 +70,19 @@ const retired = entryOf(makeRole({ id: 'role-2' as AgentRoleId, name: 'Retired R
   kind: 'unavailable',
   reason: 'agent_config_missing',
 });
-/** Two instances of one Role on this machine: two entries, each with its label. */
+/** Two groups of one Role on this machine: two entries, each named by its group. */
 const pairRole = makeRole({
   id: 'role-3' as AgentRoleId,
   name: 'uiStyle',
-  instances: ['Claude', 'Gemini'].map((label) => ({
-    id: `ui-${label}` as AgentRoleInstanceId,
-    label,
+  instances: ['Claude', 'Gemini'].map((alias) => ({
+    id: `ui-${alias}` as AgentRoleInstanceId,
+    alias,
     machineId,
     agentConfigId: agentConfig.id,
     runConfig: {},
   })),
 });
-const pair = pairRole.instances.map((instance) => ({
-  ...entryOf(pairRole, { kind: 'available' }),
-  instance,
-  title: `uiStyle · ${instance.label}`,
-}));
+const pair = composerItemsOf(pairRole);
 
 type SheetProps = ComponentProps<typeof MobileRunConfigSheet>;
 

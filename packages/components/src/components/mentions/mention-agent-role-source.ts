@@ -4,7 +4,7 @@ import {
   getAgentRoleEmoji,
   getAgentRoleMentionSlug,
   normalizeAgentRoleMentionSlug,
-  type AgentRoleInstance,
+  type AgentRoleInstanceId,
   type MachineId,
   type MachineViewMeta,
   type TextRewrite,
@@ -18,10 +18,13 @@ import { rankMentionCandidates } from '@/components/mentions/mention-rank';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import {
   useAgentRoleAvailability,
+  useComposerAgentRoleNames,
   useWorkspaceAgentRoles,
 } from '@/hooks/use-workspace-agent-roles';
 import {
   buildComposerAgentRoleItems,
+  findComposerAgentRoleItem,
+  findDefaultComposerAgentRoleItem,
   type ComposerAgentRoleItem,
 } from '@/lib/composer-agent-roles';
 
@@ -40,35 +43,34 @@ import {
  * Role and instance ids back; the MCP create path resolves the current
  * workspace row and freezes that instance when it accepts the Operation.
  *
- * The list is the composer's: the Role instances on the machine it runs on,
- * one entry each, exactly as its run-config menu lists them.
+ * The list is the composer's: one entry per instance group of every Role, the
+ * composer's machine first, exactly as its run-config menu lists them. A
+ * mention starts a new Session, so an entry on another machine can be used
+ * even where the composer's own conversation cannot move.
  */
 
-/** The machine the surrounding composer runs on; Role mentions list its instances. */
+/** The machine the surrounding composer runs on; Role mentions prefer it. */
 export const AgentRoleMentionMachineContext = React.createContext<MachineId | null>(null);
 
-export type AgentRoleMentionItem = Pick<
-  ComposerAgentRoleItem,
-  'role' | 'instance' | 'title' | 'availability' | 'agentConfig'
-> & {
+export type AgentRoleMentionItem = ComposerAgentRoleItem & {
   /**
-   * The text written after `@`: the Role's name, then `:` and the instance's
-   * label when the machine holds several. Whitespace-free by construction, and
-   * it changes with the names — which is why the committed range carries the id.
+   * The text written after `@`: the Role's name, then `:` and the group's name
+   * when the Role has several groups. Whitespace-free by construction, and it
+   * changes with the names — which is why the committed range carries the id.
    */
   slug: string;
   /** The machine, carried so the detail pane can resolve the instance's ids. */
   machine?: Pick<MachineViewMeta, 'acpCapabilities' | 'name'> | null;
 };
 
-/** `@uiStyle` for a machine's only instance, `@uiStyle:Claude` when there are several. */
+/** `@uiStyle` for a Role with one group, `@uiStyle:Claude-Code` when it has several. */
 export const getAgentRoleInstanceMentionSlug = (
-  item: Pick<ComposerAgentRoleItem, 'role' | 'instance' | 'title'>
+  item: Pick<ComposerAgentRoleItem, 'role' | 'groupName' | 'hasSiblingGroups'>
 ): string => {
   const roleSlug = getAgentRoleMentionSlug(item.role);
-  return item.title === item.role.name
-    ? roleSlug
-    : `${roleSlug}:${normalizeAgentRoleMentionSlug(item.instance.label)}`;
+  return item.hasSiblingGroups
+    ? `${roleSlug}:${normalizeAgentRoleMentionSlug(item.groupName)}`
+    : roleSlug;
 };
 
 // ---------------------------------------------------------------------------
@@ -85,7 +87,7 @@ export const selectAgentRoleMentionCandidates = (
     rankMentionCandidates(
       items.filter((item) => (item.availability.kind === 'available') === available),
       term,
-      { limit, fields: (item) => [item.slug, item.role.name, item.instance.label] }
+      { limit, fields: (item) => [item.slug, item.role.name, item.groupName] }
     );
   return [...rank(true), ...rank(false)].slice(0, limit);
 };
@@ -96,21 +98,18 @@ export const selectAgentRoleMentionCandidates = (
 
 export const buildAgentRoleMentionItems = (
   items: readonly ComposerAgentRoleItem[],
-  machine: AgentRoleMentionItem['machine']
+  machineOf: (machineId: MachineId) => AgentRoleMentionItem['machine']
 ): AgentRoleMentionItem[] =>
   items.map((item) => ({
+    ...item,
     slug: getAgentRoleInstanceMentionSlug(item),
-    role: item.role,
-    instance: item.instance,
-    title: item.title,
-    availability: item.availability,
-    agentConfig: item.agentConfig,
-    machine: machine ?? null,
+    machine: machineOf(item.instance.machineId) ?? null,
   }));
 
 /**
- * The Role instances on the composer's machine, with execution availability
- * retained for disabled menu rows. Only available items may expand before send.
+ * Every Role's entries, the composer's machine first, with execution
+ * availability retained for disabled menu rows. Only available items may
+ * expand before send.
  *
  * One owner, like `useSessionMentionItems`: the menu and the before-send
  * expansion both need the same list, and deriving it twice would re-resolve
@@ -126,6 +125,7 @@ export function useAgentRoleMentionItems(
   const { machines } = useVisibleMachineMetas();
   const { roles } = useWorkspaceAgentRoles();
   const { resolveInstance } = useAgentRoleAvailability(roles);
+  const names = useComposerAgentRoleNames();
 
   return React.useMemo(
     () =>
@@ -135,19 +135,31 @@ export function useAgentRoleMentionItems(
           machineId,
           agentConfigs,
           resolveAvailability: resolveInstance,
+          names,
         }),
-        machineId ? machines.get(machineId) : null
+        (id) => machines.get(id)
       ),
-    [agentConfigs, machineId, machines, resolveInstance, roles]
+    [agentConfigs, machineId, machines, names, resolveInstance, roles]
   );
 }
 
 /**
- * The item a committed range names: its instance, or — a range written before
- * instances carried the Role id — that Role's default instance here.
+ * The instance a committed range runs: the one it names, or — the instances of
+ * a group standing in for each other — the first of its group that can run; a
+ * range written before instances carries the Role id, which means what a bare
+ * pick of that Role runs.
  */
-const findMentionItem = (items: readonly AgentRoleMentionItem[], value: string) =>
-  items.find((item) => item.instance.id === value) ?? items.find((item) => item.role.id === value);
+const findMentionTarget = (
+  items: readonly AgentRoleMentionItem[],
+  value: string
+): ComposerAgentRoleItem | undefined => {
+  const named = findComposerAgentRoleItem(items, value as AgentRoleInstanceId);
+  if (named)
+    return named.availability.kind === 'available'
+      ? named
+      : named.group.find((entry) => entry.availability.kind === 'available');
+  return findDefaultComposerAgentRoleItem(items, value);
+};
 
 // ---------------------------------------------------------------------------
 // Text: hydration and before-send expansion
@@ -163,9 +175,9 @@ const findMentionItem = (items: readonly AgentRoleMentionItem[], value: string) 
  */
 export const buildAgentRoleMentionPrompt = (
   role: { id: string; name: string },
-  instance: Pick<AgentRoleInstance, 'id' | 'label'>
+  instance: { id: string; name: string }
 ): string =>
-  `use lody mcp to create a session with agent role[id: ${role.id}, instance: ${instance.id}, name: ${role.name} · ${instance.label}]`;
+  `use lody mcp to create a session with agent role[id: ${role.id}, instance: ${instance.id}, name: ${role.name} · ${instance.name}]`;
 
 export const buildAgentRoleMentionRewrites = (
   text: string,
@@ -175,7 +187,7 @@ export const buildAgentRoleMentionRewrites = (
   const rewrites: TextRewrite[] = [];
   for (const mention of mentions) {
     if (mention.kind !== 'agent_role' || !mention.value) continue;
-    const item = findMentionItem(items, mention.value);
+    const item = findMentionTarget(items, mention.value);
     const label = text.slice(mention.start, mention.end).replace(/^@/, '');
     // An unknown Role id is left verbatim on purpose: the Role may have been
     // deleted, unshared, or become unavailable since the draft was written, and
@@ -185,7 +197,10 @@ export const buildAgentRoleMentionRewrites = (
     rewrites.push({
       start: mention.start,
       end: mention.end,
-      replacement: buildAgentRoleMentionPrompt(item.role, item.instance),
+      replacement: buildAgentRoleMentionPrompt(item.role, {
+        id: item.instance.id,
+        name: item.groupName,
+      }),
       // The mark is frozen with the span, not resolved when the bubble renders:
       // a sent message shows the Role as it was, and painting history must not
       // depend on the mutable catalog being loaded.
@@ -222,24 +237,29 @@ export const hydrateAgentRoleMentionsFromText = (
   });
 
 /**
- * Token → instance id for the available items. A bare Role name also names the
- * Role's default instance here (its first). A token two entries would both
- * produce — a Role named `a:b` beside Role `a`'s instance `b` — is left out, so
- * it stays plain text rather than picking one of them.
+ * Token → instance id. An entry's token names its group, which runs its first
+ * instance that can (this machine first); a bare Role name names what a bare
+ * pick of the Role runs. A token two entries would both produce — a Role named
+ * `a:b` beside Role `a`'s group `b` — is left out, so it stays plain text
+ * rather than picking one of them.
  */
 export const buildAgentRoleMentionSlugMap = (
   items: readonly AgentRoleMentionItem[]
 ): Map<string, string> => {
-  const available = items.filter((item) => item.availability.kind === 'available');
   const claims = new Map<string, Set<string>>();
   const claim = (slug: string, instanceId: string) =>
     claims.set(slug, (claims.get(slug) ?? new Set()).add(instanceId));
-  for (const item of available) claim(item.slug, item.instance.id);
+  for (const item of items) {
+    const runs = item.group.find((entry) => entry.availability.kind === 'available');
+    if (runs) claim(item.slug, runs.instance.id);
+  }
   const map = new Map<string, string>();
   for (const [slug, ids] of claims) if (ids.size === 1) map.set(slug, [...ids][0]!);
-  for (const item of available) {
+  for (const item of items) {
     const roleSlug = getAgentRoleMentionSlug(item.role);
-    if (!claims.has(roleSlug) && !map.has(roleSlug)) map.set(roleSlug, item.instance.id);
+    if (claims.has(roleSlug) || map.has(roleSlug)) continue;
+    const runs = findDefaultComposerAgentRoleItem(items, item.role.id);
+    if (runs?.availability.kind === 'available') map.set(roleSlug, runs.instance.id);
   }
   return map;
 };

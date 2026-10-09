@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
+import { useTranslation } from 'react-i18next';
 import { selectAtom } from 'jotai/utils';
 import {
   listAccessibleAgentRoles,
@@ -23,6 +24,7 @@ import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { useMachineFlockAgentConfigsForMachineIds } from '@/hooks/use-machine-flock-agent-configs';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
+import type { ComposerAgentRoleNames } from '@/lib/composer-agent-roles';
 import { deleteWorkspaceAgentRole, writeWorkspaceAgentRole } from '@/lib/workspace-catalog-write';
 
 export type WorkspaceAgentRolesSnapshot = {
@@ -162,4 +164,17 @@ export function useWorkspaceAgentRoleActions(): {
     [runtime]
   );
   return { upsert, remove };
+}
+
+/** What composer Role lists name that the catalog does not: machines and a missing agent. */
+export function useComposerAgentRoleNames(): ComposerAgentRoleNames {
+  const { t } = useTranslation();
+  const { machines } = useVisibleMachineMetas();
+  return useMemo(
+    () => ({
+      machine: (machineId) => machines.get(machineId)?.name,
+      unknownAgent: t('settings.agentRoles.unknownAgentConfig'),
+    }),
+    [machines, t]
+  );
 }

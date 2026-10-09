@@ -31,7 +31,7 @@ import type {
   SessionMeta,
   SessionInputBlock,
 } from '@lody/shared';
-import { singleMachineRole } from './agent-role-fixture';
+import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
 
 const sessionAgentRoleState = vi.hoisted(() => ({
   control: {
@@ -199,7 +199,7 @@ describe('SessionChatInputArea submission feedback', () => {
     });
     const instance = role.instances[0]!;
     sessionAgentRoleState.control = {
-      items: [{ role, instance, title: role.name, availability: { kind: 'available' } }],
+      items: composerItemsOf(role),
       selectedInstanceId: instance.id,
       onSelect: () => undefined,
     };

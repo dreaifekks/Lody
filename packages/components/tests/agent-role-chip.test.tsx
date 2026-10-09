@@ -12,13 +12,9 @@ import {
   type MachineId,
 } from '@lody/shared';
 
-let agentRoleItems: Array<{
-  slug: string;
-  role: CatalogAgentRole;
-  instance: CatalogAgentRole['instances'][number];
-  title: string;
-  availability: { kind: 'available' };
-}> = [];
+import type { AgentRoleMentionItem } from '../src/components/mentions/mention-agent-role-source';
+
+let agentRoleItems: AgentRoleMentionItem[] = [];
 
 vi.mock('../src/components/mentions/mention-project-file-source', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -53,7 +49,7 @@ vi.mock('../src/components/mentions/mention-agent-role-source', async (importOri
 import { CombinedMentionTextarea } from '../src/components/mentions/combined-mention-textarea';
 import { getComposerMentionChip } from '../src/components/mentions/mention-chips';
 import { initI18n } from '../src/i18n';
-import { singleMachineRole } from './agent-role-fixture';
+import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -75,12 +71,9 @@ const role = (emoji?: string): CatalogAgentRole =>
     updatedAt: 1,
   });
 
-const itemOf = (entry: CatalogAgentRole) => ({
+const itemOf = (entry: CatalogAgentRole): AgentRoleMentionItem => ({
+  ...composerItemsOf(entry)[0]!,
   slug: 'Code-Reviewer',
-  role: entry,
-  instance: entry.instances[0]!,
-  title: entry.name,
-  availability: { kind: 'available' as const },
 });
 
 describe('agent role chip in the composer', () => {

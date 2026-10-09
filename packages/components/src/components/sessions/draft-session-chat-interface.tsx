@@ -69,11 +69,14 @@ import {
   buildAgentRoleTurnSelection,
   buildComposerAgentRoleItems,
   findComposerAgentRoleItem,
+  findDefaultComposerAgentRoleItem,
   isComposerAgentRoleApplied,
+  pinComposerAgentRoleItemsToMachine,
   resolvePendingAgentRoleSelection,
 } from '@/lib/composer-agent-roles';
 import {
   useAgentRoleAvailability,
+  useComposerAgentRoleNames,
   useWorkspaceAgentRoles,
 } from '@/hooks/use-workspace-agent-roles';
 import type { SessionAgentRoleControl } from '@/hooks/use-session-agent-role';
@@ -159,19 +162,24 @@ export const DraftSessionChatInterface = memo(
       const { roles: workspaceAgentRoles } = useWorkspaceAgentRoles();
       const { resolveInstance: resolveAgentRoleInstanceAvailability } =
         useAgentRoleAvailability(workspaceAgentRoles);
-      /* A blank child tab is still a new Session. Offer every Role instance on
-         the parent workspace's machine, just as Chat Landing does for its
-         selected machine; the Role itself may choose a different Agent type. */
+      /* A blank child tab is still a new Session, but on the parent's machine:
+         its entries there are offered whatever their Agent type, and entries
+         elsewhere are listed but cannot be picked. */
+      const agentRoleNames = useComposerAgentRoleNames();
       const composerAgentRoleItems = useMemo(
         () =>
-          buildComposerAgentRoleItems({
-            roles: workspaceAgentRoles,
-            machineId: parentSession.machineId,
-            agentConfigs,
-            resolveAvailability: resolveAgentRoleInstanceAvailability,
-          }),
+          pinComposerAgentRoleItemsToMachine(
+            buildComposerAgentRoleItems({
+              roles: workspaceAgentRoles,
+              machineId: parentSession.machineId,
+              agentConfigs,
+              resolveAvailability: resolveAgentRoleInstanceAvailability,
+              names: agentRoleNames,
+            })
+          ),
         [
           agentConfigs,
+          agentRoleNames,
           parentSession.machineId,
           resolveAgentRoleInstanceAvailability,
           workspaceAgentRoles,
@@ -186,7 +194,7 @@ export const DraftSessionChatInterface = memo(
         if (!draft.agentRoleId || !draft.agentConfigId) return null;
         const item =
           findComposerAgentRoleItem(composerAgentRoleItems, draft.agentRoleInstanceId) ??
-          composerAgentRoleItems.find((entry) => entry.role.id === draft.agentRoleId);
+          findDefaultComposerAgentRoleItem(composerAgentRoleItems, draft.agentRoleId);
         if (!item || item.availability.kind !== 'available') return null;
         return item.instance.agentConfigId === draft.agentConfigId ? item : null;
       }, [

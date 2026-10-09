@@ -145,7 +145,9 @@ import {
   buildComposerAgentRoleItems,
   doesAgentRolePinPermissionMode,
   findComposerAgentRoleItem,
-  formatAgentRoleInstanceTitle,
+  describeComposerAgentRoleInstance,
+  findDefaultComposerAgentRoleItem,
+  planNewChatAgentRolePick,
   isComposerAgentRoleApplied,
   resolvePendingAgentRoleSelection,
 } from '@/lib/composer-agent-roles';
@@ -158,6 +160,7 @@ import {
 import { useAcpSelectorOptions } from '@/hooks/use-acp-selector-options';
 import {
   useAgentRoleAvailability,
+  useComposerAgentRoleNames,
   useWorkspaceAgentRoles,
 } from '@/hooks/use-workspace-agent-roles';
 import { useAvailableCommands } from '@/hooks/use-available-commands';
@@ -1742,11 +1745,22 @@ function WorkspaceChatLanding({
       modelId: selectedModelId,
       configOptionValues,
     })
-      ? { role, instance, title: formatAgentRoleInstanceTitle(role, instance) }
+      ? {
+          role,
+          instance,
+          ...describeComposerAgentRoleInstance(
+            role,
+            instance,
+            executorConfigs,
+            t('settings.agentRoles.unknownAgentConfig')
+          ),
+        }
       : null;
   }, [
     activeAgentRolePreference,
     configOptionValues,
+    executorConfigs,
+    t,
     selectedAgent,
     selectedModeId,
     selectedModelId,
@@ -3588,8 +3602,9 @@ function WorkspaceChatLanding({
     () => (scopedMachineId ? [scopedMachineId] : []),
     [scopedMachineId]
   );
-  /* Role instances offered for the machine this chat will start on, one flat
-     list. An instance elsewhere could only move the chat off this machine. */
+  /* Every Role's entries, this chat's machine first. Picking one elsewhere
+     moves the chat to that machine: nothing has started yet. */
+  const agentRoleNames = useComposerAgentRoleNames();
   const composerAgentRoleItems = useMemo(
     () =>
       buildComposerAgentRoleItems({
@@ -3597,8 +3612,15 @@ function WorkspaceChatLanding({
         machineId: scopedMachineId,
         agentConfigs: executorConfigs,
         resolveAvailability: resolveAgentRoleInstanceAvailability,
+        names: agentRoleNames,
       }),
-    [executorConfigs, resolveAgentRoleInstanceAvailability, scopedMachineId, workspaceAgentRoles]
+    [
+      agentRoleNames,
+      executorConfigs,
+      resolveAgentRoleInstanceAvailability,
+      scopedMachineId,
+      workspaceAgentRoles,
+    ]
   );
   const handleAgentRoleSelect = useCallback(
     (instanceId: AgentRoleInstanceId | null) => {
@@ -3614,15 +3636,17 @@ function WorkspaceChatLanding({
       // run; it is never something the composer quietly starts a chat with.
       if (!item || item.availability.kind !== 'available') return;
       const { instance } = item;
+      const pick = planNewChatAgentRolePick(item, scopedMachineId);
       agentRolePreferenceTokenRef.current += 1;
       setPendingRecentRunConfig(null);
-      setSelectedAgent({ agentId: instance.agentConfigId, machineId: instance.machineId });
+      if (pick.moveToMachineId) handleMachineChange(pick.moveToMachineId);
+      setSelectedAgent(pick.agentSelection);
       setAgentRolePreference({
         instanceId: instance.id,
         token: agentRolePreferenceTokenRef.current,
       });
     },
-    [composerAgentRoleItems]
+    [composerAgentRoleItems, handleMachineChange, scopedMachineId]
   );
 
   /* Creating a Role from the composer opens on the configuration already in
@@ -3633,7 +3657,6 @@ function WorkspaceChatLanding({
       openAgentRoleEditorForCreate(
         buildAgentRoleFormValueFromRunConfig({
           instanceId: crypto.randomUUID() as AgentRoleInstanceId,
-          label: selectedConfig?.name ?? '',
           machineId: selectedAgent?.machineId ?? scopedMachineId,
           agentConfigId: selectedAgent?.agentId ?? null,
           modeId: selectedModeId,
@@ -3647,7 +3670,6 @@ function WorkspaceChatLanding({
     modelOptions.length,
     scopedMachineId,
     selectedAgent,
-    selectedConfig?.name,
     selectedModeId,
     selectedModelId,
   ]);
@@ -3697,12 +3719,12 @@ function WorkspaceChatLanding({
       setAgentRoleRestored(true);
       return;
     }
-    // The stored instance, or — stored before instances — the Role's default here.
+    // The stored instance, or — stored before instances — what a bare pick runs.
     const item =
       findComposerAgentRoleItem(
         composerAgentRoleItems,
         stored.agentRoleInstanceId as AgentRoleInstanceId | undefined
-      ) ?? composerAgentRoleItems.find((entry) => entry.role.id === stored.agentRoleId);
+      ) ?? findDefaultComposerAgentRoleItem(composerAgentRoleItems, stored.agentRoleId);
     if (!item) {
       if (agentRolesSynced) setAgentRoleRestored(true);
       return;
@@ -3772,7 +3794,7 @@ function WorkspaceChatLanding({
           findComposerAgentRoleItem(
             selectableAgentRoleItems,
             record.agentRoleInstanceId as AgentRoleInstanceId | undefined
-          ) ?? selectableAgentRoleItems.find((entry) => entry.role.id === record.agentRoleId);
+          ) ?? findDefaultComposerAgentRoleItem(selectableAgentRoleItems, record.agentRoleId);
         if (item) handleAgentRoleSelect(item.instance.id);
         return;
       }

@@ -24,7 +24,10 @@ import type {
   AcpConfigOptionValue,
 } from '@/components/shared/acp-selector-options';
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
-import type { ComposerAgentRoleItem } from '@/lib/composer-agent-roles';
+import {
+  buildComposerAgentRoleItems,
+  type ComposerAgentRoleItem,
+} from '@/lib/composer-agent-roles';
 
 /**
  * The mobile composer's consolidated run-config bottom sheet, opened by
@@ -331,7 +334,6 @@ const makeRole = (
     overrides.instances ?? [
       {
         id: `${role.id}:${role.machineId}` as AgentRoleInstanceId,
-        label: 'Codex',
         machineId: role.machineId,
         agentConfigId: role.agentConfigId,
         runConfig: role.runConfig,
@@ -340,16 +342,18 @@ const makeRole = (
   );
 };
 
-/** A Role's only instance on this machine, as the composer lists it. */
+/** A Role's one entry, as the composer lists it on this machine. */
 const entryOf = (
   role: CatalogAgentRole,
   availability: ComposerAgentRoleItem['availability'] = { kind: 'available' }
-): ComposerAgentRoleItem => ({
-  role,
-  instance: role.instances[0]!,
-  title: role.name,
-  availability,
-});
+): ComposerAgentRoleItem =>
+  buildComposerAgentRoleItems({
+    roles: [role],
+    machineId,
+    agentConfigs: agents,
+    resolveAvailability: () => availability,
+    names: { machine: () => undefined, unknownAgent: 'Unknown agent' },
+  })[0]!;
 
 /**
  * The machine has no Roles yet. The row still renders and reads `None`; its

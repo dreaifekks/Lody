@@ -21,7 +21,7 @@ import { MobileSessionRunConfig } from '../src/components/mobile/mobile-session-
 import type { ComposerAgentRoleItem } from '../src/lib/composer-agent-roles';
 import { initI18n } from '../src/i18n';
 import { Tooltip } from '@lody/ui/tooltip';
-import { singleMachineRole } from './agent-role-fixture';
+import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -53,13 +53,7 @@ const role: CatalogAgentRole = singleMachineRole({
   updatedAt: 1,
 });
 
-const roleItem: ComposerAgentRoleItem = {
-  role,
-  instance: role.instances[0]!,
-  title: role.name,
-  availability: { kind: 'available' },
-  agentConfig,
-};
+const roleItem: ComposerAgentRoleItem = { ...composerItemsOf(role)[0]!, agentConfig };
 
 type MenuProps = ComponentProps<typeof DesktopRunConfigMenu>;
 
@@ -257,7 +251,15 @@ describe('DesktopRunConfigMenu role face', () => {
     const view = await render({
       agentRoles: {
         items: [
-          { ...roleItem, instance: { ...roleItem.instance, runConfig: { modelId: 'gpt-5.5' } } },
+          {
+            ...composerItemsOf(
+              singleMachineRole({
+                ...role,
+                instances: [{ ...role.instances[0]!, runConfig: { modelId: 'gpt-5.5' } }],
+              })
+            )[0]!,
+            agentConfig,
+          },
         ],
         selectedInstanceId: roleItem.instance.id,
         onSelect: () => undefined,

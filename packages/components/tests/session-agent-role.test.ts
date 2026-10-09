@@ -69,15 +69,26 @@ describe('selectSessionAgentRoles', () => {
   ];
   const resolveAvailability = () => ({ kind: 'available' as const });
 
-  it('offers only Roles bound to the existing Session machine and provider', () => {
+  const names = {
+    machine: (id: MachineId) => (id === 'machine-2' ? 'Build box' : undefined),
+    unknownAgent: 'Unknown agent',
+  };
+
+  it("offers this Session's binding, and lists Roles elsewhere without letting them be picked", () => {
     const items = selectSessionAgentRoles({
       roles: [codexHere, codexElsewhere, claude],
       machineId: 'machine-1' as MachineId,
       agentConfigId: 'codex-1' as AgentConfigId,
       agentConfigs,
       resolveAvailability,
+      names,
     });
-    expect(items.map((item) => item.role.id)).toEqual(['r-codex']);
+    // Claude here runs another agent: not offered. The Auditor on the build box
+    // is listed, but the Session cannot move there.
+    expect(items.map((item) => [item.role.id, item.title, item.availability])).toEqual([
+      ['r-codex', 'Reviewer', { kind: 'available' }],
+      ['r-codex-2', 'Auditor · Build box', { kind: 'unavailable', reason: 'other_machine' }],
+    ]);
   });
 
   it('keeps an exact-binding Role visible when its config is gone', () => {
@@ -92,6 +103,7 @@ describe('selectSessionAgentRoles', () => {
       agentConfigId: 'deleted' as AgentConfigId,
       agentConfigs,
       resolveAvailability: () => ({ kind: 'unavailable', reason: 'agent_config_missing' }),
+      names,
     });
     expect(items).toHaveLength(1);
     expect(items[0]?.role).toEqual(orphan);

@@ -309,7 +309,7 @@ function MobileRunConfigSheetRows({
         // Role under it.
         icon: <span aria-hidden="true" />,
       },
-      ...agentRoles.items.map(({ role, instance, title, availability }) => {
+      ...agentRoles.items.map(({ role, instance, title, groupName, availability }) => {
         // Listed either way, so the reason is what makes a disabled row
         // readable rather than broken-looking.
         const reason =
@@ -321,7 +321,7 @@ function MobileRunConfigSheetRows({
         return {
           value: instance.id as string,
           label: title,
-          searchText: `${role.name} ${instance.label}`,
+          searchText: `${role.name} ${groupName}`,
           icon: (
             <span {...stylex.props(styles.emoji)} aria-hidden="true">
               {getAgentRoleEmoji(role)}

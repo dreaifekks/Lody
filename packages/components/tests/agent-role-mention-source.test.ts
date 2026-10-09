@@ -11,6 +11,7 @@ import {
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRole,
+  type AgentRoleAvailability,
   type AgentRoleId,
   type AgentRoleInstance,
   type AgentRoleInstanceId,
@@ -82,6 +83,10 @@ vi.mock('../src/hooks/use-workspace-agent-roles', () => ({
         loadedAgentConfigMachineIds: reach.authorized as Set<MachineId>,
       }),
   }),
+  useComposerAgentRoleNames: () => ({
+    machine: (id: string) => id,
+    unknownAgent: 'Unknown agent',
+  }),
 }));
 vi.mock('../src/components/mentions/mention-session-source', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -117,18 +122,18 @@ const role = (overrides: Partial<AgentRole> = {}): CatalogAgentRole =>
 
 const instance = (
   id: string,
-  label: string,
+  alias: string,
   agentConfigId: string,
   onMachine: MachineId = machineId
 ): AgentRoleInstance => ({
   id: id as AgentRoleInstanceId,
-  label,
+  alias,
   machineId: onMachine,
   agentConfigId: agentConfigId as AgentConfigId,
   runConfig: {},
 });
 
-/** uiStyle with a Claude and a Gemini instance on this machine, and one elsewhere. */
+/** uiStyle: a Claude group here and on machine-2, and a Gemini group here. */
 const uiStyle = role({
   id: 'ui-style' as AgentRoleId,
   name: 'uiStyle',
@@ -136,7 +141,7 @@ const uiStyle = role({
   instances: [
     instance('ui-claude', 'Claude', 'config-claude'),
     instance('ui-gemini', 'Gemini', 'config-gemini'),
-    instance('ui-remote', 'Remote', 'config-remote', 'machine-2' as MachineId),
+    instance('ui-remote', 'Claude', 'config-remote', 'machine-2' as MachineId),
   ],
 });
 
@@ -150,7 +155,12 @@ const agentConfigFor = (id: string) =>
     env: {},
   }) as unknown as AgentConfigMeta;
 
-const items = (...roles: CatalogAgentRole[]): AgentRoleMentionItem[] =>
+const itemsWith = (
+  roles: CatalogAgentRole[],
+  resolveAvailability: (entry: AgentRoleInstance) => AgentRoleAvailability = () => ({
+    kind: 'available',
+  })
+): AgentRoleMentionItem[] =>
   buildAgentRoleMentionItems(
     buildComposerAgentRoleItems({
       roles,
@@ -158,16 +168,19 @@ const items = (...roles: CatalogAgentRole[]): AgentRoleMentionItem[] =>
       agentConfigs: roles.flatMap((entry) =>
         entry.instances.map((candidate) => agentConfigFor(candidate.agentConfigId))
       ),
-      resolveAvailability: () => ({ kind: 'available' }),
+      resolveAvailability,
+      names: { machine: () => 'Build box', unknownAgent: 'Unknown agent' },
     }),
-    { name: 'Studio' }
+    () => ({ name: 'Studio' })
   );
+const items = (...roles: CatalogAgentRole[]) => itemsWith(roles);
 
-const promptFor = (entry: CatalogAgentRole, index = 0) =>
-  buildAgentRoleMentionPrompt(entry, entry.instances[index]!);
+/** The instruction for one instance, named by its group. */
+const promptFor = (entry: CatalogAgentRole, index = 0, name = 'Codex') =>
+  buildAgentRoleMentionPrompt(entry, { id: entry.instances[index]!.id, name });
 
 describe('agent role reach from a composer', () => {
-  it("expands only the composer machine's instances, never another machine's", async () => {
+  it('expands a Role on any machine this user may reach, never one it cannot', async () => {
     const here = role({ id: 'here' as AgentRoleId, name: 'Here Reviewer' });
     const remote = role({
       id: 'remote' as AgentRoleId,
@@ -175,7 +188,13 @@ describe('agent role reach from a composer', () => {
       machineId: 'machine-2' as MachineId,
       agentConfigId: 'config-2' as AgentConfigId,
     });
-    reach.roles = [here, remote];
+    const unreachable = role({
+      id: 'unreachable' as AgentRoleId,
+      name: 'Unreachable Reviewer',
+      machineId: 'machine-3' as MachineId,
+      agentConfigId: 'config-3' as AgentConfigId,
+    });
+    reach.roles = [here, remote, unreachable];
     reach.authorized = new Set([machineId, 'machine-2']);
 
     let expansion: MentionPromptExpansion | undefined;
@@ -203,35 +222,54 @@ describe('agent role reach from a composer', () => {
       )
     );
 
-    const text = '@Here-Reviewer and @Remote-Reviewer';
+    const text = '@Here-Reviewer and @Remote-Reviewer or @Unreachable-Reviewer';
     const expanded = expansion!.expand({
       text,
       mentions: [
         { start: 0, end: 14, kind: 'agent_role', value: here.instances[0]!.id },
         { start: 19, end: 35, kind: 'agent_role', value: remote.instances[0]!.id },
+        { start: 39, end: 60, kind: 'agent_role', value: unreachable.instances[0]!.id },
       ],
     });
-    expect(expanded.text).toBe(`${promptFor(here)} and @Remote-Reviewer`);
+    // A mention starts a new Session, so the composer's own machine is no limit.
+    expect(expanded.text).toBe(
+      `${promptFor(here)} and ${promptFor(remote)} or @Unreachable-Reviewer`
+    );
     await act(async () => root.unmount());
   });
 });
 
 describe('agent role mention tokens', () => {
-  it("names a machine's only instance by the Role alone", () => {
+  it('names a Role with one group by the Role alone', () => {
     expect(items(role({ name: 'Code Reviewer' })).map((item) => item.slug)).toEqual([
       'Code-Reviewer',
     ]);
   });
 
-  it('names each of several instances on one machine by Role and label', () => {
+  it("names each group by Role and group, one entry for a group's instances everywhere", () => {
     const list = items(uiStyle);
     expect(list.map((item) => [item.slug, item.title, item.instance.id])).toEqual([
       ['uiStyle:Claude', 'uiStyle · Claude', 'ui-claude'],
       ['uiStyle:Gemini', 'uiStyle · Gemini', 'ui-gemini'],
     ]);
+    // Unaliased instances take their agent's name.
+    const plain = items(
+      role({
+        id: 'plain' as AgentRoleId,
+        name: 'Plain',
+        instances: [
+          { ...instance('p-1', '', 'config-1'), alias: undefined },
+          { ...instance('p-2', 'Strict', 'config-1'), machineId: 'machine-2' as MachineId },
+        ],
+      })
+    );
+    expect(plain.map((item) => [item.slug, item.title])).toEqual([
+      ['Plain:Codex', 'Plain · Codex'],
+      ['Plain:Strict', 'Plain · Strict · Build box'],
+    ]);
   });
 
-  it('matches the instance label as well as the Role name', () => {
+  it('matches the group name as well as the Role name', () => {
     const list = items(uiStyle, role());
     expect(selectAgentRoleMentionCandidates(list, 'gem').map((item) => item.slug)).toEqual([
       'uiStyle:Gemini',
@@ -242,12 +280,25 @@ describe('agent role mention tokens', () => {
     ]);
   });
 
-  it("reads a bare Role name as the Role's default instance here", () => {
+  it('reads a bare Role name as what a bare pick runs, and a group token as its first that can run', () => {
     expect(hydrateAgentRoleMentionsFromText('ask @uiStyle', items(uiStyle)).values).toEqual([
       'ui-claude',
     ]);
     expect(hydrateAgentRoleMentionsFromText('ask @uiStyle:Gemini', items(uiStyle)).values).toEqual([
       'ui-gemini',
+    ]);
+    // The local Claude cannot run: the group's token, and the bare Role, go on
+    // to its instance elsewhere before another group.
+    const localClaudeDown = itemsWith([uiStyle], (entry) =>
+      entry.id === 'ui-claude'
+        ? { kind: 'unavailable', reason: 'machine_offline' }
+        : { kind: 'available' }
+    );
+    expect(hydrateAgentRoleMentionsFromText('@uiStyle:Claude', localClaudeDown).values).toEqual([
+      'ui-remote',
+    ]);
+    expect(hydrateAgentRoleMentionsFromText('@uiStyle', localClaudeDown).values).toEqual([
+      'ui-remote',
     ]);
   });
 
@@ -351,7 +402,7 @@ describe('agent role menu rows', () => {
   it.each([{ kind: 'unknown' }, { kind: 'unavailable', reason: 'machine_offline' }] as const)(
     'disables unavailable/loading rows and carries the reason below the title',
     (availability) => {
-      const list = [{ ...items(role())[0]!, availability }];
+      const list = itemsWith([role()], () => availability);
       const [candidate] = buildAgentRoleCandidates(list, '', undefined, () => 'Machine offline');
       expect(candidate).toMatchObject({
         disabled: true,
@@ -414,7 +465,7 @@ describe('agent role before-send expansion', () => {
     expect(expanded.text).toBe(`please ${promptFor(role())} this diff`);
   });
 
-  it('names the picked instance, not the first one', () => {
+  it('names the picked group, and stands in for an instance that cannot run', () => {
     const picked = 'ask @uiStyle:Gemini';
     const expanded = applyTextRewrites(
       picked,
@@ -424,8 +475,24 @@ describe('agent role before-send expansion', () => {
         items(uiStyle)
       )
     );
-    expect(expanded.text).toBe(`ask ${promptFor(uiStyle, 1)}`);
+    expect(expanded.text).toBe(`ask ${promptFor(uiStyle, 1, 'Gemini')}`);
     expect(expanded.spans[0]).toMatchObject({ label: 'uiStyle:Gemini', target: 'ui-style' });
+    // A range on the local Claude, which went offline: its group runs elsewhere.
+    const claude = 'ask @uiStyle:Claude';
+    expect(
+      applyTextRewrites(
+        claude,
+        buildAgentRoleMentionRewrites(
+          claude,
+          [{ start: 4, end: 19, kind: 'agent_role', value: 'ui-claude' }],
+          itemsWith([uiStyle], (entry) =>
+            entry.id === 'ui-claude'
+              ? { kind: 'unavailable', reason: 'machine_offline' }
+              : { kind: 'available' }
+          )
+        )
+      ).text
+    ).toBe(`ask ${promptFor(uiStyle, 2, 'Claude')}`);
   });
 
   it('leaves a role that is no longer offered as plain text', () => {

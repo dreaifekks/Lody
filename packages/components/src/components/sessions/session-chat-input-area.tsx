@@ -1982,8 +1982,6 @@ export const SessionChatInputArea = memo(
             openAgentRoleEditorForCreate(
               buildAgentRoleFormValueFromRunConfig({
                 instanceId: crypto.randomUUID() as AgentRoleInstanceId,
-                label:
-                  agentConfigs.find((config) => config.id === session.agentConfigId)?.name ?? '',
                 machineId: session.machineId,
                 agentConfigId: session.agentConfigId,
                 modeId: selectedModeId,
@@ -2001,7 +1999,6 @@ export const SessionChatInputArea = memo(
         session.agentConfigId,
         session.machineId,
         effectiveAgentRoleControl,
-        agentConfigs,
       ]
     );
     const selectedAgentRolePinsPermissionMode = useMemo(() => {

@@ -12,7 +12,6 @@ import {
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleId,
-  type AgentRoleInstance,
   type AgentRoleInstanceId,
   type CatalogAgentRole,
   type MachineId,
@@ -33,9 +32,10 @@ import type {
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
 import {
   doesAgentRolePinPermissionMode,
+  buildComposerAgentRoleItems,
   findComposerAgentRoleItem,
-  formatAgentRoleInstanceTitle,
   isComposerAgentRoleApplied,
+  pinComposerAgentRoleItemsToMachine,
   type ComposerAgentRoleItem,
 } from '@/lib/composer-agent-roles';
 
@@ -69,6 +69,15 @@ const claude: AgentConfigMeta = {
 };
 
 const agents: AgentConfigMeta[] = [codex, claude];
+
+/** Another member's machine and its Codex, for entries that run elsewhere. */
+const buildBoxId = 'machine-build-box' as MachineId;
+const buildBoxCodex: AgentConfigMeta = {
+  ...codex,
+  id: 'agent-codex-build-box' as AgentConfigId,
+  machineId: buildBoxId,
+  name: 'Codex',
+};
 
 const recentRuns = [
   {
@@ -189,7 +198,6 @@ const makeRole = (
     overrides.instances ?? [
       {
         id: `${role.id}:${role.machineId}` as AgentRoleInstanceId,
-        label: role.agentConfigId === claudeId ? 'Claude' : 'Codex',
         machineId: role.machineId,
         agentConfigId: role.agentConfigId,
         runConfig: role.runConfig,
@@ -198,19 +206,21 @@ const makeRole = (
   );
 };
 
-/** The composer's entries for a Role: one per instance, titled as the composer titles them. */
+/** The composer's entries for a Role, built and titled as the composer builds them. */
 const itemsOf = (
   role: CatalogAgentRole,
-  availability: ComposerAgentRoleItem['availability'],
-  agentConfigFor: (instance: AgentRoleInstance) => ComposerAgentRoleItem['agentConfig']
+  availability: ComposerAgentRoleItem['availability']
 ): ComposerAgentRoleItem[] =>
-  role.instances.map((instance) => ({
-    role,
-    instance,
-    title: formatAgentRoleInstanceTitle(role, instance),
-    availability,
-    agentConfig: agentConfigFor(instance),
-  }));
+  buildComposerAgentRoleItems({
+    roles: [role],
+    machineId,
+    agentConfigs: [...agents, buildBoxCodex],
+    resolveAvailability: () => availability,
+    names: {
+      machine: (id) => (id === buildBoxId ? 'Build box' : undefined),
+      unknownAgent: 'Unknown agent',
+    },
+  });
 
 const reviewer = makeRole({
   id: 'role-reviewer' as AgentRoleId,
@@ -224,7 +234,7 @@ const reviewer = makeRole({
     configOptionValues: { reasoning_effort: 'high' },
   },
 });
-/** Two instances on this machine: listed as two entries, each with its label. */
+/** Two groups here (Claude Code, Codex), each one entry; Codex also runs on the build box. */
 const uiStyle = makeRole({
   id: 'role-ui-style' as AgentRoleId,
   name: 'uiStyle',
@@ -232,29 +242,41 @@ const uiStyle = makeRole({
   instances: [
     {
       id: 'ui-style-claude' as AgentRoleInstanceId,
-      label: 'Claude',
       machineId,
       agentConfigId: claudeId,
       runConfig: { modelId: 'gpt-5.4', configOptionValues: { reasoning_effort: 'medium' } },
     },
     {
       id: 'ui-style-codex' as AgentRoleInstanceId,
-      label: 'Codex',
       machineId,
       agentConfigId: codexId,
       runConfig: { modelId: 'gpt-5.5', configOptionValues: { reasoning_effort: 'high' } },
     },
+    {
+      id: 'ui-style-codex-build-box' as AgentRoleInstanceId,
+      machineId: buildBoxId,
+      agentConfigId: buildBoxCodex.id,
+      runConfig: { modelId: 'gpt-5.5' },
+    },
   ],
 });
-const agentConfigOf = (instance: AgentRoleInstance) =>
-  instance.agentConfigId === claudeId
-    ? claude
-    : instance.agentConfigId === codexId
-      ? codex
-      : undefined;
+/** Only on the build box: listed after this machine's entries, with the machine named. */
+const vision = makeRole({
+  id: 'role-vision' as AgentRoleId,
+  name: 'visionAgent',
+  emoji: '👁️',
+  instances: [
+    {
+      id: 'vision-build-box' as AgentRoleInstanceId,
+      machineId: buildBoxId,
+      agentConfigId: buildBoxCodex.id,
+      runConfig: { modelId: 'gpt-5.5' },
+    },
+  ],
+});
 
 const roleItems: ComposerAgentRoleItem[] = [
-  ...itemsOf(reviewer, { kind: 'available' }, agentConfigOf),
+  ...itemsOf(reviewer, { kind: 'available' }),
   ...itemsOf(
     makeRole({
       id: 'role-docs' as AgentRoleId,
@@ -265,10 +287,9 @@ const roleItems: ComposerAgentRoleItem[] = [
       promptPrefix: 'Write for someone who has never seen this codebase.',
       runConfig: { modelId: 'gpt-5.4', configOptionValues: { reasoning_effort: 'medium' } },
     }),
-    { kind: 'available' },
-    agentConfigOf
+    { kind: 'available' }
   ),
-  ...itemsOf(uiStyle, { kind: 'available' }, agentConfigOf),
+  ...itemsOf(uiStyle, { kind: 'available' }),
   ...itemsOf(
     makeRole({
       id: 'role-triage' as AgentRoleId,
@@ -279,8 +300,7 @@ const roleItems: ComposerAgentRoleItem[] = [
         configOptionValues: { reasoning_effort: 'low', collaboration_mode: 'plan' },
       },
     }),
-    { kind: 'available' },
-    agentConfigOf
+    { kind: 'available' }
   ),
   // Listed, disabled, and stating its reason: an instance never re-points at
   // whichever agent config happens to be available.
@@ -292,9 +312,9 @@ const roleItems: ComposerAgentRoleItem[] = [
       agentConfigId: 'agent-removed' as AgentConfigId,
       runConfig: { modelId: 'gpt-5.1-codex' },
     }),
-    { kind: 'unavailable', reason: 'agent_config_missing' },
-    () => undefined
+    { kind: 'unavailable', reason: 'agent_config_missing' }
   ),
+  ...itemsOf(vision, { kind: 'available' }),
 ];
 
 const manyRoleItems: ComposerAgentRoleItem[] = [
@@ -310,8 +330,7 @@ const manyRoleItems: ComposerAgentRoleItem[] = [
           'then make a focused change and verify the observable result. '.repeat(3),
         runConfig: { modelId: 'gpt-5.4' },
       }),
-      { kind: 'available' },
-      agentConfigOf
+      { kind: 'available' }
     )
   ).flat(),
 ];
@@ -572,11 +591,16 @@ export const LandingRoleSelected: Story = {
   },
 };
 
-/** Existing sessions keep their Agent and only offer Roles for that binding. */
+/**
+ * Existing sessions keep their Agent: Roles for that binding can be picked, and
+ * a Role on another machine is listed but cannot, since the session cannot move.
+ */
 export const ExistingSessionRoles: Story = {
   args: {
     existingSession: true,
-    items: roleItems.filter((item) => item.instance.agentConfigId === codexId),
+    items: pinComposerAgentRoleItemsToMachine(
+      roleItems.filter((item) => !item.local || item.instance.agentConfigId === codexId)
+    ),
   },
   play: async ({ canvasElement }) => {
     await openRoleSubmenu(canvasElement);

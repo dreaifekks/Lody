@@ -24,13 +24,16 @@ import { captureAgentRoleApplied } from '@/lib/agent-role-analytics';
 import {
   buildAgentRoleTurnSelection,
   findComposerAgentRoleItem,
+  findDefaultComposerAgentRoleItem,
   isAgentRoleRunConfigApplied,
+  mapComposerAgentRoleEntries,
   selectSessionAgentRoles,
   type ComposerAgentRoleItem,
   type SessionTurnAgentRoleSelection,
 } from '@/lib/composer-agent-roles';
 import {
   useAgentRoleAvailability,
+  useComposerAgentRoleNames,
   useWorkspaceAgentRoles,
 } from '@/hooks/use-workspace-agent-roles';
 
@@ -117,6 +120,7 @@ export function useSessionAgentRole({
   const { roles, synced: agentRolesSynced } = useWorkspaceAgentRoles();
   const { resolveInstance } = useAgentRoleAvailability(roles);
   const agentConfigs = useAtomValue(getAllAgentConfigAtom);
+  const names = useComposerAgentRoleNames();
   const resolvedItems = useMemo(
     () =>
       selectSessionAgentRoles({
@@ -125,14 +129,18 @@ export function useSessionAgentRole({
         agentConfigId,
         agentConfigs,
         resolveAvailability: resolveInstance,
+        names,
       }),
-    [agentConfigId, agentConfigs, machineId, resolveInstance, roles]
+    [agentConfigId, agentConfigs, machineId, names, resolveInstance, roles]
   );
   const items = useMemo(
     () =>
       durableRoleReady
         ? resolvedItems
-        : resolvedItems.map((item) => ({ ...item, availability: { kind: 'unknown' } as const })),
+        : mapComposerAgentRoleEntries(resolvedItems, (entry) => ({
+            ...entry,
+            availability: { kind: 'unknown' },
+          })),
     [durableRoleReady, resolvedItems]
   );
 
@@ -235,10 +243,10 @@ export function useSessionAgentRole({
     [configOptionValues, selectedModeId, selectedModelId]
   );
   /* The picked instance; a record made before instances names only its Role,
-     which then means that Role's default instance here. */
+     which then means what a bare pick of that Role runs here. */
   const pickedItem = pickedRoleId
     ? (findComposerAgentRoleItem(items, pickedInstanceId) ??
-      items.find((item) => item.role.id === pickedRoleId))
+      findDefaultComposerAgentRoleItem(items, pickedRoleId))
     : undefined;
   const selectedInstanceId = useMemo(() => {
     if (!pickedItem || pickedItem.role.id !== pickedRoleId) return null;
