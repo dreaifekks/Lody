@@ -48,6 +48,11 @@ export type ComposerAgentRoleItem = {
   /** Whether the instance is on the composer's machine. */
   local: boolean;
   /**
+   * The instance's machine as the app names it (`names.machine`): the title's
+   * suffix and the detail pane read this one name.
+   */
+  machineName: string;
+  /**
    * Every instance of this entry's group, each read as an entry of its own, in
    * the order a bare pick tries them: this machine first, then list order.
    */
@@ -296,19 +301,21 @@ export function buildComposerAgentRoleItems({
       const members: ComposerAgentRoleItem[] = [];
       for (const instance of ordered) {
         const local = instance.machineId === machineId;
+        const machineName = names.machine(instance.machineId) ?? instance.machineId;
         members.push({
           role,
           instance,
           title: [
             role.name,
             hasSiblingGroups ? groupName : undefined,
-            local ? undefined : (names.machine(instance.machineId) ?? instance.machineId),
+            local ? undefined : machineName,
           ]
             .filter(Boolean)
             .join(' · '),
           groupName,
           hasSiblingGroups,
           local,
+          machineName,
           group: members,
           groupIndex,
           availability: resolveAvailability(instance),

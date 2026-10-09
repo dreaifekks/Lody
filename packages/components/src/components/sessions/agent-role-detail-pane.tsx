@@ -42,6 +42,8 @@ export type AgentRoleDetailSubject = {
   >;
   /** Only what reading a Role needs: the capabilities its labels resolve against. */
   machine?: Pick<MachineViewMeta, 'acpCapabilities'> | null;
+  /** Where the instance runs, as the entry's title names a machine. */
+  machineName?: string;
 };
 
 /**
@@ -61,6 +63,7 @@ export function AgentRoleDetailPane({
   instance,
   agentConfig,
   machine,
+  machineName,
   onEdit,
   className,
 }: AgentRoleDetailSubject & {
@@ -164,7 +167,9 @@ export function AgentRoleDetailPane({
               />
             ) : null}
             <span className="min-w-0 truncate">
-              {agentConfig?.name ?? t('settings.agentRoles.unknownAgentConfig')}
+              {[agentConfig?.name ?? t('settings.agentRoles.unknownAgentConfig'), machineName]
+                .filter(Boolean)
+                .join(' ・ ')}
             </span>
           </span>
         </span>

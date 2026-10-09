@@ -217,7 +217,7 @@ const itemsOf = (
     agentConfigs: [...agents, buildBoxCodex],
     resolveAvailability: () => availability,
     names: {
-      machine: (id) => (id === buildBoxId ? 'Build box' : undefined),
+      machine: (id) => (id === buildBoxId ? 'Build box' : 'devnuc'),
       unknownAgent: 'Unknown agent',
     },
   });

@@ -110,6 +110,11 @@ describe('AgentRoleDetailPane', () => {
     expect(rowValue(view, 'Permission')).toBeUndefined();
   });
 
+  it('names the machine the instance runs on after its agent', async () => {
+    const view = await render({ machineName: 'devnuc' });
+    expect(view.querySelector('header')?.textContent).toContain('Codex ・ devnuc');
+  });
+
   it('shows the instruction itself and offers editing only where it can be done', async () => {
     const view = await render({ role: role({ promptPrefix: 'Correctness before style.' }) });
     expect(view.textContent).toContain('Correctness before style.');
