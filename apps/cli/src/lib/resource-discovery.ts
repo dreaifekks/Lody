@@ -7,6 +7,9 @@ import {
   type AcpCapabilityCacheEntry,
   type AgentConfigMeta,
   type AgentRole,
+  getAgentRoleAgentFamily,
+  getAgentRoleInstanceGroup,
+  resolveAgentBrandId,
   type AgentRoleInstance,
   type LocalProjectMeta,
   type MachineId,
@@ -35,7 +38,12 @@ export type DiscoveryRow = {
 };
 export type AgentRoleDiscoveryInstance = {
   id: string;
-  label: string;
+  alias: string | null;
+  /**
+   * Its group: instances with one key stand in for each other across
+   * machines. `name` is the alias, else the agent family's name.
+   */
+  group: { key: string; name: string | null };
   machineId: MachineId;
   agentConfigId: string;
   runConfig: ReturnType<typeof normalizeAgentRoleRunConfig>;
@@ -68,6 +76,8 @@ export function summarizeDiscoveryAgent(
     description: config.description,
     cliType: config.cliType,
     agentType: config.agentType,
+    // Resolved here so a reader can tell its agent family without the env.
+    ...(resolveAgentBrandId(config) ? { brandId: resolveAgentBrandId(config) } : {}),
     runConfig: summarizeAgentRunConfigCapabilities(capability),
   };
 }
@@ -258,14 +268,22 @@ export class ResourceDiscovery {
       return state;
     };
     return roles.map((role) => {
-      const instances = role.instances.map((instance): AgentRoleDiscoveryInstance => ({
-        id: instance.id,
-        label: instance.label,
-        machineId: instance.machineId,
-        agentConfigId: instance.agentConfigId,
-        runConfig: normalizeAgentRoleRunConfig(instance.runConfig),
-        availability: instanceAvailability(instance),
-      }));
+      const instances = role.instances.map((instance): AgentRoleDiscoveryInstance => {
+        const config = configs.get(instance.agentConfigId);
+        const group = getAgentRoleInstanceGroup(
+          instance,
+          config && getAgentRoleAgentFamily(config)
+        );
+        return {
+          id: instance.id,
+          alias: instance.alias ?? null,
+          group: { key: group.key, name: group.name ?? null },
+          machineId: instance.machineId,
+          agentConfigId: instance.agentConfigId,
+          runConfig: normalizeAgentRoleRunConfig(instance.runConfig),
+          availability: instanceAvailability(instance),
+        };
+      });
       // Usable when any instance is; otherwise the first instance's reason.
       const states = instances.map((instance) => instance.availability);
       const state = states.find((entry) => entry.state === 'available') ??

@@ -1331,13 +1331,16 @@ type McpAgentRoleTarget = {
   role: AgentRole;
   instance: AgentRoleInstance;
   rule: AgentRoleInstanceRule;
+  /** The instance's group name: its alias, else its agent's. */
+  name?: string;
 };
 
 /**
  * Pick the instance a Role-based create runs (`selectAgentRoleInstance`): a
- * named `agentRoleInstanceId`; else an instance on the explicit `machineId`,
+ * named `agentRoleInstanceId`; else an instance on the explicit `machineId` or
  * on the machine the work is bound to (a local project, or the requester when
- * joining it as a child), on the requester's machine, or the first usable one.
+ * joining it as a child); else the first group with a usable instance, the
+ * requester's machine first inside it. Groups come from discovery.
  * An instance is usable unless discovery reports it unavailable; an unknown
  * state is left to the create path.
  */
@@ -1352,8 +1355,10 @@ const selectMcpAgentRoleTarget = async (args: {
   if (!input.agentRoleId || role?.id !== input.agentRoleId) return undefined;
   const discovery = await args.discovery();
   const reported = await discovery.agentRoleInstances(role.id);
-  const stateOf = (instance: AgentRoleInstance) =>
-    reported.find((entry) => entry.id === instance.id)?.availability;
+  const reportOf = (instance: AgentRoleInstance) =>
+    reported.find((entry) => entry.id === instance.id);
+  const stateOf = (instance: AgentRoleInstance) => reportOf(instance)?.availability;
+  const groupOf = (instance: AgentRoleInstance) => reportOf(instance)?.group;
   const roleMachineIds = [...new Set(role.instances.map((instance) => instance.machineId))];
   let workContextMachineId: MachineId | undefined;
   if (input.useCurrentSessionAsParent === true) workContextMachineId = args.requester.machineId;
@@ -1377,11 +1382,20 @@ const selectMcpAgentRoleTarget = async (args: {
       workContextMachineId,
       callerMachineId: args.requester.machineId,
     },
-    (instance) => stateOf(instance)?.state !== 'unavailable'
+    (instance) => stateOf(instance)?.state !== 'unavailable',
+    (instance) => groupOf(instance)?.key ?? `config:${instance.agentConfigId}`
   );
-  if (choice.kind === 'selected') return { role, instance: choice.instance, rule: choice.rule };
+  if (choice.kind === 'selected') {
+    const groupName = groupOf(choice.instance)?.name;
+    return {
+      role,
+      instance: choice.instance,
+      rule: choice.rule,
+      ...(groupName ? { name: groupName } : {}),
+    };
+  }
   const name = (instance: AgentRoleInstance) =>
-    `${instance.id} (${instance.label} on ${instance.machineId})`;
+    `${instance.id} (${groupOf(instance)?.name ?? instance.agentConfigId} on ${instance.machineId})`;
   const usable = choice.usableInstances.length
     ? `Usable instances: ${choice.usableInstances.map(name).join(', ')}.`
     : 'No instance can run it now.';
@@ -1415,7 +1429,7 @@ const describeAgentRoleTarget = (target: McpAgentRoleTarget | undefined) =>
         agentRole: {
           id: target.role.id,
           instanceId: target.instance.id,
-          instanceLabel: target.instance.label,
+          ...(target.name ? { instanceName: target.name } : {}),
           machineId: target.instance.machineId,
           rule: target.rule,
         },
@@ -1509,7 +1523,7 @@ const resolveMcpSessionCreate = (
     },
     role,
     instance,
-    roleSnapshot: snapshotAgentRole(role, instance),
+    roleSnapshot: snapshotAgentRole(role, { id: instance.id, label: target.name }),
   };
 };
 

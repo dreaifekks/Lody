@@ -138,7 +138,6 @@ const agentRole = (overrides: Partial<AgentRole> = {}): AgentRole => {
     overrides.instances ?? [
       {
         id: legacyAgentRoleInstanceId(row.id, row.machineId),
-        label: 'Default',
         machineId: row.machineId,
         agentConfigId: row.agentConfigId,
         runConfig: row.runConfig,
@@ -297,12 +296,15 @@ describe('Agent Role writes from an Agent', () => {
       callerTier,
       roles: async () => store.read(),
       agentConfig: async (agentConfigId) => {
-        if (agentConfigId === 'claude-opus')
-          return { machineId: 'remote-machine' as MachineId, name: 'Claude Opus' };
-        if (agentConfigId === 'claude-here')
-          return { machineId: 'local-machine' as MachineId, name: 'Claude' };
-        if (agentConfigId === 'claude-also-here')
-          return { machineId: 'local-machine' as MachineId, name: 'Claude 2' };
+        const claudeOn = (machineId: string, name: string) => ({
+          machineId: machineId as MachineId,
+          name,
+          cliType: 'builtin' as const,
+          agentType: 'claude',
+        });
+        if (agentConfigId === 'claude-opus') return claudeOn('remote-machine', 'Claude Opus');
+        if (agentConfigId === 'claude-here') return claudeOn('local-machine', 'Claude');
+        if (agentConfigId === 'claude-also-here') return claudeOn('local-machine', 'Claude 2');
         throw new Error('No readable Agent config');
       },
       // As the daemon ranks it: Lody's builtin default first, then the capability.
@@ -407,31 +409,44 @@ describe('Agent Role writes from an Agent', () => {
     ]);
   });
 
-  it('caps every instance, and allows several on one machine', async () => {
+  it('caps every instance, and allows several on one machine when aliased', async () => {
     const h = setup('edit');
     const here = { agentConfigId: 'claude-here', runConfig: { modeId: 'acceptEdits' } };
     await expect(
       h.write(
         create({ instances: [opus, { ...here, runConfig: { modeId: 'bypassPermissions' } }] })
       )
-    ).rejects.toThrow('instance Claude on machine local-machine (Role: full, conversation: edit)');
-    await expect(h.write(create({ instances: [opus, { ...opus }] }))).rejects.toThrow(
-      'Two instances of the Role have the same label'
+    ).rejects.toThrow('on machine local-machine (Role: full, conversation: edit)');
+    // A second Claude Code on one machine, without an alias, would be the same group.
+    const alsoHere = { agentConfigId: 'claude-also-here', runConfig: { modeId: 'acceptEdits' } };
+    await expect(h.write(create({ instances: [here, alsoHere] }))).rejects.toThrow(
+      'Two instances on one machine would be one group'
     );
+    // So would two instances under one alias there.
+    await expect(
+      h.write(
+        create({
+          instances: [
+            { ...here, alias: 'Strict' },
+            { ...alsoHere, alias: 'strict' },
+          ],
+        })
+      )
+    ).rejects.toThrow('Two instances on one machine would be one group');
     expect(h.store.read()).toEqual([]);
 
-    const alsoHere = { agentConfigId: 'claude-also-here', runConfig: { modeId: 'acceptEdits' } };
-    await h.write(create({ instances: [here, { ...alsoHere, label: 'Second' }, opus] }));
+    await h.write(create({ instances: [here, { ...alsoHere, alias: 'Second' }, opus] }));
     const [created] = h.store.read();
     expect(created).toMatchObject({
       machineId: 'local-machine',
       agentConfigId: 'claude-here',
       instances: [
-        { label: 'Claude', machineId: 'local-machine' },
-        { label: 'Second', machineId: 'local-machine' },
-        { label: 'Claude Opus', machineId: 'remote-machine' },
+        { machineId: 'local-machine', agentConfigId: 'claude-here' },
+        { alias: 'Second', machineId: 'local-machine' },
+        { machineId: 'remote-machine', agentConfigId: 'claude-opus' },
       ],
     });
+    expect(created?.instances[0]).not.toHaveProperty('alias');
     // A later edit above the caller in any instance is refused.
     await expect(
       h.write(
@@ -440,7 +455,7 @@ describe('Agent Role writes from an Agent', () => {
           instances: [here, { ...opus, runConfig: { modeId: 'bypassPermissions' } }],
         })
       )
-    ).rejects.toThrow('instance Claude Opus on machine remote-machine');
+    ).rejects.toThrow('on machine remote-machine');
   });
 
   it('keeps the memory of an instance passed back by id when instances are replaced', async () => {
@@ -461,28 +476,26 @@ describe('Agent Role writes from an Agent', () => {
           { agentConfigId: 'claude-here', runConfig: { modeId: 'acceptEdits' } },
           { id: keptId, agentConfigId: 'claude-opus', runConfig: { modeId: 'default' } },
           // Same agent and machine, but a new instance: no memory of its own.
-          { label: 'Fresh', agentConfigId: 'claude-opus', runConfig: { modeId: 'default' } },
+          { alias: 'Fresh', agentConfigId: 'claude-opus', runConfig: { modeId: 'default' } },
         ],
       })
     );
     expect(h.store.read()[0]?.instances).toEqual([
       {
         id: 'instance-1',
-        label: 'Claude',
         machineId: 'local-machine',
         agentConfigId: 'claude-here',
         runConfig: { modeId: 'acceptEdits' },
       },
       {
         id: keptId,
-        label: 'Default',
         machineId: 'remote-machine',
         agentConfigId: 'claude-opus',
         runConfig: { modeId: 'default', memory },
       },
       {
         id: 'instance-2',
-        label: 'Fresh',
+        alias: 'Fresh',
         machineId: 'remote-machine',
         agentConfigId: 'claude-opus',
         runConfig: { modeId: 'default' },
@@ -1100,11 +1113,11 @@ describe('session MCP input schemas', () => {
   });
 
   describe('picking the instance a Role runs', () => {
-    // Instances on the build box (offline), the Mac and the studio, in that
-    // order; the studio holds a second one with its own label and model.
-    const instanceOn = (machine: string, label = machine, id = `reviewer:${machine}`) => ({
+    // Codex on the build box (offline), the Mac and the studio, in that order,
+    // is one group; the studio also holds an aliased one with its own model.
+    const instanceOn = (machine: string, alias?: string, id = `reviewer:${machine}`) => ({
       id: id as AgentRoleInstanceId,
-      label,
+      ...(alias ? { alias } : {}),
       machineId: machine as MachineId,
       agentConfigId: `codex-${machine}` as AgentConfigId,
       runConfig: { modelId: `model-${machine}` },
@@ -1164,7 +1177,7 @@ describe('session MCP input schemas', () => {
         role,
       });
 
-    it("runs the caller machine's first instance, else the first usable one in list order", async () => {
+    it("runs the first group's instance on the caller machine, else its first usable one", async () => {
       const here = await select({});
       expect(here).toMatchObject({ rule: 'caller', instance: { id: 'reviewer:mac' } });
       // The instance's own agent and run config go into dispatch, and the
@@ -1180,12 +1193,13 @@ describe('session MCP input schemas', () => {
       expect(resolved.roleSnapshot).toMatchObject({
         id: 'reviewer',
         instanceId: 'reviewer:mac',
-        instanceLabel: 'mac',
+        instanceLabel: 'Codex',
       });
+      expect(here?.name).toBe('Codex');
       expect(buildResolvedMcpCreateCanonicalCommand(resolved)).toMatchObject({
         agentRoleInstanceId: 'reviewer:mac',
       });
-      // The studio's default is its first instance, not its second.
+      // On the studio, the Codex group comes before the aliased one.
       expect(await select({}, 'studio')).toMatchObject({
         rule: 'caller',
         instance: { id: 'reviewer:studio' },
@@ -1225,7 +1239,7 @@ describe('session MCP input schemas', () => {
       await expect(select({ machineId: 'laptop' })).rejects.toMatchObject({
         code: 'AGENT_ROLE_INSTANCE_UNAVAILABLE',
         message: expect.stringContaining(
-          'Usable instances: reviewer:mac (mac on mac), reviewer:studio (studio on studio), studio-second (Second on studio).'
+          'Usable instances: reviewer:mac (Codex on mac), reviewer:studio (Codex on studio), studio-second (Second on studio).'
         ),
       });
       await expect(select({ machineId: 'buildbox' })).rejects.toThrow(

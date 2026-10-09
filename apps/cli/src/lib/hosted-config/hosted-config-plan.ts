@@ -196,7 +196,7 @@ function planAgentRoles(
       [
         {
           id: legacyAgentRoleInstanceId(hosted.id, input.target.machineId),
-          label: hosted.instances[0]!.label,
+          ...(hosted.instances[0]!.alias ? { alias: hosted.instances[0]!.alias } : {}),
           machineId: input.target.machineId,
           agentConfigId,
           runConfig: hosted.runConfig,

@@ -85,7 +85,6 @@ function fixture(): ResourceDiscovery {
           [
             {
               id: `role-${n}:machine` as AgentRole['instances'][number]['id'],
-              label: 'Default',
               machineId: 'machine' as MachineId,
               agentConfigId: 'missing' as AgentRole['agentConfigId'],
               runConfig: {},

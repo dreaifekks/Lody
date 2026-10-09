@@ -2,16 +2,19 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import {
   AGENT_ROLE_DESCRIPTION_MAX_LENGTH,
-  AGENT_ROLE_INSTANCE_LABEL_MAX_LENGTH,
+  AGENT_ROLE_INSTANCE_ALIAS_MAX_LENGTH,
   AGENT_ROLE_NAME_MAX_LENGTH,
   buildAgentRoleFormValue,
   buildAgentRoleFromForm,
   canManageAgentRole,
   EMPTY_AGENT_ROLE_FORM_VALUE,
+  getAgentRoleAgentFamily,
   isPermissionTierWithin,
   isSensitiveAgentRoleConfigOptionKey,
   listAccessibleAgentRoles,
   validateAgentRoleForm,
+  type AgentRoleAgentConfig,
+  type AgentRoleAgentFamily,
   type AgentRoleFormError,
   type AgentRoleFormInstance,
   type AgentRoleFormValue,
@@ -67,14 +70,14 @@ const InstanceSchema = z
       .describe(
         'Id of an existing instance to keep (it keeps its memory binding); omit for a new instance.'
       ),
-    label: z
+    alias: z
       .string()
       .trim()
       .min(1)
-      .max(AGENT_ROLE_INSTANCE_LABEL_MAX_LENGTH)
+      .max(AGENT_ROLE_INSTANCE_ALIAS_MAX_LENGTH)
       .optional()
       .describe(
-        'Short name, unique in the Role, such as Claude or Gemini; defaults to the agent name.'
+        'Optional name. Instances with one alias are one group across machines; without one, an instance groups with its agent (Claude Code, Codex…). Needed for a second instance of the same agent on one machine. Omitted means none.'
       ),
     agentConfigId: z
       .string()
@@ -90,7 +93,7 @@ const InstancesSchema = z
   .min(1)
   .max(20)
   .describe(
-    'How the Role runs: each instance is one Agent config with its run config on its machine; a machine may hold several, and the first one on a machine is its default. List order is the order dispatch falls back through when neither the caller nor the work picks the machine.'
+    'How the Role runs: each instance is one Agent config with its run config on its machine. Instances group by alias, else by agent; a group stands in for itself across machines and a machine holds one instance per group. A bare Role runs the first group, in list order, that can run, preferring the caller machine inside it.'
   );
 
 const editableFields = {
@@ -149,8 +152,10 @@ export type AgentRoleWriteDeps = {
   /** Tier of the Session driving this call. */
   callerTier: ResolvedPermissionTier;
   roles: () => Promise<CatalogAgentRole[]>;
-  /** The machine and name of an Agent config this user can read; throws otherwise. */
-  agentConfig: (agentConfigId: AgentConfigId) => Promise<{ machineId: MachineId; name: string }>;
+  /** An Agent config this user can read; throws otherwise. */
+  agentConfig: (
+    agentConfigId: AgentConfigId
+  ) => Promise<AgentRoleAgentConfig & { machineId: MachineId }>;
   tierOf: (
     instance: Pick<AgentRoleInstance, 'machineId' | 'agentConfigId' | 'runConfig'>
   ) => Promise<ResolvedPermissionTier>;
@@ -165,8 +170,8 @@ const FORM_ERRORS: Record<AgentRoleFormError, string> = {
   instance_required: 'Give the Role at least one instance.',
   machine_required: 'Choose an Agent config for every instance.',
   agent_config_required: 'Choose an Agent config for every instance.',
-  label_required: 'Give every instance a label.',
-  label_taken: 'Two instances of the Role have the same label.',
+  group_taken:
+    'Two instances on one machine would be one group (the same agent, or the same alias): give one of them an alias.',
 };
 
 /** The first instance that runs higher than the caller, if any. */
@@ -182,7 +187,7 @@ const findInstanceAboveCaller = async (
 };
 
 const describeInstance = ({ instance }: { instance: AgentRoleInstance }) =>
-  `instance ${instance.label} on machine ${instance.machineId}`;
+  `instance ${instance.alias ?? instance.id} on machine ${instance.machineId}`;
 
 const SETTINGS = 'Settings → Agent Roles';
 const UNKNOWN_HINT =
@@ -219,15 +224,17 @@ export async function buildAgentRoleFromAgent(
     ? buildAgentRoleFormValue(existing)
     : EMPTY_AGENT_ROLE_FORM_VALUE;
   const instances: AgentRoleFormInstance[] = [];
+  const families = new Map<AgentConfigId, AgentRoleAgentFamily>();
   for (const entry of input.instances ?? []) {
     const agentConfigId = entry.agentConfigId as AgentConfigId;
     const config = await deps.agentConfig(agentConfigId);
+    families.set(agentConfigId, getAgentRoleAgentFamily(config));
     // Memory is the user's to bind; a kept instance keeps its own.
     const kept = entry.id ? base.instances.find((instance) => instance.id === entry.id) : undefined;
     if (entry.id && !kept) throw new Error(`The Role has no instance ${entry.id}.`);
     instances.push({
       id: kept?.id ?? deps.createInstanceId(),
-      label: entry.label ?? kept?.label ?? config.name,
+      alias: entry.alias ?? '',
       machineId: config.machineId,
       agentConfigId,
       modeId: entry.runConfig?.modeId ?? null,
@@ -250,6 +257,7 @@ export async function buildAgentRoleFromAgent(
   const errors = validateAgentRoleForm(value, {
     accessibleRoles: listAccessibleAgentRoles(roles, deps.userId),
     editingRoleId: existing?.id ?? null,
+    agentFamilyOf: (id) => families.get(id),
   });
   if (errors.length > 0) throw new Error(FORM_ERRORS[errors[0]!]);
   const role = buildAgentRoleFromForm(value, {

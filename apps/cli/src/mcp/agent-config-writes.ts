@@ -320,7 +320,7 @@ export function createAgentConfigWrites(deps: {
           agentConfig: async (agentConfigId) => {
             const agent = await readAgent(discovery, agentConfigId);
             if (!agent) throw new Error('No readable Agent config with that id.');
-            return { machineId: agent.machineId as MachineId, name: agent.name };
+            return { ...agent, machineId: agent.machineId as MachineId };
           },
           tierOf: (candidate) =>
             readAgentRunConfigTier({

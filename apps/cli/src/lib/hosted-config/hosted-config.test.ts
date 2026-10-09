@@ -71,7 +71,6 @@ const role = (overrides: Partial<AgentRole> & { id: string }): AgentRole => {
   return withAgentRoleInstances(row, [
     {
       id: legacyAgentRoleInstanceId(row.id, row.machineId),
-      label: 'Default',
       machineId: row.machineId,
       agentConfigId: row.agentConfigId,
       runConfig: row.runConfig,

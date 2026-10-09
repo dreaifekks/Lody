@@ -94,7 +94,6 @@ const role = (id: string, overrides: Partial<AgentRole> = {}): AgentRole => {
     overrides.instances ?? [
       {
         id: legacyAgentRoleInstanceId(row.id, row.machineId),
-        label: 'Default',
         machineId: row.machineId,
         agentConfigId: row.agentConfigId,
         runConfig: row.runConfig,
@@ -249,10 +248,11 @@ describe('resource discovery across MCP and CLI', () => {
       id: string,
       machineId: string,
       agentConfigId: string,
-      runConfig: AgentRole['runConfig'] = {}
+      runConfig: AgentRole['runConfig'] = {},
+      alias?: string
     ) => ({
       id: id as AgentRole['instances'][number]['id'],
-      label: id,
+      ...(alias ? { alias } : {}),
       machineId: machineId as MachineId,
       agentConfigId: agentConfigId as AgentRole['agentConfigId'],
       runConfig,
@@ -264,7 +264,7 @@ describe('resource discovery across MCP and CLI', () => {
           modelId: 'model',
           configOptionValues: { api_key: 'synthetic-secret' },
         }),
-        instance('also-on-one', 'one', 'agent-gone'),
+        instance('also-on-one', 'one', 'agent-gone', {}, 'Spare'),
       ],
     });
     const discovery = new ResourceDiscovery(source({ roles: async () => [several] }));
@@ -273,7 +273,9 @@ describe('resource discovery across MCP and CLI', () => {
     expect(item.instances).toEqual([
       {
         id: 'on-two',
-        label: 'on-two',
+        alias: null,
+        // Its config is unknown, so it groups alone.
+        group: { key: 'config:agent-two', name: null },
         machineId: 'two',
         agentConfigId: 'agent-two',
         runConfig: {},
@@ -281,7 +283,8 @@ describe('resource discovery across MCP and CLI', () => {
       },
       {
         id: 'on-one',
-        label: 'on-one',
+        alias: null,
+        group: { key: 'agent:builtin:codex', name: 'Codex' },
         machineId: 'one',
         agentConfigId: 'agent',
         runConfig: { modelId: 'model' },
@@ -289,7 +292,8 @@ describe('resource discovery across MCP and CLI', () => {
       },
       {
         id: 'also-on-one',
-        label: 'also-on-one',
+        alias: 'Spare',
+        group: { key: 'alias:spare', name: 'Spare' },
         machineId: 'one',
         agentConfigId: 'agent-gone',
         runConfig: {},

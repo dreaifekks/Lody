@@ -59,7 +59,7 @@ const LEGACY_LIST_KEYS: Record<DiscoveryResource, string> = {
 const roleMachines = (row: DiscoveryRow): string | undefined =>
   Array.isArray(row.instances)
     ? (row.instances as AgentRoleDiscoveryInstance[])
-        .map((instance) => `${instance.label}@${instance.machineId}`)
+        .map((instance) => `${instance.group.name ?? instance.agentConfigId}@${instance.machineId}`)
         .join(', ')
     : undefined;
 
