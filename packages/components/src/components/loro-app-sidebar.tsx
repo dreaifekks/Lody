@@ -46,6 +46,7 @@ import { cloudOperations } from '@/lib/cloud-api-operations';
 import { isLocalAppPlatform, useAppCapability } from '@/lib/app-platform';
 import { useCloudQuery } from '@lody/platform/react';
 import { resolveWorkspaceIdentityLogo } from '@/lib/workspace-identity';
+import { useGitHubAvatarUrl, useLoadedImageSrc } from '@/hooks/use-github-avatar';
 import {
   SidebarMachineHoverCard,
   SidebarMachineOfflinePill,
@@ -3676,6 +3677,7 @@ export function LoroAppSidebar({
     activeOrganization?.name ??
     t('organization.workspace', 'Workspace');
   const resolvedWorkspaceId = expectedWorkspaceId ?? workspaceId ?? '';
+  const gitHubIdentityLogo = useLoadedImageSrc(useGitHubAvatarUrl(resolvedWorkspaceId));
 
   return (
     <FocusScope
@@ -3707,6 +3709,7 @@ export function LoroAppSidebar({
         userEmail={user?.email ?? ''}
         workspaces={workspaces}
         currentWorkspaceId={resolvedWorkspaceId}
+        identityLogo={gitHubIdentityLogo}
         scrollStateKey={workspaceSlug}
         // Without accounts the workspaces are the LANs of this installation;
         // there is something to switch once it belongs to more than one.

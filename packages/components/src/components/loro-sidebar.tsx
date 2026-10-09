@@ -161,6 +161,8 @@ export interface LoroSidebarProps {
   userEmail: string;
   workspaces: LoroSidebarWorkspace[];
   currentWorkspaceId: string;
+  /** Drawn on the nameplate in place of the current workspace's logo; the switcher keeps the logos. */
+  identityLogo?: string | null;
   /** Stable workspace key for restoring the scroll viewport after a desktop remount. */
   scrollStateKey?: string | null;
   /**
@@ -790,6 +792,7 @@ export const LoroSidebar = memo(function LoroSidebar({
   userEmail,
   workspaces,
   currentWorkspaceId,
+  identityLogo,
   scrollStateKey,
   workspaceSwitcherEnabled = true,
   workspaceSwitcherKind = 'account',
@@ -1064,7 +1067,7 @@ export const LoroSidebar = memo(function LoroSidebar({
       <WorkspaceAvatar
         workspace={{
           name: workspaceName,
-          logo: workspaces.find((ws) => ws.id === currentWorkspaceId)?.logo,
+          logo: identityLogo ?? workspaces.find((ws) => ws.id === currentWorkspaceId)?.logo,
         }}
         size="small"
       />
