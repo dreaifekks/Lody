@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react';
 import type { AgentConfigId, MachineId } from '@lody/shared';
-import { AgentRoleForm, type AgentRoleFormProps } from '@/components/settings/agent-role-form';
+import {
+  AgentRoleForm,
+  type AgentRoleFormProps,
+  type AgentRoleFormTab,
+  type AgentRoleMachineRow,
+} from '@/components/settings/agent-role-form';
 import type { AcpSelectorOptions } from '@/components/shared/acp-selector-options';
 import { EMPTY_AGENT_ROLE_FORM_VALUE, type AgentRoleFormValue } from '@lody/shared';
-
-const machines = [
-  { machineId: 'machine-1' as MachineId, label: 'Studio', online: true },
-  { machineId: 'machine-2' as MachineId, label: 'Build box', online: false },
-];
 
 const agentConfigs = [
   { agentConfigId: 'config-1' as AgentConfigId, label: 'Codex' },
@@ -52,22 +52,81 @@ const selectorOptions: AcpSelectorOptions = {
   ],
 };
 
+const studio = 'machine-1' as MachineId;
+const buildBox = 'machine-2' as MachineId;
+const laptop = 'machine-3' as MachineId;
+
+/** Rows in list order: the Role's machines first, then the rest. */
+const machines: AgentRoleMachineRow[] = [
+  {
+    machineId: studio,
+    label: 'Studio',
+    online: true,
+    agentConfigs,
+    selectorOptions,
+    issues: [],
+  },
+  {
+    machineId: buildBox,
+    label: 'Build box',
+    online: false,
+    agentConfigs,
+    selectorOptions,
+    issues: [],
+  },
+  {
+    machineId: laptop,
+    label: 'Laptop',
+    online: true,
+    agentConfigs,
+    selectorOptions: null,
+    issues: [],
+  },
+];
+
 const configured: AgentRoleFormValue = {
   ...EMPTY_AGENT_ROLE_FORM_VALUE,
   name: 'Code Reviewer',
   description: 'Call this agent to review code changes for correctness before merging.',
   emoji: '🔍',
-  machineId: 'machine-1' as MachineId,
-  agentConfigId: 'config-1' as AgentConfigId,
-  modelId: 'gpt-5.6-sol',
-  configOptionValues: { thought_level: 'high' },
+  placements: [
+    {
+      machineId: studio,
+      enabled: true,
+      agentConfigId: 'config-1' as AgentConfigId,
+      modeId: 'default',
+      modelId: 'gpt-5.6-sol',
+      configOptionValues: { thought_level: 'high', 'fast-mode': false },
+    },
+    {
+      machineId: buildBox,
+      enabled: false,
+      agentConfigId: 'config-2' as AgentConfigId,
+      modeId: 'default',
+      modelId: 'gpt-5.6-luna',
+      configOptionValues: { thought_level: 'medium', 'fast-mode': false },
+    },
+  ],
   promptPrefix: 'Check correctness before style.',
 };
 
-/** The dialog owns the value in the product; the story owns it here. */
+const withPlacement = (
+  index: number,
+  patch: Partial<AgentRoleFormValue['placements'][number]>
+): AgentRoleFormValue => ({
+  ...configured,
+  placements: configured.placements.map((placement, at) =>
+    at === index ? { ...placement, ...patch } : placement
+  ),
+});
+
+/** The dialog owns the value and tab in the product; the story owns them here. */
 function StatefulAgentRoleForm(props: AgentRoleFormProps) {
   const [value, setValue] = useState(props.value);
-  return <AgentRoleForm {...props} value={value} onChange={setValue} />;
+  const [tab, setTab] = useState<AgentRoleFormTab>(props.tab ?? 'machines');
+  return (
+    <AgentRoleForm {...props} value={value} onChange={setValue} tab={tab} onTabChange={setTab} />
+  );
 }
 
 const meta = {
@@ -77,9 +136,6 @@ const meta = {
     value: configured,
     onChange: () => undefined,
     machines,
-    agentConfigs,
-    selectorOptions,
-    issues: [],
     errors: [],
     onSubmit: () => undefined,
     onCancel: () => undefined,
@@ -90,7 +146,7 @@ const meta = {
     // form's own scroll body and sticky footer size themselves against. The
     // panel pads its content; the form has no padding of its own.
     (Story) => (
-      <div className="mx-auto flex h-[620px] w-[620px] flex-col gap-4 overflow-hidden rounded-lg border bg-background p-4">
+      <div className="mx-auto flex h-[900px] w-[620px] flex-col gap-4 overflow-hidden rounded-lg border bg-background p-4">
         <Story />
       </div>
     ),
@@ -103,13 +159,17 @@ type Story = StoryObj<typeof meta>;
 export const NewRole: Story = {
   args: {
     value: EMPTY_AGENT_ROLE_FORM_VALUE,
-    agentConfigs: [],
-    selectorOptions: null,
-    errors: ['name_required', 'machine_required', 'agent_config_required'],
+    errors: ['name_required', 'machine_required'],
   },
 };
 
+/** One machine on, one kept but switched off, one never used. */
 export const Configured: Story = {};
+
+/** Two machines on, each with its own agent and model. */
+export const TwoMachines: Story = {
+  args: { value: withPlacement(1, { enabled: true }) },
+};
 
 /**
  * No emoji picked: the trigger shows the default glyph, so a Role never looks
@@ -119,36 +179,57 @@ export const DefaultEmoji: Story = {
   args: { value: { ...configured, emoji: '' } },
 };
 
-/** The memory notice sits above the share toggle in every state. */
 export const SharedWithWorkspace: Story = {
   args: { value: { ...configured, shareWithWorkspace: true }, isEditing: true },
 };
 
-/** The machine has no providers yet: nothing is offered in their place. */
+/** A machine with no providers yet: nothing is offered in their place. */
 export const MachineWithoutAgentConfigs: Story = {
   args: {
-    value: { ...configured, agentConfigId: null },
-    agentConfigs: [],
-    selectorOptions: null,
+    machines: machines.map((machine) =>
+      machine.machineId === studio ? { ...machine, agentConfigs: [] } : machine
+    ),
   },
 };
 
 /** Capabilities were never reported, so no run-config control is offered. */
 export const CapabilitiesUnavailable: Story = {
   args: {
-    selectorOptions: { ...selectorOptions, capabilityAuthority: 'unavailable' },
-    issues: [{ kind: 'capabilities_unknown' }],
+    machines: machines.map((machine) =>
+      machine.machineId === studio
+        ? {
+            ...machine,
+            selectorOptions: { ...selectorOptions, capabilityAuthority: 'unavailable' },
+            issues: [{ kind: 'capabilities_unknown' }],
+          }
+        : machine
+    ),
   },
 };
 
 /** A saved model that the agent stopped publishing — reported, never swapped. */
 export const IncompatibleRunConfig: Story = {
   args: {
-    value: { ...configured, modelId: 'gpt-5.5-retired' },
-    issues: [
-      { kind: 'model_unsupported', value: 'gpt-5.5-retired' },
-      { kind: 'option_unsupported', configId: 'legacy_effort' },
-    ],
+    value: withPlacement(0, { modelId: 'gpt-5.5-retired' }),
+    machines: machines.map((machine) =>
+      machine.machineId === studio
+        ? {
+            ...machine,
+            issues: [
+              { kind: 'model_unsupported', value: 'gpt-5.5-retired' },
+              { kind: 'option_unsupported', configId: 'legacy_effort' },
+            ],
+          }
+        : machine
+    ),
+  },
+};
+
+/** The Memory tab: the panel itself is supplied by the dialog. */
+export const MemoryTab: Story = {
+  args: {
+    tab: 'memory',
+    memoryPanel: <p>Memory panel for Studio</p>,
   },
 };
 

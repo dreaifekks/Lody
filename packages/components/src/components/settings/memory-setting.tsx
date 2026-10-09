@@ -17,8 +17,10 @@ import { space, text } from '@lody/ui/tokens/scales.stylex';
 import { Dialog } from '@/ui/dialog';
 import {
   MEMORY_PROVIDERS,
+  agentRoleOnMachine,
   getAgentRoleEmoji,
   type AgentRole,
+  type AgentRoleFormPlacement,
   MemoryCreateInputSchema,
   isMemoryIdentityMissing,
   machineSupportsMemoryProviders,
@@ -40,7 +42,7 @@ import { useMemoryAssociations } from '@/hooks/use-memory-associations';
 import { useAppCapability } from '@/lib/app-platform';
 import { openExternalUrl } from '@/lib/native-browser';
 import { MachinePills } from './machine-pills';
-import { Field, FormMessage } from './form-primitives';
+import { Field, FormMessage, Section } from './form-primitives';
 import { settingsCatalog as catalog, settingsSurface as surface } from './surface';
 import { SettingsEmptyList, settingsRecordsCard } from './compact-layout';
 import { SettingsLineTabs } from './settings-line-tabs';
@@ -452,12 +454,10 @@ function MachineMemories({ machineId, supported }: { machineId: MachineId; suppo
   const { roles, synced } = useWorkspaceAgentRoles();
   const { openSettings } = useOpenSettings();
   const getAssignedRoles = (entry: MemoryAssociation) =>
-    roles.filter(
-      (role) =>
-        role.machineId === machineId &&
-        role.runConfig.memory?.providerId === entry.providerId &&
-        role.runConfig.memory.memoryId === entry.memoryId
-    );
+    roles.filter((role) => {
+      const memory = agentRoleOnMachine(role, machineId)?.runConfig.memory;
+      return memory?.providerId === entry.providerId && memory.memoryId === entry.memoryId;
+    });
 
   const [editor, setEditor] = useState<Editor | null>(null);
   const [error, setError] = useState(false);
@@ -914,7 +914,38 @@ export function MemoryEditor({
   );
 }
 
-export function RoleMemoryPicker({
+/**
+ * The Role editor's Memory tab: one picker per machine the Role is enabled on,
+ * each choosing from the identities imported on THAT machine.
+ */
+export function RoleMemoryPanel({
+  placements,
+  machineLabel,
+  onChange,
+}: {
+  placements: readonly AgentRoleFormPlacement[];
+  machineLabel: (machineId: MachineId) => string;
+  onChange: (machineId: MachineId, memory: MemoryBinding | undefined) => void;
+}) {
+  const { t } = useTranslation();
+  if (!placements.length) return <p>{t('settings.memory.noMachine')}</p>;
+  return (
+    <div {...stylex.props(styles.stack)}>
+      <span {...stylex.props(catalog.meta)}>{t('settings.memory.rolePromptHint')}</span>
+      {placements.map((placement) => (
+        <Section key={placement.machineId} title={machineLabel(placement.machineId)}>
+          <RoleMemoryPicker
+            machineId={placement.machineId}
+            value={placement.memory}
+            onChange={(memory) => onChange(placement.machineId, memory)}
+          />
+        </Section>
+      ))}
+    </div>
+  );
+}
+
+function RoleMemoryPicker({
   machineId,
   value,
   onChange,
@@ -926,10 +957,27 @@ export function RoleMemoryPicker({
   const { t } = useTranslation();
   const { entries } = useMemoryAssociations(machineId);
   const { machines } = useVisibleMachineMetas();
+  const { openSettings } = useOpenSettings();
   const supported = machineSupportsMemoryProviders(machines.get(machineId));
+  // A binding this machine has not imported cannot run here; say so and point
+  // at the page that imports it.
+  const notImported =
+    value !== undefined &&
+    !entries.some(
+      (entry) => entry.providerId === value.providerId && entry.memoryId === value.memoryId
+    );
+  const openMemorySettings = (
+    <Button
+      type="button"
+      size="small"
+      variant="secondary"
+      onClick={() => openSettings('memory', { machineId })}
+    >
+      {t('settings.memory.openSettings')}
+    </Button>
+  );
   return (
     <div {...stylex.props(styles.stack)}>
-      <span {...stylex.props(catalog.meta)}>{t('settings.memory.rolePromptHint')}</span>
       {value ? (
         <div {...stylex.props(styles.unlinkRow)}>
           <Button type="button" size="small" variant="ghost" onClick={() => onChange(undefined)}>
@@ -937,20 +985,31 @@ export function RoleMemoryPicker({
           </Button>
         </div>
       ) : null}
+      {notImported ? (
+        <FormMessage tone="warning">
+          {t('settings.memory.notImported', { memoryId: value.memoryId })}
+        </FormMessage>
+      ) : null}
       {!entries.length ? (
-        <p {...stylex.props(catalog.meta)}>{t('settings.memory.emptyRole')}</p>
+        <>
+          <p {...stylex.props(catalog.meta)}>{t('settings.memory.emptyRole')}</p>
+          {openMemorySettings}
+        </>
       ) : (
-        MEMORY_PROVIDERS.map((provider) => (
-          <RoleProviderMemories
-            key={provider.id}
-            machineId={machineId}
-            provider={provider}
-            entries={entries.filter((entry) => entry.providerId === provider.id)}
-            supported={supported}
-            value={value}
-            onChange={onChange}
-          />
-        ))
+        <>
+          {MEMORY_PROVIDERS.map((provider) => (
+            <RoleProviderMemories
+              key={provider.id}
+              machineId={machineId}
+              provider={provider}
+              entries={entries.filter((entry) => entry.providerId === provider.id)}
+              supported={supported}
+              value={value}
+              onChange={onChange}
+            />
+          ))}
+          {notImported ? openMemorySettings : null}
+        </>
       )}
     </div>
   );
