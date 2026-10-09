@@ -40,6 +40,14 @@ void test('every renderer entry may call the GitHub API for pull request details
   }
 })
 
+void test('every renderer entry may fetch GitHub avatars into the avatar cache', () => {
+  for (const html of [rendererHtml, devbarHtml]) {
+    assert.ok(
+      getDirectiveSources(html, 'connect-src').includes('https://avatars.githubusercontent.com')
+    )
+  }
+})
+
 void test('only the opt-in Devbar entry may load the loopback Hub bootstrap', () => {
   assert.ok(!getDirectiveSources(rendererHtml, 'script-src').includes('http://127.0.0.1:*'))
   assert.ok(getDirectiveSources(devbarHtml, 'script-src').includes('http://127.0.0.1:*'))
