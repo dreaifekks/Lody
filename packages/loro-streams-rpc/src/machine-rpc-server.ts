@@ -489,6 +489,14 @@ type RpcServerDeps = {
 /** The reply address of a request that arrived directly; no stream has it. */
 const DIRECT_REPLY_PREFIX = 'direct:';
 
+/**
+ * How long after its deadline a request is still told that it expired. A
+ * caller whose clock runs behind sends requests that expire on arrival and
+ * waits for their answer; a server that reads its stream from the start finds
+ * a day of requests nobody waits for any more, and leaves those unanswered.
+ */
+const EXPIRED_REQUEST_ANSWER_WINDOW_MS = 5 * 60_000;
+
 export class LoroStreamsMachineRpcServer {
   private readonly requestStreamId: string;
   private readonly requestState: LoroJsonStreamState = { nextOffset: '-1' };
@@ -857,6 +865,17 @@ export class LoroStreamsMachineRpcServer {
 
     const now = this.deps.now?.() ?? Date.now();
     if (request.expiresAt <= now) {
+      if (now - request.expiresAt < EXPIRED_REQUEST_ANSWER_WINDOW_MS) {
+        const timing = { sentAt: request.sentAt, expiresAt: request.expiresAt, now };
+        this.deps.logger.warn(
+          `[rpc-server:${this.deps.machineId}] request ${request.id} (${request.method}) arrived expired: sentAt=${timing.sentAt} expiresAt=${timing.expiresAt} now=${now}`
+        );
+        await this.appendErrorResponse(request.replyTo, request.id, request.method, {
+          code: LORO_STREAMS_RPC_ERROR_CODES.requestExpired,
+          message: `The request expired before machine ${this.deps.machineId} handled it (sentAt=${timing.sentAt} expiresAt=${timing.expiresAt} now=${now}); the clocks of the two machines may differ.`,
+          data: timing,
+        });
+      }
       return;
     }
 

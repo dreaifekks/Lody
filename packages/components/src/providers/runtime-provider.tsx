@@ -34,6 +34,7 @@ import { createWorkspaceRuntime } from './create-workspace-runtime';
 import { resolveCloudPlatformRuntimePolicy } from './cloud-platform-runtime-policy';
 import type { EagerSyncSurface } from './background-sync-coordinator';
 import { resolveEffectiveWorkspaceId } from './resolve-effective-workspace-id';
+import { startLanHubClock } from './lan-hub-clock';
 import { getLocalWorkspaceSlug, useLocalWorkspace } from './local-platform-provider';
 import { isWarmWindow } from '@/lib/desktop-window';
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
@@ -101,6 +102,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const sync = resolvePlatformSync(platform.sync, localWorkspace?.id ?? workspaceId);
   // A fixed gateway carries its own credential; there is no account session.
   const token = sync.streams?.token ?? accountToken;
+  const gatewayBaseUrl = sync.streams?.gatewayBaseUrl;
+  useEffect(() => startLanHubClock(gatewayBaseUrl), [gatewayBaseUrl]);
   const visibleMachineIndex = useVisibleMachineMetas({
     includeMachineFlock: false,
     syncMachineFlock: false,

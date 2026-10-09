@@ -81,9 +81,9 @@ const AppInitializer = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   // Server time calibration belongs to the cloud synchronization plane. The
-  // account-free local platform has no time server (and no cross-device clock
-  // to align), so it must not manufacture a relative `file:///api/time`
-  // request in Electron. Capability ownership keeps this independent of build
+  // account-free local platform has no time server, so it must not
+  // manufacture a relative `file:///api/time` request in Electron; a LAN
+  // workspace aligns to its hub in RuntimeProvider instead. Capability ownership keeps this independent of build
   // kind while preserving the local-clock behavior of getServerNow().
   useEffect(() => {
     if (!hasCloudSync) {

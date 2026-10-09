@@ -1,6 +1,6 @@
 import { IosSimulatorRemoteResponseSchema } from '@lody/shared';
 import { createRpcSecretRecipient, getIosSimulatorViewerSecretContext } from '../src/rpc-secret';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   AgentConfigId,
   LocalProjectControlResponse,
@@ -22,7 +22,7 @@ import type {
   MachineStatusResponse,
   WorkspaceId,
 } from '@lody/shared';
-import { LoroStreamsTokenAuthError } from '@lody/shared';
+import { LoroStreamsTokenAuthError, getServerNow, resetTimeSync, syncTime } from '@lody/shared';
 import {
   decryptCodeCollabV2RpcPayload,
   encryptCodeCollabV2RpcPayload,
@@ -3100,4 +3100,125 @@ it('round trips typed simulator commands and isolates unavailable and denied con
     client.stop();
     server.stop();
   }
+});
+
+describe('a caller whose clock runs behind the machine it asks', () => {
+  const machineId = 'machine-1' as MachineId;
+  // The machine and the hub agree; the caller's own clock is a minute behind.
+  const machineNow = () => Date.now() + 60_000;
+
+  afterEach(() => resetTimeSync());
+
+  const connect = (callerNow: () => number) => {
+    const requests = createFakeStreamClient();
+    const responses = createFakeStreamClient();
+    const forward =
+      (destination: ReturnType<typeof createFakeStreamClient>) =>
+      async (_streamId: string, value: unknown) => {
+        destination.pushBatch({ messages: [value], nextOffset: '1', upToDate: true });
+        return '1';
+      };
+    const server = new LoroStreamsMachineRpcServer({
+      logger: createSilentLogger(),
+      workspaceId: 'workspace-1' as WorkspaceId,
+      machineId,
+      streamClient: { ...requests.streamClient, appendJson: forward(responses) },
+      now: machineNow,
+      getMachineStatus: vi.fn(),
+      refreshMachineAcpCapabilities: vi.fn(),
+      pingMachine: async ({ requestId }): Promise<MachinePingResponse> => ({
+        type: 'machine/ping_response',
+        machineId,
+        requestId,
+        success: true,
+        message: 'pong',
+      }),
+    });
+    const client = new LoroStreamsMachineRpcClient({
+      workspaceId: 'workspace-1',
+      machineId,
+      streamClient: { ...responses.streamClient, appendJson: forward(requests) },
+      now: callerNow,
+    });
+    return { server, client };
+  };
+
+  it('is told its request expired, with the times it was judged by', async () => {
+    const { server, client } = connect(() => Date.now());
+    await server.start();
+    try {
+      const response = await client.requestMachinePing({ requestId: 'ping-1', timeoutMs: 6_000 });
+      expect(response).toMatchObject({ type: 'machine/ping_response', success: false });
+      expect(response?.error).toMatch(
+        /^request_expired: .*sentAt=\d+ expiresAt=\d+ now=\d+.*clocks of the two machines/
+      );
+    } finally {
+      client.stop();
+      server.stop();
+    }
+  });
+
+  it('is answered once it aligned its clock to the hub', async () => {
+    await syncTime(async () => machineNow());
+    const { server, client } = connect(getServerNow);
+    await server.start();
+    try {
+      await expect(
+        client.requestMachinePing({ requestId: 'ping-1', timeoutMs: 6_000 })
+      ).resolves.toEqual({
+        type: 'machine/ping_response',
+        machineId,
+        requestId: 'ping-1',
+        success: true,
+        message: 'pong',
+      });
+    } finally {
+      client.stop();
+      server.stop();
+    }
+  });
+
+  it('leaves unanswered what expired long ago, as a stream read from its start holds', async () => {
+    const fake = createFakeStreamClient();
+    const server = new LoroStreamsMachineRpcServer({
+      logger: createSilentLogger(),
+      workspaceId: 'workspace-1' as WorkspaceId,
+      machineId,
+      streamClient: fake.streamClient,
+      now: machineNow,
+      getMachineStatus: vi.fn(),
+      refreshMachineAcpCapabilities: vi.fn(),
+      pingMachine: async ({ requestId }): Promise<MachinePingResponse> => ({
+        type: 'machine/ping_response',
+        machineId,
+        requestId,
+        success: true,
+        message: 'pong',
+      }),
+    });
+    const ping = (id: string, expiresAt: number) => ({
+      jsonrpc: '2.0',
+      id,
+      method: 'machine/ping',
+      rpcVersion: '1',
+      machineId,
+      workspaceId: 'workspace-1',
+      replyTo: 'workspace-1:rpc:res:client-1',
+      sentAt: expiresAt - 6_000,
+      expiresAt,
+      params: { requestId: id },
+    });
+    fake.pushBatch({
+      messages: [ping('yesterday', machineNow() - 86_400_000), ping('now', machineNow() + 6_000)],
+      nextOffset: '1',
+      upToDate: true,
+    });
+    await server.start();
+    try {
+      await fake.waitForAppendedCount(1);
+      expect(fake.appended.map(({ value }) => (value as { id: string }).id)).toEqual(['now']);
+    } finally {
+      server.stop();
+    }
+  });
 });

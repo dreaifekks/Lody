@@ -39,12 +39,20 @@ const CORS_HEADERS = {
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304])
 
 /**
- * The renderer reads and writes Streams documents and nothing else of a hub.
- * Every other route answers with what only a member may hold: the copy a
- * standby pulls carries the credential itself, and the credentials route the
- * GitHub token and the APNs key.
+ * The renderer reads and writes Streams documents and nothing else of a hub
+ * but its clock, which it aligns its request deadlines to. Every other route
+ * answers with what only a member may hold: the copy a standby pulls carries
+ * the credential itself, and the credentials route the GitHub token and the
+ * APNs key.
  */
 const RENDERER_PATH_PREFIX = '/ds/'
+/** `LAN_HUB_TIME_PATH` of `@lody/shared/lan-hub`. */
+const RENDERER_TIME_PATH = '/api/time'
+
+function isRendererRoute(method: string, pathname: string): boolean {
+  if (pathname.startsWith(RENDERER_PATH_PREFIX)) return true
+  return method === 'GET' && pathname === RENDERER_TIME_PATH
+}
 
 const httpAgent = new http.Agent({ keepAlive: true })
 const httpsAgent = new https.Agent({ keepAlive: true })
@@ -100,7 +108,7 @@ export async function forwardToLanHub(target: LanHubTarget, request: Request): P
   const upstreamUrl = new URL(target.url)
   upstreamUrl.pathname = source.pathname
   upstreamUrl.search = source.search
-  if (!upstreamUrl.pathname.startsWith(RENDERER_PATH_PREFIX)) {
+  if (!isRendererRoute(request.method, upstreamUrl.pathname)) {
     return errorResponse(403, 'not a document route')
   }
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD'

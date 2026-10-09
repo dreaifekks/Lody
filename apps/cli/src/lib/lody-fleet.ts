@@ -79,6 +79,7 @@ import {
 import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import { readLanMachineAlias, type LanMemberWorkspace } from '@/lib/lan/lan-members';
 import { createLanSshDescriber } from '@/lib/lan/lan-ssh';
+import { LanHubClock } from '@/lib/lan/lan-clock';
 import { createLanNotificationsPort } from '@/lib/lan/lan-push-notifier';
 import { createLanPushFallback, type LanPushFallback } from '@/lib/lan/lan-push-fallback';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
@@ -208,6 +209,7 @@ export class LodyFleet {
   private lanTerminalHost: LanTerminalHost | null = null;
   private readonly lanFleetControl: LanFleetControl | null;
   private readonly lanHubStandby: LanHubStandby | null;
+  private readonly lanHubClock: LanHubClock | null;
   private readonly memoryPressure: MemoryPressureSampler;
   private readonly onFatalAuthFailure?: (error: Error) => void;
   private readonly localPlatform: boolean;
@@ -333,6 +335,12 @@ export class LodyFleet {
       },
     });
     this.lan = options.lan ?? null;
+    this.lanHubClock = this.lan
+      ? new LanHubClock({
+          hubs: () => this.lan?.hubs ?? [],
+          log: (line) => this.logger.info(line),
+        })
+      : null;
     this.lanFleetControl = options.lanControl
       ? new LanFleetControl({
           logger: this.logger,
@@ -428,6 +436,9 @@ export class LodyFleet {
       this.runtimeStateReporter.setStartupStage('sync-time');
       await this.startupTimeSync;
     }
+    // A LAN member follows its hub's clock instead, without waiting on a hub
+    // that may be away.
+    this.lanHubClock?.start();
 
     const localProbeConfig: LocalProbeConfig = {
       machineId: this.machineId,
@@ -749,6 +760,7 @@ export class LodyFleet {
     this.lanPushFallback?.close();
     this.unsubscribeLanMoves?.();
     this.unsubscribeLanMoves = null;
+    this.lanHubClock?.stop();
 
     // Stop accepting local work before draining workspace runtimes. Endpoint
     // teardown must not sit behind slow agent/session cleanup, and the owning
@@ -1293,6 +1305,8 @@ export class LodyFleet {
    * GitHub and credentials read the address per request and hold no offset.
    */
   private followLanMoves(hubs: readonly LanHub[]): void {
+    // Another machine hosts the hub now, with a clock of its own.
+    void this.lanHubClock?.sync();
     for (const hub of hubs) {
       const workspaceId = getLanHubWorkspaceId(hub.id);
       const runtime = this.runtimes.get(workspaceId);

@@ -152,12 +152,24 @@ void test('keeps every route but the documents from the renderer', async (t) => 
     '/push/devices',
     '/ds/../lan/snapshot',
     '/ds/%2e%2e/lan/credentials',
-    '/ds'
+    '/ds',
+    '/api/time'
   ]) {
     const response = await handle(new Request(`lody-hub://${HOME}${path}`, { method: 'POST' }))
     assert.equal(response.status, 403, path)
   }
   assert.deepEqual(home.received, [])
+})
+
+void test('lets the renderer read the clock of its LAN', async (t) => {
+  const { handle } = await bridge(t)
+
+  const response = await handle(new Request(`lody-hub://${HOME}/api/time`))
+  const received = await response.json()
+
+  assert.equal(response.status, 200)
+  assert.equal(received.url, '/api/time')
+  assert.equal(received.headers.authorization, 'Bearer home-token')
 })
 
 void test('never forwards a request for a LAN that is not joined', async (t) => {
