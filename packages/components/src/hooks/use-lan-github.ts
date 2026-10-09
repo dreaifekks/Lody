@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useStore } from 'jotai';
 import type {
   LanGitHubState,
   LanMachine,
@@ -10,6 +11,7 @@ import type {
 } from '@lody/shared';
 import { isElectronRenderer } from '@/lib/electron';
 import { getIpcServices } from '@/lib/electron-ipc-client';
+import { resolveGitHubIdentityLogin, writeGitHubIdentityLogin } from './use-github-avatar';
 
 // The shell fills in the machine it runs on.
 const THIS_MACHINE = '' as MachineId;
@@ -56,6 +58,7 @@ function getControl() {
 export function useLanGitHub(workspaceId: string | null): LanGitHubControl {
   const [machines, setMachines] = useState<Entry[] | null>(null);
   const generation = useRef(0);
+  const store = useStore();
 
   const refresh = useCallback(async () => {
     const control = getControl();
@@ -115,7 +118,11 @@ export function useLanGitHub(workspaceId: string | null): LanGitHubControl {
     );
     if (current !== generation.current) return;
     setMachines(answers);
-  }, [workspaceId]);
+    const own = answers.find((machine) => machine.self)?.state;
+    if (own && typeof own === 'object') {
+      writeGitHubIdentityLogin(store, workspaceId, resolveGitHubIdentityLogin(own));
+    }
+  }, [store, workspaceId]);
 
   useEffect(() => {
     setMachines(null);

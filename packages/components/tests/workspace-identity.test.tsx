@@ -5,13 +5,27 @@ import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStore, Provider } from 'jotai';
+import { LOCAL_PLATFORM_CAPABILITIES, type PlatformProvider } from '@lody/platform';
+import { PlatformContext } from '@lody/platform/react';
+import type { LanGitHubState, SessionHistoryParsed, SessionId } from '@lody/shared';
 
 import lodyLogo from '../src/assets/lody-icon.png';
+import { MessageRowView } from '../src/components/ai-gui/view';
 import { LoadingPlaceholder } from '../src/components/loading-placeholder';
 import { LoroSidebar, type LoroSidebarProps } from '../src/components/loro-sidebar';
 import { MobileHomeScreen } from '../src/components/mobile/mobile-home-screen';
+import {
+  gitHubAvatarUrl,
+  resolveGitHubIdentityLogin,
+  useGitHubAvatarUrl,
+  useGitHubAvatarUser,
+  useLoadedImageSrc,
+  writeGitHubIdentityLogin,
+} from '../src/hooks/use-github-avatar';
+import { ForceDesktopLayoutProvider } from '../src/hooks/use-mobile';
 import { initI18n } from '../src/i18n';
 import { resolveWorkspaceIdentityLogo } from '../src/lib/workspace-identity';
+import { TEST_CLOUD_PLATFORM } from './test-platform';
 
 const sidebarProps: LoroSidebarProps = {
   workspaceName: 'Lody',
@@ -273,5 +287,219 @@ describe('workspace identity capability boundary', () => {
     const identity = container?.querySelector('[data-workspace-identity]');
     expect(identity?.tagName).toBe('DIV');
     expect(container?.querySelector('[aria-haspopup="dialog"]')).toBeNull();
+  });
+});
+
+describe('GitHub identity of the local desktop', () => {
+  const HOME = 'lw_home';
+  const BROKEN = new Set<string>();
+  let asked: unknown[] = [];
+  let answer: LanGitHubState | null = null;
+  /** Holds this machine's answer back until it settles. */
+  let held: Promise<void> | null = null;
+  let root: Root | undefined;
+  let container: HTMLDivElement | undefined;
+
+  /** Loads every picture on the next microtask unless its address is in `BROKEN`. */
+  class TestImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    complete = false;
+    naturalWidth = 0;
+    set src(value: string) {
+      queueMicrotask(() => (BROKEN.has(value) ? this.onerror : this.onload)?.());
+    }
+  }
+
+  const LOCAL_PLATFORM: PlatformProvider = {
+    ...TEST_CLOUD_PLATFORM,
+    kind: 'local',
+    capabilities: LOCAL_PLATFORM_CAPABILITIES,
+  };
+  const message = {
+    id: 'message-from-me',
+    role: 'user',
+    userId: 'local-user',
+    timestamp: '2026-10-09T10:30:00.000Z',
+    read: true,
+    status: 'applied',
+    items: [{ type: 'text', text: 'Hello' }],
+  } as unknown as SessionHistoryParsed;
+
+  function Nameplate() {
+    const logo = useLoadedImageSrc(useGitHubAvatarUrl(HOME));
+    return (
+      <LoroSidebar
+        {...sidebarProps}
+        workspaceName="Home"
+        workspaces={[{ id: HOME, name: 'Home', logo: lodyLogo }]}
+        currentWorkspaceId={HOME}
+        identityLogo={logo}
+        workspaceSwitcherEnabled={false}
+      />
+    );
+  }
+
+  function Sender() {
+    const user = useGitHubAvatarUser(HOME);
+    return (
+      <ForceDesktopLayoutProvider>
+        <MessageRowView
+          message={message}
+          sessionId={'session-github-sender' as SessionId}
+          user={user}
+          showSenderIdentity={false}
+        />
+      </ForceDesktopLayoutProvider>
+    );
+  }
+
+  async function render(platform: PlatformProvider) {
+    const store = createStore();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <PlatformContext.Provider value={platform}>
+          <Provider store={store}>
+            <Nameplate />
+            <Sender />
+          </Provider>
+        </PlatformContext.Provider>
+      );
+    });
+    await settle();
+    return store;
+  }
+
+  // The answer, then each picture's load, each settle on a microtask.
+  const settle = () =>
+    act(async () => {
+      for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+    });
+
+  const nameplateImage = () =>
+    container?.querySelector<HTMLImageElement>('[data-workspace-identity] img')?.src ?? null;
+  const senderImage = () =>
+    container?.querySelector<HTMLImageElement>('img[alt="User"]')?.src ?? null;
+
+  beforeEach(async () => {
+    await initI18n('en');
+    asked = [];
+    answer = null;
+    held = null;
+    BROKEN.clear();
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      })),
+    });
+    vi.stubGlobal(
+      'ResizeObserver',
+      class ResizeObserver {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    vi.stubGlobal('Image', TestImage);
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('offline')));
+    vi.stubGlobal('__LODY_ELECTRON__', true);
+    vi.stubGlobal('ipc', {
+      invoke: async (channel: string, request: { type: string }) => {
+        asked.push({ channel, ...request });
+        if (held) await held;
+        return answer
+          ? { ok: true, type: request.type, result: answer }
+          : { ok: false, type: request.type, error: 'execution_failed', message: 'down' };
+      },
+      on: () => () => {},
+      send: () => {},
+    });
+  });
+
+  afterEach(async () => {
+    if (root) await act(async () => root?.unmount());
+    root = undefined;
+    container?.remove();
+    container = undefined;
+    vi.unstubAllGlobals();
+  });
+
+  it('prefers the token the hub keeps, then this machine’s gh login', () => {
+    const own = { login: 'own-login' };
+    expect(resolveGitHubIdentityLogin({ own, lan: { login: 'hub-login' } })).toBe('hub-login');
+    expect(resolveGitHubIdentityLogin({ own, lan: null })).toBe('own-login');
+    expect(resolveGitHubIdentityLogin({ own, lan: { login: null } })).toBe('own-login');
+    expect(resolveGitHubIdentityLogin({ own: null, lan: null })).toBeNull();
+    expect(gitHubAvatarUrl('hub-login')).toBe('https://avatars.githubusercontent.com/hub-login');
+  });
+
+  it('draws the GitHub face on the nameplate and the user message', async () => {
+    answer = { own: { login: 'own-login' }, lan: { login: 'hub-login' } };
+    await render(LOCAL_PLATFORM);
+
+    expect(asked).toEqual([
+      { channel: 'localProjects.control', type: 'lan/github', machineId: '', workspaceId: HOME },
+    ]);
+    expect(nameplateImage()).toBe(gitHubAvatarUrl('hub-login'));
+    expect(senderImage()).toBe(gitHubAvatarUrl('hub-login'));
+    // A face only: no name beside it and no profile to open.
+    expect(
+      container?.querySelector('[data-testid="user-message-metadata"]')?.textContent
+    ).not.toContain('hub-login');
+    expect(container?.querySelector('button[aria-label^="View profile"]')).toBeNull();
+  });
+
+  it('keeps what Settings wrote over an answer asked before it', async () => {
+    answer = { own: null, lan: { login: 'old-login' } };
+    let release = () => {};
+    held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const store = await render(LOCAL_PLATFORM);
+
+    await act(async () => writeGitHubIdentityLogin(store, HOME, 'new-login'));
+    await settle();
+    expect(senderImage()).toBe(gitHubAvatarUrl('new-login'));
+
+    release();
+    await settle();
+    expect(senderImage()).toBe(gitHubAvatarUrl('new-login'));
+    expect(nameplateImage()).toBe(gitHubAvatarUrl('new-login'));
+  });
+
+  it('keeps the Lody logo while the GitHub face fails to load', async () => {
+    answer = { own: { login: 'own-login' }, lan: null };
+    BROKEN.add(gitHubAvatarUrl('own-login'));
+    await render(LOCAL_PLATFORM);
+
+    expect(nameplateImage()).toContain('lody-icon');
+    expect(senderImage()).toBeNull();
+  });
+
+  it('keeps the logo and the person icon without a GitHub identity', async () => {
+    answer = { own: null, lan: null };
+    await render(LOCAL_PLATFORM);
+
+    expect(nameplateImage()).toContain('lody-icon');
+    expect(senderImage()).toBeNull();
+  });
+
+  it('asks nothing on a platform whose GitHub goes through the hosted service', async () => {
+    answer = { own: { login: 'own-login' }, lan: null };
+    await render(TEST_CLOUD_PLATFORM);
+
+    expect(asked).toEqual([]);
+    expect(nameplateImage()).toContain('lody-icon');
+    expect(senderImage()).toBeNull();
   });
 });

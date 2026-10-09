@@ -6,6 +6,7 @@ import {
 } from '@/lib/session-attachment-draft';
 import { useSchedules } from '@/hooks/use-schedules';
 import { useWorkspaceGitHubRepositories } from '@/hooks/use-workspace-github-repositories';
+import { useGitHubAvatarUser } from '@/hooks/use-github-avatar';
 import { windowPreparationAtom } from '@/lib/window-preparation';
 import { conversationCopyRange } from '@/lib/conversation-copy-range';
 import { describeCopiedConversation } from '@/lib/describe-copied-conversation';
@@ -5100,10 +5101,12 @@ export const SessionChatInterface = memo(
     }, []);
     // The sender the delivered user row resolves (same query, same cache), so
     // the pending row it replaces draws the same avatar.
-    const pendingSender = useCloudQuery(
+    const cloudPendingSender = useCloudQuery(
       cloudOperations.auth.getUserById,
       currentUser?.id && workspaceId ? { userId: currentUser.id, workspaceId } : 'skip'
     );
+    const gitHubPendingSender = useGitHubAvatarUser(workspaceId);
+    const pendingSender = gitHubPendingSender ?? cloudPendingSender;
     const pendingMessages = useMemo(
       () => (
         <SessionPendingMessages

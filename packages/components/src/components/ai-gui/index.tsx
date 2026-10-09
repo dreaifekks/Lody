@@ -23,6 +23,7 @@ import {
 import { reanchorMessageTextSpansForTrim } from '@lody/shared';
 import { useMentionPromptExpansion } from '@/components/mentions/mention-expansion';
 import { useStableCallback } from '@/hooks/use-stable-callback';
+import { useGitHubAvatarUser } from '@/hooks/use-github-avatar';
 import { useConversationStreamItems } from '@/hooks/use-conversation-stream-items';
 import { useConversationVersion } from '@/hooks/use-conversation-view';
 import { findLastIndex, type ConversationView } from '@/lib/conversation-view';
@@ -141,12 +142,13 @@ const MessageRowConnected = memo(function MessageRowConnected({
     cloudOperations.auth.getUserById,
     message.userId && workspaceId ? { userId: message.userId, workspaceId } : 'skip'
   );
+  const gitHubUser = useGitHubAvatarUser(workspaceId);
 
   return (
     <MessageRowView
       message={message}
       sessionId={sessionId}
-      user={userInfo}
+      user={gitHubUser ?? userInfo}
       showSenderIdentity={showSenderIdentity}
       onNavigateSession={onNavigateSession}
       onEdit={onEditLastUser}
