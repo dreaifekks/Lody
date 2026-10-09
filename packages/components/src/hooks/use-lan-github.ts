@@ -11,7 +11,7 @@ import type {
 } from '@lody/shared';
 import { isElectronRenderer } from '@/lib/electron';
 import { getIpcServices } from '@/lib/electron-ipc-client';
-import { gitHubIdentityLoginAtomFamily, resolveGitHubIdentityLogin } from './use-github-avatar';
+import { resolveGitHubIdentityLogin, writeGitHubIdentityLogin } from './use-github-avatar';
 
 // The shell fills in the machine it runs on.
 const THIS_MACHINE = '' as MachineId;
@@ -120,7 +120,7 @@ export function useLanGitHub(workspaceId: string | null): LanGitHubControl {
     setMachines(answers);
     const own = answers.find((machine) => machine.self)?.state;
     if (own && typeof own === 'object') {
-      store.set(gitHubIdentityLoginAtomFamily(workspaceId), resolveGitHubIdentityLogin(own));
+      writeGitHubIdentityLogin(store, workspaceId, resolveGitHubIdentityLogin(own));
     }
   }, [store, workspaceId]);
 

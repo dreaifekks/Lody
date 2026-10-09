@@ -20,6 +20,7 @@ import {
   useGitHubAvatarUrl,
   useGitHubAvatarUser,
   useLoadedImageSrc,
+  writeGitHubIdentityLogin,
 } from '../src/hooks/use-github-avatar';
 import { ForceDesktopLayoutProvider } from '../src/hooks/use-mobile';
 import { initI18n } from '../src/i18n';
@@ -294,6 +295,8 @@ describe('GitHub identity of the local desktop', () => {
   const BROKEN = new Set<string>();
   let asked: unknown[] = [];
   let answer: LanGitHubState | null = null;
+  /** Holds this machine's answer back until it settles. */
+  let held: Promise<void> | null = null;
   let root: Root | undefined;
   let container: HTMLDivElement | undefined;
 
@@ -352,24 +355,29 @@ describe('GitHub identity of the local desktop', () => {
   }
 
   async function render(platform: PlatformProvider) {
+    const store = createStore();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
     await act(async () => {
       root?.render(
         <PlatformContext.Provider value={platform}>
-          <Provider store={createStore()}>
+          <Provider store={store}>
             <Nameplate />
             <Sender />
           </Provider>
         </PlatformContext.Provider>
       );
     });
-    // The answer, then each picture's load, each settle on a microtask.
-    await act(async () => {
+    await settle();
+    return store;
+  }
+
+  // The answer, then each picture's load, each settle on a microtask.
+  const settle = () =>
+    act(async () => {
       for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
     });
-  }
 
   const nameplateImage = () =>
     container?.querySelector<HTMLImageElement>('[data-workspace-identity] img')?.src ?? null;
@@ -380,6 +388,7 @@ describe('GitHub identity of the local desktop', () => {
     await initI18n('en');
     asked = [];
     answer = null;
+    held = null;
     BROKEN.clear();
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     Object.defineProperty(window, 'matchMedia', {
@@ -407,6 +416,7 @@ describe('GitHub identity of the local desktop', () => {
     vi.stubGlobal('ipc', {
       invoke: async (channel: string, request: { type: string }) => {
         asked.push({ channel, ...request });
+        if (held) await held;
         return answer
           ? { ok: true, type: request.type, result: answer }
           : { ok: false, type: request.type, error: 'execution_failed', message: 'down' };
@@ -447,6 +457,24 @@ describe('GitHub identity of the local desktop', () => {
       container?.querySelector('[data-testid="user-message-metadata"]')?.textContent
     ).not.toContain('hub-login');
     expect(container?.querySelector('button[aria-label^="View profile"]')).toBeNull();
+  });
+
+  it('keeps what Settings wrote over an answer asked before it', async () => {
+    answer = { own: null, lan: { login: 'old-login' } };
+    let release = () => {};
+    held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const store = await render(LOCAL_PLATFORM);
+
+    await act(async () => writeGitHubIdentityLogin(store, HOME, 'new-login'));
+    await settle();
+    expect(senderImage()).toBe(gitHubAvatarUrl('new-login'));
+
+    release();
+    await settle();
+    expect(senderImage()).toBe(gitHubAvatarUrl('new-login'));
+    expect(nameplateImage()).toBe(gitHubAvatarUrl('new-login'));
   });
 
   it('keeps the Lody logo while the GitHub face fails to load', async () => {

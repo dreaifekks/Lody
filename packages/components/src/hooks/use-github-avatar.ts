@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { atom, useAtomValue } from 'jotai';
+import { atom, useAtomValue, type useStore } from 'jotai';
 import { atomFamily } from 'jotai/utils';
 import type { LanGitHubState, MachineId, WorkspaceId } from '@lody/shared';
 import { useAppCapability } from '@/lib/app-platform';
@@ -18,6 +18,9 @@ export function gitHubAvatarUrl(login: string): string {
   return `https://avatars.githubusercontent.com/${encodeURIComponent(login)}`;
 }
 
+/** How often each workspace's login was written, so an answer asked before a write is dropped. */
+const loginWrites = new Map<string, number>();
+
 /**
  * The login per workspace, asked of this machine alone once something shows
  * it; Settings > GitHub writes what it reads later.
@@ -25,6 +28,8 @@ export function gitHubAvatarUrl(login: string): string {
 export const gitHubIdentityLoginAtomFamily = atomFamily((workspaceId: string) => {
   const login = atom<string | null>(null);
   login.onMount = (set) => {
+    const asked = loginWrites.get(workspaceId) ?? 0;
+    let mounted = true;
     const control = isElectronRenderer() ? getIpcServices()?.localProjects : null;
     void control
       ?.control({
@@ -33,14 +38,28 @@ export const gitHubIdentityLoginAtomFamily = atomFamily((workspaceId: string) =>
         workspaceId: workspaceId as WorkspaceId,
       })
       .then((response) => {
+        if (!mounted || (loginWrites.get(workspaceId) ?? 0) !== asked) return;
         if (response.ok && response.type === 'lan/github') {
           set(resolveGitHubIdentityLogin(response.result));
         }
       })
       .catch(() => {});
+    return () => {
+      mounted = false;
+    };
   };
   return login;
 });
+
+/** Writes what Settings > GitHub read, ahead of any answer still on its way. */
+export function writeGitHubIdentityLogin(
+  store: ReturnType<typeof useStore>,
+  workspaceId: string,
+  login: string | null
+): void {
+  loginWrites.set(workspaceId, (loginWrites.get(workspaceId) ?? 0) + 1);
+  store.set(gitHubIdentityLoginAtomFamily(workspaceId), login);
+}
 
 const noLoginAtom = atom<string | null>(null);
 
