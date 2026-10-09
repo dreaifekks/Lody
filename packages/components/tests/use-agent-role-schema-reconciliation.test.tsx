@@ -32,6 +32,7 @@ vi.mock('@/hooks/use-visible-machine-metas', () => ({
   useVisibleMachineMetas: () => ({ machines: state.machines }),
 }));
 import { useAgentRoleSchemaReconciliation } from '../src/hooks/use-agent-role-schema-reconciliation';
+import { singleMachineRole } from './agent-role-fixture';
 
 function Startup() {
   useAgentRoleSchemaReconciliation();
@@ -61,7 +62,7 @@ describe('role maintenance at workspace startup', () => {
     'waits for readiness and silently persists only a matching fresh schema: %s',
     async (scenario) => {
       const flock = new Flock('startup-role');
-      const role: AgentRole = {
+      const role: AgentRole = singleMachineRole({
         v: AGENT_ROLE_VERSION,
         id: 'role' as never,
         machineId: 'machine' as never,
@@ -73,7 +74,7 @@ describe('role maintenance at workspace startup', () => {
         revision: 1,
         createdAt: 1,
         updatedAt: 1,
-      };
+      });
       const key = workspaceFlockKeys.agentRole(role.id);
       flock.set(key, role as never);
       flock.commit();

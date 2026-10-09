@@ -4,7 +4,9 @@ Status: draft
 Translation: pending
 
 After upgrading and opening a workspace, the app automatically reconciles the
-current user's saved Roles against their bound agents. No Settings visit, save,
+current user's saved Roles against their agents. Each placement of a Role (one
+machine and its agent configuration, enabled or switched off) is reconciled on its
+own, against that machine's agent only. No Settings visit, save,
 confirmation, toast or success notice is required. The workspace shell starts the
 work after catalog readiness; offline targets wait until they become available.
 

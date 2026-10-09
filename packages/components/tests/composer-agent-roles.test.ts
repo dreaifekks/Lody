@@ -17,19 +17,21 @@ import {
   resolveTurnAgentRoleForRunConfig,
   resolvePendingAgentRoleSelection,
 } from '../src/lib/composer-agent-roles';
+import { singleMachineRole } from './agent-role-fixture';
 
-const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  ownerUserId: 'user-1',
-  visibility: 'private',
-  machineId: 'machine-1' as MachineId,
-  agentConfigId: 'config-1' as AgentConfigId,
-  runConfig: {},
-  revision: 1,
-  createdAt: 1,
-  updatedAt: 1,
-  ...overrides,
-});
+const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole =>
+  singleMachineRole({
+    v: AGENT_ROLE_VERSION,
+    ownerUserId: 'user-1',
+    visibility: 'private',
+    machineId: 'machine-1' as MachineId,
+    agentConfigId: 'config-1' as AgentConfigId,
+    runConfig: {},
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  });
 
 const makeConfig = (id: string, machineId: string, agentType = 'codex'): AgentConfigMeta =>
   ({
@@ -70,6 +72,43 @@ describe('buildComposerAgentRoleItems', () => {
     });
     expect(items.map((item) => item.role.id)).toEqual(['r-1', 'r-2', 'r-4']);
     expect(items.at(-1)?.agentConfig?.agentType).toBe('claude');
+  });
+
+  it('offers a Role enabled on several machines as its placement on this one', () => {
+    const shared = singleMachineRole({
+      ...makeRole({ id: 'r-5' as AgentRoleId, name: 'Shared' }),
+      placements: [
+        {
+          machineId: 'machine-2' as MachineId,
+          agentConfigId: 'config-9' as AgentConfigId,
+          enabled: true,
+          runConfig: { modelId: 'claude-fable-5-1[1m]' },
+        },
+        {
+          machineId: 'machine-1' as MachineId,
+          agentConfigId: 'config-2' as AgentConfigId,
+          enabled: true,
+          runConfig: { modelId: 'claude-fable-5-1' },
+        },
+      ],
+    });
+    const switchedOff = singleMachineRole({
+      ...makeRole({ id: 'r-6' as AgentRoleId, name: 'Off here' }),
+      placements: [{ ...shared.placements[0]! }, { ...shared.placements[1]!, enabled: false }],
+    });
+    const items = buildComposerAgentRoleItems({
+      roles: [shared, switchedOff],
+      machineId: 'machine-1' as MachineId,
+      agentConfigs: configs,
+      resolveAvailability: () => available,
+    });
+    expect(items.map((item) => item.role.id)).toEqual(['r-5']);
+    expect(items[0]?.role).toMatchObject({
+      machineId: 'machine-1',
+      agentConfigId: 'config-2',
+      runConfig: { modelId: 'claude-fable-5-1' },
+    });
+    expect(items[0]?.agentConfig?.agentType).toBe('claude');
   });
 
   it('offers nothing until a machine is selected', () => {

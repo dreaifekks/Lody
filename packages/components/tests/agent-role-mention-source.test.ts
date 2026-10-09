@@ -28,6 +28,7 @@ import {
   useMentionPromptExpansion,
   type MentionPromptExpansion,
 } from '../src/components/mentions/mention-expansion';
+import { singleMachineRole } from './agent-role-fixture';
 
 // The composer-facing hooks read the authenticated machine index and the
 // workspace catalog. Stub those inputs, keep the real availability rule.
@@ -69,21 +70,22 @@ vi.mock('../src/components/mentions/mention-skill-source', async (importOriginal
 
 const machineId = 'machine-1' as MachineId;
 
-const role = (overrides: Partial<AgentRole> = {}): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  id: 'role-1' as AgentRoleId,
-  ownerUserId: 'user-1',
-  visibility: 'private',
-  name: 'Code Reviewer',
-  emoji: '🔍',
-  machineId,
-  agentConfigId: 'config-1' as AgentConfigId,
-  runConfig: { modelId: 'gpt-5.6', configOptionValues: { thought_level: 'high' } },
-  revision: 3,
-  createdAt: 1,
-  updatedAt: 2,
-  ...overrides,
-});
+const role = (overrides: Partial<AgentRole> = {}): AgentRole =>
+  singleMachineRole({
+    v: AGENT_ROLE_VERSION,
+    id: 'role-1' as AgentRoleId,
+    ownerUserId: 'user-1',
+    visibility: 'private',
+    name: 'Code Reviewer',
+    emoji: '🔍',
+    machineId,
+    agentConfigId: 'config-1' as AgentConfigId,
+    runConfig: { modelId: 'gpt-5.6', configOptionValues: { thought_level: 'high' } },
+    revision: 3,
+    createdAt: 1,
+    updatedAt: 2,
+    ...overrides,
+  });
 
 const agentConfig = { cliType: 'builtin', agentType: 'codex', env: {}, name: 'Codex' } as const;
 
@@ -140,6 +142,43 @@ describe('agent role reach from a local project composer', () => {
       `${buildAgentRoleMentionPrompt({ id: 'remote', name: 'Remote Reviewer' })} and @Unreachable-Reviewer`
     );
     await act(async () => root.unmount());
+  });
+});
+
+describe('agent role mention preview', () => {
+  it('previews the first machine that can run the Role, and is available while any can', () => {
+    const multi = singleMachineRole({
+      ...role(),
+      placements: [
+        {
+          machineId: 'machine-2' as MachineId,
+          agentConfigId: 'config-2' as AgentConfigId,
+          enabled: true,
+          runConfig: { modelId: 'offline-model' },
+        },
+        {
+          machineId,
+          agentConfigId: 'config-1' as AgentConfigId,
+          enabled: true,
+          runConfig: { modelId: 'gpt-5.6' },
+        },
+      ],
+    });
+    const [item] = buildAgentRoleMentionItems([multi], {
+      availability: (view) =>
+        view.placements.some((entry) => entry.machineId === machineId)
+          ? { kind: 'available' }
+          : { kind: 'unavailable', reason: 'machine_offline' },
+      machine: (id) => ({ name: id === machineId ? 'Studio' : 'Laptop' }),
+      agentConfig: () => agentConfig,
+    });
+    expect(item?.availability).toEqual({ kind: 'available' });
+    expect(item?.role).toMatchObject({
+      id: 'role-1',
+      machineId,
+      runConfig: { modelId: 'gpt-5.6' },
+    });
+    expect(item?.machine).toEqual({ name: 'Studio' });
   });
 });
 

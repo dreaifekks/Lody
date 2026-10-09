@@ -28,6 +28,7 @@ import {
   sanitizeConfigOptionValues,
   type RecentRunConfigRecord,
 } from '../src/lib/recent-run-configs';
+import { singleMachineRole } from './agent-role-fixture';
 
 const MACHINE = 'machine-1' as MachineId;
 
@@ -232,20 +233,21 @@ describe('applying a record to the current selectors', () => {
 });
 
 describe('recent Agent Role entries', () => {
-  const role = (id: string, name: string): AgentRole => ({
-    v: AGENT_ROLE_VERSION,
-    id: id as AgentRoleId,
-    ownerUserId: 'user-1',
-    visibility: 'private',
-    name,
-    emoji: '\u{1F50D}',
-    machineId: MACHINE,
-    agentConfigId: 'agent-1' as AgentConfigId,
-    runConfig: {},
-    revision: 1,
-    createdAt: 1,
-    updatedAt: 1,
-  });
+  const role = (id: string, name: string): AgentRole =>
+    singleMachineRole({
+      v: AGENT_ROLE_VERSION,
+      id: id as AgentRoleId,
+      ownerUserId: 'user-1',
+      visibility: 'private',
+      name,
+      emoji: '\u{1F50D}',
+      machineId: MACHINE,
+      agentConfigId: 'agent-1' as AgentConfigId,
+      runConfig: {},
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    });
   const agentConfigs = [agentConfig('agent-1', 'Claude')];
 
   // The same knobs picked by hand and picked through a Role are not the same

@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type {
   AgentConfigId,
   AgentConfigMeta,
-  AgentRole,
   AgentRoleId,
   MachineId,
   SessionId,
@@ -25,6 +24,7 @@ import {
   writePersistedDraftTabs,
   writeStoredLastActiveTabState,
 } from '../src/lib/session-draft-tabs';
+import { singleMachineRole } from './agent-role-fixture';
 
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
 const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
@@ -94,7 +94,7 @@ describe('session draft tabs', () => {
   });
 
   it('applies a Role as a complete new-child-Session Agent selection', () => {
-    const role = {
+    const role = singleMachineRole({
       v: 1,
       id: 'reviewer' as AgentRoleId,
       ownerUserId: 'user-1',
@@ -110,7 +110,7 @@ describe('session draft tabs', () => {
       revision: 2,
       createdAt: 1,
       updatedAt: 2,
-    } satisfies AgentRole;
+    });
     const agentConfig = {
       id: role.agentConfigId,
       machineId: role.machineId,
@@ -133,7 +133,7 @@ describe('session draft tabs', () => {
   });
 
   it('refuses to apply a Role through a different Agent Config binding', () => {
-    const role = {
+    const role = singleMachineRole({
       v: 1,
       id: 'reviewer' as AgentRoleId,
       ownerUserId: 'user-1',
@@ -145,7 +145,7 @@ describe('session draft tabs', () => {
       revision: 1,
       createdAt: 1,
       updatedAt: 1,
-    } satisfies AgentRole;
+    });
     const wrongConfig = {
       id: 'claude-config' as AgentConfigId,
       machineId: role.machineId,

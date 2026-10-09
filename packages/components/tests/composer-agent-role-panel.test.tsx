@@ -16,23 +16,25 @@ import { ComposerAgentRolePanel } from '../src/components/sessions/composer-agen
 import type { ComposerAgentRoleItem } from '../src/lib/composer-agent-roles';
 import { Menu } from '../src/ui/menu';
 import { initI18n } from '../src/i18n';
+import { singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  ownerUserId: 'user-1',
-  visibility: 'private',
-  machineId: 'machine-1' as MachineId,
-  agentConfigId: 'config-1' as AgentConfigId,
-  runConfig: {},
-  revision: 1,
-  createdAt: 1,
-  updatedAt: 1,
-  ...overrides,
-});
+const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole =>
+  singleMachineRole({
+    v: AGENT_ROLE_VERSION,
+    ownerUserId: 'user-1',
+    visibility: 'private',
+    machineId: 'machine-1' as MachineId,
+    agentConfigId: 'config-1' as AgentConfigId,
+    runConfig: {},
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  });
 
 const reviewer: ComposerAgentRoleItem = {
   role: makeRole({

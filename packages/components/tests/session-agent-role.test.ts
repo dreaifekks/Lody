@@ -17,6 +17,7 @@ import {
   resolveProgrammaticTurnAgentRole,
   selectSessionAgentRoles,
 } from '../src/lib/composer-agent-roles';
+import { singleMachineRole } from './agent-role-fixture';
 
 const config = (id: string, agentType: string, machineId = 'machine-1'): AgentConfigMeta =>
   ({
@@ -30,17 +31,18 @@ const config = (id: string, agentType: string, machineId = 'machine-1'): AgentCo
 
 const makeRole = (
   overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name' | 'agentConfigId'>
-): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  ownerUserId: 'user-1',
-  visibility: 'private',
-  machineId: 'machine-1' as MachineId,
-  runConfig: {},
-  revision: 1,
-  createdAt: 1,
-  updatedAt: 1,
-  ...overrides,
-});
+): AgentRole =>
+  singleMachineRole({
+    v: AGENT_ROLE_VERSION,
+    ownerUserId: 'user-1',
+    visibility: 'private',
+    machineId: 'machine-1' as MachineId,
+    runConfig: {},
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  });
 
 describe('selectSessionAgentRoles', () => {
   const codexHere = makeRole({
@@ -92,7 +94,7 @@ describe('selectSessionAgentRoles', () => {
       resolveAvailability: () => ({ kind: 'unavailable', reason: 'agent_config_missing' }),
     });
     expect(items).toHaveLength(1);
-    expect(items[0]?.role).toBe(orphan);
+    expect(items[0]?.role).toEqual(orphan);
     expect(items[0]?.agentConfig).toBeUndefined();
     expect(items[0]?.availability).toEqual({
       kind: 'unavailable',

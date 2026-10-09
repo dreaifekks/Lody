@@ -14,6 +14,7 @@ import {
   acquireWorkspaceCatalog,
   type WorkspaceCatalogSnapshot,
 } from '../src/lib/workspace-catalog-room';
+import { singleMachineRole } from './agent-role-fixture';
 
 const entry = (id: string, name: string): WorkspaceMcpServerMeta => ({
   id: id as WorkspaceMcpServerMeta['id'],
@@ -24,20 +25,21 @@ const entry = (id: string, name: string): WorkspaceMcpServerMeta => ({
   updatedAt: 1,
 });
 
-const roleRow = (id: string, name: string): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  id: id as AgentRoleId,
-  ownerUserId: 'user-1',
-  visibility: 'private',
-  name,
-  mentionSlug: name.toLowerCase(),
-  machineId: 'machine-1' as MachineId,
-  agentConfigId: 'config-1' as AgentConfigId,
-  runConfig: {},
-  revision: 1,
-  createdAt: 1,
-  updatedAt: 1,
-});
+const roleRow = (id: string, name: string): AgentRole =>
+  singleMachineRole({
+    v: AGENT_ROLE_VERSION,
+    id: id as AgentRoleId,
+    ownerUserId: 'user-1',
+    visibility: 'private',
+    name,
+    mentionSlug: name.toLowerCase(),
+    machineId: 'machine-1' as MachineId,
+    agentConfigId: 'config-1' as AgentConfigId,
+    runConfig: {},
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  });
 
 // The room's startup is a chain of awaits on already-resolved promises, so
 // draining microtasks settles it deterministically — no timers, no wall clock.

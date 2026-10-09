@@ -1,4 +1,8 @@
-import { buildAgentRoleFormValueFromRunConfig, snapshotAgentRole } from '@lody/shared';
+import {
+  agentRoleOnMachine,
+  buildAgentRoleFormValueFromRunConfig,
+  snapshotAgentRole,
+} from '@lody/shared';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import {
@@ -1635,16 +1639,17 @@ function WorkspaceChatLanding({
     roleId: AgentRoleId;
     token: number;
   } | null>(null);
-  /* A Role binds `machineId + agentConfigId` exactly, so its preference applies
-     only while the composer is on that agent. Derived rather than cleared: a
+  /* A Role's preference applies only while the composer is on the agent its
+     placement for the selected machine names. Derived rather than cleared: a
      Role never re-points at whichever agent happens to be selected. */
   const activeAgentRolePreference = useMemo(() => {
     if (!agentRolePreference || !selectedAgent) return null;
-    const role = workspaceAgentRoles.find((entry) => entry.id === agentRolePreference.roleId);
-    if (!role) return null;
-    const bound =
-      role.agentConfigId === selectedAgent.agentId && role.machineId === selectedAgent.machineId;
-    return bound ? { role, token: agentRolePreference.token } : null;
+    const catalogRole = workspaceAgentRoles.find(
+      (entry) => entry.id === agentRolePreference.roleId
+    );
+    const role = catalogRole && agentRoleOnMachine(catalogRole, selectedAgent.machineId);
+    if (role?.agentConfigId !== selectedAgent.agentId) return null;
+    return { role, token: agentRolePreference.token };
   }, [agentRolePreference, selectedAgent, workspaceAgentRoles]);
   const selectedAgentDefaults = useMemo(() => {
     const roleRunConfig = activeAgentRolePreference?.role.runConfig;
@@ -3218,8 +3223,8 @@ function WorkspaceChatLanding({
         agent_role_used: activeAgentRole != null,
       });
       if (activeAgentRole) {
-        // The composer's Role picker only offers Roles bound to the machine the
-        // chat starts on, so a new-chat Role is never cross-machine.
+        // The composer's Role picker only offers Roles enabled on the machine
+        // the chat starts on, so a new-chat Role is never cross-machine.
         captureAgentRoleApplied(postHog, activeAgentRole, {
           source: 'new_chat',
           crossMachine: false,
@@ -3569,9 +3574,8 @@ function WorkspaceChatLanding({
     () => (scopedMachineId ? [scopedMachineId] : []),
     [scopedMachineId]
   );
-  /* Roles offered for the machine this chat will start on. Scoped to that one
-     machine because a Role binds its execution site exactly — a Role from
-     another machine could only move the chat off the selected one. */
+  /* Roles offered for the machine this chat will start on, as their view on
+     that machine. A Role not enabled there could only move the chat off it. */
   const composerAgentRoleItems = useMemo(
     () =>
       buildComposerAgentRoleItems({

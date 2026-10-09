@@ -1,4 +1,9 @@
-import type { AgentRole, MachineId, MessageTextSpan } from '@lody/shared';
+import {
+  agentRoleOnMachine,
+  type AgentRole,
+  type MachineId,
+  type MessageTextSpan,
+} from '@lody/shared';
 import { capturePostHogEvent, type PostHogAnalyticsClient } from '@/lib/posthog-analytics';
 
 export type AgentRoleAppliedSource = 'new_chat' | 'existing_session' | 'mention';
@@ -29,7 +34,7 @@ export function captureAgentRoleMentionsApplied(
   postHog: PostHogAnalyticsClient | null | undefined,
   input: {
     spans: readonly MessageTextSpan[] | undefined;
-    roles: readonly Pick<AgentRole, 'id' | 'machineId' | 'visibility'>[];
+    roles: readonly AgentRole[];
     /** Machine the sending conversation runs on; null when not known. */
     executionMachineId: MachineId | null | undefined;
   }
@@ -40,7 +45,9 @@ export function captureAgentRoleMentionsApplied(
     if (!role) continue;
     captureAgentRoleApplied(postHog, role, {
       source: 'mention',
-      crossMachine: input.executionMachineId ? role.machineId !== input.executionMachineId : null,
+      crossMachine: input.executionMachineId
+        ? !agentRoleOnMachine(role, input.executionMachineId)
+        : null,
     });
   }
 }

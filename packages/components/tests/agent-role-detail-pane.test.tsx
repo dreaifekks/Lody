@@ -14,6 +14,7 @@ import {
 
 import { AgentRoleDetailPane } from '../src/components/sessions/agent-role-detail-pane';
 import { initI18n } from '../src/i18n';
+import { singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -26,21 +27,22 @@ const agentConfig: Pick<AgentConfigMeta, 'cliType' | 'agentType' | 'brandId' | '
   name: 'Codex',
 };
 
-const role = (overrides: Partial<AgentRole> = {}): AgentRole => ({
-  v: AGENT_ROLE_VERSION,
-  id: 'role-1' as AgentRoleId,
-  ownerUserId: 'user-1',
-  visibility: 'workspace',
-  name: 'Code Reviewer',
-  emoji: '🔍',
-  machineId: 'machine-1' as MachineId,
-  agentConfigId: 'config-1' as AgentConfigId,
-  runConfig: { modelId: 'gpt-5.6-sol' },
-  revision: 2,
-  createdAt: 1,
-  updatedAt: 2,
-  ...overrides,
-});
+const role = (overrides: Partial<AgentRole> = {}): AgentRole =>
+  singleMachineRole({
+    v: AGENT_ROLE_VERSION,
+    id: 'role-1' as AgentRoleId,
+    ownerUserId: 'user-1',
+    visibility: 'workspace',
+    name: 'Code Reviewer',
+    emoji: '🔍',
+    machineId: 'machine-1' as MachineId,
+    agentConfigId: 'config-1' as AgentConfigId,
+    runConfig: { modelId: 'gpt-5.6-sol' },
+    revision: 2,
+    createdAt: 1,
+    updatedAt: 2,
+    ...overrides,
+  });
 
 type PaneProps = ComponentProps<typeof AgentRoleDetailPane>;
 

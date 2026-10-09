@@ -1,4 +1,4 @@
-import { snapshotAgentRole } from '@lody/shared';
+import { agentRoleOnMachine, snapshotAgentRole } from '@lody/shared';
 import { useCallback, useEffect, useMemo } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import { usePostHog } from '@posthog/react';
@@ -40,8 +40,8 @@ export type SessionAgentRoleControl = {
  * The Role row for an EXISTING session's composer.
  *
  * A live session's agent is fixed, so this is deliberately not the landing's
- * feature. It offers only Roles bound to the Session's exact machine and Agent
- * Config (its model provider), and applies only their RUN CONFIG — model,
+ * feature. It offers only Roles whose placement on the Session's machine uses
+ * its exact Agent Config (its model provider), and applies only their RUN CONFIG — model,
  * reasoning, permission, and whatever else that agent publishes — because
  * those are exactly the values a session can still change per turn. The Role's
  * machine, config, and instruction are not applied and are not claimed to be.
@@ -106,9 +106,10 @@ export function useSessionAgentRole({
   const scopedRoles = useMemo(
     () =>
       machineId && agentConfigId
-        ? roles.filter(
-            (role) => role.machineId === machineId && role.agentConfigId === agentConfigId
-          )
+        ? roles.flatMap((catalogRole) => {
+            const role = agentRoleOnMachine(catalogRole, machineId);
+            return role?.agentConfigId === agentConfigId ? [role] : [];
+          })
         : [],
     [agentConfigId, machineId, roles]
   );

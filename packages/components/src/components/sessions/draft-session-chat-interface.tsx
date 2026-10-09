@@ -155,7 +155,7 @@ export const DraftSessionChatInterface = memo(
       const { roles: workspaceAgentRoles } = useWorkspaceAgentRoles();
       const { resolve: resolveAgentRoleAvailability } =
         useAgentRoleAvailability(workspaceAgentRoles);
-      /* A blank child tab is still a new Session. Offer every Role bound to
+      /* A blank child tab is still a new Session. Offer every Role enabled on
          the parent workspace's machine, just as Chat Landing does for its
          selected machine; the Role itself may choose a different Agent type. */
       const composerAgentRoleItems = useMemo(
@@ -172,7 +172,7 @@ export const DraftSessionChatInterface = memo(
       /* The draft stores the Role's identity, not a captured copy. Edits bump
          its revision and re-seed the composer; deletion simply stops resolving.
          A preference only applies while the draft remains on the exact Agent
-         Config that Role binds. */
+         Config the Role's placement on this machine names. */
       const agentRolePreference = useMemo(() => {
         if (!draft.agentRoleId || !draft.agentConfigId) return null;
         const item = composerAgentRoleItems.find((entry) => entry.role.id === draft.agentRoleId);

@@ -24,7 +24,10 @@ export function useAgentRoleSchemaReconciliation(): void {
     () => roles.filter((role) => canManageAgentRole(role, userId)),
     [roles, userId]
   );
-  const machineIds = useMemo(() => owned.map((role) => role.machineId), [owned]);
+  const machineIds = useMemo(
+    () => owned.flatMap((role) => role.placements.map((placement) => placement.machineId)),
+    [owned]
+  );
   useMachineFlockAgentConfigsForMachineIds(machineIds);
   const configs = useAtomValue(getAllAgentConfigAtom);
   const online = useAtomValue(onlineMachineIdsAtom);
@@ -44,15 +47,19 @@ export function useAgentRoleSchemaReconciliation(): void {
   useEffect(() => {
     if (!runtime || !userId || !synced) return undefined;
     let cancelled = false;
-    for (const role of owned) {
+    // Every placement, switched off ones included: they keep their settings
+    // for when they come back on.
+    for (const [role, placement] of owned.flatMap((entry) =>
+      entry.placements.map((item) => [entry, item] as const)
+    )) {
       const config = configs.find(
-        (item) => item.id === role.agentConfigId && item.machineId === role.machineId
+        (item) => item.id === placement.agentConfigId && item.machineId === placement.machineId
       );
-      const machine = machines.get(role.machineId);
-      if (!config || !machine || !Object.keys(role.runConfig.configOptionValues ?? {}).length)
+      const machine = machines.get(placement.machineId);
+      if (!config || !machine || !Object.keys(placement.runConfig.configOptionValues ?? {}).length)
         continue;
       const key = JSON.stringify([config, machine.acpCapabilities?.[config.id]?.sourceVersion]);
-      if (!online.has(role.machineId)) {
+      if (!online.has(placement.machineId)) {
         probes.entries.delete(key);
         continue;
       }
@@ -63,7 +70,7 @@ export function useAgentRoleSchemaReconciliation(): void {
             runtime.requestMachineAcpCapabilitiesRefresh({
               type: 'machine/acp-capabilities-refresh',
               workspaceId: runtime.workspaceId,
-              machineId: role.machineId,
+              machineId: placement.machineId,
               configId: config.id,
             })
           )
@@ -76,7 +83,7 @@ export function useAgentRoleSchemaReconciliation(): void {
           if (
             cancelled ||
             !response?.success ||
-            response.machineId !== role.machineId ||
+            response.machineId !== placement.machineId ||
             response.configId !== config.id ||
             response.cliType !== config.cliType ||
             response.agentType !== config.agentType ||
@@ -91,6 +98,7 @@ export function useAgentRoleSchemaReconciliation(): void {
           await persistReconciledAgentRole(
             runtime,
             role,
+            placement.machineId,
             response.capability,
             userId,
             getServerNow(),

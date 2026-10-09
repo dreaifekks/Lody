@@ -1,10 +1,11 @@
-import type {
-  AgentConfigMeta,
-  AgentRole,
-  AgentRoleAvailability,
-  AgentRoleId,
-  AgentRoleUnavailableReason,
-  MachineId,
+import {
+  agentRoleOnMachine,
+  type AgentConfigMeta,
+  type AgentRole,
+  type AgentRoleAvailability,
+  type AgentRoleId,
+  type AgentRoleUnavailableReason,
+  type MachineId,
 } from '@lody/shared';
 import type { AcpConfigOptionValue } from '@/components/shared/acp-selector-options';
 import type { AgentSelection } from '@/components/shared/agent-selector';
@@ -113,12 +114,11 @@ export function resolveTurnAgentRoleForRunConfig({
 }
 
 /**
- * The Roles the composer offers for the machine the chat will start on.
+ * The Roles the composer offers for the machine the chat will start on, each as
+ * its view on that machine (`agentRoleOnMachine`).
  *
- * Scoped to that one machine because the composer has already decided it, and
- * `machineId + agentConfigId` bind a Role exactly: offering a Role from another
- * machine could only either move the chat off the selected machine or fall back
- * to a different config, and a Role never falls back.
+ * Scoped to that one machine because the composer has already decided it: a
+ * Role not enabled there could only move the chat off the selected machine.
  *
  * Unavailable Roles stay listed. Seeing that a Role exists and why it cannot run
  * is what lets someone fix it; dropping the row makes a broken Role look
@@ -138,7 +138,7 @@ export function buildComposerAgentRoleItems({
   if (!machineId) return [];
   const configById = new Map(agentConfigs.map((config) => [config.id, config]));
   return roles
-    .filter((role) => role.machineId === machineId)
+    .flatMap((role) => agentRoleOnMachine(role, machineId) ?? [])
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
     .map((role) => ({
       role,
@@ -174,7 +174,7 @@ export function doesAgentRolePinPermissionMode(
  * A create resolves on the DURABLE local write, while the catalog snapshot the
  * composer reads from arrives on its own tick, so "not in the list" right after
  * saving means "not yet". It can also mean "not here at all": the editor lets a
- * Role be bound to any machine, and the composer must not follow one onto a
+ * Role run on other machines only, and the composer must not follow one onto a
  * machine it is not starting this chat on. So the three answers are wait,
  * select, and give up — never "select something else".
  */
@@ -186,14 +186,14 @@ export function resolvePendingAgentRoleSelection({
   isInCatalog,
 }: {
   roleId: AgentRoleId;
-  /** The Roles the composer offers, i.e. those bound to its own machine. */
+  /** The Roles the composer offers, i.e. those enabled on its own machine. */
   items: readonly ComposerAgentRoleItem[];
   /** Whether the catalog knows this Role at all, on any machine. */
   isInCatalog: boolean;
 }): PendingAgentRoleSelection {
   const item = items.find((entry) => entry.role.id === roleId);
   if (!item) {
-    // Known to the catalog but not offered here: it is bound elsewhere, and
+    // Known to the catalog but not offered here: it runs elsewhere, and
     // following it would move the chat off the selected machine.
     return isInCatalog ? 'give-up' : 'wait';
   }
@@ -271,8 +271,9 @@ export function isComposerAgentRoleApplied(
 }
 
 /**
- * The Roles an EXISTING session may reuse: those bound to its exact machine
- * and Agent Config (the model-provider binding shown in the composer).
+ * The Roles an EXISTING session may reuse: those whose placement on its
+ * machine uses its exact Agent Config (the model-provider binding shown in the
+ * composer), as that machine's view.
  *
  * A live session's agent is fixed — its machine, its config, its whole
  * runtime — so a Role cannot be executed there the way the landing executes
@@ -303,8 +304,9 @@ export function selectSessionAgentRoles({
   if (!machineId || !agentConfigId) return [];
   const configById = new Map(agentConfigs.map((config) => [config.id, config]));
   return roles
-    .flatMap((role) => {
-      if (role.machineId !== machineId || role.agentConfigId !== agentConfigId) return [];
+    .flatMap((catalogRole) => {
+      const role = agentRoleOnMachine(catalogRole, machineId);
+      if (role?.agentConfigId !== agentConfigId) return [];
       const agentConfig = configById.get(role.agentConfigId);
       return [{ role, availability: resolveAvailability(role), agentConfig }];
     })

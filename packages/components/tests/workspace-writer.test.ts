@@ -18,6 +18,7 @@ import {
   type AgentRole,
   type AcpCapabilityCacheEntry,
 } from '@lody/shared';
+import { singleMachineRole } from './agent-role-fixture';
 
 const anchor: MinimalVisualAnnotationAnchor = {
   version: 1,
@@ -45,11 +46,19 @@ const anchor: MinimalVisualAnnotationAnchor = {
 };
 
 describe('createDirectWorkspaceWriter', () => {
-  it.each(['unchanged', 'edited', 'deleted', 'cancelled', 'other-owner', 'write-failure'] as const)(
+  it.each([
+    'unchanged',
+    'legacy-row',
+    'edited',
+    'deleted',
+    'cancelled',
+    'other-owner',
+    'write-failure',
+  ] as const)(
     'reconciles the durable role without overwriting intervening changes: %s',
     async (scenario) => {
       const flock = new Flock('role-reconciliation');
-      const role: AgentRole = {
+      const role: AgentRole = singleMachineRole({
         v: AGENT_ROLE_VERSION,
         id: 'role' as never,
         machineId: 'machine' as never,
@@ -61,9 +70,11 @@ describe('createDirectWorkspaceWriter', () => {
         revision: 1,
         createdAt: 1,
         updatedAt: 1,
-      };
+      });
       const key = workspaceFlockKeys.agentRole(role.id);
-      flock.set(key, role as never);
+      // A row from a client that predates placements is reconciled the same way.
+      const { placements: _placements, ...legacyRow } = role;
+      flock.set(key, (scenario === 'legacy-row' ? legacyRow : role) as never);
       flock.commit();
       let release!: () => void;
       const gate = new Promise<void>((resolve) => {
@@ -90,6 +101,7 @@ describe('createDirectWorkspaceWriter', () => {
       const pending = persistReconciledAgentRole(
         runtime,
         role,
+        'machine' as never,
         capability,
         scenario === 'other-owner' ? 'someone-else' : 'owner',
         3,
@@ -104,14 +116,24 @@ describe('createDirectWorkspaceWriter', () => {
       if (scenario === 'write-failure')
         await expect(pending).rejects.toThrow('storage unavailable');
       else await pending;
-      if (scenario === 'unchanged') {
+      if (scenario === 'unchanged' || scenario === 'legacy-row') {
+        const runConfig = { configOptionValues: {} };
         expect(flock.get(key)).toEqual({
           ...role,
-          runConfig: { configOptionValues: {} },
+          placements: [{ ...role.placements[0], runConfig }],
+          runConfig,
           revision: 2,
           updatedAt: 3,
         });
-        await persistReconciledAgentRole(runtime, role, capability, 'owner', 4, () => true);
+        await persistReconciledAgentRole(
+          runtime,
+          role,
+          'machine' as never,
+          capability,
+          'owner',
+          4,
+          () => true
+        );
         expect(flock.get(key)).toMatchObject({ revision: 2, updatedAt: 3 });
       } else expect(flock.get(key)).toEqual(before);
     }
