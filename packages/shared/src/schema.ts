@@ -16,6 +16,7 @@ import {
   AgentConfigId,
   AgentConfigCliType,
   AgentRoleId,
+  AgentRoleInstanceId,
   AgentType,
   AcpCapabilityCacheEntry,
   BuiltinRuntimeOverrides,
@@ -1037,6 +1038,8 @@ export type SessionMeta = {
    */
   agentRoleId?: AgentRoleId;
   agentRoleRevision?: number;
+  /** The instance of that Role the session ran with; display only. */
+  agentRoleInstanceId?: AgentRoleInstanceId;
   /** Schedule provenance only, a UUID of at most 50 UTF-8 bytes. */
   scheduleId?: string;
   acpSessionId?: ACPSessionId;

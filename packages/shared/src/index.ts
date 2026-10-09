@@ -14,6 +14,7 @@ export type {
   AbsolutePath,
   AgentConfigId,
   AgentRoleId,
+  AgentRoleInstanceId,
   BindingId,
   ClientId,
   MachineId,

@@ -5,7 +5,7 @@ import {
   ACP_CONFIG_OPTION_OFF_VALUE,
 } from './acp-run-config';
 import { AGENT_BRAND_IDS, type AgentBrandId } from './agent-brand';
-import { getAgentRoleEmoji, type AgentRole } from './agent-role';
+import { getAgentRoleEmoji, type AgentRole, type AgentRoleInstance } from './agent-role';
 import type { AgentConfigCliType, ModelInfo, SessionTurnInputConfig } from './ai';
 
 const id = z.string().trim().min(1).max(256);
@@ -16,16 +16,21 @@ export const AgentRoleSnapshotSchema = z.object({
   revision: z.number().int().nonnegative(),
   name: label,
   emoji: z.string().max(64),
+  /** The instance that ran; absent in records made before instances. */
+  instanceId: id.optional(),
+  instanceLabel: label.optional(),
 });
 export type AgentRoleSnapshot = z.infer<typeof AgentRoleSnapshotSchema>;
 export const snapshotAgentRole = (
-  role: Pick<AgentRole, 'id' | 'revision' | 'name' | 'emoji'>
+  role: Pick<AgentRole, 'id' | 'revision' | 'name' | 'emoji'>,
+  instance?: Pick<AgentRoleInstance, 'id' | 'label'>
 ): AgentRoleSnapshot =>
   AgentRoleSnapshotSchema.parse({
     id: role.id,
     revision: role.revision,
     name: role.name,
     emoji: getAgentRoleEmoji(role),
+    ...(instance ? { instanceId: instance.id, instanceLabel: instance.label } : {}),
   });
 
 /** Presentation/provenance only. Never an authorization principal or dispatch config. */

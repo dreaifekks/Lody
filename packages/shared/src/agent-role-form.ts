@@ -4,15 +4,16 @@ import {
   isAgentRoleContentEqual,
   normalizeAgentRoleDescription,
   normalizeAgentRoleEmoji,
+  normalizeAgentRoleInstanceLabel,
   normalizeAgentRoleMentionSlug,
   normalizeAgentRoleRunConfig,
-  withAgentRolePlacements,
+  withAgentRoleInstances,
   type AgentRole,
-  type AgentRolePlacement,
-  type CatalogAgentRole,
+  type AgentRoleInstance,
   type AgentRoleRunConfig,
+  type CatalogAgentRole,
 } from './agent-role';
-import type { AgentConfigId, AgentRoleId, MachineId } from './ids';
+import type { AgentConfigId, AgentRoleId, AgentRoleInstanceId, MachineId } from './ids';
 
 /**
  * The authoring state of one Agent Role, and the pure rules around it.
@@ -21,10 +22,12 @@ import type { AgentConfigId, AgentRoleId, MachineId } from './ids';
  * Role may store, when `revision` moves, and whether a saved Role still matches
  * its agent's capabilities — are testable without rendering anything.
  */
-/** One machine's row in the editor. A row with no agent chosen is not saved. */
-export type AgentRoleFormPlacement = {
-  machineId: MachineId;
-  enabled: boolean;
+
+/** One instance in the editor. A machine and an agent are chosen before it can be saved. */
+export type AgentRoleFormInstance = {
+  id: AgentRoleInstanceId;
+  label: string;
+  machineId: MachineId | null;
   agentConfigId: AgentConfigId | null;
   modeId: string | null;
   modelId: string | null;
@@ -36,8 +39,8 @@ export type AgentRoleFormValue = {
   name: string;
   description: string;
   emoji: string;
-  /** In dispatch order; see `AgentRole.placements`. */
-  placements: AgentRoleFormPlacement[];
+  /** In dispatch order; see `AgentRole.instances`. */
+  instances: AgentRoleFormInstance[];
   promptPrefix: string;
   /** Off by default: a new Role is private until its owner says otherwise. */
   shareWithWorkspace: boolean;
@@ -47,14 +50,28 @@ export const EMPTY_AGENT_ROLE_FORM_VALUE: AgentRoleFormValue = {
   name: '',
   description: '',
   emoji: '',
-  placements: [],
+  instances: [],
   promptPrefix: '',
   shareWithWorkspace: false,
 };
 
+/** A new instance, before its machine and agent are chosen. */
+export const buildEmptyAgentRoleFormInstance = (
+  id: AgentRoleInstanceId,
+  machineId: MachineId | null = null
+): AgentRoleFormInstance => ({
+  id,
+  label: '',
+  machineId,
+  agentConfigId: null,
+  modeId: null,
+  modelId: null,
+  configOptionValues: {},
+});
+
 /**
  * Seed a new Role from a run configuration the user already has in front of
- * them — the composer's current selection.
+ * them — the composer's current selection — as its one instance.
  *
  * Creating a Role out of "what I am about to run" is the whole point of
  * offering it from the composer, so the form opens on that configuration with
@@ -62,6 +79,9 @@ export const EMPTY_AGENT_ROLE_FORM_VALUE: AgentRoleFormValue = {
  * so the seed refuses exactly the option keys a Role may never store.
  */
 export const buildAgentRoleFormValueFromRunConfig = (input: {
+  instanceId: AgentRoleInstanceId;
+  /** The agent's name, the instance's default label. */
+  label: string;
   machineId: MachineId | null | undefined;
   agentConfigId: AgentConfigId | null | undefined;
   modeId?: string | null;
@@ -75,11 +95,12 @@ export const buildAgentRoleFormValueFromRunConfig = (input: {
   });
   return {
     ...EMPTY_AGENT_ROLE_FORM_VALUE,
-    placements: input.machineId
+    instances: input.machineId
       ? [
           {
+            id: input.instanceId,
+            label: input.label,
             machineId: input.machineId,
-            enabled: true,
             agentConfigId: input.agentConfigId ?? null,
             modeId: runConfig.modeId ?? null,
             modelId: runConfig.modelId ?? null,
@@ -90,21 +111,22 @@ export const buildAgentRoleFormValueFromRunConfig = (input: {
   };
 };
 
-const buildAgentRoleFormPlacement = (placement: AgentRolePlacement): AgentRoleFormPlacement => ({
-  machineId: placement.machineId,
-  enabled: placement.enabled,
-  agentConfigId: placement.agentConfigId,
-  modeId: placement.runConfig.modeId ?? null,
-  modelId: placement.runConfig.modelId ?? null,
-  configOptionValues: { ...(placement.runConfig.configOptionValues ?? {}) },
-  ...(placement.runConfig.memory ? { memory: placement.runConfig.memory } : {}),
+export const buildAgentRoleFormInstance = (instance: AgentRoleInstance): AgentRoleFormInstance => ({
+  id: instance.id,
+  label: instance.label,
+  machineId: instance.machineId,
+  agentConfigId: instance.agentConfigId,
+  modeId: instance.runConfig.modeId ?? null,
+  modelId: instance.runConfig.modelId ?? null,
+  configOptionValues: { ...(instance.runConfig.configOptionValues ?? {}) },
+  ...(instance.runConfig.memory ? { memory: instance.runConfig.memory } : {}),
 });
 
 export const buildAgentRoleFormValue = (role: CatalogAgentRole): AgentRoleFormValue => ({
   name: role.name,
   description: role.description ?? '',
   emoji: role.emoji ?? '',
-  placements: role.placements.map(buildAgentRoleFormPlacement),
+  instances: role.instances.map(buildAgentRoleFormInstance),
   promptPrefix: role.promptPrefix ?? '',
   shareWithWorkspace: role.visibility === 'workspace',
 });
@@ -112,23 +134,37 @@ export const buildAgentRoleFormValue = (role: CatalogAgentRole): AgentRoleFormVa
 export type AgentRoleFormError =
   | 'name_required'
   | 'name_taken'
+  | 'instance_required'
   | 'machine_required'
-  | 'agent_config_required';
+  | 'agent_config_required'
+  | 'label_required'
+  | 'label_taken';
 
-/** A blank row for a machine the editor lists but the Role does not use yet. */
-export const buildEmptyAgentRoleFormPlacement = (machineId: MachineId): AgentRoleFormPlacement => ({
-  machineId,
-  enabled: false,
-  agentConfigId: null,
-  modeId: null,
-  modelId: null,
-  configOptionValues: {},
-});
+/** What is wrong with one instance, if anything; also used to mark its row. */
+export const validateAgentRoleFormInstance = (
+  instance: AgentRoleFormInstance,
+  instances: readonly AgentRoleFormInstance[]
+): AgentRoleFormError[] => {
+  const errors: AgentRoleFormError[] = [];
+  const label = normalizeAgentRoleInstanceLabel(instance.label).toLowerCase();
+  if (!instance.machineId) errors.push('machine_required');
+  if (!instance.agentConfigId) errors.push('agent_config_required');
+  if (!label) errors.push('label_required');
+  else if (
+    instances.some(
+      (other) =>
+        other.id !== instance.id &&
+        normalizeAgentRoleInstanceLabel(other.label).toLowerCase() === label
+    )
+  )
+    errors.push('label_taken');
+  return errors;
+};
 
 /**
- * The name is the only authored label, so it carries both jobs: it is what the
- * list shows and what `@` completes. Uniqueness is therefore checked on the
- * DERIVED mention token — "Code Reviewer" and "Code-Reviewer" are the same
+ * The name is the Role's only authored label, so it carries both jobs: it is
+ * what the list shows and what `@` completes. Uniqueness is therefore checked on
+ * the DERIVED mention token — "Code Reviewer" and "Code-Reviewer" are the same
  * `@Code-Reviewer` — and only against the Roles this user can see. It is a
  * readability rule, not an identity one: the mention range always carries the
  * Role id, so another member's private Role neither can nor needs to be checked.
@@ -137,35 +173,34 @@ export const validateAgentRoleForm = (
   value: AgentRoleFormValue,
   options: { accessibleRoles: readonly AgentRole[]; editingRoleId?: AgentRoleId | null }
 ): AgentRoleFormError[] => {
-  const errors: AgentRoleFormError[] = [];
+  const errors = new Set<AgentRoleFormError>();
   const slug = normalizeAgentRoleMentionSlug(value.name);
   if (!slug) {
     // Covers both an empty name and one that is all punctuation the mention
     // token strips: either way there is nothing to type after `@`.
-    errors.push('name_required');
+    errors.add('name_required');
   } else if (
     options.accessibleRoles.some(
       (role) => role.id !== options.editingRoleId && getAgentRoleMentionSlug(role) === slug
     )
   ) {
-    errors.push('name_taken');
+    errors.add('name_taken');
   }
 
-  const enabled = value.placements.filter((placement) => placement.enabled);
-  if (enabled.length === 0) errors.push('machine_required');
-  else if (enabled.some((placement) => !placement.agentConfigId))
-    errors.push('agent_config_required');
-  return errors;
+  if (value.instances.length === 0) errors.add('instance_required');
+  for (const instance of value.instances)
+    for (const error of validateAgentRoleFormInstance(instance, value.instances)) errors.add(error);
+  return [...errors];
 };
 
 /**
- * The run config a form value implies.
+ * The run config a form instance implies.
  *
  * Runs through the shared normalizer rather than copying the fields, so the
  * authoring surface refuses exactly the option keys the reader would later
  * refuse — a Role never becomes a place a secret is stored.
  */
-export const buildAgentRoleRunConfig = (value: AgentRoleFormPlacement): AgentRoleRunConfig =>
+export const buildAgentRoleRunConfig = (value: AgentRoleFormInstance): AgentRoleRunConfig =>
   normalizeAgentRoleRunConfig({
     memory: value.memory,
     modeId: value.modeId ?? undefined,
@@ -175,8 +210,7 @@ export const buildAgentRoleRunConfig = (value: AgentRoleFormPlacement): AgentRol
 
 /**
  * Turn an authored form into the row to persist. Expects a value that passed
- * `validateAgentRoleForm`: rows without an agent are dropped, so at least one
- * enabled placement remains.
+ * `validateAgentRoleForm`: every instance has a machine and an agent.
  *
  * `revision` only moves when something actually changed: accepted Operations
  * and Session provenance record it, so a no-op save must not invent a new one.
@@ -184,7 +218,7 @@ export const buildAgentRoleRunConfig = (value: AgentRoleFormPlacement): AgentRol
 export const buildAgentRoleFromForm = (
   value: AgentRoleFormValue,
   options: {
-    /** The catalog row being edited; a machine view would drop every other machine. */
+    /** The catalog row being edited. */
     existing?: CatalogAgentRole;
     ownerUserId: string;
     now: number;
@@ -194,19 +228,14 @@ export const buildAgentRoleFromForm = (
   const { existing, ownerUserId, now } = options;
   const emoji = normalizeAgentRoleEmoji(value.emoji);
   const promptPrefix = value.promptPrefix.trim();
-  const placements = value.placements.flatMap((placement): AgentRolePlacement[] =>
-    placement.agentConfigId
-      ? [
-          {
-            machineId: placement.machineId,
-            agentConfigId: placement.agentConfigId,
-            enabled: placement.enabled,
-            runConfig: buildAgentRoleRunConfig(placement),
-          },
-        ]
-      : []
-  );
-  const next = withAgentRolePlacements(
+  const instances = value.instances.map((instance): AgentRoleInstance => ({
+    id: instance.id,
+    label: normalizeAgentRoleInstanceLabel(instance.label),
+    machineId: instance.machineId as MachineId,
+    agentConfigId: instance.agentConfigId as AgentConfigId,
+    runConfig: buildAgentRoleRunConfig(instance),
+  }));
+  const next = withAgentRoleInstances(
     {
       v: AGENT_ROLE_VERSION,
       id: existing?.id ?? options.createId(),
@@ -220,7 +249,7 @@ export const buildAgentRoleFromForm = (
       createdAt: existing?.createdAt ?? now,
       updatedAt: existing?.updatedAt ?? now,
     },
-    placements
+    instances
   );
 
   if (!existing) return next;

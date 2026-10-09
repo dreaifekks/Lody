@@ -1483,6 +1483,8 @@ export type ScheduleProposalRule =
 export type ScheduleProposalTarget = {
   agentConfigId?: string;
   agentRoleId?: string;
+  /** One instance of that Role; otherwise the Role's dispatch rules pick one. */
+  agentRoleInstanceId?: string;
   machineId?: string;
   project?: ProjectRef;
 };
