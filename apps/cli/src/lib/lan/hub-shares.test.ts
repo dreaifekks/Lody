@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -62,7 +63,12 @@ const READER = {
   script: Buffer.from('/* reader */'),
   style: Buffer.from('/* style */'),
   icon: Buffer.from('lody icon'),
+  // The banner a build carries, so its size is the one a preview is told.
+  banner: fs.readFileSync(
+    new URL('../../../../../packages/components/src/assets/lan-share-banner.png', import.meta.url)
+  ),
 };
+const BANNER_VERSION = `lody-${crypto.createHash('sha256').update(READER.banner).digest('hex').slice(0, 12)}`;
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 4, 5, 6]);
 
@@ -199,22 +205,34 @@ describe('conversations a LAN shares', () => {
     expect(meta(html, 'og:description')).toBe('A read-only conversation shared from Lody LAN.');
     // Without a public address, the address the reader came by.
     expect(meta(html, 'og:url')).toBe(`${hub.shareUrl}/s/${share.shareId}`);
-    expect(meta(html, 'og:image')).toBe(`${hub.shareUrl}/_lody/preview?v=lody`);
-    expect(meta(html, 'twitter:card')).toBe('summary');
+    // A hub that set no preview shows Lody's banner, large and of a known size.
+    expect(meta(html, 'og:image')).toBe(`${hub.shareUrl}/_lody/preview?v=${BANNER_VERSION}`);
+    expect(meta(html, 'og:image:width')).toBe('1200');
+    expect(meta(html, 'og:image:height')).toBe('630');
+    expect(meta(html, 'twitter:card')).toBe('summary_large_image');
     expect(html).not.toContain('A secret answer.');
     expect(html).not.toContain('Question?');
 
     await setLanSharePublicUrl(hub, 'https://share.example.com/');
     html = await head();
     expect(meta(html, 'og:url')).toBe(`https://share.example.com/s/${share.shareId}`);
-    expect(meta(html, 'og:image')).toBe('https://share.example.com/_lody/preview?v=lody');
+    expect(meta(html, 'og:image')).toBe(
+      `https://share.example.com/_lody/preview?v=${BANNER_VERSION}`
+    );
 
-    // Lody's icon is the favicon, the preview and the page's mark.
-    for (const pathname of ['/_lody/icon', '/_lody/preview', '/_lody/lody-icon.png']) {
+    // Lody's icon is the favicon and the page's mark.
+    for (const pathname of ['/_lody/icon', '/_lody/lody-icon.png']) {
       const image = await read(pathname);
       expect(image.headers.get('content-type')).toBe('image/png');
       expect(Buffer.from(await image.arrayBuffer())).toEqual(READER.icon);
     }
+    // The banner is the PNG the head says it is.
+    const preview = await read('/_lody/preview');
+    expect(preview.headers.get('content-type')).toBe('image/png');
+    const banner = Buffer.from(await preview.arrayBuffer());
+    expect(banner).toEqual(READER.banner);
+    expect(banner.subarray(12, 16).toString('latin1')).toBe('IHDR');
+    expect([banner.readUInt32BE(16), banner.readUInt32BE(20)]).toEqual([1200, 630]);
   });
 
   it('keeps the images a member sets, refuses what is not one, and takes them back', async () => {
@@ -241,16 +259,21 @@ describe('conversations a LAN shares', () => {
     await setLanShareImage(hub, 'icon', file('icon.png', PNG));
     expect(await readLanShareSettings(hub)).toMatchObject({ icon: true, preview: false });
     expect(await bytesOf('/_lody/icon')).toEqual({ type: 'image/png', bytes: PNG });
-    // A preview nobody set shows the icon; the page's mark stays Lody's.
-    expect(await bytesOf('/_lody/preview')).toEqual({ type: 'image/png', bytes: PNG });
+    // A preview nobody set stays Lody's banner, not the icon; the page's mark stays Lody's.
+    expect(await bytesOf('/_lody/preview')).toEqual({ type: 'image/png', bytes: READER.banner });
     expect((await bytesOf('/_lody/lody-icon.png')).bytes).toEqual(READER.icon);
     let html = await (await read(`/s/${share.shareId}`)).text();
     expect(html).toMatch(/<link rel="icon" href="\/_lody\/icon\?v=[a-f0-9]{12}">/);
-    expect(html).toContain('<meta name="twitter:card" content="summary">');
+    expect(html).toContain(`/_lody/preview?v=${BANNER_VERSION}"`);
 
+    // A member's preview is shown large, its size untold.
     await setLanShareImage(hub, 'preview', file('preview.jpg', JPEG));
     expect(await bytesOf('/_lody/preview')).toEqual({ type: 'image/jpeg', bytes: JPEG });
     html = await (await read(`/s/${share.shareId}`)).text();
+    expect(html).toMatch(
+      /<meta property="og:image" content="[^"]*\/_lody\/preview\?v=[a-f0-9]{12}">/
+    );
+    expect(html).not.toContain('og:image:width');
     expect(html).toContain('<meta name="twitter:card" content="summary_large_image">');
 
     // An SVG can carry script; neither the member nor the hub takes one.
@@ -296,6 +319,7 @@ describe('conversations a LAN shares', () => {
     await setLanShareImage(hub, 'preview', null);
     expect(await readLanShareSettings(hub)).toMatchObject({ icon: false, preview: false });
     expect((await bytesOf('/_lody/icon')).bytes).toEqual(READER.icon);
+    expect((await bytesOf('/_lody/preview')).bytes).toEqual(READER.banner);
     expect(readLanHubShareFiles(dataDir)?.objects).toHaveLength(2);
     expect(fs.existsSync(path.join(dataDir, 'shares', 'images.json'))).toBe(false);
   });

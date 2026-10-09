@@ -26,7 +26,9 @@ The page a LAN hub serves to readers of a shared conversation (fork-only, see
 
 `pnpm build` bundles `dist/lan-share-reader.{js,css}` with esbuild and copies
 the packaged Lody icon (`packages/components/src/assets/lody-icon.png`) as
-`dist/lan-share-reader-icon.png`;
+`dist/lan-share-reader-icon.png` and the default link preview banner
+(`packages/components/src/assets/lan-share-banner.png`, 1200×630) as
+`dist/lan-share-reader-banner.png`;
 `apps/cli/scripts/copy-share-reader.js` copies them beside the CLI bundle,
 where `apps/cli/src/lib/lan/hub-shares.ts` reads them. The hub, not this page,
 writes the page's head (title, favicon, link-preview tags).
