@@ -46,6 +46,8 @@ Shared mention primitive used by composer autocomplete surfaces.
   `onMentionAdd`: it has to interleave the controlled value commit with caret
   restoration, so a menu's own Back affordance calls it rather than restaging the
   transaction. Callers decide only _when_ it applies.
+- Find a query's trigger with `findQueryTriggerIndex`, never `lastIndexOf`
+  (`@ui@n1`).
 - `mention-trigger.ts` is the single owner of the `<namespace>:` grammar
   (`parseMentionNamespaceSearch`). The menu resolves its level from the same
   parse Backspace pops from, so the two cannot disagree about what is a

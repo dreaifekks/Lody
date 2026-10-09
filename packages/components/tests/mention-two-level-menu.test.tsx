@@ -9,11 +9,13 @@ import { MentionMobilePanel } from '../src/ui/mention/mention-mobile-content';
 import type { Mention as MentionRange } from '../src/ui/mention/mention-root';
 import {
   matchedRuns,
+  MentionTwoLevelMenu,
   MentionTwoLevelMenuBody,
   splitPathTail,
   useMentionCategoryActivation,
 } from '../src/components/mentions/mention-two-level-menu';
 import {
+  buildAgentRoleCandidates,
   getMentionViewCandidates,
   selectMentionMenuViewForTrigger,
   toSkillCandidate,
@@ -22,7 +24,16 @@ import {
   type MentionCategory,
   type MentionMenuView,
 } from '../src/components/mentions/mention-registry';
+import { buildAgentRoleMentionItems } from '../src/components/mentions/mention-agent-role-source';
 import { initI18n } from '../src/i18n';
+import {
+  AGENT_ROLE_VERSION,
+  type AgentConfigId,
+  type AgentRoleId,
+  type AgentRoleInstanceId,
+  type MachineId,
+} from '@lody/shared';
+import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -31,13 +42,15 @@ import { initI18n } from '../src/i18n';
 const latest: {
   inputValue: string;
   mentions: readonly MentionRange[];
+  open: boolean;
   onMentionAdd: ((value: string, triggerIndex: number) => void) | null;
-} = { inputValue: '', mentions: [], onMentionAdd: null };
+} = { inputValue: '', mentions: [], open: false, onMentionAdd: null };
 
 function Probe() {
   const context = useMentionContext('Probe');
   latest.inputValue = context.inputValue;
   latest.mentions = context.mentions;
+  latest.open = context.open;
   latest.onMentionAdd = context.onMentionAdd;
   return null;
 }
@@ -975,5 +988,196 @@ describe('mobile mention placement', () => {
     await act(async () => window.dispatchEvent(new Event('resize')));
     expect(panel?.style.bottom).toBe('696px');
     expect(panel?.style.maxHeight).toBe('16px');
+  });
+});
+
+/**
+ * The composer as a person uses it: nothing is open until a key opens it, and
+ * the menu reads its term from what the input made of the keystrokes.
+ */
+describe('typing a mention into the input', () => {
+  let root: Root | undefined;
+  let container: HTMLDivElement | undefined;
+  let originalRequestAnimationFrame: typeof requestAnimationFrame | undefined;
+
+  /** uiStyle: Claude on machine-1 (the composer's) and on n100. */
+  const uiStyle = singleMachineRole({
+    v: AGENT_ROLE_VERSION,
+    id: 'ui-style' as AgentRoleId,
+    ownerUserId: 'user-1',
+    visibility: 'private',
+    name: 'uiStyle',
+    machineId: 'machine-1' as MachineId,
+    agentConfigId: 'config-1' as AgentConfigId,
+    runConfig: {},
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    instances: (['machine-1', 'n100'] as const).map((machineId) => ({
+      id: `ui-${machineId}` as AgentRoleInstanceId,
+      alias: 'Claude',
+      machineId: machineId as MachineId,
+      agentConfigId: `config-${machineId}` as AgentConfigId,
+      runConfig: {},
+    })),
+  });
+  const roleItems = buildAgentRoleMentionItems(composerItemsOf(uiStyle), () => null);
+  const categories = (): MentionCategory[] => [
+    ...makeCategories(),
+    {
+      id: 'agent_role',
+      namespace: 'role',
+      label: 'Agent Roles',
+      icon: 'agent_role',
+      status: 'ready',
+      getCandidates: (term, limit) => buildAgentRoleCandidates(roleItems, term, limit),
+    },
+  ];
+
+  function Composer() {
+    const [value, setValue] = React.useState('');
+    const [mentions, setMentions] = React.useState<MentionRange[]>([]);
+    const [selected, setSelected] = React.useState<string[]>([]);
+    const menuCategories = React.useMemo(categories, []);
+    return (
+      <Mention
+        triggers={['@', '$', '/']}
+        inputValue={value}
+        onInputValueChange={setValue}
+        mentions={mentions}
+        onMentionsChange={setMentions}
+        value={selected}
+        onValueChange={setSelected}
+        onFilter={(options) => options}
+        autoCloseOnEmpty={false}
+      >
+        <Probe />
+        <MentionInput value={value} onChange={() => {}} />
+        <MentionTwoLevelMenu categories={menuCategories} />
+      </Mention>
+    );
+  }
+
+  beforeEach(async () => {
+    await initI18n('en');
+    originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    globalThis.requestAnimationFrame = ((callback) => {
+      callback(0);
+      return 0;
+    }) as typeof requestAnimationFrame;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => root?.render(<Composer />));
+  });
+
+  afterEach(() => {
+    if (root) act(() => root?.unmount());
+    root = undefined;
+    container?.remove();
+    container = undefined;
+    if (originalRequestAnimationFrame) {
+      globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    }
+    originalRequestAnimationFrame = undefined;
+  });
+
+  const input = () => container!.querySelector('textarea')!;
+
+  /** One key at a time: the key, then the character it leaves at the caret. */
+  function type(text: string) {
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    for (const key of text) {
+      act(() => {
+        const element = input();
+        element.focus();
+        element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+        const caret = element.selectionStart;
+        setValue?.call(element, element.value.slice(0, caret) + key + element.value.slice(caret));
+        element.setSelectionRange(caret + 1, caret + 1);
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
+      });
+    }
+  }
+
+  function press(key: string) {
+    act(() => {
+      input().dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    });
+  }
+
+  const rows = () =>
+    Array.from(document.querySelectorAll('[data-slot="mention-item"]')).map((node) =>
+      (node.textContent ?? '').trim()
+    );
+
+  it.each(['Enter', 'click'] as const)(
+    'keeps one query through a second trigger and commits the whole token by %s',
+    (action) => {
+      const roleRows = () => rows().filter((row) => row.includes('uiStyle'));
+      type('ask @ui');
+      expect(roleRows()).toHaveLength(1);
+      expect(roleRows()[0]).not.toContain('n100');
+      type('@');
+      // The second `@` belongs to the query: the menu stays, now by machine.
+      expect(latest.open).toBe(true);
+      type('n1');
+      expect(rows()).toHaveLength(1);
+      expect(rows()[0]).toContain('uiStyle · n100');
+
+      if (action === 'Enter') press('Enter');
+      else act(() => document.querySelector<HTMLElement>('[data-slot="mention-item"]')?.click());
+      expect(latest.inputValue).toBe('ask @uiStyle@n100 ');
+      expect(latest.mentions).toEqual([
+        { value: 'pinned:ui-n100', start: 4, end: 17, kind: 'agent_role' },
+      ]);
+    }
+  );
+
+  it('opens nothing for a trigger inside a word', () => {
+    type('mail me@example.com');
+    expect(latest.open).toBe(false);
+    expect(latest.inputValue).toBe('mail me@example.com');
+  });
+
+  it('starts a new query at a trigger after whitespace', () => {
+    type('@33');
+    press('Enter');
+    expect(latest.inputValue).toBe('#3312 ');
+    type('@32');
+    expect(rows()).toEqual(['Slow switch#3298']);
+    press('Enter');
+    // Two mentions, each from its own trigger.
+    expect(latest.inputValue).toBe('#3312 #3298 ');
+    expect(latest.mentions).toEqual([
+      { value: '#3312', start: 0, end: 5, kind: 'issue' },
+      { value: '#3298', start: 6, end: 11, kind: 'issue' },
+    ]);
+  });
+
+  it('ends a query at whitespace, so a later trigger is its own', () => {
+    type('@ui ');
+    expect(latest.open).toBe(false);
+    type('@32');
+    press('Enter');
+    expect(latest.inputValue).toBe('@ui #3298 ');
+    expect(latest.mentions).toEqual([{ value: '#3298', start: 4, end: 9, kind: 'issue' }]);
+  });
+
+  it('does not reopen a committed mention for a trigger typed against it', () => {
+    type('@33');
+    press('Enter');
+    press('Backspace');
+    act(() => {
+      const element = input();
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      setValue?.call(element, '#3312');
+      element.setSelectionRange(5, 5);
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    type('@');
+    expect(latest.open).toBe(false);
+    expect(latest.mentions).toEqual([{ value: '#3312', start: 0, end: 5, kind: 'issue' }]);
   });
 });

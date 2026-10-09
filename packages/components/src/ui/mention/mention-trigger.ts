@@ -3,6 +3,25 @@ export type TriggerCandidate = {
   index: number;
 };
 
+/**
+ * `#` opens directly after text (`issue#12`); every other trigger opens only
+ * after whitespace or at the start.
+ */
+export const canTriggerFollowText = (trigger: string): boolean => trigger === '#';
+
+/**
+ * Where the query the caret is in starts: the last `trigger` at or before the
+ * caret, or — when that one directly follows text and so opens nothing itself
+ * — the same trigger opening the whitespace-free run it is in. `@ui@n1` is one
+ * query from its first `@`; `me@example.com` and `@a @b` are unchanged.
+ */
+export function findQueryTriggerIndex(value: string, trigger: string, caret: number): number {
+  const last = value.lastIndexOf(trigger, caret);
+  if (last <= 0 || canTriggerFollowText(trigger)) return last;
+  const runStart = value.slice(0, last).search(/\S+$/u);
+  return runStart !== -1 && value.startsWith(trigger, runStart) ? runStart : last;
+}
+
 export function findTriggerCandidates(
   value: string,
   triggers: string[],
@@ -13,7 +32,7 @@ export function findTriggerCandidates(
 
   for (const trigger of triggers) {
     if (!trigger) continue;
-    const index = value.lastIndexOf(trigger, clampedFromIndex);
+    const index = findQueryTriggerIndex(value, trigger, clampedFromIndex);
     if (index !== -1) candidates.push({ trigger, index });
   }
 
