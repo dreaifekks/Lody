@@ -17,6 +17,8 @@ export const LAN_CLOCK_SYNC_INTERVAL_MS = 5 * 60_000;
  */
 export class LanHubClock {
   private timer: NodeJS.Timeout | null = null;
+  /** The last request for the time: an earlier answer arriving later is dropped. */
+  private latest = 0;
 
   constructor(
     private readonly options: {
@@ -39,19 +41,26 @@ export class LanHubClock {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.latest += 1;
   }
 
   /** Asks the hub for its time; a hub that does not answer leaves the clock as it was. */
   async sync(): Promise<void> {
     const hub = this.options.hubs()[0];
     if (!hub) return;
+    const attempt = ++this.latest;
+    const fetchHubTime = createServerTimeFetcher(`${hub.url}${LAN_HUB_TIME_PATH}`, undefined, {
+      authorization: `Bearer ${hub.token}`,
+    });
     try {
-      await syncTime(
-        createServerTimeFetcher(`${hub.url}${LAN_HUB_TIME_PATH}`, undefined, {
-          authorization: `Bearer ${hub.token}`,
-        })
-      );
+      await syncTime(async () => {
+        const serverTime = await fetchHubTime();
+        // A later request, such as one to a hub that moved, decides the clock.
+        if (attempt !== this.latest) throw new Error('superseded');
+        return serverTime;
+      });
     } catch (error) {
+      if (attempt !== this.latest) return;
       this.options.log(
         `[lan] Could not read the clock of ${hub.name}: ${formatErrorMessage(error)}`
       );

@@ -7,13 +7,12 @@ import { LanHubClock } from './lan-clock';
 
 const SKEW_MS = 60_000;
 
-/** A hub whose clock runs a minute ahead of this machine's. */
-async function startHub(token: string) {
+/** A hub whose clock runs `skewMs` ahead of this machine's, a minute unless told otherwise. */
+async function startHub(token: string, skewMs = SKEW_MS) {
   const asked: Array<() => void> = [];
   let requests = 0;
-  const server = http.createServer((request, response) => {
-    requests += 1;
-    asked.shift()?.();
+  let held: Promise<void> = Promise.resolve();
+  const answer = (request: http.IncomingMessage, response: http.ServerResponse) => {
     if (request.headers.authorization !== `Bearer ${token}`) {
       response.writeHead(401).end();
       return;
@@ -23,13 +22,24 @@ async function startHub(token: string) {
       return;
     }
     response.writeHead(200, { 'Content-Type': 'application/json' });
-    response.end(JSON.stringify({ serverTime: Date.now() + SKEW_MS }));
+    response.end(JSON.stringify({ serverTime: Date.now() + skewMs }));
+  };
+  const server = http.createServer((request, response) => {
+    requests += 1;
+    asked.shift()?.();
+    void held.then(() => answer(request, response));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     requests: () => requests,
     nextRequest: () => new Promise<void>((resolve) => asked.push(resolve)),
+    /** Answers nothing until the returned function is called. */
+    hold: () => {
+      let release = () => {};
+      held = new Promise<void>((resolve) => (release = resolve));
+      return release;
+    },
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();
@@ -78,6 +88,27 @@ describe('LAN hub clock', () => {
     expect(isTimeSynced()).toBe(false);
     expect(getServerTimeOffset()).toBe(0);
     expect(lines).toEqual([expect.stringMatching(/clock of Home: .*401/)]);
+  });
+
+  it('takes the clock of the hub it asked last, when an earlier answer arrives later', async () => {
+    const moved = await startHub('secret', -30_000);
+    try {
+      let current = lan('secret');
+      const clock = new LanHubClock({ hubs: () => [current], log: () => {} });
+      const release = hub.hold();
+      const asked = hub.nextRequest();
+      const toFormerHub = clock.sync();
+      await asked;
+      // The hub moved while the former one was being asked.
+      current = { ...current, url: moved.url };
+      await clock.sync();
+      release();
+      await toFormerHub;
+
+      expect(Math.abs(getServerTimeOffset() + 30_000)).toBeLessThan(1_000);
+    } finally {
+      await moved.close();
+    }
   });
 
   it('asks at once when it starts and again after every interval', async () => {

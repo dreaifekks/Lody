@@ -85,12 +85,17 @@ const createFakeStreamClient = () => {
           const batch =
             queuedBatches.shift() ??
             (await new Promise<LoroJsonStreamBatch>((resolve, reject) => {
-              const onAbort = () => reject(new Error('aborted'));
-              options?.signal?.addEventListener('abort', onAbort, { once: true });
-              waiters.push((next) => {
+              const waiter = (next: LoroJsonStreamBatch) => {
                 options?.signal?.removeEventListener('abort', onAbort);
                 resolve(next);
-              });
+              };
+              // A read that was aborted takes no later batch.
+              const onAbort = () => {
+                waiters.splice(waiters.indexOf(waiter), 1);
+                reject(new Error('aborted'));
+              };
+              options?.signal?.addEventListener('abort', onAbort, { once: true });
+              waiters.push(waiter);
             }));
           await onBatch(batch);
         }
@@ -3220,5 +3225,93 @@ describe('a caller whose clock runs behind the machine it asks', () => {
     } finally {
       server.stop();
     }
+  });
+
+  describe('when the stream is read again from its start', () => {
+    let clock = 1_760_000_000_000;
+    const pinged = new Map<string, () => void>();
+    const finish = new Map<string, () => void>();
+
+    const startServer = () => {
+      const fake = createFakeStreamClient();
+      const server = new LoroStreamsMachineRpcServer({
+        logger: createSilentLogger(),
+        workspaceId: 'workspace-1' as WorkspaceId,
+        machineId,
+        streamClient: fake.streamClient,
+        now: () => clock,
+        getMachineStatus: vi.fn(),
+        refreshMachineAcpCapabilities: vi.fn(),
+        pingMachine: async ({ requestId }): Promise<MachinePingResponse> => {
+          pinged.get(requestId)?.();
+          await new Promise<void>((resolve) => {
+            finish.set(requestId, resolve);
+            if (requestId !== 'slow') resolve();
+          });
+          return { type: 'machine/ping_response', machineId, requestId, success: true };
+        },
+      });
+      return { fake, server };
+    };
+    const ping = (id: string, expiresAt: number) => ({
+      jsonrpc: '2.0',
+      id,
+      method: 'machine/ping',
+      rpcVersion: '1',
+      machineId,
+      workspaceId: 'workspace-1',
+      replyTo: 'workspace-1:rpc:res:client-1',
+      sentAt: expiresAt - 6_000,
+      expiresAt,
+      params: { requestId: id },
+    });
+    const answers = (fake: ReturnType<typeof createFakeStreamClient>) =>
+      fake.appended.map(({ value }) => {
+        const answer = value as { id: string; result?: unknown; error?: { code: string } };
+        return `${answer.id}:${answer.error?.code ?? 'ok'}`;
+      });
+
+    it('lets a request that runs past its deadline finish, without telling it it expired', async () => {
+      const { fake, server } = startServer();
+      const started = new Promise<void>((resolve) => pinged.set('slow', resolve));
+      fake.pushBatch({ messages: [ping('slow', clock + 6_000)], nextOffset: '1', upToDate: true });
+      await server.start();
+      try {
+        await started;
+        // The hub moved while it ran; its deadline has passed by now.
+        clock += 60_000;
+        server.restartRequestStream();
+        fake.pushBatch({
+          messages: [ping('slow', clock - 54_000), ping('marker', clock + 6_000)],
+          nextOffset: '2',
+          upToDate: true,
+        });
+        await fake.waitForAppendedCount(1);
+        finish.get('slow')?.();
+        await fake.waitForAppendedCount(2);
+        expect(answers(fake)).toEqual(['marker:ok', 'slow:ok']);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it('tells an expired request once', async () => {
+      const { fake, server } = startServer();
+      fake.pushBatch({ messages: [ping('late', clock - 1_000)], nextOffset: '1', upToDate: true });
+      await server.start();
+      try {
+        await fake.waitForAppendedCount(1);
+        server.restartRequestStream();
+        fake.pushBatch({
+          messages: [ping('late', clock - 1_000), ping('marker', clock + 6_000)],
+          nextOffset: '2',
+          upToDate: true,
+        });
+        await fake.waitForAppendedCount(2);
+        expect(answers(fake)).toEqual(['late:request_expired', 'marker:ok']);
+      } finally {
+        server.stop();
+      }
+    });
   });
 });

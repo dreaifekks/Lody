@@ -519,8 +519,10 @@ export class LoroStreamsMachineRpcServer {
   private currentReadController: AbortController | null = null;
   private requestStreamRestartRequested = false;
   /**
-   * Requests read from the stream, until they expire: reading the stream
-   * again from its start must not run one twice.
+   * Requests read from the stream, until they could no longer be told that
+   * they expired: reading the stream again from its start must neither run
+   * one twice nor answer one that runs past its deadline, or was already told,
+   * with `request_expired`.
    */
   private readonly readRequests = new Map<string, number>();
 
@@ -760,7 +762,7 @@ export class LoroStreamsMachineRpcServer {
     }
   }
 
-  /** Whether this server reads the request for the first time; remembers it until it expires. */
+  /** Whether this server reads the request for the first time; remembers it until its expiry answer window closes. */
   private firstRead(raw: unknown): boolean {
     if (typeof raw !== 'object' || raw === null) return true;
     const { id, expiresAt } = raw as { id?: unknown; expiresAt?: unknown };
@@ -771,7 +773,8 @@ export class LoroStreamsMachineRpcServer {
       if (until <= now) this.readRequests.delete(seen);
     }
     if (this.readRequests.has(id)) return false;
-    if (expiresAt > now) this.readRequests.set(id, expiresAt);
+    const until = expiresAt + EXPIRED_REQUEST_ANSWER_WINDOW_MS;
+    if (until > now) this.readRequests.set(id, until);
     return true;
   }
 

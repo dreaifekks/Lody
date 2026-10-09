@@ -51,4 +51,27 @@ describe('LAN hub clock in the renderer', () => {
     expect(asked).toEqual([]);
     expect(isTimeSynced()).toBe(false);
   });
+
+  it('drops a late answer of the hub of a workspace the window left', async () => {
+    const OTHER = `lody-hub://${'b'.repeat(32)}`;
+    let answerFormer: () => void = () => {};
+    vi.stubGlobal('fetch', async (url: string) => {
+      asked.push(url);
+      if (url.startsWith(LAN)) await new Promise<void>((resolve) => (answerFormer = resolve));
+      const skew = url.startsWith(LAN) ? SKEW_MS : -30_000;
+      // A body that is read without waiting for I/O, so the answer settles within this task.
+      return { ok: true, json: async () => ({ serverTime: Date.now() + skew }) };
+    });
+
+    const stopFormer = startLanHubClock(LAN);
+    await vi.waitFor(() => expect(asked).toEqual([`${LAN}/api/time`]));
+    stopFormer();
+    stop = startLanHubClock(OTHER);
+    await vi.waitFor(() => expect(isTimeSynced()).toBe(true));
+    answerFormer();
+    // Everything the former answer sets off runs before the next task.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(Math.abs(getServerTimeOffset() + 30_000)).toBeLessThan(1_000);
+  });
 });

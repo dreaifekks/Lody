@@ -16,14 +16,24 @@ export function startLanHubClock(
   gatewayBaseUrl: string | undefined,
   intervalMs: number = LAN_HUB_CLOCK_SYNC_INTERVAL_MS
 ): () => void {
-  if (!gatewayBaseUrl?.startsWith(`${LAN_HUB_SCHEME}://`)) return () => {};
+  if (gatewayBaseUrl?.startsWith(`${LAN_HUB_SCHEME}://`) !== true) return () => {};
   const fetchHubTime = createServerTimeFetcher(`${gatewayBaseUrl}${LAN_HUB_TIME_PATH}`);
+  let stopped = false;
   const sync = (): void => {
-    syncTime(fetchHubTime).catch((error: unknown) => {
+    syncTime(async () => {
+      const serverTime = await fetchHubTime();
+      // The window follows another workspace's hub now.
+      if (stopped) throw new Error('superseded');
+      return serverTime;
+    }).catch((error: unknown) => {
+      if (stopped) return;
       console.warn('RuntimeProvider: could not read the clock of the LAN', error);
     });
   };
   sync();
   const timer = setInterval(sync, intervalMs);
-  return () => clearInterval(timer);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 }
