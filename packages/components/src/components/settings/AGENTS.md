@@ -96,7 +96,8 @@ component details.
   identities; discovery and creation use that machine's Provider RPC. Memory settings
   reuse Agents machine tabs/pills and catalog rows. A missing nmem install stays
   on the page with the provider URL; it must not open a blocking dialog.
-  The editor has no tabs: template fields, then the instance list; memory is picked
+  The editor has no tabs: template fields, then the instance list (an optional alias
+  per instance; a second instance of one group on a machine is refused); memory is picked
   inside an instance (`RoleMemoryPicker`), which marks a reference its machine has not
   imported and links to Memory settings. The Role list shows each Role once, never
   grouped by machine. The editor and catalog writers take a `CatalogAgentRole`; a

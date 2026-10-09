@@ -108,9 +108,9 @@ Exact deletion bypasses discovery: [relations](../../specs/session-relations.md)
   composer permission button but retain warning-tone markings. No Role-level auto-approval
   policy. Settings/mentions use `canReadAgentRole`/`canManageAgentRole`; explicit MCP lookup
   needs no mention grant.
-- A Role is a template plus ordered `instances`; legacy `machineId/agentConfigId/runConfig`
-  mirror the first. Old rows get fixed ids (`legacyAgentRoleInstanceId`). Only
-  `selectAgentRoleInstance` picks; pinned ones fail, never move; report it. Freeze
+- Roles are templates with ordered `instances`, grouped by alias else agent family, ≤1 per
+  group per machine; legacy fields mirror the first; old rows get fixed ids. Only
+  `selectAgentRoleInstance` picks; pins fail, never move; report it. Freeze
   prompt/instance/revision on acceptance; retries ignore edits/deletes; metadata is provenance.
   `resolveSessionExecutionInputBlocks` owns text; raw blocks attach. Memory: per-instance
   refs, frozen per turn ([contract](../../specs/agent-role-memory.md)).

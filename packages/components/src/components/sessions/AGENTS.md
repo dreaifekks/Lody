@@ -65,8 +65,8 @@ Read parent rules and each heading's linked context before edits.
 
 ## [Run config and Agent Roles](../../../../../.agents/docs/sessions-run-config.md)
 
-- A composer lists its machine's Role instances flat, by instance id
-  (`buildComposerAgentRoleItems`); an unavailable one stays, disabled, with its
+- A composer lists all Role groups flat, its machine first, by instance
+  (`buildComposerAgentRoleItems`); one it cannot run stays, disabled, with its
   reason. A draft authorizes the instance; a session applies only its run config.
 - A Role IS the whole configuration: other knobs render inert,
   `DesktopPermissionModeButton` is absent when the Role pins permission, and

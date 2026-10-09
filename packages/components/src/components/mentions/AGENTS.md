@@ -119,15 +119,15 @@ true })`. The fetch timestamp rides on the cached entry (survives IndexedDB).
   stable instance id on the committed RANGE), but its rewrite asks the agent to
   CREATE a Session and carries the Role and instance ids only (root `AGENTS.md`
   owns MCP create/freeze). An unavailable one stays plain text at send time. The
-  token is DERIVED: the Role's name, plus `:<label>` when this machine holds
-  several instances (`getAgentRoleInstanceMentionSlug`); a bare name means the
-  default instance and an ambiguous token stays text.
+  token is DERIVED: the Role's name, plus `:<group name>` when it has several
+  groups (`getAgentRoleInstanceMentionSlug`); a bare name means what a bare pick
+  runs and an ambiguous token stays text.
 - A Role candidate's emoji REPLACES the category glyph
   (`MentionCandidate.iconEmoji`), defaulted through `getAgentRoleEmoji`, and its
   candidate sets no detail `title`. The committed range shows that emoji through
   `applyAgentRoleEmojiChip`, boxed to the icon slot and clipped; its agent
   config and machine ride on `AgentRoleMentionItem`.
-- Role candidates are the composer menu's flat list: readable Roles' instances on
-  the composer's machine (`AgentRoleMentionMachineContext`). Disabled rows follow
-  available matches with a reason below the name. Only available Roles can be
+- Role candidates are the composer menu's flat list, the composer's machine first
+  (`AgentRoleMentionMachineContext`); any reachable machine may run one. Disabled
+  rows follow available matches with a reason below the name. Only available Roles can be
   selected, hydrated from text, or expanded before send; never fall back.

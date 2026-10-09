@@ -14,7 +14,7 @@ lives in its `README.md`.
    source missing from that list silently degrades the composer to a plain
    textarea and drops its type.
 2. **Candidates.** Each category builds its own rows; aggregate results are capped.
-   The Role category lists every Role instance on the composer's machine. A row is a
+   The Role category lists every Role's instance groups, the composer's machine first. A row is a
    registered collection item that arrow-key movement walks, so an uncapped source
    degrades navigation, not just render time. Ranking the file index is the
    expensive one, which is why `getCandidates` must stay lazy and a bare `@` calls
@@ -173,11 +173,14 @@ wrong surface.
 ## Agent Roles
 
 Role visibility and selection follow [the Role mention Spec](../../specs/agent-role-mentions.md).
-The list is the composer's own Role menu: the instances on the composer's
-machine, one flat entry each, written `@<Role>` or, where the machine holds
-several, `@<Role>:<label>`. Narrowing it to one machine makes the token a choice
-the user can see rather than a dispatch rule applied later. The menu keeps
-instances that are loading or unavailable, with
+The list is the composer's own Role menu: one flat entry per instance group (an
+alias, or an agent family without one), the composer's machine first and the
+others naming their machine, written `@<Role>` or, where the Role has several
+groups, `@<Role>:<group>`. The composer's machine is preferred, never required: a
+mention starts a new Session, so an entry elsewhere expands too, and a token or
+a bare `@<Role>` resolves the way a bare Role does over MCP — first group, this
+machine first. A range names an instance; when it cannot run, another of its
+group stands in. The menu keeps entries that are loading or unavailable, with
 an explanation below the name. They follow available matches and cannot be
 selected. Hydration and before-send expansion independently reject those rows,
 so showing a stale Role never creates a new dispatch instruction.

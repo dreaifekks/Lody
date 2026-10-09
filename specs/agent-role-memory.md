@@ -38,7 +38,8 @@ logo/name/description cards as Memory settings. Clicking a card selects it;
 unlinking remains available. A reference the machine has not imported is shown as
 missing, with a way to Memory settings. Each instance's run configuration and turn
 input still store only `{ providerId, memoryId }`; an agent write that replaces
-the instances keeps the reference of an instance passed back by id.
+the instances keeps the reference of an instance passed back by id. Instances of
+one group stand in for each other across machines, each with its own reference.
 Removing a catalog association does not rewrite existing Roles or accepted turns.
 Unlinking a Role affects future turns; accepted turns and Operations keep their
 frozen configuration. Neither memory contents nor credentials enter the catalog.

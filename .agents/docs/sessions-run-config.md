@@ -86,19 +86,26 @@ this page is the full text of the rules summarised there.
   should adopt it.
   `DesktopRunConfigMenu` gains a **Role** row when the caller passes
   `agentRoles`. It sits ABOVE Agent, since a Role answers every row under it at
-  once. What it lists are Role INSTANCES on the composer's machine, one flat
-  list (`buildComposerAgentRoleItems`): a Role with one instance there reads as
-  its name, one with several reads as `uiStyle · Claude` per instance, and
-  search matches both the Role name and the label. Selection, the "is this still
-  the Role" check and the Turn record all name the instance id; a Role's default
-  instance on a machine is its first one there. The callers split by whether a
-  Session exists yet, and that difference is load-bearing:
+  once. What it lists is one flat list of every Role's instance GROUPS
+  (`buildComposerAgentRoleItems`; a group is the instances sharing an alias, or
+  without one on one agent family): the composer's machine first, then the
+  rest, which carry their machine's name. A group shows its instance here when
+  it has one, else the first elsewhere that can run. A Role with one group reads
+  as its name, one with several as `uiStyle · Claude` per group, and search
+  matches both. Selection, the "is this still the Role" check and the Turn
+  record all name the instance id. A Role picked without an instance (a restored
+  default, a just-created Role) runs its first group that can run, this machine
+  first inside it — the MCP bare-Role rule (`findDefaultComposerAgentRoleItem`).
+  The callers split by whether a Session exists yet, and that difference is
+  load-bearing:
 
   **Chat landing and a blank child-tab draft** authorize the WHOLE Role —
   agent config, run config, instruction, and provenance — because no Session
-  exists yet and the Agent can still move. A child tab keeps the parent
-  Session's exact machine/workspace, so its Role list is every instance on
-  that machine, across Agent types; selecting one changes the draft Agent.
+  exists yet and the Agent can still move. On the chat landing an entry on
+  another machine moves the chat to that machine (`planNewChatAgentRolePick`).
+  A child tab keeps the parent Session's exact machine/workspace, so its entries
+  on that machine can be picked across Agent types, changing the draft Agent,
+  and entries elsewhere are listed disabled (`pinComposerAgentRoleItemsToMachine`).
   Never route a draft through `selectSessionAgentRoles`: that same-type subset
   is only correct after a Session exists. The Role id persists with a non-empty
   draft, its current revision re-seeds the composer after an edit, and its
@@ -106,7 +113,8 @@ this page is the full text of the rules summarised there.
 
   **An existing session** (`useSessionAgentRole`) can NOT: its agent, machine,
   and runtime are fixed. So it offers only Role instances on that machine that
-  use that exact Agent Config (the model provider shown by the composer) and applies only their
+  use that exact Agent Config (the model provider shown by the composer), lists
+  entries on other machines disabled (`other_machine`), and applies only their
   RUN CONFIG, which is exactly what transfers: model / reasoning / permission
   are the values a session can still change every turn. Keep the Role's real
   availability so a stale binding stays visible but cannot be selected. The
@@ -143,18 +151,17 @@ this page is the full text of the rules summarised there.
   creation provenance only.
   `isAgentRoleRunConfigApplied` is the shared value rule;
   `isComposerAgentRoleApplied` is that rule plus the landing's agent check. With Roles to pick it is a submenu of
-  `None` + the Role instances on the machine the chat will start on (an
-  instance's machine and Agent config are exact, so one from another machine
-  could only move the chat or fall back) beside a pane stating what the highlighted
-  one runs; with NO Roles the row's VALUE is the create action instead, and the
+  `None` + the Role entries above (an instance's machine and Agent config are
+  exact, so picking one elsewhere moves the chat rather than falling back)
+  beside a pane stating what the highlighted one runs; with NO Roles the row's VALUE is the create action instead, and the
   editor opens seeded from the composer's current configuration
   (`buildAgentRoleFormValueFromRunConfig`) — "save what I am about to run" is
   why that entry point is here at all, and the new Role is SELECTED as soon as
   the composer can offer it — creating from here means "use this now". That is
   deferred, not immediate (`resolvePendingAgentRoleSelection`): the write
   resolves on durability while the catalog snapshot arrives on its own tick, so
-  the Role is not in the list at that moment; and a Role bound to another
-  machine is given up on rather than followed there. `None` clears the NAME, not the
+  the Role is not in the list at that moment; and a Role that cannot run, or
+  is only elsewhere in a composer that cannot move, is given up on. `None` clears the NAME, not the
   configuration: the values the Role seeded are the user's own now, and rolling
   them back would undo choices they never asked to undo. An unavailable Role
   stays listed and disabled with its reason, `machine_offline` included, since
@@ -164,8 +171,8 @@ this page is the full text of the rules summarised there.
   surfaces, and describing it twice is how the two drift (the mention menu's own
   generic rows had already drifted: they printed the stored ids raw and labelled
   the permission mode "Reasoning"). Each host passes the subject and sizes the
-  box; the mention menu also passes `machineLabel`, because that list spans
-  machines while the composer's is one machine by construction. It resolves each stored id
+  box; an entry's title already names its machine when it is not the
+  composer's, so the pane does not repeat it. It resolves each stored id
   against the BOUND agent's capabilities, so a Role reads in that agent's own
   wording ("Full access", not `agent-full-access`), and it shows ONLY what the
   Role pins — `resolveConfigOptionValue` would fall back to the agent's current
