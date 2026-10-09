@@ -6,7 +6,7 @@ import { settingsActiveTabAtom, settingsDialogOpenAtom, userAtom } from '@/atoms
 import { runtimeAtom, type WorkspaceRuntime } from '@/atoms/runtime';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRolePlacements,
+  withAgentRoleInstances,
   workspaceFlockKeys,
   type AgentRole,
 } from '@lody/shared';
@@ -28,7 +28,7 @@ function OpenModalAt({ tab, children }: { tab: SettingsTabId; children: ReactNod
   return <>{children}</>;
 }
 
-const storyRole: AgentRole = withAgentRolePlacements(
+const storyRole: AgentRole = withAgentRoleInstances(
   {
     v: AGENT_ROLE_VERSION,
     id: 'settings-story-role' as AgentRole['id'],
@@ -43,9 +43,10 @@ const storyRole: AgentRole = withAgentRolePlacements(
   },
   [
     {
+      id: 'settings-story-role:settings-story-machine' as AgentRole['instances'][number]['id'],
+      label: 'Codex',
       machineId: 'settings-story-machine' as AgentRole['machineId'],
       agentConfigId: 'settings-story-config' as AgentRole['agentConfigId'],
-      enabled: true,
       runConfig: {},
     },
   ]

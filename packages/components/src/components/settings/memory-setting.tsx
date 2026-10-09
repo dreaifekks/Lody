@@ -17,10 +17,9 @@ import { space, text } from '@lody/ui/tokens/scales.stylex';
 import { Dialog } from '@/ui/dialog';
 import {
   MEMORY_PROVIDERS,
-  agentRoleOnMachine,
+  listAgentRoleInstancesOnMachine,
   getAgentRoleEmoji,
   type AgentRole,
-  type AgentRoleFormPlacement,
   MemoryCreateInputSchema,
   isMemoryIdentityMissing,
   machineSupportsMemoryProviders,
@@ -42,7 +41,7 @@ import { useMemoryAssociations } from '@/hooks/use-memory-associations';
 import { useAppCapability } from '@/lib/app-platform';
 import { openExternalUrl } from '@/lib/native-browser';
 import { MachinePills } from './machine-pills';
-import { Field, FormMessage, Section } from './form-primitives';
+import { Field, FormMessage } from './form-primitives';
 import { settingsCatalog as catalog, settingsSurface as surface } from './surface';
 import { SettingsEmptyList, settingsRecordsCard } from './compact-layout';
 import { SettingsLineTabs } from './settings-line-tabs';
@@ -454,10 +453,12 @@ function MachineMemories({ machineId, supported }: { machineId: MachineId; suppo
   const { roles, synced } = useWorkspaceAgentRoles();
   const { openSettings } = useOpenSettings();
   const getAssignedRoles = (entry: MemoryAssociation) =>
-    roles.filter((role) => {
-      const memory = agentRoleOnMachine(role, machineId)?.runConfig.memory;
-      return memory?.providerId === entry.providerId && memory.memoryId === entry.memoryId;
-    });
+    roles.filter((role) =>
+      listAgentRoleInstancesOnMachine(role, machineId).some(
+        ({ runConfig: { memory } }) =>
+          memory?.providerId === entry.providerId && memory.memoryId === entry.memoryId
+      )
+    );
 
   const [editor, setEditor] = useState<Editor | null>(null);
   const [error, setError] = useState(false);
@@ -915,37 +916,11 @@ export function MemoryEditor({
 }
 
 /**
- * The Role editor's Memory tab: one picker per machine the Role is enabled on,
- * each choosing from the identities imported on THAT machine.
+ * An instance's memory: one identity imported on that instance's machine, or
+ * none. A bound identity the machine has not imported is flagged, with a way
+ * to the page that imports it.
  */
-export function RoleMemoryPanel({
-  placements,
-  machineLabel,
-  onChange,
-}: {
-  placements: readonly AgentRoleFormPlacement[];
-  machineLabel: (machineId: MachineId) => string;
-  onChange: (machineId: MachineId, memory: MemoryBinding | undefined) => void;
-}) {
-  const { t } = useTranslation();
-  if (!placements.length) return <p>{t('settings.memory.noMachine')}</p>;
-  return (
-    <div {...stylex.props(styles.stack)}>
-      <span {...stylex.props(catalog.meta)}>{t('settings.memory.rolePromptHint')}</span>
-      {placements.map((placement) => (
-        <Section key={placement.machineId} title={machineLabel(placement.machineId)}>
-          <RoleMemoryPicker
-            machineId={placement.machineId}
-            value={placement.memory}
-            onChange={(memory) => onChange(placement.machineId, memory)}
-          />
-        </Section>
-      ))}
-    </div>
-  );
-}
-
-function RoleMemoryPicker({
+export function RoleMemoryPicker({
   machineId,
   value,
   onChange,
@@ -978,6 +953,7 @@ function RoleMemoryPicker({
   );
   return (
     <div {...stylex.props(styles.stack)}>
+      <span {...stylex.props(catalog.meta)}>{t('settings.memory.rolePromptHint')}</span>
       {value ? (
         <div {...stylex.props(styles.unlinkRow)}>
           <Button type="button" size="small" variant="ghost" onClick={() => onChange(undefined)}>

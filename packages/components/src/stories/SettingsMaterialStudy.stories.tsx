@@ -8,7 +8,7 @@ import * as GeneralSettingsStories from './GeneralSettings.stories';
 
 const { OwnerView } = composeStories(AccountSettingsStories);
 const { Default: MachinesOverview } = composeStories(AccountMachinesOverviewStories);
-const { Configured: RoleForm } = composeStories(AgentRoleFormStories);
+const { Instances: RoleForm } = composeStories(AgentRoleFormStories);
 const { Desktop: General } = composeStories(GeneralSettingsStories);
 
 /**

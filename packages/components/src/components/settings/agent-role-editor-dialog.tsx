@@ -7,10 +7,11 @@ import {
   buildAgentRoleFromForm,
   buildAgentRoleRunConfig,
   getServerNow,
-  listEnabledAgentRolePlacements,
+  buildEmptyAgentRoleFormInstance,
   validateAgentRoleForm,
   type AgentRole,
-  type AgentRoleFormPlacement,
+  type AgentRoleFormInstance,
+  type AgentRoleInstanceId,
   type CatalogAgentRole,
   type AgentRoleFormValue,
   type AgentRoleId,
@@ -31,8 +32,8 @@ import {
 } from '@/lib/agent-role-form';
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
 import { Dialog } from '@/ui/dialog';
-import { AgentRoleForm, type AgentRoleFormTab } from './agent-role-form';
-import { RoleMemoryPanel } from './memory-setting';
+import { AgentRoleForm } from './agent-role-form';
+import { RoleMemoryPicker } from './memory-setting';
 import { useSettingsPane } from './settings-page-header';
 import { SETTINGS_EDITOR_DIALOG_LAYOUT, SETTINGS_EDITOR_DIALOG_WIDTH } from './surface';
 
@@ -55,9 +56,8 @@ export const openAgentRoleEditorForCreate = (value: AgentRoleFormValue): AgentRo
 });
 
 /**
- * Edit the catalog row. A composer's machine view of the Role is not one: its
- * only placement is that machine's, and saving it would drop every other
- * machine, so the type refuses it.
+ * Edit the catalog row, the only Role value the type admits: a Role assembled
+ * anywhere else could miss instances, and saving it would drop them.
  */
 export const openAgentRoleEditorForEdit = (role: CatalogAgentRole): AgentRoleEditorState => ({
   mode: 'edit',
@@ -65,7 +65,7 @@ export const openAgentRoleEditorForEdit = (role: CatalogAgentRole): AgentRoleEdi
   value: buildAgentRoleFormValue(role),
 });
 
-/** Edit a Role a composer picked from its machine views, by id, from the catalog. */
+/** Edit a Role a composer picked one instance of, by id, from the catalog. */
 export const openAgentRoleEditorById = (
   catalog: readonly CatalogAgentRole[],
   roleId: AgentRoleId
@@ -118,59 +118,64 @@ export function AgentRoleEditorDialog({
   // panel fades out with its form rather than emptying first.
   const { shown: editor, onOpenChangeComplete } = useDialogExitSnapshot(openEditor);
 
-  const [tab, setTab] = useState<AgentRoleFormTab>('machines');
+  const [expandedInstanceId, setExpandedInstanceId] = useState<AgentRoleInstanceId | null>(null);
   const editorId = openEditor?.mode === 'edit' ? openEditor.role.id : openEditor?.roleId;
   useEffect(() => {
-    setTab('machines');
+    // A new Role opens on its first instance, an existing one closed.
+    setExpandedInstanceId(
+      openEditor?.mode === 'add' ? (openEditor.value.instances[0]?.id ?? null) : null
+    );
+    // Reset per opened Role only, not on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorId]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
 
-  // One row per machine: the Role's placements first, in their dispatch order
-  // (a machine the user can no longer see keeps its row so it can be switched
-  // off), then every other visible machine by name.
-  const machineOrder = useMemo(() => {
-    const placed = editor?.value.placements.map((placement) => placement.machineId) ?? [];
-    const rest = [...machines.values()]
-      .filter((machine) => !placed.includes(machine.id))
-      .sort((left, right) => (left.name || left.id).localeCompare(right.name || right.id))
-      .map((machine) => machine.id);
-    return [...placed, ...rest];
-  }, [editor?.value.placements, machines]);
+  const machineOptions = useMemo(
+    () =>
+      [...machines.values()]
+        .map((machine) => ({
+          machineId: machine.id,
+          label: machine.name || machine.id,
+          online: onlineMachineIds.has(machine.id),
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label)),
+    [machines, onlineMachineIds]
+  );
 
-  const selectorTargetFor = (placement: AgentRoleFormPlacement | undefined) => {
-    const config = placement?.agentConfigId
+  const configFor = (instance: AgentRoleFormInstance) =>
+    instance.agentConfigId && instance.machineId
       ? agentConfigs.find(
-          (entry) => entry.id === placement.agentConfigId && entry.machineId === placement.machineId
+          (entry) => entry.id === instance.agentConfigId && entry.machineId === instance.machineId
         )
       : undefined;
-    return config && placement
+  const selectorTargetFor = (instance: AgentRoleFormInstance) => {
+    const config = configFor(instance);
+    return config && instance.machineId
       ? {
           configId: config.id,
           cliType: config.cliType,
           agentType: config.agentType,
           runtimeOverrides: config.runtimeOverrides,
-          machine: machines.get(placement.machineId) ?? null,
+          machine: machines.get(instance.machineId) ?? null,
           // A Role pins its model: the effort ladder must follow the model
           // being edited, not the probe-time current one, so the picker and
           // the compatibility check agree on the same ladder.
-          selectedModelId: placement.modelId,
+          selectedModelId: instance.modelId,
         }
       : undefined;
   };
-  const selectorOptionsByMachine = useMemo(
+  const selectorOptionsByInstance = useMemo(
     () =>
       new Map(
-        (editor?.value.placements ?? []).flatMap((placement) => {
-          const target = selectorTargetFor(placement);
-          return target
-            ? [[placement.machineId, resolveAcpSelectorOptions(target, t)] as const]
-            : [];
+        (editor?.value.instances ?? []).flatMap((instance) => {
+          const target = selectorTargetFor(instance);
+          return target ? [[instance.id, resolveAcpSelectorOptions(target, t)] as const] : [];
         })
       ),
     // `selectorTargetFor` reads only the inputs listed here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [agentConfigs, editor?.value.placements, machines, t]
+    [agentConfigs, editor?.value.instances, machines, t]
   );
 
   // A Role pins concrete values, so as soon as an agent config's capabilities
@@ -179,21 +184,21 @@ export function AgentRoleEditorDialog({
   // about what would run. A stored value is never overwritten — that is what
   // keeps an incompatible one visible. Derived rather than written back: the
   // defaults are a function of the value and the capabilities, and the helper
-  // returns the placement itself when it changes nothing.
+  // returns the instance itself when it changes nothing.
   const editorValue = useMemo(
     () =>
       editor
         ? {
             ...editor.value,
-            placements: editor.value.placements.map((placement) =>
+            instances: editor.value.instances.map((instance) =>
               applyAgentRoleRunConfigDefaults(
-                placement,
-                selectorOptionsByMachine.get(placement.machineId) ?? null
+                instance,
+                selectorOptionsByInstance.get(instance.id) ?? null
               )
             ),
           }
         : null,
-    [editor, selectorOptionsByMachine]
+    [editor, selectorOptionsByInstance]
   );
 
   const formErrors = useMemo(
@@ -210,34 +215,33 @@ export function AgentRoleEditorDialog({
         : [],
     [accessibleRoles, editor, editorValue]
   );
-  const machineRows = useMemo(
+  const instanceRows = useMemo(
     () =>
-      machineOrder.map((machineId) => {
-        const placement = editorValue?.placements.find((entry) => entry.machineId === machineId);
-        const selectorOptions = selectorOptionsByMachine.get(machineId) ?? null;
-        return {
-          machineId,
-          label: machines.get(machineId)?.name || t('settings.agentRoles.unknownMachine'),
-          online: onlineMachineIds.has(machineId),
-          agentConfigs: agentConfigs
-            .filter((config) => config.machineId === machineId)
-            .map((config) => ({ agentConfigId: config.id, label: config.name })),
-          selectorOptions,
-          issues:
-            placement && selectorOptions
-              ? findAgentRoleRunConfigIssues(buildAgentRoleRunConfig(placement), selectorOptions)
-              : [],
-        };
-      }),
-    [
-      agentConfigs,
-      editorValue,
-      machineOrder,
-      machines,
-      onlineMachineIds,
-      selectorOptionsByMachine,
-      t,
-    ]
+      new Map(
+        (editorValue?.instances ?? []).map((instance) => {
+          const selectorOptions = selectorOptionsByInstance.get(instance.id) ?? null;
+          const model = instance.modelId
+            ? (selectorOptions?.modelOptions.find((option) => option.value === instance.modelId)
+                ?.label ?? instance.modelId)
+            : null;
+          return [
+            instance.id,
+            {
+              agentConfigs: agentConfigs
+                .filter((config) => config.machineId === instance.machineId)
+                .map((config) => ({ agentConfigId: config.id, label: config.name })),
+              selectorOptions,
+              issues: selectorOptions
+                ? findAgentRoleRunConfigIssues(buildAgentRoleRunConfig(instance), selectorOptions)
+                : [],
+              summary: [configFor(instance)?.name, model].filter(Boolean).join(' · '),
+            },
+          ] as const;
+        })
+      ),
+    // `configFor` reads only the inputs listed here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [agentConfigs, editorValue, selectorOptionsByInstance]
   );
 
   const close = () => {
@@ -267,7 +271,7 @@ export function AgentRoleEditorDialog({
           visibility: role.visibility,
           has_prompt_prefix: Boolean(role.promptPrefix),
           run_config_option_count: Object.keys(role.runConfig.configOptionValues ?? {}).length,
-          machine_count: listEnabledAgentRolePlacements(role).length,
+          instance_count: role.instances.length,
         });
       }
       onSaved?.(role, { created: editor.mode === 'add' });
@@ -303,56 +307,66 @@ export function AgentRoleEditorDialog({
         </Dialog.Header>
         {editor && editorValue ? (
           <AgentRoleForm
-            tab={tab}
-            onTabChange={setTab}
             value={editorValue}
-            memoryPanel={
-              <RoleMemoryPanel
-                placements={editorValue.placements.filter((placement) => placement.enabled)}
-                machineLabel={(machineId) =>
-                  machines.get(machineId)?.name || t('settings.agentRoles.unknownMachine')
-                }
-                onChange={(machineId, memory) => {
-                  if (!openEditor) return;
-                  onChange({
-                    ...openEditor,
-                    value: {
-                      ...editorValue,
-                      placements: editorValue.placements.map((placement) =>
-                        placement.machineId === machineId ? { ...placement, memory } : placement
-                      ),
-                    },
-                  });
-                }}
-              />
-            }
             // A panel fading out is not edited: a change there would reopen it.
             onChange={(value) => {
               if (!openEditor) return;
-              const placements = value.placements.map((placement) => {
-                const previous = editorValue.placements.find(
-                  (entry) => entry.machineId === placement.machineId
-                );
+              const instances = value.instances.map((instance) => {
+                const previous = editorValue.instances.find((entry) => entry.id === instance.id);
                 const modelChanged =
                   previous !== undefined &&
-                  placement.agentConfigId === previous.agentConfigId &&
-                  placement.modelId !== previous.modelId;
-                const target = selectorTargetFor(placement);
+                  instance.agentConfigId === previous.agentConfigId &&
+                  instance.modelId !== previous.modelId;
+                const target = selectorTargetFor(instance);
                 return modelChanged && target
                   ? {
-                      ...placement,
+                      ...instance,
                       configOptionValues: carryAgentRoleOptionsToModel(
-                        placement.configOptionValues,
-                        selectorOptionsByMachine.get(placement.machineId)?.configOptionSelectors ??
-                          [],
+                        instance.configOptionValues,
+                        selectorOptionsByInstance.get(instance.id)?.configOptionSelectors ?? [],
                         buildAcpSelectorOptions(target).configOptionSelectors
                       ),
                     }
-                  : placement;
+                  : instance;
               });
-              onChange({ ...openEditor, value: { ...value, placements } });
+              onChange({ ...openEditor, value: { ...value, instances } });
             }}
-            machines={machineRows}
+            machines={machineOptions}
+            instanceRows={instanceRows}
+            expandedInstanceId={expandedInstanceId}
+            onExpandedInstanceChange={setExpandedInstanceId}
+            onAddInstance={() => {
+              if (!openEditor) return;
+              const instance = buildEmptyAgentRoleFormInstance(
+                crypto.randomUUID() as AgentRoleInstanceId
+              );
+              onChange({
+                ...openEditor,
+                value: { ...editorValue, instances: [...editorValue.instances, instance] },
+              });
+              setExpandedInstanceId(instance.id);
+            }}
+            renderMemory={(instance) =>
+              instance.machineId ? (
+                <RoleMemoryPicker
+                  key={instance.machineId}
+                  machineId={instance.machineId}
+                  value={instance.memory}
+                  onChange={(memory) => {
+                    if (!openEditor) return;
+                    onChange({
+                      ...openEditor,
+                      value: {
+                        ...editorValue,
+                        instances: editorValue.instances.map((entry) =>
+                          entry.id === instance.id ? { ...entry, memory } : entry
+                        ),
+                      },
+                    });
+                  }}
+                />
+              ) : null
+            }
             errors={formErrors}
             submitting={submitting}
             error={error}

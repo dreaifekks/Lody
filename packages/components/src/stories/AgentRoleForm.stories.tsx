@@ -1,19 +1,13 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react';
-import type { AgentConfigId, MachineId } from '@lody/shared';
+import type { AgentConfigId, AgentRoleInstanceId, MachineId } from '@lody/shared';
 import {
   AgentRoleForm,
   type AgentRoleFormProps,
-  type AgentRoleFormTab,
-  type AgentRoleMachineRow,
+  type AgentRoleInstanceRowModel,
 } from '@/components/settings/agent-role-form';
 import type { AcpSelectorOptions } from '@/components/shared/acp-selector-options';
 import { EMPTY_AGENT_ROLE_FORM_VALUE, type AgentRoleFormValue } from '@lody/shared';
-
-const agentConfigs = [
-  { agentConfigId: 'config-1' as AgentConfigId, label: 'Codex' },
-  { agentConfigId: 'config-2' as AgentConfigId, label: 'Claude' },
-];
 
 const selectorOptions: AcpSelectorOptions = {
   capabilityAuthority: 'authoritative',
@@ -54,78 +48,96 @@ const selectorOptions: AcpSelectorOptions = {
 
 const studio = 'machine-1' as MachineId;
 const buildBox = 'machine-2' as MachineId;
-const laptop = 'machine-3' as MachineId;
 
-/** Rows in list order: the Role's machines first, then the rest. */
-const machines: AgentRoleMachineRow[] = [
-  {
-    machineId: studio,
-    label: 'Studio',
-    online: true,
-    agentConfigs,
-    selectorOptions,
-    issues: [],
-  },
-  {
-    machineId: buildBox,
-    label: 'Build box',
-    online: false,
-    agentConfigs,
-    selectorOptions,
-    issues: [],
-  },
-  {
-    machineId: laptop,
-    label: 'Laptop',
-    online: true,
-    agentConfigs,
-    selectorOptions: null,
-    issues: [],
-  },
+const machines = [
+  { machineId: studio, label: 'Studio', online: true },
+  { machineId: buildBox, label: 'Build box', online: false },
+];
+
+const claude = 'instance-claude' as AgentRoleInstanceId;
+const gemini = 'instance-gemini' as AgentRoleInstanceId;
+const codex = 'instance-codex' as AgentRoleInstanceId;
+
+const studioConfigs = [
+  { agentConfigId: 'config-claude' as AgentConfigId, label: 'Claude' },
+  { agentConfigId: 'config-gemini' as AgentConfigId, label: 'Gemini' },
 ];
 
 const configured: AgentRoleFormValue = {
   ...EMPTY_AGENT_ROLE_FORM_VALUE,
-  name: 'Code Reviewer',
-  description: 'Call this agent to review code changes for correctness before merging.',
-  emoji: '🔍',
-  placements: [
+  name: 'uiStyle',
+  description: 'Review a UI change against the design system before it ships.',
+  emoji: '🎨',
+  instances: [
     {
+      id: claude,
+      label: 'Claude',
       machineId: studio,
-      enabled: true,
-      agentConfigId: 'config-1' as AgentConfigId,
+      agentConfigId: 'config-claude' as AgentConfigId,
       modeId: 'default',
       modelId: 'gpt-5.6-sol',
       configOptionValues: { thought_level: 'high', 'fast-mode': false },
+      memory: { providerId: 'nowledge-mem', memoryId: 'ui-style' },
     },
     {
-      machineId: buildBox,
-      enabled: false,
-      agentConfigId: 'config-2' as AgentConfigId,
+      id: gemini,
+      label: 'Gemini',
+      machineId: studio,
+      agentConfigId: 'config-gemini' as AgentConfigId,
       modeId: 'default',
       modelId: 'gpt-5.6-luna',
       configOptionValues: { thought_level: 'medium', 'fast-mode': false },
     },
+    {
+      id: codex,
+      label: 'Codex',
+      machineId: buildBox,
+      agentConfigId: 'config-codex' as AgentConfigId,
+      modeId: 'default',
+      modelId: 'gpt-5.6-sol',
+      configOptionValues: { thought_level: 'high', 'fast-mode': false },
+    },
   ],
-  promptPrefix: 'Check correctness before style.',
+  promptPrefix: 'Check spacing and colour against the tokens before anything else.',
 };
 
-const withPlacement = (
-  index: number,
-  patch: Partial<AgentRoleFormValue['placements'][number]>
-): AgentRoleFormValue => ({
-  ...configured,
-  placements: configured.placements.map((placement, at) =>
-    at === index ? { ...placement, ...patch } : placement
-  ),
-});
+const instanceRows = new Map<AgentRoleInstanceId, AgentRoleInstanceRowModel>([
+  [
+    claude,
+    { agentConfigs: studioConfigs, selectorOptions, issues: [], summary: 'Claude · GPT-5.6 Sol' },
+  ],
+  [
+    gemini,
+    { agentConfigs: studioConfigs, selectorOptions, issues: [], summary: 'Gemini · GPT-5.6 Luna' },
+  ],
+  [
+    codex,
+    {
+      agentConfigs: [{ agentConfigId: 'config-codex' as AgentConfigId, label: 'Codex' }],
+      selectorOptions,
+      issues: [],
+      summary: 'Codex · GPT-5.6 Sol',
+    },
+  ],
+]);
 
-/** The dialog owns the value and tab in the product; the story owns them here. */
+/** Stands in for the memory picker, which reads a machine's imported identities. */
+const memoryStandIn = (): ReactNode => (
+  <div className="rounded-md border px-3 py-2 text-sm">ui-style · Nowledge Mem</div>
+);
+
+/** The dialog owns the value and the open instance in the product; the story owns them here. */
 function StatefulAgentRoleForm(props: AgentRoleFormProps) {
   const [value, setValue] = useState(props.value);
-  const [tab, setTab] = useState<AgentRoleFormTab>(props.tab ?? 'machines');
+  const [expanded, setExpanded] = useState(props.expandedInstanceId);
   return (
-    <AgentRoleForm {...props} value={value} onChange={setValue} tab={tab} onTabChange={setTab} />
+    <AgentRoleForm
+      {...props}
+      value={value}
+      onChange={setValue}
+      expandedInstanceId={expanded}
+      onExpandedInstanceChange={setExpanded}
+    />
   );
 }
 
@@ -136,6 +148,11 @@ const meta = {
     value: configured,
     onChange: () => undefined,
     machines,
+    instanceRows,
+    expandedInstanceId: null,
+    onExpandedInstanceChange: () => undefined,
+    onAddInstance: () => undefined,
+    renderMemory: memoryStandIn,
     errors: [],
     onSubmit: () => undefined,
     onCancel: () => undefined,
@@ -156,91 +173,67 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+/** Three instances, two of them on one machine; every row closed. */
+export const Instances: Story = {};
+
+/** One instance open: its machine, agent, label, options and memory. */
+export const InstanceOpen: Story = {
+  args: { expandedInstanceId: claude },
+};
+
 export const NewRole: Story = {
   args: {
-    value: EMPTY_AGENT_ROLE_FORM_VALUE,
-    errors: ['name_required', 'machine_required'],
+    value: {
+      ...EMPTY_AGENT_ROLE_FORM_VALUE,
+      instances: [
+        {
+          id: 'instance-new' as AgentRoleInstanceId,
+          label: '',
+          machineId: null,
+          agentConfigId: null,
+          modeId: null,
+          modelId: null,
+          configOptionValues: {},
+        },
+      ],
+    },
+    expandedInstanceId: 'instance-new' as AgentRoleInstanceId,
+    errors: ['name_required', 'machine_required', 'agent_config_required', 'label_required'],
   },
 };
 
-/** One machine on, one kept but switched off, one never used. */
-export const Configured: Story = {};
-
-/** Two machines on, each with its own agent and model. */
-export const TwoMachines: Story = {
-  args: { value: withPlacement(1, { enabled: true }) },
-};
-
-/**
- * No emoji picked: the trigger shows the default glyph, so a Role never looks
- * half-authored. Clicking it opens the picker.
- */
-export const DefaultEmoji: Story = {
-  args: { value: { ...configured, emoji: '' } },
-};
-
-export const SharedWithWorkspace: Story = {
-  args: { value: { ...configured, shareWithWorkspace: true }, isEditing: true },
-};
-
-/** A machine with no providers yet: nothing is offered in their place. */
-export const MachineWithoutAgentConfigs: Story = {
+/** Two instances on one machine may not share a label. */
+export const DuplicateLabel: Story = {
   args: {
-    machines: machines.map((machine) =>
-      machine.machineId === studio ? { ...machine, agentConfigs: [] } : machine
-    ),
-  },
-};
-
-/** Capabilities were never reported, so no run-config control is offered. */
-export const CapabilitiesUnavailable: Story = {
-  args: {
-    machines: machines.map((machine) =>
-      machine.machineId === studio
-        ? {
-            ...machine,
-            selectorOptions: { ...selectorOptions, capabilityAuthority: 'unavailable' },
-            issues: [{ kind: 'capabilities_unknown' }],
-          }
-        : machine
-    ),
+    value: {
+      ...configured,
+      instances: configured.instances.map((instance) =>
+        instance.id === gemini ? { ...instance, label: 'Claude' } : instance
+      ),
+    },
+    expandedInstanceId: gemini,
+    errors: ['label_taken'],
   },
 };
 
 /** A saved model that the agent stopped publishing — reported, never swapped. */
 export const IncompatibleRunConfig: Story = {
   args: {
-    value: withPlacement(0, { modelId: 'gpt-5.5-retired' }),
-    machines: machines.map((machine) =>
-      machine.machineId === studio
-        ? {
-            ...machine,
-            issues: [
-              { kind: 'model_unsupported', value: 'gpt-5.5-retired' },
-              { kind: 'option_unsupported', configId: 'legacy_effort' },
-            ],
-          }
-        : machine
-    ),
+    expandedInstanceId: claude,
+    instanceRows: new Map(instanceRows).set(claude, {
+      ...instanceRows.get(claude)!,
+      issues: [
+        { kind: 'model_unsupported', value: 'gpt-5.5-retired' },
+        { kind: 'option_unsupported', configId: 'legacy_effort' },
+      ],
+    }),
   },
 };
 
-/** The Memory tab: the panel itself is supplied by the dialog. */
-export const MemoryTab: Story = {
-  args: {
-    tab: 'memory',
-    memoryPanel: <p>Memory panel for Studio</p>,
-  },
+export const SharedWithWorkspace: Story = {
+  args: { value: { ...configured, shareWithWorkspace: true }, isEditing: true },
 };
 
 export const DuplicateName: Story = {
   args: { errors: ['name_taken'], isEditing: true },
-};
-
-export const SavedLocallyNotSynced: Story = {
-  args: {
-    isEditing: true,
-    error:
-      'Saved on this device but not yet synced to the workspace (offline). Other members cannot see it yet.',
-  },
 };

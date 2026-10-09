@@ -5,14 +5,15 @@ import { Plus, Trash2 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import {
-  buildAgentRoleFormValueFromRunConfig,
+  buildEmptyAgentRoleFormInstance,
   canManageAgentRole,
   EMPTY_AGENT_ROLE_FORM_VALUE,
   getAgentRoleEmoji,
-  listEnabledAgentRolePlacements,
+  listAgentRoleInstancesOnMachine,
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleAvailability,
+  type AgentRoleInstanceId,
   type CatalogAgentRole,
 } from '@lody/shared';
 import { userAtom, settingsSelectedMachineIdAtom } from '@/atoms';
@@ -41,7 +42,7 @@ import {
 } from './agent-role-editor-dialog';
 
 const styles = stylex.create({
-  machine: { display: 'inline-flex', alignItems: 'center', gap: space[1], minWidth: 0 },
+  instance: { display: 'inline-flex', alignItems: 'center', gap: space[1], minWidth: 0 },
 });
 
 /**
@@ -76,17 +77,19 @@ export function AgentRolesSetting() {
     [roles]
   );
 
-  // Opened from a machine's memory page, a new Role starts on that machine.
+  // A new Role opens on one empty instance; opened from a machine's memory
+  // page, that instance starts on that machine.
   const openAdd = () =>
     setEditor(
-      openAgentRoleEditorForCreate(
-        selectedMachineId && machines.has(selectedMachineId)
-          ? buildAgentRoleFormValueFromRunConfig({
-              machineId: selectedMachineId,
-              agentConfigId: null,
-            })
-          : EMPTY_AGENT_ROLE_FORM_VALUE
-      )
+      openAgentRoleEditorForCreate({
+        ...EMPTY_AGENT_ROLE_FORM_VALUE,
+        instances: [
+          buildEmptyAgentRoleFormInstance(
+            crypto.randomUUID() as AgentRoleInstanceId,
+            selectedMachineId && machines.has(selectedMachineId) ? selectedMachineId : null
+          ),
+        ],
+      })
     );
   const openEdit = (role: CatalogAgentRole) => setEditor(openAgentRoleEditorForEdit(role));
 
@@ -131,13 +134,20 @@ export function AgentRolesSetting() {
               <AgentRoleRow
                 role={role}
                 availability={resolve(role)}
-                machines={listEnabledAgentRolePlacements(role).map((placement) => ({
-                  label:
-                    machines.get(placement.machineId)?.name ??
-                    t('settings.agentRoles.unknownMachine'),
-                  online: onlineMachineIds.has(placement.machineId),
-                  agentConfig: agentConfigs.find((entry) => entry.id === placement.agentConfigId),
-                }))}
+                instances={role.instances.map((instance) => {
+                  const machine =
+                    machines.get(instance.machineId)?.name ??
+                    t('settings.agentRoles.unknownMachine');
+                  return {
+                    // The label only where the machine holds more than one.
+                    label:
+                      listAgentRoleInstancesOnMachine(role, instance.machineId).length > 1
+                        ? `${instance.label} · ${machine}`
+                        : machine,
+                    online: onlineMachineIds.has(instance.machineId),
+                    agentConfig: agentConfigs.find((entry) => entry.id === instance.agentConfigId),
+                  };
+                })}
                 canManage={canManageAgentRole(role, currentUserId)}
                 onEdit={() => openEdit(role)}
                 onRemove={() => setPendingRemoval(role)}
@@ -191,22 +201,23 @@ export function AgentRolesSetting() {
  * One catalog row. It is a line of the list's card, not a card of its own:
  * the list draws the card and the rule between rows.
  *
- * Names the machines the Role runs on, in dispatch order, each with its agent's
- * icon, and says exactly why it cannot run when it cannot. A row whose
- * machines are all gone stays listed and editable.
+ * Names the Role's instances in dispatch order — the machine, and the label
+ * where a machine holds several — each with its agent's icon, and says exactly
+ * why it cannot run when it cannot. A row whose instances are all gone stays
+ * listed and editable.
  */
 export function AgentRoleRow({
   role,
   availability,
-  machines,
+  instances,
   canManage,
   onEdit,
   onRemove,
 }: {
   role: AgentRole;
   availability: AgentRoleAvailability;
-  /** The enabled placements, in order; a config that still exists stands as its icon. */
-  machines: readonly {
+  /** The instances, in order; a config that still exists stands as its icon. */
+  instances: readonly {
     label: string;
     online: boolean;
     agentConfig?: Pick<AgentConfigMeta, 'cliType' | 'agentType' | 'brandId' | 'env'>;
@@ -241,19 +252,19 @@ export function AgentRoleRow({
             {role.promptPrefix ? <Badge>{t('settings.agentRoles.hasPrompt')}</Badge> : null}
           </span>
           <span {...stylex.props(catalog.meta)}>
-            {machines.map((machine, index) => (
-              <span key={index} {...stylex.props(styles.machine)}>
-                {machine.agentConfig ? (
+            {instances.map((instance, index) => (
+              <span key={index} {...stylex.props(styles.instance)}>
+                {instance.agentConfig ? (
                   <AgentIcon
-                    cliType={machine.agentConfig.cliType}
-                    agentType={machine.agentConfig.agentType}
-                    brandId={machine.agentConfig.brandId}
-                    env={machine.agentConfig.env}
+                    cliType={instance.agentConfig.cliType}
+                    agentType={instance.agentConfig.agentType}
+                    brandId={instance.agentConfig.brandId}
+                    env={instance.agentConfig.env}
                     className={stylex.props(catalog.iconSmall).className}
                   />
                 ) : null}
-                <span {...stylex.props(catalog.truncate, !machine.online && catalog.metaHint)}>
-                  {machine.label}
+                <span {...stylex.props(catalog.truncate, !instance.online && catalog.metaHint)}>
+                  {instance.label}
                 </span>
               </span>
             ))}
@@ -284,7 +295,7 @@ export function AgentRoleRow({
  * Why a Role cannot run, when the list does not already say so.
  *
  * `machine_offline` says nothing new: the row's machine names are already
- * dimmed when offline. The reasons that stay are about the Role's placements
+ * dimmed when offline. The reasons that stay are about the Role's instances
  * rather than the machines' state.
  */
 function AgentRoleAvailabilityText({ availability }: { availability: AgentRoleAvailability }) {

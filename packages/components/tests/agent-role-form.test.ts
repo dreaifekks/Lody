@@ -6,12 +6,14 @@ import {
   buildAgentRoleFromForm,
   EMPTY_AGENT_ROLE_FORM_VALUE,
   validateAgentRoleForm,
-  type AgentRoleFormPlacement,
+  type AgentRoleFormInstance,
   type AgentRoleFormValue,
   type AcpCapabilityCacheEntry,
   type AgentConfigId,
   type AgentRole,
   type AgentRoleId,
+  type AgentRoleInstanceId,
+  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 import type { AcpSelectorOptions } from '../src/components/shared/acp-selector-options';
@@ -23,7 +25,7 @@ import {
 } from '../src/lib/agent-role-form';
 import { singleMachineRole } from './agent-role-fixture';
 
-const role = (overrides: Partial<AgentRole> = {}): AgentRole =>
+const role = (overrides: Partial<AgentRole> = {}): CatalogAgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     id: 'role-1' as AgentRoleId,
@@ -39,11 +41,10 @@ const role = (overrides: Partial<AgentRole> = {}): AgentRole =>
     ...overrides,
   });
 
-const formPlacement = (
-  overrides: Partial<AgentRoleFormPlacement> = {}
-): AgentRoleFormPlacement => ({
+const formInstance = (overrides: Partial<AgentRoleFormInstance> = {}): AgentRoleFormInstance => ({
+  id: 'instance-1' as AgentRoleInstanceId,
+  label: 'Codex',
   machineId: 'machine-1' as MachineId,
-  enabled: true,
   agentConfigId: 'config-1' as AgentConfigId,
   modeId: null,
   modelId: 'gpt-5.6',
@@ -53,11 +54,11 @@ const formPlacement = (
 
 const formValue = (
   overrides: Partial<AgentRoleFormValue> = {},
-  placement: Partial<AgentRoleFormPlacement> = {}
+  instance: Partial<AgentRoleFormInstance> = {}
 ): AgentRoleFormValue => ({
   ...EMPTY_AGENT_ROLE_FORM_VALUE,
   name: 'Reviewer',
-  placements: [formPlacement(placement)],
+  instances: [formInstance(instance)],
   ...overrides,
 });
 
@@ -93,7 +94,8 @@ describe('role description authoring', () => {
 });
 
 describe('automatic role schema reconciliation', () => {
-  const machine = 'machine-1' as MachineId;
+  // The fixture's one instance, on machine-1.
+  const instanceId = 'role-1:machine-1' as AgentRoleInstanceId;
   const capability: AcpCapabilityCacheEntry = {
     cliType: 'builtin',
     agentType: 'codex',
@@ -136,7 +138,7 @@ describe('automatic role schema reconciliation', () => {
         },
       },
     });
-    const after = reconcileAgentRoleSchema(before, machine, capability);
+    const after = reconcileAgentRoleSchema(before, instanceId, capability);
     expect(after.runConfig).toEqual({
       modelId: 'retired-model',
       modeId: 'strict',
@@ -148,7 +150,7 @@ describe('automatic role schema reconciliation', () => {
       },
     });
     expect(before.runConfig.configOptionValues?.collaboration_mode).toBe('plan');
-    expect(reconcileAgentRoleSchema(after, machine, capability)).toBe(after);
+    expect(reconcileAgentRoleSchema(after, instanceId, capability)).toBe(after);
   });
 
   it('keeps an explicit new Plan value and leaves advertised legacy fields intact', () => {
@@ -156,12 +158,12 @@ describe('automatic role schema reconciliation', () => {
       runConfig: { configOptionValues: { plan_mode: false, collaboration_mode: 'plan' } },
     });
     expect(
-      reconcileAgentRoleSchema(before, machine, capability).runConfig.configOptionValues
+      reconcileAgentRoleSchema(before, instanceId, capability).runConfig.configOptionValues
     ).toEqual({
       plan_mode: false,
     });
     expect(
-      reconcileAgentRoleSchema(before, machine, {
+      reconcileAgentRoleSchema(before, instanceId, {
         ...capability,
         configOptions: [
           ...capability.configOptions!,
@@ -180,13 +182,13 @@ describe('automatic role schema reconciliation', () => {
   it('does not infer removals from absent or provisional schemas', () => {
     const before = role({ runConfig: { configOptionValues: { unknown: 'keep' } } });
     expect(
-      reconcileAgentRoleSchema(before, machine, { ...capability, configOptions: undefined })
+      reconcileAgentRoleSchema(before, instanceId, { ...capability, configOptions: undefined })
     ).toBe(before);
     expect(
-      reconcileAgentRoleSchema(before, machine, { ...capability, provenance: undefined })
+      reconcileAgentRoleSchema(before, instanceId, { ...capability, provenance: undefined })
     ).toBe(before);
     expect(
-      reconcileAgentRoleSchema(before, machine, { ...capability, configOptions: [] }).runConfig
+      reconcileAgentRoleSchema(before, instanceId, { ...capability, configOptions: [] }).runConfig
         .configOptionValues
     ).toEqual({});
   });
@@ -201,40 +203,37 @@ describe('automatic role schema reconciliation', () => {
         },
       },
     });
-    expect(reconcileAgentRoleSchema(before, machine, capability).runConfig).toEqual({
+    expect(reconcileAgentRoleSchema(before, instanceId, capability).runConfig).toEqual({
       modelId: 'another-model',
       configOptionValues: { model_specific: true, plan_mode: true },
     });
   });
 
-  it('reconciles only the placement on the probed machine', () => {
+  it('reconciles only the probed instance, even beside another on the same machine', () => {
     const stale = { configOptionValues: { future_removed: true } };
+    const entry = (id: string, machineId: string) => ({
+      id: id as AgentRoleInstanceId,
+      label: id,
+      machineId: machineId as MachineId,
+      agentConfigId: `config-${id}` as AgentConfigId,
+      runConfig: stale,
+    });
     const before = singleMachineRole({
       ...role(),
-      placements: [
-        {
-          machineId: machine,
-          agentConfigId: 'config-1' as AgentConfigId,
-          enabled: false,
-          runConfig: stale,
-        },
-        {
-          machineId: 'machine-2' as MachineId,
-          agentConfigId: 'config-2' as AgentConfigId,
-          enabled: true,
-          runConfig: stale,
-        },
-      ],
+      instances: [entry('a', 'machine-2'), entry('b', 'machine-1'), entry('c', 'machine-1')],
     });
-    const after = reconcileAgentRoleSchema(before, machine, capability);
-    expect(after.placements.map((entry) => entry.runConfig.configOptionValues)).toEqual([
+    const after = reconcileAgentRoleSchema(before, 'b' as AgentRoleInstanceId, capability);
+    expect(after.instances.map((item) => item.runConfig.configOptionValues)).toEqual([
+      { future_removed: true },
       {},
       { future_removed: true },
     ]);
-    // The mirror still follows the first enabled placement, which was not probed.
+    // The mirror still follows the first instance, which was not probed.
     expect(after.machineId).toBe('machine-2');
     expect(after.runConfig).toEqual(stale);
-    expect(reconcileAgentRoleSchema(before, 'machine-3' as MachineId, capability)).toBe(before);
+    expect(reconcileAgentRoleSchema(before, 'gone' as AgentRoleInstanceId, capability)).toBe(
+      before
+    );
   });
 
   it.each([
@@ -246,7 +245,7 @@ describe('automatic role schema reconciliation', () => {
     (values, enabled) => {
       const before = role({ runConfig: { configOptionValues: values } });
       expect(
-        reconcileAgentRoleSchema(before, machine, capability).runConfig.configOptionValues
+        reconcileAgentRoleSchema(before, instanceId, capability).runConfig.configOptionValues
       ).toEqual({
         plan_mode: enabled,
       });
@@ -277,31 +276,42 @@ const selectorOptions = (overrides: Partial<AcpSelectorOptions> = {}): AcpSelect
 });
 
 describe('agent role form validation', () => {
-  it('requires a name, an enabled machine, and an agent on every enabled machine', () => {
+  it('requires a name, an instance, and a machine, an agent and a label on each', () => {
     expect(validateAgentRoleForm(EMPTY_AGENT_ROLE_FORM_VALUE, { accessibleRoles: [] })).toEqual([
       'name_required',
-      'machine_required',
+      'instance_required',
     ]);
     expect(validateAgentRoleForm(formValue(), { accessibleRoles: [] })).toEqual([]);
-    expect(
-      validateAgentRoleForm(formValue({}, { enabled: false }), { accessibleRoles: [] })
-    ).toEqual(['machine_required']);
-    const withoutAgent = formPlacement({
-      machineId: 'machine-2' as MachineId,
+    const unfinished = formInstance({
+      id: 'instance-2' as AgentRoleInstanceId,
+      label: ' ',
+      machineId: null,
       agentConfigId: null,
     });
     expect(
-      validateAgentRoleForm(formValue({ placements: [formPlacement(), withoutAgent] }), {
+      validateAgentRoleForm(formValue({ instances: [formInstance(), unfinished] }), {
         accessibleRoles: [],
       })
-    ).toEqual(['agent_config_required']);
-    // A switched-off machine with no agent chosen is simply not saved.
+    ).toEqual(['machine_required', 'agent_config_required', 'label_required']);
+  });
+
+  it('allows several instances on one machine, but not two with one label', () => {
+    const second = formInstance({
+      id: 'instance-2' as AgentRoleInstanceId,
+      label: 'Claude',
+      agentConfigId: 'config-2' as AgentConfigId,
+    });
+    expect(
+      validateAgentRoleForm(formValue({ instances: [formInstance(), second] }), {
+        accessibleRoles: [],
+      })
+    ).toEqual([]);
     expect(
       validateAgentRoleForm(
-        formValue({ placements: [formPlacement(), { ...withoutAgent, enabled: false }] }),
+        formValue({ instances: [formInstance(), { ...second, label: ' codex ' }] }),
         { accessibleRoles: [] }
       )
-    ).toEqual([]);
+    ).toEqual(['label_taken']);
   });
 
   it('rejects a name with no mention token left in it', () => {
@@ -389,19 +399,19 @@ describe('building a role from the form', () => {
       formValue({}, { configOptionValues: { thought_level: 'high', api_key: 'sk-live' } }),
       { ownerUserId: 'user-1', now: 100, createId }
     );
-    expect(created.runConfig.configOptionValues).toEqual({ thought_level: 'high' });
+    expect(created.instances[0]?.runConfig.configOptionValues).toEqual({ thought_level: 'high' });
   });
 
-  it('keeps switched-off machines, drops rows without an agent, and mirrors the first enabled one', () => {
+  it('keeps every instance with its own memory, in order, and mirrors the first', () => {
     const memory = { providerId: 'nowledge-mem', memoryId: 'reviewer' };
     const created = buildAgentRoleFromForm(
       formValue({
-        placements: [
-          formPlacement({ enabled: false }),
-          formPlacement({ machineId: 'machine-2' as MachineId, agentConfigId: null }),
-          formPlacement({
-            machineId: 'machine-3' as MachineId,
-            agentConfigId: 'config-3' as AgentConfigId,
+        instances: [
+          formInstance({ label: ' Codex ' }),
+          formInstance({
+            id: 'instance-2' as AgentRoleInstanceId,
+            label: 'Claude',
+            agentConfigId: 'config-2' as AgentConfigId,
             modelId: 'opus',
             memory,
           }),
@@ -409,14 +419,16 @@ describe('building a role from the form', () => {
       }),
       { ownerUserId: 'user-1', now: 100, createId }
     );
-    expect(created.placements.map((entry) => [entry.machineId, entry.enabled])).toEqual([
-      ['machine-1', false],
-      ['machine-3', true],
+    expect(
+      created.instances.map((entry) => [entry.id, entry.label, entry.machineId, entry.runConfig])
+    ).toEqual([
+      ['instance-1', 'Codex', 'machine-1', { modelId: 'gpt-5.6' }],
+      ['instance-2', 'Claude', 'machine-1', { modelId: 'opus', memory }],
     ]);
     expect(created).toMatchObject({
-      machineId: 'machine-3',
-      agentConfigId: 'config-3',
-      runConfig: { modelId: 'opus', memory },
+      machineId: 'machine-1',
+      agentConfigId: 'config-1',
+      runConfig: { modelId: 'gpt-5.6' },
     });
     // Reopening and saving without a change keeps the row as it is.
     expect(
@@ -483,9 +495,9 @@ describe('building a role from the form', () => {
 describe('run config defaults', () => {
   it('writes the agent own defaults into the unset fields', () => {
     expect(
-      applyAgentRoleRunConfigDefaults(formPlacement({ modelId: null }), selectorOptions())
+      applyAgentRoleRunConfigDefaults(formInstance({ modelId: null }), selectorOptions())
     ).toEqual(
-      formPlacement({
+      formInstance({
         modelId: 'gpt-5.6',
         modeId: 'default',
         configOptionValues: { thought_level: 'medium', 'fast-mode': false },
@@ -494,7 +506,7 @@ describe('run config defaults', () => {
   });
 
   it('never overwrites a stored selection, so an incompatible one stays visible', () => {
-    const stored = formPlacement({
+    const stored = formInstance({
       modelId: 'retired-model',
       modeId: 'default',
       configOptionValues: { thought_level: 'ultra', 'fast-mode': true },
@@ -503,7 +515,7 @@ describe('run config defaults', () => {
   });
 
   it('fills nothing while the agent capabilities are unknown', () => {
-    const value = formPlacement({ modelId: null });
+    const value = formInstance({ modelId: null });
     expect(
       applyAgentRoleRunConfigDefaults(
         value,
@@ -515,7 +527,7 @@ describe('run config defaults', () => {
 
   it('offers no default for a secret-shaped option, because it is never authorable', () => {
     const seeded = applyAgentRoleRunConfigDefaults(
-      formPlacement({ modelId: null }),
+      formInstance({ modelId: null }),
       selectorOptions({
         configOptionSelectors: [
           { type: 'select', configId: 'api_key', label: 'Key', currentValue: 'x', options: [] },

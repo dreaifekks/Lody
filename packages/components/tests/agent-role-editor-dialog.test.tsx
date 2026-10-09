@@ -7,10 +7,11 @@ import { atom } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRolePlacements,
+  withAgentRoleInstances,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRoleId,
+  type AgentRoleInstanceId,
   type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
@@ -57,8 +58,8 @@ import { initI18n } from '../src/i18n';
 const machineA = 'machine-a' as MachineId;
 const memory = { providerId: 'nowledge-mem', memoryId: 'reviewer' };
 
-/** On A and B, plus a switched-off C; B and C carry their own run config and memory. */
-const catalogRole: CatalogAgentRole = withAgentRolePlacements(
+/** Two instances on A and one on B, each with its own run config; B's carries memory. */
+const catalogRole: CatalogAgentRole = withAgentRoleInstances(
   {
     v: AGENT_ROLE_VERSION,
     id: 'reviewer' as AgentRoleId,
@@ -72,33 +73,40 @@ const catalogRole: CatalogAgentRole = withAgentRolePlacements(
   },
   [
     {
+      id: 'reviewer-a' as AgentRoleInstanceId,
+      label: 'Agent a',
       machineId: machineA,
       agentConfigId: 'config-a' as AgentConfigId,
-      enabled: true,
       runConfig: { modelId: 'model-a' },
     },
     {
+      id: 'reviewer-b' as AgentRoleInstanceId,
+      label: 'Agent b',
       machineId: 'machine-b' as MachineId,
       agentConfigId: 'config-b' as AgentConfigId,
-      enabled: true,
       runConfig: { modelId: 'model-b', modeId: 'plan', memory },
     },
     {
-      machineId: 'machine-c' as MachineId,
+      id: 'reviewer-c' as AgentRoleInstanceId,
+      label: 'Agent c',
+      machineId: machineA,
       agentConfigId: 'config-c' as AgentConfigId,
-      enabled: false,
-      runConfig: { modelId: 'model-c', configOptionValues: { effort: 'high' }, memory },
+      runConfig: { modelId: 'model-c', configOptionValues: { effort: 'high' } },
     },
   ]
 );
 
 // Agents whose capabilities were never reported: the editor seeds no defaults,
-// so the saved placements must be exactly the stored ones.
-mocks.configs = ['a', 'b', 'c'].map(
-  (suffix) =>
+// so the saved instances must be exactly the stored ones.
+mocks.configs = [
+  ['a', machineA],
+  ['b', 'machine-b'],
+  ['c', machineA],
+].map(
+  ([suffix, machineId]) =>
     ({
       id: `config-${suffix}`,
-      machineId: `machine-${suffix}`,
+      machineId,
       name: `Agent ${suffix}`,
       cliType: 'custom',
       agentType: `custom-${suffix}`,
@@ -161,29 +169,29 @@ describe('editing a Role opened from a composer', () => {
     return mocks.saved[0] as CatalogAgentRole;
   };
 
-  it('saves the catalog row, keeping the other machines, the switched-off one and their memory', async () => {
-    // The chat landing menu lists machine A's view of the Role…
-    const [item] = buildComposerAgentRoleItems({
+  it('saves the catalog row with every instance and its memory, edited from one instance', async () => {
+    // The chat landing menu lists machine A's two instances of the Role…
+    const items = buildComposerAgentRoleItems({
       roles: [catalogRole],
       machineId: machineA,
       agentConfigs: mocks.configs as AgentConfigMeta[],
       resolveAvailability: () => ({ kind: 'available' }),
     });
-    expect(item?.role.placements).toHaveLength(1);
-    // …and its edit button opens the catalog row by that view's id.
-    const editor = openAgentRoleEditorById([catalogRole], item!.role.id);
+    expect(items.map((item) => item.title)).toEqual(['Reviewer · Agent a', 'Reviewer · Agent c']);
+    // …and the second one's edit button opens the catalog row by its Role id.
+    const editor = openAgentRoleEditorById([catalogRole], items[1]!.role.id);
     if (!editor) throw new Error('Role not found');
 
     const saved = await editDescriptionAndSave(editor);
     expect(saved.description).toBe('Reviews diffs before merging');
     expect(saved.revision).toBe(4);
-    expect(saved.placements).toEqual(catalogRole.placements);
+    expect(saved.instances).toEqual(catalogRole.instances);
     expect(saved).toMatchObject({ machineId: machineA, agentConfigId: 'config-a' });
   });
 
-  it('keeps every machine when Settings opens the row directly', async () => {
+  it('keeps every instance when Settings opens the row directly', async () => {
     const saved = await editDescriptionAndSave(openAgentRoleEditorForEdit(catalogRole));
-    expect(saved.placements).toEqual(catalogRole.placements);
+    expect(saved.instances).toEqual(catalogRole.instances);
   });
 
   it('opens nothing for a Role the catalog no longer has', () => {
