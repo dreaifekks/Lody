@@ -580,7 +580,7 @@ export function toAgentRoleCandidate(
   return {
     // The range payload is the stable instance id; the text only carries the
     // token derived from the names, which their owner may rename at any time.
-    value: instance.id,
+    value: item.value,
     label: item.slug,
     insertText: `${MENTION_TRIGGER}${item.slug}`,
     kind: 'agent_role',
@@ -602,6 +602,7 @@ export function toAgentRoleCandidate(
         instance,
         agentConfig: item.agentConfig,
         machine: item.machine,
+        machineName: item.machineName,
       },
     },
   };

@@ -145,6 +145,12 @@ const uiStyle = role({
   ],
 });
 
+const machineNames: Record<string, string> = {
+  'machine-1': 'devnuc',
+  'machine-2': 'Build box',
+  'machine-3': 'n100',
+};
+
 const agentConfigFor = (id: string) =>
   ({
     id,
@@ -169,11 +175,13 @@ const itemsWith = (
         entry.instances.map((candidate) => agentConfigFor(candidate.agentConfigId))
       ),
       resolveAvailability,
-      names: { machine: () => 'Build box', unknownAgent: 'Unknown agent' },
+      names: { machine: (id) => machineNames[id], unknownAgent: 'Unknown agent' },
     }),
     () => ({ name: 'Studio' })
   );
 const items = (...roles: CatalogAgentRole[]) => itemsWith(roles);
+/** What the menu lists without a machine in the term. */
+const listed = (list: readonly AgentRoleMentionItem[]) => list.filter((item) => !item.pinned);
 
 /** The instruction for one instance, named by its group. */
 const promptFor = (entry: CatalogAgentRole, index = 0, name = 'Codex') =>
@@ -241,27 +249,29 @@ describe('agent role reach from a composer', () => {
 
 describe('agent role mention tokens', () => {
   it('names a Role with one group by the Role alone', () => {
-    expect(items(role({ name: 'Code Reviewer' })).map((item) => item.slug)).toEqual([
+    expect(listed(items(role({ name: 'Code Reviewer' }))).map((item) => item.slug)).toEqual([
       'Code-Reviewer',
     ]);
   });
 
   it("names each group by Role and group, one entry for a group's instances everywhere", () => {
-    const list = items(uiStyle);
+    const list = listed(items(uiStyle));
     expect(list.map((item) => [item.slug, item.title, item.instance.id])).toEqual([
       ['uiStyle:Claude', 'uiStyle · Claude', 'ui-claude'],
       ['uiStyle:Gemini', 'uiStyle · Gemini', 'ui-gemini'],
     ]);
     // Unaliased instances take their agent's name.
-    const plain = items(
-      role({
-        id: 'plain' as AgentRoleId,
-        name: 'Plain',
-        instances: [
-          { ...instance('p-1', '', 'config-1'), alias: undefined },
-          { ...instance('p-2', 'Strict', 'config-1'), machineId: 'machine-2' as MachineId },
-        ],
-      })
+    const plain = listed(
+      items(
+        role({
+          id: 'plain' as AgentRoleId,
+          name: 'Plain',
+          instances: [
+            { ...instance('p-1', '', 'config-1'), alias: undefined },
+            { ...instance('p-2', 'Strict', 'config-1'), machineId: 'machine-2' as MachineId },
+          ],
+        })
+      )
     );
     expect(plain.map((item) => [item.slug, item.title])).toEqual([
       ['Plain:Codex', 'Plain · Codex'],
@@ -401,6 +411,7 @@ describe('agent role menu rows', () => {
       instance: withPrompt.instances[0],
       agentConfig: agentConfigFor('config-1'),
       machine: { name: 'Studio' },
+      machineName: 'devnuc',
     });
     expect(candidate?.detail?.rows).toBeUndefined();
     // No badges at all: every Role the menu offers is one this user may run, so
@@ -558,5 +569,135 @@ describe('agent role draft hydration', () => {
       mentions: [],
       values: [],
     });
+  });
+});
+
+describe('agent role entries pinned to a machine', () => {
+  /** reviewer: one group, on Build box and n100, none here. */
+  const reviewer = role({
+    id: 'reviewer' as AgentRoleId,
+    name: 'reviewer',
+    instances: [
+      instance('rev-box', '', 'config-box', 'machine-2' as MachineId),
+      instance('rev-n100', '', 'config-n100', 'machine-3' as MachineId),
+    ].map((entry) => ({ ...entry, alias: undefined })),
+  });
+  const offline = (...ids: string[]) =>
+    itemsWith([uiStyle, reviewer], (entry) =>
+      ids.includes(entry.id)
+        ? { kind: 'unavailable', reason: 'machine_offline' }
+        : { kind: 'available' }
+    );
+  const rows = (list: readonly AgentRoleMentionItem[], term: string) =>
+    buildAgentRoleCandidates(list, term).map((candidate) => [
+      candidate.title,
+      candidate.insertText,
+      candidate.value,
+    ]);
+
+  it("tells the detail pane each entry's machine, this one included", () => {
+    const candidates = buildAgentRoleCandidates(items(uiStyle), 'ui@build');
+    expect(candidates.map((candidate) => candidate.detail?.agentRole?.machineName)).toEqual([
+      'Build box',
+    ]);
+    expect(
+      buildAgentRoleCandidates(items(uiStyle), '').map(
+        (candidate) => candidate.detail?.agentRole?.machineName
+      )
+    ).toEqual(['devnuc', 'devnuc']);
+  });
+
+  it('lists the instances on a machine the term names, each under its machine', () => {
+    const list = items(uiStyle, reviewer);
+    // Without a machine nothing changes: one entry per group.
+    expect(rows(list, '')).toEqual([
+      ['uiStyle · Claude', '@uiStyle:Claude', 'ui-claude'],
+      ['uiStyle · Gemini', '@uiStyle:Gemini', 'ui-gemini'],
+      ['reviewer · Build box', '@reviewer', 'rev-box'],
+    ]);
+    expect(rows(list, 'ui@bu')).toEqual([
+      ['uiStyle · Claude · Build box', '@uiStyle:Claude@Build-box', 'pinned:ui-remote'],
+    ]);
+    expect(rows(list, '@n1')).toEqual([['reviewer · n100', '@reviewer@n100', 'pinned:rev-n100']]);
+  });
+
+  it('lists the entry that already runs on that machine instead of repeating it', () => {
+    const list = items(uiStyle, reviewer);
+    // Both uiStyle groups already run here, and reviewer's entry is Build box.
+    expect(rows(list, 'ui@dev')).toEqual([
+      ['uiStyle · Claude', '@uiStyle:Claude', 'ui-claude'],
+      ['uiStyle · Gemini', '@uiStyle:Gemini', 'ui-gemini'],
+    ]);
+    expect(rows(list, 'rev@build')).toEqual([['reviewer · Build box', '@reviewer', 'rev-box']]);
+  });
+
+  it('round-trips a pinned token to that instance', () => {
+    const list = items(uiStyle, reviewer);
+    const text = 'ask @uiStyle:Claude@Build-box';
+    const hydrated = hydrateAgentRoleMentionsFromText(text, list);
+    expect(hydrated.values).toEqual(['pinned:ui-remote']);
+    const expanded = applyTextRewrites(
+      text,
+      buildAgentRoleMentionRewrites(
+        text,
+        hydrated.mentions.map((mention) => ({ ...mention })),
+        list
+      )
+    );
+    expect(expanded.text).toBe(`ask ${promptFor(uiStyle, 2, 'Claude')}`);
+    expect(expanded.spans[0]).toMatchObject({
+      label: 'uiStyle:Claude@Build-box',
+      target: 'ui-style',
+    });
+    // A Role and a machine pin the first group there, in group order.
+    const slugs = buildAgentRoleMentionSlugMap(list);
+    expect(slugs.get('uiStyle@Build-box')).toBe('pinned:ui-remote');
+    expect(slugs.get('uiStyle@devnuc')).toBe('pinned:ui-claude');
+    expect(slugs.get('reviewer@n100')).toBe('pinned:rev-n100');
+    // The local Claude is down: the Role on this machine goes to its next group here.
+    expect(buildAgentRoleMentionSlugMap(offline('ui-claude')).get('uiStyle@devnuc')).toBe(
+      'pinned:ui-gemini'
+    );
+  });
+
+  it('never stands in for a pinned instance that cannot run', () => {
+    const list = offline('ui-remote');
+    const [candidate] = buildAgentRoleCandidates(list, 'ui@bu', undefined, () => 'Machine offline');
+    expect(candidate).toMatchObject({
+      title: 'uiStyle · Claude · Build box',
+      disabled: true,
+      subtitle: 'Machine offline',
+    });
+    const text = '@uiStyle:Claude@Build-box';
+    expect(hydrateAgentRoleMentionsFromText(text, list).mentions).toEqual([]);
+    expect(buildAgentRoleMentionSlugMap(list).has('uiStyle@Build-box')).toBe(false);
+    // A range already pinned to it stays text, though the group runs here.
+    expect(
+      buildAgentRoleMentionRewrites(
+        text,
+        [{ start: 0, end: text.length, kind: 'agent_role', value: 'pinned:ui-remote' }],
+        list
+      )
+    ).toEqual([]);
+  });
+
+  it('leaves a machine token two machines of one name share as plain text', () => {
+    // One group on each machine, so only the Role-and-machine token is shared.
+    const pair = role({
+      id: 'pair' as AgentRoleId,
+      name: 'pair',
+      instances: [
+        instance('pair-a', 'A', 'config-a', 'machine-2' as MachineId),
+        instance('pair-b', 'B', 'config-b', 'machine-3' as MachineId),
+      ],
+    });
+    const twins = items(pair).map((item) =>
+      item.instance.machineId === 'machine-3'
+        ? { ...item, machineSlug: 'Build-box', slug: item.slug.replace('n100', 'Build-box') }
+        : item
+    );
+    const slugs = buildAgentRoleMentionSlugMap(twins);
+    expect(slugs.get('pair:B@Build-box')).toBe('pinned:pair-b');
+    expect(slugs.has('pair@Build-box')).toBe(false);
   });
 });

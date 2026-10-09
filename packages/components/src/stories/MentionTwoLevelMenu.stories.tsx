@@ -12,6 +12,7 @@ import {
 import {
   getMentionViewCandidates,
   selectMentionMenuView,
+  buildAgentRoleCandidates,
   toAgentRoleCandidate,
   toCommandCandidate,
   toFileCandidate,
@@ -212,25 +213,41 @@ const ROLE_AGENT_CONFIGS = [
     name: 'Gemini',
   },
   { id: 'config-build-box', machineId: 'machine-2', ...ROLE_AGENT_CONFIG },
+  {
+    id: 'config-claude-box',
+    machineId: 'machine-2',
+    ...ROLE_AGENT_CONFIG,
+    agentType: 'claude',
+    name: 'Claude',
+  },
 ] as unknown as AgentConfigMeta[];
 const machineName = (id: MachineId) => (id === 'machine-2' ? 'Build box' : 'Studio');
 
-/** A Role's mention candidates, built as the composer builds them on the Studio. */
-const roleCandidates = (
-  role: CatalogAgentRole,
-  availability: RoleAvailability = { kind: 'available' },
-  availabilityText?: string
-): MentionCandidate[] =>
+/** Roles' mention entries, built as the composer builds them on the Studio. */
+const roleMentionItems = (
+  roles: CatalogAgentRole[],
+  availability: RoleAvailability = { kind: 'available' }
+) =>
   buildAgentRoleMentionItems(
     buildComposerAgentRoleItems({
-      roles: [role],
+      roles,
       machineId: 'machine-1' as MachineId,
       agentConfigs: ROLE_AGENT_CONFIGS,
       resolveAvailability: () => availability,
       names: { machine: machineName, unknownAgent: 'Unknown agent' },
     }),
     (id) => ({ ...ROLE_MACHINE, name: machineName(id) })
-  ).map((item) => toAgentRoleCandidate(item, availabilityText));
+  );
+
+/** A Role's mention candidates as listed without a machine in the term. */
+const roleCandidates = (
+  role: CatalogAgentRole,
+  availability: RoleAvailability = { kind: 'available' },
+  availabilityText?: string
+): MentionCandidate[] =>
+  roleMentionItems([role], availability)
+    .filter((item) => !item.pinned)
+    .map((item) => toAgentRoleCandidate(item, availabilityText));
 
 /** A Role with one entry. */
 const roleCandidate = (
@@ -264,17 +281,28 @@ const AGENT_ROLES: MentionCandidate[] = [
   }),
 ];
 
-/** Two groups on the Studio (Claude, Gemini): one entry each, named by group. */
+/**
+ * Two groups on the Studio (Claude, Gemini): one entry each, named by group.
+ * Claude runs on the build box too, which `@ui@build` lists on its own.
+ */
 const uiStyleRole = agentRole({
   id: 'role-ui-style' as AgentRoleId,
   name: 'uiStyle',
   emoji: '🎨',
-  instances: (['Claude', 'Gemini'] as const).map((name) => ({
-    id: `ui-style-${name}` as AgentRoleInstanceId,
-    machineId: 'machine-1' as MachineId,
-    agentConfigId: `config-${name.toLowerCase()}` as AgentConfigId,
-    runConfig: { modelId: name === 'Claude' ? 'opus' : 'gemini-3.7-flash-high' },
-  })),
+  instances: [
+    ...(['Claude', 'Gemini'] as const).map((name) => ({
+      id: `ui-style-${name}` as AgentRoleInstanceId,
+      machineId: 'machine-1' as MachineId,
+      agentConfigId: `config-${name.toLowerCase()}` as AgentConfigId,
+      runConfig: { modelId: name === 'Claude' ? 'opus' : 'gemini-3.7-flash-high' },
+    })),
+    {
+      id: 'ui-style-Claude-box' as AgentRoleInstanceId,
+      machineId: 'machine-2' as MachineId,
+      agentConfigId: 'config-claude-box' as AgentConfigId,
+      runConfig: { modelId: 'opus' },
+    },
+  ],
 });
 /** Only on the build box: listed with its machine named. */
 const visionRole = agentRole({
@@ -737,6 +765,19 @@ export const AgentRoleAvailability: Story = {
 
 export const AgentRoleAvailabilityNarrow: Story = {
   args: { ...AgentRoleAvailability.args, narrow: true },
+};
+
+/** `@role:ui@build` — the build box's instances, each under its machine. */
+export const AgentRoleOnMachine: Story = {
+  args: {
+    search: 'role:ui@build',
+    categories: [
+      category('agent_role', 'role', 'Agent Roles', 'agent_role', [], {
+        getCandidates: (term) =>
+          buildAgentRoleCandidates(roleMentionItems([uiStyleRole, visionRole]), term),
+      }),
+    ],
+  },
 };
 
 /** The inline editor's caret menu at the page's foot. */
