@@ -8,6 +8,7 @@ import {
   type AcpCapabilityCacheEntry,
   type AgentRole,
   type AgentRolePlacement,
+  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 import type { WorkspaceRuntime } from '@/atoms/runtime';
@@ -19,10 +20,10 @@ import { uploadWorkspaceCatalog } from './workspace-catalog-write';
  * placement on `machineId`.
  */
 export function reconcileAgentRoleSchema(
-  role: AgentRole,
+  role: CatalogAgentRole,
   machineId: MachineId,
   capability: AcpCapabilityCacheEntry
-): AgentRole {
+): CatalogAgentRole {
   if (capability.provenance !== 'runtime' || !capability.configOptions) return role;
   const placement = role.placements.find((entry) => entry.machineId === machineId);
   if (!placement) return role;
@@ -73,7 +74,7 @@ function reconcilePlacement(
 /** Fence a delayed probe against editing, deletion, ownership and workspace changes. */
 export async function persistReconciledAgentRole(
   runtime: WorkspaceRuntime,
-  expected: AgentRole,
+  expected: CatalogAgentRole,
   machineId: MachineId,
   capability: AcpCapabilityCacheEntry,
   userId: string,

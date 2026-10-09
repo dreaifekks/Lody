@@ -11,6 +11,7 @@ import {
   type AgentRoleAvailability,
   type AgentRoleAvailabilityContext,
   type AgentRoleId,
+  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 import { userAtom } from '@/atoms';
@@ -25,7 +26,7 @@ import { deleteWorkspaceAgentRole, writeWorkspaceAgentRole } from '@/lib/workspa
 
 export type WorkspaceAgentRolesSnapshot = {
   /** Roles this user may see: their own, plus every workspace-shared one. */
-  roles: AgentRole[];
+  roles: CatalogAgentRole[];
   /** True once the first remote sync landed, which makes an empty catalog authoritative. */
   synced: boolean;
 };
@@ -141,12 +142,12 @@ export function useWorkspaceAgentRoleActions(): {
    * on its own; no surface waits for it, because the row already exists and a
    * deferred upload is not something the user can act on.
    */
-  upsert: (role: AgentRole) => Promise<void>;
+  upsert: (role: CatalogAgentRole) => Promise<void>;
   remove: (id: AgentRoleId) => Promise<void>;
 } {
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const upsert = useCallback(
-    async (role: AgentRole) => {
+    async (role: CatalogAgentRole) => {
       if (!runtime) throw new Error('Workspace runtime is unavailable');
       await writeWorkspaceAgentRole(runtime, role);
     },

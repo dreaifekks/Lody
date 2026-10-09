@@ -99,6 +99,8 @@ component details.
   The Role Memory tab lists each enabled machine's saved machine-Flock associations,
   marks a reference that machine has not imported, and shares the Machines tab's
   draft/save boundary. The Role list shows each Role once, never grouped by machine.
+  The editor and catalog writers take a `CatalogAgentRole`; a composer opens it by
+  Role id, never with its one-machine view (`agentRoleOnMachine`).
   Only a ready Provider inventory can mark an identity missing; deleting a link never
   deletes provider data.
 

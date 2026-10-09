@@ -153,7 +153,7 @@ import {
 import {
   AgentRoleEditorDialog,
   openAgentRoleEditorForCreate,
-  openAgentRoleEditorForEdit,
+  openAgentRoleEditorById,
   type AgentRoleEditorState,
 } from '@/components/settings/agent-role-editor-dialog';
 import { useAcpSelectorOptions } from '@/hooks/use-acp-selector-options';
@@ -3631,12 +3631,14 @@ function WorkspaceChatLanding({
     selectedModeId,
     selectedModelId,
   ]);
+  /* The menu lists this machine's view of each Role; the editor gets the
+     catalog row, or saving would drop the Role's other machines. */
   const handleAgentRoleEdit = useCallback(
     (roleId: AgentRoleId) => {
-      const role = composerAgentRoleItems.find((entry) => entry.role.id === roleId)?.role;
-      if (role) setAgentRoleEditor(openAgentRoleEditorForEdit(role));
+      const editor = openAgentRoleEditorById(workspaceAgentRoles, roleId);
+      if (editor) setAgentRoleEditor(editor);
     },
-    [composerAgentRoleItems]
+    [workspaceAgentRoles]
   );
   /* Creating a Role from the composer means "use this now", so the new Role is
      selected as soon as the composer can offer it. Deferred rather than

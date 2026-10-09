@@ -13,6 +13,7 @@ import {
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleAvailability,
+  type CatalogAgentRole,
 } from '@lody/shared';
 import { userAtom, settingsSelectedMachineIdAtom } from '@/atoms';
 import { getAllAgentConfigAtom } from '@/atoms/agents';
@@ -87,7 +88,7 @@ export function AgentRolesSetting() {
           : EMPTY_AGENT_ROLE_FORM_VALUE
       )
     );
-  const openEdit = (role: AgentRole) => setEditor(openAgentRoleEditorForEdit(role));
+  const openEdit = (role: CatalogAgentRole) => setEditor(openAgentRoleEditorForEdit(role));
 
   const confirmRemoval = async () => {
     if (!pendingRemoval) return;

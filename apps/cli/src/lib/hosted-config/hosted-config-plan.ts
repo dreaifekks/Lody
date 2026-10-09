@@ -3,7 +3,7 @@ import {
   withAgentRolePlacements,
   type AgentConfigId,
   type AgentConfigMeta,
-  type AgentRole,
+  type CatalogAgentRole,
   type HostedConfigCategory,
   type HostedConfigItem,
   type LocalProjectMeta,
@@ -17,7 +17,7 @@ export type HostedImportTarget = {
   userId: string;
   agentConfigs: readonly AgentConfigMeta[];
   mcpServers: readonly WorkspaceMcpServerMeta[];
-  agentRoles: readonly AgentRole[];
+  agentRoles: readonly CatalogAgentRole[];
   localProjects: readonly LocalProjectMeta[];
   worktreeScripts: readonly HostedWorktreeScript[];
 };
@@ -25,7 +25,7 @@ export type HostedImportTarget = {
 export type HostedImportWrites = {
   agentConfigs: AgentConfigMeta[];
   mcpServers: WorkspaceMcpServerMeta[];
-  agentRoles: AgentRole[];
+  agentRoles: CatalogAgentRole[];
   localProjects: LocalProjectMeta[];
   worktreeScripts: HostedWorktreeScript[];
 };
@@ -167,9 +167,9 @@ function planMcpServers(input: HostedImportPlanInput): {
 function planAgentRoles(
   input: HostedImportPlanInput,
   imported: ReadonlyMap<AgentConfigId, AgentConfigId>
-): { items: HostedConfigItem[]; writes: AgentRole[] } {
+): { items: HostedConfigItem[]; writes: CatalogAgentRole[] } {
   const items: HostedConfigItem[] = [];
-  const writes: AgentRole[] = [];
+  const writes: CatalogAgentRole[] = [];
   for (const hosted of input.source.agentRoles) {
     const item = { category: 'agentRoles' as const, id: hosted.id, name: hosted.name };
     // A Role names one agent of one machine and never falls back to another.

@@ -9,6 +9,7 @@ import {
   withAgentRolePlacements,
   type AgentRole,
   type AgentRolePlacement,
+  type CatalogAgentRole,
   type AgentRoleRunConfig,
 } from './agent-role';
 import type { AgentConfigId, AgentRoleId, MachineId } from './ids';
@@ -99,7 +100,7 @@ const buildAgentRoleFormPlacement = (placement: AgentRolePlacement): AgentRoleFo
   ...(placement.runConfig.memory ? { memory: placement.runConfig.memory } : {}),
 });
 
-export const buildAgentRoleFormValue = (role: AgentRole): AgentRoleFormValue => ({
+export const buildAgentRoleFormValue = (role: CatalogAgentRole): AgentRoleFormValue => ({
   name: role.name,
   description: role.description ?? '',
   emoji: role.emoji ?? '',
@@ -183,12 +184,13 @@ export const buildAgentRoleRunConfig = (value: AgentRoleFormPlacement): AgentRol
 export const buildAgentRoleFromForm = (
   value: AgentRoleFormValue,
   options: {
-    existing?: AgentRole;
+    /** The catalog row being edited; a machine view would drop every other machine. */
+    existing?: CatalogAgentRole;
     ownerUserId: string;
     now: number;
     createId: () => AgentRoleId;
   }
-): AgentRole => {
+): CatalogAgentRole => {
   const { existing, ownerUserId, now } = options;
   const emoji = normalizeAgentRoleEmoji(value.emoji);
   const promptPrefix = value.promptPrefix.trim();

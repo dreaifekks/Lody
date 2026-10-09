@@ -1,4 +1,4 @@
-import { normalizeAgentRole, type AgentRole } from './agent-role';
+import { normalizeAgentRole, type CatalogAgentRole } from './agent-role';
 import type { AgentConfigId, AgentRoleId, MachineId, McpServerId, WorkspaceId } from './ids';
 import { isWorkspaceMcpServerMeta, type WorkspaceMcpServerMeta } from './workspace-mcp';
 import { LODY_AGENT_TOOL_IDS, type LodyAgentToolId } from './lody-agent-tools';
@@ -162,7 +162,7 @@ export type WorkspaceFlockMcpServerRow = {
 };
 export type WorkspaceFlockAgentRoleRow = {
   key: WorkspaceFlockAgentRoleKey;
-  value: AgentRole;
+  value: CatalogAgentRole;
 };
 export type WorkspaceFlockVoiceSettingRow = {
   key: WorkspaceFlockVoiceSettingKey;
@@ -304,7 +304,7 @@ export const listWorkspaceMcpServers = (rows: WorkspaceFlockRowMap): WorkspaceMc
     .map((row) => row.value)
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
 
-export const listWorkspaceAgentRoles = (rows: WorkspaceFlockRowMap): AgentRole[] =>
+export const listWorkspaceAgentRoles = (rows: WorkspaceFlockRowMap): CatalogAgentRole[] =>
   Object.values(rows)
     .filter(isAgentRoleRow)
     .map((row) => row.value)
@@ -331,7 +331,7 @@ export const deleteWorkspaceMcpServerFromFlock = (
 
 export const writeWorkspaceAgentRoleToFlock = (
   flock: WorkspaceFlockWritableFlock,
-  role: AgentRole
+  role: CatalogAgentRole
 ): boolean => writeWorkspaceFlockRow(flock, workspaceFlockKeys.agentRole(role.id), role);
 
 export const deleteWorkspaceAgentRoleFromFlock = (

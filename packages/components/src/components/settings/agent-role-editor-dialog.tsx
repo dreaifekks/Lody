@@ -11,6 +11,7 @@ import {
   validateAgentRoleForm,
   type AgentRole,
   type AgentRoleFormPlacement,
+  type CatalogAgentRole,
   type AgentRoleFormValue,
   type AgentRoleId,
 } from '@lody/shared';
@@ -45,7 +46,7 @@ import { SETTINGS_EDITOR_DIALOG_LAYOUT, SETTINGS_EDITOR_DIALOG_WIDTH } from './s
  */
 export type AgentRoleEditorState =
   | { mode: 'add'; roleId: AgentRoleId; value: AgentRoleFormValue }
-  | { mode: 'edit'; role: AgentRole; value: AgentRoleFormValue };
+  | { mode: 'edit'; role: CatalogAgentRole; value: AgentRoleFormValue };
 
 export const openAgentRoleEditorForCreate = (value: AgentRoleFormValue): AgentRoleEditorState => ({
   mode: 'add',
@@ -53,11 +54,25 @@ export const openAgentRoleEditorForCreate = (value: AgentRoleFormValue): AgentRo
   value,
 });
 
-export const openAgentRoleEditorForEdit = (role: AgentRole): AgentRoleEditorState => ({
+/**
+ * Edit the catalog row. A composer's machine view of the Role is not one: its
+ * only placement is that machine's, and saving it would drop every other
+ * machine, so the type refuses it.
+ */
+export const openAgentRoleEditorForEdit = (role: CatalogAgentRole): AgentRoleEditorState => ({
   mode: 'edit',
   role,
   value: buildAgentRoleFormValue(role),
 });
+
+/** Edit a Role a composer picked from its machine views, by id, from the catalog. */
+export const openAgentRoleEditorById = (
+  catalog: readonly CatalogAgentRole[],
+  roleId: AgentRoleId
+): AgentRoleEditorState | null => {
+  const role = catalog.find((entry) => entry.id === roleId);
+  return role ? openAgentRoleEditorForEdit(role) : null;
+};
 
 /**
  * The one Role editor.

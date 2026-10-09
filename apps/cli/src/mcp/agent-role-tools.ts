@@ -11,11 +11,11 @@ import {
   isSensitiveAgentRoleConfigOptionKey,
   listAccessibleAgentRoles,
   validateAgentRoleForm,
-  type AgentRole,
   type AgentRoleFormError,
   type AgentRoleFormPlacement,
   type AgentRoleFormValue,
   type AgentRolePlacement,
+  type CatalogAgentRole,
   type AgentRoleId,
   type AgentConfigId,
   type MachineId,
@@ -132,7 +132,7 @@ export type AgentRoleWriteDeps = {
   userId: string;
   /** Tier of the Session driving this call. */
   callerTier: ResolvedPermissionTier;
-  roles: () => Promise<AgentRole[]>;
+  roles: () => Promise<CatalogAgentRole[]>;
   /** The machine of an Agent config this user can read; throws otherwise. */
   agentMachineId: (agentConfigId: AgentConfigId) => Promise<MachineId>;
   tierOf: (
@@ -174,7 +174,7 @@ const UNKNOWN_HINT =
 export async function buildAgentRoleFromAgent(
   request: AgentRoleWrite,
   deps: AgentRoleWriteDeps
-): Promise<AgentRole> {
+): Promise<CatalogAgentRole> {
   const roles = await deps.roles();
   const existing =
     request.action === 'update'

@@ -6,7 +6,7 @@ import {
   listWorkspaceAgentRoles,
   listWorkspaceMcpServers,
   readWorkspaceFlockRowsFromFlock,
-  type AgentRole,
+  type CatalogAgentRole,
   type WorkspaceFlockEvent,
   type WorkspaceFlockRowMap,
   type WorkspaceMcpServerMeta,
@@ -24,7 +24,7 @@ import type { WorkspaceRuntime } from '@/atoms/runtime';
  */
 export type WorkspaceCatalogSnapshot = {
   servers: WorkspaceMcpServerMeta[];
-  roles: AgentRole[];
+  roles: CatalogAgentRole[];
   /** The Codex agent every device uses for experimental voice, when shared. */
   voice: WorkspaceVoiceSetting | null;
   /** Experimental next-message suggestions for Claude sessions, on for every device. */
@@ -39,7 +39,7 @@ const EMPTY_ROWS = Object.freeze({}) as WorkspaceFlockRowMap;
 
 export const EMPTY_WORKSPACE_CATALOG: WorkspaceCatalogSnapshot = Object.freeze({
   servers: Object.freeze([]) as unknown as WorkspaceMcpServerMeta[],
-  roles: Object.freeze([]) as unknown as AgentRole[],
+  roles: Object.freeze([]) as unknown as CatalogAgentRole[],
   voice: null,
   promptSuggestions: false,
   synced: false,

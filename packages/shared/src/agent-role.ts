@@ -87,6 +87,17 @@ export type AgentRole = {
   updatedAt: number;
 };
 
+declare const catalogAgentRoleBrand: unique symbol;
+
+/**
+ * A Role as the catalog holds it, with every placement. Only reading a stored
+ * row (`normalizeAgentRole`) produces one. A machine view
+ * (`agentRoleOnMachine`) is a plain `AgentRole`, so passing a view where a row
+ * is about to be edited or written back does not compile: a view would drop
+ * every other machine.
+ */
+export type CatalogAgentRole = AgentRole & { readonly [catalogAgentRoleBrand]: true };
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -305,12 +316,7 @@ export const normalizeAgentRolePlacements = (value: unknown): AgentRolePlacement
   return placements.some((placement) => placement.enabled) ? placements : undefined;
 };
 
-/**
- * Set a Role's placements and the legacy mirror that goes with them. Every
- * writer builds rows through here, so the mirror is always the first enabled
- * placement. The caller guarantees one is enabled.
- */
-export const withAgentRolePlacements = (
+const mirrorAgentRolePlacements = (
   role: Omit<AgentRole, 'placements' | 'machineId' | 'agentConfigId' | 'runConfig'>,
   placements: AgentRolePlacement[]
 ): AgentRole => {
@@ -323,6 +329,17 @@ export const withAgentRolePlacements = (
     runConfig: primary.runConfig,
   };
 };
+
+/**
+ * Make a catalog row from a Role and its COMPLETE placement list, with the
+ * legacy mirror that goes with it. Every writer builds rows through here, so
+ * the mirror is always the first enabled placement. The caller guarantees one
+ * is enabled.
+ */
+export const withAgentRolePlacements = (
+  role: Omit<AgentRole, 'placements' | 'machineId' | 'agentConfigId' | 'runConfig'>,
+  placements: AgentRolePlacement[]
+): CatalogAgentRole => mirrorAgentRolePlacements(role, placements) as CatalogAgentRole;
 
 export const listEnabledAgentRolePlacements = (role: AgentRole): AgentRolePlacement[] =>
   role.placements.filter((placement) => placement.enabled);
@@ -337,7 +354,7 @@ export const agentRoleOnMachine = (
   machineId: MachineId
 ): AgentRole | undefined => {
   const placement = role.placements.find((entry) => entry.enabled && entry.machineId === machineId);
-  return placement ? withAgentRolePlacements(role, [placement]) : undefined;
+  return placement ? mirrorAgentRolePlacements(role, [placement]) : undefined;
 };
 
 /**
@@ -450,7 +467,7 @@ export const isAgentRole = (value: unknown): value is AgentRole => {
  * existed, or by a client that dropped them — is the single machine its
  * legacy fields name.
  */
-export const normalizeAgentRole = (value: unknown): AgentRole | undefined => {
+export const normalizeAgentRole = (value: unknown): CatalogAgentRole | undefined => {
   if (!isAgentRole(value)) return undefined;
   const emoji = normalizeAgentRoleEmoji(value.emoji);
   const description = normalizeAgentRoleDescription(value.description);
@@ -509,10 +526,10 @@ export const canReadAgentRole = (role: AgentRole, userId: string | null | undefi
 export const canManageAgentRole = (role: AgentRole, userId: string | null | undefined): boolean =>
   Boolean(userId) && role.ownerUserId === userId;
 
-export const listAccessibleAgentRoles = (
-  roles: readonly AgentRole[],
+export const listAccessibleAgentRoles = <T extends AgentRole>(
+  roles: readonly T[],
   userId: string | null | undefined
-): AgentRole[] => roles.filter((role) => canReadAgentRole(role, userId));
+): T[] => roles.filter((role) => canReadAgentRole(role, userId));
 
 // ---------------------------------------------------------------------------
 // Availability

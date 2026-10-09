@@ -1,8 +1,8 @@
 import {
   getWorkspaceFlockDocId,
   workspaceFlockKeys,
-  type AgentRole,
   type AgentRoleId,
+  type CatalogAgentRole,
   type McpServerId,
   type WorkspaceId,
   type WorkspaceMcpServerMeta,
@@ -88,7 +88,7 @@ export const deleteWorkspaceMcpServer = (
  */
 export const writeWorkspaceAgentRole = (
   deps: WorkspaceCatalogWriteDeps,
-  role: AgentRole
+  role: CatalogAgentRole
 ): Promise<void> => putRow(deps, workspaceFlockKeys.agentRole(role.id), role);
 
 export const deleteWorkspaceAgentRole = (
