@@ -108,11 +108,11 @@ Exact deletion bypasses discovery: [relations](../../specs/session-relations.md)
   composer permission button but retain warning-tone markings. No Role-level auto-approval
   policy. Settings/mentions use `canReadAgentRole`/`canManageAgentRole`; explicit MCP lookup
   needs no mention grant.
-- Roles hold ordered per-machine `placements`; legacy `machineId/agentConfigId/runConfig`
-  mirror the first enabled one. Only `selectAgentRolePlacement` picks one; pinned
-  machines fail, never move; report the pick. Freeze prompt/placement/revision at
-  acceptance; retries/recovery ignore edits/deletion; Role metadata is provenance.
-  `resolveSessionExecutionInputBlocks` owns text; raw blocks attach. Memory: per-placement
+- Roles are templates with ordered `instances`, grouped by alias else agent family, ≤1 per
+  group per machine; legacy fields mirror the first; old rows get fixed ids. Only
+  `selectAgentRoleInstance` picks; pins fail, never move; report it. Freeze
+  prompt/instance/revision on acceptance; retries ignore edits/deletes; metadata is provenance.
+  `resolveSessionExecutionInputBlocks` owns text; raw blocks attach. Memory: per-instance
   refs, frozen per turn ([contract](../../specs/agent-role-memory.md)).
 - Keep `author`, human `userId`, and recipient execution config separate.
   [Contract](../../specs/message-author-identity.md).

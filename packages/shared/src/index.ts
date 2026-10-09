@@ -14,6 +14,7 @@ export type {
   AbsolutePath,
   AgentConfigId,
   AgentRoleId,
+  AgentRoleInstanceId,
   BindingId,
   ClientId,
   MachineId,
@@ -125,6 +126,7 @@ export * from './file-preview';
 export * from './machine-flock';
 export * from './workspace-mcp';
 export * from './agent-role';
+export * from './agent-role-group';
 export * from './agent-role-form';
 export * from './permission-tier';
 export * from './workspace-flock';

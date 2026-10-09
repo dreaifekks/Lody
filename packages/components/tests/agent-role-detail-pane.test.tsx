@@ -70,7 +70,14 @@ describe('AgentRoleDetailPane', () => {
 
   const render = async (props: Partial<PaneProps> = {}): Promise<HTMLDivElement> => {
     await act(async () => {
-      root?.render(createElement(AgentRoleDetailPane, { role: role(), agentConfig, ...props }));
+      root?.render(
+        createElement(AgentRoleDetailPane, {
+          role: role(),
+          instance: (props.role ?? role()).instances[0]!,
+          agentConfig,
+          ...props,
+        })
+      );
     });
     return container as HTMLDivElement;
   };
@@ -101,15 +108,6 @@ describe('AgentRoleDetailPane', () => {
     // the bound agent's own defaults and present it as the Role's.
     expect(rowValue(view, 'Reasoning')).toBeUndefined();
     expect(rowValue(view, 'Permission')).toBeUndefined();
-  });
-
-  it('names the machine only where the surface passes one', async () => {
-    const withMachine = await render({ machineLabel: 'Studio' });
-    expect(withMachine.textContent).toContain('Studio');
-    // The composer lists one machine by construction, so naming it there would
-    // be a constant that says nothing.
-    const withoutMachine = await render({ machineLabel: undefined });
-    expect(withoutMachine.textContent).not.toContain('Studio');
   });
 
   it('shows the instruction itself and offers editing only where it can be done', async () => {

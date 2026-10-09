@@ -9,6 +9,7 @@ import type {
   AgentConfigMeta,
   AgentRole,
   AgentRoleId,
+  AgentRoleInstanceId,
   MachineId,
   SessionId,
 } from '@lody/shared';
@@ -26,8 +27,13 @@ vi.mock('jotai', async (importOriginal) => ({
 
 vi.mock('../src/hooks/use-workspace-agent-roles', () => ({
   useWorkspaceAgentRoles: () => ({ roles: catalog.roles, synced: catalog.synced }),
-  useAgentRoleAvailability: () => ({ resolve: () => ({ kind: 'available' }) }),
+  useAgentRoleAvailability: () => ({
+    resolve: () => ({ kind: 'available' }),
+    resolveInstance: () => ({ kind: 'available' }),
+  }),
+  useComposerAgentRoleNames: () => names,
 }));
+const names = { machine: () => undefined, unknownAgent: 'Unknown agent' };
 
 import {
   useSessionAgentRole,
@@ -59,6 +65,9 @@ const role = (id: string, modelId: string): AgentRole =>
     updatedAt: Date.UTC(2026, 7, 25),
   });
 
+/** The id a single-machine fixture's instance gets on machine-1. */
+const iid = (roleId: string) => `${roleId}:machine-1` as AgentRoleInstanceId;
+
 const agentConfig = {
   id: 'agent-1',
   name: 'Codex',
@@ -76,6 +85,7 @@ describe('useSessionAgentRole', () => {
     provenanceRoleId?: AgentRoleId;
     durableRoleId?: AgentRoleId | null;
     durableRoleRevision?: number;
+    durableInstanceId?: AgentRoleInstanceId;
     durableSourceTurnKey?: string;
     durableKnownSourceTurnKeys?: readonly string[];
     durableRoleReady?: boolean;
@@ -89,6 +99,7 @@ describe('useSessionAgentRole', () => {
       provenanceRoleId: hookProps.provenanceRoleId,
       durableRoleId: hookProps.durableRoleId,
       durableRoleRevision: hookProps.durableRoleRevision,
+      durableInstanceId: hookProps.durableInstanceId,
       durableSourceTurnKey: hookProps.durableSourceTurnKey,
       durableKnownSourceTurnKeys: hookProps.durableKnownSourceTurnKeys,
       durableRoleReady: hookProps.durableRoleReady,
@@ -110,6 +121,7 @@ describe('useSessionAgentRole', () => {
     provenanceRoleId,
     durableRoleId,
     durableRoleRevision,
+    durableInstanceId,
     durableSourceTurnKey,
     durableKnownSourceTurnKeys,
     durableRoleReady,
@@ -120,6 +132,7 @@ describe('useSessionAgentRole', () => {
     provenanceRoleId?: AgentRoleId;
     durableRoleId?: AgentRoleId | null;
     durableRoleRevision?: number;
+    durableInstanceId?: AgentRoleInstanceId;
     durableSourceTurnKey?: string;
     durableKnownSourceTurnKeys?: readonly string[];
     durableRoleReady?: boolean;
@@ -131,6 +144,7 @@ describe('useSessionAgentRole', () => {
       provenanceRoleId,
       durableRoleId,
       durableRoleRevision,
+      durableInstanceId,
       durableSourceTurnKey,
       durableKnownSourceTurnKeys,
       durableRoleReady,
@@ -162,45 +176,178 @@ describe('useSessionAgentRole', () => {
     container = null;
   });
 
+  it('offers a Role picked on its second machine and records that instance', async () => {
+    // devnuc first, this machine second: the entry and the Turn are this machine's.
+    catalog.roles = [
+      singleMachineRole({
+        ...role('vision', 'model-1'),
+        instances: [
+          {
+            id: 'vision:devnuc' as AgentRoleInstanceId,
+            machineId: 'devnuc' as MachineId,
+            agentConfigId: 'agent-devnuc' as AgentConfigId,
+            runConfig: { modelId: 'model-other' },
+          },
+          {
+            id: 'vision:here' as AgentRoleInstanceId,
+            machineId: 'machine-1' as MachineId,
+            agentConfigId: 'agent-1' as AgentConfigId,
+            runConfig: { modelId: 'model-1' },
+          },
+        ],
+      }),
+    ];
+    // Both run Codex: one group, shown by this machine's instance.
+    catalog.agentConfigs = [
+      agentConfig,
+      { ...agentConfig, id: 'agent-devnuc', machineId: 'devnuc' } as AgentConfigMeta,
+    ];
+    await render({});
+    expect(control?.items.map((item) => item.instance.id)).toEqual(['vision:here']);
+    await act(async () => control?.onSelect('vision:here' as AgentRoleInstanceId));
+    expect(control?.selectedInstanceId).toBe('vision:here');
+    expect(control?.turnSelection).toMatchObject({
+      agentRoleId: 'vision',
+      agentRoleSnapshot: { instanceId: 'vision:here' },
+    });
+  });
+
+  it('lists a Role on another machine but will not select it: the Session cannot move', async () => {
+    catalog.roles = [
+      singleMachineRole({
+        ...role('vision', 'model-1'),
+        instances: [
+          {
+            id: 'vision:devnuc' as AgentRoleInstanceId,
+            machineId: 'devnuc' as MachineId,
+            agentConfigId: 'agent-devnuc' as AgentConfigId,
+            runConfig: { modelId: 'model-1' },
+          },
+        ],
+      }),
+    ];
+    await render({});
+    expect(control?.items.map((item) => [item.instance.id, item.availability])).toEqual([
+      ['vision:devnuc', { kind: 'unavailable', reason: 'other_machine' }],
+    ]);
+    await act(async () => control?.onSelect('vision:devnuc' as AgentRoleInstanceId));
+    expect(control?.selectedInstanceId).toBeNull();
+  });
+
+  it('drops a recorded instance once deleted or moved, never handing the Role to another', async () => {
+    const memory = (memoryId: string) => ({ providerId: 'nowledge-mem', memoryId });
+    const withInstances = (...instances: AgentRole['instances']) =>
+      singleMachineRole({ ...role('pair', 'model-1'), instances });
+    const first = {
+      id: 'pair:first' as AgentRoleInstanceId,
+      machineId: 'machine-1' as MachineId,
+      agentConfigId: 'agent-1' as AgentConfigId,
+      runConfig: { modelId: 'model-1', memory: memory('first') },
+    };
+    const second = {
+      ...first,
+      id: 'pair:second' as AgentRoleInstanceId,
+      alias: 'Second',
+      runConfig: { modelId: 'model-1', memory: memory('second') },
+    };
+    const recorded = {
+      durableRoleId: 'pair' as AgentRoleId,
+      durableRoleRevision: 1,
+      durableInstanceId: second.id,
+      durableSourceTurnKey: 'turn:turn-1',
+    };
+    catalog.roles = [withInstances(first, second)];
+    await render(recorded);
+    expect(control?.selectedInstanceId).toBe('pair:second');
+
+    // Deleted: same agent, model and mode remain in `first`, but it is not
+    // what was picked, and its memory must not ride along.
+    catalog.roles = [withInstances(first)];
+    await render(recorded);
+    expect(control?.selectedInstanceId).toBeNull();
+    expect(control?.turnSelection).toBeNull();
+
+    // Moved to another machine: listed there, disabled, and no longer picked.
+    catalog.roles = [
+      withInstances(first, {
+        ...second,
+        machineId: 'machine-2' as MachineId,
+        runConfig: { modelId: 'model-1', memory: memory('elsewhere') },
+      }),
+    ];
+    await render(recorded);
+    expect(control?.selectedInstanceId).toBeNull();
+    expect(control?.turnSelection).toBeNull();
+  });
+
+  it('restores the instance a Turn recorded among two on this machine and config', async () => {
+    const both = singleMachineRole({
+      ...role('pair', 'model-1'),
+      // The second needs an alias to share this machine and agent with the first.
+      instances: ['first', 'second'].map((name) => ({
+        id: `pair:${name}` as AgentRoleInstanceId,
+        ...(name === 'second' ? { alias: 'Second' } : {}),
+        machineId: 'machine-1' as MachineId,
+        agentConfigId: 'agent-1' as AgentConfigId,
+        runConfig: { modelId: 'model-1' },
+      })),
+    });
+    catalog.roles = [both];
+    await render({
+      durableRoleId: 'pair' as AgentRoleId,
+      durableRoleRevision: 1,
+      durableInstanceId: 'pair:second' as AgentRoleInstanceId,
+      durableSourceTurnKey: 'turn:turn-1',
+    });
+    expect(control?.selectedInstanceId).toBe('pair:second');
+    // A Turn recorded before instances names only the Role: its default here.
+    await render({
+      durableRoleId: 'pair' as AgentRoleId,
+      durableRoleRevision: 1,
+      durableSourceTurnKey: 'turn:turn-2',
+    });
+    expect(control?.selectedInstanceId).toBe('pair:first');
+  });
+
   it('shows the creating Role after the workspace catalog loads', async () => {
     const provenanceRoleId = 'role-1' as AgentRoleId;
     await render({ provenanceRoleId });
-    expect(control?.selectedRoleId).toBeNull();
+    expect(control?.selectedInstanceId).toBeNull();
 
     catalog.roles = [role('role-1', 'model-1')];
     await render({ provenanceRoleId });
 
-    expect(control?.selectedRoleId).toBe(provenanceRoleId);
+    expect(control?.selectedInstanceId).toBe(iid(provenanceRoleId));
   });
 
   it('keeps an explicit None selection and scopes it to the current session', async () => {
     const provenanceRoleId = 'role-1' as AgentRoleId;
     catalog.roles = [role('role-1', 'model-1')];
     await render({ provenanceRoleId });
-    expect(control?.selectedRoleId).toBe(provenanceRoleId);
+    expect(control?.selectedInstanceId).toBe(iid(provenanceRoleId));
 
     await act(async () => control?.onSelect(null));
-    expect(control?.selectedRoleId).toBeNull();
+    expect(control?.selectedInstanceId).toBeNull();
 
     await render({ provenanceRoleId });
-    expect(control?.selectedRoleId).toBeNull();
+    expect(control?.selectedInstanceId).toBeNull();
 
     await render({ sessionId: 'session-2', provenanceRoleId });
-    expect(control?.selectedRoleId).toBe(provenanceRoleId);
+    expect(control?.selectedInstanceId).toBe(iid(provenanceRoleId));
   });
 
   it('keeps explicit Role choices independently while switching Sessions', async () => {
     catalog.roles = [role('role-1', 'model-1'), role('role-2', 'model-1')];
     await render({ sessionId: 'session-1' });
-    await act(async () => control?.onSelect('role-1' as AgentRoleId));
-    expect(control?.selectedRoleId).toBe('role-1');
+    await act(async () => control?.onSelect(iid('role-1')));
+    expect(control?.selectedInstanceId).toBe(iid('role-1'));
 
     await render({ sessionId: 'session-2' });
-    await act(async () => control?.onSelect('role-2' as AgentRoleId));
-    expect(control?.selectedRoleId).toBe('role-2');
+    await act(async () => control?.onSelect(iid('role-2')));
+    expect(control?.selectedInstanceId).toBe(iid('role-2'));
 
     await render({ sessionId: 'session-1' });
-    expect(control?.selectedRoleId).toBe('role-1');
+    expect(control?.selectedInstanceId).toBe(iid('role-1'));
   });
 
   it('restores from the latest durable Turn and lets a newer Turn supersede a local draft', async () => {
@@ -210,13 +357,13 @@ describe('useSessionAgentRole', () => {
       durableRoleRevision: 1,
       durableSourceTurnKey: 'turn:turn-1',
     });
-    expect(control?.selectedRoleId).toBe('role-1');
+    expect(control?.selectedInstanceId).toBe(iid('role-1'));
 
-    await act(async () => control?.onSelect('role-2' as AgentRoleId));
-    expect(control?.selectedRoleId).toBe('role-2');
+    await act(async () => control?.onSelect(iid('role-2')));
+    expect(control?.selectedInstanceId).toBe(iid('role-2'));
 
     await render({ durableRoleId: null, durableSourceTurnKey: 'turn:turn-2' });
-    expect(control?.selectedRoleId).toBeNull();
+    expect(control?.selectedInstanceId).toBeNull();
 
     // Consuming the superseded draft is permanent: if a queue item disappears
     // and the resolver returns to the old history source, role-2 cannot revive.
@@ -225,7 +372,7 @@ describe('useSessionAgentRole', () => {
       durableRoleRevision: 1,
       durableSourceTurnKey: 'turn:turn-1',
     });
-    expect(control?.selectedRoleId).toBe('role-1');
+    expect(control?.selectedInstanceId).toBe(iid('role-1'));
   });
 
   it('keeps a history-based draft visible while the Session doc remount hydrates', async () => {
@@ -235,12 +382,12 @@ describe('useSessionAgentRole', () => {
       durableRoleRevision: 1,
       durableSourceTurnKey: 'turn:turn-1',
     });
-    await act(async () => control?.onSelect('role-2' as AgentRoleId));
+    await act(async () => control?.onSelect(iid('role-2')));
 
     await act(async () => root?.unmount());
     root = createRoot(container!);
     await render({ durableRoleReady: false });
-    expect(control?.selectedRoleId).toBe('role-2');
+    expect(control?.selectedInstanceId).toBe(iid('role-2'));
 
     await render({
       durableRoleId: 'role-1' as AgentRoleId,
@@ -248,7 +395,7 @@ describe('useSessionAgentRole', () => {
       durableSourceTurnKey: 'turn:turn-1',
       durableRoleReady: true,
     });
-    expect(control?.selectedRoleId).toBe('role-2');
+    expect(control?.selectedInstanceId).toBe(iid('role-2'));
   });
 
   it('does not mistake transient hydration defaults for manual Role drift', async () => {
@@ -264,7 +411,7 @@ describe('useSessionAgentRole', () => {
     root = createRoot(container!);
     await render({ durableRoleReady: false, selectedModelId: 'provider-default' });
 
-    expect(control?.selectedRoleId).toBe('role-special');
+    expect(control?.selectedInstanceId).toBe(iid('role-special'));
     expect(control?.turnSelection).toEqual({
       agentRoleId: 'role-special',
       agentRoleRevision: 1,
@@ -273,6 +420,8 @@ describe('useSessionAgentRole', () => {
         revision: 1,
         name: 'role-special',
         emoji: DEFAULT_AGENT_ROLE_EMOJI,
+        instanceId: 'role-special:machine-1',
+        instanceLabel: 'Codex',
       },
     });
   });
@@ -285,7 +434,7 @@ describe('useSessionAgentRole', () => {
       durableSourceTurnKey: 'turn:turn-2',
       durableKnownSourceTurnKeys: ['turn:turn-2', 'turn:turn-1'],
     });
-    await act(async () => control?.onSelect('role-2' as AgentRoleId));
+    await act(async () => control?.onSelect(iid('role-2')));
 
     // Older backfill extends the lineage without changing its current Turn.
     await render({
@@ -294,7 +443,7 @@ describe('useSessionAgentRole', () => {
       durableSourceTurnKey: 'turn:turn-2',
       durableKnownSourceTurnKeys: ['turn:turn-2', 'turn:turn-1', 'turn:turn-0'],
     });
-    expect(control?.selectedRoleId).toBe('role-2');
+    expect(control?.selectedInstanceId).toBe(iid('role-2'));
 
     // Falling back to an older Turn that was already known is not a new Turn.
     await render({
@@ -303,7 +452,7 @@ describe('useSessionAgentRole', () => {
       durableSourceTurnKey: 'turn:turn-1',
       durableKnownSourceTurnKeys: ['turn:turn-1'],
     });
-    expect(control?.selectedRoleId).toBe('role-2');
+    expect(control?.selectedInstanceId).toBe(iid('role-2'));
   });
 
   it('preserves durable Role metadata while its catalog row is still syncing', async () => {
@@ -314,7 +463,7 @@ describe('useSessionAgentRole', () => {
       durableRoleRevision: 5,
       durableSourceTurnKey: 'turn:turn-1',
     });
-    expect(control?.selectedRoleId).toBeNull();
+    expect(control?.selectedInstanceId).toBeNull();
     expect(control?.turnSelection).toEqual({
       agentRoleId: 'role-1',
       agentRoleRevision: 5,
@@ -344,6 +493,6 @@ describe('useSessionAgentRole', () => {
 
     await render({ provenanceRoleId, selectedModelId: 'model-2' });
 
-    expect(control?.selectedRoleId).toBeNull();
+    expect(control?.selectedInstanceId).toBeNull();
   });
 });

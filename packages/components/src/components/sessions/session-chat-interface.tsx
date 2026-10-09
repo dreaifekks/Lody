@@ -388,6 +388,7 @@ import {
 } from './session-turn-facts';
 import { AlertDialog } from '@/ui/dialog';
 import { resolveSessionHtmlAttachmentAction } from './session-html-attachment-action';
+import { AgentRoleMentionMachineContext } from '@/components/mentions/mention-agent-role-source';
 
 const styles = stylex.create({
   historyTriggerIcon: { width: 'calc(var(--spacing) * 4)', height: 'calc(var(--spacing) * 4)' },
@@ -4780,6 +4781,7 @@ export const SessionChatInterface = memo(
           durableRoleId: sessionConversationConfig.agentRoleId,
           durableRoleRevision: sessionConversationConfig.agentRoleRevision,
           durableMemory: sessionConversationConfig.memory,
+          durableSnapshot: sessionConversationConfig.agentRoleSnapshot,
         });
         return await dispatchInputBlocks(
           [{ type: 'text', text: prompt }],
@@ -4791,6 +4793,7 @@ export const SessionChatInterface = memo(
         sessionConversationConfig.agentRoleId,
         sessionConversationConfig.agentRoleRevision,
         sessionConversationConfig.memory,
+        sessionConversationConfig.agentRoleSnapshot,
       ]
     );
 
@@ -4916,6 +4919,7 @@ export const SessionChatInterface = memo(
           durableRoleId: sessionConversationConfig.agentRoleId,
           durableRoleRevision: sessionConversationConfig.agentRoleRevision,
           durableMemory: sessionConversationConfig.memory,
+          durableSnapshot: sessionConversationConfig.agentRoleSnapshot,
         });
         const accepted = await handleSendMessage(inputBlocks, currentAgentRole);
         if (accepted) {
@@ -4944,6 +4948,7 @@ export const SessionChatInterface = memo(
         sessionConversationConfig.agentRoleId,
         sessionConversationConfig.agentRoleRevision,
         sessionConversationConfig.memory,
+        sessionConversationConfig.agentRoleSnapshot,
         updateHistoryEntry,
       ]
     );
@@ -6869,510 +6874,524 @@ export const SessionChatInterface = memo(
     const headerArchivedNode = session.isArchived === true ? <SessionArchivedBadge /> : null;
 
     return (
-      <PrLinkProvider prUrl={latestPr?.url} onOpenPrTab={prLinkHandler}>
-        <SessionLinkProvider value={onNavigateSession ? handleOpenRelatedSession : null}>
-          {isVisible &&
-            !preparingWindow &&
-            onOpenBrowser &&
-            (!browserActionSession || browserActionSession.id === session.id) && (
-              <SessionPreviewPreload
-                session={session}
-                preview={sessionDoc.preview as SessionPreviewDocState | undefined}
-              />
-            )}
-          {isVisible &&
-            sessionDocReady &&
-            (sessionHistory.length > 0 || (sessionHistoryLength === 0 && sessionDocSynced)) && (
-              <span
-                hidden
-                data-window-session-ready={session.id}
-                data-window-requires-stream={sessionHistoryLength > 0 ? 'true' : undefined}
-              />
-            )}
-          <SessionConversationPage
-            className={className}
-            dropActive={imageDropZone.isActive || sessionMentionOverlay}
-            dropKind={sessionMentionOverlay ? 'session-mention' : 'files'}
-            hideMessageArea={hideMessageArea}
-            {...pageDropHandlers}
-          >
-            {/* The outline must centre in the whole conversation page, not only
+      <AgentRoleMentionMachineContext.Provider value={session.machineId ?? null}>
+        <PrLinkProvider prUrl={latestPr?.url} onOpenPrTab={prLinkHandler}>
+          <SessionLinkProvider value={onNavigateSession ? handleOpenRelatedSession : null}>
+            {isVisible &&
+              !preparingWindow &&
+              onOpenBrowser &&
+              (!browserActionSession || browserActionSession.id === session.id) && (
+                <SessionPreviewPreload
+                  session={session}
+                  preview={sessionDoc.preview as SessionPreviewDocState | undefined}
+                />
+              )}
+            {isVisible &&
+              sessionDocReady &&
+              (sessionHistory.length > 0 || (sessionHistoryLength === 0 && sessionDocSynced)) && (
+                <span
+                  hidden
+                  data-window-session-ready={session.id}
+                  data-window-requires-stream={sessionHistoryLength > 0 ? 'true' : undefined}
+                />
+              )}
+            <SessionConversationPage
+              className={className}
+              dropActive={imageDropZone.isActive || sessionMentionOverlay}
+              dropKind={sessionMentionOverlay ? 'session-mention' : 'files'}
+              hideMessageArea={hideMessageArea}
+              {...pageDropHandlers}
+            >
+              {/* The outline must centre in the whole conversation page, not only
               the flex area left after the composer takes its height. */}
-            <div ref={setOutlineOverlayRoot} {...stylex.props(styles.pageOutlineOverlay)} />
-            {!shouldHideHeader &&
-              (headerVariant === 'toolbar' ? (
-                /* Compact toolbar for the merged desktop tab row: right-side
+              <div ref={setOutlineOverlayRoot} {...stylex.props(styles.pageOutlineOverlay)} />
+              {!shouldHideHeader &&
+                (headerVariant === 'toolbar' ? (
+                  /* Compact toolbar for the merged desktop tab row: right-side
                  controls only — no title (the context strip owns identity) and
                  no PR badge (the strip owns PR). */
-                <ErrorBoundary name="SessionChatHeader" variant="inline" resetKeys={[session.id]}>
-                  <div {...stylex.props(styles.toolbarHeader)}>
-                    {headerLauncherActions}
-                    {headerArchivedNode}
-                    {headerAccessNode}
-                    {headerMenuNode}
-                    {headerEndSlot}
-                  </div>
-                </ErrorBoundary>
-              ) : (
-                <ErrorBoundary name="SessionChatHeader" variant="inline" resetKeys={[session.id]}>
-                  <SessionConversationPageHeader
-                    startSlot={headerStartSlot}
-                    titleSlot={
-                      <SessionProjectInfo
-                        session={session}
-                        isLoading={shouldShowTitleLoading}
-                        isSyncing={effectiveTitleSyncing}
-                        isMachineOffline={sessionMachineOnlineStatus === 'offline'}
-                        t={t}
-                        localProjectMeta={resolvedLocalProjectMeta}
-                      />
-                    }
-                    desktopActionsSlot={
-                      <div
-                        {...stylex.props(
-                          styles.desktopHeaderActions,
-                          isMobile && styles.hiddenHeaderActions
-                        )}
-                      >
-                        {headerLauncherActions}
-                        {headerGitHubActions}
-                        {headerArchivedNode}
-                        {headerAccessNode}
-                      </div>
-                    }
-                    menuSlot={headerMenuNode}
-                    endSlot={headerEndSlot}
-                    nativeApp={isNativeApp}
-                    reserveMacTrafficLightInset={
-                      !isNativeApp &&
-                      Boolean(headerStartSlot) &&
-                      isMacOSElectronRenderer() &&
-                      !isElectronFullscreen
-                    }
-                  />
-                </ErrorBoundary>
-              ))}
-            {subHeader}
-            {hideMessageArea ? null : (
-              <>
-                <SessionPin
-                  pinnedHistoryId={pinnedHistoryId}
-                  pinnedMessage={pinnedMessage}
-                  onUnpin={handleUnpin}
-                  onScrollToMessage={handleScrollToMessage}
-                />
-                <SessionSearchProvider value={searchContextValue}>
-                  <SessionPinContext.Provider value={pinContextValue}>
-                    {/* Message area */}
-                    <div ref={messageAreaRef} {...stylex.props(styles.messageArea)}>
-                      {isSearchOpen ? (
-                        <SessionSearchBar
-                          query={searchQuery}
-                          currentIndex={activeSearchResultIndex}
-                          totalCount={searchResults.length}
-                          inputRef={searchInputRef}
-                          onQueryChange={handleSearchQueryChange}
-                          onPrevious={() => moveToSearchResult('previous')}
-                          onNext={() => moveToSearchResult('next')}
-                          onClose={closeSearch}
-                          t={t}
-                        />
-                      ) : null}
-                      <ErrorBoundary
-                        name="SessionChatStream"
-                        variant="section"
-                        resetKeys={[session.id]}
-                        fallbackRender={(props) => <MessageListErrorFallback {...props} />}
-                      >
-                        {/* Key forces remount on session change, preventing scroll state bleed between sessions */}
-                        <MessageSendStatusContext.Provider value={sendingMessageIds}>
-                          <MessageSelectionContext.Provider value={shareSelection.context}>
-                            <SessionAgentFileLinkMenuProvider session={session}>
-                              <AgentSurfaceContext.Provider value={agentSurfaceActions}>
-                                <SessionChatStream
-                                  key={session.id}
-                                  ref={chatStreamRef}
-                                  sessionId={session?.id}
-                                  workspaceId={workspaceId}
-                                  showSenderIdentity={isMultiMember}
-                                  view={conversationView}
-                                  isVisible={isVisible}
-                                  sessionCreatedAt={session?.createdAt}
-                                  dividerLabel={sessionDividerLabel}
-                                  {...stylex.props(styles.stream)}
-                                  leadingContent={openedByConversationStart}
-                                  emptyState={chatStreamEmptyState}
-                                  trailingContent={unsentFirstMessage ? undefined : pendingMessages}
-                                  agentActivityLabel={agentActivityLabel}
-                                  agentActivityTone={agentActivityTone}
-                                  agentActivityShimmer={agentActivityShimmer}
-                                  onFileDiffClick={onFileDiffClick}
-                                  onFilePathClick={
-                                    onFilePathClick ? handleFilePathClick : undefined
-                                  }
-                                  onOpenHtmlFile={handleOpenHtmlAttachment}
-                                  messageFileDiffEntriesByTurn={messageFileDiffEntriesByTurn}
-                                  assistantActions={assistantQuickActions}
-                                  assistantActionsMessageId={latestCompletedProposedPlan?.entryId}
-                                  onCopyContext={(messageId) => {
-                                    void handleCopyConversationHistory(messageId);
-                                  }}
-                                  onForkLastAssistant={onForkLastAssistant}
-                                  forkWorktreeAvailability={forkWorktreeAvailability}
-                                  onForkWorktreeMenuOpen={onForkWorktreeMenuOpen}
-                                  onEditLastUser={
-                                    editableLastUserMessageId ? handleEditLastUser : undefined
-                                  }
-                                  editMentionContext={editMentionContext}
-                                  onResendUndelivered={handleResendUndelivered}
-                                  capacityRetry={capacityRetry ?? undefined}
-                                  forkingAssistantMessageId={forkingAssistantMessageId}
-                                  onNavigateSession={onNavigateSession}
-                                  onLastCompletedAssistantMessageIdChange={
-                                    handleLastCompletedAssistantMessageIdChange
-                                  }
-                                  conversationFontSize={conversationFontSize}
-                                  suppressStickyAutoScrollRef={suppressStickyAutoScrollRef}
-                                  outlineOverlayRoot={outlineOverlayRoot}
-                                />
-                              </AgentSurfaceContext.Provider>
-                            </SessionAgentFileLinkMenuProvider>
-                          </MessageSelectionContext.Provider>
-                        </MessageSendStatusContext.Provider>
-                      </ErrorBoundary>
+                  <ErrorBoundary name="SessionChatHeader" variant="inline" resetKeys={[session.id]}>
+                    <div {...stylex.props(styles.toolbarHeader)}>
+                      {headerLauncherActions}
+                      {headerArchivedNode}
+                      {headerAccessNode}
+                      {headerMenuNode}
+                      {headerEndSlot}
                     </div>
-
-                    {/* Requests and their editor must survive virtual row eviction. */}
-                    {workspaceId && (
-                      <div {...stylex.props(styles.shareRequestsScroller)}>
-                        <ConversationColumn {...stylex.props(styles.shareRequestsColumn)}>
-                          <SessionShareRequestCards
-                            workspaceId={workspaceId}
-                            session={session}
-                            isVisible={isVisible}
-                          />
-                        </ConversationColumn>
-                      </div>
-                    )}
-
-                    {/* The one place a pending permission request is answered; it stands in for the composer. */}
-                    <FloatingPermissionRequest
-                      sessionId={session.id}
-                      sessionStatus={liveSessionStatus ?? undefined}
-                      sessionHistory={permissionSessionHistory}
-                      onStop={() => {
-                        void handleStop();
-                      }}
+                  </ErrorBoundary>
+                ) : (
+                  <ErrorBoundary name="SessionChatHeader" variant="inline" resetKeys={[session.id]}>
+                    <SessionConversationPageHeader
+                      startSlot={headerStartSlot}
+                      titleSlot={
+                        <SessionProjectInfo
+                          session={session}
+                          isLoading={shouldShowTitleLoading}
+                          isSyncing={effectiveTitleSyncing}
+                          isMachineOffline={sessionMachineOnlineStatus === 'offline'}
+                          t={t}
+                          localProjectMeta={resolvedLocalProjectMeta}
+                        />
+                      }
+                      desktopActionsSlot={
+                        <div
+                          {...stylex.props(
+                            styles.desktopHeaderActions,
+                            isMobile && styles.hiddenHeaderActions
+                          )}
+                        >
+                          {headerLauncherActions}
+                          {headerGitHubActions}
+                          {headerArchivedNode}
+                          {headerAccessNode}
+                        </div>
+                      }
+                      menuSlot={headerMenuNode}
+                      endSlot={headerEndSlot}
+                      nativeApp={isNativeApp}
+                      reserveMacTrafficLightInset={
+                        !isNativeApp &&
+                        Boolean(headerStartSlot) &&
+                        isMacOSElectronRenderer() &&
+                        !isElectronFullscreen
+                      }
                     />
+                  </ErrorBoundary>
+                ))}
+              {subHeader}
+              {hideMessageArea ? null : (
+                <>
+                  <SessionPin
+                    pinnedHistoryId={pinnedHistoryId}
+                    pinnedMessage={pinnedMessage}
+                    onUnpin={handleUnpin}
+                    onScrollToMessage={handleScrollToMessage}
+                  />
+                  <SessionSearchProvider value={searchContextValue}>
+                    <SessionPinContext.Provider value={pinContextValue}>
+                      {/* Message area */}
+                      <div ref={messageAreaRef} {...stylex.props(styles.messageArea)}>
+                        {isSearchOpen ? (
+                          <SessionSearchBar
+                            query={searchQuery}
+                            currentIndex={activeSearchResultIndex}
+                            totalCount={searchResults.length}
+                            inputRef={searchInputRef}
+                            onQueryChange={handleSearchQueryChange}
+                            onPrevious={() => moveToSearchResult('previous')}
+                            onNext={() => moveToSearchResult('next')}
+                            onClose={closeSearch}
+                            t={t}
+                          />
+                        ) : null}
+                        <ErrorBoundary
+                          name="SessionChatStream"
+                          variant="section"
+                          resetKeys={[session.id]}
+                          fallbackRender={(props) => <MessageListErrorFallback {...props} />}
+                        >
+                          {/* Key forces remount on session change, preventing scroll state bleed between sessions */}
+                          <MessageSendStatusContext.Provider value={sendingMessageIds}>
+                            <MessageSelectionContext.Provider value={shareSelection.context}>
+                              <SessionAgentFileLinkMenuProvider session={session}>
+                                <AgentSurfaceContext.Provider value={agentSurfaceActions}>
+                                  <SessionChatStream
+                                    key={session.id}
+                                    ref={chatStreamRef}
+                                    sessionId={session?.id}
+                                    workspaceId={workspaceId}
+                                    showSenderIdentity={isMultiMember}
+                                    view={conversationView}
+                                    isVisible={isVisible}
+                                    sessionCreatedAt={session?.createdAt}
+                                    dividerLabel={sessionDividerLabel}
+                                    {...stylex.props(styles.stream)}
+                                    leadingContent={openedByConversationStart}
+                                    emptyState={chatStreamEmptyState}
+                                    trailingContent={
+                                      unsentFirstMessage ? undefined : pendingMessages
+                                    }
+                                    agentActivityLabel={agentActivityLabel}
+                                    agentActivityTone={agentActivityTone}
+                                    agentActivityShimmer={agentActivityShimmer}
+                                    onFileDiffClick={onFileDiffClick}
+                                    onFilePathClick={
+                                      onFilePathClick ? handleFilePathClick : undefined
+                                    }
+                                    onOpenHtmlFile={handleOpenHtmlAttachment}
+                                    messageFileDiffEntriesByTurn={messageFileDiffEntriesByTurn}
+                                    assistantActions={assistantQuickActions}
+                                    assistantActionsMessageId={latestCompletedProposedPlan?.entryId}
+                                    onCopyContext={(messageId) => {
+                                      void handleCopyConversationHistory(messageId);
+                                    }}
+                                    onForkLastAssistant={onForkLastAssistant}
+                                    forkWorktreeAvailability={forkWorktreeAvailability}
+                                    onForkWorktreeMenuOpen={onForkWorktreeMenuOpen}
+                                    onEditLastUser={
+                                      editableLastUserMessageId ? handleEditLastUser : undefined
+                                    }
+                                    editMentionContext={editMentionContext}
+                                    onResendUndelivered={handleResendUndelivered}
+                                    capacityRetry={capacityRetry ?? undefined}
+                                    forkingAssistantMessageId={forkingAssistantMessageId}
+                                    onNavigateSession={onNavigateSession}
+                                    onLastCompletedAssistantMessageIdChange={
+                                      handleLastCompletedAssistantMessageIdChange
+                                    }
+                                    conversationFontSize={conversationFontSize}
+                                    suppressStickyAutoScrollRef={suppressStickyAutoScrollRef}
+                                    outlineOverlayRoot={outlineOverlayRoot}
+                                  />
+                                </AgentSurfaceContext.Provider>
+                              </SessionAgentFileLinkMenuProvider>
+                            </MessageSelectionContext.Provider>
+                          </MessageSendStatusContext.Provider>
+                        </ErrorBoundary>
+                      </div>
 
-                    {/* Notification permission prompt - shown when session becomes idle (turn completed) */}
-                    {/* TODO(analytics): session/notification_prompt_shown|_permission_granted|_permission_denied.
+                      {/* Requests and their editor must survive virtual row eviction. */}
+                      {workspaceId && (
+                        <div {...stylex.props(styles.shareRequestsScroller)}>
+                          <ConversationColumn {...stylex.props(styles.shareRequestsColumn)}>
+                            <SessionShareRequestCards
+                              workspaceId={workspaceId}
+                              session={session}
+                              isVisible={isVisible}
+                            />
+                          </ConversationColumn>
+                        </div>
+                      )}
+
+                      {/* The one place a pending permission request is answered; it stands in for the composer. */}
+                      <FloatingPermissionRequest
+                        sessionId={session.id}
+                        sessionStatus={liveSessionStatus ?? undefined}
+                        sessionHistory={permissionSessionHistory}
+                        onStop={() => {
+                          void handleStop();
+                        }}
+                      />
+
+                      {/* Notification permission prompt - shown when session becomes idle (turn completed) */}
+                      {/* TODO(analytics): session/notification_prompt_shown|_permission_granted|_permission_denied.
                       Visibility + enable/dismiss live inside NotificationPermissionPrompt (owned elsewhere)
                       and the actual grant/deny resolves on the settings page, so these must be emitted from
                       that component via onShown/onEnableClicked/onDismissed callbacks (see crossFileNeeds). */}
-                    <NotificationPermissionPrompt
-                      sessionCompleted={session.status?.type === 'idle' && !isSessionWorking}
-                    />
+                      <NotificationPermissionPrompt
+                        sessionCompleted={session.status?.type === 'idle' && !isSessionWorking}
+                      />
 
-                    {/* An active auto-review run states itself here rather than
+                      {/* An active auto-review run states itself here rather than
                       only in the "…" menu: the failure mode worth designing
                       against is a user who ticked the box days ago, forgot, and
                       then finds a pull request merged itself. */}
-                    {autoReview.run && autoReview.active ? (
-                      <ConversationColumn {...stylex.props(styles.reviewStatusColumn)}>
-                        <AutoReviewStatus
-                          run={autoReview.run}
-                          maxRounds={autoReview.run.policy.budget.reviewRounds}
-                          onDisable={() => {
-                            void autoReview.disable();
-                          }}
-                          onConfirmMerge={() => {
-                            void autoReview.confirmMerge();
-                          }}
-                          onResume={() => {
-                            void autoReview.resume();
-                          }}
-                          onFixFinding={(finding) => {
-                            void dispatchPrompt(
-                              buildAuthorFixPrompt([finding], {
-                                // Same reason as the engine's own dispatch: with a
-                                // PR open, a committed-but-unpushed fix is invisible
-                                // to everything that reads the PR head.
-                                hasPullRequest: hasExistingPr,
-                              }),
-                              executionTurnConfigOverrides
-                            );
-                          }}
-                        />
-                      </ConversationColumn>
-                    ) : null}
+                      {autoReview.run && autoReview.active ? (
+                        <ConversationColumn {...stylex.props(styles.reviewStatusColumn)}>
+                          <AutoReviewStatus
+                            run={autoReview.run}
+                            maxRounds={autoReview.run.policy.budget.reviewRounds}
+                            onDisable={() => {
+                              void autoReview.disable();
+                            }}
+                            onConfirmMerge={() => {
+                              void autoReview.confirmMerge();
+                            }}
+                            onResume={() => {
+                              void autoReview.resume();
+                            }}
+                            onFixFinding={(finding) => {
+                              void dispatchPrompt(
+                                buildAuthorFixPrompt([finding], {
+                                  // Same reason as the engine's own dispatch: with a
+                                  // PR open, a committed-but-unpushed fix is invisible
+                                  // to everything that reads the PR head.
+                                  hasPullRequest: hasExistingPr,
+                                }),
+                                executionTurnConfigOverrides
+                              );
+                            }}
+                          />
+                        </ConversationColumn>
+                      ) : null}
 
-                    {/* Session info bar (desktop AND mobile): the canonical
+                      {/* Session info bar (desktop AND mobile): the canonical
                       cluster + fixed stage row merging status, goal, schedule,
                       and work context, glued to the composer shell. It
                       replaced the mobile status strip / goal banner /
                       in-composer scheduled panel. */}
-                    <SessionInfoBar
-                      status={statusStripState}
-                      goal={latestGoal}
-                      goalCommands={goalCommands}
-                      goalPendingCommand={
-                        pendingGoalCommand && pendingGoalCommand.threadId === latestGoal?.threadId
-                          ? pendingGoalCommand.command
-                          : null
-                      }
-                      onGoalCommand={handleGoalCardCommand}
-                      onGoalDismiss={handleDismissGoalBanner}
-                      scheduleSource={
-                        session.scheduleId
-                          ? {
-                              title:
-                                scheduleRegistry.rows.find(
-                                  (row) => row.scheduleId === session.scheduleId
-                                )?.title ?? t('schedules.source', 'Scheduled task'),
-                              onOpen: () => {
-                                if (workspaceSlug && session.scheduleId)
-                                  void router.navigate({
-                                    to: '/$workspaceName/schedules/$scheduleId',
-                                    params: {
-                                      workspaceName: workspaceSlug,
-                                      scheduleId: session.scheduleId,
-                                    },
-                                  });
-                              },
-                            }
-                          : null
-                      }
-                      scheduledTasks={pendingScheduledTasks}
-                      prCiRuns={infoBarPrCiRuns}
-                      onOpenPrCiRun={handleOpenPrCiRun}
-                      prCiState={latestPrState?.s}
-                      projectName={repoFullName || resolvedLocalProjectMeta?.name || null}
-                      branch={isMobile ? null : session.branchName?.trim() || null}
-                      workspaceLocation={
-                        session.isWorktree
-                          ? {
-                              // GitHub sessions are always worktrees, so surface the
-                              // GitHub identity rather than the redundant worktree mark.
-                              kind: repoFullName ? 'github-worktree' : 'worktree',
-                              path: sessionWorkspacePath,
-                            }
-                          : resolvedLocalProjectMeta
-                            ? { kind: 'folder', path: sessionWorkspacePath }
+                      <SessionInfoBar
+                        status={statusStripState}
+                        goal={latestGoal}
+                        goalCommands={goalCommands}
+                        goalPendingCommand={
+                          pendingGoalCommand && pendingGoalCommand.threadId === latestGoal?.threadId
+                            ? pendingGoalCommand.command
                             : null
-                      }
-                      pr={canShowGitHubActions ? effectiveLatestPr : null}
-                      onOpenPr={prLinkHandler}
-                      contextActions={infoBarContextActions}
-                      onOpenAllChanges={onOpenAllChanges}
-                      // Opener + every Session/Tab created here: the in-stream
-                      // creation cards scroll away with the conversation.
-                      relations={
-                        hasSessionRelations ? (
-                          <CurrentSessionRelationsChip
-                            sessionId={session.id}
-                            onOpenSession={handleOpenRelatedSession}
-                          />
-                        ) : undefined
-                      }
-                      onOpenBrowser={browserActionAvailable ? handleOpenBrowser : undefined}
-                      onOpenIosSimulator={
-                        session.iosSimulatorPreviewRequestId ? onOpenIosSimulator : undefined
-                      }
-                      privateAccessStatus={
-                        isMobile && sharing?.visibility === 'private'
-                          ? {
-                              label: t('sharing.privateOnlyYou', 'Private · Only you'),
-                              description: getSessionSharingDescription(t, sharing),
-                              onAction:
-                                sharing.canManage && onShareWithTeam
-                                  ? () => {
-                                      void onShareWithTeam();
-                                    }
-                                  : undefined,
-                            }
-                          : undefined
-                      }
-                      diffStat={changesDiffStat}
-                      // Desktop only: mobile already shows catch-up in its header.
-                      syncStatus={
-                        isMobile
-                          ? null
-                          : contentSyncState === 'catching-up'
-                            ? 'updating'
-                            : effectiveTitleSyncing
-                              ? 'syncing'
+                        }
+                        onGoalCommand={handleGoalCardCommand}
+                        onGoalDismiss={handleDismissGoalBanner}
+                        scheduleSource={
+                          session.scheduleId
+                            ? {
+                                title:
+                                  scheduleRegistry.rows.find(
+                                    (row) => row.scheduleId === session.scheduleId
+                                  )?.title ?? t('schedules.source', 'Scheduled task'),
+                                onOpen: () => {
+                                  if (workspaceSlug && session.scheduleId)
+                                    void router.navigate({
+                                      to: '/$workspaceName/schedules/$scheduleId',
+                                      params: {
+                                        workspaceName: workspaceSlug,
+                                        scheduleId: session.scheduleId,
+                                      },
+                                    });
+                                },
+                              }
+                            : null
+                        }
+                        scheduledTasks={pendingScheduledTasks}
+                        prCiRuns={infoBarPrCiRuns}
+                        onOpenPrCiRun={handleOpenPrCiRun}
+                        prCiState={latestPrState?.s}
+                        projectName={repoFullName || resolvedLocalProjectMeta?.name || null}
+                        branch={isMobile ? null : session.branchName?.trim() || null}
+                        workspaceLocation={
+                          session.isWorktree
+                            ? {
+                                // GitHub sessions are always worktrees, so surface the
+                                // GitHub identity rather than the redundant worktree mark.
+                                kind: repoFullName ? 'github-worktree' : 'worktree',
+                                path: sessionWorkspacePath,
+                              }
+                            : resolvedLocalProjectMeta
+                              ? { kind: 'folder', path: sessionWorkspacePath }
                               : null
-                      }
-                      // Mobile keeps the bar above the session drawer's z-30
-                      // edge-back strip so its leading chip stays tappable.
-                      protectFromEdgeBackZone={isMobile}
-                      // Queued turns stack on the bar (or on the composer when the
-                      // bar is empty). Hidden with the composer: a pending
-                      // permission bypasses the queue, as does share selection.
-                      queue={
-                        (messageQueue.length > 0 || hasPendingQueueRecords) &&
-                        !shouldReplaceComposerWithPermission &&
-                        !shareSelection.active ? (
-                          <MessageQueueDisplay
-                            sessionId={session.id}
-                            items={messageQueue}
-                            onRemove={handleRemoveQueueItem}
-                            onReorder={handleReorderQueueItem}
-                            onEditStart={handleStartQueueItemEdit}
-                            onEditCancel={handleCancelQueueItemEdit}
-                            onEditSave={handleSaveQueueItemEdit}
-                            onSteer={handleSteerQueuedMessage}
-                            showSteerAction={
-                              isSessionActive &&
-                              !!activeAssistantTurnId &&
-                              !isExternalHistoryRefreshing
-                            }
-                            nativeSteerAvailable={nativeSteerAvailable}
-                          />
-                        ) : undefined
-                      }
-                    />
+                        }
+                        pr={canShowGitHubActions ? effectiveLatestPr : null}
+                        onOpenPr={prLinkHandler}
+                        contextActions={infoBarContextActions}
+                        onOpenAllChanges={onOpenAllChanges}
+                        // Opener + every Session/Tab created here: the in-stream
+                        // creation cards scroll away with the conversation.
+                        relations={
+                          hasSessionRelations ? (
+                            <CurrentSessionRelationsChip
+                              sessionId={session.id}
+                              onOpenSession={handleOpenRelatedSession}
+                            />
+                          ) : undefined
+                        }
+                        onOpenBrowser={browserActionAvailable ? handleOpenBrowser : undefined}
+                        onOpenIosSimulator={
+                          session.iosSimulatorPreviewRequestId ? onOpenIosSimulator : undefined
+                        }
+                        privateAccessStatus={
+                          isMobile && sharing?.visibility === 'private'
+                            ? {
+                                label: t('sharing.privateOnlyYou', 'Private · Only you'),
+                                description: getSessionSharingDescription(t, sharing),
+                                onAction:
+                                  sharing.canManage && onShareWithTeam
+                                    ? () => {
+                                        void onShareWithTeam();
+                                      }
+                                    : undefined,
+                              }
+                            : undefined
+                        }
+                        diffStat={changesDiffStat}
+                        // Desktop only: mobile already shows catch-up in its header.
+                        syncStatus={
+                          isMobile
+                            ? null
+                            : contentSyncState === 'catching-up'
+                              ? 'updating'
+                              : effectiveTitleSyncing
+                                ? 'syncing'
+                                : null
+                        }
+                        // Mobile keeps the bar above the session drawer's z-30
+                        // edge-back strip so its leading chip stays tappable.
+                        protectFromEdgeBackZone={isMobile}
+                        // Queued turns stack on the bar (or on the composer when the
+                        // bar is empty). Hidden with the composer: a pending
+                        // permission bypasses the queue, as does share selection.
+                        queue={
+                          (messageQueue.length > 0 || hasPendingQueueRecords) &&
+                          !shouldReplaceComposerWithPermission &&
+                          !shareSelection.active ? (
+                            <MessageQueueDisplay
+                              sessionId={session.id}
+                              items={messageQueue}
+                              onRemove={handleRemoveQueueItem}
+                              onReorder={handleReorderQueueItem}
+                              onEditStart={handleStartQueueItemEdit}
+                              onEditCancel={handleCancelQueueItemEdit}
+                              onEditSave={handleSaveQueueItemEdit}
+                              onSteer={handleSteerQueuedMessage}
+                              showSteerAction={
+                                isSessionActive &&
+                                !!activeAssistantTurnId &&
+                                !isExternalHistoryRefreshing
+                              }
+                              nativeSteerAvailable={nativeSteerAvailable}
+                            />
+                          ) : undefined
+                        }
+                      />
 
-                    {/* Input area - isolated component to prevent full re-renders on typing.
+                      {/* Input area - isolated component to prevent full re-renders on typing.
                       Hidden while a permission is pending so the response buttons claim
                       the bottom surface; chat queue is bypassed for the same reason. */}
-                    <MessageSelectionToolbar selection={shareSelection} />
-                    <div
-                      {...stylex.props(
-                        styles.composerContents,
-                        shareSelection.active && styles.composerHidden
+                      <MessageSelectionToolbar selection={shareSelection} />
+                      <div
+                        {...stylex.props(
+                          styles.composerContents,
+                          shareSelection.active && styles.composerHidden
+                        )}
+                      >
+                        {shouldReplaceComposerWithPermission ? null : (
+                          <SessionChatInputArea
+                            isVisible={isVisible && !shareSelection.active}
+                            claimNavigationFocus={
+                              isVisible && !preparingWindow ? claimNavigationFocus : undefined
+                            }
+                            ref={inputAreaRef}
+                            session={session}
+                            sessionLocalProjectRootPath={resolvedLocalProjectMeta?.rootPath ?? null}
+                            isMachineRemoved={isMachineRemoved}
+                            isAgentBusy={isAgentBusy}
+                            canStopAgent={canStopAgent}
+                            isExternalHistoryRefreshing={isExternalHistoryRefreshing}
+                            externalHistorySyncLabel={externalHistorySyncLabel}
+                            isDark={isDark}
+                            isEmptyConversation={isEmptyConversation}
+                            selectedModeId={selectedModeId}
+                            selectedModelId={selectedModelId}
+                            durableAgentRoleId={sessionConversationConfig.agentRoleId}
+                            durableAgentRoleRevision={sessionConversationConfig.agentRoleRevision}
+                            durableAgentRoleInstanceId={
+                              sessionConversationConfig.agentRoleSnapshot?.instanceId as
+                                | SessionMeta['agentRoleInstanceId']
+                                | undefined
+                            }
+                            durableAgentRoleSourceTurnKey={
+                              sessionConversationSourceFence.currentTurnKey
+                            }
+                            durableAgentRoleKnownTurnKeys={
+                              sessionConversationSourceFence.knownTurnKeys
+                            }
+                            durableAgentRoleReady={sessionDocReady || hasPendingConfig}
+                            runConfigHasUserEdits={sessionRunConfigHasUserEdits}
+                            modeOptions={modeOptions}
+                            modelOptions={modelOptions}
+                            rateLimits={sessionRateLimits}
+                            showCodexResetForecast={showCodexResetForecast}
+                            isContextCompacting={isContextCompacting}
+                            configOptionSelectors={configOptionSelectors}
+                            configOptionValues={configOptionValues}
+                            isRepoPublic={isRepoPublic}
+                            availableCommands={availableCommands}
+                            commandsEnabled={isVisible}
+                            freeTurnLimitNotice={freeSessionTurnNotice}
+                            mcp={mcpSelection.menu}
+                            // The info bar above owns this gap (and seats the queue).
+                            hideTopSpacer
+                            onModeChange={handleModeChange}
+                            onModelChange={handleModelChange}
+                            onConfigOptionChange={handleConfigOptionChange}
+                            onSendMessage={handleSendMessage}
+                            voiceTurns={sessionTailHistory}
+                            onStop={() => {
+                              void handleStop();
+                            }}
+                            onContinue={canContinue ? handleContinue : undefined}
+                            onRemoveQueueItem={handleRemoveQueueItem}
+                            onAgentConfigChange={
+                              isChildSession ? handleAgentConfigChange : undefined
+                            }
+                            onNavigateToComment={onNavigateToComment}
+                            onCommentReferencesChange={onCommentReferencesChange}
+                            onVisualAnnotationReferencesChange={onVisualAnnotationReferencesChange}
+                            onVisualAnnotationReferencesSubmitted={
+                              onVisualAnnotationReferencesSubmitted
+                            }
+                          />
+                        )}
+                      </div>
+                    </SessionPinContext.Provider>
+                  </SessionSearchProvider>
+                </>
+              )}
+              <RenameSessionDialog
+                target={renameDialogTarget?.sessionId === session.id ? renameDialogTarget : null}
+                onClose={() => setRenameDialogTarget(null)}
+              />
+              {publicShareWorkspaceId &&
+                publicShareSessionId === session.id &&
+                (lanSharing ? (
+                  <LanSessionShareDialog
+                    workspaceId={publicShareWorkspaceId}
+                    session={session}
+                    onClose={() => setPublicShareSessionId(null)}
+                  />
+                ) : (
+                  <SessionShareDialog
+                    workspaceId={publicShareWorkspaceId}
+                    session={session}
+                    onClose={() => setPublicShareSessionId(null)}
+                  />
+                ))}
+              <AlertDialog.Root
+                open={pendingRemoteHtmlFileName !== null}
+                onOpenChange={(open) => {
+                  if (open) return;
+                  if (!remotePortAllowedRef.current && pendingRemoteHtmlFileName !== null) {
+                    captureSessionEvent('file_preview/remote_port_confirmed', { decision: 'deny' });
+                  }
+                  remotePortAllowedRef.current = false;
+                  setPendingRemoteHtmlFile(null);
+                }}
+              >
+                <AlertDialog.Content>
+                  <AlertDialog.Header>
+                    <AlertDialog.Title>
+                      {t(
+                        'sessions.htmlAttachment.openReportedPortTitle',
+                        'Open the reported port?'
                       )}
+                    </AlertDialog.Title>
+                    <AlertDialog.Description>
+                      {t(
+                        'sessions.htmlAttachment.openReportedPortDescription',
+                        'To preview {{name}}, Lody will connect to the local port reported by the Agent and open it in Browser.',
+                        { name: pendingRemoteHtmlFileName ?? '' }
+                      )}
+                    </AlertDialog.Description>
+                  </AlertDialog.Header>
+                  <AlertDialog.Footer>
+                    <AlertDialog.Cancel>{t('common.cancel', 'Cancel')}</AlertDialog.Cancel>
+                    <AlertDialog.Action
+                      onClick={() => {
+                        remotePortAllowedRef.current = true;
+                        captureSessionEvent('file_preview/remote_port_confirmed', {
+                          decision: 'allow',
+                        });
+                        setPendingRemoteHtmlFile(null);
+                        onOpenBrowser?.();
+                      }}
                     >
-                      {shouldReplaceComposerWithPermission ? null : (
-                        <SessionChatInputArea
-                          isVisible={isVisible && !shareSelection.active}
-                          claimNavigationFocus={
-                            isVisible && !preparingWindow ? claimNavigationFocus : undefined
-                          }
-                          ref={inputAreaRef}
-                          session={session}
-                          sessionLocalProjectRootPath={resolvedLocalProjectMeta?.rootPath ?? null}
-                          isMachineRemoved={isMachineRemoved}
-                          isAgentBusy={isAgentBusy}
-                          canStopAgent={canStopAgent}
-                          isExternalHistoryRefreshing={isExternalHistoryRefreshing}
-                          externalHistorySyncLabel={externalHistorySyncLabel}
-                          isDark={isDark}
-                          isEmptyConversation={isEmptyConversation}
-                          selectedModeId={selectedModeId}
-                          selectedModelId={selectedModelId}
-                          durableAgentRoleId={sessionConversationConfig.agentRoleId}
-                          durableAgentRoleRevision={sessionConversationConfig.agentRoleRevision}
-                          durableAgentRoleSourceTurnKey={
-                            sessionConversationSourceFence.currentTurnKey
-                          }
-                          durableAgentRoleKnownTurnKeys={
-                            sessionConversationSourceFence.knownTurnKeys
-                          }
-                          durableAgentRoleReady={sessionDocReady || hasPendingConfig}
-                          runConfigHasUserEdits={sessionRunConfigHasUserEdits}
-                          modeOptions={modeOptions}
-                          modelOptions={modelOptions}
-                          rateLimits={sessionRateLimits}
-                          showCodexResetForecast={showCodexResetForecast}
-                          isContextCompacting={isContextCompacting}
-                          configOptionSelectors={configOptionSelectors}
-                          configOptionValues={configOptionValues}
-                          isRepoPublic={isRepoPublic}
-                          availableCommands={availableCommands}
-                          commandsEnabled={isVisible}
-                          freeTurnLimitNotice={freeSessionTurnNotice}
-                          mcp={mcpSelection.menu}
-                          // The info bar above owns this gap (and seats the queue).
-                          hideTopSpacer
-                          onModeChange={handleModeChange}
-                          onModelChange={handleModelChange}
-                          onConfigOptionChange={handleConfigOptionChange}
-                          onSendMessage={handleSendMessage}
-                          voiceTurns={sessionTailHistory}
-                          onStop={() => {
-                            void handleStop();
-                          }}
-                          onContinue={canContinue ? handleContinue : undefined}
-                          onRemoveQueueItem={handleRemoveQueueItem}
-                          onAgentConfigChange={isChildSession ? handleAgentConfigChange : undefined}
-                          onNavigateToComment={onNavigateToComment}
-                          onCommentReferencesChange={onCommentReferencesChange}
-                          onVisualAnnotationReferencesChange={onVisualAnnotationReferencesChange}
-                          onVisualAnnotationReferencesSubmitted={
-                            onVisualAnnotationReferencesSubmitted
-                          }
-                        />
-                      )}
-                    </div>
-                  </SessionPinContext.Provider>
-                </SessionSearchProvider>
-              </>
-            )}
-            <RenameSessionDialog
-              target={renameDialogTarget?.sessionId === session.id ? renameDialogTarget : null}
-              onClose={() => setRenameDialogTarget(null)}
-            />
-            {publicShareWorkspaceId &&
-              publicShareSessionId === session.id &&
-              (lanSharing ? (
-                <LanSessionShareDialog
-                  workspaceId={publicShareWorkspaceId}
-                  session={session}
-                  onClose={() => setPublicShareSessionId(null)}
-                />
-              ) : (
-                <SessionShareDialog
-                  workspaceId={publicShareWorkspaceId}
-                  session={session}
-                  onClose={() => setPublicShareSessionId(null)}
-                />
-              ))}
-            <AlertDialog.Root
-              open={pendingRemoteHtmlFileName !== null}
-              onOpenChange={(open) => {
-                if (open) return;
-                if (!remotePortAllowedRef.current && pendingRemoteHtmlFileName !== null) {
-                  captureSessionEvent('file_preview/remote_port_confirmed', { decision: 'deny' });
-                }
-                remotePortAllowedRef.current = false;
-                setPendingRemoteHtmlFile(null);
-              }}
-            >
-              <AlertDialog.Content>
-                <AlertDialog.Header>
-                  <AlertDialog.Title>
-                    {t('sessions.htmlAttachment.openReportedPortTitle', 'Open the reported port?')}
-                  </AlertDialog.Title>
-                  <AlertDialog.Description>
-                    {t(
-                      'sessions.htmlAttachment.openReportedPortDescription',
-                      'To preview {{name}}, Lody will connect to the local port reported by the Agent and open it in Browser.',
-                      { name: pendingRemoteHtmlFileName ?? '' }
-                    )}
-                  </AlertDialog.Description>
-                </AlertDialog.Header>
-                <AlertDialog.Footer>
-                  <AlertDialog.Cancel>{t('common.cancel', 'Cancel')}</AlertDialog.Cancel>
-                  <AlertDialog.Action
-                    onClick={() => {
-                      remotePortAllowedRef.current = true;
-                      captureSessionEvent('file_preview/remote_port_confirmed', {
-                        decision: 'allow',
-                      });
-                      setPendingRemoteHtmlFile(null);
-                      onOpenBrowser?.();
-                    }}
-                  >
-                    {t('sessions.htmlAttachment.openReportedPortAction', 'Connect and open')}
-                  </AlertDialog.Action>
-                </AlertDialog.Footer>
-              </AlertDialog.Content>
-            </AlertDialog.Root>
-          </SessionConversationPage>
-        </SessionLinkProvider>
-      </PrLinkProvider>
+                      {t('sessions.htmlAttachment.openReportedPortAction', 'Connect and open')}
+                    </AlertDialog.Action>
+                  </AlertDialog.Footer>
+                </AlertDialog.Content>
+              </AlertDialog.Root>
+            </SessionConversationPage>
+          </SessionLinkProvider>
+        </PrLinkProvider>
+      </AgentRoleMentionMachineContext.Provider>
     );
   })
 );

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  withAgentRolePlacements,
+  withAgentRoleInstances,
   type AgentRole,
   type MachineId,
   type MachineMeta,
@@ -71,7 +71,7 @@ function fixture(): ResourceDiscovery {
     mcpServers: async () => [],
     roles: async () =>
       Array.from({ length: 25 }, (_, n) =>
-        withAgentRolePlacements(
+        withAgentRoleInstances(
           {
             v: 1,
             id: `role-${n}`,
@@ -84,9 +84,9 @@ function fixture(): ResourceDiscovery {
           } as AgentRole,
           [
             {
+              id: `role-${n}:machine` as AgentRole['instances'][number]['id'],
               machineId: 'machine' as MachineId,
               agentConfigId: 'missing' as AgentRole['agentConfigId'],
-              enabled: true,
               runConfig: {},
             },
           ]

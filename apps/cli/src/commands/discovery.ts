@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { WorkspaceId } from '@lody/shared';
 import { createResourceDiscovery } from '@/lib/resource-discovery-runtime';
 import type {
-  AgentRoleDiscoveryPlacement,
+  AgentRoleDiscoveryInstance,
   DiscoveryResource,
   DiscoveryRow,
 } from '@/lib/resource-discovery';
@@ -55,12 +55,11 @@ const LEGACY_LIST_KEYS: Record<DiscoveryResource, string> = {
   mcp: 'servers',
 };
 
-/** A Role's enabled machines, in dispatch order. */
+/** A Role's instances, in dispatch order. */
 const roleMachines = (row: DiscoveryRow): string | undefined =>
-  Array.isArray(row.placements)
-    ? (row.placements as AgentRoleDiscoveryPlacement[])
-        .filter((placement) => placement.enabled)
-        .map((placement) => placement.machineId)
+  Array.isArray(row.instances)
+    ? (row.instances as AgentRoleDiscoveryInstance[])
+        .map((instance) => `${instance.group.name ?? instance.agentConfigId}@${instance.machineId}`)
         .join(', ')
     : undefined;
 

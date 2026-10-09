@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ScheduleAgentSchema,
   type AgentConfigMeta,
-  type AgentRole,
+  type CatalogAgentRole,
   type ScheduleProposalMeta,
   type SessionMeta,
 } from '../src';
@@ -36,18 +36,28 @@ const role = {
   machineId: 'studio',
   agentConfigId: 'writer',
   runConfig: writerRunConfig,
-  placements: [
-    { machineId: 'studio', agentConfigId: 'writer', enabled: true, runConfig: writerRunConfig },
+  instances: [
+    {
+      id: 'release-studio',
+      machineId: 'studio',
+      agentConfigId: 'writer',
+      runConfig: writerRunConfig,
+    },
   ],
-} as unknown as AgentRole;
-/** Enabled on the studio and the MacBook, studio first. */
+} as unknown as CatalogAgentRole;
+/** Instances on the studio and the MacBook, studio first. */
 const twoMachineRole = {
   ...role,
-  placements: [
-    ...role.placements,
-    { machineId: 'macbook', agentConfigId: 'reviewer', enabled: true, runConfig: {} },
+  instances: [
+    ...role.instances,
+    {
+      id: 'release-mac',
+      machineId: 'macbook',
+      agentConfigId: 'reviewer',
+      runConfig: {},
+    },
   ],
-} as unknown as AgentRole;
+} as unknown as CatalogAgentRole;
 
 const session = {
   id: 's1',
@@ -137,7 +147,7 @@ describe('where a proposed schedule runs', () => {
     });
   });
 
-  it('runs a Role on the conversation machine when it is enabled there', () => {
+  it('runs a Role on the conversation machine when it has an instance there', () => {
     // The conversation runs on the MacBook, the second machine in the list.
     const result = resolveScheduleProposalTarget({
       meta: meta({ agentRoleId: 'role-1' }),
@@ -146,10 +156,18 @@ describe('where a proposed schedule runs', () => {
       roles: [twoMachineRole],
     });
     expect(result).toMatchObject({ ok: true, target: { agentConfig: reviewer } });
-    expect(result.ok && result.target.role?.machineId).toBe('macbook');
+    expect(result.ok && result.target.roleInstance?.id).toBe('release-mac');
   });
 
-  it('runs a Role on a named machine only where it is enabled', () => {
+  it('runs a named instance, or a Role on a named machine only where it has one', () => {
+    expect(
+      resolveScheduleProposalTarget({
+        meta: meta({ agentRoleId: 'role-1', agentRoleInstanceId: 'release-studio' }),
+        conversation,
+        agents,
+        roles: [twoMachineRole],
+      })
+    ).toMatchObject({ ok: true, target: { roleInstance: { id: 'release-studio' } } });
     expect(
       resolveScheduleProposalTarget({
         meta: meta({ agentRoleId: 'role-1', machineId: 'studio' }),

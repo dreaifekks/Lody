@@ -1,4 +1,4 @@
-import { buildAgentRoleFormValueFromRunConfig, snapshotAgentRole } from '@lody/shared';
+import { buildAgentRoleFormValueFromRunConfig, type AgentRoleInstanceId } from '@lody/shared';
 import { useSessionMentionSource } from '@/hooks/use-session-mention-source';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
@@ -28,6 +28,9 @@ import { useSessionAgentRole, type SessionAgentRoleControl } from '@/hooks/use-s
 import {
   doesAgentRolePinPermissionMode,
   resolveTurnAgentRoleForRunConfig,
+  buildAgentRoleTurnSelection,
+  findComposerAgentRoleItem,
+  type ComposerAgentRoleItem,
   type ComposerRunConfigOverrides,
   type SessionTurnAgentRoleSelection as ComposerTurnAgentRoleSelection,
 } from '@/lib/composer-agent-roles';
@@ -458,6 +461,7 @@ export interface SessionChatInputAreaProps {
   /** Role identity restored from the latest accepted/queued Turn. */
   durableAgentRoleId?: AgentRoleId | null;
   durableAgentRoleRevision?: number;
+  durableAgentRoleInstanceId?: AgentRoleInstanceId;
   durableAgentRoleSourceTurnKey?: string;
   durableAgentRoleKnownTurnKeys?: readonly string[];
   /** False while this Session's durable document is still hydrating. */
@@ -595,6 +599,7 @@ export const SessionChatInputArea = memo(
       selectedModelId,
       durableAgentRoleId,
       durableAgentRoleRevision,
+      durableAgentRoleInstanceId,
       durableAgentRoleSourceTurnKey,
       durableAgentRoleKnownTurnKeys,
       durableAgentRoleReady,
@@ -657,7 +662,7 @@ export const SessionChatInputArea = memo(
     }, [claimNavigationFocus, usesMobileKeyboardAction]);
     const agentRoleTurnSelectionRef = useRef<SessionTurnAgentRoleSelection>(undefined);
     const dictationBaseRef = useRef('');
-    const selectedAgentRoleRef = useRef<AgentRole | undefined>(undefined);
+    const selectedAgentRoleRef = useRef<ComposerAgentRoleItem | undefined>(undefined);
     /** Readable Roles, for attributing accepted `@Role` mentions in analytics. */
     const workspaceAgentRolesRef = useRef<readonly AgentRole[]>([]);
     const agentRoleRunConfigRef = useRef({
@@ -1539,7 +1544,7 @@ export const SessionChatInputArea = memo(
         getAgentRoleSelection: (runConfigOverrides) =>
           resolveTurnAgentRoleForRunConfig({
             turnSelection: agentRoleTurnSelectionRef.current,
-            role: selectedAgentRoleRef.current,
+            item: selectedAgentRoleRef.current,
             current: agentRoleRunConfigRef.current,
             overrides: runConfigOverrides,
           }),
@@ -1913,8 +1918,10 @@ export const SessionChatInputArea = memo(
       sessionId: session.id,
       provenanceRoleId: session.agentRoleId,
       provenanceRoleRevision: session.agentRoleRevision,
+      provenanceInstanceId: session.agentRoleInstanceId,
       durableRoleId: durableAgentRoleId,
       durableRoleRevision: durableAgentRoleRevision,
+      durableInstanceId: durableAgentRoleInstanceId,
       durableSourceTurnKey: durableAgentRoleSourceTurnKey,
       durableKnownSourceTurnKeys: durableAgentRoleKnownTurnKeys,
       durableRoleReady: durableAgentRoleReady,
@@ -1932,43 +1939,27 @@ export const SessionChatInputArea = memo(
       onConfigOptionChange,
     });
     const effectiveAgentRoleControl = agentRoleControl ?? sessionAgentRole;
-    const selectedAgentRoleItem = effectiveAgentRoleControl.selectedRoleId
-      ? effectiveAgentRoleControl.items.find(
-          (item) => item.role.id === effectiveAgentRoleControl.selectedRoleId
-        )
-      : undefined;
+    const selectedAgentRoleItem = findComposerAgentRoleItem(
+      effectiveAgentRoleControl.items,
+      effectiveAgentRoleControl.selectedInstanceId
+    );
     const agentConfigs = useAtomValue(getAllAgentConfigAtom);
     const compactPlaceholderName =
-      selectedAgentRoleItem?.role.name ??
+      selectedAgentRoleItem?.title ??
       agentConfigs.find((config) => config.id === session.agentConfigId)?.name ??
       null;
-    const selectedAgentRoleItemId = selectedAgentRoleItem?.role.id;
-    const selectedAgentRoleItemRevision = selectedAgentRoleItem?.role.revision;
     const agentRoleTurnSelection = useMemo<SessionTurnAgentRoleSelection>(
       () =>
         agentRoleControl
-          ? selectedAgentRoleItemId && selectedAgentRoleItemRevision !== undefined
-            ? {
-                agentRoleId: selectedAgentRoleItemId,
-                agentRoleRevision: selectedAgentRoleItemRevision,
-                memory: selectedAgentRoleItem?.role.runConfig.memory,
-                agentRoleSnapshot: selectedAgentRoleItem
-                  ? snapshotAgentRole(selectedAgentRoleItem.role)
-                  : undefined,
-              }
+          ? selectedAgentRoleItem
+            ? buildAgentRoleTurnSelection(selectedAgentRoleItem)
             : null
           : sessionAgentRole.turnSelection,
-      [
-        agentRoleControl,
-        selectedAgentRoleItemId,
-        selectedAgentRoleItemRevision,
-        selectedAgentRoleItem,
-        sessionAgentRole.turnSelection,
-      ]
+      [agentRoleControl, selectedAgentRoleItem, sessionAgentRole.turnSelection]
     );
     useLayoutEffect(() => {
       agentRoleTurnSelectionRef.current = agentRoleTurnSelection;
-      selectedAgentRoleRef.current = selectedAgentRoleItem?.role;
+      selectedAgentRoleRef.current = selectedAgentRoleItem;
       agentRoleRunConfigRef.current = {
         modeId: selectedModeId,
         modelId: selectedModelId,
@@ -1977,19 +1968,20 @@ export const SessionChatInputArea = memo(
     }, [
       agentRoleTurnSelection,
       configOptionValues,
-      selectedAgentRoleItem?.role,
+      selectedAgentRoleItem,
       selectedModeId,
       selectedModelId,
     ]);
     const agentRolesProp = useMemo(
       () => ({
         items: effectiveAgentRoleControl.items,
-        selectedRoleId: effectiveAgentRoleControl.selectedRoleId,
+        selectedInstanceId: effectiveAgentRoleControl.selectedInstanceId,
         onSelect: effectiveAgentRoleControl.onSelect,
         onCreate: () =>
           setAgentRoleEditor(
             openAgentRoleEditorForCreate(
               buildAgentRoleFormValueFromRunConfig({
+                instanceId: crypto.randomUUID() as AgentRoleInstanceId,
                 machineId: session.machineId,
                 agentConfigId: session.agentConfigId,
                 modeId: selectedModeId,
@@ -2010,25 +2002,20 @@ export const SessionChatInputArea = memo(
       ]
     );
     const selectedAgentRolePinsPermissionMode = useMemo(() => {
-      if (!effectiveAgentRoleControl.selectedRoleId) return false;
-      const selectedRole = effectiveAgentRoleControl.items.find(
-        (item) => item.role.id === effectiveAgentRoleControl.selectedRoleId
-      )?.role;
-      if (!selectedRole) return false;
+      if (!selectedAgentRoleItem) return false;
       const { source } = resolvePermissionModeFace({
         modeOptions,
         selectedModeId,
         configOptionSelectors,
         configOptionValues,
       });
-      return doesAgentRolePinPermissionMode(selectedRole, source);
+      return doesAgentRolePinPermissionMode(selectedAgentRoleItem.instance.runConfig, source);
     }, [
       configOptionSelectors,
       configOptionValues,
       modeOptions,
       selectedModeId,
-      effectiveAgentRoleControl.items,
-      effectiveAgentRoleControl.selectedRoleId,
+      selectedAgentRoleItem,
     ]);
     const mobileFooterSelectorNode = isMobile ? (
       <MobileSessionRunConfig

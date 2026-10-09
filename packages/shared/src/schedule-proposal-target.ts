@@ -3,7 +3,13 @@ import {
   type AcpConfigOptionValue,
   type ScheduleProposalMeta,
 } from './ai';
-import { agentRoleOnMachine, selectAgentRolePlacement, type AgentRole } from './agent-role';
+import {
+  selectAgentRoleInstance,
+  type AgentRole,
+  type AgentRoleInstance,
+  type CatalogAgentRole,
+} from './agent-role';
+import { getAgentRoleAgentFamily, getAgentRoleInstanceGroup } from './agent-role-group';
 import type { AgentConfigId, MachineId } from './ids';
 import type { AgentConfigMeta, SessionMeta } from './schema';
 import type { ProjectRef } from './project';
@@ -18,8 +24,9 @@ type ProposalRunRef = Omit<ScheduleDefinition['agent'], 'agentConfigId'> & {
 /** What the resolver reads of an Agent config. */
 export type ProposalTargetAgent = Pick<
   AgentConfigMeta,
-  'id' | 'machineId' | 'cliType' | 'agentType'
->;
+  'id' | 'machineId' | 'name' | 'cliType' | 'agentType' | 'brandId'
+> &
+  Partial<Pick<AgentConfigMeta, 'env'>>;
 
 /** What the conversation the proposal came from was running with. */
 export type ProposalConversation = {
@@ -53,6 +60,8 @@ export type ResolvedProposalTarget<A extends ProposalTargetAgent = AgentConfigMe
   /** Where each value came from, for the card to say so. */
   source: { agent: 'conversation' | 'role' | 'named'; project: 'conversation' | 'named' | 'none' };
   role?: AgentRole;
+  /** The instance of `role` the schedule runs. */
+  roleInstance?: AgentRoleInstance;
 };
 
 export type ProposalTargetProblem =
@@ -77,57 +86,69 @@ export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(arg
   meta: Pick<ScheduleProposalMeta, 'target' | 'destination'>;
   conversation: ProposalConversation | null;
   agents: readonly A[];
-  roles: readonly AgentRole[];
+  roles: readonly CatalogAgentRole[];
 }):
   | { ok: true; target: ResolvedProposalTarget<A> }
   | { ok: false; problem: ProposalTargetProblem } {
   const { meta, conversation, agents, roles } = args;
   const named = meta.target ?? {};
 
-  // The Role's machine follows the shared dispatch rules: the named machine,
-  // else the conversation's, else the first enabled one whose agent is known.
-  // `role` is then that machine's view of the Role.
+  // The Role's instance follows the shared dispatch rules: the named instance,
+  // else one on the named machine, else the first group with a known agent,
+  // the conversation's machine first.
   let role: AgentRole | undefined;
+  let instance: AgentRoleInstance | undefined;
   if (named.agentRoleId) {
-    const catalogRole = roles.find((entry) => entry.id === named.agentRoleId);
-    if (!catalogRole) return { ok: false, problem: 'role_not_found' };
-    const choice = selectAgentRolePlacement(
-      catalogRole,
+    role = roles.find((entry) => entry.id === named.agentRoleId);
+    if (!role) return { ok: false, problem: 'role_not_found' };
+    const choice = selectAgentRoleInstance(
+      role,
       {
+        instanceId: named.agentRoleInstanceId,
         machineId: named.machineId as MachineId | undefined,
         callerMachineId: conversation?.session.machineId,
       },
-      (placement) =>
+      (candidate) =>
         agents.some(
-          (agent) => agent.id === placement.agentConfigId && agent.machineId === placement.machineId
-        )
+          (agent) => agent.id === candidate.agentConfigId && agent.machineId === candidate.machineId
+        ),
+      (candidate) => {
+        const agent = agents.find((entry) => entry.id === candidate.agentConfigId);
+        return getAgentRoleInstanceGroup(candidate, agent && getAgentRoleAgentFamily(agent)).key;
+      }
     );
     if (choice.kind === 'rejected')
       return {
         ok: false,
-        problem: choice.reason === 'machine_not_enabled' ? 'machine_mismatch' : 'agent_not_found',
+        problem:
+          choice.reason === 'instance_not_found'
+            ? 'role_not_found'
+            : choice.reason === 'machine_has_no_instance' ||
+                choice.reason === 'instance_machine_mismatch'
+              ? 'machine_mismatch'
+              : 'agent_not_found',
       };
-    role = agentRoleOnMachine(catalogRole, choice.placement.machineId);
+    instance = choice.instance;
   }
 
   const agentConfigId =
-    role?.agentConfigId ?? named.agentConfigId ?? conversation?.session.agentConfigId;
+    instance?.agentConfigId ?? named.agentConfigId ?? conversation?.session.agentConfigId;
   if (!agentConfigId) return { ok: false, problem: 'no_agent' };
   const agentConfig = agents.find((entry) => entry.id === agentConfigId);
   if (!agentConfig) return { ok: false, problem: 'agent_not_found' };
 
   // A named machine is a constraint, not a lookup key: the Agent decides the
   // machine, so naming a different one is a contradiction to surface.
-  const machineId = named.machineId ?? role?.machineId;
+  const machineId = named.machineId ?? instance?.machineId;
   if (machineId && machineId !== agentConfig.machineId)
     return { ok: false, problem: 'machine_mismatch' };
 
   const sameAgentAsConversation = conversation?.session.agentConfigId === agentConfig.id;
-  const runConfig = role
+  const runConfig = instance
     ? {
-        modeId: role.runConfig.modeId,
-        modelId: role.runConfig.modelId,
-        configOptionValues: role.runConfig.configOptionValues,
+        modeId: instance.runConfig.modeId,
+        modelId: instance.runConfig.modelId,
+        configOptionValues: instance.runConfig.configOptionValues,
       }
     : sameAgentAsConversation
       ? (conversation?.runConfig ?? {})
@@ -135,7 +156,7 @@ export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(arg
 
   const configOptionValues = scheduleOptionValues(runConfig.configOptionValues);
   const agent: ProposalRunRef = {
-    memory: role?.runConfig.memory,
+    memory: instance?.runConfig.memory,
     agentConfigId: agentConfig.id as AgentConfigId,
     ...(runConfig.modeId ? { modeId: runConfig.modeId } : {}),
     ...(runConfig.modelId ? { modelId: runConfig.modelId } : {}),
@@ -170,6 +191,7 @@ export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(arg
       project,
       destination,
       role,
+      ...(instance ? { roleInstance: instance } : {}),
       source: {
         agent: role ? 'role' : named.agentConfigId ? 'named' : 'conversation',
         project:

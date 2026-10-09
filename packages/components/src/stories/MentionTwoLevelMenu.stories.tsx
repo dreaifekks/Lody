@@ -20,11 +20,17 @@ import {
   type MentionCandidate,
   type MentionCategory,
 } from '@/components/mentions/mention-registry';
+import { buildAgentRoleMentionItems } from '@/components/mentions/mention-agent-role-source';
+import { buildComposerAgentRoleItems } from '@/lib/composer-agent-roles';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRolePlacements,
+  withAgentRoleInstances,
+  type AgentRoleInstanceId,
+  type CatalogAgentRole,
   type AgentConfigId,
+  type AgentConfigMeta,
   type AgentRole,
+  type AgentRoleAvailability as RoleAvailability,
   type AgentRoleId,
   type MachineId,
 } from '@lody/shared';
@@ -159,8 +165,8 @@ const ROLE_AGENT_CONFIG = {
   name: 'Codex',
 } as const;
 
-const agentRole = (overrides: Partial<AgentRole>): AgentRole => {
-  const role: Omit<AgentRole, 'placements'> = {
+const agentRole = (overrides: Partial<AgentRole>): CatalogAgentRole => {
+  const role: Omit<AgentRole, 'instances'> = {
     v: AGENT_ROLE_VERSION,
     id: 'role-1' as AgentRoleId,
     ownerUserId: 'user-1',
@@ -175,20 +181,66 @@ const agentRole = (overrides: Partial<AgentRole>): AgentRole => {
     updatedAt: 2,
     ...overrides,
   };
-  return withAgentRolePlacements(role, [
-    {
-      machineId: role.machineId,
-      agentConfigId: role.agentConfigId,
-      enabled: true,
-      runConfig: role.runConfig,
-    },
-  ]);
+  return withAgentRoleInstances(
+    role,
+    overrides.instances ?? [
+      {
+        id: `${role.id}:${role.machineId}` as AgentRoleInstanceId,
+        machineId: role.machineId,
+        agentConfigId: role.agentConfigId,
+        runConfig: role.runConfig,
+      },
+    ]
+  );
 };
 
+/** The agents the Roles below run, on the Studio and on another member's build box. */
+const ROLE_AGENT_CONFIGS = [
+  { id: 'config-1', machineId: 'machine-1', ...ROLE_AGENT_CONFIG },
+  {
+    id: 'config-claude',
+    machineId: 'machine-1',
+    ...ROLE_AGENT_CONFIG,
+    agentType: 'claude',
+    name: 'Claude',
+  },
+  {
+    id: 'config-gemini',
+    machineId: 'machine-1',
+    ...ROLE_AGENT_CONFIG,
+    agentType: 'gemini',
+    name: 'Gemini',
+  },
+  { id: 'config-build-box', machineId: 'machine-2', ...ROLE_AGENT_CONFIG },
+] as unknown as AgentConfigMeta[];
+const machineName = (id: MachineId) => (id === 'machine-2' ? 'Build box' : 'Studio');
+
+/** A Role's mention candidates, built as the composer builds them on the Studio. */
+const roleCandidates = (
+  role: CatalogAgentRole,
+  availability: RoleAvailability = { kind: 'available' },
+  availabilityText?: string
+): MentionCandidate[] =>
+  buildAgentRoleMentionItems(
+    buildComposerAgentRoleItems({
+      roles: [role],
+      machineId: 'machine-1' as MachineId,
+      agentConfigs: ROLE_AGENT_CONFIGS,
+      resolveAvailability: () => availability,
+      names: { machine: machineName, unknownAgent: 'Unknown agent' },
+    }),
+    (id) => ({ ...ROLE_MACHINE, name: machineName(id) })
+  ).map((item) => toAgentRoleCandidate(item, availabilityText));
+
+/** A Role with one entry. */
+const roleCandidate = (
+  { role, availability }: { role: CatalogAgentRole; availability: RoleAvailability },
+  availabilityText?: string
+): MentionCandidate => roleCandidates(role, availability, availabilityText)[0]!;
+
 const AGENT_ROLES: MentionCandidate[] = [
-  toAgentRoleCandidate({
+  roleCandidate({
     availability: { kind: 'available' },
-    slug: 'Code-Reviewer',
     role: agentRole({
       // Long on purpose: the instruction scrolls inside its own block so the
       // pinned-value rows stay on screen.
@@ -199,12 +251,9 @@ const AGENT_ROLES: MentionCandidate[] = [
         'If the change is fine, say so in one line and stop.',
       ].join('\n'),
     }),
-    machine: ROLE_MACHINE,
-    agentConfig: ROLE_AGENT_CONFIG,
   }),
-  toAgentRoleCandidate({
+  roleCandidate({
     availability: { kind: 'available' },
-    slug: 'Release-Notes',
     role: agentRole({
       id: 'role-2' as AgentRoleId,
       name: 'Release Notes',
@@ -212,32 +261,49 @@ const AGENT_ROLES: MentionCandidate[] = [
       visibility: 'private',
       runConfig: { modelId: 'gpt-5.6-luna' },
     }),
-    machine: ROLE_MACHINE,
-    agentConfig: ROLE_AGENT_CONFIG,
   }),
 ];
 
+/** Two groups on the Studio (Claude, Gemini): one entry each, named by group. */
+const uiStyleRole = agentRole({
+  id: 'role-ui-style' as AgentRoleId,
+  name: 'uiStyle',
+  emoji: '🎨',
+  instances: (['Claude', 'Gemini'] as const).map((name) => ({
+    id: `ui-style-${name}` as AgentRoleInstanceId,
+    machineId: 'machine-1' as MachineId,
+    agentConfigId: `config-${name.toLowerCase()}` as AgentConfigId,
+    runConfig: { modelId: name === 'Claude' ? 'opus' : 'gemini-3.7-flash-high' },
+  })),
+});
+/** Only on the build box: listed with its machine named. */
+const visionRole = agentRole({
+  id: 'role-vision' as AgentRoleId,
+  name: 'visionAgent',
+  emoji: '👁️',
+  machineId: 'machine-2' as MachineId,
+  agentConfigId: 'config-build-box' as AgentConfigId,
+});
+AGENT_ROLES.push(...roleCandidates(uiStyleRole), ...roleCandidates(visionRole));
+
 const UNAVAILABLE_AGENT_ROLES: MentionCandidate[] = [
   ...AGENT_ROLES,
-  toAgentRoleCandidate(
+  roleCandidate(
     {
-      slug: 'Offline-Reviewer',
       role: agentRole({ id: 'offline-role' as AgentRoleId, name: 'Offline Reviewer' }),
       availability: { kind: 'unavailable', reason: 'machine_offline' },
     },
     'Unavailable: its machine is offline'
   ),
-  toAgentRoleCandidate(
+  roleCandidate(
     {
-      slug: 'Loading-Reviewer',
       role: agentRole({ id: 'loading-role' as AgentRoleId, name: 'Loading Reviewer' }),
       availability: { kind: 'unknown' },
     },
     'Checking availability…'
   ),
-  toAgentRoleCandidate(
+  roleCandidate(
     {
-      slug: 'Unreachable-Reviewer',
       role: agentRole({ id: 'unreachable-role' as AgentRoleId, name: 'Unreachable Reviewer' }),
       availability: { kind: 'unavailable', reason: 'machine_unknown' },
     },
@@ -695,16 +761,13 @@ export const MainComposerRoleCatalogAtCaret: Story = {
         category('agent_role', 'role', 'Agent Roles', 'agent_role', [
           ...AGENT_ROLES,
           ...Array.from({ length: 18 }, (_, index) =>
-            toAgentRoleCandidate({
+            roleCandidate({
               availability: { kind: 'available' },
-              slug: `Reviewer-${index + 1}`,
               role: agentRole({
                 id: `catalog-role-${index}` as AgentRoleId,
                 name: `Reviewer ${index + 1}`,
                 promptPrefix: index % 2 ? 'Review this change.\n'.repeat(40) : undefined,
               }),
-              machine: ROLE_MACHINE,
-              agentConfig: ROLE_AGENT_CONFIG,
             })
           ),
           ...UNAVAILABLE_AGENT_ROLES.slice(2),

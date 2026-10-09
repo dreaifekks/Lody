@@ -1,6 +1,7 @@
 import {
   CODEX_PROFILE_LEGACY_LAUNCH_GUARD,
-  withAgentRolePlacements,
+  legacyAgentRoleInstanceId,
+  withAgentRoleInstances,
   type AgentConfigId,
   type AgentConfigMeta,
   type CatalogAgentRole,
@@ -183,8 +184,8 @@ function planAgentRoles(
       continue;
     }
     const counterpart = input.target.agentRoles.find((role) => role.id === hosted.id);
-    // A hosted Role is a single-machine one; it becomes one placement here.
-    const next = withAgentRolePlacements(
+    // A hosted Role is a single-machine one; it becomes one instance here.
+    const next = withAgentRoleInstances(
       {
         ...hosted,
         ownerUserId: input.target.userId,
@@ -194,9 +195,10 @@ function planAgentRoles(
       },
       [
         {
+          id: legacyAgentRoleInstanceId(hosted.id, input.target.machineId),
+          ...(hosted.instances[0]!.alias ? { alias: hosted.instances[0]!.alias } : {}),
           machineId: input.target.machineId,
           agentConfigId,
-          enabled: true,
           runConfig: hosted.runConfig,
         },
       ]

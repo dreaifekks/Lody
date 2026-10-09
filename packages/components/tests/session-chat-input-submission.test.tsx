@@ -23,12 +23,20 @@ import { computeSha256Hex, uploadSessionFile } from '../src/lib/session-file-upl
 import { uploadSessionImage } from '../src/lib/session-image-upload';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentRole, AgentRoleId, SessionMeta, SessionInputBlock } from '@lody/shared';
+import type {
+  AgentConfigId,
+  AgentRole,
+  AgentRoleId,
+  MachineId,
+  SessionMeta,
+  SessionInputBlock,
+} from '@lody/shared';
+import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
 
 const sessionAgentRoleState = vi.hoisted(() => ({
   control: {
     items: [],
-    selectedRoleId: null,
+    selectedInstanceId: null,
     onSelect: () => undefined,
   } as {
     items: Array<{ role: AgentRole; availability: { kind: 'available' } }>;
@@ -156,7 +164,7 @@ describe('SessionChatInputArea submission feedback', () => {
     vi.mocked(sendSessionFileToLocalRuntime).mockReset();
     sessionAgentRoleState.control = {
       items: [],
-      selectedRoleId: null,
+      selectedInstanceId: null,
       onSelect: () => undefined,
     };
     await initI18n('en');
@@ -176,27 +184,23 @@ describe('SessionChatInputArea submission feedback', () => {
   });
 
   const renderPermissionModeCase = async (runConfig: AgentRole['runConfig']) => {
-    const selectedRoleId = 'role-1' as AgentRoleId;
+    const role = singleMachineRole({
+      v: 1,
+      id: 'role-1' as AgentRoleId,
+      revision: 1,
+      name: 'Reviewer',
+      visibility: 'private',
+      ownerUserId: 'user-1',
+      machineId: 'machine-1' as MachineId,
+      agentConfigId: 'agent-1' as AgentConfigId,
+      runConfig,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const instance = role.instances[0]!;
     sessionAgentRoleState.control = {
-      items: [
-        {
-          role: {
-            v: 1,
-            id: selectedRoleId,
-            revision: 1,
-            name: 'Reviewer',
-            visibility: 'private',
-            ownerUserId: 'user-1',
-            machineId: 'machine-1',
-            agentConfigId: 'agent-1',
-            runConfig,
-            createdAt: 1,
-            updatedAt: 1,
-          } as AgentRole,
-          availability: { kind: 'available' },
-        },
-      ],
-      selectedRoleId,
+      items: composerItemsOf(role),
+      selectedInstanceId: instance.id,
       onSelect: () => undefined,
     };
     container = document.createElement('div');

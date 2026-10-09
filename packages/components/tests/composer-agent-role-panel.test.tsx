@@ -8,7 +8,9 @@ import {
   DEFAULT_AGENT_ROLE_EMOJI,
   type AgentConfigId,
   type AgentRole,
+  type CatalogAgentRole,
   type AgentRoleId,
+  type AgentRoleInstanceId,
   type MachineId,
 } from '@lody/shared';
 
@@ -16,13 +18,15 @@ import { ComposerAgentRolePanel } from '../src/components/sessions/composer-agen
 import type { ComposerAgentRoleItem } from '../src/lib/composer-agent-roles';
 import { Menu } from '../src/ui/menu';
 import { initI18n } from '../src/i18n';
-import { singleMachineRole } from './agent-role-fixture';
+import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole =>
+const makeRole = (
+  overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
+): CatalogAgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     ownerUserId: 'user-1',
@@ -36,21 +40,19 @@ const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
     ...overrides,
   });
 
-const reviewer: ComposerAgentRoleItem = {
-  role: makeRole({
-    id: 'r-1' as AgentRoleId,
-    name: 'Code Reviewer',
-    emoji: '🔍',
-    promptPrefix: 'Review the diff for correctness before style.',
-    runConfig: {
-      modelId: 'gpt-5.6-sol',
-      modeId: 'plan',
-      configOptionValues: { thought_level: 'high', fast_mode: false },
-    },
-  }),
-  availability: { kind: 'available' },
-  agentConfig: { name: 'Codex', cliType: 'builtin', agentType: 'codex', env: {} },
-};
+const reviewerRole = makeRole({
+  id: 'r-1' as AgentRoleId,
+  name: 'Code Reviewer',
+  emoji: '🔍',
+  promptPrefix: 'Review the diff for correctness before style.',
+  runConfig: {
+    modelId: 'gpt-5.6-sol',
+    modeId: 'plan',
+    configOptionValues: { thought_level: 'high', fast_mode: false },
+  },
+});
+const reviewer: ComposerAgentRoleItem = composerItemsOf(reviewerRole)[0]!;
+const reviewerInstanceId = reviewerRole.instances[0]!.id;
 
 type PanelProps = ComponentProps<typeof ComposerAgentRolePanel>;
 
@@ -89,7 +91,7 @@ describe('ComposerAgentRolePanel', () => {
             null,
             createElement(ComposerAgentRolePanel, {
               items: [reviewer],
-              selectedRoleId: null,
+              selectedInstanceId: null,
               onSelect: () => undefined,
               compact: false,
               ...props,
@@ -100,6 +102,25 @@ describe('ComposerAgentRolePanel', () => {
     });
     return document.body;
   };
+
+  it('leaves the agent off a compact row whose title already names it', async () => {
+    const pairRole = singleMachineRole({
+      ...reviewerRole,
+      instances: [
+        { ...reviewerRole.instances[0]! },
+        { ...reviewerRole.instances[0]!, id: 'strict' as AgentRoleInstanceId, alias: 'Strict' },
+      ],
+    });
+    const rows = composerItemsOf(pairRole);
+    const view = await render({ items: rows, compact: true });
+    const rowText = [...view.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')].map(
+      (row) => row.textContent ?? ''
+    );
+    // Titled by its agent: the second line is the model alone.
+    expect(rowText.find((text) => text.includes('Code Reviewer · Codex'))).not.toContain('Codex ·');
+    // Titled by its alias: the second line still says which agent.
+    expect(rowText.find((text) => text.includes('Code Reviewer · Strict'))).toContain('Codex ·');
+  });
 
   it('states the whole binding a Role would run, not just its name', async () => {
     const view = await render();
@@ -124,7 +145,7 @@ describe('ComposerAgentRolePanel', () => {
       items: [
         {
           ...reviewer,
-          role: { ...reviewer.role, runConfig: { modelId: 'model-the-agent-dropped' } },
+          instance: { ...reviewer.instance, runConfig: { modelId: 'model-the-agent-dropped' } },
         },
       ],
     });
@@ -147,12 +168,12 @@ describe('ComposerAgentRolePanel', () => {
     await act(async () => {
       (row as HTMLElement).click();
     });
-    expect(onSelect).toHaveBeenCalledWith('r-1');
+    expect(onSelect).toHaveBeenCalledWith(reviewerInstanceId);
   });
 
   it('offers leaving the Role as its own row', async () => {
     const onSelect = vi.fn();
-    const view = await render({ selectedRoleId: 'r-1' as AgentRoleId, onSelect });
+    const view = await render({ selectedInstanceId: reviewerInstanceId, onSelect });
     const none = [...view.querySelectorAll('[role="menuitemradio"]')].find(
       (node) => node.textContent === 'None'
     );
@@ -265,6 +286,6 @@ describe('ComposerAgentRolePanel', () => {
     await act(async () => {
       (row as HTMLElement).click();
     });
-    expect(onSelect).toHaveBeenCalledWith('r-1');
+    expect(onSelect).toHaveBeenCalledWith(reviewerInstanceId);
   });
 });

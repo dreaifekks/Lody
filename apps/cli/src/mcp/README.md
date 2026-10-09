@@ -51,17 +51,25 @@ and lifecycle decisions behind them; it does not introduce additional requiremen
   the workspace catalog; no driving-Turn mention authorization is required. Resolve its target,
   Prompt prefix, revision, and concrete run config before Operation acceptance. Recovery uses
   the frozen canonical Prompt and target dispatch config and never rereads the mutable catalog.
-  A Role lists ordered placements (machine, Agent config, run config, memory), and the create
-  picks one with `selectAgentRolePlacement` before resolving the rest: an explicit `machineId`
-  must be an enabled placement that can run now; else the machine of a local `workContext`
-  project (or the requester's, with `useCurrentSessionAsParent`) must be; else the requester's
-  machine; else the first usable placement in list order. A pinned machine that cannot run the
-  Role fails the create with the usable machines listed, never moving the work, and the reply's
-  `agentRole` (`agentRoles` for a batch) names the chosen machine and rule. "Usable" is the
-  per-placement availability `lody_agent_role_list/get` report: anything not `unavailable`.
+  A Role is a template (name, description, Prompt prefix) with ordered instances: each has a
+  stable id, an optional alias, a machine, an Agent config, a run config and optional memory.
+  Instances with one alias, or without one on one agent family (runtime plus provider brand),
+  are a group that stands in for itself across machines; a machine holds at most one instance
+  per group, and writes refuse a second. The create picks one with `selectAgentRoleInstance`
+  before resolving the rest: a named `agentRoleInstanceId` must exist, run now and match any
+  `machineId` passed with it; an explicit `machineId`, else the machine of a local `workContext`
+  project (or the requester's, with `useCurrentSessionAsParent`), runs that machine's instance
+  in the earliest group; otherwise the first group, in list order, with a usable instance runs,
+  the requester's machine first inside it. A pinned machine or instance that cannot run the Role
+  fails the create with the usable instances listed, never moving the work, and the reply's
+  `agentRole` (`agentRoles` for a batch) names the instance id, group name, machine and rule.
+  "Usable" is the per-instance availability `lody_agent_role_list/get` report (with each
+  instance's alias and group): anything not `unavailable`.
   A Local Project requester defaults to a child only when the chosen machine is its own.
-  Writers also keep the legacy single-machine fields as a mirror of the first enabled
-  placement, so a client that predates placements still runs the Role there.
+  Writers also keep the legacy single-machine fields as a mirror of the first instance, so a
+  client that predates instances still runs the Role there. Readers convert older rows
+  deterministically: a lan.4 `placements` row gives one instance per switched-on machine and a
+  single-machine row one instance, each with the id `<roleId>:<machineId>` and no alias.
   `readDelegatedMachineAccess`
   requires both the executing Machine owner and the driving human to be able to use the target
   (owned, or shared plus shared project); never decide it from synced `MachineMeta.ownerUserId`

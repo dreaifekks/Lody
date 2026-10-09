@@ -4,7 +4,9 @@ import { useMemo, useState } from 'react';
 import { fn } from 'storybook/test';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRolePlacements,
+  withAgentRoleInstances,
+  type AgentRoleInstanceId,
+  type CatalogAgentRole,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRole,
@@ -22,7 +24,10 @@ import type {
   AcpConfigOptionValue,
 } from '@/components/shared/acp-selector-options';
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
-import type { ComposerAgentRoleItem } from '@/lib/composer-agent-roles';
+import {
+  buildComposerAgentRoleItems,
+  type ComposerAgentRoleItem,
+} from '@/lib/composer-agent-roles';
 
 /**
  * The mobile composer's consolidated run-config bottom sheet, opened by
@@ -196,7 +201,7 @@ function StoryShell({
 
   const [open, setOpen] = useState(true);
   const [model, setModel] = useState<string | null>(modelOptions[0]?.value ?? null);
-  const [roleId, setRoleId] = useState<AgentRoleId | null>(null);
+  const [instanceId, setInstanceId] = useState<AgentRoleInstanceId | null>(null);
   const [values, setValues] = useState<Record<string, AcpConfigOptionValue>>(() =>
     Object.fromEntries(selectors.map((sel) => [sel.configId, sel.currentValue]))
   );
@@ -235,8 +240,8 @@ function StoryShell({
             agentRoles
               ? {
                   items: agentRoles,
-                  selectedRoleId: roleId,
-                  onSelect: setRoleId,
+                  selectedInstanceId: instanceId,
+                  onSelect: setInstanceId,
                   onCreate: fn(),
                 }
               : undefined
@@ -309,8 +314,10 @@ export const ManyModels: Story = {
   },
 };
 
-const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole => {
-  const role: Omit<AgentRole, 'placements'> = {
+const makeRole = (
+  overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
+): CatalogAgentRole => {
+  const role: Omit<AgentRole, 'instances'> = {
     v: AGENT_ROLE_VERSION,
     ownerUserId: 'user-1',
     visibility: 'private',
@@ -322,15 +329,31 @@ const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
     updatedAt: 1,
     ...overrides,
   };
-  return withAgentRolePlacements(role, [
-    {
-      machineId: role.machineId,
-      agentConfigId: role.agentConfigId,
-      enabled: true,
-      runConfig: role.runConfig,
-    },
-  ]);
+  return withAgentRoleInstances(
+    role,
+    overrides.instances ?? [
+      {
+        id: `${role.id}:${role.machineId}` as AgentRoleInstanceId,
+        machineId: role.machineId,
+        agentConfigId: role.agentConfigId,
+        runConfig: role.runConfig,
+      },
+    ]
+  );
 };
+
+/** A Role's one entry, as the composer lists it on this machine. */
+const entryOf = (
+  role: CatalogAgentRole,
+  availability: ComposerAgentRoleItem['availability'] = { kind: 'available' }
+): ComposerAgentRoleItem =>
+  buildComposerAgentRoleItems({
+    roles: [role],
+    machineId,
+    agentConfigs: agents,
+    resolveAvailability: () => availability,
+    names: { machine: () => undefined, unknownAgent: 'Unknown agent' },
+  })[0]!;
 
 /**
  * The machine has no Roles yet. The row still renders and reads `None`; its
@@ -357,18 +380,12 @@ export const WithAgentRoles: Story = {
     modelOptions: codexModelOptions,
     selectors: codexSelectors,
     agentRoles: [
-      {
-        role: makeRole({ id: 'role-reviewer' as AgentRoleId, name: 'Code Reviewer', emoji: '🔍' }),
-        availability: { kind: 'available' },
-      },
-      {
-        role: makeRole({ id: 'role-docs' as AgentRoleId, name: 'Docs Writer', emoji: '📝' }),
-        availability: { kind: 'available' },
-      },
-      {
-        role: makeRole({ id: 'role-gone' as AgentRoleId, name: 'Retired Reviewer', emoji: '🗑️' }),
-        availability: { kind: 'unavailable', reason: 'agent_config_missing' },
-      },
+      entryOf(makeRole({ id: 'role-reviewer' as AgentRoleId, name: 'Code Reviewer', emoji: '🔍' })),
+      entryOf(makeRole({ id: 'role-docs' as AgentRoleId, name: 'Docs Writer', emoji: '📝' })),
+      entryOf(makeRole({ id: 'role-gone' as AgentRoleId, name: 'Retired Reviewer', emoji: '🗑️' }), {
+        kind: 'unavailable',
+        reason: 'agent_config_missing',
+      }),
     ],
   },
 };

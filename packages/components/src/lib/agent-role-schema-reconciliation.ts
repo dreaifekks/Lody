@@ -3,43 +3,43 @@ import {
   getWorkspaceFlockDocId,
   isAgentRoleContentEqual,
   normalizeAgentRole,
-  withAgentRolePlacements,
+  withAgentRoleInstances,
   workspaceFlockKeys,
   type AcpCapabilityCacheEntry,
   type AgentRole,
-  type AgentRolePlacement,
+  type AgentRoleInstance,
+  type AgentRoleInstanceId,
   type CatalogAgentRole,
-  type MachineId,
 } from '@lody/shared';
 import type { WorkspaceRuntime } from '@/atoms/runtime';
 import { uploadWorkspaceCatalog } from './workspace-catalog-write';
 
 /** Only a complete, freshly probed runtime schema may remove saved keys.
  * Values of existing fields, model and permission pins remain user decisions.
- * Each placement is its own machine and agent, so one probe reconciles only the
- * placement on `machineId`.
+ * Each instance is its own agent on its own machine, so one probe reconciles
+ * only the instance it was made for.
  */
 export function reconcileAgentRoleSchema(
   role: CatalogAgentRole,
-  machineId: MachineId,
+  instanceId: AgentRoleInstanceId,
   capability: AcpCapabilityCacheEntry
 ): CatalogAgentRole {
   if (capability.provenance !== 'runtime' || !capability.configOptions) return role;
-  const placement = role.placements.find((entry) => entry.machineId === machineId);
-  if (!placement) return role;
-  const next = reconcilePlacement(placement, capability.configOptions);
-  if (next === placement) return role;
-  return withAgentRolePlacements(
+  const instance = role.instances.find((entry) => entry.id === instanceId);
+  if (!instance) return role;
+  const next = reconcileInstance(instance, capability.configOptions);
+  if (next === instance) return role;
+  return withAgentRoleInstances(
     role,
-    role.placements.map((entry) => (entry === placement ? next : entry))
+    role.instances.map((entry) => (entry === instance ? next : entry))
   );
 }
 
-function reconcilePlacement(
-  placement: AgentRolePlacement,
+function reconcileInstance(
+  instance: AgentRoleInstance,
   configOptions: NonNullable<AcpCapabilityCacheEntry['configOptions']>
-): AgentRolePlacement {
-  const { runConfig } = placement;
+): AgentRoleInstance {
+  const { runConfig } = instance;
   const advertised = new Set(configOptions.map((option) => option.id));
   const values = { ...runConfig.configOptionValues };
   let changed = false;
@@ -67,21 +67,21 @@ function reconcilePlacement(
     delete values[key];
     changed = true;
   }
-  if (!changed) return placement;
-  return { ...placement, runConfig: { ...runConfig, configOptionValues: values } };
+  if (!changed) return instance;
+  return { ...instance, runConfig: { ...runConfig, configOptionValues: values } };
 }
 
 /** Fence a delayed probe against editing, deletion, ownership and workspace changes. */
 export async function persistReconciledAgentRole(
   runtime: WorkspaceRuntime,
   expected: CatalogAgentRole,
-  machineId: MachineId,
+  instanceId: AgentRoleInstanceId,
   capability: AcpCapabilityCacheEntry,
   userId: string,
   now: number,
   isCurrent: () => boolean
 ): Promise<void> {
-  const next = reconcileAgentRoleSchema(expected, machineId, capability);
+  const next = reconcileAgentRoleSchema(expected, instanceId, capability);
   if (next === expected) return;
   const changed = await runtime.writer.flockRowUpdate(
     getWorkspaceFlockDocId(runtime.workspaceId),
@@ -98,7 +98,7 @@ export async function persistReconciledAgentRole(
         return undefined;
       return {
         ...(current as AgentRole),
-        placements: next.placements,
+        instances: next.instances,
         machineId: next.machineId,
         agentConfigId: next.agentConfigId,
         runConfig: next.runConfig,

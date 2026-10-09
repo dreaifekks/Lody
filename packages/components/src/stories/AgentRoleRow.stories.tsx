@@ -2,7 +2,8 @@ import type { Meta, StoryObj } from '@storybook/react';
 import * as stylex from '@stylexjs/stylex';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRolePlacements,
+  withAgentRoleInstances,
+  type AgentRoleInstanceId,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRole,
@@ -12,7 +13,7 @@ import {
 import { AgentRoleRow } from '@/components/settings/agent-roles-setting';
 import { settingsSurface } from '@/components/settings/surface';
 
-const base: AgentRole = withAgentRolePlacements(
+const base: AgentRole = withAgentRoleInstances(
   {
     v: AGENT_ROLE_VERSION,
     id: 'reviewer' as AgentRoleId,
@@ -26,9 +27,9 @@ const base: AgentRole = withAgentRolePlacements(
   },
   [
     {
+      id: 'reviewer:machine-1' as AgentRoleInstanceId,
       machineId: 'machine-1' as MachineId,
       agentConfigId: 'config-1' as AgentConfigId,
-      enabled: true,
       runConfig: { modelId: 'gpt-5.6-sol', configOptionValues: { thought_level: 'high' } },
     },
   ]
@@ -51,7 +52,7 @@ const meta = {
   args: {
     role: base,
     availability: { kind: 'available' },
-    machines: [{ label: 'Studio', online: true, agentConfig: codex }],
+    instances: [{ label: 'Studio', online: true, agentConfig: codex }],
     canManage: true,
     onEdit: () => undefined,
     onRemove: () => undefined,
@@ -73,11 +74,15 @@ type Story = StoryObj<typeof meta>;
 
 export const Private: Story = {};
 
-/** One Role on two machines, each with its own agent; the offline one is dimmed. */
-export const TwoMachines: Story = {
+/**
+ * Instances on two machines, two of them on Studio: those carry their labels.
+ * The offline machine is dimmed.
+ */
+export const SeveralInstances: Story = {
   args: {
-    machines: [
-      { label: 'Studio', online: true, agentConfig: codex },
+    instances: [
+      { label: 'Claude · Studio', online: true, agentConfig: claude },
+      { label: 'Codex · Studio', online: true, agentConfig: codex },
       { label: 'MacBook', online: false, agentConfig: claude },
     ],
   },
@@ -103,7 +108,7 @@ export const WithPromptPrefix: Story = {
 export const MachineOffline: Story = {
   args: {
     availability: { kind: 'unavailable', reason: 'machine_offline' },
-    machines: [{ label: 'Studio', online: false, agentConfig: codex }],
+    instances: [{ label: 'Studio', online: false, agentConfig: codex }],
   },
 };
 
@@ -111,7 +116,7 @@ export const MachineOffline: Story = {
 export const AgentConfigMissing: Story = {
   args: {
     availability: { kind: 'unavailable', reason: 'agent_config_missing' },
-    machines: [{ label: 'Studio', online: true }],
+    instances: [{ label: 'Studio', online: true }],
   },
 };
 

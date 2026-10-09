@@ -2,6 +2,7 @@ import * as React from 'react';
 import {
   applyTextRewrites,
   MESSAGE_TEXT_SPAN_KINDS,
+  type MachineId,
   type MessageTextSpan,
   type MessageTextSpanKind,
   type TextRewrite,
@@ -49,6 +50,8 @@ import type { Mention as MentionRange } from '@/ui/mention/index';
  */
 export type MentionPromptExpansionInput = {
   source: MentionProjectSource | undefined;
+  /** The composer's machine, for a host that renders its own Role mention provider. */
+  agentRoleMachineId?: MachineId | null;
   skillAgent: SkillMentionAgent | undefined;
   /** Current composer text; used to skip work when no token is present. */
   promptValue: string;
@@ -156,6 +159,7 @@ export function useMentionPromptExpansion({
   source,
   skillAgent,
   promptValue,
+  agentRoleMachineId,
   /** Dropped from session-mention title lookup so a session cannot cite itself. */
   currentSessionId,
 }: MentionPromptExpansionInput & {
@@ -164,7 +168,7 @@ export function useMentionPromptExpansion({
   const skillRewrites = useSkillMentionRewrites(source, skillAgent, promptValue);
   // Same owner as the composer menu, by module: both read the shared catalog
   // room, so the list the user picked from is the list this authorizes against.
-  const agentRoleItems = useAgentRoleMentionItems();
+  const agentRoleItems = useAgentRoleMentionItems(agentRoleMachineId);
   const sessionItems = useSessionMentionItems(currentSessionId);
 
   const getRewrites = React.useCallback(

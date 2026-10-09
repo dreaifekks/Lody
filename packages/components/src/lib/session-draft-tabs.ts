@@ -6,6 +6,8 @@ import type {
   AgentConfigId,
   AgentRole,
   AgentRoleId,
+  AgentRoleInstance,
+  AgentRoleInstanceId,
   SessionId,
 } from '@lody/shared';
 import { isValidSessionImagePathSegment, SessionIdSchema } from '@lody/shared';
@@ -20,6 +22,7 @@ const draftSessionTabSchema = z.object({
   prompt: z.string(),
   agentConfigId: z.string().optional(),
   agentRoleId: z.string().optional(),
+  agentRoleInstanceId: z.string().optional(),
   cliType: z.enum(['builtin', 'registry', 'custom']),
   agentType: z.string(),
   modeId: z.string().nullable(),
@@ -95,8 +98,9 @@ export type DraftSessionTab = {
   sessionId: SessionId;
   prompt: string;
   agentConfigId?: AgentConfigId;
-  /** Role preference for this not-yet-created Session. */
+  /** Role preference for this not-yet-created Session: the Role and its instance. */
   agentRoleId?: AgentRoleId;
+  agentRoleInstanceId?: AgentRoleInstanceId;
   cliType: AgentConfigCliType;
   agentType: string;
   modeId: string | null;
@@ -182,20 +186,21 @@ export const createDraftSessionTab = (options: {
  * footer claim the Role while dispatching unrelated settings.
  */
 export const buildDraftSessionAgentRolePatch = (
-  role: AgentRole,
+  { role, instance }: { role: Pick<AgentRole, 'id'>; instance: AgentRoleInstance },
   agentConfig: AgentConfigMeta
 ): Partial<DraftSessionTab> | null => {
-  if (agentConfig.id !== role.agentConfigId || agentConfig.machineId !== role.machineId) {
+  if (agentConfig.id !== instance.agentConfigId || agentConfig.machineId !== instance.machineId) {
     return null;
   }
   return {
     agentRoleId: role.id,
+    agentRoleInstanceId: instance.id,
     agentConfigId: agentConfig.id,
     cliType: agentConfig.cliType,
     agentType: agentConfig.agentType,
-    modeId: role.runConfig.modeId ?? null,
-    modelId: role.runConfig.modelId ?? null,
-    configOptionValues: role.runConfig.configOptionValues,
+    modeId: instance.runConfig.modeId ?? null,
+    modelId: instance.runConfig.modelId ?? null,
+    configOptionValues: instance.runConfig.configOptionValues,
   };
 };
 

@@ -2654,6 +2654,7 @@ const SessionDetail = ({
               ? {
                   agentRoleId: payload.agentRoleId,
                   agentRoleRevision: payload.agentRoleRevision,
+                  agentRoleInstanceId: payload.agentRoleInstanceId,
                 }
               : {}),
           },

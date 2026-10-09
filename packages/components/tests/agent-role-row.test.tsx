@@ -47,7 +47,7 @@ const agentConfig: Pick<AgentConfigMeta, 'cliType' | 'agentType' | 'brandId' | '
 const baseProps: RowProps = {
   role,
   availability: { kind: 'available' },
-  machines: [{ label: 'Studio', online: true, agentConfig }],
+  instances: [{ label: 'Studio', online: true, agentConfig }],
   canManage: true,
   onEdit: () => undefined,
   onRemove: () => undefined,
@@ -82,9 +82,9 @@ describe('AgentRoleRow', () => {
     return container as HTMLDivElement;
   };
 
-  it('names the role once and the machines it runs on, in order', async () => {
+  it('names the role once and its instances, in order', async () => {
     const view = await render({
-      machines: [
+      instances: [
         { label: 'Studio', online: true, agentConfig },
         { label: 'MacBook', online: false },
       ],
@@ -104,10 +104,10 @@ describe('AgentRoleRow', () => {
     expect(view.textContent).toContain(DEFAULT_AGENT_ROLE_EMOJI);
   });
 
-  it('names a reason about the placement, and leaves offline to the machine name', async () => {
+  it('names a reason about an instance, and leaves offline to the machine name', async () => {
     const missing = await render({
       availability: { kind: 'unavailable', reason: 'agent_config_missing' },
-      machines: [{ label: 'Studio', online: true }],
+      instances: [{ label: 'Studio', online: true }],
     });
     expect(missing.textContent).toContain('its agent config no longer exists');
     // Still listed and still editable: nothing was substituted for it.
@@ -116,7 +116,7 @@ describe('AgentRoleRow', () => {
     // The dimmed machine name already carries that machine's status.
     const offline = await render({
       availability: { kind: 'unavailable', reason: 'machine_offline' },
-      machines: [{ label: 'Studio', online: false, agentConfig }],
+      instances: [{ label: 'Studio', online: false, agentConfig }],
     });
     expect(offline.textContent).not.toContain('Unavailable');
     expect(offline.querySelector('button[aria-label="Edit"]')).not.toBeNull();

@@ -10,8 +10,9 @@ import {
   AGENT_ROLE_VERSION,
   type AgentConfigId,
   type AgentConfigMeta,
-  type AgentRole,
   type AgentRoleId,
+  type AgentRoleInstanceId,
+  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 
@@ -233,7 +234,7 @@ describe('applying a record to the current selectors', () => {
 });
 
 describe('recent Agent Role entries', () => {
-  const role = (id: string, name: string): AgentRole =>
+  const role = (id: string, name: string): CatalogAgentRole =>
     singleMachineRole({
       v: AGENT_ROLE_VERSION,
       id: id as AgentRoleId,
@@ -258,15 +259,50 @@ describe('recent Agent Role entries', () => {
     );
   });
 
+  const itemOf = (entry: CatalogAgentRole, index = 0) => ({
+    role: entry,
+    instance: entry.instances[index]!,
+    title: entry.name,
+  });
+
   it('reads as the Role, not as the agent it is bound to', () => {
     const items = buildRecentRunConfigItems({
       records: [record({ agentRoleId: 'role-1' })],
       agentConfigs,
-      agentRoles: [role('role-1', 'Code Reviewer')],
+      agentRoleItems: [itemOf(role('role-1', 'Code Reviewer'))],
       currentKey: null,
     });
     expect(items[0]?.role).toEqual({ name: 'Code Reviewer', emoji: '\u{1F50D}' });
     expect(items[0]?.agent.name).toBe('Claude');
+  });
+
+  it('keeps the recorded instance, and drops the entry once that instance is gone', () => {
+    const twoHere = singleMachineRole({
+      ...role('role-1', 'uiStyle'),
+      instances: ['Claude', 'Gemini'].map((label) => ({
+        id: `ui-${label}` as AgentRoleInstanceId,
+        label,
+        machineId: MACHINE,
+        agentConfigId: 'agent-1' as AgentConfigId,
+        runConfig: {},
+      })),
+    });
+    const records = [record({ agentRoleId: 'role-1', agentRoleInstanceId: 'ui-Gemini' })];
+    const items = buildRecentRunConfigItems({
+      records,
+      agentConfigs,
+      agentRoleItems: [itemOf(twoHere, 0), { ...itemOf(twoHere, 1), title: 'uiStyle · Gemini' }],
+      currentKey: null,
+    });
+    expect(items.map((item) => item.role?.name)).toEqual(['uiStyle · Gemini']);
+    expect(
+      buildRecentRunConfigItems({
+        records,
+        agentConfigs,
+        agentRoleItems: [itemOf(twoHere, 0)],
+        currentKey: null,
+      })
+    ).toHaveLength(0);
   });
 
   // A Role never falls back, so an entry whose Role is gone or cannot run must
@@ -274,7 +310,7 @@ describe('recent Agent Role entries', () => {
   it('drops an entry whose Role can no longer run', () => {
     const records = [record({ agentRoleId: 'role-1' })];
     expect(
-      buildRecentRunConfigItems({ records, agentConfigs, agentRoles: [], currentKey: null })
+      buildRecentRunConfigItems({ records, agentConfigs, agentRoleItems: [], currentKey: null })
     ).toHaveLength(0);
     expect(buildRecentRunConfigItems({ records, agentConfigs, currentKey: null })).toHaveLength(0);
   });

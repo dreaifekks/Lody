@@ -3654,6 +3654,7 @@ export const ScheduleProposalTargetSchema = z
   .object({
     agentConfigId: z.string().min(1).optional(),
     agentRoleId: z.string().min(1).optional(),
+    agentRoleInstanceId: z.string().min(1).optional(),
     machineId: z.string().min(1).optional(),
     project: ProjectRefSchema.transform((value) => value as ProjectRef).optional(),
   })

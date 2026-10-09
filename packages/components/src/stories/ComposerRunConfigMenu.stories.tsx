@@ -6,12 +6,14 @@ import { createLocalPlatformProvider, createStaticStore } from '@lody/platform';
 import { PlatformContext } from '@lody/platform/react';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRolePlacements,
+  withAgentRoleInstances,
   getAgentConfigRoomId,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleId,
+  type AgentRoleInstanceId,
+  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 
@@ -30,7 +32,10 @@ import type {
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
 import {
   doesAgentRolePinPermissionMode,
+  buildComposerAgentRoleItems,
+  findComposerAgentRoleItem,
   isComposerAgentRoleApplied,
+  pinComposerAgentRoleItemsToMachine,
   type ComposerAgentRoleItem,
 } from '@/lib/composer-agent-roles';
 
@@ -64,6 +69,15 @@ const claude: AgentConfigMeta = {
 };
 
 const agents: AgentConfigMeta[] = [codex, claude];
+
+/** Another member's machine and its Codex, for entries that run elsewhere. */
+const buildBoxId = 'machine-build-box' as MachineId;
+const buildBoxCodex: AgentConfigMeta = {
+  ...codex,
+  id: 'agent-codex-build-box' as AgentConfigId,
+  machineId: buildBoxId,
+  name: 'Codex',
+};
 
 const recentRuns = [
   {
@@ -164,8 +178,10 @@ const selectors: AcpConfigOptionSelector[] = [
   },
 ];
 
-const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole => {
-  const role: Omit<AgentRole, 'placements'> = {
+const makeRole = (
+  overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
+): CatalogAgentRole => {
+  const role: Omit<AgentRole, 'instances'> = {
     v: AGENT_ROLE_VERSION,
     ownerUserId: 'user-storybook',
     visibility: 'private',
@@ -177,35 +193,92 @@ const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
     updatedAt: 1,
     ...overrides,
   };
-  return withAgentRolePlacements(role, [
-    {
-      machineId: role.machineId,
-      agentConfigId: role.agentConfigId,
-      enabled: true,
-      runConfig: role.runConfig,
-    },
-  ]);
+  return withAgentRoleInstances(
+    role,
+    overrides.instances ?? [
+      {
+        id: `${role.id}:${role.machineId}` as AgentRoleInstanceId,
+        machineId: role.machineId,
+        agentConfigId: role.agentConfigId,
+        runConfig: role.runConfig,
+      },
+    ]
+  );
 };
 
-const roleItems: ComposerAgentRoleItem[] = [
-  {
-    role: makeRole({
-      id: 'role-reviewer' as AgentRoleId,
-      name: 'Code Reviewer',
-      emoji: '🔍',
-      promptPrefix:
-        'Review the diff for correctness before style. Name the concrete failure scenario for every issue you raise.',
-      runConfig: {
-        modelId: 'gpt-5.5',
-        modeId: 'read-only',
-        configOptionValues: { reasoning_effort: 'high' },
-      },
-    }),
-    availability: { kind: 'available' },
-    agentConfig: codex,
+/** The composer's entries for a Role, built and titled as the composer builds them. */
+const itemsOf = (
+  role: CatalogAgentRole,
+  availability: ComposerAgentRoleItem['availability']
+): ComposerAgentRoleItem[] =>
+  buildComposerAgentRoleItems({
+    roles: [role],
+    machineId,
+    agentConfigs: [...agents, buildBoxCodex],
+    resolveAvailability: () => availability,
+    names: {
+      machine: (id) => (id === buildBoxId ? 'Build box' : undefined),
+      unknownAgent: 'Unknown agent',
+    },
+  });
+
+const reviewer = makeRole({
+  id: 'role-reviewer' as AgentRoleId,
+  name: 'Code Reviewer',
+  emoji: '🔍',
+  promptPrefix:
+    'Review the diff for correctness before style. Name the concrete failure scenario for every issue you raise.',
+  runConfig: {
+    modelId: 'gpt-5.5',
+    modeId: 'read-only',
+    configOptionValues: { reasoning_effort: 'high' },
   },
-  {
-    role: makeRole({
+});
+/** Two groups here (Claude Code, Codex), each one entry; Codex also runs on the build box. */
+const uiStyle = makeRole({
+  id: 'role-ui-style' as AgentRoleId,
+  name: 'uiStyle',
+  emoji: '🎨',
+  instances: [
+    {
+      id: 'ui-style-claude' as AgentRoleInstanceId,
+      machineId,
+      agentConfigId: claudeId,
+      runConfig: { modelId: 'gpt-5.4', configOptionValues: { reasoning_effort: 'medium' } },
+    },
+    {
+      id: 'ui-style-codex' as AgentRoleInstanceId,
+      machineId,
+      agentConfigId: codexId,
+      runConfig: { modelId: 'gpt-5.5', configOptionValues: { reasoning_effort: 'high' } },
+    },
+    {
+      id: 'ui-style-codex-build-box' as AgentRoleInstanceId,
+      machineId: buildBoxId,
+      agentConfigId: buildBoxCodex.id,
+      runConfig: { modelId: 'gpt-5.5' },
+    },
+  ],
+});
+/** Only on the build box: listed after this machine's entries, with the machine named. */
+const vision = makeRole({
+  id: 'role-vision' as AgentRoleId,
+  name: 'visionAgent',
+  emoji: '👁️',
+  instances: [
+    {
+      id: 'vision-build-box' as AgentRoleInstanceId,
+      machineId: buildBoxId,
+      agentConfigId: buildBoxCodex.id,
+      runConfig: { modelId: 'gpt-5.5' },
+    },
+  ],
+});
+
+const roleItems: ComposerAgentRoleItem[] = [
+  ...itemsOf(reviewer, { kind: 'available' }),
+  ...itemsOf(
+    makeRole({
       id: 'role-docs' as AgentRoleId,
       name: 'Docs Writer',
       emoji: '📝',
@@ -214,11 +287,11 @@ const roleItems: ComposerAgentRoleItem[] = [
       promptPrefix: 'Write for someone who has never seen this codebase.',
       runConfig: { modelId: 'gpt-5.4', configOptionValues: { reasoning_effort: 'medium' } },
     }),
-    availability: { kind: 'available' },
-    agentConfig: claude,
-  },
-  {
-    role: makeRole({
+    { kind: 'available' }
+  ),
+  ...itemsOf(uiStyle, { kind: 'available' }),
+  ...itemsOf(
+    makeRole({
       id: 'role-triage' as AgentRoleId,
       name: 'Bug Triage',
       emoji: '🐛',
@@ -227,38 +300,39 @@ const roleItems: ComposerAgentRoleItem[] = [
         configOptionValues: { reasoning_effort: 'low', collaboration_mode: 'plan' },
       },
     }),
-    availability: { kind: 'available' },
-    agentConfig: codex,
-  },
-  {
-    role: makeRole({
+    { kind: 'available' }
+  ),
+  // Listed, disabled, and stating its reason: an instance never re-points at
+  // whichever agent config happens to be available.
+  ...itemsOf(
+    makeRole({
       id: 'role-gone' as AgentRoleId,
       name: 'Retired Reviewer',
       emoji: '🗑️',
       agentConfigId: 'agent-removed' as AgentConfigId,
       runConfig: { modelId: 'gpt-5.1-codex' },
     }),
-    // Listed, disabled, and stating its reason: a Role never re-points at
-    // whichever agent config happens to be available.
-    availability: { kind: 'unavailable', reason: 'agent_config_missing' },
-  },
+    { kind: 'unavailable', reason: 'agent_config_missing' }
+  ),
+  ...itemsOf(vision, { kind: 'available' }),
 ];
 
 const manyRoleItems: ComposerAgentRoleItem[] = [
   ...roleItems,
-  ...Array.from({ length: 12 }, (_, index) => ({
-    role: makeRole({
-      id: `role-extra-${index}` as AgentRoleId,
-      name: `Workspace role ${index + 1}`,
-      emoji: '🧩',
-      promptPrefix:
-        'Inspect the request and repository context, explain any important constraints, ' +
-        'then make a focused change and verify the observable result. '.repeat(3),
-      runConfig: { modelId: 'gpt-5.4' },
-    }),
-    availability: { kind: 'available' as const },
-    agentConfig: codex,
-  })),
+  ...Array.from({ length: 12 }, (_, index) =>
+    itemsOf(
+      makeRole({
+        id: `role-extra-${index}` as AgentRoleId,
+        name: `Workspace role ${index + 1}`,
+        emoji: '🧩',
+        promptPrefix:
+          'Inspect the request and repository context, explain any important constraints, ' +
+          'then make a focused change and verify the observable result. '.repeat(3),
+        runConfig: { modelId: 'gpt-5.4' },
+      }),
+      { kind: 'available' }
+    )
+  ).flat(),
 ];
 
 /* The menu calls `useOnlineMachines`, so it needs a platform in context. A
@@ -284,13 +358,13 @@ const storyPlatform = createLocalPlatformProvider({
  */
 function StoryShell({
   items,
-  initialRoleId = null,
+  initialInstanceId = null,
   models = modelOptions,
   landing = false,
   existingSession = false,
 }: {
   items: ReadonlyArray<ComposerAgentRoleItem>;
-  initialRoleId?: AgentRoleId | null;
+  initialInstanceId?: AgentRoleInstanceId | null;
   /** Overridden by the long-list story: what an agent provider may publish. */
   models?: AcpSessionSelectOption[];
   landing?: boolean;
@@ -305,7 +379,7 @@ function StoryShell({
     return s;
   }, []);
 
-  const initialRole = items.find((item) => item.role.id === initialRoleId)?.role;
+  const initialRole = findComposerAgentRoleItem(items, initialInstanceId)?.instance;
   const [agentSelection, setAgentSelection] = useState(() =>
     initialRole
       ? { agentId: initialRole.agentConfigId, machineId: initialRole.machineId }
@@ -324,21 +398,23 @@ function StoryShell({
 
   /* Mirrors production: leaving a Role clears the NAME, not the configuration,
      so a cleared Role stays cleared until something actually changes. */
-  const [clearedRoleId, setClearedRoleId] = useState<AgentRoleId | null>(null);
-  const matchedRole =
-    items.find((item) =>
-      isComposerAgentRoleApplied(item.role, {
-        agentSelection,
-        modeId: mode,
-        modelId: model,
-        configOptionValues: values,
-      })
-    )?.role ?? null;
-  const selectedRole = matchedRole && matchedRole.id !== clearedRoleId ? matchedRole : null;
+  const [clearedInstanceId, setClearedInstanceId] = useState<AgentRoleInstanceId | null>(null);
+  const [pickedInstanceId, setPickedInstanceId] = useState(initialInstanceId);
+  // The picked instance while it still applies, else the first one that does.
+  const applied = (item: ComposerAgentRoleItem) =>
+    isComposerAgentRoleApplied(item.instance, {
+      agentSelection,
+      modeId: mode,
+      modelId: model,
+      configOptionValues: values,
+    });
+  const picked = findComposerAgentRoleItem(items, pickedInstanceId);
+  const matched = (picked && applied(picked) ? picked : items.find(applied))?.instance ?? null;
+  const selected = matched && matched.id !== clearedInstanceId ? matched : null;
   const permissionPinnedByRole =
-    selectedRole != null &&
+    selected != null &&
     doesAgentRolePinPermissionMode(
-      selectedRole,
+      selected.runConfig,
       resolvePermissionModeFace({
         modeOptions,
         selectedModeId: mode,
@@ -369,22 +445,23 @@ function StoryShell({
         onRecentRunConfigSelect={landing ? fn() : undefined}
         agentRoles={{
           items,
-          selectedRoleId: selectedRole?.id ?? null,
-          onSelect: (roleId) => {
-            if (roleId === null) {
-              setClearedRoleId(matchedRole?.id ?? null);
+          selectedInstanceId: selected?.id ?? null,
+          onSelect: (instanceId) => {
+            if (instanceId === null) {
+              setClearedInstanceId(matched?.id ?? null);
               return;
             }
-            setClearedRoleId(null);
-            const role = items.find((item) => item.role.id === roleId)?.role;
-            if (!role) return;
+            setClearedInstanceId(null);
+            const instance = findComposerAgentRoleItem(items, instanceId)?.instance;
+            if (!instance) return;
+            setPickedInstanceId(instance.id);
             setAgentSelection({
-              agentId: role.agentConfigId,
-              machineId: role.machineId,
+              agentId: instance.agentConfigId,
+              machineId: instance.machineId,
             });
-            setModel(role.runConfig.modelId ?? null);
-            setMode(role.runConfig.modeId ?? null);
-            setValues((prev) => ({ ...prev, ...(role.runConfig.configOptionValues ?? {}) }));
+            setModel(instance.runConfig.modelId ?? null);
+            setMode(instance.runConfig.modeId ?? null);
+            setValues((prev) => ({ ...prev, ...(instance.runConfig.configOptionValues ?? {}) }));
           },
           onCreate: fn(),
           onEdit: existingSession ? undefined : fn(),
@@ -508,17 +585,22 @@ export const LandingNoRoles: Story = {
 
 /** A selected Role changes the docked composer's face and may hide permission. */
 export const LandingRoleSelected: Story = {
-  args: { landing: true, initialRoleId: 'role-reviewer' as AgentRoleId },
+  args: { landing: true, initialInstanceId: reviewer.instances[0]!.id },
   play: async ({ canvasElement }) => {
     await openRoleSubmenu(canvasElement);
   },
 };
 
-/** Existing sessions keep their Agent and only offer Roles for that binding. */
+/**
+ * Existing sessions keep their Agent: Roles for that binding can be picked, and
+ * a Role on another machine is listed but cannot, since the session cannot move.
+ */
 export const ExistingSessionRoles: Story = {
   args: {
     existingSession: true,
-    items: roleItems.filter((item) => item.role.agentConfigId === codexId),
+    items: pinComposerAgentRoleItemsToMachine(
+      roleItems.filter((item) => !item.local || item.instance.agentConfigId === codexId)
+    ),
   },
   play: async ({ canvasElement }) => {
     await openRoleSubmenu(canvasElement);
@@ -530,7 +612,7 @@ export const ExistingSessionRoles: Story = {
  * beside the button, and the permission button is gone because the Role pins it.
  */
 export const RoleSelected: Story = {
-  args: { initialRoleId: 'role-reviewer' as AgentRoleId },
+  args: { initialInstanceId: reviewer.instances[0]!.id },
   play: async ({ canvasElement }) => {
     await openRoleSubmenu(canvasElement);
   },
@@ -546,16 +628,16 @@ export const RoleWithWarningPermission: Story = {
     items: [
       {
         ...roleItems[0]!,
-        role: {
-          ...roleItems[0]!.role,
-          name: 'Autofix',
-          emoji: '\u{1F6E0}\u{FE0F}',
-          runConfig: { ...roleItems[0]!.role.runConfig, modeId: 'agent-full-access' },
+        title: 'Autofix',
+        role: { ...roleItems[0]!.role, name: 'Autofix', emoji: '\u{1F6E0}\u{FE0F}' },
+        instance: {
+          ...roleItems[0]!.instance,
+          runConfig: { ...roleItems[0]!.instance.runConfig, modeId: 'agent-full-access' },
         },
       },
       ...roleItems.slice(1),
     ],
-    initialRoleId: 'role-reviewer' as AgentRoleId,
+    initialInstanceId: reviewer.instances[0]!.id,
   },
 };
 

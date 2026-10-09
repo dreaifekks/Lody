@@ -10,6 +10,7 @@ import {
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleId,
+  type AgentRoleInstanceId,
   type MachineId,
   type MachineViewMeta,
 } from '@lody/shared';
@@ -47,6 +48,7 @@ import { openExternalUrl } from '@/lib/native-browser';
 import { resolvePermissionModeFace } from '@/lib/permission-mode-face';
 import {
   doesAgentRolePinPermissionMode,
+  findComposerAgentRoleItem,
   type ComposerAgentRoleItem,
 } from '@/lib/composer-agent-roles';
 import { cn } from '@/lib/utils';
@@ -394,10 +396,10 @@ export type DesktopRunConfigMenuProps = {
    */
   agentRoles?: {
     items: ReadonlyArray<ComposerAgentRoleItem>;
-    /** The Role the current configuration still IS, not merely the last picked. */
-    selectedRoleId: AgentRoleId | null;
+    /** The instance the current configuration still IS, not merely the last picked. */
+    selectedInstanceId: AgentRoleInstanceId | null;
     /** `null` clears the Role and leaves the configuration exactly as it stands. */
-    onSelect: (roleId: AgentRoleId | null) => void;
+    onSelect: (instanceId: AgentRoleInstanceId | null) => void;
     /** Opens the Role editor seeded with what the composer is set to right now. */
     onCreate?: () => void;
     onEdit?: (roleId: AgentRoleId) => void;
@@ -547,15 +549,16 @@ export function DesktopRunConfigMenu({
     ? resolveOnOffConfigOptionEnabled(fastSelector, configOptionValues?.[fastSelector.configId])
     : false;
 
-  /* The Role the composer currently IS: the caller only passes an id while the
-     live configuration still matches that Role, so the face can name it. */
-  const selectedRole: AgentRole | undefined = useMemo(
+  /* The instance the composer currently IS: the caller only passes an id while
+     the live configuration still matches it, so the face can name it. */
+  const selectedRoleItem = useMemo(
     () =>
-      agentRoles?.selectedRoleId
-        ? agentRoles.items.find((item) => item.role.id === agentRoles.selectedRoleId)?.role
+      agentRoles
+        ? findComposerAgentRoleItem(agentRoles.items, agentRoles.selectedInstanceId)
         : undefined,
     [agentRoles]
   );
+  const selectedRole: AgentRole | undefined = selectedRoleItem?.role;
 
   /* The half of the face that describes the run configuration rather than what
      was picked. Built as parts so the separator dots can be placed by the
@@ -594,9 +597,9 @@ export function DesktopRunConfigMenu({
     configOptionValues,
   });
   if (
-    selectedRole &&
+    selectedRoleItem &&
     permissionFace.label &&
-    doesAgentRolePinPermissionMode(selectedRole, permissionFace.source)
+    doesAgentRolePinPermissionMode(selectedRoleItem.instance.runConfig, permissionFace.source)
   ) {
     // A warning-tone permission (full access / skip permissions) keeps its
     // amber shield here. The rest of the face is deliberately quiet because a
@@ -671,7 +674,7 @@ export function DesktopRunConfigMenu({
           configuration, so its values belong beside the button rather than
           crowding the one thing there is to click. */}
       {selectedRole ? (
-        <span {...stylex.props(surface.faceText, styles.roleName)}>{selectedRole.name}</span>
+        <span {...stylex.props(surface.faceText, styles.roleName)}>{selectedRoleItem?.title}</span>
       ) : (
         <>
           {showAgentNameInTrigger ? (
@@ -764,7 +767,7 @@ export function DesktopRunConfigMenu({
               <Menu.Submenu>
                 <ValueSubTrigger
                   label={roleLabel}
-                  value={selectedRole?.name ?? t('chat.runConfig.roles.none', 'None')}
+                  value={selectedRoleItem?.title ?? t('chat.runConfig.roles.none', 'None')}
                   icon={
                     selectedRole ? (
                       <span {...stylex.props(surface.emoji)} aria-hidden="true">
@@ -780,7 +783,7 @@ export function DesktopRunConfigMenu({
                   <ComposerAgentRolePanel
                     items={agentRoles.items}
                     machine={agentRoles.machine}
-                    selectedRoleId={agentRoles.selectedRoleId}
+                    selectedInstanceId={agentRoles.selectedInstanceId}
                     onSelect={agentRoles.onSelect}
                     onCreate={agentRoles.onCreate}
                     onEdit={agentRoles.onEdit}

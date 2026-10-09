@@ -121,8 +121,11 @@ describe('session draft tabs', () => {
       env: {},
     } satisfies AgentConfigMeta;
 
-    expect(buildDraftSessionAgentRolePatch(role, agentConfig)).toEqual({
+    expect(
+      buildDraftSessionAgentRolePatch({ role, instance: role.instances[0]! }, agentConfig)
+    ).toEqual({
       agentRoleId: role.id,
+      agentRoleInstanceId: 'reviewer:machine-1',
       agentConfigId: role.agentConfigId,
       cliType: 'builtin',
       agentType: 'claude',
@@ -156,7 +159,9 @@ describe('session draft tabs', () => {
       env: {},
     } satisfies AgentConfigMeta;
 
-    expect(buildDraftSessionAgentRolePatch(role, wrongConfig)).toBeNull();
+    expect(
+      buildDraftSessionAgentRolePatch({ role, instance: role.instances[0]! }, wrongConfig)
+    ).toBeNull();
   });
 
   it('hydrates legacy persisted draft tabs with an upload-safe session id', () => {

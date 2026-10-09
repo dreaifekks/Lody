@@ -7,7 +7,7 @@ import {
   AGENT_ROLE_VERSION,
   type AgentConfigId,
   type AgentConfigMeta,
-  type AgentRole,
+  type CatalogAgentRole,
   type AgentRoleId,
   type MachineId,
 } from '@lody/shared';
@@ -21,7 +21,7 @@ import { MobileSessionRunConfig } from '../src/components/mobile/mobile-session-
 import type { ComposerAgentRoleItem } from '../src/lib/composer-agent-roles';
 import { initI18n } from '../src/i18n';
 import { Tooltip } from '@lody/ui/tooltip';
-import { singleMachineRole } from './agent-role-fixture';
+import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -38,7 +38,7 @@ const agentConfig: AgentConfigMeta = {
   env: {},
 };
 
-const role: AgentRole = singleMachineRole({
+const role: CatalogAgentRole = singleMachineRole({
   v: AGENT_ROLE_VERSION,
   id: 'role-1' as AgentRoleId,
   ownerUserId: 'user-1',
@@ -53,11 +53,7 @@ const role: AgentRole = singleMachineRole({
   updatedAt: 1,
 });
 
-const roleItem: ComposerAgentRoleItem = {
-  role,
-  availability: { kind: 'available' },
-  agentConfig,
-};
+const roleItem: ComposerAgentRoleItem = { ...composerItemsOf(role)[0]!, agentConfig };
 
 type MenuProps = ComponentProps<typeof DesktopRunConfigMenu>;
 
@@ -155,7 +151,11 @@ describe('DesktopRunConfigMenu role face', () => {
 
   it('keeps Role identity and pinned values on the locked face', async () => {
     const props = {
-      agentRoles: { items: [roleItem], selectedRoleId: role.id, onSelect: () => undefined },
+      agentRoles: {
+        items: [roleItem],
+        selectedInstanceId: roleItem.instance.id,
+        onSelect: () => undefined,
+      },
     };
     const view = await render(props);
     const face = view.textContent;
@@ -210,7 +210,11 @@ describe('DesktopRunConfigMenu role face', () => {
 
   it('gives the button to the Role alone and leaves its values inert beside it', async () => {
     const view = await render({
-      agentRoles: { items: [roleItem], selectedRoleId: role.id, onSelect: () => undefined },
+      agentRoles: {
+        items: [roleItem],
+        selectedInstanceId: roleItem.instance.id,
+        onSelect: () => undefined,
+      },
     });
     const trigger = view.querySelector('button[aria-label="Run configuration"]');
     // The Role IS the whole run configuration, so it is the only thing to click.
@@ -230,7 +234,11 @@ describe('DesktopRunConfigMenu role face', () => {
 
   it('states the permission the Role pins, since it is part of what was picked', async () => {
     const view = await render({
-      agentRoles: { items: [roleItem], selectedRoleId: role.id, onSelect: () => undefined },
+      agentRoles: {
+        items: [roleItem],
+        selectedInstanceId: roleItem.instance.id,
+        onSelect: () => undefined,
+      },
     });
     const trigger = view.querySelector('button[aria-label="Run configuration"]');
     expect(trigger?.textContent).not.toContain('Read-only');
@@ -242,8 +250,18 @@ describe('DesktopRunConfigMenu role face', () => {
   it('leaves permission out of the face when the Role does not pin it', async () => {
     const view = await render({
       agentRoles: {
-        items: [{ ...roleItem, role: { ...role, runConfig: { modelId: 'gpt-5.5' } } }],
-        selectedRoleId: role.id,
+        items: [
+          {
+            ...composerItemsOf(
+              singleMachineRole({
+                ...role,
+                instances: [{ ...role.instances[0]!, runConfig: { modelId: 'gpt-5.5' } }],
+              })
+            )[0]!,
+            agentConfig,
+          },
+        ],
+        selectedInstanceId: roleItem.instance.id,
         onSelect: () => undefined,
       },
     });
@@ -263,7 +281,11 @@ describe('DesktopRunConfigMenu role face', () => {
 
   it('leads the menu with the Role row, above the rows a Role answers', async () => {
     const view = await render({
-      agentRoles: { items: [roleItem], selectedRoleId: role.id, onSelect: () => undefined },
+      agentRoles: {
+        items: [roleItem],
+        selectedInstanceId: roleItem.instance.id,
+        onSelect: () => undefined,
+      },
     });
     const menu = await openMenu(view);
     const rows = [...menu.querySelectorAll('[role="menuitem"]')].map((node) =>
@@ -280,7 +302,7 @@ describe('DesktopRunConfigMenu role face', () => {
   it('turns the Role row value into the way to make one when there are none', async () => {
     const onCreate = vi.fn();
     const view = await render({
-      agentRoles: { items: [], selectedRoleId: null, onSelect: () => undefined, onCreate },
+      agentRoles: { items: [], selectedInstanceId: null, onSelect: () => undefined, onCreate },
     });
     const menu = await openMenu(view);
     const roleRow = [...menu.querySelectorAll('[role="menuitem"]')].find((node) =>
@@ -298,7 +320,7 @@ describe('DesktopRunConfigMenu role face', () => {
 
   it('drops the Role face as soon as the selection is no longer that Role', async () => {
     const view = await render({
-      agentRoles: { items: [roleItem], selectedRoleId: null, onSelect: () => undefined },
+      agentRoles: { items: [roleItem], selectedInstanceId: null, onSelect: () => undefined },
     });
     const trigger = view.querySelector('button[aria-label="Run configuration"]');
     expect(trigger?.textContent).toContain('Codex Primary');

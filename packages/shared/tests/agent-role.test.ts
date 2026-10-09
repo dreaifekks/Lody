@@ -9,24 +9,26 @@ import {
   DEFAULT_AGENT_ROLE_EMOJI,
   getAgentRoleEmoji,
   getAgentRoleMentionSlug,
+  legacyAgentRoleInstanceId,
   listAccessibleAgentRoles,
+  listAgentRoleInstancesOnMachine,
   normalizeAgentRole,
   normalizeAgentRoleEmoji,
   normalizeAgentRoleMentionSlug,
   normalizeAgentRoleRunConfig,
-  agentRoleOnMachine,
+  orderAgentRoleInstances,
   resolveAgentRoleAvailability,
-  selectAgentRolePlacement,
-  withAgentRolePlacements,
+  selectAgentRoleInstance,
+  withAgentRoleInstances,
   type AgentRole,
   type AgentRoleAvailabilityContext,
-  type AgentRolePlacement,
+  type AgentRoleInstance,
 } from '../src/agent-role';
-import type { AgentConfigId, AgentRoleId, MachineId } from '../src/ids';
+import type { AgentConfigId, AgentRoleId, AgentRoleInstanceId, MachineId } from '../src/ids';
 
-/** A row as a client that predates placements writes it: the legacy fields only. */
+/** A row as a client that predates instances writes it: the legacy fields only. */
 const legacyRow = (overrides: Partial<AgentRole> = {}) => {
-  const { placements: _placements, ...row } = {
+  const { instances: _instances, ...row } = {
     v: AGENT_ROLE_VERSION,
     id: 'role-1' as AgentRoleId,
     ownerUserId: 'user-1',
@@ -43,32 +45,33 @@ const legacyRow = (overrides: Partial<AgentRole> = {}) => {
   return row;
 };
 
-/** A single-machine Role whose placement is its legacy fields. */
+/** A single-instance Role, read the way the catalog reads its legacy fields. */
 const role = (overrides: Partial<AgentRole> = {}): AgentRole => {
   const row = legacyRow(overrides);
-  return withAgentRolePlacements(row, [
+  return withAgentRoleInstances(row, [
     {
+      id: legacyAgentRoleInstanceId(row.id, row.machineId),
       machineId: row.machineId,
       agentConfigId: row.agentConfigId,
-      enabled: true,
       runConfig: row.runConfig,
     },
   ]);
 };
 
-const placement = (
+const instance = (
+  id: string,
   machine: string,
-  overrides: Partial<AgentRolePlacement> = {}
-): AgentRolePlacement => ({
+  overrides: Partial<AgentRoleInstance> = {}
+): AgentRoleInstance => ({
+  id: id as AgentRoleInstanceId,
   machineId: machine as MachineId,
-  agentConfigId: `config-${machine}` as AgentConfigId,
-  enabled: true,
-  runConfig: { modelId: `model-${machine}` },
+  agentConfigId: `config-${id}` as AgentConfigId,
+  runConfig: { modelId: `model-${id}` },
   ...overrides,
 });
 
-const multiRole = (...placements: AgentRolePlacement[]): AgentRole =>
-  withAgentRolePlacements(legacyRow(), placements);
+const multiRole = (...instances: AgentRoleInstance[]): AgentRole =>
+  withAgentRoleInstances(legacyRow(), instances);
 
 const context = (
   overrides: Partial<AgentRoleAvailabilityContext> = {}
@@ -188,56 +191,78 @@ describe('agent role rows', () => {
     expect(normalizeAgentRole(null)).toBeUndefined();
   });
 
-  it('reads a row without placements as the one machine its legacy fields name', () => {
-    expect(normalizeAgentRole(legacyRow())?.placements).toEqual([
+  it('reads a row without instances as one instance with an id derived from the row', () => {
+    const read = normalizeAgentRole(legacyRow());
+    expect(read?.instances).toEqual([
       {
+        id: 'role-1:machine-1',
         machineId: 'machine-1',
         agentConfigId: 'config-1',
-        enabled: true,
         runConfig: { modelId: 'gpt-5.6' },
       },
     ]);
+    // Every member reads the row on its own: the same row, the same id.
+    expect(normalizeAgentRole(legacyRow())?.instances[0]?.id).toBe(read?.instances[0]?.id);
   });
 
-  it('reads placements over the legacy fields and mirrors the first enabled one', () => {
-    const read = normalizeAgentRole({
+  it('turns lan.4 placements into instances, dropping switched-off ones', () => {
+    const stored = {
       ...legacyRow(),
       placements: [
-        placement('a', { enabled: false }),
-        placement('b', {
+        { machineId: 'devnuc', agentConfigId: 'c-devnuc', enabled: true, runConfig: {} },
+        {
+          machineId: 'n100',
+          agentConfigId: 'c-n100',
+          enabled: true,
           runConfig: {
-            modelId: 'model-b',
-            memory: { providerId: 'nowledge-mem', memoryId: 'reviewer' },
-            configOptionValues: { thought_level: 'high', api_key: 'sk-live' },
+            modelId: 'gpt-6-astra',
+            memory: { providerId: 'nowledge-mem', memoryId: 'vision' },
+            configOptionValues: { reasoning_effort: 'high', api_key: 'sk-live' },
           },
-        }),
-        // A second entry for one machine is dropped: one row per machine.
-        placement('b', { agentConfigId: 'other' as AgentConfigId }),
-        { machineId: 'c' },
+        },
+        { machineId: 'mac', agentConfigId: 'c-mac', enabled: false, runConfig: {} },
       ],
-    });
-    expect(read?.placements.map((entry) => [entry.machineId, entry.enabled])).toEqual([
-      ['a', false],
-      ['b', true],
+    };
+    const first = normalizeAgentRole(stored);
+    const second = normalizeAgentRole(structuredClone(stored));
+    // No aliases: each instance groups with its agent.
+    expect(first?.instances.map((entry) => [entry.id, entry.alias, entry.machineId])).toEqual([
+      ['role-1:devnuc', undefined, 'devnuc'],
+      ['role-1:n100', undefined, 'n100'],
     ]);
-    // Secret-shaped options are dropped inside every placement.
-    expect(read?.placements[1]?.runConfig.configOptionValues).toEqual({ thought_level: 'high' });
-    expect(read).toMatchObject({
-      machineId: 'b',
-      agentConfigId: 'config-b',
-      runConfig: {
-        modelId: 'model-b',
-        memory: { providerId: 'nowledge-mem', memoryId: 'reviewer' },
-      },
+    expect(second?.instances).toEqual(first?.instances);
+    // Secret-shaped options are dropped inside every instance; memory stays.
+    expect(first?.instances[1]?.runConfig).toEqual({
+      modelId: 'gpt-6-astra',
+      memory: { providerId: 'nowledge-mem', memoryId: 'vision' },
+      configOptionValues: { reasoning_effort: 'high' },
     });
+    expect(first).toMatchObject({ machineId: 'devnuc', agentConfigId: 'c-devnuc' });
   });
 
-  it('falls back to the legacy fields when no placement is enabled', () => {
+  it('reads instances over every older field and mirrors the first one', () => {
     const read = normalizeAgentRole({
       ...legacyRow(),
-      placements: [placement('a', { enabled: false })],
+      placements: [{ machineId: 'ignored', agentConfigId: 'ignored', enabled: true }],
+      instances: [
+        instance('claude', 'devnuc', { alias: ' Reviewer ' }),
+        instance('gemini', 'devnuc', { alias: '  ' }),
+        // A repeated id keeps the first; an entry without a machine is dropped.
+        instance('claude', 'n100'),
+        { ...instance('blank', 'n100'), machineId: '  ' as MachineId },
+      ],
     });
-    expect(read?.placements.map((entry) => entry.machineId)).toEqual(['machine-1']);
+    expect(read?.instances.map((entry) => [entry.id, entry.alias])).toEqual([
+      ['claude', 'Reviewer'],
+      // A blank alias is no alias.
+      ['gemini', undefined],
+    ]);
+    expect(read).toMatchObject({
+      machineId: 'devnuc',
+      agentConfigId: 'config-claude',
+      runConfig: { modelId: 'model-claude' },
+    });
+    expect(listAgentRoleInstancesOnMachine(read!, 'devnuc' as MachineId)).toHaveLength(2);
   });
 
   it('treats option-key ordering as unchanged content', () => {
@@ -248,89 +273,123 @@ describe('agent role rows', () => {
     expect(isAgentRoleContentEqual(left, role({ ...left, emoji: '🔍' }))).toBe(false);
   });
 
-  it('treats placement order and switching a machine off as edits', () => {
-    const both = multiRole(placement('a'), placement('b'));
-    expect(isAgentRoleContentEqual(both, multiRole(placement('a'), placement('b')))).toBe(true);
-    expect(isAgentRoleContentEqual(both, multiRole(placement('b'), placement('a')))).toBe(false);
+  it('treats instance order, aliases and run configs as edits', () => {
+    const both = multiRole(instance('a', 'm1'), instance('b', 'm1'));
+    expect(isAgentRoleContentEqual(both, multiRole(instance('a', 'm1'), instance('b', 'm1')))).toBe(
+      true
+    );
+    expect(isAgentRoleContentEqual(both, multiRole(instance('b', 'm1'), instance('a', 'm1')))).toBe(
+      false
+    );
     expect(
-      isAgentRoleContentEqual(both, multiRole(placement('a'), placement('b', { enabled: false })))
+      isAgentRoleContentEqual(
+        both,
+        multiRole(instance('a', 'm1'), instance('b', 'm1', { alias: 'x' }))
+      )
     ).toBe(false);
   });
 });
 
-describe('agent role placements', () => {
-  const both = multiRole(placement('a'), placement('b'), placement('c', { enabled: false }));
+describe('agent role instance selection', () => {
+  // Groups in first-appearance order: claude (n100, devnuc), gemini, codex.
+  const fleet = multiRole(
+    instance('claude-n100', 'n100'),
+    instance('gemini-devnuc', 'devnuc'),
+    instance('claude-devnuc', 'devnuc'),
+    instance('codex-n100', 'n100')
+  );
+  const groupKeyOf = (entry: AgentRoleInstance) => entry.id.split('-')[0]!;
   const usable =
-    (...machines: string[]) =>
-    (entry: AgentRolePlacement) =>
-      machines.includes(entry.machineId);
+    (...ids: string[]) =>
+    (entry: AgentRoleInstance) =>
+      ids.includes(entry.id);
+  const all = usable('claude-n100', 'gemini-devnuc', 'claude-devnuc', 'codex-n100');
+  const pick = (request: Parameters<typeof selectAgentRoleInstance>[1], isUsable = all) =>
+    selectAgentRoleInstance(fleet, request, isUsable, groupKeyOf);
 
-  it('views the Role on one enabled machine only', () => {
-    expect(agentRoleOnMachine(both, 'b' as MachineId)).toMatchObject({
-      machineId: 'b',
-      agentConfigId: 'config-b',
-      runConfig: { modelId: 'model-b' },
-      placements: [placement('b')],
+  it('runs a named instance as named, or fails', () => {
+    expect(pick({ instanceId: 'gemini-devnuc' })).toMatchObject({
+      kind: 'selected',
+      rule: 'instance',
+      instance: { id: 'gemini-devnuc' },
     });
-    expect(agentRoleOnMachine(both, 'c' as MachineId)).toBeUndefined();
-    expect(agentRoleOnMachine(both, 'z' as MachineId)).toBeUndefined();
+    expect(pick({ instanceId: 'gone' })).toMatchObject({
+      kind: 'rejected',
+      reason: 'instance_not_found',
+    });
+    expect(pick({ instanceId: 'gemini-devnuc', machineId: 'n100' as MachineId })).toMatchObject({
+      kind: 'rejected',
+      reason: 'instance_machine_mismatch',
+    });
+    expect(
+      pick({ instanceId: 'gemini-devnuc', workContextMachineId: 'n100' as MachineId })
+    ).toMatchObject({ kind: 'rejected', reason: 'instance_machine_mismatch' });
+    expect(pick({ instanceId: 'gemini-devnuc' }, usable('claude-n100'))).toMatchObject({
+      kind: 'rejected',
+      reason: 'instance_unavailable',
+    });
   });
 
-  it('runs an explicit machine only where the Role is enabled and usable', () => {
-    expect(
-      selectAgentRolePlacement(both, { machineId: 'b' as MachineId }, usable('a', 'b'))
-    ).toMatchObject({ kind: 'selected', rule: 'explicit', placement: { machineId: 'b' } });
-    expect(
-      selectAgentRolePlacement(both, { machineId: 'c' as MachineId }, usable('a', 'b', 'c'))
-    ).toEqual({
-      kind: 'rejected',
-      reason: 'machine_not_enabled',
-      machineId: 'c',
+  it("runs an explicit machine's instance in the earliest group, or fails without moving", () => {
+    // gemini comes first in the list on devnuc, but the claude group comes first.
+    expect(pick({ machineId: 'devnuc' as MachineId })).toMatchObject({
       rule: 'explicit',
-      usableMachineIds: ['a', 'b'],
+      instance: { id: 'claude-devnuc' },
     });
-    // Unusable there: an error, never a quiet move to the caller's machine.
     expect(
-      selectAgentRolePlacement(
-        both,
-        { machineId: 'b' as MachineId, callerMachineId: 'a' as MachineId },
-        usable('a')
+      pick({ machineId: 'devnuc' as MachineId }, usable('gemini-devnuc', 'claude-n100'))
+    ).toMatchObject({ instance: { id: 'gemini-devnuc' } });
+    expect(pick({ machineId: 'laptop' as MachineId })).toMatchObject({
+      kind: 'rejected',
+      reason: 'machine_has_no_instance',
+      rule: 'explicit',
+    });
+    expect(
+      pick(
+        { machineId: 'n100' as MachineId, callerMachineId: 'devnuc' as MachineId },
+        usable('claude-devnuc')
       )
-    ).toMatchObject({ kind: 'rejected', reason: 'machine_unavailable', machineId: 'b' });
+    ).toMatchObject({ kind: 'rejected', reason: 'machine_unavailable', machineId: 'n100' });
   });
 
   it('runs where the work is, or fails', () => {
     expect(
-      selectAgentRolePlacement(
-        both,
-        { workContextMachineId: 'b' as MachineId, callerMachineId: 'a' as MachineId },
-        usable('a', 'b')
-      )
-    ).toMatchObject({ kind: 'selected', rule: 'work_context', placement: { machineId: 'b' } });
+      pick({ workContextMachineId: 'n100' as MachineId, callerMachineId: 'devnuc' as MachineId })
+    ).toMatchObject({ rule: 'work_context', instance: { id: 'claude-n100' } });
     expect(
-      selectAgentRolePlacement(
-        both,
-        { workContextMachineId: 'b' as MachineId, callerMachineId: 'a' as MachineId },
-        usable('a')
-      )
+      pick({ workContextMachineId: 'n100' as MachineId }, usable('claude-devnuc'))
     ).toMatchObject({ kind: 'rejected', reason: 'machine_unavailable', rule: 'work_context' });
   });
 
-  it('prefers the caller machine, then the first usable one in list order', () => {
-    expect(
-      selectAgentRolePlacement(both, { callerMachineId: 'b' as MachineId }, usable('a', 'b'))
-    ).toMatchObject({ kind: 'selected', rule: 'caller', placement: { machineId: 'b' } });
-    expect(
-      selectAgentRolePlacement(both, { callerMachineId: 'b' as MachineId }, usable('a'))
-    ).toMatchObject({ kind: 'selected', rule: 'first_available', placement: { machineId: 'a' } });
-    expect(
-      selectAgentRolePlacement(both, { callerMachineId: 'c' as MachineId }, usable('b', 'c'))
-    ).toMatchObject({ kind: 'selected', rule: 'first_available', placement: { machineId: 'b' } });
-    expect(selectAgentRolePlacement(both, {}, usable())).toEqual({
-      kind: 'rejected',
-      reason: 'no_machine_available',
-      usableMachineIds: [],
+  it('takes the first group, the caller machine first inside it, for a bare Role', () => {
+    expect(pick({ callerMachineId: 'devnuc' as MachineId })).toMatchObject({
+      rule: 'caller',
+      instance: { id: 'claude-devnuc' },
     });
+    // Off the Role's machines: the group's first instance in list order.
+    expect(pick({ callerMachineId: 'mac' as MachineId })).toMatchObject({
+      rule: 'first_available',
+      instance: { id: 'claude-n100' },
+    });
+    // The local claude cannot run: its group still goes first, elsewhere.
+    expect(
+      pick({ callerMachineId: 'devnuc' as MachineId }, usable('claude-n100', 'gemini-devnuc'))
+    ).toMatchObject({ rule: 'first_available', instance: { id: 'claude-n100' } });
+    // No claude can run: the next group.
+    expect(
+      pick({ callerMachineId: 'n100' as MachineId }, usable('gemini-devnuc', 'codex-n100'))
+    ).toMatchObject({ rule: 'first_available', instance: { id: 'gemini-devnuc' } });
+    expect(pick({}, usable())).toEqual({
+      kind: 'rejected',
+      reason: 'no_instance_available',
+      usableInstances: [],
+    });
+  });
+
+  it('orders a bare Role group by group, the preferred machine first', () => {
+    expect(
+      orderAgentRoleInstances(fleet, groupKeyOf, 'devnuc' as MachineId).map((entry) => entry.id)
+    ).toEqual(['claude-devnuc', 'claude-n100', 'gemini-devnuc', 'codex-n100']);
   });
 });
 
@@ -389,10 +448,10 @@ describe('agent role availability', () => {
     ).toEqual({ kind: 'unknown' });
   });
 
-  it('is available while any enabled machine can run it', () => {
+  it('is available while any instance can run it', () => {
     const both = multiRole(
-      placement('machine-2', { agentConfigId: 'config-2' as AgentConfigId }),
-      placement('machine-1', { agentConfigId: 'config-1' as AgentConfigId })
+      instance('two', 'machine-2', { agentConfigId: 'config-2' as AgentConfigId }),
+      instance('one', 'machine-1', { agentConfigId: 'config-1' as AgentConfigId })
     );
     const configs = new Map([
       ['config-1' as AgentConfigId, 'machine-1' as MachineId],
@@ -410,17 +469,6 @@ describe('agent role availability', () => {
       kind: 'unavailable',
       reason: 'machine_offline',
     });
-    // A switched-off machine does not make the Role available.
-    const offOnly = multiRole(
-      placement('machine-1', { agentConfigId: 'config-1' as AgentConfigId, enabled: false }),
-      placement('machine-2', { agentConfigId: 'config-2' as AgentConfigId })
-    );
-    expect(
-      resolveAgentRoleAvailability(offOnly, {
-        ...ctx,
-        onlineMachineIds: new Set(['machine-1' as MachineId]),
-      })
-    ).toEqual({ kind: 'unavailable', reason: 'machine_offline' });
   });
 });
 

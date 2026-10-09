@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { getAgentRoleEmoji, type AgentConfigMeta, type AgentRole } from '@lody/shared';
+import { getAgentRoleEmoji, type AgentConfigMeta } from '@lody/shared';
+import type { ComposerAgentRoleItem } from './composer-agent-roles';
 import type { RecentRunConfigItem } from '@/components/sessions/recent-run-config-menu-group';
 import {
   isConfigOptionValueValid,
@@ -66,6 +67,8 @@ const recentRunConfigRecordSchema = z.object({
    * different entries and the id is part of the identity key.
    */
   agentRoleId: z.string().nullable().optional(),
+  /** The instance of that Role, for records made after instances existed. */
+  agentRoleInstanceId: z.string().nullable().optional(),
   usedAt: z.number(),
 });
 
@@ -101,7 +104,12 @@ const configOptionSignature = (values: Record<string, AcpConfigOptionValue>): st
 export const getRecentRunConfigKey = (
   record: Pick<
     RecentRunConfigRecord,
-    'agentId' | 'machineId' | 'modelId' | 'configOptionValues' | 'agentRoleId'
+    | 'agentId'
+    | 'machineId'
+    | 'modelId'
+    | 'configOptionValues'
+    | 'agentRoleId'
+    | 'agentRoleInstanceId'
   >
 ): string =>
   [
@@ -110,6 +118,7 @@ export const getRecentRunConfigKey = (
     record.modelId ?? '',
     configOptionSignature(record.configOptionValues),
     record.agentRoleId ?? '',
+    record.agentRoleInstanceId ?? '',
   ].join('\u0000');
 
 export type RunConfigFace = {
@@ -240,26 +249,31 @@ export function recordRecentRunConfig(
 export function buildRecentRunConfigItems({
   records,
   agentConfigs,
-  agentRoles,
+  agentRoleItems,
   currentKey,
   limit = MAX_VISIBLE_RECENT_RUN_CONFIGS,
 }: {
   records: ReadonlyArray<RecentRunConfigRecord>;
   agentConfigs: ReadonlyArray<AgentConfigMeta>;
   /**
-   * Roles the composer can run RIGHT NOW. A recorded Role entry is offered only
-   * while its Role is in here: a Role never falls back, so an entry whose Role
-   * was deleted, unshared, or whose machine went offline must drop out rather
-   * than quietly re-running its values without it.
+   * Role instances the composer can run RIGHT NOW. A recorded Role entry is
+   * offered only while its instance (or, for an older record, its Role) is in
+   * here: an entry whose Role was deleted, unshared, or whose machine went
+   * offline must drop out rather than quietly re-running its values without it.
    */
-  agentRoles?: ReadonlyArray<AgentRole>;
+  agentRoleItems?: ReadonlyArray<Pick<ComposerAgentRoleItem, 'role' | 'instance' | 'title'>>;
   currentKey: string | null;
   limit?: number;
 }): RecentRunConfigItem[] {
   const configByKey = new Map(
     agentConfigs.map((config) => [`${config.machineId} ${config.id}`, config])
   );
-  const roleById = new Map((agentRoles ?? []).map((role) => [role.id as string, role]));
+  const findRoleItem = (record: RecentRunConfigRecord) =>
+    (agentRoleItems ?? []).find((item) =>
+      record.agentRoleInstanceId
+        ? item.instance.id === record.agentRoleInstanceId
+        : item.role.id === record.agentRoleId
+    );
   const items: RecentRunConfigItem[] = [];
   const seen = new Set<string>();
   for (const record of records) {
@@ -268,8 +282,8 @@ export function buildRecentRunConfigItems({
     if (key === currentKey || seen.has(key)) continue;
     const config = configByKey.get(`${record.machineId} ${record.agentId}`);
     if (!config) continue;
-    const role = record.agentRoleId ? roleById.get(record.agentRoleId) : undefined;
-    if (record.agentRoleId && !role) continue;
+    const roleItem = record.agentRoleId ? findRoleItem(record) : undefined;
+    if (record.agentRoleId && !roleItem) continue;
     seen.add(key);
     items.push({
       id: key,
@@ -282,7 +296,9 @@ export function buildRecentRunConfigItems({
       },
       // A Role names itself; the row then reads as that Role rather than as the
       // agent it happens to be bound to.
-      ...(role ? { role: { name: role.name, emoji: getAgentRoleEmoji(role) } } : {}),
+      ...(roleItem
+        ? { role: { name: roleItem.title, emoji: getAgentRoleEmoji(roleItem.role) } }
+        : {}),
       modelLabel: record.modelLabel,
       reasoningLabel: record.reasoningLabel,
       planOn: record.planOn,

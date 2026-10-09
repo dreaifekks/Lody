@@ -1,8 +1,4 @@
-import {
-  agentRoleOnMachine,
-  buildAgentRoleFormValueFromRunConfig,
-  snapshotAgentRole,
-} from '@lody/shared';
+import { buildAgentRoleFormValueFromRunConfig, type AgentRoleInstanceId } from '@lody/shared';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import {
@@ -145,8 +141,13 @@ import {
   type RecentRunConfigRecord,
 } from '@/lib/recent-run-configs';
 import {
+  buildAgentRoleTurnSelection,
   buildComposerAgentRoleItems,
   doesAgentRolePinPermissionMode,
+  findComposerAgentRoleItem,
+  describeComposerAgentRoleInstance,
+  findRecordedComposerAgentRoleItem,
+  planNewChatAgentRolePick,
   isComposerAgentRoleApplied,
   resolvePendingAgentRoleSelection,
 } from '@/lib/composer-agent-roles';
@@ -159,6 +160,7 @@ import {
 import { useAcpSelectorOptions } from '@/hooks/use-acp-selector-options';
 import {
   useAgentRoleAvailability,
+  useComposerAgentRoleNames,
   useWorkspaceAgentRoles,
 } from '@/hooks/use-workspace-agent-roles';
 import { useAvailableCommands } from '@/hooks/use-available-commands';
@@ -220,6 +222,7 @@ import {
   useKnownIssuePrItems,
 } from '@/components/mentions/issue-pr-hash-mention';
 import { useMentionPromptExpansion } from '@/components/mentions/mention-expansion';
+import { AgentRoleMentionMachineContext } from '@/components/mentions/mention-agent-role-source';
 import type { Mention as MentionRange } from '@/ui/mention/index';
 import {
   arePersistedMentionRangesEqual,
@@ -1625,7 +1628,8 @@ function WorkspaceChatLanding({
      run-config dropdown: a Dialog rendered in menu content unmounts with the
      menu the moment it opens. */
   const [agentRoleEditor, setAgentRoleEditor] = useState<AgentRoleEditorState | null>(null);
-  const { resolve: resolveAgentRoleAvailability } = useAgentRoleAvailability(workspaceAgentRoles);
+  const { resolveInstance: resolveAgentRoleInstanceAvailability } =
+    useAgentRoleAvailability(workspaceAgentRoles);
   useEffect(() => {
     setAgentRoleRestored(false);
   }, [workspaceId]);
@@ -1636,23 +1640,29 @@ function WorkspaceChatLanding({
      running the old values under the edited Role's name. A deleted Role simply
      stops resolving. */
   const [agentRolePreference, setAgentRolePreference] = useState<{
-    roleId: AgentRoleId;
+    instanceId: AgentRoleInstanceId;
     token: number;
   } | null>(null);
-  /* A Role's preference applies only while the composer is on the agent its
-     placement for the selected machine names. Derived rather than cleared: a
-     Role never re-points at whichever agent happens to be selected. */
+  /* A preference names an instance; it applies only while the composer is on
+     that instance's agent and machine. Derived rather than cleared: an
+     instance never re-points at whichever agent happens to be selected. */
   const activeAgentRolePreference = useMemo(() => {
     if (!agentRolePreference || !selectedAgent) return null;
-    const catalogRole = workspaceAgentRoles.find(
-      (entry) => entry.id === agentRolePreference.roleId
+    const role = workspaceAgentRoles.find((entry) =>
+      entry.instances.some((instance) => instance.id === agentRolePreference.instanceId)
     );
-    const role = catalogRole && agentRoleOnMachine(catalogRole, selectedAgent.machineId);
-    if (role?.agentConfigId !== selectedAgent.agentId) return null;
-    return { role, token: agentRolePreference.token };
+    const instance = role?.instances.find((entry) => entry.id === agentRolePreference.instanceId);
+    if (
+      !role ||
+      !instance ||
+      instance.agentConfigId !== selectedAgent.agentId ||
+      instance.machineId !== selectedAgent.machineId
+    )
+      return null;
+    return { role, instance, token: agentRolePreference.token };
   }, [agentRolePreference, selectedAgent, workspaceAgentRoles]);
   const selectedAgentDefaults = useMemo(() => {
-    const roleRunConfig = activeAgentRolePreference?.role.runConfig;
+    const roleRunConfig = activeAgentRolePreference?.instance.runConfig;
     if (roleRunConfig) {
       return {
         modeId: roleRunConfig.modeId ?? null,
@@ -1675,7 +1685,7 @@ function WorkspaceChatLanding({
   } = useAcpSessionConfigSelectionState({
     targetKey: selectedAgent ? `${selectedAgent.machineId}:${selectedAgent.agentId}` : null,
     preferenceRevision: activeAgentRolePreference
-      ? `role:${activeAgentRolePreference.role.id}:${activeAgentRolePreference.role.revision}:${activeAgentRolePreference.token}`
+      ? `role:${activeAgentRolePreference.instance.id}:${activeAgentRolePreference.role.revision}:${activeAgentRolePreference.token}`
       : (selectedAgent?.agentId ?? 'none'),
     preferences: selectedAgentDefaults,
   });
@@ -1727,19 +1737,30 @@ function WorkspaceChatLanding({
      knob — or an unsupported pin falling back — takes the name away instead of
      leaving it claiming a configuration that is no longer the Role's. */
   const activeAgentRole = useMemo(() => {
-    const role = activeAgentRolePreference?.role;
-    if (!role) return null;
-    return isComposerAgentRoleApplied(role, {
+    if (!activeAgentRolePreference) return null;
+    const { role, instance } = activeAgentRolePreference;
+    return isComposerAgentRoleApplied(instance, {
       agentSelection: selectedAgent,
       modeId: selectedModeId,
       modelId: selectedModelId,
       configOptionValues,
     })
-      ? role
+      ? {
+          role,
+          instance,
+          ...describeComposerAgentRoleInstance(
+            role,
+            instance,
+            executorConfigs,
+            t('settings.agentRoles.unknownAgentConfig')
+          ),
+        }
       : null;
   }, [
     activeAgentRolePreference,
     configOptionValues,
+    executorConfigs,
+    t,
     selectedAgent,
     selectedModeId,
     selectedModelId,
@@ -1771,7 +1792,8 @@ function WorkspaceChatLanding({
             machineId: selectedAgent.machineId,
             modelId: currentRunConfigFace.modelId,
             configOptionValues: sanitizeConfigOptionValues(dispatchConfigOptionValues),
-            agentRoleId: activeAgentRole?.id ?? null,
+            agentRoleId: activeAgentRole?.role.id ?? null,
+            agentRoleInstanceId: activeAgentRole?.instance.id ?? null,
           })
         : null,
     [activeAgentRole, currentRunConfigFace.modelId, dispatchConfigOptionValues, selectedAgent]
@@ -2143,7 +2165,11 @@ function WorkspaceChatLanding({
     setSelectedLocalProject: handleSelectedLocalProjectChange,
     selectedLocalBranch,
     setSelectedLocalBranch: handleSelectedLocalBranchChange,
-    selectedAgentRoleId: agentRoleRestored ? (activeAgentRole?.id ?? null) : undefined,
+    selectedAgentRole: agentRoleRestored
+      ? activeAgentRole
+        ? { roleId: activeAgentRole.role.id, instanceId: activeAgentRole.instance.id }
+        : null
+      : undefined,
   });
 
   // ── Auto-select first repo when none selected ──
@@ -3096,7 +3122,7 @@ function WorkspaceChatLanding({
          two. A Role only reaches here while it is still what will run. */
       const promptPayload = buildAgentPrompt(
         promptText,
-        buildAgentPrompt(activeAgentRole?.promptPrefix ?? '', selectedConfig.prompt ?? '')
+        buildAgentPrompt(activeAgentRole?.role.promptPrefix ?? '', selectedConfig.prompt ?? '')
       );
       const issuePRMentions = extractIssuePRMentionsFromText(
         promptText,
@@ -3113,10 +3139,7 @@ function WorkspaceChatLanding({
         configOptionValues: dispatchConfigOptionValues,
         issuePRMentions,
         mcpServerIds: mcpSelection.selectedIds,
-        agentRoleId: activeAgentRole?.id ?? null,
-        agentRoleRevision: activeAgentRole?.revision,
-        memory: activeAgentRole?.runConfig.memory,
-        agentRoleSnapshot: activeAgentRole ? snapshotAgentRole(activeAgentRole) : undefined,
+        ...(activeAgentRole ? buildAgentRoleTurnSelection(activeAgentRole) : { agentRoleId: null }),
       });
       const pendingHistoryEntry = buildDraftUserHistoryEntry(
         {
@@ -3158,7 +3181,11 @@ function WorkspaceChatLanding({
           // Provenance only: the dispatch config above is already frozen, so a
           // Role edited or deleted later cannot change how this session runs.
           ...(activeAgentRole
-            ? { agentRoleId: activeAgentRole.id, agentRoleRevision: activeAgentRole.revision }
+            ? {
+                agentRoleId: activeAgentRole.role.id,
+                agentRoleRevision: activeAgentRole.role.revision,
+                agentRoleInstanceId: activeAgentRole.instance.id,
+              }
             : {}),
         },
         pendingHistoryEntry,
@@ -3194,7 +3221,8 @@ function WorkspaceChatLanding({
             configOptionValues: sanitizeConfigOptionValues(dispatchConfigOptionValues),
             // A Role is one of these combinations, so it is recorded as one —
             // as the Role, not as the values it happened to set.
-            agentRoleId: activeAgentRole?.id ?? null,
+            agentRoleId: activeAgentRole?.role.id ?? null,
+            agentRoleInstanceId: activeAgentRole?.instance.id ?? null,
           },
           Date.now()
         )
@@ -3225,7 +3253,7 @@ function WorkspaceChatLanding({
       if (activeAgentRole) {
         // The composer's Role picker only offers Roles enabled on the machine
         // the chat starts on, so a new-chat Role is never cross-machine.
-        captureAgentRoleApplied(postHog, activeAgentRole, {
+        captureAgentRoleApplied(postHog, activeAgentRole.role, {
           source: 'new_chat',
           crossMachine: false,
         });
@@ -3574,38 +3602,51 @@ function WorkspaceChatLanding({
     () => (scopedMachineId ? [scopedMachineId] : []),
     [scopedMachineId]
   );
-  /* Roles offered for the machine this chat will start on, as their view on
-     that machine. A Role not enabled there could only move the chat off it. */
+  /* Every Role's entries, this chat's machine first. Picking one elsewhere
+     moves the chat to that machine: nothing has started yet. */
+  const agentRoleNames = useComposerAgentRoleNames();
   const composerAgentRoleItems = useMemo(
     () =>
       buildComposerAgentRoleItems({
         roles: workspaceAgentRoles,
         machineId: scopedMachineId,
         agentConfigs: executorConfigs,
-        resolveAvailability: resolveAgentRoleAvailability,
+        resolveAvailability: resolveAgentRoleInstanceAvailability,
+        names: agentRoleNames,
       }),
-    [executorConfigs, resolveAgentRoleAvailability, scopedMachineId, workspaceAgentRoles]
+    [
+      agentRoleNames,
+      executorConfigs,
+      resolveAgentRoleInstanceAvailability,
+      scopedMachineId,
+      workspaceAgentRoles,
+    ]
   );
   const handleAgentRoleSelect = useCallback(
-    (roleId: AgentRoleId | null) => {
+    (instanceId: AgentRoleInstanceId | null) => {
       // Leaving a Role clears the NAME, not the configuration: the values it
       // seeded are now the user's own, and silently rolling them back would
       // undo choices they never asked to undo.
-      if (roleId === null) {
+      if (instanceId === null) {
         setAgentRolePreference(null);
         return;
       }
-      const item = composerAgentRoleItems.find((entry) => entry.role.id === roleId);
-      // An unavailable Role is listed so its owner can see why it cannot run;
-      // it is never something the composer quietly starts a chat with.
+      const item = findComposerAgentRoleItem(composerAgentRoleItems, instanceId);
+      // An unavailable instance is listed so its owner can see why it cannot
+      // run; it is never something the composer quietly starts a chat with.
       if (!item || item.availability.kind !== 'available') return;
-      const { role } = item;
+      const { instance } = item;
+      const pick = planNewChatAgentRolePick(item, scopedMachineId);
       agentRolePreferenceTokenRef.current += 1;
       setPendingRecentRunConfig(null);
-      setSelectedAgent({ agentId: role.agentConfigId, machineId: role.machineId });
-      setAgentRolePreference({ roleId: role.id, token: agentRolePreferenceTokenRef.current });
+      if (pick.moveToMachineId) handleMachineChange(pick.moveToMachineId);
+      setSelectedAgent(pick.agentSelection);
+      setAgentRolePreference({
+        instanceId: instance.id,
+        token: agentRolePreferenceTokenRef.current,
+      });
     },
-    [composerAgentRoleItems]
+    [composerAgentRoleItems, handleMachineChange, scopedMachineId]
   );
 
   /* Creating a Role from the composer opens on the configuration already in
@@ -3615,6 +3656,7 @@ function WorkspaceChatLanding({
     setAgentRoleEditor(
       openAgentRoleEditorForCreate(
         buildAgentRoleFormValueFromRunConfig({
+          instanceId: crypto.randomUUID() as AgentRoleInstanceId,
           machineId: selectedAgent?.machineId ?? scopedMachineId,
           agentConfigId: selectedAgent?.agentId ?? null,
           modeId: selectedModeId,
@@ -3657,9 +3699,9 @@ function WorkspaceChatLanding({
       items: composerAgentRoleItems,
       isInCatalog: workspaceAgentRoles.some((role) => role.id === pendingAgentRoleSelection),
     });
-    if (outcome === 'wait') return;
+    if (outcome.kind === 'wait') return;
     setPendingAgentRoleSelection(null);
-    if (outcome === 'select') handleAgentRoleSelect(pendingAgentRoleSelection);
+    if (outcome.kind === 'select') handleAgentRoleSelect(outcome.instanceId);
   }, [
     composerAgentRoleItems,
     handleAgentRoleSelect,
@@ -3672,20 +3714,24 @@ function WorkspaceChatLanding({
      loaded yet", so giving up then would silently drop the stored Role. */
   useEffect(() => {
     if (agentRoleRestored || !defaultsReady) return;
-    const storedRoleId = readChatLandingDefaults(workspaceId)?.agentRoleId as
-      | AgentRoleId
-      | undefined;
-    if (!storedRoleId) {
+    const stored = readChatLandingDefaults(workspaceId);
+    if (!stored?.agentRoleId) {
       setAgentRoleRestored(true);
       return;
     }
-    const item = composerAgentRoleItems.find((entry) => entry.role.id === storedRoleId);
+    // The stored instance — gone means gone — or, stored before instances,
+    // what a bare pick runs.
+    const item = findRecordedComposerAgentRoleItem(
+      composerAgentRoleItems,
+      stored.agentRoleId,
+      stored.agentRoleInstanceId as AgentRoleInstanceId | undefined
+    );
     if (!item) {
       if (agentRolesSynced) setAgentRoleRestored(true);
       return;
     }
     setAgentRoleRestored(true);
-    handleAgentRoleSelect(storedRoleId);
+    handleAgentRoleSelect(item.instance.id);
   }, [
     agentRoleRestored,
     agentRolesSynced,
@@ -3702,7 +3748,7 @@ function WorkspaceChatLanding({
       configOptionSelectors,
       configOptionValues,
     });
-    return doesAgentRolePinPermissionMode(activeAgentRole, source);
+    return doesAgentRolePinPermissionMode(activeAgentRole.instance.runConfig, source);
   }, [activeAgentRole, configOptionSelectors, configOptionValues, modeOptions, selectedModeId]);
 
   /* Recent entries are offered only for agents the menu itself can select: one
@@ -3718,11 +3764,8 @@ function WorkspaceChatLanding({
   /* Only Roles the composer could pick right now: a recorded Role entry whose
      Role is gone or unavailable must drop out rather than re-running its values
      without it. */
-  const selectableAgentRoles = useMemo(
-    () =>
-      composerAgentRoleItems
-        .filter((item) => item.availability.kind === 'available')
-        .map((item) => item.role),
+  const selectableAgentRoleItems = useMemo(
+    () => composerAgentRoleItems.filter((item) => item.availability.kind === 'available'),
     [composerAgentRoleItems]
   );
   const recentRunConfigItems = useMemo(
@@ -3730,10 +3773,15 @@ function WorkspaceChatLanding({
       buildRecentRunConfigItems({
         records: recentRunConfigRecords,
         agentConfigs: recentRunConfigAgentConfigs,
-        agentRoles: selectableAgentRoles,
+        agentRoleItems: selectableAgentRoleItems,
         currentKey: currentRunConfigKey,
       }),
-    [currentRunConfigKey, recentRunConfigAgentConfigs, recentRunConfigRecords, selectableAgentRoles]
+    [
+      currentRunConfigKey,
+      recentRunConfigAgentConfigs,
+      recentRunConfigRecords,
+      selectableAgentRoleItems,
+    ]
   );
   const handleRecentRunConfigSelect = useCallback(
     (id: string) => {
@@ -3743,7 +3791,12 @@ function WorkspaceChatLanding({
       // values are only half of it — the instruction and the provenance ride
       // with the Role, and re-running "the same knobs" would drop both.
       if (record.agentRoleId) {
-        handleAgentRoleSelect(record.agentRoleId as AgentRoleId);
+        const item = findRecordedComposerAgentRoleItem(
+          selectableAgentRoleItems,
+          record.agentRoleId,
+          record.agentRoleInstanceId as AgentRoleInstanceId | undefined
+        );
+        if (item) handleAgentRoleSelect(item.instance.id);
         return;
       }
       const config = recentRunConfigAgentConfigs.find(
@@ -3756,7 +3809,12 @@ function WorkspaceChatLanding({
       setSelectedAgent({ agentId: config.id, machineId: config.machineId });
       setPendingRecentRunConfig(record);
     },
-    [handleAgentRoleSelect, recentRunConfigAgentConfigs, recentRunConfigRecords]
+    [
+      handleAgentRoleSelect,
+      recentRunConfigAgentConfigs,
+      recentRunConfigRecords,
+      selectableAgentRoleItems,
+    ]
   );
 
   const desktopMachineOptions = useMemo(
@@ -3877,7 +3935,7 @@ function WorkspaceChatLanding({
           selectedModeId={selectedModeId}
           agentRoles={{
             items: composerAgentRoleItems,
-            selectedRoleId: activeAgentRole?.id ?? null,
+            selectedInstanceId: activeAgentRole?.instance.id ?? null,
             onSelect: handleAgentRoleSelect,
             onCreate: handleAgentRoleCreate,
             onEdit: handleAgentRoleEdit,
@@ -4181,7 +4239,7 @@ function WorkspaceChatLanding({
             }}
             agentRoles={{
               items: composerAgentRoleItems,
-              selectedRoleId: activeAgentRole?.id ?? null,
+              selectedInstanceId: activeAgentRole?.instance.id ?? null,
               onSelect: handleAgentRoleSelect,
               onCreate: handleAgentRoleCreate,
             }}
@@ -4323,7 +4381,7 @@ function WorkspaceChatLanding({
   const preparationRunConfig = useMemo(
     () =>
       buildSessionPreparationRunConfig({
-        memory: activeAgentRole?.runConfig.memory,
+        memory: activeAgentRole?.instance.runConfig.memory,
         modeId: modeOptions.length > 0 ? selectedModeId : null,
         modelId: modelOptions.length > 0 ? selectedModelId : null,
         configOptionValues: dispatchConfigOptionValues,
@@ -4332,7 +4390,7 @@ function WorkspaceChatLanding({
     [
       dispatchConfigOptionValues,
       mcpSelection.selectedIds,
-      activeAgentRole?.runConfig.memory,
+      activeAgentRole?.instance.runConfig.memory,
       modeOptions.length,
       modelOptions.length,
       selectedModeId,
@@ -4385,6 +4443,7 @@ function WorkspaceChatLanding({
   ]);
   const { expand: expandSkillMentionsForPrompt } = useMentionPromptExpansion({
     source: mentionSource,
+    agentRoleMachineId: scopedMachineId ?? null,
     skillAgent,
     promptValue: prompt,
   });
@@ -6207,7 +6266,7 @@ function WorkspaceChatLanding({
             onImageDrop={submitting ? undefined : handleImageDrop}
             imageDropDisabled={submitting}
             promptPlaceholder={promptPlaceholder}
-            compactPlaceholderName={activeAgentRole?.name ?? selectedConfig?.name ?? null}
+            compactPlaceholderName={activeAgentRole?.title ?? selectedConfig?.name ?? null}
             promptDisabled={submitting}
             promptRows={4}
             promptEnterKeyHint={promptEnterKeyHint}
@@ -6645,7 +6704,7 @@ function WorkspaceChatLanding({
   }
 
   return (
-    <>
+    <AgentRoleMentionMachineContext.Provider value={scopedMachineId ?? null}>
       <input
         ref={attachmentInputRef}
         type="file"
@@ -6667,7 +6726,7 @@ function WorkspaceChatLanding({
         onPromptPaste={handlePromptPaste}
         onImageDrop={handleImageDrop}
         promptPlaceholder={promptPlaceholder}
-        compactPlaceholderName={activeAgentRole?.name ?? selectedConfig?.name ?? null}
+        compactPlaceholderName={activeAgentRole?.title ?? selectedConfig?.name ?? null}
         promptEnterKeyHint={promptEnterKeyHint}
         promptRef={promptTextareaRef}
         pastedTextDrafts={pastedTextDrafts}
@@ -6787,6 +6846,6 @@ function WorkspaceChatLanding({
         onSaved={handleAgentRoleSaved}
         source="chat_landing"
       />
-    </>
+    </AgentRoleMentionMachineContext.Provider>
   );
 }

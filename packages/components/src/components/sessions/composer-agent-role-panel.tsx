@@ -6,6 +6,7 @@ import {
   getAgentRoleEmoji,
   type AgentRoleAvailability,
   type AgentRoleId,
+  type AgentRoleInstanceId,
   type MachineViewMeta,
 } from '@lody/shared';
 
@@ -14,6 +15,8 @@ import { AgentRoleDetailPane } from '@/components/sessions/agent-role-detail-pan
 import { useAcpSelectorOptions } from '@/hooks/use-acp-selector-options';
 import {
   AGENT_ROLE_UNAVAILABLE_REASON_KEYS,
+  doesAgentRoleTitleNameAgent,
+  findComposerAgentRoleItem,
   type ComposerAgentRoleItem,
 } from '@/lib/composer-agent-roles';
 import { withClassName } from '@/lib/stylex';
@@ -87,8 +90,8 @@ function remainingWidthForRolePanel(el: HTMLElement): number {
 }
 
 /**
- * The Role submenu: the Roles bound to the machine this chat will start on, and
- * what the highlighted one actually runs.
+ * The Role submenu: the Role instances on the machine this chat will start on,
+ * one flat list, and what the highlighted one actually runs.
  *
  * Two panes rather than one list because a Role's name is not its
  * configuration. The list is for recognising the Role you meant; the pane
@@ -102,7 +105,7 @@ function remainingWidthForRolePanel(el: HTMLElement): number {
 export function ComposerAgentRolePanel({
   items,
   machine,
-  selectedRoleId,
+  selectedInstanceId,
   onSelect,
   onCreate,
   onEdit,
@@ -116,9 +119,9 @@ export function ComposerAgentRolePanel({
    * workspace's machine-visibility context behind it.
    */
   machine?: MachineViewMeta | null;
-  selectedRoleId: AgentRoleId | null;
+  selectedInstanceId: AgentRoleInstanceId | null;
   /** `null` clears the Role and leaves the configuration exactly as it stands. */
-  onSelect: (roleId: AgentRoleId | null) => void;
+  onSelect: (instanceId: AgentRoleInstanceId | null) => void;
   onCreate?: () => void;
   onEdit?: (roleId: AgentRoleId) => void;
   /** Test/host override. Omit to size from remaining viewport. */
@@ -130,10 +133,10 @@ export function ComposerAgentRolePanel({
   // writes `--radix-popper-available-width`. Expand only once that space fits.
   const [detectedCompact, setDetectedCompact] = useState(compactOverride !== false);
   const compact = compactOverride ?? detectedCompact;
-  const [previewRoleId, setPreviewRoleId] = useState<AgentRoleId | null>(null);
+  const [previewInstanceId, setPreviewInstanceId] = useState<AgentRoleInstanceId | null>(null);
   const previewItem =
-    items.find((item) => item.role.id === previewRoleId) ??
-    items.find((item) => item.role.id === selectedRoleId) ??
+    findComposerAgentRoleItem(items, previewInstanceId) ??
+    findComposerAgentRoleItem(items, selectedInstanceId) ??
     items[0];
 
   useLayoutEffect(() => {
@@ -178,14 +181,14 @@ export function ComposerAgentRolePanel({
             not the same gesture as picking. */}
           <Menu.Item
             role="menuitemradio"
-            aria-checked={selectedRoleId === null}
+            aria-checked={selectedInstanceId === null}
             onPointerEnter={() => {
-              if (!compact) setPreviewRoleId(null);
+              if (!compact) setPreviewInstanceId(null);
             }}
             onClick={() => onSelect(null)}
             icon={Ban}
             endContent={
-              selectedRoleId === null ? (
+              selectedInstanceId === null ? (
                 <Check {...stylex.props(surface.glyph14)} aria-hidden="true" />
               ) : null
             }
@@ -193,38 +196,39 @@ export function ComposerAgentRolePanel({
             {t('chat.runConfig.roles.none', 'None')}
           </Menu.Item>
           {items.map((item) => {
-            const { role, availability } = item;
+            const { role, instance, availability } = item;
+            const selected = instance.id === selectedInstanceId;
             return (
               /* The pointer handler rides a wrapper, not the item: a disabled row
                has `pointer-events-none`, and a Role you cannot pick is still a
                Role whose configuration you may want to read. */
               <div
-                key={role.id}
+                key={instance.id}
                 onPointerEnter={() => {
-                  if (!compact) setPreviewRoleId(role.id);
+                  if (!compact) setPreviewInstanceId(instance.id);
                 }}
               >
                 <Menu.Item
                   disabled={availability.kind !== 'available'}
                   role="menuitemradio"
-                  aria-checked={role.id === selectedRoleId}
+                  aria-checked={selected}
                   onFocus={() => {
-                    if (!compact) setPreviewRoleId(role.id);
+                    if (!compact) setPreviewInstanceId(instance.id);
                   }}
-                  onClick={() => onSelect(role.id)}
+                  onClick={() => onSelect(instance.id)}
                   icon={
                     <span {...stylex.props(surface.emoji)} aria-hidden="true">
                       {getAgentRoleEmoji(role)}
                     </span>
                   }
                   endContent={
-                    role.id === selectedRoleId ? (
+                    selected ? (
                       <Check {...stylex.props(surface.glyph14)} aria-hidden="true" />
                     ) : null
                   }
                 >
                   <span {...stylex.props(styles.roleText, compact && styles.roleTextStacked)}>
-                    <span {...stylex.props(surface.truncate)}>{role.name}</span>
+                    <span {...stylex.props(surface.truncate)}>{item.title}</span>
                     {compact ? <RoleBindingSubtitle item={item} machine={machine} /> : null}
                     <RoleAvailabilityNote availability={availability} />
                   </span>
@@ -254,6 +258,7 @@ export function ComposerAgentRolePanel({
       {compact ? null : (
         <AgentRoleDetailPane
           role={previewItem.role}
+          instance={previewItem.instance}
           agentConfig={previewItem.agentConfig}
           machine={machine}
           onEdit={onEdit}
@@ -273,11 +278,11 @@ function RoleBindingSubtitle({
   machine?: MachineViewMeta | null;
 }) {
   const { t } = useTranslation();
-  const { role, agentConfig } = item;
+  const { instance, agentConfig } = item;
   const selectorOptions = useAcpSelectorOptions(
     agentConfig
       ? {
-          configId: role.agentConfigId,
+          configId: instance.agentConfigId,
           cliType: agentConfig.cliType,
           agentType: agentConfig.agentType,
           runtimeOverrides: agentConfig.runtimeOverrides,
@@ -285,11 +290,14 @@ function RoleBindingSubtitle({
         }
       : undefined
   );
-  const modelId = role.runConfig.modelId;
+  const modelId = instance.runConfig.modelId;
   const modelLabel = modelId
     ? (selectorOptions.modelOptions.find((option) => option.value === modelId)?.label ?? modelId)
     : null;
-  const agentName = agentConfig?.name ?? t('settings.agentRoles.unknownAgentConfig');
+  // The title already names the agent of an unaliased group.
+  const agentName = doesAgentRoleTitleNameAgent(item)
+    ? null
+    : (agentConfig?.name ?? t('settings.agentRoles.unknownAgentConfig'));
   const parts = [agentName, modelLabel].filter((part): part is string => Boolean(part));
   if (parts.length === 0) return null;
   return <span {...stylex.props(styles.subtitle)}>{parts.join(' · ')}</span>;

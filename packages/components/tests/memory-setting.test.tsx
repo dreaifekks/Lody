@@ -8,26 +8,12 @@ import type {
   MachineViewMeta,
   MemoryProviderResponse,
   MemoryAssociation,
-  AgentRoleFormPlacement,
 } from '@lody/shared';
 import { localProbeResultAtom } from '../src/atoms/local-probe';
-import { MemorySetting, RoleMemoryPanel } from '../src/components/settings/memory-setting';
+import { MemorySetting, RoleMemoryPicker } from '../src/components/settings/memory-setting';
 import { initI18n } from '../src/i18n';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-
-const placementOn = (
-  machineId: MachineId,
-  memory?: { providerId: string; memoryId: string }
-): AgentRoleFormPlacement => ({
-  machineId,
-  enabled: true,
-  agentConfigId: null,
-  modeId: null,
-  modelId: null,
-  configOptionValues: {},
-  ...(memory ? { memory } : {}),
-});
 
 const mocks = vi.hoisted(() => ({
   entries: [] as MemoryAssociation[],
@@ -368,9 +354,8 @@ it('uses only associated identities in the Role picker and prevents selecting a 
   await act(async () =>
     root.render(
       <Provider store={store}>
-        <RoleMemoryPanel
-          placements={[placementOn(localId)]}
-          machineLabel={() => 'This Mac'}
+        <RoleMemoryPicker
+          machineId={localId}
           onChange={() => {
             throw new Error('Cannot select missing identity');
           }}
@@ -382,29 +367,32 @@ it('uses only associated identities in the Role picker and prevents selecting a 
   expect(button('Link').disabled).toBe(true);
 });
 
-it('picks each machine identity from that machine and flags one it has not imported', async () => {
+it("picks an instance's identity from its machine and flags one that machine has not imported", async () => {
   ready();
   mocks.entries = [saved];
-  const changes: Array<[string, unknown]> = [];
-  await act(async () =>
-    root.render(
-      <Provider store={createStore()}>
-        <RoleMemoryPanel
-          placements={[
-            placementOn(localId),
-            placementOn(remoteId, { providerId: saved.providerId, memoryId: saved.memoryId }),
-          ]}
-          machineLabel={(machineId) => (machineId === localId ? 'This Mac' : 'Build box')}
-          onChange={(machineId, memory) => changes.push([machineId, memory])}
-        />
-      </Provider>
-    )
-  );
-  // The identity is imported on this Mac only: the build box flags its binding.
-  expect(container.textContent).toMatch(/This Mac.*Review lessons.*Build box/);
-  expect(container.textContent).toContain(`“${saved.memoryId}” is not imported on this machine.`);
+  const changes: unknown[] = [];
+  const renderPicker = (machineId: MachineId, value?: { providerId: string; memoryId: string }) =>
+    act(async () =>
+      root.render(
+        <Provider store={createStore()}>
+          <RoleMemoryPicker
+            machineId={machineId}
+            value={value}
+            onChange={(memory) => changes.push(memory)}
+          />
+        </Provider>
+      )
+    );
+  // Imported on this Mac: linkable, nothing to warn about.
+  await renderPicker(localId);
+  expect(container.textContent).toContain('Review lessons');
+  expect(container.textContent).not.toContain('is not imported');
   await act(async () => button('Link').click());
-  expect(changes).toEqual([[localId, { providerId: saved.providerId, memoryId: saved.memoryId }]]);
+  expect(changes).toEqual([{ providerId: saved.providerId, memoryId: saved.memoryId }]);
+
+  // The build box holds a binding it never imported: say so and point at Memory.
+  await renderPicker(remoteId, { providerId: saved.providerId, memoryId: saved.memoryId });
+  expect(container.textContent).toContain(`“${saved.memoryId}” is not imported on this machine.`);
   await act(async () => button('Open Memory settings').click());
   expect(mocks.openSettings).toHaveBeenCalledWith('memory', { machineId: remoteId });
 });

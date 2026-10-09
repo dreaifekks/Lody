@@ -14,6 +14,7 @@ import {
   ScheduleRepository,
   type AgentRole,
   type AgentRoleId,
+  type AgentRoleInstanceId,
   type MachineId,
   type MachineMeta,
   type ProposalTargetAgent,
@@ -92,10 +93,10 @@ const readRoles = async (manager: LoroDocumentManager, workspaceId: WorkspaceId)
 const readAgent = async (
   discovery: ResourceDiscovery,
   agentConfigId: string
-): Promise<ProposalTargetAgent | undefined> => {
+): Promise<(ProposalTargetAgent & { name: string }) | undefined> => {
   try {
     const { item } = await discovery.get('agent_config', agentConfigId);
-    return item as unknown as ProposalTargetAgent;
+    return item as unknown as ProposalTargetAgent & { name: string };
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('RESOURCE_NOT_FOUND')) return undefined;
     throw error;
@@ -133,13 +134,13 @@ const ensureNotice = async (
 
 /** A Role write's identity: its revision and a digest of what it holds. */
 export const agentRoleWriteId = (role: AgentRole): string => {
-  const { name, description, emoji, visibility, placements, promptPrefix } = role;
+  const { name, description, emoji, visibility, instances, promptPrefix } = role;
   const content = canonicalScheduleJson({
     name,
     description,
     emoji,
     visibility,
-    placements,
+    instances,
     promptPrefix,
   });
   return `r${role.revision}-${createHash('sha256').update(content).digest('hex').slice(0, 16)}`;
@@ -234,7 +235,7 @@ export function createAgentConfigWrites(deps: {
       const agents: ProposalTargetAgent[] = [];
       for (const agentConfigId of new Set(
         [
-          ...(role?.placements.map((placement) => placement.agentConfigId) ?? []),
+          ...(role?.instances.map((instance) => instance.agentConfigId) ?? []),
           target?.agentConfigId,
           invoking.session.agentConfigId,
         ].filter((value): value is string => Boolean(value))
@@ -316,10 +317,10 @@ export function createAgentConfigWrites(deps: {
           userId,
           callerTier: invoking.tier,
           roles: () => readRoles(manager, workspaceId),
-          agentMachineId: async (agentConfigId) => {
+          agentConfig: async (agentConfigId) => {
             const agent = await readAgent(discovery, agentConfigId);
             if (!agent) throw new Error('No readable Agent config with that id.');
-            return agent.machineId as MachineId;
+            return { ...agent, machineId: agent.machineId as MachineId };
           },
           tierOf: (candidate) =>
             readAgentRunConfigTier({
@@ -332,6 +333,7 @@ export function createAgentConfigWrites(deps: {
             }),
           now: getServerNow,
           createId: () => randomUUID() as AgentRoleId,
+          createInstanceId: () => randomUUID() as AgentRoleInstanceId,
         });
         const write = await upsertWorkspaceAgentRoleEntry(manager.repo, workspaceId, next);
         // The revision and the content a write produced identify it: two
@@ -391,5 +393,5 @@ const summarizeRole = (role: AgentRole) => ({
   name: role.name,
   visibility: role.visibility,
   revision: role.revision,
-  placements: role.placements,
+  instances: role.instances,
 });

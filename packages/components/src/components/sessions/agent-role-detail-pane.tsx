@@ -14,6 +14,7 @@ import {
   getAgentRoleEmoji,
   type AgentConfigMeta,
   type AgentRole,
+  type AgentRoleInstance,
   type AgentRoleId,
   type MachineViewMeta,
 } from '@lody/shared';
@@ -33,18 +34,14 @@ import { cn } from '@/lib/utils';
  */
 export type AgentRoleDetailSubject = {
   role: AgentRole;
+  /** The instance the pane describes: its agent, model and options. */
+  instance: AgentRoleInstance;
   agentConfig?: Pick<
     AgentConfigMeta,
     'name' | 'cliType' | 'agentType' | 'brandId' | 'env' | 'runtimeOverrides'
   >;
   /** Only what reading a Role needs: the capabilities its labels resolve against. */
   machine?: Pick<MachineViewMeta, 'acpCapabilities'> | null;
-  /**
-   * Named only where a surface offers Roles from more than one machine — the
-   * composer's list is one machine by construction, so naming it there would be
-   * a constant that says nothing.
-   */
-  machineLabel?: string;
 };
 
 /**
@@ -61,9 +58,9 @@ export type AgentRoleDetailSubject = {
  */
 export function AgentRoleDetailPane({
   role,
+  instance,
   agentConfig,
   machine,
-  machineLabel,
   onEdit,
   className,
 }: AgentRoleDetailSubject & {
@@ -75,7 +72,7 @@ export function AgentRoleDetailPane({
   const selectorOptions = useAcpSelectorOptions(
     agentConfig
       ? {
-          configId: role.agentConfigId,
+          configId: instance.agentConfigId,
           cliType: agentConfig.cliType,
           agentType: agentConfig.agentType,
           runtimeOverrides: agentConfig.runtimeOverrides,
@@ -84,7 +81,7 @@ export function AgentRoleDetailPane({
       : undefined
   );
 
-  const { modelId, modeId, configOptionValues } = role.runConfig;
+  const { modelId, modeId, configOptionValues } = instance.runConfig;
   const { thoughtLevelSelectors } = orderAcpConfigOptionSelectors(
     selectorOptions.configOptionSelectors
   );
@@ -168,7 +165,6 @@ export function AgentRoleDetailPane({
             ) : null}
             <span className="min-w-0 truncate">
               {agentConfig?.name ?? t('settings.agentRoles.unknownAgentConfig')}
-              {machineLabel ? ` · ${machineLabel}` : ''}
             </span>
           </span>
         </span>

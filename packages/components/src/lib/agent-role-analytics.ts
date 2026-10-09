@@ -1,9 +1,4 @@
-import {
-  agentRoleOnMachine,
-  type AgentRole,
-  type MachineId,
-  type MessageTextSpan,
-} from '@lody/shared';
+import { type AgentRole, type MachineId, type MessageTextSpan } from '@lody/shared';
 import { capturePostHogEvent, type PostHogAnalyticsClient } from '@/lib/posthog-analytics';
 
 export type AgentRoleAppliedSource = 'new_chat' | 'existing_session' | 'mention';
@@ -46,7 +41,7 @@ export function captureAgentRoleMentionsApplied(
     captureAgentRoleApplied(postHog, role, {
       source: 'mention',
       crossMachine: input.executionMachineId
-        ? !agentRoleOnMachine(role, input.executionMachineId)
+        ? !role.instances.some((instance) => instance.machineId === input.executionMachineId)
         : null,
     });
   }

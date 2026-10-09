@@ -1,8 +1,13 @@
-import { agentRoleOnMachine, snapshotAgentRole } from '@lody/shared';
 import { useCallback, useEffect, useMemo } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import { usePostHog } from '@posthog/react';
-import type { AgentConfigId, AgentRoleId, MachineId, SessionId } from '@lody/shared';
+import type {
+  AgentConfigId,
+  AgentRoleId,
+  AgentRoleInstanceId,
+  MachineId,
+  SessionId,
+} from '@lody/shared';
 
 import { getAllAgentConfigAtom } from '@/atoms/agents';
 import {
@@ -17,31 +22,37 @@ import type { AcpSessionSelectOption } from '@/components/shared/acp-session-sel
 import { filterAcpSessionConfigOptionValues } from '@/lib/acp-session-config-selection';
 import { captureAgentRoleApplied } from '@/lib/agent-role-analytics';
 import {
+  buildAgentRoleTurnSelection,
+  canFixedComposerUseAgentRoleEntry,
+  findComposerAgentRoleItem,
+  findRecordedComposerAgentRoleItem,
   isAgentRoleRunConfigApplied,
+  mapComposerAgentRoleEntries,
   selectSessionAgentRoles,
   type ComposerAgentRoleItem,
   type SessionTurnAgentRoleSelection,
 } from '@/lib/composer-agent-roles';
 import {
   useAgentRoleAvailability,
+  useComposerAgentRoleNames,
   useWorkspaceAgentRoles,
 } from '@/hooks/use-workspace-agent-roles';
 
 export type SessionAgentRoleControl = {
   items: ComposerAgentRoleItem[];
-  /** The Role this session's run config still IS, not merely the last picked. */
-  selectedRoleId: AgentRoleId | null;
+  /** The instance this session's run config still IS, not merely the last picked. */
+  selectedInstanceId: AgentRoleInstanceId | null;
   /** Three-state Turn metadata: undefined=legacy/unknown, null=explicit None. */
   turnSelection?: SessionTurnAgentRoleSelection;
-  onSelect: (roleId: AgentRoleId | null) => void;
+  onSelect: (instanceId: AgentRoleInstanceId | null) => void;
 };
 
 /**
  * The Role row for an EXISTING session's composer.
  *
  * A live session's agent is fixed, so this is deliberately not the landing's
- * feature. It offers only Roles whose placement on the Session's machine uses
- * its exact Agent Config (its model provider), and applies only their RUN CONFIG — model,
+ * feature. It offers only Role instances on the Session's machine with its
+ * exact Agent Config (its model provider), and applies only their RUN CONFIG — model,
  * reasoning, permission, and whatever else that agent publishes — because
  * those are exactly the values a session can still change per turn. The Role's
  * machine, config, and instruction are not applied and are not claimed to be.
@@ -56,8 +67,10 @@ export function useSessionAgentRole({
   sessionId,
   provenanceRoleId,
   provenanceRoleRevision,
+  provenanceInstanceId,
   durableRoleId,
   durableRoleRevision,
+  durableInstanceId,
   durableSourceTurnKey,
   durableKnownSourceTurnKeys = [],
   durableRoleReady = true,
@@ -78,9 +91,12 @@ export function useSessionAgentRole({
   /** Role that created this session; seeds only the composer's display name. */
   provenanceRoleId?: AgentRoleId;
   provenanceRoleRevision?: number;
+  provenanceInstanceId?: AgentRoleInstanceId;
   /** Latest accepted/queued Turn selection. Null is explicit None. */
   durableRoleId?: AgentRoleId | null;
   durableRoleRevision?: number;
+  /** The instance that Turn recorded, when it recorded one. */
+  durableInstanceId?: AgentRoleInstanceId;
   /** Stable logical Turn identity used to fence local unsent choices. */
   durableSourceTurnKey?: string;
   /** Logical Turns visible when the latest durable snapshot was resolved. */
@@ -103,34 +119,29 @@ export function useSessionAgentRole({
 }): SessionAgentRoleControl {
   const postHog = usePostHog();
   const { roles, synced: agentRolesSynced } = useWorkspaceAgentRoles();
-  const scopedRoles = useMemo(
-    () =>
-      machineId && agentConfigId
-        ? roles.flatMap((catalogRole) => {
-            const role = agentRoleOnMachine(catalogRole, machineId);
-            return role?.agentConfigId === agentConfigId ? [role] : [];
-          })
-        : [],
-    [agentConfigId, machineId, roles]
-  );
-  const { resolve: resolveAvailability } = useAgentRoleAvailability(scopedRoles);
+  const { resolveInstance } = useAgentRoleAvailability(roles);
   const agentConfigs = useAtomValue(getAllAgentConfigAtom);
+  const names = useComposerAgentRoleNames();
   const resolvedItems = useMemo(
     () =>
       selectSessionAgentRoles({
-        roles: scopedRoles,
+        roles,
         machineId,
         agentConfigId,
         agentConfigs,
-        resolveAvailability,
+        resolveAvailability: resolveInstance,
+        names,
       }),
-    [agentConfigId, agentConfigs, machineId, resolveAvailability, scopedRoles]
+    [agentConfigId, agentConfigs, machineId, names, resolveInstance, roles]
   );
   const items = useMemo(
     () =>
       durableRoleReady
         ? resolvedItems
-        : resolvedItems.map((item) => ({ ...item, availability: { kind: 'unknown' } as const })),
+        : mapComposerAgentRoleEntries(resolvedItems, (entry) => ({
+            ...entry,
+            availability: { kind: 'unknown' },
+          })),
     [durableRoleReady, resolvedItems]
   );
 
@@ -164,6 +175,8 @@ export function useSessionAgentRole({
     !durableRoleReady && durableSnapshot ? durableSnapshot.roleId : durableRoleId;
   const effectiveDurableRoleRevision =
     !durableRoleReady && durableSnapshot ? durableSnapshot.roleRevision : durableRoleRevision;
+  const effectiveDurableInstanceId =
+    !durableRoleReady && durableSnapshot ? durableSnapshot.instanceId : durableInstanceId;
   useEffect(() => {
     if (!durableRoleReady) return;
     setDurableSnapshot((current) => {
@@ -171,6 +184,7 @@ export function useSessionAgentRole({
         current &&
         current.roleId === durableRoleId &&
         current.roleRevision === durableRoleRevision &&
+        current.instanceId === durableInstanceId &&
         current.currentTurnKey === hydratedTurnKey &&
         current.knownTurnKeys.length === hydratedKnownTurnKeys.length &&
         current.knownTurnKeys.every((key, index) => key === hydratedKnownTurnKeys[index])
@@ -180,6 +194,7 @@ export function useSessionAgentRole({
       return {
         roleId: durableRoleId,
         roleRevision: durableRoleRevision,
+        instanceId: durableInstanceId,
         currentTurnKey: hydratedTurnKey,
         knownTurnKeys: hydratedKnownTurnKeys,
       };
@@ -188,6 +203,7 @@ export function useSessionAgentRole({
     durableRoleId,
     durableRoleReady,
     durableRoleRevision,
+    durableInstanceId,
     hydratedKnownTurnKeys,
     hydratedTurnKey,
     setDurableSnapshot,
@@ -196,12 +212,20 @@ export function useSessionAgentRole({
     !selectionOverride ||
     !hydratedTurnKey ||
     selectionOverride.basedOnTurnKeys.includes(hydratedTurnKey);
+  const useOverride =
+    Boolean(selectionOverride) && (!durableRoleReady || selectionOverrideIsCurrent);
   const pickedRoleId =
-    selectionOverride && (!durableRoleReady || selectionOverrideIsCurrent)
+    useOverride && selectionOverride
       ? selectionOverride.roleId
       : effectiveDurableRoleId !== undefined
         ? effectiveDurableRoleId
         : (provenanceRoleId ?? null);
+  const pickedInstanceId =
+    useOverride && selectionOverride
+      ? selectionOverride.instanceId
+      : effectiveDurableRoleId !== undefined
+        ? effectiveDurableInstanceId
+        : provenanceInstanceId;
   useEffect(() => {
     if (!durableRoleReady || !selectionOverride || selectionOverrideIsCurrent) {
       return;
@@ -219,13 +243,22 @@ export function useSessionAgentRole({
     }),
     [configOptionValues, selectedModeId, selectedModelId]
   );
-  const selectedRoleId = useMemo(() => {
-    if (!pickedRoleId) return null;
-    const role = items.find((item) => item.role.id === pickedRoleId)?.role;
-    if (!role) return null;
-    return !durableRoleReady || isAgentRoleRunConfigApplied(role, selection) ? role.id : null;
-  }, [durableRoleReady, items, pickedRoleId, selection]);
-  const pickedItem = pickedRoleId ? items.find((item) => item.role.id === pickedRoleId) : undefined;
+  /* The picked instance, while it still exists on this Session's machine: a
+     deleted or moved instance ends the selection rather than handing it to
+     another. A record made before instances names only its Role, which then
+     means what a bare pick of that Role runs here. */
+  const recordedItem = pickedRoleId
+    ? findRecordedComposerAgentRoleItem(items, pickedRoleId, pickedInstanceId)
+    : undefined;
+  const pickedItem =
+    recordedItem && canFixedComposerUseAgentRoleEntry(recordedItem) ? recordedItem : undefined;
+  const selectedInstanceId = useMemo(() => {
+    if (!pickedItem || pickedItem.role.id !== pickedRoleId) return null;
+    return !durableRoleReady ||
+      isAgentRoleRunConfigApplied(pickedItem.instance.runConfig, selection)
+      ? pickedItem.instance.id
+      : null;
+  }, [durableRoleReady, pickedItem, pickedRoleId, selection]);
   const storedPickedRevision =
     effectiveDurableRoleId === pickedRoleId
       ? effectiveDurableRoleRevision
@@ -233,13 +266,8 @@ export function useSessionAgentRole({
         ? provenanceRoleRevision
         : undefined;
   const turnSelection: SessionTurnAgentRoleSelection =
-    selectedRoleId && pickedItem
-      ? {
-          agentRoleId: selectedRoleId,
-          agentRoleRevision: pickedItem.role.revision,
-          memory: pickedItem.role.runConfig.memory,
-          agentRoleSnapshot: snapshotAgentRole(pickedItem.role),
-        }
+    selectedInstanceId && pickedItem
+      ? buildAgentRoleTurnSelection(pickedItem)
       : pickedRoleId === null
         ? null
         : pickedItem
@@ -251,28 +279,35 @@ export function useSessionAgentRole({
               : typeof storedPickedRevision === 'number'
                 ? { agentRoleId: pickedRoleId, agentRoleRevision: storedPickedRevision }
                 : undefined
-            : scopedRoles.some((role) => role.id === pickedRoleId)
-              ? typeof storedPickedRevision === 'number'
-                ? { agentRoleId: pickedRoleId, agentRoleRevision: storedPickedRevision }
-                : undefined
-              : // The synchronized catalog authoritatively no longer contains it.
-                null;
+            : pickedInstanceId
+              ? // Its instance is gone from this Session's machine: no stand-in.
+                null
+              : roles.some((role) => role.id === pickedRoleId)
+                ? typeof storedPickedRevision === 'number'
+                  ? { agentRoleId: pickedRoleId, agentRoleRevision: storedPickedRevision }
+                  : undefined
+                : // The synchronized catalog authoritatively no longer contains it.
+                  null;
 
   const onSelect = useCallback(
-    (roleId: AgentRoleId | null) => {
-      if (roleId === null) {
+    (instanceId: AgentRoleInstanceId | null) => {
+      if (instanceId === null) {
         // Clears the NAME, not the configuration: the values are the user's own
         // now, and rolling them back would undo choices they never asked to undo.
         if (!durableRoleReady) return;
         setSelectionOverride({ roleId: null, basedOnTurnKeys: effectiveKnownTurnKeys });
         return;
       }
-      const item = items.find((candidate) => candidate.role.id === roleId);
+      const item = findComposerAgentRoleItem(items, instanceId);
       if (!item || item.availability.kind !== 'available') return;
-      const { role } = item;
-      setSelectionOverride({ roleId, basedOnTurnKeys: effectiveKnownTurnKeys });
+      const { role, instance } = item;
+      setSelectionOverride({
+        roleId: role.id,
+        instanceId: instance.id,
+        basedOnTurnKeys: effectiveKnownTurnKeys,
+      });
 
-      const { modelId, modeId, configOptionValues: pinned } = role.runConfig;
+      const { modelId, modeId, configOptionValues: pinned } = instance.runConfig;
       const appliedModelId =
         modelId && modelOptions.some((option) => option.value === modelId) ? modelId : undefined;
       if (appliedModelId) {
@@ -293,7 +328,7 @@ export function useSessionAgentRole({
       )) {
         onConfigOptionChange?.(configId, value);
       }
-      // Offered Roles are bound to this Session's own machine and Agent Config.
+      // Offered instances run on this Session's own machine and Agent Config.
       captureAgentRoleApplied(postHog, role, { source: 'existing_session', crossMachine: false });
     },
     [
@@ -312,5 +347,5 @@ export function useSessionAgentRole({
     ]
   );
 
-  return { items, selectedRoleId, turnSelection, onSelect };
+  return { items, selectedInstanceId, turnSelection, onSelect };
 }

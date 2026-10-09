@@ -4,7 +4,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { z } from 'zod';
 import {
-  withAgentRolePlacements,
+  legacyAgentRoleInstanceId,
+  withAgentRoleInstances,
   type AgentConfigMeta,
   type AgentRole,
   type LocalProjectMeta,
@@ -88,13 +89,13 @@ const role = (id: string, overrides: Partial<AgentRole> = {}): AgentRole => {
     updatedAt: 1,
     ...overrides,
   } as AgentRole;
-  return withAgentRolePlacements(
+  return withAgentRoleInstances(
     row,
-    overrides.placements ?? [
+    overrides.instances ?? [
       {
+        id: legacyAgentRoleInstanceId(row.id, row.machineId),
         machineId: row.machineId,
         agentConfigId: row.agentConfigId,
-        enabled: true,
         runConfig: row.runConfig,
       },
     ]
@@ -233,7 +234,7 @@ describe('resource discovery across MCP and CLI', () => {
     });
   });
 
-  it('filters Roles by an enabled machine while retaining unavailable matches', async () => {
+  it('filters Roles by an instance machine while retaining unavailable matches', async () => {
     const discovery = new ResourceDiscovery(
       source({ roles: async () => [role('one'), role('two', { machineId: 'two' as MachineId })] })
     );
@@ -242,52 +243,67 @@ describe('resource discovery across MCP and CLI', () => {
     expect(page.items[0]?.availability?.state).toBe('unavailable');
   });
 
-  it('reports each machine of a Role with its own availability', async () => {
-    const both = role('both', {
-      placements: [
-        {
-          machineId: 'two' as MachineId,
-          agentConfigId: 'agent-two' as AgentRole['agentConfigId'],
-          enabled: true,
-          runConfig: {},
-        },
-        {
-          machineId: 'one' as MachineId,
-          agentConfigId: 'agent' as AgentRole['agentConfigId'],
-          enabled: true,
-          runConfig: { modelId: 'model', configOptionValues: { api_key: 'synthetic-secret' } },
-        },
-        {
-          machineId: 'hidden' as MachineId,
-          agentConfigId: 'agent-hidden' as AgentRole['agentConfigId'],
-          enabled: false,
-          runConfig: {},
-        },
+  it('reports each instance of a Role with its own availability', async () => {
+    const instance = (
+      id: string,
+      machineId: string,
+      agentConfigId: string,
+      runConfig: AgentRole['runConfig'] = {},
+      alias?: string
+    ) => ({
+      id: id as AgentRole['instances'][number]['id'],
+      ...(alias ? { alias } : {}),
+      machineId: machineId as MachineId,
+      agentConfigId: agentConfigId as AgentRole['agentConfigId'],
+      runConfig,
+    });
+    const several = role('several', {
+      instances: [
+        instance('on-two', 'two', 'agent-two'),
+        instance('on-one', 'one', 'agent', {
+          modelId: 'model',
+          configOptionValues: { api_key: 'synthetic-secret' },
+        }),
+        instance('also-on-one', 'one', 'agent-gone', {}, 'Spare'),
       ],
     });
-    const discovery = new ResourceDiscovery(source({ roles: async () => [both] }));
-    const { item } = await discovery.get('agent_role', 'both');
+    const discovery = new ResourceDiscovery(source({ roles: async () => [several] }));
+    const { item } = await discovery.get('agent_role', 'several');
     expect(item.availability).toEqual({ state: 'available' });
-    expect(item.placements).toEqual([
+    expect(item.instances).toEqual([
       {
+        id: 'on-two',
+        alias: null,
+        // Its config is unknown, so it groups alone.
+        group: { key: 'config:agent-two', name: null },
         machineId: 'two',
         agentConfigId: 'agent-two',
-        enabled: true,
         runConfig: {},
         availability: { state: 'unavailable', reason: 'agent_config_missing' },
       },
       {
+        id: 'on-one',
+        alias: null,
+        group: { key: 'agent:builtin:codex', name: 'Codex' },
         machineId: 'one',
         agentConfigId: 'agent',
-        enabled: true,
         runConfig: { modelId: 'model' },
         availability: { state: 'available' },
       },
-      { machineId: 'hidden', agentConfigId: 'agent-hidden', enabled: false, runConfig: {} },
+      {
+        id: 'also-on-one',
+        alias: 'Spare',
+        group: { key: 'alias:spare', name: 'Spare' },
+        machineId: 'one',
+        agentConfigId: 'agent-gone',
+        runConfig: {},
+        availability: { state: 'unavailable', reason: 'agent_config_missing' },
+      },
     ]);
-    // A machine filter keeps the Role with all its machines.
+    expect(await discovery.agentRoleInstances('several')).toEqual(item.instances);
+    // A machine filter keeps the Role with all its instances.
     const page = await discovery.list('agent_role', { machineId: 'two' });
-    expect(page.items.map((row) => row.id)).toEqual(['both']);
+    expect(page.items.map((row) => row.id)).toEqual(['several']);
     expect(await discovery.list('agent_role', { machineId: 'hidden' })).toMatchObject({
       items: [],
     });

@@ -27,17 +27,19 @@ actions on hover or keyboard focus. The page has top-right Add Memory and Refres
 actions. A successful provider inventory that omits a saved identity shows a
 warning; offline, inactive and failed probes do not prove deletion. Probes run on
 entry, focus and every 30 seconds while visible, skipping pending requests.
-Memory settings and the Role Memory tab keep saved cards visible during probing
+Memory settings and the Role memory picker keep saved cards visible during probing
 without a loading indicator; completed failures still show inline status.
 
-The Role editor shows name, description, instruction and sharing above Machines
-and Memory tabs that share one draft and save action. A Role runs on several
-machines, so each enabled machine keeps its own memory reference: the Memory tab
-lists every enabled machine with the saved associations of that machine, using the
-same logo/name/description cards as Memory settings. Clicking a card selects it;
+The Role editor shows name, description, instruction and sharing above the
+Role's instances, all under one draft and save action. Each instance runs on one
+machine, so each keeps its own memory reference, chosen while editing that
+instance from the saved associations of its machine, using the same
+logo/name/description cards as Memory settings. Clicking a card selects it;
 unlinking remains available. A reference the machine has not imported is shown as
-missing, with a way to Memory settings. Each machine's run configuration and turn
-input still store only `{ providerId, memoryId }`.
+missing, with a way to Memory settings. Each instance's run configuration and turn
+input still store only `{ providerId, memoryId }`; an agent write that replaces
+the instances keeps the reference of an instance passed back by id. Instances of
+one group stand in for each other across machines, each with its own reference.
 Removing a catalog association does not rewrite existing Roles or accepted turns.
 Unlinking a Role affects future turns; accepted turns and Operations keep their
 frozen configuration. Neither memory contents nor credentials enter the catalog.
@@ -62,7 +64,7 @@ existing ID keeps its provider profile. The returned list remains authoritative.
 Settings reuses the Agents machine selector: line tabs in the desktop pane when
 more than one machine is visible, pills outside the pane, and no remote selector
 on local-only platforms. The selected machine's saved associations use the same catalog
-rows as Agents. The Role editor Memory tab reuses the association cards, status copy and install link. Offline machines and daemons without
+rows as Agents. The Role memory picker reuses the association cards, status copy and install link. Offline machines and daemons without
 `memoryProviders` v1 do not receive memory RPCs. Requests use the existing
 local/remote machine routing; a failed local request never falls back to a
 remote transport.
