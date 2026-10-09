@@ -188,10 +188,10 @@ pinned rows, one per group there, because naming a machine asks for that
 machine even where the group's own row already runs on it. A pinned range
 carries `pinned:<instance id>`, so expansion can tell it from a group range and
 never stands another instance in. `@` rather than a space separates the machine
-because a space closes every mention menu; the input reads a trigger glued to
-a run that the same trigger opened as part of that query
-(`findQueryTriggerIndex`), which also keeps `@node_modules/@types` one path
-query. The menu keeps entries that are loading or unavailable, with
+because a space closes every mention menu; the input reads an `@` glued to a
+run that `@` opened as part of that query (`findQueryTriggerIndex`), which
+also keeps `@node_modules/@types` one path query. Only `@` repeats this way:
+`/a/b` and `$a$b` still read from their last trigger. The menu keeps entries that are loading or unavailable, with
 an explanation below the name. They follow available matches and cannot be
 selected. Hydration and before-send expansion independently reject those rows,
 so showing a stale Role never creates a new dispatch instruction.

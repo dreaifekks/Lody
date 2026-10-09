@@ -15,7 +15,6 @@ import {
 } from './mention-input-core';
 import { MentionHighlighter } from './mention-highlighter';
 import {
-  canTriggerFollowText,
   findQueryTriggerIndex,
   findTriggerCandidates,
   isMentionNavigationPrefix,
@@ -355,7 +354,7 @@ const MentionInput = React.forwardRef<InputElement, MentionInputProps>((props, f
         }
 
         function isTriggerPartOfText() {
-          if (canTriggerFollowText(trigger)) return false;
+          if (trigger === '#') return false;
           const textBeforeTrigger = value.slice(0, lastTriggerIndex);
           const hasTextBeforeTrigger = /\S/.test(textBeforeTrigger);
           if (!hasTextBeforeTrigger) return false;

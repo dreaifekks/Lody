@@ -1141,6 +1141,13 @@ describe('typing a mention into the input', () => {
     expect(latest.inputValue).toBe('mail me@example.com');
   });
 
+  it.each(['/a/b', '$a$b'])('closes at a repeated trigger other than @ (%s)', (text) => {
+    type(text.slice(0, 2));
+    expect(latest.open).toBe(true);
+    type(text.slice(2));
+    expect(latest.open).toBe(false);
+  });
+
   it('starts a new query at a trigger after whitespace', () => {
     type('@33');
     press('Enter');

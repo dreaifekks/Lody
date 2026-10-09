@@ -539,17 +539,20 @@ describe('touch selection of prepared mentions', () => {
 
 describe('findQueryTriggerIndex', () => {
   it.each([
-    // A trigger glued to a run the same trigger opened continues that query.
+    // An `@` glued to a run that `@` opened continues that query.
     ['@ui@n1', '@', 0],
     ['ask @ui@n1', '@', 4],
     ['@node_modules/@types', '@', 0],
-    // Anything else is the last trigger, as before.
+    // Any other `@` is the last one, as before.
     ['me@example.com', '@', 2],
     ['@a @b', '@', 3],
     ['@a x@b', '@', 4],
+    ['plain', '@', -1],
+    // Every other trigger reads from its last occurrence, repeated or not.
+    ['/a/b', '/', 2],
+    ['$a$b', '$', 2],
     ['@src/app', '/', 4],
     ['issue#12#3', '#', 8],
-    ['plain', '@', -1],
   ])('reads %s from the %s that opens its query', (value, trigger, index) => {
     expect(findQueryTriggerIndex(value, trigger, value.length)).toBe(index);
   });
