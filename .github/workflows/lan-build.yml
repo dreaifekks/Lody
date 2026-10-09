@@ -29,6 +29,11 @@ name: LAN build
 #
 # Running it by hand builds without publishing, unless it runs on one of these
 # tags; `build: cli` then does what the `-cli` suffix does.
+#
+# Cancelling: a later run of the same tag cancels the builds (plan, bundles,
+# desktop) of an earlier one, and that run then publishes nothing. Publishing
+# is serialized per rolling release and never cancelled while it runs, since
+# a publish cut off halfway leaves files the manifest does not describe.
 on:
   push:
     tags:
@@ -45,10 +50,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: lan-build-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   NODE_VERSION: 22
   COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
@@ -60,6 +61,9 @@ jobs:
   plan:
     name: Plan
     if: github.repository != 'LodyAI/Lody'
+    concurrency:
+      group: lan-build-${{ github.ref }}-plan
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -109,6 +113,9 @@ jobs:
     name: Build bundles
     needs: plan
     if: needs.plan.outputs.build != 'reuse'
+    concurrency:
+      group: lan-build-${{ github.ref }}-bundles
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -167,6 +174,11 @@ jobs:
     name: Package desktop (${{ matrix.id }})
     needs: [plan, bundles]
     if: needs.plan.outputs.build == 'full'
+    # One group per platform: the three of a run would otherwise wait for,
+    # and cancel, each other.
+    concurrency:
+      group: lan-build-${{ github.ref }}-desktop-${{ matrix.id }}
+      cancel-in-progress: true
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -318,13 +330,20 @@ jobs:
   release:
     name: Publish rolling release
     needs: [plan, bundles, desktop]
-    # After the builds the plan asked for; a reused build asks for none.
+    # Only after every build the plan asked for succeeded: a build cancelled by
+    # a later run of the same tag is neither a failure nor a success, and a
+    # reused build asks for none. `!cancelled()` stands in for the default
+    # `success()`, which a skipped build would fail.
     if: >-
-      !failure() && !cancelled() && github.ref_type == 'tag' &&
-      needs.plan.result == 'success'
+      !cancelled() && github.ref_type == 'tag' && needs.plan.result == 'success' &&
+      (needs.plan.outputs.build == 'reuse' ||
+      (needs.bundles.result == 'success' &&
+      (needs.plan.outputs.build == 'cli' || needs.desktop.result == 'success')))
     # Reading what the release lists, assembling and uploading is one step for
     # the release: a CLI-only build carries the files the release lists, which
-    # another tag publishing meanwhile would replace. Builds stay per tag.
+    # another run publishing meanwhile would replace. So publishing waits its
+    # turn per release and is never cancelled once it started; GitHub only
+    # drops a publish still waiting when a later one queues behind it.
     concurrency:
       group: lan-publish-${{ startsWith(github.ref_name, 'dev-') && 'lan-dev' || 'lan-latest' }}
       cancel-in-progress: false

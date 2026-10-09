@@ -97,9 +97,11 @@ script and an agent service older than this read, so none of them is offered a
 file that reports another version. The new tarball goes beside it as
 `lody-lan-cli-<version>.tgz`; `cli` names it with its build, and a newer agent
 service installs that one (`readLanCliRelease`, `resolveLanCliAssetName`).
-Publishing is serialized per release (the `release` job's concurrency group),
-since a CLI-only build lists files another tag may be replacing meanwhile;
-GitHub cancels a publish still waiting when a later one queues behind it.
+Publishing is serialized per release (the `release` job's concurrency group)
+and never cancelled while it runs, since a CLI-only build lists files another
+run may be replacing meanwhile; GitHub drops a publish still waiting when a
+later one queues behind it. A later run of the same tag cancels only the
+builds of an earlier one, which then publishes nothing.
 Tarballs of earlier CLI-only builds stay in the release unlisted.
 
 A release tag whose version and commit are those of the whole build `lan-dev`

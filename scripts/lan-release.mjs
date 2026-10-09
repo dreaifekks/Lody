@@ -321,6 +321,9 @@ export function canReuseDevBuild(devManifest, { version, commit, stableManifest 
     devManifest.version === version &&
     devManifest.cli.commit === commit &&
     devManifest.cli.version === version &&
+    // A CLI-only rebuild of the same tag lists its tarball under a name of its
+    // own beside the one of the whole build; that is no whole build any more.
+    (devManifest.cli.asset ?? CLI_ASSET_NAME) === CLI_ASSET_NAME &&
     devManifest.assets.some((asset) => isDesktopAssetName(asset.name))
   );
 }

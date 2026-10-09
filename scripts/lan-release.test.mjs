@@ -565,6 +565,34 @@ test('a release reuses only a whole dev build of its commit and version', () => 
   assert.equal(plan(null), 'full');
 });
 
+test('a release is built in full after a CLI-only rebuild of the same dev tag', async (t) => {
+  const paths = await fixture(t);
+  const version = '0.100.0-lan.7';
+  await paths.add('lan-cli', `lody-${version}.tgz`, 'cli');
+  await paths.add('lan-desktop-mac', `LodyOSS-${version}-arm64.zip`, 'mac-arm64');
+  const whole = assemble(paths, { version, tag: 'lan-dev' });
+  const stableManifest = { cli: { version: '0.100.0-lan.3', commit: OTHER_COMMIT, builtAt: 'x' } };
+  const plan = (devManifest) =>
+    planBuild({
+      tag: `v${version}`,
+      requested: '',
+      version,
+      commit: COMMIT,
+      devManifest,
+      stableManifest,
+    });
+  assert.equal(plan(whole), 'reuse');
+
+  // `build: cli` dispatched on the same tag: same version, same commit.
+  await rm(path.join(paths.artifactsDir, 'lan-desktop-mac'), { recursive: true });
+  await paths.add('lan-cli', `lody-${version}.tgz`, 'cli rebuilt');
+  const rebuilt = assemble(paths, { version, tag: 'lan-dev', carry: whole });
+  assert.equal(rebuilt.version, version);
+  assert.equal(rebuilt.cli.version, version);
+  assert.equal(rebuilt.cli.asset, `lody-lan-cli-${version}.tgz`);
+  assert.equal(plan(rebuilt), 'full');
+});
+
 async function packCli(root, name, files) {
   const staging = await mkdtemp(path.join(tmpdir(), 'lan-pack-'));
   await mkdir(path.join(staging, 'package', 'dist'), { recursive: true });
