@@ -49,7 +49,7 @@ import {
  * even where the composer's own conversation cannot move.
  *
  * A term naming a machine after `@` (`@ui@n1`) lists the instances on that
- * machine instead, each PINNED: it runs that instance or nothing, never a
+ * machine instead, every one PINNED: it runs that instance or nothing, never a
  * stand-in elsewhere in its group. The same `@<machine>` closes its token.
  */
 
@@ -94,10 +94,11 @@ const pinAgentRoleMentionValue = (instanceId: AgentRoleInstanceId): string =>
 // ---------------------------------------------------------------------------
 
 /**
- * The entries a term lists. `<role>@<machine>` lists one entry per group on
- * each machine whose token starts with `<machine>`: the group's own entry when
- * it already runs there, else the pinned one. Available matches precede
- * disabled matches, even when the latter score higher.
+ * The entries a term lists. `<role>@<machine>` lists the pinned entries on
+ * each machine whose token starts with `<machine>`, one per group there: asking
+ * for a machine means that machine, also where the group's own entry already
+ * runs on it. Available matches precede disabled matches, even when the latter
+ * score higher.
  */
 export const selectAgentRoleMentionCandidates = (
   items: readonly AgentRoleMentionItem[],
@@ -107,21 +108,22 @@ export const selectAgentRoleMentionCandidates = (
   const listed = items.filter((item) => !item.pinned);
   const at = term.indexOf('@');
   const machineTerm = term.slice(at + 1).toLowerCase();
-  const listedIds = new Set(listed.map((item) => item.instance.id));
   const onMachine =
     at < 0
       ? []
       : items.filter(
-          (item) =>
-            item.machineSlug.toLowerCase().startsWith(machineTerm) &&
-            !(item.pinned && listedIds.has(item.instance.id))
+          (item) => item.pinned && item.machineSlug.toLowerCase().startsWith(machineTerm)
         );
   const [pool, query] = onMachine.length > 0 ? [onMachine, term.slice(0, at)] : [listed, term];
   const rank = (available: boolean) =>
     rankMentionCandidates(
       pool.filter((item) => (item.availability.kind === 'available') === available),
       query,
-      { limit, fields: (item) => [item.slug, item.role.name, item.groupName] }
+      {
+        limit,
+        // Not `slug`: a pinned one ends in its machine, which is not the Role's term.
+        fields: (item) => [getAgentRoleInstanceMentionSlug(item), item.role.name, item.groupName],
+      }
     );
   return [...rank(true), ...rank(false)].slice(0, limit);
 };

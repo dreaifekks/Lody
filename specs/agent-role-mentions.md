@@ -28,9 +28,9 @@ worktree runs as an independent Session on its own machine rather than as a
 child Session.
 
 A term naming a machine after `@` (`@ui@n1`) lists, for each group with an
-instance on a machine whose name starts with it, the entry that runs there: the
-group's own entry when it already does, else one pinned to that instance and
-titled with its machine (`uiStyle · Claude · n100`). A pinned entry is written
+instance on a machine whose name starts with it, an entry pinned to that
+instance and titled with its machine (`uiStyle · Claude · n100`), also where
+the group's own entry already runs there. A pinned entry is written
 `@<entry token>@<machine>` (`@uiStyle:Claude@n100`, `@visionAgent@n100`), the
 machine's display name with whitespace as `-`; `@<Role>@<machine>` pins the
 Role's first group on that machine, in group order, that can run. A pinned

@@ -621,14 +621,26 @@ describe('agent role entries pinned to a machine', () => {
     expect(rows(list, '@n1')).toEqual([['reviewer · n100', '@reviewer@n100', 'pinned:rev-n100']]);
   });
 
-  it('lists the entry that already runs on that machine instead of repeating it', () => {
+  it("pins every row of a machine's list, also where the group's own entry runs there", () => {
     const list = items(uiStyle, reviewer);
-    // Both uiStyle groups already run here, and reviewer's entry is Build box.
+    // Both uiStyle groups already run here, and reviewer's entry is Build box:
+    // naming the machine still asks for that machine, one row per group.
     expect(rows(list, 'ui@dev')).toEqual([
-      ['uiStyle · Claude', '@uiStyle:Claude', 'ui-claude'],
-      ['uiStyle · Gemini', '@uiStyle:Gemini', 'ui-gemini'],
+      ['uiStyle · Claude · devnuc', '@uiStyle:Claude@devnuc', 'pinned:ui-claude'],
+      ['uiStyle · Gemini · devnuc', '@uiStyle:Gemini@devnuc', 'pinned:ui-gemini'],
     ]);
-    expect(rows(list, 'rev@build')).toEqual([['reviewer · Build box', '@reviewer', 'rev-box']]);
+    expect(rows(list, 'rev@build')).toEqual([
+      ['reviewer · Build box', '@reviewer@Build-box', 'pinned:rev-box'],
+    ]);
+    // Picked on devnuc, which then goes offline: it stays text rather than
+    // moving to the Claude on Build box.
+    const [picked] = buildAgentRoleCandidates(list, 'ui@dev');
+    const text = picked!.insertText!;
+    const range = { start: 0, end: text.length, kind: 'agent_role', value: picked!.value };
+    expect(applyTextRewrites(text, buildAgentRoleMentionRewrites(text, [range], list)).text).toBe(
+      promptFor(uiStyle, 0, 'Claude')
+    );
+    expect(buildAgentRoleMentionRewrites(text, [range], offline('ui-claude'))).toEqual([]);
   });
 
   it('round-trips a pinned token to that instance', () => {

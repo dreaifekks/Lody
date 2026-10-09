@@ -767,17 +767,23 @@ export const AgentRoleAvailabilityNarrow: Story = {
   args: { ...AgentRoleAvailability.args, narrow: true },
 };
 
+/** Roles ranked as the composer ranks them, so a machine in the term is read. */
+const RANKED_ROLE_CATEGORIES = [
+  category('agent_role', 'role', 'Agent Roles', 'agent_role', [], {
+    getCandidates: (term) =>
+      buildAgentRoleCandidates(roleMentionItems([uiStyleRole, visionRole]), term),
+  }),
+];
+
 /** `@role:ui@build` — the build box's instances, each under its machine. */
 export const AgentRoleOnMachine: Story = {
-  args: {
-    search: 'role:ui@build',
-    categories: [
-      category('agent_role', 'role', 'Agent Roles', 'agent_role', [], {
-        getCandidates: (term) =>
-          buildAgentRoleCandidates(roleMentionItems([uiStyleRole, visionRole]), term),
-      }),
-    ],
-  },
+  args: { search: 'role:ui@build', categories: RANKED_ROLE_CATEGORIES },
+};
+
+/** Type `@ui@build` in the main composer: the second `@` keeps the same query. */
+export const MainComposerRoleOnMachine: Story = {
+  args: { search: '' },
+  render: () => <FloatingHarness mainComposer categories={RANKED_ROLE_CATEGORIES} />,
 };
 
 /** The inline editor's caret menu at the page's foot. */

@@ -183,11 +183,15 @@ machine first. A range names an instance; when it cannot run, another of its
 group stands in. A token two entries produce stays text even while one cannot
 run, and the agent hint is left off an entry already titled by its agent.
 `@<Role>@<machine>` and `@<entry token>@<machine>` pin a machine's instance
-instead: the term after the second `@` filters by machine and lists a pinned
-row per group there unless the group's own row already runs there. A pinned
-range carries `pinned:<instance id>`, so expansion can tell it from a group
-range and never stands another instance in. `@` rather than a space separates
-the machine because a space closes every mention menu. The menu keeps entries that are loading or unavailable, with
+instead: the term after the second `@` filters by machine and lists only
+pinned rows, one per group there, because naming a machine asks for that
+machine even where the group's own row already runs on it. A pinned range
+carries `pinned:<instance id>`, so expansion can tell it from a group range and
+never stands another instance in. `@` rather than a space separates the machine
+because a space closes every mention menu; the input reads a trigger glued to
+a run that the same trigger opened as part of that query
+(`findQueryTriggerIndex`), which also keeps `@node_modules/@types` one path
+query. The menu keeps entries that are loading or unavailable, with
 an explanation below the name. They follow available matches and cannot be
 selected. Hydration and before-send expansion independently reject those rows,
 so showing a stale Role never creates a new dispatch instruction.
