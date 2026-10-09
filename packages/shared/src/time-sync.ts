@@ -122,18 +122,20 @@ const DEFAULT_TIME_SYNC_TIMEOUT_MS = 5000;
  *
  * @param url - The URL of the time sync endpoint
  * @param timeoutMs - Timeout in milliseconds (default: 5000ms)
+ * @param headers - Request headers, such as the credential of a LAN hub
  * @returns A function that returns a Promise resolving to the server timestamp
  */
 export function createServerTimeFetcher(
   url: string,
-  timeoutMs: number = DEFAULT_TIME_SYNC_TIMEOUT_MS
+  timeoutMs: number = DEFAULT_TIME_SYNC_TIMEOUT_MS,
+  headers?: Record<string, string>
 ): () => Promise<number> {
   return async () => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(url, { signal: controller.signal });
+      const response = await fetch(url, { signal: controller.signal, headers });
       if (!response.ok) {
         throw new Error(`Time sync failed: ${response.status} ${response.statusText}`);
       }

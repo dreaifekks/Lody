@@ -187,6 +187,23 @@ hub as before. One that reached it and failed is not sent again. Requests
 that wait for a second one, such as a cancellation, or that report progress
 (restarts, updates, sign-ins, runtime installs) stay on the hub.
 
+Every request carries a deadline, and the machine asked judges it by its own
+clock. The hosted service aligns its clients to its `/api/time`; a LAN aligns
+to its hub's `/api/time` instead, behind the same credential. The agent
+service follows the hub of its first LAN (`lan-clock.ts`), at start, every
+five minutes and when a hub moves; a window follows the hub its workspace
+syncs through (`lody-hub://<lan id>/api/time`, the one route the bridge passes
+besides the documents). Only the answer to the latest request for the time
+sets the clock. Each process has one clock, so a member of several LANs keeps
+one alignment: LANs whose hubs disagree by more than a request's timeout still
+drop each other's requests, which hubs that keep NTP time never do. A request
+that arrives at most five minutes past its deadline is answered with
+`request_expired`, naming its `sentAt`, its `expiresAt` and the clock it was
+judged by; older ones, which a request stream read from its start holds by the
+day, stay unanswered. The server remembers every request it read until that
+window closes, so reading the stream again neither tells a request still
+running that it expired nor tells an expired one twice.
+
 Settings > Memory lists the machines of the LAN like the Agents settings of a
 hosted workspace, so a memory can be imported on a member, such as a headless
 one, that a Role runs on. The provider is asked on that member; the import is a

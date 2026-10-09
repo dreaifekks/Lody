@@ -7,6 +7,8 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createServerTimeFetcher } from '@lody/shared';
+import { LAN_HUB_TIME_PATH } from '@lody/shared/lan-hub';
 import { LAN_GITHUB_TOKEN_PATH, fetchLanHubGitHubCredential } from '@lody/shared/node/lan-github';
 import { removeLanHubGitHubConfig, writeLanHubGitHubConfig } from './hub-github';
 import {
@@ -159,6 +161,24 @@ describe('LAN host', () => {
     });
     expect(forwarded?.headers.authorization).toBeUndefined();
     expect(forwarded?.headers['content-type']).toBe('application/octet-stream');
+  });
+
+  it('tells its clock to members, and only to members', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(1_760_000_000_000);
+      const before = streams.seen.length;
+      const fetchTime = createServerTimeFetcher(`${hub.url}${LAN_HUB_TIME_PATH}`, 5_000, {
+        authorization: `Bearer ${hub.token}`,
+      });
+      await expect(fetchTime()).resolves.toBe(1_760_000_000_000);
+      await expect(createServerTimeFetcher(`${hub.url}${LAN_HUB_TIME_PATH}`)()).rejects.toThrow(
+        /401/
+      );
+      expect(streams.seen).toHaveLength(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('answers a preflight without asking for the credential', async () => {

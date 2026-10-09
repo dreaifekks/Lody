@@ -175,6 +175,8 @@ export const LORO_STREAMS_RPC_ERROR_CODES = {
   rpcVersionMismatch: 'rpc_version_mismatch',
   methodUnavailable: 'method_unavailable',
   internalError: 'internal_error',
+  /** The request reached its machine after its deadline, by that machine's clock. */
+  requestExpired: 'request_expired',
 } as const;
 export type LoroStreamsRpcErrorCode =
   (typeof LORO_STREAMS_RPC_ERROR_CODES)[keyof typeof LORO_STREAMS_RPC_ERROR_CODES];

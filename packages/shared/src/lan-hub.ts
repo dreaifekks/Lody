@@ -10,6 +10,12 @@ export const LAN_HUB_NAME_MAX_LENGTH = 40;
 export const LAN_HUB_ID_PATTERN = /^[a-f0-9]{32}$/;
 export const LAN_INVITE_SCHEME = 'lody-lan';
 export const LAN_INVITE_TLS_SCHEME = 'lody-lans';
+/**
+ * Where a hub tells its clock, in the shape of the hosted `/api/time`. The
+ * members of a LAN align their request deadlines to it, since a local
+ * platform has no time server of its own.
+ */
+export const LAN_HUB_TIME_PATH = '/api/time';
 
 /** What a renderer may know about a LAN: everything except its credential. */
 export type LanHubSummary = {

@@ -13,7 +13,8 @@ import https from 'node:https';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { LORO_STREAMS_BUCKET_ID } from '@lody/shared';
+import { LORO_STREAMS_BUCKET_ID, type ServerTimeResponse } from '@lody/shared';
+import { LAN_HUB_TIME_PATH } from '@lody/shared/lan-hub';
 import { createApnsSender, readApnsConfig, type ApnsSender } from './apns';
 import { createLanHubGitHub, type LanHubGitHub } from './hub-github';
 import { createLanHubCredentialRoutes, type LanHubCredentialRoutes } from './hub-credentials';
@@ -716,6 +717,11 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
 
   const hubRoutes = (request: http.IncomingMessage, response: http.ServerResponse): boolean => {
     const route = request.url?.split('?')[0];
+    // A clock stays right while the data moves, so it answers in every state.
+    if (route === LAN_HUB_TIME_PATH && request.method === 'GET') {
+      sendJson(request, response, 200, { serverTime: Date.now() } satisfies ServerTimeResponse);
+      return true;
+    }
     if (route === LAN_HUB_WHERE_PATH && request.method === 'GET') {
       if (state.kind === 'moved') sendJson(request, response, 410, state.moved);
       else sendJson(request, response, 200, { movedTo: null, term: readLanHubTerm(dataDir) });
