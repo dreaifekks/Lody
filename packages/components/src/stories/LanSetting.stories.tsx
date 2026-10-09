@@ -259,6 +259,24 @@ export const ApplicationUpToDate: Story = {
   },
 };
 
+/** Switched to the dev release, which has nothing later than the running build. */
+export const ApplicationFollowsDev: Story = {
+  args: {
+    application: application(
+      updater({
+        phase: 'up_to_date',
+        availableVersion: undefined,
+        followed: {
+          repository: source.repository,
+          tag: 'lan-dev',
+          url: 'https://github.com/someone/Lody/releases/tag/lan-dev',
+        },
+      })
+    ),
+    machines: machinesView,
+  },
+};
+
 /** The application runs from a disk image, where it cannot replace itself. */
 export const ApplicationNotInstalled: Story = {
   args: {
