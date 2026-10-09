@@ -57,6 +57,14 @@ const machines = [
 const claude = 'instance-claude' as AgentRoleInstanceId;
 const gemini = 'instance-gemini' as AgentRoleInstanceId;
 const codex = 'instance-codex' as AgentRoleInstanceId;
+const strict = 'instance-strict' as AgentRoleInstanceId;
+
+const families: Record<string, { key: string; name: string }> = {
+  'config-claude': { key: 'builtin:claude', name: 'Claude Code' },
+  'config-gemini': { key: 'builtin:gemini', name: 'Gemini' },
+  'config-codex': { key: 'builtin:codex', name: 'Codex' },
+};
+const agentFamilyOf = (agentConfigId: AgentConfigId) => families[agentConfigId];
 
 const studioConfigs = [
   { agentConfigId: 'config-claude' as AgentConfigId, label: 'Claude' },
@@ -71,7 +79,7 @@ const configured: AgentRoleFormValue = {
   instances: [
     {
       id: claude,
-      label: 'Claude',
+      alias: '',
       machineId: studio,
       agentConfigId: 'config-claude' as AgentConfigId,
       modeId: 'default',
@@ -81,7 +89,7 @@ const configured: AgentRoleFormValue = {
     },
     {
       id: gemini,
-      label: 'Gemini',
+      alias: '',
       machineId: studio,
       agentConfigId: 'config-gemini' as AgentConfigId,
       modeId: 'default',
@@ -90,10 +98,21 @@ const configured: AgentRoleFormValue = {
     },
     {
       id: codex,
-      label: 'Codex',
+      alias: '',
       machineId: buildBox,
       agentConfigId: 'config-codex' as AgentConfigId,
       modeId: 'default',
+      modelId: 'gpt-5.6-sol',
+      configOptionValues: { thought_level: 'high', 'fast-mode': false },
+    },
+    {
+      // A second Claude Code on the studio, configured differently: its alias
+      // makes it a group of its own.
+      id: strict,
+      alias: 'Strict',
+      machineId: studio,
+      agentConfigId: 'config-claude' as AgentConfigId,
+      modeId: 'plan',
       modelId: 'gpt-5.6-sol',
       configOptionValues: { thought_level: 'high', 'fast-mode': false },
     },
@@ -109,6 +128,10 @@ const instanceRows = new Map<AgentRoleInstanceId, AgentRoleInstanceRowModel>([
   [
     gemini,
     { agentConfigs: studioConfigs, selectorOptions, issues: [], summary: 'Gemini · GPT-5.6 Luna' },
+  ],
+  [
+    strict,
+    { agentConfigs: studioConfigs, selectorOptions, issues: [], summary: 'Claude · GPT-5.6 Sol' },
   ],
   [
     codex,
@@ -148,6 +171,7 @@ const meta = {
     value: configured,
     onChange: () => undefined,
     machines,
+    agentFamilyOf,
     instanceRows,
     expandedInstanceId: null,
     onExpandedInstanceChange: () => undefined,
@@ -173,10 +197,10 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-/** Three instances, two of them on one machine; every row closed. */
+/** Four instances: three on the studio (one aliased), one on the build box; every row closed. */
 export const Instances: Story = {};
 
-/** One instance open: its machine, agent, label, options and memory. */
+/** One instance open: its machine, agent, alias, options and memory. */
 export const InstanceOpen: Story = {
   args: { expandedInstanceId: claude },
 };
@@ -188,7 +212,7 @@ export const NewRole: Story = {
       instances: [
         {
           id: 'instance-new' as AgentRoleInstanceId,
-          label: '',
+          alias: '',
           machineId: null,
           agentConfigId: null,
           modeId: null,
@@ -198,21 +222,21 @@ export const NewRole: Story = {
       ],
     },
     expandedInstanceId: 'instance-new' as AgentRoleInstanceId,
-    errors: ['name_required', 'machine_required', 'agent_config_required', 'label_required'],
+    errors: ['name_required', 'machine_required', 'agent_config_required'],
   },
 };
 
-/** Two instances on one machine may not share a label. */
-export const DuplicateLabel: Story = {
+/** A second unaliased Claude Code on the studio would be the same group. */
+export const DuplicateGroup: Story = {
   args: {
     value: {
       ...configured,
       instances: configured.instances.map((instance) =>
-        instance.id === gemini ? { ...instance, label: 'Claude' } : instance
+        instance.id === strict ? { ...instance, alias: '' } : instance
       ),
     },
-    expandedInstanceId: gemini,
-    errors: ['label_taken'],
+    expandedInstanceId: strict,
+    errors: ['group_taken'],
   },
 };
 

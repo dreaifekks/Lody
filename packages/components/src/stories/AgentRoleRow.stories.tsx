@@ -28,7 +28,6 @@ const base: AgentRole = withAgentRoleInstances(
   [
     {
       id: 'reviewer:machine-1' as AgentRoleInstanceId,
-      label: 'Codex',
       machineId: 'machine-1' as MachineId,
       agentConfigId: 'config-1' as AgentConfigId,
       runConfig: { modelId: 'gpt-5.6-sol', configOptionValues: { thought_level: 'high' } },

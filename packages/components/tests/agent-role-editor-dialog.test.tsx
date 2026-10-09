@@ -58,7 +58,7 @@ import { initI18n } from '../src/i18n';
 const machineA = 'machine-a' as MachineId;
 const memory = { providerId: 'nowledge-mem', memoryId: 'reviewer' };
 
-/** Two instances on A and one on B, each with its own run config; B's carries memory. */
+/** Two instances on A and an aliased one on B, each with its own run config; B's carries memory. */
 const catalogRole: CatalogAgentRole = withAgentRoleInstances(
   {
     v: AGENT_ROLE_VERSION,
@@ -74,21 +74,19 @@ const catalogRole: CatalogAgentRole = withAgentRoleInstances(
   [
     {
       id: 'reviewer-a' as AgentRoleInstanceId,
-      label: 'Agent a',
       machineId: machineA,
       agentConfigId: 'config-a' as AgentConfigId,
       runConfig: { modelId: 'model-a' },
     },
     {
       id: 'reviewer-b' as AgentRoleInstanceId,
-      label: 'Agent b',
+      alias: 'Strict',
       machineId: 'machine-b' as MachineId,
       agentConfigId: 'config-b' as AgentConfigId,
       runConfig: { modelId: 'model-b', modeId: 'plan', memory },
     },
     {
       id: 'reviewer-c' as AgentRoleInstanceId,
-      label: 'Agent c',
       machineId: machineA,
       agentConfigId: 'config-c' as AgentConfigId,
       runConfig: { modelId: 'model-c', configOptionValues: { effort: 'high' } },
@@ -176,8 +174,13 @@ describe('editing a Role opened from a composer', () => {
       machineId: machineA,
       agentConfigs: mocks.configs as AgentConfigMeta[],
       resolveAvailability: () => ({ kind: 'available' }),
+      names: { machine: (id) => id, unknownAgent: 'Unknown agent' },
     });
-    expect(items.map((item) => item.title)).toEqual(['Reviewer · Agent a', 'Reviewer · Agent c']);
+    expect(items.map((item) => item.title)).toEqual([
+      'Reviewer · Agent a',
+      'Reviewer · Agent c',
+      'Reviewer · Strict · machine-b',
+    ]);
     // …and the second one's edit button opens the catalog row by its Role id.
     const editor = openAgentRoleEditorById([catalogRole], items[1]!.role.id);
     if (!editor) throw new Error('Role not found');

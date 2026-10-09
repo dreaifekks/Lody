@@ -43,7 +43,7 @@ const role = (overrides: Partial<AgentRole> = {}): CatalogAgentRole =>
 
 const formInstance = (overrides: Partial<AgentRoleFormInstance> = {}): AgentRoleFormInstance => ({
   id: 'instance-1' as AgentRoleInstanceId,
-  label: 'Codex',
+  alias: '',
   machineId: 'machine-1' as MachineId,
   agentConfigId: 'config-1' as AgentConfigId,
   modeId: null,
@@ -63,6 +63,10 @@ const formValue = (
 });
 
 const createId = () => 'new-role' as AgentRoleId;
+
+/** config-1 and config-1b are one agent family; config-2 is another. */
+const agentFamilyOf = (id: AgentConfigId) =>
+  id.startsWith('config-1') ? { key: 'codex', name: 'Codex' } : { key: id, name: id };
 
 describe('role description authoring', () => {
   it('preserves legacy no-op saves and round-trips edits and clearing', () => {
@@ -213,7 +217,6 @@ describe('automatic role schema reconciliation', () => {
     const stale = { configOptionValues: { future_removed: true } };
     const entry = (id: string, machineId: string) => ({
       id: id as AgentRoleInstanceId,
-      label: id,
       machineId: machineId as MachineId,
       agentConfigId: `config-${id}` as AgentConfigId,
       runConfig: stale,
@@ -276,59 +279,69 @@ const selectorOptions = (overrides: Partial<AcpSelectorOptions> = {}): AcpSelect
 });
 
 describe('agent role form validation', () => {
-  it('requires a name, an instance, and a machine, an agent and a label on each', () => {
-    expect(validateAgentRoleForm(EMPTY_AGENT_ROLE_FORM_VALUE, { accessibleRoles: [] })).toEqual([
-      'name_required',
-      'instance_required',
-    ]);
-    expect(validateAgentRoleForm(formValue(), { accessibleRoles: [] })).toEqual([]);
+  it('requires a name, an instance, and a machine and an agent on each', () => {
+    expect(
+      validateAgentRoleForm(EMPTY_AGENT_ROLE_FORM_VALUE, { accessibleRoles: [], agentFamilyOf })
+    ).toEqual(['name_required', 'instance_required']);
+    expect(validateAgentRoleForm(formValue(), { accessibleRoles: [], agentFamilyOf })).toEqual([]);
     const unfinished = formInstance({
       id: 'instance-2' as AgentRoleInstanceId,
-      label: ' ',
       machineId: null,
       agentConfigId: null,
     });
     expect(
       validateAgentRoleForm(formValue({ instances: [formInstance(), unfinished] }), {
         accessibleRoles: [],
+        agentFamilyOf,
       })
-    ).toEqual(['machine_required', 'agent_config_required', 'label_required']);
+    ).toEqual(['machine_required', 'agent_config_required']);
   });
 
-  it('allows several instances on one machine, but not two with one label', () => {
-    const second = formInstance({
-      id: 'instance-2' as AgentRoleInstanceId,
-      label: 'Claude',
-      agentConfigId: 'config-2' as AgentConfigId,
-    });
+  it('allows one instance per group on a machine: a second of one agent needs an alias', () => {
+    const validate = (...instances: AgentRoleFormInstance[]) =>
+      validateAgentRoleForm(formValue({ instances }), { accessibleRoles: [], agentFamilyOf });
+    const second = formInstance({ id: 'instance-2' as AgentRoleInstanceId });
+    // Another agent on the same machine is another group.
     expect(
-      validateAgentRoleForm(formValue({ instances: [formInstance(), second] }), {
-        accessibleRoles: [],
-      })
+      validate(formInstance(), { ...second, agentConfigId: 'config-2' as AgentConfigId })
     ).toEqual([]);
+    // Another config of the same family is the same group.
     expect(
-      validateAgentRoleForm(
-        formValue({ instances: [formInstance(), { ...second, label: ' codex ' }] }),
-        { accessibleRoles: [] }
+      validate(formInstance(), { ...second, agentConfigId: 'config-1b' as AgentConfigId })
+    ).toEqual(['group_taken']);
+    expect(validate(formInstance(), { ...second, alias: 'Strict' })).toEqual([]);
+    // One alias twice on a machine is one group too, whatever the case.
+    expect(
+      validate(
+        { ...formInstance(), alias: 'Strict' },
+        { ...second, agentConfigId: 'config-2' as AgentConfigId, alias: ' strict ' }
       )
-    ).toEqual(['label_taken']);
+    ).toEqual(['group_taken']);
+    // The same agent on another machine is the same group, and allowed.
+    expect(validate(formInstance(), { ...second, machineId: 'machine-2' as MachineId })).toEqual(
+      []
+    );
   });
 
   it('rejects a name with no mention token left in it', () => {
-    expect(validateAgentRoleForm(formValue({ name: '  ---  ' }), { accessibleRoles: [] })).toEqual([
-      'name_required',
-    ]);
+    expect(
+      validateAgentRoleForm(formValue({ name: '  ---  ' }), { accessibleRoles: [], agentFamilyOf })
+    ).toEqual(['name_required']);
   });
 
   it('rejects a name that collides on the derived mention token, but not its own', () => {
     const existing = role({ id: 'other' as AgentRoleId, name: 'Reviewer' });
     // "Code Reviewer" and "Code-Reviewer" would both complete as one token.
     expect(
-      validateAgentRoleForm(formValue({ name: 'Reviewer' }), { accessibleRoles: [existing] })
+      validateAgentRoleForm(formValue({ name: 'Reviewer' }), {
+        accessibleRoles: [existing],
+        agentFamilyOf,
+      })
     ).toEqual(['name_taken']);
     expect(
       validateAgentRoleForm(formValue({ name: 'Reviewer' }), {
         accessibleRoles: [existing],
+        agentFamilyOf,
         editingRoleId: 'other' as AgentRoleId,
       })
     ).toEqual([]);
@@ -344,6 +357,7 @@ describe('name check exemption', () => {
     expect(
       validateAgentRoleForm(formValue({ name: 'Reviewer' }), {
         accessibleRoles: [justWritten],
+        agentFamilyOf,
         editingRoleId: justWritten.id,
       })
     ).toEqual([]);
@@ -354,6 +368,7 @@ describe('name check exemption', () => {
     expect(
       validateAgentRoleForm(formValue({ name: 'Reviewer' }), {
         accessibleRoles: [other],
+        agentFamilyOf,
         editingRoleId: 'new-role' as AgentRoleId,
       })
     ).toEqual(['name_taken']);
@@ -407,10 +422,10 @@ describe('building a role from the form', () => {
     const created = buildAgentRoleFromForm(
       formValue({
         instances: [
-          formInstance({ label: ' Codex ' }),
+          formInstance(),
           formInstance({
             id: 'instance-2' as AgentRoleInstanceId,
-            label: 'Claude',
+            alias: ' Strict ',
             agentConfigId: 'config-2' as AgentConfigId,
             modelId: 'opus',
             memory,
@@ -420,10 +435,11 @@ describe('building a role from the form', () => {
       { ownerUserId: 'user-1', now: 100, createId }
     );
     expect(
-      created.instances.map((entry) => [entry.id, entry.label, entry.machineId, entry.runConfig])
+      created.instances.map((entry) => [entry.id, entry.alias, entry.machineId, entry.runConfig])
     ).toEqual([
-      ['instance-1', 'Codex', 'machine-1', { modelId: 'gpt-5.6' }],
-      ['instance-2', 'Claude', 'machine-1', { modelId: 'opus', memory }],
+      // No alias is stored as none, not as an empty string.
+      ['instance-1', undefined, 'machine-1', { modelId: 'gpt-5.6' }],
+      ['instance-2', 'Strict', 'machine-1', { modelId: 'opus', memory }],
     ]);
     expect(created).toMatchObject({
       machineId: 'machine-1',

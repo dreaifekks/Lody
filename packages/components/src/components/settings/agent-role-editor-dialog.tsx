@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { usePostHog } from '@posthog/react';
 import { useTranslation } from 'react-i18next';
@@ -6,9 +6,11 @@ import {
   buildAgentRoleFormValue,
   buildAgentRoleFromForm,
   buildAgentRoleRunConfig,
+  getAgentRoleAgentFamily,
   getServerNow,
   buildEmptyAgentRoleFormInstance,
   validateAgentRoleForm,
+  type AgentConfigId,
   type AgentRole,
   type AgentRoleFormInstance,
   type AgentRoleInstanceId,
@@ -201,6 +203,13 @@ export function AgentRoleEditorDialog({
     [editor, selectorOptionsByInstance]
   );
 
+  const agentFamilyOf = useCallback(
+    (agentConfigId: AgentConfigId) => {
+      const config = agentConfigs.find((entry) => entry.id === agentConfigId);
+      return config ? getAgentRoleAgentFamily(config) : undefined;
+    },
+    [agentConfigs]
+  );
   const formErrors = useMemo(
     () =>
       editorValue
@@ -211,9 +220,10 @@ export function AgentRoleEditorDialog({
                 ? editor.role.id
                 : editor.roleId
               : null,
+            agentFamilyOf,
           })
         : [],
-    [accessibleRoles, editor, editorValue]
+    [accessibleRoles, agentFamilyOf, editor, editorValue]
   );
   const instanceRows = useMemo(
     () =>
@@ -308,6 +318,7 @@ export function AgentRoleEditorDialog({
         {editor && editorValue ? (
           <AgentRoleForm
             value={editorValue}
+            agentFamilyOf={agentFamilyOf}
             // A panel fading out is not edited: a change there would reopen it.
             onChange={(value) => {
               if (!openEditor) return;

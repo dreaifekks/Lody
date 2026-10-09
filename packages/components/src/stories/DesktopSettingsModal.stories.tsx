@@ -44,7 +44,6 @@ const storyRole: AgentRole = withAgentRoleInstances(
   [
     {
       id: 'settings-story-role:settings-story-machine' as AgentRole['instances'][number]['id'],
-      label: 'Codex',
       machineId: 'settings-story-machine' as AgentRole['machineId'],
       agentConfigId: 'settings-story-config' as AgentRole['agentConfigId'],
       runConfig: {},

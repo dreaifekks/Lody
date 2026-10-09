@@ -4,12 +4,13 @@ import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import {
-  AGENT_ROLE_INSTANCE_LABEL_MAX_LENGTH,
+  AGENT_ROLE_INSTANCE_ALIAS_MAX_LENGTH,
   AGENT_ROLE_NAME_MAX_LENGTH,
   normalizeAgentRoleDescription,
   DEFAULT_AGENT_ROLE_EMOJI,
   validateAgentRoleFormInstance,
   type AgentConfigId,
+  type AgentRoleAgentFamily,
   type AgentRoleFormError,
   type AgentRoleFormInstance,
   type AgentRoleFormValue,
@@ -89,6 +90,8 @@ export type AgentRoleFormProps = {
   value: AgentRoleFormValue;
   onChange: (value: AgentRoleFormValue) => void;
   machines: readonly AgentRoleMachineOption[];
+  /** An agent's family, which groups the instances without an alias. */
+  agentFamilyOf: (agentConfigId: AgentConfigId) => AgentRoleAgentFamily | undefined;
   /** Keyed by instance id. */
   instanceRows: ReadonlyMap<AgentRoleInstanceId, AgentRoleInstanceRowModel>;
   expandedInstanceId: AgentRoleInstanceId | null;
@@ -114,8 +117,8 @@ export type AgentRoleFormProps = {
  * Storybook as it does in Settings.
  *
  * What the Role does (name, description, instruction, sharing) sits on top;
- * its instances are listed below, one row each — label, machine, agent and
- * model — and open in place to be edited. Every run-config control is
+ * its instances are listed below, one row each — name (alias, else agent),
+ * machine, agent and model — and open in place to be edited. Every run-config control is
  * generated from that agent's published capabilities. There is no free-text
  * model or reasoning field, and no control appears for an agent whose
  * capabilities are unknown — offering one would let a user author a Role that
@@ -125,6 +128,7 @@ export function AgentRoleForm({
   value,
   onChange,
   machines,
+  agentFamilyOf,
   instanceRows,
   expandedInstanceId,
   onExpandedInstanceChange,
@@ -241,7 +245,9 @@ export function AgentRoleForm({
               {value.instances.map((instance, index) => {
                 const row = instanceRows.get(instance.id);
                 const expanded = instance.id === expandedInstanceId;
-                const invalid = validateAgentRoleFormInstance(instance, value.instances).length > 0;
+                const invalid =
+                  validateAgentRoleFormInstance(instance, value.instances, agentFamilyOf).length >
+                  0;
                 return (
                   <div
                     key={instance.id}
@@ -262,7 +268,11 @@ export function AgentRoleForm({
                         <span {...stylex.props(catalog.body)}>
                           <span {...stylex.props(catalog.titleLine)}>
                             <span {...stylex.props(catalog.name)}>
-                              {instance.label || t('settings.agentRoles.form.newInstance')}
+                              {instance.alias.trim() ||
+                                (instance.agentConfigId
+                                  ? agentFamilyOf(instance.agentConfigId)?.name
+                                  : undefined) ||
+                                t('settings.agentRoles.form.newInstance')}
                             </span>
                           </span>
                           <span
@@ -300,6 +310,7 @@ export function AgentRoleForm({
                       <InstanceEditor
                         instance={instance}
                         siblings={value.instances}
+                        agentFamilyOf={agentFamilyOf}
                         row={row}
                         machines={machines}
                         onChange={(patch) => updateInstance(instance.id, patch)}
@@ -346,6 +357,7 @@ export function AgentRoleForm({
 function InstanceEditor({
   instance,
   siblings,
+  agentFamilyOf,
   row,
   machines,
   onChange,
@@ -353,6 +365,7 @@ function InstanceEditor({
 }: {
   instance: AgentRoleFormInstance;
   siblings: readonly AgentRoleFormInstance[];
+  agentFamilyOf: AgentRoleFormProps['agentFamilyOf'];
   row: AgentRoleInstanceRowModel | undefined;
   machines: readonly AgentRoleMachineOption[];
   onChange: (patch: Partial<AgentRoleFormInstance>) => void;
@@ -360,15 +373,16 @@ function InstanceEditor({
 }) {
   const { t } = useTranslation();
   const fieldId = useId();
-  const errors = validateAgentRoleFormInstance(instance, siblings);
+  const errors = validateAgentRoleFormInstance(instance, siblings, agentFamilyOf);
+  const familyName = instance.agentConfigId
+    ? agentFamilyOf(instance.agentConfigId)?.name
+    : undefined;
   const agentConfigs = row?.agentConfigs ?? [];
   const selectorOptions = row?.selectorOptions ?? null;
   const issues = row?.issues ?? [];
   const configOptionSelectors = selectorOptions
     ? selectAuthorableAgentRoleConfigOptions(selectorOptions.configOptionSelectors)
     : [];
-  const labelOf = (agentConfigId: AgentConfigId | null) =>
-    agentConfigs.find((config) => config.agentConfigId === agentConfigId)?.label ?? '';
 
   return (
     <div {...stylex.props(styles.instanceEditor)}>
@@ -423,13 +437,8 @@ function InstanceEditor({
             disabled={!instance.machineId || agentConfigs.length === 0}
             onValueChange={(agentConfigId) => {
               if (agentConfigId == null) return;
-              const previousName = labelOf(instance.agentConfigId);
               onChange({
                 agentConfigId: agentConfigId as AgentConfigId,
-                // The label follows the agent until someone names it.
-                ...(!instance.label || instance.label === previousName
-                  ? { label: labelOf(agentConfigId as AgentConfigId) }
-                  : {}),
                 // Capabilities belong to the config; keeping the old model
                 // would carry a selection the new agent may not publish.
                 modeId: null,
@@ -457,20 +466,27 @@ function InstanceEditor({
       {instance.machineId && agentConfigs.length === 0 ? (
         <FormMessage tone="warning">{t('settings.agentRoles.form.noAgentConfigs')}</FormMessage>
       ) : null}
-      <Field label={t('settings.agentRoles.form.label')} htmlFor={`${fieldId}-label`}>
+      <Field
+        label={t('settings.agentRoles.form.alias')}
+        hint={t('settings.agentRoles.form.aliasHint')}
+        htmlFor={`${fieldId}-alias`}
+      >
         <Input
-          id={`${fieldId}-label`}
+          id={`${fieldId}-alias`}
           autoComplete="off"
-          maxLength={AGENT_ROLE_INSTANCE_LABEL_MAX_LENGTH}
-          aria-invalid={
-            errors.includes('label_required') || errors.includes('label_taken') || undefined
-          }
-          value={instance.label}
-          onChange={(event) => onChange({ label: event.target.value })}
+          maxLength={AGENT_ROLE_INSTANCE_ALIAS_MAX_LENGTH}
+          placeholder={familyName}
+          aria-invalid={errors.includes('group_taken') || undefined}
+          value={instance.alias}
+          onChange={(event) => onChange({ alias: event.target.value })}
         />
       </Field>
-      {errors.includes('label_taken') ? (
-        <FormMessage tone="error">{t('settings.agentRoles.errors.labelTaken')}</FormMessage>
+      {errors.includes('group_taken') ? (
+        <FormMessage tone="error">
+          {t('settings.agentRoles.errors.groupTaken', {
+            name: instance.alias.trim() || familyName,
+          })}
+        </FormMessage>
       ) : null}
       {instance.agentConfigId ? (
         selectorOptions?.capabilityAuthority === 'unavailable' || !selectorOptions ? (

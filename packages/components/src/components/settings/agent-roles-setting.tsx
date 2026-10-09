@@ -9,7 +9,6 @@ import {
   canManageAgentRole,
   EMPTY_AGENT_ROLE_FORM_VALUE,
   getAgentRoleEmoji,
-  listAgentRoleInstancesOnMachine,
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleAvailability,
@@ -139,11 +138,8 @@ export function AgentRolesSetting() {
                     machines.get(instance.machineId)?.name ??
                     t('settings.agentRoles.unknownMachine');
                   return {
-                    // The label only where the machine holds more than one.
-                    label:
-                      listAgentRoleInstancesOnMachine(role, instance.machineId).length > 1
-                        ? `${instance.label} · ${machine}`
-                        : machine,
+                    // The icon says which agent; an alias is the user's own name for it.
+                    label: instance.alias ? `${instance.alias} · ${machine}` : machine,
                     online: onlineMachineIds.has(instance.machineId),
                     agentConfig: agentConfigs.find((entry) => entry.id === instance.agentConfigId),
                   };
