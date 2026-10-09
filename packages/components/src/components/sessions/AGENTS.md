@@ -65,9 +65,10 @@ Read parent rules and each heading's linked context before edits.
 
 ## [Run config and Agent Roles](../../../../../.agents/docs/sessions-run-config.md)
 
-- A Role never falls back: `machineId + agentConfigId` are exact, and an
-  unavailable one stays listed, disabled, with its reason. A draft authorizes the
-  whole Role; an existing session applies only its run config.
+- A composer offers a Role only as its placement on that machine
+  (`agentRoleOnMachine`); an unavailable one stays listed, disabled, with its
+  reason. A draft authorizes the whole Role; an existing session applies only
+  its run config.
 - A Role IS the whole configuration: other knobs render inert,
   `DesktopPermissionModeButton` is absent when the Role pins permission, and
   moving a knob unnames the Role instead of clearing values.

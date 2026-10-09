@@ -92,7 +92,7 @@ this page is the full text of the rules summarised there.
   **Chat landing and a blank child-tab draft** authorize the WHOLE Role —
   agent config, run config, instruction, and provenance — because no Session
   exists yet and the Agent can still move. A child tab keeps the parent
-  Session's exact machine/workspace, so its Role list is every Role bound to
+  Session's exact machine/workspace, so its Role list is every Role enabled on
   that machine, across Agent types; selecting one changes the draft Agent.
   Never route a draft through `selectSessionAgentRoles`: that same-type subset
   is only correct after a Session exists. The Role id persists with a non-empty
@@ -100,8 +100,8 @@ this page is the full text of the rules summarised there.
   instruction is frozen into the first Turn before draft promotion.
 
   **An existing session** (`useSessionAgentRole`) can NOT: its agent, machine,
-  and runtime are fixed. So it offers only Roles bound to that exact machine +
-  Agent Config (the model provider shown by the composer) and applies only their
+  and runtime are fixed. So it offers only Roles whose placement on that machine
+  uses that exact Agent Config (the model provider shown by the composer) and applies only their
   RUN CONFIG, which is exactly what transfers: model / reasoning / permission
   are the values a session can still change every turn. Keep the Role's real
   availability so a stale binding stays visible but cannot be selected. The

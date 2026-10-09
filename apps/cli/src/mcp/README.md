@@ -51,8 +51,18 @@ and lifecycle decisions behind them; it does not introduce additional requiremen
   the workspace catalog; no driving-Turn mention authorization is required. Resolve its target,
   Prompt prefix, revision, and concrete run config before Operation acceptance. Recovery uses
   the frozen canonical Prompt and target dispatch config and never rereads the mutable catalog.
-  A Role may target any reachable Machine, whatever the requester's context; a Local Project
-  requester defaults to a child only for a same-Machine Role. `readDelegatedMachineAccess`
+  A Role lists ordered placements (machine, Agent config, run config, memory), and the create
+  picks one with `selectAgentRolePlacement` before resolving the rest: an explicit `machineId`
+  must be an enabled placement that can run now; else the machine of a local `workContext`
+  project (or the requester's, with `useCurrentSessionAsParent`) must be; else the requester's
+  machine; else the first usable placement in list order. A pinned machine that cannot run the
+  Role fails the create with the usable machines listed, never moving the work, and the reply's
+  `agentRole` (`agentRoles` for a batch) names the chosen machine and rule. "Usable" is the
+  per-placement availability `lody_agent_role_list/get` report: anything not `unavailable`.
+  A Local Project requester defaults to a child only when the chosen machine is its own.
+  Writers also keep the legacy single-machine fields as a mirror of the first enabled
+  placement, so a client that predates placements still runs the Role there.
+  `readDelegatedMachineAccess`
   requires both the executing Machine owner and the driving human to be able to use the target
   (owned, or shared plus shared project); never decide it from synced `MachineMeta.ownerUserId`
   ([note](../../../../.agents/notes/implemented/bug-fix/2026-09-28-mcp-cross-machine-agent-role.md)).

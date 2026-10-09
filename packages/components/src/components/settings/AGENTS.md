@@ -92,14 +92,15 @@ component details.
 
 - Before changing Role settings or dispatch, read the authoritative
   [shared Role contracts](../../../../shared/AGENTS.md#workspace-mcp-and-agent-roles).
-  The editor clears its memory reference when the target machine changes;
-  discovery and creation use that exact machine's Provider RPC. Memory settings
+  Each placement keeps its own memory reference, chosen from that machine's imported
+  identities; discovery and creation use that machine's Provider RPC. Memory settings
   reuse Agents machine tabs/pills and catalog rows. A missing nmem install stays
   on the page with the provider URL; it must not open a blocking dialog.
-  The Role Memory tab lists saved machine-Flock associations and shares the
-  Configuration tab's draft/save boundary. Role settings retain all machine groups;
-  memory shortcuts locate a group without adding machine tabs or filtering. Only a ready Provider
-  inventory can mark an identity missing; deleting a link never deletes provider data.
+  The Role Memory tab lists each enabled machine's saved machine-Flock associations,
+  marks a reference that machine has not imported, and shares the Machines tab's
+  draft/save boundary. The Role list shows each Role once, never grouped by machine.
+  Only a ready Provider inventory can mark an identity missing; deleting a link never
+  deletes provider data.
 
 ## Workspace ownership
 

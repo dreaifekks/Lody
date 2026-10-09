@@ -102,18 +102,17 @@ Exact deletion bypasses discovery: [relations](../../specs/session-relations.md)
   upload. Settings neither await nor report upload; upload failure must not fail or
   roll back a durable write. CLI reports its sync result. See
   [catalog explanation](../../.agents/docs/workspace-catalog-durability.md).
-- Roles use one workspace Flock `agentRole` family; sharing changes `visibility`.
-  No secrets, API keys, MCP selections or memory contents. Apply
-  `isSensitiveAgentRoleConfigOptionKey` on read/write. Permission pins use
-  `runConfig.modeId` or `_permission`: hide the separate composer permission
-  button but retain warning-tone markings. No Role-level auto-approval policy.
-  Settings/mentions use `canReadAgentRole`/`canManageAgentRole`; explicit MCP
-  lookup needs no mention grant.
-- Roles bind `machineId + agentConfigId`; no fallback. Unavailable machine/config/model/mode
-  stays listed with reasons, unmentionable. Freeze Role prompt/target/revision/config
-  at acceptance; retries/recovery ignore edits/deletion. Session Role metadata:
-  provenance only. `resolveSessionExecutionInputBlocks` owns text; raw blocks supply attachments.
-- Memory stores provider/id references, frozen per turn. Daemon commands and env
-  mapping follow the [memory contract](../../specs/agent-role-memory.md).
+- Roles use one workspace Flock `agentRole` family; sharing changes `visibility`. No secrets,
+  API keys, MCP selections or memory contents; apply `isSensitiveAgentRoleConfigOptionKey` on
+  read/write. Permission pins use `runConfig.modeId` or `_permission`: hide the separate
+  composer permission button but retain warning-tone markings. No Role-level auto-approval
+  policy. Settings/mentions use `canReadAgentRole`/`canManageAgentRole`; explicit MCP lookup
+  needs no mention grant.
+- Roles hold ordered per-machine `placements`; legacy `machineId/agentConfigId/runConfig`
+  mirror the first enabled one. Only `selectAgentRolePlacement` picks one; pinned
+  machines fail, never move; report the pick. Freeze prompt/placement/revision at
+  acceptance; retries/recovery ignore edits/deletion; Role metadata is provenance.
+  `resolveSessionExecutionInputBlocks` owns text; raw blocks attach. Memory: per-placement
+  refs, frozen per turn ([contract](../../specs/agent-role-memory.md)).
 - Keep `author`, human `userId`, and recipient execution config separate.
   [Contract](../../specs/message-author-identity.md).

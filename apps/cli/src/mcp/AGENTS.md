@@ -33,8 +33,8 @@ Parent instructions apply. Background: [README.md](README.md).
 - Create tools resolve explicit Role ids from the catalog without mention authorization.
   Before accepting an Operation, freeze the Role target, Prompt prefix, revision and run
   config. Recovery uses the frozen canonical Prompt and dispatch config, never rereading
-  the Role. Roles may target any reachable Machine; Local
-  Projects default to child Sessions only for same-Machine Roles. `readDelegatedMachineAccess`
+  the Role. `selectAgentRolePlacement` picks the machine; Local Projects default to child
+  Sessions only on the requester's. `readDelegatedMachineAccess`
   requires access for both executing Machine owner and driving human (owned, or shared with
   shared project), never trusting synced `MachineMeta.ownerUserId`.
 - Derive orchestration identity only from the active execution runtime's dispatch payload;
@@ -44,8 +44,8 @@ Parent instructions apply. Background: [README.md](README.md).
   owner Machine and current authorization, not a frozen daemon account.
 - Agent Role and Schedule writes (`lody_agent_role_create/update`,
   `lody_schedule_create/update/resume`) are Session tools capped at the invoking
-  Session's permission tier: the lowest of the live Agent's options, its persisted
-  report (both ranked as reported) and the driving Turn's dispatch config; configs
+  Session's permission tier (each Role placement): the lowest of the live Agent's options,
+  its persisted report (both ranked as reported) and the driving Turn's dispatch config; configs
   to be dispatched get dispatch's builtin-default rule first (`permission-tier.ts`). The written
   config, the stored one, and a chat a Schedule sends into must all stay within it.
   Unknown (no capability, unset permission option beside the mode, unoffered
@@ -55,9 +55,9 @@ Parent instructions apply. Background: [README.md](README.md).
   (`agentConfigNoticeId`) to the Session and devices, outside `lody_notify_user`'s gates.
   MCP only: [CLI and known limits](README.md#agent-config-writes).
 - Direct Role creation stays on the ordinary `lody_session_create` and
-  `lody_session_create_many` tools. When `agentRoleId` is present, tolerate manual Machine, Agent,
-  and run-config fields but remove them before resolution: the current Role row is authoritative
-  and those fields must not influence validation, canonical identity, recovery, or dispatch.
+  `lody_session_create_many` tools. With `agentRoleId`, `machineId` only picks the placement;
+  accept but drop manual Agent/run-config fields before resolution: the placement is
+  authoritative and they must not influence validation, canonical identity, recovery, or dispatch.
 
 ## Session tool contracts
 
