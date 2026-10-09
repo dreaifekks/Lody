@@ -13,7 +13,9 @@ import {
   validateAgentRoleForm,
   type AgentRole,
   type AgentRoleFormError,
+  type AgentRoleFormPlacement,
   type AgentRoleFormValue,
+  type AgentRolePlacement,
   type AgentRoleId,
   type AgentConfigId,
   type MachineId,
@@ -52,6 +54,29 @@ const RunConfigSchema = z
     'Mode, model and option values from the Agent config runConfig (lody_agent_config_get). Omitted fields run with the Agent defaults.'
   );
 
+const PlacementSchema = z
+  .object({
+    agentConfigId: z
+      .string()
+      .trim()
+      .min(1)
+      .describe('Agent config id; it fixes the machine this entry runs on.'),
+    enabled: z
+      .boolean()
+      .optional()
+      .describe('Off keeps the entry without running there; on by default.'),
+    runConfig: RunConfigSchema.optional(),
+  })
+  .strict();
+
+const PlacementsSchema = z
+  .array(PlacementSchema)
+  .min(1)
+  .max(20)
+  .describe(
+    'Where the Role may run: one entry per machine, in the order dispatch falls back through when neither the caller nor the work picks the machine. At least one entry must be enabled.'
+  );
+
 const editableFields = {
   name: z
     .string()
@@ -77,8 +102,7 @@ export const AgentRoleCreateToolInputSchema = z
     name: editableFields.name,
     description: editableFields.description.optional(),
     emoji: editableFields.emoji.optional(),
-    agentConfigId: z.string().trim().min(1).describe('Agent config id; it fixes the machine.'),
-    runConfig: RunConfigSchema.optional(),
+    placements: PlacementsSchema,
     promptPrefix: editableFields.promptPrefix.optional(),
     shareWithWorkspace: editableFields.shareWithWorkspace.optional(),
   })
@@ -91,17 +115,13 @@ export const AgentRoleUpdateToolInputSchema = z
     name: editableFields.name.optional(),
     description: editableFields.description.optional(),
     emoji: editableFields.emoji.optional(),
-    agentConfigId: z.string().trim().min(1).optional(),
-    runConfig: RunConfigSchema.optional().describe(
-      'Replaces the whole run config. Required when agentConfigId changes.'
+    placements: PlacementsSchema.optional().describe(
+      'Replaces the whole list; give every entry its full runConfig. A machine that stays keeps its memory binding.'
     ),
     promptPrefix: editableFields.promptPrefix.optional(),
     shareWithWorkspace: editableFields.shareWithWorkspace.optional(),
   })
-  .strict()
-  .refine((input) => input.agentConfigId === undefined || input.runConfig !== undefined, {
-    message: 'Changing agentConfigId needs runConfig: the old selections belong to the old Agent.',
-  });
+  .strict();
 export type AgentRoleUpdateToolInput = z.infer<typeof AgentRoleUpdateToolInputSchema>;
 
 export type AgentRoleWrite =
@@ -116,7 +136,7 @@ export type AgentRoleWriteDeps = {
   /** The machine of an Agent config this user can read; throws otherwise. */
   agentMachineId: (agentConfigId: AgentConfigId) => Promise<MachineId>;
   tierOf: (
-    role: Pick<AgentRole, 'machineId' | 'agentConfigId' | 'runConfig'>
+    placement: Pick<AgentRolePlacement, 'machineId' | 'agentConfigId' | 'runConfig'>
   ) => Promise<ResolvedPermissionTier>;
   now: () => number;
   createId: () => AgentRoleId;
@@ -125,8 +145,21 @@ export type AgentRoleWriteDeps = {
 const FORM_ERRORS: Record<AgentRoleFormError, string> = {
   name_required: 'Give the Role a name with at least one letter or digit.',
   name_taken: 'Another Role already has this name (or the same @mention token).',
-  machine_required: 'Choose an Agent config.',
+  machine_required: 'Enable at least one placement.',
   agent_config_required: 'Choose an Agent config.',
+};
+
+/** The highest-running placement that exceeds the caller, if any. */
+const findPlacementAboveCaller = async (
+  placements: readonly AgentRolePlacement[],
+  deps: AgentRoleWriteDeps
+): Promise<{ machineId: MachineId; tier: ResolvedPermissionTier } | undefined> => {
+  for (const placement of placements) {
+    const tier = await deps.tierOf(placement);
+    if (!isPermissionTierWithin(tier, deps.callerTier))
+      return { machineId: placement.machineId, tier };
+  }
+  return undefined;
 };
 
 const SETTINGS = 'Settings → Agent Roles';
@@ -135,8 +168,8 @@ const UNKNOWN_HINT =
 
 /**
  * The Role an Agent asked for, checked the way Settings checks it and kept
- * within the calling Session's permission tier: a Role that runs higher, or
- * one already above that tier, is the user's to set in Settings.
+ * within the calling Session's permission tier on every placement: a Role that
+ * runs higher on any machine, or already does, is the user's to set in Settings.
  */
 export async function buildAgentRoleFromAgent(
   request: AgentRoleWrite,
@@ -150,10 +183,10 @@ export async function buildAgentRoleFromAgent(
   if (request.action === 'update') {
     if (!existing || !canManageAgentRole(existing, deps.userId))
       throw new Error('No Agent Role with that id that you own.');
-    const current = await deps.tierOf(existing);
-    if (!isPermissionTierWithin(current, deps.callerTier))
+    const above = await findPlacementAboveCaller(existing.placements, deps);
+    if (above)
       throw new Error(
-        `This Role runs with more permissions than this conversation (Role: ${current}, conversation: ${deps.callerTier}). Only the user can change it, in ${SETTINGS}.`
+        `This Role runs with more permissions than this conversation on machine ${above.machineId} (Role: ${above.tier}, conversation: ${deps.callerTier}). Only the user can change it, in ${SETTINGS}.`
       );
   } else if (roles.length >= MAX_AGENT_ROLES) {
     throw new Error(`The workspace already has ${MAX_AGENT_ROLES} Agent Roles.`);
@@ -163,8 +196,23 @@ export async function buildAgentRoleFromAgent(
   const base: AgentRoleFormValue = existing
     ? buildAgentRoleFormValue(existing)
     : EMPTY_AGENT_ROLE_FORM_VALUE;
-  const agentConfigId = (input.agentConfigId ?? existing?.agentConfigId) as AgentConfigId;
-  const runConfig = input.runConfig;
+  const placements: AgentRoleFormPlacement[] = [];
+  for (const entry of input.placements ?? []) {
+    const agentConfigId = entry.agentConfigId as AgentConfigId;
+    const machineId = await deps.agentMachineId(agentConfigId);
+    if (placements.some((placement) => placement.machineId === machineId))
+      throw new Error(`Two placements run on machine ${machineId}; give each machine one entry.`);
+    const memory = base.placements.find((placement) => placement.machineId === machineId)?.memory;
+    placements.push({
+      machineId,
+      enabled: entry.enabled ?? true,
+      agentConfigId,
+      modeId: entry.runConfig?.modeId ?? null,
+      modelId: entry.runConfig?.modelId ?? null,
+      configOptionValues: entry.runConfig?.configOptionValues ?? {},
+      ...(memory ? { memory } : {}),
+    });
+  }
   const value: AgentRoleFormValue = {
     ...base,
     ...(input.name !== undefined ? { name: input.name } : {}),
@@ -174,15 +222,7 @@ export async function buildAgentRoleFromAgent(
     ...(input.shareWithWorkspace !== undefined
       ? { shareWithWorkspace: input.shareWithWorkspace }
       : {}),
-    agentConfigId,
-    machineId: await deps.agentMachineId(agentConfigId),
-    ...(runConfig
-      ? {
-          modeId: runConfig.modeId ?? null,
-          modelId: runConfig.modelId ?? null,
-          configOptionValues: runConfig.configOptionValues ?? {},
-        }
-      : {}),
+    ...(input.placements ? { placements } : {}),
   };
   const errors = validateAgentRoleForm(value, {
     accessibleRoles: listAccessibleAgentRoles(roles, deps.userId),
@@ -195,16 +235,16 @@ export async function buildAgentRoleFromAgent(
     now: deps.now(),
     createId: deps.createId,
   });
-  const tier = await deps.tierOf(role);
-  if (!isPermissionTierWithin(tier, deps.callerTier))
+  const above = await findPlacementAboveCaller(role.placements, deps);
+  if (above)
     throw new Error(
-      `The Role would run with more permissions than this conversation (Role: ${tier}, conversation: ${deps.callerTier}). Only the user can set that, in ${SETTINGS}.${tier === 'unknown' ? ` ${UNKNOWN_HINT}` : ''}`
+      `The Role would run with more permissions than this conversation on machine ${above.machineId} (Role: ${above.tier}, conversation: ${deps.callerTier}). Only the user can set that, in ${SETTINGS}.${above.tier === 'unknown' ? ` ${UNKNOWN_HINT}` : ''}`
     );
   return role;
 }
 
 const ROLE_CEILING =
-  'The Role may run with at most the permissions this conversation runs with now (its permission mode); a higher or unrecognized mode is refused and only the user can set it in Settings → Agent Roles. Set every permission option the Agent has beside its mode (such as permission_mode) explicitly. Pi Roles are exempt.';
+  'On every placement the Role may run with at most the permissions this conversation runs with now (its permission mode); a higher or unrecognized mode is refused and only the user can set it in Settings → Agent Roles. Set every permission option the Agent has beside its mode (such as permission_mode) explicitly. Pi Roles are exempt.';
 
 export function registerAgentRoleWriteTools(
   registerSessionTool: ReturnType<typeof createSessionToolRegistrar>,
@@ -215,8 +255,8 @@ export function registerAgentRoleWriteTools(
     {
       title: 'Create an Agent Role',
       description: [
-        'Create an Agent Role (a named preset of Agent config, model, mode, options and prompt',
-        'prefix) when the user asks for one. Read ids and runConfig choices with',
+        'Create an Agent Role (a named task preset: prompt prefix plus, per machine, the Agent',
+        'config, model, mode and options it runs with) when the user asks for one. Read ids and runConfig choices with',
         'lody_agent_config_list / lody_agent_config_get. New Roles are private unless',
         'shareWithWorkspace is set. Credentials, identities and memory cannot be set here.',
         ROLE_CEILING,
@@ -230,8 +270,8 @@ export function registerAgentRoleWriteTools(
     {
       title: 'Change an Agent Role',
       description: [
-        'Change an Agent Role the user owns. Omitted fields stay; runConfig replaces the whole',
-        'run config. A Role that already runs with more permissions than this conversation can',
+        'Change an Agent Role the user owns. Omitted fields stay; placements replaces the whole',
+        'list. A Role that already runs with more permissions than this conversation on any machine can',
         'only be changed by the user. Roles cannot be deleted here.',
         ROLE_CEILING,
       ].join(' '),

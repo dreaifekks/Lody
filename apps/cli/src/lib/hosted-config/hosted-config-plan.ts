@@ -1,5 +1,6 @@
 import {
   CODEX_PROFILE_LEGACY_LAUNCH_GUARD,
+  withAgentRolePlacements,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRole,
@@ -182,15 +183,24 @@ function planAgentRoles(
       continue;
     }
     const counterpart = input.target.agentRoles.find((role) => role.id === hosted.id);
-    const next: AgentRole = {
-      ...hosted,
-      machineId: input.target.machineId,
-      agentConfigId,
-      ownerUserId: input.target.userId,
-      revision: counterpart?.revision ?? hosted.revision,
-      createdAt: counterpart?.createdAt ?? hosted.createdAt,
-      updatedAt: counterpart?.updatedAt ?? hosted.updatedAt,
-    };
+    // A hosted Role is a single-machine one; it becomes one placement here.
+    const next = withAgentRolePlacements(
+      {
+        ...hosted,
+        ownerUserId: input.target.userId,
+        revision: counterpart?.revision ?? hosted.revision,
+        createdAt: counterpart?.createdAt ?? hosted.createdAt,
+        updatedAt: counterpart?.updatedAt ?? hosted.updatedAt,
+      },
+      [
+        {
+          machineId: input.target.machineId,
+          agentConfigId,
+          enabled: true,
+          runConfig: hosted.runConfig,
+        },
+      ]
+    );
     const action = !counterpart ? 'create' : same(next, counterpart) ? 'unchanged' : 'update';
     if (action !== 'unchanged') {
       writes.push({

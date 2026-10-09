@@ -7,6 +7,7 @@ import { SqliteRepoStore } from 'loro-repo/storage/sqlite';
 import {
   getWorkspaceFlockDocId,
   listWorkspaceAgentRoles,
+  withAgentRolePlacements,
   readWorkspaceFlockRowsFromFlock,
   writeWorkspaceAgentRoleToFlock,
   type AgentConfigId,
@@ -52,8 +53,8 @@ const agent = (overrides: Partial<AgentConfigMeta> & { id: string }): AgentConfi
     ...overrides,
   }) as AgentConfigMeta;
 
-const role = (overrides: Partial<AgentRole> & { id: string }): AgentRole =>
-  ({
+const role = (overrides: Partial<AgentRole> & { id: string }): AgentRole => {
+  const row = {
     v: 1,
     ownerUserId: 'hosted-user',
     visibility: 'private',
@@ -65,7 +66,16 @@ const role = (overrides: Partial<AgentRole> & { id: string }): AgentRole =>
     createdAt: 10,
     updatedAt: 20,
     ...overrides,
-  }) as AgentRole;
+  } as AgentRole;
+  return withAgentRolePlacements(row, [
+    {
+      machineId: row.machineId,
+      agentConfigId: row.agentConfigId,
+      enabled: true,
+      runConfig: row.runConfig,
+    },
+  ]);
+};
 
 const mcp = (overrides: Partial<WorkspaceMcpServerMeta> & { id: string }): WorkspaceMcpServerMeta =>
   ({

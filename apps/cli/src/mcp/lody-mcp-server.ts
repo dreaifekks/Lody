@@ -23,6 +23,11 @@ import {
   readMachineFlockRowsFromFlock,
   readWorkspaceFlockRowsFromFlock,
   listWorkspaceAgentRoles,
+  agentRoleOnMachine,
+  listEnabledAgentRolePlacements,
+  selectAgentRolePlacement,
+  type AgentRolePlacementRule,
+  type LodyOperationSnapshot,
   type AcpCapabilityCacheEntry,
   type AgentRunConfigSelection,
   LocalSessionControlResponseSchema,
@@ -147,7 +152,10 @@ import { captureCli, initCliAnalytics } from '@/lib/analytics/posthog';
 import { registerDiscoveryTools } from './discovery-tools';
 import { createResourceDiscovery } from '@/lib/resource-discovery-runtime';
 import { getCliPlatformKind } from '@/lib/cli-platform';
-import { summarizeDiscoveryAgent as summarizeAgentConfig } from '@/lib/resource-discovery';
+import {
+  summarizeDiscoveryAgent as summarizeAgentConfig,
+  type ResourceDiscovery,
+} from '@/lib/resource-discovery';
 import { SessionDiscoveryFilterShape, matchesSessionDiscovery } from '@/lib/discovery-query';
 import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
 import { createSessionToolRegistrar, type SessionToolHandlers } from './session-tool-router';
@@ -403,9 +411,14 @@ const SessionCreateCommandInputShape = {
     .min(1)
     .optional()
     .describe(
-      'Agent Role id from the workspace catalog. When set, machine, agent config, and run config come from the current Role row.'
+      'Agent Role id from the workspace catalog. When set, the current Role row supplies the agent config and run config of the machine the session runs on.'
     ),
-  machineId: z.string().trim().min(1).optional().describe('Target machine id.'),
+  machineId: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe('Target machine id. With agentRoleId it must be a machine the Role is enabled on.'),
   agentConfigId: z.string().trim().min(1).optional().describe('Target agent config id.'),
   ...SessionRunConfigInputShape,
 };
@@ -467,6 +480,7 @@ const sessionCreateCommandSchemas = [
     .strict(),
 ] as const;
 
+/** `machineId` is removed too: it already chose the placement, whose machine replaces it. */
 const AGENT_ROLE_MANUAL_OVERRIDE_FIELDS = [
   'machineId',
   'agentConfigId',
@@ -1292,8 +1306,86 @@ type ResolvedMcpSessionCreate = {
   input: SessionCreateCommandInput;
   prompt: string;
   dispatchConfig: ResolvedTurnDispatchConfig;
+  /** The Role as it runs on the chosen machine (`agentRoleOnMachine`). */
   role?: AgentRole;
 };
+
+/** The Role's view on the machine a create runs on, and the rule that picked it. */
+type McpAgentRoleTarget = { role: AgentRole; rule: AgentRolePlacementRule };
+
+/**
+ * Pick the machine a Role-based create runs on (`selectAgentRolePlacement`):
+ * an explicit `machineId`, else the machine the work is bound to (a local
+ * project, or the requester when joining it as a child), else the requester's
+ * machine, else the Role's first usable machine. A placement is usable unless
+ * discovery reports it unavailable; an unknown state is left to the create path.
+ */
+const selectMcpAgentRoleTarget = async (args: {
+  /** Opened only for a Role create: it reads the Role's machines. */
+  discovery: () => Promise<
+    Pick<ResourceDiscovery, 'agentRolePlacements' | 'localProjectMachineId'>
+  >;
+  input: SessionCreateCommandInput;
+  requester: Pick<SessionMeta, 'machineId'>;
+  role: AgentRole | undefined;
+}): Promise<McpAgentRoleTarget | undefined> => {
+  const { input, role } = args;
+  if (!input.agentRoleId || role?.id !== input.agentRoleId) return undefined;
+  const discovery = await args.discovery();
+  const placements = await discovery.agentRolePlacements(role.id);
+  const stateOf = (machineId: MachineId) =>
+    placements.find((placement) => placement.machineId === machineId)?.availability;
+  const enabledMachineIds = listEnabledAgentRolePlacements(role).map(
+    (placement) => placement.machineId
+  );
+  let workContextMachineId: MachineId | undefined;
+  if (input.useCurrentSessionAsParent === true) workContextMachineId = args.requester.machineId;
+  else if (input.workContext?.kind === 'local') {
+    workContextMachineId = await discovery.localProjectMachineId(
+      input.workContext.projectId,
+      enabledMachineIds
+    );
+    if (!workContextMachineId)
+      throw new LodyOperationStoreError(
+        'AGENT_ROLE_MACHINE_UNAVAILABLE',
+        `Local project ${input.workContext.projectId} is not on a machine Agent Role "${role.name}" is enabled on (${enabledMachineIds.join(', ')}).`,
+        false
+      );
+  }
+  const choice = selectAgentRolePlacement(
+    role,
+    {
+      machineId: input.machineId as MachineId | undefined,
+      workContextMachineId,
+      callerMachineId: args.requester.machineId,
+    },
+    (placement) => stateOf(placement.machineId)?.state !== 'unavailable'
+  );
+  if (choice.kind === 'selected') {
+    const view = agentRoleOnMachine(role, choice.placement.machineId);
+    return view && { role: view, rule: choice.rule };
+  }
+  const usable = choice.usableMachineIds.length
+    ? `Usable machines: ${choice.usableMachineIds.join(', ')}.`
+    : 'No machine can run it now.';
+  const where = choice.rule === 'work_context' ? 'The work context is on' : 'Requested';
+  const reasonOf = (machineId: MachineId) => stateOf(machineId)?.reason ?? 'unavailable';
+  const message =
+    choice.reason === 'machine_not_enabled'
+      ? `${where} machine ${choice.machineId}, where Agent Role "${role.name}" is not enabled. ${usable}`
+      : choice.reason === 'machine_unavailable' && choice.machineId
+        ? `${where} machine ${choice.machineId}, where Agent Role "${role.name}" cannot run now (${reasonOf(choice.machineId)}). ${usable}`
+        : `Agent Role "${role.name}" cannot run on any of its machines now: ${enabledMachineIds
+            .map((machineId) => `${machineId} (${reasonOf(machineId)})`)
+            .join(', ')}.`;
+  throw new LodyOperationStoreError('AGENT_ROLE_MACHINE_UNAVAILABLE', message, true);
+};
+
+/** What the create reply says about the machine a Role was dispatched to. */
+const describeAgentRoleTarget = (target: McpAgentRoleTarget | undefined) =>
+  target
+    ? { agentRole: { id: target.role.id, machineId: target.role.machineId, rule: target.rule } }
+    : {};
 
 const composeAgentRolePrompt = (promptPrefix: string | undefined, prompt: string): string => {
   const prefix = promptPrefix?.trim();
@@ -1339,9 +1431,10 @@ const resolveMcpSessionCreate = (
       false
     );
   }
-  // A Role may run on any Machine the requester can access; the shared create
-  // path enforces that access. Only a Local Project child is filesystem-bound,
-  // so a Role on another Machine starts as an independent Session there.
+  // `role` is already the view on the machine `selectMcpAgentRoleTarget`
+  // chose; the shared create path enforces access to it. Only a Local Project
+  // child is filesystem-bound, so a Role on another Machine starts as an
+  // independent Session there.
   const project = requester.project;
   let useCurrentSessionAsParent = input.useCurrentSessionAsParent;
   let workContext = input.workContext;
@@ -2327,7 +2420,10 @@ const activeOperationItem = (
 const markOperationItemInputDurable = (item: LodyOperationItemResult): LodyOperationItemResult =>
   item.status === 'active' ? { ...item, inputDurable: true } : item;
 
-const snapshotOperation = (requesterSessionId: SessionId, operationId: string): Promise<unknown> =>
+const snapshotOperation = (
+  requesterSessionId: SessionId,
+  operationId: string
+): Promise<LodyOperationSnapshot> =>
   withOperationStore((store) => store.snapshot(store.get(requesterSessionId, operationId)));
 
 const assertDifferentMcpSession = (
@@ -2631,12 +2727,19 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
     const roleCatalog = args.agentRoleId
       ? await loadWorkspaceAgentRoleCatalog(manager, workspace.id as WorkspaceId)
       : undefined;
-    const resolved = resolveMcpSessionCreate(
-      args,
-      invoking,
-      currentSession,
-      args.agentRoleId ? roleCatalog?.get(args.agentRoleId) : undefined
-    );
+    const roleTarget = await selectMcpAgentRoleTarget({
+      discovery: () =>
+        createResourceDiscovery({
+          manager,
+          auth,
+          workspaceId: workspace.id as WorkspaceId,
+          delegatedRequester: { userId: invoking.identity.userId },
+        }),
+      input: args,
+      requester: currentSession,
+      role: args.agentRoleId ? roleCatalog?.get(args.agentRoleId) : undefined,
+    });
+    const resolved = resolveMcpSessionCreate(args, invoking, currentSession, roleTarget?.role);
     const canonicalCommand = buildResolvedMcpCreateCanonicalCommand(resolved, args.deadlineSeconds);
     const retry = await withOperationStore((store) =>
       store.findMatchingRetry(
@@ -2649,7 +2752,10 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
       )
     );
     if (retry) {
-      return await withOperationStore((store) => store.snapshot(retry));
+      return {
+        ...(await withOperationStore((store) => store.snapshot(retry))),
+        ...describeAgentRoleTarget(roleTarget),
+      };
     }
     const targetMachineId = (resolved.input.machineId ?? currentSession.machineId) as MachineId;
     await assertMachineNotOfflineForSingleCommand(manager, targetMachineId, ctx);
@@ -2714,7 +2820,10 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
       )
     );
     if (accepted.operation.state === 'finished') {
-      return await withOperationStore((store) => store.snapshot(accepted.operation));
+      return {
+        ...(await withOperationStore((store) => store.snapshot(accepted.operation))),
+        ...describeAgentRoleTarget(roleTarget),
+      };
     }
     const pendingItem = accepted.operation.items[0];
     if (!pendingItem || pendingItem.status !== 'active') {
@@ -2739,7 +2848,10 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
         // The durable Operation already owns fixed target ids. A transport
         // failure is ambiguous, so leave it active for level-checked replay
         // instead of making the caller resend the prompt.
-        return snapshotOperation(ctx.sessionId as SessionId, args.operationId);
+        return {
+          ...(await snapshotOperation(ctx.sessionId as SessionId, args.operationId)),
+          ...describeAgentRoleTarget(roleTarget),
+        };
       }
       if (
         result.sessionId !== pendingItem.target.sessionId ||
@@ -2767,7 +2879,10 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
         { distinctId: auth.machineId }
       );
     }
-    return snapshotOperation(ctx.sessionId as SessionId, args.operationId!);
+    return {
+      ...(await snapshotOperation(ctx.sessionId as SessionId, args.operationId!)),
+      ...describeAgentRoleTarget(roleTarget),
+    };
   });
 };
 
@@ -3067,8 +3182,14 @@ const startSessionCreateManyOperation = async (
     const roleCatalog = expanded.some((item) => Boolean(item.agentRoleId))
       ? await loadWorkspaceAgentRoleCatalog(manager, workspace.id as WorkspaceId)
       : undefined;
-    const resolvedItems = expanded.map((item) => {
-      if (!item.prompt) return { resolved: undefined, error: undefined };
+    const roleTargets: Array<McpAgentRoleTarget | undefined> = [];
+    const resolvedItems: Array<{ resolved?: ResolvedMcpSessionCreate; error?: unknown }> = [];
+    for (const item of expanded) {
+      if (!item.prompt) {
+        roleTargets.push(undefined);
+        resolvedItems.push({});
+        continue;
+      }
       try {
         const single = {
           operationId: args.operationId,
@@ -3082,19 +3203,34 @@ const startSessionCreateManyOperation = async (
             : {}),
           ...(item.workContext ? { workContext: item.workContext } : {}),
         } as SessionCreateCommandInput;
-        return {
-          resolved: resolveMcpSessionCreate(
-            single,
-            invoking,
-            requester,
-            item.agentRoleId ? roleCatalog?.get(item.agentRoleId) : undefined
-          ),
-          error: undefined,
-        };
+        const roleTarget = await selectMcpAgentRoleTarget({
+          discovery: () =>
+            createResourceDiscovery({
+              manager,
+              auth,
+              workspaceId: workspace.id as WorkspaceId,
+              delegatedRequester: { userId: invoking.identity.userId },
+            }),
+          input: single,
+          requester,
+          role: item.agentRoleId ? roleCatalog?.get(item.agentRoleId) : undefined,
+        });
+        roleTargets.push(roleTarget);
+        resolvedItems.push({
+          resolved: resolveMcpSessionCreate(single, invoking, requester, roleTarget?.role),
+        });
       } catch (error) {
-        return { resolved: undefined, error };
+        roleTargets.push(undefined);
+        resolvedItems.push({ error });
       }
-    });
+    }
+    const roleTargetSummary = roleTargets.some(Boolean)
+      ? {
+          agentRoles: roleTargets.flatMap((target, index) =>
+            target ? [{ index, ...describeAgentRoleTarget(target).agentRole }] : []
+          ),
+        }
+      : {};
     const canonicalCommand = {
       items: expanded.map((item, index) => {
         const resolved = resolvedItems[index]?.resolved;
@@ -3118,7 +3254,10 @@ const startSessionCreateManyOperation = async (
       )
     );
     if (retry) {
-      return await withOperationStore((store) => store.snapshot(retry));
+      return {
+        ...(await withOperationStore((store) => store.snapshot(retry))),
+        ...roleTargetSummary,
+      };
     }
     const machineLiveness = makeMachineLivenessLookupForMcp(manager, ctx);
     const validatedItems = await mapWithConcurrency(
@@ -3264,7 +3403,10 @@ const startSessionCreateManyOperation = async (
       )
     );
     if (accepted.operation.state === 'finished') {
-      return await withOperationStore((store) => store.snapshot(accepted.operation));
+      return {
+        ...(await withOperationStore((store) => store.snapshot(accepted.operation))),
+        ...roleTargetSummary,
+      };
     }
     const nextItems = await mapWithConcurrency(
       accepted.operation.items,
@@ -3339,7 +3481,10 @@ const startSessionCreateManyOperation = async (
       args.operationId,
       nextItems
     );
-    return snapshotOperation(ctx.sessionId as SessionId, args.operationId);
+    return {
+      ...(await snapshotOperation(ctx.sessionId as SessionId, args.operationId)),
+      ...roleTargetSummary,
+    };
   });
 };
 
@@ -3608,6 +3753,7 @@ export const __lodyMcpServerInternals = {
   composeAgentRolePrompt,
   loadWorkspaceAgentRoleCatalog,
   resolveMcpSessionCreate,
+  selectMcpAgentRoleTarget,
   buildResolvedMcpCreateCanonicalCommand,
   summarizeAgentConfig,
   assertDifferentMcpSession,
@@ -4081,7 +4227,7 @@ export function buildSessionToolServer(
     {
       title: 'Create a Lody session',
       description:
-        'Start durable asynchronous work that creates a Lody session. Supply operationId; the result arrives automatically as a continuation, so do not poll operation_get. To use an Agent Role, pass agentRoleId; the current workspace catalog row supplies the exact Machine, Agent config, model, reasoning, and permission mode. If manual machine or run-config fields are also present, the Role takes precedence and those fields are ignored. A Role may run on any Machine the owner of this Machine can use; to work in a project there, pass workContext for a local project on that Machine (find it with lody_session_create_options machineId + localProjectQuery). Without workContext a Role on another Machine starts as a plain chat there. To recover an already accepted create without resending its prompt, send only operationId with resume=true. useCurrentSessionAsParent=true and workContext are mutually exclusive schema branches. Machine/config ids and runConfig values for non-Role creates come from lody_session_create_options. The wait field is temporary legacy compatibility only.',
+        'Start durable asynchronous work that creates a Lody session. Supply operationId; the result arrives automatically as a continuation, so do not poll operation_get. To use an Agent Role, pass agentRoleId. A Role lists the machines it may run on, each with its own Agent config, model, reasoning, and permission mode. The machine is chosen in order: an explicit machineId (must be one the Role is enabled on); else the machine of a local workContext project (or this machine with useCurrentSessionAsParent); else this machine; else the first available machine of the Role. A pinned machine where the Role cannot run is an error listing the usable ones, never a silent switch; the agentRole field of the reply names the chosen machine and rule. Manual agent config and run-config fields are ignored for a Role. To recover an already accepted create without resending its prompt, send only operationId with resume=true. useCurrentSessionAsParent=true and workContext are mutually exclusive schema branches. Machine/config ids and runConfig values for non-Role creates come from lody_session_create_options. The wait field is temporary legacy compatibility only.',
       inputSchema: SessionCreateToolInputSchema,
     },
     async (input) => {
@@ -4109,11 +4255,23 @@ export function buildSessionToolServer(
           const roleCatalog = args.agentRoleId
             ? await loadWorkspaceAgentRoleCatalog(manager, workspace.id as WorkspaceId)
             : undefined;
+          const roleTarget = await selectMcpAgentRoleTarget({
+            discovery: () =>
+              createResourceDiscovery({
+                manager,
+                auth,
+                workspaceId: workspace.id as WorkspaceId,
+                delegatedRequester: { userId: invoking.identity.userId },
+              }),
+            input: args,
+            requester: currentSession,
+            role: args.agentRoleId ? roleCatalog?.get(args.agentRoleId) : undefined,
+          });
           const resolved = resolveMcpSessionCreate(
             args,
             invoking,
             currentSession,
-            args.agentRoleId ? roleCatalog?.get(args.agentRoleId) : undefined
+            roleTarget?.role
           );
           await freezeInvokingAuthor(manager, currentSession, invoking);
           const options = buildMcpCreateOptions(resolved.input, ctx);
@@ -4242,7 +4400,7 @@ export function buildSessionToolServer(
     {
       title: 'Create multiple Lody sessions',
       description:
-        'Start one durable batch Operation for 1-20 Session creates. defaults and items shallow-merge; nested objects replace wholesale. Each item may use an agentRoleId from the workspace catalog. When a Role item also includes manual machine, agent config, or run-config fields, the Role takes precedence and those fields are ignored. Non-Role items accept modeId, configOptionValues, modelId, reasoningEffort, fastMode, and planMode using target advertised capabilities from lody_session_create_options. Explicit permissions may be broader than the parent; choose only within the user authorization granted to the caller. Ordered item failures are isolated. Completion arrives automatically as one continuation, so do not poll operation_get in a loop.',
+        'Start one durable batch Operation for 1-20 Session creates. defaults and items shallow-merge; nested objects replace wholesale. Each item may use an agentRoleId from the workspace catalog; its machine is chosen as in lody_session_create (machineId must be one the Role is enabled on), and manual agent config and run-config fields are ignored. The agentRoles field of the reply lists the chosen machine of each Role item. Non-Role items accept modeId, configOptionValues, modelId, reasoningEffort, fastMode, and planMode using target advertised capabilities from lody_session_create_options. Explicit permissions may be broader than the parent; choose only within the user authorization granted to the caller. Ordered item failures are isolated. Completion arrives automatically as one continuation, so do not poll operation_get in a loop.',
       inputSchema: SessionCreateManyToolInputSchema,
     },
     async (input) => {

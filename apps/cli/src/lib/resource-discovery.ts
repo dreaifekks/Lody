@@ -7,6 +7,7 @@ import {
   type AcpCapabilityCacheEntry,
   type AgentConfigMeta,
   type AgentRole,
+  type AgentRolePlacement,
   type LocalProjectMeta,
   type MachineId,
   type MachineMeta,
@@ -31,6 +32,14 @@ export type DiscoveryRow = {
   description?: string;
   availability?: DiscoveryAvailability;
   [key: string]: unknown;
+};
+export type AgentRoleDiscoveryPlacement = {
+  machineId: MachineId;
+  agentConfigId: string;
+  enabled: boolean;
+  runConfig: ReturnType<typeof normalizeAgentRoleRunConfig>;
+  /** Reported for enabled placements only. */
+  availability?: DiscoveryAvailability;
 };
 export type DiscoverySource = {
   workspaceId: string;
@@ -118,10 +127,17 @@ export class ResourceDiscovery {
         repoFullName: repo.fullName,
       }));
     }
+    // A machine filter keeps the Roles enabled there, each still listing all its machines.
     const roles =
       resource === 'agent_role'
         ? (await source.roles()).filter(
-            (role) => canReadAgentRole(role, source.userId) && (!id || role.id === id)
+            (role) =>
+              canReadAgentRole(role, source.userId) &&
+              (!id || role.id === id) &&
+              (!query.machineId ||
+                role.placements.some(
+                  (placement) => placement.enabled && placement.machineId === query.machineId
+                ))
           )
         : [];
     const machines = await source.machines();
@@ -129,9 +145,14 @@ export class ResourceDiscovery {
     const authorized: MachineMeta[] = [];
     // Bound machine I/O: no workspace-wide Promise.all fan-out.
     for (const machine of machines) {
-      if (query.machineId && machine.id !== query.machineId) continue;
-      if (resource === 'agent_role' && !roles.some((role) => role.machineId === machine.id))
-        continue;
+      if (resource === 'agent_role') {
+        if (
+          !roles.some((role) =>
+            role.placements.some((placement) => placement.machineId === machine.id)
+          )
+        )
+          continue;
+      } else if (query.machineId && machine.id !== query.machineId) continue;
       if (await source.canAccess(machine.id)) authorized.push(machine);
     }
     const status = (machineId: MachineId) =>
@@ -202,30 +223,31 @@ export class ResourceDiscovery {
           capabilityStatus: capability ? 'reported' : 'unknown',
         };
       });
-    return roles.map((role) => {
-      const config = configs.get(role.agentConfigId);
+    const placementAvailability = (placement: AgentRolePlacement): DiscoveryAvailability => {
+      const config = configs.get(placement.agentConfigId);
       let state: DiscoveryAvailability;
-      if (!authorized.some((machine) => machine.id === role.machineId))
+      if (!authorized.some((machine) => machine.id === placement.machineId))
         state = { state: 'unavailable', reason: 'machine_inaccessible_or_missing' };
       else if (!config) state = { state: 'unavailable', reason: 'agent_config_missing' };
-      else if (config.machineId !== role.machineId)
+      else if (config.machineId !== placement.machineId)
         state = { state: 'unavailable', reason: 'agent_config_machine_mismatch' };
-      else state = availability(role.machineId);
+      else state = availability(placement.machineId);
       const capability = config ? capabilityOf(config) : undefined;
       if (state.state === 'available' && !capability)
         state = { state: 'unknown', reason: 'capabilities_unreported' };
       const models = capability ? summarizeAgentRunConfigCapabilities(capability).models : [];
+      const { runConfig } = placement;
       if (
         state.state === 'available' &&
         capability &&
-        role.runConfig.modelId &&
-        !models.some((model) => model.id === role.runConfig.modelId)
+        runConfig.modelId &&
+        !models.some((model) => model.id === runConfig.modelId)
       )
         state = { state: 'unavailable', reason: 'model_unavailable' };
       const permission = capability?.configOptions?.find(
         (option) => option.id === '_permission' || option.category === 'mode'
       );
-      const modeId = role.runConfig.modeId ?? role.runConfig.configOptionValues?._permission;
+      const modeId = runConfig.modeId ?? runConfig.configOptionValues?._permission;
       if (
         state.state === 'available' &&
         capability &&
@@ -235,15 +257,30 @@ export class ResourceDiscovery {
           : capability.modes.some((mode) => mode.id === modeId))
       )
         state = { state: 'unavailable', reason: 'mode_unavailable' };
+      return state;
+    };
+    return roles.map((role) => {
+      const placements = role.placements.map((placement): AgentRoleDiscoveryPlacement => ({
+        machineId: placement.machineId,
+        agentConfigId: placement.agentConfigId,
+        enabled: placement.enabled,
+        runConfig: normalizeAgentRoleRunConfig(placement.runConfig),
+        ...(placement.enabled ? { availability: placementAvailability(placement) } : {}),
+      }));
+      // Usable when any enabled machine is; otherwise the first enabled one's reason.
+      const states = placements.flatMap((placement) =>
+        placement.availability ? [placement.availability] : []
+      );
+      const state = states.find((entry) => entry.state === 'available') ??
+        states.find((entry) => entry.state === 'unknown') ??
+        states[0] ?? { state: 'unavailable', reason: 'no_machine_enabled' };
       return {
         id: role.id,
         name: role.name,
         description: role.description ?? '',
-        machineId: role.machineId,
-        agentConfigId: role.agentConfigId,
         visibility: role.visibility,
         revision: role.revision,
-        runConfig: normalizeAgentRoleRunConfig(role.runConfig),
+        placements,
         availability: state,
         ...(id ? { promptPrefix: role.promptPrefix } : {}),
       };
@@ -263,7 +300,7 @@ export class ResourceDiscovery {
           row.description,
           typeof row.rootPath === 'string' ? row.rootPath : undefined
         ) &&
-        (!query.machineId || row.machineId === query.machineId) &&
+        (!query.machineId || resource === 'agent_role' || row.machineId === query.machineId) &&
         (!query.onlineStatus || row.onlineStatus === query.onlineStatus)
     );
     return {
@@ -282,5 +319,22 @@ export class ResourceDiscovery {
     const row = (await this.rows(resource, {}, id)).find((candidate) => candidate.id === id);
     if (!row) throw new Error('RESOURCE_NOT_FOUND: resource does not exist or is not readable.');
     return { ok: true as const, workspaceId: this.source.workspaceId, item: row };
+  }
+
+  /** The placements of one readable Role with their availability, as `get` reports them. */
+  async agentRolePlacements(id: string): Promise<AgentRoleDiscoveryPlacement[]> {
+    const { item } = await this.get('agent_role', id);
+    return item.placements as AgentRoleDiscoveryPlacement[];
+  }
+
+  /** Which of these machines holds the local project with this id. */
+  async localProjectMachineId(
+    projectId: string,
+    machineIds: readonly MachineId[]
+  ): Promise<MachineId | undefined> {
+    for (const machineId of machineIds)
+      if ((await this.source.projects(machineId)).some((project) => project.id === projectId))
+        return machineId;
+    return undefined;
   }
 }
