@@ -23,6 +23,7 @@ import { filterAcpSessionConfigOptionValues } from '@/lib/acp-session-config-sel
 import { captureAgentRoleApplied } from '@/lib/agent-role-analytics';
 import {
   buildAgentRoleTurnSelection,
+  canFixedComposerUseAgentRoleEntry,
   findComposerAgentRoleItem,
   findRecordedComposerAgentRoleItem,
   isAgentRoleRunConfigApplied,
@@ -249,7 +250,8 @@ export function useSessionAgentRole({
   const recordedItem = pickedRoleId
     ? findRecordedComposerAgentRoleItem(items, pickedRoleId, pickedInstanceId)
     : undefined;
-  const pickedItem = recordedItem?.local ? recordedItem : undefined;
+  const pickedItem =
+    recordedItem && canFixedComposerUseAgentRoleEntry(recordedItem) ? recordedItem : undefined;
   const selectedInstanceId = useMemo(() => {
     if (!pickedItem || pickedItem.role.id !== pickedRoleId) return null;
     return !durableRoleReady ||

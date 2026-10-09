@@ -353,10 +353,19 @@ export const pinComposerAgentRoleItemsToMachine = (
   items: readonly ComposerAgentRoleItem[]
 ): ComposerAgentRoleItem[] =>
   mapComposerAgentRoleEntries(items, (entry) =>
-    entry.local
+    canFixedComposerUseAgentRoleEntry(entry)
       ? entry
       : { ...entry, availability: { kind: 'unavailable', reason: 'other_machine' } }
   );
+
+/**
+ * Whether a composer whose machine is fixed can use an entry at all. The menu
+ * disables what fails this, and a recorded selection that fails it ends: the
+ * two must not disagree about the same entry.
+ */
+export const canFixedComposerUseAgentRoleEntry = (
+  entry: Pick<ComposerAgentRoleItem, 'local'>
+): boolean => entry.local;
 
 /** Rewrite every entry, group members included, keeping each group shared. */
 export const mapComposerAgentRoleEntries = (
