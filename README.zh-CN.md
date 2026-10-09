@@ -155,7 +155,7 @@ Lody 为 Agent 提供创建或复用其他对话、读取状态和历史、追�
 
 ## 发布
 
-推送 `v<上游版本>-lan.<n>` 形式的 tag，会构建桌面应用和 CLI 包，并替换[滚动发布](https://github.com/dreaifekks/Lody/releases/tag/lan-latest)。`node scripts/lan-release.mjs version` 会打印下一个版本号。`dev-v<上游版本>-lan.<n>` 形式的 tag 可以从任意分支以同样方式构建，替换的是 `lan-dev` 预发布，只有从它安装的机器会跟随（`lan-release.mjs version --channel dev`）。上游自带的 `Release` 工作流只接受 `vX.Y.Z` 形式的正式版本 tag，在本仓库已停用。
+推送 `v<上游版本>-lan.<n>` 形式的 tag，会构建桌面应用和 CLI 包，并替换[滚动发布](https://github.com/dreaifekks/Lody/releases/tag/lan-latest)。`node scripts/lan-release.mjs version` 会打印下一个版本号。`dev-v<上游版本>-lan.<n>` 形式的 tag 可以从任意分支以同样方式构建，替换的是 `lan-dev` 预发布，只有从它安装的机器会跟随（`lan-release.mjs version --channel dev`）；加 `-cli` 后缀时只构建 CLI，保留已发布的桌面安装包。正式版 tag 如果和 `lan-dev` 上同一个 commit 的全量构建版本号相同，就直接复用那次构建的产物，不再重新构建，所以发正式版时沿用 dev 的编号。桌面端可以在设置 > LAN 里切换跟随稳定版还是开发版。上游自带的 `Release` 工作流只接受 `vX.Y.Z` 形式的正式版本 tag，在本仓库已停用。
 
 ## 仓库结构
 

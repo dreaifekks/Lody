@@ -170,6 +170,7 @@ const application = (reported: ElectronUpdaterState, updating = false) => (
     updater={reported}
     updating={updating}
     onCheck={() => {}}
+    onFollow={() => {}}
     onUpdate={() => {}}
     onViewChanges={() => {}}
   />

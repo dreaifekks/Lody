@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import type { LanAgentRuntime, LanMachine, MachineId } from '@lody/shared';
+import { readLanCliRelease } from '@lody/shared/lan-release';
 import { printJson, runOneShotCommand, type CommonCommandOptions } from '@/lib/command-runtime';
 import {
   describeLanMachineBuild,
@@ -106,7 +107,7 @@ async function restartServices(): Promise<string[]> {
 async function updateThisMachine(options: UpdateOptions): Promise<void> {
   const source = getLanReleaseSource();
   if (options.check) {
-    const newest = await readNewestLanRelease({ source });
+    const newest = readLanCliRelease(await readNewestLanRelease({ source }));
     const build = describeLanMachineBuild('manual', source);
     if (options.json) {
       printJson({ ok: true, running: build.version, newest });

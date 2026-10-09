@@ -13,6 +13,7 @@ import {
   type LanMachineUpdateResult,
 } from '@lody/shared';
 import {
+  readLanCliRelease,
   resolveLanUpdateAvailability,
   summarizeLanRelease,
   type LanMachineBuild,
@@ -167,8 +168,10 @@ export class LanMachineControl {
     }
     let release: LanReleaseSummary | null = null;
     try {
+      const manifest = await (this.options.readNewest ?? readNewestLanRelease)({ source });
+      // A desktop updates to its installers; everything else to the CLI tarball.
       release = summarizeLanRelease(
-        await (this.options.readNewest ?? readNewestLanRelease)({ source })
+        this.options.build.update === 'desktop' ? manifest : readLanCliRelease(manifest)
       );
     } catch (error) {
       this.options.logger.debug(
@@ -200,7 +203,9 @@ export class LanMachineControl {
 
     let manifest;
     try {
-      manifest = await (this.options.readNewest ?? readNewestLanRelease)({ source: build.source });
+      manifest = readLanCliRelease(
+        await (this.options.readNewest ?? readNewestLanRelease)({ source: build.source })
+      );
     } catch (error) {
       throw new LanControlRefused('release', formatErrorMessage(error));
     }

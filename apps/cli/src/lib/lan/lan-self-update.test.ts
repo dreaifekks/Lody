@@ -170,6 +170,21 @@ describe('an agent service that replaces itself', () => {
     });
   });
 
+  it('follows the CLI tarball of a release that kept older desktop installers', async () => {
+    const cliOnly = manifest({
+      version: RUNNING,
+      commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      cli: { version: NEWEST, commit: manifest().commit, builtAt: manifest().builtAt },
+    });
+
+    await expect(update({ fetch: release(cliOnly) })).resolves.toEqual({
+      from: RUNNING,
+      to: NEWEST,
+      commit: manifest().commit,
+    });
+    expect(installedBuild()).toBe(`// ${NEWEST}`);
+  });
+
   it('refuses a second update while one is under way, and recovers from a dead one', async () => {
     fs.mkdirSync(path.join(root, '.update'));
     expect((await failure(update())).code).toBe('busy');

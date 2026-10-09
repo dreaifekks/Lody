@@ -12,6 +12,35 @@ import { initI18n } from '../src/i18n';
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
+class TestPointerEvent extends MouseEvent {
+  readonly pointerType: string;
+
+  constructor(type: string, init: MouseEventInit & { pointerType?: string } = {}) {
+    super(type, init);
+    this.pointerType = init.pointerType ?? '';
+  }
+}
+
+/** A pointer pressing: Base UI opens a Select on it and picks the row it lands on. */
+async function pointerClick(element: Element): Promise<void> {
+  const init = { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse', detail: 1 };
+  await act(async () => {
+    element.dispatchEvent(new TestPointerEvent('pointermove', init));
+    element.dispatchEvent(new TestPointerEvent('pointerdown', init));
+    element.dispatchEvent(new MouseEvent('mousedown', init));
+    (element as HTMLElement).focus();
+    element.dispatchEvent(new TestPointerEvent('pointerup', init));
+    element.dispatchEvent(new MouseEvent('mouseup', init));
+    (element as HTMLElement).click();
+  });
+  // Base UI finishes opening a popup in a frame that `act` does not flush.
+  await act(async () => {
+    for (let index = 0; index < 2; index += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  });
+}
+
 const followed = {
   repository: 'someone/Lody',
   tag: 'lan-latest',
@@ -37,6 +66,7 @@ describe('the build of this application', () => {
           updater={state}
           updating={updating}
           onCheck={() => asked.push('check')}
+          onFollow={(channel) => asked.push(`follow ${channel}`)}
           onUpdate={() => asked.push('update')}
           onViewChanges={() => asked.push('changes')}
         />
@@ -72,6 +102,23 @@ describe('the build of this application', () => {
 
     await click('Check for updates');
     expect(asked).toEqual(['check']);
+  });
+
+  it('switches between the releases of the fork', async () => {
+    await render(updater({ phase: 'up_to_date' }));
+    const trigger = container.querySelector<HTMLElement>('[aria-label="Release followed"]');
+    expect(trigger?.textContent).toContain('Stable');
+
+    await pointerClick(trigger!);
+    const dev = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+      (option) => !option.closest('[hidden]') && option.textContent?.trim() === 'Dev'
+    );
+    await pointerClick(dev!);
+    expect(asked).toEqual(['follow dev']);
+
+    // A release of another name is followed as the build was stamped.
+    await render(updater({ followed: { ...followed, tag: 'nightly' } }));
+    expect(container.querySelector('[aria-label="Release followed"]')).toBeNull();
   });
 
   it('offers a later build and what changed in it', async () => {

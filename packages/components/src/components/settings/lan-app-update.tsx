@@ -2,8 +2,10 @@ import * as stylex from '@stylexjs/stylex';
 import { Download } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ElectronUpdaterState } from '@lody/shared/electron-ipc';
+import { resolveLanReleaseChannel, type LanReleaseChannel } from '@lody/shared/lan-release';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { Button } from '@lody/ui/button';
+import { Select } from '@lody/ui/select';
 import { Spinner } from '@lody/ui/spinner';
 import { CompactRow } from './compact-layout';
 import { settingsCatalog as catalog } from './surface';
@@ -21,6 +23,8 @@ export type LanAppUpdateProps = {
   /** Whether an update was started from here and has not failed yet. */
   updating: boolean;
   onCheck: () => void;
+  /** Follows the other release of the fork from now on. */
+  onFollow: (channel: LanReleaseChannel) => void;
   onUpdate: () => void;
   onViewChanges: () => void;
 };
@@ -36,6 +40,7 @@ export function LanAppUpdate({
   updater,
   updating,
   onCheck,
+  onFollow,
   onUpdate,
   onViewChanges,
 }: LanAppUpdateProps) {
@@ -65,6 +70,11 @@ export function LanAppUpdate({
           : phase === 'up_to_date'
             ? `${t('settings.lan.app.newest')}${t('settings.lan.machines.factSeparator')}${follows}`
             : follows;
+  const channel = resolveLanReleaseChannel(updater.followed.tag);
+  const channels = (['stable', 'dev'] as const).map((value) => ({
+    value,
+    label: t(`settings.lan.app.channel.${value}`),
+  }));
 
   return (
     <CompactRow
@@ -82,6 +92,27 @@ export function LanAppUpdate({
         </>
       }
     >
+      {channel && phase !== 'disabled' ? (
+        <Select.Root
+          items={channels}
+          value={channel}
+          disabled={busy}
+          onValueChange={(value) => {
+            if (value === 'stable' || value === 'dev') onFollow(value);
+          }}
+        >
+          <Select.Trigger size="small" aria-label={t('settings.lan.app.channel.label')}>
+            <Select.Value />
+          </Select.Trigger>
+          <Select.Content>
+            {channels.map((option) => (
+              <Select.Item key={option.value} value={option.value}>
+                {option.label}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+      ) : null}
       {canUpdate ? (
         <>
           <Button size="small" variant="ghost" onClick={onViewChanges}>

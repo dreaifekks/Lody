@@ -9,9 +9,11 @@ import type {
 } from '@lody/shared/electron-ipc'
 import { IPC_PUSH_CHANNELS } from '@lody/shared/electron-ipc'
 import {
+  LAN_RELEASE_CHANNEL_TAGS,
   findLanReleaseAsset,
   getLanReleasePageUrl,
   resolveLanUpdateAvailability,
+  type LanReleaseChannel,
   type LanReleaseManifest,
   type LanReleaseSource
 } from '@lody/shared/lan-release'
@@ -29,6 +31,7 @@ import {
   readBundleVersion,
   readLanInstallFailure
 } from './lan-updater-install'
+import { readFollowedLanRelease, writeFollowedLanRelease } from './lan-updater-follow'
 import { composeLanReleaseNotes, getLanCompareUrl, readLanChanges } from './lan-updater-notes'
 import {
   resolveLanInstallTarget,
@@ -75,6 +78,7 @@ function run(command: string, args: string[], timeoutMs: number): Promise<void> 
  * push, and most of them are not worth the download to whoever runs one.
  */
 export class LanUpdaterService implements AppUpdater {
+  private source: LanReleaseSource
   private state: ElectronUpdaterState
   private decision: LanUpdaterDecision = { enabled: false, reason: 'not_packaged' }
   /** The release a later version was read from. */
@@ -89,7 +93,15 @@ export class LanUpdaterService implements AppUpdater {
   private firstCheck: NodeJS.Timeout | null = null
   private interval: NodeJS.Timeout | null = null
 
-  constructor(private readonly options: { source: LanReleaseSource }) {
+  constructor(
+    private readonly options: {
+      /** The stamp of the build. */
+      source: LanReleaseSource
+      /** Where the release this installation follows is recorded. */
+      dataDir: string
+    }
+  ) {
+    this.source = readFollowedLanRelease(options.source, options.dataDir)
     this.state = {
       phase: 'idle',
       currentVersion: app.getVersion(),
@@ -152,7 +164,7 @@ export class LanUpdaterService implements AppUpdater {
       this.setState({ phase: 'checking', error: undefined })
     }
     try {
-      const manifest = await fetchLanReleaseManifest(this.options.source, { fetch: netFetch })
+      const manifest = await fetchLanReleaseManifest(this.source, { fetch: netFetch })
       // Why the last update failed is said with the update it can be tried
       // with again, and to nobody once there is none.
       const failure = this.failure
@@ -191,6 +203,29 @@ export class LanUpdaterService implements AppUpdater {
     }
   }
 
+  /** Follows the other release of the fork from now on, and asks it at once. */
+  async follow(channel: LanReleaseChannel): Promise<CheckForElectronUpdateResult> {
+    if (this.checkInFlight || this.updateInFlight) {
+      return { started: false, error: 'check_in_progress' }
+    }
+    const tag = LAN_RELEASE_CHANNEL_TAGS[channel]
+    if (tag !== this.source.tag) {
+      writeFollowedLanRelease(this.options.dataDir, tag)
+      this.source = { ...this.source, tag }
+      this.manifest = null
+      if (this.staged) this.discardStaged()
+      this.setState({
+        phase: 'idle',
+        availableVersion: undefined,
+        downloadedVersion: undefined,
+        releaseNotes: undefined,
+        releaseNotesByLocale: undefined,
+        error: undefined
+      })
+    }
+    return await this.checkForUpdates()
+  }
+
   /**
    * Updates the application: downloads what is not there yet, then quits and
    * lets the new build take the place of this one. It answers once it started.
@@ -225,7 +260,7 @@ export class LanUpdaterService implements AppUpdater {
         })
         fs.mkdirSync(path.dirname(target.download), { recursive: true })
         const downloaded = await downloadNewestLanReleaseAsset({
-          source: this.options.source,
+          source: this.source,
           manifest,
           assetName: asset.name,
           destination: target.download,
@@ -337,17 +372,14 @@ export class LanUpdaterService implements AppUpdater {
   }
 
   private async readChanges(manifest: LanReleaseManifest): Promise<void> {
-    const from = this.options.source.commit
+    const from = this.source.commit
     if (!from || from === manifest.commit) return
     let changes: string[] = []
     try {
-      const response = await net.fetch(
-        getLanCompareUrl(this.options.source, from, manifest.commit),
-        {
-          headers: { accept: 'application/vnd.github+json' },
-          signal: AbortSignal.timeout(NOTES_TIMEOUT_MS)
-        }
-      )
+      const response = await net.fetch(getLanCompareUrl(this.source, from, manifest.commit), {
+        headers: { accept: 'application/vnd.github+json' },
+        signal: AbortSignal.timeout(NOTES_TIMEOUT_MS)
+      })
       if (response.ok) changes = readLanChanges(await response.json())
     } catch {
       // The notes then name the build and nothing else.
@@ -361,7 +393,7 @@ export class LanUpdaterService implements AppUpdater {
     changes: readonly string[]
   ): Pick<ElectronUpdaterState, 'releaseNotes' | 'releaseNotesByLocale'> {
     const notes = composeLanReleaseNotes({
-      source: this.options.source,
+      source: this.source,
       version: manifest.version,
       commit: manifest.commit,
       changes
@@ -370,8 +402,8 @@ export class LanUpdaterService implements AppUpdater {
   }
 
   private describeSource(): NonNullable<ElectronUpdaterState['followed']> {
-    const { repository, tag } = this.options.source
-    return { repository, tag, url: getLanReleasePageUrl(this.options.source) }
+    const { repository, tag } = this.source
+    return { repository, tag, url: getLanReleasePageUrl(this.source) }
   }
 
   /** What the replacement of the last update said when it failed, read once. */

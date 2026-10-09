@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   LAN_CLI_ASSET_NAME,
   findLanReleaseAsset,
+  readLanCliRelease,
   resolveLanUpdateAvailability,
   type LanReleaseManifest,
   type LanReleaseSource,
@@ -211,7 +212,7 @@ export async function applyLanSelfUpdate(
   const run = options.run ?? runLanUpdateCommand;
   const { root, runtime } = installation;
 
-  const manifest = options.manifest ?? (await readNewestLanRelease(options));
+  const manifest = readLanCliRelease(options.manifest ?? (await readNewestLanRelease(options)));
   if (
     !options.force &&
     resolveLanUpdateAvailability(options.runningVersion, manifest.version) !== 'available'
@@ -234,17 +235,19 @@ export async function applyLanSelfUpdate(
     options.onPhase?.('downloading', manifest);
     let downloaded: LanReleaseManifest;
     try {
-      downloaded = await downloadNewestLanReleaseAsset({
-        source,
-        manifest,
-        assetName: asset.name,
-        destination: tarball,
-        fetch: options.fetch,
-        env,
-        signal: options.signal,
-        // A build published meanwhile is the one installed.
-        onManifest: (newer) => options.onPhase?.('downloading', newer),
-      });
+      downloaded = readLanCliRelease(
+        await downloadNewestLanReleaseAsset({
+          source,
+          manifest,
+          assetName: asset.name,
+          destination: tarball,
+          fetch: options.fetch,
+          env,
+          signal: options.signal,
+          // A build published meanwhile is the one installed.
+          onManifest: (newer) => options.onPhase?.('downloading', readLanCliRelease(newer)),
+        })
+      );
     } catch (error) {
       if (!(error instanceof LanReleaseError)) throw error;
       throw new LanSelfUpdateError('release', error.message, { cause: error });

@@ -86,8 +86,30 @@ are stamped with that tag, and its install scripts install from it. A branch
 is tried on a few machines that way before it is merged and released to
 everyone. Dev builds number themselves on their own
 (`lan-release.mjs version --channel dev`), since a build only compares itself
-with the builds of the release it follows; a machine changes channel by
-installing from the other release. `scripts/lan-release.mjs` names the build and assembles
+with the builds of the release it follows; an agent service changes channel by
+installing from the other release, a desktop in Settings > LAN.
+
+A dev tag ending in `-cli` (or a run by hand with `build: cli`) builds the CLI
+tarball only and skips the desktop packaging. The release keeps the installers
+it carries, and its manifest goes on describing their build at the top level,
+which is all a desktop and every build older than this reads, so no desktop is
+offered the installers it already runs. The tarball's own build is `cli`, which
+an agent service reads instead (`readLanCliRelease`).
+
+A release tag whose version and commit are those of the whole build `lan-dev`
+carries publishes that build again instead of building it a second time; any
+other release tag builds everything. The version is inside every file (a macOS
+update refuses a bundle that names another one, an agent service the build
+that reports another), so a dev build is released under its own number. The
+CLI tarball is stamped again to follow `lan-latest`. The desktop installers
+cannot be and keep the stamp of `lan-dev`, so a desktop does not follow its
+stamp: it records the release it follows (`lan-release.json` of its data) on
+its first start, and an update keeps the record. A build is reused only once
+both releases carry builds that record it (their manifests have `cli`); a
+machine that skips every such build, or a desktop installed afresh from a
+reused installer, follows `lan-dev` until switched.
+
+`scripts/lan-release.mjs` names the build and assembles
 the release; `scripts/lan/install.sh` and `install-mac.sh` are published with
 it. A fork build may carry no publisher's signature, which neither the updater
 of the platform nor the one of the framework accepts, so every fork build
