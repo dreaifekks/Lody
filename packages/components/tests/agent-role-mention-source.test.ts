@@ -7,19 +7,25 @@ import {
   AGENT_ROLE_VERSION,
   DEFAULT_AGENT_ROLE_EMOJI,
   applyTextRewrites,
-  resolveAgentRoleAvailability,
+  resolveAgentRoleInstanceAvailability,
   type AgentConfigId,
+  type AgentConfigMeta,
   type AgentRole,
   type AgentRoleId,
+  type AgentRoleInstance,
+  type AgentRoleInstanceId,
+  type CatalogAgentRole,
   type LocalProjectId,
   type MachineId,
   type WorkspaceId,
 } from '@lody/shared';
 import { buildAgentRoleCandidates } from '../src/components/mentions/mention-registry';
 import {
+  AgentRoleMentionMachineContext,
   buildAgentRoleMentionItems,
   buildAgentRoleMentionPrompt,
   buildAgentRoleMentionRewrites,
+  buildAgentRoleMentionSlugMap,
   hydrateAgentRoleMentionsFromText,
   selectAgentRoleMentionCandidates,
   type AgentRoleMentionItem,
@@ -28,12 +34,14 @@ import {
   useMentionPromptExpansion,
   type MentionPromptExpansion,
 } from '../src/components/mentions/mention-expansion';
+import { buildComposerAgentRoleItems } from '../src/lib/composer-agent-roles';
 import { singleMachineRole } from './agent-role-fixture';
 
-// The composer-facing hooks read the authenticated machine index and the
-// workspace catalog. Stub those inputs, keep the real availability rule.
+// The composer-facing hooks read the authenticated machine index, the agent
+// configs and the workspace catalog. Stub those inputs, keep the real
+// availability rule.
 const reach = vi.hoisted(() => ({
-  roles: [] as AgentRole[],
+  roles: [] as CatalogAgentRole[],
   authorized: new Set<string>(),
 }));
 vi.mock('../src/hooks/use-visible-machine-metas', () => ({
@@ -41,15 +49,35 @@ vi.mock('../src/hooks/use-visible-machine-metas', () => ({
     machines: new Map([...reach.authorized].map((id) => [id, { id, name: id }])),
   }),
 }));
+vi.mock('../src/atoms/agents', async (importOriginal) => {
+  const { atom } = await import('jotai');
+  return {
+    ...(await importOriginal<object>()),
+    getAllAgentConfigAtom: atom(() =>
+      reach.roles.flatMap((entry) =>
+        entry.instances.map((instance) => ({
+          id: instance.agentConfigId,
+          machineId: instance.machineId,
+          name: 'Codex',
+          cliType: 'builtin',
+          agentType: 'codex',
+          env: {},
+        }))
+      )
+    ),
+  };
+});
 vi.mock('../src/hooks/use-workspace-agent-roles', () => ({
   useWorkspaceAgentRoles: () => ({ roles: reach.roles, synced: true }),
   useAgentRoleAvailability: () => ({
-    resolve: (entry: AgentRole) =>
-      resolveAgentRoleAvailability(entry, {
+    resolveInstance: (instance: AgentRoleInstance) =>
+      resolveAgentRoleInstanceAvailability(instance, {
         authorizedMachineIds: reach.authorized as Set<MachineId>,
         onlineMachineIds: reach.authorized as Set<MachineId>,
         agentConfigMachineIds: new Map(
-          reach.roles.map((candidate) => [candidate.agentConfigId, candidate.machineId])
+          reach.roles.flatMap((entry) =>
+            entry.instances.map((candidate) => [candidate.agentConfigId, candidate.machineId])
+          )
         ),
         loadedAgentConfigMachineIds: reach.authorized as Set<MachineId>,
       }),
@@ -70,7 +98,7 @@ vi.mock('../src/components/mentions/mention-skill-source', async (importOriginal
 
 const machineId = 'machine-1' as MachineId;
 
-const role = (overrides: Partial<AgentRole> = {}): AgentRole =>
+const role = (overrides: Partial<AgentRole> = {}): CatalogAgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     id: 'role-1' as AgentRoleId,
@@ -87,30 +115,67 @@ const role = (overrides: Partial<AgentRole> = {}): AgentRole =>
     ...overrides,
   });
 
-const agentConfig = { cliType: 'builtin', agentType: 'codex', env: {}, name: 'Codex' } as const;
+const instance = (
+  id: string,
+  label: string,
+  agentConfigId: string,
+  onMachine: MachineId = machineId
+): AgentRoleInstance => ({
+  id: id as AgentRoleInstanceId,
+  label,
+  machineId: onMachine,
+  agentConfigId: agentConfigId as AgentConfigId,
+  runConfig: {},
+});
 
-const items = (...roles: AgentRole[]): AgentRoleMentionItem[] =>
-  buildAgentRoleMentionItems(roles, {
-    availability: () => ({ kind: 'available' }),
-    machine: () => ({ name: 'Studio' }),
-    agentConfig: () => agentConfig,
-  });
+/** uiStyle with a Claude and a Gemini instance on this machine, and one elsewhere. */
+const uiStyle = role({
+  id: 'ui-style' as AgentRoleId,
+  name: 'uiStyle',
+  emoji: '🎨',
+  instances: [
+    instance('ui-claude', 'Claude', 'config-claude'),
+    instance('ui-gemini', 'Gemini', 'config-gemini'),
+    instance('ui-remote', 'Remote', 'config-remote', 'machine-2' as MachineId),
+  ],
+});
 
-describe('agent role reach from a local project composer', () => {
-  it('dispatches a role bound to another authorized machine, never an unreachable one', async () => {
+const agentConfigFor = (id: string) =>
+  ({
+    id,
+    machineId,
+    name: id === 'config-1' ? 'Codex' : id.replace('config-', 'Agent '),
+    cliType: 'builtin',
+    agentType: 'codex',
+    env: {},
+  }) as unknown as AgentConfigMeta;
+
+const items = (...roles: CatalogAgentRole[]): AgentRoleMentionItem[] =>
+  buildAgentRoleMentionItems(
+    buildComposerAgentRoleItems({
+      roles,
+      machineId,
+      agentConfigs: roles.flatMap((entry) =>
+        entry.instances.map((candidate) => agentConfigFor(candidate.agentConfigId))
+      ),
+      resolveAvailability: () => ({ kind: 'available' }),
+    }),
+    { name: 'Studio' }
+  );
+
+const promptFor = (entry: CatalogAgentRole, index = 0) =>
+  buildAgentRoleMentionPrompt(entry, entry.instances[index]!);
+
+describe('agent role reach from a composer', () => {
+  it("expands only the composer machine's instances, never another machine's", async () => {
+    const here = role({ id: 'here' as AgentRoleId, name: 'Here Reviewer' });
     const remote = role({
       id: 'remote' as AgentRoleId,
       name: 'Remote Reviewer',
       machineId: 'machine-2' as MachineId,
       agentConfigId: 'config-2' as AgentConfigId,
     });
-    const unreachable = role({
-      id: 'unreachable' as AgentRoleId,
-      name: 'Unreachable Reviewer',
-      machineId: 'machine-3' as MachineId,
-      agentConfigId: 'config-3' as AgentConfigId,
-    });
-    reach.roles = [remote, unreachable];
+    reach.roles = [here, remote];
     reach.authorized = new Set([machineId, 'machine-2']);
 
     let expansion: MentionPromptExpansion | undefined;
@@ -128,57 +193,71 @@ describe('agent role reach from a local project composer', () => {
       return null;
     }
     const root = createRoot(document.createElement('div'));
-    await act(async () => root.render(createElement(LocalProjectComposer)));
+    await act(async () =>
+      root.render(
+        createElement(
+          AgentRoleMentionMachineContext.Provider,
+          { value: machineId },
+          createElement(LocalProjectComposer)
+        )
+      )
+    );
 
-    const text = '@Remote-Reviewer and @Unreachable-Reviewer';
+    const text = '@Here-Reviewer and @Remote-Reviewer';
     const expanded = expansion!.expand({
       text,
       mentions: [
-        { start: 0, end: 16, kind: 'agent_role', value: 'remote' },
-        { start: 21, end: 42, kind: 'agent_role', value: 'unreachable' },
+        { start: 0, end: 14, kind: 'agent_role', value: here.instances[0]!.id },
+        { start: 19, end: 35, kind: 'agent_role', value: remote.instances[0]!.id },
       ],
     });
-    expect(expanded.text).toBe(
-      `${buildAgentRoleMentionPrompt({ id: 'remote', name: 'Remote Reviewer' })} and @Unreachable-Reviewer`
-    );
+    expect(expanded.text).toBe(`${promptFor(here)} and @Remote-Reviewer`);
     await act(async () => root.unmount());
   });
 });
 
-describe('agent role mention preview', () => {
-  it('previews the first machine that can run the Role, and is available while any can', () => {
-    const multi = singleMachineRole({
-      ...role(),
-      placements: [
-        {
-          machineId: 'machine-2' as MachineId,
-          agentConfigId: 'config-2' as AgentConfigId,
-          enabled: true,
-          runConfig: { modelId: 'offline-model' },
-        },
-        {
-          machineId,
-          agentConfigId: 'config-1' as AgentConfigId,
-          enabled: true,
-          runConfig: { modelId: 'gpt-5.6' },
-        },
-      ],
-    });
-    const [item] = buildAgentRoleMentionItems([multi], {
-      availability: (view) =>
-        view.placements.some((entry) => entry.machineId === machineId)
-          ? { kind: 'available' }
-          : { kind: 'unavailable', reason: 'machine_offline' },
-      machine: (id) => ({ name: id === machineId ? 'Studio' : 'Laptop' }),
-      agentConfig: () => agentConfig,
-    });
-    expect(item?.availability).toEqual({ kind: 'available' });
-    expect(item?.role).toMatchObject({
-      id: 'role-1',
-      machineId,
-      runConfig: { modelId: 'gpt-5.6' },
-    });
-    expect(item?.machine).toEqual({ name: 'Studio' });
+describe('agent role mention tokens', () => {
+  it("names a machine's only instance by the Role alone", () => {
+    expect(items(role({ name: 'Code Reviewer' })).map((item) => item.slug)).toEqual([
+      'Code-Reviewer',
+    ]);
+  });
+
+  it('names each of several instances on one machine by Role and label', () => {
+    const list = items(uiStyle);
+    expect(list.map((item) => [item.slug, item.title, item.instance.id])).toEqual([
+      ['uiStyle:Claude', 'uiStyle · Claude', 'ui-claude'],
+      ['uiStyle:Gemini', 'uiStyle · Gemini', 'ui-gemini'],
+    ]);
+  });
+
+  it('matches the instance label as well as the Role name', () => {
+    const list = items(uiStyle, role());
+    expect(selectAgentRoleMentionCandidates(list, 'gem').map((item) => item.slug)).toEqual([
+      'uiStyle:Gemini',
+    ]);
+    expect(selectAgentRoleMentionCandidates(list, 'uistyle').map((item) => item.slug)).toEqual([
+      'uiStyle:Claude',
+      'uiStyle:Gemini',
+    ]);
+  });
+
+  it("reads a bare Role name as the Role's default instance here", () => {
+    expect(hydrateAgentRoleMentionsFromText('ask @uiStyle', items(uiStyle)).values).toEqual([
+      'ui-claude',
+    ]);
+    expect(hydrateAgentRoleMentionsFromText('ask @uiStyle:Gemini', items(uiStyle)).values).toEqual([
+      'ui-gemini',
+    ]);
+  });
+
+  it('leaves a token two entries would both produce as plain text', () => {
+    // A Role literally named `uiStyle:Claude` collides with uiStyle's Claude instance.
+    const lookalike = role({ id: 'lookalike' as AgentRoleId, name: 'uiStyle:Claude' });
+    const list = items(uiStyle, lookalike);
+    expect(buildAgentRoleMentionSlugMap(list).has('uiStyle:Claude')).toBe(false);
+    expect(hydrateAgentRoleMentionsFromText('@uiStyle:Claude', list).mentions).toEqual([]);
+    expect(buildAgentRoleMentionSlugMap(list).get('uiStyle:Gemini')).toBe('ui-gemini');
   });
 });
 
@@ -241,13 +320,13 @@ describe('agent role menu rows', () => {
       // The name alone: the emoji is the row's icon, not a prefix on the text.
       title: 'Code Reviewer',
       insertText: '@Code-Reviewer',
-      value: 'role-1',
+      value: 'role-1:machine-1',
     });
     // Nothing restated in the detail: the pane heads itself with the same mark
     // and name.
     expect(candidate?.detail?.title).toBeUndefined();
-    // Who does the work and where, on the row's own line.
-    expect(candidate?.hint).toBe('Codex · Studio');
+    // Who does the work; every row runs on this composer's machine.
+    expect(candidate?.hint).toBe('Codex');
   });
 
   it('hands the Role to the shared pane instead of restating it as rows', () => {
@@ -259,10 +338,9 @@ describe('agent role menu rows', () => {
     // the permission mode "Reasoning".
     expect(candidate?.detail?.agentRole).toEqual({
       role: withPrompt,
-      agentConfig,
+      instance: withPrompt.instances[0],
+      agentConfig: agentConfigFor('config-1'),
       machine: { name: 'Studio' },
-      // Named because this menu spans machines, unlike the composer's list.
-      machineLabel: 'Studio',
     });
     expect(candidate?.detail?.rows).toBeUndefined();
     // No badges at all: every Role the menu offers is one this user may run, so
@@ -283,7 +361,7 @@ describe('agent role menu rows', () => {
       expect(
         buildAgentRoleMentionRewrites(
           '@Code-Reviewer',
-          [{ start: 0, end: 14, kind: 'agent_role', value: 'role-1' }],
+          [{ start: 0, end: 14, kind: 'agent_role', value: 'role-1:machine-1' }],
           list
         )
       ).toEqual([]);
@@ -299,20 +377,18 @@ describe('agent role menu rows', () => {
 
 describe('agent role before-send expansion', () => {
   const text = 'please @Code-Reviewer this diff';
-  const mention = { start: 7, end: 21, kind: 'agent_role', value: 'role-1' };
+  const mention = { start: 7, end: 21, kind: 'agent_role', value: 'role-1:machine-1' };
 
   it('rewrites the range into an id-bearing instruction and keeps the chip label', () => {
     const expanded = applyTextRewrites(
       text,
       buildAgentRoleMentionRewrites(text, [mention], items(role()))
     );
-    expect(expanded.text).toBe(
-      `please ${buildAgentRoleMentionPrompt({ id: 'role-1', name: 'Code Reviewer' })} this diff`
-    );
+    expect(expanded.text).toBe(`please ${promptFor(role())} this diff`);
     expect(expanded.spans).toEqual([
       {
         start: 7,
-        end: 7 + buildAgentRoleMentionPrompt({ id: 'role-1', name: 'Code Reviewer' }).length,
+        end: 7 + promptFor(role()).length,
         kind: 'agent_role',
         label: 'Code-Reviewer',
         target: 'role-1',
@@ -323,10 +399,33 @@ describe('agent role before-send expansion', () => {
   });
 
   it('carries no run configuration into the instruction', () => {
-    const prompt = buildAgentRoleMentionPrompt({ id: 'role-1', name: 'Code Reviewer' });
+    const prompt = promptFor(role());
     expect(prompt).not.toContain('gpt-5.6');
-    expect(prompt).not.toContain('machine-1');
+    expect(prompt).not.toContain('thought_level');
     expect(prompt).not.toContain('config-1');
+  });
+
+  it("expands a range written before instances to the Role's default instance here", () => {
+    const legacy = { ...mention, value: 'role-1' };
+    const expanded = applyTextRewrites(
+      text,
+      buildAgentRoleMentionRewrites(text, [legacy], items(role()))
+    );
+    expect(expanded.text).toBe(`please ${promptFor(role())} this diff`);
+  });
+
+  it('names the picked instance, not the first one', () => {
+    const picked = 'ask @uiStyle:Gemini';
+    const expanded = applyTextRewrites(
+      picked,
+      buildAgentRoleMentionRewrites(
+        picked,
+        [{ start: 4, end: 19, kind: 'agent_role', value: 'ui-gemini' }],
+        items(uiStyle)
+      )
+    );
+    expect(expanded.text).toBe(`ask ${promptFor(uiStyle, 1)}`);
+    expect(expanded.spans[0]).toMatchObject({ label: 'uiStyle:Gemini', target: 'ui-style' });
   });
 
   it('leaves a role that is no longer offered as plain text', () => {
@@ -335,10 +434,10 @@ describe('agent role before-send expansion', () => {
 });
 
 describe('agent role draft hydration', () => {
-  it('recognises a known token and yields a range carrying the role id', () => {
+  it('recognises a known token and yields a range carrying the instance id', () => {
     expect(hydrateAgentRoleMentionsFromText('ping @Code-Reviewer now', items(role()))).toEqual({
-      mentions: [{ value: 'role-1', start: 5, end: 19, kind: 'agent_role' }],
-      values: ['role-1'],
+      mentions: [{ value: 'role-1:machine-1', start: 5, end: 19, kind: 'agent_role' }],
+      values: ['role-1:machine-1'],
     });
   });
 

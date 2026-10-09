@@ -1,10 +1,14 @@
 import {
-  agentRoleOnMachine,
+  listAgentRoleInstancesOnMachine,
+  snapshotAgentRole,
   type AgentConfigMeta,
-  type AgentRole,
   type AgentRoleAvailability,
   type AgentRoleId,
+  type AgentRoleInstance,
+  type AgentRoleInstanceId,
+  type AgentRoleRunConfig,
   type AgentRoleUnavailableReason,
+  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 import type { AcpConfigOptionValue } from '@/components/shared/acp-selector-options';
@@ -13,21 +17,27 @@ import type { AgentSelection } from '@/components/shared/agent-selector';
 /**
  * Agent Roles as the composer's run-config menu uses them.
  *
- * A Role is one packaged answer to "which agent, which model, which run
- * options" — the same knobs the menu's detail tab exposes one at a time. That
- * is the whole relationship between the two tabs, and it is why the rules here
- * are about identity rather than repair: picking a Role must set exactly what
- * the Role says, and the composer must stop naming the Role the moment the
- * running configuration is no longer the Role's.
+ * A Role is a template; what the menu offers are its instances on the
+ * composer's machine, each one packaged answer to "which agent, which model,
+ * which run options" — the same knobs the menu's detail tab exposes one at a
+ * time. That is the whole relationship between the two tabs, and it is why the
+ * rules here are about identity rather than repair: picking an instance must
+ * set exactly what it says, and the composer must stop naming it the moment the
+ * running configuration is no longer that instance's.
  */
 
 export type ComposerAgentRoleItem = {
-  role: AgentRole;
+  /** The whole catalog row: the template, and every instance. */
+  role: CatalogAgentRole;
+  /** The instance this entry runs. Selection, checks and records all use it. */
+  instance: AgentRoleInstance;
+  /** The Role's name, plus the instance's label when the machine holds several. */
+  title: string;
   availability: AgentRoleAvailability;
   /**
-   * The bound config while it still exists; its absence is itself the reason.
-   * Carries what the detail pane needs to resolve that agent's capabilities, so
-   * a stored id can be shown as the label the agent publishes for it.
+   * The instance's config while it still exists; its absence is itself the
+   * reason. Carries what the detail pane needs to resolve that agent's
+   * capabilities, so a stored id can be shown as the label the agent publishes.
    */
   agentConfig?: Pick<
     AgentConfigMeta,
@@ -40,10 +50,36 @@ export type SessionTurnAgentRoleSelection =
       agentRoleId: AgentRoleId;
       memory?: import('@lody/shared').MemoryBinding;
       agentRoleRevision: number;
+      /** Carries the instance that ran. */
       agentRoleSnapshot?: import('@lody/shared').AgentRoleSnapshot;
     }
   | null
   | undefined;
+
+/** The Turn record of a picked entry: the Role, the instance that runs, its memory. */
+export const buildAgentRoleTurnSelection = (
+  item: Pick<ComposerAgentRoleItem, 'role' | 'instance'>
+): NonNullable<SessionTurnAgentRoleSelection> => ({
+  agentRoleId: item.role.id,
+  agentRoleRevision: item.role.revision,
+  memory: item.instance.runConfig.memory,
+  agentRoleSnapshot: snapshotAgentRole(item.role, item.instance),
+});
+
+/** `uiStyle`, or `uiStyle · Claude` when the machine holds more than one instance. */
+export const formatAgentRoleInstanceTitle = (
+  role: Pick<CatalogAgentRole, 'name' | 'instances'>,
+  instance: AgentRoleInstance
+): string =>
+  listAgentRoleInstancesOnMachine(role, instance.machineId).length > 1
+    ? `${role.name} · ${instance.label}`
+    : role.name;
+
+export const findComposerAgentRoleItem = (
+  items: readonly ComposerAgentRoleItem[],
+  instanceId: AgentRoleInstanceId | null | undefined
+): ComposerAgentRoleItem | undefined =>
+  instanceId ? items.find((item) => item.instance.id === instanceId) : undefined;
 
 export type ComposerRunConfigOverrides = {
   modeIdOverride?: string | null;
@@ -61,18 +97,26 @@ export function resolveProgrammaticTurnAgentRole({
   durableRoleId,
   durableRoleRevision,
   durableMemory,
+  durableSnapshot,
 }: {
   requested?: SessionTurnAgentRoleSelection;
   composer?: SessionTurnAgentRoleSelection;
   durableRoleId?: AgentRoleId | null;
   durableMemory?: import('@lody/shared').MemoryBinding;
   durableRoleRevision?: number;
+  /** The durable Turn's Role record, which names the instance that ran. */
+  durableSnapshot?: import('@lody/shared').AgentRoleSnapshot;
 }): SessionTurnAgentRoleSelection {
   if (requested !== undefined) return requested;
   if (composer !== undefined) return composer;
   if (durableRoleId === null) return null;
   return durableRoleId && typeof durableRoleRevision === 'number'
-    ? { agentRoleId: durableRoleId, agentRoleRevision: durableRoleRevision, memory: durableMemory }
+    ? {
+        agentRoleId: durableRoleId,
+        agentRoleRevision: durableRoleRevision,
+        memory: durableMemory,
+        ...(durableSnapshot?.id === durableRoleId ? { agentRoleSnapshot: durableSnapshot } : {}),
+      }
     : undefined;
 }
 
@@ -83,17 +127,17 @@ export function resolveProgrammaticTurnAgentRole({
  * would make the Turn claim a configuration it is not running.
  *
  * A catalog-pending Role may still be carried when the run config is untouched.
- * Once an override exists we must be able to verify the current Role row, or
+ * Once an override exists we must be able to verify the picked instance, or
  * conservatively freeze explicit None.
  */
 export function resolveTurnAgentRoleForRunConfig({
   turnSelection,
-  role,
+  item,
   current,
   overrides,
 }: {
   turnSelection: SessionTurnAgentRoleSelection;
-  role: AgentRole | undefined;
+  item: Pick<ComposerAgentRoleItem, 'role' | 'instance'> | undefined;
   current: ComposerRunConfigValues;
   overrides?: ComposerRunConfigOverrides;
 }): SessionTurnAgentRoleSelection {
@@ -103,26 +147,49 @@ export function resolveTurnAgentRoleForRunConfig({
     overrides?.modelIdOverride !== undefined ||
     overrides?.configOptionValuesOverride !== undefined;
   if (!hasOverride) return turnSelection;
-  if (!role || role.id !== turnSelection.agentRoleId) return null;
+  if (!item || item.role.id !== turnSelection.agentRoleId) return null;
 
   const effective: ComposerRunConfigValues = {
     modeId: overrides?.modeIdOverride !== undefined ? overrides.modeIdOverride : current.modeId,
     modelId: overrides?.modelIdOverride !== undefined ? overrides.modelIdOverride : current.modelId,
     configOptionValues: overrides?.configOptionValuesOverride ?? current.configOptionValues,
   };
-  return isAgentRoleRunConfigApplied(role, effective) ? turnSelection : null;
+  return isAgentRoleRunConfigApplied(item.instance.runConfig, effective) ? turnSelection : null;
 }
 
+type AgentConfigLookup = ReadonlyMap<string, AgentConfigMeta>;
+
+const itemFor = (
+  role: CatalogAgentRole,
+  instance: AgentRoleInstance,
+  configById: AgentConfigLookup,
+  resolveAvailability: (instance: AgentRoleInstance) => AgentRoleAvailability
+): ComposerAgentRoleItem => ({
+  role,
+  instance,
+  title: formatAgentRoleInstanceTitle(role, instance),
+  availability: resolveAvailability(instance),
+  agentConfig: configById.get(instance.agentConfigId),
+});
+
+/** Role name, then the Role's own instance order. */
+const sortItems = (items: ComposerAgentRoleItem[]): ComposerAgentRoleItem[] =>
+  items.sort(
+    (left, right) =>
+      left.role.name.localeCompare(right.role.name) ||
+      left.role.id.localeCompare(right.role.id) ||
+      left.role.instances.indexOf(left.instance) - right.role.instances.indexOf(right.instance)
+  );
+
 /**
- * The Roles the composer offers for the machine the chat will start on, each as
- * its view on that machine (`agentRoleOnMachine`).
+ * The Role instances the composer offers for the machine the chat will start
+ * on: one flat list, one entry per instance on that machine.
  *
- * Scoped to that one machine because the composer has already decided it: a
- * Role not enabled there could only move the chat off the selected machine.
+ * Scoped to that one machine because the composer has already decided it: an
+ * instance elsewhere could only move the chat off the selected machine.
  *
- * Unavailable Roles stay listed. Seeing that a Role exists and why it cannot run
- * is what lets someone fix it; dropping the row makes a broken Role look
- * deleted.
+ * Unavailable instances stay listed. Seeing that one exists and why it cannot
+ * run is what lets someone fix it; dropping the row makes it look deleted.
  */
 export function buildComposerAgentRoleItems({
   roles,
@@ -130,41 +197,41 @@ export function buildComposerAgentRoleItems({
   agentConfigs,
   resolveAvailability,
 }: {
-  roles: readonly AgentRole[];
+  roles: readonly CatalogAgentRole[];
   machineId: MachineId | null | undefined;
   agentConfigs: readonly AgentConfigMeta[];
-  resolveAvailability: (role: AgentRole) => AgentRoleAvailability;
+  resolveAvailability: (instance: AgentRoleInstance) => AgentRoleAvailability;
 }): ComposerAgentRoleItem[] {
   if (!machineId) return [];
-  const configById = new Map(agentConfigs.map((config) => [config.id, config]));
-  return roles
-    .flatMap((role) => agentRoleOnMachine(role, machineId) ?? [])
-    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
-    .map((role) => ({
-      role,
-      availability: resolveAvailability(role),
-      agentConfig: configById.get(role.agentConfigId),
-    }));
+  const configById = new Map(agentConfigs.map((config) => [config.id as string, config]));
+  return sortItems(
+    roles.flatMap((role) =>
+      listAgentRoleInstancesOnMachine(role, machineId).map((instance) =>
+        itemFor(role, instance, configById, resolveAvailability)
+      )
+    )
+  );
 }
 
 /**
- * Whether this Role pins the permission mode.
+ * Whether this run config pins the permission mode.
  *
- * Permission IS part of a Role — the Role editor writes it as `runConfig.modeId`
- * for legacy ACP modes, or as the agent's own `_permission` option — so while a
- * Role is what will run, permission is not a separate thing left to choose.
- * Asked rather than assumed, because an agent that publishes no permission
- * control leaves a Role with nothing to pin, and hiding the composer's
- * permission button then would take away a knob the Role never owned.
+ * Permission IS part of an instance — the Role editor writes it as
+ * `runConfig.modeId` for legacy ACP modes, or as the agent's own `_permission`
+ * option — so while an instance is what will run, permission is not a separate
+ * thing left to choose. Asked rather than assumed, because an agent that
+ * publishes no permission control leaves an instance with nothing to pin, and
+ * hiding the composer's permission button then would take away a knob the
+ * instance never owned.
  */
 export function doesAgentRolePinPermissionMode(
-  role: AgentRole,
+  runConfig: AgentRoleRunConfig,
   source: { kind: 'configOption'; configId: string } | { kind: 'modeId' } | null
 ): boolean {
   if (!source) return false;
   return source.kind === 'modeId'
-    ? Boolean(role.runConfig.modeId)
-    : role.runConfig.configOptionValues?.[source.configId] !== undefined;
+    ? Boolean(runConfig.modeId)
+    : runConfig.configOptionValues?.[source.configId] !== undefined;
 }
 
 /**
@@ -175,10 +242,14 @@ export function doesAgentRolePinPermissionMode(
  * composer reads from arrives on its own tick, so "not in the list" right after
  * saving means "not yet". It can also mean "not here at all": the editor lets a
  * Role run on other machines only, and the composer must not follow one onto a
- * machine it is not starting this chat on. So the three answers are wait,
- * select, and give up — never "select something else".
+ * machine it is not starting this chat on. So the answers are wait, select
+ * (the Role's default instance here), and give up — never "select something
+ * else".
  */
-export type PendingAgentRoleSelection = 'wait' | 'select' | 'give-up';
+export type PendingAgentRoleSelection =
+  | { kind: 'wait' }
+  | { kind: 'select'; instanceId: AgentRoleInstanceId }
+  | { kind: 'give-up' };
 
 export function resolvePendingAgentRoleSelection({
   roleId,
@@ -186,19 +257,22 @@ export function resolvePendingAgentRoleSelection({
   isInCatalog,
 }: {
   roleId: AgentRoleId;
-  /** The Roles the composer offers, i.e. those enabled on its own machine. */
+  /** The instances the composer offers, i.e. those on its own machine. */
   items: readonly ComposerAgentRoleItem[];
   /** Whether the catalog knows this Role at all, on any machine. */
   isInCatalog: boolean;
 }): PendingAgentRoleSelection {
+  // The first instance listed for the Role is its default on this machine.
   const item = items.find((entry) => entry.role.id === roleId);
   if (!item) {
     // Known to the catalog but not offered here: it runs elsewhere, and
     // following it would move the chat off the selected machine.
-    return isInCatalog ? 'give-up' : 'wait';
+    return isInCatalog ? { kind: 'give-up' } : { kind: 'wait' };
   }
-  if (item.availability.kind === 'unknown') return 'wait';
-  return item.availability.kind === 'available' ? 'select' : 'give-up';
+  if (item.availability.kind === 'unknown') return { kind: 'wait' };
+  return item.availability.kind === 'available'
+    ? { kind: 'select', instanceId: item.instance.id }
+    : { kind: 'give-up' };
 }
 
 /**
@@ -227,19 +301,19 @@ export type ComposerRunConfigSelection = ComposerRunConfigValues & {
 };
 
 /**
- * Whether every value this Role PINS is what the composer is set to.
+ * Whether every value an instance PINS is what the composer is set to.
  *
- * Only the pinned values are compared: a Role deliberately leaves the rest on
- * the agent's default, so an unpinned option is not a difference.
+ * Only the pinned values are compared: an instance deliberately leaves the
+ * rest on the agent's default, so an unpinned option is not a difference.
  *
  * This is the half that does NOT involve the agent, because the two surfaces
  * disagree about the agent on purpose — see `isComposerAgentRoleApplied`.
  */
 export function isAgentRoleRunConfigApplied(
-  role: AgentRole,
+  runConfig: AgentRoleRunConfig,
   selection: ComposerRunConfigValues
 ): boolean {
-  const { modeId, modelId, configOptionValues } = role.runConfig;
+  const { modeId, modelId, configOptionValues } = runConfig;
   if (modeId && selection.modeId !== modeId) return false;
   if (modelId && selection.modelId !== modelId) return false;
   for (const [configId, value] of Object.entries(configOptionValues ?? {})) {
@@ -249,39 +323,40 @@ export function isAgentRoleRunConfigApplied(
 }
 
 /**
- * Whether the composer is currently configured as this Role says — values AND
- * the agent it binds.
+ * Whether the composer is currently configured as this instance says — values
+ * AND the agent and machine it runs on.
  *
  * This is the NEW-CHAT rule. The chat landing can still move the agent, so
- * picking a Role there authorizes the whole Role, and the footer names it only
- * while that holds. Three things end it, and all three are cases where the
- * Role's own promise was already broken: the user moved a knob, the agent
- * changed, or the agent no longer supports a value the Role pins so the
- * selection state fell back to the agent's own.
+ * picking an instance there authorizes the whole instance, and the footer names
+ * it only while that holds. Three things end it, and all three are cases where
+ * the instance's own promise was already broken: the user moved a knob, the
+ * agent changed, or the agent no longer supports a value the instance pins so
+ * the selection state fell back to the agent's own.
  */
 export function isComposerAgentRoleApplied(
-  role: AgentRole,
+  instance: AgentRoleInstance,
   selection: ComposerRunConfigSelection
 ): boolean {
   const { agentSelection } = selection;
   if (!agentSelection) return false;
-  if (agentSelection.agentId !== role.agentConfigId) return false;
-  if (agentSelection.machineId !== role.machineId) return false;
-  return isAgentRoleRunConfigApplied(role, selection);
+  if (agentSelection.agentId !== instance.agentConfigId) return false;
+  if (agentSelection.machineId !== instance.machineId) return false;
+  return isAgentRoleRunConfigApplied(instance.runConfig, selection);
 }
 
 /**
- * The Roles an EXISTING session may reuse: those whose placement on its
- * machine uses its exact Agent Config (the model-provider binding shown in the
- * composer), as that machine's view.
+ * The Role instances an EXISTING session may reuse: those on its exact machine
+ * with its exact Agent Config (the model-provider binding shown in the
+ * composer).
  *
  * A live session's agent is fixed — its machine, its config, its whole
- * runtime — so a Role cannot be executed there the way the landing executes
- * one. What DOES transfer is the run configuration: model, reasoning, and
- * permission options. Keeping the offer on the exact binding avoids presenting
- * a Role whose provider credentials, capability set, or machine availability do
- * not describe the running Session. Unavailable Roles remain visible and
- * disabled with their real reason, just like the new-chat menu.
+ * runtime — so an instance cannot be executed there the way the landing
+ * executes one. What DOES transfer is the run configuration: model, reasoning,
+ * and permission options. Keeping the offer on the exact binding avoids
+ * presenting an instance whose provider credentials, capability set, or machine
+ * availability do not describe the running Session. Unavailable instances
+ * remain visible and disabled with their real reason, just like the new-chat
+ * menu.
  *
  * The Role's instruction is NOT part of it. A Role's prompt prefix belongs to
  * the FIRST turn of a session it creates; replaying it into an ongoing
@@ -294,21 +369,18 @@ export function selectSessionAgentRoles({
   agentConfigs,
   resolveAvailability,
 }: {
-  roles: readonly AgentRole[];
+  roles: readonly CatalogAgentRole[];
   /** Existing Sessions stay on this exact machine and provider binding. */
   machineId: MachineId | null | undefined;
   agentConfigId: AgentConfigMeta['id'] | null | undefined;
   agentConfigs: readonly AgentConfigMeta[];
-  resolveAvailability: (role: AgentRole) => AgentRoleAvailability;
+  resolveAvailability: (instance: AgentRoleInstance) => AgentRoleAvailability;
 }): ComposerAgentRoleItem[] {
   if (!machineId || !agentConfigId) return [];
-  const configById = new Map(agentConfigs.map((config) => [config.id, config]));
-  return roles
-    .flatMap((catalogRole) => {
-      const role = agentRoleOnMachine(catalogRole, machineId);
-      if (role?.agentConfigId !== agentConfigId) return [];
-      const agentConfig = configById.get(role.agentConfigId);
-      return [{ role, availability: resolveAvailability(role), agentConfig }];
-    })
-    .sort((left, right) => left.role.name.localeCompare(right.role.name));
+  return buildComposerAgentRoleItems({
+    roles,
+    machineId,
+    agentConfigs,
+    resolveAvailability,
+  }).filter((item) => item.instance.agentConfigId === agentConfigId);
 }

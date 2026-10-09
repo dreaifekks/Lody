@@ -144,13 +144,18 @@ describe('isAgentRoleRunConfigApplied', () => {
   };
 
   it('holds on the values alone, whatever agent is running', () => {
-    expect(isAgentRoleRunConfigApplied(role, applied)).toBe(true);
+    expect(isAgentRoleRunConfigApplied(role.runConfig, applied)).toBe(true);
   });
 
   it('stops holding when a pinned value is changed by hand', () => {
-    expect(isAgentRoleRunConfigApplied(role, { ...applied, modelId: 'gpt-5.5-mini' })).toBe(false);
     expect(
-      isAgentRoleRunConfigApplied(role, { ...applied, configOptionValues: { effort: 'low' } })
+      isAgentRoleRunConfigApplied(role.runConfig, { ...applied, modelId: 'gpt-5.5-mini' })
+    ).toBe(false);
+    expect(
+      isAgentRoleRunConfigApplied(role.runConfig, {
+        ...applied,
+        configOptionValues: { effort: 'low' },
+      })
     ).toBe(false);
   });
 
@@ -161,7 +166,7 @@ describe('isAgentRoleRunConfigApplied', () => {
       ...applied,
       agentSelection: { agentId: 'codex-2' as AgentConfigId, machineId: 'machine-1' as MachineId },
     };
-    expect(isAgentRoleRunConfigApplied(role, selection)).toBe(true);
-    expect(isComposerAgentRoleApplied(role, selection)).toBe(false);
+    expect(isAgentRoleRunConfigApplied(role.runConfig, selection)).toBe(true);
+    expect(isComposerAgentRoleApplied(role.instances[0]!, selection)).toBe(false);
   });
 });

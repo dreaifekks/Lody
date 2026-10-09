@@ -28,6 +28,7 @@ import {
 import { orderAcpConfigOptionSelectors } from '@/lib/acp-selector-order';
 import {
   AGENT_ROLE_UNAVAILABLE_REASON_KEYS,
+  findComposerAgentRoleItem,
   type ComposerAgentRoleItem,
 } from '@/lib/composer-agent-roles';
 import { shouldOfferOptionSearch } from '@/lib/fuzzy-option-filter';
@@ -41,7 +42,7 @@ import { corner, radius, space, text } from '@lody/ui/tokens/scales.stylex';
 import {
   classifyPermissionModeFace,
   getAgentRoleEmoji,
-  type AgentRoleId,
+  type AgentRoleInstanceId,
   type MachineId,
 } from '@lody/shared';
 import {
@@ -179,10 +180,10 @@ export type MobileRunConfigSheetProps = {
    */
   agentRoles?: {
     items: ReadonlyArray<ComposerAgentRoleItem>;
-    /** The Role the current configuration still IS, not merely the last picked. */
-    selectedRoleId: AgentRoleId | null;
+    /** The instance the current configuration still IS, not merely the last picked. */
+    selectedInstanceId: AgentRoleInstanceId | null;
     /** `null` clears the Role and leaves the configuration exactly as it stands. */
-    onSelect: (roleId: AgentRoleId | null) => void;
+    onSelect: (instanceId: AgentRoleInstanceId | null) => void;
     /** Opens the Role editor seeded with what the composer is set to right now. */
     onCreate?: () => void;
   };
@@ -308,7 +309,7 @@ function MobileRunConfigSheetRows({
         // Role under it.
         icon: <span aria-hidden="true" />,
       },
-      ...agentRoles.items.map(({ role, availability }) => {
+      ...agentRoles.items.map(({ role, instance, title, availability }) => {
         // Listed either way, so the reason is what makes a disabled row
         // readable rather than broken-looking.
         const reason =
@@ -318,9 +319,9 @@ function MobileRunConfigSheetRows({
               ? t('settings.agentRoles.status.checking')
               : null;
         return {
-          value: role.id as string,
-          label: role.name,
-          searchText: role.name,
+          value: instance.id as string,
+          label: title,
+          searchText: `${role.name} ${instance.label}`,
           icon: (
             <span {...stylex.props(styles.emoji)} aria-hidden="true">
               {getAgentRoleEmoji(role)}
@@ -342,9 +343,10 @@ function MobileRunConfigSheetRows({
         : []),
     ];
   }, [agentRoles, roleNoneLabel, t]);
-  const selectedRole = agentRoles?.selectedRoleId
-    ? agentRoles.items.find((item) => item.role.id === agentRoles.selectedRoleId)?.role
+  const selectedRoleItem = agentRoles
+    ? findComposerAgentRoleItem(agentRoles.items, agentRoles.selectedInstanceId)
     : undefined;
+  const selectedRole = selectedRoleItem?.role;
 
   /* ── Agent (options scoped by allowedMachineIds when provided) ── */
   const agentOptions = useMemo<MobileInlinePickerOption<string>[]>(() => {
@@ -532,13 +534,15 @@ function MobileRunConfigSheetRows({
         <RunConfigRow label={roleRowLabel}>
           <MobileInlinePicker<string>
             id="run-config-role"
-            value={agentRoles.selectedRoleId ?? ROLE_NONE_VALUE}
+            value={agentRoles.selectedInstanceId ?? ROLE_NONE_VALUE}
             onChange={(value) => {
               if (value === ROLE_CREATE_VALUE) {
                 agentRoles.onCreate?.();
                 return;
               }
-              agentRoles.onSelect(value === ROLE_NONE_VALUE ? null : (value as AgentRoleId));
+              agentRoles.onSelect(
+                value === ROLE_NONE_VALUE ? null : (value as AgentRoleInstanceId)
+              );
             }}
             options={roleOptions}
             ariaLabel={roleRowLabel}
@@ -555,7 +559,7 @@ function MobileRunConfigSheetRows({
                   </span>
                 ) : null}
                 <span {...stylex.props(composerSurface.truncate)}>
-                  {selectedRole?.name ?? roleNoneLabel}
+                  {selectedRoleItem?.title ?? roleNoneLabel}
                 </span>
               </>
             }

@@ -97,6 +97,9 @@ function buildSessionCreateResult(payload: SessionToCreate): CreateSessionResult
     if (typeof payload.agentRoleRevision === 'number') {
       sessionMeta.agentRoleRevision = payload.agentRoleRevision;
     }
+    if (payload.agentRoleInstanceId) {
+      sessionMeta.agentRoleInstanceId = payload.agentRoleInstanceId;
+    }
   }
   return { sessionId, sessionMeta };
 }

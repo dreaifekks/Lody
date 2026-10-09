@@ -6,11 +6,15 @@ import {
   type AgentRole,
   type AgentRoleAvailability,
   type AgentRoleId,
+  type AgentRoleInstance,
+  type AgentRoleInstanceId,
+  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 
 import type { ComposerAgentRoleItem } from '../src/lib/composer-agent-roles';
 import {
+  buildAgentRoleTurnSelection,
   buildComposerAgentRoleItems,
   doesAgentRolePinPermissionMode,
   isComposerAgentRoleApplied,
@@ -19,7 +23,9 @@ import {
 } from '../src/lib/composer-agent-roles';
 import { singleMachineRole } from './agent-role-fixture';
 
-const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole =>
+const makeRole = (
+  overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
+): CatalogAgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     ownerUserId: 'user-1',
@@ -45,6 +51,20 @@ const makeConfig = (id: string, machineId: string, agentType = 'codex'): AgentCo
 
 const available: AgentRoleAvailability = { kind: 'available' };
 
+const inst = (
+  id: string,
+  machineId: string,
+  agentConfigId: string,
+  runConfig: AgentRoleInstance['runConfig'] = {},
+  label = id
+): AgentRoleInstance => ({
+  id: id as AgentRoleInstanceId,
+  label,
+  machineId: machineId as MachineId,
+  agentConfigId: agentConfigId as AgentConfigId,
+  runConfig,
+});
+
 describe('buildComposerAgentRoleItems', () => {
   const reviewer = makeRole({ id: 'r-2' as AgentRoleId, name: 'Reviewer' });
   const architect = makeRole({ id: 'r-1' as AgentRoleId, name: 'Architect' });
@@ -63,7 +83,7 @@ describe('buildComposerAgentRoleItems', () => {
     makeConfig('config-2', 'machine-1', 'claude'),
   ];
 
-  it('offers every Agent type bound to the machine the chat starts on', () => {
+  it('offers every instance on the machine the chat starts on, one flat list', () => {
     const items = buildComposerAgentRoleItems({
       roles: [reviewer, architect, elsewhere, writer],
       machineId: 'machine-1' as MachineId,
@@ -71,44 +91,78 @@ describe('buildComposerAgentRoleItems', () => {
       resolveAvailability: () => available,
     });
     expect(items.map((item) => item.role.id)).toEqual(['r-1', 'r-2', 'r-4']);
+    expect(items.map((item) => item.title)).toEqual(['Architect', 'Reviewer', 'Writer']);
     expect(items.at(-1)?.agentConfig?.agentType).toBe('claude');
   });
 
-  it('offers a Role enabled on several machines as its placement on this one', () => {
-    const shared = singleMachineRole({
-      ...makeRole({ id: 'r-5' as AgentRoleId, name: 'Shared' }),
-      placements: [
-        {
-          machineId: 'machine-2' as MachineId,
-          agentConfigId: 'config-9' as AgentConfigId,
-          enabled: true,
-          runConfig: { modelId: 'claude-fable-5-1[1m]' },
-        },
-        {
-          machineId: 'machine-1' as MachineId,
-          agentConfigId: 'config-2' as AgentConfigId,
-          enabled: true,
-          runConfig: { modelId: 'claude-fable-5-1' },
-        },
+  it('lists each instance a machine holds, labelled, and only that machine’s', () => {
+    const uiStyle = makeRole({
+      id: 'r-5' as AgentRoleId,
+      name: 'uiStyle',
+      instances: [
+        inst('ui-claude', 'machine-1', 'config-2', { modelId: 'opus' }, 'Claude'),
+        inst('ui-codex', 'machine-1', 'config-1', { modelId: 'gpt-5.6' }, 'Codex'),
+        inst('ui-elsewhere', 'machine-2', 'config-9', {}, 'Elsewhere'),
       ],
     });
-    const switchedOff = singleMachineRole({
-      ...makeRole({ id: 'r-6' as AgentRoleId, name: 'Off here' }),
-      placements: [{ ...shared.placements[0]! }, { ...shared.placements[1]!, enabled: false }],
-    });
     const items = buildComposerAgentRoleItems({
-      roles: [shared, switchedOff],
+      roles: [uiStyle],
       machineId: 'machine-1' as MachineId,
       agentConfigs: configs,
+      resolveAvailability: (instance) =>
+        instance.id === 'ui-codex' ? { kind: 'unavailable', reason: 'machine_offline' } : available,
+    });
+    expect(items.map((item) => [item.instance.id, item.title, item.availability.kind])).toEqual([
+      ['ui-claude', 'uiStyle · Claude', 'available'],
+      ['ui-codex', 'uiStyle · Codex', 'unavailable'],
+    ]);
+    // Each entry is its own instance, not the Role's first-instance mirror.
+    expect(items[1]?.instance.runConfig.modelId).toBe('gpt-5.6');
+    expect(items[1]?.agentConfig?.agentType).toBe('codex');
+  });
+
+  /*
+   * The reported bug: a Role on devnuc first and n100 second, picked in a chat
+   * on n100. The entry must be n100's instance, applied as picked, and the Turn
+   * must record the Role with that instance — not the devnuc mirror.
+   */
+  it('selects a Role on its second machine and records that instance in the Turn', () => {
+    const runConfig = {
+      modeId: 'agent-auto-review',
+      modelId: 'gpt-6-astra',
+      configOptionValues: { 'fast-mode': false, reasoning_effort: 'high' },
+    };
+    const vision = makeRole({
+      id: 'vision' as AgentRoleId,
+      name: 'visionAgent',
+      revision: 6,
+      instances: [
+        inst('vision:devnuc', 'devnuc', 'c-devnuc', runConfig, 'Codex'),
+        inst('vision:n100', 'n100', 'c-n100', runConfig, 'Codex'),
+      ],
+    });
+    const [item, ...rest] = buildComposerAgentRoleItems({
+      roles: [vision],
+      machineId: 'n100' as MachineId,
+      agentConfigs: [makeConfig('c-devnuc', 'devnuc'), makeConfig('c-n100', 'n100')],
       resolveAvailability: () => available,
     });
-    expect(items.map((item) => item.role.id)).toEqual(['r-5']);
-    expect(items[0]?.role).toMatchObject({
-      machineId: 'machine-1',
-      agentConfigId: 'config-2',
-      runConfig: { modelId: 'claude-fable-5-1' },
+    expect(rest).toEqual([]);
+    expect(item?.instance).toMatchObject({ id: 'vision:n100', agentConfigId: 'c-n100' });
+    // What the composer sets when the entry is picked is what the check reads.
+    expect(
+      isComposerAgentRoleApplied(item!.instance, {
+        agentSelection: { agentId: 'c-n100' as AgentConfigId, machineId: 'n100' as MachineId },
+        modeId: runConfig.modeId,
+        modelId: runConfig.modelId,
+        configOptionValues: runConfig.configOptionValues,
+      })
+    ).toBe(true);
+    expect(buildAgentRoleTurnSelection(item!)).toMatchObject({
+      agentRoleId: 'vision',
+      agentRoleRevision: 6,
+      agentRoleSnapshot: { id: 'vision', instanceId: 'vision:n100', instanceLabel: 'Codex' },
     });
-    expect(items[0]?.agentConfig?.agentType).toBe('claude');
   });
 
   it('offers nothing until a machine is selected', () => {
@@ -151,7 +205,9 @@ describe('buildComposerAgentRoleItems', () => {
 });
 
 describe('isComposerAgentRoleApplied', () => {
-  const role = makeRole({
+  const {
+    instances: [role],
+  } = makeRole({
     id: 'r-1' as AgentRoleId,
     name: 'Reviewer',
     runConfig: {
@@ -168,12 +224,12 @@ describe('isComposerAgentRoleApplied', () => {
   };
 
   it('holds while every pinned value is what will run', () => {
-    expect(isComposerAgentRoleApplied(role, matching)).toBe(true);
+    expect(isComposerAgentRoleApplied(role!, matching)).toBe(true);
   });
 
   it('ignores options the Role does not pin', () => {
     expect(
-      isComposerAgentRoleApplied(role, {
+      isComposerAgentRoleApplied(role!, {
         ...matching,
         configOptionValues: { thought_level: 'high', fast_mode: true },
       })
@@ -182,7 +238,7 @@ describe('isComposerAgentRoleApplied', () => {
 
   it('stops holding when a pinned option falls back to the agent value', () => {
     expect(
-      isComposerAgentRoleApplied(role, {
+      isComposerAgentRoleApplied(role!, {
         ...matching,
         configOptionValues: { thought_level: 'low' },
       })
@@ -190,13 +246,13 @@ describe('isComposerAgentRoleApplied', () => {
   });
 
   it('stops holding when the model or mode is changed by hand', () => {
-    expect(isComposerAgentRoleApplied(role, { ...matching, modelId: 'gpt-5.6-thor' })).toBe(false);
-    expect(isComposerAgentRoleApplied(role, { ...matching, modeId: 'default' })).toBe(false);
+    expect(isComposerAgentRoleApplied(role!, { ...matching, modelId: 'gpt-5.6-thor' })).toBe(false);
+    expect(isComposerAgentRoleApplied(role!, { ...matching, modeId: 'default' })).toBe(false);
   });
 
   it('never holds for another agent config or machine', () => {
     expect(
-      isComposerAgentRoleApplied(role, {
+      isComposerAgentRoleApplied(role!, {
         ...matching,
         agentSelection: {
           agentId: 'config-2' as AgentConfigId,
@@ -205,7 +261,7 @@ describe('isComposerAgentRoleApplied', () => {
       })
     ).toBe(false);
     expect(
-      isComposerAgentRoleApplied(role, {
+      isComposerAgentRoleApplied(role!, {
         ...matching,
         agentSelection: {
           agentId: 'config-1' as AgentConfigId,
@@ -213,7 +269,7 @@ describe('isComposerAgentRoleApplied', () => {
         },
       })
     ).toBe(false);
-    expect(isComposerAgentRoleApplied(role, { ...matching, agentSelection: null })).toBe(false);
+    expect(isComposerAgentRoleApplied(role!, { ...matching, agentSelection: null })).toBe(false);
   });
 });
 
@@ -224,6 +280,7 @@ describe('resolveTurnAgentRoleForRunConfig', () => {
     runConfig: { modeId: 'plan', configOptionValues: { collaboration_mode: 'plan' } },
   });
   const turnSelection = { agentRoleId: role.id, agentRoleRevision: role.revision };
+  const item = { role, instance: role.instances[0]! };
   const current = {
     modeId: 'plan',
     modelId: null,
@@ -234,7 +291,7 @@ describe('resolveTurnAgentRoleForRunConfig', () => {
     expect(
       resolveTurnAgentRoleForRunConfig({
         turnSelection,
-        role,
+        item,
         current,
         overrides: {
           modeIdOverride: 'default',
@@ -250,8 +307,8 @@ describe('doesAgentRolePinPermissionMode', () => {
     id: 'r-1' as AgentRoleId,
     name: 'Reviewer',
     runConfig: { modeId: 'read-only', configOptionValues: { permission_mode: 'ask' } },
-  });
-  const bare = makeRole({ id: 'r-2' as AgentRoleId, name: 'Bare' });
+  }).runConfig;
+  const bare = makeRole({ id: 'r-2' as AgentRoleId, name: 'Bare' }).runConfig;
 
   it('holds for a legacy ACP mode the Role stored', () => {
     expect(doesAgentRolePinPermissionMode(pinning, { kind: 'modeId' })).toBe(true);
@@ -274,17 +331,20 @@ describe('doesAgentRolePinPermissionMode', () => {
 
 describe('resolvePendingAgentRoleSelection', () => {
   const roleId = 'r-1' as AgentRoleId;
+  const role = makeRole({ id: roleId, name: 'Reviewer' });
   const item = (availability: AgentRoleAvailability): ComposerAgentRoleItem => ({
-    role: makeRole({ id: roleId, name: 'Reviewer' }),
+    role,
+    instance: role.instances[0]!,
+    title: role.name,
     availability,
   });
 
   // A create resolves on the durable local write; the catalog snapshot the
   // composer reads from arrives on its own tick.
   it('waits while the Role has not reached the composer yet', () => {
-    expect(resolvePendingAgentRoleSelection({ roleId, items: [], isInCatalog: false })).toBe(
-      'wait'
-    );
+    expect(resolvePendingAgentRoleSelection({ roleId, items: [], isInCatalog: false })).toEqual({
+      kind: 'wait',
+    });
   });
 
   it('waits while the binding cannot be judged', () => {
@@ -294,7 +354,7 @@ describe('resolvePendingAgentRoleSelection', () => {
         items: [item({ kind: 'unknown' })],
         isInCatalog: true,
       })
-    ).toBe('wait');
+    ).toEqual({ kind: 'wait' });
   });
 
   it('selects the Role once the composer can offer it', () => {
@@ -304,15 +364,15 @@ describe('resolvePendingAgentRoleSelection', () => {
         items: [item({ kind: 'available' })],
         isInCatalog: true,
       })
-    ).toBe('select');
+    ).toEqual({ kind: 'select', instanceId: role.instances[0]!.id });
   });
 
   // The editor lets a Role be bound to any machine; following one onto another
   // machine would move the chat off the one it is starting on.
   it('gives up on a Role the catalog knows but this machine does not offer', () => {
-    expect(resolvePendingAgentRoleSelection({ roleId, items: [], isInCatalog: true })).toBe(
-      'give-up'
-    );
+    expect(resolvePendingAgentRoleSelection({ roleId, items: [], isInCatalog: true })).toEqual({
+      kind: 'give-up',
+    });
   });
 
   it('gives up rather than waiting on a Role that cannot run', () => {
@@ -322,6 +382,6 @@ describe('resolvePendingAgentRoleSelection', () => {
         items: [item({ kind: 'unavailable', reason: 'machine_offline' })],
         isInCatalog: true,
       })
-    ).toBe('give-up');
+    ).toEqual({ kind: 'give-up' });
   });
 });

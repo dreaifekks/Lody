@@ -7,13 +7,18 @@ import {
   AGENT_ROLE_VERSION,
   DEFAULT_AGENT_ROLE_EMOJI,
   type AgentConfigId,
-  type AgentRole,
   type AgentRoleId,
+  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 
-let agentRoleItems: Array<{ slug: string; role: AgentRole; availability: { kind: 'available' } }> =
-  [];
+let agentRoleItems: Array<{
+  slug: string;
+  role: CatalogAgentRole;
+  instance: CatalogAgentRole['instances'][number];
+  title: string;
+  availability: { kind: 'available' };
+}> = [];
 
 vi.mock('../src/components/mentions/mention-project-file-source', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -54,7 +59,7 @@ import { singleMachineRole } from './agent-role-fixture';
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const role = (emoji?: string): AgentRole =>
+const role = (emoji?: string): CatalogAgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     id: 'role-1' as AgentRoleId,
@@ -69,6 +74,14 @@ const role = (emoji?: string): AgentRole =>
     createdAt: 1,
     updatedAt: 1,
   });
+
+const itemOf = (entry: CatalogAgentRole) => ({
+  slug: 'Code-Reviewer',
+  role: entry,
+  instance: entry.instances[0]!,
+  title: entry.name,
+  availability: { kind: 'available' as const },
+});
 
 describe('agent role chip in the composer', () => {
   let root: Root | undefined;
@@ -100,7 +113,9 @@ describe('agent role chip in the composer', () => {
           value: 'ping @Code-Reviewer now',
           onValueChange: () => undefined,
           getMentionChip: getComposerMentionChip,
-          persistedMentions: [{ start: 5, end: 19, value: 'role-1', kind: 'agent_role' as const }],
+          persistedMentions: [
+            { start: 5, end: 19, value: 'role-1:machine-1', kind: 'agent_role' as const },
+          ],
         })
       );
     });
@@ -108,15 +123,13 @@ describe('agent role chip in the composer', () => {
   };
 
   it('paints the role own emoji over the committed token', async () => {
-    agentRoleItems = [
-      { slug: 'Code-Reviewer', availability: { kind: 'available' }, role: role('🔍') },
-    ];
+    agentRoleItems = [itemOf(role('🔍'))];
     const view = await renderComposer();
     expect(view.textContent).toContain('🔍');
   });
 
   it('falls back to the shared default glyph for a role with no emoji', async () => {
-    agentRoleItems = [{ slug: 'Code-Reviewer', availability: { kind: 'available' }, role: role() }];
+    agentRoleItems = [itemOf(role())];
     const view = await renderComposer();
     expect(view.textContent).toContain(DEFAULT_AGENT_ROLE_EMOJI);
   });

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   AgentConfigMeta,
   AgentRoleId,
+  AgentRoleInstanceId,
   LocalProjectId,
   MachineId,
   MachineViewMeta,
@@ -43,7 +44,7 @@ type UseChatLandingDefaultsArgs = {
    * that has not loaded is not a Role the user deselected, and writing null for
    * it would drop the remembered Role before it could ever be restored.
    */
-  selectedAgentRoleId?: AgentRoleId | null;
+  selectedAgentRole?: { roleId: AgentRoleId; instanceId: AgentRoleInstanceId } | null;
 };
 
 function pickPreferredMachineId(
@@ -78,7 +79,7 @@ export function useChatLandingDefaults({
   setSelectedLocalProject,
   selectedLocalBranch,
   setSelectedLocalBranch,
-  selectedAgentRoleId,
+  selectedAgentRole,
 }: UseChatLandingDefaultsArgs) {
   const initializedRef = useRef(false);
   const initializedWorkspaceIdRef = useRef<string | null>(null);
@@ -258,7 +259,13 @@ export function useChatLandingDefaults({
       localProjectId: selectedLocalProject?.localProjectId ?? null,
       localBranch: selectedLocalBranch ?? null,
       agentRoleId:
-        selectedAgentRoleId === undefined ? (previous?.agentRoleId ?? null) : selectedAgentRoleId,
+        selectedAgentRole === undefined
+          ? (previous?.agentRoleId ?? null)
+          : (selectedAgentRole?.roleId ?? null),
+      agentRoleInstanceId:
+        selectedAgentRole === undefined
+          ? (previous?.agentRoleInstanceId ?? null)
+          : (selectedAgentRole?.instanceId ?? null),
     });
   }, [
     workspaceId,
@@ -269,7 +276,7 @@ export function useChatLandingDefaults({
     selectedBranch,
     selectedLocalProject,
     selectedLocalBranch,
-    selectedAgentRoleId,
+    selectedAgentRole,
   ]);
 
   // After the initial defaults pass completes, the current `selectedAgent` may

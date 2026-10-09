@@ -10,6 +10,8 @@ import {
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRole,
+  type AgentRoleInstanceId,
+  type CatalogAgentRole,
   type AgentRoleId,
   type MachineId,
 } from '@lody/shared';
@@ -38,7 +40,9 @@ const agentConfig: AgentConfigMeta = {
   env: {},
 };
 
-const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole =>
+const makeRole = (
+  overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
+): CatalogAgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     ownerUserId: 'user-1',
@@ -52,15 +56,42 @@ const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
     ...overrides,
   });
 
+const entryOf = (
+  role: CatalogAgentRole,
+  availability: ComposerAgentRoleItem['availability']
+): ComposerAgentRoleItem => ({
+  role,
+  instance: role.instances[0]!,
+  title: role.name,
+  availability,
+});
 const reviewer: ComposerAgentRoleItem = {
-  role: makeRole({ id: 'role-1' as AgentRoleId, name: 'Code Reviewer', emoji: '🔍' }),
-  availability: { kind: 'available' },
+  ...entryOf(makeRole({ id: 'role-1' as AgentRoleId, name: 'Code Reviewer', emoji: '🔍' }), {
+    kind: 'available',
+  }),
   agentConfig,
 };
-const retired: ComposerAgentRoleItem = {
-  role: makeRole({ id: 'role-2' as AgentRoleId, name: 'Retired Reviewer' }),
-  availability: { kind: 'unavailable', reason: 'agent_config_missing' },
-};
+const retired = entryOf(makeRole({ id: 'role-2' as AgentRoleId, name: 'Retired Reviewer' }), {
+  kind: 'unavailable',
+  reason: 'agent_config_missing',
+});
+/** Two instances of one Role on this machine: two entries, each with its label. */
+const pairRole = makeRole({
+  id: 'role-3' as AgentRoleId,
+  name: 'uiStyle',
+  instances: ['Claude', 'Gemini'].map((label) => ({
+    id: `ui-${label}` as AgentRoleInstanceId,
+    label,
+    machineId,
+    agentConfigId: agentConfig.id,
+    runConfig: {},
+  })),
+});
+const pair = pairRole.instances.map((instance) => ({
+  ...entryOf(pairRole, { kind: 'available' }),
+  instance,
+  title: `uiStyle · ${instance.label}`,
+}));
 
 type SheetProps = ComponentProps<typeof MobileRunConfigSheet>;
 
@@ -139,7 +170,7 @@ describe('MobileRunConfigSheet agent-role row', () => {
   it('still shows the row when the machine has no Roles yet', async () => {
     const onCreate = vi.fn();
     const view = await render({
-      agentRoles: { items: [], selectedRoleId: null, onSelect: () => undefined, onCreate },
+      agentRoles: { items: [], selectedInstanceId: null, onSelect: () => undefined, onCreate },
     });
     expect(view.querySelector('button[aria-label="Role"]')?.textContent).toContain('None');
 
@@ -155,7 +186,7 @@ describe('MobileRunConfigSheet agent-role row', () => {
 
   it('puts Role above Agent, because a Role answers every row under it', async () => {
     const view = await render({
-      agentRoles: { items: [reviewer], selectedRoleId: null, onSelect: () => undefined },
+      agentRoles: { items: [reviewer], selectedInstanceId: null, onSelect: () => undefined },
     });
     const labels = [...view.querySelectorAll('button[aria-label]')].map((node) =>
       node.getAttribute('aria-label')
@@ -168,14 +199,14 @@ describe('MobileRunConfigSheet agent-role row', () => {
 
   it('reads as None until a Role is picked, and as the Role after', async () => {
     const none = await render({
-      agentRoles: { items: [reviewer], selectedRoleId: null, onSelect: () => undefined },
+      agentRoles: { items: [reviewer], selectedInstanceId: null, onSelect: () => undefined },
     });
     expect(none.querySelector('button[aria-label="Role"]')?.textContent).toContain('None');
 
     const picked = await render({
       agentRoles: {
         items: [reviewer],
-        selectedRoleId: reviewer.role.id,
+        selectedInstanceId: reviewer.instance.id,
         onSelect: () => undefined,
       },
     });
@@ -190,7 +221,7 @@ describe('MobileRunConfigSheet agent-role row', () => {
      TRIGGER deliberately has no such slot — it shows one value, not a column. */
   it('reserves the emoji slot for None in the list, so the labels line up', async () => {
     const view = await render({
-      agentRoles: { items: [reviewer], selectedRoleId: null, onSelect: () => undefined },
+      agentRoles: { items: [reviewer], selectedInstanceId: null, onSelect: () => undefined },
     });
     await openRolePicker(view);
     // Option rows only: the row's own trigger also carries the label, and it
@@ -211,7 +242,7 @@ describe('MobileRunConfigSheet agent-role row', () => {
   it('reports null for None — it clears the name, not the configuration', async () => {
     const onSelect = vi.fn();
     const view = await render({
-      agentRoles: { items: [reviewer], selectedRoleId: reviewer.role.id, onSelect },
+      agentRoles: { items: [reviewer], selectedInstanceId: reviewer.instance.id, onSelect },
     });
     await openRolePicker(view);
     const noneOption = [...view.querySelectorAll('[role="dialog"] button')].find(
@@ -226,7 +257,7 @@ describe('MobileRunConfigSheet agent-role row', () => {
   it('picks a Role by its stable id', async () => {
     const onSelect = vi.fn();
     const view = await render({
-      agentRoles: { items: [reviewer], selectedRoleId: null, onSelect },
+      agentRoles: { items: [reviewer], selectedInstanceId: null, onSelect },
     });
     await openRolePicker(view);
     const option = [...view.querySelectorAll('[role="dialog"] button')].find((node) =>
@@ -235,13 +266,33 @@ describe('MobileRunConfigSheet agent-role row', () => {
     await act(async () => {
       (option as HTMLElement).click();
     });
-    expect(onSelect).toHaveBeenCalledWith('role-1');
+    expect(onSelect).toHaveBeenCalledWith(reviewer.instance.id);
+  });
+
+  it('lists a Role once per instance here, labelled only when there are several', async () => {
+    const onSelect = vi.fn();
+    const view = await render({
+      agentRoles: { items: [reviewer, ...pair], selectedInstanceId: null, onSelect },
+    });
+    await openRolePicker(view);
+    const texts = [...view.querySelectorAll('[role="dialog"] button')].map(
+      (node) => node.textContent ?? ''
+    );
+    for (const title of ['Code Reviewer', 'uiStyle · Claude', 'uiStyle · Gemini'])
+      expect(texts.filter((text) => text.includes(title))).toHaveLength(1);
+    const gemini = [...view.querySelectorAll('[role="dialog"] button')].find((node) =>
+      node.textContent?.includes('uiStyle · Gemini')
+    );
+    await act(async () => {
+      (gemini as HTMLElement).click();
+    });
+    expect(onSelect).toHaveBeenCalledWith('ui-Gemini');
   });
 
   it('keeps an unavailable Role listed, disabled, and says why', async () => {
     const onSelect = vi.fn();
     const view = await render({
-      agentRoles: { items: [reviewer, retired], selectedRoleId: null, onSelect },
+      agentRoles: { items: [reviewer, retired], selectedInstanceId: null, onSelect },
     });
     await openRolePicker(view);
     const option = [...view.querySelectorAll('[role="dialog"] button')].find((node) =>

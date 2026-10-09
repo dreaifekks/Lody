@@ -3,14 +3,15 @@ import { useAtomValue } from 'jotai';
 import { selectAtom } from 'jotai/utils';
 import {
   listAccessibleAgentRoles,
-  listEnabledAgentRolePlacements,
   machineSupportsMemoryProviders,
   resolveAgentRoleAvailability,
+  resolveAgentRoleInstanceAvailability,
   type AgentConfigId,
   type AgentRole,
   type AgentRoleAvailability,
   type AgentRoleAvailabilityContext,
   type AgentRoleId,
+  type AgentRoleInstance,
   type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
@@ -49,31 +50,27 @@ export function useWorkspaceAgentRoles(): WorkspaceAgentRolesSnapshot {
 }
 
 export type AgentRoleAvailabilityResolver = {
-  resolve: (role: AgentRole) => AgentRoleAvailability;
+  /** A Role: available while any of its instances is. */
+  resolve: (role: Pick<AgentRole, 'instances'>) => AgentRoleAvailability;
+  resolveInstance: (instance: AgentRoleInstance) => AgentRoleAvailability;
 };
 
 /**
  * Whether each Role can still run, and why not when it cannot.
  *
- * Subscribes the agent configs of exactly the machines the given Roles are
- * enabled on, so a Role bound to a machine no surface has opened yet still resolves
+ * Subscribes the agent configs of exactly the machines the given Roles have
+ * instances on, so a Role bound to a machine no surface has opened yet still resolves
  * instead of reporting a missing config. Until those rows are read the
  * availability is `unknown`, never `unavailable` — reporting a Role broken
  * because its config list has not loaded is the same silent lie as falling back
  * to another config.
  */
 export function useAgentRoleAvailability(
-  roles: readonly AgentRole[]
+  roles: readonly Pick<AgentRole, 'instances'>[]
 ): AgentRoleAvailabilityResolver {
   const roleMachineIdsKey = useMemo(
     () =>
-      [
-        ...new Set(
-          roles.flatMap((role) =>
-            listEnabledAgentRolePlacements(role).map((placement) => placement.machineId)
-          )
-        ),
-      ]
+      [...new Set(roles.flatMap((role) => role.instances.map((instance) => instance.machineId)))]
         .sort()
         .join('\0'),
     [roles]
@@ -129,11 +126,15 @@ export function useAgentRoleAvailability(
   }, [agentConfigs, loadedMachineIds, machines, onlineMachineIds]);
 
   const resolve = useCallback(
-    (role: AgentRole) => resolveAgentRoleAvailability(role, context),
+    (role: Pick<AgentRole, 'instances'>) => resolveAgentRoleAvailability(role, context),
+    [context]
+  );
+  const resolveInstance = useCallback(
+    (instance: AgentRoleInstance) => resolveAgentRoleInstanceAvailability(instance, context),
     [context]
   );
 
-  return { resolve };
+  return { resolve, resolveInstance };
 }
 
 export function useWorkspaceAgentRoleActions(): {

@@ -699,9 +699,9 @@ function CandidateDetailPane({ detail }: { detail: MentionCandidateDetail }) {
       <div {...stylex.props(styles.detailSlot)}>
         <AgentRoleDetailPane
           role={detail.agentRole.role}
+          instance={detail.agentRole.instance}
           agentConfig={detail.agentRole.agentConfig}
           machine={detail.agentRole.machine}
-          machineLabel={detail.agentRole.machineLabel}
           className="absolute inset-0 h-auto w-auto"
         />
       </div>

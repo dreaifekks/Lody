@@ -1,6 +1,6 @@
 import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
-import type { AgentRoleId, SessionId } from '@lody/shared';
+import type { AgentRoleId, AgentRoleInstanceId, SessionId } from '@lody/shared';
 
 /**
  * Explicit Role choices made in existing-session composers.
@@ -16,6 +16,8 @@ export const sessionAgentRoleSelectionAtomFamily = atomFamily((_sessionId: Sessi
   atom<
     | {
         roleId: AgentRoleId | null;
+        /** The instance picked; absent for a choice made before instances. */
+        instanceId?: AgentRoleInstanceId;
         /** Logical durable Turns visible when this unsent choice was made. */
         basedOnTurnKeys: readonly string[];
       }
@@ -37,6 +39,7 @@ export const sessionAgentRoleDurableSnapshotAtomFamily = atomFamily((_sessionId:
     | {
         roleId: AgentRoleId | null | undefined;
         roleRevision: number | undefined;
+        instanceId: AgentRoleInstanceId | undefined;
         currentTurnKey: string | null;
         knownTurnKeys: readonly string[];
       }

@@ -569,24 +569,23 @@ export function toAgentRoleCandidate(
   item: AgentRoleMentionItem,
   availabilityText?: string
 ): MentionCandidate {
-  const { role } = item;
+  const { role, instance } = item;
   // The emoji REPLACES the category glyph on the row: the category header above
   // already says these are Agent Roles, so a second generic glyph only crowds
   // out the Role's own mark. Every Role has one, defaulted, so rows stay aligned.
   const emoji = getAgentRoleEmoji(role);
   return {
-    // The range payload is the stable Role id; the text only carries the token
-    // derived from the name, which its owner may rename at any time.
-    value: role.id,
+    // The range payload is the stable instance id; the text only carries the
+    // token derived from the names, which their owner may rename at any time.
+    value: instance.id,
     label: item.slug,
     insertText: `${MENTION_TRIGGER}${item.slug}`,
     kind: 'agent_role',
     icon: 'agent_role',
     iconEmoji: emoji,
-    title: role.name,
-    // Who does the work and where: two Roles named alike on two machines are
-    // told apart here without opening the pane.
-    hint: [item.agentConfig?.name, item.machine?.name].filter(Boolean).join(' · ') || undefined,
+    title: item.title,
+    // Who does the work; every listed instance runs on this composer's machine.
+    hint: item.agentConfig?.name,
     disabled: item.availability.kind !== 'available',
     subtitle: availabilityText,
     detail: {
@@ -596,12 +595,9 @@ export function toAgentRoleCandidate(
       // nothing about accepting it. It is a Settings concern.
       agentRole: {
         role,
+        instance,
         agentConfig: item.agentConfig,
         machine: item.machine,
-        // Named here, unlike the composer's list: this menu offers Roles from
-        // every machine the user may reach, so which one a Role binds to is
-        // part of what accepting it authorizes.
-        machineLabel: item.machine?.name,
       },
     },
   };

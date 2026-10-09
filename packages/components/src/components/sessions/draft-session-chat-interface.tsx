@@ -1,4 +1,4 @@
-import { snapshotAgentRole } from '@lody/shared';
+import type { AgentRoleInstanceId } from '@lody/shared';
 import type { SessionAttachmentDraft } from '@/lib/session-attachment-draft';
 import {
   forwardRef,
@@ -66,7 +66,9 @@ import { useSessionDoc } from '@/hooks/use-session-doc';
 import { useConversationTail, useConversationVersion } from '@/hooks/use-conversation-view';
 import { collectConversationConfigSources } from '@/lib/conversation-view';
 import {
+  buildAgentRoleTurnSelection,
   buildComposerAgentRoleItems,
+  findComposerAgentRoleItem,
   isComposerAgentRoleApplied,
   resolvePendingAgentRoleSelection,
 } from '@/lib/composer-agent-roles';
@@ -76,6 +78,7 @@ import {
 } from '@/hooks/use-workspace-agent-roles';
 import type { SessionAgentRoleControl } from '@/hooks/use-session-agent-role';
 import { buildAgentPrompt } from '@/lib';
+import { AgentRoleMentionMachineContext } from '@/components/mentions/mention-agent-role-source';
 
 const areConfigOptionValuesEqual = (
   left?: Record<string, AcpConfigOptionValue>,
@@ -99,6 +102,7 @@ export type DraftSessionSendPayload = {
   /** Role provenance frozen with the child Session, when the Role still applies. */
   agentRoleId?: DraftSessionTab['agentRoleId'];
   agentRoleRevision?: number;
+  agentRoleInstanceId?: DraftSessionTab['agentRoleInstanceId'];
   cliType: DraftSessionTab['cliType'];
   agentType: DraftSessionTab['agentType'];
   /** Launch spec resolved from the selected agent config for `cliType: 'custom'`. */
@@ -153,9 +157,9 @@ export const DraftSessionChatInterface = memo(
       const sessionConfigTargetKey = `${draft.id}:${draft.agentConfigId ?? ''}:${draft.cliType}:${draft.agentType}`;
       const agentConfigs = useAtomValue(getAllAgentConfigAtom);
       const { roles: workspaceAgentRoles } = useWorkspaceAgentRoles();
-      const { resolve: resolveAgentRoleAvailability } =
+      const { resolveInstance: resolveAgentRoleInstanceAvailability } =
         useAgentRoleAvailability(workspaceAgentRoles);
-      /* A blank child tab is still a new Session. Offer every Role enabled on
+      /* A blank child tab is still a new Session. Offer every Role instance on
          the parent workspace's machine, just as Chat Landing does for its
          selected machine; the Role itself may choose a different Agent type. */
       const composerAgentRoleItems = useMemo(
@@ -164,21 +168,33 @@ export const DraftSessionChatInterface = memo(
             roles: workspaceAgentRoles,
             machineId: parentSession.machineId,
             agentConfigs,
-            resolveAvailability: resolveAgentRoleAvailability,
+            resolveAvailability: resolveAgentRoleInstanceAvailability,
           }),
-        [agentConfigs, parentSession.machineId, resolveAgentRoleAvailability, workspaceAgentRoles]
+        [
+          agentConfigs,
+          parentSession.machineId,
+          resolveAgentRoleInstanceAvailability,
+          workspaceAgentRoles,
+        ]
       );
       const [agentRolePreferenceToken, setAgentRolePreferenceToken] = useState(0);
-      /* The draft stores the Role's identity, not a captured copy. Edits bump
-         its revision and re-seed the composer; deletion simply stops resolving.
-         A preference only applies while the draft remains on the exact Agent
-         Config the Role's placement on this machine names. */
+      /* The draft stores the instance's identity, not a captured copy. Edits
+         bump the Role's revision and re-seed the composer; deletion simply stops
+         resolving. A preference only applies while the draft remains on the
+         exact Agent Config the instance names. */
       const agentRolePreference = useMemo(() => {
         if (!draft.agentRoleId || !draft.agentConfigId) return null;
-        const item = composerAgentRoleItems.find((entry) => entry.role.id === draft.agentRoleId);
+        const item =
+          findComposerAgentRoleItem(composerAgentRoleItems, draft.agentRoleInstanceId) ??
+          composerAgentRoleItems.find((entry) => entry.role.id === draft.agentRoleId);
         if (!item || item.availability.kind !== 'available') return null;
-        return item.role.agentConfigId === draft.agentConfigId ? item.role : null;
-      }, [composerAgentRoleItems, draft.agentConfigId, draft.agentRoleId]);
+        return item.instance.agentConfigId === draft.agentConfigId ? item : null;
+      }, [
+        composerAgentRoleItems,
+        draft.agentConfigId,
+        draft.agentRoleId,
+        draft.agentRoleInstanceId,
+      ]);
       const docMetaCacheReady = useAtomValue(docMetaCacheReadyAtom);
       // The draft composer has no MCP picker yet, so the first turn carries the
       // workspace default selection — the same set the promoted child composer
@@ -224,7 +240,7 @@ export const DraftSessionChatInterface = memo(
       );
       const preferredSessionConfig = useMemo(() => {
         if (agentRolePreference) {
-          return agentRolePreference.runConfig;
+          return agentRolePreference.instance.runConfig;
         }
         const inheritedConfigOptionValues = preferAgentDefaults
           ? draftAgentDefaults?.configOptionValues
@@ -255,7 +271,7 @@ export const DraftSessionChatInterface = memo(
         preferAgentDefaults,
       ]);
       const sessionConfigPreferenceRevision = agentRolePreference
-        ? `${sessionConfigTargetKey}:role:${agentRolePreference.id}:${agentRolePreference.revision}:${agentRolePreferenceToken}`
+        ? `${sessionConfigTargetKey}:role:${agentRolePreference.instance.id}:${agentRolePreference.role.revision}:${agentRolePreferenceToken}`
         : `${sessionConfigTargetKey}:${parentConversationConfig.sourceConfigKey ?? ''}`;
       /* No effects: user edits are the only stored selection state; the
          effective values derive per render. Candidates feed the capability
@@ -342,21 +358,22 @@ export const DraftSessionChatInterface = memo(
       });
 
       const handleAgentRoleSelect = useCallback(
-        (roleId: AgentRoleId | null) => {
+        (instanceId: AgentRoleInstanceId | null) => {
           // None clears only the Role identity. The values it seeded remain the
           // user's draft configuration, matching Chat Landing.
-          if (roleId === null) {
-            onDraftChange(draft.id, { agentRoleId: undefined });
+          if (instanceId === null) {
+            onDraftChange(draft.id, { agentRoleId: undefined, agentRoleInstanceId: undefined });
             return;
           }
-          const item = composerAgentRoleItems.find((entry) => entry.role.id === roleId);
+          const item = findComposerAgentRoleItem(composerAgentRoleItems, instanceId);
           if (!item || item.availability.kind !== 'available') return;
           const agentConfig = agentConfigs.find(
             (config) =>
-              config.id === item.role.agentConfigId && config.machineId === parentSession.machineId
+              config.id === item.instance.agentConfigId &&
+              config.machineId === parentSession.machineId
           );
           if (!agentConfig) return;
-          const patch = buildDraftSessionAgentRolePatch(item.role, agentConfig);
+          const patch = buildDraftSessionAgentRolePatch(item, agentConfig);
           if (!patch) return;
           setAgentRolePreferenceToken((token) => token + 1);
           onDraftChange(draft.id, patch);
@@ -365,7 +382,7 @@ export const DraftSessionChatInterface = memo(
       );
       const activeAgentRole = useMemo(() => {
         if (!agentRolePreference || !draft.agentConfigId) return null;
-        return isComposerAgentRoleApplied(agentRolePreference, {
+        return isComposerAgentRoleApplied(agentRolePreference.instance, {
           agentSelection: {
             agentId: draft.agentConfigId,
             machineId: parentSession.machineId,
@@ -387,10 +404,10 @@ export const DraftSessionChatInterface = memo(
       const draftAgentRoleControl = useMemo<SessionAgentRoleControl>(
         () => ({
           items: composerAgentRoleItems,
-          selectedRoleId: activeAgentRole?.id ?? null,
+          selectedInstanceId: activeAgentRole?.instance.id ?? null,
           onSelect: handleAgentRoleSelect,
         }),
-        [activeAgentRole?.id, composerAgentRoleItems, handleAgentRoleSelect]
+        [activeAgentRole?.instance.id, composerAgentRoleItems, handleAgentRoleSelect]
       );
       const [pendingAgentRoleSelection, setPendingAgentRoleSelection] =
         useState<AgentRoleId | null>(null);
@@ -407,9 +424,9 @@ export const DraftSessionChatInterface = memo(
           items: composerAgentRoleItems,
           isInCatalog: workspaceAgentRoles.some((role) => role.id === pendingAgentRoleSelection),
         });
-        if (outcome === 'wait') return;
+        if (outcome.kind === 'wait') return;
         setPendingAgentRoleSelection(null);
-        if (outcome === 'select') handleAgentRoleSelect(pendingAgentRoleSelection);
+        if (outcome.kind === 'select') handleAgentRoleSelect(outcome.instanceId);
       }, [
         composerAgentRoleItems,
         handleAgentRoleSelect,
@@ -502,7 +519,7 @@ export const DraftSessionChatInterface = memo(
           // A Role is a new-Session preset even inside a parent Session's blank
           // tab. Its instruction belongs before this child Session's first
           // task, while the parent Agent Config's prompt remains excluded.
-          const promptPayload = buildAgentPrompt(prompt, activeAgentRole?.promptPrefix ?? '');
+          const promptPayload = buildAgentPrompt(prompt, activeAgentRole?.role.promptPrefix ?? '');
           return {
             draftId: draft.id,
             sessionId: draft.sessionId,
@@ -511,8 +528,9 @@ export const DraftSessionChatInterface = memo(
             agentConfigId: draft.agentConfigId,
             ...(activeAgentRole
               ? {
-                  agentRoleId: activeAgentRole.id,
-                  agentRoleRevision: activeAgentRole.revision,
+                  agentRoleId: activeAgentRole.role.id,
+                  agentRoleRevision: activeAgentRole.role.revision,
+                  agentRoleInstanceId: activeAgentRole.instance.id,
                 }
               : {}),
             cliType: draft.cliType,
@@ -540,10 +558,9 @@ export const DraftSessionChatInterface = memo(
                   )
                 : undefined,
               mcpServerIds: mcpSelection.selectedIds,
-              agentRoleId: activeAgentRole?.id ?? null,
-              agentRoleRevision: activeAgentRole?.revision,
-              memory: activeAgentRole?.runConfig.memory,
-              agentRoleSnapshot: activeAgentRole ? snapshotAgentRole(activeAgentRole) : undefined,
+              ...(activeAgentRole
+                ? buildAgentRoleTurnSelection(activeAgentRole)
+                : { agentRoleId: null }),
             }),
           };
         },
@@ -617,61 +634,63 @@ export const DraftSessionChatInterface = memo(
       );
 
       return (
-        <div className="flex h-full flex-col">
-          <div className="relative min-h-0 flex-1 bg-background">
-            <ChildTabEmptyState onSuggest={(text) => inputAreaRef.current?.setInputText(text)} />
-          </div>
-          <SessionChatInputArea
-            ref={inputAreaRef}
-            session={transientSession}
-            sessionLocalProjectRootPath={sessionLocalProjectRootPath}
-            isMachineRemoved={!sessionMachine && docMetaCacheReady}
-            isAgentBusy={false}
-            isDark={isDark}
-            isEmptyConversation={true}
-            commandsEnabled={commandsEnabled}
-            selectedModeId={selectedModeId}
-            selectedModelId={selectedModelId}
-            modeOptions={modeOptions}
-            modelOptions={modelOptions}
-            rateLimits={
-              (!draft.agentConfigId || sessionAgentConfig) &&
-              canShowSubscriptionRateLimits({
-                cliType: draft.cliType,
-                agentType: draft.agentType,
-                config: sessionAgentConfig,
-              })
-                ? sessionMachine?.raceLimits
-                : undefined
-            }
-            /* Judged here, with the resolved config: a side chat can run a
+        <AgentRoleMentionMachineContext.Provider value={parentSession.machineId ?? null}>
+          <div className="flex h-full flex-col">
+            <div className="relative min-h-0 flex-1 bg-background">
+              <ChildTabEmptyState onSuggest={(text) => inputAreaRef.current?.setInputText(text)} />
+            </div>
+            <SessionChatInputArea
+              ref={inputAreaRef}
+              session={transientSession}
+              sessionLocalProjectRootPath={sessionLocalProjectRootPath}
+              isMachineRemoved={!sessionMachine && docMetaCacheReady}
+              isAgentBusy={false}
+              isDark={isDark}
+              isEmptyConversation={true}
+              commandsEnabled={commandsEnabled}
+              selectedModeId={selectedModeId}
+              selectedModelId={selectedModelId}
+              modeOptions={modeOptions}
+              modelOptions={modelOptions}
+              rateLimits={
+                (!draft.agentConfigId || sessionAgentConfig) &&
+                canShowSubscriptionRateLimits({
+                  cliType: draft.cliType,
+                  agentType: draft.agentType,
+                  config: sessionAgentConfig,
+                })
+                  ? sessionMachine?.raceLimits
+                  : undefined
+              }
+              /* Judged here, with the resolved config: a side chat can run a
                Codex-compatible provider whose identity `cliType`/`agentType`
                alone would not reveal. */
-            showCodexResetForecast={
-              (!draft.agentConfigId || !!sessionAgentConfig) &&
-              canShowCodexResetForecast({
-                cliType: draft.cliType,
-                agentType: draft.agentType,
-                config: sessionAgentConfig,
-              })
-            }
-            configOptionSelectors={configOptionSelectors}
-            configOptionValues={configOptionValues}
-            availableCommands={availableCommands}
-            onModeChange={selectMode}
-            onModelChange={selectModel}
-            onConfigOptionChange={selectConfigOption}
-            onSendMessage={handleSendMessage}
-            onStop={() => {}}
-            onRemoveQueueItem={async () => {}}
-            onAgentConfigChange={handleAgentConfigChange}
-            agentRoleControl={draftAgentRoleControl}
-            onAgentRoleSaved={handleAgentRoleSaved}
-            initialInputText={draft.prompt}
-            onInputValueChange={(prompt) => onDraftChange(draft.id, { prompt })}
-            onCommentReferencesChange={onCommentReferencesChange}
-          />
-        </div>
+              showCodexResetForecast={
+                (!draft.agentConfigId || !!sessionAgentConfig) &&
+                canShowCodexResetForecast({
+                  cliType: draft.cliType,
+                  agentType: draft.agentType,
+                  config: sessionAgentConfig,
+                })
+              }
+              configOptionSelectors={configOptionSelectors}
+              configOptionValues={configOptionValues}
+              availableCommands={availableCommands}
+              onModeChange={selectMode}
+              onModelChange={selectModel}
+              onConfigOptionChange={selectConfigOption}
+              onSendMessage={handleSendMessage}
+              onStop={() => {}}
+              onRemoveQueueItem={async () => {}}
+              onAgentConfigChange={handleAgentConfigChange}
+              agentRoleControl={draftAgentRoleControl}
+              onAgentRoleSaved={handleAgentRoleSaved}
+              initialInputText={draft.prompt}
+              onInputValueChange={(prompt) => onDraftChange(draft.id, { prompt })}
+              onCommentReferencesChange={onCommentReferencesChange}
+            />
+          </div>
+        </AgentRoleMentionMachineContext.Provider>
       );
     }
   )

@@ -72,8 +72,9 @@ describe('createDirectWorkspaceWriter', () => {
         updatedAt: 1,
       });
       const key = workspaceFlockKeys.agentRole(role.id);
-      // A row from a client that predates placements is reconciled the same way.
-      const { placements: _placements, ...legacyRow } = role;
+      // A row from a client that predates instances is reconciled the same way:
+      // its one instance has the id a reader derives for it.
+      const { instances: _instances, ...legacyRow } = role;
       flock.set(key, (scenario === 'legacy-row' ? legacyRow : role) as never);
       flock.commit();
       let release!: () => void;
@@ -101,7 +102,7 @@ describe('createDirectWorkspaceWriter', () => {
       const pending = persistReconciledAgentRole(
         runtime,
         role,
-        'machine' as never,
+        'role:machine' as never,
         capability,
         scenario === 'other-owner' ? 'someone-else' : 'owner',
         3,
@@ -120,7 +121,7 @@ describe('createDirectWorkspaceWriter', () => {
         const runConfig = { configOptionValues: {} };
         expect(flock.get(key)).toEqual({
           ...role,
-          placements: [{ ...role.placements[0], runConfig }],
+          instances: [{ ...role.instances[0], runConfig }],
           runConfig,
           revision: 2,
           updatedAt: 3,
@@ -128,7 +129,7 @@ describe('createDirectWorkspaceWriter', () => {
         await persistReconciledAgentRole(
           runtime,
           role,
-          'machine' as never,
+          'role:machine' as never,
           capability,
           'owner',
           4,

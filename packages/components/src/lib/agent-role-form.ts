@@ -1,6 +1,6 @@
 import {
   isSensitiveAgentRoleConfigOptionKey,
-  type AgentRoleFormPlacement,
+  type AgentRoleFormInstance,
   type AgentRoleRunConfig,
 } from '@lody/shared';
 import {
@@ -10,7 +10,7 @@ import {
 } from '@/components/shared/acp-selector-options';
 
 /**
- * Seed one machine's row with what its selected agent actually defaults to.
+ * Seed one instance with what its selected agent actually defaults to.
  *
  * A Role has no "inherit" state: every run-config control shows a concrete
  * value, because "Agent default" tells a user nothing about what will run and
@@ -23,9 +23,9 @@ import {
  * incompatible value visible instead of silently replaced.
  */
 export const applyAgentRoleRunConfigDefaults = (
-  value: AgentRoleFormPlacement,
+  value: AgentRoleFormInstance,
   selectorOptions: AcpSelectorOptions | null
-): AgentRoleFormPlacement => {
+): AgentRoleFormInstance => {
   if (!selectorOptions || selectorOptions.capabilityAuthority === 'unavailable') return value;
 
   const modelId =
@@ -58,10 +58,10 @@ export const applyAgentRoleRunConfigDefaults = (
 };
 
 export const carryAgentRoleOptionsToModel = (
-  values: AgentRoleFormPlacement['configOptionValues'],
+  values: AgentRoleFormInstance['configOptionValues'],
   outgoing: readonly AcpConfigOptionSelector[],
   incoming: readonly AcpConfigOptionSelector[]
-): AgentRoleFormPlacement['configOptionValues'] =>
+): AgentRoleFormInstance['configOptionValues'] =>
   Object.fromEntries(
     Object.entries(values).filter(([configId, value]) => {
       if (!outgoing.some((selector) => selector.configId === configId)) return true;
