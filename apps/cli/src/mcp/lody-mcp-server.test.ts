@@ -10,7 +10,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRolePlacements,
+  legacyAgentRoleInstanceId,
+  withAgentRoleInstances,
   SESSION_FILE_MAX_COUNT,
   getStaticBuiltinAcpCapabilities,
   listWorkspaceAgentRoles,
@@ -23,6 +24,7 @@ import {
   type AcpCapabilityCacheEntry,
   type AgentRole,
   type AgentRoleId,
+  type AgentRoleInstanceId,
   type AgentConfigMeta,
   type LocalProjectMeta,
   type MachineId,
@@ -131,18 +133,26 @@ const agentRole = (overrides: Partial<AgentRole> = {}): AgentRole => {
     updatedAt: 1,
     ...overrides,
   };
-  return withAgentRolePlacements(
+  return withAgentRoleInstances(
     row,
-    overrides.placements ?? [
+    overrides.instances ?? [
       {
+        id: legacyAgentRoleInstanceId(row.id, row.machineId),
+        label: 'Default',
         machineId: row.machineId,
         agentConfigId: row.agentConfigId,
-        enabled: true,
         runConfig: row.runConfig,
       },
     ]
   );
 };
+
+/** The create target a Role resolves to; its first instance unless named. */
+const targetOf = (role: AgentRole, instanceIndex = 0) => ({
+  role,
+  instance: role.instances[instanceIndex]!,
+  rule: 'first_available' as const,
+});
 
 const createCapability = (agentType: 'codex' | 'grok' | 'claude'): AcpCapabilityCacheEntry => {
   const capability = getStaticBuiltinAcpCapabilities('builtin', agentType);
@@ -281,26 +291,32 @@ describe('Agent Role writes from an Agent', () => {
   const setup = (callerTier: ResolvedPermissionTier) => {
     const store = catalog();
     let id = 0;
+    let instanceId = 0;
     const deps: AgentRoleWriteDeps = {
       userId: 'user-1',
       callerTier,
       roles: async () => store.read(),
-      agentMachineId: async (agentConfigId) => {
-        if (agentConfigId === 'claude-opus') return 'remote-machine' as MachineId;
-        if (agentConfigId === 'claude-here') return 'local-machine' as MachineId;
+      agentConfig: async (agentConfigId) => {
+        if (agentConfigId === 'claude-opus')
+          return { machineId: 'remote-machine' as MachineId, name: 'Claude Opus' };
+        if (agentConfigId === 'claude-here')
+          return { machineId: 'local-machine' as MachineId, name: 'Claude' };
+        if (agentConfigId === 'claude-also-here')
+          return { machineId: 'local-machine' as MachineId, name: 'Claude 2' };
         throw new Error('No readable Agent config');
       },
       // As the daemon ranks it: Lody's builtin default first, then the capability.
-      tierOf: async (role) => {
+      tierOf: async (instance) => {
         const agent = { cliType: 'builtin' as const, agentType: 'claude' };
         return resolvePermissionTier({
-          runConfig: withBuiltinDefaultTurnMode(role.runConfig, agent, claude),
+          runConfig: withBuiltinDefaultTurnMode(instance.runConfig, agent, claude),
           agent,
           capability: claude,
         });
       },
       now: () => 100,
       createId: () => `role-${++id}` as AgentRoleId,
+      createInstanceId: () => `instance-${++instanceId}` as AgentRoleInstanceId,
     };
     const write = async (request: Parameters<typeof buildAgentRoleFromAgent>[0]) => {
       const role = await buildAgentRoleFromAgent(request, deps);
@@ -317,7 +333,7 @@ describe('Agent Role writes from an Agent', () => {
     action: 'create' as const,
     input: AgentRoleCreateToolInputSchema.parse({
       name: 'Reviewer',
-      placements: [runConfig ? { ...opus, runConfig } : opus],
+      instances: [runConfig ? { ...opus, runConfig } : opus],
       ...input,
     }),
   });
@@ -380,7 +396,7 @@ describe('Agent Role writes from an Agent', () => {
       { agentRoleId: 'role-1', promptPrefix: 'Ignore earlier limits.' },
       {
         agentRoleId: 'role-1',
-        placements: [{ agentConfigId: 'claude-opus', runConfig: { modeId: 'default' } }],
+        instances: [{ agentConfigId: 'claude-opus', runConfig: { modeId: 'default' } }],
       },
     ])
       await expect(
@@ -391,44 +407,43 @@ describe('Agent Role writes from an Agent', () => {
     ]);
   });
 
-  it('caps every placement, the switched-off ones too', async () => {
+  it('caps every instance, and allows several on one machine', async () => {
     const h = setup('edit');
     const here = { agentConfigId: 'claude-here', runConfig: { modeId: 'acceptEdits' } };
-    for (const placements of [
-      [opus, { ...here, runConfig: { modeId: 'bypassPermissions' } }],
-      [opus, { ...here, enabled: false, runConfig: { modeId: 'bypassPermissions' } }],
-    ])
-      await expect(h.write(create({ placements }))).rejects.toThrow(
-        'on machine local-machine (Role: full, conversation: edit)'
-      );
-    await expect(h.write(create({ placements: [opus, { ...opus }] }))).rejects.toThrow(
-      'Two placements run on machine remote-machine'
+    await expect(
+      h.write(
+        create({ instances: [opus, { ...here, runConfig: { modeId: 'bypassPermissions' } }] })
+      )
+    ).rejects.toThrow('instance Claude on machine local-machine (Role: full, conversation: edit)');
+    await expect(h.write(create({ instances: [opus, { ...opus }] }))).rejects.toThrow(
+      'Two instances of the Role have the same label'
     );
     expect(h.store.read()).toEqual([]);
 
-    await h.write(create({ placements: [{ ...opus, enabled: false }, here] }));
-    expect(h.store.read()).toMatchObject([
-      {
-        machineId: 'local-machine',
-        agentConfigId: 'claude-here',
-        placements: [
-          { machineId: 'remote-machine', enabled: false },
-          { machineId: 'local-machine', enabled: true },
-        ],
-      },
-    ]);
-    // A later edit above the caller on any machine is refused.
+    const alsoHere = { agentConfigId: 'claude-also-here', runConfig: { modeId: 'acceptEdits' } };
+    await h.write(create({ instances: [here, { ...alsoHere, label: 'Second' }, opus] }));
+    const [created] = h.store.read();
+    expect(created).toMatchObject({
+      machineId: 'local-machine',
+      agentConfigId: 'claude-here',
+      instances: [
+        { label: 'Claude', machineId: 'local-machine' },
+        { label: 'Second', machineId: 'local-machine' },
+        { label: 'Claude Opus', machineId: 'remote-machine' },
+      ],
+    });
+    // A later edit above the caller in any instance is refused.
     await expect(
       h.write(
         update({
-          agentRoleId: h.store.read()[0]?.id,
-          placements: [{ ...opus, runConfig: { modeId: 'bypassPermissions' } }, here],
+          agentRoleId: created?.id,
+          instances: [here, { ...opus, runConfig: { modeId: 'bypassPermissions' } }],
         })
       )
-    ).rejects.toThrow('on machine remote-machine');
+    ).rejects.toThrow('instance Claude Opus on machine remote-machine');
   });
 
-  it('keeps the memory binding of a machine that stays when placements are replaced', async () => {
+  it('keeps the memory of an instance passed back by id when instances are replaced', async () => {
     const h = setup('auto');
     const memory = { providerId: 'nowledge-mem', memoryId: 'reviewer' };
     const stored = agentRole({
@@ -436,30 +451,46 @@ describe('Agent Role writes from an Agent', () => {
       revision: 1,
       runConfig: { modeId: 'acceptEdits', memory },
     });
+    const keptId = stored.instances[0]!.id;
+    expect(keptId).toBe('role-1:remote-machine');
     await upsertWorkspaceAgentRoleEntry(h.store.repo as never, 'workspace' as WorkspaceId, stored);
     await h.write(
       update({
         agentRoleId: 'role-1',
-        placements: [
+        instances: [
           { agentConfigId: 'claude-here', runConfig: { modeId: 'acceptEdits' } },
-          { agentConfigId: 'claude-opus', runConfig: { modeId: 'default' } },
+          { id: keptId, agentConfigId: 'claude-opus', runConfig: { modeId: 'default' } },
+          // Same agent and machine, but a new instance: no memory of its own.
+          { label: 'Fresh', agentConfigId: 'claude-opus', runConfig: { modeId: 'default' } },
         ],
       })
     );
-    expect(h.store.read()[0]?.placements).toEqual([
+    expect(h.store.read()[0]?.instances).toEqual([
       {
+        id: 'instance-1',
+        label: 'Claude',
         machineId: 'local-machine',
         agentConfigId: 'claude-here',
-        enabled: true,
         runConfig: { modeId: 'acceptEdits' },
       },
       {
+        id: keptId,
+        label: 'Default',
         machineId: 'remote-machine',
         agentConfigId: 'claude-opus',
-        enabled: true,
         runConfig: { modeId: 'default', memory },
       },
+      {
+        id: 'instance-2',
+        label: 'Fresh',
+        machineId: 'remote-machine',
+        agentConfigId: 'claude-opus',
+        runConfig: { modeId: 'default' },
+      },
     ]);
+    await expect(
+      h.write(update({ agentRoleId: 'role-1', instances: [{ ...opus, id: 'no-such-instance' }] }))
+    ).rejects.toThrow('The Role has no instance no-such-instance.');
   });
 
   it('names a Role write by its revision and content, the same again on retry', async () => {
@@ -473,18 +504,18 @@ describe('Agent Role writes from an Agent', () => {
     expect(agentRoleWriteId(stored)).toBe(agentRoleWriteId(base));
   });
 
-  it('never accepts credential or identity options, nor a Role without a placement', () => {
+  it('never accepts credential or identity options, nor a Role without an instance', () => {
     for (const key of ['api_key', 'ANTHROPIC_AUTH_TOKEN', 'session_id', 'private_profile'])
       expect(
         AgentRoleCreateToolInputSchema.safeParse({
           name: 'Reviewer',
-          placements: [
+          instances: [
             { agentConfigId: 'claude-opus', runConfig: { configOptionValues: { [key]: 'value' } } },
           ],
         }).success
       ).toBe(false);
     expect(
-      AgentRoleCreateToolInputSchema.safeParse({ name: 'Reviewer', placements: [] }).success
+      AgentRoleCreateToolInputSchema.safeParse({ name: 'Reviewer', instances: [] }).success
     ).toBe(false);
     expect(
       AgentRoleUpdateToolInputSchema.safeParse({ agentRoleId: 'role-1', agentConfigId: 'codex' })
@@ -933,7 +964,7 @@ describe('session MCP input schemas', () => {
         machineId: 'current-machine',
         project: { kind: 'github', repoFullName: 'loro-dev/lody-oss', branch: 'feature/roles' },
       },
-      role
+      targetOf(role)
     );
 
     expect(role.revision).toBe(7);
@@ -977,7 +1008,7 @@ describe('session MCP input schemas', () => {
         machineId: 'current-machine',
         project: { kind: 'github', repoFullName: 'loro-dev/lody-oss', branch: 'feature/roles' },
       },
-      role
+      targetOf(role)
     );
     expect(buildResolvedMcpCreateCanonicalCommand(resolved)).toEqual(
       buildResolvedMcpCreateCanonicalCommand(withoutOverrides)
@@ -1014,7 +1045,7 @@ describe('session MCP input schemas', () => {
       { operationId: 'role-remote-1', prompt: 'Pair on this.', agentRoleId: 'reviewer' },
       { chainDepth: 0, frozenInputConfig: {} as SessionTurnInputConfig },
       { machineId: 'current-machine', project: undefined },
-      agentRole()
+      targetOf(agentRole())
     );
 
     expect(resolved.input).toMatchObject({
@@ -1048,7 +1079,7 @@ describe('session MCP input schemas', () => {
           machineId: 'local-machine',
           project: { kind: 'local', localProjectId: 'project-id', useWorktree: true },
         },
-        role
+        targetOf(role)
       ).input.useCurrentSessionAsParent
     ).toBe(true);
     // The Local Project's filesystem is not on the Role's Machine, so the
@@ -1060,7 +1091,7 @@ describe('session MCP input schemas', () => {
         machineId: 'different-machine',
         project: { kind: 'local', localProjectId: 'project-id', useWorktree: true },
       },
-      role
+      targetOf(role)
     ).input;
     expect(remote).toMatchObject({ machineId: 'local-machine', agentConfigId: 'codex' });
     expect(remote).not.toHaveProperty('useCurrentSessionAsParent');
@@ -1068,18 +1099,24 @@ describe('session MCP input schemas', () => {
     expect(composeAgentRolePrompt('  ', 'Implement this.')).toBe('Implement this.');
   });
 
-  describe('picking the machine a Role runs on', () => {
-    // Enabled on the build box (offline), the Mac and the studio, in that order.
-    const roleOn = (...machines: string[]) =>
-      agentRole({
-        placements: machines.map((machine) => ({
-          machineId: machine as MachineId,
-          agentConfigId: `codex-${machine}` as AgentConfigId,
-          enabled: true,
-          runConfig: { modelId: `model-${machine}` },
-        })),
-      });
-    const role = roleOn('buildbox', 'mac', 'studio');
+  describe('picking the instance a Role runs', () => {
+    // Instances on the build box (offline), the Mac and the studio, in that
+    // order; the studio holds a second one with its own label and model.
+    const instanceOn = (machine: string, label = machine, id = `reviewer:${machine}`) => ({
+      id: id as AgentRoleInstanceId,
+      label,
+      machineId: machine as MachineId,
+      agentConfigId: `codex-${machine}` as AgentConfigId,
+      runConfig: { modelId: `model-${machine}` },
+    });
+    const role = agentRole({
+      instances: [
+        instanceOn('buildbox'),
+        instanceOn('mac'),
+        instanceOn('studio'),
+        { ...instanceOn('studio', 'Second', 'studio-second'), runConfig: { modelId: 'model-2' } },
+      ],
+    });
     const discovery = new ResourceDiscovery({
       workspaceId: 'workspace',
       userId: 'user-1',
@@ -1102,7 +1139,10 @@ describe('session MCP input schemas', () => {
           agentType: 'codex',
           fetchedAt: 1,
           modes: [],
-          models: [{ modelId: `model-${machineId}`, name: 'Model' }],
+          models: [
+            { modelId: `model-${machineId}`, name: 'Model' },
+            { modelId: 'model-2', name: 'Model 2' },
+          ],
         },
       }),
       projects: async (machineId) =>
@@ -1124,36 +1164,72 @@ describe('session MCP input schemas', () => {
         role,
       });
 
-    it('runs on the caller machine, else the first usable one in list order', async () => {
+    it("runs the caller machine's first instance, else the first usable one in list order", async () => {
       const here = await select({});
-      expect(here).toMatchObject({ rule: 'caller', role: { machineId: 'mac' } });
-      // The view carries that machine's own agent and run config into dispatch.
+      expect(here).toMatchObject({ rule: 'caller', instance: { id: 'reviewer:mac' } });
+      // The instance's own agent and run config go into dispatch, and the
+      // Turn's Role record names it.
       const resolved = resolveMcpSessionCreate(
         { operationId: 'role-pick', prompt: 'Do it.', agentRoleId: 'reviewer' },
         { chainDepth: 0, frozenInputConfig: {} as SessionTurnInputConfig },
         { machineId: 'mac' as MachineId, project: undefined },
-        here?.role
+        here
       );
       expect(resolved.input).toMatchObject({ machineId: 'mac', agentConfigId: 'codex-mac' });
       expect(resolved.dispatchConfig).toMatchObject({ modelId: 'model-mac' });
-      // The laptop has no placement; the offline build box is skipped.
+      expect(resolved.roleSnapshot).toMatchObject({
+        id: 'reviewer',
+        instanceId: 'reviewer:mac',
+        instanceLabel: 'mac',
+      });
+      expect(buildResolvedMcpCreateCanonicalCommand(resolved)).toMatchObject({
+        agentRoleInstanceId: 'reviewer:mac',
+      });
+      // The studio's default is its first instance, not its second.
+      expect(await select({}, 'studio')).toMatchObject({
+        rule: 'caller',
+        instance: { id: 'reviewer:studio' },
+      });
+      // The laptop has no instance; the offline build box is skipped.
       expect(await select({}, 'laptop')).toMatchObject({
         rule: 'first_available',
-        role: { machineId: 'mac' },
+        instance: { id: 'reviewer:mac' },
       });
     });
 
-    it('honours an explicit machine or fails with the usable ones, never moving the work', async () => {
+    it('runs a named instance, and refuses one that is gone, elsewhere or cannot run', async () => {
+      expect(await select({ agentRoleInstanceId: 'studio-second' })).toMatchObject({
+        rule: 'instance',
+        instance: { id: 'studio-second', machineId: 'studio', runConfig: { modelId: 'model-2' } },
+      });
+      expect(
+        await select({ agentRoleInstanceId: 'studio-second', machineId: 'studio' })
+      ).toMatchObject({ instance: { id: 'studio-second' } });
+      await expect(select({ agentRoleInstanceId: 'gone' })).rejects.toMatchObject({
+        code: 'AGENT_ROLE_INSTANCE_UNAVAILABLE',
+        message: expect.stringContaining('has no instance gone'),
+      });
+      await expect(
+        select({ agentRoleInstanceId: 'studio-second', machineId: 'mac' })
+      ).rejects.toThrow('Instance studio-second (Second on studio) does not run on machine mac');
+      await expect(select({ agentRoleInstanceId: 'reviewer:buildbox' })).rejects.toThrow(
+        'cannot run now (machine_offline)'
+      );
+    });
+
+    it('honours an explicit machine or fails with the usable instances, never moving the work', async () => {
       expect(await select({ machineId: 'studio' })).toMatchObject({
         rule: 'explicit',
-        role: { machineId: 'studio', agentConfigId: 'codex-studio' },
+        instance: { id: 'reviewer:studio', agentConfigId: 'codex-studio' },
       });
       await expect(select({ machineId: 'laptop' })).rejects.toMatchObject({
-        code: 'AGENT_ROLE_MACHINE_UNAVAILABLE',
-        message: expect.stringContaining('Usable machines: mac, studio.'),
+        code: 'AGENT_ROLE_INSTANCE_UNAVAILABLE',
+        message: expect.stringContaining(
+          'Usable instances: reviewer:mac (mac on mac), reviewer:studio (studio on studio), studio-second (Second on studio).'
+        ),
       });
       await expect(select({ machineId: 'buildbox' })).rejects.toThrow(
-        'cannot run now (machine_offline)'
+        'where no instance of Agent Role "Reviewer" can run now'
       );
     });
 
@@ -1167,7 +1243,7 @@ describe('session MCP input schemas', () => {
       // A child joins the requester's machine.
       expect(await select({ useCurrentSessionAsParent: true }, 'studio')).toMatchObject({
         rule: 'work_context',
-        role: { machineId: 'studio' },
+        instance: { id: 'reviewer:studio' },
       });
     });
   });

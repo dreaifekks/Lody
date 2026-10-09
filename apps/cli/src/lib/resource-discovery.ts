@@ -7,7 +7,7 @@ import {
   type AcpCapabilityCacheEntry,
   type AgentConfigMeta,
   type AgentRole,
-  type AgentRolePlacement,
+  type AgentRoleInstance,
   type LocalProjectMeta,
   type MachineId,
   type MachineMeta,
@@ -33,13 +33,13 @@ export type DiscoveryRow = {
   availability?: DiscoveryAvailability;
   [key: string]: unknown;
 };
-export type AgentRoleDiscoveryPlacement = {
+export type AgentRoleDiscoveryInstance = {
+  id: string;
+  label: string;
   machineId: MachineId;
   agentConfigId: string;
-  enabled: boolean;
   runConfig: ReturnType<typeof normalizeAgentRoleRunConfig>;
-  /** Reported for enabled placements only. */
-  availability?: DiscoveryAvailability;
+  availability: DiscoveryAvailability;
 };
 export type DiscoverySource = {
   workspaceId: string;
@@ -127,7 +127,7 @@ export class ResourceDiscovery {
         repoFullName: repo.fullName,
       }));
     }
-    // A machine filter keeps the Roles enabled there, each still listing all its machines.
+    // A machine filter keeps the Roles with an instance there, each still listing all of them.
     const roles =
       resource === 'agent_role'
         ? (await source.roles()).filter(
@@ -135,9 +135,7 @@ export class ResourceDiscovery {
               canReadAgentRole(role, source.userId) &&
               (!id || role.id === id) &&
               (!query.machineId ||
-                role.placements.some(
-                  (placement) => placement.enabled && placement.machineId === query.machineId
-                ))
+                role.instances.some((instance) => instance.machineId === query.machineId))
           )
         : [];
     const machines = await source.machines();
@@ -148,7 +146,7 @@ export class ResourceDiscovery {
       if (resource === 'agent_role') {
         if (
           !roles.some((role) =>
-            role.placements.some((placement) => placement.machineId === machine.id)
+            role.instances.some((instance) => instance.machineId === machine.id)
           )
         )
           continue;
@@ -223,20 +221,20 @@ export class ResourceDiscovery {
           capabilityStatus: capability ? 'reported' : 'unknown',
         };
       });
-    const placementAvailability = (placement: AgentRolePlacement): DiscoveryAvailability => {
-      const config = configs.get(placement.agentConfigId);
+    const instanceAvailability = (instance: AgentRoleInstance): DiscoveryAvailability => {
+      const config = configs.get(instance.agentConfigId);
       let state: DiscoveryAvailability;
-      if (!authorized.some((machine) => machine.id === placement.machineId))
+      if (!authorized.some((machine) => machine.id === instance.machineId))
         state = { state: 'unavailable', reason: 'machine_inaccessible_or_missing' };
       else if (!config) state = { state: 'unavailable', reason: 'agent_config_missing' };
-      else if (config.machineId !== placement.machineId)
+      else if (config.machineId !== instance.machineId)
         state = { state: 'unavailable', reason: 'agent_config_machine_mismatch' };
-      else state = availability(placement.machineId);
+      else state = availability(instance.machineId);
       const capability = config ? capabilityOf(config) : undefined;
       if (state.state === 'available' && !capability)
         state = { state: 'unknown', reason: 'capabilities_unreported' };
       const models = capability ? summarizeAgentRunConfigCapabilities(capability).models : [];
-      const { runConfig } = placement;
+      const { runConfig } = instance;
       if (
         state.state === 'available' &&
         capability &&
@@ -260,27 +258,26 @@ export class ResourceDiscovery {
       return state;
     };
     return roles.map((role) => {
-      const placements = role.placements.map((placement): AgentRoleDiscoveryPlacement => ({
-        machineId: placement.machineId,
-        agentConfigId: placement.agentConfigId,
-        enabled: placement.enabled,
-        runConfig: normalizeAgentRoleRunConfig(placement.runConfig),
-        ...(placement.enabled ? { availability: placementAvailability(placement) } : {}),
+      const instances = role.instances.map((instance): AgentRoleDiscoveryInstance => ({
+        id: instance.id,
+        label: instance.label,
+        machineId: instance.machineId,
+        agentConfigId: instance.agentConfigId,
+        runConfig: normalizeAgentRoleRunConfig(instance.runConfig),
+        availability: instanceAvailability(instance),
       }));
-      // Usable when any enabled machine is; otherwise the first enabled one's reason.
-      const states = placements.flatMap((placement) =>
-        placement.availability ? [placement.availability] : []
-      );
+      // Usable when any instance is; otherwise the first instance's reason.
+      const states = instances.map((instance) => instance.availability);
       const state = states.find((entry) => entry.state === 'available') ??
         states.find((entry) => entry.state === 'unknown') ??
-        states[0] ?? { state: 'unavailable', reason: 'no_machine_enabled' };
+        states[0] ?? { state: 'unknown' };
       return {
         id: role.id,
         name: role.name,
         description: role.description ?? '',
         visibility: role.visibility,
         revision: role.revision,
-        placements,
+        instances,
         availability: state,
         ...(id ? { promptPrefix: role.promptPrefix } : {}),
       };
@@ -321,10 +318,10 @@ export class ResourceDiscovery {
     return { ok: true as const, workspaceId: this.source.workspaceId, item: row };
   }
 
-  /** The placements of one readable Role with their availability, as `get` reports them. */
-  async agentRolePlacements(id: string): Promise<AgentRoleDiscoveryPlacement[]> {
+  /** The instances of one readable Role with their availability, as `get` reports them. */
+  async agentRoleInstances(id: string): Promise<AgentRoleDiscoveryInstance[]> {
     const { item } = await this.get('agent_role', id);
-    return item.placements as AgentRoleDiscoveryPlacement[];
+    return item.instances as AgentRoleDiscoveryInstance[];
   }
 
   /** Which of these machines holds the local project with this id. */

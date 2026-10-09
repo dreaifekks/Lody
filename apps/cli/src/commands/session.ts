@@ -75,6 +75,7 @@ import {
   type AcpConfigOptionSummary,
   type AgentConfigMeta,
   type AgentRoleId,
+  type AgentRoleInstanceId,
   type LocalProjectGitState,
   type LocalProjectId,
   type MachineId,
@@ -3334,6 +3335,9 @@ export async function prepareSessionInput(
     ...(options.agentRoleId ? { agentRoleId: options.agentRoleId as AgentRoleId } : {}),
     ...(options.agentRoleRevision !== undefined
       ? { agentRoleRevision: options.agentRoleRevision }
+      : {}),
+    ...(options.agentRoleId && options.agentRoleSnapshot?.instanceId
+      ? { agentRoleInstanceId: options.agentRoleSnapshot.instanceId as AgentRoleInstanceId }
       : {}),
     // `agentRoleId`/`agentRoleRevision` are declared on `SessionMeta` now, so
     // the provenance fields no longer need a local intersection here.

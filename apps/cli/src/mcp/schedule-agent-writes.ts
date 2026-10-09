@@ -5,7 +5,7 @@ import {
   ScheduleProposalRuleSchema,
   ScheduleProposalTargetSchema,
   scheduleProposalRuleToTrigger,
-  type AgentRole,
+  type CatalogAgentRole,
   type ProposalConversation,
   type ProposalTargetAgent,
   type ProposalTargetProblem,
@@ -62,7 +62,7 @@ export type ScheduleDraftContext = {
   now: number;
   conversation: ProposalConversation;
   agents: readonly ProposalTargetAgent[];
-  roles: readonly AgentRole[];
+  roles: readonly CatalogAgentRole[];
   /** The clock of the machine a schedule runs on; a rule without a zone uses it. */
   machineTimeZone: (machineId: string) => string | undefined;
 };

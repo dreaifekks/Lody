@@ -2,6 +2,7 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import {
   AGENT_ROLE_DESCRIPTION_MAX_LENGTH,
+  AGENT_ROLE_INSTANCE_LABEL_MAX_LENGTH,
   AGENT_ROLE_NAME_MAX_LENGTH,
   buildAgentRoleFormValue,
   buildAgentRoleFromForm,
@@ -12,9 +13,10 @@ import {
   listAccessibleAgentRoles,
   validateAgentRoleForm,
   type AgentRoleFormError,
-  type AgentRoleFormPlacement,
+  type AgentRoleFormInstance,
   type AgentRoleFormValue,
-  type AgentRolePlacement,
+  type AgentRoleInstance,
+  type AgentRoleInstanceId,
   type CatalogAgentRole,
   type AgentRoleId,
   type AgentConfigId,
@@ -54,27 +56,41 @@ const RunConfigSchema = z
     'Mode, model and option values from the Agent config runConfig (lody_agent_config_get). Omitted fields run with the Agent defaults.'
   );
 
-const PlacementSchema = z
+const InstanceSchema = z
   .object({
+    id: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'Id of an existing instance to keep (it keeps its memory binding); omit for a new instance.'
+      ),
+    label: z
+      .string()
+      .trim()
+      .min(1)
+      .max(AGENT_ROLE_INSTANCE_LABEL_MAX_LENGTH)
+      .optional()
+      .describe(
+        'Short name, unique in the Role, such as Claude or Gemini; defaults to the agent name.'
+      ),
     agentConfigId: z
       .string()
       .trim()
       .min(1)
-      .describe('Agent config id; it fixes the machine this entry runs on.'),
-    enabled: z
-      .boolean()
-      .optional()
-      .describe('Off keeps the entry without running there; on by default.'),
+      .describe('Agent config id; it fixes the machine this instance runs on.'),
     runConfig: RunConfigSchema.optional(),
   })
   .strict();
 
-const PlacementsSchema = z
-  .array(PlacementSchema)
+const InstancesSchema = z
+  .array(InstanceSchema)
   .min(1)
   .max(20)
   .describe(
-    'Where the Role may run: one entry per machine, in the order dispatch falls back through when neither the caller nor the work picks the machine. At least one entry must be enabled.'
+    'How the Role runs: each instance is one Agent config with its run config on its machine; a machine may hold several, and the first one on a machine is its default. List order is the order dispatch falls back through when neither the caller nor the work picks the machine.'
   );
 
 const editableFields = {
@@ -102,7 +118,7 @@ export const AgentRoleCreateToolInputSchema = z
     name: editableFields.name,
     description: editableFields.description.optional(),
     emoji: editableFields.emoji.optional(),
-    placements: PlacementsSchema,
+    instances: InstancesSchema,
     promptPrefix: editableFields.promptPrefix.optional(),
     shareWithWorkspace: editableFields.shareWithWorkspace.optional(),
   })
@@ -115,8 +131,8 @@ export const AgentRoleUpdateToolInputSchema = z
     name: editableFields.name.optional(),
     description: editableFields.description.optional(),
     emoji: editableFields.emoji.optional(),
-    placements: PlacementsSchema.optional().describe(
-      'Replaces the whole list; give every entry its full runConfig. A machine that stays keeps its memory binding.'
+    instances: InstancesSchema.optional().describe(
+      'Replaces the whole list; give every instance its full runConfig. An instance passed with its id keeps its memory binding.'
     ),
     promptPrefix: editableFields.promptPrefix.optional(),
     shareWithWorkspace: editableFields.shareWithWorkspace.optional(),
@@ -133,34 +149,40 @@ export type AgentRoleWriteDeps = {
   /** Tier of the Session driving this call. */
   callerTier: ResolvedPermissionTier;
   roles: () => Promise<CatalogAgentRole[]>;
-  /** The machine of an Agent config this user can read; throws otherwise. */
-  agentMachineId: (agentConfigId: AgentConfigId) => Promise<MachineId>;
+  /** The machine and name of an Agent config this user can read; throws otherwise. */
+  agentConfig: (agentConfigId: AgentConfigId) => Promise<{ machineId: MachineId; name: string }>;
   tierOf: (
-    placement: Pick<AgentRolePlacement, 'machineId' | 'agentConfigId' | 'runConfig'>
+    instance: Pick<AgentRoleInstance, 'machineId' | 'agentConfigId' | 'runConfig'>
   ) => Promise<ResolvedPermissionTier>;
   now: () => number;
   createId: () => AgentRoleId;
+  createInstanceId: () => AgentRoleInstanceId;
 };
 
 const FORM_ERRORS: Record<AgentRoleFormError, string> = {
   name_required: 'Give the Role a name with at least one letter or digit.',
   name_taken: 'Another Role already has this name (or the same @mention token).',
-  machine_required: 'Enable at least one placement.',
-  agent_config_required: 'Choose an Agent config.',
+  instance_required: 'Give the Role at least one instance.',
+  machine_required: 'Choose an Agent config for every instance.',
+  agent_config_required: 'Choose an Agent config for every instance.',
+  label_required: 'Give every instance a label.',
+  label_taken: 'Two instances of the Role have the same label.',
 };
 
-/** The highest-running placement that exceeds the caller, if any. */
-const findPlacementAboveCaller = async (
-  placements: readonly AgentRolePlacement[],
+/** The first instance that runs higher than the caller, if any. */
+const findInstanceAboveCaller = async (
+  instances: readonly AgentRoleInstance[],
   deps: AgentRoleWriteDeps
-): Promise<{ machineId: MachineId; tier: ResolvedPermissionTier } | undefined> => {
-  for (const placement of placements) {
-    const tier = await deps.tierOf(placement);
-    if (!isPermissionTierWithin(tier, deps.callerTier))
-      return { machineId: placement.machineId, tier };
+): Promise<{ instance: AgentRoleInstance; tier: ResolvedPermissionTier } | undefined> => {
+  for (const instance of instances) {
+    const tier = await deps.tierOf(instance);
+    if (!isPermissionTierWithin(tier, deps.callerTier)) return { instance, tier };
   }
   return undefined;
 };
+
+const describeInstance = ({ instance }: { instance: AgentRoleInstance }) =>
+  `instance ${instance.label} on machine ${instance.machineId}`;
 
 const SETTINGS = 'Settings → Agent Roles';
 const UNKNOWN_HINT =
@@ -168,8 +190,8 @@ const UNKNOWN_HINT =
 
 /**
  * The Role an Agent asked for, checked the way Settings checks it and kept
- * within the calling Session's permission tier on every placement: a Role that
- * runs higher on any machine, or already does, is the user's to set in Settings.
+ * within the calling Session's permission tier on every instance: a Role whose
+ * instance runs higher, or already does, is the user's to set in Settings.
  */
 export async function buildAgentRoleFromAgent(
   request: AgentRoleWrite,
@@ -183,10 +205,10 @@ export async function buildAgentRoleFromAgent(
   if (request.action === 'update') {
     if (!existing || !canManageAgentRole(existing, deps.userId))
       throw new Error('No Agent Role with that id that you own.');
-    const above = await findPlacementAboveCaller(existing.placements, deps);
+    const above = await findInstanceAboveCaller(existing.instances, deps);
     if (above)
       throw new Error(
-        `This Role runs with more permissions than this conversation on machine ${above.machineId} (Role: ${above.tier}, conversation: ${deps.callerTier}). Only the user can change it, in ${SETTINGS}.`
+        `This Role runs with more permissions than this conversation in ${describeInstance(above)} (Role: ${above.tier}, conversation: ${deps.callerTier}). Only the user can change it, in ${SETTINGS}.`
       );
   } else if (roles.length >= MAX_AGENT_ROLES) {
     throw new Error(`The workspace already has ${MAX_AGENT_ROLES} Agent Roles.`);
@@ -196,21 +218,22 @@ export async function buildAgentRoleFromAgent(
   const base: AgentRoleFormValue = existing
     ? buildAgentRoleFormValue(existing)
     : EMPTY_AGENT_ROLE_FORM_VALUE;
-  const placements: AgentRoleFormPlacement[] = [];
-  for (const entry of input.placements ?? []) {
+  const instances: AgentRoleFormInstance[] = [];
+  for (const entry of input.instances ?? []) {
     const agentConfigId = entry.agentConfigId as AgentConfigId;
-    const machineId = await deps.agentMachineId(agentConfigId);
-    if (placements.some((placement) => placement.machineId === machineId))
-      throw new Error(`Two placements run on machine ${machineId}; give each machine one entry.`);
-    const memory = base.placements.find((placement) => placement.machineId === machineId)?.memory;
-    placements.push({
-      machineId,
-      enabled: entry.enabled ?? true,
+    const config = await deps.agentConfig(agentConfigId);
+    // Memory is the user's to bind; a kept instance keeps its own.
+    const kept = entry.id ? base.instances.find((instance) => instance.id === entry.id) : undefined;
+    if (entry.id && !kept) throw new Error(`The Role has no instance ${entry.id}.`);
+    instances.push({
+      id: kept?.id ?? deps.createInstanceId(),
+      label: entry.label ?? kept?.label ?? config.name,
+      machineId: config.machineId,
       agentConfigId,
       modeId: entry.runConfig?.modeId ?? null,
       modelId: entry.runConfig?.modelId ?? null,
       configOptionValues: entry.runConfig?.configOptionValues ?? {},
-      ...(memory ? { memory } : {}),
+      ...(kept?.memory && kept.machineId === config.machineId ? { memory: kept.memory } : {}),
     });
   }
   const value: AgentRoleFormValue = {
@@ -222,7 +245,7 @@ export async function buildAgentRoleFromAgent(
     ...(input.shareWithWorkspace !== undefined
       ? { shareWithWorkspace: input.shareWithWorkspace }
       : {}),
-    ...(input.placements ? { placements } : {}),
+    ...(input.instances ? { instances } : {}),
   };
   const errors = validateAgentRoleForm(value, {
     accessibleRoles: listAccessibleAgentRoles(roles, deps.userId),
@@ -235,16 +258,16 @@ export async function buildAgentRoleFromAgent(
     now: deps.now(),
     createId: deps.createId,
   });
-  const above = await findPlacementAboveCaller(role.placements, deps);
+  const above = await findInstanceAboveCaller(role.instances, deps);
   if (above)
     throw new Error(
-      `The Role would run with more permissions than this conversation on machine ${above.machineId} (Role: ${above.tier}, conversation: ${deps.callerTier}). Only the user can set that, in ${SETTINGS}.${above.tier === 'unknown' ? ` ${UNKNOWN_HINT}` : ''}`
+      `The Role would run with more permissions than this conversation in ${describeInstance(above)} (Role: ${above.tier}, conversation: ${deps.callerTier}). Only the user can set that, in ${SETTINGS}.${above.tier === 'unknown' ? ` ${UNKNOWN_HINT}` : ''}`
     );
   return role;
 }
 
 const ROLE_CEILING =
-  'On every placement the Role may run with at most the permissions this conversation runs with now (its permission mode); a higher or unrecognized mode is refused and only the user can set it in Settings → Agent Roles. Set every permission option the Agent has beside its mode (such as permission_mode) explicitly. Pi Roles are exempt.';
+  'In every instance the Role may run with at most the permissions this conversation runs with now (its permission mode); a higher or unrecognized mode is refused and only the user can set it in Settings → Agent Roles. Set every permission option the Agent has beside its mode (such as permission_mode) explicitly. Pi Roles are exempt.';
 
 export function registerAgentRoleWriteTools(
   registerSessionTool: ReturnType<typeof createSessionToolRegistrar>,
@@ -255,8 +278,8 @@ export function registerAgentRoleWriteTools(
     {
       title: 'Create an Agent Role',
       description: [
-        'Create an Agent Role (a named task preset: prompt prefix plus, per machine, the Agent',
-        'config, model, mode and options it runs with) when the user asks for one. Read ids and runConfig choices with',
+        'Create an Agent Role (a named task template: prompt prefix plus instances, each an Agent',
+        'config on its machine with the model, mode and options it runs with) when the user asks for one. Read ids and runConfig choices with',
         'lody_agent_config_list / lody_agent_config_get. New Roles are private unless',
         'shareWithWorkspace is set. Credentials, identities and memory cannot be set here.',
         ROLE_CEILING,
@@ -270,8 +293,8 @@ export function registerAgentRoleWriteTools(
     {
       title: 'Change an Agent Role',
       description: [
-        'Change an Agent Role the user owns. Omitted fields stay; placements replaces the whole',
-        'list. A Role that already runs with more permissions than this conversation on any machine can',
+        'Change an Agent Role the user owns. Omitted fields stay; instances replaces the whole',
+        'list (pass an existing instance id to keep it). A Role with an instance that already runs with more permissions than this conversation can',
         'only be changed by the user. Roles cannot be deleted here.',
         ROLE_CEILING,
       ].join(' '),
