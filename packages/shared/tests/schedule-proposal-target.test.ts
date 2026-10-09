@@ -39,7 +39,6 @@ const role = {
   instances: [
     {
       id: 'release-studio',
-      label: 'Writer',
       machineId: 'studio',
       agentConfigId: 'writer',
       runConfig: writerRunConfig,
@@ -53,7 +52,6 @@ const twoMachineRole = {
     ...role.instances,
     {
       id: 'release-mac',
-      label: 'Reviewer',
       machineId: 'macbook',
       agentConfigId: 'reviewer',
       runConfig: {},

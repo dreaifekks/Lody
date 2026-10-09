@@ -9,6 +9,7 @@ import {
   type AgentRoleInstance,
   type CatalogAgentRole,
 } from './agent-role';
+import { getAgentRoleAgentFamily, getAgentRoleInstanceGroup } from './agent-role-group';
 import type { AgentConfigId, MachineId } from './ids';
 import type { AgentConfigMeta, SessionMeta } from './schema';
 import type { ProjectRef } from './project';
@@ -23,8 +24,9 @@ type ProposalRunRef = Omit<ScheduleDefinition['agent'], 'agentConfigId'> & {
 /** What the resolver reads of an Agent config. */
 export type ProposalTargetAgent = Pick<
   AgentConfigMeta,
-  'id' | 'machineId' | 'cliType' | 'agentType'
->;
+  'id' | 'machineId' | 'name' | 'cliType' | 'agentType' | 'brandId'
+> &
+  Partial<Pick<AgentConfigMeta, 'env'>>;
 
 /** What the conversation the proposal came from was running with. */
 export type ProposalConversation = {
@@ -92,8 +94,8 @@ export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(arg
   const named = meta.target ?? {};
 
   // The Role's instance follows the shared dispatch rules: the named instance,
-  // else one on the named machine, else the conversation's machine, else the
-  // first one whose agent is known.
+  // else one on the named machine, else the first group with a known agent,
+  // the conversation's machine first.
   let role: AgentRole | undefined;
   let instance: AgentRoleInstance | undefined;
   if (named.agentRoleId) {
@@ -109,7 +111,11 @@ export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(arg
       (candidate) =>
         agents.some(
           (agent) => agent.id === candidate.agentConfigId && agent.machineId === candidate.machineId
-        )
+        ),
+      (candidate) => {
+        const agent = agents.find((entry) => entry.id === candidate.agentConfigId);
+        return getAgentRoleInstanceGroup(candidate, agent && getAgentRoleAgentFamily(agent)).key;
+      }
     );
     if (choice.kind === 'rejected')
       return {

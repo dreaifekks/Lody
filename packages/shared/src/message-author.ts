@@ -16,21 +16,22 @@ export const AgentRoleSnapshotSchema = z.object({
   revision: z.number().int().nonnegative(),
   name: label,
   emoji: z.string().max(64),
-  /** The instance that ran; absent in records made before instances. */
+  /** The instance that ran and its group's name; absent in records made before instances. */
   instanceId: id.optional(),
   instanceLabel: label.optional(),
 });
 export type AgentRoleSnapshot = z.infer<typeof AgentRoleSnapshotSchema>;
 export const snapshotAgentRole = (
   role: Pick<AgentRole, 'id' | 'revision' | 'name' | 'emoji'>,
-  instance?: Pick<AgentRoleInstance, 'id' | 'label'>
+  instance?: { id: AgentRoleInstance['id']; label?: string }
 ): AgentRoleSnapshot =>
   AgentRoleSnapshotSchema.parse({
     id: role.id,
     revision: role.revision,
     name: role.name,
     emoji: getAgentRoleEmoji(role),
-    ...(instance ? { instanceId: instance.id, instanceLabel: instance.label } : {}),
+    ...(instance ? { instanceId: instance.id } : {}),
+    ...(instance?.label ? { instanceLabel: instance.label } : {}),
   });
 
 /** Presentation/provenance only. Never an authorization principal or dispatch config. */

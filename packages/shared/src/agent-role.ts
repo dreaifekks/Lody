@@ -17,10 +17,12 @@ import { isSensitiveAcpConfigOptionId } from './session-preparation';
  *   V1 therefore refuses to persist anything secret-shaped in the first place
  *   (`isSensitiveAgentRoleConfigOptionKey`), rather than pretending a private
  *   row is a safe place to put one.
- * - Instances are ordered. A machine may hold several; the first one on a
- *   machine is that machine's default. Dispatch picks one by explicit, ordered
- *   rules (`selectAgentRoleInstance`) and reports which; it never swaps the
- *   agent or config inside an instance.
+ * - Instances are ordered and fall into groups: instances with one alias, or
+ *   without an alias on one agent family, are one group and stand in for each
+ *   other across machines (`agent-role-group.ts`). A machine holds at most one
+ *   instance per group. Dispatch picks one by explicit, ordered rules
+ *   (`selectAgentRoleInstance`) and reports which; it never swaps the agent or
+ *   config inside an instance.
  * - `id` is the stable identity of a Role and of an instance. Mention tokens
  *   are DERIVED from the names and change when they do, so a mention range
  *   carries the ids.
@@ -46,8 +48,11 @@ export type AgentRoleRunConfig = {
 /** One way a Role runs: an Agent Config on one machine and that agent's run config. */
 export type AgentRoleInstance = {
   id: AgentRoleInstanceId;
-  /** Short, unique within the Role: `uiStyle · Claude`. */
-  label: string;
+  /**
+   * The user's name for it. Instances sharing an alias are one group across
+   * machines; without one, the instance groups with its agent family.
+   */
+  alias?: string;
   machineId: MachineId;
   agentConfigId: AgentConfigId;
   runConfig: AgentRoleRunConfig;
@@ -66,8 +71,8 @@ export type AgentRole = {
   emoji?: string;
 
   /**
-   * Ordered and never empty. The order is the order dispatch tries machines
-   * in, and the first instance on a machine is that machine's default.
+   * Ordered and never empty. The order of first appearance orders the groups,
+   * and inside a group the order dispatch tries machines in.
    */
   instances: AgentRoleInstance[];
   /**
@@ -267,7 +272,7 @@ const serializeInstances = (instances: readonly AgentRoleInstance[]): string =>
   JSON.stringify(
     instances.map((instance) => [
       instance.id,
-      instance.label,
+      instance.alias ?? '',
       instance.machineId,
       instance.agentConfigId,
       serializeRunConfig(instance.runConfig),
@@ -278,16 +283,16 @@ const serializeInstances = (instances: readonly AgentRoleInstance[]): string =>
 // Instances
 // ---------------------------------------------------------------------------
 
-export const AGENT_ROLE_INSTANCE_LABEL_MAX_LENGTH = 40;
+export const AGENT_ROLE_INSTANCE_ALIAS_MAX_LENGTH = 40;
 
-export const normalizeAgentRoleInstanceLabel = (value: string): string =>
+export const normalizeAgentRoleInstanceAlias = (value: string): string =>
   Array.from(
     value
       .replace(/\p{Cc}/gu, '')
       .replace(/\s+/gu, ' ')
       .trim()
   )
-    .slice(0, AGENT_ROLE_INSTANCE_LABEL_MAX_LENGTH)
+    .slice(0, AGENT_ROLE_INSTANCE_ALIAS_MAX_LENGTH)
     .join('');
 
 /**
@@ -297,17 +302,6 @@ export const normalizeAgentRoleInstanceLabel = (value: string): string =>
  */
 export const legacyAgentRoleInstanceId = (roleId: string, machineId: string): AgentRoleInstanceId =>
   `${roleId}:${machineId}` as AgentRoleInstanceId;
-
-/** Give repeated labels a number, in list order, so labels stay unique in a Role. */
-const uniqueLabels = (instances: AgentRoleInstance[]): AgentRoleInstance[] => {
-  const seen = new Set<string>();
-  return instances.map((instance) => {
-    let label = instance.label;
-    for (let n = 2; seen.has(label.toLowerCase()); n += 1) label = `${instance.label} ${n}`;
-    seen.add(label.toLowerCase());
-    return label === instance.label ? instance : { ...instance, label };
-  });
-};
 
 const readMemoryOk = (runConfig: unknown): boolean =>
   !isRecord(runConfig) ||
@@ -320,22 +314,21 @@ const readAgentRoleInstance = (value: unknown): AgentRoleInstance | undefined =>
     !isNonEmptyString(value.id) ||
     !isNonEmptyString(value.machineId) ||
     !isNonEmptyString(value.agentConfigId) ||
-    typeof value.label !== 'string' ||
-    !normalizeAgentRoleInstanceLabel(value.label) ||
     (value.runConfig !== undefined && !isRecord(value.runConfig)) ||
     !readMemoryOk(value.runConfig)
   )
     return undefined;
+  const alias = typeof value.alias === 'string' ? normalizeAgentRoleInstanceAlias(value.alias) : '';
   return {
     id: value.id.trim() as AgentRoleInstanceId,
-    label: normalizeAgentRoleInstanceLabel(value.label),
+    ...(alias ? { alias } : {}),
     machineId: value.machineId.trim() as MachineId,
     agentConfigId: value.agentConfigId.trim() as AgentConfigId,
     runConfig: normalizeAgentRoleRunConfig(value.runConfig),
   };
 };
 
-/** An instance converted from an older row, labelled by its model when it pins one. */
+/** An instance converted from an older row; it has no alias, so it groups by its agent. */
 const legacyInstance = (
   roleId: string,
   machineId: string,
@@ -345,7 +338,6 @@ const legacyInstance = (
   const normalized = normalizeAgentRoleRunConfig(runConfig);
   return {
     id: legacyAgentRoleInstanceId(roleId, machineId),
-    label: normalizeAgentRoleInstanceLabel(normalized.modelId ?? '') || 'Default',
     machineId: machineId.trim() as MachineId,
     agentConfigId: agentConfigId.trim() as AgentConfigId,
     runConfig: normalized,
@@ -389,7 +381,7 @@ const readAgentRoleInstances = (row: Record<string, unknown> & AgentRoleLegacyFi
       machines.add(entry.machineId.trim());
       instances.push(legacyInstance(roleId, entry.machineId, entry.agentConfigId, entry.runConfig));
     }
-    if (instances.length > 0) return uniqueLabels(instances);
+    if (instances.length > 0) return instances;
   }
   return [legacyInstance(roleId, row.machineId, row.agentConfigId, row.runConfig)];
 };
@@ -442,11 +434,11 @@ export const findAgentRoleInstance = (
  *    create fails — it is never silently moved.
  * 2. A machine bound by the work (a local project, or a parent Session the new
  *    one joins) is the only one that makes sense; it fails the same way.
- * 3. Otherwise the caller's own machine, when it holds a usable instance.
- * 4. Otherwise the first machine, in list order, that holds a usable instance.
+ * 3. Otherwise the first group, in the Role's order, with a usable instance;
+ *    inside it the preferred (caller's) machine first, then list order.
  *
- * On a chosen machine the first usable instance runs. The rule is returned so
- * callers can say which instance was picked and why.
+ * On a pinned machine its instance in the earliest group runs. The rule is
+ * returned so callers can say which instance was picked and why.
  */
 export type AgentRoleInstanceRule =
   | 'instance'
@@ -473,6 +465,27 @@ export type AgentRoleInstanceChoice =
       usableInstances: AgentRoleInstance[];
     };
 
+/**
+ * The instances in the order a bare Role tries them: group by group in the
+ * order groups first appear, and inside a group the preferred machine first,
+ * then list order.
+ */
+export const orderAgentRoleInstances = (
+  role: Pick<AgentRole, 'instances'>,
+  groupKeyOf: (instance: AgentRoleInstance) => string,
+  preferredMachineId?: MachineId | null
+): AgentRoleInstance[] => {
+  const groups = new Map<string, AgentRoleInstance[]>();
+  for (const instance of role.instances) {
+    const key = groupKeyOf(instance);
+    groups.set(key, [...(groups.get(key) ?? []), instance]);
+  }
+  return [...groups.values()].flatMap((group) => [
+    ...group.filter((instance) => instance.machineId === preferredMachineId),
+    ...group.filter((instance) => instance.machineId !== preferredMachineId),
+  ]);
+};
+
 export const selectAgentRoleInstance = (
   role: Pick<AgentRole, 'instances'>,
   request: {
@@ -481,7 +494,8 @@ export const selectAgentRoleInstance = (
     workContextMachineId?: MachineId;
     callerMachineId?: MachineId;
   },
-  isUsable: (instance: AgentRoleInstance) => boolean
+  isUsable: (instance: AgentRoleInstance) => boolean,
+  groupKeyOf: (instance: AgentRoleInstance) => string
 ): AgentRoleInstanceChoice => {
   const usableInstances = role.instances.filter(isUsable);
   const reject = (
@@ -504,6 +518,7 @@ export const selectAgentRoleInstance = (
       return reject('instance_unavailable', 'instance', { instanceId: instance.id });
     return { kind: 'selected', instance, rule: 'instance' };
   }
+  const ordered = orderAgentRoleInstances(role, groupKeyOf, request.callerMachineId);
   const pinned: Array<['explicit' | 'work_context', MachineId | undefined]> = [
     ['explicit', request.machineId],
     ['work_context', request.workContextMachineId],
@@ -512,15 +527,17 @@ export const selectAgentRoleInstance = (
     if (!machineId) continue;
     if (!role.instances.some((instance) => instance.machineId === machineId))
       return reject('machine_has_no_instance', rule, { machineId });
-    const instance = usableInstances.find((entry) => entry.machineId === machineId);
+    const instance = ordered.find((entry) => entry.machineId === machineId && isUsable(entry));
     if (!instance) return reject('machine_unavailable', rule, { machineId });
     return { kind: 'selected', instance, rule };
   }
-  const caller = usableInstances.find((entry) => entry.machineId === request.callerMachineId);
-  if (caller) return { kind: 'selected', instance: caller, rule: 'caller' };
-  const first = usableInstances[0];
+  const first = ordered.find(isUsable);
   return first
-    ? { kind: 'selected', instance: first, rule: 'first_available' }
+    ? {
+        kind: 'selected',
+        instance: first,
+        rule: first.machineId === request.callerMachineId ? 'caller' : 'first_available',
+      }
     : { kind: 'rejected', reason: 'no_instance_available', usableInstances };
 };
 
@@ -635,7 +652,9 @@ export type AgentRoleUnavailableReason =
   | 'machine_unknown'
   | 'machine_offline'
   | 'agent_config_missing'
-  | 'agent_config_machine_mismatch';
+  | 'agent_config_machine_mismatch'
+  /** It runs elsewhere, and this conversation's machine is fixed. */
+  | 'other_machine';
 
 export type AgentRoleAvailability =
   | { kind: 'available' }

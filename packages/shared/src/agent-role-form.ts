@@ -4,7 +4,7 @@ import {
   isAgentRoleContentEqual,
   normalizeAgentRoleDescription,
   normalizeAgentRoleEmoji,
-  normalizeAgentRoleInstanceLabel,
+  normalizeAgentRoleInstanceAlias,
   normalizeAgentRoleMentionSlug,
   normalizeAgentRoleRunConfig,
   withAgentRoleInstances,
@@ -13,6 +13,7 @@ import {
   type AgentRoleRunConfig,
   type CatalogAgentRole,
 } from './agent-role';
+import { getAgentRoleInstanceGroup, type AgentRoleAgentFamily } from './agent-role-group';
 import type { AgentConfigId, AgentRoleId, AgentRoleInstanceId, MachineId } from './ids';
 
 /**
@@ -26,7 +27,8 @@ import type { AgentConfigId, AgentRoleId, AgentRoleInstanceId, MachineId } from 
 /** One instance in the editor. A machine and an agent are chosen before it can be saved. */
 export type AgentRoleFormInstance = {
   id: AgentRoleInstanceId;
-  label: string;
+  /** Empty for none: the instance then groups with its agent family. */
+  alias: string;
   machineId: MachineId | null;
   agentConfigId: AgentConfigId | null;
   modeId: string | null;
@@ -61,7 +63,7 @@ export const buildEmptyAgentRoleFormInstance = (
   machineId: MachineId | null = null
 ): AgentRoleFormInstance => ({
   id,
-  label: '',
+  alias: '',
   machineId,
   agentConfigId: null,
   modeId: null,
@@ -80,8 +82,6 @@ export const buildEmptyAgentRoleFormInstance = (
  */
 export const buildAgentRoleFormValueFromRunConfig = (input: {
   instanceId: AgentRoleInstanceId;
-  /** The agent's name, the instance's default label. */
-  label: string;
   machineId: MachineId | null | undefined;
   agentConfigId: AgentConfigId | null | undefined;
   modeId?: string | null;
@@ -99,7 +99,7 @@ export const buildAgentRoleFormValueFromRunConfig = (input: {
       ? [
           {
             id: input.instanceId,
-            label: input.label,
+            alias: '',
             machineId: input.machineId,
             agentConfigId: input.agentConfigId ?? null,
             modeId: runConfig.modeId ?? null,
@@ -113,7 +113,7 @@ export const buildAgentRoleFormValueFromRunConfig = (input: {
 
 export const buildAgentRoleFormInstance = (instance: AgentRoleInstance): AgentRoleFormInstance => ({
   id: instance.id,
-  label: instance.label,
+  alias: instance.alias ?? '',
   machineId: instance.machineId,
   agentConfigId: instance.agentConfigId,
   modeId: instance.runConfig.modeId ?? null,
@@ -137,27 +137,46 @@ export type AgentRoleFormError =
   | 'instance_required'
   | 'machine_required'
   | 'agent_config_required'
-  | 'label_required'
-  | 'label_taken';
+  | 'group_taken';
 
-/** What is wrong with one instance, if anything; also used to mark its row. */
+/** The group an authored instance falls in; see `agent-role-group.ts`. */
+const formInstanceGroupKey = (
+  instance: AgentRoleFormInstance,
+  agentFamilyOf: (id: AgentConfigId) => AgentRoleAgentFamily | undefined
+): string => {
+  const alias = normalizeAgentRoleInstanceAlias(instance.alias);
+  return getAgentRoleInstanceGroup(
+    { ...(alias ? { alias } : {}), agentConfigId: instance.agentConfigId as AgentConfigId },
+    instance.agentConfigId ? agentFamilyOf(instance.agentConfigId) : undefined
+  ).key;
+};
+
+/**
+ * What is wrong with one instance, if anything; also used to mark its row.
+ * A machine runs each group through one instance, so a second instance of the
+ * same agent (or alias) on a machine needs an alias of its own.
+ */
 export const validateAgentRoleFormInstance = (
   instance: AgentRoleFormInstance,
-  instances: readonly AgentRoleFormInstance[]
+  instances: readonly AgentRoleFormInstance[],
+  agentFamilyOf: (id: AgentConfigId) => AgentRoleAgentFamily | undefined
 ): AgentRoleFormError[] => {
   const errors: AgentRoleFormError[] = [];
-  const label = normalizeAgentRoleInstanceLabel(instance.label).toLowerCase();
   if (!instance.machineId) errors.push('machine_required');
   if (!instance.agentConfigId) errors.push('agent_config_required');
-  if (!label) errors.push('label_required');
-  else if (
-    instances.some(
-      (other) =>
-        other.id !== instance.id &&
-        normalizeAgentRoleInstanceLabel(other.label).toLowerCase() === label
+  else {
+    const key = formInstanceGroupKey(instance, agentFamilyOf);
+    if (
+      instances.some(
+        (other) =>
+          other.id !== instance.id &&
+          other.machineId === instance.machineId &&
+          other.agentConfigId !== null &&
+          formInstanceGroupKey(other, agentFamilyOf) === key
+      )
     )
-  )
-    errors.push('label_taken');
+      errors.push('group_taken');
+  }
   return errors;
 };
 
@@ -171,7 +190,12 @@ export const validateAgentRoleFormInstance = (
  */
 export const validateAgentRoleForm = (
   value: AgentRoleFormValue,
-  options: { accessibleRoles: readonly AgentRole[]; editingRoleId?: AgentRoleId | null }
+  options: {
+    accessibleRoles: readonly AgentRole[];
+    editingRoleId?: AgentRoleId | null;
+    /** Reads an instance's agent, which decides its group. */
+    agentFamilyOf: (id: AgentConfigId) => AgentRoleAgentFamily | undefined;
+  }
 ): AgentRoleFormError[] => {
   const errors = new Set<AgentRoleFormError>();
   const slug = normalizeAgentRoleMentionSlug(value.name);
@@ -189,7 +213,12 @@ export const validateAgentRoleForm = (
 
   if (value.instances.length === 0) errors.add('instance_required');
   for (const instance of value.instances)
-    for (const error of validateAgentRoleFormInstance(instance, value.instances)) errors.add(error);
+    for (const error of validateAgentRoleFormInstance(
+      instance,
+      value.instances,
+      options.agentFamilyOf
+    ))
+      errors.add(error);
   return [...errors];
 };
 
@@ -228,13 +257,16 @@ export const buildAgentRoleFromForm = (
   const { existing, ownerUserId, now } = options;
   const emoji = normalizeAgentRoleEmoji(value.emoji);
   const promptPrefix = value.promptPrefix.trim();
-  const instances = value.instances.map((instance): AgentRoleInstance => ({
-    id: instance.id,
-    label: normalizeAgentRoleInstanceLabel(instance.label),
-    machineId: instance.machineId as MachineId,
-    agentConfigId: instance.agentConfigId as AgentConfigId,
-    runConfig: buildAgentRoleRunConfig(instance),
-  }));
+  const instances = value.instances.map((instance): AgentRoleInstance => {
+    const alias = normalizeAgentRoleInstanceAlias(instance.alias);
+    return {
+      id: instance.id,
+      ...(alias ? { alias } : {}),
+      machineId: instance.machineId as MachineId,
+      agentConfigId: instance.agentConfigId as AgentConfigId,
+      runConfig: buildAgentRoleRunConfig(instance),
+    };
+  });
   const next = withAgentRoleInstances(
     {
       v: AGENT_ROLE_VERSION,

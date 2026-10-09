@@ -40,7 +40,6 @@ const agentRole = (roleId: string, overrides: Partial<AgentRole> = {}): AgentRol
     overrides.instances ?? [
       {
         id: `${roleId}:machine-1` as AgentRole['instances'][number]['id'],
-        label: 'Default',
         machineId: 'machine-1' as MachineId,
         agentConfigId: 'config-1' as AgentConfigId,
         runConfig: {},
@@ -243,14 +242,12 @@ describe('workspace Flock helpers', () => {
       instances: [
         {
           id: 'claude' as AgentRole['instances'][number]['id'],
-          label: 'Claude',
           machineId: 'machine-2' as MachineId,
           agentConfigId: 'config-2' as AgentConfigId,
           runConfig: { modelId: 'opus', memory: { providerId: 'nowledge-mem', memoryId: 'lody' } },
         },
         {
           id: 'codex' as AgentRole['instances'][number]['id'],
-          label: 'Codex',
           machineId: 'machine-1' as MachineId,
           agentConfigId: 'config-1' as AgentConfigId,
           runConfig: {},
