@@ -14,14 +14,14 @@ lives in its `README.md`.
    source missing from that list silently degrades the composer to a plain
    textarea and drops its type.
 2. **Candidates.** Each category builds its own rows; aggregate results are capped.
-   The Role category lists the full readable catalog. A row is a
+   The Role category lists every Role instance on the composer's machine. A row is a
    registered collection item that arrow-key movement walks, so an uncapped source
    degrades navigation, not just render time. Ranking the file index is the
    expensive one, which is why `getCandidates` must stay lazy and a bare `@` calls
    none of them.
 3. **Commit.** The candidate's `insertText` is what the user sees in the prompt;
    the committed _range_ is what carries structured identity (a session id, a Role
-   id) that no text form could.
+   instance id) that no text form could.
 4. **Draft persistence and hydration.** Ranges are stored beside the draft, and
    rebuilding them from text is only a fallback.
 5. **Before send.** One hook rewrites the ranges that need rewriting, and the
@@ -173,8 +173,11 @@ wrong surface.
 ## Agent Roles
 
 Role visibility and selection follow [the Role mention Spec](../../specs/agent-role-mentions.md).
-Every composer, including a Local Project one, can reach all authorized
-machines. The menu keeps readable Roles that are loading or unavailable, with
+The list is the composer's own Role menu: the instances on the composer's
+machine, one flat entry each, written `@<Role>` or, where the machine holds
+several, `@<Role>:<label>`. Narrowing it to one machine makes the token a choice
+the user can see rather than a dispatch rule applied later. The menu keeps
+instances that are loading or unavailable, with
 an explanation below the name. They follow available matches and cannot be
 selected. Hydration and before-send expansion independently reject those rows,
 so showing a stale Role never creates a new dispatch instruction.
@@ -184,7 +187,7 @@ emoji replaces the category glyph because the category header already says these
 are Agent Roles, so a second generic glyph only crowds out the Role's own mark;
 the emoji is boxed and clipped because the icon slot covers one character of real
 text and an emoji glyph is wider than a latin one. The committed range carries
-only the Role id, and only the composer holds the live catalog, which is why the
+only the instance id, and only the composer holds the live catalog, which is why the
 composer wraps the caller's chip resolver.
 
 The transcript freezes the mark with the span so renaming or re-marking a Role

@@ -23,7 +23,7 @@ Pipeline background: [ui-mentions.md](../../../../../.agents/docs/ui-mentions.md
   `insertText` (`@dir`, commit).
 - `getCandidates` stays lazy; bare `@` ranks nothing. File menus index/search
   in a Worker, cancel stale work, and publish current-source results only; no
-  UI-thread fallback. Aggregate results are capped; Roles list all readable entries.
+  UI-thread fallback. Aggregate results are capped; Roles list all entries.
 - Issues and PRs rank over their own slice of the shared cache, partitioned once
   by `useMentionCategories`.
 - Files, Sessions, Roles, Issues, and PRs use vendored VS Code `scoreFuzzy`
@@ -116,18 +116,18 @@ true })`. The fetch timestamp rides on the cached entry (survives IndexedDB).
 ## Agent Roles
 
 - An Agent Role mention has the session mention's shape (plain `@<token>`,
-  stable Role id on the committed RANGE), but its rewrite asks the agent to
-  CREATE a Session and carries the Role id only (root `AGENTS.md` owns MCP
-  create/freeze). An unavailable Role stays plain text at send time. The token
-  is DERIVED from the Role's name
-  (`getAgentRoleMentionSlug`); renaming changes it, and uniqueness uses that token.
+  stable instance id on the committed RANGE), but its rewrite asks the agent to
+  CREATE a Session and carries the Role and instance ids only (root `AGENTS.md`
+  owns MCP create/freeze). An unavailable one stays plain text at send time. The
+  token is DERIVED: the Role's name, plus `:<label>` when this machine holds
+  several instances (`getAgentRoleInstanceMentionSlug`); a bare name means the
+  default instance and an ambiguous token stays text.
 - A Role candidate's emoji REPLACES the category glyph
   (`MentionCandidate.iconEmoji`), defaulted through `getAgentRoleEmoji`, and its
   candidate sets no detail `title`. The committed range shows that emoji through
   `applyAgentRoleEmojiChip`, boxed to the icon slot and clipped; its agent
   config and machine ride on `AgentRoleMentionItem`.
-- Role candidates pass visibility, then executability. Every composer may
-  dispatch a Role to any authorized machine; there is no work-context pinning.
-  List all readable Roles; disabled rows follow
+- Role candidates are the composer menu's flat list: readable Roles' instances on
+  the composer's machine (`AgentRoleMentionMachineContext`). Disabled rows follow
   available matches with a reason below the name. Only available Roles can be
   selected, hydrated from text, or expanded before send; never fall back.

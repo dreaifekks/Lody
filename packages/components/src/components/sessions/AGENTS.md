@@ -65,17 +65,16 @@ Read parent rules and each heading's linked context before edits.
 
 ## [Run config and Agent Roles](../../../../../.agents/docs/sessions-run-config.md)
 
-- A composer offers a Role only as its placement on that machine
-  (`agentRoleOnMachine`); an unavailable one stays listed, disabled, with its
-  reason. A draft authorizes the whole Role; an existing session applies only
-  its run config.
+- A composer lists its machine's Role instances flat, by instance id
+  (`buildComposerAgentRoleItems`); an unavailable one stays, disabled, with its
+  reason. A draft authorizes the instance; a session applies only its run config.
 - A Role IS the whole configuration: other knobs render inert,
   `DesktopPermissionModeButton` is absent when the Role pins permission, and
   moving a knob unnames the Role instead of clearing values.
 - Selection flows through `useAcpSessionConfigSelectionState`, a pure derivation:
   never store the resolved selection or reconcile it in an effect (#185).
-- Freeze `agentRoleId` + `agentRoleRevision` into the Turn `inputConfig` on send;
-  `SessionMeta.agentRoleId` is creation provenance and is never rewritten.
+- Freeze Role id, revision and instance (`agentRoleSnapshot`) into the Turn
+  `inputConfig`; `SessionMeta.agentRoleId`/`agentRoleInstanceId` are never rewritten.
 - Two durable authorities: the latest accepted/queued Turn `inputConfig`, and
   `SessionDoc.acpRuntimeConfig` fenced by `userTurnId`. Apply that baseline only
   to unedited composer fields, never infer runtime config from a permission

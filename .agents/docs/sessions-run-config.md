@@ -86,13 +86,18 @@ this page is the full text of the rules summarised there.
   should adopt it.
   `DesktopRunConfigMenu` gains a **Role** row when the caller passes
   `agentRoles`. It sits ABOVE Agent, since a Role answers every row under it at
-  once. The callers split by whether a Session exists yet, and that difference
-  is load-bearing:
+  once. What it lists are Role INSTANCES on the composer's machine, one flat
+  list (`buildComposerAgentRoleItems`): a Role with one instance there reads as
+  its name, one with several reads as `uiStyle · Claude` per instance, and
+  search matches both the Role name and the label. Selection, the "is this still
+  the Role" check and the Turn record all name the instance id; a Role's default
+  instance on a machine is its first one there. The callers split by whether a
+  Session exists yet, and that difference is load-bearing:
 
   **Chat landing and a blank child-tab draft** authorize the WHOLE Role —
   agent config, run config, instruction, and provenance — because no Session
   exists yet and the Agent can still move. A child tab keeps the parent
-  Session's exact machine/workspace, so its Role list is every Role enabled on
+  Session's exact machine/workspace, so its Role list is every instance on
   that machine, across Agent types; selecting one changes the draft Agent.
   Never route a draft through `selectSessionAgentRoles`: that same-type subset
   is only correct after a Session exists. The Role id persists with a non-empty
@@ -100,8 +105,8 @@ this page is the full text of the rules summarised there.
   instruction is frozen into the first Turn before draft promotion.
 
   **An existing session** (`useSessionAgentRole`) can NOT: its agent, machine,
-  and runtime are fixed. So it offers only Roles whose placement on that machine
-  uses that exact Agent Config (the model provider shown by the composer) and applies only their
+  and runtime are fixed. So it offers only Role instances on that machine that
+  use that exact Agent Config (the model provider shown by the composer) and applies only their
   RUN CONFIG, which is exactly what transfers: model / reasoning / permission
   are the values a session can still change every turn. Keep the Role's real
   availability so a stale binding stays visible but cannot be selected. The
@@ -112,7 +117,8 @@ this page is the full text of the rules summarised there.
   session-keyed app state rather than the composer component: top-level
   navigation unmounts that component, and one shared override slot also makes
   selecting a Role in a second Session erase the first Session's identity. On
-  send, freeze `agentRoleId` (null for None) plus `agentRoleRevision` into the
+  send, freeze `agentRoleId` (null for None) plus `agentRoleRevision` and the
+  instance (`agentRoleSnapshot.instanceId`/`instanceLabel`) into the
   Turn `inputConfig`; the latest accepted/queued Turn is the synchronized
   authority on remount and supersedes a draft made against an older Turn. A
   session-keyed last-known durable snapshot may bridge the empty document while
@@ -137,9 +143,9 @@ this page is the full text of the rules summarised there.
   creation provenance only.
   `isAgentRoleRunConfigApplied` is the shared value rule;
   `isComposerAgentRoleApplied` is that rule plus the landing's agent check. With Roles to pick it is a submenu of
-  `None` + the Roles bound to the machine the chat will start on (a Role's
-  `machineId + agentConfigId` are exact, so a Role from another machine could
-  only move the chat or fall back) beside a pane stating what the highlighted
+  `None` + the Role instances on the machine the chat will start on (an
+  instance's machine and Agent config are exact, so one from another machine
+  could only move the chat or fall back) beside a pane stating what the highlighted
   one runs; with NO Roles the row's VALUE is the create action instead, and the
   editor opens seeded from the composer's current configuration
   (`buildAgentRoleFormValueFromRunConfig`) — "save what I am about to run" is
