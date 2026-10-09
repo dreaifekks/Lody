@@ -202,7 +202,11 @@ replaces the [rolling release](https://github.com/dreaifekks/Lody/releases/tag/l
 `node scripts/lan-release.mjs version` prints the next version. A tag
 `dev-v<upstream>-lan.<n>` builds the same way from any branch and replaces the
 `lan-dev` prerelease instead, which only installations made from it follow
-(`lan-release.mjs version --channel dev`). Upstream's own
+(`lan-release.mjs version --channel dev`); with a `-cli` suffix it builds the
+CLI only and keeps the desktop installers. A release tag that names the
+version of a whole `lan-dev` build of the same commit publishes that build
+again instead of building it a second time, so release a dev build under its
+dev number. A desktop switches between the two in Settings > LAN. Upstream's own
 `Release` workflow is disabled on this repository; it accepts only stable
 `vX.Y.Z` tags.
 

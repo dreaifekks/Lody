@@ -3,23 +3,52 @@ name: LAN build
 # Builds the self-hosted LAN composition for a fork: the desktop installers,
 # the CLI tarball a server installs, and the install scripts, published as one
 # rolling release. Upstream ships from its own pipeline and never runs this.
-# Only a tag v<upstream>-lan.<n>, pushed when the branch is ready, builds and
-# publishes; running it by hand on a branch builds without publishing. A tag
-# dev-v<upstream>-lan.<n> publishes to the separate `lan-dev` release as a
-# prerelease, for machines installed from it to try a branch first.
+#
+# - dev-v<upstream>-lan.<n> builds everything and publishes it to the `lan-dev`
+#   prerelease, for machines installed from it to try a branch first.
+# - dev-v<upstream>-lan.<n>-cli builds the CLI tarball only. `lan-dev` keeps
+#   the files of its last whole build, `lody-lan-cli.tgz` included, and its
+#   manifest goes on describing that build at the top level, which is all a
+#   desktop, the install script and an older agent service read. The new
+#   tarball is uploaded beside it as `lody-lan-cli-<version>.tgz` and named
+#   under `cli`, which a newer agent service installs.
+# - v<upstream>-lan.<n> publishes to `lan-latest`, which everyone else follows.
+#   When `lan-dev` carries a whole build of the same commit under the same
+#   version, its files are published again instead of being built a second
+#   time; the version is inside every file, so tag the dev number
+#   (dev-v0.104.0-lan.5 is released as v0.104.0-lan.5). Otherwise everything
+#   is built. A release tag never builds the CLI only.
+#   The CLI tarball is stamped again to follow `lan-latest`. The desktop
+#   installers keep the stamp of `lan-dev`: a desktop follows the release it
+#   recorded on its first start (and may switch in Settings > LAN). So both
+#   releases have to carry a build that records it, one whose manifest has
+#   `cli`, before a release reuses anything; the first release after that
+#   change is built in full. Accepted gaps: a desktop installed afresh from a
+#   reused installer, and a desktop that skipped every newer build and updates
+#   straight to a reused one, follow `lan-dev` and have to be switched by hand.
+#
+# Running it by hand builds without publishing, unless it runs on one of these
+# tags; `build: cli` then does what the `-cli` suffix does.
+#
+# Cancelling: a later run of the same tag cancels the builds (plan, bundles,
+# desktop) of an earlier one, and that run then publishes nothing. Publishing
+# is serialized per rolling release and never cancelled while it runs, since
+# a publish cut off halfway leaves files the manifest does not describe.
 on:
   push:
     tags:
       - 'v*-lan.*'
       - 'dev-v*-lan.*'
   workflow_dispatch:
+    inputs:
+      build:
+        description: 'full, or cli: the CLI tarball only, keeping the desktop installers of the release'
+        type: choice
+        options: [full, cli]
+        default: full
 
 permissions:
   contents: read
-
-concurrency:
-  group: lan-build-${{ github.ref }}
-  cancel-in-progress: true
 
 env:
   NODE_VERSION: 22
@@ -28,24 +57,73 @@ env:
   LAN_PRERELEASE: ${{ startsWith(github.ref_name, 'dev-') && '--prerelease' || '' }}
 
 jobs:
+  # Decides the version and what to build before anything is installed.
+  plan:
+    name: Plan
+    if: github.repository != 'LodyAI/Lody'
+    concurrency:
+      group: lan-build-${{ github.ref }}-plan
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # A build off a branch numbers itself after the release tags.
+          fetch-depth: ${{ github.ref_type == 'tag' && 1 || 0 }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Read both releases
+        if: github.ref_type == 'tag' && !startsWith(github.ref_name, 'dev-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for release in lan-dev lan-latest; do
+            # A download that breaks off leaves part of the file behind.
+            gh release download "$release" --pattern manifest.json --dir "$RUNNER_TEMP/$release" || {
+              rm -f "$RUNNER_TEMP/$release/manifest.json"
+              echo "$release could not be read; everything is built."
+            }
+          done
+
+      - name: Plan the build
+        id: plan
+        env:
+          LAN_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          LAN_BUILD: ${{ inputs.build }}
+        run: |
+          node scripts/lan-release.mjs plan ${LAN_TAG:+--tag "$LAN_TAG"} --build "$LAN_BUILD" \
+            --commit "$GITHUB_SHA" --dev-manifest "$RUNNER_TEMP/lan-dev/manifest.json" \
+            --stable-manifest "$RUNNER_TEMP/lan-latest/manifest.json"
+
   # The renderer build needs more memory than a hosted macOS runner has, and
   # its output is the same on every host, so it is built once here and only
   # packaged per platform.
   bundles:
     name: Build bundles
-    if: github.repository != 'LodyAI/Lody'
+    needs: plan
+    if: needs.plan.outputs.build != 'reuse'
+    concurrency:
+      group: lan-build-${{ github.ref }}-bundles
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
           persist-credentials: false
-          # A build off a tag numbers itself after the release tags.
-          fetch-depth: 0
 
       - name: Set up workspace toolchain
         uses: ./.github/actions/setup-workspace
@@ -56,10 +134,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Stamp build version
-        id: version
         env:
-          LAN_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: node scripts/lan-release.mjs version --write ${LAN_TAG:+--tag "$LAN_TAG"}
+          LAN_VERSION: ${{ needs.plan.outputs.version }}
+        run: node scripts/lan-release.mjs version --set "$LAN_VERSION" --write
 
       - name: Build CLI and desktop bundles
         env:
@@ -95,7 +172,13 @@ jobs:
 
   desktop:
     name: Package desktop (${{ matrix.id }})
-    needs: bundles
+    needs: [plan, bundles]
+    if: needs.plan.outputs.build == 'full'
+    # One group per platform: the three of a run would otherwise wait for,
+    # and cancel, each other.
+    concurrency:
+      group: lan-build-${{ github.ref }}-desktop-${{ matrix.id }}
+      cancel-in-progress: true
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -130,7 +213,7 @@ jobs:
       - name: Stamp build version
         shell: bash
         env:
-          LAN_VERSION: ${{ needs.bundles.outputs.version }}
+          LAN_VERSION: ${{ needs.plan.outputs.version }}
         run: node scripts/lan-release.mjs version --set "$LAN_VERSION" --write
 
       - name: Restore bundles
@@ -186,7 +269,7 @@ jobs:
       - name: Package
         shell: bash
         env:
-          LAN_VERSION: ${{ needs.bundles.outputs.version }}
+          LAN_VERSION: ${{ needs.plan.outputs.version }}
           # Never search the runner keychain; the only identity is the one named here.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           CSC_LINK: ${{ matrix.id == 'mac' && secrets.LAN_MAC_SIGNING_P12 || '' }}
@@ -246,8 +329,24 @@ jobs:
 
   release:
     name: Publish rolling release
-    needs: [bundles, desktop]
-    if: github.ref_type == 'tag'
+    needs: [plan, bundles, desktop]
+    # Only after every build the plan asked for succeeded: a build cancelled by
+    # a later run of the same tag is neither a failure nor a success, and a
+    # reused build asks for none. `!cancelled()` stands in for the default
+    # `success()`, which a skipped build would fail.
+    if: >-
+      !cancelled() && github.ref_type == 'tag' && needs.plan.result == 'success' &&
+      (needs.plan.outputs.build == 'reuse' ||
+      (needs.bundles.result == 'success' &&
+      (needs.plan.outputs.build == 'cli' || needs.desktop.result == 'success')))
+    # Reading what the release lists, assembling and uploading is one step for
+    # the release: a CLI-only build carries the files the release lists, which
+    # another run publishing meanwhile would replace. So publishing waits its
+    # turn per release and is never cancelled once it started; GitHub only
+    # drops a publish still waiting when a later one queues behind it.
+    concurrency:
+      group: lan-publish-${{ startsWith(github.ref_name, 'dev-') && 'lan-dev' || 'lan-latest' }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -264,14 +363,26 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Download build outputs
+        if: needs.plan.outputs.build != 'reuse'
         uses: actions/download-artifact@v4
         with:
           pattern: lan-{cli,desktop-*}
           path: ${{ runner.temp }}/lan-artifacts
 
-      - name: Assemble release
+      # A CLI-only build keeps the desktop installers the release lists now.
+      - name: Read the published manifest
+        if: needs.plan.outputs.build == 'cli'
         env:
-          LAN_VERSION: ${{ needs.bundles.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release download "$LAN_RELEASE_TAG" --pattern manifest.json \
+            --dir "$RUNNER_TEMP/lan-published"
+
+      - name: Assemble release
+        if: needs.plan.outputs.build != 'reuse'
+        env:
+          LAN_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           node scripts/lan-release.mjs assemble \
             --version "$LAN_VERSION" \
@@ -279,6 +390,32 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --tag "$LAN_RELEASE_TAG" \
             --artifacts "$RUNNER_TEMP/lan-artifacts" \
+            --carry "$RUNNER_TEMP/lan-published/manifest.json" \
+            --out "$RUNNER_TEMP/lan-release" \
+            --notes "$RUNNER_TEMP/lan-release-notes.md"
+
+      - name: Download the dev build
+        if: needs.plan.outputs.build == 'reuse'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release download lan-dev --dir "$RUNNER_TEMP/lan-dev"
+          gh release download "$LAN_RELEASE_TAG" --pattern manifest.json \
+            --dir "$RUNNER_TEMP/lan-published"
+
+      - name: Assemble release from the dev build
+        if: needs.plan.outputs.build == 'reuse'
+        env:
+          LAN_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          node scripts/lan-release.mjs promote \
+            --from "$RUNNER_TEMP/lan-dev" \
+            --version "$LAN_VERSION" \
+            --commit "$GITHUB_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$LAN_RELEASE_TAG" \
+            --stable-manifest "$RUNNER_TEMP/lan-published/manifest.json" \
             --out "$RUNNER_TEMP/lan-release" \
             --notes "$RUNNER_TEMP/lan-release-notes.md"
 
@@ -286,7 +423,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          LAN_VERSION: ${{ needs.bundles.outputs.version }}
+          LAN_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
           if gh release view "$LAN_RELEASE_TAG" >/dev/null 2>&1; then

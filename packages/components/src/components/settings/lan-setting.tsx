@@ -11,6 +11,7 @@ import type {
 } from '@lody/shared/electron-ipc';
 import type { MachineId, MachineMeta } from '@lody/shared';
 import type { LanMachine } from '@lody/shared/lan-control';
+import type { LanReleaseChannel } from '@lody/shared/lan-release';
 import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
 import { userAtom } from '@/atoms';
 import { localMachineIdAtom } from '@/atoms/local-probe';
@@ -128,6 +129,9 @@ function LanApplication() {
   const check = useCallback(() => {
     void getIpcServices()?.updater.checkForUpdates();
   }, []);
+  const follow = useCallback((channel: LanReleaseChannel) => {
+    void getIpcServices()?.updater.follow(channel);
+  }, []);
   const update = useCallback(() => {
     const ipc = getIpcServices();
     if (!ipc) return;
@@ -150,6 +154,7 @@ function LanApplication() {
         updater={updater}
         updating={updating}
         onCheck={check}
+        onFollow={follow}
         onUpdate={update}
         onViewChanges={() => setChangesOpen(true)}
       />

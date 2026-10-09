@@ -170,6 +170,7 @@ const application = (reported: ElectronUpdaterState, updating = false) => (
     updater={reported}
     updating={updating}
     onCheck={() => {}}
+    onFollow={() => {}}
     onUpdate={() => {}}
     onViewChanges={() => {}}
   />
@@ -254,6 +255,24 @@ export const ApplicationDownloading: Story = {
 export const ApplicationUpToDate: Story = {
   args: {
     application: application(updater({ phase: 'up_to_date', availableVersion: undefined })),
+    machines: machinesView,
+  },
+};
+
+/** Switched to the dev release, which has nothing later than the running build. */
+export const ApplicationFollowsDev: Story = {
+  args: {
+    application: application(
+      updater({
+        phase: 'up_to_date',
+        availableVersion: undefined,
+        followed: {
+          repository: source.repository,
+          tag: 'lan-dev',
+          url: 'https://github.com/someone/Lody/releases/tag/lan-dev',
+        },
+      })
+    ),
     machines: machinesView,
   },
 };

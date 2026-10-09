@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { defineBuildStamp, readBuildStamp } from './lan-build-stamp.mjs';
 import {
   assembleRelease,
+  canReuseDevBuild,
   composeLanVersion,
+  planBuild,
+  promoteDevBuild,
+  restampCliTarball,
   nextLanVersion,
   describeSigningCertificate,
   readBaseVersion,
@@ -102,6 +107,26 @@ test('dev builds number themselves apart from the releases', () => {
   assert.equal(resolveTagChannel('v0.103.0-lan.4'), 'stable');
   assert.equal(LAN_CHANNELS.dev.rollingTag, 'lan-dev');
   assert.throws(() => resolveTagVersion('dev-0.103.0-lan.4', '0.103.0'), /looks like/u);
+});
+
+test('a dev tag ending in -cli builds the CLI only and numbers like any dev tag', () => {
+  assert.equal(resolveTagVersion('dev-v0.103.0-lan.4-cli', '0.103.0'), '0.103.0-lan.4');
+  assert.equal(resolveTagChannel('dev-v0.103.0-lan.4-cli'), 'dev');
+  assert.equal(
+    nextLanVersion('0.103.0', ['dev-v0.103.0-lan.3', 'dev-v0.103.0-lan.4-cli'], 'dev'),
+    '0.103.0-lan.5'
+  );
+  assert.throws(() => resolveTagVersion('v0.103.0-lan.4-cli', '0.103.0'), /only a dev tag/u);
+
+  const plan = (tag, requested) =>
+    planBuild({ tag, requested, version: '0.103.0-lan.4', commit: COMMIT, devManifest: null });
+  assert.equal(plan('dev-v0.103.0-lan.4-cli', ''), 'cli');
+  assert.equal(plan('dev-v0.103.0-lan.4', 'cli'), 'cli');
+  assert.equal(plan('dev-v0.103.0-lan.4', ''), 'full');
+  assert.equal(plan(undefined, 'cli'), 'cli');
+  assert.equal(plan(undefined, ''), 'full');
+  assert.throws(() => plan('v0.103.0-lan.4', 'cli'), /builds everything/u);
+  assert.throws(() => plan(undefined, 'desktop'), /full or cli/u);
 });
 
 test('a release tag must name the upstream release its commit synced', () => {
@@ -408,4 +433,269 @@ test('a wrong stamp fails the build', () => {
   assert.throws(() =>
     readBuildStamp({ LODY_LAN_REPOSITORY: 'a/b', LODY_LAN_TAG: 'lan', LODY_LAN_COMMIT: 'HEAD' })
   );
+});
+
+const OTHER_COMMIT = 'fedcba9876543210fedcba9876543210fedcba98';
+
+test('a CLI-only build keeps the desktop installers the release published last', async (t) => {
+  const paths = await fixture(t);
+  await paths.add('lan-cli', 'lody-0.100.0-lan.8.tgz', 'new cli');
+  const previous = {
+    version: '0.100.0-lan.7',
+    commit: OTHER_COMMIT,
+    repository: 'someone/Lody',
+    tag: 'lan-dev',
+    builtAt: '2025-12-31T00:00:00.000Z',
+    assets: [
+      { name: 'LodyOSS-lan-mac-arm64.zip', size: 9, sha256: 'a'.repeat(64) },
+      { name: 'install.sh', size: 1, sha256: 'b'.repeat(64) },
+      { name: 'lody-lan-cli.tgz', size: 3, sha256: 'c'.repeat(64) },
+    ],
+  };
+
+  const manifest = assemble(paths, { version: '0.100.0-lan.8', tag: 'lan-dev', carry: previous });
+
+  // A desktop, and every older build, reads the top level: the installers it may download.
+  assert.equal(manifest.version, '0.100.0-lan.7');
+  assert.equal(manifest.commit, OTHER_COMMIT);
+  assert.equal(manifest.builtAt, '2025-12-31T00:00:00.000Z');
+  assert.deepEqual(manifest.cli, {
+    version: '0.100.0-lan.8',
+    commit: COMMIT,
+    builtAt: '2026-01-01T00:00:00.000Z',
+    asset: 'lody-lan-cli-0.100.0-lan.8.tgz',
+  });
+  assert.deepEqual(
+    manifest.assets.find((asset) => asset.name === 'LodyOSS-lan-mac-arm64.zip'),
+    {
+      name: 'LodyOSS-lan-mac-arm64.zip',
+      size: 9,
+      sha256: 'a'.repeat(64),
+    }
+  );
+  // The tarball under the fixed name stays: what reads the top level installs it.
+  assert.deepEqual(
+    manifest.assets.find((asset) => asset.name === 'lody-lan-cli.tgz'),
+    { name: 'lody-lan-cli.tgz', size: 3, sha256: 'c'.repeat(64) }
+  );
+  const later = manifest.assets.find((asset) => asset.name === 'lody-lan-cli-0.100.0-lan.8.tgz');
+  assert.equal(later.sha256, crypto.createHash('sha256').update('new cli').digest('hex'));
+  // Uploaded: the new tarball and the scripts; the carried files stay as they are.
+  assert.deepEqual((await readdir(paths.outDir)).sort(), [
+    'SHA256SUMS',
+    'install-mac.sh',
+    'install.sh',
+    'lody-lan-cli-0.100.0-lan.8.tgz',
+    'manifest.json',
+  ]);
+  const sums = await readFile(path.join(paths.outDir, 'SHA256SUMS'), 'utf8');
+  assert.deepEqual(
+    sums.trimEnd().split('\n'),
+    manifest.assets.map((asset) => `${asset.sha256}  ${asset.name}`)
+  );
+  assert.ok(sums.includes(`${'a'.repeat(64)}  LodyOSS-lan-mac-arm64.zip`));
+  assert.ok(sums.includes(`${'c'.repeat(64)}  lody-lan-cli.tgz`));
+  assert.equal(
+    await readFile(path.join(paths.outDir, 'install-mac.sh'), 'utf8'),
+    'VERSION="0.100.0-lan.7"\n'
+  );
+  const notes = renderReleaseNotes(manifest);
+  assert.ok(notes.includes('`0.100.0-lan.8`'));
+  assert.ok(notes.includes('desktop installers are build `0.100.0-lan.7`'));
+
+  // A whole build describes itself at both levels and carries nothing over.
+  await paths.add('lan-desktop-mac', 'LodyOSS-0.100.0-lan.9-arm64.zip', 'mac');
+  const whole = assemble(paths, { version: '0.100.0-lan.9', tag: 'lan-dev', carry: previous });
+  assert.equal(whole.version, '0.100.0-lan.9');
+  assert.deepEqual(whole.cli, {
+    version: whole.version,
+    commit: whole.commit,
+    builtAt: whole.builtAt,
+    asset: 'lody-lan-cli.tgz',
+  });
+  assert.notEqual(
+    whole.assets.find((asset) => asset.name === 'LodyOSS-lan-mac-arm64.zip').sha256,
+    'a'.repeat(64)
+  );
+});
+
+test('a release reuses only a whole dev build of its commit and version', () => {
+  const build = { version: '0.100.0-lan.7', commit: COMMIT };
+  const stableManifest = {
+    version: '0.100.0-lan.5',
+    commit: OTHER_COMMIT,
+    cli: { version: '0.100.0-lan.5', commit: OTHER_COMMIT, builtAt: 'x' },
+  };
+  const target = { ...build, stableManifest };
+  const dev = {
+    ...build,
+    repository: 'someone/Lody',
+    tag: 'lan-dev',
+    builtAt: '2026-01-01T00:00:00.000Z',
+    assets: [
+      { name: 'LodyOSS-lan-win-x64-setup.exe', size: 1, sha256: 'a'.repeat(64) },
+      { name: 'lody-lan-cli.tgz', size: 1, sha256: 'b'.repeat(64) },
+    ],
+    cli: { ...build, builtAt: '2026-01-01T00:00:00.000Z' },
+  };
+  const cliOnly = { ...dev, version: '0.100.0-lan.6', commit: OTHER_COMMIT };
+
+  assert.equal(canReuseDevBuild(dev, target), true);
+  assert.equal(canReuseDevBuild(null, target), false);
+  assert.equal(canReuseDevBuild(dev, { ...target, commit: OTHER_COMMIT }), false);
+  // Another number: every file reports the dev version.
+  assert.equal(canReuseDevBuild(dev, { ...target, version: '0.100.0-lan.2' }), false);
+  assert.equal(canReuseDevBuild(cliOnly, target), false);
+  assert.equal(
+    canReuseDevBuild({ ...dev, cli: { ...dev.cli, version: '0.100.0-lan.8' } }, target),
+    false
+  );
+  assert.equal(canReuseDevBuild({ ...dev, assets: dev.assets.slice(1) }, target), false);
+  // Either release still on a build from before desktops recorded what they follow.
+  const { cli: _devCli, ...olderDev } = dev;
+  const { cli: _stableCli, ...olderStable } = stableManifest;
+  assert.equal(canReuseDevBuild(olderDev, target), false);
+  assert.equal(canReuseDevBuild(dev, { ...target, stableManifest: olderStable }), false);
+  assert.equal(canReuseDevBuild(dev, { ...target, stableManifest: null }), false);
+
+  const plan = (devManifest) =>
+    planBuild({ tag: 'v0.100.0-lan.7', requested: '', ...target, devManifest });
+  assert.equal(plan(dev), 'reuse');
+  assert.equal(plan(cliOnly), 'full');
+  assert.equal(plan(null), 'full');
+});
+
+test('a release is built in full after a CLI-only rebuild of the same dev tag', async (t) => {
+  const paths = await fixture(t);
+  const version = '0.100.0-lan.7';
+  await paths.add('lan-cli', `lody-${version}.tgz`, 'cli');
+  await paths.add('lan-desktop-mac', `LodyOSS-${version}-arm64.zip`, 'mac-arm64');
+  const whole = assemble(paths, { version, tag: 'lan-dev' });
+  const stableManifest = { cli: { version: '0.100.0-lan.3', commit: OTHER_COMMIT, builtAt: 'x' } };
+  const plan = (devManifest) =>
+    planBuild({
+      tag: `v${version}`,
+      requested: '',
+      version,
+      commit: COMMIT,
+      devManifest,
+      stableManifest,
+    });
+  assert.equal(plan(whole), 'reuse');
+
+  // `build: cli` dispatched on the same tag: same version, same commit.
+  await rm(path.join(paths.artifactsDir, 'lan-desktop-mac'), { recursive: true });
+  await paths.add('lan-cli', `lody-${version}.tgz`, 'cli rebuilt');
+  const rebuilt = assemble(paths, { version, tag: 'lan-dev', carry: whole });
+  assert.equal(rebuilt.version, version);
+  assert.equal(rebuilt.cli.version, version);
+  assert.equal(rebuilt.cli.asset, `lody-lan-cli-${version}.tgz`);
+  assert.equal(plan(rebuilt), 'full');
+});
+
+async function packCli(root, name, files) {
+  const staging = await mkdtemp(path.join(tmpdir(), 'lan-pack-'));
+  await mkdir(path.join(staging, 'package', 'dist'), { recursive: true });
+  for (const [file, content] of Object.entries(files)) {
+    await writeFile(path.join(staging, 'package', file), content);
+  }
+  await mkdir(root, { recursive: true });
+  const tarball = path.join(root, name);
+  spawnSync('tar', ['-czf', tarball, '-C', staging, 'package']);
+  await rm(staging, { recursive: true, force: true });
+  return tarball;
+}
+
+async function unpackCli(tarball, file) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'lan-unpack-'));
+  spawnSync('tar', ['-xzf', tarball, '-C', directory]);
+  const content = await readFile(path.join(directory, 'package', file), 'utf8');
+  await rm(directory, { recursive: true, force: true });
+  return content;
+}
+
+const stampOf = (tag) => JSON.stringify({ repository: 'someone/Lody', tag, commit: COMMIT });
+
+test('a reused dev build is published under the release with its own manifest', async (t) => {
+  const paths = await fixture(t);
+  await packCli(path.join(paths.artifactsDir, 'lan-cli'), 'lody-0.100.0-lan.7.tgz', {
+    'dist/index.js': `parse('${stampOf('lan-dev')}');\n`,
+    'package.json': '{"name":"lody","version":"0.100.0-lan.7"}\n',
+  });
+  await paths.add('lan-desktop-mac', 'LodyOSS-0.100.0-lan.7-arm64.zip', 'mac-arm64');
+  const devDir = path.join(paths.root, 'lan-dev');
+  const dev = assemble(paths, { tag: 'lan-dev', outDir: devDir });
+  // Left in the release by an earlier CLI-only build; no manifest lists it.
+  await writeFile(path.join(devDir, 'lody-lan-cli-0.100.0-lan.6.tgz'), 'stale');
+  const stableManifest = { cli: { version: '0.100.0-lan.3', commit: OTHER_COMMIT, builtAt: 'x' } };
+  const promote = (overrides = {}) =>
+    promoteDevBuild({
+      fromDir: devDir,
+      version: '0.100.0-lan.7',
+      commit: COMMIT,
+      repository: 'someone/Lody',
+      tag: 'lan-latest',
+      stableManifest,
+      templatesDir: paths.templatesDir,
+      outDir: paths.outDir,
+      ...overrides,
+    });
+
+  assert.throws(() => promote({ stableManifest: {} }), /no longer carries/u);
+  const manifest = promote();
+  assert.equal(manifest.tag, 'lan-latest');
+  assert.deepEqual(manifest.cli, dev.cli);
+  assert.deepEqual(
+    manifest.assets.map((asset) => asset.name),
+    dev.assets.map((asset) => asset.name)
+  );
+  assert.ok(!(await readdir(paths.outDir)).includes('lody-lan-cli-0.100.0-lan.6.tgz'));
+  const sums = await readFile(path.join(paths.outDir, 'SHA256SUMS'), 'utf8');
+  assert.deepEqual(
+    sums.trimEnd().split('\n'),
+    manifest.assets.map((asset) => `${asset.sha256}  ${asset.name}`)
+  );
+  const cli = path.join(paths.outDir, 'lody-lan-cli.tgz');
+  assert.equal(await unpackCli(cli, 'dist/index.js'), `parse('${stampOf('lan-latest')}');\n`);
+  assert.equal(
+    manifest.assets.find((asset) => asset.name === 'lody-lan-cli.tgz').sha256,
+    crypto
+      .createHash('sha256')
+      .update(await readFile(cli))
+      .digest('hex')
+  );
+  assert.equal(manifest.version, '0.100.0-lan.7');
+  assert.equal(manifest.builtAt, dev.builtAt);
+  assert.equal(
+    await readFile(path.join(paths.outDir, 'install.sh'), 'utf8'),
+    'REPOSITORY="someone/Lody"\nTAG="lan-latest"\n'
+  );
+  const zip = manifest.assets.find((asset) => asset.name === 'LodyOSS-lan-mac-arm64.zip');
+  assert.deepEqual(
+    zip,
+    dev.assets.find((asset) => asset.name === zip.name)
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(path.join(paths.outDir, 'manifest.json'), 'utf8')),
+    manifest
+  );
+
+  assert.throws(() => promote({ version: '0.100.0-lan.2' }), /no longer carries/u);
+  await writeFile(path.join(devDir, 'LodyOSS-lan-mac-arm64.zip'), 'replaced meanwhile');
+  assert.throws(() => promote(), /not the file lan-dev describes/u);
+});
+
+test('a CLI tarball is stamped again only where its one stamp is', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lan-restamp-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const from = { repository: 'someone/Lody', tag: 'lan-dev', commit: COMMIT };
+  const to = { ...from, tag: 'lan-latest' };
+
+  const twice = await packCli(root, 'twice.tgz', {
+    'dist/index.js': `a('${stampOf('lan-dev')}');\n`,
+    'dist/other.js': `b('${stampOf('lan-dev')}');\n`,
+  });
+  assert.throws(() => restampCliTarball(twice, from, to), /stamp 2 times/u);
+  const none = await packCli(root, 'none.tgz', { 'dist/index.js': 'a(null);\n' });
+  assert.throws(() => restampCliTarball(none, from, to), /stamp 0 times/u);
 });

@@ -86,8 +86,39 @@ are stamped with that tag, and its install scripts install from it. A branch
 is tried on a few machines that way before it is merged and released to
 everyone. Dev builds number themselves on their own
 (`lan-release.mjs version --channel dev`), since a build only compares itself
-with the builds of the release it follows; a machine changes channel by
-installing from the other release. `scripts/lan-release.mjs` names the build and assembles
+with the builds of the release it follows; an agent service changes channel by
+installing from the other release, a desktop in Settings > LAN.
+
+A dev tag ending in `-cli` (or a run by hand with `build: cli`) builds the CLI
+tarball only and skips the desktop packaging. The release keeps the files of
+its last whole build, `lody-lan-cli.tgz` included, and its manifest goes on
+describing that build at the top level. That is all a desktop, the install
+script and an agent service older than this read, so none of them is offered a
+file that reports another version. The new tarball goes beside it as
+`lody-lan-cli-<version>.tgz`; `cli` names it with its build, and a newer agent
+service installs that one (`readLanCliRelease`, `resolveLanCliAssetName`).
+Publishing is serialized per release (the `release` job's concurrency group)
+and never cancelled while it runs, since a CLI-only build lists files another
+run may be replacing meanwhile; GitHub drops a publish still waiting when a
+later one queues behind it. A later run of the same tag cancels only the
+builds of an earlier one, which then publishes nothing.
+Tarballs of earlier CLI-only builds stay in the release unlisted.
+
+A release tag whose version and commit are those of the whole build `lan-dev`
+carries publishes that build again instead of building it a second time; any
+other release tag builds everything. The version is inside every file (a macOS
+update refuses a bundle that names another one, an agent service the build
+that reports another), so a dev build is released under its own number. The
+CLI tarball is stamped again to follow `lan-latest`. The desktop installers
+cannot be and keep the stamp of `lan-dev`, so a desktop does not follow its
+stamp: it records the release it follows (`lan-release.json` of its data) on
+its first start, and an update keeps the record. A build is reused only once
+both releases carry builds that record it (their manifests have `cli`). An
+accepted gap: a desktop that skipped every newer build and updates straight to
+a reused one, or one installed afresh from a reused installer, follows
+`lan-dev` and has to be switched by hand in Settings > LAN.
+
+`scripts/lan-release.mjs` names the build and assembles
 the release; `scripts/lan/install.sh` and `install-mac.sh` are published with
 it. A fork build may carry no publisher's signature, which neither the updater
 of the platform nor the one of the framework accepts, so every fork build

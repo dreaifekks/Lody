@@ -33,16 +33,39 @@ export const LanReleaseAssetSchema = z.object({
 });
 export type LanReleaseAsset = z.infer<typeof LanReleaseAssetSchema>;
 
-// Not strict: a later build may describe itself with more than this one reads.
-export const LanReleaseManifestSchema = z.object({
+const LanReleaseBuildSchema = z.object({
   version: z.string().regex(LAN_VERSION_PATTERN),
   commit: z.string().regex(COMMIT_PATTERN),
+  builtAt: z.string().min(1),
+});
+
+// Not strict: a later build may describe itself with more than this one reads.
+export const LanReleaseManifestSchema = LanReleaseBuildSchema.extend({
   repository: z.string().regex(REPOSITORY_PATTERN),
   tag: z.string().regex(TAG_PATTERN),
-  builtAt: z.string().min(1),
   assets: z.array(LanReleaseAssetSchema),
+  /**
+   * The newest CLI tarball, `asset` naming it. A dev release may rebuild only
+   * the CLI and keep the files of an earlier build, `LAN_CLI_ASSET_NAME`
+   * included, which the top level then goes on describing: a desktop, the
+   * install script and every build older than this field read only the top
+   * level and install that tarball.
+   */
+  cli: LanReleaseBuildSchema.extend({ asset: z.string().regex(ASSET_NAME_PATTERN) }).optional(),
 });
 export type LanReleaseManifest = z.infer<typeof LanReleaseManifestSchema>;
+
+/** The manifest as the newest CLI tarball sees it: its version, commit and build time on top. */
+export function readLanCliRelease(manifest: LanReleaseManifest): LanReleaseManifest {
+  if (!manifest.cli) return manifest;
+  const { version, commit, builtAt } = manifest.cli;
+  return { ...manifest, version, commit, builtAt };
+}
+
+/** The file an agent service installs from a release. */
+export function resolveLanCliAssetName(manifest: LanReleaseManifest): string {
+  return manifest.cli?.asset ?? LAN_CLI_ASSET_NAME;
+}
 
 /** What a window or another machine may know about the newest build. */
 export const LanReleaseSummarySchema = z
@@ -87,6 +110,24 @@ export function composeLanReleaseSource(values: {
   if (!repository || !tag) return null;
   const commit = values.commit?.trim();
   return LanReleaseSourceSchema.parse({ repository, tag, ...(commit ? { commit } : {}) });
+}
+
+/**
+ * The two releases the workflow of a fork publishes (`scripts/lan-release.mjs`
+ * names them too). A release may carry the very installers a dev build
+ * published first, stamped with the dev release, so the stamp cannot tell an
+ * installation which of them it came from; a desktop records which it follows
+ * and may switch.
+ */
+export const LAN_RELEASE_CHANNEL_TAGS = { stable: 'lan-latest', dev: 'lan-dev' } as const;
+export const LanReleaseChannelSchema = z.enum(['stable', 'dev']);
+export type LanReleaseChannel = z.infer<typeof LanReleaseChannelSchema>;
+
+/** `null` for a tag that is neither of the two releases. */
+export function resolveLanReleaseChannel(tag: string): LanReleaseChannel | null {
+  if (tag === LAN_RELEASE_CHANNEL_TAGS.stable) return 'stable';
+  if (tag === LAN_RELEASE_CHANNEL_TAGS.dev) return 'dev';
+  return null;
 }
 
 export function getLanReleaseBaseUrl(source: Pick<LanReleaseSource, 'repository' | 'tag'>): string {

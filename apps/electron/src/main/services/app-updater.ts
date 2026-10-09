@@ -1,3 +1,4 @@
+import type { LanReleaseChannel } from '@lody/shared/lan-release'
 import type {
   CheckForElectronUpdateResult,
   ElectronUpdaterState,
@@ -15,4 +16,6 @@ export interface AppUpdater {
   stop(): void
   checkForUpdates(): Promise<CheckForElectronUpdateResult>
   quitAndInstall(): Promise<QuitAndInstallElectronUpdateResult>
+  /** Switches between the releases of a fork; absent where a publisher's feed is followed. */
+  follow?(channel: LanReleaseChannel): Promise<CheckForElectronUpdateResult>
 }

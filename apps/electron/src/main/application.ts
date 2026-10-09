@@ -257,7 +257,7 @@ export function startApplication(executionHost?: DesktopExecutionHost): void {
         ? parseLanReleaseSource(__LODY_LAN_RELEASE_JSON__)
         : null
     const appUpdaterService: AppUpdater = lanReleaseSource
-      ? new LanUpdaterService({ source: lanReleaseSource })
+      ? new LanUpdaterService({ source: lanReleaseSource, dataDir: app.getPath('userData') })
       : new AppUpdaterService({
           enabled: shouldConstructUpdaterEnabled({
             localPlatform: isLocalPlatform(),
