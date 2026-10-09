@@ -34,6 +34,8 @@ export type PermissionRequestNotificationInput = {
   toolTitle: string | null | undefined;
   toolKind: string | null | undefined;
   requestKind?: PermissionRequestKind;
+  /** Only a self-hosted LAN reads it; never sent to the hosted backend. */
+  projectId?: string | null;
 };
 
 export type LiveActivitySummaryNotificationInput = {

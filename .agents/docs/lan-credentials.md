@@ -84,6 +84,11 @@ and a hub that has none of them yet:
   push (404) is left at that. Live Activities stay with the hub, which alone
   merges what every member reports. The hub gives every alert a collapse id, so
   an alert sent by both shows once.
+- Hub and member group alerts on the phone the same way, by `thread-id`: the
+  session's project (`project:local:<machine>:<local project>`, a worktree
+  session under its project, or `project:github:<repo>`), `chat` for every
+  session without one, and the session id for a member too old to report the
+  project. A withdrawn approval alert keeps its group.
 - A hub started from a standby copy takes what that copy lacks from the
   machine's own copy of the credentials.
 
