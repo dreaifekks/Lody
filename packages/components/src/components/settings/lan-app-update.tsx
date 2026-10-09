@@ -1,5 +1,6 @@
 import * as stylex from '@stylexjs/stylex';
 import { Download } from 'lucide-react';
+import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ElectronUpdaterState } from '@lody/shared/electron-ipc';
 import { resolveLanReleaseChannel, type LanReleaseChannel } from '@lody/shared/lan-release';
@@ -33,6 +34,7 @@ export type LanAppUpdateProps = {
  * The build of this application and the releases it follows, as a row of the
  * group that names this machine. It says one thing at rest: what is on offer
  * or under way, else why nothing can be, else where the build comes from.
+ * A second row switches between the two releases of the fork.
  * Nothing is shown for an application that follows no repository: its
  * publisher updates it, and that is said where the publisher's updates are.
  */
@@ -45,6 +47,7 @@ export function LanAppUpdate({
   onViewChanges,
 }: LanAppUpdateProps) {
   const { t } = useTranslation();
+  const channelLabelId = useId();
   if (!updater?.followed) return null;
 
   const { phase } = updater;
@@ -77,58 +80,62 @@ export function LanAppUpdate({
   }));
 
   return (
-    <CompactRow
-      label={t('settings.lan.app.version', { version: updater.currentVersion })}
-      helper={
-        <>
-          <span {...stylex.props(styles.line, canUpdate && styles.offer)}>{standing}</span>
-          {updater.error && phase !== 'downloading' ? (
-            <span {...stylex.props(styles.line, styles.failure)}>
-              {t(canUpdate ? 'settings.lan.app.updateFailed' : 'settings.lan.app.checkFailed', {
-                message: updater.error,
-              })}
-            </span>
-          ) : null}
-        </>
-      }
-    >
+    <>
+      <CompactRow
+        label={t('settings.lan.app.version', { version: updater.currentVersion })}
+        helper={
+          <>
+            <span {...stylex.props(styles.line, canUpdate && styles.offer)}>{standing}</span>
+            {updater.error && phase !== 'downloading' ? (
+              <span {...stylex.props(styles.line, styles.failure)}>
+                {t(canUpdate ? 'settings.lan.app.updateFailed' : 'settings.lan.app.checkFailed', {
+                  message: updater.error,
+                })}
+              </span>
+            ) : null}
+          </>
+        }
+      >
+        {canUpdate ? (
+          <>
+            <Button size="small" variant="ghost" onClick={onViewChanges}>
+              {t('settings.lan.app.changes')}
+            </Button>
+            <Button size="small" disabled={busy} onClick={onUpdate}>
+              {updating ? <Spinner size="small" /> : <Download {...stylex.props(catalog.icon)} />}
+              {t('settings.lan.app.update')}
+            </Button>
+          </>
+        ) : phase === 'disabled' ? null : (
+          <Button size="small" variant="secondary" disabled={busy} onClick={onCheck}>
+            {busy ? <Spinner size="small" /> : null}
+            {t('settings.lan.app.check')}
+          </Button>
+        )}
+      </CompactRow>
       {channel && phase !== 'disabled' ? (
-        <Select.Root
-          items={channels}
-          value={channel}
-          disabled={busy}
-          onValueChange={(value) => {
-            if (value === 'stable' || value === 'dev') onFollow(value);
-          }}
-        >
-          <Select.Trigger size="small" aria-label={t('settings.lan.app.channel.label')}>
-            <Select.Value />
-          </Select.Trigger>
-          <Select.Content>
-            {channels.map((option) => (
-              <Select.Item key={option.value} value={option.value}>
-                {option.label}
-              </Select.Item>
-            ))}
-          </Select.Content>
-        </Select.Root>
+        <CompactRow labelId={channelLabelId} label={t('settings.lan.app.channel.label')}>
+          <Select.Root
+            items={channels}
+            value={channel}
+            disabled={busy}
+            onValueChange={(value) => {
+              if (value === 'stable' || value === 'dev') onFollow(value);
+            }}
+          >
+            <Select.Trigger size="small" aria-labelledby={channelLabelId}>
+              <Select.Value />
+            </Select.Trigger>
+            <Select.Content>
+              {channels.map((option) => (
+                <Select.Item key={option.value} value={option.value}>
+                  {option.label}
+                </Select.Item>
+              ))}
+            </Select.Content>
+          </Select.Root>
+        </CompactRow>
       ) : null}
-      {canUpdate ? (
-        <>
-          <Button size="small" variant="ghost" onClick={onViewChanges}>
-            {t('settings.lan.app.changes')}
-          </Button>
-          <Button size="small" disabled={busy} onClick={onUpdate}>
-            {updating ? <Spinner size="small" /> : <Download {...stylex.props(catalog.icon)} />}
-            {t('settings.lan.app.update')}
-          </Button>
-        </>
-      ) : phase === 'disabled' ? null : (
-        <Button size="small" variant="secondary" disabled={busy} onClick={onCheck}>
-          {busy ? <Spinner size="small" /> : null}
-          {t('settings.lan.app.check')}
-        </Button>
-      )}
-    </CompactRow>
+    </>
   );
 }

@@ -8,6 +8,7 @@ import {
   LAN_CLI_ASSET_NAME,
   findLanReleaseAsset,
   readLanCliRelease,
+  resolveLanCliAssetName,
   resolveLanUpdateAvailability,
   type LanReleaseManifest,
   type LanReleaseSource,
@@ -219,9 +220,10 @@ export async function applyLanSelfUpdate(
   ) {
     throw new LanSelfUpdateError('current', `${options.runningVersion} is the newest build`);
   }
-  const asset = findLanReleaseAsset(manifest, LAN_CLI_ASSET_NAME);
+  const assetName = resolveLanCliAssetName(manifest);
+  const asset = findLanReleaseAsset(manifest, assetName);
   if (!asset) {
-    throw new LanSelfUpdateError('release', `The release carries no ${LAN_CLI_ASSET_NAME}`);
+    throw new LanSelfUpdateError('release', `The release carries no ${assetName}`);
   }
 
   const staging = claimStaging(root, (options.now ?? Date.now)());

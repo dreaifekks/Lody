@@ -170,19 +170,60 @@ describe('an agent service that replaces itself', () => {
     });
   });
 
-  it('follows the CLI tarball of a release that kept older desktop installers', async () => {
-    const cliOnly = manifest({
-      version: RUNNING,
-      commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      cli: { version: NEWEST, commit: manifest().commit, builtAt: manifest().builtAt },
+  it('installs the tarball a CLI-only build named, and an older reader the one at the top', async () => {
+    const LATER = '0.100.0-lan.5';
+    const files: Record<string, Buffer> = {
+      'lody-lan-cli.tgz': Buffer.from(`build ${NEWEST}`),
+      [`lody-lan-cli-${LATER}.tgz`]: Buffer.from(`build ${LATER}`),
+    };
+    const described = (name: string) => ({
+      name,
+      size: files[name]!.byteLength,
+      sha256: crypto.createHash('sha256').update(files[name]!).digest('hex'),
     });
+    const cliOnly = manifest({
+      assets: Object.keys(files).map(described),
+      cli: {
+        version: LATER,
+        commit: 'cccccccccccccccccccccccccccccccccccccccc',
+        builtAt: '2026-09-30T00:00:00.000Z',
+        asset: `lody-lan-cli-${LATER}.tgz`,
+      },
+    });
+    const serve =
+      (served: LanReleaseManifest): LanReleaseFetch =>
+      async (url) => {
+        if (url === `${BASE}/manifest.json`) return new Response(JSON.stringify(served));
+        const file = files[url.slice(BASE.length + 1)];
+        return file ? new Response(file) : new Response('not found', { status: 404 });
+      };
+    // npm installs the build the tarball holds, which then reports its version.
+    const byTarball: LanUpdateCommandRunner = async (_command, args) => {
+      if (args[0] === 'install') {
+        const prefix = args[args.indexOf('--prefix') + 1]!;
+        const dist = path.join(prefix, 'node_modules', 'lody', 'dist');
+        fs.mkdirSync(dist, { recursive: true });
+        const built = fs.readFileSync(args.at(-1)!, 'utf8').slice('build '.length);
+        fs.writeFileSync(path.join(dist, 'index.js'), `// ${built}`);
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      const reported = fs.readFileSync(args[0]!, 'utf8').slice('// '.length);
+      return { code: 0, stdout: `${reported}\n`, stderr: '' };
+    };
 
-    await expect(update({ fetch: release(cliOnly) })).resolves.toEqual({
-      from: RUNNING,
+    // A build from before `cli` reads the top level and installs the tarball under the fixed name.
+    const { cli: _cli, ...older } = cliOnly;
+    await expect(update({ fetch: serve(older), run: byTarball })).resolves.toMatchObject({
       to: NEWEST,
-      commit: manifest().commit,
     });
     expect(installedBuild()).toBe(`// ${NEWEST}`);
+
+    await expect(update({ fetch: serve(cliOnly), run: byTarball })).resolves.toEqual({
+      from: RUNNING,
+      to: LATER,
+      commit: 'cccccccccccccccccccccccccccccccccccccccc',
+    });
+    expect(installedBuild()).toBe(`// ${LATER}`);
   });
 
   it('refuses a second update while one is under way, and recovers from a dead one', async () => {

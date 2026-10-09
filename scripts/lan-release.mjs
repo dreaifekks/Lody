@@ -217,9 +217,12 @@ export function renderInstallScript(template, values) {
 
 /**
  * `carry` is the manifest the release published last. A build without desktop
- * installers keeps the ones it lists: they stay in the release, and the top
- * level of the manifest goes on describing their build, which is all a
- * desktop reads. `cli` always describes the CLI tarball assembled here.
+ * installers keeps the files of the build it lists, the CLI tarball under its
+ * fixed name included: they stay in the release, and the top level of the
+ * manifest goes on describing that build. A desktop, every build older than
+ * `cli` and the install script read only the top level, and the tarball they
+ * install reports that version. The new tarball goes beside it under a name
+ * of its own. `cli` always describes the CLI tarball assembled here.
  */
 export function assembleRelease(options) {
   const { version, commit, repository, tag, artifactsDir, outDir, carry } = options;
@@ -252,23 +255,33 @@ export function assembleRelease(options) {
     throw new Error(`No CLI tarball found under ${artifactsDir}`);
   }
 
-  const cli = { version, commit, builtAt: options.builtAt ?? new Date().toISOString() };
-  const builtDesktop = [...published.keys()].some(isDesktopAssetName);
-  const carried =
-    !builtDesktop && carry ? carry.assets.filter((asset) => isDesktopAssetName(asset.name)) : [];
-  const desktop =
-    carried.length > 0
-      ? { version: carry.version, commit: carry.commit, builtAt: carry.builtAt }
-      : cli;
+  const built = { version, commit, builtAt: options.builtAt ?? new Date().toISOString() };
+  const carrying =
+    ![...published.keys()].some(isDesktopAssetName) &&
+    Boolean(carry?.assets.some((asset) => isDesktopAssetName(asset.name)));
+  const carried = carrying
+    ? carry.assets.filter(
+        (asset) => isDesktopAssetName(asset.name) || asset.name === CLI_ASSET_NAME
+      )
+    : [];
+  const top = carrying
+    ? { version: carry.version, commit: carry.commit, builtAt: carry.builtAt }
+    : built;
+  let cliAsset = CLI_ASSET_NAME;
+  if (carrying) {
+    cliAsset = `lody-lan-cli-${version}.tgz`;
+    fs.renameSync(path.join(outDir, CLI_ASSET_NAME), path.join(outDir, cliAsset));
+    published.set(cliAsset, published.get(CLI_ASSET_NAME));
+    published.delete(CLI_ASSET_NAME);
+  }
 
   const templatesDir = options.templatesDir ?? path.join(repositoryRoot, 'scripts', 'lan');
   for (const templateName of INSTALL_SCRIPT_TEMPLATES) {
     const template = fs.readFileSync(path.join(templatesDir, templateName), 'utf8');
     const targetPath = path.join(outDir, templateName);
-    const scriptVersion = templateName === 'install-mac.sh' ? desktop.version : version;
     fs.writeFileSync(
       targetPath,
-      renderInstallScript(template, { repository, tag, version: scriptVersion }),
+      renderInstallScript(template, { repository, tag, version: top.version }),
       { mode: 0o755 }
     );
     published.set(templateName, path.join(templatesDir, templateName));
@@ -285,7 +298,7 @@ export function assembleRelease(options) {
     path.join(outDir, 'SHA256SUMS'),
     `${assets.map((asset) => `${asset.sha256}  ${asset.name}`).join('\n')}\n`
   );
-  const manifest = { ...desktop, repository, tag, assets, cli };
+  const manifest = { ...top, repository, tag, assets, cli: { ...built, asset: cliAsset } };
   fs.writeFileSync(path.join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }
@@ -383,7 +396,19 @@ export function promoteDevBuild(options) {
     }
   }
   restampCliTarball(path.join(fromDir, CLI_ASSET_NAME), devManifest, { repository, tag, commit });
-  return assembleRelease({ ...options, artifactsDir: fromDir, builtAt: devManifest.builtAt });
+  // The release also holds tarballs of earlier CLI-only builds that no manifest
+  // lists any more; only what this one lists is published.
+  const listed = `${fromDir}.listed`;
+  fs.rmSync(listed, { recursive: true, force: true });
+  fs.mkdirSync(listed);
+  try {
+    for (const asset of devManifest.assets) {
+      fs.linkSync(path.join(fromDir, asset.name), path.join(listed, asset.name));
+    }
+    return assembleRelease({ ...options, artifactsDir: listed, builtAt: devManifest.builtAt });
+  } finally {
+    fs.rmSync(listed, { recursive: true, force: true });
+  }
 }
 
 export function renderReleaseNotes(manifest) {

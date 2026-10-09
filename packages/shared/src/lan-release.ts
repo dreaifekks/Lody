@@ -45,18 +45,26 @@ export const LanReleaseManifestSchema = LanReleaseBuildSchema.extend({
   tag: z.string().regex(TAG_PATTERN),
   assets: z.array(LanReleaseAssetSchema),
   /**
-   * The build of the CLI tarball. A dev release may rebuild only the CLI and
-   * keep the desktop installers of an earlier build, which the top level then
-   * goes on describing: a desktop, and every build older than this field,
-   * reads only the top level.
+   * The newest CLI tarball, `asset` naming it. A dev release may rebuild only
+   * the CLI and keep the files of an earlier build, `LAN_CLI_ASSET_NAME`
+   * included, which the top level then goes on describing: a desktop, the
+   * install script and every build older than this field read only the top
+   * level and install that tarball.
    */
-  cli: LanReleaseBuildSchema.optional(),
+  cli: LanReleaseBuildSchema.extend({ asset: z.string().regex(ASSET_NAME_PATTERN) }).optional(),
 });
 export type LanReleaseManifest = z.infer<typeof LanReleaseManifestSchema>;
 
-/** The manifest as the CLI tarball sees it: its version, commit and build time on top. */
+/** The manifest as the newest CLI tarball sees it: its version, commit and build time on top. */
 export function readLanCliRelease(manifest: LanReleaseManifest): LanReleaseManifest {
-  return manifest.cli ? { ...manifest, ...manifest.cli } : manifest;
+  if (!manifest.cli) return manifest;
+  const { version, commit, builtAt } = manifest.cli;
+  return { ...manifest, version, commit, builtAt };
+}
+
+/** The file an agent service installs from a release. */
+export function resolveLanCliAssetName(manifest: LanReleaseManifest): string {
+  return manifest.cli?.asset ?? LAN_CLI_ASSET_NAME;
 }
 
 /** What a window or another machine may know about the newest build. */

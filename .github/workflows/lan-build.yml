@@ -7,9 +7,11 @@ name: LAN build
 # - dev-v<upstream>-lan.<n> builds everything and publishes it to the `lan-dev`
 #   prerelease, for machines installed from it to try a branch first.
 # - dev-v<upstream>-lan.<n>-cli builds the CLI tarball only. `lan-dev` keeps
-#   its desktop installers, and its manifest goes on describing them at the
-#   top level, which is all a desktop reads; the new tarball is described
-#   under `cli`.
+#   the files of its last whole build, `lody-lan-cli.tgz` included, and its
+#   manifest goes on describing that build at the top level, which is all a
+#   desktop, the install script and an older agent service read. The new
+#   tarball is uploaded beside it as `lody-lan-cli-<version>.tgz` and named
+#   under `cli`, which a newer agent service installs.
 # - v<upstream>-lan.<n> publishes to `lan-latest`, which everyone else follows.
 #   When `lan-dev` carries a whole build of the same commit under the same
 #   version, its files are published again instead of being built a second
@@ -21,8 +23,9 @@ name: LAN build
 #   recorded on its first start (and may switch in Settings > LAN). So both
 #   releases have to carry a build that records it, one whose manifest has
 #   `cli`, before a release reuses anything; the first release after that
-#   change is built in full. A desktop installed afresh from a reused
-#   installer follows `lan-dev` until switched.
+#   change is built in full. Accepted gaps: a desktop installed afresh from a
+#   reused installer, and a desktop that skipped every newer build and updates
+#   straight to a reused one, follow `lan-dev` and have to be switched by hand.
 #
 # Running it by hand builds without publishing, unless it runs on one of these
 # tags; `build: cli` then does what the `-cli` suffix does.
@@ -82,8 +85,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           for release in lan-dev lan-latest; do
-            gh release download "$release" --pattern manifest.json --dir "$RUNNER_TEMP/$release" ||
-              echo "$release publishes no manifest; everything is built."
+            # A download that breaks off leaves part of the file behind.
+            gh release download "$release" --pattern manifest.json --dir "$RUNNER_TEMP/$release" || {
+              rm -f "$RUNNER_TEMP/$release/manifest.json"
+              echo "$release could not be read; everything is built."
+            }
           done
 
       - name: Plan the build
@@ -316,6 +322,12 @@ jobs:
     if: >-
       !failure() && !cancelled() && github.ref_type == 'tag' &&
       needs.plan.result == 'success'
+    # Reading what the release lists, assembling and uploading is one step for
+    # the release: a CLI-only build carries the files the release lists, which
+    # another tag publishing meanwhile would replace. Builds stay per tag.
+    concurrency:
+      group: lan-publish-${{ startsWith(github.ref_name, 'dev-') && 'lan-dev' || 'lan-latest' }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

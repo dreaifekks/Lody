@@ -90,11 +90,17 @@ with the builds of the release it follows; an agent service changes channel by
 installing from the other release, a desktop in Settings > LAN.
 
 A dev tag ending in `-cli` (or a run by hand with `build: cli`) builds the CLI
-tarball only and skips the desktop packaging. The release keeps the installers
-it carries, and its manifest goes on describing their build at the top level,
-which is all a desktop and every build older than this reads, so no desktop is
-offered the installers it already runs. The tarball's own build is `cli`, which
-an agent service reads instead (`readLanCliRelease`).
+tarball only and skips the desktop packaging. The release keeps the files of
+its last whole build, `lody-lan-cli.tgz` included, and its manifest goes on
+describing that build at the top level. That is all a desktop, the install
+script and an agent service older than this read, so none of them is offered a
+file that reports another version. The new tarball goes beside it as
+`lody-lan-cli-<version>.tgz`; `cli` names it with its build, and a newer agent
+service installs that one (`readLanCliRelease`, `resolveLanCliAssetName`).
+Publishing is serialized per release (the `release` job's concurrency group),
+since a CLI-only build lists files another tag may be replacing meanwhile;
+GitHub cancels a publish still waiting when a later one queues behind it.
+Tarballs of earlier CLI-only builds stay in the release unlisted.
 
 A release tag whose version and commit are those of the whole build `lan-dev`
 carries publishes that build again instead of building it a second time; any
@@ -105,9 +111,10 @@ CLI tarball is stamped again to follow `lan-latest`. The desktop installers
 cannot be and keep the stamp of `lan-dev`, so a desktop does not follow its
 stamp: it records the release it follows (`lan-release.json` of its data) on
 its first start, and an update keeps the record. A build is reused only once
-both releases carry builds that record it (their manifests have `cli`); a
-machine that skips every such build, or a desktop installed afresh from a
-reused installer, follows `lan-dev` until switched.
+both releases carry builds that record it (their manifests have `cli`). An
+accepted gap: a desktop that skipped every newer build and updates straight to
+a reused one, or one installed afresh from a reused installer, follows
+`lan-dev` and has to be switched by hand in Settings > LAN.
 
 `scripts/lan-release.mjs` names the build and assembles
 the release; `scripts/lan/install.sh` and `install-mac.sh` are published with

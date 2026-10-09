@@ -106,7 +106,10 @@ describe('the build of this application', () => {
 
   it('switches between the releases of the fork', async () => {
     await render(updater({ phase: 'up_to_date' }));
-    const trigger = container.querySelector<HTMLElement>('[aria-label="Release followed"]');
+    const label = [...container.querySelectorAll('p')].find(
+      (node) => node.textContent === 'Release followed'
+    );
+    const trigger = container.querySelector<HTMLElement>(`[aria-labelledby="${label?.id}"]`);
     expect(trigger?.textContent).toContain('Stable');
 
     await pointerClick(trigger!);
@@ -118,7 +121,7 @@ describe('the build of this application', () => {
 
     // A release of another name is followed as the build was stamped.
     await render(updater({ followed: { ...followed, tag: 'nightly' } }));
-    expect(container.querySelector('[aria-label="Release followed"]')).toBeNull();
+    expect(container.textContent).not.toContain('Release followed');
   });
 
   it('offers a later build and what changed in it', async () => {

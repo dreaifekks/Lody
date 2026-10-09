@@ -463,6 +463,7 @@ test('a CLI-only build keeps the desktop installers the release published last',
     version: '0.100.0-lan.8',
     commit: COMMIT,
     builtAt: '2026-01-01T00:00:00.000Z',
+    asset: 'lody-lan-cli-0.100.0-lan.8.tgz',
   });
   assert.deepEqual(
     manifest.assets.find((asset) => asset.name === 'LodyOSS-lan-mac-arm64.zip'),
@@ -472,14 +473,28 @@ test('a CLI-only build keeps the desktop installers the release published last',
       sha256: 'a'.repeat(64),
     }
   );
-  // The new tarball and scripts, not the ones the previous manifest lists.
-  assert.notEqual(
-    manifest.assets.find((asset) => asset.name === 'lody-lan-cli.tgz').sha256,
-    'c'.repeat(64)
+  // The tarball under the fixed name stays: what reads the top level installs it.
+  assert.deepEqual(
+    manifest.assets.find((asset) => asset.name === 'lody-lan-cli.tgz'),
+    { name: 'lody-lan-cli.tgz', size: 3, sha256: 'c'.repeat(64) }
   );
-  assert.ok(!(await readdir(paths.outDir)).includes('LodyOSS-lan-mac-arm64.zip'));
+  const later = manifest.assets.find((asset) => asset.name === 'lody-lan-cli-0.100.0-lan.8.tgz');
+  assert.equal(later.sha256, crypto.createHash('sha256').update('new cli').digest('hex'));
+  // Uploaded: the new tarball and the scripts; the carried files stay as they are.
+  assert.deepEqual((await readdir(paths.outDir)).sort(), [
+    'SHA256SUMS',
+    'install-mac.sh',
+    'install.sh',
+    'lody-lan-cli-0.100.0-lan.8.tgz',
+    'manifest.json',
+  ]);
   const sums = await readFile(path.join(paths.outDir, 'SHA256SUMS'), 'utf8');
+  assert.deepEqual(
+    sums.trimEnd().split('\n'),
+    manifest.assets.map((asset) => `${asset.sha256}  ${asset.name}`)
+  );
   assert.ok(sums.includes(`${'a'.repeat(64)}  LodyOSS-lan-mac-arm64.zip`));
+  assert.ok(sums.includes(`${'c'.repeat(64)}  lody-lan-cli.tgz`));
   assert.equal(
     await readFile(path.join(paths.outDir, 'install-mac.sh'), 'utf8'),
     'VERSION="0.100.0-lan.7"\n'
@@ -496,6 +511,7 @@ test('a CLI-only build keeps the desktop installers the release published last',
     version: whole.version,
     commit: whole.commit,
     builtAt: whole.builtAt,
+    asset: 'lody-lan-cli.tgz',
   });
   assert.notEqual(
     whole.assets.find((asset) => asset.name === 'LodyOSS-lan-mac-arm64.zip').sha256,
@@ -581,6 +597,8 @@ test('a reused dev build is published under the release with its own manifest', 
   await paths.add('lan-desktop-mac', 'LodyOSS-0.100.0-lan.7-arm64.zip', 'mac-arm64');
   const devDir = path.join(paths.root, 'lan-dev');
   const dev = assemble(paths, { tag: 'lan-dev', outDir: devDir });
+  // Left in the release by an earlier CLI-only build; no manifest lists it.
+  await writeFile(path.join(devDir, 'lody-lan-cli-0.100.0-lan.6.tgz'), 'stale');
   const stableManifest = { cli: { version: '0.100.0-lan.3', commit: OTHER_COMMIT, builtAt: 'x' } };
   const promote = (overrides = {}) =>
     promoteDevBuild({
@@ -599,6 +617,16 @@ test('a reused dev build is published under the release with its own manifest', 
   const manifest = promote();
   assert.equal(manifest.tag, 'lan-latest');
   assert.deepEqual(manifest.cli, dev.cli);
+  assert.deepEqual(
+    manifest.assets.map((asset) => asset.name),
+    dev.assets.map((asset) => asset.name)
+  );
+  assert.ok(!(await readdir(paths.outDir)).includes('lody-lan-cli-0.100.0-lan.6.tgz'));
+  const sums = await readFile(path.join(paths.outDir, 'SHA256SUMS'), 'utf8');
+  assert.deepEqual(
+    sums.trimEnd().split('\n'),
+    manifest.assets.map((asset) => `${asset.sha256}  ${asset.name}`)
+  );
   const cli = path.join(paths.outDir, 'lody-lan-cli.tgz');
   assert.equal(await unpackCli(cli, 'dist/index.js'), `parse('${stampOf('lan-latest')}');\n`);
   assert.equal(
