@@ -10,6 +10,7 @@ import { PlatformContext } from '@lody/platform/react';
 import type { LanGitHubState, SessionHistoryParsed, SessionId } from '@lody/shared';
 
 import lodyLogo from '../src/assets/lody-icon.png';
+import { localCliStartingAtom } from '../src/atoms/local-probe';
 import { MessageRowView } from '../src/components/ai-gui/view';
 import { LoadingPlaceholder } from '../src/components/loading-placeholder';
 import { LoroSidebar, type LoroSidebarProps } from '../src/components/loro-sidebar';
@@ -354,8 +355,9 @@ describe('GitHub identity of the local desktop', () => {
     );
   }
 
-  async function render(platform: PlatformProvider) {
+  async function render(platform: PlatformProvider, agentStarting = false) {
     const store = createStore();
+    store.set(localCliStartingAtom, agentStarting);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -457,6 +459,28 @@ describe('GitHub identity of the local desktop', () => {
       container?.querySelector('[data-testid="user-message-metadata"]')?.textContent
     ).not.toContain('hub-login');
     expect(container?.querySelector('button[aria-label^="View profile"]')).toBeNull();
+  });
+
+  it('asks once the local agent can answer, and again when it comes back', async () => {
+    answer = { own: { login: 'own-login' }, lan: null };
+    const store = await render(LOCAL_PLATFORM, true);
+    expect(asked).toEqual([]);
+    expect(nameplateImage()).toContain('lody-icon');
+
+    await act(async () => store.set(localCliStartingAtom, false));
+    await settle();
+    expect(nameplateImage()).toBe(gitHubAvatarUrl('own-login'));
+    expect(senderImage()).toBe(gitHubAvatarUrl('own-login'));
+
+    // A restart keeps the face it had, then draws whoever signed in meanwhile.
+    answer = { own: { login: 'next-login' }, lan: null };
+    await act(async () => store.set(localCliStartingAtom, true));
+    await settle();
+    expect(nameplateImage()).toBe(gitHubAvatarUrl('own-login'));
+    await act(async () => store.set(localCliStartingAtom, false));
+    await settle();
+    expect(nameplateImage()).toBe(gitHubAvatarUrl('next-login'));
+    expect(asked).toHaveLength(2);
   });
 
   it('keeps what Settings wrote over an answer asked before it', async () => {
