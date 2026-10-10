@@ -240,8 +240,9 @@ export function useSessionAgentRole({
       modeId: selectedModeId,
       modelId: selectedModelId,
       configOptionValues: configOptionValues ?? {},
+      configOptionSelectors,
     }),
-    [configOptionValues, selectedModeId, selectedModelId]
+    [configOptionSelectors, configOptionValues, selectedModeId, selectedModelId]
   );
   /* The picked instance, while it still exists on this Session's machine: a
      deleted or moved instance ends the selection rather than handing it to

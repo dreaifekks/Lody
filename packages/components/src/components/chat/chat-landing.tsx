@@ -1744,6 +1744,7 @@ function WorkspaceChatLanding({
       modeId: selectedModeId,
       modelId: selectedModelId,
       configOptionValues,
+      configOptionSelectors: resolvedConfigOptionSelectors,
     })
       ? {
           role,
@@ -1760,6 +1761,7 @@ function WorkspaceChatLanding({
     activeAgentRolePreference,
     configOptionValues,
     executorConfigs,
+    resolvedConfigOptionSelectors,
     t,
     selectedAgent,
     selectedModeId,

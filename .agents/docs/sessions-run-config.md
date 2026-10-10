@@ -225,10 +225,14 @@ this page is the full text of the rules summarised there.
   two dispatches disagreeing about a runtime-omitted key plus options rebuilt
   from the selection was a synchronous #185 render loop on session open. The footer names a Role only while
   `isComposerAgentRoleApplied` still holds (`lib/composer-agent-roles.ts`):
-  every value the Role pins is what will run. A pin is compared by what it
-  means to run, not by its key being present: Fast pinned off holds on a model
-  with no Fast toggle, where the resolved selection carries no Fast value at
-  all (`isFastModeOffValue`; stored Fable Roles carry such a pin). Moving a knob takes the name away
+  every value the Role pins is what will run. One pin holds without its value
+  being in the selection: Fast pinned off, on a model whose resolved selectors
+  have no Fast toggle (`isFastModeOffWithoutToggle`; Fable Roles merged over
+  MCP kept `fast: false` from the Opus Roles they came from). The selectors are
+  the proof, not the missing value: a runtime snapshot taken on a model without
+  Fast omits it for a model that has the toggle too, and there the name stays
+  off. Every caller passes the selectors resolved for the selection's model; a
+  programmatic Turn that overrides the model has none and proves nothing. Moving a knob takes the name away
   rather than clearing the preference, which would re-seed the value just
   changed. With a Role selected the TRIGGER carries the Role and nothing else,
   and the model/reasoning/permission/Plan/Fast values render beside it as inert

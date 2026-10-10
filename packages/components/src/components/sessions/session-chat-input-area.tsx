@@ -32,6 +32,7 @@ import {
   findComposerAgentRoleItem,
   type ComposerAgentRoleItem,
   type ComposerRunConfigOverrides,
+  type ComposerRunConfigValues,
   type SessionTurnAgentRoleSelection as ComposerTurnAgentRoleSelection,
 } from '@/lib/composer-agent-roles';
 import { resolvePermissionModeFace } from '@/lib/permission-mode-face';
@@ -665,10 +666,11 @@ export const SessionChatInputArea = memo(
     const selectedAgentRoleRef = useRef<ComposerAgentRoleItem | undefined>(undefined);
     /** Readable Roles, for attributing accepted `@Role` mentions in analytics. */
     const workspaceAgentRolesRef = useRef<readonly AgentRole[]>([]);
-    const agentRoleRunConfigRef = useRef({
+    const agentRoleRunConfigRef = useRef<ComposerRunConfigValues>({
       modeId: selectedModeId,
       modelId: selectedModelId,
       configOptionValues: configOptionValues ?? {},
+      configOptionSelectors: configOptionSelectors ?? [],
     });
     const attachmentInputRef = useRef<HTMLInputElement>(null);
     const activeSessionIdRef = useRef(session.id);
@@ -1964,9 +1966,11 @@ export const SessionChatInputArea = memo(
         modeId: selectedModeId,
         modelId: selectedModelId,
         configOptionValues: configOptionValues ?? {},
+        configOptionSelectors: configOptionSelectors ?? [],
       };
     }, [
       agentRoleTurnSelection,
+      configOptionSelectors,
       configOptionValues,
       selectedAgentRoleItem,
       selectedModeId,

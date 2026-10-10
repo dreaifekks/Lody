@@ -407,6 +407,7 @@ function StoryShell({
       modeId: mode,
       modelId: model,
       configOptionValues: values,
+      configOptionSelectors: selectors,
     });
   const picked = findComposerAgentRoleItem(items, pickedInstanceId);
   const matched = (picked && applied(picked) ? picked : items.find(applied))?.instance ?? null;

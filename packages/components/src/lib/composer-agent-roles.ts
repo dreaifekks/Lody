@@ -14,7 +14,8 @@ import {
   type MachineId,
 } from '@lody/shared';
 import {
-  isFastModeOffValue,
+  isFastModeOffWithoutToggle,
+  type AcpConfigOptionSelector,
   type AcpConfigOptionValue,
 } from '@/components/shared/acp-selector-options';
 import type { AgentSelection } from '@/components/shared/agent-selector';
@@ -224,10 +225,14 @@ export function resolveTurnAgentRoleForRunConfig({
   if (!hasOverride) return turnSelection;
   if (!item || item.role.id !== turnSelection.agentRoleId) return null;
 
+  const modelId =
+    overrides?.modelIdOverride !== undefined ? overrides.modelIdOverride : current.modelId;
   const effective: ComposerRunConfigValues = {
     modeId: overrides?.modeIdOverride !== undefined ? overrides.modeIdOverride : current.modeId,
-    modelId: overrides?.modelIdOverride !== undefined ? overrides.modelIdOverride : current.modelId,
+    modelId,
     configOptionValues: overrides?.configOptionValuesOverride ?? current.configOptionValues,
+    // The selectors describe the composer's model; another model's are not known here.
+    configOptionSelectors: modelId === current.modelId ? current.configOptionSelectors : undefined,
   };
   return isAgentRoleRunConfigApplied(item.instance.runConfig, effective) ? turnSelection : null;
 }
@@ -465,6 +470,11 @@ export type ComposerRunConfigValues = {
   modeId: string | null;
   modelId: string | null;
   configOptionValues: Record<string, AcpConfigOptionValue | undefined>;
+  /**
+   * The option selectors resolved for `modelId`: which controls that model
+   * has. `undefined` when they are not known for it.
+   */
+  configOptionSelectors: readonly Pick<AcpConfigOptionSelector, 'configId'>[] | undefined;
 };
 
 export type ComposerRunConfigSelection = ComposerRunConfigValues & {
@@ -475,9 +485,9 @@ export type ComposerRunConfigSelection = ComposerRunConfigValues & {
  * Whether every value an instance PINS is what the composer is set to.
  *
  * Only the pinned values are compared: an instance deliberately leaves the
- * rest on the agent's default, so an unpinned option is not a difference. A
- * pin is compared by what it means to run, not by its key being present: Fast
- * pinned off holds on a model that has no Fast toggle.
+ * rest on the agent's default, so an unpinned option is not a difference. One
+ * pin holds without its value being in the selection: Fast pinned off, on a
+ * model whose selectors show it has no Fast toggle (`isFastModeOffWithoutToggle`).
  *
  * This is the half that does NOT involve the agent, because the two surfaces
  * disagree about the agent on purpose — see `isComposerAgentRoleApplied`.
@@ -492,9 +502,12 @@ export function isAgentRoleRunConfigApplied(
   for (const [configId, value] of Object.entries(configOptionValues ?? {})) {
     const selected = selection.configOptionValues[configId];
     if (selected === value) continue;
-    // The selection carries no Fast value only where the model has no Fast
-    // toggle, and there Fast is off: exactly what this pin says.
-    if (selected === undefined && isFastModeOffValue(configId, value)) continue;
+    if (
+      selected === undefined &&
+      isFastModeOffWithoutToggle(configId, value, selection.configOptionSelectors)
+    ) {
+      continue;
+    }
     return false;
   }
   return true;

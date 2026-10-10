@@ -400,6 +400,7 @@ export const DraftSessionChatInterface = memo(
           modeId: selectedModeId,
           modelId: selectedModelId,
           configOptionValues,
+          configOptionSelectors: resolvedConfigOptionSelectors,
         })
           ? agentRolePreference
           : null;
@@ -408,6 +409,7 @@ export const DraftSessionChatInterface = memo(
         configOptionValues,
         draft.agentConfigId,
         parentSession.machineId,
+        resolvedConfigOptionSelectors,
         selectedModeId,
         selectedModelId,
       ]);

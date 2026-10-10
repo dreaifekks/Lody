@@ -6,7 +6,7 @@ import {
 } from '@lody/shared';
 import {
   isConfigOptionValueValid,
-  isFastModeOffValue,
+  isFastModeOffWithoutToggle,
   type AcpConfigOptionSelector,
   type AcpSelectorOptions,
 } from '@/components/shared/acp-selector-options';
@@ -123,7 +123,7 @@ export const findAgentRoleRunConfigIssues = (
     );
     if (!selector) {
       // Fast pinned off on a model without the toggle is what runs anyway.
-      if (!isFastModeOffValue(configId, value)) {
+      if (!isFastModeOffWithoutToggle(configId, value, selectorOptions.configOptionSelectors)) {
         issues.push({ kind: 'option_unsupported', configId });
       }
       continue;
