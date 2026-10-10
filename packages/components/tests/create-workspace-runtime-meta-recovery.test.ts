@@ -1422,6 +1422,54 @@ describe('createWorkspaceRuntime meta recovery lifecycle', () => {
     await runtime.dispose();
   });
 
+  it('rejoins the local plane at once when the local agent finishes starting', async () => {
+    // The regression this pins: joins refused by an agent still starting were
+    // retried only on the 30s backoff, so a slow first start left the window
+    // without its machine long after the agent was ready.
+    mocks.joinMetaRoom.mockResolvedValueOnce(createMetaSub(Promise.resolve()));
+    const starting = { localAgentEnabled: true, phase: 'starting', startupStage: 'fleet-start' };
+    const ready = { localAgentEnabled: true, phase: 'running', startupStage: 'ready' };
+    let onCliState: (state: unknown) => void = () => {};
+    const send = vi.fn();
+    Object.assign(window, {
+      __LODY_ELECTRON__: true,
+      ipc: {
+        invoke: vi.fn(async (channel: string) =>
+          channel === 'cli.getState' ? starting : channel === 'loro.isConnected'
+        ),
+        on: vi.fn((channel: string, listener: (payload: unknown) => void) => {
+          if (channel === 'cli.state') onCliState = listener;
+          return () => {};
+        }),
+        send,
+      },
+    });
+
+    const runtime = await createWorkspaceRuntime({
+      workspaceSlug: 'workspace',
+      workspaceId: 'workspace-1' as WorkspaceId,
+      apiBaseUrl: 'https://api.example.test',
+      syncMode: 'local',
+    });
+    await flushPromises();
+    mocks.reconnect.mockClear();
+    send.mockClear();
+
+    onCliState(ready);
+    await flushPromises();
+    // The relay redials for a subscriber, and the rooms rejoin without backoff.
+    expect(send).toHaveBeenCalledWith('loro.subscribe', null);
+    expect(mocks.reconnect).toHaveBeenCalledWith({ transportIds: ['local'], resetBackoff: true });
+
+    // An agent that stays ready says nothing new.
+    mocks.reconnect.mockClear();
+    onCliState({ ...ready, updatedAtMs: 2 });
+    await flushPromises();
+    expect(mocks.reconnect).not.toHaveBeenCalled();
+
+    await runtime.dispose();
+  });
+
   it('repairs a dual-homed room whose cloud binding failed (invisible to trackers)', async () => {
     // The regression this pins: a dual-homed room's cloud subscription failing
     // while the local plane stays healthy produced no signal anywhere and the

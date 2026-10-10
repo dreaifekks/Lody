@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   getCliState: vi.fn(),
   onCliState: vi.fn(),
   openExternalUrl: vi.fn(),
+  restartCli: vi.fn(),
   selectLocalProjectDirectory: vi.fn(),
   useVisibleLocalProjects: vi.fn(),
 }));
@@ -48,7 +49,11 @@ vi.mock('../src/lib/native-browser', () => ({
   openExternalUrl: mocks.openExternalUrl,
 }));
 
-import { localCliStartingAtom, localProbeResultAtom } from '../src/atoms/local-probe';
+import {
+  localCliStartingAtom,
+  localProbeAttemptedAtom,
+  localProbeResultAtom,
+} from '../src/atoms/local-probe';
 import { runtimeAtom } from '../src/atoms/runtime';
 import { currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms/workspace-context';
 import {
@@ -61,7 +66,10 @@ import {
   ProjectsScreen,
   ProjectsScreenView,
 } from '../src/components/onboarding/screens/projects-screen';
-import { ProvidersScreenView } from '../src/components/onboarding/screens/providers-screen';
+import {
+  ProvidersScreen,
+  ProvidersScreenView,
+} from '../src/components/onboarding/screens/providers-screen';
 import { SummaryScreen } from '../src/components/onboarding/screens/summary-screen';
 import { initI18n } from '../src/i18n';
 import { TestCloudPlatformProvider } from './test-platform';
@@ -79,6 +87,7 @@ function installElectronWindowIpc() {
     value: {
       invoke: async (channel: string, ...args: unknown[]) => {
         if (channel === 'cli.getState') return mocks.getCliState();
+        if (channel === 'cli.restart') return mocks.restartCli();
         if (channel === 'localProjects.selectDirectory') {
           return mocks.selectLocalProjectDirectory(...args);
         }
@@ -274,6 +283,53 @@ describe('desktop onboarding flow', () => {
       workspaceSlug: 'workspace-1',
       returnTarget: 'desktop',
     });
+  });
+
+  it('waits for a starting local agent, then restarts a missing one only once', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.restartCli.mockResolvedValue({ ok: true });
+      store.set(localProbeResultAtom, null);
+      store.set(localProbeAttemptedAtom, true);
+      store.set(localCliStartingAtom, true);
+      await act(async () => {
+        root?.render(
+          <TestCloudPlatformProvider>
+            <Provider store={store}>
+              <ProvidersScreen
+                onBack={vi.fn()}
+                onSkip={vi.fn()}
+                onNext={vi.fn()}
+                onManagedRuntimeSelected={vi.fn()}
+              />
+            </Provider>
+          </TestCloudPlatformProvider>
+        );
+      });
+
+      // A slow first start is left alone however long it takes.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120_000);
+      });
+      expect(mocks.restartCli).not.toHaveBeenCalled();
+      expect(container.textContent).toContain('Waiting for the local agent to connect');
+
+      await act(async () => store.set(localCliStartingAtom, false));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(mocks.restartCli).toHaveBeenCalledTimes(1);
+
+      // The restarted agent starts and answers again without its machine arriving.
+      await act(async () => store.set(localCliStartingAtom, true));
+      await act(async () => store.set(localCliStartingAtom, false));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(mocks.restartCli).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps a pending setup distinct from a completed AgentConfig', async () => {

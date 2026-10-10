@@ -85,7 +85,7 @@ function getLocalProbeResultFromCliState(state: ElectronCliState): LocalProbeRes
  * process is terminally down (`offline`/`fatal`/`stopped`) we also stop holding
  * so the normal error path can run instead of spinning forever.
  */
-function isLocalCliRuntimeStarting(state: ElectronCliState): boolean {
+export function isLocalCliRuntimeStarting(state: ElectronCliState): boolean {
   if (!state.localAgentEnabled) return false;
   if (state.startupStage === 'ready') return false;
   return (

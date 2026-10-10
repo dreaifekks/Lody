@@ -17,6 +17,7 @@ import { isLocalAppPlatform } from '@/lib/app-platform';
 import { jotaiStore } from '@/lib/utils';
 import { desktopWindowId } from '@/lib/desktop-window';
 import { navigationSidebarHiddenAtom } from '@/atoms/layout-state';
+import { isLocalCliRuntimeStarting } from '@/atoms/local-probe';
 import {
   getMachineRoomId,
   type MachineMeta,
@@ -94,7 +95,7 @@ import {
   ACP_CAPABILITIES_REFRESH_CLIENT_BACKSTOP_MS,
 } from '@lody/shared';
 import { LocalLoroTransportAdapter } from '@lody/shared/local-loro-transport';
-import type { WorkspaceId } from '@lody/shared';
+import type { ElectronCliState, WorkspaceId } from '@lody/shared';
 import { createDirectWorkspaceWriter } from './workspace-writer-impl';
 import {
   createConversationSession,
@@ -158,7 +159,12 @@ import { createLocalLoroDataPlaneConnection } from './local-loro-data-plane-conn
 import { createWorkspaceMachineRpcFacade } from './workspace-machine-rpc-facade';
 import { resyncMachineFlockRows } from '@/hooks/use-machine-flock-rows';
 import { createCodeCollabFileIndexCache } from '@/lib/code-collab-file-index-cache';
-import { getIpcServices, onIpcEvent, sendLocalSessionControl } from '@/lib/electron-ipc-client';
+import {
+  getIpcServices,
+  onIpcEvent,
+  sendIpc,
+  sendLocalSessionControl,
+} from '@/lib/electron-ipc-client';
 
 declare global {
   interface Window {
@@ -667,6 +673,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
   // be in flight at once; each clears only its own entry.
   const webCloudAddsInFlight = new Set<number>();
   let reconnectBackstopTimer: ReturnType<typeof setInterval> | null = null;
+  let unsubscribeLocalAgentState: (() => void) | null = null;
   let releaseIdleDocumentStoresBeforeReconnect: () => Promise<void> = async () => {};
   // Background eager-sync coordinator. Assigned once all of its port
   // dependencies (session store cache, env handlers) are in scope; started from
@@ -4791,6 +4798,8 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      unsubscribeLocalAgentState?.();
+      unsubscribeLocalAgentState = null;
       transportReady.reject(new Error('Runtime disposed'));
 
       for (const pending of pendingSessionCreateResponses.values()) {
@@ -4945,6 +4954,33 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
   document.addEventListener('visibilitychange', handleVisibilityChange);
   window.addEventListener('online', handleOnline);
   window.addEventListener('offline', handleOffline);
+  // A local agent still starting refuses every join, and the retries back off
+  // up to 30s on both sides of the relay. Nothing else says when its workspace
+  // runtimes exist, so without this edge a slow first start left the window
+  // waiting out that backoff (or a reload) after the agent was already ready.
+  if (electronLocalDataPlane && getIpcServices()) {
+    let localAgentStarting: boolean | null = null;
+    const handleLocalAgentState = (state: ElectronCliState) => {
+      const starting = isLocalCliRuntimeStarting(state);
+      const becameReady =
+        localAgentStarting === true && !starting && state.startupStage === 'ready';
+      localAgentStarting = starting;
+      if (!becameReady || disposePromise) return;
+      // The relay redials at once for a subscriber instead of on its own timer.
+      sendIpc('loro.subscribe', null);
+      if (transportAttached) {
+        localReconnectLoop?.trigger('local-agent-ready');
+      }
+    };
+    unsubscribeLocalAgentState = onIpcEvent('cli.state', handleLocalAgentState);
+    // The first push may already be the ready one; what came before it is asked.
+    void getIpcServices()
+      ?.cli.getState()
+      .then((state) => {
+        if (localAgentStarting === null) localAgentStarting = isLocalCliRuntimeStarting(state);
+      })
+      .catch(() => {});
+  }
   // Level-triggered backstop: even if every event edge above is missed (a
   // status change that landed while the tab was frozen, a lost timer), the
   // reconnect loop re-evaluates registry health on a slow interval. update()

@@ -39,7 +39,11 @@ import {
 } from '@/atoms/agents';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
-import { localMachineIdAtom, localProbeAttemptedAtom } from '@/atoms/local-probe';
+import {
+  localCliStartingAtom,
+  localMachineIdAtom,
+  localProbeAttemptedAtom,
+} from '@/atoms/local-probe';
 import type { DesktopOnboardingProviderSelection } from '@/atoms/onboarding';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useMachineFlockAgentConfigsForMachineIds } from '@/hooks/use-machine-flock-agent-configs';
@@ -758,6 +762,7 @@ export function ProvidersScreen({
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
   const localMachineId = useAtomValue(localMachineIdAtom);
   const localProbeAttempted = useAtomValue(localProbeAttemptedAtom);
+  const localCliStarting = useAtomValue(localCliStartingAtom);
   const { machines } = useVisibleMachineMetas();
   const localMachineIdsForAgentConfigs = useMemo(
     () => (localMachineId === null ? [] : [localMachineId]),
@@ -881,14 +886,37 @@ export function ProvidersScreen({
   // give it another window to reconnect. If it still doesn't show up, surface
   // a single toast and let the user retry/refresh manually — we don't want a
   // verbose recovery panel in the onboarding flow.
+  // A CLI still starting is not a missing one: the window opens once it can
+  // answer, since restarting a slow first start only starts the wait over.
+  const localAgentRestartedRef = useRef(false);
   useEffect(() => {
     let cancelled = false;
     let firstTimeoutId: number | null = null;
     let secondTimeoutId: number | null = null;
+    const reportUnreachable = () => {
+      console.error('[onboarding] Local agent remained unreachable after an automatic restart');
+      analytics.capture('onboarding/operation_failed', {
+        step: 'providers',
+        operation: 'local_agent_recovery',
+        failure_code: 'local_agent_unreachable',
+        retryable: true,
+      });
+      toast.error(
+        t(
+          'onboarding.providers.localAgentUnreachable',
+          'Could not reach the local agent. Please restart Lody and try again.'
+        )
+      );
+    };
 
-    if (!localMachine && localProbeAttempted) {
+    if (!localMachine && localProbeAttempted && !localCliStarting) {
       firstTimeoutId = window.setTimeout(() => {
         if (cancelled) return;
+        // The restarted CLI came back and the machine still did not arrive.
+        if (localAgentRestartedRef.current) {
+          reportUnreachable();
+          return;
+        }
         const services = getIpcServices();
         const restart = services ? services.cli.restart.bind(services.cli) : undefined;
         if (!restart) {
@@ -915,6 +943,7 @@ export function ProvidersScreen({
           step: 'providers',
           operation: 'local_agent_restart',
         });
+        localAgentRestartedRef.current = true;
         void restart()
           .then((result) => {
             if (cancelled) return;
@@ -928,21 +957,7 @@ export function ProvidersScreen({
             });
             secondTimeoutId = window.setTimeout(() => {
               if (cancelled) return;
-              console.error(
-                '[onboarding] Local agent remained unreachable after an automatic restart'
-              );
-              analytics.capture('onboarding/operation_failed', {
-                step: 'providers',
-                operation: 'local_agent_recovery',
-                failure_code: 'local_agent_unreachable',
-                retryable: true,
-              });
-              toast.error(
-                t(
-                  'onboarding.providers.localAgentUnreachable',
-                  'Could not reach the local agent. Please restart Lody and try again.'
-                )
-              );
+              reportUnreachable();
             }, PROVIDERS_SCREEN_MACHINE_TIMEOUT_MS);
           })
           .catch((error) => {
@@ -971,7 +986,7 @@ export function ProvidersScreen({
       if (firstTimeoutId !== null) window.clearTimeout(firstTimeoutId);
       if (secondTimeoutId !== null) window.clearTimeout(secondTimeoutId);
     };
-  }, [analytics, localMachine, localProbeAttempted, t]);
+  }, [analytics, localCliStarting, localMachine, localProbeAttempted, t]);
 
   const refreshCapabilities = useCallback(
     async (args: {
