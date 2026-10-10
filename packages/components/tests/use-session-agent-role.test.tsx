@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AGENT_ROLE_EMOJI } from '@lody/shared';
 import type {
+  AcpCapabilityCacheEntry,
   AgentConfigId,
   AgentConfigMeta,
   AgentRole,
@@ -187,9 +188,10 @@ describe('useSessionAgentRole', () => {
   describe('in a live Claude session, resolved as the composer resolves it', () => {
     // Unsent edits over what the agent last reported, against its own capabilities.
     const claude = { cliType: 'builtin', agentType: 'claude' } as const;
-    const machine = { acpCapabilities: { 'agent-1': reportedClaudeCapabilities } };
     let resolved: ResolvedAcpSessionConfigSelection | null = null;
     let live: {
+      /** What the agent reports; the fixture's unless a test says otherwise. */
+      capabilities?: AcpCapabilityCacheEntry;
       runtimePreferences?: AcpSessionConfigPreferences;
       initialEdits?: AcpSessionUserConfigEdits;
       provenanceRoleId?: AgentRoleId;
@@ -206,7 +208,9 @@ describe('useSessionAgentRole', () => {
         selectedModeId: candidates.modeId,
         selectedModelId: candidates.modelId,
         configOptionValues: candidates.configOptionValues,
-        machine,
+        machine: {
+          acpCapabilities: { 'agent-1': live.capabilities ?? reportedClaudeCapabilities },
+        },
       });
       resolved = resolveAcpSessionConfigSelection(inputs, selectorOptions, claude);
       control = useSessionAgentRole({
@@ -220,7 +224,10 @@ describe('useSessionAgentRole', () => {
         modeOptions: selectorOptions.modeOptions,
         selectedModeId: resolved.selectedModeId,
         onModeChange: (value) => setEdits((prev) => ({ ...prev, mode: { value } })),
+        // The menu's selectors describe the candidate model; the resolved ones
+        // the model that will run. The session passes both, as here.
         configOptionSelectors: selectorOptions.configOptionSelectors,
+        resolvedConfigOptionSelectors: resolved.configOptionSelectors,
         configOptionValues: resolved.configOptionValues,
         onConfigOptionChange: (configId, value) =>
           setEdits((prev) => ({
@@ -298,6 +305,48 @@ describe('useSessionAgentRole', () => {
       expect(resolved!.configOptionValues).not.toHaveProperty('fast');
       expect(control?.selectedInstanceId).toBeNull();
       // A Turn sent now does not claim the Role, nor does a programmatic one.
+      expect(control?.turnSelection).toBeNull();
+      expect(resolveProgrammaticTurnAgentRole({ composer: control?.turnSelection })).toBeNull();
+    });
+
+    it('judges a Fast-off Role by the model that will run, not the one last reported', async () => {
+      // The agent last reported Fable, which it no longer offers: the model
+      // falls back to Opus. The menu's selectors still describe Fable, which
+      // has no Fast toggle; Opus has one, and nothing says it is off.
+      catalog.roles = [
+        claudeRole('reviewer', {
+          modeId: 'auto',
+          modelId: 'opus',
+          configOptionValues: { effort: 'high', fast: false },
+        }),
+      ];
+      live = {
+        provenanceRoleId: 'reviewer' as AgentRoleId,
+        capabilities: {
+          ...reportedClaudeCapabilities,
+          configOptions: reportedClaudeCapabilities.configOptions?.map((option) =>
+            option.id === 'model'
+              ? { ...option, options: option.options.filter((model) => model.value === 'opus') }
+              : option
+          ),
+        },
+        runtimePreferences: {
+          modeId: 'auto',
+          modelId: 'claude-fable-5-1',
+          configOptionValues: { effort: 'high' },
+        },
+      };
+      await act(async () => root?.render(createElement(LiveSession)));
+      expect(resolved).toMatchObject({
+        selectedModeId: 'auto',
+        selectedModelId: 'opus',
+        configOptionValues: { effort: 'high' },
+      });
+      expect(resolved!.configOptionValues).not.toHaveProperty('fast');
+      expect(resolved!.configOptionSelectors.map((selector) => selector.configId)).toContain(
+        'fast'
+      );
+      expect(control?.selectedInstanceId).toBeNull();
       expect(control?.turnSelection).toBeNull();
       expect(resolveProgrammaticTurnAgentRole({ composer: control?.turnSelection })).toBeNull();
     });

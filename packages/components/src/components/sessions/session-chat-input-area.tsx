@@ -486,6 +486,11 @@ export interface SessionChatInputAreaProps {
   isContextCompacting?: boolean;
   /** Dynamic config option selectors from the agent's configOptions. */
   configOptionSelectors?: AcpConfigOptionSelector[];
+  /**
+   * The selectors resolved for the model that will run. A Role's pins are
+   * judged against these, not the menu's, which describe the candidate model.
+   */
+  resolvedConfigOptionSelectors?: readonly AcpConfigOptionSelector[];
   /** Current values for each configOption (configId → value). */
   configOptionValues?: Record<string, AcpConfigOptionValue>;
   /** Whether the session's repo is public (for #mention feature) */
@@ -611,6 +616,7 @@ export const SessionChatInputArea = memo(
       showCodexResetForecast = false,
       isContextCompacting = false,
       configOptionSelectors,
+      resolvedConfigOptionSelectors,
       configOptionValues,
       isRepoPublic,
       availableCommands,
@@ -670,7 +676,7 @@ export const SessionChatInputArea = memo(
       modeId: selectedModeId,
       modelId: selectedModelId,
       configOptionValues: configOptionValues ?? {},
-      configOptionSelectors: configOptionSelectors ?? [],
+      configOptionSelectors: resolvedConfigOptionSelectors,
     });
     const attachmentInputRef = useRef<HTMLInputElement>(null);
     const activeSessionIdRef = useRef(session.id);
@@ -1936,6 +1942,7 @@ export const SessionChatInputArea = memo(
       selectedModeId,
       onModeChange,
       configOptionSelectors: configOptionSelectors ?? [],
+      resolvedConfigOptionSelectors,
       configOptionValues,
       runConfigHasUserEdits,
       onConfigOptionChange,
@@ -1966,12 +1973,12 @@ export const SessionChatInputArea = memo(
         modeId: selectedModeId,
         modelId: selectedModelId,
         configOptionValues: configOptionValues ?? {},
-        configOptionSelectors: configOptionSelectors ?? [],
+        configOptionSelectors: resolvedConfigOptionSelectors,
       };
     }, [
       agentRoleTurnSelection,
-      configOptionSelectors,
       configOptionValues,
+      resolvedConfigOptionSelectors,
       selectedAgentRoleItem,
       selectedModeId,
       selectedModelId,

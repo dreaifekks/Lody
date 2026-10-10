@@ -686,6 +686,7 @@ export const DraftSessionChatInterface = memo(
                 })
               }
               configOptionSelectors={configOptionSelectors}
+              resolvedConfigOptionSelectors={resolvedConfigOptionSelectors}
               configOptionValues={configOptionValues}
               availableCommands={availableCommands}
               onModeChange={selectMode}
