@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from 'react';
+import { act, createElement, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AGENT_ROLE_EMOJI } from '@lody/shared';
@@ -44,7 +44,14 @@ import {
   sessionAgentRoleDurableSnapshotAtomFamily,
   sessionAgentRoleSelectionAtomFamily,
 } from '../src/atoms/session-agent-roles';
-import { singleMachineRole } from './agent-role-fixture';
+import { buildAcpSelectorOptions } from '../src/components/shared/acp-selector-options';
+import {
+  buildAcpSessionConfigCandidates,
+  resolveAcpSessionConfigSelection,
+  type AcpSessionUserConfigEdits,
+  type ResolvedAcpSessionConfigSelection,
+} from '../src/lib/acp-session-config-selection';
+import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -174,6 +181,76 @@ describe('useSessionAgentRole', () => {
     root = null;
     container?.remove();
     container = null;
+  });
+
+  it('names a picked Role that pins Fast off on a model without a Fast toggle', async () => {
+    // A live Claude session on its defaults, its run config resolved as the
+    // composer resolves it: unsent edits over what the agent reports.
+    const claude = { cliType: 'builtin', agentType: 'claude' } as const;
+    const machine = { acpCapabilities: { 'agent-1': reportedClaudeCapabilities } };
+    let resolved: ResolvedAcpSessionConfigSelection | null = null;
+    function LiveSession() {
+      const [edits, setEdits] = useState<AcpSessionUserConfigEdits>({ configOptions: {} });
+      const inputs = { edits, preferences: {} };
+      const candidates = buildAcpSessionConfigCandidates(inputs);
+      const selectorOptions = buildAcpSelectorOptions({
+        ...claude,
+        configId: 'agent-1' as AgentConfigId,
+        selectedModeId: candidates.modeId,
+        selectedModelId: candidates.modelId,
+        configOptionValues: candidates.configOptionValues,
+        machine,
+      });
+      resolved = resolveAcpSessionConfigSelection(inputs, selectorOptions, claude);
+      control = useSessionAgentRole({
+        sessionId: 'session-1' as SessionId,
+        machineId: 'machine-1' as MachineId,
+        agentConfigId: 'agent-1' as AgentConfigId,
+        modelOptions: selectorOptions.modelOptions,
+        selectedModelId: resolved.selectedModelId,
+        onModelChange: (value) => setEdits((prev) => ({ ...prev, model: { value } })),
+        modeOptions: selectorOptions.modeOptions,
+        selectedModeId: resolved.selectedModeId,
+        onModeChange: (value) => setEdits((prev) => ({ ...prev, mode: { value } })),
+        configOptionSelectors: selectorOptions.configOptionSelectors,
+        configOptionValues: resolved.configOptionValues,
+        onConfigOptionChange: (configId, value) =>
+          setEdits((prev) => ({
+            ...prev,
+            configOptions: { ...prev.configOptions, [configId]: value },
+          })),
+      });
+      return null;
+    }
+    // uiStyle's instance as stored: Fable, effort high, Fast off.
+    catalog.agentConfigs = [{ ...agentConfig, ...claude, name: 'Claude Code' } as AgentConfigMeta];
+    catalog.roles = [
+      singleMachineRole({
+        ...role('ui-style', 'claude-fable-5-1'),
+        instances: undefined,
+        runConfig: {
+          modeId: 'auto',
+          modelId: 'claude-fable-5-1',
+          configOptionValues: { effort: 'max', fast: false },
+        },
+      }),
+    ];
+    await act(async () => root?.render(createElement(LiveSession)));
+    expect(resolved).toMatchObject({
+      selectedModelId: 'opus',
+      configOptionValues: { fast: false },
+    });
+
+    await act(async () => control?.onSelect(iid('ui-style')));
+    // The session now runs what the Role pins; Fable has no Fast to carry.
+    expect(resolved).toMatchObject({
+      selectedModeId: 'auto',
+      selectedModelId: 'claude-fable-5-1',
+      configOptionValues: { effort: 'max' },
+    });
+    expect(resolved!.configOptionValues).not.toHaveProperty('fast');
+    expect(control?.selectedInstanceId).toBe(iid('ui-style'));
+    expect(control?.turnSelection).toMatchObject({ agentRoleId: 'ui-style' });
   });
 
   it('offers a Role picked on its second machine and records that instance', async () => {

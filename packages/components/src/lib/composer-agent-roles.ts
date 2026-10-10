@@ -13,7 +13,10 @@ import {
   type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
-import type { AcpConfigOptionValue } from '@/components/shared/acp-selector-options';
+import {
+  isFastModeOffValue,
+  type AcpConfigOptionValue,
+} from '@/components/shared/acp-selector-options';
 import type { AgentSelection } from '@/components/shared/agent-selector';
 
 /**
@@ -472,7 +475,9 @@ export type ComposerRunConfigSelection = ComposerRunConfigValues & {
  * Whether every value an instance PINS is what the composer is set to.
  *
  * Only the pinned values are compared: an instance deliberately leaves the
- * rest on the agent's default, so an unpinned option is not a difference.
+ * rest on the agent's default, so an unpinned option is not a difference. A
+ * pin is compared by what it means to run, not by its key being present: Fast
+ * pinned off holds on a model that has no Fast toggle.
  *
  * This is the half that does NOT involve the agent, because the two surfaces
  * disagree about the agent on purpose — see `isComposerAgentRoleApplied`.
@@ -485,7 +490,12 @@ export function isAgentRoleRunConfigApplied(
   if (modeId && selection.modeId !== modeId) return false;
   if (modelId && selection.modelId !== modelId) return false;
   for (const [configId, value] of Object.entries(configOptionValues ?? {})) {
-    if (selection.configOptionValues[configId] !== value) return false;
+    const selected = selection.configOptionValues[configId];
+    if (selected === value) continue;
+    // The selection carries no Fast value only where the model has no Fast
+    // toggle, and there Fast is off: exactly what this pin says.
+    if (selected === undefined && isFastModeOffValue(configId, value)) continue;
+    return false;
   }
   return true;
 }

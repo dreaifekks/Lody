@@ -22,6 +22,10 @@ import {
 import { AgentIcon } from '@/components/icons/agent-icon';
 import { useAcpSelectorOptions } from '@/hooks/use-acp-selector-options';
 import { orderAcpConfigOptionSelectors } from '@/lib/acp-selector-order';
+import {
+  describeAgentRoleRunConfigIssue,
+  findAgentRoleRunConfigIssues,
+} from '@/lib/agent-role-form';
 import { resolvePermissionModeFace } from '@/lib/permission-mode-face';
 import { cn } from '@/lib/utils';
 
@@ -85,6 +89,26 @@ export function AgentRoleDetailPane({
   );
 
   const { modelId, modeId, configOptionValues } = instance.runConfig;
+  /* What the agent cannot run of this Role, so a Role that will not take says
+     why here rather than only by its name missing from the composer. Judged
+     against the PINNED model's own controls, and only from capabilities the
+     agent itself reported: a guessed catalog must not call a pin unsupported. */
+  const pinnedSelectorOptions = useAcpSelectorOptions(
+    agentConfig
+      ? {
+          configId: instance.agentConfigId,
+          cliType: agentConfig.cliType,
+          agentType: agentConfig.agentType,
+          runtimeOverrides: agentConfig.runtimeOverrides,
+          machine: machine ?? null,
+          selectedModelId: modelId,
+        }
+      : undefined
+  );
+  const issues =
+    pinnedSelectorOptions.capabilityAuthority === 'authoritative'
+      ? findAgentRoleRunConfigIssues(instance.runConfig, pinnedSelectorOptions)
+      : [];
   const { thoughtLevelSelectors } = orderAcpConfigOptionSelectors(
     selectorOptions.configOptionSelectors
   );
@@ -178,6 +202,13 @@ export function AgentRoleDetailPane({
       {/* Only the values scroll. The header says WHICH Role and the footer is
           how to change it — both stay put however long the instruction runs. */}
       <div className="scrollbar-pro min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+        {/* Before the values, so a short pane cannot scroll it out of sight. */}
+        {issues.length > 0 ? (
+          <p className="px-4 pt-3 text-[11px] leading-relaxed text-status-warning">
+            {t('settings.agentRoles.form.incompatibleTitle')}{' '}
+            {issues.map((issue) => describeAgentRoleRunConfigIssue(issue, t)).join(', ')}
+          </p>
+        ) : null}
         <dl className="flex flex-col gap-2 px-4 py-3">
           {modelId ? (
             <DetailRow

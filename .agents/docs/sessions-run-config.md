@@ -191,7 +191,11 @@ this page is the full text of the rules summarised there.
   outruns the line elides rather than wraps, and a model id elides at the START
   (`claude-opus-5` vs `claude-sonnet-5` differ in the tail). The permission's DESCRIPTION is
   deliberately absent: a sentence about what one value allows belongs to the
-  Role editor, not to a scan of what is pinned. Its machine is passed
+  Role editor, not to a scan of what is pinned. Above the values it names any
+  pin the agent cannot run (`findAgentRoleRunConfigIssues`, the editor's own
+  wording), judged against the pinned model and only from capabilities the
+  agent itself reported — otherwise a Role that will not take says so only by
+  its name missing from the composer. Its machine is passed
   in rather than looked up, so the pane stays renderable without the workspace's
   machine-visibility context. Its two
   panes grow with their content up to 14rem, then scroll
@@ -221,7 +225,10 @@ this page is the full text of the rules summarised there.
   two dispatches disagreeing about a runtime-omitted key plus options rebuilt
   from the selection was a synchronous #185 render loop on session open. The footer names a Role only while
   `isComposerAgentRoleApplied` still holds (`lib/composer-agent-roles.ts`):
-  every value the Role pins is what will run. Moving a knob takes the name away
+  every value the Role pins is what will run. A pin is compared by what it
+  means to run, not by its key being present: Fast pinned off holds on a model
+  with no Fast toggle, where the resolved selection carries no Fast value at
+  all (`isFastModeOffValue`; stored Fable Roles carry such a pin). Moving a knob takes the name away
   rather than clearing the preference, which would re-seed the value just
   changed. With a Role selected the TRIGGER carries the Role and nothing else,
   and the model/reasoning/permission/Plan/Fast values render beside it as inert

@@ -23,7 +23,8 @@ import {
   findAgentRoleRunConfigIssues,
   selectAuthorableAgentRoleConfigOptions,
 } from '../src/lib/agent-role-form';
-import { singleMachineRole } from './agent-role-fixture';
+import { buildAcpSelectorOptions } from '../src/components/shared/acp-selector-options';
+import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
 
 const role = (overrides: Partial<AgentRole> = {}): CatalogAgentRole =>
   singleMachineRole({
@@ -604,6 +605,27 @@ describe('run config compatibility', () => {
         selectorOptions()
       )
     ).toEqual([]);
+  });
+
+  it('does not report Fast pinned off for a model that has no Fast toggle', () => {
+    // The pinned model's own controls, as the agent reports them: Fable has none.
+    const fable = buildAcpSelectorOptions({
+      cliType: 'builtin',
+      agentType: 'claude',
+      configId: 'config-1' as AgentConfigId,
+      selectedModelId: 'claude-fable-5-1',
+      machine: { acpCapabilities: { 'config-1': reportedClaudeCapabilities } },
+    });
+    const pins = (fast: boolean) => ({
+      modeId: 'auto',
+      modelId: 'claude-fable-5-1',
+      configOptionValues: { effort: 'max', fast },
+    });
+    expect(findAgentRoleRunConfigIssues(pins(false), fable)).toEqual([]);
+    // Fast pinned ON there is a setting the model cannot run.
+    expect(findAgentRoleRunConfigIssues(pins(true), fable)).toEqual([
+      { kind: 'option_unsupported', configId: 'fast' },
+    ]);
   });
 
   it('will not call a stored selection compatible while capabilities are unknown', () => {

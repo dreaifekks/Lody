@@ -26,6 +26,7 @@ import { buildComposerAgentRoleItems } from '@/lib/composer-agent-roles';
 import {
   AGENT_ROLE_VERSION,
   withAgentRoleInstances,
+  type AcpCapabilityCacheEntry,
   type AgentRoleInstanceId,
   type CatalogAgentRole,
   type AgentConfigId,
@@ -223,6 +224,52 @@ const ROLE_AGENT_CONFIGS = [
 ] as unknown as AgentConfigMeta[];
 const machineName = (id: MachineId) => (id === 'machine-2' ? 'Build box' : 'Studio');
 
+/**
+ * What the Studio's Claude reports about itself: the probed options describe
+ * Opus, and its own declaration says Fable takes effort and has no Fast toggle.
+ */
+const CLAUDE_REPORTED_CAPABILITIES = {
+  cacheVersion: 9,
+  cliType: 'builtin',
+  agentType: 'claude',
+  provenance: 'runtime',
+  fetchedAt: 1,
+  sourceVersion: 'storybook',
+  configOptions: [
+    {
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      type: 'select',
+      currentValue: 'opus',
+      options: [
+        { value: 'opus', name: 'Opus 5.5' },
+        { value: 'claude-fable-5-1', name: 'Fable 5.1' },
+      ],
+    },
+    {
+      id: 'effort',
+      name: 'Effort',
+      category: 'thought_level',
+      type: 'select',
+      currentValue: 'high',
+      options: ['low', 'medium', 'high', 'max'].map((value) => ({ value, name: value })),
+    },
+    {
+      id: 'fast',
+      name: 'Fast mode',
+      category: 'model_config',
+      type: 'boolean',
+      currentValue: false,
+      options: [],
+    },
+  ],
+  declaredModelControls: {
+    opus: { effortValues: ['low', 'medium', 'high', 'max'], fastMode: true },
+    'claude-fable-5-1': { effortValues: ['low', 'medium', 'high', 'max'], fastMode: false },
+  },
+} as unknown as AcpCapabilityCacheEntry;
+
 /** Roles' mention entries, built as the composer builds them on the Studio. */
 const roleMentionItems = (
   roles: CatalogAgentRole[],
@@ -236,7 +283,11 @@ const roleMentionItems = (
       resolveAvailability: () => availability,
       names: { machine: machineName, unknownAgent: 'Unknown agent' },
     }),
-    (id) => ({ ...ROLE_MACHINE, name: machineName(id) })
+    (id) => ({
+      ...ROLE_MACHINE,
+      name: machineName(id),
+      acpCapabilities: { 'config-claude': CLAUDE_REPORTED_CAPABILITIES },
+    })
   );
 
 /** A Role's mention candidates as listed without a machine in the term. */
@@ -774,6 +825,35 @@ const RANKED_ROLE_CATEGORIES = [
       buildAgentRoleCandidates(roleMentionItems([uiStyleRole, visionRole]), term),
   }),
 ];
+
+/**
+ * A Role that pins Fast on for Fable, which has no Fast toggle: picking it does
+ * not take, and its pane says which setting the agent cannot run.
+ */
+export const AgentRoleUnsupportedPin: Story = {
+  args: {
+    search: 'role:',
+    categories: [
+      category(
+        'agent_role',
+        'role',
+        'Agent Roles',
+        'agent_role',
+        roleCandidates(
+          agentRole({
+            id: 'role-fast-fable' as AgentRoleId,
+            name: 'Deep Review',
+            agentConfigId: 'config-claude' as AgentConfigId,
+            runConfig: {
+              modelId: 'claude-fable-5-1',
+              configOptionValues: { effort: 'max', fast: true },
+            },
+          })
+        )
+      ),
+    ],
+  },
+};
 
 /** `@role:ui@build` — the build box's instances, each under its machine. */
 export const AgentRoleOnMachine: Story = {
