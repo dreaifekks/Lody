@@ -6,6 +6,7 @@ import { gunzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { FILE_PREVIEW_V3_LIMITS, type SessionId } from '@lody/shared';
+import type { FilePreviewPathPolicyOptions } from './file-preview-path-policy';
 import { FilePreviewService, type FilePreviewWorkspaceResolver } from './file-preview-service';
 
 const SESSION_ID = 'session-preview' as SessionId;
@@ -55,6 +56,7 @@ function createService(args: {
   readonly workspaceRoot: string;
   readonly extraRoots?: readonly string[];
   readonly limits?: Partial<typeof FILE_PREVIEW_V3_LIMITS>;
+  readonly pathPolicy?: FilePreviewPathPolicyOptions;
 }): FilePreviewService {
   const resolveWorkspace: FilePreviewWorkspaceResolver = async () => ({
     ok: true,
@@ -65,6 +67,7 @@ function createService(args: {
     resolveWorkspace,
     extraRoots: args.extraRoots ?? [],
     ...(args.limits === undefined ? {} : { limits: args.limits }),
+    ...(args.pathPolicy === undefined ? {} : { pathPolicy: args.pathPolicy }),
   });
 }
 
@@ -296,6 +299,30 @@ describe('FilePreviewService', () => {
     });
 
     expect(response).toMatchObject({ status: 'error', code: 'path_not_allowed' });
+  });
+
+  it('serves an external file to a remote preview once the local platform lifts the boundary', async () => {
+    const workspaceRoot = await makeDir('preview-ws-');
+    const outside = await makeDir('preview-outside-');
+    const filePath = path.join(outside, 'notes.md');
+    await writeFile(filePath, '# Elsewhere\n');
+    const service = createService({ workspaceRoot, pathPolicy: { allowArbitraryPaths: true } });
+
+    const response = await service.previewFile({ v: 3, sessionId: SESSION_ID, path: filePath });
+
+    expect(response).toMatchObject({
+      status: 'ok',
+      kind: 'text',
+      path: await realpath(filePath),
+      external: true,
+    });
+    expect(
+      await service.previewFile({
+        v: 3,
+        sessionId: SESSION_ID,
+        path: path.join(outside, 'never-existed.md'),
+      })
+    ).toMatchObject({ status: 'error', code: 'file_not_found' });
   });
 
   it('lets the same-machine Electron preview read an arbitrary external file as readonly', async () => {
