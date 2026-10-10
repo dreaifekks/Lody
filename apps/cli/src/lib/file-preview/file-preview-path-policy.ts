@@ -49,8 +49,10 @@ export type FilePreviewPathPolicyOptions = {
   /** Overrides the fixed extra roots. Tests pass an empty array or a temp dir. */
   readonly extraRoots?: readonly string[];
   /**
-   * Same-machine Electron preview only. The desktop user explicitly controls
-   * this local IPC path, so it may inspect any readable regular file. Remote
+   * Lifts the root boundary: any readable regular file resolves. Set for the
+   * same-machine Electron preview, whose user explicitly controls that local IPC
+   * path, and for every preview on the local platform, where the only callers
+   * are the installation's own user and the members of its LAN. Hosted remote
    * File Preview v3 requests MUST leave this false and keep the root boundary.
    */
   readonly allowArbitraryPaths?: boolean;

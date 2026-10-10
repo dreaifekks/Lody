@@ -22,9 +22,12 @@ save path's text reads.
 
 - `file-preview-service.ts` never throws for a domain failure: every rejection is a
   typed `status: 'error'` response.
-- `file-preview-path-policy.ts` is the security boundary. Remote `file/preview`
-  requests may read only the session workspace root, `os.tmpdir()`,
-  `<LodyDataDir>/chats`, and `LODY_FILE_PREVIEW_EXTRA_ROOTS`. The separate
+- `file-preview-path-policy.ts` is the security boundary. Hosted remote
+  `file/preview` requests may read only the session workspace root, `os.tmpdir()`,
+  `<LodyDataDir>/chats`, and `LODY_FILE_PREVIEW_EXTRA_ROOTS`. On the local
+  platform `MessageHandler` lifts the boundary (`allowArbitraryPaths`): the only
+  callers are the installation's user and the members of its LAN, who already
+  hold a shell on every member. The separate
   local-only `file/resolve-local` IPC method is the Electron user's explicit
   same-machine capability and resolves any regular file for Electron; it returns
   identity only, never bytes, and is never added

@@ -3202,6 +3202,10 @@ export class MessageHandler {
             }
           : { ok: false, code: resolved.code, message: resolved.message };
       },
+      // Local platform only: every caller is the one user of this installation
+      // or of its LAN, who already holds a shell on each member, so the root
+      // boundary protects nothing there. Hosted requests keep it.
+      ...(this.cloudPort.kind === 'local' ? { pathPolicy: { allowArbitraryPaths: true } } : {}),
     });
     this.sessionManager.setRequestPermissionHandler((sessionId, requestId, request, agentClient) =>
       this.handleAgentPermissionRequest(
