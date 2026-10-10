@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { atom, useAtomValue, type useStore } from 'jotai';
+import { atomEffect } from 'jotai-effect';
 import { atomFamily } from 'jotai/utils';
 import type { LanGitHubState, MachineId, WorkspaceId } from '@lody/shared';
+import { localCliStartingAtom } from '@/atoms/local-probe';
 import { useAppCapability } from '@/lib/app-platform';
 import { isElectronRenderer } from '@/lib/electron';
 import { getIpcServices } from '@/lib/electron-ipc-client';
@@ -23,11 +25,14 @@ const loginWrites = new Map<string, number>();
 
 /**
  * The login per workspace, asked of this machine alone once something shows
- * it; Settings > GitHub writes what it reads later.
+ * it and the local agent can answer, and again each time the agent comes back;
+ * Settings > GitHub writes what it reads later.
  */
 export const gitHubIdentityLoginAtomFamily = atomFamily((workspaceId: string) => {
   const login = atom<string | null>(null);
-  login.onMount = (set) => {
+  const ask = atomEffect((get, set) => {
+    // An agent still starting refuses the question, and nothing would ask again.
+    if (get(localCliStartingAtom)) return undefined;
     const asked = loginWrites.get(workspaceId) ?? 0;
     let mounted = true;
     const control = isElectronRenderer() ? getIpcServices()?.localProjects : null;
@@ -40,15 +45,21 @@ export const gitHubIdentityLoginAtomFamily = atomFamily((workspaceId: string) =>
       .then((response) => {
         if (!mounted || (loginWrites.get(workspaceId) ?? 0) !== asked) return;
         if (response.ok && response.type === 'lan/github') {
-          set(resolveGitHubIdentityLogin(response.result));
+          set(login, resolveGitHubIdentityLogin(response.result));
         }
       })
       .catch(() => {});
     return () => {
       mounted = false;
     };
-  };
-  return login;
+  });
+  return atom(
+    (get) => {
+      get(ask);
+      return get(login);
+    },
+    (_get, set, value: string | null) => set(login, value)
+  );
 });
 
 /** Writes what Settings > GitHub read, ahead of any answer still on its way. */

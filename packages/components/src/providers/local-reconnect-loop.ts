@@ -11,7 +11,11 @@ const LOCAL_RECONNECT_JITTER_FRACTION = 0.2;
 // the largest backoff step earns no refund.
 const LOCAL_RECONNECT_HEALTHY_RESET_MS = LOCAL_RECONNECT_MAX_DELAY_MS;
 
-export type LocalReconnectTriggerReason = 'visibility-wake' | 'network-online' | 'token-refresh';
+export type LocalReconnectTriggerReason =
+  | 'visibility-wake'
+  | 'network-online'
+  | 'token-refresh'
+  | 'local-agent-ready';
 
 export const computeLocalReconnectDelayMs = (
   attempt: number,
