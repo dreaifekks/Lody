@@ -3,6 +3,20 @@ export type TriggerCandidate = {
   index: number;
 };
 
+/**
+ * Where the query the caret is in starts: the last `trigger` at or before the
+ * caret. `@` alone may repeat inside its query: one that directly follows text,
+ * and so opens nothing itself, belongs to the `@` opening the whitespace-free
+ * run it is in. `@ui@n1` is one query from its first `@`; `me@example.com`,
+ * `@a @b` and every other trigger (`/a/b`, `$a$b`) read from the last one.
+ */
+export function findQueryTriggerIndex(value: string, trigger: string, caret: number): number {
+  const last = value.lastIndexOf(trigger, caret);
+  if (last <= 0 || trigger !== '@') return last;
+  const runStart = value.slice(0, last).search(/\S+$/u);
+  return runStart !== -1 && value.startsWith(trigger, runStart) ? runStart : last;
+}
+
 export function findTriggerCandidates(
   value: string,
   triggers: string[],
@@ -13,7 +27,7 @@ export function findTriggerCandidates(
 
   for (const trigger of triggers) {
     if (!trigger) continue;
-    const index = value.lastIndexOf(trigger, clampedFromIndex);
+    const index = findQueryTriggerIndex(value, trigger, clampedFromIndex);
     if (index !== -1) candidates.push({ trigger, index });
   }
 

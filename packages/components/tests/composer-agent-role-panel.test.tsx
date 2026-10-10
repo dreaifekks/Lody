@@ -126,7 +126,8 @@ describe('ComposerAgentRolePanel', () => {
     const view = await render();
     expect(view.textContent).toContain('Code Reviewer');
     expect(view.textContent).toContain('🔍');
-    expect(view.textContent).toContain('Codex');
+    // The agent, then the machine it runs on: this one, by its machine name.
+    expect(view.textContent).toContain('Codex ・ machine-1');
     // Resolved against the bound agent's own capabilities: the Role stores the
     // id, the pane shows the label that agent publishes for it.
     expect(view.textContent).toContain('5.6-Sol');

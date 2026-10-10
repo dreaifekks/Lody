@@ -9,6 +9,7 @@ import {
 } from "@diceui/shared";
 import * as React from "react";
 import { type ItemData, useMentionContext } from "./mention-root";
+import { findQueryTriggerIndex } from "./mention-trigger";
 
 const ITEM_NAME = "MentionItem";
 
@@ -179,7 +180,8 @@ const MentionItem = React.forwardRef<ItemElement, MentionItemProps>(
             // otherwise the transient empty query cancels the selected item.
             inputElement.focus();
             inputElement.setSelectionRange(selectionStart, selectionEnd);
-            const lastTriggerIndex = inputElement.value.lastIndexOf(
+            const lastTriggerIndex = findQueryTriggerIndex(
+              inputElement.value,
               context.trigger,
               selectionStart
             );

@@ -886,10 +886,11 @@ export const CombinedMentionTextarea = React.forwardRef<
       () =>
         new Map(
           agentRoleItems.flatMap((item) => [
-            // A range names any instance of an entry's group.
+            // A range names any instance of an entry's group, or pins one.
             ...item.group.map(
               (entry) => [entry.instance.id as string, getAgentRoleEmoji(item.role)] as const
             ),
+            [item.value, getAgentRoleEmoji(item.role)] as const,
             // A range saved before instances carries the Role id.
             [item.role.id as string, getAgentRoleEmoji(item.role)] as const,
           ])

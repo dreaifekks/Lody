@@ -106,6 +106,28 @@ export const isFastModeSelector = (selector: AcpConfigOptionSelector): boolean =
   isAcpFastModeConfigId(selector.configId) &&
   (selector.type === 'boolean' || isOnOffSelectSelector(selector));
 
+/**
+ * Whether a stored value says Fast is off for a model that has no Fast toggle.
+ * That is already the case there — the reading `resolveAgentRunConfigSelection`
+ * gives an MCP caller — so such a value neither differs from what will run nor
+ * names an unsupported setting.
+ *
+ * `selectors` are the ones resolved for that model, and they are the proof: the
+ * toggle must be ABSENT from them. A value merely missing from a selection
+ * proves nothing — a runtime snapshot taken on a model without Fast omits it
+ * for a model that has the toggle too — and selectors that are not known for
+ * the model (`undefined`) prove nothing either.
+ */
+export const isFastModeOffWithoutToggle = (
+  configId: string,
+  value: AcpConfigOptionValue,
+  selectors: readonly Pick<AcpConfigOptionSelector, 'configId'>[] | undefined
+): boolean =>
+  selectors !== undefined &&
+  isAcpFastModeConfigId(configId) &&
+  (value === false || value === CONFIG_OPTION_OFF_VALUE) &&
+  !selectors.some((selector) => selector.configId === configId);
+
 export const isOnOffConfigOptionValue = (
   value: AcpConfigOptionValue | undefined
 ): value is typeof CONFIG_OPTION_ON_VALUE | typeof CONFIG_OPTION_OFF_VALUE =>

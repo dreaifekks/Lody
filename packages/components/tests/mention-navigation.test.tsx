@@ -12,6 +12,7 @@ import {
   useMentionContext,
 } from '../src/ui/mention';
 import type { ItemData, Mention as MentionRange } from '../src/ui/mention/mention-root';
+import { findQueryTriggerIndex } from '../src/ui/mention/mention-trigger';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -533,5 +534,26 @@ describe('touch selection of prepared mentions', () => {
     expect(input.value).toBe('Review this change');
     expect(input.selectionStart).toBe('Review this change'.length);
     expect(input.getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+describe('findQueryTriggerIndex', () => {
+  it.each([
+    // An `@` glued to a run that `@` opened continues that query.
+    ['@ui@n1', '@', 0],
+    ['ask @ui@n1', '@', 4],
+    ['@node_modules/@types', '@', 0],
+    // Any other `@` is the last one, as before.
+    ['me@example.com', '@', 2],
+    ['@a @b', '@', 3],
+    ['@a x@b', '@', 4],
+    ['plain', '@', -1],
+    // Every other trigger reads from its last occurrence, repeated or not.
+    ['/a/b', '/', 2],
+    ['$a$b', '$', 2],
+    ['@src/app', '/', 4],
+    ['issue#12#3', '#', 8],
+  ])('reads %s from the %s that opens its query', (value, trigger, index) => {
+    expect(findQueryTriggerIndex(value, trigger, value.length)).toBe(index);
   });
 });

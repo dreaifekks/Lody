@@ -23,6 +23,7 @@ import type {
 } from '@/components/shared/acp-selector-options';
 import {
   selectAuthorableAgentRoleConfigOptions,
+  describeAgentRoleRunConfigIssue,
   type AgentRoleRunConfigIssue,
 } from '@/lib/agent-role-form';
 import { withClassName } from '@/lib/stylex';
@@ -556,28 +557,7 @@ function InstanceEditor({
 
 function RunConfigIssueText({ issue }: { issue: AgentRoleRunConfigIssue }) {
   const { t } = useTranslation();
-  const describe = (): string => {
-    switch (issue.kind) {
-      case 'capabilities_unknown':
-        return t('settings.agentRoles.issues.capabilitiesUnknown');
-      case 'mode_unsupported':
-        return t('settings.agentRoles.issues.modeUnsupported', { value: issue.value });
-      case 'model_unsupported':
-        return t('settings.agentRoles.issues.modelUnsupported', { value: issue.value });
-      case 'option_unsupported':
-        return t('settings.agentRoles.issues.optionUnsupported', { option: issue.configId });
-      case 'option_value_unsupported':
-        return t('settings.agentRoles.issues.optionValueUnsupported', {
-          option: issue.configId,
-          value: issue.value,
-        });
-      default: {
-        const exhaustive: never = issue;
-        return String(exhaustive);
-      }
-    }
-  };
-  return <>{describe()}</>;
+  return <>{describeAgentRoleRunConfigIssue(issue, t)}</>;
 }
 
 /**

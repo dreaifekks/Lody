@@ -13,7 +13,11 @@ import {
   type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
-import type { AcpConfigOptionValue } from '@/components/shared/acp-selector-options';
+import {
+  isFastModeOffWithoutToggle,
+  type AcpConfigOptionSelector,
+  type AcpConfigOptionValue,
+} from '@/components/shared/acp-selector-options';
 import type { AgentSelection } from '@/components/shared/agent-selector';
 
 /**
@@ -47,6 +51,11 @@ export type ComposerAgentRoleItem = {
   hasSiblingGroups: boolean;
   /** Whether the instance is on the composer's machine. */
   local: boolean;
+  /**
+   * The instance's machine as the app names it (`names.machine`): the title's
+   * suffix and the detail pane read this one name.
+   */
+  machineName: string;
   /**
    * Every instance of this entry's group, each read as an entry of its own, in
    * the order a bare pick tries them: this machine first, then list order.
@@ -216,10 +225,14 @@ export function resolveTurnAgentRoleForRunConfig({
   if (!hasOverride) return turnSelection;
   if (!item || item.role.id !== turnSelection.agentRoleId) return null;
 
+  const modelId =
+    overrides?.modelIdOverride !== undefined ? overrides.modelIdOverride : current.modelId;
   const effective: ComposerRunConfigValues = {
     modeId: overrides?.modeIdOverride !== undefined ? overrides.modeIdOverride : current.modeId,
-    modelId: overrides?.modelIdOverride !== undefined ? overrides.modelIdOverride : current.modelId,
+    modelId,
     configOptionValues: overrides?.configOptionValuesOverride ?? current.configOptionValues,
+    // The selectors describe the composer's model; another model's are not known here.
+    configOptionSelectors: modelId === current.modelId ? current.configOptionSelectors : undefined,
   };
   return isAgentRoleRunConfigApplied(item.instance.runConfig, effective) ? turnSelection : null;
 }
@@ -296,19 +309,21 @@ export function buildComposerAgentRoleItems({
       const members: ComposerAgentRoleItem[] = [];
       for (const instance of ordered) {
         const local = instance.machineId === machineId;
+        const machineName = names.machine(instance.machineId) ?? instance.machineId;
         members.push({
           role,
           instance,
           title: [
             role.name,
             hasSiblingGroups ? groupName : undefined,
-            local ? undefined : (names.machine(instance.machineId) ?? instance.machineId),
+            local ? undefined : machineName,
           ]
             .filter(Boolean)
             .join(' · '),
           groupName,
           hasSiblingGroups,
           local,
+          machineName,
           group: members,
           groupIndex,
           availability: resolveAvailability(instance),
@@ -455,6 +470,11 @@ export type ComposerRunConfigValues = {
   modeId: string | null;
   modelId: string | null;
   configOptionValues: Record<string, AcpConfigOptionValue | undefined>;
+  /**
+   * The option selectors resolved for `modelId`: which controls that model
+   * has. `undefined` when they are not known for it.
+   */
+  configOptionSelectors: readonly Pick<AcpConfigOptionSelector, 'configId'>[] | undefined;
 };
 
 export type ComposerRunConfigSelection = ComposerRunConfigValues & {
@@ -465,7 +485,9 @@ export type ComposerRunConfigSelection = ComposerRunConfigValues & {
  * Whether every value an instance PINS is what the composer is set to.
  *
  * Only the pinned values are compared: an instance deliberately leaves the
- * rest on the agent's default, so an unpinned option is not a difference.
+ * rest on the agent's default, so an unpinned option is not a difference. One
+ * pin holds without its value being in the selection: Fast pinned off, on a
+ * model whose selectors show it has no Fast toggle (`isFastModeOffWithoutToggle`).
  *
  * This is the half that does NOT involve the agent, because the two surfaces
  * disagree about the agent on purpose — see `isComposerAgentRoleApplied`.
@@ -478,7 +500,15 @@ export function isAgentRoleRunConfigApplied(
   if (modeId && selection.modeId !== modeId) return false;
   if (modelId && selection.modelId !== modelId) return false;
   for (const [configId, value] of Object.entries(configOptionValues ?? {})) {
-    if (selection.configOptionValues[configId] !== value) return false;
+    const selected = selection.configOptionValues[configId];
+    if (selected === value) continue;
+    if (
+      selected === undefined &&
+      isFastModeOffWithoutToggle(configId, value, selection.configOptionSelectors)
+    ) {
+      continue;
+    }
+    return false;
   }
   return true;
 }

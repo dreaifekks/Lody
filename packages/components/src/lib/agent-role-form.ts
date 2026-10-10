@@ -1,3 +1,4 @@
+import type { TFunction } from 'i18next';
 import {
   isSensitiveAgentRoleConfigOptionKey,
   type AgentRoleFormInstance,
@@ -5,6 +6,7 @@ import {
 } from '@lody/shared';
 import {
   isConfigOptionValueValid,
+  isFastModeOffWithoutToggle,
   type AcpConfigOptionSelector,
   type AcpSelectorOptions,
 } from '@/components/shared/acp-selector-options';
@@ -120,7 +122,10 @@ export const findAgentRoleRunConfigIssues = (
       (candidate) => candidate.configId === configId
     );
     if (!selector) {
-      issues.push({ kind: 'option_unsupported', configId });
+      // Fast pinned off on a model without the toggle is what runs anyway.
+      if (!isFastModeOffWithoutToggle(configId, value, selectorOptions.configOptionSelectors)) {
+        issues.push({ kind: 'option_unsupported', configId });
+      }
       continue;
     }
     if (!isConfigOptionValueValid(selector, value)) {
@@ -128,6 +133,32 @@ export const findAgentRoleRunConfigIssues = (
     }
   }
   return issues;
+};
+
+/** One issue as the Role editor and the composer's Role pane both word it. */
+export const describeAgentRoleRunConfigIssue = (
+  issue: AgentRoleRunConfigIssue,
+  t: TFunction
+): string => {
+  switch (issue.kind) {
+    case 'capabilities_unknown':
+      return t('settings.agentRoles.issues.capabilitiesUnknown');
+    case 'mode_unsupported':
+      return t('settings.agentRoles.issues.modeUnsupported', { value: issue.value });
+    case 'model_unsupported':
+      return t('settings.agentRoles.issues.modelUnsupported', { value: issue.value });
+    case 'option_unsupported':
+      return t('settings.agentRoles.issues.optionUnsupported', { option: issue.configId });
+    case 'option_value_unsupported':
+      return t('settings.agentRoles.issues.optionValueUnsupported', {
+        option: issue.configId,
+        value: issue.value,
+      });
+    default: {
+      const exhaustive: never = issue;
+      return String(exhaustive);
+    }
+  }
 };
 
 /**

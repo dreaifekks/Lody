@@ -24,7 +24,14 @@ import {
   resolveTurnAgentRoleForRunConfig,
   resolvePendingAgentRoleSelection,
 } from '../src/lib/composer-agent-roles';
-import { singleMachineRole } from './agent-role-fixture';
+import { buildAcpSelectorOptions } from '../src/components/shared/acp-selector-options';
+import {
+  buildAcpSessionConfigCandidates,
+  resolveAcpSessionConfigSelection,
+  type AcpSessionConfigPreferences,
+  type AcpSessionUserConfigEdits,
+} from '../src/lib/acp-session-config-selection';
+import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
 
 const makeRole = (
   overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
@@ -325,6 +332,7 @@ describe('isComposerAgentRoleApplied', () => {
     modelId: 'gpt-5.6-sol',
     modeId: 'plan',
     configOptionValues: { thought_level: 'high' },
+    configOptionSelectors: [{ configId: 'thought_level' }],
   };
 
   it('holds while every pinned value is what will run', () => {
@@ -377,6 +385,115 @@ describe('isComposerAgentRoleApplied', () => {
   });
 });
 
+/**
+ * A Role as real ones are stored, through the derivation the new-chat page and
+ * a draft Tab both run: its run config seeds the selection, the agent's own
+ * capabilities resolve it, and the composer names it while that still holds.
+ */
+describe('a stored Role resolved against what its agent reports', () => {
+  const agentConfigId = 'claude-here' as AgentConfigId;
+  const machine = { acpCapabilities: { [agentConfigId]: reportedClaudeCapabilities } };
+  const seeded = (
+    runConfig: AgentRoleInstance['runConfig'],
+    edits: AcpSessionUserConfigEdits = { configOptions: {} },
+    /** What the agent last reported it is running, in a live session. */
+    runtimePreferences?: AcpSessionConfigPreferences
+  ) => {
+    const {
+      instances: [instance],
+    } = makeRole({ id: 'r-real' as AgentRoleId, name: 'uiStyle', agentConfigId, runConfig });
+    const inputs = {
+      edits,
+      preferences: {
+        modeId: runConfig.modeId ?? null,
+        modelId: runConfig.modelId ?? null,
+        configOptionValues: runConfig.configOptionValues,
+      },
+      runtimePreferences,
+    };
+    const candidates = buildAcpSessionConfigCandidates(inputs);
+    const target = { cliType: 'builtin', agentType: 'claude' } as const;
+    const resolved = resolveAcpSessionConfigSelection(
+      inputs,
+      buildAcpSelectorOptions({
+        ...target,
+        configId: agentConfigId,
+        selectedModeId: candidates.modeId,
+        selectedModelId: candidates.modelId,
+        configOptionValues: candidates.configOptionValues,
+        machine,
+      }),
+      target
+    );
+    return {
+      resolved,
+      applied: isComposerAgentRoleApplied(instance!, {
+        agentSelection: { agentId: agentConfigId, machineId: 'machine-1' as MachineId },
+        modeId: resolved.selectedModeId,
+        modelId: resolved.selectedModelId,
+        configOptionValues: resolved.configOptionValues,
+        configOptionSelectors: resolved.configOptionSelectors,
+      }),
+    };
+  };
+  const fable = { modeId: 'auto', modelId: 'claude-fable-5-1' };
+
+  it('is the Role though it pins Fast off on a model that has no Fast toggle', () => {
+    // uiStyle, uxAgent and companion as stored: Fable has no Fast, so the
+    // resolved selection carries no `fast` at all — and Fast is off.
+    const { resolved, applied } = seeded({
+      ...fable,
+      configOptionValues: { effort: 'high', fast: false },
+    });
+    expect(resolved.configOptionValues).toEqual({ effort: 'high' });
+    expect(applied).toBe(true);
+  });
+
+  it('is the Role with Fast pinned off where the model has the toggle', () => {
+    expect(
+      seeded({
+        modeId: 'auto',
+        modelId: 'opus',
+        configOptionValues: { effort: 'high', fast: false },
+      }).applied
+    ).toBe(true);
+  });
+
+  it('is not the Role when it pins Fast on for a model that cannot run it', () => {
+    expect(seeded({ ...fable, configOptionValues: { effort: 'high', fast: true } }).applied).toBe(
+      false
+    );
+  });
+
+  it('is not the Role when Fast is merely missing for a model that has the toggle', () => {
+    // An Opus Role with Fast off, in a session the agent last reported running
+    // Fable: that snapshot has no `fast`. Back on Opus the toggle exists, the
+    // snapshot still owns the table, and nothing says Fast is off there.
+    const { resolved, applied } = seeded(
+      { modeId: 'auto', modelId: 'opus', configOptionValues: { effort: 'high', fast: false } },
+      { model: { value: 'opus' }, configOptions: {} },
+      { ...fable, configOptionValues: { effort: 'high' } }
+    );
+    expect(resolved.selectedModelId).toBe('opus');
+    expect(resolved.configOptionValues).not.toHaveProperty('fast');
+    expect(resolved.configOptionSelectors.map((selector) => selector.configId)).toContain('fast');
+    expect(applied).toBe(false);
+  });
+
+  it('stops being the Role once a pinned knob is moved by hand', () => {
+    const pins = { ...fable, configOptionValues: { effort: 'high', fast: false } };
+    expect(seeded(pins, { configOptions: { effort: 'low' } }).applied).toBe(false);
+    expect(seeded(pins, { model: { value: 'opus' }, configOptions: {} }).applied).toBe(false);
+    // On Opus the toggle exists, so turning Fast on there is a real difference.
+    expect(
+      seeded(
+        { modeId: 'auto', modelId: 'opus', configOptionValues: { fast: false } },
+        { configOptions: { fast: true } }
+      ).applied
+    ).toBe(false);
+  });
+});
+
 describe('resolveTurnAgentRoleForRunConfig', () => {
   const role = makeRole({
     id: 'r-1' as AgentRoleId,
@@ -389,6 +506,7 @@ describe('resolveTurnAgentRoleForRunConfig', () => {
     modeId: 'plan',
     modelId: null,
     configOptionValues: { collaboration_mode: 'plan' },
+    configOptionSelectors: [{ configId: 'collaboration_mode' }],
   };
 
   it('freezes explicit None when execute-plan overrides a pinned Role value', () => {
@@ -401,6 +519,55 @@ describe('resolveTurnAgentRoleForRunConfig', () => {
           modeIdOverride: 'default',
           configOptionValuesOverride: { collaboration_mode: 'default' },
         },
+      })
+    ).toBeNull();
+  });
+});
+
+describe('a programmatic Turn of a Role that pins Fast off', () => {
+  const role = makeRole({
+    id: 'r-fast' as AgentRoleId,
+    name: 'Reviewer',
+    runConfig: { modelId: 'opus', configOptionValues: { fast: false } },
+  });
+  const args = {
+    turnSelection: { agentRoleId: role.id, agentRoleRevision: role.revision },
+    item: { role, instance: role.instances[0]!, groupName: 'Claude Code' },
+    overrides: { modeIdOverride: 'default' },
+  };
+  // What the composer runs carries no Fast value in either case.
+  const current = { modeId: 'plan', modelId: 'opus', configOptionValues: {} };
+
+  it('keeps the Role where the model has no Fast toggle', () => {
+    expect(
+      resolveTurnAgentRoleForRunConfig({
+        ...args,
+        current: { ...current, configOptionSelectors: [{ configId: 'effort' }] },
+      })
+    ).toEqual(args.turnSelection);
+  });
+
+  it('drops the Role where the toggle exists and nothing says it is off', () => {
+    expect(
+      resolveTurnAgentRoleForRunConfig({
+        ...args,
+        current: { ...current, configOptionSelectors: [{ configId: 'fast' }] },
+      })
+    ).toBeNull();
+  });
+
+  it('drops the Role when the Turn runs a model whose controls are not known here', () => {
+    const unpinned = makeRole({
+      id: 'r-any-model' as AgentRoleId,
+      name: 'Any model',
+      runConfig: { configOptionValues: { fast: false } },
+    });
+    expect(
+      resolveTurnAgentRoleForRunConfig({
+        turnSelection: { agentRoleId: unpinned.id, agentRoleRevision: unpinned.revision },
+        item: { role: unpinned, instance: unpinned.instances[0]!, groupName: 'Claude Code' },
+        current: { ...current, configOptionSelectors: [{ configId: 'effort' }] },
+        overrides: { modelIdOverride: 'claude-fable-5-1' },
       })
     ).toBeNull();
   });

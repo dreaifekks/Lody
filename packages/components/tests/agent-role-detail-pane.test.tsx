@@ -14,7 +14,7 @@ import {
 
 import { AgentRoleDetailPane } from '../src/components/sessions/agent-role-detail-pane';
 import { initI18n } from '../src/i18n';
-import { singleMachineRole } from './agent-role-fixture';
+import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -108,6 +108,35 @@ describe('AgentRoleDetailPane', () => {
     // the bound agent's own defaults and present it as the Role's.
     expect(rowValue(view, 'Reasoning')).toBeUndefined();
     expect(rowValue(view, 'Permission')).toBeUndefined();
+  });
+
+  it('names the machine the instance runs on after its agent', async () => {
+    const view = await render({ machineName: 'devnuc' });
+    expect(view.querySelector('header')?.textContent).toContain('Codex ・ devnuc');
+  });
+
+  it('says which pinned setting the agent cannot run, and nothing when all can', async () => {
+    const claude = { ...agentConfig, agentType: 'claude', name: 'Claude Code' };
+    const machine = { acpCapabilities: { 'config-1': reportedClaudeCapabilities } };
+    const fable = (fast: boolean) =>
+      role({
+        runConfig: {
+          modeId: 'auto',
+          modelId: 'claude-fable-5-1',
+          configOptionValues: { effort: 'max', fast },
+        },
+      });
+    const unsupported = 'no longer supports';
+    // Fast off on a model without Fast is what runs anyway.
+    const fine = await render({ role: fable(false), agentConfig: claude, machine });
+    expect(fine.textContent).not.toContain(unsupported);
+    // Fast on there cannot run: the Role would not take, and this is why.
+    const broken = await render({ role: fable(true), agentConfig: claude, machine });
+    expect(broken.textContent).toContain(unsupported);
+    expect(broken.textContent).toContain('option “fast”');
+    // Capabilities the agent did not report itself call nothing unsupported.
+    const guessed = await render({ role: fable(true), agentConfig: claude, machine: null });
+    expect(guessed.textContent).not.toContain(unsupported);
   });
 
   it('shows the instruction itself and offers editing only where it can be done', async () => {

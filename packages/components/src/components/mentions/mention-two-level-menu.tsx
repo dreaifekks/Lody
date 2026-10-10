@@ -702,6 +702,7 @@ function CandidateDetailPane({ detail }: { detail: MentionCandidateDetail }) {
           instance={detail.agentRole.instance}
           agentConfig={detail.agentRole.agentConfig}
           machine={detail.agentRole.machine}
+          machineName={detail.agentRole.machineName}
           className="absolute inset-0 h-auto w-auto"
         />
       </div>

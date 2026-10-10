@@ -2750,11 +2750,15 @@ export const SessionChatInterface = memo(
       capabilityAuthority,
       steerCapability
     );
-    const { selectedModeId, selectedModelId, configOptionValues } =
-      useResolvedAcpSessionConfigSelection(sessionConfigSelection, selectorOptions, {
-        cliType: session.cliType,
-        agentType: session.agentType,
-      });
+    const {
+      selectedModeId,
+      selectedModelId,
+      configOptionValues,
+      configOptionSelectors: resolvedConfigOptionSelectors,
+    } = useResolvedAcpSessionConfigSelection(sessionConfigSelection, selectorOptions, {
+      cliType: session.cliType,
+      agentType: session.agentType,
+    });
     const machineDotlodyPath = useMemo(
       () => resolveMachineDotlodyPath(machineFlockRows, isLocalSession ? localHomeDir : null),
       [isLocalSession, localHomeDir, machineFlockRows]
@@ -7291,6 +7295,7 @@ export const SessionChatInterface = memo(
                             showCodexResetForecast={showCodexResetForecast}
                             isContextCompacting={isContextCompacting}
                             configOptionSelectors={configOptionSelectors}
+                            resolvedConfigOptionSelectors={resolvedConfigOptionSelectors}
                             configOptionValues={configOptionValues}
                             isRepoPublic={isRepoPublic}
                             availableCommands={availableCommands}

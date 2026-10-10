@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from 'react';
+import { act, createElement, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AGENT_ROLE_EMOJI } from '@lody/shared';
 import type {
+  AcpCapabilityCacheEntry,
   AgentConfigId,
   AgentConfigMeta,
   AgentRole,
@@ -44,7 +45,15 @@ import {
   sessionAgentRoleDurableSnapshotAtomFamily,
   sessionAgentRoleSelectionAtomFamily,
 } from '../src/atoms/session-agent-roles';
-import { singleMachineRole } from './agent-role-fixture';
+import { buildAcpSelectorOptions } from '../src/components/shared/acp-selector-options';
+import {
+  buildAcpSessionConfigCandidates,
+  resolveAcpSessionConfigSelection,
+  type AcpSessionConfigPreferences,
+  type AcpSessionUserConfigEdits,
+  type ResolvedAcpSessionConfigSelection,
+} from '../src/lib/acp-session-config-selection';
+import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -174,6 +183,173 @@ describe('useSessionAgentRole', () => {
     root = null;
     container?.remove();
     container = null;
+  });
+
+  describe('in a live Claude session, resolved as the composer resolves it', () => {
+    // Unsent edits over what the agent last reported, against its own capabilities.
+    const claude = { cliType: 'builtin', agentType: 'claude' } as const;
+    let resolved: ResolvedAcpSessionConfigSelection | null = null;
+    let live: {
+      /** What the agent reports; the fixture's unless a test says otherwise. */
+      capabilities?: AcpCapabilityCacheEntry;
+      runtimePreferences?: AcpSessionConfigPreferences;
+      initialEdits?: AcpSessionUserConfigEdits;
+      provenanceRoleId?: AgentRoleId;
+    } = {};
+    function LiveSession() {
+      const [edits, setEdits] = useState<AcpSessionUserConfigEdits>(
+        live.initialEdits ?? { configOptions: {} }
+      );
+      const inputs = { edits, preferences: {}, runtimePreferences: live.runtimePreferences };
+      const candidates = buildAcpSessionConfigCandidates(inputs);
+      const selectorOptions = buildAcpSelectorOptions({
+        ...claude,
+        configId: 'agent-1' as AgentConfigId,
+        selectedModeId: candidates.modeId,
+        selectedModelId: candidates.modelId,
+        configOptionValues: candidates.configOptionValues,
+        machine: {
+          acpCapabilities: { 'agent-1': live.capabilities ?? reportedClaudeCapabilities },
+        },
+      });
+      resolved = resolveAcpSessionConfigSelection(inputs, selectorOptions, claude);
+      control = useSessionAgentRole({
+        sessionId: 'session-1' as SessionId,
+        provenanceRoleId: live.provenanceRoleId,
+        machineId: 'machine-1' as MachineId,
+        agentConfigId: 'agent-1' as AgentConfigId,
+        modelOptions: selectorOptions.modelOptions,
+        selectedModelId: resolved.selectedModelId,
+        onModelChange: (value) => setEdits((prev) => ({ ...prev, model: { value } })),
+        modeOptions: selectorOptions.modeOptions,
+        selectedModeId: resolved.selectedModeId,
+        onModeChange: (value) => setEdits((prev) => ({ ...prev, mode: { value } })),
+        // The menu's selectors describe the candidate model; the resolved ones
+        // the model that will run. The session passes both, as here.
+        configOptionSelectors: selectorOptions.configOptionSelectors,
+        resolvedConfigOptionSelectors: resolved.configOptionSelectors,
+        configOptionValues: resolved.configOptionValues,
+        onConfigOptionChange: (configId, value) =>
+          setEdits((prev) => ({
+            ...prev,
+            configOptions: { ...prev.configOptions, [configId]: value },
+          })),
+      });
+      return null;
+    }
+    const claudeRole = (id: string, runConfig: AgentRole['runConfig']) =>
+      singleMachineRole({ ...role(id, 'unused'), instances: undefined, runConfig });
+
+    beforeEach(() => {
+      live = {};
+      resolved = null;
+      catalog.agentConfigs = [
+        { ...agentConfig, ...claude, name: 'Claude Code' } as AgentConfigMeta,
+      ];
+    });
+
+    it('names a picked Role that pins Fast off on a model without a Fast toggle', async () => {
+      // uiStyle's instance as stored: Fable, effort max, Fast off.
+      catalog.roles = [
+        claudeRole('ui-style', {
+          modeId: 'auto',
+          modelId: 'claude-fable-5-1',
+          configOptionValues: { effort: 'max', fast: false },
+        }),
+      ];
+      await act(async () => root?.render(createElement(LiveSession)));
+      expect(resolved).toMatchObject({
+        selectedModelId: 'opus',
+        configOptionValues: { fast: false },
+      });
+
+      await act(async () => control?.onSelect(iid('ui-style')));
+      // The session now runs what the Role pins; Fable has no Fast to carry.
+      expect(resolved).toMatchObject({
+        selectedModeId: 'auto',
+        selectedModelId: 'claude-fable-5-1',
+        configOptionValues: { effort: 'max' },
+      });
+      expect(resolved!.configOptionValues).not.toHaveProperty('fast');
+      expect(control?.selectedInstanceId).toBe(iid('ui-style'));
+      expect(control?.turnSelection).toMatchObject({ agentRoleId: 'ui-style' });
+    });
+
+    it('does not name a Fast-off Role where Fast is only missing from what the agent reported', async () => {
+      // The Role that made this session pins Opus with Fast off. The agent last
+      // reported running Fable, whose snapshot has no `fast`; the user then put
+      // the model back on Opus. Opus has the toggle and nothing says it is off.
+      catalog.roles = [
+        claudeRole('reviewer', {
+          modeId: 'auto',
+          modelId: 'opus',
+          configOptionValues: { effort: 'high', fast: false },
+        }),
+      ];
+      live = {
+        provenanceRoleId: 'reviewer' as AgentRoleId,
+        runtimePreferences: {
+          modeId: 'auto',
+          modelId: 'claude-fable-5-1',
+          configOptionValues: { effort: 'high' },
+        },
+        initialEdits: { model: { value: 'opus' }, configOptions: {} },
+      };
+      await act(async () => root?.render(createElement(LiveSession)));
+      // Everything else the Role pins is what runs; only Fast is unaccounted for.
+      expect(resolved).toMatchObject({
+        selectedModeId: 'auto',
+        selectedModelId: 'opus',
+        configOptionValues: { effort: 'high' },
+      });
+      expect(resolved!.configOptionValues).not.toHaveProperty('fast');
+      expect(control?.selectedInstanceId).toBeNull();
+      // A Turn sent now does not claim the Role, nor does a programmatic one.
+      expect(control?.turnSelection).toBeNull();
+      expect(resolveProgrammaticTurnAgentRole({ composer: control?.turnSelection })).toBeNull();
+    });
+
+    it('judges a Fast-off Role by the model that will run, not the one last reported', async () => {
+      // The agent last reported Fable, which it no longer offers: the model
+      // falls back to Opus. The menu's selectors still describe Fable, which
+      // has no Fast toggle; Opus has one, and nothing says it is off.
+      catalog.roles = [
+        claudeRole('reviewer', {
+          modeId: 'auto',
+          modelId: 'opus',
+          configOptionValues: { effort: 'high', fast: false },
+        }),
+      ];
+      live = {
+        provenanceRoleId: 'reviewer' as AgentRoleId,
+        capabilities: {
+          ...reportedClaudeCapabilities,
+          configOptions: reportedClaudeCapabilities.configOptions?.map((option) =>
+            option.id === 'model'
+              ? { ...option, options: option.options.filter((model) => model.value === 'opus') }
+              : option
+          ),
+        },
+        runtimePreferences: {
+          modeId: 'auto',
+          modelId: 'claude-fable-5-1',
+          configOptionValues: { effort: 'high' },
+        },
+      };
+      await act(async () => root?.render(createElement(LiveSession)));
+      expect(resolved).toMatchObject({
+        selectedModeId: 'auto',
+        selectedModelId: 'opus',
+        configOptionValues: { effort: 'high' },
+      });
+      expect(resolved!.configOptionValues).not.toHaveProperty('fast');
+      expect(resolved!.configOptionSelectors.map((selector) => selector.configId)).toContain(
+        'fast'
+      );
+      expect(control?.selectedInstanceId).toBeNull();
+      expect(control?.turnSelection).toBeNull();
+      expect(resolveProgrammaticTurnAgentRole({ composer: control?.turnSelection })).toBeNull();
+    });
   });
 
   it('offers a Role picked on its second machine and records that instance', async () => {

@@ -32,6 +32,7 @@ import {
   findComposerAgentRoleItem,
   type ComposerAgentRoleItem,
   type ComposerRunConfigOverrides,
+  type ComposerRunConfigValues,
   type SessionTurnAgentRoleSelection as ComposerTurnAgentRoleSelection,
 } from '@/lib/composer-agent-roles';
 import { resolvePermissionModeFace } from '@/lib/permission-mode-face';
@@ -485,6 +486,11 @@ export interface SessionChatInputAreaProps {
   isContextCompacting?: boolean;
   /** Dynamic config option selectors from the agent's configOptions. */
   configOptionSelectors?: AcpConfigOptionSelector[];
+  /**
+   * The selectors resolved for the model that will run. A Role's pins are
+   * judged against these, not the menu's, which describe the candidate model.
+   */
+  resolvedConfigOptionSelectors?: readonly AcpConfigOptionSelector[];
   /** Current values for each configOption (configId → value). */
   configOptionValues?: Record<string, AcpConfigOptionValue>;
   /** Whether the session's repo is public (for #mention feature) */
@@ -610,6 +616,7 @@ export const SessionChatInputArea = memo(
       showCodexResetForecast = false,
       isContextCompacting = false,
       configOptionSelectors,
+      resolvedConfigOptionSelectors,
       configOptionValues,
       isRepoPublic,
       availableCommands,
@@ -665,10 +672,11 @@ export const SessionChatInputArea = memo(
     const selectedAgentRoleRef = useRef<ComposerAgentRoleItem | undefined>(undefined);
     /** Readable Roles, for attributing accepted `@Role` mentions in analytics. */
     const workspaceAgentRolesRef = useRef<readonly AgentRole[]>([]);
-    const agentRoleRunConfigRef = useRef({
+    const agentRoleRunConfigRef = useRef<ComposerRunConfigValues>({
       modeId: selectedModeId,
       modelId: selectedModelId,
       configOptionValues: configOptionValues ?? {},
+      configOptionSelectors: resolvedConfigOptionSelectors,
     });
     const attachmentInputRef = useRef<HTMLInputElement>(null);
     const activeSessionIdRef = useRef(session.id);
@@ -1934,6 +1942,7 @@ export const SessionChatInputArea = memo(
       selectedModeId,
       onModeChange,
       configOptionSelectors: configOptionSelectors ?? [],
+      resolvedConfigOptionSelectors,
       configOptionValues,
       runConfigHasUserEdits,
       onConfigOptionChange,
@@ -1964,10 +1973,12 @@ export const SessionChatInputArea = memo(
         modeId: selectedModeId,
         modelId: selectedModelId,
         configOptionValues: configOptionValues ?? {},
+        configOptionSelectors: resolvedConfigOptionSelectors,
       };
     }, [
       agentRoleTurnSelection,
       configOptionValues,
+      resolvedConfigOptionSelectors,
       selectedAgentRoleItem,
       selectedModeId,
       selectedModelId,

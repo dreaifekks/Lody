@@ -14,7 +14,11 @@ import {
   removeMentionText,
 } from './mention-input-core';
 import { MentionHighlighter } from './mention-highlighter';
-import { findTriggerCandidates, isMentionNavigationPrefix } from './mention-trigger';
+import {
+  findQueryTriggerIndex,
+  findTriggerCandidates,
+  isMentionNavigationPrefix,
+} from './mention-trigger';
 import { type Mention, useMentionContext } from './mention-root';
 
 const INPUT_NAME = 'MentionInput';
@@ -681,7 +685,7 @@ const MentionInput = React.forwardRef<InputElement, MentionInputProps>((props, f
       }
 
       function getTriggerSpan() {
-        const triggerIndex = input.value.lastIndexOf(context.trigger, cursorPosition);
+        const triggerIndex = findQueryTriggerIndex(input.value, context.trigger, cursorPosition);
         if (triggerIndex === -1) return null;
         return {
           triggerIndex,

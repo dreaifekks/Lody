@@ -83,6 +83,7 @@ export function useSessionAgentRole({
   selectedModeId,
   onModeChange,
   configOptionSelectors,
+  resolvedConfigOptionSelectors,
   configOptionValues,
   runConfigHasUserEdits = false,
   onConfigOptionChange,
@@ -112,6 +113,12 @@ export function useSessionAgentRole({
   selectedModeId: string | null;
   onModeChange?: (value: string) => void;
   configOptionSelectors: ReadonlyArray<AcpConfigOptionSelector>;
+  /**
+   * The selectors resolved for the model that will run, which a Role's pins
+   * are judged against. `configOptionSelectors` are the menu's: built for the
+   * candidate model, which validation may replace.
+   */
+  resolvedConfigOptionSelectors: ReadonlyArray<AcpConfigOptionSelector> | undefined;
   configOptionValues: Record<string, AcpConfigOptionValue | undefined> | undefined;
   /** Tracks manual drift even while the selected Role row is unavailable. */
   runConfigHasUserEdits?: boolean;
@@ -240,8 +247,9 @@ export function useSessionAgentRole({
       modeId: selectedModeId,
       modelId: selectedModelId,
       configOptionValues: configOptionValues ?? {},
+      configOptionSelectors: resolvedConfigOptionSelectors,
     }),
-    [configOptionValues, selectedModeId, selectedModelId]
+    [configOptionValues, resolvedConfigOptionSelectors, selectedModeId, selectedModelId]
   );
   /* The picked instance, while it still exists on this Session's machine: a
      deleted or moved instance ends the selection rather than handing it to

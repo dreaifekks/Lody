@@ -25,6 +25,7 @@ import {
 } from './mention-input-core';
 import type { InputElement } from './mention-input';
 import type { ItemElement } from './mention-item';
+import { findQueryTriggerIndex } from './mention-trigger';
 
 function getDataState(open: boolean) {
   return open ? 'open' : 'closed';
@@ -764,7 +765,7 @@ const MentionRoot = React.forwardRef<RootElement, MentionRootProps>((props, forw
     const input = inputRef.current;
     if (!input) return false;
     const caretPosition = input.selectionStart ?? input.value.length;
-    const triggerIndex = input.value.lastIndexOf(trigger, caretPosition);
+    const triggerIndex = findQueryTriggerIndex(input.value, trigger, caretPosition);
     if (triggerIndex === -1) return false;
 
     const caret = triggerIndex + trigger.length;

@@ -12,6 +12,7 @@ import {
 import {
   getMentionViewCandidates,
   selectMentionMenuView,
+  buildAgentRoleCandidates,
   toAgentRoleCandidate,
   toCommandCandidate,
   toFileCandidate,
@@ -25,6 +26,7 @@ import { buildComposerAgentRoleItems } from '@/lib/composer-agent-roles';
 import {
   AGENT_ROLE_VERSION,
   withAgentRoleInstances,
+  type AcpCapabilityCacheEntry,
   type AgentRoleInstanceId,
   type CatalogAgentRole,
   type AgentConfigId,
@@ -212,25 +214,91 @@ const ROLE_AGENT_CONFIGS = [
     name: 'Gemini',
   },
   { id: 'config-build-box', machineId: 'machine-2', ...ROLE_AGENT_CONFIG },
+  {
+    id: 'config-claude-box',
+    machineId: 'machine-2',
+    ...ROLE_AGENT_CONFIG,
+    agentType: 'claude',
+    name: 'Claude',
+  },
 ] as unknown as AgentConfigMeta[];
 const machineName = (id: MachineId) => (id === 'machine-2' ? 'Build box' : 'Studio');
 
-/** A Role's mention candidates, built as the composer builds them on the Studio. */
-const roleCandidates = (
-  role: CatalogAgentRole,
-  availability: RoleAvailability = { kind: 'available' },
-  availabilityText?: string
-): MentionCandidate[] =>
+/**
+ * What the Studio's Claude reports about itself: the probed options describe
+ * Opus, and its own declaration says Fable takes effort and has no Fast toggle.
+ */
+const CLAUDE_REPORTED_CAPABILITIES = {
+  cacheVersion: 9,
+  cliType: 'builtin',
+  agentType: 'claude',
+  provenance: 'runtime',
+  fetchedAt: 1,
+  sourceVersion: 'storybook',
+  configOptions: [
+    {
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      type: 'select',
+      currentValue: 'opus',
+      options: [
+        { value: 'opus', name: 'Opus 5.5' },
+        { value: 'claude-fable-5-1', name: 'Fable 5.1' },
+      ],
+    },
+    {
+      id: 'effort',
+      name: 'Effort',
+      category: 'thought_level',
+      type: 'select',
+      currentValue: 'high',
+      options: ['low', 'medium', 'high', 'max'].map((value) => ({ value, name: value })),
+    },
+    {
+      id: 'fast',
+      name: 'Fast mode',
+      category: 'model_config',
+      type: 'boolean',
+      currentValue: false,
+      options: [],
+    },
+  ],
+  declaredModelControls: {
+    opus: { effortValues: ['low', 'medium', 'high', 'max'], fastMode: true },
+    'claude-fable-5-1': { effortValues: ['low', 'medium', 'high', 'max'], fastMode: false },
+  },
+} as unknown as AcpCapabilityCacheEntry;
+
+/** Roles' mention entries, built as the composer builds them on the Studio. */
+const roleMentionItems = (
+  roles: CatalogAgentRole[],
+  availability: RoleAvailability = { kind: 'available' }
+) =>
   buildAgentRoleMentionItems(
     buildComposerAgentRoleItems({
-      roles: [role],
+      roles,
       machineId: 'machine-1' as MachineId,
       agentConfigs: ROLE_AGENT_CONFIGS,
       resolveAvailability: () => availability,
       names: { machine: machineName, unknownAgent: 'Unknown agent' },
     }),
-    (id) => ({ ...ROLE_MACHINE, name: machineName(id) })
-  ).map((item) => toAgentRoleCandidate(item, availabilityText));
+    (id) => ({
+      ...ROLE_MACHINE,
+      name: machineName(id),
+      acpCapabilities: { 'config-claude': CLAUDE_REPORTED_CAPABILITIES },
+    })
+  );
+
+/** A Role's mention candidates as listed without a machine in the term. */
+const roleCandidates = (
+  role: CatalogAgentRole,
+  availability: RoleAvailability = { kind: 'available' },
+  availabilityText?: string
+): MentionCandidate[] =>
+  roleMentionItems([role], availability)
+    .filter((item) => !item.pinned)
+    .map((item) => toAgentRoleCandidate(item, availabilityText));
 
 /** A Role with one entry. */
 const roleCandidate = (
@@ -264,17 +332,28 @@ const AGENT_ROLES: MentionCandidate[] = [
   }),
 ];
 
-/** Two groups on the Studio (Claude, Gemini): one entry each, named by group. */
+/**
+ * Two groups on the Studio (Claude, Gemini): one entry each, named by group.
+ * Claude runs on the build box too, which `@ui@build` lists on its own.
+ */
 const uiStyleRole = agentRole({
   id: 'role-ui-style' as AgentRoleId,
   name: 'uiStyle',
   emoji: '🎨',
-  instances: (['Claude', 'Gemini'] as const).map((name) => ({
-    id: `ui-style-${name}` as AgentRoleInstanceId,
-    machineId: 'machine-1' as MachineId,
-    agentConfigId: `config-${name.toLowerCase()}` as AgentConfigId,
-    runConfig: { modelId: name === 'Claude' ? 'opus' : 'gemini-3.7-flash-high' },
-  })),
+  instances: [
+    ...(['Claude', 'Gemini'] as const).map((name) => ({
+      id: `ui-style-${name}` as AgentRoleInstanceId,
+      machineId: 'machine-1' as MachineId,
+      agentConfigId: `config-${name.toLowerCase()}` as AgentConfigId,
+      runConfig: { modelId: name === 'Claude' ? 'opus' : 'gemini-3.7-flash-high' },
+    })),
+    {
+      id: 'ui-style-Claude-box' as AgentRoleInstanceId,
+      machineId: 'machine-2' as MachineId,
+      agentConfigId: 'config-claude-box' as AgentConfigId,
+      runConfig: { modelId: 'opus' },
+    },
+  ],
 });
 /** Only on the build box: listed with its machine named. */
 const visionRole = agentRole({
@@ -737,6 +816,54 @@ export const AgentRoleAvailability: Story = {
 
 export const AgentRoleAvailabilityNarrow: Story = {
   args: { ...AgentRoleAvailability.args, narrow: true },
+};
+
+/** Roles ranked as the composer ranks them, so a machine in the term is read. */
+const RANKED_ROLE_CATEGORIES = [
+  category('agent_role', 'role', 'Agent Roles', 'agent_role', [], {
+    getCandidates: (term) =>
+      buildAgentRoleCandidates(roleMentionItems([uiStyleRole, visionRole]), term),
+  }),
+];
+
+/**
+ * A Role that pins Fast on for Fable, which has no Fast toggle: picking it does
+ * not take, and its pane says which setting the agent cannot run.
+ */
+export const AgentRoleUnsupportedPin: Story = {
+  args: {
+    search: 'role:',
+    categories: [
+      category(
+        'agent_role',
+        'role',
+        'Agent Roles',
+        'agent_role',
+        roleCandidates(
+          agentRole({
+            id: 'role-fast-fable' as AgentRoleId,
+            name: 'Deep Review',
+            agentConfigId: 'config-claude' as AgentConfigId,
+            runConfig: {
+              modelId: 'claude-fable-5-1',
+              configOptionValues: { effort: 'max', fast: true },
+            },
+          })
+        )
+      ),
+    ],
+  },
+};
+
+/** `@role:ui@build` — the build box's instances, each under its machine. */
+export const AgentRoleOnMachine: Story = {
+  args: { search: 'role:ui@build', categories: RANKED_ROLE_CATEGORIES },
+};
+
+/** Type `@ui@build` in the main composer: the second `@` keeps the same query. */
+export const MainComposerRoleOnMachine: Story = {
+  args: { search: '' },
+  render: () => <FloatingHarness mainComposer categories={RANKED_ROLE_CATEGORIES} />,
 };
 
 /** The inline editor's caret menu at the page's foot. */
