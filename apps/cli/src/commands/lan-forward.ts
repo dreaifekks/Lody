@@ -90,7 +90,7 @@ export const forwardCommand = new Command('forward')
   .description(
     'Reach ports through a machine of a LAN, such as a dev server an agent started there'
   )
-  .argument('<machine>', 'Name, short name or id of a member')
+  .argument('<machine>', 'Name, short name or id of a member, as `lan machines` lists them')
   .argument('<ports...>', `A port there: ${MAPPING_FORMS}`)
   .option('--bind <address>', 'Local address to listen on', '127.0.0.1')
   .option('--json', 'Print JSON output')
@@ -100,7 +100,13 @@ export const forwardCommand = new Command('forward')
     [
       '',
       'Like ssh -L: a port alone is one of the machine itself, and a host names',
-      'anything the machine reaches. The forwarding lasts until this command ends (Ctrl-C).',
+      'anything the machine reaches. The forwarding lasts until this command ends',
+      '(Ctrl-C), so run it in the background to use the port from the same place.',
+      '',
+      'Examples:',
+      '  lody-lan lan forward mba 3000             127.0.0.1:3000 is port 3000 of mba',
+      '  lody-lan lan forward mba 8080:3000        127.0.0.1:8080 is port 3000 of mba',
+      '  lody-lan lan forward mba 8080:nas.lan:80  127.0.0.1:8080 is nas.lan:80 as mba reaches it',
     ].join('\n')
   )
   .action(async (selector: string, specs: string[], options: ForwardOptions) => {

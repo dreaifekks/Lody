@@ -33,6 +33,7 @@ each topic; the invariants stay in the scoped `AGENTS.md` files they link to.
 | GitHub         | `apps/cli/src/lib/lan/hub-github.ts`, `lan-github-tokens.ts`, `lan-agent-github.ts`         | One GitHub token on the host for members that have no `gh` login                                                              |
 | Credentials    | `apps/cli/src/lib/lan/hub-credentials.ts`, `lan-credential-sync.ts`, `lan-push-fallback.ts` | Every member keeps a copy of the GitHub token, the APNs key and the phones, and uses it while the hub is away                 |
 | Ports          | `apps/cli/src/lib/lan/lan-tunnel.ts`, `apps/cli/src/lib/local-tunnel-server.ts`             | A program of one member reaches a port another member reaches                                                                 |
+| Command        | `apps/cli/src/lib/lan/lan-session-command.ts`                                               | `lody-lan` on the PATH of every session, and the sentence each turn tells the agent about it                                  |
 | Usage          | `apps/cli/src/lib/usage/local-usage-ledger.ts`, `packages/components/src/lib/lan-usage.ts`  | Each machine counts what its agents used; the usage page gathers it from every member                                         |
 | Shares         | `apps/cli/src/lib/lan/hub-shares.ts`, `lan-shares.ts`, `packages/lan-share-reader`          | The hub keeps published conversations and serves them to readers on a port of their own                                       |
 
@@ -92,7 +93,7 @@ that workspace back instead of creating an empty one.
 
 | Page                                                              | What it covers                                                                     |
 | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| [Terminals, ports, files and requests](lan-member-connections.md) | Direct connections between members; desktop and agent requests to another machine  |
+| [Terminals, ports, files and requests](lan-member-connections.md) | Direct connections between members, `lody-lan` in a session, requests to a machine |
 | [Folders in an editor](lan-folders.md)                            | Opening another member's folder in an editor over SSH                              |
 | [Machines](lan-machines.md)                                       | Machine metadata, the machine list, requests between members, following a change   |
 | [Updates, hosting and releases](lan-releases.md)                  | Self-update of services and desktops, `lody lan up`, fork builds, tags and signing |

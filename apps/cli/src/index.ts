@@ -47,7 +47,8 @@ installCliHttpGlobalDispatcher({ logger: getLogger('http-transport') });
 const program = new Command();
 
 program
-  .name('lody')
+  // A launcher names itself, so help prints commands that work as printed.
+  .name(process.env.LODY_LAN_COMMAND?.trim() || 'lody')
   .description('Lody Agent CLI tool for managing remote command execution')
   .version(version, '-v, --version', 'display version number')
   .enablePositionalOptions();

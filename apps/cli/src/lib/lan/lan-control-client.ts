@@ -11,7 +11,10 @@ import {
 } from '@lody/shared';
 import { makeLocalProbeClientAuto } from '@lody/shared/node/local-ipc';
 import { Effect } from 'effect';
-import { DAEMON_NOT_RUNNING_MESSAGE } from '@/lib/command-runtime';
+import {
+  DAEMON_NOT_RUNNING_MESSAGE,
+  describeLocalDaemonConnectFailure,
+} from '@/lib/command-runtime';
 import { sendLocalProjectControl } from '@/lib/local-project-control-client';
 import { makeLocalWorkspaceCatalog } from '@/lib/local-workspace-catalog';
 
@@ -22,14 +25,11 @@ const ASK_TIMEOUT_MS = 150_000;
 
 /** The agent service names its machine itself, so no account is involved. */
 export async function resolveLocalMachineId(): Promise<MachineId> {
-  try {
-    const health = await Effect.runPromise(
-      makeLocalProbeClientAuto().health({ timeoutMs: PROBE_TIMEOUT_MS })
-    );
-    return health.machineId as MachineId;
-  } catch {
-    throw new Error(DAEMON_NOT_RUNNING_MESSAGE);
-  }
+  const health = await Effect.runPromise(
+    Effect.either(makeLocalProbeClientAuto().health({ timeoutMs: PROBE_TIMEOUT_MS }))
+  );
+  if (health._tag === 'Left') throw new Error(describeLocalDaemonConnectFailure(health.left));
+  return health.right.machineId as MachineId;
 }
 
 export async function listLanMachinesOfThisMachine(machineId: MachineId): Promise<LanMachines> {

@@ -257,5 +257,12 @@ export async function executeTerminalCommand(
         )
       ) as Record<string, unknown>;
     }
+    default: {
+      // Unreachable while TerminalCommand stays a closed union: the request is
+      // parsed before it comes here. Falling off the switch failed as well,
+      // when the caller copied the missing result.
+      const unreachable: never = command;
+      throw new Error(`Unsupported terminal command: ${String(unreachable)}`);
+    }
   }
 }

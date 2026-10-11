@@ -54,6 +54,8 @@ const DEFAULT_LOCAL_CONTROL_TIMEOUT_MS = 30_000;
 const DAEMON_HEALTH_PROBE_TIMEOUT_MS = 2_000;
 export const DAEMON_NOT_RUNNING_MESSAGE =
   'Local CLI daemon is not running. Run `npx lody start` first.';
+export const DAEMON_CONNECT_NOT_PERMITTED_MESSAGE =
+  'Cannot connect to the Lody agent service of this machine: the connection was not permitted. If this command runs in a sandbox, run it outside the sandbox.';
 export const DAEMON_BUSY_MESSAGE =
   'Local CLI daemon did not answer in time. It may be busy; retry the request and reuse the same operationId when present.';
 export const WORKSPACE_SYNC_UNAVAILABLE_MESSAGE =
@@ -85,13 +87,32 @@ export class LocalDaemonAvailabilityError extends Data.TaggedError('LocalDaemonA
   }
 }
 
+/**
+ * What to say when the agent service cannot be connected to. A connection the
+ * operating system refused to let through (EPERM, EACCES) is what a sandbox
+ * around the command gives, such as the one Codex runs commands in: the
+ * service may well be running, so saying it is not would send an agent to
+ * start one. Nothing to connect to means it is not running.
+ */
+export function describeLocalDaemonConnectFailure(error: unknown): string {
+  for (
+    let current = error;
+    typeof current === 'object' && current !== null;
+    current = (current as { cause?: unknown }).cause
+  ) {
+    const code = (current as { code?: unknown }).code;
+    if (code === 'EPERM' || code === 'EACCES') return DAEMON_CONNECT_NOT_PERMITTED_MESSAGE;
+  }
+  return DAEMON_NOT_RUNNING_MESSAGE;
+}
+
 export function classifyLocalDaemonIpcError(
   error: IpcConnectError | IpcTimeoutError | IpcProtocolError
 ): LocalDaemonAvailabilityError {
   if (error instanceof IpcConnectError) {
     return new LocalDaemonAvailabilityError({
       code: 'DAEMON_NOT_RUNNING',
-      message: DAEMON_NOT_RUNNING_MESSAGE,
+      message: describeLocalDaemonConnectFailure(error),
       retryable: false,
       cause: error,
     });

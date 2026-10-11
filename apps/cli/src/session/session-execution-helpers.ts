@@ -1,4 +1,5 @@
 import { type IssuePRMention, type ProjectRef } from '@lody/shared';
+import { getLanSessionCommandReminder } from '@/lib/lan/lan-session-command';
 
 export {
   extractPromptPreviewFromInputBlocks,
@@ -80,5 +81,5 @@ export const buildPrompt = (
     : '';
   const systemCommands = project?.kind === 'github' ? GITHUB_WORKTREE_SYSTEM_COMMANDS : '';
 
-  return `${promptWithReferences}${feedbackInstruction}${systemCommands}${LODY_MCP_TOOLS_REMINDER}`;
+  return `${promptWithReferences}${feedbackInstruction}${systemCommands}${LODY_MCP_TOOLS_REMINDER}${getLanSessionCommandReminder()}`;
 };

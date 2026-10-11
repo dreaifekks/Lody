@@ -29,9 +29,11 @@ import {
 import { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import { LanMembership, toLanWorkspaces } from '@/lib/lan/lan-membership';
 import { createLanCredentialSync } from '@/lib/lan/lan-credential-sync';
+import { installLanSessionCommand } from '@/lib/lan/lan-session-command';
 import { LanServiceManager } from '@/lib/lan/service';
 import { makeLocalWorkspaceCatalog } from '@/lib/local-workspace-catalog';
 import { checkClaude, checkCodex } from '@/utils';
+import { resolveLodyBin } from './daemon-shared';
 import { CliAvailability, resolveCliTypesSelection } from './start-options';
 import { CliRuntimeStateReporter } from '@/lib/cli-runtime-state';
 import { formatErrorMessage } from '@/utils/format-error';
@@ -642,6 +644,18 @@ async function startAgentService(
       logger,
       onRestartRequired: (reason) => triggerLanRestart?.(`LAN settings changed: ${reason}`),
       credentials: (hubs) => createLanCredentialSync({ hubs, logger }),
+    });
+    const membership = lanMembership;
+    // Sessions run this service's own command line as `lody-lan`, whether or
+    // not the machine has one installed.
+    installLanSessionCommand({
+      runtime: {
+        execPath: process.execPath,
+        entry: resolveLodyBin(),
+        electronRunAsNode: process.env.ELECTRON_RUN_AS_NODE,
+      },
+      isLanMember: () => membership.hubs.length > 0,
+      logger,
     });
     const streamsTokens = lanMembership.streamsTokens;
     const githubTokens = lanMembership.githubTokens;
