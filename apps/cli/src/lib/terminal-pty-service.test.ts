@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { machineShellScope, type TerminalServerEvent } from '@lody/shared';
 import type { Logger } from '@/utils/logger';
-import { setLanSessionCommand, writeLanSessionCommand } from './lan/lan-session-command';
+import { installLanSessionCommand, setLanSessionCommand } from './lan/lan-session-command';
 import { endOfInput, shellExitStatus } from './lan/lan-shell';
 import { makeTerminalPtyService, type TerminalPtyServiceApi } from './terminal-pty-service';
 
@@ -101,14 +101,13 @@ describe('a machine shell in a real terminal', () => {
     const shell = path.join(directory, 'shell');
     fs.writeFileSync(shell, '#!/bin/sh\nexec /bin/sh -c "$3"\n', { mode: 0o755 });
     process.env.SHELL = shell;
-    setLanSessionCommand({
-      binDir: writeLanSessionCommand(
-        // An embedded service runs as Node only when told to; a terminal's
-        // environment does not say so, the command does.
-        { execPath: process.execPath, entry, electronRunAsNode: '1' },
-        { dataDir: path.join(directory, "it's data") }
-      ),
+    installLanSessionCommand({
+      // An embedded service runs as Node only when told to; a terminal's
+      // environment does not say so, the command does.
+      runtime: { execPath: process.execPath, entry, electronRunAsNode: '1' },
       isLanMember: () => true,
+      logger: silentLogger(),
+      dataDir: path.join(directory, "it's data"),
     });
 
     const { exit, output } = await run('lody-lan lan shell mba -- "uname -a"');

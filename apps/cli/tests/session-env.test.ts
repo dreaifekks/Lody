@@ -20,10 +20,8 @@ vi.mock('@/agent/login-shell-env', () => ({
   },
 }));
 
-import {
-  setLanSessionCommand,
-  writeLanSessionCommand,
-} from '../src/lib/lan/lan-session-command';
+import { installLanSessionCommand, setLanSessionCommand } from '../src/lib/lan/lan-session-command';
+import { buildPrompt } from '../src/session/session-execution-helpers';
 import { Session } from '../src/session/session';
 import type { CreateAgentConfig } from '../src/session/session-manager';
 import type { SessionSandbox } from '../src/session/session-sandbox';
@@ -277,9 +275,11 @@ describe('Session buildShellEnv', () => {
 
 describe('the lody-lan command of a session', () => {
   let directory: string;
+  let warnings: string[];
 
   beforeEach(() => {
     directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-session-command-'));
+    warnings = [];
   });
 
   afterEach(() => {
@@ -287,11 +287,13 @@ describe('the lody-lan command of a session', () => {
     fs.rmSync(directory, { recursive: true, force: true });
   });
 
-  const buildEnv = (config: SessionConfig = createConfig()): NodeJS.ProcessEnv =>
+  // A PATH of its own: the one the suite runs with may lead with a gh shim.
+  const buildEnv = (overrides: Partial<SessionConfig> = {}): NodeJS.ProcessEnv =>
     (
-      new Session(config, createSilentLogger()) as unknown as {
-        buildShellEnv(): NodeJS.ProcessEnv;
-      }
+      new Session(
+        createConfig({ env: { PATH: '/usr/bin' }, ...overrides }),
+        createSilentLogger()
+      ) as unknown as { buildShellEnv(): NodeJS.ProcessEnv }
     ).buildShellEnv();
 
   /** Stands in for the CLI: says what it was started with. */
@@ -304,67 +306,88 @@ describe('the lody-lan command of a session', () => {
     return entry;
   };
 
+  const install = (
+    options: Partial<Parameters<typeof installLanSessionCommand>[0]> = {}
+  ): string => {
+    installLanSessionCommand({
+      runtime: { execPath: process.execPath, entry: writeEntry() },
+      isLanMember: () => true,
+      logger: { warn: (...args: unknown[]) => warnings.push(args.join(' ')) },
+      dataDir: directory,
+      ...options,
+    });
+    return path.join(directory, 'session-bin');
+  };
+
   it('leads the PATH of an agent and runs the CLI of the agent service that started it', () => {
-    const withoutCommand = buildEnv().PATH;
-    const binDir = writeLanSessionCommand(
-      { execPath: process.execPath, entry: writeEntry() },
-      { dataDir: directory }
-    );
-    setLanSessionCommand({ binDir, isLanMember: () => true });
+    const withoutCommand = buildEnv();
+    const binDir = install();
 
     const env = buildEnv();
 
-    // Nothing else moves, and without the command nothing is added.
-    expect(env.PATH).toBe([binDir, withoutCommand].join(delimiter));
+    // Nothing else changes, and without the command nothing is added.
+    expect(env).toEqual({ ...withoutCommand, PATH: [binDir, withoutCommand.PATH].join(delimiter) });
     expect(
       execFileSync('lody-lan', ['lan', 'shell', 'mba', '--', 'uname -a'], {
         env,
         encoding: 'utf8',
       }).trim()
     ).toBe('[["lan","shell","mba","--","uname -a"],"lody-lan"]');
+    expect(warnings).toEqual([]);
   });
 
-  it('stands before the gh shim, which still shadows the native gh', () => {
-    const binDir = writeLanSessionCommand(
-      { execPath: process.execPath, entry: writeEntry() },
-      { dataDir: directory }
-    );
-    setLanSessionCommand({ binDir, isLanMember: () => false });
+  it('follows the gh shim of a session, which stays first', () => {
+    const binDir = install();
 
     const entries = (
-      buildEnv(
-        createConfig({
-          githubCredentialPolicy: {
-            allowLocalAuth: true,
-            stateFilePath: path.join(directory, 'broker.json'),
-          },
-        })
-      ).PATH ?? ''
+      buildEnv({
+        githubCredentialPolicy: {
+          allowLocalAuth: true,
+          stateFilePath: path.join(directory, 'broker.json'),
+        },
+      }).PATH ?? ''
     ).split(delimiter);
 
-    expect(entries[0]).toBe(binDir);
-    expect(path.basename(path.dirname(entries[1] ?? ''))).toBe('gh-session-bin');
+    expect(path.basename(path.dirname(entries[0] ?? ''))).toBe('gh-session-bin');
+    expect(entries[1]).toBe(binDir);
   });
 
-  it('writes a .cmd for Windows that makes an embedded runtime act as Node', () => {
-    const binDir = writeLanSessionCommand(
-      {
-        execPath: 'C:\\Program Files\\Lody OSS\\Lody OSS.exe',
-        entry: 'C:\\Users\\100%\\cli\\index.js',
-        electronRunAsNode: '1',
-      },
-      { dataDir: directory, platform: 'win32' }
-    );
+  it('offers no command it could not write, and tells no agent of one', () => {
+    const withoutCommand = buildEnv();
+    const promptWithoutCommand = buildPrompt('ship the patch');
+    // The directory of the command cannot be made: a file has its name.
+    fs.writeFileSync(path.join(directory, 'session-bin'), '');
 
+    install();
+
+    expect(buildEnv()).toEqual(withoutCommand);
+    expect(buildPrompt('ship the patch')).toBe(promptWithoutCommand);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('Sessions get no lody-lan command');
+  });
+
+  it('gives Windows a .cmd that takes its paths from the environment of the session', () => {
+    const runtime = {
+      execPath: 'C:\\Users\\张三\\Lody OSS\\Lody OSS.exe',
+      entry: 'C:\\Users\\张三\\100%!\\cli\\index.js',
+      electronRunAsNode: '1',
+    };
+    const binDir = install({ runtime, platform: 'win32' });
+
+    const env = buildEnv();
+
+    // The file holds no path: cmd would read one in the code page of its console.
     expect(fs.readFileSync(path.join(binDir, 'lody-lan.cmd'), 'utf8').split('\r\n')).toEqual([
       '@echo off',
       'rem Written by the Lody agent service of this machine: its own command line.',
-      'setlocal',
+      'setlocal DisableDelayedExpansion',
       'set "LODY_LAN_COMMAND=lody-lan"',
       'set "ELECTRON_RUN_AS_NODE=1"',
-      '"C:\\Program Files\\Lody OSS\\Lody OSS.exe" "C:\\Users\\100%%\\cli\\index.js" %*',
+      '"%LODY_LAN_COMMAND_RUNTIME%" "%LODY_LAN_COMMAND_ENTRY%" %*',
       '',
     ]);
+    expect(env.LODY_LAN_COMMAND_RUNTIME).toBe(runtime.execPath);
+    expect(env.LODY_LAN_COMMAND_ENTRY).toBe(runtime.entry);
     // Git Bash on Windows runs the script beside it.
     expect(fs.existsSync(path.join(binDir, 'lody-lan'))).toBe(true);
   });

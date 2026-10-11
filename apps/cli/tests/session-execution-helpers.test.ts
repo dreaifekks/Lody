@@ -39,14 +39,14 @@ describe('session execution prompt helpers', () => {
   });
 
   it('adds nothing on a machine that belongs to no LAN', () => {
-    setLanSessionCommand({ binDir: '/data/session-bin', isLanMember: () => false });
+    setLanSessionCommand({ binDir: '/data/session-bin', env: {}, isLanMember: () => false });
 
     expect(buildPrompt('ship the patch')).toBe(`ship the patch${LODY_MCP_REMINDER}`);
   });
 
   it('tells the agent of a LAN member how to reach the other machines, from the turn it joined', () => {
     let hubs = 0;
-    setLanSessionCommand({ binDir: '/data/session-bin', isLanMember: () => hubs > 0 });
+    setLanSessionCommand({ binDir: '/data/session-bin', env: {}, isLanMember: () => hubs > 0 });
     const before = buildPrompt('ship the patch');
     hubs = 1;
 

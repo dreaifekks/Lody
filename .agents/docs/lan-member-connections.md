@@ -116,23 +116,32 @@ script runs the runtime and the entry of that service, so a machine that has
 only the desktop application has the command too, and the command is always
 the build that serves the sockets it connects to. The service embedded in a
 desktop runs as Node only while `ELECTRON_RUN_AS_NODE` is set, which the
-environment of a terminal drops, so the script sets it. Windows gets
-`lody-lan.cmd` beside the script; a POSIX shell there, such as Git Bash, runs
-the script. The name is not `lody`: that may be the hosted command on the same
-machine.
+environment of a terminal drops, so the script sets it. The name is not
+`lody`: that may be the hosted command on the same machine. A command that
+cannot be written is logged as a warning and offered to no session: the PATH
+and the prompt stay as they were, and the service starts.
+
+Windows gets `lody-lan.cmd` beside the script; a POSIX shell there, such as
+Git Bash, runs the script. The `.cmd` holds no path. cmd reads a batch file in
+the code page of its console, which garbles a path with characters outside
+that page, such as a user name in Chinese. The service puts the runtime and
+the entry into the environment of its sessions and terminals instead
+(`LODY_LAN_COMMAND_RUNTIME`, `LODY_LAN_COMMAND_ENTRY`), which Windows keeps in
+Unicode, and the `.cmd` reads them there. It therefore runs only where the
+service started the shell, while the script runs anywhere.
 
 ```text
  agent or terminal ─▶ <data dir>/session-bin/lody-lan ─▶ runtime + entry of ─▶ local sockets of
- of a session         first on its PATH                  the agent service     that agent service
+ of a session         heads its PATH                     the agent service     that agent service
 ```
 
-The directory leads the PATH of what the service starts: the agent process of
+The directory heads the PATH of what the service starts: the agent process of
 a session and the commands it runs (`buildShellEnv` in
 `apps/cli/src/session/session.ts`), and the terminals of the machine, a shell
 that `lan shell` opens included (`apps/cli/src/lib/terminal-pty-service.ts`).
 A command run on another member therefore finds that member's own `lody-lan`.
-The `gh` shim directory of a session follows it and shadows the native `gh` as
-before.
+It is the first entry, or the second where the `gh` shim directory of a
+session leads the PATH: PATH merges keep that one first.
 
 While the machine belongs to at least one LAN, each turn ends with one
 sentence that names the three commands and points at `lody-lan lan --help`
