@@ -154,6 +154,29 @@ describe('sending runs into a chat', () => {
   });
 });
 
+describe('a schedule that runs as an Agent Role', () => {
+  it('marks a Role that is gone, or cannot run on the machine, on the Agent at once', () => {
+    // The Agent saved beside the reference still exists: it must not make the form look fine.
+    expect(collectScheduleSaveIssues(ready({ agentRoleProblem: 'role_not_found' }), t)).toEqual([
+      { field: 'agent', kind: 'invalid', message: en['schedules.roleNotFound'] },
+    ]);
+    expect(
+      collectScheduleSaveIssues(ready({ agentRoleProblem: 'instance_unavailable' }), t)
+    ).toEqual([
+      { field: 'agent', kind: 'invalid', message: en['schedules.roleInstanceUnavailable'] },
+    ]);
+    expect(collectScheduleSaveIssues(ready({ usesAgentRole: true }), t)).toEqual([]);
+  });
+
+  it('needs a machine whose daemon reads the reference, only when there is one', () => {
+    const older = { ...machine!, protocolCapabilities: { schedules: 2 } };
+    expect(collectScheduleSaveIssues(ready({ machine: older, usesAgentRole: true }), t)).toEqual([
+      { field: 'machine', kind: 'invalid', message: en['schedules.roleUpgrade'] },
+    ]);
+    expect(collectScheduleSaveIssues(ready({ machine: older }), t)).toEqual([]);
+  });
+});
+
 describe('where each reason is marked', () => {
   it('puts every reason next to the control that fixes it', () => {
     const issues = collectScheduleSaveIssues(

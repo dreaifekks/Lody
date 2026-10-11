@@ -323,6 +323,7 @@ export function ScheduleProposalNotice({
           workspaceReady: !!runtime,
           userId: user?.id,
           agent: target.agent,
+          usesAgentRole: !!target.agentRole,
           agentConfig: target.agentConfig,
           machine,
           project: target.project,
@@ -419,6 +420,7 @@ export function ScheduleProposalNotice({
                 trigger,
                 machineId: final.target.agentConfig.machineId,
                 agent: final.target.agent,
+                ...(final.target.agentRole ? { agentRole: final.target.agentRole } : {}),
                 ...(final.target.project ? { project: final.target.project } : {}),
                 destination: final.target.destination,
                 misfirePolicy: { kind: 'run_once' },
@@ -496,6 +498,10 @@ export function ScheduleProposalNotice({
       'That Agent does not run on the named machine.'
     ),
     no_agent: t('schedules.proposal.noAgent', 'This conversation has no Agent to run with.'),
+    role_with_chat: t(
+      'schedules.proposal.roleWithChat',
+      'An existing chat follows its own Agent, so an Agent Role cannot run in it.'
+    ),
   };
   const reasons = problem ? [problemText[problem]] : [...editProblems, ...blockers];
   const rows: [string, string][] = [

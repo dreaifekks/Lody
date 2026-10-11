@@ -11,7 +11,13 @@ import type { AgentRunRef } from '@/components/shared/agent-run-ref';
 import {
   DesktopPermissionModeButton,
   DesktopRunConfigMenu,
+  type DesktopRunConfigMenuProps,
 } from '@/components/sessions/desktop-run-config-menu';
+import { resolvePermissionModeFace } from '@/lib/permission-mode-face';
+import {
+  doesAgentRolePinPermissionMode,
+  findComposerAgentRoleItem,
+} from '@/lib/composer-agent-roles';
 import { seedScheduleAgentRunRef } from './schedule-agent-defaults';
 
 /**
@@ -22,12 +28,17 @@ import { seedScheduleAgentRunRef } from './schedule-agent-defaults';
  * Picking an Agent seeds it the way the chat landing does
  * (`seedScheduleAgentRunRef`): the controls show a complete choice, permission
  * included, which the person can read and change before saving.
+ *
+ * With `agentRoles` the menu offers Roles as the composer does: `value` is then
+ * what the picked Role resolves to, and a permission the Role pins is stated
+ * in the Role's face instead of the separate button.
  */
 export function ScheduleAgentControls({
   machine,
   agentConfigs,
   value,
   onChange,
+  agentRoles,
   disabledReason,
 }: {
   machine: (MachineMeta & MachineLegacyMetaFields) | undefined;
@@ -35,6 +46,11 @@ export function ScheduleAgentControls({
   agentConfigs: readonly AgentConfigMeta[];
   value: AgentRunRef | null;
   onChange: (next: AgentRunRef) => void;
+  /** Roles with an instance on `machine`; omitted where a Role does not apply. */
+  agentRoles?: Pick<
+    NonNullable<DesktopRunConfigMenuProps['agentRoles']>,
+    'items' | 'selectedInstanceId' | 'onSelect' | 'machine'
+  >;
   /** Read-only schedule, or no machine chosen yet. */
   disabledReason?: string;
 }) {
@@ -68,6 +84,20 @@ export function ScheduleAgentControls({
       configOptionValues: { ...(value?.configOptionValues ?? {}), [configId]: optionValue },
     });
   const editable = !disabledReason;
+  const selectedRole = agentRoles
+    ? findComposerAgentRoleItem(agentRoles.items, agentRoles.selectedInstanceId)
+    : undefined;
+  const rolePinsPermission =
+    !!selectedRole &&
+    doesAgentRolePinPermissionMode(
+      selectedRole.instance.runConfig,
+      resolvePermissionModeFace({
+        modeOptions: options.modeOptions,
+        selectedModeId: value?.modeId ?? null,
+        configOptionSelectors: options.configOptionSelectors,
+        configOptionValues: optionValues,
+      }).source
+    );
 
   return (
     <>
@@ -98,8 +128,9 @@ export function ScheduleAgentControls({
         onConfigOptionChange={editable ? patchOption : undefined}
         modeOptions={options.modeOptions}
         selectedModeId={value?.modeId ?? null}
+        agentRoles={agentRoles}
       />
-      {selected ? (
+      {selected && !rolePinsPermission ? (
         <DesktopPermissionModeButton
           modeOptions={options.modeOptions}
           selectedModeId={value?.modeId ?? null}

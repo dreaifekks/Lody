@@ -7,10 +7,12 @@ import {
   getScheduleRoomId,
   getServerNow,
   getSessionRoomId,
+  getWorkspaceFlockDocId,
   agentConfigNoticeId,
   isLoroRepoDocDeleted,
   higherPermissionTier,
   isPermissionTierWithin,
+  machineSupportsScheduleAgentRoles,
   machineSupportsSchedulesProtocol,
   normalizeSessionTurnInputConfig,
   ScheduleRuntimeRowSchema,
@@ -44,6 +46,7 @@ import { readAgentRunConfigTier } from '../agent-permission-tier';
 import { publishScheduleProposal } from './schedule-proposal';
 import {
   destinationSessionProblem,
+  readScheduleAgentRole,
   scheduleDestinationSessionId,
 } from './schedule-run-preparation';
 
@@ -258,29 +261,83 @@ export async function executeScheduleCommand(
     throw new Error('Schedules can run only on a machine owned by the creator');
   if (needsTarget && !machineSupportsSchedulesProtocol(machine))
     throw new Error('Update the target machine CLI to manage schedules');
-  // An Agent changes only Schedules that run within its own Session's tier,
-  // and only into Schedules that do; the rest is the user's to decide.
-  const tierOf = (definition: Pick<ScheduleDefinition, 'machineId' | 'agent'>) =>
-    readAgentRunConfigTier({
+  // A Role reference means what the Role says now, on the Schedule's machine.
+  let roleCatalogCurrent = localOnly;
+  const resolveRole = async (
+    definition: Pick<ScheduleDefinition, 'machineId'> & {
+      agentRole: NonNullable<ScheduleDefinition['agentRole']>;
+    }
+  ) => {
+    if (!roleCatalogCurrent) {
+      await syncFlockDocForRead(
+        manager,
+        getWorkspaceFlockDocId(workspaceId),
+        'schedule:command:prewrite'
+      );
+      roleCatalogCurrent = true;
+    }
+    return readScheduleAgentRole({
       manager,
       workspaceId,
       machineId: definition.machineId as MachineId,
-      agentConfigId: definition.agent.agentConfigId as AgentConfigId,
-      runConfig: definition.agent,
+      userId: auth.userId,
+      ref: definition.agentRole,
+    });
+  };
+  // An Agent changes only Schedules that run within its own Session's tier,
+  // and only into Schedules that do; the rest is the user's to decide. A
+  // Schedule bound to a Role ranks as that Role's instance does now, never as
+  // the Agent saved beside the reference; one that no longer resolves is unknown.
+  const tierOf = async (
+    definition: Pick<ScheduleDefinition, 'machineId' | 'agent' | 'agentRole'>
+  ): Promise<ResolvedPermissionTier> => {
+    const { agentRole } = definition;
+    const role = agentRole
+      ? await resolveRole({ machineId: definition.machineId, agentRole })
+      : undefined;
+    if (role && !role.ok) return 'unknown';
+    const agent = role?.agent ?? definition.agent;
+    return readAgentRunConfigTier({
+      manager,
+      workspaceId,
+      machineId: definition.machineId as MachineId,
+      agentConfigId: agent.agentConfigId as AgentConfigId,
+      runConfig: agent,
       localOnly,
     });
-  if (
+  };
+  const callerTier =
     requesterSessionId &&
-    requesterPermissionTier &&
     (command.action === 'create' || command.action === 'edit' || command.action === 'resume')
-  ) {
-    const current =
-      command.action === 'create' ? undefined : (await repository.read(id))?.definition;
-    if (current && !isPermissionTierWithin(await tierOf(current), requesterPermissionTier))
+      ? requesterPermissionTier
+      : undefined;
+  const current =
+    callerTier && command.action !== 'create' ? (await repository.read(id))?.definition : undefined;
+  if (callerTier && current && !isPermissionTierWithin(await tierOf(current), callerTier))
+    throw new Error(
+      'This schedule runs with more permissions than this conversation has. Only the user can change or resume it, in Schedules.'
+    );
+  let draft = command.action === 'create' || command.action === 'edit' ? command.draft : undefined;
+  if (draft?.agentRole) {
+    const { agentRole } = draft;
+    if ((draft.destination ?? DEFAULT_SCHEDULE_DESTINATION).kind === 'existing_session')
       throw new Error(
-        'This schedule runs with more permissions than this conversation has. Only the user can change or resume it, in Schedules.'
+        'A schedule that sends into an existing chat follows that chat’s Agent and cannot keep an Agent Role; name that Agent as the target instead'
       );
-    const result = command.action === 'resume' ? current : command.draft;
+    if (!machineSupportsScheduleAgentRoles(machine))
+      throw new Error('Update the target machine CLI to run schedules as an Agent Role');
+    const resolved = await resolveRole({ machineId: draft.machineId, agentRole });
+    if (!resolved.ok)
+      throw new Error(
+        resolved.problem === 'role_not_found'
+          ? 'No Agent Role with that id is readable here.'
+          : 'That Agent Role has no instance that can run on the target machine.'
+      );
+    // The Role decides what runs; the Agent saved beside it is what it resolves to now.
+    draft = { ...draft, agent: resolved.agent };
+  }
+  if (callerTier) {
+    const result = command.action === 'resume' ? current : draft;
     if (result) {
       // A chat the runs go into keeps what its Agent was last set to for any
       // option a run leaves alone, so that chat counts as well.
@@ -292,18 +349,17 @@ export async function executeScheduleCommand(
         await tierOf(result),
         destinationSessionId ? await readSessionTier(destinationSessionId) : 'ask'
       );
-      if (!isPermissionTierWithin(tier, requesterPermissionTier))
+      if (!isPermissionTierWithin(tier, callerTier))
         throw new Error(
           'The schedule, or the chat it sends into, would run with more permissions than this conversation has. Unknown counts as more: set every permission option of the Agent (such as permission_mode) explicitly, or use lody_schedule_propose so the user can confirm it.'
         );
     }
   }
   const now = getServerNow();
-  if (command.action === 'create' || command.action === 'edit') {
+  if (draft && (command.action === 'create' || command.action === 'edit')) {
     if (!machine) throw new Error('Target machine is unavailable');
     const { resolveTurnDispatchConfig, validateSessionCreateOptions } =
       await import('@/commands/session');
-    const draft = command.draft;
     const configId = draft.agent.agentConfigId as AgentConfigId;
     const agent = await readMergedAgentConfigById(manager.repo, workspaceId, machine.id, configId);
     if (!agent.config || agent.config.machineId !== machine.id)

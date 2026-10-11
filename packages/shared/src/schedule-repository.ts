@@ -28,6 +28,7 @@ export type ScheduleDraft = Pick<
   | 'misfirePolicy'
   | 'overlapPolicy'
   | 'agent'
+  | 'agentRole'
   | 'project'
   | 'retryPolicy'
 > & { prompt: string; destination?: ScheduleDefinition['destination'] };
@@ -119,9 +120,13 @@ export class ScheduleRepository {
     try {
       mirror.setState({
         ...document,
-        // Spread `project` explicitly: it is optional on the definition but a
-        // present (possibly undefined) key in the mirrored map.
-        definition: { ...document.definition, project: document.definition.project },
+        // Spread `project` and `agentRole` explicitly: they are optional on the
+        // definition but present (possibly undefined) keys in the mirrored map.
+        definition: {
+          ...document.definition,
+          project: document.definition.project,
+          agentRole: document.definition.agentRole,
+        },
         timeline: document.timeline.map((entry) => ({
           ...entry,
           requesterSessionId: entry.requesterSessionId,
@@ -185,6 +190,7 @@ export class ScheduleRepository {
         misfirePolicy,
         overlapPolicy,
         agent,
+        agentRole,
         project,
         destination,
         retryPolicy,
@@ -196,6 +202,7 @@ export class ScheduleRepository {
         misfirePolicy,
         overlapPolicy,
         agent,
+        agentRole,
         project,
         destination,
         retryPolicy,

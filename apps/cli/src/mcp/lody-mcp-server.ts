@@ -1,4 +1,9 @@
-import { snapshotAgentRole, readMessageAuthor, type AgentMessageAuthor } from '@lody/shared';
+import {
+  composeAgentRolePrompt,
+  snapshotAgentRole,
+  readMessageAuthor,
+  type AgentMessageAuthor,
+} from '@lody/shared';
 import { resolveSessionMessageAuthor } from '@/session/message-author';
 import { spawn } from 'child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -1435,11 +1440,6 @@ const describeAgentRoleTarget = (target: McpAgentRoleTarget | undefined) =>
         },
       }
     : {};
-
-const composeAgentRolePrompt = (promptPrefix: string | undefined, prompt: string): string => {
-  const prefix = promptPrefix?.trim();
-  return prefix ? `${prefix}\n\n${prompt}` : prompt;
-};
 
 const loadWorkspaceAgentRoleCatalog = async (
   manager: LoroDocumentManager,

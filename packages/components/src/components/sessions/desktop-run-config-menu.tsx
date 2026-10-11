@@ -391,8 +391,8 @@ export type DesktopRunConfigMenuProps = {
   /**
    * Agent Roles, shown above Agent. The caller scopes them to what this
    * surface can apply: full configuration on new chats, run configuration
-   * only in existing sessions. Omit for non-Role surfaces such as schedules
-   * and review-policy settings.
+   * only in existing sessions, the entries on its machine for a schedule.
+   * Omit for non-Role surfaces such as review-policy settings.
    */
   agentRoles?: {
     items: ReadonlyArray<ComposerAgentRoleItem>;

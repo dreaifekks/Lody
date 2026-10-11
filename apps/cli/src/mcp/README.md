@@ -102,6 +102,20 @@ the auto and full tiers it already has everything its user has, and telling an
 Agent's process from the person's by process ancestry is defeated by `setsid` or an
 outside scheduler.
 
+A Schedule written with an Agent Role in `target` keeps a reference to that Role
+(`definition.agentRole`), and each run resolves it again on the Schedule's machine
+([run contract](../lib/schedules/AGENTS.md)). The cap therefore ranks a bound
+Schedule by what its Role resolves to at the moment of the write, never by the Agent
+saved beside the reference, and a run is not ranked again: raising a Role afterwards
+is itself a person's edit or a capped `lody_agent_role_update`. Known limits:
+
+- A reference without an instance runs the first usable instance of the Role on that
+  machine, so adding an instance ahead of it there changes what the Schedule runs.
+- Slot admission and the Registry row keep the Agent the Role resolved to at the last
+  save until the Schedule is saved again.
+- A build without the `scheduleAgentRoles` capability rejects the definition and its
+  Registry row: it neither lists nor runs a bound Schedule.
+
 Known limits of the alerts on these writes:
 
 - The hub marks a notice id seen before APNs answers, so a retry of the same id after

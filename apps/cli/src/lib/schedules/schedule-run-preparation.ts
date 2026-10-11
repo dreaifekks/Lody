@@ -1,6 +1,16 @@
 import {
+  composeAgentRolePrompt,
+  getWorkspaceFlockDocId,
+  listAccessibleAgentRoles,
+  listWorkspaceAgentRoles,
+  readWorkspaceFlockRowsFromFlock,
+  resolveScheduleAgentRole,
   scheduleOwnSessionId,
+  snapshotAgentRole,
   normalizeLegacyScheduleAgent,
+  type AgentRole,
+  type AgentRoleInstance,
+  type ScheduleAgentRoleRef,
   type ScheduleDefinition,
   type WorkspaceId,
   type AgentConfigMeta,
@@ -12,6 +22,7 @@ import {
   type SessionMeta,
 } from '@lody/shared';
 
+import { ScheduleConfigurationError } from './schedule-engine';
 import { buildProjectOptions } from './schedule-project-options';
 
 /**
@@ -29,7 +40,32 @@ export type ScheduleRunIdentity = {
   agentConfigId: string;
   title: string;
   project?: ProjectRef;
+  /** The Role this run resolved, recorded on the Session and its Turn as provenance. */
+  role?: ScheduleRunRole;
 };
+
+/** A Role as one run resolved it: the Role then, and its instance on this machine. */
+export type ScheduleRunRole = {
+  role: AgentRole;
+  instance: AgentRoleInstance;
+  /** The instance's group name: its alias, else its agent's. */
+  groupName?: string;
+};
+
+/**
+ * The prompt a run sends. A Role's instruction belongs to the first Turn of a
+ * chat it creates, so only the run that creates the chat carries it; a later
+ * run into the same chat takes the Role's run config alone.
+ */
+export function buildScheduleRunPrompt(args: {
+  prompt: string;
+  role?: ScheduleRunRole;
+  createsSession: boolean;
+}): string {
+  return args.role && args.createsSession
+    ? composeAgentRolePrompt(args.role.role.promptPrefix, args.prompt)
+    : args.prompt;
+}
 
 export function buildScheduleSessionCreateOptions(
   run: ScheduleRunIdentity
@@ -42,6 +78,16 @@ export function buildScheduleSessionCreateOptions(
     // The Schedule engine has already refreshed workspace meta for this run.
     workspaceMetaPrewriteSatisfied: true,
     ...buildProjectOptions(run.project),
+    ...(run.role
+      ? {
+          agentRoleId: run.role.role.id,
+          agentRoleRevision: run.role.role.revision,
+          agentRoleSnapshot: snapshotAgentRole(run.role.role, {
+            id: run.role.instance.id,
+            label: run.role.groupName,
+          }),
+        }
+      : {}),
   };
 }
 
@@ -111,6 +157,65 @@ export function destinationSessionProblem(args: {
     meta.agentConfigId === args.agentConfigId
     ? null
     : 'SESSION_UNAVAILABLE';
+}
+
+/**
+ * What a Schedule's Role reference resolves to on its machine, from the catalog
+ * and Agent configs as this daemon holds them now. Callers that need them
+ * current sync first. Only a Role the owner can read counts.
+ */
+export async function readScheduleAgentRole(args: {
+  manager: import('../loro/doc').LoroDocumentManager;
+  workspaceId: WorkspaceId;
+  machineId: MachineMeta['id'];
+  userId: string;
+  ref: ScheduleAgentRoleRef;
+}): Promise<ReturnType<typeof resolveScheduleAgentRole<AgentConfigMeta>>> {
+  const { manager, workspaceId, machineId, ref } = args;
+  const { readMergedAgentConfigById } = await import('../agent-config-machine-flock');
+  const catalog = await manager.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
+  const roles = listAccessibleAgentRoles(
+    listWorkspaceAgentRoles(readWorkspaceFlockRowsFromFlock(catalog.flock)),
+    args.userId
+  ).filter((role) => role.id === ref.roleId);
+  // Only the Role's own Agents on this machine can run it: read those, by id.
+  const agents: AgentConfigMeta[] = [];
+  for (const agentConfigId of new Set(
+    roles.flatMap((role) =>
+      role.instances
+        .filter((instance) => instance.machineId === machineId)
+        .map((instance) => instance.agentConfigId)
+    )
+  )) {
+    const { config } = await readMergedAgentConfigById(
+      manager.repo,
+      workspaceId,
+      machineId,
+      agentConfigId
+    );
+    if (config) agents.push(config);
+  }
+  return resolveScheduleAgentRole({ ref, machineId, roles, agents });
+}
+
+/**
+ * The Role one run resolves, or `undefined` for a Schedule without one. A Role
+ * that is gone, or has no instance to run on this machine, blocks the run under
+ * its own code; the Agent saved beside the reference is never run instead.
+ */
+export async function resolveScheduleRunRole(
+  args: Omit<Parameters<typeof readScheduleAgentRole>[0], 'ref'> & {
+    ref: ScheduleAgentRoleRef | undefined;
+  }
+) {
+  const { ref } = args;
+  if (!ref) return undefined;
+  const resolved = await readScheduleAgentRole({ ...args, ref });
+  if (!resolved.ok)
+    throw new ScheduleConfigurationError(
+      resolved.problem === 'role_not_found' ? 'ROLE_NOT_FOUND' : 'ROLE_INSTANCE_UNAVAILABLE'
+    );
+  return resolved;
 }
 
 /** Adapt legacy persisted values only at the Schedule-to-Session boundary. */

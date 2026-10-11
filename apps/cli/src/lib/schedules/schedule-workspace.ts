@@ -6,6 +6,7 @@ import {
   getScheduleRoomId,
   getServerNow,
   getSessionRoomId,
+  getWorkspaceFlockDocId,
   isLoroRepoDocDeleted,
   ScheduleRepository,
   scheduleDefinitionFingerprint,
@@ -30,8 +31,10 @@ import { createSessionBackend } from '@/session/session-backend';
 import { lanAlertProjectId } from '../lan/lan-push-protocol';
 import { streamsRoomBinding } from '../loro/streams-room-binding';
 import {
+  buildScheduleRunPrompt,
   buildScheduleRunTarget,
   resolveScheduleAgentRunConfig,
+  resolveScheduleRunRole,
   buildScheduleSessionCreateOptions,
   destinationSessionProblem,
   scheduleDestinationSessionId,
@@ -75,17 +78,37 @@ export async function createScheduleWorkspace(args: {
   let cloudGate: ReturnType<typeof createScheduleSyncGate> | undefined;
   const isReady = () => args.localOnly || cloudGate?.isReady() === true;
   const disabled = process.env.LODY_SCHEDULES_DISABLED === '1';
-  const resolveTarget = async (
+  /**
+   * The Role a run resolves, once: `prepare` freezes what it returns, so a
+   * retry of that run ignores later edits to the Role.
+   */
+  const resolveRunRole = async (
     run: import('./schedule-store').ScheduleRun<PreparedSessionInput>
   ) => {
-    const agent = run.definition.agent;
+    const ref = run.definition.agentRole;
+    if (ref && !args.localOnly)
+      await manager.syncFlockDocOrThrow(getWorkspaceFlockDocId(workspaceId), {
+        reason: 'schedule:agent-role',
+      });
+    return resolveScheduleRunRole({
+      manager,
+      workspaceId,
+      machineId: auth.machineId,
+      userId: auth.userId,
+      ref,
+    });
+  };
+  const resolveTarget = async (
+    run: import('./schedule-store').ScheduleRun<PreparedSessionInput>,
+    agentConfigId: string
+  ) => {
     const machineRecord = await manager.repo.getDocMeta(getMachineRoomId(auth.machineId));
     const machine = machineRecord?.meta as MachineMeta | undefined;
     const agentConfig = await readMergedAgentConfigById(
       manager.repo,
       workspaceId,
       auth.machineId,
-      agent.agentConfigId as AgentConfigId
+      agentConfigId as AgentConfigId
     );
     if (
       !machine ||
@@ -113,6 +136,7 @@ export async function createScheduleWorkspace(args: {
       run.definition.scheduleId,
       run.definition.destination
     );
+    let createsSession = true;
     if (destinationSessionId) {
       const sessionRecord = await manager.repo.getDocMeta(getSessionRoomId(destinationSessionId));
       const problem = destinationSessionProblem({
@@ -124,15 +148,19 @@ export async function createScheduleWorkspace(args: {
             : { kind: 'present', meta: sessionRecord.meta as SessionMeta },
         userId: auth.userId,
         machineId: auth.machineId,
-        agentConfigId: agent.agentConfigId,
+        agentConfigId,
       });
       if (problem) throw new ScheduleConfigurationError(problem);
+      createsSession = !sessionRecord?.meta;
     }
-    return buildScheduleRunTarget({
-      targetMachine: machine,
-      agentConfig: agentConfig.config,
-      project,
-    });
+    return {
+      createsSession,
+      target: buildScheduleRunTarget({
+        targetMachine: machine,
+        agentConfig: agentConfig.config,
+        project,
+      }),
+    };
   };
   const engine = new ScheduleEngine<PreparedSessionInput>({
     workspaceId,
@@ -150,28 +178,37 @@ export async function createScheduleWorkspace(args: {
       return repository.read(id);
     },
     validateTarget: async (run) => {
-      await resolveTarget(run);
+      // A prepared run checks the Agent it froze, not what its Role says now.
+      await resolveTarget(
+        run,
+        run.prepared?.meta.agentConfigId ?? run.definition.agent.agentConfigId
+      );
     },
     prepare: async (run) => {
       const { prepareSessionInput, resolveTurnDispatchConfig } = await import('@/commands/session');
-      const target = await resolveTarget(run);
+      const role = await resolveRunRole(run);
+      const { target, createsSession } = await resolveTarget(
+        run,
+        (role?.agent ?? run.definition.agent).agentConfigId
+      );
       const agent = await resolveScheduleAgentRunConfig(
         manager,
         workspaceId,
         auth.machineId,
-        run.definition.agent
+        role?.agent ?? run.definition.agent
       );
       const prepared = await prepareSessionInput(
         auth,
         workspace,
         manager,
-        run.prompt,
+        buildScheduleRunPrompt({ prompt: run.prompt, role, createsSession }),
         buildScheduleSessionCreateOptions({
           sessionId: run.sessionId as SessionId,
           userTurnId: run.userTurnId,
           agentConfigId: agent.agentConfigId,
           title: run.definition.title,
           project: run.definition.project,
+          role,
         }),
         {
           ...resolveTurnDispatchConfig({}),

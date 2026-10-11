@@ -35,8 +35,10 @@
   (`useWindowDragRegionClass`) with buttons `WINDOW_DRAG_EXEMPT_CLASS`, or the
   strip swallows their clicks. Saving and closing return to the full list.
 - The editor reuses the composer's parts: one box holds name, a hairline, the
-  prompt and, along its bottom, the composer's own Agent controls
+  prompt and, along its bottom, the composer's Agent controls
   (`ScheduleAgentControls` = `DesktopRunConfigMenu` + `DesktopPermissionModeButton`).
+  A picked Role is kept as a reference:
+  [rules](../../../../../apps/cli/src/lib/schedules/AGENTS.md).
   Preserve ACP value types through save; never stringify option values.
   Under the box are the chat landing's context pills — `DesktopMachineMenu`, the
   project chip, the worktree checkbox. Destination and trigger share one card;
@@ -52,8 +54,8 @@
   exclamation mark (`FieldIssueMark`) next to that control, never a list at the
   bottom; `missing` shows only after a save attempt, `invalid` at once. Only
   `form` reasons sit beside Save and disable it; everything else lets Save
-  run the guard, mark and focus the first empty field. There is no project
-  mark: beside the project chip it reads as "a project is required".
+  run the guard, mark and focus the first empty field. No project mark:
+  it would read as "a project is required".
 - Time and date are typed only: the native picker button is hidden
   (`[&::-webkit-calendar-picker-indicator]:hidden`), which in Chromium also
   removes the popup. The prompt has no resize handle: it grows with its text
@@ -100,11 +102,11 @@
   layout only. Cards are `scheduleCardProps()` (the settings `settingsCard`
   StyleX) inside `data-settings-surface`. Copy is `em` of `--ui-font-size`, two
   inks (`foreground`, `muted-foreground`), `font-normal` except the name.
-- Alignment is measured, not eyeballed: property rows are 44px, labels share
+- Alignment is measured: property rows are 44px, labels share
   one left line, every row's last visible mark ends on one right inset (selects
   are solid `Select.Trigger`s; only the native time input bleeds `-mr-2`); a row with a hint
   or multi-line control pins its label to the first line. `PropertyRow` tracks
   are content-sized (`minmax(0,auto)` / `minmax(0,1fr)`), never from `sm:`;
   `EditorInNarrowPanel` catches regressions.
 - `AnimatePresence` children must carry their own `key` (`<Reveal key=… >`);
-  a key set only inside the child reads as `""` and breaks exit animations.
+  a key set only inside the child breaks exit animations.
