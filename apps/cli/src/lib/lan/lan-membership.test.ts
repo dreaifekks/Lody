@@ -189,13 +189,15 @@ describe('LanMembership', () => {
       workspaceId: `lw_${home.id}` as never,
     });
     const moves: string[][] = [];
-    harness.membership.onMoved((hubs) => moves.push(hubs.map((moved) => moved.url)));
+    harness.membership.onMoved((hubs, previous) =>
+      moves.push(hubs.map((moved, index) => `${previous[index]?.url} -> ${moved.url}`))
+    );
     harness.membership.start();
 
     harness.change(settings([{ ...home, url: 'http://10.0.0.2:8788' }, office]));
 
     expect(harness.restarts).toEqual([]);
-    expect(moves).toEqual([['http://10.0.0.2:8788']]);
+    expect(moves).toEqual([[`${home.url} -> http://10.0.0.2:8788`]]);
     expect(provider?.getGatewayBaseUrl()).toBe('http://10.0.0.2:8788');
     await expect(provider?.getToken()).resolves.toBe('home-token');
     expect(gatewayOf(harness.membership, `lw_${home.id}`)?.url).toBe('http://10.0.0.2:8788');

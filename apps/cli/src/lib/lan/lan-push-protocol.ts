@@ -106,6 +106,14 @@ export type LanPushEvent =
       code?: string | null;
     })
   | (LanPushEventBase & {
+      /** The hub of the LAN moved onto the machine that reports it. */
+      type: 'hub-moved';
+      /** The LAN as the reporting machine calls it. */
+      lanName?: string | null;
+      url: string;
+      term: number;
+    })
+  | (LanPushEventBase & {
       type: 'session-detail';
       sessionId: string;
       activity?: string | null;

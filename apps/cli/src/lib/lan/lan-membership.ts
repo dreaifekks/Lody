@@ -39,6 +39,9 @@ const TermsSchema = z.record(
   z.object({ url: z.string(), term: z.number().int().nonnegative() })
 );
 
+/** The LANs whose hubs answer at another address now, and the same LANs as they were. */
+export type LanHubMovedListener = (hubs: readonly LanHub[], previous: readonly LanHub[]) => void;
+
 export function toLanWorkspaces(hubs: readonly LanHub[]): WorkspaceSummary[] {
   return summarizeLanHubs(hubs).map((hub) => ({
     id: hub.workspaceId,
@@ -63,7 +66,7 @@ export class LanMembership {
   private restartRequested = false;
   private readonly credentials: LanCredentialSync | null;
   private readonly askedAt = new Map<string, number>();
-  private readonly movedListeners = new Set<(hubs: readonly LanHub[]) => void>();
+  private readonly movedListeners = new Set<LanHubMovedListener>();
   private unwatchRequests: (() => void) | null = null;
 
   constructor(
@@ -134,10 +137,10 @@ export class LanMembership {
 
   /**
    * Tells `listener` which LANs' hubs this process follows to another
-   * address. What holds a connection to the old one reconnects; nothing
-   * else stops.
+   * address, and those LANs as they were before. What holds a connection to
+   * the old one reconnects; nothing else stops.
    */
-  onMoved(listener: (hubs: readonly LanHub[]) => void): () => void {
+  onMoved(listener: LanHubMovedListener): () => void {
     this.movedListeners.add(listener);
     return () => this.movedListeners.delete(listener);
   }
@@ -326,14 +329,16 @@ export class LanMembership {
       this.options.onRestartRequired(change.reason);
       return;
     }
+    const before = this.settings.hubs;
     this.settings = next;
     const workspaces = toLanWorkspaces(next.hubs);
     if (change.kind === 'moved') {
       const moved = next.hubs.filter((hub) => change.hubIds.includes(hub.id));
+      const previous = before.filter((hub) => change.hubIds.includes(hub.id));
       this.options.logger.info(
         `[lan] Reconnecting to ${moved.map((hub) => `${hub.name} at ${hub.url}`).join(', ')}; running turns go on.`
       );
-      for (const listener of this.movedListeners) listener(moved);
+      for (const listener of this.movedListeners) listener(moved, previous);
     } else {
       this.options.logger.info(
         `[lan] Now a member of ${workspaces.length} LAN(s): ${workspaces

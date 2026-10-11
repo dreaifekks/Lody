@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import type http from 'node:http';
 import path from 'node:path';
 import type { LiveActivityConversationItem, LiveActivityStatusCounts } from '@lody/shared';
+import { LAN_HUB_DEFAULT_NAME } from '@lody/shared/lan-hub';
 import { isApnsDeviceToken, type ApnsPush, type ApnsSender } from './apns';
 import {
   LAN_PUSH_DEVICES_PATH,
@@ -83,6 +84,7 @@ type Copy = {
   scheduleStarted: string;
   scheduleBlocked: (code: string) => string;
   scheduleSkipped: (code: string) => string;
+  hubMoved: (address: string, machine: string | null) => string;
   untitled: string;
   test: string;
 };
@@ -97,6 +99,8 @@ const COPY: Record<Language, Copy> = {
     scheduleStarted: 'Scheduled task started',
     scheduleBlocked: (code) => `Scheduled task could not run (${code})`,
     scheduleSkipped: (code) => `Scheduled task skipped (${code})`,
+    hubMoved: (address, machine) =>
+      machine ? `${machine} now hosts the hub at ${address}` : `The hub is now at ${address}`,
     untitled: 'New Task',
     test: 'Push notifications from this LAN work.',
   },
@@ -110,6 +114,8 @@ const COPY: Record<Language, Copy> = {
     scheduleStarted: '定时任务开始运行',
     scheduleBlocked: (code) => `定时任务没能运行（${code}）`,
     scheduleSkipped: (code) => `定时任务已跳过（${code}）`,
+    hubMoved: (address, machine) =>
+      machine ? `hub 现在由 ${machine} 托管：${address}` : `hub 现在在 ${address}`,
     untitled: '新任务',
     test: '局域网推送已接通。',
   },
@@ -215,6 +221,7 @@ const EVENT_TYPES = new Set([
   'permission-requested',
   'permission-resolved',
   'schedule',
+  'hub-moved',
   'session-detail',
   'live-activity',
 ]);
@@ -233,6 +240,10 @@ function parseEvent(body: unknown): LanPushEvent {
   } else if (body.type === 'schedule') {
     if (typeof body.scheduleId !== 'string' || typeof body.runKey !== 'string') {
       throw new BadRequest('invalid schedule event');
+    }
+  } else if (body.type === 'hub-moved') {
+    if (typeof body.url !== 'string' || typeof body.term !== 'number') {
+      throw new BadRequest('invalid hub move');
     }
   } else if (typeof body.sessionId !== 'string') {
     throw new BadRequest('missing sessionId');
@@ -1054,6 +1065,18 @@ export function createLanHubPush(options: {
       if (deviceTokens.length > 0) {
         await withdrawPermissionAlert(event, deviceTokens, sent.sessionTitle);
       }
+    } else if (event.type === 'hub-moved') {
+      if (!firstTime(`hub-moved:${event.term}:${event.url}`)) return null;
+      const machine = event.machineName ? truncate(event.machineName, 60) : null;
+      await alert(
+        // The body names the machine, whoever else reports.
+        { ...event, machineName: null },
+        (copy) => ({
+          title: event.lanName || LAN_HUB_DEFAULT_NAME,
+          body: copy.hubMoved(event.url, machine),
+        }),
+        { collapseId: `hub-moved-${event.term}` }
+      );
     } else {
       if (!firstTime(`schedule:${event.runKey}:${event.phase}`)) return null;
       await alert(
