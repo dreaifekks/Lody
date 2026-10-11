@@ -318,7 +318,7 @@ export async function executeScheduleCommand(
       'This schedule runs with more permissions than this conversation has. Only the user can change or resume it, in Schedules.'
     );
   let draft = command.action === 'create' || command.action === 'edit' ? command.draft : undefined;
-  if (draft?.agentRole) {
+  if (draft?.agentRole && (command.action === 'create' || command.action === 'edit')) {
     const { agentRole } = draft;
     if ((draft.destination ?? DEFAULT_SCHEDULE_DESTINATION).kind === 'existing_session')
       throw new Error(
@@ -333,8 +333,17 @@ export async function executeScheduleCommand(
           ? 'No Agent Role with that id is readable here.'
           : 'That Agent Role has no instance that can run on the target machine.'
       );
-    // The Role decides what runs; the Agent saved beside it is what it resolves to now.
-    draft = { ...draft, agent: resolved.agent };
+    // The Role decides what runs; the Agent saved beside it is what it resolves to
+    // now. A retry of a write that already landed is that write: it keeps the Agent
+    // saved then, so it still matches and can finish publishing the Registry row.
+    const { requestId } = command;
+    const landed = await repository.read(id);
+    draft = {
+      ...draft,
+      agent: landed?.timeline.some((entry) => entry.id === requestId)
+        ? landed.definition.agent
+        : resolved.agent,
+    };
   }
   if (callerTier) {
     const result = command.action === 'resume' ? current : draft;

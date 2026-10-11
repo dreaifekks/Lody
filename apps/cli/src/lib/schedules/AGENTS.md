@@ -85,7 +85,8 @@
   `promptPrefix` goes only on the run that creates the chat
   (`buildScheduleRunPrompt`); every run records Role, revision and instance on
   its Turn, and on the Session it creates, as an MCP Role create does. The command
-  service resolves a draft's reference (overwriting `agent`), refuses it with
+  service resolves a draft's reference (overwriting `agent`, except on a replay of
+  a landed `requestId`, which keeps the `agent` saved then), refuses it with
   `existing_session` or on a machine without the `scheduleAgentRoles` capability,
   and ranks a bound Schedule's tier by what its Role resolves to now
   (unresolvable = unknown). The editor shows and saves that resolution too; an

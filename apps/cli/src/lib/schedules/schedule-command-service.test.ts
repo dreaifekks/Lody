@@ -6,6 +6,7 @@ import {
   ScheduleDefinitionSchema,
   getStaticBuiltinAcpCapabilities,
   normalizeAgentRole,
+  scheduleDefinitionFingerprint,
   SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION,
   SCHEDULES_PROTOCOL_VERSION,
   type ResolvedPermissionTier,
@@ -29,6 +30,7 @@ async function fixture() {
   const registrySync = vi.fn(async () => {});
   const documentSync = vi.fn(async () => {});
   const notificationSync = vi.fn(async () => false);
+  let failRegistryPublish = false;
   const port: ScheduleRepositoryPort = {
     openPersistedDoc: async (id) => {
       if (!docs.has(id)) docs.set(id, new LoroDoc());
@@ -38,7 +40,13 @@ async function fixture() {
       syncOnce: registrySync,
       flock: {
         get: (key) => rows.get(JSON.stringify(key)),
-        set: (key, value) => rows.set(JSON.stringify(key), value),
+        set: (key, value) => {
+          if (failRegistryPublish && key[0] === 'schedule') {
+            failRegistryPublish = false;
+            throw new Error('Registry write failed');
+          }
+          return rows.set(JSON.stringify(key), value);
+        },
         scan: () => [...rows].map(([key, value]) => ({ key: JSON.parse(key), value })),
       },
     }),
@@ -198,6 +206,10 @@ async function fixture() {
       };
       rows.set(key, row);
       return normalizeAgentRole(row)!;
+    },
+    /** The next write lands its definition, then fails before its Registry row. */
+    failNextRegistryPublish: () => {
+      failRegistryPublish = true;
     },
     /** The target machine's daemon predates Role references. */
     withoutRoleSupport: () => {
@@ -771,6 +783,78 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
 
       // A Role that is gone has no tier to compare: the schedule is the user's to change.
       h.setRole('role-1', null);
+      await expect(update(h, { requestId: 'again', title: 'Night review' })).rejects.toThrow(
+        'Only the user'
+      );
+    });
+
+    it('completes a write whose Registry row failed, as it was first made, after the Role changed', async () => {
+      const h = await asAgent('edit');
+      const first = h.setRole('role-1', roleInstance('acceptEdits'))!;
+      const published = async (scheduleId: string) => {
+        const document = (await h.repository.read(scheduleId))!;
+        const row = (await h.repository.list()).find((entry) => entry.scheduleId === scheduleId);
+        return {
+          document,
+          matches: row?.definitionFingerprint === scheduleDefinitionFingerprint(document),
+        };
+      };
+      const firstAgent = { agentConfigId: 'agent', modeId: 'acceptEdits', modelId: 'sonnet' };
+
+      // Create: the definition lands, its Registry row does not.
+      h.failNextRegistryPublish();
+      await expect(createAs(h, 'nightly', first)).rejects.toThrow('Registry write failed');
+      expect((await published('nightly')).matches).toBe(false);
+      // The Role is edited before the caller retries the same request.
+      const second = h.setRole('role-1', {
+        ...roleInstance('acceptEdits'),
+        runConfig: { modeId: 'acceptEdits', modelId: 'opus' },
+      })!;
+      await expect(createAs(h, 'nightly', second)).resolves.toMatchObject({ ok: true });
+      const created = await published('nightly');
+      expect(created.matches).toBe(true);
+      expect(created.document.definition.agent).toEqual(firstAgent);
+      expect(created.document.timeline).toHaveLength(1);
+
+      // Edit: the same, with the Role changing again in between.
+      h.failNextRegistryPublish();
+      await expect(update(h, { requestId: 'retitle', title: 'Evening review' })).rejects.toThrow(
+        'Registry write failed'
+      );
+      expect((await published('nightly')).matches).toBe(false);
+      h.setRole('role-1', {
+        ...roleInstance('acceptEdits'),
+        runConfig: { modeId: 'acceptEdits', modelId: 'haiku' },
+      });
+      await expect(
+        update(h, { requestId: 'retitle', title: 'Evening review' })
+      ).resolves.toMatchObject({ ok: true });
+      const edited = await published('nightly');
+      expect(edited.matches).toBe(true);
+      expect(edited.document.definition).toMatchObject({
+        title: 'Evening review',
+        agentRole: { roleId: 'role-1' },
+        // What the Role resolved to when this request first landed.
+        agent: { agentConfigId: 'agent', modeId: 'acceptEdits', modelId: 'opus' },
+      });
+      expect(edited.document.timeline.map((entry) => entry.id)).toEqual(['nightly', 'retitle']);
+
+      // A new request is a new write: it saves what the Role says now.
+      await update(h, { requestId: 'reprompt', prompt: 'Review this week’s commits.' });
+      const fresh = await published('nightly');
+      expect(fresh.matches).toBe(true);
+      expect(fresh.document.definition.agent).toEqual({
+        agentConfigId: 'agent',
+        modeId: 'acceptEdits',
+        modelId: 'haiku',
+      });
+
+      // A retry is still ranked as the Role runs now: raised above the caller, it is refused.
+      h.failNextRegistryPublish();
+      await expect(update(h, { requestId: 'again', title: 'Night review' })).rejects.toThrow(
+        'Registry write failed'
+      );
+      h.setRole('role-1', roleInstance('bypassPermissions'));
       await expect(update(h, { requestId: 'again', title: 'Night review' })).rejects.toThrow(
         'Only the user'
       );
