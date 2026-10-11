@@ -3237,6 +3237,7 @@
   "settings.mcp.removeTitle": "移除 MCP 服务器",
   "settings.mcp.syncing": "正在同步工作区目录…",
   "settings.lan.description": "持有同一邀请的机器互相可见、互派 Agent，无需账号。",
+  "settings.lan.hubMovedNotice": "hub 现在在 {{address}}",
   "settings.lan.join": "加入局域网",
   "settings.lan.joinTitle": "加入局域网",
   "settings.lan.joinDescription": "粘贴局域网主机打印的邀请，或从已加入的机器上复制一份。",

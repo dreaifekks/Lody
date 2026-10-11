@@ -194,6 +194,26 @@ describe('LanHubStore', () => {
     expect(store.resolve(deriveLanHubId('home-token'))?.token).toBe('home-token');
   });
 
+  it("tells a move another process made, and not the user's own edit", () => {
+    const { store, editedElsewhere } = createStore();
+    const id = deriveLanHubId('home-token');
+    const moves: string[] = [];
+    store.join({ invite: HOME_INVITE });
+    store.start();
+    store.onMoved((hub, previousUrl) => moves.push(`${hub.name}: ${previousUrl} -> ${hub.url}`));
+
+    store.update({ id, url: '192.168.1.5:8788' });
+    editedElsewhere();
+    expect(moves).toEqual([]);
+
+    createStore().store.update({ id, url: '192.168.1.6:8788' });
+    editedElsewhere();
+    createStore().store.update({ id, name: 'Flat' });
+    editedElsewhere();
+
+    expect(moves).toEqual(['Home: http://192.168.1.5:8788 -> http://192.168.1.6:8788']);
+  });
+
   it('does not overwrite an edit another process made in the meantime', () => {
     const { store } = createStore();
     createStore().store.join({ invite: HOME_INVITE });

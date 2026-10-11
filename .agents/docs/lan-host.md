@@ -121,6 +121,11 @@ The machine that hosts the hub now also has it alert the phones of the LAN
 (`hub-moved` of the push events), once per term, with the new address: a phone
 keeps the address it was given.
 
+A desktop application that is running says so too, in a notification of its
+machine: it watches the settings its agent service rewrote
+(`LanHubStore.onMoved`). An address the user changes in Settings is their own
+edit and is not told.
+
 ## Limits
 
 - The hub is a development server on SQLite: one node, no replication. Back up
