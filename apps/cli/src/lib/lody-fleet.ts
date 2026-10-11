@@ -76,6 +76,9 @@ import {
   canThisMachineHostLanHub,
   doesThisMachineHostLanHub,
 } from '@/lib/lan/lan-hub-standby';
+import { reportLanHubMoved, runLanHubMovedHook } from '@/lib/lan/lan-hub-moved';
+import { readLanHubTerm } from '@/lib/lan/hub-handover';
+import { getDefaultLanHubDataDir } from '@/lib/lan/hub-server';
 import type { LanMachineControl } from '@/lib/lan/lan-machine-control';
 import { readLanMachineAlias, type LanMemberWorkspace } from '@/lib/lan/lan-members';
 import { createLanSshDescriber } from '@/lib/lan/lan-ssh';
@@ -238,6 +241,8 @@ export class LodyFleet {
   private lastCachedWorkspaceSignature: string | null = null;
   private remoteBridgeOfflineTimer: NodeJS.Timeout | null = null;
   private unsubscribeLanMoves: (() => void) | null = null;
+  /** The hooks of earlier moves; one runs after the other. */
+  private lanMoveHooks: Promise<void> = Promise.resolve();
   // Last valid workspace list, retried after an apply/reconcile failure. The
   // Convex subscription only re-fires on actual list changes, so without this a
   // one-off reconcile failure (e.g. a catalog write error) could leave the fleet
@@ -522,7 +527,11 @@ export class LodyFleet {
     this.startLanTerminalHost();
     this.lanFleetControl?.start();
     this.lanHubStandby?.start();
-    this.unsubscribeLanMoves = this.lan?.onMoved?.((hubs) => this.followLanMoves(hubs)) ?? null;
+    this.unsubscribeLanMoves =
+      this.lan?.onMoved?.((hubs, previous) => {
+        this.followLanMoves(hubs);
+        this.tellLanMoves(hubs, previous);
+      }) ?? null;
 
     // Start the PR poller BEFORE any workspace runtime can connect: the
     // local-first catalog bootstrap below registers each workspace with the
@@ -1320,6 +1329,43 @@ export class LodyFleet {
         .catch((error: unknown) => {
           this.logger.warn(
             `[lan] Could not reconnect ${hub.name} at ${hub.url}: ${formatErrorMessage(error)}`
+          );
+        });
+    }
+  }
+
+  /**
+   * Tells what is outside Lody that a hub moved: this machine's hook, and,
+   * from the machine that hosts the hub now, the phones of the LAN.
+   */
+  private tellLanMoves(hubs: readonly LanHub[], previous: readonly LanHub[]): void {
+    for (const hub of hubs) {
+      const previousUrl = previous.find((entry) => entry.id === hub.id)?.url;
+      if (!previousUrl) continue;
+      this.lanMoveHooks = this.lanMoveHooks
+        .then(async () => {
+          const hosting = await doesThisMachineHostLanHub(hub).catch(() => false);
+          // A hub that was taken over by hand starts its term in its own data.
+          const term = hosting
+            ? readLanHubTerm(getDefaultLanHubDataDir())
+            : (this.lan?.termOf?.(hub.id) ?? 0);
+          const move = { hub, previousUrl, term, hosting };
+          if (hosting) {
+            const repo = this.runtimes.get(getLanHubWorkspaceId(hub.id))?.lody.documentManager.repo;
+            const alias = repo
+              ? await readLanMachineAlias(repo, this.machineId).catch(() => null)
+              : null;
+            void reportLanHubMoved(move, {
+              machineId: this.machineId,
+              machineName: alias ?? this.machineName,
+              logger: this.logger,
+            });
+          }
+          await runLanHubMovedHook(move, { logger: this.logger });
+        })
+        .catch((error: unknown) => {
+          this.logger.warn(
+            `[lan] The move of ${hub.name} was not told: ${formatErrorMessage(error)}`
           );
         });
     }

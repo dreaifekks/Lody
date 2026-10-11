@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { LanHub } from '@lody/shared/node/lan-hub';
+import { summarizeLanHubs, type LanHub } from '@lody/shared/node/lan-hub';
 import { createApnsProviderToken, readApnsConfig, writeApnsConfig, type ApnsPush } from './apns';
 import {
   agentNoticeCollapseId,
@@ -15,6 +15,7 @@ import {
   type LanHubPush,
 } from './hub-push';
 import { startLanHubServer, type LanHubServer, type LanHubUpstream } from './hub-server';
+import { reportLanHubMoved } from './lan-hub-moved';
 import { createLanNotificationsPort } from './lan-push-notifier';
 import { createLanCredentialSync } from './lan-credential-sync';
 import { createLanPushFallback } from './lan-push-fallback';
@@ -216,6 +217,23 @@ describe('LAN host push', () => {
       { title: 'New Task', body: 'Failed: The agent process disconnected' },
       { title: 'Daily report', body: 'Scheduled task started' },
     ]);
+  });
+
+  it('tells the phones once where the hub moved, from the machine that hosts it', async () => {
+    const lan = member();
+    await register({ userId: summarizeLanHubs([lan])[0]?.userId });
+    const move = { hub: lan, previousUrl: 'http://10.0.0.1:8788', term: 3, hosting: true };
+    const from = { machineId: 'machine-2', machineName: 'n100', logger: { debug() {} } as never };
+
+    await expect(reportLanHubMoved(move, from)).resolves.toBe(true);
+    await expect(reportLanHubMoved(move, from)).resolves.toBe(true);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ pushType: 'alert', collapseId: 'hub-moved-3' });
+    expect(sent[0]?.payload).toMatchObject({
+      aps: { alert: { title: 'Home', body: `hub 现在由 n100 托管：${lan.url}` } },
+    });
+    expect(JSON.stringify(sent[0])).not.toContain(lan.token);
   });
 
   it('alerts an agent message once, opening its conversation', async () => {

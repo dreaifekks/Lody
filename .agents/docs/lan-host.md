@@ -89,6 +89,38 @@ sends what the hub lacks, which is how a write that only it and the lost hub
 had survives (`hub-failover.test.ts` runs this against the Streams server).
 JSON streams, the short-lived request streams, keep their offsets.
 
+## Telling what is outside Lody
+
+A tunnel, a reverse proxy or a monitor that names the hub's machine has to
+follow a move, and may live on any member. So every member runs its own hook
+once its agent service follows a hub to another address, whatever told it: the
+pointer, a member, its own takeover, `lody lan move` or Settings
+(`lan-hub-moved.ts`, from the one place all of them pass,
+`LanMembership.apply`). The hook is the executable file
+`hooks/lan-hub-moved` of the data directory; without one nothing happens, and
+nothing in the application shows or edits it.
+
+| Variable                     | Value                                                      |
+| ---------------------------- | ---------------------------------------------------------- |
+| `LODY_HOOK_EVENT`            | `lan-hub-moved`                                            |
+| `LODY_HOOK_LAN_ID`           | The id of the LAN                                          |
+| `LODY_HOOK_LAN_NAME`         | The LAN as this machine calls it                           |
+| `LODY_HOOK_HUB_URL`          | Where the hub is now                                       |
+| `LODY_HOOK_HUB_PREVIOUS_URL` | Where this machine reached it before                       |
+| `LODY_HOOK_HUB_TERM`         | The term this machine follows; a move by hand starts none  |
+| `LODY_HOOK_HUB_HOSTED_HERE`  | `true` on the machine that hosts the hub now, else `false` |
+
+The hook inherits the service's environment without `LODY_LAN_HUB_URL` and
+`LODY_LAN_HUB_TOKEN`, and is never given the credential: what needs it, such as
+the address shares open at, it asks `lody lan` for. It runs in `hooks/`, one
+move after the other, and is stopped after a minute; how it ended and the last
+of what it wrote go to the service's log. It is not run again, so it should set
+things to where the hub is now rather than undo the previous address.
+
+The machine that hosts the hub now also has it alert the phones of the LAN
+(`hub-moved` of the push events), once per term, with the new address: a phone
+keeps the address it was given.
+
 ## Limits
 
 - The hub is a development server on SQLite: one node, no replication. Back up
@@ -103,3 +135,6 @@ JSON streams, the short-lived request streams, keep their offsets.
   registered for push keep the address they were given; the iOS client has to
   be pointed to the new host by hand. Alerts still reach them,
   as the new hub and every member send from the copied registrations.
+- The hook runs in an agent service that is running when the address changes.
+  A machine moved while its service was stopped runs none, and Windows runs
+  none at all.

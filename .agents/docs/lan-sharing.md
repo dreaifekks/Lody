@@ -134,7 +134,8 @@ set with `lody lan share-url <url>` or in Settings > Share management
 (`lan/share-settings`, which reads it and the hub's own address from
 `GET /lan/shares/settings`), is kept in `index.json` too; without one, a link
 names the address of the hub with the share port. A tunnel has to follow the
-hub to its new machine; the links stay the same once it does.
+hub to its new machine; the links stay the same once it does. Each member's
+[hook](lan-host.md#telling-what-is-outside-lody) is where it can.
 
 The agent's `lody_session_share` tool stays unavailable on the local platform:
 upstream lets an agent only ask, and a person approve on a card in the app,
