@@ -40,6 +40,32 @@ checks/reopens miss their cached entry. Refreshing only one key after save leave
 the other holding the old digest and makes the next check report our own write as
 an external edit.
 
+## A relative link the workspace does not hold
+
+An agent names a file the way it thinks of it: `pending.md` for a file it keeps
+under `~/.local/state/…`, or `data-runtime/edit-session.ts` for one three folders
+down. The machine resolves a relative path against the session workspace only, so
+such a link opened on "file not found" although the conversation said where the
+file was.
+
+`lib/session-file-link-fallback.ts` gives a chat link a second look. The open
+handler first asks the machine whether the path exists as written, with a one-byte
+File Preview request that transfers no content; a path the file index already
+lists is not asked about. Only on `file_not_found` does it read the hydrated turns
+of the conversation the link was clicked in and probe, in this order, a longer
+mentioned path that ends in the link (prompts, prose, tool inputs and tool
+output), the link under a mentioned directory outside the workspace, and the link
+under a mentioned workspace folder. The first candidate that exists is opened
+under the path the machine reports for it (home expanded, absolute outside the
+workspace), so the viewer, Copy Path and the editor actions all name the real
+file. At most 16 candidates are probed, in parallel. The lookup waits on the
+machine, so its result is dropped when the user has moved to another session.
+
+The machine remains the only authority: a candidate is a request like any other
+and passes the same path policy. Canonical paths (tree, quick open, LSP, diff)
+carry no conversation and are never looked up this way. A file the conversation
+never located, such as one that lives on another machine, still reports missing.
+
 ## Known gaps
 
 These are existing inspection notes, not newly reproduced findings:

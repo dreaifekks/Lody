@@ -380,6 +380,11 @@ import {
 } from '@/hooks/use-conversation-view';
 import { collectConversationConfigSources, countUserTurns } from '@/lib/conversation-view';
 import {
+  collectFileLinkContext,
+  type FileLinkContext,
+  type FileLinkContextTurn,
+} from '@/lib/session-file-link-fallback';
+import {
   latestGoalFromFacts,
   latestProposedPlanFromFacts,
   permissionRequestsFromFacts,
@@ -2203,7 +2208,10 @@ interface SessionChatInterfaceProps {
   className?: string;
   hideHeader?: boolean;
   onFileDiffClick?: (turnId: string, filePath: string) => void;
-  onFilePathClick?: (filePath: string) => void;
+  onFilePathClick?: (
+    filePath: string,
+    options?: { readonly linkContext?: () => FileLinkContext }
+  ) => void;
   /** Opens an agent-uploaded HTML source path directly in rendered file preview. */
   onOpenHtmlFile?: (filePath: string) => void;
   messageFileDiffEntriesByTurn?: MessageFileDiffEntriesByTurn;
@@ -6352,7 +6360,17 @@ export const SessionChatInterface = memo(
       session.parentSessionId,
     ]);
     const handleFilePathClick = useStableCallback((filePath: string) => {
-      onFilePathClick?.(filePath);
+      // Read only if the machine cannot find the path as written; a rendered
+      // link's turn is hydrated, so the turns on screen are the ones that matter.
+      const linkContext = () => {
+        const turns: FileLinkContextTurn[] = [];
+        for (let index = (conversationView?.turnCount ?? 0) - 1; index >= 0; index -= 1) {
+          const turn = conversationView?.turn(index);
+          if (turn) turns.push(turn);
+        }
+        return collectFileLinkContext(turns);
+      };
+      onFilePathClick?.(filePath, { linkContext });
     });
     const handleOpenHtmlAttachment = useStableCallback((file: SessionFilePayload): boolean => {
       const action = resolveSessionHtmlAttachmentAction({

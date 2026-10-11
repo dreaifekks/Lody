@@ -67,6 +67,13 @@ const GITHUB_WORKTREE_SYSTEM_COMMANDS = `\n\nThe following are system instructio
 const LODY_MCP_TOOLS_REMINDER =
   '\n\nUse the available Lody MCP tools when relevant; rely on their tool descriptions for complete, current capabilities and usage guidance.';
 
+// The reader turns a file path in a reply into a link and opens it relative to
+// the session's working directory; an agent cannot know that unless it is told.
+// Like the reminder above, this rides on the prompt that starts a session.
+const FILE_PATH_REMINDER =
+  "\n\nFile paths in your replies become links that open relative to this session's working directory: " +
+  'write a file inside it by its full path from there, and a file anywhere else by its absolute path.';
+
 // TODO: use system prompt
 export const buildPrompt = (
   prompt: string,
@@ -81,5 +88,5 @@ export const buildPrompt = (
     : '';
   const systemCommands = project?.kind === 'github' ? GITHUB_WORKTREE_SYSTEM_COMMANDS : '';
 
-  return `${promptWithReferences}${feedbackInstruction}${systemCommands}${LODY_MCP_TOOLS_REMINDER}${getLanSessionCommandReminder()}`;
+  return `${promptWithReferences}${feedbackInstruction}${systemCommands}${LODY_MCP_TOOLS_REMINDER}${FILE_PATH_REMINDER}${getLanSessionCommandReminder()}`;
 };
