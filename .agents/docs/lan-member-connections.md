@@ -306,7 +306,8 @@ one to retry (`SYNC_UNAVAILABLE`), not as something that does not exist.
   sandbox, instead of that no service is running
   (`describeLocalDaemonConnectFailure` in `apps/cli/src/lib/command-runtime.ts`).
   An agent there asks for the command to run outside the sandbox, which its
-  approval setting decides.
+  approval setting decides. This is meant: the sandbox is the permission the
+  user chose for the session, and the command does not work around it.
 - Terminals and files of other members need a direct path between the
   machines, which an overlay network gives; a hub reached through a proxy does
   not.
