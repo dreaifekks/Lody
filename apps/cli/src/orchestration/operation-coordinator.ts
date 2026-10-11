@@ -62,7 +62,9 @@ type ObservedDeliverySettlement = {
   | { outcome: 'finalize'; pendingHistoryWrite?: () => Promise<void> }
 );
 
-const TARGET_OUTPUT_PREVIEW_MAX_BYTES = 8 * 1024;
+const TARGET_OUTPUT_PREVIEW_MAX_BYTES = 32 * 1024;
+// A reply ends with its conclusion, so an oversized one keeps mostly its tail.
+const TARGET_OUTPUT_PREVIEW_HEAD_SHARE = 0.25;
 const MATERIALIZATION_RETRY_MIN_MS = 1_000;
 const MATERIALIZATION_RETRY_MAX_MS = 30_000;
 // A Delivery that could not run within this grace window after its Operation's
@@ -86,7 +88,7 @@ const truncateTargetOutput = (
   const marker = '\n…\n';
   const characters = Array.from(text);
   const render = (keptCharacters: number) => {
-    const headCount = Math.ceil(keptCharacters / 2);
+    const headCount = Math.ceil(keptCharacters * TARGET_OUTPUT_PREVIEW_HEAD_SHARE);
     const tailCount = keptCharacters - headCount;
     return `${characters.slice(0, headCount).join('')}${marker}${characters
       .slice(characters.length - tailCount)
@@ -104,7 +106,7 @@ const truncateTargetOutput = (
       high = middle - 1;
     }
   }
-  const headCount = Math.ceil(best / 2);
+  const headCount = Math.ceil(best * TARGET_OUTPUT_PREVIEW_HEAD_SHARE);
   const tailCount = best - headCount;
   const kept = `${characters.slice(0, headCount).join('')}${characters
     .slice(characters.length - tailCount)
@@ -161,10 +163,19 @@ export type LodyOperationCoordinatorOptions = {
 const isTerminalAssistantEntry = (entry: SessionHistoryInput): boolean =>
   entry.role === 'assistant' && (entry.finished === true || typeof entry.endedAt === 'number');
 
+const hasTruncatedOutput = (completion: StoredLodyOperation['completion']): boolean =>
+  completion?.type === 'result' &&
+  completion.value.items.some((item) => item.status === 'succeeded' && item.output?.truncated);
+
 const completionText = (operation: StoredLodyOperation): string =>
   [
     `Lody Operation ${operation.operationId} (${operation.kind}) finished.`,
     'Use the structured completion below to continue the user task. Do not restart completed targets.',
+    ...(hasTruncatedOutput(operation.completion)
+      ? [
+          "An output marked `truncated` is a preview with its middle omitted. Before relying on it, read the full reply with lody_session_history, passing that item's target.sessionId.",
+        ]
+      : []),
     JSON.stringify(operation.completion),
   ].join('\n\n');
 

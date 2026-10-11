@@ -819,6 +819,51 @@ describe('LodyOperationCoordinator', () => {
     }
   });
 
+  it('keeps a long reply whole and points at the target history once it is cut', async () => {
+    const deliveredPrompt = async (text: string) => {
+      const harness = await makeHarness();
+      const targetHistory = harness.histories.get(harness.targetSessionId)!;
+      targetHistory[0] = { ...targetHistory[0]!, status: 'handled' };
+      targetHistory.push({
+        id: 'assistant:turn-1',
+        role: 'assistant',
+        userTurnId: 'turn-1',
+        timestamp: '2026-07-20T00:00:00.500Z',
+        items: [{ type: 'text', text }],
+        fileDiff: [],
+        finished: true,
+      });
+      harness.coordinator.start();
+      await harness.coordinator.idle();
+      harness.coordinator.stop();
+      const message = harness.continueSession.mock.calls[0]?.[0] as {
+        acpSessionConfig: { prompt: string };
+      };
+      const store = new LodyOperationStore(harness.storePath, () => TEST_NOW_MS);
+      try {
+        const completion = store.get(harness.requesterSessionId, 'review-round-1').completion;
+        if (completion?.type !== 'result') throw new Error('expected result');
+        const item = completion.value.items[0];
+        if (item?.status !== 'succeeded' || !item.output) throw new Error('expected output');
+        return { prompt: message.acpSessionConfig.prompt, output: item.output };
+      } finally {
+        store.close();
+      }
+    };
+
+    // 5,000 CJK characters are 15 KiB: past the former 8 KiB preview.
+    const report = '结'.repeat(5_000);
+    const whole = await deliveredPrompt(report);
+    expect(whole.output).toEqual({ text: report });
+    expect(whole.prompt).not.toContain('lody_session_history');
+
+    const conclusion = '结论'.repeat(4_000);
+    const cut = await deliveredPrompt(`${'过程'.repeat(20_000)}${conclusion}`);
+    expect(cut.output.truncated).toBe(true);
+    expect(cut.output.text.endsWith(conclusion)).toBe(true);
+    expect(cut.prompt).toContain('lody_session_history');
+  });
+
   it('delivers a durably completed target before its pending user status is repaired', async () => {
     const harness = await makeHarness();
     Object.assign(harness.metas.get(harness.targetSessionId)!, {

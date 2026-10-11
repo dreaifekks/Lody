@@ -16,9 +16,10 @@ Root and `apps/cli/AGENTS.md` apply; `specs/session-orchestration.md` owns behav
   uncertainty and arms the same owned bounded-backoff wake as a materializer
   error; unrelated SQLite/Meta watch hints must not be the only retry path, and
   every retry rechecks the fixed user Turn id first.
-- Successful item completion copies only visible assistant text into an 8 KiB
-  `output` preview. The store may further head/tail-bound it to keep the whole
-  completion at 64 KiB; preserve both per-output and aggregate omission metadata.
+- Successful item completion copies only visible assistant text into a 32 KiB
+  tail-weighted `output` preview. The store may further head/tail-bound it to
+  keep the completion at 64 KiB; preserve per-output and aggregate omission
+  metadata. A truncated completion names `lody_session_history`.
 - Operation files contain prompts and assistant output; keep them private to the
   local account (0700/0600 on Unix).
 - Create Operations freeze each target's effective dispatch config at
