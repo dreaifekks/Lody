@@ -8,7 +8,6 @@ import {
   ANTIGRAVITY_AGENT_TYPE,
   AgentConfigCliType,
   AgentType,
-  CliType,
   RateLimitAgentType,
   collectOnlineMachineIdsFromPresence,
   createHistoryWriter,
