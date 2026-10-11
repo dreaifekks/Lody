@@ -198,6 +198,11 @@ import {
   resolveSessionFileOpenTarget,
   type SessionFileOpenPathKind,
 } from '@/lib/session-file-open-target';
+import {
+  classifyFileLinkProbe,
+  resolveMissingFileLink,
+  type FileLinkContext,
+} from '@/lib/session-file-link-fallback';
 import { isSessionMarkdownPath } from '@/lib/session-file-language';
 import { SessionNotFound } from './session-not-found';
 import { SessionSyncingIndicator } from './session-syncing-indicator';
@@ -382,6 +387,8 @@ type ViewerTab =
       label: string;
     };
 
+const FILE_LINK_PROBE_TIMEOUT_MS = 2_500;
+
 type SessionDetailOpenFileOptions = {
   /** Analytics only. */
   readonly source?:
@@ -397,6 +404,12 @@ type SessionDetailOpenFileOptions = {
   readonly endLine?: number;
   /** Enter rendered HTML after the file snapshot becomes available. */
   readonly previewHtml?: boolean;
+  /**
+   * The conversation a chat link was clicked in. Lets a relative link the
+   * machine cannot find be looked up where the conversation says the file is;
+   * see `lib/session-file-link-fallback.ts`.
+   */
+  readonly linkContext?: () => FileLinkContext;
 };
 
 /** Mobile diff sheet state */
@@ -4066,9 +4079,12 @@ const SessionDetail = ({
     }
   }, [activePlanReview, activeSidebarTab]);
 
+  const openFileSessionIdRef = useRef(sessionId);
+  openFileSessionIdRef.current = sessionId;
   const handleOpenFile = useStableCallback(
     (filePath: string, options: SessionDetailOpenFileOptions = {}) => {
       setFileProviderRequestedByInteraction(true);
+      const openedInSessionId = sessionId;
       void (async () => {
         // Where the path came from decides whether it may be rewritten at all;
         // `resolveSessionFileOpenTarget` owns that rule and documents why.
@@ -4080,11 +4096,39 @@ const SessionDetail = ({
           ...(options.startLine === undefined ? {} : { startLine: options.startLine }),
           ...(options.endLine === undefined ? {} : { endLine: options.endLine }),
         });
+        const linkSession = activeSession;
+        const linkMachineId = linkSession?.machineId;
+        // A path the index already lists exists; only an unlisted one is asked about.
+        const linkIsIndexed =
+          (await activeSessionFileProvider?.getFile(target.filePath).catch(() => null)) != null;
+        const openPath =
+          options.linkContext && runtime && linkSession && linkMachineId && !linkIsIndexed
+            ? await resolveMissingFileLink({
+                path: target.filePath,
+                context: options.linkContext,
+                // One byte is enough to learn whether the path exists, and a
+                // machine that does not answer must not hold the viewer back.
+                probe: async (path) =>
+                  classifyFileLinkProbe(
+                    await runtime.requestFilePreview(
+                      linkMachineId,
+                      { sessionId: linkSession.id, path, maxBytes: 1 },
+                      {
+                        ownerSessionId: linkSession.parentSessionId ?? linkSession.id,
+                        timeoutMs: FILE_LINK_PROBE_TIMEOUT_MS,
+                      }
+                    )
+                  ),
+              })
+            : target.filePath;
+        // The lookup waits on the machine. A tab must not land in the session
+        // the user moved to meanwhile, where the same name is another file.
+        if (openFileSessionIdRef.current !== openedInSessionId) return;
         const resolution = await resolveSessionFileProviderOpenPath(
           activeSessionFileProvider,
-          target.filePath
+          openPath
         ).catch((): SessionFileProviderOpenPathResolution => ({
-          path: target.filePath,
+          path: openPath,
           redirected: false,
         }));
         const resolvedFilePath = resolution.path;
