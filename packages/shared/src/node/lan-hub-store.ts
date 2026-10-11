@@ -49,6 +49,7 @@ export class LanHubStore {
   private error: string | null = null;
   private watcher: LanHubSettingsWatcher | null = null;
   private readonly listeners = new Set<() => void>();
+  private readonly movedListeners = new Set<(hub: LanHub, previousUrl: string) => void>();
 
   constructor(
     private readonly options: LanHubSettingsLocation & {
@@ -65,7 +66,15 @@ export class LanHubStore {
     this.watcher = (this.options.watch ?? watchLanHubSettings)({
       env: this.options.env,
       filePath: this.options.filePath,
-      onChange: (settings) => this.adopt(settings, null),
+      onChange: (settings) => {
+        const before = this.settings.hubs;
+        this.adopt(settings, null);
+        for (const hub of settings.hubs) {
+          const previousUrl = before.find((entry) => entry.id === hub.id)?.url;
+          if (!previousUrl || previousUrl === hub.url) continue;
+          for (const listener of [...this.movedListeners]) listener(hub, previousUrl);
+        }
+      },
       onError: (error) => this.adopt(this.settings, describe(error)),
     });
     // The settings were read before they were watched.
@@ -76,11 +85,22 @@ export class LanHubStore {
     this.watcher?.close();
     this.watcher = null;
     this.listeners.clear();
+    this.movedListeners.clear();
   }
 
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Tells `listener` that another process, such as the agent service that
+   * follows a hub, moved a LAN to another address. An edit made through this
+   * store is the user's own and is not told.
+   */
+  onMoved(listener: (hub: LanHub, previousUrl: string) => void): () => void {
+    this.movedListeners.add(listener);
+    return () => this.movedListeners.delete(listener);
   }
 
   getHubs(): readonly LanHub[] {

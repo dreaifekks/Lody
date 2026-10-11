@@ -164,4 +164,23 @@ export class NotificationService {
 
     return await showNativeNotification(notification, this.activeNotifications)
   }
+
+  /**
+   * Says that the hub of a LAN answers at another address now. Shown with the
+   * application in front too: nothing in a window changes when a hub moves.
+   */
+  async showLanHubMoved(input: {
+    title: string
+    body: string
+  }): Promise<ShowSessionCompletionNotificationResult> {
+    if (!Notification.isSupported()) {
+      return { shown: false, reason: 'notification_not_supported' }
+    }
+    const notification = new Notification({ title: input.title, body: input.body })
+    notification.on('click', () => {
+      const mainWindow = this.getMainWindow()
+      if (mainWindow && !mainWindow.isDestroyed()) focusWindow(mainWindow)
+    })
+    return await showNativeNotification(notification, this.activeNotifications)
+  }
 }

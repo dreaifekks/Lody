@@ -49,7 +49,7 @@ import {
   WindowBadgeService,
   bindWindowBadgeToBrowserWindows
 } from './services/window-badge-service'
-import { setupApplicationMenu } from './menu'
+import { setupApplicationMenu, translateAppText } from './menu'
 import { isRendererReloadShortcut } from './reload-shortcut'
 import { requestRendererReload } from './renderer-recovery'
 import { closeProductWindowsForQuit } from './renderer-unload'
@@ -265,6 +265,14 @@ export function startApplication(executionHost?: DesktopExecutionHost): void {
           })
         })
     const notificationService = new NotificationService(() => getMainWindow())
+    // The agent service follows a hub that moved; this window keeps working
+    // through it, so the notification is the only thing that says so here.
+    lanHubStore?.onMoved((hub) => {
+      void notificationService.showLanHubMoved({
+        title: hub.name,
+        body: translateAppText('settings.lan.hubMovedNotice').replace('{{address}}', hub.url)
+      })
+    })
     const windowsTrayService = new WindowsTrayService({
       iconPath: icon,
       productName: PRODUCT_NAME,

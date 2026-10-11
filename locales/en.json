@@ -3237,6 +3237,7 @@
   "settings.mcp.removeTitle": "Remove MCP server",
   "settings.mcp.syncing": "Syncing the workspace catalog…",
   "settings.lan.description": "Machines that share an invite see each other and run agents on each other, without an account.",
+  "settings.lan.hubMovedNotice": "The hub is now at {{address}}",
   "settings.lan.join": "Join a LAN",
   "settings.lan.joinTitle": "Join a LAN",
   "settings.lan.joinDescription": "Paste the invite the host of the LAN printed, or copy one from a machine that already belongs to it.",
