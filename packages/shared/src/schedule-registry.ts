@@ -79,6 +79,7 @@ export function buildScheduleRegistryRow(document: ScheduleDocument): ScheduleRe
     trigger: d.trigger,
     destination: d.destination,
     agentConfigId: d.agent.agentConfigId,
+    agentRoleId: d.agentRole?.roleId,
     projectKind: d.project?.kind,
     projectKey: d.project
       ? d.project.kind === 'local'

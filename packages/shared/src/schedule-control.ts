@@ -19,6 +19,7 @@ export const ScheduleDraftSchema = ScheduleDefinitionSchema.pick({
   misfirePolicy: true,
   overlapPolicy: true,
   agent: true,
+  agentRole: true,
   project: true,
   destination: true,
   retryPolicy: true,

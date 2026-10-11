@@ -6,7 +6,10 @@ import {
   type ScheduleProposalMeta,
   type SessionMeta,
 } from '../src';
-import { resolveScheduleProposalTarget } from '../src/schedule-proposal-target';
+import {
+  resolveScheduleAgentRole,
+  resolveScheduleProposalTarget,
+} from '../src/schedule-proposal-target';
 
 const reviewer = {
   id: 'reviewer',
@@ -186,6 +189,47 @@ describe('where a proposed schedule runs', () => {
     ).toEqual({ ok: false, problem: 'machine_mismatch' });
   });
 
+  it('keeps a reference to the Role, naming an instance only when one was named', () => {
+    const bare = resolveScheduleProposalTarget({
+      meta: meta({ agentRoleId: 'role-1' }),
+      conversation,
+      agents,
+      roles: [twoMachineRole],
+    });
+    expect(bare.ok && bare.target.agentRole).toEqual({ roleId: 'role-1' });
+    const pinned = resolveScheduleProposalTarget({
+      meta: meta({ agentRoleId: 'role-1', agentRoleInstanceId: 'release-studio' }),
+      conversation,
+      agents,
+      roles: [twoMachineRole],
+    });
+    expect(pinned.ok && pinned.target.agentRole).toEqual({
+      roleId: 'role-1',
+      instanceId: 'release-studio',
+    });
+    const plain = resolveScheduleProposalTarget({ meta: meta(), conversation, agents, roles: [] });
+    expect(plain.ok && plain.target.agentRole).toBeUndefined();
+  });
+
+  it('refuses a Role for a picked chat, which follows its own Agent', () => {
+    expect(
+      resolveScheduleProposalTarget({
+        meta: meta({ agentRoleId: 'role-1' }, { kind: 'existing_session', sessionId: 's9' }),
+        conversation,
+        agents,
+        roles: [role],
+      })
+    ).toEqual({ ok: false, problem: 'role_with_chat' });
+    expect(
+      resolveScheduleProposalTarget({
+        meta: meta({ agentRoleId: 'role-1' }, { kind: 'own_session' }),
+        conversation,
+        agents,
+        roles: [role],
+      })
+    ).toMatchObject({ ok: true, target: { agentRole: { roleId: 'role-1' } } });
+  });
+
   it('gives a named Agent the builtin default mode, never the conversation’s', () => {
     // The conversation's mode belongs to the conversation's Agent; carrying it
     // onto a different Agent could hand that Agent an elevated mode nobody chose.
@@ -264,5 +308,101 @@ describe('where a proposed schedule runs', () => {
     expect(
       resolveScheduleProposalTarget({ meta: meta(), conversation: null, agents, roles: [] })
     ).toEqual({ ok: false, problem: 'no_agent' });
+  });
+});
+
+describe('what a schedule bound to a Role runs', () => {
+  const resolve = (
+    ref: { roleId: string; instanceId?: string },
+    machineId: string,
+    roles: CatalogAgentRole[],
+    known = agents
+  ) => resolveScheduleAgentRole({ ref, machineId, roles, agents: known });
+
+  it('takes the Role’s instance on the schedule’s machine, never one elsewhere', () => {
+    // The studio instance comes first in the Role, but the schedule is the MacBook's.
+    expect(resolve({ roleId: 'role-1' }, 'macbook', [twoMachineRole])).toMatchObject({
+      ok: true,
+      instance: { id: 'release-mac' },
+      agentConfig: reviewer,
+      agent: { agentConfigId: 'reviewer' },
+    });
+    expect(resolve({ roleId: 'role-1' }, 'studio', [twoMachineRole])).toMatchObject({
+      ok: true,
+      instance: { id: 'release-studio' },
+      agent: {
+        agentConfigId: 'writer',
+        modeId: 'plan',
+        modelId: 'sonnet',
+        configOptionValues: { verbose: true },
+      },
+    });
+  });
+
+  it('runs what the Role says at that moment, not what it said when saved', () => {
+    const ref = { roleId: 'role-1', instanceId: 'release-studio' };
+    const before = resolve(ref, 'studio', [role]);
+    const edited = {
+      ...role,
+      revision: 2,
+      instances: [
+        {
+          ...role.instances[0]!,
+          runConfig: {
+            modeId: 'bypassPermissions',
+            modelId: 'opus',
+            memory: { providerId: 'nmem', memoryId: 'm1' },
+          },
+        },
+      ],
+    } as unknown as CatalogAgentRole;
+    const after = resolve(ref, 'studio', [edited]);
+    expect(before.ok && before.agent.modelId).toBe('sonnet');
+    expect(after).toMatchObject({
+      ok: true,
+      role: { revision: 2 },
+      agent: {
+        agentConfigId: 'writer',
+        modeId: 'bypassPermissions',
+        modelId: 'opus',
+        memory: { providerId: 'nmem', memoryId: 'm1' },
+      },
+    });
+    // Options the Role no longer pins are gone, not carried over from the old run config.
+    expect(after.ok && after.agent.configOptionValues).toBeUndefined();
+    expect(after.ok && ScheduleAgentSchema.safeParse(after.agent).success).toBe(true);
+  });
+
+  it('names the instance by its group, the way a dispatched Role is recorded', () => {
+    const aliased = {
+      ...role,
+      instances: [{ ...role.instances[0]!, alias: 'Night shift' }],
+    } as unknown as CatalogAgentRole;
+    expect(resolve({ roleId: 'role-1' }, 'studio', [aliased])).toMatchObject({
+      ok: true,
+      groupName: 'Night shift',
+    });
+  });
+
+  it('reports a deleted Role instead of running the saved Agent', () => {
+    expect(resolve({ roleId: 'role-1' }, 'studio', [])).toEqual({
+      ok: false,
+      problem: 'role_not_found',
+    });
+  });
+
+  it('reports a Role with nothing to run on that machine', () => {
+    const unavailable = { ok: false, problem: 'instance_unavailable' };
+    // No instance on the machine at all.
+    expect(resolve({ roleId: 'role-1' }, 'macbook', [role])).toEqual(unavailable);
+    // The named instance was removed, or lives on another machine.
+    expect(resolve({ roleId: 'role-1', instanceId: 'gone' }, 'studio', [role])).toEqual(
+      unavailable
+    );
+    expect(
+      resolve({ roleId: 'role-1', instanceId: 'release-studio' }, 'macbook', [twoMachineRole])
+    ).toEqual(unavailable);
+    // Its Agent config no longer exists there.
+    expect(resolve({ roleId: 'role-1' }, 'studio', [role], [reviewer])).toEqual(unavailable);
   });
 });

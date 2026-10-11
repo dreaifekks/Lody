@@ -271,6 +271,31 @@ describe('Schedule worker handoff', () => {
     expect(h.ports.dispatch).toHaveBeenCalledTimes(1);
     expect(h.store.unfinished('workspace')[0]?.scheduledFor).toBe(60_000);
   });
+  it('blocks a run whose Role cannot be resolved, freezing nothing, then prepares it afresh', async () => {
+    const h = harness();
+    h.ports.prepare = vi
+      .fn()
+      .mockRejectedValueOnce(new ScheduleConfigurationError('ROLE_NOT_FOUND'))
+      .mockImplementation(async () => ({ prompt: 'as the Role says now' }));
+    await h.engine.evaluate();
+    const blocked = h.store.unfinished('workspace')[0]!;
+    expect(blocked).toMatchObject({
+      state: 'retry_wait',
+      attempts: 0,
+      errorCode: 'ROLE_NOT_FOUND',
+    });
+    // Nothing was frozen from the Agent saved beside the reference, and no Session exists.
+    expect(blocked.prepared).toBeUndefined();
+    expect(h.ports.materialize).not.toHaveBeenCalled();
+    expect(h.ports.dispatch).not.toHaveBeenCalled();
+    expect(h.slots.isBusy('agent')).toBe(false);
+    expect(h.ports.publish).toHaveBeenLastCalledWith(
+      expect.objectContaining({ queueState: 'blocked', blockedCode: 'ROLE_NOT_FOUND' })
+    );
+    h.time(90_000);
+    await h.engine.evaluate();
+    expect(h.ports.dispatch).toHaveBeenCalledWith({ prompt: 'as the Role says now' });
+  });
   it('does not hand off a preparation that outlives its dispatch deadline', async () => {
     const h = harness();
     h.ports.materialize = vi.fn(async () => {

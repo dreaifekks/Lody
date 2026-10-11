@@ -1,11 +1,13 @@
 import type { AgentRunRef } from '@/components/shared/agent-run-ref';
 import type { TFunction } from 'i18next';
 import {
+  machineSupportsScheduleAgentRoles,
   machineSupportsSchedulesProtocol,
   type AgentConfigMeta,
   type MachineLegacyMetaFields,
   type MachineMeta,
   type ProjectRef,
+  type ScheduleAgentRoleProblem,
   type ScheduleDestination,
 } from '@lody/shared';
 
@@ -15,6 +17,10 @@ export type ScheduleSaveContext = {
   workspaceReady: boolean;
   userId?: string;
   agent: AgentRunRef | null;
+  /** Whether the schedule keeps a Role reference, which its machine's daemon must read. */
+  usesAgentRole?: boolean;
+  /** Why the Role this schedule runs as cannot run on its machine, once that is known. */
+  agentRoleProblem?: ScheduleAgentRoleProblem | null;
   agentConfig: AgentConfigMeta | null | undefined;
   machine: (MachineMeta & MachineLegacyMetaFields) | undefined;
   /** `null` is a deliberate chat-only schedule, not an unfinished form. */
@@ -71,6 +77,21 @@ export function collectScheduleSaveIssues(
       t('schedules.workspaceNotReady', 'Wait for your workspace and account to finish loading.')
     );
   const { agent, agentConfig, machine } = context;
+  // A run never falls back to the Agent saved beside a Role, so neither does the form.
+  if (context.agentRoleProblem)
+    push(
+      'agent',
+      'invalid',
+      context.agentRoleProblem === 'role_not_found'
+        ? t(
+            'schedules.roleNotFound',
+            'The Agent Role this schedule runs as no longer exists. Choose another Role or an Agent.'
+          )
+        : t(
+            'schedules.roleInstanceUnavailable',
+            'The Agent Role this schedule runs as has no instance that can run on this machine. Choose another Role or an Agent.'
+          )
+    );
   if (!agentConfig || !agent) {
     push('agent', 'missing', t('schedules.requireAgent', 'Choose an available Agent.'));
   } else {
@@ -95,6 +116,15 @@ export function collectScheduleSaveIssues(
           'machine',
           'invalid',
           t('schedules.upgrade', 'Update the target machine’s CLI to edit schedules.')
+        );
+      else if (context.usesAgentRole && !machineSupportsScheduleAgentRoles(machine))
+        push(
+          'machine',
+          'invalid',
+          t(
+            'schedules.roleUpgrade',
+            'Update the target machine’s CLI to run schedules as an Agent Role.'
+          )
         );
     }
   }

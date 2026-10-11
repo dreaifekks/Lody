@@ -36,7 +36,11 @@ const DRAFT_GUIDE = [
   '{days: 1-31, hour, minute}; once {at: RFC3339}. Times are in the user’s own time zone unless',
   'they named one. The Agent, permission mode, machine and project default to this',
   'conversation’s; set `target` only when the user explicitly named a different Agent Role,',
-  'Agent, machine or project (resolve names to ids with lody_session_create_options).',
+  'Agent, machine or project (resolve names to ids with lody_session_create_options). An Agent',
+  'Role in `target` is kept as a reference, not copied: every run uses the Role as it is then,',
+  'through its instance on the schedule’s machine, so later edits to the Role change the',
+  'schedule, and a run is blocked while the Role is deleted or has no instance there. A Role',
+  'cannot be combined with existing_session, which follows that chat’s Agent.',
   'Destination: new_session (a fresh chat per run, default), own_session (one chat this task',
   'keeps continuing), or existing_session {sessionId}. Reuse requestId when retrying.',
 ].join(' ');
@@ -102,9 +106,11 @@ export function registerScheduleTools(
       description: [
         'Change the title, prompt, rule, destination or target of a Schedule the user owns.',
         'Omitted fields stay as they are; `target` is resolved as in lody_schedule_propose, with',
-        'this conversation’s Agent and permission mode as defaults, and without it the Agent,',
-        'machine and project stay. A schedule that already runs with more permissions than this',
-        'conversation can only be changed by the user.',
+        'this conversation’s Agent and permission mode as defaults, and without it the Agent or',
+        'Agent Role reference, machine and project stay. A `target` without agentRoleId drops the',
+        'Role reference. A schedule that already runs with more permissions than this',
+        'conversation can only be changed by the user; one bound to an Agent Role counts as that',
+        'Role runs now.',
         ceiling,
         'Reuse requestId when retrying.',
       ].join(' '),
@@ -129,7 +135,7 @@ export function registerScheduleTools(
     'lody_schedule_list',
     {
       description:
-        'List scheduled-task summaries in the current workspace. Use get for details; execution belongs to the owner machine.',
+        'List scheduled-task summaries in the current workspace; `agentRoleId` is set on one that runs as an Agent Role. Use get for details; execution belongs to the owner machine.',
       inputSchema: z
         .object({
           query: z.string().max(200).optional(),
@@ -144,7 +150,7 @@ export function registerScheduleTools(
     'lody_schedule_get',
     {
       description:
-        'Read a Schedule, its prompt, recent configuration activity and next five times. Ordinary Sessions own execution results.',
+        'Read a Schedule, its prompt, recent configuration activity and next five times. `definition.agentRole` is the Agent Role it runs as, read again at every run; `definition.agent` is then only what that Role resolved to when the schedule was saved. Ordinary Sessions own execution results.',
       inputSchema: z.object({ scheduleId: id }).strict(),
     },
     (args) => call({ action: 'show', ...args })

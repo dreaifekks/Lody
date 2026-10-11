@@ -72,6 +72,27 @@
   `SESSION_UNAVAILABLE` as a recoverable configuration problem. The command
   service applies the same rule on create/edit and rejects a project on a
   schedule that sends into a chat.
+- `definition.agentRole` (`roleId`, optional `instanceId`) is a reference, never a
+  copy. `prepare` reads the Role as it is then (`resolveScheduleRunRole`: the
+  owner's readable catalog, `selectAgentRoleInstance` held to this machine, the
+  named instance or else the first usable one) and freezes the result; later
+  attempts of that run validate the Agent it froze. A Role that is gone, or has
+  no usable instance here, blocks the run as `ROLE_NOT_FOUND` /
+  `ROLE_INSTANCE_UNAVAILABLE`, a recoverable configuration problem: never run the
+  saved `definition.agent`, an instance on another machine or another Agent.
+  `agent` beside a reference is what the Role resolved to at the last save; the
+  Registry row, listing and slot admission read it, no run does. The Role's
+  `promptPrefix` goes only on the run that creates the chat
+  (`buildScheduleRunPrompt`); every run records Role, revision and instance on
+  its Turn, and on the Session it creates, as an MCP Role create does. The command
+  service resolves a draft's reference (overwriting `agent`, except on a replay of
+  a landed `requestId`, which keeps the `agent` saved then), refuses it with
+  `existing_session` or on a machine without the `scheduleAgentRoles` capability,
+  and ranks a bound Schedule's tier by what its Role resolves to now
+  (unresolvable = unknown). The editor shows and saves that resolution too; an
+  Agent choice made by hand ends the reference, a picked chat offers no Role, and
+  a reference that cannot resolve is an `invalid` issue on the Agent controls. A build that predates the
+  field rejects the definition and its Registry row: it lists and runs nothing.
 - Dispose Schedule workers before tearing down a workspace's Lody runtime.
   Timers and active evaluations must not survive workspace revocation.
 - Deterministic tests use injected clocks, explicit sync barriers and temporary

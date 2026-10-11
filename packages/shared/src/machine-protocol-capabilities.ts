@@ -34,6 +34,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   lanTunnel: 'lanTunnel',
   realtimeVoice: 'realtimeVoice',
   sessionCancelActiveTurn: 'sessionCancelActiveTurn',
+  scheduleAgentRoles: 'scheduleAgentRoles',
 } as const;
 
 export const MEMORY_PROVIDERS_PROTOCOL_VERSION = 1;
@@ -60,6 +61,7 @@ export const LAN_FILES_PROTOCOL_VERSION = 1;
 export const LAN_SHELL_PROTOCOL_VERSION = 1;
 export const LAN_TUNNEL_PROTOCOL_VERSION = 1;
 export const SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION = 1;
+export const SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION = 1;
 
 type MachineProtocolCapabilityCarrier = {
   protocolCapabilities?: MachineProtocolCapabilities;
@@ -132,6 +134,7 @@ export const CURRENT_MACHINE_PROTOCOL_CAPABILITIES: MachineProtocolCapabilities 
     ACP_CAPABILITY_REFRESH_CACHE_PROTOCOL_VERSION,
   [MACHINE_PROTOCOL_CAPABILITIES.sessionCancelActiveTurn]:
     SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION,
+  [MACHINE_PROTOCOL_CAPABILITIES.scheduleAgentRoles]: SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION,
 };
 
 export function machineSupportsSubagentEvents(
@@ -262,6 +265,20 @@ export function machineSupportsSchedulesProtocol(
     machine,
     MACHINE_PROTOCOL_CAPABILITIES.schedules,
     SCHEDULES_PROTOCOL_VERSION
+  );
+}
+
+/**
+ * Whether the target daemon reads a Schedule's Agent Role reference and resolves
+ * it at each run. One without it rejects such a definition, so none is saved there.
+ */
+export function machineSupportsScheduleAgentRoles(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.scheduleAgentRoles,
+    SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION
   );
 }
 

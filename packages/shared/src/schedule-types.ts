@@ -92,6 +92,19 @@ export const ScheduleAgentSchema = z
   .strict();
 
 /**
+ * The Agent Role a schedule runs as. A reference, never a copy: every run reads
+ * the Role as it is then and takes its instance on the schedule's machine, the
+ * named one or else the first that can run there.
+ */
+export const ScheduleAgentRoleRefSchema = z
+  .object({
+    roleId: z.string().min(1).max(256),
+    instanceId: z.string().min(1).max(256).optional(),
+  })
+  .strict();
+export type ScheduleAgentRoleRef = z.infer<typeof ScheduleAgentRoleRefSchema>;
+
+/**
  * Older Schedule writers stringified ACP booleans. Interpret only exact boolean
  * literals for options the target declares boolean; select strings stay strings.
  * This is an execution/display projection, never a persisted-definition migration:
@@ -131,6 +144,10 @@ export const ScheduleDefinitionSchema = z
     misfirePolicy: z.object({ kind: z.enum(['skip', 'run_once']) }).strict(),
     overlapPolicy: z.enum(['skip', 'queue_one']),
     agent: ScheduleAgentSchema,
+    // With a Role, `agent` is what that Role resolved to when the schedule was
+    // saved: it names the Agent for listing and admission, and no run reads it.
+    // A daemon that predates the field rejects the definition and runs nothing.
+    agentRole: ScheduleAgentRoleRefSchema.optional(),
     // Optional: a schedule may be a plain chat with an Agent, with no
     // repository or working directory attached at all.
     project: ProjectRefSchema.transform((value) => value as ProjectRef).optional(),
@@ -181,6 +198,7 @@ export const ScheduleRegistryRowSchema = ScheduleDefinitionSchema.pick({
   elevatedPermissions: z.boolean().default(false),
   definitionFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   agentConfigId: z.string().min(1),
+  agentRoleId: z.string().min(1).optional(),
   projectKind: z.enum(['local', 'github']).optional(),
   projectKey: z.string().min(1).optional(),
 });

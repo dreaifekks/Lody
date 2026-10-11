@@ -172,6 +172,15 @@ export const normalizeAgentRoleMentionSlug = (value: string): string => {
  * the list and the mention menu, and the picker is a change rather than a
  * decision the user has to make before the Role looks finished.
  */
+/** A Role's instruction, ahead of the task of the Session it creates. */
+export const composeAgentRolePrompt = (
+  promptPrefix: string | undefined,
+  prompt: string
+): string => {
+  const prefix = promptPrefix?.trim();
+  return prefix ? `${prefix}\n\n${prompt}` : prompt;
+};
+
 export const DEFAULT_AGENT_ROLE_EMOJI = '🪼';
 
 export const getAgentRoleEmoji = (role: Pick<AgentRole, 'emoji'>): string =>

@@ -210,6 +210,7 @@ describe('MessageHandler machine registration', () => {
       schedules: 2,
       preparedSessionInput: 1,
       sessionCancelActiveTurn: 1,
+      scheduleAgentRoles: 1,
       realtimeVoice: 3,
     });
 

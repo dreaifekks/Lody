@@ -16,17 +16,23 @@ import { DesktopMachineMenu } from '../components/sessions/desktop-run-config-me
 import { ProjectRefSelector } from '../components/shared/project-ref-selector';
 import type { AgentRunRef } from '../components/shared/agent-run-ref';
 import { WorktreeCheckboxPill } from '../components/shared/workdir-mode-selector';
-import type {
-  AgentConfigId,
-  AgentConfigMeta,
-  MachineId,
-  MachineMeta,
-  ProjectRef,
-  ScheduleDestination,
-  ScheduleRegistryRow,
-  ScheduleRuntimeRow,
+import {
+  normalizeAgentRole,
+  type AgentConfigId,
+  type AgentConfigMeta,
+  type AgentRoleInstanceId,
+  type MachineId,
+  type MachineMeta,
+  type ProjectRef,
+  type ScheduleDestination,
+  type ScheduleRegistryRow,
+  type ScheduleRuntimeRow,
 } from '@lody/shared';
 import { useState, type ReactNode } from 'react';
+import {
+  buildComposerAgentRoleItems,
+  findComposerAgentRoleItem,
+} from '../lib/composer-agent-roles';
 import { createLocalPlatformProvider, createStaticStore } from '@lody/platform';
 import { PlatformContext } from '@lody/platform/react';
 
@@ -184,6 +190,15 @@ export const ReadOnly: Story = {
   args: { contextForRow: (item) => ({ ...context(item), canToggle: false }) },
 };
 export const AwaitingMachine: Story = { args: { runtimes: [] } };
+/** A schedule bound to a Role is listed as that Role, where the Agent would be named. */
+export const ListWithRole: Story = {
+  args: {
+    contextForRow: (item) => ({
+      ...context(item),
+      ...(item.scheduleId === 'standup' ? { agent: '🚀 Release manager' } : {}),
+    }),
+  },
+};
 
 const chats = [
   { id: 'c1', title: 'Release planning', detail: 'Code reviewer · MacBook Pro' },
@@ -211,8 +226,57 @@ const storyAgents = [
   { id: 'writer', machineId: 'macbook', name: 'Writer', cliType: 'builtin', agentType: 'codex' },
 ] as unknown as AgentConfigMeta[];
 
+/** Two Roles with an instance on the story machine, as the composer's menu lists them. */
+const storyRoleItems = buildComposerAgentRoleItems({
+  roles: [
+    normalizeAgentRole({
+      v: 1,
+      id: 'release',
+      ownerUserId: 'owner',
+      visibility: 'workspace',
+      name: 'Release manager',
+      emoji: '🚀',
+      machineId: 'macbook',
+      agentConfigId: 'reviewer',
+      instances: [
+        {
+          id: 'release-mac',
+          machineId: 'macbook',
+          agentConfigId: 'reviewer',
+          runConfig: { modeId: 'acceptEdits', modelId: 'sonnet' },
+        },
+      ],
+      revision: 1,
+      createdAt: 0,
+      updatedAt: 0,
+    })!,
+    normalizeAgentRole({
+      v: 1,
+      id: 'scribe',
+      ownerUserId: 'owner',
+      visibility: 'workspace',
+      name: 'Scribe',
+      emoji: '🪶',
+      machineId: 'macbook',
+      agentConfigId: 'writer',
+      instances: [
+        { id: 'scribe-mac', machineId: 'macbook', agentConfigId: 'writer', runConfig: {} },
+      ],
+      revision: 1,
+      createdAt: 0,
+      updatedAt: 0,
+    })!,
+  ],
+  machineId: 'macbook' as MachineId,
+  agentConfigs: storyAgents,
+  resolveAvailability: () => ({ kind: 'available' }),
+  names: { machine: () => 'MacBook Pro', unknownAgent: 'Unknown agent' },
+});
+
 type EditorFixture = {
   chatOnly?: boolean;
+  /** Offer Roles; `bound` opens on one, as a schedule saved with it does. */
+  roles?: 'offered' | 'bound';
   destination?: ScheduleDestination;
   ownChatExists?: boolean;
   noAgent?: boolean;
@@ -250,9 +314,21 @@ function EditorStory({
   const [destination, setDestination] = useState<ScheduleDestination>(
     fixture.destination ?? { kind: 'new_session' }
   );
-  const [agent, setAgent] = useState<AgentRunRef | null>(
+  const [roleInstanceId, setRoleInstanceId] = useState<AgentRoleInstanceId | null>(
+    fixture.roles === 'bound' ? ('release-mac' as AgentRoleInstanceId) : null
+  );
+  const [manualAgent, setManualAgent] = useState<AgentRunRef | null>(
     fixture.noAgent ? null : { agentConfigId: 'reviewer' as AgentConfigId, modeId: 'default' }
   );
+  // As in the workspace: a bound Role is what shows, and any choice by hand ends it.
+  const roleItem = findComposerAgentRoleItem(storyRoleItems, roleInstanceId);
+  const agent: AgentRunRef | null = roleItem
+    ? { agentConfigId: roleItem.instance.agentConfigId, ...roleItem.instance.runConfig }
+    : manualAgent;
+  const setAgent = (next: AgentRunRef | null) => {
+    setManualAgent(next);
+    setRoleInstanceId(null);
+  };
   const [project, setProject] = useState<ProjectRef | null>(
     fixture.chatOnly ? null : ({ kind: 'github', repoFullName: 'loro-dev/lody' } as ProjectRef)
   );
@@ -283,6 +359,15 @@ function EditorStory({
               agentConfigs={storyAgents}
               value={agent}
               onChange={setAgent}
+              agentRoles={
+                fixture.roles && destination.kind !== 'existing_session'
+                  ? {
+                      items: storyRoleItems,
+                      selectedInstanceId: roleInstanceId,
+                      onSelect: (id) => (id ? setRoleInstanceId(id) : setAgent(agent)),
+                    }
+                  : undefined
+              }
             />
             <FieldIssueMark messages={marks('agent', revealMissing)} />
           </>
@@ -506,6 +591,24 @@ export const EditorMissingRequirements: Story = editor({
 export const EditorAgentConflict: Story = editor({
   fixture: {
     issues: [{ field: 'agent', kind: 'invalid', message: 'Choose an explicit permission mode.' }],
+  },
+});
+/** Bound to a Role: the run bar names the Role, and its pinned permission joins that face. */
+export const EditorRole: Story = editor({ fixture: { roles: 'bound' } });
+/** Roles are offered, none picked: the Agent's own configuration shows as usual. */
+export const EditorRoleOffered: Story = editor({ fixture: { roles: 'offered' } });
+/** The Role is gone: the saved Agent shows, marked, and nothing runs until one is chosen. */
+export const EditorRoleUnavailable: Story = editor({
+  fixture: {
+    roles: 'offered',
+    issues: [
+      {
+        field: 'agent',
+        kind: 'invalid',
+        message:
+          'The Agent Role this schedule runs as no longer exists. Choose another Role or an Agent.',
+      },
+    ],
   },
 });
 /** A reason that belongs to no control sits beside Save. */

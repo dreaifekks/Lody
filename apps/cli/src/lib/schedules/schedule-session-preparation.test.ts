@@ -3,6 +3,8 @@ import {
   ScheduleAgentSchema,
   type AcpCapabilityCacheEntry,
   type AgentConfigMeta,
+  type AgentRole,
+  type AgentRoleInstance,
   type MachineMeta,
   type ProjectRef,
   type SessionId,
@@ -14,6 +16,7 @@ import type { AuthContext } from '../command-runtime';
 import type { LoroDocumentManager } from '../loro/doc';
 import type { WorkspaceSummary } from '../workspace';
 import {
+  buildScheduleRunPrompt,
   buildScheduleRunTarget,
   resolveScheduleAgentRunConfig,
   buildScheduleSessionCreateOptions,
@@ -203,5 +206,75 @@ describe('Schedule ACP values reach ordinary Session preparation', () => {
   );
   it('leaves malformed legacy booleans for the ordinary validator to reject', async () => {
     await expect(prepareOptions('off')).rejects.toThrow('expects a boolean');
+  });
+
+  it('starts a Role’s Session as a dispatched Role does: instruction, run config, provenance', async () => {
+    const role = {
+      role: {
+        id: 'role-1',
+        revision: 3,
+        name: 'Release manager',
+        emoji: '🚀',
+        promptPrefix: 'You are the release manager.',
+      } as AgentRole,
+      instance: {
+        id: 'instance-1',
+        machineId: 'machine',
+        agentConfigId: 'agent',
+        runConfig: { configOptionValues: { plan_mode: true } },
+      } as AgentRoleInstance,
+      groupName: 'Night shift',
+    };
+    const prepareRun = (createsSession: boolean) =>
+      prepareSessionInput(
+        auth,
+        workspace,
+        localManager,
+        buildScheduleRunPrompt({ prompt: 'Cut the release.', role, createsSession }),
+        buildScheduleSessionCreateOptions({
+          sessionId: 'session-1' as SessionId,
+          userTurnId: 'turn-1',
+          agentConfigId: 'agent',
+          title: 'Release',
+          role,
+        }),
+        {
+          ...resolveTurnDispatchConfig({}),
+          agentConfigId: 'agent',
+          ...role.instance.runConfig,
+          inheritSessionDefaults: false,
+        },
+        buildScheduleRunTarget({ targetMachine, agentConfig: config })
+      );
+    const prepared = await prepareRun(true);
+    expect(prepared.meta).toMatchObject({
+      agentConfigId: 'agent',
+      agentRoleId: 'role-1',
+      agentRoleRevision: 3,
+      agentRoleInstanceId: 'instance-1',
+    });
+    expect(prepared.userTurn.items).toEqual([
+      { type: 'text', text: 'You are the release manager.\n\nCut the release.' },
+    ]);
+    expect(prepared.userTurn.inputConfig).toMatchObject({
+      agentRoleId: 'role-1',
+      agentRoleRevision: 3,
+      agentRoleSnapshot: {
+        id: 'role-1',
+        revision: 3,
+        name: 'Release manager',
+        emoji: '🚀',
+        instanceId: 'instance-1',
+        instanceLabel: 'Night shift',
+      },
+      configOptionValues: { plan_mode: true },
+    });
+    // A later run into the schedule's own chat: the Role's config and record, no instruction.
+    const later = await prepareRun(false);
+    expect(later.userTurn.items).toEqual([{ type: 'text', text: 'Cut the release.' }]);
+    expect(later.userTurn.inputConfig).toMatchObject({
+      agentRoleId: 'role-1',
+      configOptionValues: { plan_mode: true },
+    });
   });
 });

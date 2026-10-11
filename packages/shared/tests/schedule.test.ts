@@ -400,6 +400,45 @@ describe('Chat-mode schedules carry no project', () => {
     expect(row?.definitionFingerprint).toBe(scheduleDefinitionFingerprint(stored!));
   });
 
+  it('keeps a Role reference through the doc and the Registry, and drops it with a later save', async () => {
+    const repo = new ScheduleRepository(memoryPort(), 'workspace' as never);
+    const save = (activityId: string, agentRole?: { roleId: string; instanceId?: string }) =>
+      repo.save({
+        scheduleId: 'test',
+        draft: { ...chatDraft(), ...(agentRole ? { agentRole } : {}) },
+        actorId: 'owner',
+        now: 1,
+        activationId: activityId,
+        activityId,
+        create: activityId === 'created',
+      });
+    await save('created', { roleId: 'role-1', instanceId: 'instance-1' });
+    const bound = await repo.read('test');
+    expect(bound?.definition.agentRole).toEqual({ roleId: 'role-1', instanceId: 'instance-1' });
+    // The Agent saved beside the reference stays: it names the Agent for listing.
+    expect(bound?.definition.agent).toEqual(definition().agent);
+    const [boundRow] = await repo.list();
+    expect(boundRow?.agentRoleId).toBe('role-1');
+    expect(boundRow?.definitionFingerprint).toBe(scheduleDefinitionFingerprint(bound!));
+
+    // A retry of the same write is that write, reference included.
+    await save('created', { roleId: 'role-1', instanceId: 'instance-1' });
+    await expect(save('created', { roleId: 'role-2' })).rejects.toThrow('Idempotency key conflict');
+
+    await save('edited');
+    const manual = await repo.read('test');
+    expect(manual?.definition.agentRole).toBeUndefined();
+    const [manualRow] = await repo.list();
+    expect(manualRow?.agentRoleId).toBeUndefined();
+    // Binding to a Role changes what runs, so it is a different authorized definition.
+    expect(scheduleDefinitionFingerprint(manual!)).not.toBe(
+      scheduleDefinitionFingerprint({
+        ...manual!,
+        definition: { ...manual!.definition, agentRole: { roleId: 'role-1' } },
+      })
+    );
+  });
+
   it('does not confuse a chat schedule with an identical project-bound one', () => {
     const withProject = { definition: definition(), prompt: 'hello' };
     const { project: _project, ...rest } = definition();

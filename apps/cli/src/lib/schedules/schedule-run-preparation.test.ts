@@ -1,16 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import type {
-  AgentConfigMeta,
-  MachineMeta,
-  ProjectRef,
-  SessionId,
-  SessionMeta,
+import {
+  getWorkspaceFlockDocId,
+  type AgentConfigMeta,
+  type MachineMeta,
+  type ProjectRef,
+  type SessionId,
+  type SessionMeta,
+  type WorkspaceId,
 } from '@lody/shared';
 
+import type { LoroDocumentManager } from '../loro/doc';
+import { ScheduleConfigurationError } from './schedule-engine';
 import {
+  buildScheduleRunPrompt,
   buildScheduleRunTarget,
   buildScheduleSessionCreateOptions,
   destinationSessionProblem,
+  resolveScheduleRunRole,
   scheduleDestinationSessionId,
   scheduleRequiredLocalProjectId,
 } from './schedule-run-preparation';
@@ -174,5 +180,168 @@ describe('Where a run is sent', () => {
           session: { kind: 'present', meta: meta(wrong) },
         })
       ).toBe('SESSION_UNAVAILABLE');
+  });
+});
+
+describe('A run of a schedule bound to a Role', () => {
+  /** The workspace catalog and the machine's Agent configs, as this daemon holds them. */
+  const daemon = () => {
+    const roles = new Map<string, Record<string, unknown>>();
+    const agents = new Set(['agent', 'writer']);
+    const manager = {
+      repo: {
+        openFlockDoc: async (docId: string) => ({
+          flock: {
+            scan: ({ prefix }: { prefix?: unknown[] } = {}) =>
+              docId === getWorkspaceFlockDocId('workspace' as WorkspaceId) &&
+              prefix?.[0] === 'agentRole'
+                ? [...roles].map(([id, value]) => ({ key: ['agentRole', id], value }))
+                : [],
+          },
+        }),
+        getDocMeta: async (roomId: string) => {
+          const id = roomId.replace(/^agent-/, '');
+          return roomId.startsWith('agent-') && agents.has(id)
+            ? {
+                meta: {
+                  id,
+                  machineId: 'machine',
+                  name: id,
+                  cliType: 'builtin',
+                  agentType: 'claude',
+                },
+              }
+            : undefined;
+        },
+      },
+    } as unknown as LoroDocumentManager;
+    const setRole = (overrides: Record<string, unknown> = {}) =>
+      roles.set('role-1', {
+        v: 1,
+        id: 'role-1',
+        ownerUserId: 'owner',
+        visibility: 'private',
+        name: 'Release manager',
+        emoji: '🚀',
+        promptPrefix: 'You are the release manager.',
+        machineId: 'machine',
+        agentConfigId: 'agent',
+        runConfig: {},
+        instances: [
+          {
+            id: 'instance-1',
+            alias: 'Night shift',
+            machineId: 'machine',
+            agentConfigId: 'agent',
+            runConfig: { modeId: 'plan', modelId: 'sonnet' },
+          },
+        ],
+        revision: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        ...overrides,
+      });
+    setRole();
+    return {
+      roles,
+      agents,
+      setRole,
+      resolve: (ref: { roleId: string; instanceId?: string } | undefined, userId = 'owner') =>
+        resolveScheduleRunRole({
+          manager,
+          workspaceId: 'workspace' as never,
+          machineId: 'machine' as never,
+          userId,
+          ref,
+        }),
+    };
+  };
+  const code = (error: unknown) =>
+    error instanceof ScheduleConfigurationError ? error.code : `unexpected: ${String(error)}`;
+
+  it('reads the Role as it is at that run, so an edit reaches the next one', async () => {
+    const h = daemon();
+    const ref = { roleId: 'role-1' };
+    expect(await h.resolve(ref)).toMatchObject({
+      role: { revision: 1 },
+      instance: { id: 'instance-1' },
+      groupName: 'Night shift',
+      agent: { agentConfigId: 'agent', modeId: 'plan', modelId: 'sonnet' },
+    });
+    // The Role moves to another Agent and model; the schedule was not saved again.
+    h.setRole({
+      revision: 2,
+      instances: [
+        {
+          id: 'instance-1',
+          machineId: 'machine',
+          agentConfigId: 'writer',
+          runConfig: { modelId: 'opus', configOptionValues: { effort: 'high' } },
+        },
+      ],
+    });
+    const next = (await h.resolve(ref))!;
+    expect(next.role.revision).toBe(2);
+    expect(next.agentConfig.id).toBe('writer');
+    expect(next.agent).toEqual({
+      agentConfigId: 'writer',
+      modelId: 'opus',
+      configOptionValues: { effort: 'high' },
+    });
+    expect(await h.resolve(undefined)).toBeUndefined();
+  });
+
+  it('blocks the run under its own code when the Role is gone or cannot run here', async () => {
+    const h = daemon();
+    const ref = { roleId: 'role-1' };
+    // Someone else's private Role is not this owner's to run.
+    expect(await h.resolve(ref, 'other').catch(code)).toBe('ROLE_NOT_FOUND');
+    // The named instance was removed from the Role.
+    expect(await h.resolve({ roleId: 'role-1', instanceId: 'gone' }).catch(code)).toBe(
+      'ROLE_INSTANCE_UNAVAILABLE'
+    );
+    // Its Agent config was deleted from this machine.
+    h.agents.delete('agent');
+    expect(await h.resolve(ref).catch(code)).toBe('ROLE_INSTANCE_UNAVAILABLE');
+    h.agents.add('agent');
+    // Its only instance now lives on another machine: the run does not follow it there.
+    h.setRole({
+      instances: [{ id: 'instance-1', machineId: 'laptop', agentConfigId: 'agent', runConfig: {} }],
+    });
+    expect(await h.resolve(ref).catch(code)).toBe('ROLE_INSTANCE_UNAVAILABLE');
+    h.roles.clear();
+    expect(await h.resolve(ref).catch(code)).toBe('ROLE_NOT_FOUND');
+  });
+
+  it('puts the Role’s instruction before the prompt only on the run that creates the chat', async () => {
+    const role = (await daemon().resolve({ roleId: 'role-1' }))!;
+    expect(buildScheduleRunPrompt({ prompt: 'Cut the release.', role, createsSession: true })).toBe(
+      'You are the release manager.\n\nCut the release.'
+    );
+    // A later run into the schedule's own chat continues a conversation already instructed.
+    expect(
+      buildScheduleRunPrompt({ prompt: 'Cut the release.', role, createsSession: false })
+    ).toBe('Cut the release.');
+    expect(buildScheduleRunPrompt({ prompt: 'Cut the release.', createsSession: true })).toBe(
+      'Cut the release.'
+    );
+  });
+
+  it('records the Role, its revision and the instance that ran as Session provenance', async () => {
+    const role = (await daemon().resolve({ roleId: 'role-1' }))!;
+    expect(buildScheduleSessionCreateOptions({ ...run(), role })).toMatchObject({
+      agentRoleId: 'role-1',
+      agentRoleRevision: 1,
+      agentRoleSnapshot: {
+        id: 'role-1',
+        revision: 1,
+        name: 'Release manager',
+        emoji: '🚀',
+        instanceId: 'instance-1',
+        instanceLabel: 'Night shift',
+      },
+    });
+    for (const field of ['agentRoleId', 'agentRoleRevision', 'agentRoleSnapshot'])
+      expect(buildScheduleSessionCreateOptions(run())).not.toHaveProperty(field);
   });
 });

@@ -5,6 +5,9 @@ import {
   ScheduleRepository,
   ScheduleDefinitionSchema,
   getStaticBuiltinAcpCapabilities,
+  normalizeAgentRole,
+  scheduleDefinitionFingerprint,
+  SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION,
   SCHEDULES_PROTOCOL_VERSION,
   type ResolvedPermissionTier,
   type ScheduleCommand,
@@ -27,6 +30,7 @@ async function fixture() {
   const registrySync = vi.fn(async () => {});
   const documentSync = vi.fn(async () => {});
   const notificationSync = vi.fn(async () => false);
+  let failRegistryPublish = false;
   const port: ScheduleRepositoryPort = {
     openPersistedDoc: async (id) => {
       if (!docs.has(id)) docs.set(id, new LoroDoc());
@@ -36,7 +40,13 @@ async function fixture() {
       syncOnce: registrySync,
       flock: {
         get: (key) => rows.get(JSON.stringify(key)),
-        set: (key, value) => rows.set(JSON.stringify(key), value),
+        set: (key, value) => {
+          if (failRegistryPublish && key[0] === 'schedule') {
+            failRegistryPublish = false;
+            throw new Error('Registry write failed');
+          }
+          return rows.set(JSON.stringify(key), value);
+        },
         scan: () => [...rows].map(([key, value]) => ({ key: JSON.parse(key), value })),
       },
     }),
@@ -74,6 +84,7 @@ async function fixture() {
   let owner = 'owner';
   let machinePresent = false;
   let agentPresent = true;
+  let roleSupport = true;
   /** Further Agent configs on `machine`, by id. */
   const agents = new Map<string, Record<string, unknown>>();
   /** Fields of a Session meta beyond the invoking owner's, by Session id. */
@@ -101,7 +112,12 @@ async function fixture() {
                     meta: {
                       id: 'machine',
                       ownerUserId: 'owner',
-                      protocolCapabilities: { schedules: SCHEDULES_PROTOCOL_VERSION },
+                      protocolCapabilities: {
+                        schedules: SCHEDULES_PROTOCOL_VERSION,
+                        ...(roleSupport
+                          ? { scheduleAgentRoles: SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION }
+                          : {}),
+                      },
                     },
                   }
                 : id === 'agent-agent' && agentPresent
@@ -165,6 +181,39 @@ async function fixture() {
           agentType,
           fetchedAt: 1,
         });
+    },
+    /** A workspace-shared Role with one instance, on `machine`; `null` deletes it. */
+    setRole: (
+      roleId: string,
+      instance: { id: string; agentConfigId: string; runConfig: Record<string, unknown> } | null
+    ) => {
+      const key = JSON.stringify(['agentRole', roleId]);
+      if (!instance) return void rows.delete(key);
+      const prior = rows.get(key) as { revision: number } | undefined;
+      const row = {
+        v: 1,
+        id: roleId,
+        ownerUserId: 'owner',
+        visibility: 'workspace',
+        name: 'Release manager',
+        machineId: 'machine',
+        agentConfigId: instance.agentConfigId,
+        runConfig: instance.runConfig,
+        instances: [{ ...instance, machineId: 'machine' }],
+        revision: (prior?.revision ?? 0) + 1,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      rows.set(key, row);
+      return normalizeAgentRole(row)!;
+    },
+    /** The next write lands its definition, then fails before its Registry row. */
+    failNextRegistryPublish: () => {
+      failRegistryPublish = true;
+    },
+    /** The target machine's daemon predates Role references. */
+    withoutRoleSupport: () => {
+      roleSupport = false;
     },
     session: (sessionId: string, meta: Record<string, unknown>) => {
       sessions.set(sessionId, meta);
@@ -601,6 +650,252 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
       })
     ).rejects.toThrow('Only the user');
     expect((await h.repository.read('nightly'))?.prompt).toBe(edited.prompt);
+  });
+
+  describe('a schedule that runs as an Agent Role', () => {
+    const roleInstance = (modeId: string) => ({
+      id: 'instance-1',
+      agentConfigId: 'agent',
+      runConfig: { modeId, modelId: 'sonnet' },
+    });
+    /** A write as the MCP path builds it: against the catalog the caller read. */
+    const createAs = (
+      h: Awaited<ReturnType<typeof fixture>>,
+      requestId: string,
+      role: NonNullable<ReturnType<Awaited<ReturnType<typeof fixture>>['setRole']>>
+    ) =>
+      executeScheduleCommand(h.context, {
+        action: 'create',
+        scheduleId: requestId,
+        requestId,
+        draft: buildScheduleCreateDraft(
+          {
+            requestId,
+            title: 'Nightly review',
+            prompt: 'Review today’s commits.',
+            rule: { kind: 'daily', hour: 21, minute: 0 },
+            target: { agentRoleId: role.id },
+          },
+          { ...draftContext, roles: [role] }
+        ),
+      });
+    const update = async (
+      h: Awaited<ReturnType<typeof fixture>>,
+      input: Omit<Parameters<typeof buildScheduleEditDraft>[0], 'scheduleId'>,
+      roles: Parameters<typeof buildScheduleEditDraft>[2]['roles'] = []
+    ) =>
+      executeScheduleCommand(h.context, {
+        action: 'edit',
+        scheduleId: 'nightly',
+        requestId: input.requestId,
+        draft: buildScheduleEditDraft(
+          { scheduleId: 'nightly', ...input },
+          (await h.repository.read('nightly'))!,
+          { ...draftContext, roles }
+        ),
+      });
+
+    it('saves the reference, shows it, keeps it without a target and drops it with a plain one', async () => {
+      const h = await asAgent('edit');
+      const role = h.setRole('role-1', roleInstance('acceptEdits'))!;
+      await createAs(h, 'nightly', role);
+      expect((await h.repository.read('nightly'))!.definition).toMatchObject({
+        agentRole: { roleId: 'role-1' },
+        // What the Role resolved to at this write, for listing.
+        agent: { agentConfigId: 'agent', modeId: 'acceptEdits', modelId: 'sonnet' },
+      });
+      await expect(
+        executeScheduleCommand(h.context, { action: 'show', scheduleId: 'nightly' })
+      ).resolves.toMatchObject({ schedule: { definition: { agentRole: { roleId: 'role-1' } } } });
+      await expect(
+        executeScheduleCommand(h.context, { action: 'list', limit: 30, query: 'Nightly' })
+      ).resolves.toMatchObject({ schedules: [{ scheduleId: 'nightly', agentRoleId: 'role-1' }] });
+
+      await update(h, { requestId: 'retitle', title: 'Evening review' });
+      expect((await h.repository.read('nightly'))!.definition).toMatchObject({
+        title: 'Evening review',
+        agentRole: { roleId: 'role-1' },
+      });
+
+      // Naming the Agent itself ends the Role: the schedule keeps that Agent's config.
+      await update(h, { requestId: 'plain', target: { agentConfigId: 'agent' } });
+      const plain = (await h.repository.read('nightly'))!.definition;
+      expect(plain.agentRole).toBeUndefined();
+      expect(plain.agent).toEqual({ agentConfigId: 'agent', modeId: 'acceptEdits' });
+      expect(
+        (await h.repository.list()).find((row) => row.scheduleId === 'nightly')?.agentRoleId
+      ).toBeUndefined();
+
+      // And a target naming a Role binds it again, to the instance named.
+      await update(
+        h,
+        {
+          requestId: 'rebind',
+          target: { agentRoleId: 'role-1', agentRoleInstanceId: 'instance-1' },
+        },
+        [role]
+      );
+      expect((await h.repository.read('nightly'))!.definition.agentRole).toEqual({
+        roleId: 'role-1',
+        instanceId: 'instance-1',
+      });
+    });
+
+    it('ranks the schedule as the Role runs now, never as the Agent saved beside it', async () => {
+      const h = await asAgent('edit');
+      const role = h.setRole('role-1', roleInstance('acceptEdits'))!;
+      await createAs(h, 'nightly', role);
+
+      // The user raises the Role. The schedule's saved Agent still says acceptEdits.
+      h.setRole('role-1', roleInstance('bypassPermissions'));
+      expect((await h.repository.read('nightly'))!.definition.agent.modeId).toBe('acceptEdits');
+      await expect(update(h, { requestId: 'retitle', title: 'Evening review' })).rejects.toThrow(
+        'Only the user'
+      );
+      // A draft built from a catalog read before the change claims the old mode; the
+      // write is still ranked, and would be saved, as the Role is now.
+      await expect(createAs(h, 'stale', role)).rejects.toThrow('lody_schedule_propose');
+      expect(await h.repository.read('stale')).toBeNull();
+      h.context.requesterPermissionTier = undefined;
+      await executeScheduleCommand(h.context, {
+        action: 'pause',
+        scheduleId: 'nightly',
+        requestId: 'pause',
+      });
+      h.context.requesterPermissionTier = 'edit';
+      await expect(
+        executeScheduleCommand(h.context, {
+          action: 'resume',
+          scheduleId: 'nightly',
+          requestId: 'resume',
+        })
+      ).rejects.toThrow('Only the user');
+
+      // Lowered again, the same caller may change it, and the saved Agent follows the Role.
+      h.setRole('role-1', { ...roleInstance('acceptEdits'), runConfig: { modeId: 'acceptEdits' } });
+      await update(h, { requestId: 'retitle', title: 'Evening review' });
+      expect((await h.repository.read('nightly'))!.definition).toMatchObject({
+        title: 'Evening review',
+        agentRole: { roleId: 'role-1' },
+        agent: { agentConfigId: 'agent', modeId: 'acceptEdits' },
+      });
+      expect((await h.repository.read('nightly'))!.definition.agent).not.toHaveProperty('modelId');
+
+      // A Role that is gone has no tier to compare: the schedule is the user's to change.
+      h.setRole('role-1', null);
+      await expect(update(h, { requestId: 'again', title: 'Night review' })).rejects.toThrow(
+        'Only the user'
+      );
+    });
+
+    it('completes a write whose Registry row failed, as it was first made, after the Role changed', async () => {
+      const h = await asAgent('edit');
+      const first = h.setRole('role-1', roleInstance('acceptEdits'))!;
+      const published = async (scheduleId: string) => {
+        const document = (await h.repository.read(scheduleId))!;
+        const row = (await h.repository.list()).find((entry) => entry.scheduleId === scheduleId);
+        return {
+          document,
+          matches: row?.definitionFingerprint === scheduleDefinitionFingerprint(document),
+        };
+      };
+      const firstAgent = { agentConfigId: 'agent', modeId: 'acceptEdits', modelId: 'sonnet' };
+
+      // Create: the definition lands, its Registry row does not.
+      h.failNextRegistryPublish();
+      await expect(createAs(h, 'nightly', first)).rejects.toThrow('Registry write failed');
+      expect((await published('nightly')).matches).toBe(false);
+      // The Role is edited before the caller retries the same request.
+      const second = h.setRole('role-1', {
+        ...roleInstance('acceptEdits'),
+        runConfig: { modeId: 'acceptEdits', modelId: 'opus' },
+      })!;
+      await expect(createAs(h, 'nightly', second)).resolves.toMatchObject({ ok: true });
+      const created = await published('nightly');
+      expect(created.matches).toBe(true);
+      expect(created.document.definition.agent).toEqual(firstAgent);
+      expect(created.document.timeline).toHaveLength(1);
+
+      // Edit: the same, with the Role changing again in between.
+      h.failNextRegistryPublish();
+      await expect(update(h, { requestId: 'retitle', title: 'Evening review' })).rejects.toThrow(
+        'Registry write failed'
+      );
+      expect((await published('nightly')).matches).toBe(false);
+      h.setRole('role-1', {
+        ...roleInstance('acceptEdits'),
+        runConfig: { modeId: 'acceptEdits', modelId: 'haiku' },
+      });
+      await expect(
+        update(h, { requestId: 'retitle', title: 'Evening review' })
+      ).resolves.toMatchObject({ ok: true });
+      const edited = await published('nightly');
+      expect(edited.matches).toBe(true);
+      expect(edited.document.definition).toMatchObject({
+        title: 'Evening review',
+        agentRole: { roleId: 'role-1' },
+        // What the Role resolved to when this request first landed.
+        agent: { agentConfigId: 'agent', modeId: 'acceptEdits', modelId: 'opus' },
+      });
+      expect(edited.document.timeline.map((entry) => entry.id)).toEqual(['nightly', 'retitle']);
+
+      // A new request is a new write: it saves what the Role says now.
+      await update(h, { requestId: 'reprompt', prompt: 'Review this week’s commits.' });
+      const fresh = await published('nightly');
+      expect(fresh.matches).toBe(true);
+      expect(fresh.document.definition.agent).toEqual({
+        agentConfigId: 'agent',
+        modeId: 'acceptEdits',
+        modelId: 'haiku',
+      });
+
+      // A retry is still ranked as the Role runs now: raised above the caller, it is refused.
+      h.failNextRegistryPublish();
+      await expect(update(h, { requestId: 'again', title: 'Night review' })).rejects.toThrow(
+        'Registry write failed'
+      );
+      h.setRole('role-1', roleInstance('bypassPermissions'));
+      await expect(update(h, { requestId: 'again', title: 'Night review' })).rejects.toThrow(
+        'Only the user'
+      );
+    });
+
+    it('refuses a reference that cannot run: a picked chat, an older daemon, a missing Role', async () => {
+      const h = await asAgent('edit');
+      // A person's own command: no tier applies, the rules below still do.
+      h.context.requesterSessionId = undefined;
+      h.context.requesterPermissionTier = undefined;
+      const { definition } = (await h.repository.read('schedule'))!;
+      const draft = {
+        title: 'As a Role',
+        machineId: definition.machineId,
+        trigger: definition.trigger,
+        misfirePolicy: definition.misfirePolicy,
+        overlapPolicy: definition.overlapPolicy,
+        agent: definition.agent,
+        agentRole: { roleId: 'role-1' },
+        retryPolicy: definition.retryPolicy,
+        prompt: 'Synthetic prompt',
+      };
+      const save = (overrides: Partial<typeof draft> & { destination?: object } = {}) =>
+        executeScheduleCommand(h.context, {
+          action: 'create',
+          scheduleId: 'as-role',
+          requestId: 'as-role',
+          draft: { ...draft, ...overrides },
+        } as ScheduleCommand);
+      await expect(save()).rejects.toThrow('No Agent Role with that id');
+      h.setRole('role-1', { ...roleInstance('acceptEdits'), agentConfigId: 'elsewhere' });
+      await expect(save()).rejects.toThrow('no instance that can run on the target machine');
+      h.setRole('role-1', roleInstance('acceptEdits'));
+      h.session('chat', { id: 'chat', agentConfigId: 'agent' });
+      await expect(
+        save({ destination: { kind: 'existing_session', sessionId: 'chat' } })
+      ).rejects.toThrow('cannot keep an Agent Role');
+      h.withoutRoleSupport();
+      await expect(save()).rejects.toThrow('Update the target machine CLI');
+      expect(await h.repository.read('as-role')).toBeNull();
+    });
   });
 
   it('resumes a paused schedule within the tier, and only that', async () => {

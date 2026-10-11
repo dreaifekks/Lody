@@ -12,11 +12,16 @@ import { v4 as uuid } from 'uuid';
 import { AlertTriangle } from 'lucide-react';
 import {
   DEFAULT_SCHEDULE_DESTINATION,
+  getAgentRoleEmoji,
   getDeviceTimeZone,
   getServerNow,
+  machineSupportsScheduleAgentRoles,
   machineSupportsSchedulesProtocol,
+  resolveScheduleAgentRole,
   scheduleOwnSessionId,
   ScheduleRepository,
+  type AgentRoleInstanceId,
+  type ScheduleAgentRoleRef,
   type SessionId,
   type SessionMeta,
   type AgentConfigId,
@@ -44,6 +49,12 @@ import {
   sessionLiveStatusAtomFamily,
 } from '@/atoms/presence';
 import { useScheduleDocument, useSchedules } from '@/hooks/use-schedules';
+import {
+  useAgentRoleAvailability,
+  useComposerAgentRoleNames,
+  useWorkspaceAgentRoles,
+} from '@/hooks/use-workspace-agent-roles';
+import { buildComposerAgentRoleItems, findComposerAgentRoleItem } from '@/lib/composer-agent-roles';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useVisibleLocalProjects } from '@/hooks/use-visible-local-projects';
 import { useOpenSettings } from '@/hooks/use-open-settings';
@@ -220,6 +231,12 @@ export function SchedulesWorkspace({ scheduleId }: { scheduleId?: string }) {
   const navigate = useNavigate();
   const registry = useSchedules();
   const agents = useAtomValue(getAllAgentConfigAtom);
+  const { roles } = useWorkspaceAgentRoles();
+  // A schedule bound to a Role is listed as that Role, by its name today.
+  const roleFace = (roleId: string | undefined) => {
+    const role = roleId ? roles.find((entry) => entry.id === roleId) : undefined;
+    return role ? `${getAgentRoleEmoji(role)} ${role.name}` : undefined;
+  };
   const localProjects = useVisibleLocalProjects({ includeMachineFlock: true });
   const onlineMachines = useAtomValue(onlineMachineIdsAtom);
   const presenceSync = useAtomValue(lodyPresenceSyncStateAtom);
@@ -458,7 +475,10 @@ export function SchedulesWorkspace({ scheduleId }: { scheduleId?: string }) {
       contextForRow={(item) => ({
         machine: machines.get(item.machineId as never)?.name ?? item.machineId,
         timeZone: machines.get(item.machineId as never)?.timeZone,
-        agent: agents.find((a) => a.id === item.agentConfigId)?.name ?? item.agentConfigId,
+        agent:
+          roleFace(item.agentRoleId) ??
+          agents.find((a) => a.id === item.agentConfigId)?.name ??
+          item.agentConfigId,
         project: !item.projectKey
           ? null
           : item.projectKind === 'local'
@@ -561,6 +581,12 @@ function ScheduleEditor({
         }
       : null
   );
+  // The Role this schedule runs as. While it resolves, the Agent shown and
+  // saved is what the Role says now; `agent` is only what was last set by hand.
+  const [agentRole, setAgentRole] = useState<ScheduleAgentRoleRef | null>(
+    document?.definition.agentRole ?? null
+  );
+  const { roles: workspaceRoles, synced: rolesSynced } = useWorkspaceAgentRoles();
   const [project, setProject] = useState<ProjectRef | null>(document?.definition.project ?? null);
   const [destination, setDestination] = useState<ScheduleDestination>(
     document?.definition.destination ?? DEFAULT_SCHEDULE_DESTINATION
@@ -572,7 +598,7 @@ function ScheduleEditor({
     activationId: uuid(),
     activityId: uuid(),
   }));
-  const selected = agents.find((config) => config.id === agent?.agentConfigId);
+  const savedConfig = agents.find((config) => config.id === agent?.agentConfigId);
   // The machine is its own choice, as on the chat landing; the Agent is picked
   // among that machine's agents. Until an Agent exists it is chosen directly.
   // Schedules run only on the person's own machines, so only those are offered.
@@ -588,10 +614,34 @@ function ScheduleEditor({
   );
   const [pickedMachineId, setPickedMachineId] = useState<MachineId | null>(null);
   const machineId =
-    (selected?.machineId as MachineId | undefined) ??
+    (savedConfig?.machineId as MachineId | undefined) ??
     pickedMachineId ??
+    // A Role may have moved to another Agent since; its schedule has not moved.
+    (agentRole && document ? (document.definition.machineId as MachineId) : null) ??
     (machineOptions.length === 1 ? machineOptions[0]!.value : null);
   const machine = machineId ? machines.get(machineId) : undefined;
+  const roleResolution = useMemo(
+    () =>
+      agentRole && machineId
+        ? resolveScheduleAgentRole({ ref: agentRole, machineId, roles: workspaceRoles, agents })
+        : null,
+    [agentRole, agents, machineId, workspaceRoles]
+  );
+  const shownAgent: AgentRunRef | null = roleResolution?.ok ? roleResolution.agent : agent;
+  const selected = roleResolution?.ok ? roleResolution.agentConfig : savedConfig;
+  // Known only once the catalog and that machine's Agents have arrived.
+  const agentRoleProblem =
+    roleResolution &&
+    !roleResolution.ok &&
+    rolesSynced &&
+    agents.some((config) => config.machineId === machineId)
+      ? roleResolution.problem
+      : null;
+  // Any choice made by hand ends the Role, keeping the values it had set.
+  const setManualAgent = (next: AgentRunRef | null) => {
+    setAgent(next);
+    setAgentRole(null);
+  };
   const machineAgents = useMemo(
     () =>
       agents
@@ -610,7 +660,7 @@ function ScheduleEditor({
       agents,
       machines: new Map([[machineMeta.id, machineMeta]]),
     });
-    setAgent(config ? seedScheduleAgentRunRef(config, machineMeta) : null);
+    setManualAgent(config ? seedScheduleAgentRunRef(config, machineMeta) : null);
   };
   const chooseMachine = (next: MachineId) => {
     if (next === machineId) return;
@@ -619,8 +669,8 @@ function ScheduleEditor({
     // gets the Agent the chat landing would pick there, already configured.
     if (project?.kind === 'local') setProject(null);
     const nextMachine = machines.get(next);
-    if (nextMachine) seedAgentOn(nextMachine, agent?.agentConfigId);
-    else setAgent(null);
+    if (nextMachine) seedAgentOn(nextMachine, shownAgent?.agentConfigId);
+    else setManualAgent(null);
   };
   // A new schedule opens as the chat landing last left things: its machine and
   // Agent with that Agent's remembered model, options and permission. Seeded
@@ -669,13 +719,56 @@ function ScheduleEditor({
         : undefined;
   const chooseDestination = (next: ScheduleDestination) => {
     setDestination(next);
+    // A picked chat follows its own Agent, so a Role does not apply to it.
+    if (next.kind === 'existing_session' && agentRole) setManualAgent(shownAgent);
     if (next.kind === 'existing_session' && next.sessionId) {
       const meta = sessions.find((entry) => entry.id === next.sessionId);
       // Follow the chat's Agent; the person still picks the permission mode.
-      if (meta?.agentConfigId && meta.agentConfigId !== agent?.agentConfigId)
-        setAgent({ agentConfigId: meta.agentConfigId as AgentConfigId });
+      if (meta?.agentConfigId && meta.agentConfigId !== shownAgent?.agentConfigId)
+        setManualAgent({ agentConfigId: meta.agentConfigId as AgentConfigId });
     }
     if (next.kind !== 'new_session') setProject(null);
+  };
+  // Roles with an instance on the schedule's machine, where its daemon reads a
+  // Role reference; a picked chat follows its own Agent, so none are offered.
+  const { resolveInstance: resolveRoleAvailability } = useAgentRoleAvailability(workspaceRoles);
+  const roleNames = useComposerAgentRoleNames();
+  const roleItems = useMemo(
+    () =>
+      machineId &&
+      destination.kind !== 'existing_session' &&
+      machineSupportsScheduleAgentRoles(machine)
+        ? buildComposerAgentRoleItems({
+            roles: workspaceRoles,
+            machineId,
+            agentConfigs: agents,
+            // Saving needs no machine online; the run waits for it as any schedule does.
+            resolveAvailability: (instance) => {
+              const availability = resolveRoleAvailability(instance);
+              return availability.kind === 'unavailable' &&
+                availability.reason === 'machine_offline'
+                ? { kind: 'available' }
+                : availability;
+            },
+            names: roleNames,
+          }).filter((item) => item.local)
+        : null,
+    [
+      agents,
+      destination.kind,
+      machine,
+      machineId,
+      resolveRoleAvailability,
+      roleNames,
+      workspaceRoles,
+    ]
+  );
+  const chooseRole = (instanceId: AgentRoleInstanceId | null) => {
+    // Leaving a Role clears the name, not the configuration it had set.
+    if (instanceId === null) return setManualAgent(shownAgent);
+    const item = findComposerAgentRoleItem(roleItems ?? [], instanceId);
+    if (item?.availability.kind === 'available')
+      setAgentRole({ roleId: item.role.id, instanceId: item.instance.id });
   };
   const machineLocalProjectIds = useMemo(
     () =>
@@ -691,7 +784,9 @@ function ScheduleEditor({
       disabledReason,
       workspaceReady: !!runtime,
       userId: user?.id,
-      agent,
+      agent: shownAgent,
+      usesAgentRole: !!agentRole,
+      agentRoleProblem,
       agentConfig: selected ?? null,
       machine,
       project,
@@ -722,7 +817,7 @@ function ScheduleEditor({
     [document]
   );
   const save = async (value: ScheduleFormValue) => {
-    if (saving || issues.length || !runtime || !user || !selected || !agent) return;
+    if (saving || issues.length || !runtime || !user || !selected || !shownAgent) return;
     setSaving(true);
     setError(undefined);
     try {
@@ -739,7 +834,8 @@ function ScheduleEditor({
               prompt: value.prompt,
               trigger: value.trigger,
               machineId: selected.machineId,
-              agent,
+              agent: shownAgent,
+              ...(agentRole ? { agentRole } : {}),
               ...(project && destination.kind === 'new_session' ? { project } : {}),
               destination,
               misfirePolicy: { kind: value.misfire },
@@ -802,8 +898,18 @@ function ScheduleEditor({
           <ScheduleAgentControls
             machine={machine}
             agentConfigs={machineAgents}
-            value={agent}
-            onChange={setAgent}
+            value={shownAgent}
+            onChange={setManualAgent}
+            agentRoles={
+              roleItems
+                ? {
+                    items: roleItems,
+                    selectedInstanceId: roleResolution?.ok ? roleResolution.instance.id : null,
+                    onSelect: chooseRole,
+                    machine: machine ?? null,
+                  }
+                : undefined
+            }
             disabledReason={
               disabledReason ??
               (machine

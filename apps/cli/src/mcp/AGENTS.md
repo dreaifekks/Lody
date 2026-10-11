@@ -45,14 +45,15 @@ Parent instructions apply. Background: [README.md](README.md).
 - Agent Role and Schedule writes (`lody_agent_role_create/update`,
   `lody_schedule_create/update/resume`) are Session tools capped at the invoking
   Session's permission tier (each Role instance): the lowest of the live Agent's options,
-  its persisted report (both ranked as reported) and the driving Turn's dispatch config; configs
-  to be dispatched get dispatch's builtin-default rule first (`permission-tier.ts`). The written
-  config, the stored one, and a chat a Schedule sends into must all stay within it.
+  its persisted report (both ranked as reported) and the driving Turn's dispatch config; dispatched
+  configs get dispatch's builtin default first (`permission-tier.ts`). Written and
+  stored configs (a Schedule's Role as resolved now) and a chat a Schedule sends into
+  stay within it.
   Unknown (no capability, unset permission option beside the mode, unoffered
-  default) is left to Settings or `lody_schedule_propose`. Builtin Pi is exempt by
-  the user's choice: any caller may write it; as a caller it counts as full. No credential option or
-  memory binding, no deletion. Each successful write, retries too, sends one notice id
-  (`agentConfigNoticeId`) to the Session and devices, outside `lody_notify_user`'s gates.
+  default) is left to Settings or `lody_schedule_propose`. Builtin Pi is exempt
+  (user's choice): any caller may write it; as a caller it counts as full. No credential option,
+  memory binding or deletion. Each successful write, retries too, sends one notice id
+  (`agentConfigNoticeId`) to Session and devices, outside `lody_notify_user`'s gates.
   MCP only: [CLI and known limits](README.md#agent-config-writes).
 - Direct Role creation stays on the ordinary `lody_session_create` and
   `lody_session_create_many` tools. With `agentRoleId`, `agentRoleInstanceId`/`machineId` only

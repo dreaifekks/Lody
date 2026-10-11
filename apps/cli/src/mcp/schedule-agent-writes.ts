@@ -72,6 +72,8 @@ const PROBLEMS: Record<ProposalTargetProblem, string> = {
   agent_not_found: 'No Agent config with that id is readable here.',
   machine_mismatch: 'The named machine is not the one that Agent runs on.',
   no_agent: 'This conversation has no Agent config; name one in target.',
+  role_with_chat:
+    'A schedule that sends into an existing chat follows that chat’s Agent; an Agent Role cannot be named with it.',
 };
 
 const resolveTarget = (
@@ -120,6 +122,7 @@ export function buildScheduleCreateDraft(
     ),
     machineId,
     agent: target.agent,
+    ...(target.agentRole ? { agentRole: target.agentRole } : {}),
     ...(target.project ? { project: target.project } : {}),
     destination: target.destination,
     misfirePolicy: { kind: 'run_once' },
@@ -135,9 +138,11 @@ const proposalDestination = (
 
 /**
  * An existing Schedule with the named fields replaced. `target` means what it
- * means to a proposal, defaults included; without it the Agent, machine and
- * project stay. A chat destination never keeps a project, and a Schedule that
- * already keeps its own chat keeps continuing that chat.
+ * means to a proposal, defaults included; without it the Agent, its Role
+ * reference, machine and project stay. A `target` replaces the reference too:
+ * one that names no Role leaves the Schedule on the Agent it resolves to. A
+ * chat destination never keeps a project, and a Schedule that already keeps its
+ * own chat keeps continuing that chat.
  */
 export function buildScheduleEditDraft(
   input: ScheduleUpdateToolInput,
@@ -171,6 +176,13 @@ export function buildScheduleEditDraft(
       : definition.trigger,
     machineId,
     agent: target?.agent ?? definition.agent,
+    ...(target
+      ? target.agentRole
+        ? { agentRole: target.agentRole }
+        : {}
+      : definition.agentRole
+        ? { agentRole: definition.agentRole }
+        : {}),
     ...(project ? { project } : {}),
     destination,
     misfirePolicy: definition.misfirePolicy,
