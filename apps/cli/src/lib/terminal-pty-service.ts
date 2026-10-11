@@ -18,6 +18,7 @@ import { getCachedLoginShellEnvSync } from '@/agent/login-shell-env';
 import { mergeLoginShellEnv, withDefaultAcpPathEntries } from '@/agent/setting';
 import { LODY_GIT_CRED_CONTEXT_TOKEN_ENV } from '@/lib/git-credential-broker';
 import { clearManagedGhTokenEnv, LODY_MANAGED_GH_TOKEN_SHA256_ENV } from '@/lib/gh-token-env';
+import { exposeLanSessionCommand } from '@/lib/lan/lan-session-command';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import type { TerminalReplay } from '@/lib/terminal-connection';
@@ -118,6 +119,7 @@ function buildTerminalEnv(sessionId: string | null): NodeJS.ProcessEnv {
   for (const key of TERMINAL_ENV_BLOCKLIST) {
     delete merged[key];
   }
+  exposeLanSessionCommand(merged);
   return merged;
 }
 

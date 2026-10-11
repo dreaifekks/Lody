@@ -46,7 +46,10 @@ async function resolveMachine(selector: string | undefined) {
 
 export const shellCommand = new Command('shell')
   .description('Open a shell on a machine of a LAN, over the connection members open to each other')
-  .argument('[machine]', 'Name, short name or id of a member; this machine when left out')
+  .argument(
+    '[machine]',
+    'Name, short name or id of a member, as `lan machines` lists them; this machine when left out'
+  )
   .argument('[command...]', 'Run this instead of an interactive shell (put -- before it)')
   .option(
     '--cwd <dir>',
@@ -64,8 +67,19 @@ export const shellCommand = new Command('shell')
       'Enter, then ~ and . leaves the shell running and ends this command;',
       '--attach brings it back. Typing exit ends the shell.',
       '',
-      'A command runs in a terminal there, as with ssh -t: what a pipe gives it is',
-      'echoed, and it is no way to move binary data.',
+      'Examples:',
+      '  lody-lan lan shell mba -- uname -a',
+      "  lody-lan lan shell mba --cwd '~/project' -- 'git status && git log -1'",
+      "  lody-lan lan shell mba -- 'cat > /tmp/fix.patch' < fix.patch",
+      "  base64 app.bin | lody-lan lan shell mba -- 'base64 -d > /tmp/app.bin'",
+      '',
+      'The words after -- are joined and run by the shell of that machine, so quote',
+      'a command with pipes, redirections or && as one argument. This command ends',
+      'with the exit code of that one.',
+      '',
+      'A command runs in a terminal there, as with ssh -t: its output arrives with',
+      'CRLF line ends and stderr mixed in, and what a pipe gives it is echoed. Text',
+      'passes whole; encode anything else, as base64 does above.',
     ].join('\n')
   )
   .action(async (selector: string | undefined, words: string[], options: ShellOptions) => {

@@ -3,7 +3,8 @@
 Members of a [LAN](lan.md) connect to each other directly for what the hub
 should not carry or keep: terminals, ports, the files of a message, and the
 requests a desktop or an agent sends to another machine. Folders that open in
-an editor are in [folders over SSH](lan-folders.md).
+an editor are in [folders over SSH](lan-folders.md). An agent uses the terminals
+and ports through [the command in its session](#the-command-in-a-session).
 
 ## Terminals of other members
 
@@ -104,6 +105,49 @@ authorizes every preview control on another machine and creates the shared
 tunnels. The panel reads no preview status, and Share, Restore preview and
 Stop sharing are hidden (`remotePreview` capability). The iOS Simulator of
 another member is not offered either, for the same reason.
+
+## The command in a session
+
+An agent reaches the other members with `lan machines`, `lan shell` and
+`lan forward`, so every session of a member has them under one name. An agent
+service of the local platform writes `lody-lan` into `session-bin` of its data
+directory when it starts (`apps/cli/src/lib/lan/lan-session-command.ts`). The
+script runs the runtime and the entry of that service, so a machine that has
+only the desktop application has the command too, and the command is always
+the build that serves the sockets it connects to. The service embedded in a
+desktop runs as Node only while `ELECTRON_RUN_AS_NODE` is set, which the
+environment of a terminal drops, so the script sets it. Windows gets
+`lody-lan.cmd` beside the script; a POSIX shell there, such as Git Bash, runs
+the script. The name is not `lody`: that may be the hosted command on the same
+machine.
+
+```text
+ agent or terminal ─▶ <data dir>/session-bin/lody-lan ─▶ runtime + entry of ─▶ local sockets of
+ of a session         first on its PATH                  the agent service     that agent service
+```
+
+The directory leads the PATH of what the service starts: the agent process of
+a session and the commands it runs (`buildShellEnv` in
+`apps/cli/src/session/session.ts`), and the terminals of the machine, a shell
+that `lan shell` opens included (`apps/cli/src/lib/terminal-pty-service.ts`).
+A command run on another member therefore finds that member's own `lody-lan`.
+The `gh` shim directory of a session follows it and shadows the native `gh` as
+before.
+
+While the machine belongs to at least one LAN, each turn ends with one
+sentence that names the three commands and points at `lody-lan lan --help`
+(`getLanSessionCommandReminder`, which `buildPrompt` appends after the reminder
+about Lody's tools). The prompt is the one text every agent reads; the
+instructions of Lody's MCP server reach only some of them. Membership is read
+at each turn. A machine in no LAN has the command and no sentence. On the
+hosted platform nothing sets the command up, so neither the PATH nor the prompt
+of a session changes there.
+
+The sentence is short because it travels with every turn, so the help carries
+the rest: how a machine is named, that a command follows `--` and is quoted as
+one argument, how a text file is piped in and anything else encoded, and what
+the forms of a forwarded port mean. Help printed through a launcher that sets
+`LODY_LAN_COMMAND` names the program as the launcher does.
 
 ## Files of a message
 
@@ -241,6 +285,9 @@ one to retry (`SYNC_UNAVAILABLE`), not as something that does not exist.
 
 ## Limits
 
+- A terminal starts a login shell, and a profile that assigns PATH anew drops
+  the directory of `lody-lan` there. The agent process is started directly and
+  keeps it.
 - Terminals and files of other members need a direct path between the
   machines, which an overlay network gives; a hub reached through a proxy does
   not.

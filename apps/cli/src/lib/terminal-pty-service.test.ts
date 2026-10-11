@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { machineShellScope, type TerminalServerEvent } from '@lody/shared';
 import type { Logger } from '@/utils/logger';
+import { setLanSessionCommand, writeLanSessionCommand } from './lan/lan-session-command';
 import { endOfInput, shellExitStatus } from './lan/lan-shell';
 import { makeTerminalPtyService, type TerminalPtyServiceApi } from './terminal-pty-service';
 
@@ -40,6 +41,7 @@ describe('a machine shell in a real terminal', () => {
   });
 
   afterEach(() => {
+    setLanSessionCommand(null);
     pty.closeAll();
     if (previousShell === undefined) delete process.env.SHELL;
     else process.env.SHELL = previousShell;
@@ -86,5 +88,32 @@ describe('a machine shell in a real terminal', () => {
 
     expect(shellExitStatus(exit)).toBe(143);
     expect(shellExitStatus((await run('exit 3')).exit)).toBe(3);
+  });
+
+  it("runs the agent service's own command line as lody-lan", async () => {
+    // Stands in for the CLI: says what it was started with.
+    const entry = path.join(directory, 'entry.cjs');
+    fs.writeFileSync(
+      entry,
+      'console.log(JSON.stringify([process.argv.slice(2), process.env.LODY_LAN_COMMAND, process.env.ELECTRON_RUN_AS_NODE]))'
+    );
+    // A profile may replace PATH, so the shell of this test reads none.
+    const shell = path.join(directory, 'shell');
+    fs.writeFileSync(shell, '#!/bin/sh\nexec /bin/sh -c "$3"\n', { mode: 0o755 });
+    process.env.SHELL = shell;
+    setLanSessionCommand({
+      binDir: writeLanSessionCommand(
+        // An embedded service runs as Node only when told to; a terminal's
+        // environment does not say so, the command does.
+        { execPath: process.execPath, entry, electronRunAsNode: '1' },
+        { dataDir: path.join(directory, "it's data") }
+      ),
+      isLanMember: () => true,
+    });
+
+    const { exit, output } = await run('lody-lan lan shell mba -- "uname -a"');
+
+    expect(shellExitStatus(exit)).toBe(0);
+    expect(output()).toContain('[["lan","shell","mba","--","uname -a"],"lody-lan","1"]');
   });
 });

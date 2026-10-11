@@ -3,6 +3,7 @@ import EventEmitter from 'eventemitter3';
 import { clearGitHubTokenEnv } from '@/lib/gh-token-env';
 import { applyNonOwnerShellEnv } from '@/lib/non-owner-shell-env';
 import { prependGhShimBinDirToPath } from '@/lib/gh-shim-script';
+import { exposeLanSessionCommand } from '@/lib/lan/lan-session-command';
 import { ACPSessionId, getServerNow, MachineId, SessionId } from '@lody/shared';
 import type { CreateAgentConfig, ISession, SessionMonitorRuntimeInfo } from './session-manager';
 import {
@@ -533,6 +534,7 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
           finalEnv[key] = configEnv[key];
       }
     }
+    exposeLanSessionCommand(finalEnv);
     return finalEnv;
   }
 
