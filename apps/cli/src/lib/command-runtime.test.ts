@@ -12,6 +12,7 @@ import {
   writeLocalDaemonRunFile,
 } from '@lody/shared/node/local-ipc';
 import {
+  DAEMON_CONNECT_NOT_PERMITTED_MESSAGE,
   DAEMON_NOT_RUNNING_MESSAGE,
   classifyLocalDaemonIpcError,
   dispatchLocalControl,
@@ -263,6 +264,51 @@ describe('command runtime helpers', () => {
       retryable: false,
     });
   });
+
+  it('tells a connection that was not permitted, as in a sandbox, from a daemon that is not running', () => {
+    const connectFailure = (code: string) =>
+      new IpcConnectError({
+        message: `connect ${code} /run/lody-oss-probe.sock`,
+        cause: Object.assign(new Error(`connect ${code}`), { code, syscall: 'connect' }),
+      });
+
+    for (const code of ['EPERM', 'EACCES']) {
+      expect(classifyLocalDaemonIpcError(connectFailure(code))).toMatchObject({
+        code: 'DAEMON_NOT_RUNNING',
+        message: DAEMON_CONNECT_NOT_PERMITTED_MESSAGE,
+        retryable: false,
+      });
+    }
+    for (const code of ['ENOENT', 'ECONNREFUSED']) {
+      expect(classifyLocalDaemonIpcError(connectFailure(code)).message).toBe(
+        DAEMON_NOT_RUNNING_MESSAGE
+      );
+    }
+    expect(DAEMON_CONNECT_NOT_PERMITTED_MESSAGE).toBe(
+      'Cannot connect to the Lody agent service of this machine: the connection was not permitted. If this command runs in a sandbox, run it outside the sandbox.'
+    );
+  });
+
+  // Root connects whatever the mode of a socket says, and a pipe has no mode.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'says so when a running daemon refuses the connection to its socket',
+    async () => {
+      const tempDir = makeTempDir();
+      const socketPath = makeSocketPath(tempDir, 'probe');
+      await listenSocket(socketPath, (_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({}));
+      });
+      fs.chmodSync(socketPath, 0o000);
+
+      const error = await ensureDaemonReachable({ socketPath }).catch((cause: unknown) => cause);
+
+      expect(error).toMatchObject({
+        code: 'DAEMON_NOT_RUNNING',
+        message: DAEMON_CONNECT_NOT_PERMITTED_MESSAGE,
+      });
+    }
+  );
 
   it('passes when the daemon probe responds with 2xx', async () => {
     const options = await makeDaemonOptions({

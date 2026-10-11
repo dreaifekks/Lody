@@ -297,6 +297,16 @@ one to retry (`SYNC_UNAVAILABLE`), not as something that does not exist.
 - A terminal starts a login shell, and a profile that assigns PATH anew drops
   the directory of `lody-lan` there. The agent process is started directly and
   keeps it.
+- The commands connect to local sockets of the agent service, and a sandbox
+  that lets no connection through stops them. The Linux sandbox Codex runs
+  commands in does (measured with codex-cli 0.162.1): every `connect` fails
+  with `EPERM`, a Unix socket included, in the modes `read-only`, `agent` and
+  `agent-auto-review`; `agent-full-access` has no sandbox. The command then
+  says that the connection was not permitted and to run it outside the
+  sandbox, instead of that no service is running
+  (`describeLocalDaemonConnectFailure` in `apps/cli/src/lib/command-runtime.ts`).
+  An agent there asks for the command to run outside the sandbox, which its
+  approval setting decides.
 - Terminals and files of other members need a direct path between the
   machines, which an overlay network gives; a hub reached through a proxy does
   not.
