@@ -154,15 +154,44 @@ export type RenderContext = {
   manifest: Manifest;
 };
 
+/** A picture at the size the desktop shows it in a message; a click opens the whole of it. */
 function image(context: RenderContext, block: JsonObject): HTMLElement | null {
   const id = str(block.imageId);
   const attachment = context.manifest.attachments.find((entry) => entry.id === id);
   if (!attachment || attachment.kind !== 'image') return null;
+  const url = context.objectUrl(attachment.objectId);
+  const link = element(context.document, 'a', 'picture');
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener';
   const node = element(context.document, 'img', 'image');
-  node.src = context.objectUrl(attachment.objectId);
+  node.src = url;
   node.alt = str(block.fileName) ?? context.strings.image;
   node.loading = 'lazy';
-  return node;
+  link.append(node);
+  return link;
+}
+
+const isPictures = (node: HTMLElement): boolean =>
+  node.classList.contains('picture') || node.classList.contains('images');
+
+/** The nodes of a message with each run of pictures in one row, beside its text and not in it. */
+function gatherPictures(document: Document, nodes: HTMLElement[]): HTMLElement[] {
+  const gathered: HTMLElement[] = [];
+  let row: HTMLElement | null = null;
+  for (const node of nodes) {
+    if (!isPictures(node)) {
+      row = null;
+      gathered.push(node);
+      continue;
+    }
+    if (!row) {
+      row = element(document, 'div', 'images');
+      gathered.push(row);
+    }
+    row.append(...(node.classList.contains('picture') ? [node] : [...node.children]));
+  }
+  return gathered;
 }
 
 /** Restores a title the capture left out because it repeated the first command. */
@@ -460,9 +489,37 @@ function renderAssistant(context: RenderContext, entry: JsonObject, items: Json[
   });
 }
 
+/** A user's message: its pictures in a row of their own, above the bubble that holds its text. */
+function renderUser(context: RenderContext, items: Json[]): HTMLElement[] {
+  const nodes = items
+    .map((item) => renderItem(context, item))
+    .filter((node): node is HTMLElement => node !== null);
+  const pictures = nodes.filter(isPictures);
+  const said = nodes.filter((node) => !isPictures(node));
+  const bubble = element(context.document, 'div', 'bubble');
+  bubble.append(...said);
+  return [...gatherPictures(context.document, pictures), ...(said.length > 0 ? [bubble] : [])];
+}
+
+/** The agent that wrote a message, with its model and effort; `null` when a person did. */
+function bylineOf(entry: JsonObject): string | null {
+  const author = entry.author;
+  if (!isObject(author) || author.kind !== 'agent') return null;
+  const role = isObject(author.role) ? author.role : {};
+  const model = isObject(author.model) ? author.model : {};
+  // A Role stands for the agent that ran it, as on the desktop.
+  const name = str(role.name)
+    ? [str(role.emoji), str(role.name)].filter(Boolean).join(' ')
+    : str(author.name);
+  const parts = [name, str(model.name) ?? str(model.id), str(author.reasoningEffort)];
+  return parts.filter(Boolean).join(' · ') || null;
+}
+
 /** One conversation's history; entries of other roles, and unknown items, are left out. */
 export function renderHistory(context: RenderContext, history: Json): HTMLElement {
   const list = element(context.document, 'div', 'history');
+  // A byline is said once, and again only when the writer of that side changes.
+  const bylines: { [role: string]: string | null } = {};
   for (const entry of Array.isArray(history) ? history : []) {
     if (!isObject(entry) || (entry.role !== 'user' && entry.role !== 'assistant')) continue;
     let items = Array.isArray(entry.items) ? entry.items : [];
@@ -473,12 +530,15 @@ export function renderHistory(context: RenderContext, history: Json): HTMLElemen
     }
     const nodes =
       entry.role === 'assistant'
-        ? renderAssistant(context, entry, items)
-        : items
-            .map((item) => renderItem(context, item))
-            .filter((node): node is HTMLElement => node !== null);
+        ? gatherPictures(context.document, renderAssistant(context, entry, items))
+        : renderUser(context, items);
     if (nodes.length === 0) continue;
     const message = element(context.document, 'article', `message ${entry.role}`);
+    const byline = bylineOf(entry);
+    if (byline !== null && byline !== bylines[entry.role]) {
+      message.append(element(context.document, 'div', 'byline', byline));
+    }
+    bylines[entry.role] = byline;
     message.append(...nodes);
     list.append(message);
   }

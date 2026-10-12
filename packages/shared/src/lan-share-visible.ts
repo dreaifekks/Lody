@@ -129,10 +129,45 @@ const ATTACHMENT_KEYS = [
   'sourcePath',
 ];
 
+/** The file types a conversation shows as a picture (`SESSION_IMAGE_ALLOWED_MIME_TYPES`). */
+const PICTURE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+/**
+ * A picture as a share carries it. A LAN keeps the picture of a message as a
+ * file on one machine, and sharing leaves every file out, so such a file is
+ * rebuilt as the image it is shown as; the window then reads it from the
+ * machine that keeps it. `null` for any other item.
+ */
+function pictureOf(item: LanShareTurnItem): LanShareTurnItem | null {
+  if (
+    item.type !== 'file' ||
+    item.transport !== 'local' ||
+    typeof item.fileId !== 'string' ||
+    typeof item.machineId !== 'string' ||
+    typeof item.mimeType !== 'string' ||
+    !PICTURE_TYPES.has(item.mimeType)
+  ) {
+    return null;
+  }
+  return {
+    ...pick(item, ['fileName', 'mimeType', 'sha256', 'sizeBytes', 'storageSessionId', 'machineId']),
+    type: 'image',
+    imageId: item.fileId,
+  };
+}
+
+/** A user's message as it was sent, its pictures as a share carries them. */
+const sentItems = (items: unknown): unknown =>
+  Array.isArray(items)
+    ? items.map((item: unknown) => (isRecord(item) ? (pictureOf(item) ?? item) : item))
+    : items;
+
 /** An item kept for a reader, rebuilt from the fields a reader reads; `null` when none is. */
 function publicItem(item: LanShareTurnItem): LanShareTurnItem | null {
   if (item.type === 'text') return { type: 'text', text: textOf(item) ?? '' };
-  if (item.type === 'image' || item.type === 'file') return pick(item, ATTACHMENT_KEYS);
+  if (item.type === 'image' || item.type === 'file') {
+    return pictureOf(item) ?? pick(item, ATTACHMENT_KEYS);
+  }
   if (item.type === 'image_group') {
     const images = Array.isArray(item.images) ? item.images.filter(isRecord) : [];
     return { type: 'image_group', images: images.map((image) => pick(image, ATTACHMENT_KEYS)) };
@@ -169,6 +204,45 @@ export function projectLanShareTurnItems(
   );
 }
 
+/** The named fields of `value` that hold text. */
+function texts(value: unknown, keys: readonly string[]) {
+  const picked: { [key: string]: string } = {};
+  if (!isRecord(value)) return picked;
+  for (const key of keys) {
+    const text = value[key];
+    if (typeof text === 'string' && text.trim() !== '') picked[key] = text;
+  }
+  return picked;
+}
+
+/**
+ * The agent that wrote an entry, as a reader is told: its name or Role, its
+ * model and its effort, and none of its ids. An assistant turn records the
+ * model that ran and the effort's label (`modelInfo`), which the desktop shows
+ * and which is said before what the author was configured with. Nothing for a
+ * person, whose author holds only an id.
+ */
+function publicAuthor(entry: { readonly [key: string]: unknown }) {
+  const author = isRecord(entry.author) && entry.author.kind === 'agent' ? entry.author : null;
+  const ran = entry.role === 'assistant' && isRecord(entry.modelInfo) ? entry.modelInfo : null;
+  if (!author && !ran) return {};
+  const role = texts(author?.role, ['name', 'emoji']);
+  const configured = texts(author?.model, ['id', 'name']);
+  // The agent's own label for the model, less the mark of its default.
+  const name = texts(ran, ['name']).name?.replace(/\s*\(recommended\)/gi, '') ?? configured.name;
+  const id = texts(ran, ['modelId']).modelId ?? configured.id;
+  const effort = texts(ran?._meta, ['lodyThoughtLevel']).lodyThoughtLevel;
+  return {
+    author: {
+      kind: 'agent',
+      ...texts(author, ['name', 'reasoningEffort']),
+      ...(effort ? { reasoningEffort: effort } : {}),
+      ...(role.name ? { role } : {}),
+      ...(id ? { model: { id, ...(name ? { name } : {}) } } : {}),
+    },
+  };
+}
+
 /** Whether an assistant turn ended, as the reader tells it. */
 export const isLanShareTurnFinished = (entry: LanShareTurnItem): boolean =>
   entry.finished === true || typeof entry.endedAt === 'number';
@@ -177,6 +251,7 @@ export const isLanShareTurnFinished = (entry: LanShareTurnItem): boolean =>
  * A conversation's history as a LAN publishes it, every entry rebuilt from the
  * fields a reader reads: the user's messages as they were sent, and of each
  * assistant turn what {@link projectLanShareTurnItems} keeps, with its times.
+ * An entry an agent wrote also says which agent, model and effort.
  * Entries of other roles are dropped, and so is an assistant turn with nothing
  * left. The history itself is not changed.
  */
@@ -188,9 +263,11 @@ export function projectLanShareHistory(history: unknown): unknown[] {
       const blocks = isRecord(entry.inputConfig) ? entry.inputConfig.inputBlocks : undefined;
       return [
         {
-          ...pick(entry, ['id', 'role', 'timestamp', 'items']),
+          ...pick(entry, ['id', 'role', 'timestamp']),
+          ...(entry.items !== undefined ? { items: sentItems(entry.items) } : {}),
+          ...publicAuthor(entry),
           // Older histories kept a message's content only in its input blocks.
-          ...(Array.isArray(blocks) ? { inputConfig: { inputBlocks: blocks } } : {}),
+          ...(Array.isArray(blocks) ? { inputConfig: { inputBlocks: sentItems(blocks) } } : {}),
         },
       ];
     }
@@ -201,6 +278,7 @@ export function projectLanShareHistory(history: unknown): unknown[] {
     return [
       {
         ...pick(entry, ['id', 'role', 'timestamp', 'finished', 'endedAt', 'permissionWaitMs']),
+        ...publicAuthor(entry),
         items: kept,
       },
     ];

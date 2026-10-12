@@ -83,6 +83,7 @@ header h1 {
 
 .meta,
 .empty,
+.byline,
 .subagent {
   color: var(--muted);
   font-size: 13px;
@@ -133,13 +134,23 @@ h2 {
   min-width: 0;
 }
 
+/* A user's message keeps to the right: its pictures, then the bubble of its text. */
 .message.user {
   align-self: flex-end;
+  align-items: flex-end;
   max-width: 85%;
+}
+
+.bubble {
+  max-width: 100%;
   padding: 12px 16px;
   border-radius: 14px;
   background: var(--fill);
   line-height: 20px;
+}
+
+.message.user .images {
+  justify-content: flex-end;
 }
 
 .md {
@@ -310,8 +321,19 @@ details.failed summary {
   gap: 8px;
 }
 
-.image {
+/* A picture is shown in the box the desktop shows it in, whatever the width of the message. */
+.picture {
+  display: inline-flex;
   max-width: 100%;
-  max-height: 480px;
-  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: zoom-in;
+}
+
+.image {
+  display: block;
+  max-width: min(100%, 320px);
+  max-height: 168px;
+  object-fit: contain;
 }

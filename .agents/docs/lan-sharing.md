@@ -23,8 +23,16 @@ and, through a tunnel such as Cloudflare's, to the internet.
 under it with the upstream exporter (`prepareSharePackage`), with file
 attachments omitted by the upstream switch and history left uncompressed, so
 the reader needs no Zstd. A picture of a LAN conversation is a file of an
-image type, so it is omitted too; a typed image block, which only the hosted
-store backs, fails the capture. Only the answers are published: before the
+image type (PNG, JPEG, WebP or GIF) that one machine keeps: the projection
+hands it to the exporter as an image, the window reads its bytes through the
+agent service from the machine that keeps it (`session/file-read-local`, as
+the conversation shows it), and the exporter checks them against the file's
+digest and copies them into the package, at most 64 pictures of 20 MB each.
+A picture that cannot be read, its machine being away, fails the capture, as
+does a typed image block, which only the hosted store backs; every other
+file is left out with a line saying so. The reader shows the pictures of a
+message in a row of their own, at the size the desktop shows them and beside
+its text, never inside it; a click opens the whole picture. Only the answers are published: before the
 exporter sees a history, `projectLanShareHistory`
 (`packages/shared/src/lan-share-visible.ts`) keeps the user's messages and,
 of each assistant turn, what the reader shows with the work folded (the
@@ -32,7 +40,11 @@ closing text, earlier text of 300 characters or with structure, and the
 answer's pictures and files). Every entry and item is rebuilt from the
 fields the reader reads (a text keeps its text, an assistant turn its id and
 times, never its input configuration), so nothing rides along in another
-field. Thinking, tool calls with their commands and diffs, short narration,
+field. An entry an agent wrote keeps who wrote it: the agent's or Role's
+name, the model and the effort, without any id; the reader says it above the
+message, once until the writer of that side changes. Of an assistant turn the
+model and effort are those the turn recorded as having run (`modelInfo`, the
+names the desktop shows), before what its author was configured with. Thinking, tool calls with their commands and diffs, short narration,
 subagent tasks, plans and notices never leave the window; a turn that shows
 no answer (still running, or ending in work) keeps only its substantive
 text, and one left empty is dropped. The reader folds by the same file, so a published turn shows what
