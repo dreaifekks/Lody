@@ -29,6 +29,7 @@ import {
   type PreparedSharePackage,
 } from '@lody/shared/session-sharing';
 import { userAtom } from '@/atoms';
+import { readKeptFileBytes } from '@/components/ai-gui/session-local-image-file';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { activeWorkspaceRuntimeAtom, type SessionDocStore } from '@/atoms/runtime';
 import type { useSessionShareManagement } from '@/hooks/use-session-share-management';
@@ -196,14 +197,18 @@ export function toLanShareEntry(
 
 /**
  * Freezes the selected conversations with the upstream exporter. A LAN keeps
- * the picture of a message as a file, which sharing omits with every file;
- * a typed image only the hosted store backs, so it fails the capture.
+ * the picture of a message as a file on one machine: the projection hands it
+ * over as an image, whose bytes are read here through the agent service, from
+ * the machine that keeps it, and travel in the package. A picture that cannot
+ * be read fails the capture, as does a typed image, which only the hosted
+ * store backs. Every other file is left out, as sharing leaves files out.
  *
  * Only the answers are published: each history goes through
  * `projectLanShareHistory` first, so thinking, tool calls, diffs and short
  * narration never leave this window, whatever the reader page would fold.
  */
 export async function captureLanSessionShare(options: {
+  workspaceId: string;
   sessions: readonly SessionMeta[];
   rootSessionId: string;
   previousSourceIds?: readonly { sourceId: string; conversationId: string }[];
@@ -255,7 +260,25 @@ export async function captureLanSessionShare(options: {
       })),
       signal: options.signal,
       // No compressHistory: the reader page the hub serves decodes no Zstd.
-      readAttachment: () => Promise.reject(new Error('Share attachment unavailable')),
+      readAttachment: async ({ conversationSourceId, kind, reference }) => {
+        const { imageId, machineId, mimeType, sizeBytes, sha256, storageSessionId } = reference;
+        if (
+          kind !== 'image' ||
+          typeof imageId !== 'string' ||
+          typeof machineId !== 'string' ||
+          typeof mimeType !== 'string' ||
+          typeof sizeBytes !== 'number' ||
+          typeof sha256 !== 'string'
+        ) {
+          throw new Error('Share attachment unavailable');
+        }
+        const bytes = await readKeptFileBytes(
+          { fileId: imageId, machineId, sizeBytes, sha256 },
+          options.workspaceId,
+          typeof storageSessionId === 'string' ? storageSessionId : conversationSourceId
+        );
+        return { bytes, mediaType: mimeType };
+      },
     });
   } finally {
     for (const { store, releaseSync } of stores) {
@@ -465,6 +488,7 @@ export function useLanSessionShareManagement(
         setStage('capture');
         setPhase('capturing');
         prepared = await captureLanSessionShare({
+          workspaceId,
           runtime,
           sessions,
           rootSessionId: sessionId,

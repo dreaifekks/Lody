@@ -29,11 +29,24 @@ const shell = vi.hoisted(() => ({
     preview: false,
   },
   images: [] as Array<{ kind: string; bytes: Uint8Array | null }>,
+  /** The files each machine keeps, by `<machineId>/<fileId>`. */
+  kept: new Map<string, Uint8Array>(),
+  reads: [] as Array<{ workspaceId: string; sessionId: string; machineId: string; fileId: string }>,
 }));
 vi.mock('@/lib/electron', () => ({ isElectronRenderer: () => true }));
 vi.mock('@/lib/electron-ipc-client', () => ({
   getIpcServices: () => ({
     localProjects: {
+      readSessionFileLocal: async (request: {
+        workspaceId: string;
+        sessionId: string;
+        machineId: string;
+        fileId: string;
+      }) => {
+        shell.reads.push(request);
+        const bytes = shell.kept.get(`${request.machineId}/${request.fileId}`);
+        return bytes ? { ok: true, bytes } : { ok: false, error: 'machine_offline' };
+      },
       control: async (request: {
         type: string;
         workspaceId: string;
@@ -309,6 +322,7 @@ describe('what a LAN share publishes of a conversation', () => {
 
   it('carries the answers of every conversation and nothing of the work', async () => {
     const prepared = await captureLanSessionShare({
+      workspaceId: 'w1',
       sessions: [
         { id: 'root', title: 'Root', machineId: 'm1' },
         { id: 'child', title: 'Child', machineId: 'm1', parentSessionId: 'root' },
@@ -363,5 +377,91 @@ describe('what a LAN share publishes of a conversation', () => {
     expect(root.map((entry) => entry.id)).toEqual(['r-u', 'r-a']);
     expect(root[1]?.endedAt).toBe(Date.parse('2026-10-09T08:01:00.000Z'));
     expect(root[1]?.items.map((item) => item.type)).toEqual(['text', 'text']);
+  });
+
+  describe('a picture a machine keeps as a file', () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const digest = async (bytes: Uint8Array<ArrayBuffer>) =>
+      [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('');
+    const file = async (fields: { [key: string]: unknown }) => ({
+      type: 'file',
+      fileId: 'f1',
+      fileName: 'chart.png',
+      mimeType: 'image/png',
+      sizeBytes: png.length,
+      sha256: await digest(png),
+      textPreview: false,
+      transport: 'local',
+      machineId: 'm2',
+      sourcePath: 'out/chart.png',
+      ...fields,
+    });
+    const capture = () =>
+      captureLanSessionShare({
+        workspaceId: 'w1',
+        sessions: [{ id: 'pictures', title: 'Pictures', machineId: 'm1' }] as never,
+        rootSessionId: 'pictures',
+        signal: new AbortController().signal,
+        runtime: runtime as never,
+      });
+
+    beforeEach(async () => {
+      shell.kept.clear();
+      shell.reads.length = 0;
+      histories.pictures = [
+        {
+          id: 'p-u',
+          role: 'user',
+          items: [{ type: 'text', text: 'What is on this?' }, await file({})],
+        },
+        {
+          id: 'p-a',
+          role: 'assistant',
+          finished: true,
+          items: [
+            { type: 'text', text: 'The same chart, redrawn.' },
+            await file({}),
+            await file({ fileId: 'f2', fileName: 'notes.pdf', mimeType: 'application/pdf' }),
+          ],
+        },
+      ];
+    });
+
+    it('travels in the share once, read from the machine that keeps it', async () => {
+      shell.kept.set('m2/f1', png);
+      const prepared = await capture();
+      expect(shell.reads).toEqual([
+        expect.objectContaining({
+          workspaceId: 'w1',
+          sessionId: 'pictures',
+          machineId: 'm2',
+          fileId: 'f1',
+        }),
+      ]);
+      expect(prepared.manifest.attachments).toEqual([
+        { id: 'a1', kind: 'image', fileName: 'chart.png', objectId: 'a1' },
+      ]);
+      expect(prepared.objects.get('a1')).toEqual(png);
+      expect(prepared.manifest.objects.find((object) => object.id === 'a1')?.mediaType).toBe(
+        'image/png'
+      );
+      const text = new TextDecoder().decode(prepared.objects.get('h1'));
+      const history = JSON.parse(text) as Array<{ items: Array<{ [key: string]: unknown }> }>;
+      expect(history.map((entry) => entry.items.map((item) => item.type))).toEqual([
+        ['text', 'image'],
+        ['text', 'image', 'text'],
+      ]);
+      expect(history[0]?.items[1]).toMatchObject({ imageId: 'a1', fileName: 'chart.png' });
+      // Where the picture was kept stays home, and so does any other file.
+      for (const kept of ['m2', 'out/chart.png', 'notes.pdf', '"f1"', '"f2"']) {
+        expect([kept, text.includes(kept)]).toEqual([kept, false]);
+      }
+    });
+
+    it('fails the capture when the machine that keeps it cannot be read', async () => {
+      await expect(capture()).rejects.toThrow('machine_offline');
+    });
   });
 });

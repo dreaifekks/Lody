@@ -277,6 +277,111 @@ describe('the reader page', () => {
     expect(page.textContent).not.toContain('Private reasoning.');
   });
 
+  it('shows pictures in a row of their own, outside the text of the message', () => {
+    const page = render([
+      {
+        id: 'u1',
+        role: 'user',
+        items: [
+          { type: 'image', imageId: 'a1', fileName: 'chart.png' },
+          { type: 'text', text: 'What is on this?' },
+        ],
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        finished: true,
+        items: [
+          { type: 'image', imageId: 'a1' },
+          { type: 'image', imageId: 'a1' },
+          { type: 'text', text: 'The same chart, twice.' },
+        ],
+      },
+    ]);
+    const rows = (message: Element) =>
+      [...message.children].map((node) => [node.className, node.querySelectorAll('img').length]);
+    const [user, assistant] = [...page.querySelectorAll('.message')];
+    expect(rows(user!)).toEqual([
+      ['images', 1],
+      ['bubble', 0],
+    ]);
+    expect(user!.querySelector('.bubble')?.textContent).toContain('What is on this?');
+    expect(rows(assistant!)).toEqual([
+      ['images', 2],
+      ['md', 0],
+    ]);
+    // A click opens the whole picture.
+    const link = page.querySelector<HTMLAnchorElement>('a.picture')!;
+    expect([link.getAttribute('href'), link.target, link.rel]).toEqual([
+      '/s/x/d/y/a1',
+      '_blank',
+      'noopener',
+    ]);
+  });
+
+  it('says which agent, model and effort wrote a message, once per writer and without ids', () => {
+    const agent = (fields: { [key: string]: Json }) => ({
+      v: 1,
+      kind: 'agent',
+      sessionId: 'private-session',
+      turnId: 'private-turn',
+      agentConfigId: 'private-config',
+      name: 'Claude Code',
+      model: { id: 'opus', source: 'configured' },
+      reasoningEffort: 'high',
+      ...fields,
+    });
+    const answer = (id: string, text: string, author: Json) => ({
+      id,
+      role: 'assistant',
+      finished: true,
+      author,
+      items: [{ type: 'text', text }],
+    });
+    const published = projectLanShareHistory([
+      {
+        id: 'u1',
+        role: 'user',
+        author: { v: 1, kind: 'human', userId: 'private-user' },
+        items: [{ type: 'text', text: 'Why?' }],
+      },
+      // The model that ran and its effort, as the turn recorded them, are what is said.
+      {
+        ...answer('a1', 'First.', agent({})),
+        modelInfo: {
+          modelId: 'opus',
+          name: 'Opus 5.5 (recommended)',
+          _meta: { lodyThoughtLevel: 'High', other: 'private-meta' },
+        },
+      },
+      answer('a2', 'Second.', agent({})),
+      {
+        id: 'u2',
+        role: 'user',
+        author: agent({ role: { id: 'private-role', revision: 3, name: 'Reviewer', emoji: '🔍' } }),
+        items: [{ type: 'text', text: 'Check it.' }],
+      },
+      answer(
+        'a3',
+        'Third.',
+        agent({ name: 'Codex', model: { id: 'gpt-x', name: 'GPT X', source: 'runtime' } })
+      ),
+    ]) as Json;
+    expect(JSON.stringify(published)).not.toContain('private-');
+    const page = render(published);
+    expect(
+      [...page.querySelectorAll('.message')].map(
+        (message) => message.querySelector('.byline')?.textContent ?? null
+      )
+    ).toEqual([
+      null,
+      'Claude Code · Opus 5.5 · High',
+      'Claude Code · opus · high',
+      '🔍 Reviewer · opus · high',
+      'Codex · GPT X · high',
+    ]);
+  });
+
   it('lists each conversation after the one that holds or opened it', () => {
     expect(orderConversations(manifest)).toEqual([
       { id: 'c1', depth: 0 },

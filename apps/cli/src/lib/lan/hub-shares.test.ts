@@ -188,6 +188,39 @@ describe('conversations a LAN shares', () => {
     expect(await listLanSharedConversations(hub)).toEqual([share]);
   });
 
+  it('keeps a picture of the conversation and serves it under the share as the image it is', async () => {
+    const prepared = await prepareSharePackage({
+      rootSourceId: 'session-root',
+      conversations: [
+        {
+          sourceId: 'session-root',
+          title: 'A chart',
+          history: [
+            {
+              id: 'a1',
+              role: 'assistant',
+              items: [{ type: 'image', imageId: 'kept-file', fileName: 'chart.png' }],
+            },
+          ],
+        },
+      ],
+      capturedAt: '2026-10-08T00:00:00.000Z',
+      // A copy of its own: a small Buffer is a view of a pool the digest must not read.
+      readAttachment: async () => ({ bytes: new Uint8Array(PNG), mediaType: 'image/png' }),
+    });
+    const share = await publish(prepared);
+
+    const { share: json, history } = await readRoot(share.shareId);
+    const [attachment] = json.manifest.attachments;
+    expect(attachment).toMatchObject({ kind: 'image', fileName: 'chart.png' });
+    expect(history[0]?.items[0]).toMatchObject({ type: 'image', imageId: attachment?.id });
+    const picture = await read(`/s/${share.shareId}/d/${json.deployment}/${attachment?.objectId}`);
+    expect(picture.status).toBe(200);
+    expect(picture.headers.get('content-type')).toBe('image/png');
+    expect(picture.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(Buffer.from(await picture.arrayBuffer())).toEqual(PNG);
+  });
+
   it('writes the head a link preview reads, naming nothing of the conversation but its title', async () => {
     const share = await publish(await capture('A secret answer.', [], 'Fix <the> "clock" & co'));
     const head = async () => {

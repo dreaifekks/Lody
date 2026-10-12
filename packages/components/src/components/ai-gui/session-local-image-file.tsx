@@ -130,7 +130,7 @@ export async function readKeptFile(
 
 /** The bytes of a file block, read as `readKeptFile` reads them. */
 export async function readKeptFileBytes(
-  file: SessionFilePayload,
+  file: Pick<SessionFilePayload, 'fileId' | 'machineId' | 'sizeBytes' | 'sha256'>,
   workspaceId: string,
   sessionId: string
 ): Promise<Uint8Array<ArrayBuffer>> {
