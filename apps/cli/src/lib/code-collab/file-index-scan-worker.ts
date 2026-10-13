@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import {
   buildCodeCollabFileIndexState,
+  isCodeCollabFileTreeValueIgnored,
   type CodeCollabV2AllChangesState,
   type CodeCollabV2FileIndexState,
   type CodeCollabV2FileTreeValue,
@@ -11,10 +12,13 @@ import {
 import { closeDirectoryQuietly } from './directory-handle';
 import {
   computeAllChanges,
+  IGNORED_LAZY_DIRECTORY_VALUE,
   isInsideGitWorktree,
   joinWorkspacePath,
   pathSegmentComparisonKey,
+  restoreExpandedIgnoredDirectories,
   scanGitDirectoryEntries,
+  type ExpandedIgnoredDirectory,
 } from './file-index-scan-core';
 
 export type FileIndexScanWorkerInput = {
@@ -37,6 +41,7 @@ export type FileIndexFullStateWorkerInput = {
   readonly maxRawTextBytes: number;
   readonly entryBudget: number;
   readonly preferredBaseBranch?: string;
+  readonly expandedIgnoredDirectories?: readonly ExpandedIgnoredDirectory[];
   readonly providedAllChanges?: {
     readonly source: 'diff-store';
     readonly state: CodeCollabV2AllChangesState;
@@ -108,6 +113,7 @@ async function computeFullFileIndexState(
     entryBudget: input.entryBudget,
     recursive: true,
   });
+  await restoreExpandedIgnoredDirectories(fileTreeEntries, input.expandedIgnoredDirectories ?? []);
   const scanMs = Date.now() - scanStartedAtMs;
   const fileTree = Object.fromEntries(fileTreeEntries);
   const buildStartedAtMs = Date.now();
@@ -212,7 +218,12 @@ async function scanDirectoryEntries(
       }
       entries.set(workspacePath, value);
       remainingEntries -= 1;
-      if (options.recursive && isLazyDirectoryValue(value) && remainingEntries > 0) {
+      if (
+        options.recursive &&
+        isLazyDirectoryValue(value) &&
+        !isCodeCollabFileTreeValueIgnored(value) &&
+        remainingEntries > 0
+      ) {
         queue.push({ absolutePath, workspacePath });
       }
     }
@@ -288,8 +299,12 @@ function classifyDirectoryEntry(entry: {
   isSymbolicLink(): boolean;
 }): CodeCollabV2FileTreeValue | undefined {
   if (entry.isDirectory()) {
+    if (entry.name === '.git') {
+      return undefined;
+    }
+    // Outside Git these names stand in for ignore rules: listed, never walked.
     return DEFAULT_IGNORED_DIRECTORY_NAMES.has(entry.name)
-      ? undefined
+      ? IGNORED_LAZY_DIRECTORY_VALUE
       : ({ kind: 'lazy' } as const);
   }
   if (entry.isSymbolicLink()) {

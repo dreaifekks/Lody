@@ -225,6 +225,39 @@ describe('CodeCollabSessionFileProvider v2', () => {
     expect(runtime.refreshText).not.toHaveBeenCalled();
   });
 
+  it('lists ignored rows marked, keeps them out of search, and still opens them', async () => {
+    const provider = new CodeCollabSessionFileProvider({
+      runtime: createRuntime(),
+      role: 'write',
+      fileTree: {
+        'src/app.ts': true,
+        notes: { kind: 'lazy', ignored: true },
+        'notes/plan.md': { kind: 'file', ignored: true },
+        'notes/link': { kind: 'skipped', reason: 'symlink', ignored: true },
+      },
+    });
+
+    const listed = await provider.listFiles();
+    expect(listed.map((entry) => [entry.path, entry.entryType, entry.ignored])).toEqual([
+      ['notes', 'lazy-directory', true],
+      ['notes/link', 'file', true],
+      ['notes/plan.md', 'file', true],
+      ['src/app.ts', 'file', undefined],
+    ]);
+    expect(listed.find((entry) => entry.path === 'notes/plan.md')).toMatchObject({
+      kind: 'text',
+      readonly: false,
+    });
+
+    expect((await provider.searchFiles('')).map((entry) => entry.path)).toEqual(['src/app.ts']);
+    expect(await provider.searchFiles('notes')).toEqual([]);
+
+    await expect(provider.openFile('notes/plan.md')).resolves.toMatchObject({
+      status: 'ready',
+      entry: { path: 'notes/plan.md' },
+    });
+  });
+
   it('previews a binary image file the file index marked as binary', async () => {
     const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
     const runtime = createRuntime({

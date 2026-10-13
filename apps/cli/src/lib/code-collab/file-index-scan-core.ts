@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -17,11 +18,36 @@ import { gitDiffBaseRefCandidates } from '../git/git-diff-base';
 // `code-collab-v2-service.ts`. Keep this module dependency-light (node builtins +
 // `@lody/shared` types only) so the worker bundle stays free of wasm/top-level-await
 // imports. The filesystem (`opendir`) directory-scan fallback is intentionally NOT
-// here: its error classification differs between the worker and the service.
+// here: its error classification differs between the worker and the service. The
+// one-level read of an ignored directory is here because both share it unchanged.
 
 const execFileAsync = promisify(execFile);
 
 const GIT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
+/** Children listed for one ignored directory; the rest of a larger one is cut off. */
+export const IGNORED_DIRECTORY_ENTRY_LIMIT = 2000;
+
+export const IGNORED_LAZY_DIRECTORY_VALUE = {
+  kind: 'lazy',
+  ignored: true,
+} as const satisfies CodeCollabV2FileTreeValue;
+
+const IGNORED_FILE_VALUE = {
+  kind: 'file',
+  ignored: true,
+} as const satisfies CodeCollabV2FileTreeValue;
+
+/** An ignored directory the user opened, re-read after each whole-tree replacement. */
+export type ExpandedIgnoredDirectory = {
+  readonly workspacePath: string;
+  readonly absolutePath: string;
+};
+
+type GitTreePath = {
+  readonly relativePath: string;
+  readonly value: CodeCollabV2FileTreeValue;
+};
 
 export type GitDirectoryScanInput = {
   readonly directoryAbsolutePath: string;
@@ -49,15 +75,78 @@ export async function scanGitDirectoryEntries(
     directoryWorkspacePath: options.directoryWorkspacePath,
     entryBudget: options.entryBudget,
     recursive: options.recursive,
-    relativeFilePaths: result.paths,
+    treePaths: result.paths,
   });
+}
+
+/**
+ * Read one level of an ignored directory from disk. Every child stays ignored and
+ * a child directory stays lazy; nothing is skipped by name except `.git`.
+ */
+export async function readIgnoredDirectoryEntries(
+  directory: ExpandedIgnoredDirectory
+): Promise<Map<string, CodeCollabV2FileTreeValue>> {
+  const directoryEntries = (await readdir(directory.absolutePath, { withFileTypes: true }))
+    .filter((entry) => entry.name !== '.git')
+    .map((entry) => ({ entry, comparisonKey: pathSegmentComparisonKey(entry.name) }))
+    .sort((left, right) => {
+      const keyOrder = left.comparisonKey.localeCompare(right.comparisonKey);
+      return keyOrder === 0 ? left.entry.name.localeCompare(right.entry.name) : keyOrder;
+    })
+    .slice(0, IGNORED_DIRECTORY_ENTRY_LIMIT);
+  return new Map(
+    directoryEntries.map(({ entry }) => [
+      joinWorkspacePath(directory.workspacePath, entry.name),
+      classifyIgnoredDirectoryEntry(entry),
+    ])
+  );
+}
+
+function classifyIgnoredDirectoryEntry(entry: Dirent): CodeCollabV2FileTreeValue {
+  if (entry.isDirectory()) {
+    return IGNORED_LAZY_DIRECTORY_VALUE;
+  }
+  if (entry.isSymbolicLink()) {
+    return { kind: 'skipped', reason: 'symlink', ignored: true };
+  }
+  if (!entry.isFile()) {
+    return { kind: 'skipped', reason: 'special', ignored: true };
+  }
+  return IGNORED_FILE_VALUE;
+}
+
+/**
+ * A whole-tree scan lists an ignored directory without its children, so put back
+ * the level of each one the user had opened. A directory that is gone, no longer
+ * ignored, or unreadable right now is left as the scan reported it.
+ */
+export async function restoreExpandedIgnoredDirectories(
+  entries: Map<string, CodeCollabV2FileTreeValue>,
+  expandedDirectories: readonly ExpandedIgnoredDirectory[]
+): Promise<void> {
+  const parentsFirst = [...expandedDirectories].sort(
+    (left, right) => pathDepth(left.workspacePath) - pathDepth(right.workspacePath)
+  );
+  for (const directory of parentsFirst) {
+    if (!isIgnoredLazyDirectoryValue(entries.get(directory.workspacePath))) {
+      continue;
+    }
+    const children = await readIgnoredDirectoryEntries(directory).catch(() => null);
+    for (const [workspacePath, value] of children ?? []) {
+      entries.set(workspacePath, value);
+    }
+  }
+}
+
+export function isIgnoredLazyDirectoryValue(value: CodeCollabV2FileTreeValue | undefined): boolean {
+  return value !== undefined && value !== true && value.kind === 'lazy' && value.ignored === true;
 }
 
 async function runGitLsFiles(
   cwd: string
-): Promise<{ readonly ok: true; readonly paths: readonly string[] } | { readonly ok: false }> {
+): Promise<{ readonly ok: true; readonly paths: readonly GitTreePath[] } | { readonly ok: false }> {
   try {
-    const [{ stdout }, deleted] = await Promise.all([
+    const [{ stdout }, deleted, ignored] = await Promise.all([
       execFileAsync(
         'git',
         [
@@ -75,20 +164,62 @@ async function runGitLsFiles(
         { maxBuffer: GIT_MAX_BUFFER_BYTES }
       ),
       runGit(cwd, ['ls-files', '--deleted', '-z', '--', '.']),
+      // `--directory` folds a wholly ignored directory into one `dir/` line instead
+      // of walking it, which keeps this to tens of lines where a full listing of
+      // `node_modules` would be hundreds of thousands.
+      runGit(cwd, [
+        'ls-files',
+        '-z',
+        '--others',
+        '--ignored',
+        '--exclude-standard',
+        '--directory',
+        '--',
+        '.',
+      ]),
     ]);
     const deletedPaths = deleted.ok
       ? new Set(deleted.stdout.split('\0').map(normalizeGitPath).filter(isValidRelativeGitPath))
       : new Set<string>();
     return {
       ok: true,
-      paths: stdout
-        .split('\0')
-        .map(normalizeGitPath)
-        .filter((filePath) => isValidRelativeGitPath(filePath) && !deletedPaths.has(filePath)),
+      paths: [
+        ...stdout
+          .split('\0')
+          .map(normalizeGitPath)
+          .filter((filePath) => isValidRelativeGitPath(filePath) && !deletedPaths.has(filePath))
+          .map((relativePath): GitTreePath => ({ relativePath, value: true })),
+        ...(ignored.ok ? parseIgnoredGitPaths(ignored.stdout) : []),
+      ],
     };
   } catch {
     return { ok: false };
   }
+}
+
+function parseIgnoredGitPaths(stdout: string): GitTreePath[] {
+  const treePaths: GitTreePath[] = [];
+  // A directory holding nothing but ignored files is listed with its children
+  // right after it; the directory row alone stands for them.
+  let listedDirectoryPrefix: string | null = null;
+  for (const line of stdout.split('\0')) {
+    const directory = line.endsWith('/');
+    const relativePath = normalizeGitPath(directory ? line.slice(0, -1) : line);
+    if (
+      !isValidRelativeGitPath(relativePath) ||
+      (listedDirectoryPrefix !== null && relativePath.startsWith(listedDirectoryPrefix))
+    ) {
+      continue;
+    }
+    if (directory) {
+      listedDirectoryPrefix = `${relativePath}/`;
+    }
+    treePaths.push({
+      relativePath,
+      value: directory ? IGNORED_LAZY_DIRECTORY_VALUE : IGNORED_FILE_VALUE,
+    });
+  }
+  return treePaths;
 }
 
 export async function computeAllChanges(
@@ -259,11 +390,16 @@ function buildEntriesFromGitFilePaths(options: {
   readonly directoryWorkspacePath: string;
   readonly entryBudget: number;
   readonly recursive: boolean;
-  readonly relativeFilePaths: readonly string[];
+  readonly treePaths: readonly GitTreePath[];
 }): Map<string, CodeCollabV2FileTreeValue> {
   const candidates = new Map<string, CodeCollabV2FileTreeValue>();
-  const conflicts = buildGitPathConflictIndex(options.relativeFilePaths);
-  for (const relativeFilePath of options.relativeFilePaths) {
+  // Tracked and untracked paths with their parent directories, as opposed to
+  // ignored paths and the directories only they need.
+  const regularPaths = new Set<string>();
+  const conflicts = buildGitPathConflictIndex(
+    options.treePaths.map(({ relativePath }) => relativePath)
+  );
+  for (const { relativePath: relativeFilePath, value } of options.treePaths) {
     const segments = relativeFilePath.split('/').filter((segment) => segment.length > 0);
     const maxSegmentIndex = options.recursive ? segments.length - 1 : 0;
     for (let index = 0; index <= maxSegmentIndex; index += 1) {
@@ -273,6 +409,9 @@ function buildEntriesFromGitFilePaths(options: {
       }
       const relativePath = segments.slice(0, index + 1).join('/');
       const workspacePath = joinWorkspacePath(options.directoryWorkspacePath, relativePath);
+      if (value === true) {
+        regularPaths.add(workspacePath);
+      }
       if (conflicts.has(relativePath)) {
         candidates.set(workspacePath, { kind: 'skipped', reason: 'path_conflict' });
         break;
@@ -282,7 +421,7 @@ function buildEntriesFromGitFilePaths(options: {
           candidates.set(workspacePath, { kind: 'lazy' });
         }
       } else {
-        candidates.set(workspacePath, true);
+        candidates.set(workspacePath, value);
       }
     }
   }
@@ -291,7 +430,16 @@ function buildEntriesFromGitFilePaths(options: {
     const depthOrder = pathDepth(leftPath) - pathDepth(rightPath);
     return depthOrder === 0 ? leftPath.localeCompare(rightPath) : depthOrder;
   });
-  return new Map(sortedCandidates.slice(0, Math.max(0, options.entryBudget)));
+  // Ignored entries only fill what the others leave: however many there are, no
+  // tracked or untracked path loses its place in the budget to them.
+  const entryBudget = Math.max(0, options.entryBudget);
+  const entries = sortedCandidates
+    .filter(([workspacePath]) => regularPaths.has(workspacePath))
+    .slice(0, entryBudget);
+  const ignoredEntries = sortedCandidates
+    .filter(([workspacePath]) => !regularPaths.has(workspacePath))
+    .slice(0, entryBudget - entries.length);
+  return new Map([...entries, ...ignoredEntries]);
 }
 
 function buildGitPathConflictIndex(relativeFilePaths: readonly string[]): Set<string> {

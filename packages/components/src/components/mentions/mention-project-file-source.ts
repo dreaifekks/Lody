@@ -75,10 +75,12 @@ export type LocalProjectFileReadResult = {
 };
 
 export function buildMentionFilePathsEntryFromProviderEntries(
-  entries: readonly FileWorkspaceProviderEntry[],
+  providerEntries: readonly FileWorkspaceProviderEntry[],
   fetchedAt = Date.now(),
   previous?: MentionFilePathsEntry | null
 ): MentionFilePathsEntry {
+  // `@file` completion skips ignored paths, as search does.
+  const entries = providerEntries.filter((entry) => entry.ignored !== true);
   const paths = [
     ...new Set(
       entries

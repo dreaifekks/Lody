@@ -21,6 +21,8 @@ import {
   getServerNow,
   buildCodeCollabFileIndexState,
   codeCollabFileIndexStatesEqual,
+  isCodeCollabFileTreeValueIgnored,
+  markCodeCollabFileTreeValueIgnored,
   type CodeCollabV2AllChangesDiffEntry,
   type CodeCollabV2AllChangesState,
   type CodeCollabV2AllChangesValue,
@@ -66,8 +68,13 @@ import {
 } from './file-index-scan-pool';
 import {
   computeAllChanges,
+  IGNORED_LAZY_DIRECTORY_VALUE,
+  isIgnoredLazyDirectoryValue,
+  readIgnoredDirectoryEntries,
   resolveAllChangesDiffBase,
+  restoreExpandedIgnoredDirectories,
   scanGitDirectoryEntries,
+  type ExpandedIgnoredDirectory,
 } from './file-index-scan-core';
 import { closeDirectoryQuietly } from './directory-handle';
 import { CODE_COLLAB_IGNORED_DIRECTORY_NAMES } from './workspace-watch-path-policy';
@@ -274,6 +281,11 @@ const FILE_INDEX_REPAIR_JITTER_FRACTION = 0.2;
 
 export class CodeCollabV2Service {
   private readonly stateByOwnerSessionId = new Map<SessionId, OwnerSharedState>();
+  /** Ignored directories the user opened, by workspace path; see `scanIgnoredDirectoryIntoState`. */
+  private readonly expandedIgnoredDirectoriesByOwnerSessionId = new Map<
+    SessionId,
+    Map<string, ExpandedIgnoredDirectory>
+  >();
   private readonly publishedStateByOwnerSessionId = new Map<SessionId, OwnerPublishedSharedState>();
   private readonly watchByOwnerSessionId = new Map<SessionId, OwnerWorkspaceWatchState>();
   private readonly refreshQueueByOwnerSessionId = new Map<
@@ -1361,6 +1373,7 @@ export class CodeCollabV2Service {
       workspaceRoot: resolved.workspaceRoot,
       maxRawTextBytes: this.deps.maxRawTextBytes ?? CODE_COLLAB_V2_TEXT_LIMITS.maxRawTextBytes,
       entryBudget: this.deps.maxFileTreeEntries ?? DEFAULT_FILE_TREE_SCAN_ENTRY_BUDGET,
+      expandedIgnoredDirectories: this.expandedIgnoredDirectories(resolved.ownerSessionId),
       ...(resolved.allChangesBaseBranch === undefined
         ? {}
         : { preferredBaseBranch: resolved.allChangesBaseBranch }),
@@ -1393,6 +1406,7 @@ export class CodeCollabV2Service {
     }
 
     replaceFileTreeEntries(state.fileTree, new Map(result.fileTreeEntries), fileTreeIndex);
+    this.forgetCollapsedIgnoredDirectories(resolved.ownerSessionId, state);
     state.allChanges = result.allChanges;
     if (options.publish !== false) {
       await this.publishPreparedOwnerFileIndex(resolved.ownerSessionId, result.fileIndex, options, {
@@ -1423,6 +1437,9 @@ export class CodeCollabV2Service {
       readonly fileTreeIndex?: FileTreePathIndex;
     } = {}
   ): Promise<number> {
+    if (isIgnoredLazyDirectoryValue(state.fileTree[resolved.workspacePath])) {
+      return await this.scanIgnoredDirectoryIntoState(state, resolved, options.fileTreeIndex);
+    }
     const scanInput = {
       directoryAbsolutePath: resolved.absolutePath,
       directoryWorkspacePath: resolved.workspacePath,
@@ -1432,8 +1449,15 @@ export class CodeCollabV2Service {
     };
     const entries =
       (await scanDirectoryEntriesInWorker(scanInput)) ?? (await scanDirectoryEntries(scanInput));
+    if (options.recursive === true) {
+      await restoreExpandedIgnoredDirectories(
+        entries,
+        this.expandedIgnoredDirectories(resolved.ownerSessionId)
+      );
+    }
     if (options.replaceFileTree === true) {
       replaceFileTreeEntries(state.fileTree, entries, options.fileTreeIndex);
+      this.forgetCollapsedIgnoredDirectories(resolved.ownerSessionId, state);
       return entries.size;
     }
     if (options.recursive === true) {
@@ -1455,6 +1479,62 @@ export class CodeCollabV2Service {
       setFileTreePathValue(state.fileTree, workspacePath, value, options.fileTreeIndex);
     }
     return entries.size;
+  }
+
+  /**
+   * An ignored directory is read from disk one level at a time, and remembered so
+   * a later rescan of the tree around it can put that level back instead of
+   * folding it.
+   */
+  private async scanIgnoredDirectoryIntoState(
+    state: OwnerSharedState,
+    resolved: ResolvedPath,
+    fileTreeIndex?: FileTreePathIndex
+  ): Promise<number> {
+    const entries = await readIgnoredDirectoryEntries(resolved).catch((error: unknown) => {
+      throw mapNodeReadError(error, resolved.workspacePath);
+    });
+    let expanded = this.expandedIgnoredDirectoriesByOwnerSessionId.get(resolved.ownerSessionId);
+    if (!expanded) {
+      expanded = new Map();
+      this.expandedIgnoredDirectoriesByOwnerSessionId.set(resolved.ownerSessionId, expanded);
+    }
+    expanded.set(resolved.workspacePath, {
+      workspacePath: resolved.workspacePath,
+      absolutePath: resolved.absolutePath,
+    });
+    replaceImmediateDirectoryEntries(
+      state.fileTree,
+      resolved.workspacePath,
+      entries,
+      fileTreeIndex
+    );
+    for (const [workspacePath, value] of entries) {
+      setFileTreePathValue(state.fileTree, workspacePath, value, fileTreeIndex);
+    }
+    return entries.size;
+  }
+
+  private expandedIgnoredDirectories(ownerSessionId: SessionId): ExpandedIgnoredDirectory[] {
+    return [
+      ...(this.expandedIgnoredDirectoriesByOwnerSessionId.get(ownerSessionId)?.values() ?? []),
+    ];
+  }
+
+  /** After a whole-tree replacement, drop the directories that are gone or no longer ignored. */
+  private forgetCollapsedIgnoredDirectories(
+    ownerSessionId: SessionId,
+    state: OwnerSharedState
+  ): void {
+    const expanded = this.expandedIgnoredDirectoriesByOwnerSessionId.get(ownerSessionId);
+    if (!expanded) {
+      return;
+    }
+    for (const workspacePath of [...expanded.keys()]) {
+      if (!isIgnoredLazyDirectoryValue(state.fileTree[workspacePath])) {
+        expanded.delete(workspacePath);
+      }
+    }
   }
 
   private async computeAllChangesAndPublish(
@@ -1528,7 +1608,12 @@ export class CodeCollabV2Service {
         if (value === undefined) {
           return;
         }
-        setFileTreePathValue(state.fileTree, workspacePath, value, fileTreeIndex);
+        setFileTreePathValue(
+          state.fileTree,
+          workspacePath,
+          withInheritedIgnoredMark(state.fileTree, workspacePath, value),
+          fileTreeIndex
+        );
         if (!isLazyDirectoryValue(value)) {
           deleteDescendantFileTreeEntries(state.fileTree, workspacePath, fileTreeIndex);
         }
@@ -1756,7 +1841,7 @@ export class CodeCollabV2Service {
       setFileTreePathValue(
         state.fileTree,
         resolved.workspacePath,
-        nextFileTreeValue,
+        withInheritedIgnoredMark(state.fileTree, resolved.workspacePath, nextFileTreeValue),
         fileTreeIndex
       );
       if (!isLazyDirectoryValue(nextFileTreeValue)) {
@@ -2500,7 +2585,12 @@ async function scanDirectoryEntries(options: {
       }
       entries.set(workspacePath, value);
       remainingEntries -= 1;
-      if (options.recursive && isLazyDirectoryValue(value) && remainingEntries > 0) {
+      if (
+        options.recursive &&
+        isLazyDirectoryValue(value) &&
+        !isCodeCollabFileTreeValueIgnored(value) &&
+        remainingEntries > 0
+      ) {
         queue.push({ absolutePath, workspacePath });
       }
     }
@@ -2572,8 +2662,12 @@ function classifyDirectoryEntry(entry: {
   isSymbolicLink(): boolean;
 }): CodeCollabV2FileTreeValue | undefined {
   if (entry.isDirectory()) {
+    if (entry.name === '.git') {
+      return undefined;
+    }
+    // Outside Git these names stand in for ignore rules: listed, never walked.
     return CODE_COLLAB_IGNORED_DIRECTORY_NAMES.has(entry.name)
-      ? undefined
+      ? IGNORED_LAZY_DIRECTORY_VALUE
       : ({ kind: 'lazy' } as const);
   }
   if (entry.isSymbolicLink()) {
@@ -2684,6 +2778,24 @@ function collectExpandedDirectoryPaths(fileTree: CodeCollabV2FileTreeState): str
 
 function isLazyDirectoryValue(value: CodeCollabV2FileTreeValue | undefined): boolean {
   return value !== undefined && value !== true && value.kind === 'lazy';
+}
+
+/**
+ * A path classified on its own (after a save, or for an All Changes row) has no
+ * ignore information; it is ignored when it already was, or when it sits under an
+ * ignored directory.
+ */
+function withInheritedIgnoredMark(
+  fileTree: CodeCollabV2FileTreeState,
+  workspacePath: string,
+  value: CodeCollabV2FileTreeValue
+): CodeCollabV2FileTreeValue {
+  for (let current = workspacePath; current; current = parentWorkspacePath(current)) {
+    if (isCodeCollabFileTreeValueIgnored(fileTree[current])) {
+      return markCodeCollabFileTreeValueIgnored(value);
+    }
+  }
+  return value;
 }
 
 function mergeQueuedSharedStateRefresh(

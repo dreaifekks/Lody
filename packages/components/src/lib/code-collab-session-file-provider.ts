@@ -316,8 +316,9 @@ export class CodeCollabSessionFileProvider implements SessionFileProvider {
 
   async searchFiles(query: string): Promise<readonly SessionFileProviderEntry[]> {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return this.files;
-    return this.files.filter((file) => file.path.toLowerCase().includes(normalized));
+    const searchable = this.files.filter((file) => file.ignored !== true);
+    if (!normalized) return searchable;
+    return searchable.filter((file) => file.path.toLowerCase().includes(normalized));
   }
 
   async getFile(pathOrFileId: string): Promise<SessionFileProviderEntry | null> {
@@ -918,6 +919,9 @@ export function codeCollabFileTreeValueToSessionFileEntry(
   if (value === true) {
     return textEntry(path, sourceState);
   }
+  if (value.kind === 'file') {
+    return { ...textEntry(path, sourceState), ignored: true };
+  }
   if (value.kind === 'lazy') {
     return {
       entryType: 'lazy-directory',
@@ -927,6 +931,7 @@ export function codeCollabFileTreeValueToSessionFileEntry(
       sourceState,
       readonly: true,
       unavailableReason: 'metadata-only',
+      ...(value.ignored === true ? { ignored: true } : {}),
     };
   }
   if (value.kind === 'binary') {
@@ -963,6 +968,7 @@ export function codeCollabFileTreeValueToSessionFileEntry(
     sourceState,
     readonly: true,
     unavailableReason: 'unsupported-special',
+    ...(value.ignored === true ? { ignored: true } : {}),
   };
 }
 

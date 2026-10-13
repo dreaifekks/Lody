@@ -31,6 +31,7 @@ import {
   type CodeCollabV2WorkspaceResolver,
 } from './code-collab-v2-service';
 import { CodeCollabV2DiffStore } from './code-collab-v2-diff-store';
+import { IGNORED_DIRECTORY_ENTRY_LIMIT } from './file-index-scan-core';
 import { getGitDiffStats } from '../git/git-diff-stats';
 import type {
   WorkspaceWatchCoordinatorApi,
@@ -1534,10 +1535,113 @@ describe('CodeCollabV2Service text RPC boundary', () => {
 
   it('only initializes directories that are currently published as lazy', async () => {
     await withWorkspace(async (workspaceRoot) => {
-      await mkdir(path.join(workspaceRoot, 'node_modules', 'pkg'), { recursive: true });
+      await mkdir(path.join(workspaceRoot, '.git'));
+      await writeFile(path.join(workspaceRoot, '.git', 'description'), 'not a repository\n');
+
+      const { published, publishFileIndex } = collectPublishedSharedStates();
+      const service = new CodeCollabV2Service({
+        resolveWorkspace: makeResolver(workspaceRoot),
+        publishFileIndex,
+      });
+
+      await service.initDirectory({ sessionId: SESSION_ID, path: '.' });
+      expect(published.at(-1)?.fileTree).not.toHaveProperty('.git');
+
+      await expect(
+        service.initDirectory({ sessionId: SESSION_ID, path: '.git' })
+      ).rejects.toMatchObject({
+        code: 'unsupported_skipped',
+        options: { path: '.git' },
+      });
+      expect(published.at(-1)?.fileTree).not.toHaveProperty('.git/description');
+    });
+  });
+
+  it('lists dependency and build directories outside Git as ignored without walking them', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      await mkdir(path.join(workspaceRoot, 'node_modules', 'pkg', '.git'), { recursive: true });
+      await mkdir(path.join(workspaceRoot, 'node_modules', 'dist'));
       await writeFile(
         path.join(workspaceRoot, 'node_modules', 'pkg', 'index.js'),
-        'module.exports = 1;\n'
+        'exports.a = 1;\n'
+      );
+      await mkdir(path.join(workspaceRoot, 'src', 'build'), { recursive: true });
+      await writeFile(path.join(workspaceRoot, 'src', 'build', 'out.js'), 'out\n');
+      await writeFile(path.join(workspaceRoot, 'src', 'app.ts'), 'app\n');
+
+      const { published, publishFileIndex } = collectPublishedSharedStates();
+      const service = new CodeCollabV2Service({
+        resolveWorkspace: makeResolver(workspaceRoot),
+        publishFileIndex,
+      });
+
+      await service.initDirectory({ sessionId: SESSION_ID, path: '.' });
+      expect(published.at(-1)?.fileTree).toEqual({
+        node_modules: { kind: 'lazy', ignored: true },
+        src: { kind: 'lazy' },
+        'src/app.ts': true,
+        'src/build': { kind: 'lazy', ignored: true },
+      });
+
+      await service.initDirectory({ sessionId: SESSION_ID, path: 'node_modules' });
+      await service.initDirectory({ sessionId: SESSION_ID, path: 'node_modules/pkg' });
+      const opened = {
+        'node_modules/dist': { kind: 'lazy', ignored: true },
+        'node_modules/pkg': { kind: 'lazy', ignored: true },
+        'node_modules/pkg/index.js': { kind: 'file', ignored: true },
+      };
+      expect(published.at(-1)?.fileTree).toMatchObject(opened);
+      expect(published.at(-1)?.fileTree).not.toHaveProperty('node_modules/pkg/.git');
+
+      // The whole tree is rescanned; the two opened levels come back with it.
+      await writeFile(path.join(workspaceRoot, 'node_modules', 'pkg', 'extra.js'), 'extra\n');
+      await service.refreshSharedState({ sessionId: SESSION_ID });
+      expect(published.at(-1)?.fileTree).toMatchObject({
+        ...opened,
+        'node_modules/pkg/extra.js': { kind: 'file', ignored: true },
+      });
+    });
+  });
+
+  it('marks a file opened under an unopened ignored directory as ignored', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      await mkdir(path.join(workspaceRoot, 'dist', 'assets'), { recursive: true });
+      await writeFile(path.join(workspaceRoot, 'dist', 'assets', 'out.js'), 'out\n');
+
+      const { published, publishFileIndex } = collectPublishedSharedStates();
+      let notifyPublished: (() => void) | undefined;
+      const service = new CodeCollabV2Service({
+        resolveWorkspace: makeResolver(workspaceRoot),
+        publishFileIndex: async (state) => {
+          await publishFileIndex(state);
+          notifyPublished?.();
+        },
+      });
+
+      await service.initDirectory({ sessionId: SESSION_ID, path: '.' });
+      expect(published.at(-1)?.fileTree).toEqual({ dist: { kind: 'lazy', ignored: true } });
+
+      const reconciled = new Promise<void>((resolve) => {
+        notifyPublished = resolve;
+      });
+      await service.openText({ sessionId: SESSION_ID, path: 'dist/assets/out.js' });
+      await reconciled;
+      expect(published.at(-1)?.fileTree).toEqual({
+        dist: { kind: 'lazy', ignored: true },
+        'dist/assets/out.js': { kind: 'file', ignored: true },
+      });
+    });
+  });
+
+  it('cuts an opened ignored directory off at its entry limit', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      await mkdir(path.join(workspaceRoot, 'dist'));
+      const fileNames = Array.from(
+        { length: IGNORED_DIRECTORY_ENTRY_LIMIT + 1 },
+        (_, index) => `f${String(index).padStart(5, '0')}.js`
+      );
+      await Promise.all(
+        fileNames.map((name) => writeFile(path.join(workspaceRoot, 'dist', name), ''))
       );
 
       const { published, publishFileIndex } = collectPublishedSharedStates();
@@ -1547,15 +1651,98 @@ describe('CodeCollabV2Service text RPC boundary', () => {
       });
 
       await service.initDirectory({ sessionId: SESSION_ID, path: '.' });
-      expect(published.at(-1)?.fileTree).not.toHaveProperty('node_modules');
+      const opened = await service.initDirectory({ sessionId: SESSION_ID, path: 'dist' });
 
-      await expect(
-        service.initDirectory({ sessionId: SESSION_ID, path: 'node_modules' })
-      ).rejects.toMatchObject({
-        code: 'unsupported_skipped',
-        options: { path: 'node_modules' },
+      expect(opened.publishedEntries).toBe(IGNORED_DIRECTORY_ENTRY_LIMIT);
+      expect(published.at(-1)?.fileTree).toHaveProperty([`dist/${fileNames[0]}`]);
+      expect(published.at(-1)?.fileTree).not.toHaveProperty([`dist/${fileNames.at(-1)}`]);
+    });
+  });
+
+  it('lists Git-ignored paths marked and keeps an opened ignored directory open across refreshes', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      await initGitRepoWithCommit(workspaceRoot);
+      await writeFile(path.join(workspaceRoot, 'tracked.txt'), 'tracked\n');
+      await gitCommitAll(workspaceRoot, 'init');
+      const excludePath = path.join(workspaceRoot, '.git', 'info', 'exclude');
+      await mkdir(path.dirname(excludePath), { recursive: true });
+      await writeFile(excludePath, 'notes/\n*.log\n');
+      await mkdir(path.join(workspaceRoot, 'notes', 'demoday', 'deep'), { recursive: true });
+      await mkdir(path.join(workspaceRoot, 'notes', 'node_modules', 'pkg'), { recursive: true });
+      await writeFile(path.join(workspaceRoot, 'notes', 'plan.md'), 'plan\n');
+      await writeFile(path.join(workspaceRoot, 'notes', 'demoday', '准备.md'), 'prep\n');
+      await writeFile(path.join(workspaceRoot, 'notes', 'demoday', 'deep', 'x.md'), 'x\n');
+      await writeFile(path.join(workspaceRoot, 'notes', 'node_modules', 'pkg', 'index.js'), '1\n');
+      await writeFile(path.join(workspaceRoot, 'debug.log'), 'log\n');
+
+      const { published, publishFileIndex } = collectPublishedSharedStates();
+      const service = new CodeCollabV2Service({
+        resolveWorkspace: makeResolver(workspaceRoot),
+        publishFileIndex,
       });
-      expect(published.at(-1)?.fileTree).not.toHaveProperty('node_modules/pkg');
+
+      await service.initDirectory({ sessionId: SESSION_ID, path: '.' });
+      expect(published.at(-1)?.fileTree).toEqual({
+        'debug.log': { kind: 'file', ignored: true },
+        notes: { kind: 'lazy', ignored: true },
+        'tracked.txt': true,
+      });
+      expect(published.at(-1)?.allChanges).toEqual({});
+
+      const openedNotes = await service.initDirectory({ sessionId: SESSION_ID, path: 'notes' });
+      expect(openedNotes.publishedEntries).toBe(3);
+      await service.initDirectory({ sessionId: SESSION_ID, path: 'notes/demoday' });
+      const opened = {
+        notes: { kind: 'lazy', ignored: true },
+        'notes/demoday': { kind: 'lazy', ignored: true },
+        'notes/demoday/deep': { kind: 'lazy', ignored: true },
+        'notes/demoday/准备.md': { kind: 'file', ignored: true },
+        'notes/node_modules': { kind: 'lazy', ignored: true },
+        'notes/plan.md': { kind: 'file', ignored: true },
+      };
+      expect(published.at(-1)?.fileTree).toEqual({
+        ...opened,
+        'debug.log': { kind: 'file', ignored: true },
+        'tracked.txt': true,
+      });
+
+      // A finished turn replaces the whole tree; both opened levels survive it
+      // and pick up what changed on disk meanwhile.
+      await writeFile(path.join(workspaceRoot, 'notes', 'demoday', 'added.md'), 'added\n');
+      await service.refreshSharedStateAfterTurn({ sessionId: SESSION_ID });
+      expect(published.at(-1)?.fileTree).toEqual({
+        ...opened,
+        'notes/demoday/added.md': { kind: 'file', ignored: true },
+        'debug.log': { kind: 'file', ignored: true },
+        'tracked.txt': true,
+      });
+
+      // Reopening the parent rereads its level and leaves the opened child alone.
+      await service.initDirectory({ sessionId: SESSION_ID, path: 'notes' });
+      expect(published.at(-1)?.fileTree).toHaveProperty(['notes/demoday/added.md']);
+
+      await rm(path.join(workspaceRoot, 'notes', 'demoday'), { recursive: true });
+      await service.refreshSharedState({ sessionId: SESSION_ID });
+      expect(published.at(-1)?.fileTree).toEqual({
+        notes: { kind: 'lazy', ignored: true },
+        'notes/node_modules': { kind: 'lazy', ignored: true },
+        'notes/plan.md': { kind: 'file', ignored: true },
+        'debug.log': { kind: 'file', ignored: true },
+        'tracked.txt': true,
+      });
+
+      // Once the rule is gone the directory is an ordinary untracked one again.
+      await writeFile(excludePath, '');
+      await service.refreshSharedState({ sessionId: SESSION_ID });
+      expect(published.at(-1)?.fileTree).toEqual({
+        'debug.log': true,
+        notes: { kind: 'lazy' },
+        'notes/node_modules': { kind: 'lazy' },
+        'notes/node_modules/pkg': { kind: 'lazy' },
+        'notes/node_modules/pkg/index.js': true,
+        'notes/plan.md': true,
+        'tracked.txt': true,
+      });
     });
   });
 

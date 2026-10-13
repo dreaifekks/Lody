@@ -20,11 +20,36 @@ export type FilePathTextSegment =
   | { type: 'path'; value: string };
 
 // One greedy run of path-ish characters, plus an optional GitHub/VSCode/colon
-// line suffix. The char class excludes whitespace and CJK, so a candidate
-// naturally stops at word/sentence boundaries (incl. inside CJK prose).
-const PATH_BODY = String.raw`(?:\.{0,2}[\\/])?[A-Za-z0-9._-]+(?:[\\/][A-Za-z0-9._-]+)*`;
+// line suffix. The first segment is ASCII only, so a candidate does not swallow
+// the CJK prose in front of it (`详见packages/foo.ts`). Segments after the first
+// separator also take letters, marks and digits of any script
+// (`notes/准备.md`); whitespace and punctuation, full-width included, end it.
+//
+// With no space before the prose that follows, such a segment would run on into
+// it (`src/foo.ts和src/bar.ts`). So a later segment is read as runs, and an ASCII
+// extension (`.` plus letters and digits, at least one letter) that is directly
+// followed by a non-ASCII character is the last thing the candidate takes; the
+// scan carries on after it. A dot with digits only is part of a name (`v1.2版`).
+// Each run is matched whole and nothing after it is required, so a failed
+// attempt re-reads only the run it is on and the scan stays linear.
+const ASCII_SEGMENT = String.raw`[A-Za-z0-9._-]+`;
+const NON_ASCII_RUN = String.raw`(?:(?!\p{ASCII})[\p{L}\p{M}\p{N}])+`;
+const ASCII_EXTENSION = String.raw`\.[0-9]*[A-Za-z][A-Za-z0-9]*(?![A-Za-z0-9])`;
+const OTHER_DOT = String.raw`\.[0-9]*(?![A-Za-z0-9])`;
+const SEGMENT = String.raw`(?=[\p{L}\p{M}\p{N}._-])(?:${NON_ASCII_RUN}|[A-Za-z0-9_-]+|${OTHER_DOT}|${ASCII_EXTENSION}(?!\P{ASCII}))*(?:${ASCII_EXTENSION})?`;
+const PATH_PREFIX = String.raw`(?:\.{0,2}[\\/])?`;
 const LINE_SUFFIX = String.raw`(?:#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?|:L?\d+(?:C\d+)?(?::\d+)?)`;
-const CANDIDATE_PATTERN = new RegExp(`${PATH_BODY}(?:${LINE_SUFFIX})?`, 'g');
+const CANDIDATE_PATTERN = new RegExp(
+  `${PATH_PREFIX}${ASCII_SEGMENT}(?:[\\\\/]${SEGMENT})*(?:${LINE_SUFFIX})?`,
+  'gu'
+);
+// The start of a candidate as far as it is ASCII, which is all it was before
+// later segments took other scripts.
+const ASCII_CANDIDATE_PATTERN = new RegExp(
+  `^${PATH_PREFIX}${ASCII_SEGMENT}(?:[\\\\/]${ASCII_SEGMENT})*(?:${LINE_SUFFIX})?`
+);
+const NON_ASCII_PATTERN = /\P{ASCII}/u;
+const ASCII_EXTENSION_END_PATTERN = /\.[A-Za-z0-9]+$/;
 
 // Paths essentially never end in punctuation, so we can strip a trailing run
 // (sentence/quote/bracket chars, incl. full-width CJK) without balancing.
@@ -76,6 +101,15 @@ const qualifiesAsFilePath = (raw: string, context: 'prose' | 'code'): boolean =>
   const hasExtension = dotIndex > 0 && dotIndex < lastSegment.length - 1;
   const recognized = isRecognizedFilePath(lastSegment);
 
+  // In prose a path with non-ASCII names has to end in an ASCII extension.
+  if (
+    context === 'prose' &&
+    NON_ASCII_PATTERN.test(base) &&
+    !ASCII_EXTENSION_END_PATTERN.test(lastSegment)
+  ) {
+    return false;
+  }
+
   if (hasSlash) {
     // A separator + extension is a strong path signal on its own.
     return hasExtension && !looksLikeBareDomain(base);
@@ -90,6 +124,11 @@ const qualifiesAsFilePath = (raw: string, context: 'prose' | 'code'): boolean =>
   // Inline code, no separator: the author marked it as a token, so a
   // recognized file name/extension is sufficient (`tsconfig.json`, `foo.ts`).
   return hasExtension && recognized;
+};
+
+const resolveProsePath = (candidate: string): string | null => {
+  const path = stripTrailingPunctuation(candidate);
+  return path && qualifiesAsFilePath(path, 'prose') ? path : null;
 };
 
 // Split a plain-text node into text / file-path segments. Rejected candidates
@@ -113,8 +152,15 @@ export const splitTextIntoFilePathSegments = (value: string): FilePathTextSegmen
       /[\\/]/.test(rawMatch) || /[:#]/.test(rawMatch) || /\.[A-Za-z0-9]/.test(rawMatch);
 
     if (!isEmailTail && couldBePath) {
-      const path = stripTrailingPunctuation(rawMatch);
-      if (path && qualifiesAsFilePath(path, 'prose')) {
+      // A candidate that does not hold up as a path with non-ASCII names
+      // (`src/a.ts/以及其他`) is still the ASCII path in front of them. The rest
+      // of it is not scanned again, so no tail of it turns into a link.
+      const path =
+        resolveProsePath(rawMatch) ??
+        (NON_ASCII_PATTERN.test(rawMatch)
+          ? resolveProsePath(ASCII_CANDIDATE_PATTERN.exec(rawMatch)?.[0] ?? '')
+          : null);
+      if (path) {
         if (matchStart > cursor) {
           segments.push({ type: 'text', value: value.slice(cursor, matchStart) });
         }
