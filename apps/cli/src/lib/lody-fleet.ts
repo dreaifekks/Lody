@@ -532,7 +532,8 @@ export class LodyFleet {
       }),
       traceAsync(this.logger, 'startup.local_files', undefined, async () => {
         // Never fatal: without it a desktop reads the files of a message whole, as before.
-        if (!this.localPlatform) return;
+        // A member of a LAN needs it most, so the test is the installation, not `localPlatform`.
+        if (this.cloudPort.kind !== 'local') return;
         await this.localFileServer.start().catch((error: unknown) => {
           this.logger.warn(`[lan-files] ${formatErrorMessage(error)}`);
         });

@@ -24,8 +24,8 @@ function getUserSocketSuffix() {
     .slice(0, 16);
 }
 
-function getLocalTerminalSocketPath(platform) {
-  const basename = `${getInstallationProfile(platform).namespace}-terminal`;
+function getLocalSocketPath(suffix, platform) {
+  const basename = `${getInstallationProfile(platform).namespace}-${suffix}`;
   if (process.platform === 'win32') {
     return `\\\\.\\pipe\\${basename}-${getUserSocketSuffix()}`;
   }
@@ -40,6 +40,16 @@ function getLocalTerminalSocketPath(platform) {
   return socketPath;
 }
 
+function getLocalTerminalSocketPath(platform) {
+  return getLocalSocketPath('terminal', platform);
+}
+
+// Where the agent service gives the desktop of this machine parts of a file.
+function getLocalFileSocketPath(platform) {
+  return getLocalSocketPath('files', platform);
+}
+
 module.exports = {
   getLocalTerminalSocketPath,
+  getLocalFileSocketPath,
 };

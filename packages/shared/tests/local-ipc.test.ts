@@ -22,7 +22,7 @@ import {
   readLocalDaemonRunFile,
   writeLocalDaemonRunFile,
 } from '../src/node/local-ipc';
-import { getLocalTerminalSocketPath } from '../src/node/local-terminal';
+import { getLocalFileSocketPath, getLocalTerminalSocketPath } from '../src/node/local-terminal';
 
 const servers: http.Server[] = [];
 const tempDirs: string[] = [];
@@ -215,12 +215,14 @@ describe('local IPC socket client', () => {
     }
   );
 
-  it('keeps the CommonJS terminal socket path in sync with the TypeScript module', () => {
+  it('keeps the CommonJS terminal and file socket paths in sync with the TypeScript module', () => {
     const require = createRequire(import.meta.url);
     const cjs = require('../src/node/local-terminal.cjs') as {
       getLocalTerminalSocketPath: () => string;
+      getLocalFileSocketPath: () => string;
     };
     expect(cjs.getLocalTerminalSocketPath()).toBe(getLocalTerminalSocketPath());
+    expect(cjs.getLocalFileSocketPath()).toBe(getLocalFileSocketPath());
   });
 
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
