@@ -353,6 +353,11 @@ export class Lody {
     return await this.runtime.handleDirectMachineRpc(raw);
   }
 
+  /** Where a file a preview of the session may read is; throws the refusal. */
+  async resolveFilePreviewPath(sessionId: string, filePath: string): Promise<string> {
+    return await this.runtime.resolveFilePreviewPath(sessionId, filePath);
+  }
+
   /** Work of this machine's own, run as a session command of this workspace. */
   async runAsSessionCommand<T>(run: () => Promise<T>): Promise<T> {
     return await this.runtime.runAsSessionCommand(run);

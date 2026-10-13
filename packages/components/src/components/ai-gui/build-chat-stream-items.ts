@@ -236,6 +236,8 @@ export function buildChatStreamItems(
       userId: entry.userId,
       author: entry.author,
       acpTurnId: entry.acpTurnId,
+      // Ties an answer to the message it answers: one gallery for the turn's images.
+      userTurnId: entry.userTurnId,
       modelInfo: entry.modelInfo,
       tokenUsage: entry.tokenUsage,
       fileDiff: entry.fileDiff,

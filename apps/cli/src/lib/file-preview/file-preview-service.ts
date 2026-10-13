@@ -98,6 +98,30 @@ export class FilePreviewService {
     };
   }
 
+  /**
+   * Where a file `previewFile` may read is, for a read that travels in parts
+   * instead of in the one bounded response. Authorized exactly as a preview is.
+   */
+  async resolveReadablePath(request: {
+    sessionId: string;
+    path: string;
+  }): Promise<ResolvedPreviewPath | import('@lody/shared').FilePreviewV3Error> {
+    const workspace = await this.deps.resolveWorkspace(request.sessionId as SessionId);
+    if (!workspace.ok) return filePreviewV3Error(workspace.code, { message: workspace.message });
+    const resolution = resolveFilePreviewPath({
+      workspaceRoot: workspace.workspaceRoot,
+      requestedPath: request.path,
+      ...(this.deps.extraRoots === undefined ? {} : { extraRoots: this.deps.extraRoots }),
+      options: { ...this.deps.pathPolicy },
+    });
+    if (!resolution.ok)
+      return filePreviewV3Error(resolution.rejection.code, {
+        message: resolution.rejection.message,
+        path: request.path,
+      });
+    return resolution.resolved;
+  }
+
   async previewFile(request: FilePreviewV3Request): Promise<FilePreviewV3Response> {
     const limits = this.limits;
     const workspace = await this.deps.resolveWorkspace(request.sessionId as SessionId);

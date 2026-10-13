@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { createElement } from 'react';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -17,6 +18,10 @@ import {
   OfficePreviewTooLargeError,
   readOfficePreviewBytes,
 } from '../src/lib/session-file-office-source';
+
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('SessionFileBinaryPreview', () => {
   it('opens PDFs in the paged document viewer', () => {
@@ -43,6 +48,81 @@ describe('SessionFileBinaryPreview', () => {
     );
 
     expect(markup).toContain('This binary file cannot be previewed.');
+  });
+
+  it.each([
+    ['video', 'recordings/demo.MP4', '<video'],
+    ['audio', 'recordings/voice.m4a', '<audio'],
+  ])(
+    'plays a %s file from its resource with the player controls, not by itself',
+    (_k, path, tag) => {
+      const markup = renderToStaticMarkup(
+        createElement(SessionFileBinaryPreview, { path, url: 'lody-resource://member/clip' })
+      );
+
+      expect(markup).toContain(tag);
+      expect(markup).toContain('src="lody-resource://member/clip"');
+      expect(markup).toContain('controls=""');
+      expect(markup).toContain('preload="metadata"');
+      expect(markup).not.toContain('autoplay');
+      expect(markup).not.toContain('This binary file cannot be previewed.');
+    }
+  );
+
+  it('pauses a player whose panel leaves the screen, and keeps what it was playing', async () => {
+    const paused = new Set<Element>();
+    const pause = vi
+      .spyOn(HTMLMediaElement.prototype, 'pause')
+      .mockImplementation(function (this: HTMLMediaElement) {
+        paused.add(this);
+      });
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const show = async (active: boolean) => {
+      await act(async () => {
+        root.render(
+          createElement(SessionFileBinaryPreview, {
+            path: 'recordings/demo.mp4',
+            url: 'lody-resource://member/clip',
+            active,
+          })
+        );
+      });
+      return container.querySelector('video');
+    };
+
+    const video = await show(true);
+    expect(video).not.toBeNull();
+    expect(paused.size).toBe(0);
+    const hidden = await show(false);
+
+    // The same player with the same source: its place in the file is kept.
+    expect(hidden).toBe(video);
+    expect(hidden?.getAttribute('src')).toBe('lody-resource://member/clip');
+    expect(video && paused.has(video)).toBe(true);
+    await act(async () => root.unmount());
+    pause.mockRestore();
+  });
+
+  it('keeps a media file nothing was read of on the notice, with a download where one is offered', () => {
+    const markup = renderToStaticMarkup(
+      createElement(SessionFileBinaryPreview, {
+        path: 'recordings/demo.mp4',
+        fileActions: { onCopyPath: () => {}, onDownload: () => {} },
+      })
+    );
+
+    expect(markup).not.toContain('<video');
+    expect(markup).toContain('This binary file cannot be previewed.');
+    expect(markup).toContain('Download file');
+    expect(
+      renderToStaticMarkup(
+        createElement(SessionFileBinaryPreview, {
+          path: 'archive.zip',
+          fileActions: { onCopyPath: () => {} },
+        })
+      )
+    ).not.toContain('Download file');
   });
 
   it.each(['docx', 'xlsx', 'pptx'])('routes %s files into the lazy office preview', (extension) => {

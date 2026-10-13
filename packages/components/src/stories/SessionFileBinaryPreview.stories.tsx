@@ -97,6 +97,43 @@ export const RemoteArchive: Story = {
   args: { path: 'build/Lody.zip', fileActions: { onCopyPath: fn() } },
 };
 
+/** A member of a LAN that gives parts of its files: the file itself can be saved. */
+export const RemoteArchiveDownload: Story = {
+  args: { path: 'build/Lody.zip', fileActions: { onCopyPath: fn(), onDownload: fn() } },
+};
+
+/** One second of a 440 Hz tone, as a WAV file. */
+const createSampleWav = (): Uint8Array => {
+  const sampleRate = 8000;
+  const bytes = new Uint8Array(44 + sampleRate * 2);
+  const view = new DataView(bytes.buffer);
+  const ascii = (offset: number, text: string) => {
+    for (let index = 0; index < text.length; index += 1) {
+      view.setUint8(offset + index, text.charCodeAt(index));
+    }
+  };
+  ascii(0, 'RIFF');
+  view.setUint32(4, bytes.length - 8, true);
+  ascii(8, 'WAVEfmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  ascii(36, 'data');
+  view.setUint32(40, sampleRate * 2, true);
+  for (let index = 0; index < sampleRate; index += 1) {
+    view.setInt16(44 + index * 2, Math.sin((index / sampleRate) * 2 * Math.PI * 440) * 8000, true);
+  }
+  return bytes;
+};
+
+export const AudioRecording: Story = {
+  args: { path: 'recordings/tone.wav', bytes: createSampleWav() },
+};
+
 export const NativeArchive: Story = {
   args: { path: 'build/package.deb', fileActions: { onCopyPath: fn(), onShare: fn() } },
 };

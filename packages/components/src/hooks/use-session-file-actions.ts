@@ -13,10 +13,12 @@ import { toast } from '@/lib/toast';
 import { useTranslation } from 'react-i18next';
 import {
   getMachineFlockLocalProjects,
+  machineSupportsLanFileRanges,
   type CodeCollabContentUnavailableReason,
   type SessionMeta,
 } from '@lody/shared';
 import { getMachineMetaByIdAtomFamily } from '@/atoms';
+import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
 import { localHomeDirAtom, localMachineIdAtom } from '@/atoms/local-probe';
 import { useMachineFlockRows } from '@/hooks/use-machine-flock-rows';
 import { usePostHog } from '@posthog/react';
@@ -186,6 +188,7 @@ export function useSessionFileActions({
   const [pathLauncherPreference, setPathLauncherPreference] = useState(
     readStoredPathLauncherPreference
   );
+  const workspaceId = useAtomValue(currentWorkspaceIdAtom);
   const localMachineId = useAtomValue(localMachineIdAtom);
   const localHomeDir = useAtomValue(localHomeDirAtom);
   const sessionMachine = useAtomValue(
@@ -567,8 +570,46 @@ export function useSessionFileActions({
     t,
   ]);
 
+  // A member of a LAN that gives parts of its files is asked for the file
+  // itself, which the desktop writes to disk as it arrives: no size is too
+  // large for that. Everything else reads through the preview API below.
+  const savesInParts =
+    isElectronRenderer && Boolean(workspaceId) && machineSupportsLanFileRanges(sessionMachine);
+
   const download = useMemo(() => {
     if (!session || !availability.download || !fileProvider) return null;
+
+    if (savesInParts && workspaceId) {
+      return (filePath: string) => {
+        const name = getDownloadFileName(filePath);
+        const id = `session-file-download:${session.id}:${filePath}`;
+        toast(t('sessions.fileActions.downloading', 'Downloading {{name}}…', { name }), {
+          id,
+          duration: 0,
+        });
+        void (async () => {
+          const result = await getIpcServices()
+            ?.machineRpc.saveMemberFile({
+              workspaceId,
+              machineId: session.machineId,
+              sessionId: session.id,
+              path: filePath,
+              fileName: name,
+            })
+            .catch(() => undefined);
+          if (!result?.ok) {
+            toast.error(t('sessions.fileActions.downloadFailed', 'Could not download that file.'), {
+              id,
+              ...(result?.error ? { description: result.error } : {}),
+            });
+          } else if (result.saved) {
+            toast.success(t('sessions.fileActions.downloaded', 'Saved {{name}}', { name }), { id });
+          } else {
+            toast.dismiss(id);
+          }
+        })();
+      };
+    }
 
     // KNOWN CEILING: this reads through the preview API, which answers in ONE
     // bounded response (10 MiB text / 5 MiB binary remotely). So the download
@@ -639,7 +680,7 @@ export function useSessionFileActions({
         }
       })();
     };
-  }, [availability.download, fileProvider, nativeShell, session, t]);
+  }, [availability.download, fileProvider, nativeShell, savesInParts, session, t, workspaceId]);
 
   const buildErrorActions = useCallback(
     (
@@ -655,6 +696,14 @@ export function useSessionFileActions({
       if (!localHost || !resolveHostPath(trimmed))
         return {
           onCopyPath,
+          ...(savesInParts && download
+            ? {
+                onDownload: () => {
+                  trackFileAction('download', 'file_fallback', trimmed);
+                  download(trimmed);
+                },
+              }
+            : {}),
           ...(nativeShell && download && snapshot?.bytes
             ? {
                 onShare: () => {
@@ -681,7 +730,17 @@ export function useSessionFileActions({
         },
       };
     },
-    [copyPath, download, localHost, nativeShell, resolveHostPath, session, sharing, trackFileAction]
+    [
+      copyPath,
+      download,
+      localHost,
+      nativeShell,
+      resolveHostPath,
+      savesInParts,
+      session,
+      sharing,
+      trackFileAction,
+    ]
   );
 
   const resolveMarkdownLinkFilePath = useCallback(

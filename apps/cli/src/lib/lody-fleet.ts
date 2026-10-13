@@ -42,6 +42,7 @@ import type { LocalProbeConfig } from '@/lib/local-probe';
 import type { LocalSessionControlConfig } from '@/lib/local-session-control';
 import { startLocalTerminalServer, stopLocalTerminalServer } from '@/lib/local-terminal-server';
 import { LocalTunnelServer } from '@/lib/local-tunnel-server';
+import { LocalFileServer } from '@/lib/local-file-server';
 import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
 import type { LocalUsageLedger } from '@/lib/usage/local-usage-ledger';
 import type { LanHub } from '@lody/shared/node/lan-hub';
@@ -206,6 +207,7 @@ export class LodyFleet {
   private readonly terminalPtyService: TerminalPtyServiceApi;
   private readonly terminalRouter: TerminalRouter;
   private readonly localTunnelServer: LocalTunnelServer;
+  private readonly localFileServer: LocalFileServer;
   private readonly usageLedger: LocalUsageLedger | null;
   private readonly lan: LanTerminalMembership | null;
   private readonly lanFileHandoff: LanFileHandoff;
@@ -402,6 +404,16 @@ export class LodyFleet {
           ? async (sessionId) => await this.lookupTerminalSessionMeta(runtime, sessionId)
           : null;
       },
+      resolvePath: async (workspaceId, sessionId, filePath) => {
+        const runtime = this.runtimes.get(workspaceId);
+        if (!runtime)
+          throw new Error('remote_unreachable:this machine does not run that workspace');
+        return await runtime.lody.resolveFilePreviewPath(sessionId, filePath);
+      },
+    });
+    this.localFileServer = new LocalFileServer({
+      logger: this.logger,
+      serve: async (request, socket) => await this.lanFileHandoff.range(request, socket),
     });
     this.terminalRouter = new TerminalRouter({
       local: this.terminalPtyService,
@@ -516,6 +528,13 @@ export class LodyFleet {
         // Never fatal: only `lan forward` needs it.
         await this.localTunnelServer.start().catch((error: unknown) => {
           this.logger.warn(`[lan-tunnel] ${formatErrorMessage(error)}`);
+        });
+      }),
+      traceAsync(this.logger, 'startup.local_files', undefined, async () => {
+        // Never fatal: without it a desktop reads the files of a message whole, as before.
+        if (!this.localPlatform) return;
+        await this.localFileServer.start().catch((error: unknown) => {
+          this.logger.warn(`[lan-files] ${formatErrorMessage(error)}`);
         });
       }),
       traceAsync(this.logger, 'startup.mcp_http', undefined, async () => {
@@ -778,6 +797,7 @@ export class LodyFleet {
       stopLocalIpcSocketServers(),
       stopLocalTerminalServer(),
       this.localTunnelServer.stop(),
+      this.localFileServer.stop(),
       this.lanTerminalHost?.close(),
       this.lanFleetControl?.close(),
       this.lanHubStandby?.close(),

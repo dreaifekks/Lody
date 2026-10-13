@@ -14,7 +14,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { atom, Provider } from 'jotai';
+import { atom, createStore, Provider } from 'jotai';
 
 // The machine's own path metadata: `null` is the state right after mount, when
 // the Flock rows for that machine have not arrived yet.
@@ -53,6 +53,11 @@ const probePathLaunchers = vi.fn(async (payload: { launchers: Array<{ launcherId
   availableIds: payload.launchers.map((launcher) => launcher.launcherId),
 }));
 let bridgeAvailable = true;
+type SaveMemberFileResult = { ok: true; saved: boolean } | { ok: false; error: string };
+const saveMemberFile = vi.fn(async (_input: unknown): Promise<SaveMemberFileResult> => ({
+  ok: true,
+  saved: true,
+}));
 const writeTextToClipboard = vi.fn(async (_text: string) => true);
 vi.mock('../src/lib/clipboard', () => ({
   writeTextToClipboard: (text: string) => writeTextToClipboard(text),
@@ -60,18 +65,43 @@ vi.mock('../src/lib/clipboard', () => ({
 vi.mock('../src/lib/electron-ipc-client', () => ({
   getIpcServices: () =>
     bridgeAvailable
-      ? { app: { revealLocalPath, openLocalPath, launchLocalPath, probePathLaunchers } }
+      ? {
+          app: { revealLocalPath, openLocalPath, launchLocalPath, probePathLaunchers },
+          machineRpc: { saveMemberFile },
+        }
       : null,
 }));
 
 const toastError = vi.fn();
 const toastSuccess = vi.fn();
-vi.mock('@/lib/toast', () => ({
-  toast: {
-    error: (...args: unknown[]) => toastError(...args),
-    success: (...args: unknown[]) => toastSuccess(...args),
-  },
-}));
+/** What the toast of each id says last; `undefined` once it was dismissed. */
+const toasts = new Map<unknown, string | undefined>();
+function showToast(
+  kind: string,
+  title: string,
+  options?: { id?: string; description?: string }
+): void {
+  if (kind === 'error') toastError(title, ...(options ? [options] : []));
+  if (kind === 'success') toastSuccess(title, ...(options ? [options] : []));
+  toasts.set(
+    options?.id ?? title,
+    `${kind}: ${title}${options?.description ? ` (${options.description})` : ''}`
+  );
+}
+vi.mock('@/lib/toast', () => {
+  type Show = (title: string, options?: { id?: string; description?: string }) => void;
+  const show =
+    (kind: string): Show =>
+    (title, options) =>
+      showToast(kind, title, options);
+  return {
+    toast: Object.assign(show('neutral'), {
+      error: show('error'),
+      success: show('success'),
+      dismiss: (id: string) => toasts.set(id, undefined),
+    }),
+  };
+});
 
 const downloadBytesAsFile = vi.fn();
 vi.mock('../src/lib/download-file', () => ({
@@ -83,7 +113,9 @@ vi.mock('../src/hooks/use-machine-flock-rows', () => ({
   useMachineFlockRows: () => ({}),
 }));
 
-import type { SessionMeta } from '@lody/shared';
+import { getMachineRoomId, type SessionMeta } from '@lody/shared';
+import { machineMetaCacheAtom } from '../src/atoms/doc-meta';
+import { currentWorkspaceIdAtom } from '../src/atoms/workspace-context';
 import {
   useSessionFileActions,
   type SessionFileActions,
@@ -268,6 +300,124 @@ describe('remote file download action', () => {
     expect(toastError).toHaveBeenCalledWith(
       'This file is too large to download from here. Open it on the machine that owns it.'
     );
+  });
+});
+
+describe('download from a LAN member that gives parts of its files', () => {
+  let root: Root | undefined;
+  let container: HTMLDivElement | undefined;
+
+  beforeEach(async () => {
+    await initI18n('en');
+    bridgeAvailable = true;
+    toasts.clear();
+    saveMemberFile.mockClear();
+    downloadBytesAsFile.mockClear();
+    localMachineId = 'machine-desktop';
+    (window as { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__ = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root?.unmount();
+    });
+    container?.remove();
+    delete (window as { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__;
+    localMachineId = null;
+  });
+
+  /** The actions for a session of another machine, which says what it supports. */
+  const resolveActions = async (
+    protocolCapabilities: Record<string, number>
+  ): Promise<SessionFileActions> => {
+    const store = createStore();
+    store.set(currentWorkspaceIdAtom, 'lw_home' as never);
+    store.set(machineMetaCacheAtom, {
+      [getMachineRoomId(session.machineId)]: { id: session.machineId, protocolCapabilities },
+    } as never);
+    const fileProvider = {
+      openFile: async (): Promise<FileWorkspaceOpenResult> => ({
+        status: 'unavailable',
+        reason: 'blob-too-large',
+      }),
+    };
+    let actions: SessionFileActions | undefined;
+    function Probe() {
+      actions = useSessionFileActions({ session, fileProvider });
+      return null;
+    }
+    await act(async () => {
+      root?.render(createElement(Provider, { store }, createElement(Probe)));
+    });
+    if (!actions) throw new Error('hook did not render');
+    return actions;
+  };
+  const toastOf = (filePath: string) =>
+    toasts.get(`session-file-download:${session.id}:${filePath}`);
+
+  it('asks the desktop to save the file itself, and says how that ended', async () => {
+    const actions = await resolveActions({ lanFileRanges: 1 });
+
+    await act(async () => actions.download?.('out/demo.mp4'));
+    expect(saveMemberFile.mock.calls[0]?.[0]).toEqual({
+      workspaceId: 'lw_home',
+      machineId: session.machineId,
+      sessionId: session.id,
+      path: 'out/demo.mp4',
+      fileName: 'out/demo.mp4',
+    });
+    expect(toastOf('out/demo.mp4')).toBe('success: Saved out/demo.mp4');
+
+    saveMemberFile.mockResolvedValueOnce({ ok: false, error: 'devbox: file_changed' });
+    await act(async () => actions.download?.('out/changing.mp4'));
+    expect(toastOf('out/changing.mp4')).toBe(
+      'error: Could not download that file. (devbox: file_changed)'
+    );
+
+    // A save dialog the user closed leaves nothing on screen.
+    saveMemberFile.mockResolvedValueOnce({ ok: true, saved: false });
+    await act(async () => actions.download?.('out/cancelled.mp4'));
+    expect(toasts.has(`session-file-download:${session.id}:out/cancelled.mp4`)).toBe(true);
+    expect(toastOf('out/cancelled.mp4')).toBeUndefined();
+    expect(downloadBytesAsFile).not.toHaveBeenCalled();
+  });
+
+  it('shows the file as downloading until the desktop answers', async () => {
+    let answer: (result: SaveMemberFileResult) => void = () => {};
+    saveMemberFile.mockImplementationOnce(
+      () => new Promise<SaveMemberFileResult>((resolve) => (answer = resolve))
+    );
+    const actions = await resolveActions({ lanFileRanges: 1 });
+
+    await act(async () => actions.download?.('out/large.bin'));
+    expect(toastOf('out/large.bin')).toBe('neutral: Downloading out/large.bin…');
+    await act(async () => answer({ ok: true, saved: true }));
+    expect(toastOf('out/large.bin')).toBe('success: Saved out/large.bin');
+  });
+
+  it('puts the download on the card of a file too large to preview only where it can finish', async () => {
+    const streamed = (await resolveActions({ lanFileRanges: 1 })).buildErrorActions(
+      'out/large.bin'
+    );
+    const bounded = (await resolveActions({ lanFiles: 1 })).buildErrorActions('out/large.bin');
+
+    expect(bounded?.onDownload).toBeUndefined();
+    await act(async () => streamed?.onDownload?.());
+    expect(saveMemberFile.mock.calls[0]?.[0]).toMatchObject({ path: 'out/large.bin' });
+  });
+
+  it('reads through the preview API from a member that gives no parts', async () => {
+    const actions = await resolveActions({ lanFiles: 1 });
+
+    await act(async () => actions.download?.('out/large.bin'));
+
+    expect(saveMemberFile).not.toHaveBeenCalled();
+    expect([...toasts.values()]).toEqual([
+      'error: This file is too large to download from here. Open it on the machine that owns it.',
+    ]);
   });
 });
 

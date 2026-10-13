@@ -102,3 +102,13 @@ native-dependency, and OSS-composition rules stay in `apps/electron/AGENTS.md`.
   cross-origin readers can inspect `Accept-Ranges` and `Content-Range`.
   Raster header dimensions bound decode cost.
   The scheme never bypasses CSP, executes file content, or authorizes a remote RPC.
+- `lody-resource://member/<token>` (`member-file-resource.ts`) stands for a file only
+  the agent service can read: a block a session keeps, or a file of another
+  [LAN member](../../../.agents/docs/lan-member-connections.md#parts-of-a-file). Each
+  Range request is one ranged read over the local file socket; the shell never
+  connects to a member or holds its credential. Local platform only; same opaque,
+  renderer-lifetime, bounded tokens. `member-file-resource-protocol.ts` adds the host
+  once the application loads: the entry reaches `local-file-resource-protocol.ts`
+  before that, so it must gain no business import. Every part after the first carries the revision
+  the resource was opened on, and a changed file answers 409. Saving streams to a
+  `.part` file beside the chosen path; never buffer such a file whole.

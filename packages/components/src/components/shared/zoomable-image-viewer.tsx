@@ -3,7 +3,9 @@ import { createPortal } from 'react-dom';
 import { FloatingFocusManager, useFloating } from '@floating-ui/react';
 import * as stylex from '@stylexjs/stylex';
 import { Button } from '@lody/ui/button';
+import { Spinner } from '@lody/ui/spinner';
 import { forcedThemeClassNames } from '@lody/ui/theme';
+import { colors } from '@lody/ui/tokens/colors.stylex';
 import { space } from '@lody/ui/tokens/scales.stylex';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -55,6 +57,16 @@ const styles = stylex.create({
     pointerEvents: 'none',
   },
   toolbar: { pointerEvents: 'auto' },
+  status: {
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: space[6],
+    color: colors.label,
+    textAlign: 'center',
+  },
   close: { marginInlineStart: 'auto', paddingInline: space[2] },
   previous: {
     position: 'absolute',
@@ -78,6 +90,8 @@ export type ZoomableImageViewerItem = {
   readonly key: string;
   /** Undefined while the full-size source is still loading. */
   readonly src: string | undefined;
+  /** Why there will be no source; shown in the photo's place. */
+  readonly error?: string | undefined;
   /** Source name, used as the save-dialog default. */
   readonly fileName?: string | undefined;
 };
@@ -260,6 +274,7 @@ function OpenZoomableImageViewer({
   const isMobile = useIsMobile();
   const isElectronFullscreen = useElectronFullscreen();
   useImagePreviewContextMenu(images);
+  const shown = images[index];
 
   // Native window controls are drawn ABOVE web content, so the top bar clears
   // them horizontally and centers its own controls on their line (the y=23
@@ -344,6 +359,15 @@ function OpenZoomableImageViewer({
             ...forcedThemeClassNames('dark')
           )}
         >
+          {shown && !shown.src ? (
+            <div {...stylex.props(styles.status)}>
+              {shown.error ? (
+                <span role="status">{shown.error}</span>
+              ) : (
+                <Spinner label={t('sessions.markdownImage.loading', 'Loading image…')} />
+              )}
+            </div>
+          ) : null}
           <div
             className={cn('PhotoView-Slider__BannerWrap', stylex.props(styles.toolbar).className)}
           >

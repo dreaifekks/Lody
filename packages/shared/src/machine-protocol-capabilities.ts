@@ -30,6 +30,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   acpCapabilityRefreshCache: 'acpCapabilityRefreshCache',
   lanControl: 'lanControl',
   lanFiles: 'lanFiles',
+  lanFileRanges: 'lanFileRanges',
   lanShell: 'lanShell',
   lanTunnel: 'lanTunnel',
   realtimeVoice: 'realtimeVoice',
@@ -58,6 +59,7 @@ export const PI_EXTENSIONS_PROTOCOL_VERSION = 1;
 export const ACP_CAPABILITY_REFRESH_CACHE_PROTOCOL_VERSION = 1;
 export const LAN_CONTROL_PROTOCOL_VERSION = 1;
 export const LAN_FILES_PROTOCOL_VERSION = 1;
+export const LAN_FILE_RANGES_PROTOCOL_VERSION = 1;
 export const LAN_SHELL_PROTOCOL_VERSION = 1;
 export const LAN_TUNNEL_PROTOCOL_VERSION = 1;
 export const SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION = 1;
@@ -406,6 +408,24 @@ export function machineSupportsLanFiles(
     machine,
     MACHINE_PROTOCOL_CAPABILITIES.lanFiles,
     LAN_FILES_PROTOCOL_VERSION
+  );
+}
+
+/**
+ * Whether the target daemon answers a `range` request on the connection that
+ * carries files: part of a file a session keeps, or of a file at a path its
+ * previews may read. A daemon without it refuses the request as a file header
+ * it cannot read.
+ *
+ * Like `lanControl` it is said only by a daemon that was assembled to accept.
+ */
+export function machineSupportsLanFileRanges(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.lanFileRanges,
+    LAN_FILE_RANGES_PROTOCOL_VERSION
   );
 }
 

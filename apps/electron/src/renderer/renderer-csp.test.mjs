@@ -24,6 +24,11 @@ void test('renderer CSP allows reading preview object URLs for image export', ()
   assert.ok(getDirectiveSources(rendererHtml, 'connect-src').includes('blob:'))
 })
 
+void test('renderer CSP lets a player read file resources, previewed bytes and inline audio', () => {
+  const sources = getDirectiveSources(rendererHtml, 'media-src')
+  for (const source of ['lody-resource:', 'blob:', 'data:']) assert.ok(sources.includes(source))
+})
+
 void test('renderer CSP allows the Codex reset forecast API', () => {
   assert.ok(getDirectiveSources(rendererHtml, 'connect-src').includes('https://codex-resets.com'))
 })

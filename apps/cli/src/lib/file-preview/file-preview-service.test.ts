@@ -325,6 +325,40 @@ describe('FilePreviewService', () => {
     ).toMatchObject({ status: 'error', code: 'file_not_found' });
   });
 
+  it('resolves a file for a read in parts under the boundary a preview has, whatever its size', async () => {
+    const workspaceRoot = await makeDir('preview-ws-');
+    const outside = await makeDir('preview-outside-');
+    await writeFile(path.join(workspaceRoot, 'clip.mp4'), Buffer.alloc(64, 1));
+    await writeFile(path.join(outside, 'clip.mp4'), Buffer.alloc(64, 2));
+    await symlink(path.join(outside, 'clip.mp4'), path.join(workspaceRoot, 'link.mp4'));
+    const limits = { maxBinaryBytes: 16, maxTextBytes: 16 };
+    const hosted = createService({ workspaceRoot, limits });
+    const local = createService({
+      workspaceRoot,
+      limits,
+      pathPolicy: { allowArbitraryPaths: true },
+    });
+    const ask = async (service: FilePreviewService, requested: string) =>
+      await service.resolveReadablePath({ sessionId: SESSION_ID, path: requested });
+
+    // Past every preview limit, and still resolved: the parts are bounded, not the file.
+    expect(await ask(hosted, 'clip.mp4')).toMatchObject({
+      absolutePath: await realpath(path.join(workspaceRoot, 'clip.mp4')),
+      sizeBytes: 64,
+    });
+    for (const escaping of [path.join(outside, 'clip.mp4'), 'link.mp4', '../clip.mp4']) {
+      expect(await ask(hosted, escaping)).toMatchObject({ status: 'error' });
+    }
+    expect(await ask(hosted, path.join(outside, 'clip.mp4'))).toMatchObject({
+      code: 'path_not_allowed',
+    });
+    expect(await ask(local, path.join(outside, 'clip.mp4'))).toMatchObject({
+      absolutePath: await realpath(path.join(outside, 'clip.mp4')),
+      external: true,
+    });
+    expect(await ask(local, 'missing.mp4')).toMatchObject({ code: 'file_not_found' });
+  });
+
   it('lets the same-machine Electron preview read an arbitrary external file as readonly', async () => {
     const workspaceRoot = await makeDir('preview-ws-');
     const outside = await makeDir('preview-outside-');

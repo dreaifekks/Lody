@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { Duplex } from 'node:stream';
 import {
+  machineSupportsLanFileRanges,
   machineSupportsLanFiles,
   type LocalSessionControlResponse,
   type MachineId,
@@ -15,6 +17,7 @@ import {
   type SessionMeta,
   type WorkspaceId,
 } from '@lody/shared';
+import type { LanFileRangeRequest, LocalFileRangeRequest } from '@lody/shared/lan-file-range';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import { parseLanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import type { LanHub } from '@lody/shared/node/lan-hub';
@@ -23,7 +26,10 @@ import { formatErrorMessage } from '@/utils/format-error';
 import { getSessionFileBlobPath } from '@/lib/session-file-blob-store';
 import {
   fetchFileFromLanMember,
+  LanFileRangeAborted,
+  relayFileRangeFromLanMember,
   sendFilesToLanMember,
+  serveFileRange,
   type LanFileToRead,
   type ReceivedLanFile,
 } from './lan-files';
@@ -43,6 +49,7 @@ export type LanFileWorkspace = {
 
 type SendFiles = typeof sendFilesToLanMember;
 type FetchFile = typeof fetchFileFromLanMember;
+type RelayRange = typeof relayFileRangeFromLanMember;
 type SessionLookup = LanFileWorkspace['lookupSession'];
 
 /**
@@ -64,8 +71,15 @@ export class LanFileHandoff {
        * reads the files of its own machine's sessions whatever carries them.
        */
       localSessions: (workspaceId: string) => SessionLookup | null;
+      /**
+       * Where a file at a path is, for a session of a workspace this machine
+       * runs. It throws the reason for a path the session's previews may not
+       * read. Absent on a machine that gives no file by its path.
+       */
+      resolvePath?: (workspaceId: string, sessionId: string, filePath: string) => Promise<string>;
       sendFiles?: SendFiles;
       fetchFile?: FetchFile;
+      relayRange?: RelayRange;
       /** Where this machine keeps the file of a block; the blob store by default. */
       keptPath?: typeof getSessionFileBlobPath;
     }
@@ -79,7 +93,73 @@ export class LanFileHandoff {
       },
       store: async (file) => await this.store(workspaceId, file),
       read: async ({ sessionId, fileId }) => await this.kept(workspaceId, sessionId, fileId),
+      locate: async (file) => await this.locate(workspaceId, file),
     };
+  }
+
+  /** Where the file of a `range` request is on this machine. */
+  private async locate(workspaceId: string, file: LanFileRangeRequest): Promise<string> {
+    if (file.fileId !== undefined) {
+      return (await this.kept(workspaceId, file.sessionId, file.fileId)).path;
+    }
+    if (!this.options.resolvePath) {
+      throw new Error('invalid_request:this machine gives no file by its path');
+    }
+    return await this.options.resolvePath(workspaceId, file.sessionId, file.path ?? '');
+  }
+
+  /**
+   * Answers the desktop of this machine with part of a file, on the connection
+   * it asked on: from this machine, or passed on from the member of a LAN that
+   * has the file. The connection ends with the answer.
+   */
+  async range(message: LocalFileRangeRequest, to: Duplex): Promise<void> {
+    const { workspaceId, machineId, ...request } = message;
+    try {
+      if (machineId === this.options.machineId) {
+        await serveFileRange(to, request, await this.locate(workspaceId, request));
+      } else {
+        const hub = this.options
+          .hubs()
+          .find((candidate) => getLanHubWorkspaceId(candidate.id) === workspaceId);
+        const workspace = this.options.workspace(workspaceId);
+        if (!hub || !workspace) {
+          throw new Error(
+            'remote_unreachable:another machine has the file, and no LAN of this machine reaches it'
+          );
+        }
+        const machine = await workspace.readMachine(machineId as MachineId);
+        const endpoint = parseLanTerminalEndpoint(machine?.lanTerminal);
+        if (!endpoint || !machineSupportsLanFileRanges(machine)) {
+          throw new Error(
+            `unsupported:${machine?.name?.trim() || machineId} gives no part of a file to the other machines of ${hub.name}`
+          );
+        }
+        await (this.options.relayRange ?? relayFileRangeFromLanMember)({
+          endpoint,
+          lanId: hub.id,
+          key: deriveLanTerminalKey(hub.token),
+          machineId,
+          request,
+          to,
+        });
+      }
+      to.end();
+    } catch (error) {
+      const reason = formatErrorMessage(error);
+      this.options.logger.debug(`[lan-files] no part of a file from ${machineId}: ${reason}`);
+      if (error instanceof LanFileRangeAborted) {
+        to.destroy();
+        return;
+      }
+      to.end(
+        `${JSON.stringify({
+          type: 'error',
+          code: /^([a-z][a-z0-9_]*):/.exec(reason)?.[1] ?? 'file_read_failed',
+          message: reason,
+        })}\n`
+      );
+    }
   }
 
   /** A file this machine keeps for a session, as a block of its history names it. */

@@ -219,6 +219,65 @@ does: the desktop reads the whole file and shows its first bytes. The card
 still names the machine. When that machine cannot be reached the preview says
 why, with the machine's name, and offers the download.
 
+### Parts of a file
+
+A video cannot be shown as a picture is, read whole and handed to the window,
+and a file of several gigabytes cannot be saved through a request that holds
+it whole. The `files` connection therefore also answers a `range` line
+(`packages/shared/src/lan-file-range.ts`). It names a session and either a
+block that session keeps (`fileId`) or a path (`path`), an offset and, unless
+the rest of the file is meant, a length. The member answers with one line (the
+size of the file, how many bytes follow, and a `revision` that identifies the
+content they are from) and then exactly those bytes; a length of zero asks
+for the size alone.
+
+A path is resolved and authorized by the member as its `file/preview` does
+(`FilePreviewService.resolveReadablePath`, the same
+`file-preview-path-policy`), so a range reads nothing a preview could not.
+Only the size limit of the one bounded preview response does not apply: the
+parts are bounded, not the file. A member says that it answers with the
+`lanFileRanges` protocol capability. One that does not is not asked, and the
+desktop then does what it did before.
+
+```text
+ player, or ─ lody-resource://member/<token> ─▶ shell ─ local file ─▶ agent service ─ TLS-PSK ─▶ agent service
+ Save dialog   a Range request                         socket         of this machine            of the member
+```
+
+The window names no machine to the network and holds no credential. It asks
+its shell for a resource URL (`machineRpc.openMemberFile`); the shell asks for
+the size, and gives out an opaque token that ends with the page, as the
+resources of this machine's own files do
+(`apps/electron/src/main/services/member-file-resource.ts`). Each Range request
+for that URL becomes one connection to the local file socket of the agent
+service (`getLocalFileSocketPath`, beside the terminal socket;
+`apps/cli/src/lib/local-file-server.ts`), which takes the same line plus the
+workspace and the machine. The agent service reads the file itself when the
+machine is its own, and otherwise passes the member's answer on as it arrives
+(`LanFileHandoff.range`). A player that stops reading closes its connection,
+and with it the one to the member.
+
+Each part is checked after it was read and before it leaves: a file whose
+size, time or inode changed breaks the part off, and the connection ends
+without a word, since a word would be read as bytes of the file. The next
+request carries the revision and is refused with `file_changed`, so the parts
+of two files are never joined; the player is told the file changed.
+
+Three things use it on a desktop:
+
+- An audio or a video file a message carries is played above its card
+  (`session-kept-media-file.tsx`), with the player's own controls. Before the
+  user starts it, only what the player needs for the length and the first
+  frame is read. The card stays: it names the file and downloads it.
+- In the file panel, audio and video of a session another member runs play the
+  same way. For these the window asks for a resource instead of sending
+  `file/preview`; every other file is previewed as before.
+- **Download file**, in the panel's menu and on the card of a file too large
+  or impossible to preview, opens a Save dialog and writes the file as it
+  arrives (`machineRpc.saveMemberFile`). A part that breaks off is asked for
+  again from where it stopped, as long as each attempt brought bytes, and the
+  file appears under its name only once it is complete.
+
 ## A desktop's requests to other machines
 
 A desktop asks another machine for what it shows of that machine's sessions
@@ -314,3 +373,8 @@ one to retry (`SYNC_UNAVAILABLE`), not as something that does not exist.
 - A file stays on the machine that runs its session. Other members read it
   from there, so they cannot while that machine is offline, and it is gone with
   that machine's data directory.
+- A player plays what Chromium plays. Nothing is converted: a video in a
+  format or codec it does not know leaves the card, and the download.
+- Only audio and video of another member open from a resource. A PDF, an
+  Office file or a picture there still has to fit the bounded preview
+  response, and is downloaded otherwise.

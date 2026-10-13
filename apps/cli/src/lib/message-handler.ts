@@ -182,6 +182,7 @@ import {
   getDeviceTimeZone,
   isLanMemberControlType,
   LAN_CONTROL_PROTOCOL_VERSION,
+  LAN_FILE_RANGES_PROTOCOL_VERSION,
   LAN_FILES_PROTOCOL_VERSION,
   LAN_SHELL_PROTOCOL_VERSION,
   LAN_TUNNEL_PROTOCOL_VERSION,
@@ -6233,6 +6234,7 @@ export class MessageHandler {
     }
     if (this.acceptsLanMemberFiles) {
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanFiles] = LAN_FILES_PROTOCOL_VERSION;
+      capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanFileRanges] = LAN_FILE_RANGES_PROTOCOL_VERSION;
       // The same listener opens the shells and ports of this machine to the members.
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanShell] = LAN_SHELL_PROTOCOL_VERSION;
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanTunnel] = LAN_TUNNEL_PROTOCOL_VERSION;
@@ -6889,6 +6891,19 @@ export class MessageHandler {
    */
   async handleDirectMachineRpc(raw: unknown): Promise<unknown[] | null> {
     return (await this.machineRpcServer?.handleDirectRequest(raw)) ?? null;
+  }
+
+  /**
+   * Where a file a preview of the session may read is, for a member of this
+   * workspace's LAN that reads it in parts. Throws the refusal, code first.
+   */
+  async resolveFilePreviewPath(sessionId: string, filePath: string): Promise<string> {
+    const resolved = await this.filePreviewService.resolveReadablePath({
+      sessionId,
+      path: filePath,
+    });
+    if ('status' in resolved) throw new Error(`${resolved.code}:${resolved.message}`);
+    return resolved.absolutePath;
   }
 
   /**

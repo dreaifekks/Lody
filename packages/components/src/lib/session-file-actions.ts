@@ -94,6 +94,12 @@ export type SessionFileLocalHostActions = {
  */
 export type SessionFileErrorActions = {
   readonly onCopyPath: () => void;
+  /**
+   * Saves the file itself, whatever its size. Present only where the machine
+   * that has the file gives it in parts: a download through the bounded preview
+   * response could not serve the files whose card sent the user looking.
+   */
+  readonly onDownload?: () => void;
   readonly onShare?: () => void;
   readonly sharing?: boolean;
   readonly localHost?: SessionFileLocalHostActions;

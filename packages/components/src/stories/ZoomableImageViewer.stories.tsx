@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react';
-import { ZoomableImageViewer } from '@/components/shared/zoomable-image-viewer';
+import {
+  ZoomableImageViewer,
+  type ZoomableImageViewerItem,
+} from '@/components/shared/zoomable-image-viewer';
 import { Button } from '@lody/ui/button';
 
 /**
@@ -52,11 +55,19 @@ const GALLERY_IMAGES = [
   { key: 'shot-3', src: svgDataUrl('three', '#3b0764', '#a855f7') },
 ];
 
+// A gallery whose pictures are read as the viewer reaches them: one still on
+// its way, one that could not be read, one that is there.
+const READ_ON_DEMAND_IMAGES: ZoomableImageViewerItem[] = [
+  { key: 'reading', src: undefined },
+  { key: 'lost', src: undefined, error: 'Image could not be loaded: devnuc: file_not_found' },
+  { key: 'shot-3', src: svgDataUrl('three', '#3b0764', '#a855f7') },
+];
+
 function ViewerHarness({
   images,
   initiallyOpen = true,
 }: {
-  images: { key: string; src: string }[];
+  images: ZoomableImageViewerItem[];
   initiallyOpen?: boolean;
 }) {
   const [index, setIndex] = useState<number | null>(initiallyOpen ? 0 : null);
@@ -100,6 +111,12 @@ export const TallScreenshot: Story = {
 export const Gallery: Story = {
   args: { open: true, onClose: () => {}, images: GALLERY_IMAGES, index: 0 },
   render: () => <ViewerHarness images={GALLERY_IMAGES} />,
+};
+
+/** Stepping is never held up by a picture: one still loading spins, one that failed says why. */
+export const ReadOnDemand: Story = {
+  args: { open: true, onClose: () => {}, images: READ_ON_DEMAND_IMAGES, index: 0 },
+  render: () => <ViewerHarness images={READ_ON_DEMAND_IMAGES} />,
 };
 
 export const KeyboardGallery: Story = {

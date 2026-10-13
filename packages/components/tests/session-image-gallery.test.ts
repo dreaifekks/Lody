@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { SessionHistoryParsed, SessionId } from '@lody/shared';
+import type { SessionFilePayload, SessionHistoryParsed, SessionId } from '@lody/shared';
 import {
   collectSessionImageGalleryEntries,
   createSessionImageGalleryEntry,
   findSessionImageGalleryEntryIndex,
+  getSessionFileGalleryKey,
+  getSessionToolImageGalleryKey,
 } from '../src/lib/session-image-gallery';
 
 const sessionId = 'session-1' as SessionId;
@@ -187,6 +189,117 @@ describe('collectSessionImageGalleryEntries', () => {
         galleryGroupId: 'assistant-legacy',
       }),
     ]);
+  });
+});
+
+describe('a turn whose pictures are stored in different ways', () => {
+  const picture = (fileId: string, mimeType = 'image/png'): SessionFilePayload => ({
+    type: 'file',
+    fileId,
+    fileName: `${fileId}.png`,
+    mimeType,
+    sizeBytes: 2048,
+    sha256: fileId.padEnd(64, '0'),
+    textPreview: false,
+    transport: 'local',
+    machineId: 'devnuc',
+  });
+  const shownAsPicture = (file: SessionFilePayload) => file.mimeType === 'image/png';
+  const returned = { type: 'image' as const, data: 'QUJD', mimeType: 'image/png' };
+
+  const messages: SessionHistoryParsed[] = [
+    buildMessage({
+      id: 'user-1',
+      items: [picture('asked'), { type: 'text', text: 'What is this?' }],
+    }),
+    buildMessage({
+      id: 'assistant-1',
+      role: 'assistant',
+      userTurnId: 'user-1',
+      items: [
+        { type: 'thought', text: 'Looking.' },
+        picture('drawn'),
+        {
+          type: 'tool_call',
+          toolCallId: 'shot',
+          title: 'Take a screenshot',
+          kind: 'other',
+          status: 'completed',
+          content: [
+            { type: 'content', content: { type: 'text', text: 'done' } },
+            { type: 'content', content: returned },
+          ],
+        },
+        { type: 'image', imageId: 'img-1', mimeType: 'image/png', sizeBytes: 64 },
+        picture('notes', 'application/pdf'),
+        { type: 'text', text: 'Here.' },
+      ],
+    }),
+    buildMessage({ id: 'user-2', items: [{ type: 'text', text: 'Again.' }] }),
+    buildMessage({
+      id: 'assistant-2',
+      role: 'assistant',
+      userTurnId: 'user-2',
+      items: [picture('later')],
+    }),
+  ];
+
+  it('lists them in the order the conversation shows them, one group per turn', () => {
+    const entries = collectSessionImageGalleryEntries(messages, sessionId, shownAsPicture);
+
+    expect(entries.map((entry) => [entry.galleryGroupId, entry.key])).toEqual([
+      ['user-1', getSessionFileGalleryKey('user-1', picture('asked'))],
+      ['user-1', getSessionFileGalleryKey('assistant-1', picture('drawn'))],
+      ['user-1', 'tool:shot:0'],
+      ['user-1', 'assistant-1:3:0:img-1'],
+      ['user-2', getSessionFileGalleryKey('assistant-2', picture('later'))],
+    ]);
+    expect(entries[1]).toEqual(
+      expect.objectContaining({ sessionId, messageId: 'assistant-1', file: picture('drawn') })
+    );
+    expect(entries[2]).toEqual(
+      expect.objectContaining({ messageId: 'assistant-1', toolImage: returned })
+    );
+  });
+
+  it('keeps the key of a tool call picture when a block arrives ahead of it', () => {
+    const first = { type: 'image' as const, data: 'QUJD', mimeType: 'image/png' };
+    const second = { type: 'image' as const, data: 'REVG', mimeType: 'image/png' };
+    const call = (content: Array<typeof first | { type: 'text'; text: string }>) => ({
+      toolCallId: 'capture',
+      content: content.map((block) => ({ type: 'content' as const, content: block })),
+    });
+
+    const before = call([first, second]);
+    const after = call([{ type: 'text', text: 'Two captures.' }, first, second]);
+
+    expect(getSessionToolImageGalleryKey(after, first)).toBe(
+      getSessionToolImageGalleryKey(before, first)
+    );
+    expect(getSessionToolImageGalleryKey(after, second)).toBe(
+      getSessionToolImageGalleryKey(before, second)
+    );
+    expect(getSessionToolImageGalleryKey(before, first)).not.toBe(
+      getSessionToolImageGalleryKey(before, second)
+    );
+  });
+
+  it('reads a file from the session that stores it', () => {
+    const copied = { ...picture('copied'), storageSessionId: 'session-origin' as SessionId };
+
+    expect(
+      collectSessionImageGalleryEntries(
+        [buildMessage({ id: 'user-1', items: [copied] })],
+        sessionId,
+        shownAsPicture
+      )
+    ).toEqual([expect.objectContaining({ sessionId: 'session-origin', file: copied })]);
+  });
+
+  it('leaves file blocks out where no client shows them as pictures', () => {
+    expect(
+      collectSessionImageGalleryEntries(messages, sessionId).map((entry) => entry.key)
+    ).toEqual(['tool:shot:0', 'assistant-1:3:0:img-1']);
   });
 });
 
