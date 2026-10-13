@@ -70,6 +70,10 @@ save path's text reads.
   that response.** `file/resolve-local` returns the canonical absolute path after
   owner/path resolution; Electron owns bounded content reads and resource lifetime.
   Negotiate `localFileResources` through the central machine protocol binding.
+- A LAN member reads a file in parts over its `files` connection, never through
+  this response. `resolveReadablePath` answers where such a file is under the SAME
+  resolution and authorization as `previewFile`, without its size limits and
+  without reading. Do not give ranged reads a path policy of their own.
 - `maxBinaryBytes` stays pinned to `SESSION_IMAGE_MAX_SIZE_BYTES`. Do not raise these
   budgets without measuring against the real gateway, since a non-404 4xx append
   failure is not retried.

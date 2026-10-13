@@ -10,6 +10,11 @@ import {
   SessionFileBlockSchema,
   type SessionFilePayload,
 } from '@lody/shared';
+import {
+  LanFileRangeAnswerSchema,
+  LanFileRangeRequestSchema,
+  type LanFileRangeRequest,
+} from '@lody/shared/lan-file-range';
 import { z } from 'zod';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
@@ -31,6 +36,12 @@ import { connectLanMember, type LanMemberConnectOptions } from './lan-terminal';
  * The same connection also gives a file back: a member that shows a message
  * asks for one file the other keeps, which answers with its size and then
  * exactly that many bytes. The asker checks them against the block.
+ *
+ * A `range` line asks for part of a file instead, so a video plays and a file
+ * of any size is saved without being copied whole first: a block a session
+ * keeps, or a file at a path the session's previews may read. The answer names
+ * the size of the file and what identifies its present content, and is
+ * followed by the bytes asked for.
  */
 const HEADER_MAX_BYTES = 8 * 1024;
 const ANSWER_MAX_BYTES = 64 * 1024;
@@ -184,12 +195,77 @@ function armIdleTimeout(stream: Duplex, timeoutMs: number): void {
   });
 }
 
-function parseReadRequest(line: string): z.infer<typeof ReadRequestSchema> | null {
+function parseRequest<T>(schema: z.ZodType<T>, line: string): T | null {
   try {
-    const parsed = ReadRequestSchema.safeParse(JSON.parse(line));
+    const parsed = schema.safeParse(JSON.parse(line));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * A range that broke off after its bytes were announced. No line can say so
+ * any more, since it would be read as bytes of the file: the connection ends.
+ */
+export class LanFileRangeAborted extends Error {}
+
+const RANGE_CHUNK_BYTES = 64 * 1024;
+
+const revisionOf = (stat: fs.Stats): string =>
+  `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+
+function writeChunk(stream: Duplex, chunk: Buffer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    stream.write(chunk, (error) => (error ? reject(error) : resolve()));
+  });
+}
+
+/**
+ * Answers one `range` request from the file at `filePath`. A request this
+ * file cannot answer is refused by throwing its reason before anything is
+ * written. A file that changes while its bytes travel breaks the range off:
+ * each part is checked after it was read and before it leaves, and the next
+ * request, which carries the revision, is the one that is told.
+ */
+export async function serveFileRange(
+  stream: Duplex,
+  request: Pick<LanFileRangeRequest, 'offset' | 'length' | 'revision'>,
+  filePath: string
+): Promise<void> {
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error('not_a_file:that is not a file');
+    const revision = revisionOf(stat);
+    if (request.revision !== undefined && request.revision !== revision) {
+      throw new Error('file_changed:the file changed since it was opened');
+    }
+    if (request.offset > stat.size) {
+      throw new Error('invalid_range:the file ends before that offset');
+    }
+    const end = Math.min(stat.size, request.offset + (request.length ?? stat.size));
+    writeLine(stream, {
+      type: 'range',
+      sizeBytes: stat.size,
+      length: end - request.offset,
+      revision,
+    });
+    try {
+      for (let position = request.offset; position < end;) {
+        const chunk = Buffer.allocUnsafe(Math.min(RANGE_CHUNK_BYTES, end - position));
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
+        if (bytesRead === 0 || revisionOf(await handle.stat()) !== revision) {
+          throw new Error('the file changed while it was read');
+        }
+        position += bytesRead;
+        await writeChunk(stream, chunk.subarray(0, bytesRead));
+      }
+    } catch (error) {
+      throw new LanFileRangeAborted(formatErrorMessage(error), { cause: error });
+    }
+  } finally {
+    await handle.close();
   }
 }
 
@@ -214,6 +290,8 @@ export async function serveLanFileConnection(
     store: (file: ReceivedLanFile) => Promise<SessionFilePayload>;
     /** Throws the reason when this machine gives no such file back. */
     read?: (file: { sessionId: string; fileId: string }) => Promise<LanFileToRead>;
+    /** Where the file of a `range` request is; throws the reason when it may not be read. */
+    locate?: (file: LanFileRangeRequest) => Promise<string>;
     logger: Logger;
     idleTimeoutMs?: number;
   }
@@ -227,7 +305,14 @@ export async function serveLanFileConnection(
       const line = await reader.readLine(HEADER_MAX_BYTES);
       if (line === null) return;
       if (line.trim() === '') continue;
-      const read = parseReadRequest(line);
+      const range = parseRequest(LanFileRangeRequestSchema, line);
+      if (range) {
+        if (!options.locate)
+          throw new Error('invalid_request:this machine gives no part of a file');
+        await serveFileRange(stream, range, await options.locate(range));
+        continue;
+      }
+      const read = parseRequest(ReadRequestSchema, line);
       if (read) {
         if (!options.read) throw new Error('invalid_request:this machine gives no files back');
         const file = await options.read(read);
@@ -281,7 +366,8 @@ export async function serveLanFileConnection(
     }
   } catch (error) {
     options.logger.debug(`[lan-files] refused a file: ${formatErrorMessage(error)}`);
-    writeLine(stream, { type: 'error', ...classifyRefusal(error) });
+    if (error instanceof LanFileRangeAborted) stream.destroy();
+    else writeLine(stream, { type: 'error', ...classifyRefusal(error) });
   } finally {
     stream.end();
   }
@@ -469,6 +555,44 @@ export async function fetchFileFromLanMember(
   const { socket, rest } = await connectLanMember({ ...options, service: 'files' });
   try {
     await readLanFile(socket, { ...options, initial: rest });
+  } finally {
+    socket.destroy();
+  }
+}
+
+/**
+ * Asks a member that already answered for part of a file and passes its answer
+ * on to `to` as it arrives: the line that announces the bytes, then the bytes.
+ * A refusal is thrown; once the bytes were announced a failure is a
+ * `LanFileRangeAborted`, and `to` has part of them.
+ */
+export async function relayLanFileRange(
+  stream: Duplex,
+  options: { initial: Buffer; request: LanFileRangeRequest; to: Duplex; idleTimeoutMs?: number }
+): Promise<void> {
+  const { reader, readAnswer } = answersOf(stream, options);
+  try {
+    writeLine(stream, options.request);
+    const answer = await readAnswer(LanFileRangeAnswerSchema);
+    if (answer.type === 'error') throw toRefusal(answer);
+    writeLine(options.to, answer);
+    try {
+      await reader.readBytes(answer.length, async (chunk) => await writeChunk(options.to, chunk));
+    } catch (error) {
+      throw new LanFileRangeAborted(formatErrorMessage(error), { cause: error });
+    }
+  } finally {
+    stream.end();
+  }
+}
+
+/** Passes part of a file on from the member of a LAN that has it. */
+export async function relayFileRangeFromLanMember(
+  options: LanMemberConnectOptions & { request: LanFileRangeRequest; to: Duplex }
+): Promise<void> {
+  const { socket, rest } = await connectLanMember({ ...options, service: 'files' });
+  try {
+    await relayLanFileRange(socket, { initial: rest, request: options.request, to: options.to });
   } finally {
     socket.destroy();
   }

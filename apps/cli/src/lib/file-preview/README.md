@@ -54,6 +54,12 @@ editing and opaque resource URLs for paged text or streaming images. Per-read bu
 revision checks, cancellation, and virtual rows replace the old whole-file IPC ceiling.
 The remote `file/preview` retains its complete, bounded response for the remote wire.
 
+A member of a LAN can also be asked for part of a file, over the connection that
+carries the files of a message ([how](../../../../../.agents/docs/lan-member-connections.md#parts-of-a-file)).
+`resolveReadablePath` gives that read the path: the same resolution and the same
+boundary as a preview, so it reaches nothing a preview could not, and no size limit,
+because each part is bounded by the request rather than by one response.
+
 `maxBinaryBytes` is pinned to `SESSION_IMAGE_MAX_SIZE_BYTES` because that is the only
 budget for this payload shape (base64 image bytes in one Machine RPC response)
 already proven in production, via `local-project/control` image reads. The gateway's

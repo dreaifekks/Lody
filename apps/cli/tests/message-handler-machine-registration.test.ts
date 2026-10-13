@@ -281,8 +281,12 @@ describe('MessageHandler machine registration', () => {
     expect((await register(false)).protocolCapabilities).not.toHaveProperty('lanControl');
 
     // Nor does it send files to a machine that would take them for terminal input.
-    expect((await register(false, true)).protocolCapabilities).toMatchObject({ lanFiles: 1 });
+    expect((await register(false, true)).protocolCapabilities).toMatchObject({
+      lanFiles: 1,
+      lanFileRanges: 1,
+    });
     expect((await register(true)).protocolCapabilities).not.toHaveProperty('lanFiles');
+    expect((await register(true)).protocolCapabilities).not.toHaveProperty('lanFileRanges');
   });
 
   it('lets another LAN machine pick the turn a cancel stops, and tells an older one a turn', async () => {

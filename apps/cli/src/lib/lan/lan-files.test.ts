@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
@@ -16,9 +17,15 @@ import type {
   SessionMeta,
   WorkspaceId,
 } from '@lody/shared';
+import {
+  LanFileRangeAnswerSchema,
+  type LanFileRangeAnswer,
+  type LocalFileRangeRequest,
+} from '@lody/shared/lan-file-range';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import type { LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import { addLanHub, type LanHub } from '@lody/shared/node/lan-hub';
+import { LocalFileServer } from '@/lib/local-file-server';
 import { getSessionFileBlobPath } from '@/lib/session-file-blob-store';
 import type { Logger } from '@/utils/logger';
 import { LanFileHandoff, type LanFileWorkspace } from './lan-file-handoff';
@@ -131,7 +138,10 @@ describe('files between LAN members', () => {
   /** The server machine: a member of Home that runs the sessions named. */
   async function startServer(
     sessions: Record<string, Partial<SessionMeta> | 'deleted'> = {},
-    options: { takesFiles?: boolean } = {}
+    options: {
+      takesFiles?: boolean;
+      resolvePath?: (workspaceId: string, sessionId: string, filePath: string) => Promise<string>;
+    } = {}
   ) {
     const { workspace, stored } = serverWorkspace(sessions);
     const handoff = new LanFileHandoff({
@@ -141,6 +151,7 @@ describe('files between LAN members', () => {
       workspace: (workspaceId) => (workspaceId === HOME ? workspace : null),
       localSessions: (workspaceId) => (workspaceId === HOME ? workspace.lookupSession : null),
       keptPath,
+      ...(options.resolvePath ? { resolvePath: options.resolvePath } : {}),
     });
     const published = new Map<string, LanTerminalEndpoint | undefined>();
     const host = new LanTerminalHost({
@@ -446,6 +457,213 @@ describe('files between LAN members', () => {
 
       expect(response).toMatchObject({ success: false, error: 'remote_unreachable' });
       expect(response.message).toContain('devbox gives no files');
+    });
+  });
+
+  describe('reading part of a file', () => {
+    const RANGES = { lanFiles: 1, lanFileRanges: 1 };
+
+    /** The local file socket of a machine, as its desktop connects to it. */
+    async function desktopOf(handoff: LanFileHandoff) {
+      const socketPath = path.join(fs.mkdtempSync(path.join(scratch, 'desktop-')), 'files.sock');
+      const server = new LocalFileServer({
+        logger: silentLogger(),
+        socketPath,
+        serve: async (asked, socket) => await handoff.range(asked, socket),
+      });
+      await server.start();
+      cleanups.push(() => server.stop());
+      return socketPath;
+    }
+
+    const rangeRequest = (
+      overrides: Partial<LocalFileRangeRequest> = {}
+    ): LocalFileRangeRequest => ({
+      type: 'range',
+      workspaceId: HOME,
+      machineId: SERVER,
+      sessionId: 'home-session',
+      offset: 0,
+      ...(overrides.path === undefined ? { fileId: 'file-clip' } : {}),
+      ...overrides,
+    });
+
+    /**
+     * Asks as a desktop does and reads to the end of the connection.
+     * `afterFirstBytes` runs once the answer and the first bytes of the file
+     * arrived, before any more of them is read.
+     */
+    async function ask(
+      socketPath: string,
+      asked: LocalFileRangeRequest,
+      afterFirstBytes?: () => void
+    ): Promise<{ answer: LanFileRangeAnswer; body: Buffer }> {
+      const socket = net.connect(socketPath);
+      cleanups.push(() => socket.destroy());
+      socket.write(`${JSON.stringify(asked)}\n`);
+      let line: string | null = null;
+      let pending = Buffer.alloc(0);
+      const body: Buffer[] = [];
+      let paused = afterFirstBytes;
+      for await (const chunk of socket as AsyncIterable<Buffer>) {
+        if (line === null) {
+          pending = Buffer.concat([pending, chunk]);
+          const newline = pending.indexOf(0x0a);
+          if (newline < 0) continue;
+          line = pending.subarray(0, newline).toString('utf8');
+          body.push(pending.subarray(newline + 1));
+        } else {
+          body.push(chunk);
+        }
+        if (paused && body.some((part) => part.length > 0)) {
+          paused();
+          paused = undefined;
+        }
+      }
+      if (line === null) throw new Error('the agent service gave no answer');
+      return {
+        answer: LanFileRangeAnswerSchema.parse(JSON.parse(line)),
+        body: Buffer.concat(body),
+      };
+    }
+
+    it('gives the part of a kept file that was asked for, from another member', async () => {
+      const clip = crypto.randomBytes(1_500_000);
+      keep('home-session', 'file-clip', clip);
+      const { endpoint } = await startServer({ 'home-session': { machineId: SERVER } });
+      const desktop = await desktopOf(startClient(endpoint, { capabilities: RANGES }));
+
+      const whole = await ask(desktop, rangeRequest());
+      const middle = await ask(desktop, rangeRequest({ offset: 700_000, length: 200_000 }));
+      const tail = await ask(desktop, rangeRequest({ offset: 1_400_000, length: 500_000 }));
+      const size = await ask(desktop, rangeRequest({ length: 0 }));
+
+      expect(whole.answer).toMatchObject({ type: 'range', sizeBytes: clip.length });
+      expect(whole.body.equals(clip)).toBe(true);
+      expect(middle.answer).toMatchObject({ sizeBytes: clip.length, length: 200_000 });
+      expect(middle.body.equals(clip.subarray(700_000, 900_000))).toBe(true);
+      // A range that reaches past the end stops there.
+      expect(tail.answer).toMatchObject({ length: 100_000 });
+      expect(tail.body.equals(clip.subarray(1_400_000))).toBe(true);
+      expect(size.answer).toMatchObject({ sizeBytes: clip.length, length: 0 });
+      expect(size.body.length).toBe(0);
+    });
+
+    it('gives a file by its path where the member resolves it, and tells a refusal', async () => {
+      const video = crypto.randomBytes(300_000);
+      const videoPath = writeFile('demo.mp4', video);
+      const { endpoint } = await startServer(
+        { 'home-session': { machineId: SERVER } },
+        {
+          resolvePath: async (_workspaceId, sessionId, filePath) => {
+            if (sessionId !== 'home-session' || filePath !== 'out/demo.mp4') {
+              throw new Error('path_not_allowed:File is outside the workspace');
+            }
+            return videoPath;
+          },
+        }
+      );
+      const desktop = await desktopOf(startClient(endpoint, { capabilities: RANGES }));
+
+      const part = await ask(desktop, rangeRequest({ path: 'out/demo.mp4', offset: 100_000 }));
+      const refused = await ask(desktop, rangeRequest({ path: '/etc/passwd' }));
+
+      expect(part.answer).toMatchObject({ type: 'range', sizeBytes: video.length });
+      expect(part.body.equals(video.subarray(100_000))).toBe(true);
+      expect(refused.answer).toMatchObject({ type: 'error', code: 'path_not_allowed' });
+      expect(refused.body.length).toBe(0);
+    });
+
+    it('refuses an offset past the end, and a file the session does not keep', async () => {
+      keep('home-session', 'file-clip', crypto.randomBytes(1000));
+      const { endpoint } = await startServer({ 'home-session': { machineId: SERVER } });
+      const desktop = await desktopOf(startClient(endpoint, { capabilities: RANGES }));
+
+      const atEnd = await ask(desktop, rangeRequest({ offset: 1000 }));
+      const past = await ask(desktop, rangeRequest({ offset: 1001 }));
+      const missing = await ask(desktop, rangeRequest({ fileId: 'file-other' }));
+
+      expect(atEnd.answer).toMatchObject({ type: 'range', sizeBytes: 1000, length: 0 });
+      expect(past.answer).toMatchObject({ type: 'error', code: 'invalid_range' });
+      expect(missing.answer).toMatchObject({ type: 'error', code: 'file_not_found' });
+    });
+
+    it('refuses the next part of a file that became another one', async () => {
+      keep('home-session', 'file-clip', crypto.randomBytes(1000));
+      const { endpoint } = await startServer({ 'home-session': { machineId: SERVER } });
+      const desktop = await desktopOf(startClient(endpoint, { capabilities: RANGES }));
+
+      const first = await ask(desktop, rangeRequest({ length: 500 }));
+      if (first.answer.type !== 'range') throw new Error('the first part was refused');
+      const { revision } = first.answer;
+      const same = await ask(desktop, rangeRequest({ offset: 500, revision }));
+      keep('home-session', 'file-clip', crypto.randomBytes(2000));
+      const changed = await ask(desktop, rangeRequest({ offset: 500, revision }));
+
+      expect(same.answer).toMatchObject({ type: 'range', length: 500, revision });
+      expect(changed.answer).toMatchObject({ type: 'error', code: 'file_changed' });
+    });
+
+    it('breaks off a part whose file changes while it travels', async () => {
+      // Larger than every buffer between the file and the desktop holds, so the
+      // member is still reading when the desktop has its first bytes.
+      const size = 64 * 1024 * 1024;
+      const filePath = keptPath({
+        workspaceId: HOME,
+        sessionId: 'home-session',
+        fileId: 'file-clip',
+      });
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.closeSync(fs.openSync(filePath, 'w'));
+      fs.truncateSync(filePath, size);
+      const { endpoint } = await startServer({ 'home-session': { machineId: SERVER } });
+      const desktop = await desktopOf(startClient(endpoint, { capabilities: RANGES }));
+
+      const cut = await ask(desktop, rangeRequest(), () => fs.truncateSync(filePath, 1024));
+
+      expect(cut.answer).toMatchObject({ type: 'range', sizeBytes: size, length: size });
+      expect(cut.body.length).toBeGreaterThan(0);
+      expect(cut.body.length).toBeLessThan(size);
+    });
+
+    it('does not ask a member that says nothing about parts of files', async () => {
+      keep('home-session', 'file-clip', crypto.randomBytes(1000));
+      const { endpoint } = await startServer({ 'home-session': { machineId: SERVER } });
+      const desktop = await desktopOf(startClient(endpoint));
+
+      const { answer, body } = await ask(desktop, rangeRequest());
+
+      expect(answer).toMatchObject({ type: 'error', code: 'unsupported' });
+      expect(answer.type === 'error' && answer.message).toContain('devbox gives no part of a file');
+      expect(body.length).toBe(0);
+    });
+
+    it('gives a file this machine keeps without a LAN, and none of a workspace it cannot reach', async () => {
+      const clip = crypto.randomBytes(5000);
+      keep('home-session', 'file-clip', clip);
+      const { handoff } = await startServer({ 'home-session': { machineId: SERVER } });
+      const desktop = await desktopOf(handoff);
+
+      const own = await ask(desktop, rangeRequest({ offset: 4000 }));
+      const elsewhere = await ask(desktop, rangeRequest({ machineId: CLIENT }));
+      const unknown = await ask(
+        desktop,
+        rangeRequest({ workspaceId: 'lw_other', machineId: CLIENT })
+      );
+
+      expect(own.body.equals(clip.subarray(4000))).toBe(true);
+      // The client machine publishes no endpoint in this workspace.
+      expect(elsewhere.answer).toMatchObject({ type: 'error', code: 'unsupported' });
+      expect(unknown.answer).toMatchObject({ type: 'error', code: 'remote_unreachable' });
+    });
+
+    it('refuses a request the socket cannot read', async () => {
+      const { handoff } = await startServer({});
+      const desktop = await desktopOf(handoff);
+
+      const both = await ask(desktop, rangeRequest({ path: 'a.mp4', fileId: 'file-clip' }));
+
+      expect(both.answer).toMatchObject({ type: 'error', code: 'invalid_request' });
     });
   });
 

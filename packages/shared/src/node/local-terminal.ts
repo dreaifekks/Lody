@@ -22,3 +22,12 @@ export function getLocalTerminalSocketPath(platform?: PlatformKind): string {
 export function getLocalTunnelSocketPath(platform?: PlatformKind): string {
   return getLocalDaemonSocketPath(`${getInstallationProfile(platform).namespace}-tunnel`, platform);
 }
+
+/**
+ * Where the agent service gives the desktop of this machine parts of a file:
+ * one a session keeps, here or on a machine of its LANs, or one at a path of
+ * such a machine. Same 0700 run dir as the terminal socket.
+ */
+export function getLocalFileSocketPath(platform?: PlatformKind): string {
+  return getLocalDaemonSocketPath(`${getInstallationProfile(platform).namespace}-files`, platform);
+}

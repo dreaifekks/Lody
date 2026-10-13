@@ -346,6 +346,10 @@ export class MachineRuntime {
     return await this.requireHandler().handleDirectMachineRpc(raw);
   }
 
+  async resolveFilePreviewPath(sessionId: string, filePath: string): Promise<string> {
+    return await this.requireHandler().resolveFilePreviewPath(sessionId, filePath);
+  }
+
   async runAsSessionCommand<T>(run: () => Promise<T>): Promise<T> {
     return await this.requireHandler().runAsSessionCommand(run);
   }

@@ -11,6 +11,7 @@ import type {
   LanMemberControlResponse,
   SessionFilePayload,
 } from '@lody/shared';
+import type { LanFileRangeRequest } from '@lody/shared/lan-file-range';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { serveTerminalConnection, type TerminalService } from '@/lib/terminal-connection';
 import type { Logger } from '@/utils/logger';
@@ -71,6 +72,8 @@ export type LanFileReceiver = {
   store: (file: ReceivedLanFile) => Promise<SessionFilePayload>;
   /** A file this machine keeps, for a member that shows its message. */
   read: (file: { sessionId: string; fileId: string }) => Promise<LanFileToRead>;
+  /** Where the file is that a member asks part of. */
+  locate: (file: LanFileRangeRequest) => Promise<string>;
 };
 
 /**
