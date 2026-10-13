@@ -46,6 +46,51 @@ describe('splitTextIntoFilePathSegments (prose)', () => {
     ]);
   });
 
+  it('takes non-ASCII names after the first separator', () => {
+    expect(paths('notes/demoday/准备.md')).toEqual(['notes/demoday/准备.md']);
+    expect(paths('见 notes/demoday/准备.md 这个文件')).toEqual(['notes/demoday/准备.md']);
+    expect(paths('notes/准备/prep.md')).toEqual(['notes/准备/prep.md']);
+    expect(paths('notes/v1.2版/x.md')).toEqual(['notes/v1.2版/x.md']);
+    expect(paths('打开docs/設計/メモ.md:12。')).toEqual(['docs/設計/メモ.md:12']);
+    expect(paths('看 ./docs/v1.2版本/说明.md#L3')).toEqual(['./docs/v1.2版本/说明.md#L3']);
+  });
+
+  it('ends a path at an ASCII extension that runs into non-ASCII text', () => {
+    expect(splitTextIntoFilePathSegments('src/foo.ts和src/bar.ts')).toEqual([
+      { type: 'path', value: 'src/foo.ts' },
+      { type: 'text', value: '和' },
+      { type: 'path', value: 'src/bar.ts' },
+    ]);
+    expect(paths('参考docs/设计.md和docs/计划.md的内容')).toEqual(['docs/设计.md', 'docs/计划.md']);
+    expect(paths('详见packages/foo.d.ts的实现')).toEqual(['packages/foo.d.ts']);
+    // Whether the extension is a known file type does not matter.
+    expect(paths('见logs/app.log以及src/main.ts')).toEqual(['logs/app.log', 'src/main.ts']);
+    expect(paths('见docs/a.xyz和src/b.ts')).toEqual(['docs/a.xyz', 'src/b.ts']);
+    expect(paths('详见src/a.ini和src/b.conf')).toEqual(['src/a.ini', 'src/b.conf']);
+    expect(paths('见docs/a.xyz这个文件')).toEqual(['docs/a.xyz']);
+  });
+
+  it('splits a long run of paths joined by non-ASCII text', () => {
+    const expected = Array.from({ length: 3000 }, (_, index) => `src/f${index}.ts`);
+    const found = paths(expected.join('和'));
+    expect(found).toHaveLength(3000);
+    expect(found.slice(0, 2)).toEqual(['src/f0.ts', 'src/f1.ts']);
+    expect(found.slice(-2)).toEqual(['src/f2998.ts', 'src/f2999.ts']);
+    expect(paths('src/f.ts和'.repeat(3000))).toEqual(
+      Array.from({ length: 3000 }, () => 'src/f.ts')
+    );
+  });
+
+  it('needs an ASCII first segment and, for a non-ASCII path, an ASCII extension', () => {
+    expect(paths('目录/准备.md')).toEqual([]);
+    expect(paths('notes/准备/目录')).toEqual([]);
+    expect(paths('notes/准备.文档')).toEqual([]);
+    expect(paths('读/写权限和I/O操作')).toEqual([]);
+    // Then only the ASCII path in front counts, and no tail of the rest does.
+    expect(paths('见src/a.ts/以及其他')).toEqual(['src/a.ts']);
+    expect(paths('src/工具/a.b/说明')).toEqual([]);
+  });
+
   it('requires a slash or line suffix in prose', () => {
     expect(paths('we run Node.js in production')).toEqual([]);
     expect(paths('bump to version 2.0 today')).toEqual([]);
