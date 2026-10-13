@@ -496,7 +496,7 @@ describe('files between LAN members', () => {
     async function ask(
       socketPath: string,
       asked: LocalFileRangeRequest,
-      afterFirstBytes?: () => void
+      afterFirstBytes?: (socket: net.Socket) => void
     ): Promise<{ answer: LanFileRangeAnswer; body: Buffer }> {
       const socket = net.connect(socketPath);
       cleanups.push(() => socket.destroy());
@@ -516,7 +516,7 @@ describe('files between LAN members', () => {
           body.push(chunk);
         }
         if (paused && body.some((part) => part.length > 0)) {
-          paused();
+          paused(socket);
           paused = undefined;
         }
       }
@@ -602,6 +602,82 @@ describe('files between LAN members', () => {
 
       expect(same.answer).toMatchObject({ type: 'range', length: 500, revision });
       expect(changed.answer).toMatchObject({ type: 'error', code: 'file_changed' });
+    });
+
+    it('refuses the next part of a file written over in place under its size and time', async () => {
+      const filePath = keptPath({
+        workspaceId: HOME,
+        sessionId: 'home-session',
+        fileId: 'file-clip',
+      });
+      const written = 1_700_000_000;
+      keep('home-session', 'file-clip', Buffer.alloc(1000, 'A'));
+      fs.utimesSync(filePath, written, written);
+      const before = fs.statSync(filePath);
+      const { endpoint } = await startServer({ 'home-session': { machineId: SERVER } });
+      const desktop = await desktopOf(startClient(endpoint, { capabilities: RANGES }));
+
+      const first = await ask(desktop, rangeRequest({ length: 500 }));
+      if (first.answer.type !== 'range') throw new Error('the first part was refused');
+      // Only the change time tells such a file from the one it was, and that
+      // moves with the clock: the file is written until it has moved.
+      do {
+        fs.writeFileSync(filePath, Buffer.alloc(1000, 'B'));
+        fs.utimesSync(filePath, written, written);
+      } while (fs.statSync(filePath).ctimeMs === before.ctimeMs);
+      const after = fs.statSync(filePath);
+      const next = await ask(
+        desktop,
+        rangeRequest({ offset: 500, revision: first.answer.revision })
+      );
+
+      expect([after.ino, after.size, after.mtimeMs]).toEqual([
+        before.ino,
+        before.size,
+        before.mtimeMs,
+      ]);
+      expect(first.body.equals(Buffer.alloc(500, 'A'))).toBe(true);
+      expect(next.answer).toMatchObject({ type: 'error', code: 'file_changed' });
+      expect(next.body.length).toBe(0);
+    });
+
+    it('lets go of the member when the desktop leaves while the member is silent', async () => {
+      const key = deriveLanTerminalKey(home.token);
+      let left: () => void = () => {};
+      const memberLeft = new Promise<void>((resolve) => (left = resolve));
+      // A member that announces a part and sends only its first bytes.
+      const silent = tls.createServer(
+        {
+          ciphers: 'ECDHE-PSK-CHACHA20-POLY1305',
+          minVersion: 'TLSv1.2',
+          maxVersion: 'TLSv1.2',
+          pskCallback: (_socket, identity) => (identity === home.id ? key : null),
+        },
+        (socket) => {
+          let lines = 0;
+          socket.on('error', () => {});
+          socket.once('close', left);
+          socket.on('data', () => {
+            lines += 1;
+            socket.write(
+              lines === 1
+                ? `${JSON.stringify({ type: 'hello', version: 1, machineId: SERVER, service: 'files' })}\n`
+                : `${JSON.stringify({ type: 'range', sizeBytes: 1000, length: 1000, revision: 'r1' })}\nfirst bytes`
+            );
+          });
+        }
+      );
+      await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', () => resolve()));
+      cleanups.push(() => new Promise<void>((resolve) => silent.close(() => resolve())));
+      const { port } = silent.address() as { port: number };
+      const desktop = await desktopOf(
+        startClient({ version: 1, host: '127.0.0.1', port }, { capabilities: RANGES })
+      );
+
+      const asked = ask(desktop, rangeRequest(), (socket) => socket.destroy()).catch(() => null);
+
+      await memberLeft;
+      await asked;
     });
 
     it('breaks off a part whose file changes while it travels', async () => {

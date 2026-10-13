@@ -60,6 +60,7 @@ export const SessionFileBinaryPreview = memo(function SessionFileBinaryPreview({
         path={path}
         bytes={bytes}
         url={url}
+        active={active}
         onError={() => setUnplayable(source)}
       />
     );

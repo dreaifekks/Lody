@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import net from 'node:net'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -102,10 +104,13 @@ void test('a file is saved whole, resuming a part that broke off from where it s
   const { dir, open, requests } = await agentService(t, file, { cutAfter: 120_000 })
   const destination = join(dir, 'saved.mp4')
   await writeFile(destination, 'what was there before')
+  // A file of another program's, under the name a download in progress might take.
+  await writeFile(`${destination}.part`, 'not of this download')
 
   await saveAgentFile(open, target, destination)
 
   assert.deepEqual(await readFile(destination), file)
+  assert.equal(await readFile(`${destination}.part`, 'utf8'), 'not of this download')
   assert.deepEqual(
     requests.map(({ offset, revision }) => ({ offset, revision })),
     [
@@ -113,13 +118,14 @@ void test('a file is saved whole, resuming a part that broke off from where it s
       { offset: 120_000, revision: 'r1' }
     ]
   )
-  assert.deepEqual((await readdir(dir)).sort(), ['files.sock', 'saved.mp4'])
+  assert.deepEqual((await readdir(dir)).sort(), ['files.sock', 'saved.mp4', 'saved.mp4.part'])
 })
 
 void test('a file that changes while it is saved leaves what was there before', async (t) => {
   const { dir, open, state } = await agentService(t, pattern(500_000), { cutAfter: 120_000 })
   const destination = join(dir, 'saved.mp4')
   await writeFile(destination, 'what was there before')
+  await writeFile(`${destination}.part`, 'not of this download')
   const changing = async (asked, range, signal) => {
     if (range.offset > 0) state.revision = 'r2'
     return await open(asked, range, signal)
@@ -131,8 +137,59 @@ void test('a file that changes while it is saved leaves what was there before', 
   )
 
   assert.equal(await readFile(destination, 'utf8'), 'what was there before')
-  assert.deepEqual((await readdir(dir)).sort(), ['files.sock', 'saved.mp4'])
+  assert.equal(await readFile(`${destination}.part`, 'utf8'), 'not of this download')
+  assert.deepEqual((await readdir(dir)).sort(), ['files.sock', 'saved.mp4', 'saved.mp4.part'])
 })
+
+void test(
+  'a write the disk takes only part of fails the save and leaves what was there before',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), 'lody-agent-files-'))
+    t.after(() => rm(dir, { recursive: true, force: true }))
+    const destination = join(dir, 'saved.bin')
+    await writeFile(destination, 'what was there before')
+    // The save runs in a process whose files may not grow past 1 KiB: the
+    // system takes the first kilobyte of the only write, then refuses the rest.
+    const script = `
+      import { saveAgentFile } from ${JSON.stringify(new URL('./member-file-resource.ts', import.meta.url).href)}
+      const file = Buffer.alloc(4096, 7)
+      const open = async (_target, range) => ({
+        sizeBytes: file.length,
+        revision: 'r1',
+        closed: Promise.resolve(),
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(file.subarray(range.offset))
+            controller.close()
+          }
+        })
+      })
+      await saveAgentFile(open, {}, process.env.LODY_TEST_DESTINATION).then(
+        () => console.log('saved'),
+        (error) => console.log('failed ' + error.code)
+      )
+    `
+    const { stdout } = await promisify(execFile)(
+      'bash',
+      [
+        '-c',
+        'ulimit -f 1 && exec "$0" "$@"',
+        process.execPath,
+        '--experimental-strip-types',
+        '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON',
+        '--input-type=module',
+        '-e',
+        script
+      ],
+      { env: { ...process.env, LODY_TEST_DESTINATION: destination } }
+    )
+
+    assert.equal(stdout.trim(), 'failed EFBIG')
+    assert.equal(await readFile(destination, 'utf8'), 'what was there before')
+    assert.deepEqual(await readdir(dir), ['saved.bin'])
+  }
+)
 
 void test('a member resource answers ranges, as a player asks for them', async (t) => {
   const file = pattern(300_000)

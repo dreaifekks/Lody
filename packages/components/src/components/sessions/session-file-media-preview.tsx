@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
 
 const styles = stylex.create({
@@ -21,6 +21,8 @@ interface SessionFileMediaPreviewProps {
   readonly bytes?: Uint8Array;
   /** A resource URL, read in ranges as the player asks for them. */
   readonly url?: string;
+  /** False while the panel or the tab that holds the player is not on screen. */
+  readonly active?: boolean;
   /** The player could not play it: a format or a file it cannot read. */
   readonly onError: () => void;
 }
@@ -28,16 +30,23 @@ interface SessionFileMediaPreviewProps {
 /**
  * Plays an audio or a video file with the platform's own controls. Nothing
  * plays until the user starts it; only what the player needs to show its
- * length and first frame is read before that.
+ * length and first frame is read before that. A player that leaves the screen
+ * is paused where it is: a hidden panel stays mounted, and would go on playing.
  */
 export const SessionFileMediaPreview = memo(function SessionFileMediaPreview({
   kind,
   path,
   bytes,
   url,
+  active = true,
   onError,
 }: SessionFileMediaPreviewProps) {
   const [objectUrl, setObjectUrl] = useState<string | undefined>(undefined);
+  const playerRef = useRef<HTMLVideoElement & HTMLAudioElement>(null);
+
+  useEffect(() => {
+    if (!active) playerRef.current?.pause();
+  }, [active]);
 
   useEffect(() => {
     if (url || !bytes || bytes.byteLength === 0) {
@@ -55,6 +64,7 @@ export const SessionFileMediaPreview = memo(function SessionFileMediaPreview({
     <div {...stylex.props(styles.frame)}>
       {kind === 'video' ? (
         <video
+          ref={playerRef}
           key={source}
           src={source}
           controls
@@ -66,6 +76,7 @@ export const SessionFileMediaPreview = memo(function SessionFileMediaPreview({
         />
       ) : (
         <audio
+          ref={playerRef}
           key={source}
           src={source}
           controls

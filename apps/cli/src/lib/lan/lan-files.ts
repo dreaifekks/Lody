@@ -212,8 +212,10 @@ export class LanFileRangeAborted extends Error {}
 
 const RANGE_CHUNK_BYTES = 64 * 1024;
 
+// The change time as well: a file written over in place can keep its size and
+// its modification time.
 const revisionOf = (stat: fs.Stats): string =>
-  `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+  `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
 
 function writeChunk(stream: Duplex, chunk: Buffer): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -591,9 +593,13 @@ export async function relayFileRangeFromLanMember(
   options: LanMemberConnectOptions & { request: LanFileRangeRequest; to: Duplex }
 ): Promise<void> {
   const { socket, rest } = await connectLanMember({ ...options, service: 'files' });
+  // Whoever asked may leave while the member is silent, when no write tells.
+  const leave = () => socket.destroy();
+  options.to.once('close', leave);
   try {
     await relayLanFileRange(socket, { initial: rest, request: options.request, to: options.to });
   } finally {
+    options.to.off('close', leave);
     socket.destroy();
   }
 }

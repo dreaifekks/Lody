@@ -123,8 +123,10 @@ export async function saveAgentFile(
   target: AgentFileTarget,
   destinationPath: string
 ): Promise<void> {
-  const partPath = `${destinationPath}.part`
-  const handle = await open(partPath, 'w')
+  // A name of this download's own, created here: a file that happens to lie
+  // beside the destination is neither written over nor removed.
+  const partPath = `${destinationPath}.${randomUUID()}.part`
+  const handle = await open(partPath, 'wx')
   let complete = false
   try {
     let written = 0
@@ -138,8 +140,12 @@ export async function saveAgentFile(
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
-          await handle.write(value)
-          written += value.length
+          // A write may take fewer bytes than it was given.
+          for (let offset = 0; offset < value.length;) {
+            const { bytesWritten } = await handle.write(value, offset)
+            offset += bytesWritten
+            written += bytesWritten
+          }
         }
         break
       } catch (error) {

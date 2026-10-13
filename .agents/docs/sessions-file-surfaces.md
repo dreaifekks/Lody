@@ -120,7 +120,8 @@ this page is the full text of the rules summarised there.
   audio or video and the machine advertises `lanFileRanges`. Bytes a bounded
   preview already brought (web, mobile, hosted, an older member) play from an
   object URL. A file the player cannot play returns to the binary notice and
-  its file actions. Nothing is transcoded, and the renderer CSP must keep
+  its file actions. A player whose panel or tab leaves the screen is paused
+  where it is (`active`), since the hidden panel stays mounted. Nothing is transcoded, and the renderer CSP must keep
   `media-src` open to `lody-resource:` and `blob:`.
 - Markdown file viewers copy the latest complete source text (including unsaved
   editor changes) from the top toolbar. On mobile, source mode uses the native
