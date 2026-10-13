@@ -23,9 +23,8 @@ export type SessionImageGalleryEntry = {
   alt?: string;
 };
 
-type ToolCallContentBlock = NonNullable<
-  Extract<SessionHistoryParsed['items'][number], { type: 'tool_call' }>['content']
->[number];
+type ToolCallItem = Extract<SessionHistoryParsed['items'][number], { type: 'tool_call' }>;
+type ToolCallContentBlock = NonNullable<ToolCallItem['content']>[number];
 
 /** A picture a tool call returned inline. */
 export type SessionToolImage = Extract<
@@ -60,8 +59,23 @@ export const getSessionFileGalleryKey = (
   file: Pick<SessionFilePayload, 'fileId' | 'sha256'>
 ): string => `${messageId}:file:${file.fileId}:${file.sha256}`;
 
-export const getSessionToolImageGalleryKey = (toolCallId: string, blockIndex: number): string =>
-  `tool:${toolCallId}:${blockIndex}`;
+/**
+ * A tool call's picture is its nth one, not the nth block: the content list is
+ * replaced as the call goes on, and a block arriving ahead of a picture must
+ * not hand its key to another.
+ */
+export const getSessionToolImageGalleryKey = (
+  toolCall: Pick<ToolCallItem, 'toolCallId' | 'content'>,
+  image: SessionToolImage
+): string => {
+  let ordinal = 0;
+  for (const block of toolCall.content ?? []) {
+    if (block.type !== 'content' || block.content.type !== 'image') continue;
+    if (block.content === image) break;
+    ordinal += 1;
+  }
+  return `tool:${toolCall.toolCallId}:${ordinal}`;
+};
 
 type CreateSessionImageGalleryEntryArgs = {
   sessionId: SessionId;
@@ -145,10 +159,10 @@ export const collectSessionImageGalleryEntries = (
       }
 
       if (item.type === 'tool_call') {
-        item.content?.forEach((block, blockIndex) => {
+        item.content?.forEach((block) => {
           if (block.type === 'content' && block.content.type === 'image') {
             entries.push({
-              key: getSessionToolImageGalleryKey(item.toolCallId, blockIndex),
+              key: getSessionToolImageGalleryKey(item, block.content),
               messageId: message.id,
               galleryGroupId,
               toolImage: block.content,

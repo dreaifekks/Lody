@@ -7751,10 +7751,7 @@ const GenericToolCallCard = memo(function GenericToolCallCard({
         <ToolDetailSection key={`content-${index}`}>
           <StandardToolContentBlock
             content={content}
-            imageKey={getSessionToolImageGalleryKey(
-              toolCall.toolCallId,
-              toolCall.content?.indexOf(block) ?? -1
-            )}
+            toolCall={toolCall}
             onFilePathClick={onFilePathClick}
             fontSize={fontSize}
           />
@@ -7997,13 +7994,13 @@ const toolImageSrc = (image: SessionToolImage, readonly = false): string | undef
 
 const StandardToolContentBlock = ({
   content,
-  imageKey,
+  toolCall,
   onFilePathClick,
   fontSize,
 }: {
   content: StandardToolContent;
-  /** This block as an image of its turn's gallery. */
-  imageKey: string;
+  /** The call this block belongs to, which places its image in the turn's gallery. */
+  toolCall: ToolCallMessage;
   onFilePathClick?: (filePath: string) => void;
   fontSize: ConversationFontSize;
 }) => {
@@ -8027,7 +8024,11 @@ const StandardToolContentBlock = ({
           {readonly ? (
             <img src={src} alt={alt} className="max-h-80 w-full rounded-lg object-contain" />
           ) : (
-            <ToolContentImage src={src} alt={alt} galleryKey={imageKey} />
+            <ToolContentImage
+              src={src}
+              alt={alt}
+              galleryKey={getSessionToolImageGalleryKey(toolCall, content)}
+            />
           )}
         </div>
       );

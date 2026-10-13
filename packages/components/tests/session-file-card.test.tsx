@@ -730,17 +730,18 @@ describe('the images of one turn in the viewer', () => {
 
   // One turn: the user's picture, then an answer whose work holds a picture, a
   // tool call that returned one, and a large one. A second turn has its own.
+  // What a row has expanded outlives a test by message id, so each history names its own.
   const history = (prefix: string) => [
     {
-      id: 'user-1',
+      id: `${prefix}-user-1`,
       role: 'user',
       timestamp: '2026-10-13T00:00:00Z',
       items: [picture(`${prefix}-asked`), { type: 'text', text: 'What is on this?' }],
     },
     {
-      id: 'assistant-1',
+      id: `${prefix}-assistant-1`,
       role: 'assistant',
-      userTurnId: 'user-1',
+      userTurnId: `${prefix}-user-1`,
       timestamp: '2026-10-13T00:00:01Z',
       items: [
         picture(`${prefix}-first`),
@@ -763,15 +764,15 @@ describe('the images of one turn in the viewer', () => {
       finished: true,
     },
     {
-      id: 'user-2',
+      id: `${prefix}-user-2`,
       role: 'user',
       timestamp: '2026-10-13T00:01:00Z',
       items: [{ type: 'text', text: 'One more.' }],
     },
     {
-      id: 'assistant-2',
+      id: `${prefix}-assistant-2`,
       role: 'assistant',
-      userTurnId: 'user-2',
+      userTurnId: `${prefix}-user-2`,
       timestamp: '2026-10-13T00:01:01Z',
       items: [picture(`${prefix}-later`), { type: 'text', text: 'Done.' }],
       fileDiff: [],
@@ -779,7 +780,7 @@ describe('the images of one turn in the viewer', () => {
     },
   ];
 
-  const show = async (turns: unknown[]) => {
+  const show = async (turns: Array<{ id: string }>) => {
     const store = createStore();
     store.set(currentWorkspaceIdAtom, 'lan-home' as WorkspaceId);
     const view = createConversationViewFromHistory({
@@ -800,7 +801,7 @@ describe('the images of one turn in the viewer', () => {
             createElement(SessionChatStreamView, {
               items,
               sessionId,
-              lastAssistantMessageId: 'assistant-2',
+              lastAssistantMessageId: turns[turns.length - 1]!.id,
               renderMessageRow: ({ message, sessionId: id }) =>
                 createElement(MessageRowView, { message, sessionId: id }),
             })
@@ -872,6 +873,18 @@ describe('the images of one turn in the viewer', () => {
     );
   });
 
+  const click = async (find: () => HTMLElement | null | undefined) => {
+    await act(async () => {
+      find()?.click();
+    });
+  };
+  const labelled = (text: string) =>
+    Array.from(container?.querySelectorAll<HTMLElement>('button, [role="button"]') ?? []).find(
+      (candidate) => candidate.textContent?.includes(text)
+    );
+  const toolPictures = () =>
+    Array.from(container?.querySelectorAll<HTMLElement>('img[alt="Generated image"]') ?? []);
+
   it('opens a picture a tool call returned among the others of its turn', async () => {
     reads();
     const turns = history('tool');
@@ -879,21 +892,51 @@ describe('the images of one turn in the viewer', () => {
     turns[1] = { ...turns[1], finished: false };
     await show(turns);
 
-    const click = async (find: () => HTMLElement | null | undefined) => {
-      await act(async () => {
-        find()?.click();
-      });
-    };
-    const labelled = (text: string) =>
-      Array.from(container?.querySelectorAll<HTMLElement>('button, [role="button"]') ?? []).find(
-        (candidate) => candidate.textContent?.includes(text)
-      );
     await click(() => labelled('Called 1 tool'));
     await click(() => labelled('Take a screenshot'));
-    await click(() => container?.querySelector('img[alt="Generated image"]')?.closest('button'));
+    await click(() => toolPictures()[0]?.closest('button'));
 
     expect(counter()).toBe('3 / 5');
     expect(photos()).toContain('data:image/png;base64,QUJD');
+  });
+
+  it('stays on a tool call picture when the call puts a block ahead of it', async () => {
+    reads();
+    const capture = (type: string, value: string) =>
+      type === 'text'
+        ? { type: 'content', content: { type: 'text', text: value } }
+        : { type: 'content', content: { type: 'image', data: value, mimeType: 'image/png' } };
+    // The running call's content is a list the agent replaces as it goes.
+    const turns = (content: unknown[]) => {
+      const all = history('moved');
+      const answer = all[1] as { items: unknown[] };
+      all[1] = {
+        ...answer,
+        finished: false,
+        items: answer.items.map((item) =>
+          (item as { type: string }).type === 'tool_call' ? { ...(item as object), content } : item
+        ),
+      } as (typeof all)[number];
+      return all;
+    };
+    await show(turns([capture('image', 'QUJD'), capture('image', 'REVG')]));
+
+    await click(() => labelled('Called 1 tool'));
+    await click(() => labelled('Take a screenshot'));
+    await click(() => toolPictures()[1]?.closest('button'));
+    expect(counter()).toBe('4 / 6');
+
+    await show(
+      turns([capture('text', 'Two captures.'), capture('image', 'QUJD'), capture('image', 'REVG')])
+    );
+
+    // Still the second capture, with the first one before it.
+    expect(counter()).toBe('4 / 6');
+    expect(photos()).toEqual([
+      'data:image/png;base64,QUJD',
+      'data:image/png;base64,REVG',
+      expect.stringMatching(/^blob:/),
+    ]);
   });
 
   it('keeps the pictures of another turn out', async () => {

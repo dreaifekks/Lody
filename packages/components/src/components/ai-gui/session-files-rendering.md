@@ -93,8 +93,9 @@ the extra thumbnail-load gap documented in the
   around it, or a subagent run's steps, which are not items of the stream's messages);
   the image then opens alone in its own viewer. Keys:
   `getSessionFileGalleryKey(messageId, file)` and
-  `getSessionToolImageGalleryKey(toolCallId, blockIndex)`, the index being the block's
-  place in `toolCall.content`, not in a filtered copy.
+  `getSessionToolImageGalleryKey(toolCall, image)`, which numbers a call's pictures
+  among themselves: its content list is replaced as the call goes on, so a block's
+  place in it is not an identity. The stream and the collector both use that function.
 - `session-gallery-images.ts` supplies what the open viewer shows. A file block is read
   through `readKeptImage` (the page's cache, so a thumbnail already shown costs no
   second read) when the viewer stops on it; a neighbour is read ahead only if the

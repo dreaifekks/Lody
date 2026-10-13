@@ -250,7 +250,7 @@ describe('a turn whose pictures are stored in different ways', () => {
     expect(entries.map((entry) => [entry.galleryGroupId, entry.key])).toEqual([
       ['user-1', getSessionFileGalleryKey('user-1', picture('asked'))],
       ['user-1', getSessionFileGalleryKey('assistant-1', picture('drawn'))],
-      ['user-1', getSessionToolImageGalleryKey('shot', 1)],
+      ['user-1', 'tool:shot:0'],
       ['user-1', 'assistant-1:3:0:img-1'],
       ['user-2', getSessionFileGalleryKey('assistant-2', picture('later'))],
     ]);
@@ -259,6 +259,28 @@ describe('a turn whose pictures are stored in different ways', () => {
     );
     expect(entries[2]).toEqual(
       expect.objectContaining({ messageId: 'assistant-1', toolImage: returned })
+    );
+  });
+
+  it('keeps the key of a tool call picture when a block arrives ahead of it', () => {
+    const first = { type: 'image' as const, data: 'QUJD', mimeType: 'image/png' };
+    const second = { type: 'image' as const, data: 'REVG', mimeType: 'image/png' };
+    const call = (content: Array<typeof first | { type: 'text'; text: string }>) => ({
+      toolCallId: 'capture',
+      content: content.map((block) => ({ type: 'content' as const, content: block })),
+    });
+
+    const before = call([first, second]);
+    const after = call([{ type: 'text', text: 'Two captures.' }, first, second]);
+
+    expect(getSessionToolImageGalleryKey(after, first)).toBe(
+      getSessionToolImageGalleryKey(before, first)
+    );
+    expect(getSessionToolImageGalleryKey(after, second)).toBe(
+      getSessionToolImageGalleryKey(before, second)
+    );
+    expect(getSessionToolImageGalleryKey(before, first)).not.toBe(
+      getSessionToolImageGalleryKey(before, second)
     );
   });
 
@@ -277,7 +299,7 @@ describe('a turn whose pictures are stored in different ways', () => {
   it('leaves file blocks out where no client shows them as pictures', () => {
     expect(
       collectSessionImageGalleryEntries(messages, sessionId).map((entry) => entry.key)
-    ).toEqual([getSessionToolImageGalleryKey('shot', 1), 'assistant-1:3:0:img-1']);
+    ).toEqual(['tool:shot:0', 'assistant-1:3:0:img-1']);
   });
 });
 
