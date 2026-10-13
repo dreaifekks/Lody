@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@lody/ui/button';
@@ -9,6 +9,7 @@ import { SESSION_IMAGE_ALLOWED_MIME_TYPES, type SessionFilePayload } from '@lody
 import { ZoomableImageViewer } from '@/components/shared/zoomable-image-viewer';
 import { canUseElectronLocalFileSend } from '@/lib/electron-session-file-sender';
 import { getIpcServices } from '@/lib/electron-ipc-client';
+import { SessionImagePreviewContext } from './session-image-preview-context';
 
 /**
  * Without a store every device reads from, an image a message carries is a
@@ -80,7 +81,12 @@ const cache = new Map<string, Cached & { promise: Promise<Blob> }>();
 
 const cacheKey = (file: SessionFilePayload) => `${file.machineId}\0${file.fileId}\0${file.sha256}`;
 
-function readImage(file: SessionFilePayload, workspaceId: string, sessionId: string) {
+/** Whether an image is read without being asked for: a small one, or one this page already read. */
+export const loadsKeptImageOnSight = (file: SessionFilePayload): boolean =>
+  file.sizeBytes <= AUTO_LOAD_MAX_BYTES || cache.has(cacheKey(file));
+
+/** An image file block, read once for the page and kept for whoever shows it next. */
+export function readKeptImage(file: SessionFilePayload, workspaceId: string, sessionId: string) {
   const key = cacheKey(file);
   const hit = cache.get(key);
   if (hit) {
@@ -158,12 +164,15 @@ export function SessionKeptImageFile({
   workspaceId,
   sessionId,
   card,
+  galleryKey,
 }: {
   file: SessionFilePayload;
   workspaceId: string;
   sessionId: string;
   /** The file card, shown until the image is there. */
   card: ReactNode;
+  /** This image in the gallery of its turn; without one it opens alone. */
+  galleryKey?: string;
 }) {
   const { t } = useTranslation();
   const key = cacheKey(file);
@@ -172,8 +181,9 @@ export function SessionKeptImageFile({
   const [state, setState] = useState<State>({ status: 'idle' });
   const [decoded, setDecoded] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const gallery = useContext(SessionImagePreviewContext);
   const anchorRef = useRef<HTMLDivElement>(null);
-  const automatic = file.sizeBytes <= AUTO_LOAD_MAX_BYTES || cached !== undefined;
+  const automatic = loadsKeptImageOnSight(file);
 
   useEffect(() => {
     if (!automatic && attempt === 0) return undefined;
@@ -181,7 +191,7 @@ export function SessionKeptImageFile({
     let objectUrl: string | undefined;
     setDecoded(false);
     setState({ status: 'loading' });
-    readImage(file, workspaceId, sessionId).then(
+    readKeptImage(file, workspaceId, sessionId).then(
       (blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
@@ -210,7 +220,9 @@ export function SessionKeptImageFile({
           type="button"
           aria-label={file.fileName}
           title={file.fileName}
-          onClick={() => setViewerOpen(true)}
+          onClick={() => {
+            if (!(galleryKey && gallery?.openImagePreview(galleryKey))) setViewerOpen(true);
+          }}
           {...stylex.props(styles.frame, !decoded && styles.pending)}
         >
           <img

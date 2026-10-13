@@ -18,8 +18,14 @@ import {
 import { Provider, createStore } from 'jotai';
 import { PlatformContext } from '@lody/platform/react';
 
+import { buildChatStreamItems } from '../src/components/ai-gui/build-chat-stream-items';
 import { SessionFileCard } from '../src/components/ai-gui/session-file-card';
-import { SessionFileGroup } from '../src/components/ai-gui/view';
+import {
+  MessageRowView,
+  SessionChatStreamView,
+  SessionFileGroup,
+} from '../src/components/ai-gui/view';
+import { createConversationViewFromHistory } from '../src/lib/conversation-view';
 import { currentWorkspaceIdAtom } from '../src/atoms/workspace-context';
 import {
   isKeptImageFile,
@@ -58,6 +64,12 @@ vi.mock('../src/lib/electron-ipc-client', () => ({
     localProjects: { readSessionFileLocal: (input: ReadInput) => readKeptFile(input) },
     machineRpc: { openMemberFile: (input: OpenInput) => openMemberFile(input) },
     app: { getFullscreen: async () => false },
+    // The viewer's right-click menu; nothing here opens it.
+    image: {
+      showPreviewMenu: async () => null,
+      copyToClipboard: async () => ({ ok: true }),
+      saveAs: async () => ({ ok: true }),
+    },
   }),
   onIpcEvent: () => () => {},
 }));
@@ -663,5 +675,261 @@ describe('audio and video a machine keeps', () => {
 
     expect(view.querySelector('video')).toBeNull();
     expect(view.textContent).toContain('odd-codec.mkv');
+  });
+});
+
+describe('the images of one turn in the viewer', () => {
+  let root: Root | undefined;
+  let container: HTMLDivElement | undefined;
+  let nextUrl = 0;
+  const sessionId = 'gallery-session' as SessionId;
+
+  beforeEach(async () => {
+    await initI18n('en');
+    (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__ = true;
+    URL.createObjectURL = () => `blob:gallery-${(nextUrl += 1)}`;
+    URL.revokeObjectURL = () => {};
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root?.unmount();
+      });
+      root = undefined;
+    }
+    container?.remove();
+    container = undefined;
+    vi.unstubAllGlobals();
+    delete (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__;
+  });
+
+  const picture = (fileId: string, overrides: Partial<SessionFilePayload> = {}) =>
+    file({
+      fileId,
+      fileName: `${fileId}.png`,
+      mimeType: 'image/png',
+      sizeBytes: 2048,
+      sha256: fileId.padEnd(64, '0'),
+      textPreview: false,
+      transport: 'local',
+      machineId: 'devnuc',
+      ...overrides,
+    });
+
+  // One turn: the user's picture, then an answer whose work holds a picture, a
+  // tool call that returned one, and a large one. A second turn has its own.
+  const history = (prefix: string) => [
+    {
+      id: 'user-1',
+      role: 'user',
+      timestamp: '2026-10-13T00:00:00Z',
+      items: [picture(`${prefix}-asked`), { type: 'text', text: 'What is on this?' }],
+    },
+    {
+      id: 'assistant-1',
+      role: 'assistant',
+      userTurnId: 'user-1',
+      timestamp: '2026-10-13T00:00:01Z',
+      items: [
+        picture(`${prefix}-first`),
+        {
+          type: 'tool_call',
+          toolCallId: `${prefix}-shot`,
+          title: 'Take a screenshot',
+          kind: 'other',
+          status: 'completed',
+          content: [
+            { type: 'content', content: { type: 'text', text: 'done' } },
+            { type: 'content', content: { type: 'image', data: 'QUJD', mimeType: 'image/png' } },
+          ],
+        },
+        picture(`${prefix}-second`),
+        picture(`${prefix}-large`, { sizeBytes: 12 * 1024 * 1024 }),
+        { type: 'text', text: 'Here they are.' },
+      ],
+      fileDiff: [],
+      finished: true,
+    },
+    {
+      id: 'user-2',
+      role: 'user',
+      timestamp: '2026-10-13T00:01:00Z',
+      items: [{ type: 'text', text: 'One more.' }],
+    },
+    {
+      id: 'assistant-2',
+      role: 'assistant',
+      userTurnId: 'user-2',
+      timestamp: '2026-10-13T00:01:01Z',
+      items: [picture(`${prefix}-later`), { type: 'text', text: 'Done.' }],
+      fileDiff: [],
+      finished: true,
+    },
+  ];
+
+  const show = async (turns: unknown[]) => {
+    const store = createStore();
+    store.set(currentWorkspaceIdAtom, 'lan-home' as WorkspaceId);
+    const view = createConversationViewFromHistory({
+      sessionId,
+      getHistory: () => turns as never,
+      subscribe: () => () => {},
+    });
+    const { items } = buildChatStreamItems(view, sessionId);
+    view.dispose();
+    await act(async () => {
+      root?.render(
+        createElement(
+          PlatformContext.Provider,
+          { value: { ...TEST_CLOUD_PLATFORM, kind: 'local', capabilities: new Set() } },
+          createElement(
+            Provider,
+            { store },
+            createElement(SessionChatStreamView, {
+              items,
+              sessionId,
+              lastAssistantMessageId: 'assistant-2',
+              renderMessageRow: ({ message, sessionId: id }) =>
+                createElement(MessageRowView, { message, sessionId: id }),
+            })
+          )
+        )
+      );
+    });
+    // Each thumbnail on the page decodes, which turns its placeholder into a button.
+    await act(async () => {
+      container
+        ?.querySelectorAll('img')
+        .forEach((thumbnail) => thumbnail.dispatchEvent(new Event('load')));
+    });
+  };
+
+  const thumbnail = (name: string) =>
+    container?.querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`);
+  const viewer = () => document.body.querySelector<HTMLElement>('[role="dialog"][aria-modal]');
+  const counter = () => viewer()?.querySelector('.PhotoView-Slider__Counter')?.textContent;
+  const photos = () =>
+    Array.from(
+      viewer()?.querySelectorAll<HTMLImageElement>('img.lody-photo-slider-image') ?? []
+    ).map((photo) => photo.getAttribute('src'));
+  const press = async (key: string) => {
+    await act(async () => {
+      viewer()?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    });
+  };
+
+  const reads = (answer: (fileId: string) => ReadResult = () => ok) => {
+    const asked: string[] = [];
+    readKeptFile = async (input) => {
+      asked.push(input.fileId);
+      return answer(input.fileId);
+    };
+    return asked;
+  };
+  const ok: ReadResult = { ok: true, bytes: new Uint8Array([1]).buffer };
+  const open = async (name: string) => {
+    await act(async () => {
+      thumbnail(name)?.click();
+    });
+  };
+
+  it('steps through them in the order the conversation shows them, reading as it goes', async () => {
+    const asked = reads();
+    await show(history('order'));
+    await open('order-second.png');
+
+    // The user's picture, the first of the answer, the tool call's, this one, the large one.
+    expect(counter()).toBe('4 / 5');
+    // Beside it: the tool call's picture, and the large one, which waits to be reached.
+    expect(photos()).toEqual(['data:image/png;base64,QUJD', expect.stringMatching(/^blob:/)]);
+    expect(asked).not.toContain('order-large');
+
+    await press('ArrowRight');
+    expect(counter()).toBe('5 / 5');
+    expect(asked.filter((fileId) => fileId === 'order-large')).toEqual(['order-large']);
+    expect(photos()).toHaveLength(2);
+
+    await press('ArrowLeft');
+    await press('ArrowLeft');
+    await press('ArrowLeft');
+    expect(counter()).toBe('2 / 5');
+    expect(photos()).toHaveLength(3);
+    // Every picture was read once, however often the viewer passed it.
+    expect([...asked].sort()).toEqual(
+      ['order-asked', 'order-first', 'order-large', 'order-later', 'order-second'].sort()
+    );
+  });
+
+  it('opens a picture a tool call returned among the others of its turn', async () => {
+    reads();
+    const turns = history('tool');
+    // Still running, so the work of the turn is laid out rather than folded.
+    turns[1] = { ...turns[1], finished: false };
+    await show(turns);
+
+    const click = async (find: () => HTMLElement | null | undefined) => {
+      await act(async () => {
+        find()?.click();
+      });
+    };
+    const labelled = (text: string) =>
+      Array.from(container?.querySelectorAll<HTMLElement>('button, [role="button"]') ?? []).find(
+        (candidate) => candidate.textContent?.includes(text)
+      );
+    await click(() => labelled('Called 1 tool'));
+    await click(() => labelled('Take a screenshot'));
+    await click(() => container?.querySelector('img[alt="Generated image"]')?.closest('button'));
+
+    expect(counter()).toBe('3 / 5');
+    expect(photos()).toContain('data:image/png;base64,QUJD');
+  });
+
+  it('keeps the pictures of another turn out', async () => {
+    reads();
+    await show(history('apart'));
+
+    await open('apart-later.png');
+
+    expect(counter()).toBe('1 / 1');
+    expect(viewer()?.querySelector('button[aria-label="Next image"]')).toBeNull();
+    expect(photos()).toEqual([expect.stringMatching(/^blob:/)]);
+  });
+
+  it('says why a picture could not be read, and still steps on', async () => {
+    const asked = reads((fileId) =>
+      fileId === 'lost-large' ? { ok: false, error: 'devnuc: file_not_found' } : ok
+    );
+    await show(history('lost'));
+
+    await open('lost-second.png');
+    await press('ArrowRight');
+
+    expect(counter()).toBe('5 / 5');
+    expect(viewer()?.textContent).toContain('Image could not be loaded: devnuc: file_not_found');
+
+    await press('ArrowRight');
+    expect(counter()).toBe('1 / 5');
+    expect(viewer()?.textContent).not.toContain('Image could not be loaded');
+
+    // Passing beside it asks nothing; stopping on it again does.
+    await press('ArrowRight');
+    await press('ArrowRight');
+    await press('ArrowRight');
+    expect(counter()).toBe('4 / 5');
+    expect(asked.filter((fileId) => fileId === 'lost-large')).toHaveLength(1);
+    await press('ArrowRight');
+    expect(asked.filter((fileId) => fileId === 'lost-large')).toHaveLength(2);
   });
 });

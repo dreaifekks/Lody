@@ -76,10 +76,33 @@ the extra thumbnail-load gap documented in the
   drag-to-pan, and the top-right close button. Tapping the photo stays inside the
   pan/zoom surface, and vertical pulls do not dismiss it; close through the
   toolbar or backdrop. Both callers mount it:
-  `view.tsx` `ImagePreviewDialog` (chat image blocks, gallery of the turn's images)
+  `view.tsx` `ImagePreviewDialog` (the gallery of the turn's images)
   and `../sessions/session-file-image-preview.tsx` (Code Collab file preview, one
   image). A new image surface must reuse it rather than hand-roll gestures —
   the two paths are required to feel identical.
+- The gallery of a turn is every picture of it, whatever it is stored as, in the order
+  the conversation shows them: uploaded `image` / `image_group` blocks, file blocks a
+  machine keeps (`session-local-image-file.tsx`), and `image` blocks a tool call
+  returned (`tool-content-image.tsx`). `@/lib/session-image-gallery.ts` collects them
+  from the messages, so a picture inside folded work or a closed tool step is in the
+  gallery without being mounted. A turn is the user message plus every assistant
+  message whose `userTurnId` names it; `buildChatStreamItems` must keep passing
+  `userTurnId`, or each message becomes its own gallery.
+- An image opens through `SessionImagePreviewContext.openImagePreview(key)`, which
+  answers false when the conversation's gallery does not hold that key (no gallery
+  around it, or a subagent run's steps, which are not items of the stream's messages);
+  the image then opens alone in its own viewer. Keys:
+  `getSessionFileGalleryKey(messageId, file)` and
+  `getSessionToolImageGalleryKey(toolCallId, blockIndex)`, the index being the block's
+  place in `toolCall.content`, not in a filtered copy.
+- `session-gallery-images.ts` supplies what the open viewer shows. A file block is read
+  through `readKeptImage` (the page's cache, so a thumbnail already shown costs no
+  second read) when the viewer stops on it; a neighbour is read ahead only if the
+  conversation would read it unasked (`loadsKeptImageOnSight`: up to 10 MB, or already
+  read). An item with no `src` spins, one with `error` says why, and neither blocks
+  stepping; a failed read is tried again when the viewer stops on that picture again.
+  One read per picture per stop: a running turn hands over a new entry list on every
+  change.
 - The file preview stays a fitted `<img>` inline and opens the viewer on tap.
   `react-photo-view` has no inline mode, and a hand-rolled inline zoom would be a
   second gesture implementation fighting Vaul drawer drag + the file browser's
@@ -115,5 +138,6 @@ the extra thumbnail-load gap documented in the
   for the clipboard, original encoding for the save. Callers pass `fileName` on
   each `ZoomableImageViewerItem` for the save-dialog default. With no preload
   bridge the handler must not `preventDefault()`: web keeps the browser's menu.
-- Still plain non-zoomable `<img>`, by scope not by accident: tool-call `image`
-  content blocks in `view.tsx` and markdown images in `markdown-renderer.tsx`.
+- Still plain non-zoomable `<img>`, by scope not by accident: markdown images in
+  `markdown-renderer.tsx` (their source is inside the text and a remote file needs a
+  click per image), and tool-call `image` blocks in read-only presentation.

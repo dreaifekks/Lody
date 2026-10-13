@@ -258,6 +258,9 @@ import {
   readKeptFileBytes,
   SessionKeptImageFile,
 } from './session-local-image-file';
+import { SessionImagePreviewContext } from './session-image-preview-context';
+import { useSessionGalleryViewerImages } from './session-gallery-images';
+import { ToolContentImage } from './tool-content-image';
 import {
   getSessionImageBlobUrl,
   getSessionImageDataUrl,
@@ -321,7 +324,11 @@ import {
   collectSessionImageGalleryEntries,
   createSessionImageGalleryEntry,
   findSessionImageGalleryEntryIndex,
+  getSessionFileGalleryKey,
+  getSessionToolImageGalleryKey,
+  type SessionGalleryEntry,
   type SessionImageGalleryEntry,
+  type SessionToolImage,
 } from '@/lib/session-image-gallery';
 import {
   getMessageItemPrefix,
@@ -330,7 +337,7 @@ import {
   getThoughtSearchBlockId,
 } from '@/lib/session-chat-search';
 
-const EMPTY_GALLERY_ENTRIES: readonly SessionImageGalleryEntry[] = [];
+const EMPTY_GALLERY_ENTRIES: readonly SessionGalleryEntry[] = [];
 
 // ── Expand/collapse state cache ──────────────────────────────────────────────
 // Survives virtual-scroll unmount/remount so expand/collapse state is not lost
@@ -652,9 +659,6 @@ export const SessionChatActionContext = createContext<{
   openHtmlFile?: (file: SessionFilePayload) => boolean;
   copyContext?: (messageId: string) => void;
 }>({});
-const SessionImagePreviewContext = createContext<{
-  openImagePreview: (imageKey: string) => void;
-} | null>(null);
 
 /** Live work reads in the process tone; waiting on the user in the warning tone. */
 export type AgentActivityTone = 'primary' | 'warning';
@@ -2259,10 +2263,13 @@ export const SessionChatStreamView = forwardRef<
       () =>
         collectSessionImageGalleryEntries(
           items.flatMap((item) => (item.type === 'message' ? [item.message] : [])),
-          sessionId
+          sessionId,
+          isKeptImageFile
         ),
       [items, sessionId]
     );
+    const galleryEntriesRef = useRef(galleryEntries);
+    galleryEntriesRef.current = galleryEntries;
     const [activeImageKey, setActiveImageKey] = useState<string | null>(null);
     const activeGalleryEntries = useMemo(() => {
       if (!activeImageKey) return EMPTY_GALLERY_ENTRIES;
@@ -2286,7 +2293,9 @@ export const SessionChatStreamView = forwardRef<
     const imagePreviewContextValue = useMemo(
       () => ({
         openImagePreview: (imageKey: string) => {
+          if (!galleryEntriesRef.current.some((entry) => entry.key === imageKey)) return false;
           setActiveImageKey(imageKey);
+          return true;
         },
       }),
       []
@@ -5789,7 +5798,13 @@ const UserChatBubble = ({
   const renderGroup = (group: UserRenderGroup) => {
     if (group.kind === 'files') {
       return (
-        <SessionFileGroup key={group.key} files={group.files} sessionId={sessionId} align="end" />
+        <SessionFileGroup
+          key={group.key}
+          files={group.files}
+          sessionId={sessionId}
+          messageId={message.id}
+          align="end"
+        />
       );
     }
     if (group.kind === 'images') {
@@ -5918,7 +5933,14 @@ const renderAssistantContent = (
         />
       );
     case 'file':
-      return <SessionFileGroup files={[content]} sessionId={sessionId} align="start" />;
+      return (
+        <SessionFileGroup
+          files={[content]}
+          sessionId={sessionId}
+          messageId={options?.messageId}
+          align="start"
+        />
+      );
     case 'thought':
       return (
         <ThoughtCard
@@ -6002,7 +6024,7 @@ const IMAGE_ATTACHMENT_ROW_CLASS = 'flex w-full flex-wrap gap-2';
  * Loads original images for visible entries and pre-fetches adjacent ones.
  */
 function useImageBlobUrls(
-  entries: ReadonlyArray<SessionImageGalleryEntry>,
+  entries: ReadonlyArray<SessionGalleryEntry>,
   activeIndex: number,
   open: boolean
 ) {
@@ -6030,7 +6052,8 @@ function useImageBlobUrls(
     let active = true;
     indicesToLoad.forEach((i) => {
       const entry = entries[i];
-      if (!entry) {
+      // Only an uploaded image is fetched here; the rest are read by the gallery.
+      if (!entry || !('imageId' in entry)) {
         return;
       }
 
@@ -6077,7 +6100,7 @@ const ImagePreviewDialog = ({
   onOpenChange: (open: boolean) => void;
   activeImageKey: string | null;
   onActiveImageKeyChange: (imageKey: string | null) => void;
-  entries: ReadonlyArray<SessionImageGalleryEntry>;
+  entries: ReadonlyArray<SessionGalleryEntry>;
   portalAnchorRef?: ImagePreviewPortalAnchorRef;
 }) => {
   const activeIndex = useMemo(
@@ -6086,15 +6109,7 @@ const ImagePreviewDialog = ({
   );
 
   const blobUrls = useImageBlobUrls(entries, activeIndex, open);
-  const images = useMemo(
-    () =>
-      entries.map((entry) => ({
-        key: entry.key,
-        src: blobUrls.get(entry.key),
-        fileName: entry.fileName,
-      })),
-    [entries, blobUrls]
-  );
+  const images = useSessionGalleryViewerImages(entries, activeIndex, open, blobUrls, toolImageSrc);
 
   const handleIndexChange = useCallback(
     (index: number) => {
@@ -6454,10 +6469,13 @@ export const SessionFileGroup = (props: Parameters<typeof WorkspaceSessionFileGr
 const WorkspaceSessionFileGroup = ({
   files,
   sessionId,
+  messageId,
   align = 'start',
 }: {
   files: SessionFilePayload[];
   sessionId: SessionId;
+  /** The message these blocks belong to, which places their images in its turn's gallery. */
+  messageId?: string;
   align?: 'start' | 'end';
 }) => {
   const { t } = useTranslation();
@@ -6589,6 +6607,7 @@ const WorkspaceSessionFileGroup = ({
             key={`${file.sha256}-${index}`}
             file={file}
             sessionId={sessionId}
+            messageId={messageId}
             workspaceId={workspaceId}
             onPreview={handlePreview}
             onDownload={handleDownload}
@@ -6626,6 +6645,7 @@ const WorkspaceSessionFileGroup = ({
 const SessionFileBlockCard = ({
   file,
   sessionId,
+  messageId,
   workspaceId,
   onPreview,
   onDownload,
@@ -6633,6 +6653,7 @@ const SessionFileBlockCard = ({
 }: {
   file: SessionFilePayload;
   sessionId: SessionId;
+  messageId?: string;
   workspaceId: WorkspaceId | null;
   onPreview: (file: SessionFilePayload) => void;
   onDownload: (file: SessionFilePayload) => void;
@@ -6666,6 +6687,7 @@ const SessionFileBlockCard = ({
         workspaceId={workspaceId}
         sessionId={file.storageSessionId ?? sessionId}
         card={card}
+        galleryKey={messageId ? getSessionFileGalleryKey(messageId, file) : undefined}
       />
     );
   }
@@ -6733,7 +6755,14 @@ const renderUserContent = (
         />
       );
     case 'file':
-      return <SessionFileGroup files={[content]} sessionId={sessionId} align="end" />;
+      return (
+        <SessionFileGroup
+          files={[content]}
+          sessionId={sessionId}
+          messageId={options.messageId}
+          align="end"
+        />
+      );
     case 'thought':
       return (
         <ThoughtCard
@@ -7722,6 +7751,10 @@ const GenericToolCallCard = memo(function GenericToolCallCard({
         <ToolDetailSection key={`content-${index}`}>
           <StandardToolContentBlock
             content={content}
+            imageKey={getSessionToolImageGalleryKey(
+              toolCall.toolCallId,
+              toolCall.content?.indexOf(block) ?? -1
+            )}
             onFilePathClick={onFilePathClick}
             fontSize={fontSize}
           />
@@ -7957,12 +7990,20 @@ function buildSafeBase64DataUrl(
   return `data:${mimeType};base64,${data.replace(/\s+/g, '')}`;
 }
 
+const toolImageSrc = (image: SessionToolImage, readonly = false): string | undefined =>
+  image.uri && !readonly
+    ? sanitizeToolContentHref(image.uri)
+    : buildSafeBase64DataUrl(image.mimeType, image.data);
+
 const StandardToolContentBlock = ({
   content,
+  imageKey,
   onFilePathClick,
   fontSize,
 }: {
   content: StandardToolContent;
+  /** This block as an image of its turn's gallery. */
+  imageKey: string;
   onFilePathClick?: (filePath: string) => void;
   fontSize: ConversationFontSize;
 }) => {
@@ -7970,11 +8011,9 @@ const StandardToolContentBlock = ({
   switch (content.type) {
     // Text is laid out by `ToolCallCard`, which owns the verbatim/Markdown split.
     case 'image': {
-      const src =
-        content.uri && !readonly
-          ? sanitizeToolContentHref(content.uri)
-          : buildSafeBase64DataUrl(content.mimeType, content.data);
+      const src = toolImageSrc(content, readonly !== null);
       if (!src) return null;
+      const alt = content.annotations?.audience ? 'Shared image' : 'Generated image';
       return (
         <div className="space-y-2">
           <div
@@ -7985,11 +8024,11 @@ const StandardToolContentBlock = ({
           >
             Image
           </div>
-          <img
-            src={src}
-            alt={content.annotations?.audience ? 'Shared image' : 'Generated image'}
-            className="max-h-80 w-full rounded-lg object-contain"
-          />
+          {readonly ? (
+            <img src={src} alt={alt} className="max-h-80 w-full rounded-lg object-contain" />
+          ) : (
+            <ToolContentImage src={src} alt={alt} galleryKey={imageKey} />
+          )}
         </div>
       );
     }
