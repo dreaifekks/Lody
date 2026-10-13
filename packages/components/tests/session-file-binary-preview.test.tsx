@@ -45,6 +45,46 @@ describe('SessionFileBinaryPreview', () => {
     expect(markup).toContain('This binary file cannot be previewed.');
   });
 
+  it.each([
+    ['video', 'recordings/demo.MP4', '<video'],
+    ['audio', 'recordings/voice.m4a', '<audio'],
+  ])(
+    'plays a %s file from its resource with the player controls, not by itself',
+    (_k, path, tag) => {
+      const markup = renderToStaticMarkup(
+        createElement(SessionFileBinaryPreview, { path, url: 'lody-resource://member/clip' })
+      );
+
+      expect(markup).toContain(tag);
+      expect(markup).toContain('src="lody-resource://member/clip"');
+      expect(markup).toContain('controls=""');
+      expect(markup).toContain('preload="metadata"');
+      expect(markup).not.toContain('autoplay');
+      expect(markup).not.toContain('This binary file cannot be previewed.');
+    }
+  );
+
+  it('keeps a media file nothing was read of on the notice, with a download where one is offered', () => {
+    const markup = renderToStaticMarkup(
+      createElement(SessionFileBinaryPreview, {
+        path: 'recordings/demo.mp4',
+        fileActions: { onCopyPath: () => {}, onDownload: () => {} },
+      })
+    );
+
+    expect(markup).not.toContain('<video');
+    expect(markup).toContain('This binary file cannot be previewed.');
+    expect(markup).toContain('Download file');
+    expect(
+      renderToStaticMarkup(
+        createElement(SessionFileBinaryPreview, {
+          path: 'archive.zip',
+          fileActions: { onCopyPath: () => {} },
+        })
+      )
+    ).not.toContain('Download file');
+  });
+
   it.each(['docx', 'xlsx', 'pptx'])('routes %s files into the lazy office preview', (extension) => {
     const markup = renderToStaticMarkup(
       createElement(SessionFileBinaryPreview, {

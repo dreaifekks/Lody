@@ -20,6 +20,7 @@ import {
   type WorkspaceMcpServerMeta,
   DEFAULT_PREVIEW_CREATE_TIMEOUT_MS,
   getServerNow,
+  machineSupportsLanFileRanges,
   machineSupportsLocalFileResourcesProtocol,
   machineSupportsPiExtensions,
   machineSupportsRealtimeVoice,
@@ -96,6 +97,7 @@ import {
 } from '@lody/shared';
 import { createAsyncConcurrencyGate } from '@/lib/async-concurrency-gate';
 import { getIpcServices } from '@/lib/electron-ipc-client';
+import { getSessionFileKind } from '@/lib/session-file-presentation';
 import type { WorkspaceTargetRouter } from './workspace-target-router';
 
 const LOCAL_MACHINE_ID_READY_TIMEOUT_MS = 2_000;
@@ -238,6 +240,35 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
           // the server; once identified, remote machines still use Streams.
           const plane = await resolveMachineTargetPlane(machineId);
           if (plane === 'cloud') {
+            // A video or a recording of another member of the LAN is played
+            // from a resource URL that reads it in ranges: the one bounded
+            // response below holds no more than a few megabytes of it. A
+            // caller that bounds the read itself only asks about the file.
+            const mediaKind = getSessionFileKind(request.path);
+            if (
+              request.maxBytes === undefined &&
+              (mediaKind === 'audio' || mediaKind === 'video') &&
+              machineSupportsLanFileRanges({
+                protocolCapabilities: await deps.getMachineProtocolCapabilities(machineId),
+              })
+            ) {
+              const resource = await getIpcServices()?.machineRpc.openMemberFile({
+                workspaceId,
+                machineId,
+                sessionId: request.sessionId,
+                path: request.path,
+              });
+              if (resource?.ok) {
+                return {
+                  status: 'resource' as const,
+                  path: request.path,
+                  external: false,
+                  kind: 'binary' as const,
+                  sizeBytes: resource.sizeBytes,
+                  url: resource.url,
+                };
+              }
+            }
             const client = await getMachineRpcClient(machineId);
             return await client.requestFilePreview({
               ...params,

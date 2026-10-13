@@ -265,6 +265,7 @@ import {
 } from '@/lib/session-image-cache';
 import { useAppCapabilityCheck } from '@/lib/app-platform';
 import { SessionFileCard, SessionFileCardList } from './session-file-card';
+import { isKeptMediaFile, SessionKeptMediaFile } from './session-kept-media-file';
 import {
   SessionFilePreviewDialog,
   type SessionFilePreviewStatus,
@@ -6658,16 +6659,28 @@ const SessionFileBlockCard = ({
     />
   );
   // Nothing uploads an image a machine keeps; it is read from that machine.
-  return !uploads && workspaceId && isKeptImageFile(file) ? (
-    <SessionKeptImageFile
-      file={file}
-      workspaceId={workspaceId}
-      sessionId={file.storageSessionId ?? sessionId}
-      card={card}
-    />
-  ) : (
-    card
-  );
+  if (!uploads && workspaceId && isKeptImageFile(file)) {
+    return (
+      <SessionKeptImageFile
+        file={file}
+        workspaceId={workspaceId}
+        sessionId={file.storageSessionId ?? sessionId}
+        card={card}
+      />
+    );
+  }
+  // Nor an audio or a video file, which is played from there.
+  if (!uploads && workspaceId && isKeptMediaFile(file)) {
+    return (
+      <SessionKeptMediaFile
+        file={file}
+        workspaceId={workspaceId}
+        sessionId={file.storageSessionId ?? sessionId}
+        card={card}
+      />
+    );
+  }
+  return card;
 };
 
 const renderUserContent = (

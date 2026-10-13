@@ -40,9 +40,23 @@ let readKeptFile: (input: ReadInput) => Promise<ReadResult> = async () => ({
   ok: false,
   error: 'not wired',
 });
+type OpenInput = {
+  workspaceId: string;
+  machineId: string;
+  sessionId: string;
+  fileId: string;
+  mimeType: string;
+};
+type OpenResult = { ok: true; url: string; sizeBytes: number } | { ok: false; error: string };
+/** The desktop's shell, asked for a resource URL that reads a kept file in ranges. */
+let openMemberFile: (input: OpenInput) => Promise<OpenResult> = async () => ({
+  ok: false,
+  error: 'not wired',
+});
 vi.mock('../src/lib/electron-ipc-client', () => ({
   getIpcServices: () => ({
     localProjects: { readSessionFileLocal: (input: ReadInput) => readKeptFile(input) },
+    machineRpc: { openMemberFile: (input: OpenInput) => openMemberFile(input) },
     app: { getFullscreen: async () => false },
   }),
   onIpcEvent: () => () => {},
@@ -520,5 +534,134 @@ describe('previewing a file a machine keeps', () => {
 
     expect(page.textContent).toContain('Could not load preview: devnuc: connect ECONNREFUSED');
     expect(page.querySelector('pre')).toBeNull();
+  });
+});
+
+describe('audio and video a machine keeps', () => {
+  let root: Root | undefined;
+  let container: HTMLDivElement | undefined;
+
+  beforeEach(async () => {
+    await initI18n('en');
+    (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__ = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root?.unmount();
+    });
+    container?.remove();
+    delete (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__;
+  });
+
+  const kept = (fileId: string, overrides: Partial<SessionFilePayload> = {}) =>
+    file({
+      fileId,
+      fileName: `${fileId}.mp4`,
+      mimeType: 'video/mp4',
+      sizeBytes: 80_000_000,
+      sha256: fileId.padEnd(64, '0'),
+      textPreview: false,
+      transport: 'local',
+      machineId: 'devnuc',
+      ...overrides,
+    });
+
+  /** Shows the files of a message; `uploads` is the hosted product, where a store has them. */
+  const show = async (files: SessionFilePayload[], uploads = false) => {
+    const store = createStore();
+    store.set(currentWorkspaceIdAtom, 'lan-home' as WorkspaceId);
+    await act(async () => {
+      root?.render(
+        createElement(
+          PlatformContext.Provider,
+          {
+            value: uploads
+              ? TEST_CLOUD_PLATFORM
+              : { ...TEST_CLOUD_PLATFORM, kind: 'local', capabilities: new Set() },
+          },
+          createElement(
+            Provider,
+            { store },
+            createElement(SessionFileGroup, { files, sessionId: 'session-1' as SessionId })
+          )
+        )
+      );
+    });
+    return container as HTMLDivElement;
+  };
+
+  it('plays where the message shows them, from a resource the desktop opens for the block', async () => {
+    const asked: OpenInput[] = [];
+    openMemberFile = async (input) => {
+      asked.push(input);
+      return { ok: true, url: `lody-resource://member/${input.fileId}`, sizeBytes: 1 };
+    };
+
+    const view = await show([
+      kept('clip'),
+      kept('voice', { fileName: 'voice.m4a', mimeType: 'audio/mp4' }),
+      kept('notes', { fileName: 'notes.bin', mimeType: 'application/octet-stream' }),
+    ]);
+
+    expect(asked).toEqual([
+      {
+        workspaceId: 'lan-home',
+        machineId: 'devnuc',
+        sessionId: 'session-1',
+        fileId: 'clip',
+        mimeType: 'video/mp4',
+      },
+      expect.objectContaining({ fileId: 'voice', mimeType: 'audio/mp4' }),
+    ]);
+    const video = view.querySelector('video');
+    const audio = view.querySelector('audio');
+    expect(video?.getAttribute('src')).toBe('lody-resource://member/clip');
+    expect(audio?.getAttribute('src')).toBe('lody-resource://member/voice');
+    for (const player of [video, audio]) {
+      expect(player?.controls).toBe(true);
+      expect(player?.autoplay).toBe(false);
+      expect(player?.preload).toBe('metadata');
+    }
+    // The card stays: it names the file, says where it is kept, and downloads it.
+    expect(view.textContent).toContain('clip.mp4');
+    expect(view.textContent).toContain('voice.m4a');
+    expect(view.textContent).toContain('On devnuc');
+  });
+
+  it('leaves the card alone when no resource opens, and where a store has the file', async () => {
+    const asked: string[] = [];
+    openMemberFile = async (input) => {
+      asked.push(input.fileId);
+      return { ok: false, error: 'devnuc gives no part of a file' };
+    };
+
+    const view = await show([kept('old-member')]);
+    expect(view.querySelector('video')).toBeNull();
+    expect(view.textContent).toContain('old-member.mp4');
+
+    await show([kept('uploading')], true);
+    await show([kept('uploaded', { transport: 'r2', machineId: undefined })]);
+    expect(asked).toEqual(['old-member']);
+  });
+
+  it('gives the card back when the player cannot play the file', async () => {
+    openMemberFile = async (input) => ({
+      ok: true,
+      url: `lody-resource://member/${input.fileId}`,
+      sizeBytes: 1,
+    });
+    const view = await show([kept('odd-codec', { fileName: 'odd-codec.mkv' })]);
+    expect(view.querySelector('video')).not.toBeNull();
+
+    await act(async () => {
+      view.querySelector('video')?.dispatchEvent(new Event('error'));
+    });
+
+    expect(view.querySelector('video')).toBeNull();
+    expect(view.textContent).toContain('odd-codec.mkv');
   });
 });

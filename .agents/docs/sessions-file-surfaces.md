@@ -56,8 +56,16 @@ this page is the full text of the rules summarised there.
   looking. That is a known ceiling, not a silent failure: say so
   (`sessions.fileActions.downloadTooLarge`), because a generic "could not
   download" reads as a glitch worth retrying. Lifting it needs a ranged or
-  streamed Machine RPC method behind a negotiated `protocolCapabilities` key,
-  never a client-side retry loop. Never promote a
+  streamed transfer behind a negotiated `protocolCapabilities` key, never a
+  client-side retry loop. A LAN has one: a member that advertises
+  `lanFileRanges` gives its files in parts
+  ([how](lan-member-connections.md#parts-of-a-file)), so there the desktop's
+  download asks the shell to save the file itself
+  (`machineRpc.saveMemberFile`: Save dialog, written to disk as it arrives)
+  and reports the outcome in one toast. Only that download is put on the
+  notice card (`SessionFileErrorActions.onDownload`): a bounded one would
+  fail on exactly the files whose card shows it. Hosted targets keep the
+  bounded download and its ceiling. Never promote a
   local-host action to a surface that cannot perform it, and never re-derive
   that decision per surface — `lib/session-file-actions.ts` states it once.
   Native mobile exports those same complete bytes through the Capacitor cache
@@ -103,6 +111,17 @@ this page is the full text of the rules summarised there.
   thumbnails, direct page entry, quarter-turn rotation, zoom modes and percentages,
   and expandable search. Thumbnail rendering follows the visible sidebar range;
   file actions remain in the existing side-panel menu.
+- Audio and video play in `SessionFileMediaPreview` with the platform's own
+  controls; nothing starts by itself, and `preload="metadata"` reads only the
+  length and the first frame. The player takes a resource URL: Electron's
+  `lody-resource://file/…` for a file of this machine, and
+  `lody-resource://member/…` for one of another LAN member, which
+  `requestFilePreview` asks for instead of `file/preview` when the path is
+  audio or video and the machine advertises `lanFileRanges`. Bytes a bounded
+  preview already brought (web, mobile, hosted, an older member) play from an
+  object URL. A file the player cannot play returns to the binary notice and
+  its file actions. Nothing is transcoded, and the renderer CSP must keep
+  `media-src` open to `lody-resource:` and `blob:`.
 - Markdown file viewers copy the latest complete source text (including unsaved
   editor changes) from the top toolbar. On mobile, source mode uses the native
   text surface instead of Monaco so long-press keeps the OS selection menu;

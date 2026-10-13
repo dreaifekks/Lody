@@ -1,6 +1,6 @@
 import type { CodeCollabContentUnavailableReason } from '@lody/shared';
 import * as stylex from '@stylexjs/stylex';
-import { Copy, ExternalLink, FolderOpen, Loader2, Share2 } from 'lucide-react';
+import { Copy, Download, ExternalLink, FolderOpen, Loader2, Share2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 // The action model is shared with the file tree context menu and the side
 // panel ⋯ menu; the card is one consumer of it, not its owner.
@@ -396,6 +396,18 @@ export function SessionFileNoticeCard({
                 {t('sessions.fileActions.share', 'Share file…')}
               </Button>
             ) : null}
+            {actions.onDownload ? (
+              <Button
+                size="small"
+                variant="secondary"
+                className={ACTION_BUTTON_CLASS}
+                onClick={actions.onDownload}
+                data-testid="session-file-error-download"
+              >
+                <Download {...stylex.props(styles.actionIcon)} aria-hidden="true" />
+                {t('sessions.fileActions.download', 'Download file')}
+              </Button>
+            ) : null}
             {localHost ? (
               <>
                 <Button
@@ -426,7 +438,7 @@ export function SessionFileNoticeCard({
               size="small"
               // Without the local-host pair this is the only way out of the
               // card, so it leads instead of trailing them.
-              variant={localHost || actions.onShare ? 'ghost' : 'secondary'}
+              variant={localHost || actions.onShare || actions.onDownload ? 'ghost' : 'secondary'}
               className={ACTION_BUTTON_CLASS}
               onClick={actions.onCopyPath}
               data-testid="session-file-error-copy-path"

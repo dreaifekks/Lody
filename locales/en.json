@@ -4658,6 +4658,8 @@
   "sessions.fileActions.share": "Share file…",
   "sessions.fileActions.shareFailed": "Could not share that file.",
   "sessions.fileActions.downloadFailed": "Could not download that file.",
+  "sessions.fileActions.downloading": "Downloading {{name}}…",
+  "sessions.fileActions.downloaded": "Saved {{name}}",
   "sessions.fileActions.fileMissing": "That file no longer exists.",
   "sessions.fileActions.pathUnresolved": "The file path could not be resolved. Copy the details to check the requested path and workspace folder.",
   "sessions.fileActions.bridgeUnavailable": "The desktop connection is unavailable. Restart Lody and try again.",
