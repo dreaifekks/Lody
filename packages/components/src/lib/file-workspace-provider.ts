@@ -27,6 +27,8 @@ export type FileWorkspaceProviderEntry = {
   readonly specialKind?: CodeCollabSpecialKind;
   readonly unavailableReason?: CodeCollabContentUnavailableReason;
   readonly updatedAt?: string;
+  /** Excluded by the workspace's ignore rules: listed and dimmed, left out of search. */
+  readonly ignored?: boolean;
 };
 
 export type FileWorkspaceTextSnapshot = {

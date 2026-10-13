@@ -508,14 +508,19 @@ export const CodeCollabV2LspUnsupportedSchema = z
   .strict();
 export type CodeCollabV2LspUnsupported = z.infer<typeof CodeCollabV2LspUnsupportedSchema>;
 
+// `ignored: true` marks a path the workspace's ignore rules exclude. It is
+// optional everywhere and absent on every other row, so unmarked rows keep
+// their previous shape; an ignored plain file needs the object form.
 export const CodeCollabV2FileTreeValueSchema = z.union([
   z.literal(true),
-  z.object({ kind: z.literal('lazy') }).strict(),
+  z.object({ kind: z.literal('file'), ignored: z.literal(true) }).strict(),
+  z.object({ kind: z.literal('lazy'), ignored: z.literal(true).optional() }).strict(),
   z.object({ kind: z.literal('binary') }).strict(),
   z
     .object({
       kind: z.literal('skipped'),
       reason: z.string().min(1),
+      ignored: z.literal(true).optional(),
     })
     .strict(),
   z
@@ -557,6 +562,7 @@ export const CodeCollabV2FileIndexValueSchema = z.union([
     .object({
       kind: z.literal('file'),
       change: CodeCollabV2AllChangesValueSchema.optional(),
+      ignored: z.literal(true).optional(),
     })
     .strict(),
   z
@@ -585,11 +591,12 @@ export const CodeCollabV2FileIndexValueSchema = z.union([
       change: CodeCollabV2AllChangesValueSchema,
     })
     .strict(),
-  z.object({ kind: z.literal('lazy') }).strict(),
+  z.object({ kind: z.literal('lazy'), ignored: z.literal(true).optional() }).strict(),
   z
     .object({
       kind: z.literal('skipped'),
       reason: z.string().min(1),
+      ignored: z.literal(true).optional(),
     })
     .strict(),
 ]);
@@ -697,6 +704,9 @@ const normalizeOptionalCodeCollabAllChangesValue = (
   return normalized === undefined ? { ok: false } : { ok: true, value: normalized };
 };
 
+const isCodeCollabIgnoredFlag = (value: unknown): boolean =>
+  isCodeCollabMissing(value) || value === true;
+
 const normalizeCodeCollabFileIndexValue = (
   value: unknown
 ): CodeCollabV2FileIndexValue | undefined => {
@@ -708,7 +718,23 @@ const normalizeCodeCollabFileIndexValue = (
   }
 
   switch (value.kind) {
-    case 'file':
+    case 'file': {
+      if (
+        !hasOnlyCodeCollabKeys(value, ['kind', 'change', 'ignored']) ||
+        !isCodeCollabIgnoredFlag(value.ignored)
+      ) {
+        return undefined;
+      }
+      const change = normalizeOptionalCodeCollabAllChangesValue(value.change);
+      if (!change.ok) {
+        return undefined;
+      }
+      return {
+        kind: 'file',
+        ...(change.value === undefined ? {} : { change: change.value }),
+        ...(value.ignored === true ? { ignored: true } : {}),
+      };
+    }
     case 'text':
     case 'binary': {
       if (!hasOnlyCodeCollabKeys(value, ['kind', 'change'])) {
@@ -758,13 +784,25 @@ const normalizeCodeCollabFileIndexValue = (
       return change === undefined ? undefined : { kind: 'deleted', change };
     }
     case 'lazy':
-      return hasOnlyCodeCollabKeys(value, ['kind']) ? { kind: 'lazy' } : undefined;
+      if (
+        !hasOnlyCodeCollabKeys(value, ['kind', 'ignored']) ||
+        !isCodeCollabIgnoredFlag(value.ignored)
+      ) {
+        return undefined;
+      }
+      return value.ignored === true ? { kind: 'lazy', ignored: true } : { kind: 'lazy' };
     case 'skipped':
-      return hasOnlyCodeCollabKeys(value, ['kind', 'reason']) &&
-        typeof value.reason === 'string' &&
-        value.reason.length > 0
-        ? { kind: 'skipped', reason: value.reason }
-        : undefined;
+      if (
+        !hasOnlyCodeCollabKeys(value, ['kind', 'reason', 'ignored']) ||
+        !isCodeCollabIgnoredFlag(value.ignored) ||
+        typeof value.reason !== 'string' ||
+        value.reason.length === 0
+      ) {
+        return undefined;
+      }
+      return value.ignored === true
+        ? { kind: 'skipped', reason: value.reason, ignored: true }
+        : { kind: 'skipped', reason: value.reason };
     default:
       return undefined;
   }
@@ -991,7 +1029,11 @@ export function codeCollabFileIndexValuesEqual(
   if (left === true || right === true) return false;
   switch (left.kind) {
     case 'file':
-      return right.kind === 'file' && codeCollabAllChangesValuesEqual(left.change, right.change);
+      return (
+        right.kind === 'file' &&
+        left.ignored === right.ignored &&
+        codeCollabAllChangesValuesEqual(left.change, right.change)
+      );
     case 'text':
       return right.kind === 'text' && codeCollabAllChangesValuesEqual(left.change, right.change);
     case 'binary':
@@ -1006,9 +1048,11 @@ export function codeCollabFileIndexValuesEqual(
     case 'deleted':
       return right.kind === 'deleted' && codeCollabAllChangesValuesEqual(left.change, right.change);
     case 'lazy':
-      return right.kind === 'lazy';
+      return right.kind === 'lazy' && left.ignored === right.ignored;
     case 'skipped':
-      return right.kind === 'skipped' && left.reason === right.reason;
+      return (
+        right.kind === 'skipped' && left.reason === right.reason && left.ignored === right.ignored
+      );
   }
   return assertNever(left);
 }
@@ -1035,13 +1079,19 @@ export function codeCollabFileTreeValueToFileIndexValue(
     return change === undefined ? true : { kind: 'file', change };
   }
   switch (value.kind) {
+    case 'file':
+      return change === undefined
+        ? { kind: 'file', ignored: true }
+        : { kind: 'file', change, ignored: true };
     case 'lazy':
-      return { kind: 'lazy' };
+      return value.ignored === true ? { kind: 'lazy', ignored: true } : { kind: 'lazy' };
     case 'binary':
     case 'too_large':
       return change === undefined ? true : { kind: 'file', change };
     case 'skipped':
-      return { kind: 'skipped', reason: value.reason };
+      return value.ignored === true
+        ? { kind: 'skipped', reason: value.reason, ignored: true }
+        : { kind: 'skipped', reason: value.reason };
   }
   return assertNever(value);
 }
@@ -1054,19 +1104,38 @@ export function codeCollabFileIndexValueToFileTreeValue(
   }
   switch (value.kind) {
     case 'file':
+      return value.ignored === true ? { kind: 'file', ignored: true } : true;
     case 'text':
       return true;
     case 'binary':
     case 'too_large':
       return true;
     case 'lazy':
-      return { kind: 'lazy' };
+      return value.ignored === true ? { kind: 'lazy', ignored: true } : { kind: 'lazy' };
     case 'skipped':
-      return { kind: 'skipped', reason: value.reason };
+      return value.ignored === true
+        ? { kind: 'skipped', reason: value.reason, ignored: true }
+        : { kind: 'skipped', reason: value.reason };
     case 'deleted':
       return undefined;
   }
   return assertNever(value);
+}
+
+export function isCodeCollabFileTreeValueIgnored(
+  value: CodeCollabV2FileTreeValue | undefined
+): boolean {
+  return value !== undefined && value !== true && 'ignored' in value && value.ignored === true;
+}
+
+/** The same entry carrying the ignored mark; kinds that cannot carry it are returned as is. */
+export function markCodeCollabFileTreeValueIgnored(
+  value: CodeCollabV2FileTreeValue
+): CodeCollabV2FileTreeValue {
+  if (value === true) {
+    return { kind: 'file', ignored: true };
+  }
+  return value.kind === 'lazy' || value.kind === 'skipped' ? { ...value, ignored: true } : value;
 }
 
 export function codeCollabFileIndexValueChange(

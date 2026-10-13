@@ -108,6 +108,150 @@ describe('fileIndexScanWorker', () => {
     });
   });
 
+  it('lists Git-ignored paths as marked rows and restores the opened ignored directories', async () => {
+    await withGitWorkspace(async (workspaceRoot) => {
+      await writeFile(path.join(workspaceRoot, '.gitignore'), 'build/\n*.log\n');
+      await writeFile(path.join(workspaceRoot, '.git', 'info', 'exclude'), 'notes/\n');
+      await mkdir(path.join(workspaceRoot, 'notes', 'demoday'), { recursive: true });
+      await mkdir(path.join(workspaceRoot, 'build', 'out'), { recursive: true });
+      await mkdir(path.join(workspaceRoot, 'logs', 'old'), { recursive: true });
+      await writeFile(path.join(workspaceRoot, 'notes', 'demoday', 'prep.md'), 'prep\n');
+      await writeFile(path.join(workspaceRoot, 'build', 'out', 'bundle.js'), 'bundle\n');
+      await writeFile(path.join(workspaceRoot, 'logs', 'old', 'a.log'), 'a\n');
+      await writeFile(path.join(workspaceRoot, 'src', 'trace.log'), 'trace\n');
+      const scan = (expandedWorkspacePaths: readonly string[]) =>
+        fileIndexScanWorker({
+          kind: 'full-state',
+          workspaceRoot,
+          maxRawTextBytes: 1024 * 1024,
+          entryBudget: 1000,
+          expandedIgnoredDirectories: expandedWorkspacePaths.map((workspacePath) => ({
+            workspacePath,
+            absolutePath: path.join(workspaceRoot, workspacePath),
+          })),
+        });
+      const folded = {
+        '.gitignore': true,
+        'README.md': true,
+        build: { kind: 'lazy', ignored: true },
+        // Holds nothing but ignored files, so Git reports the directory itself.
+        logs: { kind: 'lazy', ignored: true },
+        notes: { kind: 'lazy', ignored: true },
+        src: { kind: 'lazy' },
+        'src/app.ts': true,
+        'src/new.ts': true,
+        'src/trace.log': { kind: 'file', ignored: true },
+      };
+
+      const result = await scan([]);
+      if (result.status !== 'ok') throw new Error('Expected Git scan');
+      expect(Object.fromEntries(result.fileTreeEntries)).toEqual(folded);
+      expect(result.fileIndex).toMatchObject({
+        notes: { kind: 'lazy', ignored: true },
+        'src/trace.log': { kind: 'file', ignored: true },
+        'src/new.ts': { kind: 'file', change: { diff: [2, 0] } },
+      });
+      expect(Object.keys(result.allChanges).sort()).toEqual([
+        '.gitignore',
+        'src/app.ts',
+        'src/new.ts',
+      ]);
+
+      // `src` is not ignored and `gone` does not exist: neither is read.
+      const restored = await scan(['notes/demoday', 'notes', 'src', 'gone']);
+      if (restored.status !== 'ok') throw new Error('Expected Git scan');
+      expect(Object.fromEntries(restored.fileTreeEntries)).toEqual({
+        ...folded,
+        'notes/demoday': { kind: 'lazy', ignored: true },
+        'notes/demoday/prep.md': { kind: 'file', ignored: true },
+      });
+      expect(restored.fileIndex['notes/demoday/prep.md']).toEqual({ kind: 'file', ignored: true });
+    });
+  });
+
+  it('gives ignored paths only the entry budget that tracked and untracked paths leave', async () => {
+    await withGitWorkspace(async (workspaceRoot) => {
+      await writeFile(path.join(workspaceRoot, '.gitignore'), '*.log\ncache/\n');
+      await mkdir(path.join(workspaceRoot, 'cache'));
+      await mkdir(path.join(workspaceRoot, 'logs'));
+      for (const name of ['a.log', 'b.log', 'cache/x.bin', 'logs/c.log', 'src/trace.log']) {
+        await writeFile(path.join(workspaceRoot, name), 'ignored\n');
+      }
+      const scan = async (entryBudget: number) => {
+        const result = await fileIndexScanWorker({
+          kind: 'scan',
+          directoryAbsolutePath: workspaceRoot,
+          directoryWorkspacePath: '',
+          maxRawTextBytes: 1024 * 1024,
+          entryBudget,
+          recursive: true,
+        });
+        if (result.kind !== 'scan') throw new Error('Expected scan result');
+        return Object.fromEntries(result.entries);
+      };
+      const regular = {
+        '.gitignore': true,
+        'README.md': true,
+        src: { kind: 'lazy' },
+        'src/app.ts': true,
+        'src/new.ts': true,
+      };
+
+      // Four ignored rows sit at the root, above the files under `src`; they do
+      // not push those out, and take what is left shallowest first.
+      expect(await scan(7)).toEqual({
+        ...regular,
+        'a.log': { kind: 'file', ignored: true },
+        'b.log': { kind: 'file', ignored: true },
+      });
+      expect(await scan(5)).toEqual(regular);
+      expect(await scan(4)).toEqual({
+        '.gitignore': true,
+        'README.md': true,
+        src: { kind: 'lazy' },
+        'src/app.ts': true,
+      });
+      expect(await scan(1000)).toEqual({
+        ...regular,
+        'a.log': { kind: 'file', ignored: true },
+        'b.log': { kind: 'file', ignored: true },
+        cache: { kind: 'lazy', ignored: true },
+        logs: { kind: 'lazy', ignored: true },
+        'src/trace.log': { kind: 'file', ignored: true },
+      });
+    });
+  });
+
+  it('lists dependency and build directories outside Git as ignored without walking them', async () => {
+    await withPlainWorkspace(async (workspaceRoot) => {
+      await mkdir(path.join(workspaceRoot, 'node_modules', 'pkg'), { recursive: true });
+      await writeFile(path.join(workspaceRoot, 'node_modules', 'pkg', 'index.js'), '1\n');
+      await mkdir(path.join(workspaceRoot, 'src', 'dist'));
+      await writeFile(path.join(workspaceRoot, 'src', 'dist', 'out.js'), 'out\n');
+      await mkdir(path.join(workspaceRoot, '.git'));
+      await writeFile(path.join(workspaceRoot, '.git', 'description'), 'not a repository\n');
+
+      const result = await fileIndexScanWorker({
+        kind: 'scan',
+        directoryAbsolutePath: workspaceRoot,
+        directoryWorkspacePath: '',
+        maxRawTextBytes: 1024 * 1024,
+        entryBudget: 1000,
+        recursive: true,
+      });
+
+      expect(result.kind).toBe('scan');
+      if (result.kind !== 'scan') return;
+      expect(Object.fromEntries(result.entries)).toEqual({
+        'README.md': true,
+        node_modules: { kind: 'lazy', ignored: true },
+        src: { kind: 'lazy' },
+        'src/app.ts': true,
+        'src/dist': { kind: 'lazy', ignored: true },
+      });
+    });
+  });
+
   it('builds non-Git full file-index state with provided diff-store changes', async () => {
     await withPlainWorkspace(async (workspaceRoot) => {
       const probe = await fileIndexScanWorker({

@@ -22,7 +22,22 @@ export function buildFileTreeFromFileWorkspaceProviderEntries(
     if (entry.entryType !== 'lazy-directory' || !entry.directoryId) continue;
     ensureLazyDirectoryTreeItem(tree, entry.path, entry.directoryId);
   }
+  const ignoredPaths = new Set(
+    entries.filter((entry) => entry.ignored === true).map((entry) => entry.path)
+  );
+  if (ignoredPaths.size > 0) {
+    markIgnoredFileTreeItems(tree, ignoredPaths);
+  }
   return tree;
+}
+
+function markIgnoredFileTreeItems(items: FileTreeItem[], ignoredPaths: ReadonlySet<string>): void {
+  for (const item of items) {
+    if (ignoredPaths.has(item.path)) {
+      item.ignored = true;
+    }
+    markIgnoredFileTreeItems(item.children ?? [], ignoredPaths);
+  }
 }
 
 export const buildFileTreeFromSessionFileProviderEntries =

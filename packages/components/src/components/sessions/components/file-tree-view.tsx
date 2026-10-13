@@ -145,7 +145,7 @@ const fileTreeToTreeData = (
         ...(lazyDirectoryId === undefined || onLazyDirectoryOpen === undefined
           ? {}
           : { onClick: () => onLazyDirectoryOpen(lazyDirectoryId) }),
-        className: item.modified ? 'text-modified-file' : undefined,
+        className: fileTreeItemClassName(item),
       };
     }
 
@@ -155,12 +155,16 @@ const fileTreeToTreeData = (
       name,
       icon: FileIcon,
       onClick: () => onFileOpen(item.path),
-      className: item.modified ? 'text-modified-file' : undefined,
+      className: fileTreeItemClassName(item),
     };
   };
 
   return items.map(walk);
 };
+
+// An ignored row is only dimmed; it opens, expands and takes its menu as usual.
+const fileTreeItemClassName = (item: FileTreeItem): string | undefined =>
+  item.modified ? 'text-modified-file' : item.ignored ? 'text-muted-foreground' : undefined;
 
 // Memoize the changed-paths lookup so a stable `changedFilePaths` array does not
 // rebuild the marked tree every render. Returns `undefined` when no list is

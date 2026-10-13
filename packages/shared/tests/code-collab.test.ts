@@ -4,7 +4,10 @@ import {
   CODE_COLLAB_LIMITS,
   CodeCollabDomainErrorSchema,
   applyCodeCollabFileIndexFlockEvents,
+  buildCodeCollabFileIndexState,
   CodeCollabFileEntrySchema,
+  CodeCollabV2FileIndexStateSchema,
+  CodeCollabV2FileTreeStateSchema,
   authorizeCodeCollabRoleRequest,
   checkRealtimeTextLineLimits,
   classifyCodeCollabFileSystemNode,
@@ -265,6 +268,54 @@ describe('Code Collab shared protocol helpers', () => {
       change: { diff: [1, 0] },
     });
     expect(flock.rows.get('src/index.ts')).toEqual({ kind: 'text' });
+  });
+
+  it('carries the ignored mark through the file index and leaves unmarked rows as they were', () => {
+    const fileTree = {
+      'README.md': true,
+      src: { kind: 'lazy' },
+      notes: { kind: 'lazy', ignored: true },
+      'notes/plan.md': { kind: 'file', ignored: true },
+      'notes/link': { kind: 'skipped', reason: 'symlink', ignored: true },
+      'dist/out.js': { kind: 'file', ignored: true },
+    } as const;
+    const fileIndex = buildCodeCollabFileIndexState(fileTree, {
+      'README.md': { diff: [1, 0] },
+      'dist/out.js': { diff: [2, 0] },
+    });
+
+    expect(fileIndex).toEqual({
+      'README.md': { kind: 'file', change: { diff: [1, 0] } },
+      src: { kind: 'lazy' },
+      notes: { kind: 'lazy', ignored: true },
+      'notes/plan.md': { kind: 'file', ignored: true },
+      'notes/link': { kind: 'skipped', reason: 'symlink', ignored: true },
+      'dist/out.js': { kind: 'file', change: { diff: [2, 0] }, ignored: true },
+    });
+    expect(CodeCollabV2FileTreeStateSchema.parse(fileTree)).toEqual(fileTree);
+    expect(CodeCollabV2FileIndexStateSchema.parse(fileIndex)).toEqual(fileIndex);
+    expect(codeCollabFileIndexToSharedState(fileIndex).fileTree).toEqual(fileTree);
+
+    const flock = new FakeFileIndexFlock();
+    expect(writeCodeCollabFileIndexToFlock(flock, fileIndex, 1)).toBe(true);
+    expect(flock.rows.get('src')).toEqual({ kind: 'lazy' });
+    expect(readCodeCollabFileIndexFromFlock(flock)).toEqual(fileIndex);
+    // Content-deduped: the same marks are not written again, a dropped mark is.
+    expect(writeCodeCollabFileIndexToFlock(flock, fileIndex, 2)).toBe(false);
+    expect(
+      writeCodeCollabFileIndexToFlock(flock, { ...fileIndex, notes: { kind: 'lazy' } }, 3)
+    ).toBe(true);
+    expect(flock.rows.get('notes')).toEqual({ kind: 'lazy' });
+
+    // `null` reads as "no mark"; any other value is not a row this version knows.
+    expect(
+      applyCodeCollabFileIndexFlockEvents({}, [
+        { key: ['a'], value: { kind: 'lazy', ignored: null } },
+        { key: ['b'], value: { kind: 'file', ignored: true } },
+        { key: ['c'], value: { kind: 'lazy', ignored: false } },
+        { key: ['d'], value: { kind: 'text', ignored: true } },
+      ])
+    ).toEqual({ a: { kind: 'lazy' }, b: { kind: 'file', ignored: true } });
   });
 
   it('applies file-index Flock events without rescanning unrelated rows', () => {

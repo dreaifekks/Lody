@@ -90,6 +90,61 @@ describe('buildFileTreeFromSessionFileProviderEntries', () => {
     ]);
   });
 
+  it('dims ignored rows and still opens and expands them', async () => {
+    const initializeDirectory = vi.fn(async () => undefined);
+    const provider = {
+      ...createReadyProvider([
+        {
+          entryType: 'lazy-directory',
+          directoryId: 'notes',
+          path: 'notes',
+          kind: 'special',
+          sourceState: 'live-readonly',
+          ignored: true,
+        },
+        { path: 'debug.log', kind: 'text', sourceState: 'live-readonly', ignored: true },
+        { path: 'README.md', kind: 'text', sourceState: 'live-readonly' },
+      ]),
+      initializeDirectory,
+    } as unknown as SessionFileProvider;
+    const handleOpenFile = vi.fn();
+    const session = {
+      id: 'session-provider-tree-ignored',
+      machineId: 'machine-1',
+      createdAt: '2026-05-14T00:00:00.000Z',
+      userId: 'user-1',
+      cliType: 'codex',
+      agentType: 'codex',
+    } as unknown as SessionMeta;
+
+    const rendered = await render(
+      createElement(FileTreeView, {
+        session,
+        handleOpenFile,
+        fileProvider: provider,
+        fileProviderPending: false,
+      })
+    );
+    const row = (path: string): HTMLElement => {
+      const label = rendered.querySelector(`[role="treeitem"] [title="${path}"]`);
+      const treeItem = label?.closest<HTMLElement>('[role="treeitem"]');
+      if (!treeItem) throw new Error(`Missing row ${path}`);
+      return treeItem;
+    };
+
+    expect(row('notes').classList.contains('text-muted-foreground')).toBe(true);
+    expect(row('debug.log').classList.contains('text-muted-foreground')).toBe(true);
+    expect(row('README.md').classList.contains('text-muted-foreground')).toBe(false);
+    expect(row('debug.log').hasAttribute('disabled')).toBe(false);
+
+    await act(async () => {
+      row('debug.log').click();
+      row('notes').click();
+    });
+    expect(handleOpenFile).toHaveBeenCalledWith('debug.log');
+    expect(initializeDirectory).toHaveBeenCalledWith('notes');
+  });
+
   it('marks the provider tree load as ready once listFiles returns', async () => {
     const provider = createSessionFileProviderFromSource({
       kind: 'none',

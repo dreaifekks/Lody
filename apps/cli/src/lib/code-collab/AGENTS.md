@@ -54,6 +54,12 @@ File-by-file responsibilities: [README.md](README.md).
   path-only and must not read file contents to classify text/binary/size. Root
   init/full/turn refresh should use the worker `full-state` path when available so
   file listing and fileIndex building stay off the main thread.
+- Ignored paths are listed with `ignored: true`, never hidden and never walked: Git
+  scans add `git ls-files --others --ignored --directory` (a wholly ignored directory
+  is one lazy row); FS scans mark the fixed directory names; only `.git` is omitted.
+  Opening an ignored directory reads one disk level (2000 entries at most, all
+  ignored). The service remembers those directories per owner and every scan that
+  replaces the tree around them reads their level back.
 - Machine RPC is the integration boundary. Local/Electron direct transport can be
   added below that RPC abstraction, but file operations still route to the single CLI
   service. In particular, local `code-collab/get-file-index` scans/builds the initial

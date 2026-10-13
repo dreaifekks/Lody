@@ -461,6 +461,7 @@ export type FileTreeItem = {
   children?: FileTreeItem[];
   modified?: boolean;
   lazyDirectoryId?: string;
+  ignored?: boolean;
 };
 
 export interface GeneralSettings {
