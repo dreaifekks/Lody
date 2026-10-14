@@ -37,7 +37,7 @@ import { archiveSearchFieldTheme } from './archive-search.stylex';
 import { Tooltip } from '@lody/ui/tooltip';
 import { currentWorkspaceSlugAtom, setMobileDrawerOpenAtom, userAtom } from '@/atoms';
 import { getAgentMetaByIdAtomFamily } from '@/atoms/agents';
-import { archiveScopeAtom } from '@/atoms/sidebar-state';
+import { archiveMachineIdAtom, archiveScopeAtom } from '@/atoms/sidebar-state';
 import { getMachineMetaMapAtom } from '@/atoms/machines';
 import { localMachineIdAtom } from '@/atoms/local-probe';
 import {
@@ -51,7 +51,8 @@ import { AgentIcon } from '@/components/icons/agent-icon';
 import { SwipeActionRow } from '@/components/shared/swipe-action-row';
 import { UserAvatar } from '@/components/user-avatar';
 import { MobileArchiveScreen } from '@/components/mobile/mobile-archive-screen';
-import { WebArchiveScreen } from './web-archive-screen';
+import { usePlatformCapability } from '@lody/platform/react';
+import { ArchiveScopeMenu, WebArchiveScreen } from './web-archive-screen';
 import {
   getMachineFlockLocalProjects,
   getSessionLaunchConfigLegacyFields,
@@ -74,6 +75,7 @@ export type ArchivedSessionGroup = {
   key: string;
   kind: 'repo' | 'chat' | 'local';
   label: string;
+  machineName?: string;
   local?: {
     name: string;
     path?: string | null;
@@ -117,6 +119,14 @@ const styles = stylex.create({
     transitionDuration: duration.fast,
     transitionTimingFunction: ease.standard,
   },
+  moreRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '36px',
+    boxShadow: ROW_RULE,
+  },
+  moreRowMobile: { height: '56px' },
   rowNested: { paddingInlineStart: '44px' },
   rowRuled: {
     boxShadow: ROW_RULE,
@@ -515,7 +525,6 @@ const styles = stylex.create({
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  triggerLabelShort: { maxWidth: '104px' },
   searchGlyph: { width: '14px', height: '14px' },
   empty: {
     boxSizing: 'border-box',
@@ -672,7 +681,7 @@ function sessionMatchesArchiveQuery(
   return haystacks.some((value) => value.toLowerCase().includes(query));
 }
 
-function groupSessionsForArchive({
+export function groupSessionsForArchive({
   sessions,
   localProjectLabelByKey,
   groupMode,
@@ -728,7 +737,13 @@ function groupSessionsForArchive({
 
   const result: Omit<ArchivedSessionGroup, 'collapsed'>[] = [];
 
-  const sortedLocalKeys = [...localGroups.keys()].sort((a, b) => a.localeCompare(b));
+  const localDisplayName = (key: string) => {
+    const label = localProjectLabelByKey.get(key);
+    return label?.path?.trim() || label?.name || 'Local project';
+  };
+  const sortedLocalKeys = [...localGroups.keys()].sort((a, b) =>
+    localDisplayName(a).localeCompare(localDisplayName(b))
+  );
   for (const key of sortedLocalKeys) {
     const groupSessions = localGroups.get(key);
     if (!groupSessions) continue;
@@ -1382,6 +1397,9 @@ function ArchivedSessionGroupHeader({
         ) : (
           <span {...stylex.props(styles.headerLabel)}>{label}</span>
         )}
+        {isLocal && group.machineName !== undefined ? (
+          <span {...stylex.props(styles.headerCount)}>{group.machineName}</span>
+        ) : null}
         <span {...stylex.props(styles.headerCount)}>({group.sessions.length})</span>
         {!restoreAvailable ? (
           <Badge icon={<CircleAlert {...stylex.props(styles.badgeGlyph)} aria-hidden="true" />}>
@@ -1624,9 +1642,11 @@ export function ArchiveSessionList({
   listScopeId,
   resetScrollKey,
 }: ArchiveSessionListProps) {
+  const { t } = useTranslation();
+  const [expandedGroupKeys, setExpandedGroupKeys] = useState<ReadonlySet<string>>(new Set());
   const rows = useMemo(
-    () => flattenVisibleArchiveRows(groups, { hideGroupHeader }),
-    [groups, hideGroupHeader]
+    () => flattenVisibleArchiveRows(groups, { hideGroupHeader, expandedGroupKeys }),
+    [groups, hideGroupHeader, expandedGroupKeys]
   );
   const groupByKey = useMemo(() => {
     const map = new Map<string, ArchivedSessionGroup>();
@@ -1666,6 +1686,23 @@ export function ArchiveSessionList({
             onToggleCollapse={() => onToggleCollapse(row.groupKey)}
             onToggleGroupSelect={onToggleGroupSelect}
           />
+        );
+      }
+      if (row.kind === 'more') {
+        return (
+          <div {...stylex.props(styles.moreRow, isMobile && styles.moreRowMobile)}>
+            <Button
+              variant="ghost"
+              size="small"
+              data-id={`archive-more:${row.groupKey}`}
+              data-scope-item="row"
+              onClick={() =>
+                setExpandedGroupKeys((previous) => new Set(previous).add(row.groupKey))
+              }
+            >
+              {t('archive.showMore', '… {{count}} more', { count: row.remainingCount })}
+            </Button>
+          </div>
         );
       }
       const session = sessionById.get(row.sessionId);
@@ -1719,6 +1756,7 @@ export function ArchiveSessionList({
       restoreUnavailableLabel,
       selectedIds,
       sessionById,
+      t,
     ]
   );
 
@@ -1745,12 +1783,36 @@ export function ArchiveView() {
   const openMobileDrawer = useSetAtom(setMobileDrawerOpenAtom);
   const [deleteConfirmSession, setDeleteConfirmSession] = useState<SessionMeta | null>(null);
   const [archiveScope, setArchiveScope] = useAtom(archiveScopeAtom);
+  const hasTeamSharing = usePlatformCapability('teamSharing');
+  const [archiveMachineId, setArchiveMachineId] = useAtom(archiveMachineIdAtom);
+  const archiveMachines = useMemo(
+    () => Array.from(new Set(archivedSessions.map((session) => session.machineId))),
+    [archivedSessions]
+  );
+  const effectiveMachineId =
+    !hasTeamSharing && archiveMachines.some((id) => id === archiveMachineId)
+      ? archiveMachineId
+      : null;
   const [searchQuery, setSearchQuery] = useState('');
   const [sortMode, setSortMode] = useState<ArchiveSortMode>('newest');
   const [groupMode, setGroupMode] = useState<ArchiveGroupMode>('project');
   const { activeOrganization } = useOrganization();
   const machineMetaMap = useAtomValue(getMachineMetaMapAtom);
   const localMachineId = useAtomValue(localMachineIdAtom);
+  const machineOptions = useMemo(
+    () =>
+      archiveMachines
+        .map((id) => ({ id, name: machineMetaMap.get(id)?.name || id }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [archiveMachines, machineMetaMap]
+  );
+  const machineFilter = hasTeamSharing
+    ? undefined
+    : {
+        options: machineOptions,
+        value: effectiveMachineId,
+        onChange: setArchiveMachineId,
+      };
   const archivedLocalSessionMachineIds = useMemo(
     () =>
       Array.from(
@@ -1794,6 +1856,11 @@ export function ArchiveView() {
 
   // Filter archived sessions based on scope (my/team + local privacy).
   const scopedArchivedSessions = useMemo(() => {
+    if (!hasTeamSharing) {
+      return effectiveMachineId !== null
+        ? archivedSessions.filter((session) => session.machineId === effectiveMachineId)
+        : archivedSessions;
+    }
     const userId = user?.id ?? null;
     const base =
       archiveScope === 'my'
@@ -1821,7 +1888,15 @@ export function ArchiveView() {
 
       return false;
     });
-  }, [archivedSessions, archiveScope, localMachineId, machineMetaMap, user?.id]);
+  }, [
+    archivedSessions,
+    archiveScope,
+    effectiveMachineId,
+    hasTeamSharing,
+    localMachineId,
+    machineMetaMap,
+    user?.id,
+  ]);
 
   const localProjectLabelByKey = useMemo(() => {
     const map = new Map<
@@ -1897,10 +1972,23 @@ export function ArchiveView() {
       flatLabel: t('archive.allSessions', 'All sessions'),
     }).map((group) => {
       if (groupMode === 'flat') return group;
+      if (group.kind === 'local' && !hasTeamSharing && effectiveMachineId === null) {
+        const machineId = group.sessions[0]!.machineId;
+        return { ...group, machineName: machineMetaMap.get(machineId)?.name || machineId };
+      }
       if (group.kind !== 'chat') return group;
       return { ...group, label: t('archive.chats', 'Chats') };
     });
-  }, [filteredArchivedSessions, groupMode, localProjectLabelByKey, sortMode, t]);
+  }, [
+    filteredArchivedSessions,
+    groupMode,
+    localProjectLabelByKey,
+    sortMode,
+    t,
+    hasTeamSharing,
+    effectiveMachineId,
+    machineMetaMap,
+  ]);
 
   // Track collapsed state for each group
   const [collapsedState, setCollapsedState] = useState<Record<string, boolean>>({});
@@ -2163,11 +2251,6 @@ export function ArchiveView() {
     groupMode === 'flat'
       ? t('archive.group.flat', 'One list')
       : t('archive.group.project', 'By project');
-  const scopeLabel =
-    archiveScope === 'my'
-      ? t('sessions.sidebar.my', 'My Tasks')
-      : t('sessions.sidebar.team', 'All Tasks');
-
   /* Mobile: scope sits after search (was in the header). Desktop keeps
      scope in the WebArchiveScreen header and only group/sort here. */
   const chevron = <ChevronDown {...stylex.props(styles.triggerGlyph)} aria-hidden="true" />;
@@ -2188,31 +2271,12 @@ export function ArchiveView() {
           className={stylex.props(styles.search, archiveSearchFieldTheme).className}
         />
         {isMobile ? (
-          <Menu.Root>
-            <Menu.Trigger
-              render={
-                <Button type="button" variant="ghost" size="small">
-                  <span {...stylex.props(styles.triggerLabel, styles.triggerLabelShort)}>
-                    {scopeLabel}
-                  </span>
-                  {chevron}
-                </Button>
-              }
-            />
-            <Menu.Content align="end">
-              <Menu.RadioGroup
-                value={archiveScope}
-                onValueChange={(value) => {
-                  if (value === 'my' || value === 'team') setArchiveScope(value);
-                }}
-              >
-                <Menu.RadioItem value="my">{t('sessions.sidebar.my', 'My Tasks')}</Menu.RadioItem>
-                <Menu.RadioItem value="team">
-                  {t('sessions.sidebar.team', 'All Tasks')}
-                </Menu.RadioItem>
-              </Menu.RadioGroup>
-            </Menu.Content>
-          </Menu.Root>
+          <ArchiveScopeMenu
+            compact
+            archiveScope={archiveScope}
+            onArchiveScopeChange={setArchiveScope}
+            machineFilter={machineFilter}
+          />
         ) : null}
       </div>
       <div {...stylex.props(styles.toolbarMenus)}>
@@ -2307,7 +2371,7 @@ export function ArchiveView() {
           membersByUserId={membersByUserId}
           hideGroupHeader={groupMode === 'flat'}
           listScopeId={listScopeId}
-          resetScrollKey={`${archiveScope}:${groupMode}:${sortMode}:${normalizedSearchQuery}`}
+          resetScrollKey={`${effectiveMachineId ?? archiveScope}:${groupMode}:${sortMode}:${normalizedSearchQuery}`}
         />
       )}
     </div>
@@ -2424,6 +2488,7 @@ export function ArchiveView() {
 
   return (
     <WebArchiveScreen
+      machineFilter={machineFilter}
       archiveScope={archiveScope}
       isMultiSelectMode={isMultiSelectMode}
       selectedCount={selectedCount}

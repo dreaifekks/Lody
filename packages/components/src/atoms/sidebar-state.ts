@@ -343,3 +343,6 @@ export type ArchiveScopeValue = 'my' | 'team';
  * the complete workspace archive. An explicit choice remains persisted below.
  */
 export const archiveScopeAtom = atomWithStorage<ArchiveScopeValue>('lody-archive-scope', 'team');
+
+/** Machine filter for local archives; null shows every machine. */
+export const archiveMachineIdAtom = atomWithStorage<string | null>('lody-archive-machine-id', null);
