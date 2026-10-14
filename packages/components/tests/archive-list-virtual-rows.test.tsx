@@ -250,7 +250,7 @@ describe('ArchiveListWindow virtualization', () => {
 
   it('hides a single-machine selector and preserves hosted My/All filtering', async () => {
     fixture.sessions = [
-      archived('mine', 'machine-a'),
+      archived('mine', 'machine-a', 'local'),
       { ...archived('theirs', 'machine-a'), userId: 'teammate' },
     ];
     const local = await renderWindow(
@@ -259,6 +259,9 @@ describe('ArchiveListWindow virtualization', () => {
       </Provider>
     );
     expect(local.textContent).not.toContain('All machines');
+    const projectHeader = local.querySelector('[data-id="archive-group:local:machine-a:project"]')!;
+    expect(projectHeader.textContent).toContain('App');
+    expect(projectHeader.textContent).not.toContain('Laptop');
     expect(sessionIds(local)).toEqual(['mine', 'theirs']);
     fixture.teamSharing = true;
     const store = createStore();

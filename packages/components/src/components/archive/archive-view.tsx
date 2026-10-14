@@ -441,11 +441,20 @@ const styles = stylex.create({
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
+  headerLocalLabel: { flexBasis: 'auto' },
+  headerMachine: {
+    flexShrink: 10,
+    minWidth: 0,
+    maxWidth: '11em',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
   headerLocal: { display: 'flex', alignItems: 'baseline', gap: space[2], minWidth: 0 },
   headerLocalName: {
     flexShrink: 0,
     minWidth: 0,
-    maxWidth: '40%',
+    maxWidth: '100%',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -1383,7 +1392,7 @@ function ArchivedSessionGroupHeader({
           />
         </span>
         {isLocal ? (
-          <span {...stylex.props(styles.headerLabel)}>
+          <span {...stylex.props(styles.headerLabel, styles.headerLocalLabel)}>
             <span {...stylex.props(styles.headerLocal)}>
               <span {...stylex.props(styles.headerLocalName)}>{group.local?.name ?? label}</span>
               <span
@@ -1398,7 +1407,12 @@ function ArchivedSessionGroupHeader({
           <span {...stylex.props(styles.headerLabel)}>{label}</span>
         )}
         {isLocal && group.machineName !== undefined ? (
-          <span {...stylex.props(styles.headerCount)}>{group.machineName}</span>
+          <span
+            {...stylex.props(styles.headerCount, styles.headerMachine)}
+            title={group.machineName}
+          >
+            {group.machineName}
+          </span>
         ) : null}
         <span {...stylex.props(styles.headerCount)}>({group.sessions.length})</span>
         {!restoreAvailable ? (
@@ -1972,7 +1986,12 @@ export function ArchiveView() {
       flatLabel: t('archive.allSessions', 'All sessions'),
     }).map((group) => {
       if (groupMode === 'flat') return group;
-      if (group.kind === 'local' && !hasTeamSharing && effectiveMachineId === null) {
+      if (
+        group.kind === 'local' &&
+        !hasTeamSharing &&
+        machineOptions.length > 1 &&
+        effectiveMachineId === null
+      ) {
         const machineId = group.sessions[0]!.machineId;
         return { ...group, machineName: machineMetaMap.get(machineId)?.name || machineId };
       }
@@ -1988,6 +2007,7 @@ export function ArchiveView() {
     hasTeamSharing,
     effectiveMachineId,
     machineMetaMap,
+    machineOptions.length,
   ]);
 
   // Track collapsed state for each group

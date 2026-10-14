@@ -19,4 +19,5 @@ Parent `src/components/AGENTS.md` also applies. `CLAUDE.md` is a symlink; edit `
   per group; search keeps the preview, flat mode shows all, and group selection
   includes hidden sessions.
 - `teamSharing` retains My/All scope. Without it, filter by archived machine ids;
-  show machine names on local project headers only when viewing all machines.
+  show machine names on local project headers only when viewing all of multiple
+  machines. Truncate machine names before shrinking project names; keep counts visible.
