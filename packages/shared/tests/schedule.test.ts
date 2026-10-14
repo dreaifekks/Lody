@@ -124,6 +124,15 @@ describe('Schedule persistence contract', () => {
       })
     ).toBe(first);
     expect(scheduleDefinitionFingerprint({ definition: d, prompt: 'different' })).not.toBe(first);
+    const none = scheduleDefinitionFingerprint({
+      definition: { ...d, mcpServerIds: [] },
+      prompt: 'hello',
+    });
+    const selected = scheduleDefinitionFingerprint({
+      definition: { ...d, mcpServerIds: ['mcp-a'] },
+      prompt: 'hello',
+    });
+    expect(new Set([first, none, selected]).size).toBe(3);
     const key = scheduleRunKey('test', 'activation', 123);
     expect(
       scheduleRunIds(key, { scheduleId: 'test', destination: { kind: 'new_session' } })
@@ -261,6 +270,7 @@ it.each([false, true, 'false', 'true'])(
             select_flag: 'false',
           },
         },
+        mcpServerIds: planMode === false ? [] : ['mcp-a'],
         project: { kind: 'local', localProjectId: 'project' as never, useWorktree: true },
         destination: { kind: 'own_session', epoch: 0 },
         misfirePolicy: d.misfirePolicy,
@@ -282,6 +292,7 @@ it.each([false, true, 'false', 'true'])(
       'workspace' as never
     );
     const read = await machine.read('test');
+    expect(read?.definition.mcpServerIds).toEqual(planMode === false ? [] : ['mcp-a']);
     expect(read?.definition.agent.configOptionValues).toEqual({
       _permission: 'workspace-write',
       effort: 'high',

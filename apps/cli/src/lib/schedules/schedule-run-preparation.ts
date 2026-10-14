@@ -1,5 +1,8 @@
 import {
   composeAgentRolePrompt,
+  getDefaultSelectedMcpServerIds,
+  getSessionRoomId,
+  resolveSessionMcpSelection,
   getWorkspaceFlockDocId,
   listAccessibleAgentRoles,
   listWorkspaceAgentRoles,
@@ -16,12 +19,16 @@ import {
   type AgentConfigMeta,
   type LocalProjectId,
   type MachineMeta,
+  type McpServerId,
   type ProjectRef,
   type ScheduleDestination,
   type SessionId,
   type SessionMeta,
 } from '@lody/shared';
 
+import type { PreparedSessionInput } from '../prepared-session-input';
+import { createSessionBackend } from '@/session/session-backend';
+import { listWorkspaceMcpCatalog, syncMcpCatalog } from '../workspace-mcp-store';
 import { ScheduleConfigurationError } from './schedule-engine';
 import { buildProjectOptions } from './schedule-project-options';
 
@@ -235,4 +242,31 @@ export async function resolveScheduleAgentRunConfig(
     localOnly: true,
   });
   return normalizeLegacyScheduleAgent(agent, capability?.configOptions);
+}
+
+/** Freeze the run's MCP choice before the engine persists the prepared turn. */
+export async function applyScheduleMcpSelection(args: {
+  manager: import('../loro/doc').LoroDocumentManager;
+  workspaceId: WorkspaceId;
+  localOnly: boolean;
+  definition: Pick<ScheduleDefinition, 'destination' | 'mcpServerIds'>;
+  prepared: PreparedSessionInput;
+}): Promise<void> {
+  const { manager, workspaceId, definition, prepared } = args;
+  let mcpServerIds = definition.mcpServerIds;
+  if (definition.destination.kind === 'existing_session') {
+    const session = await manager.getOrCreateSessionDoc(prepared.sessionId);
+    const record = await manager.repo.getDocMeta(getSessionRoomId(prepared.sessionId));
+    const backend = await createSessionBackend(session, record?.meta as SessionMeta);
+    mcpServerIds = resolveSessionMcpSelection(await backend.readHistory());
+  } else if (mcpServerIds === undefined) {
+    if (!args.localOnly) await syncMcpCatalog(manager, workspaceId);
+    mcpServerIds = getDefaultSelectedMcpServerIds(
+      await listWorkspaceMcpCatalog(manager.repo, workspaceId)
+    );
+  }
+  prepared.userTurn.inputConfig = {
+    ...prepared.userTurn.inputConfig,
+    mcpServerIds: [...mcpServerIds] as McpServerId[],
+  };
 }

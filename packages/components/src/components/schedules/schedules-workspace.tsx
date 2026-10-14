@@ -1,5 +1,7 @@
 import type { AgentRunRef } from '@/components/shared/agent-run-ref';
 import { AlertDialog } from '@/ui/dialog';
+import { AttachmentAddMenu } from '@/components/chat/attachment-add-menu';
+import { useWorkspaceMcpCatalog } from '@/hooks/use-workspace-mcp-catalog';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useCommand } from '@/lib/commands';
 import { useEffect, useMemo, useState } from 'react';
@@ -13,6 +15,8 @@ import { AlertTriangle } from 'lucide-react';
 import {
   DEFAULT_SCHEDULE_DESTINATION,
   getAgentRoleEmoji,
+  getDefaultSelectedMcpServerIds,
+  type McpServerId,
   getDeviceTimeZone,
   getServerNow,
   machineSupportsScheduleAgentRoles,
@@ -591,6 +595,11 @@ function ScheduleEditor({
   const [destination, setDestination] = useState<ScheduleDestination>(
     document?.definition.destination ?? DEFAULT_SCHEDULE_DESTINATION
   );
+  const { servers: mcpServers } = useWorkspaceMcpCatalog();
+  const isMobile = useIsMobile();
+  const [mcpServerIds, setMcpServerIds] = useState<string[] | undefined>(
+    document?.definition.mcpServerIds
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [identity] = useState(() => ({
@@ -835,6 +844,7 @@ function ScheduleEditor({
               trigger: value.trigger,
               machineId: selected.machineId,
               agent: shownAgent,
+              mcpServerIds,
               ...(agentRole ? { agentRole } : {}),
               ...(project && destination.kind === 'new_session' ? { project } : {}),
               destination,
@@ -895,6 +905,27 @@ function ScheduleEditor({
       onSave={(value) => void save(value)}
       agentBar={({ revealMissing }) => (
         <>
+          {destination.kind !== 'existing_session' ? (
+            <AttachmentAddMenu
+              isMobile={isMobile}
+              disabled={saving || !!disabledReason}
+              mcp={{
+                servers: mcpServers,
+                selectedIds: (mcpServerIds ??
+                  getDefaultSelectedMcpServerIds(mcpServers)) as McpServerId[],
+                onSelectedIdsChange: setMcpServerIds,
+                // Unset follows the workspace's defaults at every run; unfollowing
+                // pins the servers those defaults name now.
+                workspaceDefaults: {
+                  following: mcpServerIds === undefined,
+                  onFollowingChange: (following) =>
+                    setMcpServerIds(
+                      following ? undefined : getDefaultSelectedMcpServerIds(mcpServers)
+                    ),
+                },
+              }}
+            />
+          ) : null}
           <ScheduleAgentControls
             machine={machine}
             agentConfigs={machineAgents}

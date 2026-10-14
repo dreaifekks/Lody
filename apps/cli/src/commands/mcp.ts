@@ -23,6 +23,7 @@ import { runWorkspaceCommand, type WorkspaceCommandContext } from '@/lib/termina
 import {
   deleteWorkspaceMcpCatalogEntry,
   listWorkspaceMcpCatalog,
+  findWorkspaceMcpServer,
   syncMcpCatalog,
   upsertWorkspaceMcpCatalogEntry,
   type McpCatalogWriteResult,
@@ -148,23 +149,6 @@ function normalizeName(name: string): string {
   const normalized = normalizeCliValue(name);
   if (!normalized) throw new Error('MCP server name must not be empty.');
   return normalized;
-}
-
-function findByIdOrName(
-  entries: readonly WorkspaceMcpServerMeta[],
-  selector: string
-): WorkspaceMcpServerMeta {
-  const normalized = normalizeName(selector);
-  const byId = entries.find(({ id }) => id === normalized);
-  if (byId) return byId;
-  const matches = entries.filter(
-    ({ name }) => name.toLocaleLowerCase() === normalized.toLocaleLowerCase()
-  );
-  if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) {
-    throw new Error(`MCP server selector is ambiguous: ${normalized}. Use an id.`);
-  }
-  throw new Error(`MCP server not found: ${normalized}`);
 }
 
 function assertUniqueName(
@@ -319,7 +303,7 @@ async function setMcpServer(
   selector: string,
   options: McpSetOptions
 ) {
-  const current = findByIdOrName(servers, selector);
+  const current = findWorkspaceMcpServer(servers, selector);
   const name = options.name === undefined ? current.name : normalizeName(options.name);
   assertUniqueName(servers, name, current.id);
   const connection = buildMcpConnectionFromOptions(options, current.connection);
@@ -352,7 +336,7 @@ async function removeMcpServer(
   { repo, workspaceId, servers, writeOptions }: McpCatalogContext,
   selector: string
 ) {
-  const current = findByIdOrName(servers, selector);
+  const current = findWorkspaceMcpServer(servers, selector);
   const result = await deleteWorkspaceMcpCatalogEntry(repo, workspaceId, current.id, writeOptions);
   return {
     payload: { workspaceId, mcpServerId: current.id },

@@ -144,6 +144,8 @@ export const ScheduleDefinitionSchema = z
     misfirePolicy: z.object({ kind: z.enum(['skip', 'run_once']) }).strict(),
     overlapPolicy: z.enum(['skip', 'queue_one']),
     agent: ScheduleAgentSchema,
+    // Omitted follows workspace defaults at dispatch; [] explicitly selects none.
+    mcpServerIds: z.array(z.string().min(1).max(256)).max(256).optional(),
     // With a Role, `agent` is what that Role resolved to when the schedule was
     // saved: it names the Agent for listing and admission, and no run reads it.
     // A daemon that predates the field rejects the definition and runs nothing.

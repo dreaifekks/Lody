@@ -8,6 +8,7 @@ import en from '../../../locales/en.json';
 import zh from '../../../locales/zh_CN.json';
 import { ScheduleForm, ScheduleListView } from '../src/components/schedules/schedule-view';
 import {
+  describeMcpSelection,
   describeTrigger,
   formatInstant,
   formatTimeOfDay,
@@ -70,6 +71,20 @@ describe('Chinese is a product language, not an Intl locale', () => {
   });
   const render = (node: React.ReactNode) =>
     act(() => root.render(<I18nextProvider i18n={instance}>{node}</I18nextProvider>));
+
+  it('names the MCP servers a proposal loads and how they were chosen', () => {
+    const servers = [
+      { id: 'mail', name: 'Mail', transport: 'stdio', enabledByDefault: true },
+      { id: 'search', name: 'Search', transport: 'http' },
+    ] as never;
+    expect(describeMcpSelection(undefined, servers, instance.t)).toBe('工作区默认：Mail');
+    expect(describeMcpSelection(undefined, [], instance.t)).toBe('工作区默认（无）');
+    expect(describeMcpSelection([], servers, instance.t)).toBe('不加载');
+    // A saved id whose server was removed still shows, as its id.
+    expect(describeMcpSelection(['search', 'gone'], servers, instance.t)).toBe(
+      '指定：Search, gone'
+    );
+  });
 
   it('formats every schedule surface under zh_CN without throwing', () => {
     for (const language of ['zh_CN', 'zh-CN', 'en', '', undefined]) {

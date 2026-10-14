@@ -3608,6 +3608,7 @@ export const MessageItemActorSchema = z.object({
 
 // Metadata for the task_proposal system notice
 export const TaskProposalMetaSchema = z.object({
+  mcpServerIds: z.array(z.string().min(1).max(256)).max(256).optional(),
   proposalId: z.string().trim().min(1),
   title: z.string(),
   body: z.string().optional(),

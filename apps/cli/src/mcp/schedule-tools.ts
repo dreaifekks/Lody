@@ -4,6 +4,7 @@ import {
   ScheduleProposalDestinationSchema,
   ScheduleProposalRuleSchema,
   ScheduleProposalTargetSchema,
+  ScheduleDefinitionSchema,
   type ScheduleCommand,
 } from '@lody/shared';
 import {
@@ -43,6 +44,8 @@ const DRAFT_GUIDE = [
   'cannot be combined with existing_session, which follows that chat’s Agent.',
   'Destination: new_session (a fresh chat per run, default), own_session (one chat this task',
   'keeps continuing), or existing_session {sessionId}. Reuse requestId when retrying.',
+  'mcpServerIds accepts workspace MCP ids or names (saved as ids). Omit to use enabledByDefault',
+  'servers at each run; [] selects none. existing_session keeps that chat’s MCP selection.',
 ].join(' ');
 
 const id = z
@@ -112,7 +115,8 @@ export function registerScheduleTools(
         'conversation can only be changed by the user; one bound to an Agent Role counts as that',
         'Role runs now.',
         ceiling,
-        'Reuse requestId when retrying.',
+        'mcpServerIds accepts MCP ids or names; [] selects none; null returns to enabledByDefault servers. Omitted keeps the saved choice.',
+        'existing_session keeps that chat’s MCP selection. Reuse requestId when retrying.',
       ].join(' '),
       inputSchema: ScheduleUpdateToolInputSchema,
     },
@@ -150,7 +154,7 @@ export function registerScheduleTools(
     'lody_schedule_get',
     {
       description:
-        'Read a Schedule, its prompt, recent configuration activity and next five times. `definition.agentRole` is the Agent Role it runs as, read again at every run; `definition.agent` is then only what that Role resolved to when the schedule was saved. Ordinary Sessions own execution results.',
+        'Read a Schedule, its prompt, recent configuration activity and next five times. `definition.agentRole` is the Agent Role it runs as, read again at every run; `definition.agent` is then only what that Role resolved to when the schedule was saved. definition.mcpServerIds contains the saved workspace MCP ids; absent uses enabledByDefault, [] selects none. Ordinary Sessions own execution results.',
       inputSchema: z.object({ scheduleId: id }).strict(),
     },
     (args) => call({ action: 'show', ...args })
@@ -182,6 +186,7 @@ export function registerScheduleTools(
           rule: ScheduleProposalRuleSchema,
           destination: ScheduleProposalDestinationSchema.optional(),
           target: ScheduleProposalTargetSchema.optional(),
+          mcpServerIds: ScheduleDefinitionSchema.shape.mcpServerIds,
         })
         .strict(),
     },

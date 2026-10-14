@@ -1496,6 +1496,7 @@ export type ScheduleProposalTarget = {
  * proposal, it stays in history unresolved until acted on.
  */
 export type ScheduleProposalMeta = {
+  mcpServerIds?: string[];
   /** Stable id; a retried proposal replaces itself instead of stacking. */
   proposalId: string;
   title: string;

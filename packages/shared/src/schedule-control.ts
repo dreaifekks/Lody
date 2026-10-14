@@ -20,6 +20,7 @@ export const ScheduleDraftSchema = ScheduleDefinitionSchema.pick({
   overlapPolicy: true,
   agent: true,
   agentRole: true,
+  mcpServerIds: true,
   project: true,
   destination: true,
   retryPolicy: true,
@@ -67,6 +68,7 @@ export const ScheduleCommandSchema = z.discriminatedUnion('action', [
       rule: ScheduleProposalRuleSchema,
       destination: ScheduleProposalDestinationSchema.optional(),
       target: ScheduleProposalTargetSchema.optional(),
+      mcpServerIds: ScheduleDefinitionSchema.shape.mcpServerIds,
     })
     .strict(),
 ]);

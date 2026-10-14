@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { withHistoryPort } from '../../../tests/history-port-fixture';
 import {
   ScheduleAgentSchema,
   type AcpCapabilityCacheEntry,
@@ -16,6 +17,7 @@ import type { AuthContext } from '../command-runtime';
 import type { LoroDocumentManager } from '../loro/doc';
 import type { WorkspaceSummary } from '../workspace';
 import {
+  applyScheduleMcpSelection,
   buildScheduleRunPrompt,
   buildScheduleRunTarget,
   resolveScheduleAgentRunConfig,
@@ -78,6 +80,33 @@ const prepare = (
   );
 
 describe('Session preparation for a scheduled run', () => {
+  it.each([{ selection: ['chat-mcp'] }, { selection: [] }])(
+    'retains an existing chat MCP choice $selection instead of Schedule defaults',
+    async ({ selection }) => {
+      const prepared = await prepare();
+      const existingManager = {
+        repo: { getDocMeta: async () => ({ meta: prepared.meta }) },
+        getOrCreateSessionDoc: async () =>
+          withHistoryPort({
+            getHistory: () => [
+              { id: 'previous', role: 'user', inputConfig: { mcpServerIds: selection } },
+            ],
+          }),
+      } as unknown as LoroDocumentManager;
+      await applyScheduleMcpSelection({
+        manager: existingManager,
+        workspaceId: 'workspace' as WorkspaceId,
+        localOnly: true,
+        definition: {
+          destination: { kind: 'existing_session', sessionId: prepared.sessionId },
+          mcpServerIds: ['schedule-mcp'],
+        },
+        prepared,
+      });
+      expect(prepared.userTurn.inputConfig?.mcpServerIds).toEqual(selection);
+    }
+  );
+
   it('produces no project, repository or branch for a chat-only schedule', async () => {
     const prepared = await prepare();
     for (const field of ['project', 'repoFullName', 'baseBranch'] as const)
