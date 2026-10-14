@@ -27,6 +27,21 @@ daemon 复用新会话 UI 使用的 `getDefaultSelectedMcpServerIds`。
 均不携带 MCP id。本次按要求保持其行为不变；仅在 Schedule 准备阶段补齐，
 避免隐式改变所有 Agent 创建的会话。
 
+### Review 跟进
+
+编辑时不再重新解析 Schedule 已保存的 id：运行时遇到被删除的 MCP 只记录
+problem 并跳过，所以只改标题的 update（以及它的重放）不能因为
+`MCP server not found` 失败。本次新传入的名称和 id 仍会解析。
+`lody_schedule_update` 接受 `mcpServerIds: null`，清除选择并恢复跟随工作区
+默认；不传仍保留原值，`[]` 仍表示不加载。编辑器的 MCP 菜单新增「跟随工作区
+默认」勾选项：勾选表示未设置，取消勾选会把当前默认固定下来，勾选某个 MCP
+也会固定列表。提议卡片新增 MCP 一行（工作区默认及其名称、不加载、或指定的
+名称），发往已有会话时不显示。
+
+检查：CLI command-service 测试覆盖已保存 id 对应的 MCP 被删后改标题及其重放
+成功、新传入的不存在名称仍报错、`null` 清除字段；UI 测试覆盖菜单切换以及
+zh_CN 下卡片文案。
+
 ## 验证
 
 行为测试覆盖 new/own 会话的 engine、SQLite、Loro 派发，显式选择、默认选择、

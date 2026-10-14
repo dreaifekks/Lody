@@ -20,6 +20,7 @@ import {
   buildScheduleEditDraft,
   scheduleDraftNow,
   type ScheduleCreateToolInput,
+  type ScheduleUpdateToolInput,
 } from '@/mcp/schedule-agent-writes';
 import { readInvokingPermissionTier, type RuntimeConfigOption } from '../agent-permission-tier';
 import { WorkspaceSyncUnavailableError } from '../command-runtime';
@@ -166,6 +167,7 @@ async function fixture() {
         createdAt: 0,
         updatedAt: 0,
       }),
+    removeMcp: (id: string) => rows.delete(JSON.stringify(['mcpServer', id])),
     owner: (value: string) => {
       owner = value;
     },
@@ -615,6 +617,56 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
         requestId: 'ambiguous',
       })
     ).rejects.toThrow('ambiguous');
+  });
+
+  it('keeps saved MCP ids whose server was removed, and null returns to workspace defaults', async () => {
+    const h = await asAgent('edit');
+    h.addMcp('mcp-a', 'Mail');
+    h.addMcp('mcp-b', 'Search');
+    await executeScheduleCommand(h.context, {
+      action: 'create',
+      scheduleId: 'mcp-task',
+      requestId: 'mcp-task',
+      draft: buildScheduleCreateDraft(
+        {
+          requestId: 'mcp-task',
+          title: 'MCP task',
+          prompt: 'Read updates.',
+          rule: { kind: 'manual' },
+          mcpServerIds: ['Mail', 'Search'],
+        },
+        draftContext
+      ),
+    });
+    h.removeMcp('mcp-a');
+    const edit = async (input: Omit<ScheduleUpdateToolInput, 'scheduleId'>) =>
+      executeScheduleCommand(h.context, {
+        action: 'edit',
+        scheduleId: 'mcp-task',
+        requestId: input.requestId,
+        draft: buildScheduleEditDraft(
+          { scheduleId: 'mcp-task', ...input },
+          (await h.repository.read('mcp-task'))!,
+          draftContext
+        ),
+      });
+    await edit({ requestId: 'rename', title: 'Renamed' });
+    // The replay rebuilds from the saved document and still matches.
+    await edit({ requestId: 'rename', title: 'Renamed' });
+    let stored = (await h.repository.read('mcp-task'))!;
+    expect(stored.definition).toMatchObject({
+      title: 'Renamed',
+      mcpServerIds: ['mcp-a', 'mcp-b'],
+    });
+    // A newly named server is still looked up.
+    await expect(edit({ requestId: 'gone', mcpServerIds: ['mcp-a', 'Mail'] })).rejects.toThrow(
+      'MCP server not found: Mail'
+    );
+    await edit({ requestId: 'defaults', mcpServerIds: null });
+    stored = (await h.repository.read('mcp-task'))!;
+    expect(stored.definition.mcpServerIds).toBeUndefined();
+    await edit({ requestId: 'still-defaults', title: 'Renamed again' });
+    expect((await h.repository.read('mcp-task'))!.definition.mcpServerIds).toBeUndefined();
   });
 
   it('creates an enabled schedule with this conversation’s Agent and mode, attributed to it', async () => {

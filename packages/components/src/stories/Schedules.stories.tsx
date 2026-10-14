@@ -313,7 +313,8 @@ function EditorStory({
   /** Render without the page scroller, e.g. inside the detail pane. */
   bare?: boolean;
 }) {
-  const [mcpServerIds, setMcpServerIds] = useState<McpServerId[]>(['mail' as McpServerId]);
+  // Unset follows the workspace defaults (Mail here).
+  const [mcpServerIds, setMcpServerIds] = useState<McpServerId[]>();
   const [destination, setDestination] = useState<ScheduleDestination>(
     fixture.destination ?? { kind: 'new_session' }
   );
@@ -378,8 +379,13 @@ function EditorStory({
                       updatedAt: 0,
                     },
                   ],
-                  selectedIds: mcpServerIds,
+                  selectedIds: mcpServerIds ?? ['mail' as McpServerId],
                   onSelectedIdsChange: setMcpServerIds,
+                  workspaceDefaults: {
+                    following: mcpServerIds === undefined,
+                    onFollowingChange: (following) =>
+                      setMcpServerIds(following ? undefined : ['mail' as McpServerId]),
+                  },
                 }}
               />
             ) : null}

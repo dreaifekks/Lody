@@ -115,7 +115,7 @@ export function registerScheduleTools(
         'conversation can only be changed by the user; one bound to an Agent Role counts as that',
         'Role runs now.',
         ceiling,
-        'mcpServerIds accepts MCP ids or names; [] selects none. Omitted keeps the saved choice.',
+        'mcpServerIds accepts MCP ids or names; [] selects none; null returns to enabledByDefault servers. Omitted keeps the saved choice.',
         'existing_session keeps that chat’s MCP selection. Reuse requestId when retrying.',
       ].join(' '),
       inputSchema: ScheduleUpdateToolInputSchema,

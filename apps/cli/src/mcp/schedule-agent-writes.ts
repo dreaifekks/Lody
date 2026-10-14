@@ -53,7 +53,8 @@ export const ScheduleUpdateToolInputSchema = z
     rule: fields.rule.optional(),
     destination: fields.destination.optional(),
     target: fields.target.optional(),
-    mcpServerIds: ScheduleDefinitionSchema.shape.mcpServerIds,
+    // null clears the saved choice so runs follow workspace defaults again.
+    mcpServerIds: ScheduleDefinitionSchema.shape.mcpServerIds.nullable(),
   })
   .strict();
 export type ScheduleUpdateToolInput = z.infer<typeof ScheduleUpdateToolInputSchema>;
@@ -180,7 +181,8 @@ export function buildScheduleEditDraft(
       : definition.trigger,
     machineId,
     agent: target?.agent ?? definition.agent,
-    mcpServerIds: input.mcpServerIds ?? definition.mcpServerIds,
+    mcpServerIds:
+      input.mcpServerIds === null ? undefined : (input.mcpServerIds ?? definition.mcpServerIds),
     ...(target
       ? target.agentRole
         ? { agentRole: target.agentRole }

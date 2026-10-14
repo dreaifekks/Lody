@@ -32,6 +32,22 @@ config and history builder do not carry MCP ids. It was inspected and left
 unchanged as requested. Fixing Schedule preparation locally avoids changing
 all agent-created conversations implicitly.
 
+### Review follow-up
+
+Edits no longer resolve ids the Schedule already stores: the runtime skips a
+removed server with a problem, so a title-only update (or its replay) must not
+fail with `MCP server not found`. Newly supplied names and ids still resolve.
+`lody_schedule_update` accepts `mcpServerIds: null` to clear the choice and
+follow workspace defaults again; omission still keeps it and `[]` still selects
+none. The editor's MCP menu gains a "Follow workspace defaults" checkbox:
+checked means unset, unchecking pins the current defaults, and picking a server
+pins the list. The proposal card shows an MCP row (workspace defaults with
+their names, none, or the pinned names) unless runs go into an existing chat.
+
+Checks: CLI command-service tests cover a removed stored id surviving a rename,
+its replay, a new missing name still failing, and `null` clearing the field;
+UI tests cover the menu toggle and the card wording under zh_CN.
+
 ## Validation
 
 Behavioral tests cover engine/SQLite/Loro handoff for new and owned chats with

@@ -14,6 +14,8 @@ export interface AttachmentAddMenuMcp {
   onSelectedIdsChange: (ids: McpServerId[]) => void;
   /** Existing conversation: the change applies the next time the agent starts. */
   existingSession?: boolean;
+  /** A saved choice that can instead follow the workspace's default servers (Schedules). */
+  workspaceDefaults?: { following: boolean; onFollowingChange: (following: boolean) => void };
   disabled?: boolean;
 }
 
@@ -212,6 +214,22 @@ function McpServerItems({ mcp, isMobile }: { mcp: AttachmentAddMenuMcp; isMobile
 
   return (
     <>
+      {mcp.workspaceDefaults ? (
+        <>
+          <Menu.CheckboxItem
+            checked={mcp.workspaceDefaults.following}
+            disabled={mcp.disabled}
+            className={cn(isMobile && 'py-2.5 text-[15px]')}
+            closeOnClick={false}
+            onCheckedChange={(checked) =>
+              mcp.workspaceDefaults!.onFollowingChange(checked === true)
+            }
+          >
+            {t('session.mcp.workspaceDefaults', 'Follow workspace defaults')}
+          </Menu.CheckboxItem>
+          <Menu.Separator />
+        </>
+      ) : null}
       {mcp.servers.map((server) => {
         const detail =
           server.description ??

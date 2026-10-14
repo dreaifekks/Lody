@@ -1,6 +1,7 @@
 import type { TFunction } from 'i18next';
 import { toIntlLocaleOrEn } from '@/lib/intl-locale';
 import {
+  getDefaultSelectedMcpServerIds,
   getDeviceTimeZone,
   normalizeScheduleWeekdays,
   scheduleRecurrenceTimeZone,
@@ -9,6 +10,7 @@ import {
   type ScheduleRecurrence,
   type ScheduleTrigger,
   type ScheduleWeekday,
+  type WorkspaceMcpServerMeta,
 } from '@lody/shared';
 
 /**
@@ -145,6 +147,22 @@ export function describeDestination(destination: ScheduleDestination, t: TFuncti
       return unknown;
     }
   }
+}
+
+/** Which workspace MCP servers a run loads, and whether the list is pinned. */
+export function describeMcpSelection(
+  mcpServerIds: readonly string[] | undefined,
+  servers: readonly WorkspaceMcpServerMeta[],
+  t: TFunction
+): string {
+  if (mcpServerIds?.length === 0) return t('schedules.mcp.none', 'None');
+  const names = (mcpServerIds ?? getDefaultSelectedMcpServerIds(servers))
+    .map((id) => servers.find((server) => server.id === id)?.name ?? id)
+    .join(', ');
+  if (mcpServerIds) return t('schedules.mcp.selected', 'Selected: {{names}}', { names });
+  return names
+    ? t('schedules.mcp.defaults', 'Workspace defaults: {{names}}', { names })
+    : t('schedules.mcp.defaultsNone', 'Workspace defaults (none)');
 }
 
 /** The display clock; calendar triggers retain their authored zone. */

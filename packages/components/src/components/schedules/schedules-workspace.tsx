@@ -914,6 +914,15 @@ function ScheduleEditor({
                 selectedIds: (mcpServerIds ??
                   getDefaultSelectedMcpServerIds(mcpServers)) as McpServerId[],
                 onSelectedIdsChange: setMcpServerIds,
+                // Unset follows the workspace's defaults at every run; unfollowing
+                // pins the servers those defaults name now.
+                workspaceDefaults: {
+                  following: mcpServerIds === undefined,
+                  onFollowingChange: (following) =>
+                    setMcpServerIds(
+                      following ? undefined : getDefaultSelectedMcpServerIds(mcpServers)
+                    ),
+                },
               }}
             />
           ) : null}

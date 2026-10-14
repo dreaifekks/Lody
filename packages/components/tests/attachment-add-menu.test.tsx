@@ -67,4 +67,57 @@ describe('AttachmentAddMenu', () => {
     await act(async () => items[0]!.click());
     expect(onAddAttachment).toHaveBeenCalledOnce();
   });
+
+  it('shows whether a selection follows the workspace defaults and switches back to them', async () => {
+    const servers = [
+      { id: 'mail', name: 'Mail', transport: 'stdio', enabledByDefault: true },
+      { id: 'search', name: 'Search', transport: 'http' },
+    ] as never;
+    let selected: string[] | undefined = ['search'];
+    const render = () =>
+      root.render(
+        <AttachmentAddMenu
+          isMobile
+          mcp={{
+            servers,
+            selectedIds: (selected ?? ['mail']) as never,
+            onSelectedIdsChange: (ids) => {
+              selected = ids;
+            },
+            workspaceDefaults: {
+              following: selected === undefined,
+              onFollowingChange: (following) => {
+                selected = following ? undefined : ['mail'];
+              },
+            },
+          }}
+        />
+      );
+    await act(async () => render());
+    await act(async () => {
+      container
+        .querySelector('button[aria-label="Add attachment"]')!
+        .dispatchEvent(
+          new TestPointerEvent('mousedown', { bubbles: true, button: 0, pointerType: 'mouse' })
+        );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    await act(async () => document.body.querySelector<HTMLElement>('[role="menuitem"]')!.click());
+    const option = (name: string) =>
+      [...document.body.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')].find((item) =>
+        item.textContent?.includes(name)
+      )!;
+    expect(option('Follow workspace defaults').getAttribute('aria-checked')).toBe('false');
+    expect(option('Search').getAttribute('aria-checked')).toBe('true');
+
+    await act(async () => option('Follow workspace defaults').click());
+    expect(selected).toBeUndefined();
+    await act(async () => render());
+    expect(option('Follow workspace defaults').getAttribute('aria-checked')).toBe('true');
+    expect(option('Mail').getAttribute('aria-checked')).toBe('true');
+
+    // Picking a server pins the list.
+    await act(async () => option('Search').click());
+    expect(selected).toEqual(['mail', 'search']);
+  });
 });

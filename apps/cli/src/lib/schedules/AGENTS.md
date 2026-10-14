@@ -49,7 +49,9 @@
 - `mcpServerIds` is optional: new/owned chats use workspace `enabledByDefault` ids
   when absent, and `[]` means none. Freeze the choice on the prepared turn; retries
   keep it. Existing-chat destinations inherit the chat's choice. CLI/MCP writes
-  resolve names to catalog ids; UI edits and proposal confirmation preserve the field.
+  resolve names to catalog ids, except ids the edited Schedule already stores (a
+  removed server must not block unrelated edits); MCP update `null` clears the
+  field. UI edits and proposal confirmation preserve the field.
 - Schedule v2 preserves ACP string/boolean values. Legacy boolean strings are
   projected against target capability types at handoff, never migrated in the
   definition/ledger (their fingerprints authorize execution).

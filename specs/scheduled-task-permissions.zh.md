@@ -36,8 +36,12 @@ prepared turn 冻结这份列表，重试保持不变。旧 Schedule 文档无�
 Lody 内置 MCP 不受影响。
 
 MCP 创建、修改、提议工具和 CLI JSON draft 接受 id 或唯一名称，写入时统一
-解析为 id。MCP update 未传字段时保留原选择。编辑器复用 composer 的 MCP 菜单，
-未操作的缺省选择保持动态。确认提议卡片时将保存的 id 带入 definition。
+解析为 id。Schedule 已保存的 id 不再重新解析，因此其中某个 MCP 被删除后，
+修改其他字段仍会成功，运行时跳过该 MCP。MCP update 未传字段时保留原选择，
+传 `null` 清除该字段，恢复每次运行跟随工作区默认。编辑器复用 composer 的
+MCP 菜单，并提供「跟随工作区默认」选项，用于显示和恢复未设置状态；未操作的
+缺省选择保持动态。提议卡片列出 MCP 名称，并标明是工作区默认、不加载还是
+指定列表；确认时将保存的 id 带入 definition。
 使用新字段前，执行机器的 daemon 需要包含此支持。
 
 ## 依据

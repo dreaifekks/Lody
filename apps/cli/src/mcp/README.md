@@ -131,7 +131,10 @@ Known limits of the alerts on these writes:
 `mcpServerIds` as workspace MCP ids or unique names. Names are stored as ids;
 `lody_schedule_get` includes the choice in `schedule.definition`. On create or
 propose, omission follows workspace `enabledByDefault` servers at every run;
-`[]` selects none. Update omission preserves the stored choice. Existing-chat
+`[]` selects none. Update omission preserves the stored choice; update `null`
+clears it so runs follow workspace defaults again. Ids the schedule already
+saved are not resolved again, so an edit still succeeds after one of those
+servers was removed (runs skip it). Existing-chat
 destinations retain that chat's MCP selection.
 
 The human CLI accepts the same field inside `lody schedule create/edit --file`

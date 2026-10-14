@@ -34,13 +34,14 @@ import { useResolvedWorkspaceScope } from '@/hooks/use-resolved-workspace-scope'
 import { useVisibleLocalProjects } from '@/hooks/use-visible-local-projects';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useWorkspaceAgentRoles } from '@/hooks/use-workspace-agent-roles';
+import { useWorkspaceMcpCatalog } from '@/hooks/use-workspace-mcp-catalog';
 import { Button } from '@lody/ui/button';
 import { Input } from '@lody/ui/input';
 import { Tabs } from '@lody/ui/tabs';
 import { Textarea } from '@lody/ui/textarea';
 import { settingsCard } from '@/components/settings/compact-layout';
 import { MarkdownRenderer } from '@/components/ai-gui/markdown-renderer';
-import { describeDestination, describeRecurrence } from './schedule-format';
+import { describeDestination, describeMcpSelection, describeRecurrence } from './schedule-format';
 import { PropertyRow, scheduleCardProps } from './schedule-property-row';
 import { ScheduleRecurrenceEditor } from './schedule-recurrence-editor';
 import { collectScheduleSaveBlockers } from './schedule-save-blockers';
@@ -213,6 +214,7 @@ export function ScheduleProposalNotice({
   const session = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(sessionId)));
   const agents = useAtomValue(getAllAgentConfigAtom) as AgentConfigMeta[];
   const { roles } = useWorkspaceAgentRoles();
+  const { servers: mcpServers } = useWorkspaceMcpCatalog();
   const { machines } = useVisibleMachineMetas({ includeMachineFlock: true });
   const local = useVisibleLocalProjects({ includeMachineFlock: true });
   const [busy, setBusy] = useState(false);
@@ -533,6 +535,15 @@ export function ScheduleProposalNotice({
             .join(' · ')
         : '—',
     ],
+    // An existing chat keeps its own MCP selection.
+    ...(target?.destination.kind === 'existing_session'
+      ? []
+      : [
+          [
+            t('schedules.mcp.label', 'MCP'),
+            describeMcpSelection(meta.mcpServerIds, mcpServers, t),
+          ] as [string, string],
+        ]),
     ...(target?.project
       ? [
           [
