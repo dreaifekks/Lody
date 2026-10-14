@@ -8,6 +8,7 @@ export const ARCHIVE_DESKTOP_SESSION_ROW_ESTIMATE_PX = 36;
 export const ARCHIVE_MOBILE_SESSION_ROW_ESTIMATE_PX = 56;
 export const ARCHIVE_GROUP_GAP_PX = 16;
 export const ARCHIVE_LIST_OVERSCAN = 12;
+export const ARCHIVE_GROUP_PREVIEW_COUNT = 10;
 
 export type ArchiveListGroupInput = {
   key: string;
@@ -17,6 +18,13 @@ export type ArchiveListGroupInput = {
 };
 
 export type ArchiveVirtualRow =
+  | {
+      kind: 'more';
+      key: string;
+      groupKey: string;
+      remainingCount: number;
+      isLastInGroup: true;
+    }
   | {
       kind: 'header';
       key: string;
@@ -52,7 +60,7 @@ export function shouldVirtualizeVisibleArchiveRows(
 
 export function flattenVisibleArchiveRows(
   groups: readonly ArchiveListGroupInput[],
-  options: { hideGroupHeader: boolean }
+  options: { hideGroupHeader: boolean; expandedGroupKeys?: ReadonlySet<string> }
 ): ArchiveVirtualRow[] {
   const rows: ArchiveVirtualRow[] = [];
   let isFirstHeader = true;
@@ -74,22 +82,43 @@ export function flattenVisibleArchiveRows(
     if (!showSessions) continue;
 
     const tree = buildArchivedSessionTree(group.sessions);
-    tree.forEach((node, index) => {
+    const rootCount = tree.filter((node) => node.depth === 0).length;
+    const limited = !options.hideGroupHeader && options.expandedGroupKeys?.has(group.key) !== true;
+    const remainingCount = limited ? Math.max(0, rootCount - ARCHIVE_GROUP_PREVIEW_COUNT) : 0;
+    let visibleRoots = 0;
+    const visibleTree =
+      remainingCount > 0
+        ? tree.filter((node) => {
+            if (node.depth === 0) visibleRoots += 1;
+            return visibleRoots <= ARCHIVE_GROUP_PREVIEW_COUNT;
+          })
+        : tree;
+    visibleTree.forEach((node, index) => {
       rows.push({
         kind: 'session',
         key: `session:${node.item.id}`,
         groupKey: group.key,
         sessionId: node.item.id,
         depth: node.depth,
-        isLastInGroup: index === tree.length - 1,
+        isLastInGroup: remainingCount === 0 && index === visibleTree.length - 1,
       });
     });
+    if (remainingCount > 0) {
+      rows.push({
+        kind: 'more',
+        key: `more:${group.key}`,
+        groupKey: group.key,
+        remainingCount,
+        isLastInGroup: true,
+      });
+    }
   }
 
   return rows;
 }
 
 export function archiveRowDataId(row: ArchiveVirtualRow): string {
+  if (row.kind === 'more') return `archive-more:${row.groupKey}`;
   return row.kind === 'header'
     ? `archive-group:${row.groupKey}`
     : `archive-session:${row.sessionId}`;

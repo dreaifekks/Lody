@@ -70,10 +70,12 @@ const styles = stylex.create({
   scope: { minWidth: 0, marginInlineStart: space[2] },
   scopeLabel: {
     minWidth: 0,
+    maxWidth: '16em',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
+  scopeLabelShort: { maxWidth: '104px' },
   chevron: { flexShrink: 0, width: '14px', height: '14px', color: colors.tertiaryLabel },
   body: {
     display: 'flex',
@@ -88,7 +90,83 @@ const styles = stylex.create({
   },
 });
 
+export type ArchiveMachineFilter = {
+  options: { id: string; name: string }[];
+  value: string | null;
+  onChange: (machineId: string | null) => void;
+};
+
+type ArchiveScopeMenuProps = {
+  compact?: boolean;
+  archiveScope: ArchiveScope;
+  onArchiveScopeChange: (scope: ArchiveScope) => void;
+  machineFilter?: ArchiveMachineFilter;
+};
+
+export function ArchiveScopeMenu({
+  compact = false,
+  archiveScope,
+  onArchiveScopeChange,
+  machineFilter,
+}: ArchiveScopeMenuProps) {
+  const { t } = useTranslation();
+  if (machineFilter && machineFilter.options.length <= 1) return null;
+  const scopeLabel = machineFilter
+    ? (machineFilter.options.find((machine) => machine.id === machineFilter.value)?.name ??
+      t('archive.machines.all', 'All machines'))
+    : archiveScope === 'my'
+      ? t('sessions.sidebar.my', 'My Tasks')
+      : t('sessions.sidebar.team', 'All Tasks');
+  return (
+    <Menu.Root>
+      <Menu.Trigger
+        render={
+          <Button type="button" variant="ghost" size="small">
+            <span {...stylex.props(styles.scopeLabel, compact && styles.scopeLabelShort)}>
+              {scopeLabel}
+            </span>
+            <ChevronDown {...stylex.props(styles.chevron)} />
+          </Button>
+        }
+      />
+      <Menu.Content align={compact ? 'end' : 'start'}>
+        <Menu.RadioGroup
+          value={machineFilter ? (machineFilter.value ?? '__all__') : archiveScope}
+          onValueChange={(value: string) => {
+            if (machineFilter) {
+              machineFilter.onChange(value === '__all__' ? null : value);
+            } else if (value === 'my' || value === 'team') {
+              onArchiveScopeChange(value);
+            }
+          }}
+        >
+          {machineFilter ? (
+            <>
+              <Menu.RadioItem value="__all__">
+                {t('archive.machines.all', 'All machines')}
+              </Menu.RadioItem>
+              {machineFilter.options.map((machine) => (
+                <Menu.RadioItem key={machine.id} value={machine.id}>
+                  {machine.name}
+                </Menu.RadioItem>
+              ))}
+            </>
+          ) : (
+            <>
+              <Menu.RadioItem value="my">{t('sessions.sidebar.my', 'My Tasks')}</Menu.RadioItem>
+              <Menu.RadioItem value="team">
+                {t('sessions.sidebar.team', 'All Tasks')}
+              </Menu.RadioItem>
+            </>
+          )}
+        </Menu.RadioGroup>
+      </Menu.Content>
+    </Menu.Root>
+  );
+}
+
 export type WebArchiveScreenProps = {
+  machineFilter?: ArchiveMachineFilter;
   archiveScope: ArchiveScope;
   isMultiSelectMode: boolean;
   selectedCount: number;
@@ -105,6 +183,7 @@ export type WebArchiveScreenProps = {
 
 export function WebArchiveScreen({
   archiveScope,
+  machineFilter,
   isMultiSelectMode,
   selectedCount,
   isBulkActionBusy,
@@ -130,10 +209,6 @@ export function WebArchiveScreen({
   const hasMacOSTitlebarInset =
     !isNativeAppShell() && isMacOSElectronRenderer() && !isElectronFullscreen;
 
-  const scopeLabel =
-    archiveScope === 'my'
-      ? t('sessions.sidebar.my', 'My Tasks')
-      : t('sessions.sidebar.team', 'All Tasks');
   const chromeClassName = [
     windowDragClass,
     windowsCaptionPadClass,
@@ -212,33 +287,11 @@ export function WebArchiveScreen({
                 <h1 {...stylex.props(styles.title)}>{t('archive.title', 'Archive')}</h1>
               </div>
               <div {...stylex.props(styles.scope)}>
-                <Menu.Root>
-                  <Menu.Trigger
-                    render={
-                      <Button type="button" variant="ghost" size="small">
-                        <span {...stylex.props(styles.scopeLabel)}>{scopeLabel}</span>
-                        <ChevronDown {...stylex.props(styles.chevron)} />
-                      </Button>
-                    }
-                  />
-                  <Menu.Content align="start">
-                    <Menu.RadioGroup
-                      value={archiveScope}
-                      onValueChange={(value) => {
-                        if (value === 'my' || value === 'team') {
-                          onArchiveScopeChange(value);
-                        }
-                      }}
-                    >
-                      <Menu.RadioItem value="my">
-                        {t('sessions.sidebar.my', 'My Tasks')}
-                      </Menu.RadioItem>
-                      <Menu.RadioItem value="team">
-                        {t('sessions.sidebar.team', 'All Tasks')}
-                      </Menu.RadioItem>
-                    </Menu.RadioGroup>
-                  </Menu.Content>
-                </Menu.Root>
+                <ArchiveScopeMenu
+                  archiveScope={archiveScope}
+                  onArchiveScopeChange={onArchiveScopeChange}
+                  machineFilter={machineFilter}
+                />
               </div>
             </>
           )}

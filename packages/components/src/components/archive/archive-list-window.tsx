@@ -87,12 +87,12 @@ function archiveCardRuns(rows: readonly ArchiveVirtualRow[]): ArchiveCardRun[] {
   const runs: ArchiveCardRun[] = [];
   let current: ArchiveCardRun | null = null;
   rows.forEach((row, index) => {
-    if (row.kind !== 'session') {
+    if (row.kind === 'header') {
       current = null;
       return;
     }
     const previous = rows[index - 1];
-    if (current && previous?.kind === 'session' && previous.groupKey === row.groupKey) {
+    if (current && previous?.kind !== 'header' && previous?.groupKey === row.groupKey) {
       current.end = index;
     } else {
       current = { key: `card:${row.groupKey}:${index}`, start: index, end: index };
@@ -119,6 +119,26 @@ function useArchiveVirtualListKeyboardNavigation({
   rowsRef.current = rows;
   const scrollToIndexRef = useRef(scrollToIndex);
   scrollToIndexRef.current = scrollToIndex;
+
+  const focusPendingRow = useCallback(() => {
+    if (!enabled) return;
+    const dataId = pendingFocusDataIdRef.current;
+    if (!dataId) return;
+    const root = rootRef.current;
+    if (!root) return;
+    const item = root.querySelector(`[data-id="${CSS.escape(dataId)}"]`);
+    if (!(item instanceof HTMLElement)) return;
+    pendingFocusDataIdRef.current = null;
+    const target = item.matches(
+      'a[href], button:not([disabled]), input:not([disabled]), [tabindex]'
+    )
+      ? item
+      : item.querySelector<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), [tabindex]'
+        );
+    target?.focus({ preventScroll: true });
+    item.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [enabled, rootRef]);
 
   useEffect(() => {
     if (!enabled || typeof window === 'undefined') return undefined;
@@ -169,30 +189,15 @@ function useArchiveVirtualListKeyboardNavigation({
       event.preventDefault();
       pendingFocusDataIdRef.current = archiveRowDataId(nextRow);
       scrollToIndexRef.current(nextIndex);
+      focusPendingRow();
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [enabled, rootRef]);
+  }, [enabled, rootRef, focusPendingRow]);
 
   useLayoutEffect(() => {
-    if (!enabled) return;
-    const dataId = pendingFocusDataIdRef.current;
-    if (!dataId) return;
-    const root = rootRef.current;
-    if (!root) return;
-    const item = root.querySelector(`[data-id="${CSS.escape(dataId)}"]`);
-    if (!(item instanceof HTMLElement)) return;
-    pendingFocusDataIdRef.current = null;
-    const target = item.matches(
-      'a[href], button:not([disabled]), input:not([disabled]), [tabindex]'
-    )
-      ? item
-      : item.querySelector<HTMLElement>(
-          'a[href], button:not([disabled]), input:not([disabled]), [tabindex]'
-        );
-    target?.focus({ preventScroll: true });
-    item.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    focusPendingRow();
   });
 }
 
@@ -214,6 +219,7 @@ export function ArchiveListWindow({
   resetScrollKey,
 }: ArchiveListWindowProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const focusedMoreRowRef = useRef<{ key: string; index: number } | null>(null);
   const shouldVirtualize = shouldVirtualizeVisibleArchiveRows(rows.length, virtualizeThreshold);
   const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: rows.length,
@@ -244,6 +250,23 @@ export function ArchiveListWindow({
   });
 
   const virtualItems = rowVirtualizer.getVirtualItems();
+  // Expanding removes the focused disclosure. Keep keyboard navigation at the
+  // first newly revealed session, including when expansion enables virtualization.
+  useLayoutEffect(() => {
+    const focused = focusedMoreRowRef.current;
+    if (!focused || rows.some((row) => row.key === focused.key)) return;
+    const row = rows[focused.index];
+    if (!row) return;
+    const item = scrollRef.current?.querySelector<HTMLElement>(
+      `[data-id="${CSS.escape(archiveRowDataId(row))}"]`
+    );
+    if (item) {
+      focusedMoreRowRef.current = null;
+      item.focus({ preventScroll: true });
+    } else if (shouldVirtualize) {
+      queueMicrotask(() => rowVirtualizer.scrollToIndex(focused.index, { align: 'auto' }));
+    }
+  });
   // Phones keep the flat list of the rest of the mobile shell: a swipe row's
   // content is opaque on the page, so it cannot sit on a card.
   const drawCards = !isMobile;
@@ -312,7 +335,19 @@ export function ArchiveListWindow({
   };
 
   return (
-    <div ref={scrollRef} data-archive-list-scroll="" {...stylex.props(styles.scroll)}>
+    <div
+      ref={scrollRef}
+      data-archive-list-scroll=""
+      {...stylex.props(styles.scroll)}
+      onClickCapture={(event) => {
+        const id = (event.target as HTMLElement)
+          .closest('[data-scope-item]')
+          ?.getAttribute('data-id');
+        const index = rows.findIndex((row) => archiveRowDataId(row) === id);
+        const row = rows[index];
+        focusedMoreRowRef.current = row?.kind === 'more' ? { key: row.key, index } : null;
+      }}
+    >
       <FocusScope id={listScopeId} {...stylex.props(styles.fill)}>
         {shouldVirtualize ? (
           <div

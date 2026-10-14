@@ -3,7 +3,7 @@
 import { createStore } from 'jotai';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { archiveScopeAtom, chatScopeAtom } from '../src/atoms/sidebar-state';
+import { archiveMachineIdAtom, archiveScopeAtom, chatScopeAtom } from '../src/atoms/sidebar-state';
 
 const CHAT_SCOPE_STORAGE_KEY = 'lody-sidebar-chat-scope';
 const ARCHIVE_SCOPE_STORAGE_KEY = 'lody-archive-scope';
@@ -66,6 +66,22 @@ describe('archiveScopeAtom', () => {
 
     expect(store.get(archiveScopeAtom)).toBe('my');
 
+    unsubscribe();
+  });
+});
+
+describe('archiveMachineIdAtom', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('defaults to all machines and restores an explicitly persisted choice', () => {
+    const store = createStore();
+    const unmount = store.sub(archiveMachineIdAtom, () => {});
+    expect(store.get(archiveMachineIdAtom)).toBeNull();
+    store.set(archiveMachineIdAtom, 'server');
+    unmount();
+    const reopened = createStore();
+    const unsubscribe = reopened.sub(archiveMachineIdAtom, () => {});
+    expect(reopened.get(archiveMachineIdAtom)).toBe('server');
     unsubscribe();
   });
 });
