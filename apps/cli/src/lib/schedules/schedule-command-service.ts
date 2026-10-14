@@ -45,6 +45,11 @@ import { readMergedAgentConfigById } from '../agent-config-machine-flock';
 import { readAgentRunConfigTier } from '../agent-permission-tier';
 import { publishScheduleProposal } from './schedule-proposal';
 import {
+  findWorkspaceMcpServer,
+  listWorkspaceMcpCatalog,
+  syncMcpCatalog,
+} from '../workspace-mcp-store';
+import {
   destinationSessionProblem,
   readScheduleAgentRole,
   scheduleDestinationSessionId,
@@ -153,6 +158,12 @@ export async function executeScheduleCommand(
     const session = await manager.getOrCreateSessionDoc(requesterSessionId);
     await sync(session.roomId);
   }
+  const resolveMcpIds = async (selectors: string[] | undefined) => {
+    if (selectors === undefined || selectors.length === 0) return selectors;
+    if (!localOnly) await syncMcpCatalog(manager, workspaceId);
+    const servers = await listWorkspaceMcpCatalog(manager.repo, workspaceId);
+    return [...new Set(selectors.map((selector) => findWorkspaceMcpServer(servers, selector).id))];
+  };
   const registry = await manager.repo.openFlockDoc(getScheduleRegistryFlockDocId(workspaceId));
   if (!localOnly) await registry.syncOnce();
   if (command.action === 'list') {
@@ -193,6 +204,7 @@ export async function executeScheduleCommand(
         title: command.title,
         prompt: command.prompt,
         rule: command.rule,
+        mcpServerIds: await resolveMcpIds(command.mcpServerIds),
         ...(command.destination ? { destination: command.destination } : {}),
         ...(command.target ? { target: command.target } : {}),
       },
@@ -318,6 +330,7 @@ export async function executeScheduleCommand(
       'This schedule runs with more permissions than this conversation has. Only the user can change or resume it, in Schedules.'
     );
   let draft = command.action === 'create' || command.action === 'edit' ? command.draft : undefined;
+  if (draft) draft = { ...draft, mcpServerIds: await resolveMcpIds(draft.mcpServerIds) };
   if (draft?.agentRole && (command.action === 'create' || command.action === 'edit')) {
     const { agentRole } = draft;
     if ((draft.destination ?? DEFAULT_SCHEDULE_DESTINATION).kind === 'existing_session')

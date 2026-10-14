@@ -39,7 +39,7 @@ for (const action of [
   if (action === 'create' || action === 'edit')
     command.requiredOption(
       '--file <path>',
-      'JSON draft: title, prompt, machineId, trigger, agent, project and policies'
+      'JSON draft: title, prompt, machineId, trigger, agent, project, policies and optional mcpServerIds (ids/names; omit for workspace defaults, [] for none)'
     );
   if (['create', 'edit', 'pause', 'resume', 'run'].includes(action))
     command.option('--request-id <id>', 'Stable idempotency key; reuse on retry');

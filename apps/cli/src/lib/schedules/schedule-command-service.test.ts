@@ -158,6 +158,14 @@ async function fixture() {
     documentSync,
     notificationSync,
     history: () => history,
+    addMcp: (id: string, name: string) =>
+      rows.set(JSON.stringify(['mcpServer', id]), {
+        id,
+        name,
+        transport: 'stdio',
+        createdAt: 0,
+        updatedAt: 0,
+      }),
     owner: (value: string) => {
       owner = value;
     },
@@ -408,6 +416,18 @@ describe('proposing a schedule from a conversation', () => {
       ...extra,
     } as ScheduleCommand);
 
+  it('resolves MCP names into ids on the proposal card', async () => {
+    const h = await fixture();
+    h.context.requesterSessionId = 'session' as never;
+    h.addMcp('mcp-a', 'Mail');
+    await propose(h, { mcpServerIds: ['Mail', 'mcp-a'] });
+    expect(h.history()[0].items[0].meta.mcpServerIds).toEqual(['mcp-a']);
+    await expect(propose(h, { mcpServerIds: ['Mail', 'mcp-a'] })).resolves.toMatchObject({
+      pending: true,
+    });
+    await expect(propose(h, { mcpServerIds: [] })).rejects.toThrow('Idempotency');
+  });
+
   it('writes one card into the invoking conversation, idempotently', async () => {
     const h = await fixture();
     h.context.requesterSessionId = 'session' as never;
@@ -535,6 +555,67 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
         draftContext
       ),
     });
+
+  it('stores MCP ids from create/update and preserves omitted versus empty selections', async () => {
+    const h = await asAgent('edit');
+    h.addMcp('mcp-a', 'Mail');
+    const input = {
+      requestId: 'mcp-task',
+      title: 'MCP task',
+      prompt: 'Read updates.',
+      rule: { kind: 'manual' as const },
+      mcpServerIds: ['Mail'],
+    };
+    const command = {
+      action: 'create' as const,
+      scheduleId: 'mcp-task',
+      requestId: input.requestId,
+      draft: buildScheduleCreateDraft(input, draftContext),
+    };
+    await executeScheduleCommand(h.context, command);
+    await executeScheduleCommand(h.context, command);
+    const stored = (await h.repository.read('mcp-task'))!;
+    expect(stored.definition.mcpServerIds).toEqual(['mcp-a']);
+    expect(
+      buildScheduleEditDraft(
+        { scheduleId: 'mcp-task', requestId: 'unchanged', title: 'Renamed' },
+        stored,
+        draftContext
+      ).mcpServerIds
+    ).toEqual(['mcp-a']);
+    await executeScheduleCommand(h.context, {
+      action: 'edit',
+      scheduleId: 'mcp-task',
+      requestId: 'empty',
+      draft: buildScheduleEditDraft(
+        { scheduleId: 'mcp-task', requestId: 'empty', mcpServerIds: [] },
+        stored,
+        draftContext
+      ),
+    });
+    expect(
+      await executeScheduleCommand(h.context, { action: 'show', scheduleId: 'mcp-task' })
+    ).toMatchObject({ schedule: { definition: { mcpServerIds: [] } } });
+    expect(
+      buildScheduleCreateDraft({ ...input, mcpServerIds: undefined }, draftContext)
+    ).not.toHaveProperty('mcpServerIds');
+    await expect(
+      executeScheduleCommand(h.context, {
+        ...command,
+        scheduleId: 'missing',
+        requestId: 'missing',
+        draft: { ...command.draft, mcpServerIds: ['missing'] },
+      })
+    ).rejects.toThrow('MCP server not found');
+    h.addMcp('mcp-b', 'Mail');
+    await expect(
+      executeScheduleCommand(h.context, {
+        ...command,
+        scheduleId: 'ambiguous',
+        requestId: 'ambiguous',
+      })
+    ).rejects.toThrow('ambiguous');
+  });
 
   it('creates an enabled schedule with this conversation’s Agent and mode, attributed to it', async () => {
     const h = await asAgent('edit');

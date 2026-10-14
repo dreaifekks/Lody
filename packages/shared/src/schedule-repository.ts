@@ -29,6 +29,7 @@ export type ScheduleDraft = Pick<
   | 'overlapPolicy'
   | 'agent'
   | 'agentRole'
+  | 'mcpServerIds'
   | 'project'
   | 'retryPolicy'
 > & { prompt: string; destination?: ScheduleDefinition['destination'] };
@@ -126,6 +127,7 @@ export class ScheduleRepository {
           ...document.definition,
           project: document.definition.project,
           agentRole: document.definition.agentRole,
+          mcpServerIds: document.definition.mcpServerIds,
         },
         timeline: document.timeline.map((entry) => ({
           ...entry,
@@ -191,6 +193,7 @@ export class ScheduleRepository {
         overlapPolicy,
         agent,
         agentRole,
+        mcpServerIds,
         project,
         destination,
         retryPolicy,
@@ -203,6 +206,7 @@ export class ScheduleRepository {
         overlapPolicy,
         agent,
         agentRole,
+        mcpServerIds,
         project,
         destination,
         retryPolicy,

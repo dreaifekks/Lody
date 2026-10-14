@@ -94,8 +94,8 @@ Exact deletion bypasses discovery: [relations](../../specs/session-relations.md)
 
 ## Workspace MCP / Roles
 
-- Workspace MCP has exactly two durable layers: catalog entries in the workspace Flock
-  document and selected ids in each user turn input config. Do not add machine bindings.
+- Workspace MCP catalogs live in workspace Flock; selected ids live in user turns.
+  Schedule definitions can select MCP ids for future turns. Do not add machine bindings.
   Preserve `mcpServerIds: []` as an explicit empty selection; dispatch must carry the
   driving turn's selection into ACP startup rather than rereading session history.
 - MCP/Role catalog writes resolve on local Flock durability, followed by explicit

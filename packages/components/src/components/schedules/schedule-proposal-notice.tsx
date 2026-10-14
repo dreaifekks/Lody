@@ -420,6 +420,7 @@ export function ScheduleProposalNotice({
                 trigger,
                 machineId: final.target.agentConfig.machineId,
                 agent: final.target.agent,
+                mcpServerIds: meta.mcpServerIds,
                 ...(final.target.agentRole ? { agentRole: final.target.agentRole } : {}),
                 ...(final.target.project ? { project: final.target.project } : {}),
                 destination: final.target.destination,

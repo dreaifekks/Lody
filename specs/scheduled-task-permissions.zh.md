@@ -26,6 +26,20 @@ activation 或冻结的运行标识。显示和交接时，仅对目标 Agent �
 的选项转换精确的旧值 `"true"`/`"false"`。未知选项和其他值仍由普通会话校验，
 缺少能力数据不允许猜测类型。此兼容不会重跑已耗尽重试次数或已提交的工作。
 
+## 工作区 MCP 选择
+
+Schedule 可保存 `mcpServerIds`，内容为工作区 catalog id 列表。对于
+`new_session` 和 `own_session`，未设置时在每次准备派发时使用工作区中
+`enabledByDefault` 的 MCP；显式空数组表示不加载任何工作区 MCP。
+prepared turn 冻结这份列表，重试保持不变。旧 Schedule 文档无需迁移。
+`existing_session` 始终沿用会话自己的 MCP 选择，忽略这个字段。
+Lody 内置 MCP 不受影响。
+
+MCP 创建、修改、提议工具和 CLI JSON draft 接受 id 或唯一名称，写入时统一
+解析为 id。MCP update 未传字段时保留原选择。编辑器复用 composer 的 MCP 菜单，
+未操作的缺省选择保持动态。确认提议卡片时将保存的 id 带入 definition。
+使用新字段前，执行机器的 daemon 需要包含此支持。
+
 ## 依据
 
 - [Shared validation](../packages/shared/src/schedule-types.ts)

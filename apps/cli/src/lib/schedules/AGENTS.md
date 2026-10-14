@@ -46,6 +46,10 @@
   The tool description tells the agent to ask rather than guess when the
   prompt, rule or destination is unclear — that guidance is the product
   behaviour, so keep it in step with what the card can resolve.
+- `mcpServerIds` is optional: new/owned chats use workspace `enabledByDefault` ids
+  when absent, and `[]` means none. Freeze the choice on the prepared turn; retries
+  keep it. Existing-chat destinations inherit the chat's choice. CLI/MCP writes
+  resolve names to catalog ids; UI edits and proposal confirmation preserve the field.
 - Schedule v2 preserves ACP string/boolean values. Legacy boolean strings are
   projected against target capability types at handoff, never migrated in the
   definition/ledger (their fingerprints authorize execution).

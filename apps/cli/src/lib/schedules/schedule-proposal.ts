@@ -3,7 +3,7 @@ import type { SessionBackend } from '@/session/session-backend';
 
 export type ScheduleProposalDraft = Pick<
   ScheduleProposalMeta,
-  'proposalId' | 'title' | 'prompt' | 'rule' | 'destination' | 'target'
+  'proposalId' | 'title' | 'prompt' | 'rule' | 'destination' | 'target' | 'mcpServerIds'
 >;
 
 export type ScheduleProposalActor = { agentConfigId?: string; name?: string };

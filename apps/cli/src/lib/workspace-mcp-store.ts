@@ -124,3 +124,20 @@ export async function upsertWorkspaceAgentRoleEntry(
     writeWorkspaceAgentRoleToFlock(flock, role)
   );
 }
+
+export function findWorkspaceMcpServer(
+  entries: readonly WorkspaceMcpServerMeta[],
+  selector: string
+): WorkspaceMcpServerMeta {
+  const normalized = selector.trim();
+  const byId = entries.find(({ id }) => id === normalized);
+  if (byId) return byId;
+  const matches = entries.filter(
+    ({ name }) => name.toLocaleLowerCase() === normalized.toLocaleLowerCase()
+  );
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) {
+    throw new Error(`MCP server selector is ambiguous: ${normalized}. Use an id.`);
+  }
+  throw new Error(`MCP server not found: ${normalized}`);
+}

@@ -4,6 +4,7 @@ import {
   ScheduleProposalDestinationSchema,
   ScheduleProposalRuleSchema,
   ScheduleProposalTargetSchema,
+  ScheduleDefinitionSchema,
   scheduleProposalRuleToTrigger,
   type CatalogAgentRole,
   type ProposalConversation,
@@ -38,6 +39,7 @@ export const ScheduleCreateToolInputSchema = z
     rule: fields.rule,
     destination: fields.destination.optional(),
     target: fields.target.optional(),
+    mcpServerIds: ScheduleDefinitionSchema.shape.mcpServerIds,
   })
   .strict();
 export type ScheduleCreateToolInput = z.infer<typeof ScheduleCreateToolInputSchema>;
@@ -51,6 +53,7 @@ export const ScheduleUpdateToolInputSchema = z
     rule: fields.rule.optional(),
     destination: fields.destination.optional(),
     target: fields.target.optional(),
+    mcpServerIds: ScheduleDefinitionSchema.shape.mcpServerIds,
   })
   .strict();
 export type ScheduleUpdateToolInput = z.infer<typeof ScheduleUpdateToolInputSchema>;
@@ -122,6 +125,7 @@ export function buildScheduleCreateDraft(
     ),
     machineId,
     agent: target.agent,
+    ...(input.mcpServerIds !== undefined ? { mcpServerIds: input.mcpServerIds } : {}),
     ...(target.agentRole ? { agentRole: target.agentRole } : {}),
     ...(target.project ? { project: target.project } : {}),
     destination: target.destination,
@@ -176,6 +180,7 @@ export function buildScheduleEditDraft(
       : definition.trigger,
     machineId,
     agent: target?.agent ?? definition.agent,
+    mcpServerIds: input.mcpServerIds ?? definition.mcpServerIds,
     ...(target
       ? target.agentRole
         ? { agentRole: target.agentRole }

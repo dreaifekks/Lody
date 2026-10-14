@@ -33,6 +33,21 @@ Agent declares boolean. Unknown options and other values remain subject to
 ordinary Session validation; missing capability data does not authorize guessing.
 This compatibility does not re-run exhausted or already dispatched work.
 
+## Workspace MCP selection
+
+A Schedule may store `mcpServerIds`, a list of workspace catalog ids. For
+`new_session` and `own_session`, omission uses the workspace servers marked
+`enabledByDefault` when each run is prepared; an explicit empty list selects no
+workspace MCP servers. The prepared turn freezes the list for retries. Old
+Schedule documents need no migration. `existing_session` keeps its own MCP
+selection, regardless of this field. Lody's built-in MCP is unaffected.
+
+Create/update/propose MCP tools and CLI JSON drafts accept ids or unique names;
+writes resolve names to ids. An omitted MCP update field preserves the existing
+choice. The editor reuses the composer MCP menu and keeps an untouched omitted
+choice dynamic. Proposal confirmation carries its stored ids into the definition.
+The owning daemon must include this support before using the new field.
+
 ## Evidence
 
 - [Shared validation](../packages/shared/src/schedule-types.ts)

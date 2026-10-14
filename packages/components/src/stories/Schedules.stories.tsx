@@ -1,3 +1,4 @@
+import { AttachmentAddMenu } from '../components/chat/attachment-add-menu';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import {
   ScheduleForm,
@@ -18,6 +19,7 @@ import type { AgentRunRef } from '../components/shared/agent-run-ref';
 import { WorktreeCheckboxPill } from '../components/shared/workdir-mode-selector';
 import {
   normalizeAgentRole,
+  type McpServerId,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRoleInstanceId,
@@ -311,6 +313,7 @@ function EditorStory({
   /** Render without the page scroller, e.g. inside the detail pane. */
   bare?: boolean;
 }) {
+  const [mcpServerIds, setMcpServerIds] = useState<McpServerId[]>(['mail' as McpServerId]);
   const [destination, setDestination] = useState<ScheduleDestination>(
     fixture.destination ?? { kind: 'new_session' }
   );
@@ -354,6 +357,32 @@ function EditorStory({
         }
         agentBar={({ revealMissing }) => (
           <>
+            {destination.kind !== 'existing_session' ? (
+              <AttachmentAddMenu
+                isMobile={false}
+                mcp={{
+                  servers: [
+                    {
+                      id: 'mail' as McpServerId,
+                      name: 'Mail',
+                      transport: 'stdio',
+                      enabledByDefault: true,
+                      createdAt: 0,
+                      updatedAt: 0,
+                    },
+                    {
+                      id: 'search' as McpServerId,
+                      name: 'Search',
+                      transport: 'http',
+                      createdAt: 0,
+                      updatedAt: 0,
+                    },
+                  ],
+                  selectedIds: mcpServerIds,
+                  onSelectedIdsChange: setMcpServerIds,
+                }}
+              />
+            ) : null}
             <ScheduleAgentControls
               machine={storyMachine}
               agentConfigs={storyAgents}

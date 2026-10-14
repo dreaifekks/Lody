@@ -27,6 +27,7 @@ import { findNextDispatchableUserTurn } from '@/session/session-dispatch-logic';
 import { ScheduleEngine, type ScheduleEnginePorts } from './schedule-engine';
 import { ScheduleStore, type ScheduleRun } from './schedule-store';
 import {
+  applyScheduleMcpSelection,
   buildScheduleRunTarget,
   buildScheduleSessionCreateOptions,
   scheduleDestinationSessionId,
@@ -75,7 +76,10 @@ describe('Chat-only schedule handoff', () => {
       sessionId: string;
       userTurnId: string;
       state: string | undefined;
-    }) => void
+    }) => void,
+    selection: Pick<ScheduleDefinition, 'mcpServerIds' | 'destination'> = {
+      destination: { kind: 'new_session' },
+    }
   ) => {
     const directory = mkdtempSync(path.join(os.tmpdir(), 'lody-schedule-chat-'));
     const store = new ScheduleStore<PreparedSessionInput>(path.join(directory, 'runs.sqlite'));
@@ -88,6 +92,44 @@ describe('Chat-only schedule handoff', () => {
           metas.set(id, { ...metas.get(id), ...patch } as SessionMeta);
         },
         flush: async () => {},
+        openFlockDoc: async () => ({
+          flock: {
+            scan: () => [
+              {
+                key: ['mcpServer', 'default'],
+                value: {
+                  id: 'default',
+                  name: 'Default',
+                  transport: 'stdio',
+                  enabledByDefault: true,
+                  createdAt: 0,
+                  updatedAt: 0,
+                },
+              },
+              {
+                key: ['mcpServer', 'opt-in'],
+                value: {
+                  id: 'opt-in',
+                  name: 'Optional',
+                  transport: 'stdio',
+                  enabledByDefault: false,
+                  createdAt: 0,
+                  updatedAt: 0,
+                },
+              },
+              {
+                key: ['mcpServer', 'unset'],
+                value: {
+                  id: 'unset',
+                  name: 'Unset',
+                  transport: 'stdio',
+                  createdAt: 0,
+                  updatedAt: 0,
+                },
+              },
+            ],
+          },
+        }),
       },
       getOrCreateSessionDoc: async (id: string) => {
         if (!mirrors.has(id))
@@ -110,7 +152,7 @@ describe('Chat-only schedule handoff', () => {
     } as unknown as LoroDocumentManager;
 
     const document: ScheduleDocument = {
-      definition: definition(project),
+      definition: { ...definition(project), ...selection },
       prompt: 'Say good morning.',
       timeline: [],
     };
@@ -154,7 +196,7 @@ describe('Chat-only schedule handoff', () => {
           })
         );
         identity = { sessionId: scheduled.sessionId, userTurnId: scheduled.userTurnId };
-        return {
+        const prepared = {
           sessionId: scheduled.sessionId as PreparedSessionInput['sessionId'],
           meta: {
             id: scheduled.sessionId,
@@ -174,6 +216,14 @@ describe('Chat-only schedule handoff', () => {
             fileDiff: [],
           },
         } satisfies PreparedSessionInput;
+        await applyScheduleMcpSelection({
+          manager,
+          workspaceId: 'workspace' as never,
+          localOnly: true,
+          definition: scheduled.definition,
+          prepared,
+        });
+        return prepared;
       },
       materialize: (prepared) => materializePreparedSessionInput(manager, prepared),
       isDispatched: (prepared) => isPreparedSessionDispatched(manager, prepared),
@@ -203,6 +253,31 @@ describe('Chat-only schedule handoff', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   };
+
+  it.each(['new_session', 'own_session'] as const)(
+    'freezes explicit, default and empty MCP selections for %s',
+    async (kind) => {
+      const destination = kind === 'own_session' ? { kind, epoch: 0 } : { kind };
+      for (const [mcpServerIds, expected] of [
+        [undefined, ['default']],
+        [['opt-in'], ['opt-in']],
+        [[], []],
+      ] as const) {
+        await run(
+          undefined,
+          (context) => {
+            const turn = findNextDispatchableUserTurn(context.history, context.meta!);
+            expect(turn?.inputConfig?.mcpServerIds).toEqual(expected);
+            expect(context.state).toBe('dispatched');
+          },
+          {
+            destination,
+            ...(mcpServerIds !== undefined ? { mcpServerIds: [...mcpServerIds] } : {}),
+          }
+        );
+      }
+    }
+  );
 
   it('dispatches a run with no workspace selector and no target project', async () => {
     await run(undefined, (context) => {

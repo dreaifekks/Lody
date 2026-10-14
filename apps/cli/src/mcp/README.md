@@ -124,3 +124,18 @@ Known limits of the alerts on these writes:
 - `lody_agent_role_create` has no request id: if the Role landed but its alert did
   not, a retry is refused as a duplicate name. Re-sending an alert also marks its
   conversation unread again.
+
+### Schedule MCP selection
+
+`lody_schedule_create`, `lody_schedule_update` and `lody_schedule_propose` accept
+`mcpServerIds` as workspace MCP ids or unique names. Names are stored as ids;
+`lody_schedule_get` includes the choice in `schedule.definition`. On create or
+propose, omission follows workspace `enabledByDefault` servers at every run;
+`[]` selects none. Update omission preserves the stored choice. Existing-chat
+destinations retain that chat's MCP selection.
+
+The human CLI accepts the same field inside `lody schedule create/edit --file`
+JSON drafts, for example `"mcpServerIds": ["mail", "search"]` or
+`"mcpServerIds": []`. CLI edit replaces the full draft, so omitting the field
+there restores workspace defaults. The editor's composer menu also sets the
+selection; confirmation cards preserve proposed ids.
