@@ -3,6 +3,7 @@ import type { LoroDoc } from 'loro-crdt';
 import {
   BOARD_NOTES_MAX_BYTES,
   deriveBoardSessionStatus,
+  isBoardSessionStopped,
   findFreshSessionPresenceState,
   getBoardRoomId,
   getSessionRoomId,
@@ -80,8 +81,10 @@ export function registerBoardTools(
         if (name === 'lody_board_get') {
           result = { ...board, role: session.boardRole ?? 'thread' };
         } else if (name === 'lody_board_overview') {
-          const members = (await listAliveSessionMetas(manager))
-            .map(({ meta }) => meta)
+          const sessions = new Map(
+            (await listAliveSessionMetas(manager)).map(({ meta }) => [meta.id, meta])
+          );
+          const members = [...sessions.values()]
             .filter((meta) => meta.boardId === board.id)
             .sort((a, b) => a.id.localeCompare(b.id));
           const presence = manager.getPresenceStates() ?? {};
@@ -101,7 +104,7 @@ export function registerBoardTools(
               lastMessageAt: meta.lastMessageAt,
               status: deriveBoardSessionStatus({
                 liveStatus: findFreshSessionPresenceState(presence, meta.id, Date.now())?.status,
-                collaborationStopped: meta.collaborationStopped,
+                collaborationStopped: isBoardSessionStopped(meta, (id) => sessions.get(id)),
                 awaitingUserSince: meta.awaitingUserSince,
                 lastMessageAt: meta.lastMessageAt,
               }),

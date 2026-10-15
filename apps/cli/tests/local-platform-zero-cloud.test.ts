@@ -226,6 +226,36 @@ describe('local platform zero-cloud integration', () => {
         expect(overview.rows).toEqual([
           expect.objectContaining({ sessionId, role: 'coordinator' }),
         ]);
+        const rootId = 'stopped-root' as SessionId;
+        const childId = 'stopped-child' as SessionId;
+        await manager.repo.upsertDocMeta(getSessionRoomId(rootId), {
+          id: rootId,
+          machineId,
+          userId,
+          collaborationStopped: true,
+        });
+        await manager.repo.upsertDocMeta(getSessionRoomId(childId), {
+          id: childId,
+          machineId,
+          userId,
+          boardId: board.id,
+          parentSessionId: rootId,
+        });
+        const stopped = JSON.parse((await call('lody_board_overview')).content[0]!.text!);
+        expect(stopped.rows).toContainEqual(
+          expect.objectContaining({
+            sessionId: childId,
+            status: 'stopped',
+          })
+        );
+        await manager.repo.upsertDocMeta(getSessionRoomId(rootId), { collaborationStopped: false });
+        const resumed = JSON.parse((await call('lody_board_overview')).content[0]!.text!);
+        expect(resumed.rows).toContainEqual(
+          expect.objectContaining({
+            sessionId: childId,
+            status: 'idle',
+          })
+        );
         for (let i = 0; i < 101; i++) {
           const id = `member-${i}` as SessionId;
           await manager.repo.upsertDocMeta(getSessionRoomId(id), {
