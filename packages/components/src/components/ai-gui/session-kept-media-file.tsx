@@ -37,13 +37,13 @@ function KeptMediaResource({
   file,
   workspaceId,
   sessionId,
-  card,
+  renderCard,
 }: {
   file: SessionFilePayload;
   workspaceId: string;
   sessionId: string;
-  /** The file card: it names the file and downloads it, beside the player. */
-  card: ReactNode;
+  /** The file card owns the media, file information and download action. */
+  renderCard: (media?: ReactNode) => ReactNode;
 }) {
   const key = resourceKey(file, sessionId);
   const kind = mediaKindOf(file);
@@ -76,15 +76,15 @@ function KeptMediaResource({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, workspaceId]);
 
-  if (!url || !kind) return card;
-  return (
-    <>
-      {kind === 'video' ? (
-        <SessionFileVideoPreview path={file.fileName} url={url} compact />
-      ) : (
-        <SessionFileAudioPreview path={file.fileName} url={url} />
-      )}
-      {card}
-    </>
+  if (!url || !kind) return renderCard();
+  const forgetFailedUrl = () => {
+    if (opened.get(key) === url) opened.delete(key);
+  };
+  return renderCard(
+    kind === 'video' ? (
+      <SessionFileVideoPreview path={file.fileName} url={url} compact onError={forgetFailedUrl} />
+    ) : (
+      <SessionFileAudioPreview path={file.fileName} url={url} compact onError={forgetFailedUrl} />
+    )
   );
 }

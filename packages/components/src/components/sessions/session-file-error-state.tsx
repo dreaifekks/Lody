@@ -17,6 +17,16 @@ const styles = stylex.create({
     paddingBlock: '24px',
     paddingInline: '16px',
   },
+  compactFrame: { minHeight: 0, paddingBlock: 0, paddingInline: 0 },
+  compactCard: {
+    maxWidth: 'none',
+    borderWidth: 0,
+    borderRadius: 0,
+    backgroundColor: 'transparent',
+    paddingBlock: 0,
+    paddingInline: 0,
+    boxShadow: 'none',
+  },
   card: {
     width: '100%',
     maxWidth: '20rem',
@@ -360,8 +370,10 @@ export function SessionFileErrorState({
 /** Shared presentation for files that cannot be displayed inline. */
 export function SessionFileNoticeCard({
   presentation,
+  compact = false,
   fileActions: actions,
 }: {
+  readonly compact?: boolean;
   readonly presentation: Pick<
     SessionFileErrorPresentation,
     'title' | 'description' | 'technicalDetails'
@@ -372,10 +384,13 @@ export function SessionFileNoticeCard({
   const localHost = actions?.localHost;
 
   return (
-    <div {...stylex.props(styles.frame)}>
+    <div {...stylex.props(styles.frame, compact && styles.compactFrame)}>
       {/* No status glyph: the card is one short paragraph and a stack of
           actions, and a 40px icon column indented all of it for decoration. */}
-      <section data-testid="session-file-error-state" {...stylex.props(styles.card)}>
+      <section
+        data-testid="session-file-error-state"
+        {...stylex.props(styles.card, compact && styles.compactCard)}
+      >
         <h2 {...stylex.props(styles.title)}>{presentation.title}</h2>
         <p {...stylex.props(styles.description)}>{presentation.description}</p>
         {actions ? (

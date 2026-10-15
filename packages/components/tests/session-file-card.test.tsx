@@ -645,7 +645,15 @@ describe('audio and video a machine keeps', () => {
       expect(player?.autoplay).toBe(false);
       expect(player?.preload).toBe('metadata');
     }
-    // The card stays: it names the file, says where it is kept, and downloads it.
+    for (const [player, name] of [
+      [video, 'clip.mp4'],
+      [audio, 'voice.m4a'],
+    ] as const) {
+      const card = player?.closest('[data-testid="session-media-card"]');
+      expect(card?.textContent).toContain(name);
+      expect(card?.querySelectorAll('button')).toHaveLength(1);
+    }
+    // The same card names the file, says where it is kept, and downloads it.
     expect(view.textContent?.split('clip.mp4')).toHaveLength(2);
     expect(video?.getAttribute('aria-label')).toBe('Video preview');
     expect(audio?.getAttribute('aria-label')).toBe('Audio preview');
@@ -681,6 +689,7 @@ describe('audio and video a machine keeps', () => {
     const view = await show([kept(`odd-codec-${ext}`, { fileName: `odd-codec.${ext}` })]);
     const player = view.querySelector<HTMLMediaElement>(kind)!;
     expect(player).not.toBeNull();
+    const card = player.closest('[data-testid="session-media-card"]');
 
     await act(async () => {
       player.dispatchEvent(new Event('error'));
@@ -688,7 +697,8 @@ describe('audio and video a machine keeps', () => {
 
     expect(view.querySelector('video')).toBeNull();
     expect(view.textContent?.split(`odd-codec.${ext}`)).toHaveLength(2);
-    expect(view.textContent).toContain(`${label} unavailable`);
+    expect(card?.textContent).toContain(`${label} unavailable`);
+    expect(card?.textContent).toContain(`odd-codec.${ext}`);
     expect(player.hasAttribute('src')).toBe(false);
     expect(view.querySelectorAll('button')).toHaveLength(1);
     const downloaded: string[] = [];
@@ -698,6 +708,28 @@ describe('audio and video a machine keeps', () => {
     };
     await act(async () => view.querySelector('button')!.click());
     expect(downloaded).toEqual([`odd-codec-${ext}`]);
+  });
+  it.each([
+    ['video', 'webm'],
+    ['audio', 'wav'],
+  ])('reopens a failed member %s URL after the attachment remounts', async (kind, extension) => {
+    const urls = ['lody-resource://member/expired', 'lody-resource://member/renewed'];
+    openMemberFile = async () => ({ ok: true, url: urls.shift()!, sizeBytes: 1 });
+    const attachment = kept(`renew-${extension}`, { fileName: `renew.${extension}` });
+    const view = await show([attachment]);
+    expect(view.querySelector(kind)?.getAttribute('src')).toBe('lody-resource://member/expired');
+    // A healthy virtualized remount reuses the URL.
+    await show([]);
+    await show([attachment]);
+    const player = view.querySelector(kind)!;
+    expect(player.getAttribute('src')).toBe('lody-resource://member/expired');
+    await act(async () => player.dispatchEvent(new Event('error')));
+    expect(view.querySelector(kind)).toBeNull();
+    expect(view.querySelector('[data-testid="session-file-error-state"]')).not.toBeNull();
+    await show([]);
+    await show([attachment]);
+    expect(view.querySelector(kind)?.getAttribute('src')).toBe('lody-resource://member/renewed');
+    expect(view.querySelector('[data-testid="session-file-error-state"]')).toBeNull();
   });
 });
 

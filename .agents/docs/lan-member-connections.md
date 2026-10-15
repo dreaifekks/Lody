@@ -269,11 +269,13 @@ of two files are never joined; the player is told the file changed.
 
 Three things use it on a desktop:
 
-- An audio or a video file a message carries is played above its card
-  (`session-kept-media-file.tsx`), with the player's own controls. Before the
+- An audio or a video file a message carries is played inside its attachment
+  card (`session-kept-media-file.tsx`), with the player's own controls. Before the
   user starts it, only what the player needs for the length and the first
   frame is read. This resource layer delegates to the same video/audio players
-  as the file panel. The card stays: it names the file and downloads it once.
+  as the file panel. One frame contains the player or compact error notice,
+  then the filename, machine, size and download row. A playback error removes
+  that resource URL from the cache, so reopening requests a fresh member URL.
 - In the file panel, audio and video of a session another member runs play the
   same way. For these the window asks for a resource instead of sending
   `file/preview`; every other file is previewed as before.

@@ -1,5 +1,7 @@
 import { type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
+import { colors } from '@lody/ui/tokens/colors.stylex';
+import { corner, radius, space } from '@lody/ui/tokens/scales.stylex';
 import { useTranslation } from 'react-i18next';
 import {
   AlertCircle,
@@ -51,6 +53,8 @@ export const getSessionFileIcon = (fileName: string, mimeType?: string) =>
 
 export type SessionFileCardProps = {
   file: SessionFilePayload;
+  /** A player or playback notice inside this attachment card. */
+  media?: ReactNode;
   /** Static publications own their retention independently of the source upload. */
   retention?: 'workspace' | 'publication';
   /** Resolved display name of the machine holding the bytes (transport='local'). */
@@ -136,7 +140,36 @@ const buildActionIcon = ({
   return <Eye className="h-4 w-4" aria-hidden="true" />;
 };
 
-const styles = stylex.create({ frame: { position: 'relative', overflow: 'hidden' } });
+const styles = stylex.create({
+  frame: { position: 'relative', overflow: 'hidden' },
+  mediaCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: space[3],
+    padding: space[3],
+    width: '100%',
+    maxWidth: '24rem',
+    minWidth: 0,
+    boxSizing: 'border-box',
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: colors.separator,
+    borderRadius: radius.large,
+    cornerShape: corner.shape,
+    backgroundColor: colors.elevatedBackground,
+  },
+  // Match the 768px inline image preview limit in view.tsx.
+  videoCard: { maxWidth: '48rem' },
+  mediaInfo: {
+    display: 'flex',
+    width: '100%',
+    minWidth: 0,
+    gap: space[1],
+    alignItems: 'center',
+    textAlign: 'left',
+  },
+});
 
 /** The delivered card layout, also used while attachment preparation is pending. */
 export function SessionFileCardLayout({
@@ -150,6 +183,8 @@ export function SessionFileCardLayout({
   onClick,
   secondaryAction,
   progress,
+  media,
+  mediaKind,
   className,
 }: {
   fileName: string;
@@ -162,15 +197,20 @@ export function SessionFileCardLayout({
   onClick?: () => void;
   secondaryAction?: ReactNode;
   progress?: ReactNode;
+  media?: ReactNode;
+  mediaKind?: SessionFileKind;
   className?: string;
 }) {
-  return (
+  const information = (
     <div
       className={cn(
-        stylex.props(styles.frame).className,
-        'group flex w-full max-w-sm items-center gap-1 rounded-xl border px-3 py-2.5 text-left',
-        'border-border/60 bg-card/80 transition-[background-color,border-color,box-shadow] duration-150',
-        isInteractive &&
+        stylex.props(styles.frame, !!media && styles.mediaInfo).className,
+        'group',
+        !media && 'flex w-full max-w-sm items-center gap-1 rounded-xl border px-3 py-2.5 text-left',
+        !media &&
+          'border-border/60 bg-card/80 transition-[background-color,border-color,box-shadow] duration-150',
+        !media &&
+          isInteractive &&
           'hover:border-border hover:bg-accent/50 hover:shadow-sm active:scale-[0.99]',
         isMuted && 'opacity-70',
         failed && 'border-destructive/30 bg-destructive/[0.04]',
@@ -231,6 +271,17 @@ export function SessionFileCardLayout({
       {progress}
     </div>
   );
+  return media ? (
+    <div
+      data-testid="session-media-card"
+      {...stylex.props(styles.mediaCard, mediaKind === 'video' && styles.videoCard)}
+    >
+      {media}
+      {information}
+    </div>
+  ) : (
+    information
+  );
 }
 
 /**
@@ -240,6 +291,7 @@ export function SessionFileCardLayout({
  */
 export function SessionFileCard({
   file,
+  media,
   retention = 'workspace',
   pendingMachineName,
   uploads = true,
@@ -292,6 +344,8 @@ export function SessionFileCard({
 
   return (
     <SessionFileCardLayout
+      media={media}
+      mediaKind={kind}
       fileName={file.fileName}
       subtitle={subtitle}
       icon={<Icon className="size-5" aria-hidden="true" />}

@@ -269,14 +269,15 @@ function ChatMediaStory({ path, bytes }: { path: string; bytes: Uint8Array }) {
         file={file}
         workspaceId="story-workspace"
         sessionId="story-session"
-        card={
+        renderCard={(media) => (
           <SessionFileCard
+            media={media}
             file={file}
             uploads={false}
             pendingMachineName="devnuc"
             onDownload={fn()}
           />
-        }
+        )}
       />
     </SessionFileCardList>
   ) : null;
@@ -295,4 +296,9 @@ export const ChatAudio: Story = {
 export const ChatAudioError: Story = {
   args: { path: 'broken.wav', bytes: Uint8Array.of(1, 2, 3) },
   render: (args) => <ChatMediaStory path={args.path} bytes={args.bytes!} />,
+};
+
+export const ChatAudioDark: Story = {
+  ...ChatAudio,
+  globals: { theme: 'dark' },
 };

@@ -11,7 +11,9 @@ interface SessionFileAudioPreviewProps {
   readonly bytes?: Uint8Array;
   readonly url?: string;
   readonly active?: boolean;
+  readonly compact?: boolean;
   readonly fileActions?: SessionFileErrorActions;
+  readonly onError?: () => void;
 }
 
 const styles = stylex.create({
@@ -26,6 +28,7 @@ const styles = stylex.create({
     padding: space[3],
   },
   audio: { width: '100%' },
+  compactFrame: { height: 'auto', padding: 0 },
 });
 
 /** Only consumes provider-authorized sources; never resolves host file paths. */
@@ -34,7 +37,9 @@ export function SessionFileAudioPreview({
   bytes,
   url,
   active = true,
+  compact = false,
   fileActions,
+  onError,
 }: SessionFileAudioPreviewProps) {
   const mimeType = getAudioMimeTypeForPath(path);
   const [source, setSource] = useState<{
@@ -60,15 +65,27 @@ export function SessionFileAudioPreview({
   if (!active || !source || source.path !== path || source.bytes !== bytes || source.url !== url) {
     return null;
   }
-  return <AudioPlayback key={source.src} src={source.src} fileActions={fileActions} />;
+  return (
+    <AudioPlayback
+      key={source.src}
+      src={source.src}
+      compact={compact}
+      fileActions={fileActions}
+      onError={onError}
+    />
+  );
 }
 
 function AudioPlayback({
   src,
+  compact,
   fileActions,
+  onError,
 }: {
   readonly src: string;
+  readonly compact: boolean;
   readonly fileActions?: SessionFileErrorActions;
+  readonly onError?: () => void;
 }) {
   const { t } = useTranslation();
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -94,6 +111,7 @@ function AudioPlayback({
   if (failed) {
     return (
       <SessionFileNoticeCard
+        compact={compact}
         presentation={{
           title: t('sessions.audioPreview.failedTitle', 'Audio unavailable'),
           description: t(
@@ -107,7 +125,7 @@ function AudioPlayback({
   }
 
   return (
-    <div {...stylex.props(styles.frame)}>
+    <div {...stylex.props(styles.frame, compact && styles.compactFrame)}>
       <audio
         ref={audioRef}
         {...stylex.props(styles.audio)}
@@ -115,7 +133,10 @@ function AudioPlayback({
         controls
         preload="metadata"
         aria-label={t('sessions.audioPreview.label', 'Audio preview')}
-        onError={() => setFailed(true)}
+        onError={() => {
+          setFailed(true);
+          onError?.();
+        }}
       />
     </div>
   );

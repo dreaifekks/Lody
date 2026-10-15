@@ -6802,9 +6802,10 @@ const SessionFileBlockCard = ({
   );
   // Files are uploaded to the store that syncs a workspace across devices.
   const uploads = useAppCapabilityCheck()('cloudSync');
-  const card = (
+  const renderCard = (media?: React.ReactNode) => (
     <SessionFileCard
       file={file}
+      media={media}
       pendingMachineName={machineMeta?.name ?? file.machineId}
       uploads={uploads}
       onPreview={onPreview}
@@ -6822,7 +6823,7 @@ const SessionFileBlockCard = ({
         file={file}
         workspaceId={workspaceId}
         sessionId={file.storageSessionId ?? sessionId}
-        card={card}
+        card={renderCard()}
         galleryKey={messageId ? getSessionFileGalleryKey(messageId, file) : undefined}
       />
     );
@@ -6834,11 +6835,11 @@ const SessionFileBlockCard = ({
         file={file}
         workspaceId={workspaceId}
         sessionId={file.storageSessionId ?? sessionId}
-        card={card}
+        renderCard={renderCard}
       />
     );
   }
-  return card;
+  return renderCard();
 };
 
 const renderUserContent = (

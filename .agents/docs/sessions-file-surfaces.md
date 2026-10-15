@@ -111,7 +111,11 @@ this page is the full text of the rules summarised there.
   codec guarantees. Provider bytes become typed object URLs; local resource URLs
   go directly to the media element. Deactivation destroys the player and releases
   its blob; document visibility pauses background playback without auto-resuming.
-  Media errors preserve the file-action notice. Remote binary limits still apply;
+  Media errors preserve the file-action notice. Chat attachments place the player
+  or borderless compact notice and file information inside one card; audio is
+  capped at 24rem, video at the inline image preview limit of 768px. Video keeps
+  its natural aspect ratio so controls and picture share a width. Failed member
+  URLs are evicted from the chat cache and requested again on remount. Remote binary limits still apply;
   the player adds neither a transport nor transcoding. The mobile project file
   browser shares the player. Intent: [local file links](../../specs/local-file-link-actions.md).
 - Session PDFs use the PDF.js paged viewer. Electron's `lody-resource://` URL is a

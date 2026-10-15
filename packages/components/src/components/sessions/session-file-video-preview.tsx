@@ -13,6 +13,7 @@ interface SessionFileVideoPreviewProps {
   readonly active?: boolean;
   readonly compact?: boolean;
   readonly fileActions?: SessionFileErrorActions;
+  readonly onError?: () => void;
 }
 
 const styles = stylex.create({
@@ -25,8 +26,8 @@ const styles = stylex.create({
     padding: space[3],
   },
   video: { width: '100%', maxHeight: '100%', objectFit: 'contain' },
-  compactFrame: { width: '100%', height: 'auto', boxSizing: 'border-box' },
-  compact: { height: 'auto', maxHeight: '20rem' },
+  compactFrame: { width: '100%', height: 'auto', padding: 0, boxSizing: 'border-box' },
+  compact: { display: 'block', height: 'auto', maxHeight: 'none' },
 });
 
 /** Only consumes provider-authorized sources; never resolves host file paths. */
@@ -37,6 +38,7 @@ export function SessionFileVideoPreview({
   active = true,
   compact = false,
   fileActions,
+  onError,
 }: SessionFileVideoPreviewProps) {
   const mimeType = getVideoMimeTypeForPath(path);
   const [source, setSource] = useState<{
@@ -63,7 +65,13 @@ export function SessionFileVideoPreview({
     return null;
   }
   return (
-    <VideoPlayback key={source.src} src={source.src} compact={compact} fileActions={fileActions} />
+    <VideoPlayback
+      key={source.src}
+      src={source.src}
+      compact={compact}
+      fileActions={fileActions}
+      onError={onError}
+    />
   );
 }
 
@@ -71,10 +79,12 @@ function VideoPlayback({
   src,
   compact,
   fileActions,
+  onError,
 }: {
   readonly src: string;
   readonly compact: boolean;
   readonly fileActions?: SessionFileErrorActions;
+  readonly onError?: () => void;
 }) {
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -100,6 +110,7 @@ function VideoPlayback({
   if (failed) {
     return (
       <SessionFileNoticeCard
+        compact={compact}
         presentation={{
           title: t('sessions.videoPreview.failedTitle', 'Video unavailable'),
           description: t(
@@ -122,7 +133,10 @@ function VideoPlayback({
         playsInline
         preload="metadata"
         aria-label={t('sessions.videoPreview.label', 'Video preview')}
-        onError={() => setFailed(true)}
+        onError={() => {
+          setFailed(true);
+          onError?.();
+        }}
       />
     </div>
   );
