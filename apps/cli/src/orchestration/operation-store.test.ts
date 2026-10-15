@@ -1268,6 +1268,22 @@ const boardReportInput = () => ({
 const storeDb = (store: LodyOperationStore) => (store as unknown as { db: Database.Database }).db;
 
 describe('Board report transactions', () => {
+  it('removes only the deleted member cursors and retains unrelated report state', async () => {
+    const store = await makeStore();
+    const input = boardReportInput();
+    try {
+      store.acceptBoardReport(input);
+      const other = { ...input, sessionId: 'other' as SessionId, events: [] };
+      store.acceptBoardReport(other);
+      store.deleteRequesterSession(input.sessionId);
+      expect(store.readBoardReportCursor(input.boardId, input.sessionId)).toEqual({});
+      expect(store.readBoardReportCursor(input.boardId, other.sessionId)).toEqual(other.cursor);
+      expect(queuedResults(store, input.workspaceId)).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
   it('rolls back Operation, Inbox result and intent when the cursor fails, then accepts once', async () => {
     const store = await makeStore();
     const input = boardReportInput();

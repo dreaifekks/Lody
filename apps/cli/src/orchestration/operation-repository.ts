@@ -34,6 +34,7 @@ export type AcceptOperationOptions = { materializationClaimToken?: string };
 export class OperationRepository extends Context.Service<
   OperationRepository,
   {
+    retainBoardReportCursors(sessionId: SessionId, boardId?: BoardId): Effect.Effect<void, unknown>;
     acceptBoardReport(input: AcceptBoardReportInput): Effect.Effect<void, unknown>;
     readBoardReportCursor(
       boardId: BoardId,

@@ -555,6 +555,12 @@ export class LodyOperationStore {
     return accepted;
   }
 
+  retainBoardReportCursors(sessionId: SessionId, boardId?: BoardId): void {
+    this.db
+      .prepare('DELETE FROM board_report_cursors WHERE session_id = ? AND board_id IS NOT ?')
+      .run(sessionId, boardId ?? null);
+  }
+
   readBoardReportCursor(boardId: BoardId, sessionId: SessionId): BoardReportCursor {
     const row = this.db
       .prepare(
@@ -991,6 +997,7 @@ export class LodyOperationStore {
   deleteRequesterSession(requesterSessionId: SessionId): void {
     this.transaction(() => {
       this.inbox.deleteSession(requesterSessionId);
+      this.retainBoardReportCursors(requesterSessionId);
       this.db
         .prepare('DELETE FROM operations WHERE requester_session_id = ?')
         .run(requesterSessionId);

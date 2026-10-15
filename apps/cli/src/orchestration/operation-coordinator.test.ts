@@ -1678,6 +1678,31 @@ const boardHarness = async () => {
 };
 
 describe('Board reports through Operation Inbox', () => {
+  it('cleans departed membership cursors while preserving archived members and queued reports', async () => {
+    const h = await boardHarness();
+    try {
+      await h.add('member');
+      await h.append('member', h.input('work'));
+      await h.finish('member', 'work');
+      h.coordinator.start();
+      await h.drain();
+      expect(h.store.readBoardReportCursor(h.board.id, 'member' as SessionId)).toEqual({
+        lastTurnId: 'work',
+      });
+      await h.repo.upsertDocMeta(getSessionRoomId('member' as SessionId), { isArchived: true });
+      await h.drain();
+      expect(h.store.readBoardReportCursor(h.board.id, 'member' as SessionId)).toEqual({
+        lastTurnId: 'work',
+      });
+      await h.repo.upsertDocMeta(getSessionRoomId('member' as SessionId), { boardId: undefined });
+      await h.drain();
+      expect(h.store.readBoardReportCursor(h.board.id, 'member' as SessionId)).toEqual({});
+      expect(h.reports()).toHaveLength(1);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('does not report a reviewer completion; reports its parent after system continuation', async () => {
     const h = await boardHarness();
     try {

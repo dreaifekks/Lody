@@ -108,14 +108,27 @@ export class BoardReportWorkflow {
       }
       if (!this.seeded && this.boards.size) {
         // One startup snapshot, then doc-metadata events maintain membership.
-        for (const meta of yield* this.ports.boardSessionMetas) this.members.set(meta.id, meta);
+        for (const meta of yield* this.ports.boardSessionMetas) {
+          yield* this.operations.retainBoardReportCursors(meta.id, meta.boardId);
+          this.members.set(meta.id, meta);
+        }
         this.seeded = true;
         for (const id of this.members.keys()) this.dirty.add(id);
       }
       for (const id of [...this.metadataDirty]) {
         this.metadataDirty.delete(id);
         const previous = this.members.get(id);
-        const refreshed = yield* Effect.exit(this.ports.metadata(id));
+        const refreshed = yield* Effect.exit(
+          this.ports
+            .metadata(id)
+            .pipe(
+              Effect.tap((record) =>
+                record && previous?.boardId !== record.meta.boardId
+                  ? this.operations.retainBoardReportCursors(id, record.meta.boardId)
+                  : Effect.void
+              )
+            )
+        );
         if (Exit.isFailure(refreshed)) {
           this.metadataDirty.add(id);
           yield* Effect.failCause(refreshed.cause);
