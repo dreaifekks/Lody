@@ -87,10 +87,13 @@ For example, a Grok target may use `configOptionValues: { permission_mode: "ask"
 its ACP mode `default` is not a permission policy. Explicit permissions may exceed
 the parent; callers must follow their user authorization. Roles still override
 manual configuration. `lody session create --agent-role <idOrName>` resolves a
-workspace Role the same way: the Role's machine, agent config, run configuration,
-and prompt prefix win over `--machine`/`--agent`/`--agent-config`/`--mode`/`--model`/
-`--config-option` (ignored flags are listed in a warning), while `--repo`/
-`--local-project`/`--branch`/`--worktree` still supply the work context.
+workspace Role using the same instance selector: `--machine` pins the machine;
+otherwise a local project or parent binds the work to its machine, then the caller's
+machine is preferred within the first usable group. Unavailable pins fail. The
+selected instance's agent config and run configuration override `--agent`/
+`--agent-config`/`--mode`/`--model`/`--config-option` (with a warning), and its
+id and configuration are frozen in the Role snapshot. The Role supplies the prompt
+prefix; `--repo`/`--local-project`/`--branch`/`--worktree` supply the work context.
 Merge, Plan and retry behavior: [creation contract](../../specs/session-orchestration.md#session-creation-configuration).
 
 `project list` without catalog options retains the local daemon project listing.

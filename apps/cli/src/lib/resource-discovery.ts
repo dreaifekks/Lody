@@ -345,11 +345,11 @@ export class ResourceDiscovery {
   /** Which of these machines holds the local project with this id. */
   async localProjectMachineId(
     projectId: string,
-    machineIds: readonly MachineId[]
+    machineIds: readonly MachineId[],
+    matchesProject: (project: LocalProjectMeta) => boolean = (project) => project.id === projectId
   ): Promise<MachineId | undefined> {
     for (const machineId of machineIds)
-      if ((await this.source.projects(machineId)).some((project) => project.id === projectId))
-        return machineId;
+      if ((await this.source.projects(machineId)).some(matchesProject)) return machineId;
     return undefined;
   }
 }

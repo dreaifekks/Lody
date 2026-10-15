@@ -3,18 +3,29 @@ import {
   listWorkspaceAgentRoles,
   readWorkspaceFlockRowsFromFlock,
   snapshotAgentRole,
+  selectAgentRoleInstance,
+  type AgentRoleInstance,
+  type MachineId,
+  type SessionId,
   type AgentRole,
   type WorkspaceId,
 } from '@lody/shared';
-import { normalizeCliValue } from '@/lib/command-runtime';
+import { createResourceDiscovery } from './resource-discovery-runtime';
+import type { AgentRoleDiscoveryInstance } from './resource-discovery';
+import {
+  resolveCreateCurrentSessionId,
+  resolveSessionMetaOrThrow,
+  selectLocalProjectsBySelector,
+} from '@/commands/session';
+import { type AuthContext, normalizeCliValue } from '@/lib/command-runtime';
 import type { LoroDocumentManager } from '@/lib/loro/doc';
 import type { CreateOptions, ResolvedTurnDispatchConfig } from '@/commands/session';
 
 /**
- * Agent Role resolution for session creation, shared by the MCP create tools
- * and the CLI `session create --agent-role` flag. The current catalog Role row
- * is authoritative for machine, agent config, run config and Prompt prefix;
- * manual overrides never influence the resolved target.
+ * CLI `session create --agent-role` uses the same instance selector as MCP.
+ * The selected instance owns the machine, agent and run config; the Role owns
+ * the Prompt prefix. Machine pins select an instance; manual agent/run-config
+ * overrides are ignored.
  */
 
 export const composeAgentRolePrompt = (
@@ -91,9 +102,6 @@ export type AgentRoleCreateOverrides = {
 
 export const listIgnoredAgentRoleOverrides = (options: AgentRoleCreateOverrides): string[] => {
   const ignored: string[] = [];
-  if (normalizeCliValue(options.machine)) {
-    ignored.push('--machine');
-  }
   if (normalizeCliValue(options.agent)) {
     ignored.push('--agent');
   }
@@ -114,6 +122,7 @@ export const listIgnoredAgentRoleOverrides = (options: AgentRoleCreateOverrides)
 
 export type ResolvedAgentRoleCreate = {
   role: AgentRole;
+  instance: AgentRoleInstance;
   machineId: AgentRole['machineId'];
   agentConfigId: AgentRole['agentConfigId'];
   prompt: string;
@@ -126,39 +135,89 @@ export const resolveAgentRoleCreate = (args: {
   role: AgentRole;
   prompt: string;
   overrides?: AgentRoleCreateOverrides;
-}): ResolvedAgentRoleCreate => ({
-  role: args.role,
-  machineId: args.role.machineId,
-  agentConfigId: args.role.agentConfigId,
-  prompt: composeAgentRolePrompt(args.role.promptPrefix, args.prompt),
-  dispatchConfig: {
-    ...args.role.runConfig,
-    inheritSessionDefaults: false,
-  },
-  ignoredOverrides: listIgnoredAgentRoleOverrides(args.overrides ?? {}),
-});
+  request?: Parameters<typeof selectAgentRoleInstance>[1];
+  instances?: readonly AgentRoleDiscoveryInstance[];
+}): ResolvedAgentRoleCreate => {
+  const reportOf = (instance: AgentRoleInstance) =>
+    args.instances?.find((entry) => entry.id === instance.id);
+  const choice = selectAgentRoleInstance(
+    args.role,
+    args.request ?? {},
+    (instance) => reportOf(instance)?.availability.state !== 'unavailable',
+    (instance) => reportOf(instance)?.group.key ?? `config:${instance.agentConfigId}`
+  );
+  if (choice.kind === 'rejected') {
+    throw new Error(
+      `Agent Role "${args.role.name}": ${choice.reason}. Usable instances: ${choice.usableInstances.map((instance) => `${instance.id} (${instance.machineId})`).join(', ') || 'none'}.`
+    );
+  }
+  return {
+    role: args.role,
+    instance: choice.instance,
+    machineId: choice.instance.machineId,
+    agentConfigId: choice.instance.agentConfigId,
+    prompt: composeAgentRolePrompt(args.role.promptPrefix, args.prompt),
+    dispatchConfig: { ...choice.instance.runConfig, inheritSessionDefaults: false },
+    ignoredOverrides: listIgnoredAgentRoleOverrides(args.overrides ?? {}),
+  };
+};
 
 /** Resolve the CLI `--agent-role` selector (fixed id or unique name) against the workspace catalog. */
 export const resolveAgentRoleCreateFromCatalog = async (args: {
   manager: LoroDocumentManager;
+  auth: AuthContext;
   workspaceId: WorkspaceId;
   selector: string;
   prompt: string;
-  overrides?: AgentRoleCreateOverrides;
+  overrides?: CreateOptions;
 }): Promise<ResolvedAgentRoleCreate> => {
   const catalog = await loadWorkspaceAgentRoleCatalog(args.manager, args.workspaceId);
   const role = selectUniqueAgentRoleByIdOrName([...catalog.values()], args.selector);
-  return resolveAgentRoleCreate({ role, prompt: args.prompt, overrides: args.overrides });
+  const discovery = await createResourceDiscovery(args);
+  const options = args.overrides ?? {};
+  const machine = normalizeCliValue(options.machine);
+  const machineId = machine ? ((await discovery.resolveMachine(machine)) as MachineId) : undefined;
+  const parentId =
+    normalizeCliValue(options.parent) ??
+    (options.useCurrentSessionAsParent ? resolveCreateCurrentSessionId(options) : undefined);
+  const projectId = normalizeCliValue(options.localProject);
+  const workContextMachineId = parentId
+    ? (await resolveSessionMetaOrThrow(args.manager, parentId as SessionId)).machineId
+    : projectId
+      ? await discovery.localProjectMachineId(
+          projectId,
+          machineId
+            ? [machineId]
+            : [...new Set(role.instances.map((instance) => instance.machineId))],
+          (project) => selectLocalProjectsBySelector([project], projectId).length > 0
+        )
+      : undefined;
+  if (projectId && !workContextMachineId) {
+    throw new Error(
+      `Local project ${projectId} is not on a machine where Agent Role "${role.name}" has an instance.`
+    );
+  }
+  return resolveAgentRoleCreate({
+    role,
+    prompt: args.prompt,
+    overrides: options,
+    instances: await discovery.agentRoleInstances(role.id),
+    request: {
+      machineId,
+      workContextMachineId,
+      callerMachineId: args.auth.machineId as MachineId,
+    },
+  });
 };
 
 export const bindAgentRoleCreateOptions = (
   options: CreateOptions,
-  role: AgentRole | undefined
+  resolved: ResolvedAgentRoleCreate | undefined
 ): void => {
-  if (!role) return;
-  options.agentRoleId = role.id;
-  options.agentRoleRevision = role.revision;
-  options.agentRoleSnapshot = snapshotAgentRole(role, role.instances?.[0]);
+  if (!resolved) return;
+  options.agentRoleId = resolved.role.id;
+  options.agentRoleRevision = resolved.role.revision;
+  options.agentRoleSnapshot = snapshotAgentRole(resolved.role, resolved.instance);
 };
 
 /**
@@ -176,5 +235,5 @@ export const applyAgentRoleCreateTarget = (
   delete options.mode;
   delete options.model;
   options.configOption = [];
-  bindAgentRoleCreateOptions(options, resolved.role);
+  bindAgentRoleCreateOptions(options, resolved);
 };

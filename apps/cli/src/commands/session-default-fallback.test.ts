@@ -21,6 +21,7 @@ import type { SessionTurn } from '@lody/shared/session-data';
 import { type LoroDocumentManager, SessionDocument } from '@/lib/loro/doc';
 import { composeTestSessionDoc } from '../../tests/session-doc-fixture';
 import { FlockSyncTimeoutError } from '@/lib/loro/timeout-utils';
+import { normalizeAgentRole } from '@lody/shared';
 import { applyAgentRoleCreateTarget, resolveAgentRoleCreate } from '@/lib/agent-role-create';
 import {
   createLocalSessionCommandEnvironment,
@@ -1089,7 +1090,7 @@ describe('interrupted inherited create replay', () => {
 describe('Role create with failed Machine Flock freshness', () => {
   it('authors and dispatches the Role target and run config after clearing invalid manual overrides', async () => {
     const fixture = createFixture('codex', createModelCapability());
-    const role: AgentRole = {
+    const role = normalizeAgentRole({
       v: 1,
       id: 'default-fallback-role' as AgentRole['id'],
       ownerUserId: userId,
@@ -1106,9 +1107,9 @@ describe('Role create with failed Machine Flock freshness', () => {
       revision: 7,
       createdAt: 1,
       updatedAt: 1,
-    };
+    })!;
     const options: CreateOptions = {
-      machine: 'invalid-manual-machine',
+      machine: machineId,
       agent: 'invalid-manual-agent',
       agentConfig: 'invalid-manual-config',
       mode: 'invalid-manual-mode',

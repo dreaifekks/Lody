@@ -4703,7 +4703,7 @@ const sessionCreateCommand = new Command('create')
   .option('--agent-config <idOrName>', 'Agent config id or name')
   .option(
     '--agent-role <idOrName>',
-    'Agent Role id or name; the Role overrides --machine, --agent(-config), --mode, --model and --config-option'
+    'Agent Role id or name; --machine pins an instance; the Role overrides --agent(-config), --mode, --model and --config-option'
   )
   .option('--parent <sessionId>', 'Parent session whose work context should be reused')
   .option('--use-current-session-as-parent', 'Use LODY_SESSION_ID as the parent session')
@@ -4794,6 +4794,7 @@ const sessionCreateCommand = new Command('create')
           const agentRoleSelector = normalizeCliValue(options.agentRole);
           const resolvedAgentRole = agentRoleSelector
             ? await resolveAgentRoleCreateFromCatalog({
+                auth,
                 manager,
                 workspaceId: workspace.id as WorkspaceId,
                 selector: agentRoleSelector,
@@ -4806,7 +4807,7 @@ const sessionCreateCommand = new Command('create')
           if (resolvedAgentRole) {
             if (resolvedAgentRole.ignoredOverrides.length > 0) {
               console.error(
-                `Warning: --agent-role ${resolvedAgentRole.role.id} overrides ${resolvedAgentRole.ignoredOverrides.join(', ')}; the Role's machine, agent config, and run configuration take precedence.`
+                `Warning: --agent-role ${resolvedAgentRole.role.id} overrides ${resolvedAgentRole.ignoredOverrides.join(', ')}; the selected Role instance's agent config and run configuration take precedence.`
               );
             }
             applyAgentRoleCreateTarget(options, resolvedAgentRole);

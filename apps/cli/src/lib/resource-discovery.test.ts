@@ -13,6 +13,7 @@ import {
   type MachineMeta,
   type WorkspaceMcpServerMeta,
 } from '@lody/shared';
+import { selectLocalProjectsBySelector } from '@/commands/session';
 import { ResourceDiscovery, type DiscoverySource } from './resource-discovery';
 import { registerDiscoveryTools } from '@/mcp/discovery-tools';
 import { createSessionToolRegistrar, type SessionToolHandlers } from '@/mcp/session-tool-router';
@@ -311,6 +312,23 @@ describe('resource discovery across MCP and CLI', () => {
       await discovery.localProjectMachineId('same-path', ['hidden', 'two'] as MachineId[])
     ).toBe('hidden');
   });
+
+  it.each(['Project', '/synthetic/project'])(
+    'resolves CLI local project selector %s on the requested machines',
+    async (selector) => {
+      const discovery = new ResourceDiscovery(source());
+      expect(
+        await discovery.localProjectMachineId(
+          selector,
+          ['two'] as MachineId[],
+          (project) => selectLocalProjectsBySelector([project], selector).length > 0
+        )
+      ).toBe('two');
+      expect(
+        await discovery.localProjectMachineId(selector, ['two'] as MachineId[])
+      ).toBeUndefined();
+    }
+  );
 
   it('reads GitHub-only projects independently of the local machine catalog', async () => {
     const discovery = new ResourceDiscovery(

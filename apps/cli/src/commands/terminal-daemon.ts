@@ -80,11 +80,12 @@ export async function executeTerminalCommand(
       };
       const role = selection.agentRole
         ? await resolveAgentRoleCreateFromCatalog({
+            auth,
             manager,
             workspaceId: workspace.id as WorkspaceId,
             selector: selection.agentRole,
             prompt,
-            overrides: { ...selection, mode, model, configOption },
+            overrides: { ...options, mode, model, configOption },
           })
         : undefined;
       if (role) applyAgentRoleCreateTarget(options, role);

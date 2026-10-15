@@ -7,9 +7,12 @@ import {
   type AgentConfigId,
   type AgentRole,
   type AgentRoleId,
+  type AgentRoleInstanceId,
   type MachineId,
   type WorkspaceId,
 } from '@lody/shared';
+import type { AuthContext } from './command-runtime';
+import type { AgentRoleDiscoveryInstance } from './resource-discovery';
 import type { LoroDocumentManager } from '@/lib/loro/doc';
 import type { CreateOptions } from '@/commands/session';
 import {
@@ -26,6 +29,26 @@ import { __lodyMcpServerInternals } from '../mcp/lody-mcp-server';
 
 const { buildMcpCreateOptions, getSessionContext, resolveMcpSessionCreate } =
   __lodyMcpServerInternals;
+
+const discoveryState = vi.hoisted(() => ({
+  instances: [] as AgentRoleDiscoveryInstance[],
+  projectMachineId: undefined as MachineId | undefined,
+}));
+vi.mock('./resource-discovery-runtime', () => ({
+  createResourceDiscovery: async () => ({
+    agentRoleInstances: async () => discoveryState.instances,
+    localProjectMachineId: async () => discoveryState.projectMachineId,
+    resolveMachine: async (selector: string) => selector,
+  }),
+}));
+const auth: AuthContext = {
+  token: 'test',
+  userId: 'user-1',
+  userName: 'User',
+  userEmail: 'user@example.test',
+  machineId: 'machine-b' as MachineId,
+  machineName: 'B',
+};
 
 const createMcpContext = (): ReturnType<typeof getSessionContext> => ({
   machineId: 'machine-id',
@@ -139,29 +162,104 @@ describe('resolveAgentRoleCreate', () => {
         model: 'opus',
         configOption: ['permission_mode=ask'],
       })
-    ).toEqual(['--machine', '--agent', '--agent-config', '--mode', '--model', '--config-option']);
+    ).toEqual(['--agent', '--agent-config', '--mode', '--model', '--config-option']);
     expect(listIgnoredAgentRoleOverrides({ machine: '  ', configOption: [] })).toEqual([]);
   });
 });
 
 describe('resolveAgentRoleCreateFromCatalog', () => {
+  it('selects and freezes the local project instance just like MCP, and respects machine pins', async () => {
+    const role = agentRole({
+      instances: [
+        {
+          id: 'instance-a' as AgentRoleInstanceId,
+          machineId: 'machine-a' as MachineId,
+          agentConfigId: 'config-a' as AgentConfigId,
+          runConfig: { modelId: 'a' },
+        },
+        {
+          id: 'instance-b' as AgentRoleInstanceId,
+          machineId: 'machine-b' as MachineId,
+          agentConfigId: 'config-b' as AgentConfigId,
+          runConfig: { modelId: 'b' },
+        },
+      ],
+    });
+    discoveryState.instances = role.instances.map((instance) => ({
+      ...instance,
+      alias: null,
+      group: { key: 'claude', name: 'Claude' },
+      availability: { state: 'available' },
+    }));
+    discoveryState.projectMachineId = 'machine-b' as MachineId;
+    const { manager } = createRoleCatalogManager([role]);
+    const cli = await resolveAgentRoleCreateFromCatalog({
+      auth: { ...auth, machineId: 'machine-a' as MachineId },
+      manager,
+      workspaceId: 'workspace-id' as WorkspaceId,
+      selector: role.id,
+      prompt: 'Review',
+      overrides: { localProject: 'project-b' },
+    });
+    const mcp = await __lodyMcpServerInternals.selectMcpAgentRoleTarget({
+      role,
+      requester: { machineId: 'machine-a' as MachineId },
+      input: {
+        operationId: 'role-project',
+        prompt: 'Review',
+        agentRoleId: role.id,
+        workContext: { kind: 'local', projectId: 'project-b' },
+      },
+      discovery: async () => ({
+        agentRoleInstances: async () => discoveryState.instances,
+        localProjectMachineId: async () => discoveryState.projectMachineId,
+      }),
+    });
+    expect(cli.instance).toEqual(mcp?.instance);
+    expect(cli.machineId).toBe('machine-b');
+    expect(cli.dispatchConfig.modelId).toBe('b');
+    const options: CreateOptions = {};
+    applyAgentRoleCreateTarget(options, cli);
+    expect(options.agentRoleSnapshot).toEqual(snapshotAgentRole(role, role.instances[1]));
+    const pinned = await resolveAgentRoleCreateFromCatalog({
+      auth,
+      manager,
+      workspaceId: 'workspace-id' as WorkspaceId,
+      selector: role.id,
+      prompt: 'Review',
+      overrides: { machine: 'machine-a' },
+    });
+    expect(pinned.instance.id).toBe('instance-a');
+    discoveryState.instances[0]!.availability = { state: 'unavailable', reason: 'machine_offline' };
+    await expect(
+      resolveAgentRoleCreateFromCatalog({
+        auth,
+        manager,
+        workspaceId: 'workspace-id' as WorkspaceId,
+        selector: role.id,
+        prompt: 'Review',
+        overrides: { machine: 'machine-a' },
+      })
+    ).rejects.toThrow('machine_unavailable');
+    discoveryState.instances = [];
+    discoveryState.projectMachineId = undefined;
+  });
+
   it('loads the workspace catalog and resolves an id or unique name', async () => {
     const role = agentRole();
-    const { manager, syncFlockDocOrThrow } = createRoleCatalogManager([role]);
+    const { manager } = createRoleCatalogManager([role]);
 
     const byId = await resolveAgentRoleCreateFromCatalog({
+      auth,
       manager,
       workspaceId: 'workspace-id' as WorkspaceId,
       selector: 'reviewer',
       prompt: 'Review this.',
     });
     expect(byId.role).toEqual(role);
-    expect(syncFlockDocOrThrow).toHaveBeenCalledWith('workspace-id:wf:workspace', {
-      timeoutMs: 10_000,
-      reason: 'agent-role-catalog-read',
-    });
 
     const byName = await resolveAgentRoleCreateFromCatalog({
+      auth,
       manager,
       workspaceId: 'workspace-id' as WorkspaceId,
       selector: 'Reviewer',
@@ -173,6 +271,7 @@ describe('resolveAgentRoleCreateFromCatalog', () => {
 
     await expect(
       resolveAgentRoleCreateFromCatalog({
+        auth,
         manager,
         workspaceId: 'workspace-id' as WorkspaceId,
         selector: 'missing',
@@ -267,7 +366,7 @@ describe('MCP resolution parity', () => {
     expect(cliOptions.agentRoleId).toBe('reviewer');
     expect(cliOptions.agentRoleRevision).toBe(7);
 
-    bindAgentRoleCreateOptions(mcpOptions, mcp.role);
+    bindAgentRoleCreateOptions(mcpOptions, cli);
     expect(mcpOptions.agentRoleId).toBe(cliOptions.agentRoleId);
     expect(mcpOptions.agentRoleRevision).toBe(cliOptions.agentRoleRevision);
     expect(mcpOptions.agentRoleSnapshot).toEqual(cliOptions.agentRoleSnapshot);
