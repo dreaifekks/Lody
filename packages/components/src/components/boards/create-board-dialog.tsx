@@ -1,3 +1,4 @@
+import { buildAgentPrompt } from '@/lib';
 import { buildAcpSelectorOptions } from '@/components/shared/acp-selector-options';
 import { filterAcpSessionConfigOptionValues } from '@/lib/acp-session-config-selection';
 import { useMemo, useState } from 'react';
@@ -14,11 +15,9 @@ import { Switch } from '@lody/ui/switch';
 import { Dialog } from '@/ui/dialog';
 import {
   DEFAULT_BOARD_RULES,
-  MAX_BOARDS_PER_WORKSPACE,
   normalizeBoardMeta,
   buildSessionTurnInputConfig,
   buildPendingUserHistoryEntry,
-  composeAgentRolePrompt,
   getDefaultSelectedMcpServerIds,
   type AgentRoleInstanceId,
   type BoardMeta,
@@ -65,7 +64,7 @@ export function CreateBoardDialog({
   const { t } = useTranslation();
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const user = useAtomValue(userAtom);
-  const { boards, servers } = useWorkspaceCatalog();
+  const { servers } = useWorkspaceCatalog();
   const { machines } = useVisibleMachineMetas();
   useMachineFlockAgentConfigs();
   const agents = useAtomValue(getAllAgentConfigAtom);
@@ -140,11 +139,11 @@ export function CreateBoardDialog({
       createdAtMs: Date.now(),
       createdByUserId: user.id,
     });
-    if (!board || boards.length >= MAX_BOARDS_PER_WORKSPACE) {
+    if (!board) {
       setError(
         t(
           'boards.invalid',
-          'Enter a name and goal within the limits. A workspace can have up to 50 boards.'
+          'Enter a name and goal within the limits. A workspace can have up to 50 active boards.'
         )
       );
       return;
@@ -156,12 +155,10 @@ export function CreateBoardDialog({
     setSaving(true);
     setError('');
     const inputBlocks = [{ type: 'text' as const, text: board.purpose }];
-    const prompt = [
-      config.prompt,
-      role ? composeAgentRolePrompt(role.role.promptPrefix, board.purpose) : board.purpose,
-    ]
-      .filter(Boolean)
-      .join('\n\n');
+    const prompt = buildAgentPrompt(
+      board.purpose,
+      buildAgentPrompt(role?.role.promptPrefix ?? '', config.prompt)
+    );
     const selectors = buildAcpSelectorOptions({
       configId: config.id,
       cliType: config.cliType,
@@ -239,7 +236,7 @@ export function CreateBoardDialog({
         cause instanceof Error && cause.message === 'BOARD_LIMIT'
           ? t(
               'boards.invalid',
-              'Enter a name and goal within the limits. A workspace can have up to 50 boards.'
+              'Enter a name and goal within the limits. A workspace can have up to 50 active boards.'
             )
           : cause instanceof Error
             ? cause.message

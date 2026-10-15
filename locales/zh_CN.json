@@ -5351,7 +5351,7 @@
   "boards.chain": "自主链 {{depth}}/{{limit}}",
   "boards.loading": "加载中…",
   "boards.noConclusion": "暂无结论。",
-  "boards.invalid": "请填写符合长度限制的名称和目标；每个工作区最多 50 个看板。",
+  "boards.invalid": "请填写符合长度限制的名称和目标；每个工作区最多 50 个未归档看板。",
   "boards.agentUnavailable": "请选择可用的 Agent。",
   "boards.create": "新建看板",
   "boards.createHelp": "选择协调者，目标将作为它的第一条消息。",

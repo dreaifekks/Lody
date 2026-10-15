@@ -168,4 +168,10 @@ it('creates a board before its coordinator, compensates rejected acceptance, and
     })
   ).rejects.toThrow('BOARD_LIMIT');
   expect(rows.size).toBe(50);
+  rows.set('1', { key: ['board', 'bd_1'], value: { ...board, id: 'bd_1', archivedAtMs: 2 } });
+  await expect(
+    createWorkspaceBoard(deps, { ...board, id: 'bd_replacement' as never }, async () => 'accepted')
+  ).resolves.toBe('accepted');
+  expect(rows.size).toBe(51);
+  expect(rows.get('1')?.value).toMatchObject({ archivedAtMs: 2 });
 });

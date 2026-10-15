@@ -1,11 +1,12 @@
-import { useId, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
+import { useMachineFlockRowsByMachineIds } from '@/hooks/use-machine-flock-rows';
 import { FocusScope, useListKeyboardNavigation } from '@/ui/focus-scope';
 import { useAtomValue } from 'jotai';
 import { useNavigate } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
 import * as stylex from '@stylexjs/stylex';
 import { Button } from '@lody/ui/button';
-import type { BoardMeta, SessionMeta } from '@lody/shared';
+import { getMachineFlockLocalProjects, type BoardMeta, type SessionMeta } from '@lody/shared';
 import { boardEnabledAtom } from '@/atoms/settings';
 import { currentWorkspaceSlugAtom } from '@/atoms';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
@@ -78,6 +79,12 @@ function BoardsContent({ boardId }: { boardId?: string }) {
   const coordinator = members.find((session) => session.id === board?.coordinatorSessionId);
   const threads = members.filter((session) => session.id !== board?.coordinatorSessionId);
   const archived = board ? archivedSessions.filter((session) => session.boardId === board.id) : [];
+  const machineIds = [...new Set([...members, ...archived].map((session) => session.machineId))];
+  const machineRows = useMachineFlockRowsByMachineIds(machineIds, { families: ['localProject'] });
+  const localProjectsByMachine = useMemo(
+    () => new Map([...machineRows].map(([id, rows]) => [id, getMachineFlockLocalProjects(rows)])),
+    [machineRows]
+  );
   return (
     <FocusScope id={scopeId} {...stylex.props(boardStyles.page)}>
       {boardId ? (
@@ -100,6 +107,7 @@ function BoardsContent({ boardId }: { boardId?: string }) {
                 {coordinator ? (
                   <BoardSessionRow
                     session={coordinator}
+                    localProjects={localProjectsByMachine.get(coordinator.machineId)}
                     depth={0}
                     onOpen={() => openSession(coordinator)}
                   />
@@ -120,6 +128,7 @@ function BoardsContent({ boardId }: { boardId?: string }) {
                   <BoardSessionRow
                     key={session.id}
                     session={session}
+                    localProjects={localProjectsByMachine.get(session.machineId)}
                     depth={depth}
                     onOpen={() => openSession(session)}
                   />
@@ -135,6 +144,7 @@ function BoardsContent({ boardId }: { boardId?: string }) {
                       <BoardSessionRow
                         key={session.id}
                         session={session}
+                        localProjects={localProjectsByMachine.get(session.machineId)}
                         depth={depth}
                         onOpen={() => openSession(session)}
                       />

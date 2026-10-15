@@ -675,7 +675,13 @@ describe('local platform zero-cloud integration', () => {
       } as Parameters<typeof manager.repo.upsertDocMeta>[1]);
       const sessionId = await manager.createSession(machineId, 'custom', 'claude');
       const sourceDoc = await manager.getOrCreateSessionDoc(sessionId);
-      await sourceDoc.appendUserTurn({ id: 'source-turn', role: 'user', userId, timestamp: new Date(0).toISOString(), items: [{ type: 'text', text: 'Continue the peer work.' }] });
+      await sourceDoc.appendUserTurn({
+        id: 'source-turn',
+        role: 'user',
+        userId,
+        timestamp: new Date(0).toISOString(),
+        items: [{ type: 'text', text: 'Continue the peer work.' }],
+      });
       // A session on the other machine, in a project this replica has not received yet.
       const peerSessionId = await manager.createSession(peerId, 'custom', 'claude');
       await manager.repo.upsertDocMeta(getSessionRoomId(peerSessionId), {
@@ -1098,21 +1104,41 @@ describe('local platform zero-cloud integration', () => {
       await expect(run({ command: 'export', outputDir: 'relative' })).rejects.toThrow('absolute');
       const catalog = await manager.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
       writeWorkspaceAgentRoleToFlock(catalog.flock, {
-        v: AGENT_ROLE_VERSION, id: 'terminal-role' as AgentRoleId, name: 'Terminal reviewer',
-        ownerUserId: userId, visibility: 'private', machineId, agentConfigId: configId,
-        runConfig: {}, promptPrefix: 'Review carefully.', revision: 1, createdAt: 1, updatedAt: 1,
+        v: AGENT_ROLE_VERSION,
+        id: 'terminal-role' as AgentRoleId,
+        name: 'Terminal reviewer',
+        ownerUserId: userId,
+        visibility: 'private',
+        machineId,
+        agentConfigId: configId,
+        runConfig: {},
+        promptPrefix: 'Review carefully.',
+        revision: 1,
+        createdAt: 1,
+        updatedAt: 1,
       });
       await manager.repo.flush();
       const attachmentPath = path.join(tempDir, 'terminal-attachment.txt');
       await fs.writeFile(attachmentPath, 'synthetic attachment');
-      const roleSession = (await run({ command: 'create', prompt: 'Inspect this.',
-        agentRole: 'Terminal reviewer', attach: [attachmentPath] })).sessionId as SessionId;
-      expect(await meta(roleSession)).toMatchObject({ agentRoleId: 'terminal-role', agentConfigId: configId });
+      const roleSession = (
+        await run({
+          command: 'create',
+          prompt: 'Inspect this.',
+          agentRole: 'Terminal reviewer',
+          attach: [attachmentPath],
+        })
+      ).sessionId as SessionId;
+      expect(await meta(roleSession)).toMatchObject({
+        agentRoleId: 'terminal-role',
+        agentConfigId: configId,
+      });
       const roleItems = await userPrompts(roleSession);
-      expect(roleItems[0]).toEqual(expect.arrayContaining([
-        expect.objectContaining({ type: 'text', text: 'Review carefully.\n\nInspect this.' }),
-        expect.objectContaining({ type: 'file', transport: 'local', machineId }),
-      ]));
+      expect(roleItems[0]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'text', text: 'Review carefully.\n\nInspect this.' }),
+          expect.objectContaining({ type: 'file', transport: 'local', machineId }),
+        ])
+      );
       await run({ command: 'chat', sessionId: roleSession, prompt: '', attach: [attachmentPath] });
       expect((await userPrompts(roleSession))[1]).toEqual([
         expect.objectContaining({ type: 'file', transport: 'local', machineId }),
@@ -1121,6 +1147,88 @@ describe('local platform zero-cloud integration', () => {
       expect(cloudConnectionAttempts).toBe(0);
     } finally {
       vi.unstubAllGlobals();
+      await manager.cleanUp({ fast: true, preserveSessionStatus: true });
+    }
+  });
+
+  it('resolves Board membership from the parent exclusively, or from the current Session for independent creates', async () => {
+    applyLocalPlatformEnv();
+    const workspaceId = 'lw_board_inheritance' as WorkspaceId;
+    const machineId = 'board-machine' as MachineId;
+    const userId = 'local:board-test';
+    const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
+    try {
+      await manager.registerMachine(machineId, {
+        id: machineId,
+        name: 'Desk',
+        ownerUserId: userId,
+      });
+      const configId = await manager.createAgentConfig('custom', 'claude', machineId, 'Synthetic');
+      const current = await manager.createSession(machineId, 'custom', 'claude');
+      const memberParent = await manager.createSession(machineId, 'custom', 'claude');
+      const plainParent = await manager.createSession(machineId, 'custom', 'claude');
+      await manager.repo.upsertDocMeta(getSessionRoomId(current), {
+        boardId: 'bd_current',
+        boardRole: 'coordinator',
+        boardGeneration: 2,
+      } as Partial<SessionMeta>);
+      await manager.repo.upsertDocMeta(getSessionRoomId(memberParent), {
+        boardId: 'bd_parent',
+      } as Partial<SessionMeta>);
+      const environment = createLocalSessionCommandEnvironment({
+        manager,
+        workspaceId,
+        machineId,
+        machineName: 'Desk',
+        userId,
+        host: {
+          readInvocation: (id) => ({
+            type: 'session/active-invocation-context',
+            sessionId: id,
+            active: false,
+          }),
+          readLiveStatus: async (id) => ({ sessionId: id, machineOnline: true, fresh: true }),
+          cancelSession: async () => ({ success: true }),
+          dispatchSession: async () => {},
+        },
+      });
+      const { createSessionResult, resolveTurnDispatchConfig } =
+        await import('../src/commands/session');
+      for (const scenario of [
+        { parent: memberParent, expectedBoard: 'bd_parent' },
+        { parent: plainParent, expectedBoard: undefined },
+        { expectedBoard: 'bd_current' },
+        { useCurrentSessionAsParent: true, expectedBoard: 'bd_current' },
+      ]) {
+        // No ownerTarget: createSessionResult -> prepareSessionInput -> resolveCreateContext.
+        const created = await runWithSessionCommandEnvironment(environment, () =>
+          createSessionResult(
+            environment.auth,
+            environment.workspace,
+            manager,
+            'Inspect this task.',
+            {
+              agentConfig: configId,
+              currentSessionId: current,
+              parent: scenario.parent,
+              useCurrentSessionAsParent: scenario.useCurrentSessionAsParent,
+              boardId: 'bd_current' as never,
+            },
+            { ...resolveTurnDispatchConfig({}), inheritSessionDefaults: false }
+          )
+        );
+        const meta = (await manager.repo.getDocMeta(getSessionRoomId(created.sessionId)))
+          ?.meta as SessionMeta;
+        expect(meta.boardId).toBe(scenario.expectedBoard);
+        expect(meta.parentSessionId).toBe(
+          scenario.parent ?? (scenario.useCurrentSessionAsParent ? current : undefined)
+        );
+        expect(meta.openedBySessionId).toBe(current);
+        expect(meta.boardRole).toBeUndefined();
+        expect(meta.boardGeneration).toBeUndefined();
+      }
+      expect(cloudConnectionAttempts).toBe(0);
+    } finally {
       await manager.cleanUp({ fast: true, preserveSessionStatus: true });
     }
   });

@@ -5351,7 +5351,7 @@
   "boards.chain": "Autonomous chain {{depth}}/{{limit}}",
   "boards.loading": "Loading…",
   "boards.noConclusion": "No conclusion yet.",
-  "boards.invalid": "Enter a name and goal within the limits. A workspace can have up to 50 boards.",
+  "boards.invalid": "Enter a name and goal within the limits. A workspace can have up to 50 active boards.",
   "boards.agentUnavailable": "Choose an available agent.",
   "boards.create": "New board",
   "boards.createHelp": "Choose a coordinator. Your goal will be its first message.",

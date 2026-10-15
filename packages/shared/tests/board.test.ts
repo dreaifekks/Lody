@@ -57,10 +57,31 @@ describe('board status', () => {
     );
     expect(
       deriveBoardSessionStatus({ liveStatus: { type: 'running' }, awaitingUserSince: 10 })
-    ).toBe('waiting_user');
+    ).toBe('running');
     expect(deriveBoardSessionStatus({ liveStatus: { type: 'requestPermission' } })).toBe(
       'waiting_user'
     );
+  });
+  it('only uses a waiting marker newer than the last completed turn when presence is absent', () => {
+    expect(deriveBoardSessionStatus({ awaitingUserSince: 10, lastMessageAt: 20 })).toBe('idle');
+    expect(deriveBoardSessionStatus({ awaitingUserSince: 20, lastMessageAt: 20 })).toBe('idle');
+    expect(deriveBoardSessionStatus({ awaitingUserSince: 21, lastMessageAt: 20 })).toBe(
+      'waiting_user'
+    );
+    expect(
+      deriveBoardSessionStatus({
+        awaitingUserSince: 21,
+        lastMessageAt: 20,
+        liveStatus: { type: 'initializing' },
+      })
+    ).toBe('initializing');
+    expect(
+      deriveBoardSessionStatus({
+        awaitingUserSince: 21,
+        lastMessageAt: 20,
+        liveStatus: { type: 'running', phase: 'finalizing' },
+      })
+    ).toBe('finalizing');
   });
   it('distinguishes failed, agent-dispatched and human turns while idle', () => {
     expect(deriveBoardSessionStatus({ lastUserTurn: { status: 'failed' } })).toBe('failed');

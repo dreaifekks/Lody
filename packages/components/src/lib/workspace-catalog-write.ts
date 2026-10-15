@@ -142,8 +142,9 @@ export async function createWorkspaceBoard<T>(
 ): Promise<T> {
   const handle = await deps.repo.openFlockDoc(getWorkspaceFlockDocId(deps.workspaceId));
   if (
-    listWorkspaceBoards(readWorkspaceFlockRowsFromFlock(handle.flock)).length >=
-    MAX_BOARDS_PER_WORKSPACE
+    listWorkspaceBoards(readWorkspaceFlockRowsFromFlock(handle.flock)).filter(
+      (entry) => entry.archivedAtMs === undefined
+    ).length >= MAX_BOARDS_PER_WORKSPACE
   )
     throw new Error('BOARD_LIMIT');
   await writeWorkspaceBoard(deps, board);

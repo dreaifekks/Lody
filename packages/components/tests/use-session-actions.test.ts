@@ -829,38 +829,60 @@ describe('useSessionActions', () => {
     );
   });
 
-  it('inherits a child tab board without inheriting the coordinator role', async () => {
-    const sessionId = 'session-child-create' as SessionId;
-    const parent = {
-      ...createSessionPayload('parent-session-id' as SessionId),
-      id: 'parent-session-id',
-      boardId: 'bd_test',
-      boardRole: 'coordinator',
-      boardGeneration: 2,
-    } as SessionMeta;
-    const metas = new Map<string, unknown>();
-    const runtime = createRuntime({
-      repo: {
-        upsertDocMeta: async (id: string, meta: unknown) => {
-          metas.set(id, meta);
-        },
-      } as unknown as WorkspaceRuntime['repo'],
-    });
-    const actions = await renderActions(runtime, {
-      sessionMetaCache: { [getSessionRoomId(parent.id)]: parent },
-    });
-    const result = await actions.createSession({
-      ...createSessionPayload(sessionId),
-      parentSessionId: parent.id,
-    });
-    expect(result.sessionMeta.boardId).toBe(parent.boardId);
-    expect(result.sessionMeta.boardRole).toBeUndefined();
-    expect(result.sessionMeta.boardGeneration).toBeUndefined();
-    expect(metas.get(getSessionRoomId(sessionId))).toMatchObject({
-      boardId: 'bd_test',
-      parentSessionId: parent.id,
-    });
-  });
+  it.each([
+    { boardId: 'bd_parent', method: 'create' },
+    { boardId: undefined, method: 'create' },
+    { boardId: 'bd_parent', method: 'start' },
+    { boardId: undefined, method: 'start' },
+  ] as const)(
+    'inherits only the parent board ($boardId) through $method, never the caller board or role',
+    async ({ boardId, method }) => {
+      const sessionId = 'session-child-create' as SessionId;
+      const parent = {
+        ...createSessionPayload('parent-session-id' as SessionId),
+        id: 'parent-session-id',
+        boardId,
+        boardRole: 'coordinator',
+        boardGeneration: 2,
+      } as SessionMeta;
+      const metas = new Map<string, unknown>();
+      const runtime = createRuntime({
+        repo: {
+          getDocMeta: async (id: string) => (metas.has(id) ? { meta: metas.get(id) } : undefined),
+          upsertDocMeta: async (id: string, meta: unknown) => {
+            metas.set(id, { ...(metas.get(id) as object), ...(meta as object) });
+          },
+        } as unknown as WorkspaceRuntime['repo'],
+      });
+      const actions = await renderActions(runtime, {
+        sessionMetaCache: { [getSessionRoomId(parent.id)]: parent },
+      });
+      const payload = {
+        ...createSessionPayload(sessionId),
+        parentSessionId: parent.id,
+        boardId: 'bd_caller' as never,
+      };
+      const result =
+        method === 'create'
+          ? await actions.createSession(payload)
+          : await actions.startSession(payload, {
+              role: 'user',
+              userId: 'user-1',
+              timestamp: '2026-10-16T00:00:00.000Z',
+              items: [{ type: 'text', text: 'Inspect the task.' }],
+              inputConfig: {
+                agentType: 'codex',
+                inputBlocks: [{ type: 'text', text: 'Inspect the task.' }],
+              },
+            } as never);
+      expect(result.sessionMeta.boardId).toBe(parent.boardId);
+      expect(result.sessionMeta.boardRole).toBeUndefined();
+      expect(result.sessionMeta.boardGeneration).toBeUndefined();
+      const persisted = metas.get(getSessionRoomId(sessionId)) as SessionMeta;
+      expect(persisted.parentSessionId).toBe(parent.id);
+      expect(persisted.boardId).toBe(boardId);
+    }
+  );
 
   it('does not record daily activity while Convex authentication is recovering', async () => {
     convexAuthState.isAuthenticated = false;
@@ -1226,11 +1248,12 @@ describe('useSessionActions', () => {
     const runtime = createRuntime({});
     const actions = await renderActions(runtime, { store });
 
-    const result = await actions.createSession(
-      createSessionPayload('session-roost-gated' as SessionId)
-    );
+    const result = await actions.createSession({
+      ...createSessionPayload('session-roost-gated' as SessionId),
+      boardId: 'bd_roost' as never,
+    });
 
-    expect(result.sessionMeta.historyBackend).toBe('roost');
+    expect(result.sessionMeta).toMatchObject({ historyBackend: 'roost', boardId: 'bd_roost' });
   });
 
   it.each([

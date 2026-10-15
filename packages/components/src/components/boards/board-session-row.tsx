@@ -1,10 +1,9 @@
-import { useMachineFlockRowsByMachineIds } from '@/hooks/use-machine-flock-rows';
 import { useState } from 'react';
 import { useAtomValue } from 'jotai';
 import * as stylex from '@stylexjs/stylex';
 import { useTranslation } from 'react-i18next';
 import {
-  getMachineFlockLocalProjects,
+  type LocalProjectMeta,
   deriveBoardSessionStatus,
   LODY_MAX_CHAIN_DEPTH,
   type SessionMeta,
@@ -19,10 +18,12 @@ import { BoardSessionRowView, boardStyles } from './board-view';
 export function BoardSessionRow({
   session,
   depth,
+  localProjects,
   onOpen,
 }: {
   session: SessionMeta;
   depth: number;
+  localProjects?: Readonly<Record<string, LocalProjectMeta>>;
   onOpen: () => void;
 }) {
   const [expanded, setExpanded] = useState(session.boardRole === 'coordinator');
@@ -40,6 +41,7 @@ export function BoardSessionRow({
   const status = deriveBoardSessionStatus({
     liveStatus,
     awaitingUserSince: session.awaitingUserSince,
+    lastMessageAt: session.lastMessageAt,
     lastUserTurn: lastUser,
     chatFailed: turns
       .slice(lastUser ? turns.indexOf(lastUser) : turns.length)
@@ -51,16 +53,13 @@ export function BoardSessionRow({
   });
   const project = session.project;
   const machine = machines.get(session.machineId);
-  const machineRows = useMachineFlockRowsByMachineIds([session.machineId], {
-    families: ['localProject'],
-  }).get(session.machineId);
-  const localProjects = {
+  const projects: Readonly<Record<string, LocalProjectMeta>> = {
     ...machine?.localProjects,
-    ...(machineRows ? getMachineFlockLocalProjects(machineRows) : {}),
+    ...localProjects,
   };
   const context =
     project?.kind === 'local'
-      ? (localProjects[project.localProjectId]?.name ?? t('boards.localProject', 'Local project'))
+      ? (projects[project.localProjectId]?.name ?? t('boards.localProject', 'Local project'))
       : project?.kind === 'github'
         ? project.repoFullName
         : t('boards.chat', 'Chat');

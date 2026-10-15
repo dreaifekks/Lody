@@ -67,7 +67,7 @@ type BoardMeta = {
 };
 ```
 
-At most 50 Boards per workspace. Do not store a second member list: session metadata
+At most 50 active Boards per workspace. Archived Boards (`archivedAtMs` set) do not count toward this limit. Do not store a second member list: session metadata
 is the membership authority, and Overview/tools filter by `boardId`.
 
 ### Membership
@@ -306,7 +306,7 @@ A shared status helper serves rendering and `lody_board_overview`:
 | State | Source |
 | --- | --- |
 | Running / Starting / Finalizing | Presence (`sessionLiveStatusAtomFamily`), never durable `SessionMeta.status` |
-| Waiting for you | `awaitingUserSince` |
+| Waiting for you | Presence `requestPermission`, or no live status and `awaitingUserSince` newer than `lastMessageAt` |
 | Auto review | Nonterminal review document |
 | Failed | Current generation's last user turn failed or same-turn `chat_failed` |
 | Idle · waiting for coordinator | Idle and last user turn authored by agent |
@@ -388,6 +388,8 @@ Each step should merge and validate independently, in dependency order.
 
 ### PR2 Coordinator instructions, Board tools and notes
 
+- Overview New thread and session-menu Join board / Remove from board actions.
+
 - `buildPrompt` adds coordinator/thread instructions by role.
 - Shared Board document read/write and CLI acquisition/size bounds; components
   `useBoardDocument` and notes panel following Schedule documents.
@@ -466,7 +468,9 @@ workspace routes/sidebar, metadata/presence atoms, archive/Schedule components;
 PR1 implements Board rows, three membership fields, CLI/MCP and UI child inheritance,
 list filtering, experiment, creation, desktop/mobile entry and read-only Overview.
 See the [PR1 Agent Note](../../.agents/notes/implemented/feature/2026-10-15-board-overview.md).
-PR2–PR5 above remain intent, not implemented behavior.
+PR2–PR5 above remain intent, not implemented behavior. Overview’s **New thread**
+and the session menu’s **Join board / Remove from board** are not implemented in
+PR1; they are assigned to PR2.
 
 Adjustments to the original file plan: UI creation bypasses CLI preparation, so
 both paths in `session-submission.ts` also inherit membership. Reuse the shared

@@ -3390,7 +3390,7 @@ async function resolveCreateContext(args: {
     ...(project ? { project } : {}),
     ...(parentSessionId ? { parentSessionId } : {}),
     ...resolveOpenedBySessionRelation(currentSession),
-    boardId: parentSession?.boardId ?? currentSession?.boardId,
+    boardId: parentSession ? parentSession.boardId : currentSession?.boardId,
   };
 }
 
@@ -3748,6 +3748,7 @@ export async function prepareSessionInput(
   });
   Object.assign(effectiveDispatchConfig, authoredDispatchOverrides);
 
+  const boardId = parentSessionId ? resolved.boardId : (resolved.boardId ?? options.boardId);
   const sessionId = options.sessionId ?? (uuidV4() as SessionId);
   const attachments =
     options.inputAttachments ??
@@ -3797,9 +3798,7 @@ export async function prepareSessionInput(
     ...(parentSessionId ? { parentSessionId } : {}),
     ...(openedBySessionId ? { openedBySessionId } : {}),
     ...(openedByRootSessionId ? { openedByRootSessionId } : {}),
-    ...((resolved.boardId ?? options.boardId)
-      ? { boardId: resolved.boardId ?? options.boardId }
-      : {}),
+    ...(boardId ? { boardId } : {}),
     ...(options.boardRole ? { boardRole: options.boardRole } : {}),
     ...(options.boardGeneration !== undefined ? { boardGeneration: options.boardGeneration } : {}),
     ...(options.agentRoleId ? { agentRoleId: options.agentRoleId as AgentRoleId } : {}),

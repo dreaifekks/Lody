@@ -65,7 +65,7 @@ type BoardMeta = {
 };
 ```
 
-每个工作区至多 50 个看板。看板行不保存成员列表：成员资格写在 session 自己的元数据
+每个工作区至多 50 个未归档看板；已归档（`archivedAtMs` 有值）的看板不计入上限。看板行不保存成员列表：成员资格写在 session 自己的元数据
 上，Overview 和工具都按 `boardId` 过滤，没有第二份需要维护一致的名单。
 
 ### 成员资格
@@ -340,7 +340,7 @@ turn 的首行（在做什么）；不展开不读文档，和归档页的预览
 | 显示          | 来源                                                                 |
 | ------------- | -------------------------------------------------------------------- |
 | 运行中 / 启动中 / 收尾中 | presence（`sessionLiveStatusAtomFamily`），不用 `SessionMeta.status` |
-| 等你回答      | `awaitingUserSince` 有值                                              |
+| 等你回答      | presence 为 `requestPermission`，或无 live 状态且 `awaitingUserSince` 晚于 `lastMessageAt`                                              |
 | 自动 review 中 | `autoReview` 运行文档非终态                                           |
 | 失败          | 当前代最后一个 user turn `failed`，或 `chat_failed`                    |
 | 空闲 · 等协调者 | 空闲且最后一个 user turn 是 agent 派发的                              |
@@ -424,6 +424,8 @@ Agent Role / Schedule 写入的权限档位上限不变；看板工具只写 Lod
   按 `archive-list-virtual-rows.test.tsx` 的方式。
 
 ### PR2 协调者提示、看板工具、笔记
+
+- Overview「+ 新线程」和会话菜单「加入看板 / 移出看板」。
 
 - `session-execution-helpers.ts` `buildPrompt`：协调者说明、线程说明（按 `boardRole`）。
 - 看板文档 `board-<id>`：shared 读写（仿 `schedule-repository.ts`），CLI 侧打开与容量；
@@ -527,7 +529,8 @@ Agent Role / Schedule 写入的权限档位上限不变；看板工具只写 Lod
 PR1 已实现：看板 Flock 行、三项成员元数据、CLI/MCP 与界面子 Tab 继承、
 `session_list` 看板筛选、实验开关、创建对话框、桌面/移动入口和只读 Overview。
 实现细节和检查记录见 [PR1 Agent Note](../../.agents/notes/implemented/feature/2026-10-15-board-overview.zh.md)。
-PR2–PR5 尚未实现，前文对应段落仍表示未来意图。
+PR2–PR5 尚未实现，前文对应段落仍表示未来意图。Overview 的「+ 新线程」以及
+会话 ⋯ 菜单中的「加入看板 / 移出看板」不在 PR1 内，明确安排到 PR2 实现。
 
 PR1 与最初文件分工的调整：界面创建并不经过 CLI `prepareSessionInput`，因此还必须在
 `packages/components/src/lib/session-submission.ts` 的两个创建入口继承成员资格。

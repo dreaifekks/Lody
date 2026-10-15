@@ -52,6 +52,7 @@ function buildSessionCreateResult(
   parent?: SessionMeta
 ): CreateSessionResult {
   const sessionId = payload.sessionId ?? (uuidv4() as SessionId);
+  const boardId = payload.parentSessionId ? parent?.boardId : payload.boardId;
   const sessionMeta: SessionMeta = {
     id: sessionId,
     machineId: payload.machineId,
@@ -66,9 +67,7 @@ function buildSessionCreateResult(
     // the session lifetime. Existing sessions retain their stored backend.
     historyBackend: payload.historyBackend ?? defaultHistoryBackend,
     agentConfigId: payload.agentConfigId,
-    ...((parent?.boardId ?? payload.boardId)
-      ? { boardId: parent?.boardId ?? payload.boardId }
-      : {}),
+    ...(boardId ? { boardId } : {}),
     ...(payload.boardRole ? { boardRole: payload.boardRole } : {}),
     ...(payload.boardGeneration !== undefined ? { boardGeneration: payload.boardGeneration } : {}),
     acpSessionId: undefined,

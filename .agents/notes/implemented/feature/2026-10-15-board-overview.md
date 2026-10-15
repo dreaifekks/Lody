@@ -39,12 +39,36 @@ The Schedule agent controls and existing session acceptance preserve agent/Role
 selection, prompt composition, MCP defaults, and run config. A per-device opt-in
 hides navigation and route content without erasing membership or stopping work.
 
+## Review corrections
+
+The follow-up keeps live presence ahead of waiting markers. A stale waiting
+marker is ignored after a newer `lastMessageAt`; daemon marker lifecycle
+is unchanged. A child inherits only its parent’s membership, including absence;
+preparation cannot restore the caller’s Board from bound create options.
+
+Creation now uses the shared prompt composer and one write-time capacity check
+that excludes archived Boards. Overview acquires local-project catalogs once
+per machine at list level. Integration tests create actual sessions through
+`resolveCreateContext`; row tests use a Loro-backed ConversationView to distinguish
+current failed turns/notices from an older failure followed by a new assignment.
+New thread and Join/Remove actions are explicitly assigned to PR2 in the Spec.
+
 ## Verification and limits
 
-Behavioral suites cover normalization, catalog events, status precedence, MCP
-creation membership, UI child inheritance and real-atom Overview updates. Full affected-package suites passed: shared 1,528; CLI 4,012 with one skipped;
-components 5,348. Full-workspace typecheck, lint/i18n/boundary checks, formatting
-and docs checks passed. The aggregate CI run exited 143 before completing; the
-affected suites were then completed separately. Storybook list/row previews were
-checked in a browser at desktop and 390px widths; real LAN dispatch remains manual. No report observer,
-Board MCP tools, notes document, round rejection or digest is shipped in PR1.
+After the review corrections, the full affected-package suites passed: shared
+1,529; CLI 4,013 with one skipped; components 5,352. The new CLI integration goes
+through `createSessionResult` and `resolveCreateContext`, and Overview uses a real
+Loro-backed reader in its transcript cases. Lint/i18n/boundary, format and docs
+checks passed.
+
+The recursive workspace typecheck completed. Components passed after its project
+map annotation was corrected; other packages passed except CLI's 11 existing
+voice/prompt errors. `acp-extension-core` declares its types from `src`, where this
+clean checkout has not applied the repository's existing voice/prompt patches.
+Both patches pass `git apply --check`; neither those sources nor CLI agent files
+changed here. Normal adapter preparation applies them, but this follow-up leaves
+submodules unchanged, as permitted for the known check limitation.
+
+The original PR1 browser checks covered desktop and 390px list/row previews.
+Real LAN dispatch remains manual. No report observer, Board MCP tools, notes
+document, round rejection or digest is shipped in PR1.

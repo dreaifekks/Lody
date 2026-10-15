@@ -1,19 +1,29 @@
+import { buildSessionDoc, openReaderView } from './conversation-view-fixtures';
+import type { ConversationView } from '../src/lib/conversation-view';
 // @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createStore, Provider, useAtomValue } from 'jotai';
 import { describe, it, expect, vi } from 'vitest';
-import { getSessionRoomId, type SessionMeta, type SessionId } from '@lody/shared';
+import {
+  getSessionRoomId,
+  type SessionHistory,
+  type SessionMeta,
+  type SessionId,
+} from '@lody/shared';
 import { sessionMetaCacheAtom, allActiveSessionsAtom } from '../src/atoms/doc-meta';
 import { lodyPresenceStatesAtom, lodyPresenceNowMsAtom } from '../src/atoms/presence';
 import { BoardSessionRow } from '../src/components/boards/board-session-row';
 import { buildBoardRows } from '../src/components/boards/boards-workspace';
 
-const docReads = vi.hoisted(() => ({ enabled: new Set<string>() }));
+const docReads = vi.hoisted(() => ({
+  enabled: new Set<string>(),
+  histories: new Map<string, ConversationView>(),
+}));
 vi.mock('@/hooks/use-session-doc', () => ({
   useSessionDoc: (id: string, options: { enabled: boolean }) => {
     if (options.enabled) docReads.enabled.add(id);
-    return { history: null, ready: true };
+    return { history: options.enabled ? (docReads.histories.get(id) ?? null) : null, ready: true };
   },
 }));
 vi.mock('@/components/boards/create-board-dialog', () => ({ CreateBoardDialog: () => null }));
@@ -50,6 +60,103 @@ function Rows() {
 }
 
 describe('board Overview', () => {
+  it.each([
+    {
+      name: 'failed user turn',
+      failed: true,
+      currentFailure: false,
+      oldFailure: false,
+      expected: 'Failed',
+    },
+    {
+      name: 'current chat_failed notice',
+      failed: false,
+      currentFailure: true,
+      oldFailure: false,
+      expected: 'Failed',
+    },
+    {
+      name: 'agent turn after an old failure',
+      failed: false,
+      currentFailure: false,
+      oldFailure: true,
+      expected: 'Idle · waiting for coordinator',
+    },
+  ])(
+    'reads a Loro-backed transcript: $name',
+    async ({ failed, currentFailure, oldFailure, expected }) => {
+      const id = 'transcript' as SessionId;
+      const entry = (turnId: string, patch: Partial<SessionHistory>): SessionHistory => ({
+        id: turnId,
+        role: 'user',
+        timestamp: '2026-10-15T00:00:00Z',
+        finished: true,
+        items: [],
+        ...patch,
+      });
+      const failure = (turnId: string) =>
+        entry(turnId, {
+          role: 'system',
+          items: [
+            { type: 'system_notice', name: 'chat_failed', meta: { reason: 'agent_no_output' } },
+          ],
+        });
+      const turns = [
+        ...(oldFailure ? [entry('old-user', {}), failure('old-failure')] : []),
+        entry('latest-user', {
+          status: failed ? 'failed' : 'handled',
+          author: {
+            v: 1,
+            kind: 'agent',
+            sessionId: 'coordinator',
+            turnId: 'assignment',
+            name: 'Coordinator',
+          },
+          items: [{ type: 'text', text: 'Implement the next step.\nKeep the result small.' }],
+        }),
+        entry('latest-assistant', {
+          role: 'assistant',
+          items: [{ type: 'text', text: 'Latest conclusion from the real transcript.' }],
+        }),
+        ...(currentFailure ? [failure('latest-failure')] : []),
+      ];
+      const doc = buildSessionDoc(turns);
+      const history = await openReaderView(doc, { sessionId: id });
+      docReads.histories.set(id, history);
+      const host = document.createElement('div');
+      document.body.append(host);
+      const root = createRoot(host);
+      try {
+        await act(async () =>
+          root.render(
+            <Provider store={createStore()}>
+              <BoardSessionRow
+                session={makeSession(id, { awaitingUserSince: 10, lastMessageAt: 20 })}
+                depth={0}
+                onOpen={() => {}}
+              />
+            </Provider>
+          )
+        );
+        expect(host.textContent).not.toContain('Latest conclusion');
+        await act(async () =>
+          host.querySelector<HTMLButtonElement>('button[aria-expanded]')?.click()
+        );
+        expect(host.textContent).toContain(expected);
+        expect(host.textContent).toContain('Implement the next step.');
+        expect(host.textContent).not.toContain('Keep the result small.');
+        expect(host.textContent).toContain('Latest conclusion from the real transcript.');
+        if (oldFailure) expect(host.textContent).not.toContain('Failed');
+      } finally {
+        await act(async () => root.unmount());
+        host.remove();
+        docReads.histories.delete(id);
+        history.dispose();
+        doc.free();
+      }
+    }
+  );
+
   it('updates membership from real metadata atoms, shows tabs/opened sessions, and uses presence rather than stale status', async () => {
     const store = createStore();
     const a = makeSession('root');
