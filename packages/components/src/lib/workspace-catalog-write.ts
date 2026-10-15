@@ -1,6 +1,10 @@
 import {
   getWorkspaceFlockDocId,
   workspaceFlockKeys,
+  type BoardMeta,
+  MAX_BOARDS_PER_WORKSPACE,
+  listWorkspaceBoards,
+  readWorkspaceFlockRowsFromFlock,
   type AgentRoleId,
   type CatalogAgentRole,
   type McpServerId,
@@ -120,3 +124,33 @@ export const writeWorkspaceAgentTools = (
   tools: readonly LodyAgentToolId[]
 ): Promise<void> =>
   putRow(deps, workspaceFlockKeys.agentToolsSetting(), { version: 1, tools: [...tools] });
+
+export const writeWorkspaceBoard = (
+  deps: WorkspaceCatalogWriteDeps,
+  board: BoardMeta
+): Promise<void> => putRow(deps, workspaceFlockKeys.board(board.id), board);
+export const deleteWorkspaceBoard = (
+  deps: WorkspaceCatalogWriteDeps,
+  id: BoardMeta['id']
+): Promise<void> => deleteRow(deps, workspaceFlockKeys.board(id));
+
+/** Board creation compensates only a rejected first-turn acceptance, never upload. */
+export async function createWorkspaceBoard<T>(
+  deps: WorkspaceCatalogWriteDeps,
+  board: BoardMeta,
+  startCoordinator: () => Promise<T>
+): Promise<T> {
+  const handle = await deps.repo.openFlockDoc(getWorkspaceFlockDocId(deps.workspaceId));
+  if (
+    listWorkspaceBoards(readWorkspaceFlockRowsFromFlock(handle.flock)).length >=
+    MAX_BOARDS_PER_WORKSPACE
+  )
+    throw new Error('BOARD_LIMIT');
+  await writeWorkspaceBoard(deps, board);
+  try {
+    return await startCoordinator();
+  } catch (error) {
+    await deleteWorkspaceBoard(deps, board.id);
+    throw error;
+  }
+}

@@ -48,7 +48,8 @@ export type SessionSubmissionPorts = {
 
 function buildSessionCreateResult(
   payload: SessionToCreate,
-  defaultHistoryBackend: SessionHistoryBackendKind
+  defaultHistoryBackend: SessionHistoryBackendKind,
+  parent?: SessionMeta
 ): CreateSessionResult {
   const sessionId = payload.sessionId ?? (uuidv4() as SessionId);
   const sessionMeta: SessionMeta = {
@@ -65,6 +66,11 @@ function buildSessionCreateResult(
     // the session lifetime. Existing sessions retain their stored backend.
     historyBackend: payload.historyBackend ?? defaultHistoryBackend,
     agentConfigId: payload.agentConfigId,
+    ...((parent?.boardId ?? payload.boardId)
+      ? { boardId: parent?.boardId ?? payload.boardId }
+      : {}),
+    ...(payload.boardRole ? { boardRole: payload.boardRole } : {}),
+    ...(payload.boardGeneration !== undefined ? { boardGeneration: payload.boardGeneration } : {}),
     acpSessionId: undefined,
     diffStats: undefined,
   };
@@ -138,7 +144,11 @@ export function createSessionSubmission(ports: SessionSubmissionPorts) {
       requested: payload.historyBackend,
       preferred: defaultHistoryBackend,
     });
-    return buildSessionCreateResult({ ...payload, historyBackend: backend }, backend);
+    return buildSessionCreateResult(
+      { ...payload, historyBackend: backend },
+      backend,
+      payload.parentSessionId ? readSessionMeta(payload.parentSessionId) : undefined
+    );
   };
 
   const createSession = async (payload: SessionToCreate): Promise<CreateSessionResult> => {

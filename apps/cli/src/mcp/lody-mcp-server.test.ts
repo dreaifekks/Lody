@@ -45,6 +45,8 @@ import {
   LodyOperationStoreError,
 } from '@/orchestration/operation-store';
 import {
+  prepareSessionInput,
+  resolveTurnDispatchConfig,
   applyAgentRunConfigSelection,
   resolveEffectiveSessionCreateDispatchConfig,
   validateTurnConfigOptionValues,
@@ -2077,4 +2079,82 @@ describe('session MCP input schemas', () => {
         Buffer.byteLength(result.text.replace('\n…\n', ''), 'utf8')
     );
   });
+});
+
+describe('board membership in MCP creation', () => {
+  it.each([
+    { useCurrentSessionAsParent: true },
+    { workContext: { kind: 'chat' as const } },
+    { workContext: { kind: 'local' as const, projectId: 'project', worktree: true as const } },
+  ])('inherits membership through create options into persisted metadata: %j', async (context) => {
+    const input: Parameters<typeof buildMcpCreateOptions>[0] = {
+      operationId: 'board-create',
+      prompt: 'Implement one task',
+      ...context,
+    };
+    expect(SessionCreateToolInputSchema.safeParse(input).success).toBe(true);
+    const options = buildMcpCreateOptions(input, {
+      sessionId: 'requester',
+      workspaceId: 'workspace',
+      machineId: 'machine',
+    } as ReturnType<typeof getSessionContext>);
+    bindMcpCreateContext(
+      options,
+      {
+        userId: 'owner',
+        sourceTurnId: 'turn',
+        author: {
+          v: 1,
+          kind: 'agent',
+          sessionId: 'requester' as SessionId,
+          turnId: 'turn',
+          name: 'Coordinator',
+        },
+      },
+      { machineId: 'machine' as MachineId, boardId: 'bd_test' as never }
+    );
+    options.workspaceMetaPrewriteSatisfied = true;
+    options.bypassSessionQuota = true;
+    const prepared = await prepareSessionInput(
+      { userId: 'owner', machineId: 'machine' } as never,
+      { id: 'workspace' } as never,
+      { repo: { getDocMeta: async () => undefined } } as unknown as LoroDocumentManager,
+      input.prompt,
+      options,
+      { ...resolveTurnDispatchConfig({}), inheritSessionDefaults: false },
+      {
+        targetMachine: { id: 'machine', ownerUserId: 'owner' } as MachineMeta,
+        agentConfig: {
+          id: 'agent',
+          machineId: 'machine',
+          cliType: 'claude',
+          agentType: 'claude',
+        } as AgentConfigMeta,
+      }
+    );
+    expect(prepared.meta.boardId).toBe('bd_test');
+    expect(prepared.meta.boardRole).toBeUndefined();
+    expect(prepared.meta.boardGeneration).toBeUndefined();
+    expect(prepared.userTurn.items).toEqual([{ type: 'text', text: input.prompt }]);
+    expect(options.useCurrentSessionAsParent).toBe(context.useCurrentSessionAsParent);
+    if (context.workContext?.kind === 'local') expect(options.localProject).toBe('project');
+  });
+});
+
+it('filters Board members and binds list cursors to the selected board', () => {
+  const { matchesSessionListFilters, sessionListFingerprint } = __lodyMcpServerInternals;
+  const input = SessionListToolInputSchema.parse({ boardId: 'bd_test' });
+  const ctx = createMcpContext();
+  const member = { id: 'member', boardId: 'bd_test' } as import('@lody/shared').SessionMeta;
+  expect(matchesSessionListFilters(member, input, ctx, 'owner')).toBe(true);
+  expect(
+    matchesSessionListFilters({ ...member, boardId: 'bd_other' as never }, input, ctx, 'owner')
+  ).toBe(false);
+  expect(matchesSessionListFilters({ ...member, boardId: undefined }, input, ctx, 'owner')).toBe(
+    false
+  );
+  expect(sessionListFingerprint(input, ctx)).not.toBe(
+    sessionListFingerprint({ ...input, boardId: 'bd_other' }, ctx)
+  );
+  expect(SessionListToolInputSchema.parse({ boardId: 'current' }).boardId).toBe('current');
 });

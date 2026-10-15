@@ -10,3 +10,5 @@ export type RepoId = string & { __brand: 'RepoId' };
 export type SessionId = string & { __brand: 'SessionId' };
 export type TaskId = string & { __brand: 'TaskId' };
 export type WorkspaceId = string & { __brand: 'WorkspaceId' };
+
+export type BoardId = string & { __brand: 'BoardId' };

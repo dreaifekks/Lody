@@ -1,3 +1,4 @@
+import { boardEnabledAtom } from '@/atoms/settings';
 import { parseLanHubRole } from '@lody/shared/lan-hub-role';
 import { openSessionOnModifiedClick } from '@/lib/desktop-window';
 import { buildSessionLink } from '@lody/shared/session-link';
@@ -1818,8 +1819,10 @@ export function LoroAppSidebar({
     return null;
   }, [location.pathname, location.search, selectedSessionId, workspaceSlug]);
 
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
   const activeNav = useMemo(() => {
     if (isArchiveRoute(location.pathname, workspaceSlug)) return 'archive';
+    if (workspaceSlug && location.pathname.startsWith(`/${workspaceSlug}/boards`)) return 'boards';
     if (workspaceSlug && location.pathname.startsWith(`/${workspaceSlug}/schedules`))
       return 'schedules';
     if (
@@ -3284,6 +3287,7 @@ export function LoroAppSidebar({
 
   const labels: Partial<LoroSidebarLabels> = useMemo(() => {
     return {
+      boards: t('boards.title', 'Boards'),
       schedules: t('schedules.title', 'Schedules'),
       home: t('sidebar.home', 'Home'),
       docs: t('sidebar.docs', 'Docs'),
@@ -3778,6 +3782,19 @@ export function LoroAppSidebar({
         onCreateWorkspaceClicked={handleCreateWorkspaceClicked}
         onHomeClicked={handleHomeClicked}
         onArchiveClicked={handleArchiveClicked}
+        onBoardsClicked={
+          boardsEnabled
+            ? () => {
+                if (workspaceSlug) {
+                  closeMobileDrawer();
+                  void router.navigate({
+                    to: '/$workspaceName/boards',
+                    params: { workspaceName: workspaceSlug },
+                  });
+                }
+              }
+            : undefined
+        }
         onSchedulesClicked={() => {
           if (workspaceSlug) {
             closeMobileDrawer();

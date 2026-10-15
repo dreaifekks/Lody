@@ -1137,6 +1137,10 @@ export type SessionMeta = {
    * the author's latest work?" must check BOTH.
    */
   workspaceUnpushed?: boolean;
+  /** Membership is stored on the Session, not duplicated in the Board row. */
+  boardId?: import('./ids').BoardId;
+  boardRole?: 'coordinator';
+  boardGeneration?: number;
   /** If set, this session is a child tab of another session and shares its workspace directory. */
   parentSessionId?: SessionId;
   /**

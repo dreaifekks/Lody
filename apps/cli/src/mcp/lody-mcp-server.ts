@@ -107,6 +107,7 @@ import { readMachineLocalProjects } from '@/lib/local-project-meta';
 import { listWorkspaceGitHubRepositoriesForCliToken } from '@/lib/workspace';
 import { listLocalGitHubRepositories } from '@/lib/lan/lan-github-repos';
 import {
+  resolveSessionMetaOrThrow,
   createSessionResult,
   runSessionOperationWithSyncedMetadata,
   MachineFlockReadUnavailableError,
@@ -885,6 +886,12 @@ const SessionListToolInputSchema = z
     ...SessionDiscoveryFilterShape,
     archive: z.enum(['active', 'archived', 'any']).default('active'),
     createdBy: z.literal('me').optional(),
+    boardId: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Board id, or current for the invoking session’s board.'),
     openedBy: z.string().trim().min(1).optional(),
     parent: z.string().trim().min(1).optional(),
     executionState: z.enum(['idle', 'busy']).optional(),
@@ -1874,6 +1881,7 @@ const sessionSummaryForMcp = (
   }
 ) => ({
   id: session.id,
+  ...(session.boardId ? { boardId: session.boardId } : {}),
   ...(session.title ? { title: session.title } : {}),
   createdAt: isoTimestamp(session.createdAt),
   lastActivityAt: isoTimestamp(session.lastMessageAt ?? session.createdAt),
@@ -1917,6 +1925,7 @@ const sessionListFingerprint = (
       JSON.stringify({
         archive: input.archive,
         createdBy: input.createdBy,
+        boardId: input.boardId,
         openedBy: input.openedBy === 'current' ? requireCurrentSessionId(ctx) : input.openedBy,
         parent: input.parent === 'current' ? requireCurrentSessionId(ctx) : input.parent,
         executionState: input.executionState,
@@ -1970,6 +1979,7 @@ const matchesSessionListFilters = (
   userId: string
 ): boolean => {
   if (!matchesSessionDiscovery(session, input)) return false;
+  if (input.boardId && session.boardId !== input.boardId) return false;
   if (input.archive === 'active' && session.isArchived === true) return false;
   if (input.archive === 'archived' && session.isArchived !== true) return false;
   if (input.createdBy === 'me' && session.userId !== userId) return false;
@@ -2027,6 +2037,11 @@ const buildSessionList = async (input: SessionListToolInput): Promise<unknown> =
   const workspace = await resolveWorkspaceOrThrow(auth, getMcpWorkspaceId(ctx));
   return await withWorkspaceManager(auth, workspace, 'mcp', async (manager) => {
     await syncWorkspaceMetaForRead(manager, `mcp.session_list:${ctx.sessionId}`);
+    if (input.boardId === 'current') {
+      const current = await resolveSessionMetaOrThrow(manager, requireCurrentSessionId(ctx));
+      if (!current.boardId) return { items: [] };
+      input = { ...input, boardId: current.boardId };
+    }
     const fingerprint = sessionListFingerprint(input, ctx);
     const cursor = parseSessionListCursor(input.cursor, fingerprint);
     const presence = manager.getPresenceStates() ?? {};
@@ -2351,10 +2366,11 @@ const readCurrentSessionMeta = async (
 const bindMcpCreateContext = (
   options: CreateOptions,
   identity: InvocationIdentity,
-  requester: Pick<SessionMeta, 'machineId'>
+  requester: Pick<SessionMeta, 'machineId' | 'boardId'>
 ): void => {
   options.delegatedRequester = toDelegatedSessionRequester(identity);
   options.defaultMachineId = requester.machineId;
+  options.boardId = requester.boardId;
 };
 
 type InvocationIdentity = {
@@ -2918,6 +2934,7 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
       return {
         ...(await withOperationStore((store) => store.snapshot(retry))),
         ...describeAgentRoleTarget(roleTarget),
+        ...(currentSession.boardId ? { boardId: currentSession.boardId } : {}),
       };
     }
     const targetMachineId = (resolved.input.machineId ?? currentSession.machineId) as MachineId;
@@ -3021,6 +3038,7 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
       return {
         ...(await withOperationStore((store) => store.snapshot(accepted.operation))),
         ...describeAgentRoleTarget(roleTarget),
+        ...(currentSession.boardId ? { boardId: currentSession.boardId } : {}),
       };
     }
     const pendingItem = accepted.operation.items[0];
@@ -3050,6 +3068,7 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
         return {
           ...(await snapshotOperation(ctx.sessionId as SessionId, args.operationId)),
           ...describeAgentRoleTarget(roleTarget),
+          ...(currentSession.boardId ? { boardId: currentSession.boardId } : {}),
         };
       }
       if (
@@ -3081,6 +3100,7 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
     return {
       ...(await snapshotOperation(ctx.sessionId as SessionId, args.operationId!)),
       ...describeAgentRoleTarget(roleTarget),
+      ...(currentSession.boardId ? { boardId: currentSession.boardId } : {}),
     };
   });
 };
@@ -3493,6 +3513,7 @@ const startSessionCreateManyOperation = async (
       return {
         ...(await withOperationStore((store) => store.snapshot(retry))),
         ...roleTargetSummary,
+        ...(requester.boardId ? { boardId: requester.boardId } : {}),
       };
     }
     const machineLiveness = makeMachineLivenessLookupForMcp(manager, ctx);
@@ -3657,6 +3678,7 @@ const startSessionCreateManyOperation = async (
       return {
         ...(await withOperationStore((store) => store.snapshot(accepted.operation))),
         ...roleTargetSummary,
+        ...(requester.boardId ? { boardId: requester.boardId } : {}),
       };
     }
     const nextItems = await mapWithConcurrency(
@@ -3735,6 +3757,7 @@ const startSessionCreateManyOperation = async (
     return {
       ...(await snapshotOperation(ctx.sessionId as SessionId, args.operationId)),
       ...roleTargetSummary,
+      ...(requester.boardId ? { boardId: requester.boardId } : {}),
     };
   });
 };
@@ -3949,6 +3972,8 @@ export const __lodyMcpServerInternals = {
   SessionChatManyToolInputSchema,
   SessionHistoryToolInputSchema,
   SessionListToolInputSchema,
+  matchesSessionListFilters,
+  sessionListFingerprint,
   SessionRenameToolInputSchema,
   SessionRenameManyToolInputSchema,
   SessionStatusManyToolInputSchema,
@@ -4521,6 +4546,7 @@ export function buildSessionToolServer(
             workspaceId: result.workspaceId,
             machineId: result.machineId,
             agentConfigId: result.agentConfigId,
+            ...(result.boardId ? { boardId: result.boardId } : {}),
             workContext: summarizeProjectRefForMcp(result.project),
             userTurnId: result.userTurnId,
             ...(result.parentSessionId ? { parentSessionId: result.parentSessionId } : {}),

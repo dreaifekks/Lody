@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  normalizeBoardMeta,
   AGENT_ROLE_VERSION,
   type AgentConfigId,
   type AgentRole,
@@ -8,6 +9,7 @@ import {
   type WorkspaceMcpServerMeta,
 } from '@lody/shared';
 import {
+  createWorkspaceBoard,
   deleteWorkspaceMcpServer,
   putWorkspaceMcpServer,
   uploadWorkspaceCatalog,
@@ -119,4 +121,51 @@ describe('workspace catalog writes', () => {
     await expect(writeWorkspaceAgentRole(unopenable.deps, role)).resolves.toBeUndefined();
     await expect(uploadWorkspaceCatalog(unopenable.deps)).resolves.toBeUndefined();
   });
+});
+
+it('creates a board before its coordinator, compensates rejected acceptance, and enforces catalog capacity', async () => {
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_test',
+    name: 'Feature',
+    purpose: 'Implement it',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'owner',
+  })!;
+  const rows = new Map<string, { key: readonly unknown[]; value: unknown }>();
+  const deps = {
+    workspaceId,
+    repo: {
+      openFlockDoc: async () => ({
+        flock: { scan: () => rows.values() },
+        syncOnce: async () => {},
+      }),
+    },
+    writer: {
+      flockRowPut: async (_doc: string, key: readonly unknown[], value: unknown) => {
+        rows.set(JSON.stringify(key), { key, value });
+      },
+      flockRowDelete: async (_doc: string, key: readonly unknown[]) => {
+        rows.delete(JSON.stringify(key));
+      },
+    },
+  } as unknown as WorkspaceCatalogWriteDeps;
+  await expect(
+    createWorkspaceBoard(deps, board, async () => {
+      expect(rows.size).toBe(1);
+      throw new Error('acceptance failed');
+    })
+  ).rejects.toThrow('acceptance failed');
+  expect(rows.size).toBe(0);
+  await expect(createWorkspaceBoard(deps, board, async () => 'accepted')).resolves.toBe('accepted');
+  expect([...rows.values()][0]?.value).toEqual(board);
+  for (let i = 1; i < 50; i++)
+    rows.set(String(i), { key: ['board', `bd_${i}`], value: { ...board, id: `bd_${i}` } });
+  await expect(
+    createWorkspaceBoard(deps, { ...board, id: 'bd_overflow' as never }, async () => {
+      throw new Error('must not start');
+    })
+  ).rejects.toThrow('BOARD_LIMIT');
+  expect(rows.size).toBe(50);
 });

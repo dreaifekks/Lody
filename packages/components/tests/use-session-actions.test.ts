@@ -829,21 +829,36 @@ describe('useSessionActions', () => {
     );
   });
 
-  it('records daily active user when creating a child session', async () => {
+  it('inherits a child tab board without inheriting the coordinator role', async () => {
     const sessionId = 'session-child-create' as SessionId;
-    const upsertDocMeta = vi.fn(async () => undefined);
+    const parent = {
+      ...createSessionPayload('parent-session-id' as SessionId),
+      id: 'parent-session-id',
+      boardId: 'bd_test',
+      boardRole: 'coordinator',
+      boardGeneration: 2,
+    } as SessionMeta;
+    const metas = new Map<string, unknown>();
     const runtime = createRuntime({
-      repo: { upsertDocMeta } as unknown as WorkspaceRuntime['repo'],
+      repo: {
+        upsertDocMeta: async (id: string, meta: unknown) => {
+          metas.set(id, meta);
+        },
+      } as unknown as WorkspaceRuntime['repo'],
     });
-    const actions = await renderActions(runtime);
-
-    await actions.createSession({
+    const actions = await renderActions(runtime, {
+      sessionMetaCache: { [getSessionRoomId(parent.id)]: parent },
+    });
+    const result = await actions.createSession({
       ...createSessionPayload(sessionId),
-      parentSessionId: 'parent-session-id' as SessionId,
+      parentSessionId: parent.id,
     });
-
-    expect(recordMyWorkspaceDailyActiveUser).toHaveBeenCalledWith({
-      workspaceId: runtime.workspaceId,
+    expect(result.sessionMeta.boardId).toBe(parent.boardId);
+    expect(result.sessionMeta.boardRole).toBeUndefined();
+    expect(result.sessionMeta.boardGeneration).toBeUndefined();
+    expect(metas.get(getSessionRoomId(sessionId))).toMatchObject({
+      boardId: 'bd_test',
+      parentSessionId: parent.id,
     });
   });
 

@@ -103,6 +103,7 @@ describe('workspace Flock helpers', () => {
     expect(flock.scanOptions).toEqual([
       { prefix: ['mcpServer'] },
       { prefix: ['agentRole'] },
+      { prefix: ['board'] },
       { prefix: ['setting'] },
     ]);
   });

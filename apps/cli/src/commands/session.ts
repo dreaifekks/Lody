@@ -222,6 +222,9 @@ type PromptOptions = {
 export type CreateOptions = CommonOptions &
   PromptOptions & {
     inputAttachments?: SessionInputAttachment[];
+    boardId?: SessionMeta['boardId'];
+    boardRole?: SessionMeta['boardRole'];
+    boardGeneration?: number;
     title?: string;
     machine?: string;
     agent?: string;
@@ -395,6 +398,7 @@ type LocalProjectSelectorCandidate = {
 };
 
 type ResolvedCreateContext = {
+  boardId?: SessionMeta['boardId'];
   targetMachine: MachineMeta;
   agentConfig: AgentConfigMeta;
   project?: ProjectRef;
@@ -3386,6 +3390,7 @@ async function resolveCreateContext(args: {
     ...(project ? { project } : {}),
     ...(parentSessionId ? { parentSessionId } : {}),
     ...resolveOpenedBySessionRelation(currentSession),
+    boardId: parentSession?.boardId ?? currentSession?.boardId,
   };
 }
 
@@ -3792,6 +3797,11 @@ export async function prepareSessionInput(
     ...(parentSessionId ? { parentSessionId } : {}),
     ...(openedBySessionId ? { openedBySessionId } : {}),
     ...(openedByRootSessionId ? { openedByRootSessionId } : {}),
+    ...((resolved.boardId ?? options.boardId)
+      ? { boardId: resolved.boardId ?? options.boardId }
+      : {}),
+    ...(options.boardRole ? { boardRole: options.boardRole } : {}),
+    ...(options.boardGeneration !== undefined ? { boardGeneration: options.boardGeneration } : {}),
     ...(options.agentRoleId ? { agentRoleId: options.agentRoleId as AgentRoleId } : {}),
     ...(options.agentRoleRevision !== undefined
       ? { agentRoleRevision: options.agentRoleRevision }
@@ -3856,6 +3866,7 @@ export async function createSessionResult(
     onEvent?: (event: SessionTurnOutputEvent) => void;
   }
 ): Promise<{
+  boardId?: SessionMeta['boardId'];
   sessionId: SessionId;
   machineId: MachineId;
   workspaceId: WorkspaceId;
@@ -3938,6 +3949,7 @@ export async function createSessionResult(
       workspaceId: workspace.id as WorkspaceId,
       userTurnId,
       agentConfigId: agentConfig.id,
+      ...(meta.boardId ? { boardId: meta.boardId } : {}),
       ...(project ? { project } : {}),
       ...(parentSessionId ? { parentSessionId } : {}),
       ...(openedBySessionId ? { openedBySessionId } : {}),

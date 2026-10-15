@@ -111,6 +111,16 @@ See the [decision and verification](../../../../.agents/notes/implemented/bug-fi
   (owned, or shared plus shared project); never decide it from synced `MachineMeta.ownerUserId`
   ([note](../../../../.agents/notes/implemented/bug-fix/2026-09-28-mcp-cross-machine-agent-role.md)).
 
+## Board membership
+
+Creating a Session from a Board member inherits its `boardId`, for child Tabs,
+independent work contexts and batches alike. Coordinator role and generation are
+not inherited. `lody_session_list({ boardId: "current" })` lists the invoking
+Session's Board; an explicit id filters another Board, and a non-member's
+`current` query is empty. The Board filter is part of cursor identity.
+This is PR1 of the [Board design](../../../../specs/project-coordinator/design.md);
+Board-specific tools and automatic reports are later steps.
+
 ## Chat configuration
 
 - Chat follow-ups inherit omitted mode/model/options from the target's last model turn
