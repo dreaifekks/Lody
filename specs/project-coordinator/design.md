@@ -8,8 +8,15 @@ Translation: current
 Bring the Claude Projects pattern into Lody: several parallel threads within a
 scope, a coordinator that delegates work, and a user who can enter any thread
 at any time. This design describes intent, data ownership and delivery guarantees.
-Module `AGENTS.md` files own implementation constraints. The decisions at the end
-were confirmed for PR1; the complete specification remains a draft.
+Module `AGENTS.md` files own implementation constraints. The end records the
+decisions the user confirmed, the new questions raised by the upstream 0.105.0
+revision, and the PR1/PR2 implementation records.
+
+This revision follows upstream 0.105.0: Delivery is gone (#1523) and every result
+goes through the Operation Inbox's batched wake; the delegation chain cap is 16
+and a conversation-tree stop exists (#1428); automatic review is gone (#1393);
+child sessions have a compact task panel and `REVERSE_CHAT_FORBIDDEN` (#1481);
+a manual user Stop no longer wakes anyone automatically (#1553).
 
 ## Scenario
 
@@ -17,11 +24,14 @@ The user creates a Board, supplies its goal and chooses a coordinator agent. The
 coordinator uses `lody_session_create` to start implementation threads in worktrees
 and a research chat on another LAN member, then ends its turn.
 
-When a member finishes, fails, needs the user, or finishes its own reviewer session,
-Lody batches those events and delivers them when the coordinator is idle. Agents
-need not forward conclusions manually. Overview shows what each thread is doing,
-who it waits for, its round and latest conclusion. Opening a row enters the ordinary
-session composer: the user talks directly to its agent.
+When a member finishes, fails, needs the user, or a reviewer it opened stalls on
+the user, Lody records that as one durable result for the coordinator, and the
+coordinator's Operation Inbox delivers the accumulated results as one batch when
+it is idle. Agents need not forward conclusions manually; upstream refuses chats
+back to the sender anyway (`REVERSE_CHAT_FORBIDDEN`). Overview shows what each
+thread is doing, who it waits for, its round and latest conclusion. Opening a row
+enters the ordinary session composer: the user talks directly to its agent. A
+user Stop in any session follows upstream rules: the stopped result wakes nobody.
 
 After four delegated rounds, the coordinator hands work to a new generation sharing
 the original worktree. Members share Board notes; a daily schedule asks the coordinator
@@ -35,7 +45,7 @@ to append progress and save durable knowledge through its own nmem tools.
 | Coordinator | Fixed ordinary session receiving coordinator instructions and reports | `boardRole` |
 | Thread | Non-coordinator root session, without `parentSessionId` | Root session id |
 | Generation | A successor child Tab under the thread root, sharing its directory | `boardGeneration` |
-| Report | A system turn containing new member events, delivered at an idle boundary | `board_report` |
+| Report | One member event, stored as a finished `board_report` Operation on the coordinator machine and delivered by the Inbox in a batch | `board_report` |
 
 Lody already uses Project for repositories and local folders (`ProjectRef`,
 `['localProject', id]`, `lody_project_list`). This container is **Board / 看板**.
@@ -67,27 +77,32 @@ type BoardMeta = {
 };
 ```
 
-At most 50 active Boards per workspace. Archived Boards (`archivedAtMs` set) do not count toward this limit. Do not store a second member list: session metadata
-is the membership authority, and Overview/tools filter by `boardId`.
+At most 50 active Boards per workspace. Archived Boards (`archivedAtMs` set) do not
+count toward this limit. Do not store a second member list: session metadata is the
+membership authority, and Overview/tools filter by `boardId`.
 
 ### Membership
 
-Add to `SessionMeta` in `packages/shared/src/schema.ts`:
+Board fields on `SessionMeta` in `packages/shared/src/schema.ts`:
 
 ```ts
-boardId?: BoardId;
-boardRole?: 'coordinator'; // absent on execution threads
-boardGeneration?: number; // successors: 2, 3, ...; absent on reviewer Tabs
+boardId?: BoardId; // membership (PR1)
+boardRole?: 'coordinator'; // absent on execution threads (PR1)
+boardGeneration?: number; // successors: 2, 3, ...; absent on reviewer Tabs (PR1)
+boardJoinedAtMs?: number; // manual join time; absent when the session joined at creation (PR3)
 ```
 
-Creation writes membership:
+Creation writes membership, on the CLI path (`prepareSessionInput`) and the two UI
+creation entries (`session-submission.ts`):
 
 - The coordinator receives `boardId` and `boardRole`.
 - `lody_session_create` and `create_many` inherit the invoker's Board for child Tabs,
-  independent work contexts and plain chats alike. Reviewers therefore join too.
+  independent work contexts and plain chats alike. Reviewers therefore join too,
+  which is why reports can cover grandchildren.
 - A child Tab inherits its root's Board.
-- Overview's future New thread action sets `boardId`; future Join/Remove actions
-  change only membership, without moving a session.
+- Overview's New thread action sets `boardId`; Join/Remove actions change only
+  membership, without moving a session. Joining an existing session also writes
+  `boardJoinedAtMs`; reports consider only state after that moment.
 
 Coordinator and threads remain ordinary sessions. Archive/restore/delete/worktree
 cleanup follow `specs/session-relations.md` and `specs/session-worktree-lifecycle.md`;
@@ -122,22 +137,35 @@ Flock replaces whole row values, so concurrent appends would overwrite each othe
 LoroText merges them. Follow `schedule-repository.ts` and `useScheduleDocument` for
 document acquisition/subscription; Board rows provide discovery, with no new registry.
 
-### Machine-local state and LAN sync
+### Machine-local state
 
-The coordinator machine's `operations.sqlite3` owns `board_report_cursors`:
-`(board_id, session_id, last_reported_user_turn_id, last_reported_awaiting_since,
-last_reported_notice_id)`. A report is a finished Operation with a Delivery, committed
-with its cursor changes in one transaction.
+Reports live only in the coordinator machine's Operation store (`operations.sqlite3`,
+`apps/cli/src/orchestration/operation-store.ts`) and, like Operations today, are not synced:
+
+- One `operations` row of kind `board_report`: the requester is the coordinator
+  session, the row is `finished` at creation, and its completion carries one member
+  event (see Automatic reports).
+- Its `inbox_results` row, written by the existing `InboxSqlite.indexCompletion()` in
+  the same transaction, identical in shape to an ordinary Operation receipt.
+- `board_report_cursors(board_id, session_id, last_turn_id, last_awaiting_since,
+  last_notice_id)`: how far each member has been processed.
+
+All three commit in one `BEGIN IMMEDIATE` transaction. There is no Delivery table and
+no second delivery state: claim, batching, settlement and expiry are the Inbox's
+existing semantics.
+
+### LAN sync
 
 | Data | Owner | Transport |
 | --- | --- | --- |
 | Board rows, membership, notes | Workspace/session/Board documents | Durable hub streams; offline changes merge |
-| Report cursors and Operations | Coordinator machine SQLite | Not synced, like existing Operations |
+| Report Operations, Inbox results, cursors | Coordinator machine SQLite | Not synced, like existing Operations |
 | Status | Session metadata and presence | Durable metadata plus existing ephemeral presence, read-only |
 
 Threads may run on any LAN member. The coordinator reads synced session documents,
-as `reconcileItem` already does for Operation results. No new inter-machine RPC or
-presence payload is needed; follow the Loro sync stack's ephemeral-channel constraints.
+as `reconcileItem` in `coordinator-workflow.ts` already does for Operation results. No
+new inter-machine RPC or presence payload is needed; follow the Loro sync stack's
+ephemeral-channel constraints.
 
 ## Coordinator session
 
@@ -156,116 +184,257 @@ Board instructions use that same path:
 
 - Coordinator first message: append coordinator instructions.
 - Thread first message: append thread instructions.
-- A report carries its fixed instructions in the system turn itself, like `completionText`.
+- A report turn is upstream's Inbox batch turn: its body is the fixed `batchPreview`
+  text plus member JSON (`inbox/model.ts`); no Board text is injected.
 
 Coordinator instructions state:
 
 1. Its Board name and goal.
-2. Delegate with `lody_session_create`, end the turn and await automatic reports,
-   including descendants; do not ask executors to forward results. Use
-   `lody_board_overview` and `lody_session_history` for detail.
-3. The configured round limit; hand off when reached; chat refuses during auto review;
-   use `followUp: true` only for additions to the same assignment.
+2. Delegate with `lody_session_create`, end the turn and await reports. Reports arrive
+   like its own delegation receipts, as a "completed asynchronous work" batch whose
+   members have `operationKind: 'board_report'`, one member event each; failures,
+   waits and notices of any member, including sessions a thread opened, arrive this
+   way. Do not ask executors to forward results (upstream refuses chats back to the
+   sender). Use `lody_board_overview` and `lody_session_history` for detail.
+3. The configured round limit; `lody_session_chat` is refused at the limit, hand off
+   with `lody_board_thread_handoff`; use `followUp: true` only for additions to the
+   same assignment. The delegation chain is capped at 16 hops: on
+   `CHAIN_DEPTH_EXCEEDED`, stop and report to the user. After the user presses Stop,
+   accumulated reports arrive together with the user's next message.
 4. Lody automatically appends the Board's executor constraints to each thread's first
    message; the coordinator does not need to repeat them.
 5. Record conclusions/decisions with `lody_board_notes_*`.
 6. Report conclusions and decisions the user needs to make.
 
 Thread instructions state the Board name, goal, coordinator id, automatic completion/
-waiting/failure reports, notes tools and executor constraints. A successor also gets
-handoff facts before the coordinator-authored prompt.
+waiting/failure reports (forwarding is neither needed nor possible), notes tools and
+executor constraints. A successor also gets handoff facts before the coordinator-authored
+prompt.
 
 ### Product logic versus instructions
 
 | Product logic | Agent judgment/instructions |
 | --- | --- |
-| Membership, event sources, batching and delivery | Task decomposition, agent choice and review combinations |
+| Membership, event sources, durable results, Inbox batching and wake | Task decomposition, agent choice and review combinations |
 | Round accounting/limits and follow-up flag | Whether input supplements the same task |
 | Shared-directory child successor and handoff facts | The handoff narrative |
-| Refuse agent messages during auto review | How to act on review findings |
+| Tree stop, Inbox pause, no wake on user Stop, 16-hop cap (all upstream) | How to act on review findings |
 | Notes document, size, append/replace | What and when to write |
 | Daily schedule and destination | Digest content and nmem commands |
 
-Agent Role preferences remain in user memory rules. Constraints such as “commit,
-do not push” are editable `executorConstraints`, not hard-coded product policy.
+Cross review has no product logic: a thread opens its own reviewer child session with an
+ordinary `lody_session_create` (`useCurrentSessionAsParent: true`), and the reviewer's
+own receipt wakes the thread. Agent Role preferences remain in user memory rules.
+Constraints such as "commit, do not push" are editable `executorConstraints`, not
+hard-coded product policy.
 
 ## Automatic reports
 
+In one sentence: an observer writes each new member state as one finished Operation of
+the coordinator; the Inbox decides when, at what depth and in how large a batch the
+coordinator sees it. The Board has no delivery pipeline of its own.
+
 ### Event sources
 
-Observe every member except the coordinator, including child Tabs, through synced
-session documents:
+Observe every member except the coordinator, including child Tabs and independent
+sessions threads opened, through synced session documents. First find the member's
+latest **driving turn**: the latest user turn, or a system turn carrying
+`inputConfig.chainDepth` (continuations, Inbox batches and schedules are system
+driven), then the first assistant entry after it. Looking only at user turns misses
+system-driven turns, so "the executor finished applying the review" would never report.
 
-| Event | Evidence |
-| --- | --- |
-| `finished` | New user turn has a terminal assistant entry (`isTerminalAssistantEntry`) |
-| `failed` | User turn status `failed`, or same-turn `chat_failed` system notice |
-| `cancelled` | User turn status `canceled` |
-| `waiting_user` | Newly set `awaitingUserSince`: permission, question, review handoff |
-| `notice` | Changed `agentNotice.id` from `lody_notify_user` |
+| Event | Evidence | Origin filter |
+| --- | --- | --- |
+| `finished` | First assistant entry after the driving turn is terminal (`isTerminalAssistantEntry`) and newer than the cursor | Not reported by default when the driving turn's `author.kind === 'human'` |
+| `failed` | Driving turn status `failed`, or same-turn `chat_failed` notice | Reported regardless of origin |
+| `waiting_user` | Newly set `awaitingUserSince` later than the driving turn: permission request, question | Regardless of origin; once per driving turn |
+| `notice` | Changed `agentNotice.id` from `lody_notify_user` | Regardless of origin |
 
-Events include session/title/machine/current generation, rounds/limit, context usage,
-origin (`author.kind`), a tail-weighted 32 KiB assistant preview (as Operation output),
-and a waiting-request summary when applicable.
+The human filter is `author.kind !== 'human'`, never `=== 'agent'`: system-driven turns
+are not human and must not be muted. With `reportHumanTurns` on, human-driven
+`finished` reports too. `cancelled` is not an automatic report event (see Open
+decision 3): per #1553 a user Stop on a member must not wake anyone, and a synced
+document only shows "cancelled", not by whom; the coordinator already knows about its
+own `lody_operation_cancel`. Cancellation is Overview-only.
 
-### Observer and delivery
+Events include session id/title/machine/current generation, `contextWindowUsage`,
+origin (`author.kind`), a tail-weighted 32 KiB assistant preview (as Operation item
+`output`, 25% head / 75% tail), a waiting-request summary when applicable and the
+notice text. State a member left before joining (`boardJoinedAtMs`) is not reported:
+a manually joined session starts its cursor at the join moment.
 
-Extend `LodyOperationCoordinator` on the coordinator's Host-lease Worker only,
-using `meta.machineId === this.machineId` as the ownership boundary:
+### Observer
 
-```text
-Member document change → wake → level-check members against cursors
-                                    ↓ coordinator idle
-                      finished board_report Operation + Delivery + cursor advance
-                                    ↓ existing Delivery pipeline
-                      claim → system report card → continue coordinator
-```
+The observer is a Board branch in `LodyOperationCoordinator` / `coordinator-workflow.ts`
+that runs only on the coordinator session's Host-lease Worker, using
+`meta.machineId === this.machineId` as the boundary; where a thread runs does not
+matter, so a cross-machine event is never reported twice. The coordinator itself is
+outside observation and cannot wake itself.
 
-Idle means no active turn, pending human input or pending Delivery, exactly as
-`deliverIfRunnable` determines. Busy-time events accumulate in documents. At the next
-idle boundary, batch everything into one wake; do not add timers or count thresholds.
-Pending user input wins. Existing claim, two-attempt, uncertain, eight-hour expiry
-and Operation-list semantics apply. Event count is uncapped, but the existing 64 KiB
-completion-body head/tail limit applies; agents can read truncated output through
-history. Advance cursors transactionally so repeated scans do not report twice.
+- Membership is maintained from events, not full scans: subscribe to the workspace
+  catalog's `board` family and to session `doc-metadata` events (fields `boardId`,
+  `isArchived`, `awaitingUserSince`, `agentNotice`, `lastMessageAt`,
+  `collaborationStopped`, through the same `repo.watch` entry `message-handler.ts`
+  uses for `collaborationStopped`); member history changes mark members dirty through
+  their own document subscriptions.
+- Wakes coalesce: at most one reconcile runs and one waits; a reconcile re-reads only
+  dirty members and skips archived ones. Otherwise every streaming import triggers a
+  workspace-wide scan.
+- The observer runs after Operation reconciliation in the same pass, so the receipt of
+  a turn the coordinator delegated is always visible to the dedupe check.
+- It does not judge coordinator idleness: an event becomes a result as soon as it is
+  confirmed; idle, busy, pause and stop belong to the Inbox. The old "check the idle
+  boundary before and after" logic is no longer needed.
 
-### Deduplication and boundaries
+### Durable results and the Inbox interface
 
-- Skip `(sessionId, userTurnId)` still covered by an active delegated Operation;
-  its own receipt delivers those results. Subsequent turns remain reportable.
-- Human thread turns do not wake the coordinator by default: Overview/digest only.
-  A Board can enable `reportHumanTurns`. Waiting, failures and notices report
-  regardless of origin. A user speaking in a thread is taking over its work.
-- Reports never write to execution threads, so cannot interrupt their auto review.
-  Review termination already writes `awaitingUserSince` and handoff text.
-- Archiving/removing the coordinator stops observation and retains cursors.
+One event = one Operation, through a new `acceptBoardReport()` in `operation-store.ts`,
+doing three things in one `BEGIN IMMEDIATE` transaction:
 
-### Chain depth
+1. Insert the `operations` row: `kind = 'board_report'`, `requesterSessionId` = the
+   coordinator, `ownerMachineId` = this machine, `state = 'finished'`, `items: []`,
+   completion `{ type: 'result', value: { items: [], boardReport: { boardId, events: [event] } } }`
+   (`OperationResultSchema` gains optional `boardReport`; `LodyOperationKind` gains
+   `board_report`). `initiatorChainDepth` and `frozenContinuationConfig.inputConfig`
+   come from the coordinator's latest driving turn, including its `chainDepth`, the
+   same source upstream uses for continuation turns.
+2. Call the existing `inbox.indexCompletion()`: it writes `inbox_results` and, when the
+   coordinator is idle, unpaused and has no accepted input, records one pending intent.
+   No Board special case exists here.
+3. Advance that member's cursor.
 
-Report depth is the maximum source `inputConfig.chainDepth` plus one. Reuse
-`LODY_MAX_CHAIN_DEPTH = 32`: delegation plus report wake is two hops, permitting
-16 autonomous coordinator wakes. At the cap, write a report card with
-`continuation.reason = CHAIN_DEPTH_EXCEEDED`, without waking. Any human message to
-the coordinator starts at depth zero and allows work at the next idle boundary.
-Overview shows `n/32`. A separate Board budget is future work.
+The Operation id is deterministic: `board:<member id>:<driving turn id>:<event>`, with
+`awaitingUserSince` / `agentNotice.id` appended for `waiting_user` / `notice`. The
+`operations` primary key `(requester_session_id, operation_id)` and the
+`operation_retired_ids` trigger therefore implement "receiving coordinator + source
+event" deduplication: restarts, repeated scans and seven-day expiry never accept the
+same event twice. The completion obeys the existing 64 KiB bound
+(`assertCompletionBound`); truncated previews direct the coordinator to
+`lody_session_history`.
+
+### Batching and chain depth
+
+Batching is entirely upstream:
+
+- When the coordinator is idle, the first wakeable result records an intent; while it
+  is busy, results only queue, and the normal release (`release()`) records one intent.
+  `prepare()` snapshots the watermark when claiming and freezes every unconsumed,
+  unclaimed result into one batch; later arrivals wait for the next one. No timers, no
+  count thresholds.
+- A user message to the coordinator always wins: a prepared automatic batch is
+  superseded by human input, and queued results travel with it (human-plus-batch).
+- `batchPreview` inlines at most 50 members and 64 KiB; the coordinator reads the rest
+  with `lody_operation_batch_get` (128 KiB pages).
+- Batch depth `batchDepth` (`inbox/model.ts`): automatic = max(config `chainDepth`,
+  member `chain_depth`) + 1; human or scheduled (`task`) = that input's own depth,
+  usually 0. An automatic batch at depth >= 16 (`LODY_MAX_CHAIN_DEPTH`, the claim check
+  in `inbox/sqlite.ts`) marks the intent `depth_limited` without claiming; results
+  stay queued until the user's next message carries them at depth 0.
+
+A report row's `chain_depth` is the depth of the coordinator's latest driving turn at
+observation time (Open decision 1). Each autonomous wake then costs exactly one hop, a
+user or scheduled turn resets to 0, grandchild events cost no extra hops, and the value
+matches the coordinator's own delegation receipts (`initiatorChainDepth` = depth at
+delegation) in the common case. From one user message the coordinator wakes
+autonomously at most 15 times (depths 1–15); the sixteenth is refused by the Inbox. At
+depth 15 the coordinator may still delegate (upstream refuses initiators at >= 16);
+the member at 16 cannot delegate further.
+
+Overview's coordinator row shows `chain n/16`, with n from the coordinator's latest
+driving turn. Upstream writes nothing to history at the cap, so Overview cannot see
+"stopped" from documents alone; whether the observer writes one idempotent
+`board_chain_limit` system notice into the coordinator history is Open decision 4.
+
+### Deduplication
+
+Three layers, none relying on memory state:
+
+1. Cursors: each member reports only driving turns / waiting moments / notice ids newer
+   than `board_report_cursors`; filtered events (human-driven, covered by a receipt)
+   also advance the cursor, so enabling `reportHumanTurns` later cannot replay old ones.
+2. Operation id: one member, one driving turn, one event can be accepted once (primary
+   key plus retired ids).
+3. Receipt coverage: a `finished` / `failed` whose `(sessionId, userTurnId)` is a target
+   of any of the coordinator's own `session_create` / `session_chat` (including
+   `_many`) Operations, active or finished-and-retained, is not reported: that receipt
+   delivers itself. Checking only active Operations would duplicate the result on the
+   scan after completion. `waiting_user` and `notice` have no receipt and report
+   normally. Unfinished targets of timed-out or cancelled roots are not permanently
+   hidden: their terminal turns are newer than the cursor and report normally.
+
+Reports are the only upward channel for member state. Instructions neither require nor
+rely on forwarding: in the turn a coordinator chat started, the member's
+`lody_session_chat` to the coordinator is refused with `REVERSE_CHAT_FORBIDDEN`. A
+grandchild's (reviewer's) result first wakes its parent member; the parent's subsequent
+completion is reported by the observer. Whether a grandchild's own `finished` is also
+reported is Open decision 2.
+
+### Stop and pause
+
+Everything is reused from upstream; the Board adds no rule and only states the scope:
+
+- Tree stop (`collaborationStopped`): stopping the whole tree from Related sessions
+  writes `collaborationStopped` on the root and every descendant
+  (`readSessionOperationTargets(…, 'collaboration')` climbs `parentSessionId` /
+  `openedBySessionId` to the root, then collects descendants); the daemon cancels
+  running turns and preserves pending input (`reconcileCollaborationStops`). For the
+  Board: while the coordinator's tree is stopped, the Inbox launches no batch for it
+  (`launchInboxBatch` checks `isSessionCollaborationStopped`) and its MCP delegation is
+  refused with `COLLABORATION_STOPPED`; the observer keeps writing member events as
+  results, and after restoration upstream's stop semantics decide whether and when they
+  are delivered (`specs/session-orchestration.md`, User-controlled conversation-tree stop).
+- Upstream's stop scope is the conversation tree: threads the coordinator opened and
+  their descendants. A Board may manually join unrelated root sessions; they are
+  outside the coordinator's stop scope, keep running and keep queuing events. The first
+  release does tree stop only; a Board-level "stop all members" is Open decision 6.
+- Inbox pause: a Stop on the coordinator from an Inbox v2 client (`cancelId` /
+  `pauseInbox`) runs `pause()`: the session is paused, queued inputs cancelled, claims
+  of prepared batches released; results stay queued. No intent is recorded while
+  paused; only fresh trusted human input (`humanInputReceipts`) clears the pause and
+  carries accumulated results. Agent chats, scheduled turns and reports cannot clear it.
+- User Stop on a member (#1553): the manually stopped target appears in the
+  coordinator's Operation receipt as `cancelled` with `cancellationReason: 'user_stop'`;
+  `operationInboxCompletion` drops it from automatic admission, and a fully stopped
+  Operation yields no wakeable result at all. The observer does not report
+  `cancelled`, so no second path turns it into a wake.
 
 ### Failure and offline behavior
 
-Events remain in documents while the coordinator machine is offline and are scanned
-when it returns. An offline executor produces no new document events. Existing
-`DELIVERY_ATTEMPTS_EXHAUSTED` and `DELIVERY_EXECUTION_UNCERTAIN` semantics apply;
-failed report writes do not advance cursors.
+- While the coordinator machine is offline, events remain in documents; on return the
+  observer catches up on the latest state and does not reconstruct intermediate events:
+  a member that changed three times reports once. An offline executor produces no new
+  document events.
+- A failed report write (busy SQLite, failed transaction) rolls back all three writes,
+  leaves the cursor in place and retries on the next wake through the existing bounded
+  backoff in `coordinator-activity`; no new timer.
+- Results are not silently dropped by long daemon downtime: unconsumed `inbox_results`
+  rows never expire, pending intents are durable and recovered by the startup scan
+  (`repo.pending`); report Operations are finished at creation and have no deadline;
+  consumed payloads are cleaned after seven days, but the batch card in history remains.
+- When a batch was submitted but model delivery is uncertain (`unknown` settlement),
+  upstream never re-batches it and the history card says delivery is uncertain. The
+  Board does not resend: Overview and `lody_board_overview` remain the truth about
+  current state, and the coordinator reads them on its next wake.
+- Archiving/removing the coordinator or archiving the Board stops observation and
+  retains cursors and results; permanent session deletion removes Inbox rows through
+  `deleteSession`.
 
-## Rounds, handoff and auto-review protection
+## Rounds and handoff
+
+### Rounds
 
 Rounds derive from current-generation history: user turns authored by an agent,
-excluding `inputConfig.boardFollowUp`. Human input does not count. Add
-`followUp?: true` to `lody_session_chat`.
+excluding `inputConfig.boardFollowUp`. Human input and system-driven turns (Inbox
+batches, schedules, continuations) do not count. Add `followUp?: true` to
+`lody_session_chat`, stored as `inputConfig.boardFollowUp`.
 
 Before accepting a chat Operation, refuse a thread at its limit without follow-up
 as `THREAD_ROUND_LIMIT`, naming the current id, rounds and handoff tool. Refuse a
-superseded generation as `THREAD_SUPERSEDED` with the current id. UI human input
-remains unrestricted.
+superseded generation as `THREAD_SUPERSEDED` with the current id. Both checks run
+after upstream's `COLLABORATION_STOPPED`, `CHAIN_DEPTH_EXCEEDED` and
+`REVERSE_CHAT_FORBIDDEN`. UI human input remains unrestricted.
+
+### Handoff
 
 Coordinator-only `lody_board_thread_handoff({ threadId, prompt })`:
 
@@ -276,9 +445,8 @@ Coordinator-only `lody_board_thread_handoff({ threadId, prompt })`:
    context-usage facts, followed by the coordinator's prompt.
 3. Return the new id; its round count begins at zero.
 
-While a thread's `autoReview` document is nonterminal, agent chat rejects with
-retryable `THREAD_UNDER_AUTO_REVIEW`. Reuse the review automation predicate; Overview
-shows Auto review. Human and agent inputs otherwise pause review through the same path.
+When the thread root is stopped (`isSessionCollaborationStopped(root)`), handoff is
+refused with `COLLABORATION_STOPPED`, like upstream delegation: only the user restores it.
 
 ## Overview
 
@@ -291,16 +459,15 @@ Mobile renders the same page, following Schedules.
 
 ### Contents and status
 
-The header contains name/goal, coordinator agent/machine/status, autonomous chain,
-digest time and Open. Future actions are Notes, Settings and Archive board.
-Threads show title, agent/model, machine/work context, state, rounds/limit,
-generation when present, recent activity and existing PR/diff hints. Archived
-threads are collapsed separately. Child Tabs indent below their root; independent
-sessions use the existing opened-by tree.
+The header contains name/goal, coordinator agent/machine/status, autonomous chain
+`n/16`, digest time and Open. Threads show title, agent/model, machine/work context,
+state, rounds/limit, generation when present, recent activity and existing PR/diff
+hints. Archived threads are collapsed separately. Child Tabs indent below their root;
+independent sessions use the existing opened-by tree.
 
 Only an expanded row opens its session document. Its preview shows the last
-assistant text's tail (conclusion) and the last user turn's first line (current task),
-following archive preview behavior. Keep idle rows free of invented resource status.
+assistant text's tail (conclusion) and the latest driving turn's first line (current
+task), following archive preview behavior. Keep idle rows free of invented resource status.
 
 A shared status helper serves rendering and `lody_board_overview`:
 
@@ -308,18 +475,36 @@ A shared status helper serves rendering and `lody_board_overview`:
 | --- | --- |
 | Running / Starting / Finalizing | Presence (`sessionLiveStatusAtomFamily`), never durable `SessionMeta.status` |
 | Waiting for you | Presence `requestPermission`, or no live status and `awaitingUserSince` newer than `lastMessageAt` |
-| Auto review | Nonterminal review document |
-| Failed | Current generation's last user turn failed or same-turn `chat_failed` |
-| Idle · waiting for coordinator | Idle and last user turn authored by agent |
+| Stopped | `collaborationStopped` on the session or an ancestor |
+| Failed | Current generation's latest driving turn failed or same-turn `chat_failed` |
+| Cancelled | Current generation's latest driving turn `canceled` |
+| Idle · waiting for coordinator | Idle and latest driving turn not authored by a human |
 | Idle | Otherwise |
+
+The coordinator row additionally shows `chain n/16` and Stopped. Inbox pause has no
+synced evidence in documents, so Overview does not show it, consistent with upstream.
+
+### Reports in the conversation
+
+A batch in the coordinator history is upstream's `operation_completion_batch` system
+turn: a "N completed task results" title with each member rendered by
+`OperationCompletionView`; creation receipts already render as the compact task panel
+(`CreatedSessionList` / `operation_progress`, one row per session, five rows with
+scrolling). Board reports get no second card: a member with
+`operationKind === 'board_report'` renders as the same compact rows, one event per row:
+member title (subscribed like existing rows) · event label · first line of the summary,
+click to open the session. The only additions are two status labels, Waiting for you and
+Notice, because the existing row vocabulary covers only created/running/succeeded/
+failed/cancelled. No expandable conclusion preview: a person opens the session, the
+coordinator reads the batch body; one fact is drawn once. The old PR3
+`board-report-card.tsx` is not carried over.
 
 ### Actions
 
 A row opens the ordinary session route, using `?tab=` for the current generation.
-The normal composer supports direct user input. Future row menus offer Open,
-Remove from board and Archive. Settings edits name, goal, rules, coordinator agent
-and digest; Notes opens the shared-note panel. These write actions are outside
-PR1's read-only Overview.
+The normal composer supports direct user input. Row menus offer Open, Remove from
+board and Archive. Settings edits name, goal, rules, coordinator agent and digest;
+Notes opens the shared-note panel. Idle rows draw no resource status.
 
 ## Shared notes
 
@@ -342,9 +527,22 @@ with the coordinator id. A fixed prompt reads Overview/notes, appends the day's
 progress, conclusions and unresolved work, and saves it to nmem. Store
 `digestScheduleId`; disable/archive pauses the schedule.
 
-The coordinator already has Board tools, no Schedule schema extension is needed,
-and scheduled turns reset chain depth to zero. The trade-off is one extra daily
-turn in coordinator context.
+The coordinator already has Board tools, so no Schedule schema extension is needed. A
+scheduled turn has depth 0 and enters the Inbox as a `task` input: it carries the
+results queued at that moment at depth 0, so the autonomous chain restarts once a day.
+The trade-off is one extra daily turn in coordinator context.
+
+The digest must respect stop and pause:
+
+- A scheduled turn has no human receipt (`humanInputReceipts`), so the Inbox admits it
+  as `task`; while the coordinator is paused, `inputAcceptance('task', paused)` refuses
+  it (`inbox-paused` in `session-execution-service.ts`) and the pause is not cleared.
+  PR5 must not forge a human receipt for the digest turn.
+- While the coordinator's tree is stopped, dispatch cancels the turn and preserves its
+  input; upstream already does this.
+- Today a refused turn stays pending in history until the user's next message
+  overrides it; whether to check before handoff and record the run as skipped is Open
+  decision 5.
 
 ## MCP tools
 
@@ -365,119 +563,226 @@ rechecks current membership (`BOARD_NOT_MEMBER`). All are Session tools through
 Existing tools change as follows:
 
 - Create/create_many: no new agent arguments; inherit and return `boardId`.
-- Chat/chat_many: follow-up flag and the three round/superseded/review refusals.
+- Chat/chat_many: follow-up flag and the `THREAD_ROUND_LIMIT` / `THREAD_SUPERSEDED`
+  refusals. Upstream's `COLLABORATION_STOPPED`, `CHAIN_DEPTH_EXCEEDED` and
+  `REVERSE_CHAT_FORBIDDEN` apply unchanged and run first.
 - Session list: `boardId` filter, accepting `'current'`.
-- Operation get/list: additional `board_report` kind.
+- Operation get/list: additional `board_report` kind; `lody_operation_batch_get` is
+  unchanged and pages Board members like ordinary ones.
 
 Existing Role/Schedule permission-tier ceilings stay unchanged. Board tools write
 only Lody-owned data.
 
 ## Implementation steps
 
-Each step should merge and validate independently, in dependency order.
+Each step should merge and validate independently, in dependency order. PR1 and PR2
+are implemented (records at the end); only their differences from the new mechanisms
+are listed.
 
-### PR1 Boards, membership and read-only Overview
+### PR1 Boards, membership and read-only Overview — implemented
 
-- Shared: `board.ts` metadata/normalization/status; Flock row family; three session
-  fields; workspace route segment.
-- CLI `prepareSessionInput` accepts Board fields; MCP create inherits membership
-  and session list filters it.
-- Components: both routes/pages, creation dialog reusing Schedule agent controls,
-  navigation, Experimental · Sessions > Boards, locales.
-- Tests: normalization/status; MCP creation for parent/independent work contexts;
-  real-atom Overview component behavior, following archive-list tests.
+- See "PR1 implemented". Differences from this revision: the chain limit shown in
+  Overview is 16 (the `/32` copy changes with PR3); the status helper's "latest user
+  turn" becomes "latest driving turn" with PR3.
 
-### PR2 Coordinator instructions, Board tools and notes
+### PR2 Coordinator instructions, Board tools and notes — implemented
 
-- Overview New thread and session-menu Join board / Remove from board actions.
+- See "PR2 implemented". Differences: the placeholder "reports are not implemented,
+  report explicitly" text is replaced by the coordinator/thread instructions above with
+  PR3; there is no automatic-review copy.
 
-- `buildPrompt` adds coordinator/thread instructions by role.
-- Shared Board document read/write and CLI acquisition/size bounds; components
-  `useBoardDocument` and notes panel following Schedule documents.
-- Register get/overview/notes tools, MCP HTTP Board header and agent-client wiring.
-- Tests: prompt output; daemon-routed member/nonmember/size behavior; concurrent
-  LoroText appends on two replicas.
+### PR3 Inbox-based automatic reports
 
-### PR3 Automatic reports
+- `packages/shared`: `LodyOperationKind` gains `board_report` and `OperationResultSchema`
+  gains optional `boardReport` (`BoardReportEventSchema`, one event per Operation) in
+  `session-orchestration.ts`; `schema.ts` gains `boardJoinedAtMs`; `board.ts` gains pure
+  functions `readLatestDrivingTurn`, event derivation and `boardReportOperationId`.
+- `apps/cli/src/orchestration/operation-store.ts`: `board_report_cursors` table;
+  `acceptBoardReport()` (finished Operation + `inbox.indexCompletion()` + cursor in one
+  `BEGIN IMMEDIATE`); `boardCoveredTargets()` (targets of `operations` in any state);
+  `MemberRow.operation_kind` in `inbox/sqlite.ts` accepts `board_report`.
+- `apps/cli/src/orchestration/coordinator-workflow.ts` / `operation-coordinator.ts`:
+  the Board branch (catalog and `doc-metadata` subscriptions, dirty member set,
+  single-flight reconcile, event derivation, dedupe, acceptance); if the chain-limit
+  notice is approved, query `depth_limited` intents here and write the idempotent
+  notice. `operation-model.ts` stays untouched unless scheduling semantics change.
+- `apps/cli/src/mcp/lody-mcp-server.ts`: `lody_operation_get/list` accept the kind.
+- `session-execution-helpers.ts` `buildPrompt`: coordinator/thread instructions from
+  this revision.
+- `packages/components`: `OperationCompletionView` branch for `board_report` (compact
+  rows plus two labels); coordinator row `chain n/16` and Stopped; `boards/AGENTS.md`;
+  locales.
+- Tests (injected clocks, real Mirror / `repo.watch` subscriptions, explicit reconcile
+  barriers, in `operation-coordinator.test.ts` and `operation-store.test.ts`): busy
+  accumulation then one batch after release; human input carries queued results at
+  depth 0; no intent while paused and the next human input carries them; a stopped tree
+  launches no batch; a member stopped by the user yields no event; grandchild
+  `waiting_user` arrives; receipt-coverage dedupe including finished retained
+  Operations; `reportHumanTurns` on, and cursor advance while off; a system-driven
+  (continuation) completion reports; repeated permission requests in one driving turn
+  report once; depth 15 → 16 yields `depth_limited`; results and intents survive
+  restart; an injected cursor write failure rolls back everything; archived members are
+  skipped; state before `boardJoinedAtMs` is not reported; streaming imports do not
+  trigger full scans (subscription counting).
 
-- Operation store kind, cursor table and atomic `acceptFinishedReport()`.
-- Coordinator member subscriptions, level scans, idle boundaries, dedupe and chain.
-- Shared completion reason, orchestration kind, report card rendering and model semantics.
-- Tests with injected clocks and real Mirror subscriptions: busy batching, human
-  priority, descendant completion, Operation dedupe, human-report switch, depth cap,
-  offline catch-up and transactional persistence.
+### PR4 Rounds and handoff
 
-### PR4 Rounds, handoff and auto-review protection
-
-- Shared round derivation and `inputConfig.boardFollowUp`.
-- Chat refusals; handoff tool using child creation, facts and generation.
-- Overview rounds, generations and auto-review state.
-- Tests: agent/human/follow-up accounting; refusal paths; successor directory/config
-  inheritance; nonterminal review document behavior.
+- Shared round derivation (agent-authored user turns minus `followUp`; human and
+  system-driven turns excluded) and `inputConfig.boardFollowUp`.
+- MCP: the two chat refusals after upstream's three; `lody_board_thread_handoff`
+  (`--parent` path, handoff facts, `boardGeneration`, refused when the root is stopped).
+- Overview rounds and generations.
+- Tests: history → rounds (follow-up, human input, Inbox batch turns); refusal order;
+  successor Tab shares the directory and inherits run config; handoff refused on a
+  stopped root; `THREAD_SUPERSEDED` on an old generation.
 
 ### PR5 Daily digest and completion
 
-- Board toggle creates/pauses a Schedule targeting the coordinator.
-- Update experimental documentation, Spec evidence and Agent Note.
-- Test cron/destination/prompt and pause behavior.
+- Board toggle creates/pauses a Schedule (`schedule-command-service.ts`) targeting the
+  coordinator as `existing_session`, with the fixed prompt; archiving pauses it.
+- Pause and stop: no human receipt for the digest turn; if the pre-handoff check is
+  approved (Open decision 5), add a Board-agnostic "destination paused/stopped →
+  skipped" check beside the destination checks in `schedule-run-preparation.ts`.
+- Documentation: a Boards section in `.agents/docs/experimental.md`, Spec evidence, the
+  Agent Note, and a Board reports section in `apps/cli/src/orchestration/README.md`.
+- Tests: the definition the command service creates (cron, destination, prompt); toggle
+  off pauses; a digest turn into a paused coordinator neither clears the pause nor
+  runs; into a stopped tree it is cancelled with input preserved.
 - Exercise a real LAN with coordinator and threads on different members: reports,
-  handoff and notes.
+  handoff, notes and Stop.
 
 ## Risks
 
-- Many threads may wake the coordinator at every idle boundary. Batching and
-  excluding human completions reduce this; a minimum wake interval may be needed later.
-- Sixteen autonomous wakes may stop overnight work; show the limit before adding a budget.
+- Many threads may wake the coordinator at every idle boundary. Inbox batching,
+  excluding human completions and not reporting grandchild completions reduce this; a
+  minimum wake interval may be needed later.
+- Fifteen autonomous wakes may stop overnight work, and upstream writes nothing to
+  history at the cap. Show it in Overview and the (pending) notice before adding a budget.
+- An `unknown` batch settlement is never resent upstream, so the coordinator may miss a
+  batch; Overview is the truth, and the digest or next wake catches up.
+- Inbox pause has no synced evidence, so Overview cannot show a stopped coordinator.
 - Expanded rows acquire session documents; keep the 100-thread view bounded and expand few.
 - Replace racing with append can move appended notes to the end.
-- Older clients ignore unknown Board rows/metadata; upgrade the coordinator's machine
-  first for reports.
+- Older clients ignore unknown Board rows and `boardId` / `boardJoinedAtMs`; reports
+  exist only on the coordinator's machine, which must run a build with Inbox v2 and
+  the `board_report` kind.
 - Codex may need stronger coordination discipline in practice, but creation does not
   prohibit any agent and prompts do not special-case it.
 
 ## Decided
 
-The user explicitly confirmed these eight choices in the PR1 task:
+The user confirmed these eight choices (item 3 revised for upstream 0.105.0); the
+complete specification remains a draft.
 
 1. Name: **Board / 看板**, not Project.
 2. Human thread completion does not wake the coordinator by default; Overview and
    digest still include it. Each Board may enable `reportHumanTurns`.
-3. Use the existing 32-hop cap and show depth/limit in Overview.
+3. The delegation chain cap follows upstream `LODY_MAX_CHAIN_DEPTH = 16`, with no
+   separate Board budget; Overview shows depth and limit.
 4. Successors are child Tabs of the thread root and share its worktree.
 5. Send the daily digest directly into the coordinator session.
 6. First release adds Board navigation/pages without sidebar regrouping.
 7. Default four rounds, counting agent-authored user turns, excluding follow-up.
 8. Do not require Claude; remember the last coordinator choice.
 
+Also settled: automatic review was removed upstream, so the design has no
+`THREAD_UNDER_AUTO_REVIEW`, auto-review protection or related state; cross review uses
+ordinary reviewer child sessions. Upstream's global delegation prompt (`adff308b`) is not
+merged; the coordinator's working method lives only in the Board prompt.
+
+## Open decisions
+
+New questions raised by upstream mechanisms, each with a recommendation:
+
+1. Which depth a report row takes. A: the source turn's depth (grandchild events cost
+   more hops, closer to the literal "causal chain"); B: the coordinator's driving-turn
+   depth at the time (each wake costs exactly one hop, resets after the user speaks,
+   matches the coordinator's own receipts). Recommend B.
+2. Whether a grandchild's (reviewer's) `finished` is reported separately. Its result
+   already wakes the parent member, whose subsequent completion reports the conclusion;
+   a separate report wakes the coordinator twice per review cycle and costs an extra
+   hop. Recommend not reporting it; grandchildren report only `failed` /
+   `waiting_user` / `notice`.
+3. Whether `cancelled` is reported. Across machines only "cancelled" is visible, not
+   whether it was a user Stop (#1553 forbids an automatic wake) or something else; the
+   coordinator already knows its own cancellations. Recommend not reporting; Overview only.
+4. Upstream writes nothing to history at depth 16. Should the observer write one
+   idempotent "autonomous chain reached its limit, send a message to continue" system
+   notice into the coordinator history, which Overview also uses to show Stopped?
+   Recommend yes, one per chain.
+5. The daily digest while the coordinator is paused or stopped. Today the Inbox refuses
+   it and the turn hangs as pending. A: check before handoff and record the run as
+   skipped (a Board-agnostic "destination paused/stopped" check in Schedule
+   preparation); B: accept upstream behavior and let the user run `schedule run` after
+   restoring. Recommend A.
+6. Board-level stop. Upstream stops a conversation tree; manually joined roots are
+   outside it. A: not in the first release, Overview's Stopped reflects each session's
+   own marker; B: add Stop board, writing `collaborationStopped` on every member root.
+   Recommend A, with B under Later.
+
 ## Later
 
 Board sidebar grouping/hiding members from other groups; split Overview/coordinator
 conversation; synced folders; context-usage-based handoff hints; Board wake intervals
-or budgets; mobile report push through the existing notify path; Board templates.
+or budgets; Board-level stop; mobile report push through the existing notify path;
+Board templates.
 
-## Evidence and PR1 implementation
+## Evidence
 
-Design evidence: `operation-coordinator.ts`, `operation-store.ts`, shared
-`session-orchestration.ts`; `session-execution-helpers.ts`, CLI `session.ts`,
-`lan-session-command.ts`, `lody-mcp-server.ts`, `lody-mcp-http-protocol.ts`;
-`message-handler.ts`, review automation, agent notices, shared schema/presence;
-workspace Flock/Schedule repository/registry, LAN and catalog-durability docs;
-workspace routes/sidebar, metadata/presence atoms, archive/Schedule components;
-`specs/session-relations.md`, `session-worktree-lifecycle.md`,
-`session-orchestration.md`, `agent-role-memory.md`.
+Intent: this document. Inspected implementation (design basis, unchanged):
+
+- Inbox and receipts: `apps/cli/src/orchestration/inbox/model.ts` (`batchDepth`,
+  `batchPreview`), `inbox/sqlite.ts` (`indexCompletion`, `requestAutomatic`, the 16-hop
+  check in `prepare`, `accept`, `pause`, `release`, `cleanupExpired`), `inbox/rules.ts`
+  (`operationInboxCompletion`, `user_stop`), `inbox/service.ts`, `operation-store.ts`
+  (`finish`, retired ids), `coordinator-workflow.ts` (`reconcileItem`,
+  `writeOperationProgress`), `operation-coordinator.ts` (`launchInboxBatch`),
+  `apps/cli/src/orchestration/AGENTS.md` and `README.md`, `specs/session-orchestration.md`.
+- Stop and pause: `packages/shared/src/session-operation-targets.ts`
+  (`readSessionOperationTargets`, `isSessionCollaborationStopped`),
+  `apps/cli/src/session/session-execution-service.ts` (`cancelSession`,
+  `reconcileCollaborationStops`, `acceptInboxHumanInput`, `inbox-paused`),
+  `apps/cli/src/lib/message-handler.ts` (`collaborationStopped` watch),
+  `packages/components/src/hooks/use-session-actions.ts` (`setTreeCollaborationStopped`).
+- Chain and reverse chat: `packages/shared/src/session-orchestration.ts`
+  (`LODY_MAX_CHAIN_DEPTH`), `apps/cli/src/mcp/lody-mcp-server.ts`
+  (`resolveInvokingTurnContext`, `reverseChatError`, `readInvokingChatSender`).
+- Prompt assembly: `apps/cli/src/session/session-execution-helpers.ts` (`buildPrompt`),
+  `apps/cli/src/commands/session.ts` (`prepareSessionInput`, `resolveCreateContext`,
+  `assertSupportedParentDepth`), `apps/cli/src/lib/lan/lan-session-command.ts`,
+  `apps/cli/src/mcp/lody-mcp-http-protocol.ts`, `agent-surface-tools.ts`.
+- Status signals: `apps/cli/src/lib/message-handler.ts` (`finalizeACPState`, permission
+  requests writing `awaitingUserSince`), `apps/cli/src/lib/agent-notice.ts`,
+  `packages/shared/src/schema.ts` (`SessionMeta`, `cancelRequest`,
+  `getPendingUserTurnActivationId`), `packages/shared/src/presence.ts`.
+- Schedules: `apps/cli/src/lib/schedules/schedule-run-preparation.ts`
+  (`existing_session`), `schedule-command-service.ts`, `apps/cli/src/lib/schedules/AGENTS.md`.
+- Workspace documents and sync: `packages/shared/src/workspace-flock.ts`,
+  `schedule-repository.ts`, `schedule-registry.ts`, `.agents/docs/lan.md`,
+  `.agents/docs/workspace-catalog-durability.md`, `.claude/skills/lody-loro-sync-stack/SKILL.md`.
+- UI: `packages/components/src/routes/$workspaceName/_auth/`, `loro-app-sidebar.tsx`,
+  `atoms/doc-meta.ts`, `atoms/presence.ts`, `components/archive/`, `components/schedules/`,
+  `components/boards/`, `components/ai-gui/view.tsx` (`OperationCompletionBatchView`),
+  `components/ai-gui/created-session-list.tsx`, `.agents/docs/sessions-live-status.md`,
+  `.agents/docs/experimental.md`.
+- Relations and lifecycle: `specs/session-relations.md`,
+  `specs/session-worktree-lifecycle.md`, `specs/agent-role-memory.md`.
+- The old PR3 implementation `08c5c26e0` (built on the removed Delivery; reference only)
+  and its review findings.
+
+## PR1 implemented
 
 PR1 implements Board rows, three membership fields, CLI/MCP and UI child inheritance,
 list filtering, experiment, creation, desktop/mobile entry and read-only Overview.
 See the [PR1 Agent Note](../../.agents/notes/implemented/feature/2026-10-15-board-overview.md).
-PR2–PR5 above remain intent, not implemented behavior. Overview’s **New thread**
-and the session menu’s **Join board / Remove from board** are not implemented in
-PR1; they are assigned to PR2.
+At the end of PR1, PR2–PR5 remained intent. Overview's **New thread** and the session
+menu's **Join board / Remove from board** are not part of PR1; they are assigned to PR2.
 
 Adjustments to the original file plan: UI creation bypasses CLI preparation, so
 both paths in `session-submission.ts` also inherit membership. Reuse the shared
 catalog room. Collapsed threads display only presence/meta facts; expansion adds
 failure/waiting-coordinator facts and message previews. The coordinator starts
-expanded to show chain depth. Rounds/generation switching/review remain PR4.
+expanded to show chain depth. Rounds and generation switching remain PR4.
 Like existing catalog operations, the count limit and cross-document creation
 are not distributed transactions across devices.
 
