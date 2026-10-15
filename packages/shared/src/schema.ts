@@ -1141,6 +1141,8 @@ export type SessionMeta = {
   boardId?: import('./ids').BoardId;
   boardRole?: 'coordinator';
   boardGeneration?: number;
+  /** Manual membership starts observing state at this timestamp. */
+  boardJoinedAtMs?: number;
   /** If set, this session is a child tab of another session and shares its workspace directory. */
   parentSessionId?: SessionId;
   /**

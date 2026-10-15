@@ -4745,7 +4745,7 @@ export function buildSessionToolServer(
     'lody_operation_list',
     {
       description:
-        'List durable Operation summaries owned by the current Session and invoking user. Optional state filter and keyset pagination. Completion is saved immediately and delivered at the next permitted input boundary; do not poll.',
+        'List durable Operation summaries, including board_report events, owned by the current Session and invoking user. Optional state filter and keyset pagination. Completion is saved immediately and delivered at the next permitted input boundary; do not poll.',
       inputSchema: OperationListQuerySchema,
       annotations: { readOnlyHint: true },
     },
@@ -4837,7 +4837,7 @@ export function buildSessionToolServer(
     {
       title: 'Get a Lody Operation snapshot',
       description:
-        'Return one durable Operation owned by the current Session. Completion is saved immediately and delivered at the next permitted input boundary; use this for an occasional snapshot, not polling loops.',
+        'Return one durable Operation, including board_report events, owned by the current Session. Completion is saved immediately and delivered at the next permitted input boundary; use this for an occasional snapshot, not polling loops.',
       inputSchema: OperationGetToolInputSchema,
     },
     async (args: OperationGetToolInput) => {

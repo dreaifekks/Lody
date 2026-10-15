@@ -1,3 +1,4 @@
+import { LODY_MAX_CHAIN_DEPTH, type SessionId } from '@lody/shared';
 import type { StoredLodyOperation } from '@lody/shared';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
@@ -44,6 +45,7 @@ const MemberRow = z.object({
     'session_create_many',
     'session_chat',
     'session_chat_many',
+    'board_report',
   ]),
   source_turn_id: z.string().nullable(),
   created_at: z.string().nullable(),
@@ -946,6 +948,19 @@ export class InboxSqlite {
       completion: JSON.parse(r.completion_json),
     };
   }
+  depthLimitedSessions(workspaceId: string): SessionId[] {
+    return (
+      this.db
+        .prepare(`SELECT DISTINCT i.session_id FROM inbox_intents i
+      WHERE i.workspace_id=? AND i.state='depth_limited'
+      AND NOT EXISTS(SELECT 1 FROM inbox_inputs p WHERE p.workspace_id=i.workspace_id AND p.session_id=i.session_id AND p.canceled=0 AND p.finished=0)
+      AND EXISTS(SELECT 1 FROM inbox_results r WHERE r.workspace_id=i.workspace_id AND r.session_id=i.session_id AND r.consumed=0 AND r.claim IS NULL AND r.sequence<=i.watermark
+        AND (r.chain_depth>=? OR json_extract(i.input_json,'$.config.chainDepth')>=?))`)
+        .all(workspaceId, LODY_MAX_CHAIN_DEPTH - 1, LODY_MAX_CHAIN_DEPTH - 1) as {
+        session_id: SessionId;
+      }[]
+    ).map((row) => row.session_id);
+  }
   pending(workspaceId: string): Array<{ intentId: string; input: InboxInput }> {
     return this.db
       .prepare(
@@ -1016,10 +1031,10 @@ export class InboxSqlite {
         input,
         members.map((m) => m.chainDepth)
       );
-      if (input.kind === 'automatic' && chainDepth >= 16) {
+      if (input.kind === 'automatic' && chainDepth >= LODY_MAX_CHAIN_DEPTH) {
         this.db
-          .prepare("UPDATE inbox_intents SET state='depth_limited' WHERE intent_id=?")
-          .run(intentId);
+          .prepare("UPDATE inbox_intents SET state='depth_limited',watermark=? WHERE intent_id=?")
+          .run(watermark, intentId);
         return undefined;
       }
       const batchId = randomUUID();

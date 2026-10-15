@@ -3,7 +3,7 @@ import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@lody/ui/button';
 import * as stylex from '@stylexjs/stylex';
-import { getSessionRoomId, type BoardMeta, type SessionMeta } from '@lody/shared';
+import { getServerNow, getSessionRoomId, type BoardMeta, type SessionMeta } from '@lody/shared';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { Dialog } from '@/ui/dialog';
@@ -13,13 +13,15 @@ import type { WorkspaceRuntime } from '@/atoms/runtime';
 export async function changeBoardMembership(
   runtime: Pick<WorkspaceRuntime, 'repo' | 'writer'>,
   session: SessionMeta,
-  board?: BoardMeta
+  board?: BoardMeta,
+  now = getServerNow()
 ) {
   const roomId = getSessionRoomId(session.id);
   const current = (await runtime.repo.getDocMeta(roomId))?.meta as SessionMeta | undefined;
   if (!current || current.boardRole === 'coordinator') throw new Error('BOARD_COORDINATOR_FIXED');
   await runtime.writer.upsertDocMeta(roomId, {
     boardId: board?.id,
+    boardJoinedAtMs: board ? now : undefined,
     boardRole: undefined,
     boardGeneration: undefined,
   });

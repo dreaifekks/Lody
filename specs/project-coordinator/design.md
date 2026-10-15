@@ -148,7 +148,7 @@ Reports live only in the coordinator machine's Operation store (`operations.sqli
 - Its `inbox_results` row, written by the existing `InboxSqlite.indexCompletion()` in
   the same transaction, identical in shape to an ordinary Operation receipt.
 - `board_report_cursors(board_id, session_id, last_turn_id, last_awaiting_since,
-  last_notice_id)`: how far each member has been processed.
+  last_awaiting_turn_id, last_notice_id)`: how far each member has been processed.
 
 All three commit in one `BEGIN IMMEDIATE` transaction. There is no Delivery table and
 no second delivery state: claim, batching, settlement and expiry are the Inbox's
@@ -304,8 +304,9 @@ doing three things in one `BEGIN IMMEDIATE` transaction:
    No Board special case exists here.
 3. Advance that member's cursor.
 
-The Operation id is deterministic: `board:<member id>:<driving turn id>:<event>`, with
-`awaitingUserSince` / `agentNotice.id` appended for `waiting_user` / `notice`. The
+The Operation id is deterministic: hash the JSON tuple of member id, driving turn id,
+event and `awaitingUserSince` / `agentNotice.id` for waiting/notices. Use `board-` plus
+the first 58 SHA-256 hex characters to fit the existing 64-character id contract. The
 `operations` primary key `(requester_session_id, operation_id)` and the
 `operation_retired_ids` trigger therefore implement "receiving coordinator + source
 event" deduplication: restarts, repeated scans and seven-day expiry never accept the
@@ -413,7 +414,7 @@ Everything is reused from upstream; the Board adds no rule and only states the s
   backoff in `coordinator-activity`; no new timer.
 - Results are not silently dropped by long daemon downtime: unconsumed `inbox_results`
   rows never expire, pending intents are durable and recovered by the startup scan
-  (`repo.pending`); report Operations are finished at creation and have no deadline;
+  (`repo.pending`); report Operations are finished at creation and never enter deadline scheduling;
   consumed payloads are cleaned after seven days, but the batch card in history remains.
 - When a batch was submitted but model delivery is uncertain (`unknown` settlement),
   upstream never re-batches it and the history card says delivery is uncertain. The
@@ -809,3 +810,33 @@ tool calls continue from the local replica. Local durability completes writes; u
 remains in the background. Coordinator identity and default note headings use the invoking
 Session id rather than requiring an id in sparse metadata. Lody injects thread constraints
 once in the first message; the coordinator does not repeat them.
+
+## PR3 implemented
+
+PR3 now uses the upstream Operation Inbox. Catalog/metadata and history subscriptions
+mark affected members dirty; the native coordinator reconciles ordinary Operations
+before deriving and accepting Board events. Each event is a finished `board_report`
+Operation, committed with its Inbox index and member cursor. Busy accumulation, human
+priority, pause, stop and batching retain upstream semantics. Grandchild completion
+returns through its parent's continuation reply; waiting, failure and notices still
+report. Thread startup instructions require verbatim child conclusions and leave
+change decisions to the coordinator.
+
+Minimal adjustments to the design notation: source identities hash to `board-` plus
+the first 58 SHA-256 hex characters to fit the existing Operation ID contract. Finished
+rows retain the required `deadlineAt` field, set to creation time, without deadline
+scheduling. Cursors add `last_awaiting_turn_id` so one wait report per turn depends on
+identity, not timestamp precision. Shallow history directories expose system input
+configuration and `chainDepth`, selecting continuation work without reading the full
+transcript. A cohesive module is called by the existing native coordinator; there is
+no additional scheduling loop.
+
+Limit notices observe actual `depth_limited` intents. The claim check retains its
+watermark for observation without changing admission or depth calculation. Notices
+are history-only and idempotent per driving turn; fresh human input makes old notices
+inactive in Overview. The coordinator row reads its latest driving depth and its own
+or inherited collaboration stop. Batch reports reuse compact task rows, navigation and
+live titles, with waiting/notice labels. PR4/PR5 remain unimplemented and startup
+instructions do not promise round refusal, handoff or digests.
+
+Implementation and validation: [PR3 Agent Note](../../.agents/notes/implemented/feature/2026-10-16-board-inbox-reports.md).

@@ -1,3 +1,4 @@
+import { BoardReportWorkflow } from './board-report-workflow';
 import {
   makeLodyError,
   type LodyOperationCompletion,
@@ -26,7 +27,10 @@ import { CoordinatorPorts, type CoordinatorHistory } from './coordinator-ports';
 import { OperationRepository } from './operation-repository';
 export class CoordinatorWorkflow {
   recoverSubscriptions = () =>
-    Effect.forEach([...this.subscriptions.values()], (detach) => detach, { discard: true });
+    Effect.forEach([...this.subscriptions.values()], (detach) => detach, { discard: true }).pipe(
+      Effect.andThen(this.boards.recoverSubscriptions())
+    );
+  private readonly boards: BoardReportWorkflow;
   private readonly projectedBatches = new Set<string>();
   private readonly subscriptions = new Map<string, Effect.Effect<void>>();
   private readonly materializationRetryAttempts = new Map<string, number>();
@@ -39,7 +43,9 @@ export class CoordinatorWorkflow {
     private readonly operations: OperationRepository['Service'],
     private readonly activity: CoordinatorActivity['Service'],
     private readonly scope: Scope.Scope
-  ) {}
+  ) {
+    this.boards = new BoardReportWorkflow(options, ports, operations, activity, scope);
+  }
   private get started() {
     return this.ports.active();
   }
@@ -91,7 +97,9 @@ export class CoordinatorWorkflow {
       } else {
         yield* this.activity.cancel('progress');
       }
+      const boardResult = yield* Effect.exit(this.boards.reconcile());
       yield* this.ports.wakeInbox;
+      if (Exit.isFailure(boardResult)) yield* Effect.failCause(boardResult.cause);
     }.bind(this)
   );
   projectInboxReceipts = Effect.fnUntraced(

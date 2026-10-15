@@ -1,7 +1,7 @@
 import type { AgentMessageAuthor } from './message-author';
 import { z } from 'zod';
 
-import type { MachineId, SessionId, WorkspaceId } from './ids';
+import type { BoardId, MachineId, SessionId, WorkspaceId } from './ids';
 import type { SessionTurnInputConfig } from './ai';
 
 export const LODY_OPERATION_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
@@ -74,7 +74,38 @@ export const LodyOperationItemSchema = z.discriminatedUnion('status', [
     .strict(),
 ]);
 
-const OperationResultSchema = z.object({ items: z.array(LodyOperationItemSchema) }).strict();
+export const BoardReportEventSchema = z
+  .object({
+    kind: z.enum(['finished', 'failed', 'waiting_user', 'notice']),
+    sessionId: z.string(),
+    turnId: z.string(),
+    at: z.number(),
+    title: z.string().optional(),
+    machineId: z.string(),
+    generation: z.number().optional(),
+    contextWindowUsage: z.object({ size: z.number(), used: z.number() }).optional(),
+    origin: z.enum(['human', 'agent', 'system']),
+    output: OperationOutputPreviewSchema.optional(),
+    awaitingUserSince: z.number().optional(),
+    noticeId: z.string().optional(),
+  })
+  .strict();
+export type BoardReportEvent = Omit<
+  z.infer<typeof BoardReportEventSchema>,
+  'sessionId' | 'machineId'
+> & {
+  sessionId: SessionId;
+  machineId: MachineId;
+};
+const OperationResultSchema = z
+  .object({
+    items: z.array(LodyOperationItemSchema),
+    boardReport: z
+      .object({ boardId: z.string(), events: z.array(BoardReportEventSchema).length(1) })
+      .strict()
+      .optional(),
+  })
+  .strict();
 const CompletionTruncationSchema = z
   .object({ truncated: z.literal(true), omittedBytes: z.number().int().nonnegative() })
   .strict();
@@ -106,7 +137,8 @@ export type LodyOperationKind =
   | 'session_create'
   | 'session_create_many'
   | 'session_chat'
-  | 'session_chat_many';
+  | 'session_chat_many'
+  | 'board_report';
 
 export type OperationProgressKind = Extract<
   LodyOperationKind,
@@ -176,6 +208,7 @@ export type LodyOperationItemResult =
 
 export type LodyOperationResult = {
   items: LodyOperationItemResult[];
+  boardReport?: { boardId: BoardId; events: BoardReportEvent[] };
 };
 
 export type LodyCompletionTruncation = {

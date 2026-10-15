@@ -142,6 +142,7 @@ function createFixture(agentType: 'codex' | 'claude', capability?: AcpCapability
       },
       openFlockDoc: async () => ({
         flock: {
+          subscribe: () => () => {},
           // Provider discovery works even when its ACP capability row has not arrived.
           scan: ({ prefix }: { prefix?: readonly unknown[] } = {}) =>
             [

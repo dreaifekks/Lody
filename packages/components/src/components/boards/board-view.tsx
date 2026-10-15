@@ -136,6 +136,8 @@ export function BoardSessionRowView({
     failed: t('boards.status.failed', 'Failed'),
     waiting_coordinator: t('boards.status.waitingCoordinator', 'Idle · waiting for coordinator'),
     idle: t('boards.status.idle', 'Idle'),
+    stopped: t('boards.status.stopped', 'Stopped'),
+    cancelled: t('sessions.openedBy.status.cancelled', 'Cancelled'),
   };
   return (
     <div data-board-session={session.id}>

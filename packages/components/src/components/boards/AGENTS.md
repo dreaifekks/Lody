@@ -29,5 +29,11 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   concurrent writes. Never truncate a merge; allow a reducing replacement.
 - Only the coordinator (both role and catalog id) or the user may replace notes.
   Durable local writes do not fail because upload failed.
-- Startup prompts describe implemented capabilities. Board-wide reports, round
-  enforcement, handoff and digest scheduling remain separate implementation steps.
+- Manual joins stamp `boardJoinedAtMs`; old states never become new reports.
+- The coordinator host observes current member documents. Reports, Inbox indexing
+  and cursors commit together; only the existing Inbox may batch or wake.
+- Reviewer/other grandchild completions return through their parent; blockers still
+  report. Thread prompts require verbatim child conclusions and coordinator decisions
+  before changes. Cancellation never creates a Board wake.
+- Startup prompts describe implemented reports. Round enforcement, handoff and digest
+  scheduling remain later steps.

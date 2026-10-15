@@ -124,6 +124,7 @@ describe('nested operation progress feedback', () => {
       now: () => Date.parse('2026-01-01T01:00:00.000Z'),
       workspaceDocument: {
         repo: {
+          openFlockDoc: async () => ({ flock: { scan: () => [], subscribe: () => () => {} } }),
           watch: () => ({ unsubscribe: () => {} }),
           flush: async () => {},
           getDocMeta: async (room: string) => {

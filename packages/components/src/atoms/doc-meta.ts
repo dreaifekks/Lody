@@ -126,6 +126,8 @@ const SESSION_LIST_VISIBLE_KEYS: readonly (keyof SessionMeta)[] = [
   'boardId',
   'boardRole',
   'boardGeneration',
+  'boardJoinedAtMs',
+  'collaborationStopped',
   'openedBySessionId',
   'openedByRootSessionId',
   'latestUserMsgId',

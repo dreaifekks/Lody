@@ -5398,5 +5398,9 @@
   "boards.noAvailable": "请先创建看板。",
   "boards.membershipFailed": "未能更改看板成员资格。",
   "boards.newThread": "+ 新线程",
-  "boards.threadHelp": "选择 Agent 并描述任务，会话将加入此看板。"
+  "boards.threadHelp": "选择 Agent 并描述任务，会话将加入此看板。",
+  "sessions.openedBy.status.waitingUser": "等你回答",
+  "sessions.openedBy.status.notice": "通知",
+  "boards.status.stopped": "已停止",
+  "boards.chainLimit": "自主链已到上限，说一句话继续。"
 }

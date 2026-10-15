@@ -1,3 +1,4 @@
+import type { BoardMeta, BoardDrivingState } from '@lody/shared';
 import type {
   LodyOperationItemResult,
   SessionHistoryInput,
@@ -9,7 +10,12 @@ import type { HistoryAction, SessionTurnRead } from '@lody/shared/session-data';
 import { Context, Effect } from 'effect';
 import type { InboxBatch } from './inbox/model';
 
+export type CoordinatorBoardCatalog = {
+  read(): BoardMeta[];
+  observe(wake: Effect.Effect<void>): Effect.Effect<Effect.Effect<void>, unknown>;
+};
 export type CoordinatorHistory = {
+  readDrivingState: Effect.Effect<BoardDrivingState | undefined, unknown>;
   meta: SessionMeta;
   readTurn(id: string): Effect.Effect<SessionTurnRead, unknown>;
   readTurnOutput(id: string): Effect.Effect<SessionHistoryInput[], unknown>;
@@ -20,6 +26,11 @@ export type CoordinatorHistory = {
 export class CoordinatorPorts extends Context.Service<
   CoordinatorPorts,
   {
+    boardCatalog: Effect.Effect<CoordinatorBoardCatalog, unknown>;
+    boardSessionMetas: Effect.Effect<SessionMeta[], unknown>;
+    observeBoardMetadata(
+      onChange: (id: SessionId) => Effect.Effect<void>
+    ): Effect.Effect<Effect.Effect<void>, unknown>;
     metadata(id: SessionId): Effect.Effect<{ meta: SessionMeta } | undefined, unknown>;
     execution(id: SessionId): { activeTurnId?: string };
     operation(key: string): Effect.Effect<{ signal: { readonly aborted: boolean } }, unknown>;

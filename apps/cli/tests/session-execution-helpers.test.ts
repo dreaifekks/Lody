@@ -114,7 +114,9 @@ it('adds role-specific Board instructions while retaining the task and existing 
   );
   expect(coordinator).toContain('lody_board_overview');
   expect(coordinator).toContain('end your turn');
-  expect(coordinator).toContain('round enforcement and handoff are not available yet');
+  expect(coordinator).toContain(
+    'Round enforcement, handoff and daily digests are not available yet'
+  );
   expect(coordinator).toContain('Commit only. Run tests.');
   expect(coordinator).toContain('lody_board_notes_replace');
   const thread = buildPrompt('Implement', undefined, undefined, undefined, {
@@ -122,6 +124,8 @@ it('adds role-specific Board instructions while retaining the task and existing 
   });
   expect(thread).toContain('Coordinator session: coordinator');
   expect(thread).toContain('lody_board_notes_append');
+  expect(thread).toContain('include them verbatim in your reply');
+  expect(thread).toContain('the coordinator decides which changes to make');
   expect(thread).toContain('Commit only. Run tests.');
   expect(thread).not.toContain('You are the coordinator');
 });

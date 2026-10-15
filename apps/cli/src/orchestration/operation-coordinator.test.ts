@@ -204,7 +204,9 @@ const makeHarness = async (options?: {
       ? flockRows.filter((row) => prefix.every((part, index) => row.key[index] === part))
       : flockRows;
   });
-  const openFlockDoc = vi.fn(async () => ({ flock: { scan: flockScan } }));
+  const openFlockDoc = vi.fn(async () => ({
+    flock: { scan: flockScan, subscribe: () => () => {} },
+  }));
   const getRepoMeta = vi.fn(() => {
     throw new Error('Inbox configuration lookup must not enumerate repo meta');
   });
@@ -1370,6 +1372,12 @@ describe('native coordinator failure boundaries', () => {
         active: () => true,
         now: () => TEST_NOW_MS,
         claimToken: 'claim',
+        boardCatalog: Effect.succeed({
+          read: () => [],
+          observe: () => Effect.succeed(Effect.void),
+        }),
+        boardSessionMetas: Effect.succeed([]),
+        observeBoardMetadata: () => Effect.succeed(Effect.void),
         metadata: () => Effect.failCause(cause),
         session: () => Effect.fail(new Error('unexpected history access')),
         execution: () => ({}),
@@ -1469,5 +1477,656 @@ it('keeps long completion reports and preserves their conclusion when the Inbox 
     } finally {
       await harness.coordinator.stop();
     }
+  }
+});
+
+const boardHarness = async () => {
+  const { LoroRepo } = await import('loro-repo');
+  const { createSessionMirror, normalizeBoardMeta, getWorkspaceFlockDocId, workspaceFlockKeys } =
+    await import('@lody/shared');
+  const { createLoroSessionData } = await import('@lody/shared/session-data');
+  const repo = await LoroRepo.create({});
+  const workspaceId = 'board-workspace' as WorkspaceId;
+  const machineId = 'board-host' as MachineId;
+  const coordinatorId = 'board-coordinator' as SessionId;
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_reports',
+    name: 'Reports',
+    purpose: 'Ship a feature',
+    coordinatorSessionId: coordinatorId,
+    createdAtMs: TEST_NOW_MS,
+    createdByUserId: 'user-1',
+  })!;
+  const catalog = await repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
+  catalog.flock.set(workspaceFlockKeys.board(board.id), board);
+  let now = TEST_NOW_MS + 1000;
+  const store = new LodyOperationStore(':memory:', () => now);
+  const docs = new Map<SessionId, ReturnType<typeof createDoc>>();
+  function createDoc(id: SessionId) {
+    const loro = new LoroDoc();
+    const mirror = createSessionMirror({
+      doc: loro,
+      initialState: { session: { id }, history: [] },
+    });
+    const sessionData = createLoroSessionData({
+      sessionId: id,
+      doc: loro,
+      writer: mirror.historyWriter,
+    });
+    return {
+      sessionId: id,
+      mirror,
+      sessionData,
+      loro,
+      subscribeAll: (listener: () => void) => mirror.subscribe(listener),
+      getMetaState: async () => (await repo.getDocMeta(getSessionRoomId(id)))?.meta as SessionMeta,
+      flushLocalWrites: async () => {},
+      readHistorySnapshot: () => mirror.getState().history,
+      applyHistoryAction: sessionData.commands.applyHistoryAction,
+    };
+  }
+  const add = async (name: string, extra: Partial<SessionMeta> = {}) => {
+    const id = name as SessionId;
+    const doc = createDoc(id);
+    docs.set(id, doc);
+    await repo.openPersistedDoc(getSessionRoomId(id));
+    await repo.upsertDocMeta(getSessionRoomId(id), {
+      id,
+      workspaceId,
+      machineId,
+      userId: 'user-1',
+      cliType: 'builtin',
+      agentType: 'codex',
+      title: name,
+      boardId: board.id,
+      ...extra,
+    });
+    return doc;
+  };
+  const input = (
+    id: string,
+    options: {
+      role?: 'user' | 'system';
+      depth?: number;
+      human?: boolean;
+      status?: SessionHistoryInput['status'];
+    } = {}
+  ): SessionHistoryInput => ({
+    id,
+    role: options.role ?? 'user',
+    timestamp: new Date(now).toISOString(),
+    userId: 'user-1',
+    inputConfig: {
+      cliType: 'builtin',
+      agentType: 'codex',
+      modelId: 'test-model',
+      chainDepth: options.depth ?? 1,
+      mcpServerIds: [],
+    },
+    status: options.status ?? 'handled',
+    author: options.human
+      ? { v: 1, kind: 'human', userId: 'user-1' }
+      : options.role === 'system'
+        ? { v: 1, kind: 'system' }
+        : {
+            v: 1,
+            kind: 'agent',
+            name: 'Coordinator',
+            sessionId: coordinatorId,
+            turnId: 'coordinator-input',
+          },
+    items: [{ type: 'text', text: 'Synthetic task' }],
+    fileDiff: [],
+  });
+  const append = async (id: string, turn: SessionHistoryInput) => {
+    await docs
+      .get(id as SessionId)!
+      .sessionData.commands.appendTurn({ ...turn, fileDiff: turn.fileDiff ?? [] });
+  };
+  const finish = async (id: string, turnId: string, text = 'Synthetic conclusion') =>
+    append(id, {
+      id: `${turnId}-answer`,
+      role: 'assistant',
+      userTurnId: turnId,
+      timestamp: new Date(now + 1).toISOString(),
+      endedAt: now + 1,
+      finished: true,
+      items: [{ type: 'text', text }],
+      fileDiff: [],
+    });
+  await add(coordinatorId, { boardRole: 'coordinator' });
+  await append(coordinatorId, input('coordinator-input', { depth: 0, human: true }));
+  const launches: import('./inbox/model').InboxBatch[] = [];
+  const warnings: unknown[] = [];
+  let hold = true;
+  const coordinator = new LodyOperationCoordinator({
+    workspaceId,
+    machineId,
+    userId: 'user-1',
+    now: () => now,
+    workerBootId: 'board-worker',
+    workspaceDocument: {
+      repo,
+      getOrCreateSessionDoc: async (id: SessionId) => docs.get(id),
+    } as never,
+    executionService: {
+      getExecutionSnapshot: () => ({ hasActiveTurn: hold }),
+      continueSession: async (
+        _message: unknown,
+        options: { inboxBatch: import('./inbox/model').InboxBatch }
+      ) => {
+        const batch = options.inboxBatch;
+        launches.push(batch);
+        const executionId = `execution:${batch.batchId}`;
+        expect(store.inbox.begin(batch, executionId, batch.owner)).toBe(true);
+        expect(store.inbox.fence(batch, executionId)).toBe(true);
+        store.inbox.settle(batch, 'settled');
+        store.inbox.release({ ...batch, executionId, outcome: 'normal' });
+      },
+    } as never,
+    dispatchWatcher: { hasPendingDispatch: () => false } as never,
+    storeFactory: () => store,
+    storePath: '/unused/board.sqlite3',
+    operationStoreWatchFactory: () => ({ close: () => {} }),
+    materializeTarget: async () => {},
+    logger: { warn: (message: unknown) => warnings.push(message), debug: () => {} } as never,
+  });
+  const drain = async () => {
+    // Repo/Mirror notifications are microtasks; the public barrier joins each owned reconcile.
+    await repo.flush();
+    await coordinator.wake('test-barrier');
+    await coordinator.idle();
+  };
+  const reports = () =>
+    store
+      .listForRequester(
+        { workspaceId, requesterSessionId: coordinatorId, requesterUserId: 'user-1' },
+        { limit: 100 }
+      )
+      .items.filter((row) => row.kind === 'board_report');
+  return {
+    repo,
+    store,
+    coordinator,
+    coordinatorId,
+    workspaceId,
+    machineId,
+    board,
+    catalog,
+    docs,
+    input,
+    append,
+    finish,
+    add,
+    drain,
+    reports,
+    launches,
+    warnings,
+    advance: (ms: number) => {
+      now += ms;
+    },
+    release: () => {
+      hold = false;
+    },
+    close: async () => {
+      await coordinator.stop();
+      for (const doc of docs.values()) doc.mirror.dispose();
+      await repo.destroy();
+    },
+  };
+};
+
+describe('Board reports through Operation Inbox', () => {
+  it('does not report a reviewer completion; reports its parent after system continuation', async () => {
+    const h = await boardHarness();
+    try {
+      await h.add('parent');
+      await h.add('reviewer', { parentSessionId: 'parent' as SessionId });
+      await h.append('reviewer', h.input('review'));
+      h.coordinator.start();
+      await h.drain();
+      await h.finish('reviewer', 'review', 'Keep the change narrow.');
+      await h.drain();
+      expect(h.reports()).toEqual([]);
+      h.advance(10);
+      await h.append('parent', h.input('review-batch', { role: 'system', depth: 4 }));
+      await h.finish('parent', 'review-batch', 'Keep the change narrow.');
+      await h.drain();
+      expect(h.reports()).toHaveLength(1);
+      const operation = h.store.get(h.coordinatorId, h.reports()[0]!.operationId);
+      expect(operation).toMatchObject({
+        kind: 'board_report',
+        state: 'finished',
+        initiatorChainDepth: 0,
+        completion: {
+          value: {
+            boardReport: {
+              events: [
+                {
+                  sessionId: 'parent',
+                  kind: 'finished',
+                  output: { text: 'Keep the change narrow.' },
+                },
+              ],
+            },
+          },
+        },
+      });
+      expect(h.warnings).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('reports a grandchild waiting once per driving turn, and notices regardless of origin', async () => {
+    const h = await boardHarness();
+    try {
+      await h.add('parent');
+      await h.add('reviewer', { parentSessionId: 'parent' as SessionId });
+      await h.append('reviewer', h.input('review', { human: true }));
+      h.coordinator.start();
+      await h.drain();
+      await h.repo.upsertDocMeta(getSessionRoomId('reviewer' as SessionId), {
+        awaitingUserSince: TEST_NOW_MS + 1002,
+      });
+      await h.drain();
+      expect(h.reports()).toHaveLength(1);
+      await h.repo.upsertDocMeta(getSessionRoomId('reviewer' as SessionId), {
+        awaitingUserSince: TEST_NOW_MS + 1003,
+        agentNotice: { id: 'notice', body: 'Need a choice', at: TEST_NOW_MS + 1003 },
+      });
+      await h.drain();
+      expect(h.reports()).toHaveLength(2);
+      expect(
+        h.store.readBoardReportCursor(h.board.id, 'reviewer' as SessionId).lastAwaitingSince
+      ).toBe(TEST_NOW_MS + 1002);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe('Board subscription and filtering boundaries', () => {
+  it('advances human cursors while disabled; enabling the rule only reports later input', async () => {
+    const h = await boardHarness();
+    try {
+      await h.add('member');
+      await h.append('member', h.input('human', { human: true }));
+      await h.finish('member', 'human');
+      h.coordinator.start();
+      await h.drain();
+      expect(h.reports()).toEqual([]);
+      expect(h.store.readBoardReportCursor(h.board.id, 'member' as SessionId).lastTurnId).toBe(
+        'human'
+      );
+      h.catalog.flock.set(['board', h.board.id], {
+        ...h.board,
+        rules: { ...h.board.rules, reportHumanTurns: true },
+      });
+      await h.drain();
+      expect(h.reports()).toEqual([]);
+      h.advance(10);
+      await h.append('member', h.input('new-human', { human: true }));
+      await h.finish('member', 'new-human');
+      await h.drain();
+      expect(h.reports()).toHaveLength(1);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('skips archived members and pre-join states, then observes newly joined members via repo.watch', async () => {
+    const h = await boardHarness();
+    try {
+      await h.add('archived', { isArchived: true });
+      await h.append('archived', h.input('archived-turn'));
+      await h.finish('archived', 'archived-turn');
+      await h.add('old', { boardId: undefined });
+      await h.append('old', h.input('old-turn'));
+      await h.finish('old', 'old-turn');
+      h.coordinator.start();
+      await h.drain();
+      h.advance(20);
+      await h.repo.upsertDocMeta(getSessionRoomId('old' as SessionId), {
+        boardId: h.board.id,
+        boardJoinedAtMs: TEST_NOW_MS + 1020,
+        agentNotice: { id: 'old-notice', body: 'Old information', at: TEST_NOW_MS },
+        awaitingUserSince: TEST_NOW_MS + 1002,
+      });
+      await h.drain();
+      expect(h.reports()).toEqual([]);
+      await h.append('old', h.input('new-turn'));
+      await h.finish('old', 'new-turn');
+      await h.drain();
+      expect(h.reports()).toHaveLength(1);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it.each(['history', 'local-receipt'] as const)(
+    'never turns user Stop into a report (%s evidence)',
+    async (evidence) => {
+      const h = await boardHarness();
+      try {
+        await h.add('stopped');
+        await h.append(
+          'stopped',
+          h.input('stopped-turn', { status: evidence === 'history' ? 'canceled' : 'handled' })
+        );
+        await h.finish('stopped', 'stopped-turn');
+        if (evidence === 'local-receipt') {
+          const input = {
+            workspaceId: h.workspaceId,
+            sessionId: 'stopped',
+            userId: 'user-1',
+            inputId: 'stopped-turn',
+            kind: 'task' as const,
+            config: {},
+          };
+          expect(h.store.inbox.accept(input)).toBe(true);
+          expect(h.store.inbox.begin(input, 'stopped-execution')).toBe(true);
+          expect(h.store.inbox.pause(input, 'stopped-execution')).toBe(true);
+          h.store.inbox.release({
+            ...input,
+            executionId: 'stopped-execution',
+            outcome: 'user_stop',
+          });
+        }
+        h.coordinator.start();
+        await h.drain();
+        expect(h.reports()).toEqual([]);
+        expect(h.store.readBoardReportCursor(h.board.id, 'stopped' as SessionId).lastTurnId).toBe(
+          'stopped-turn'
+        );
+      } finally {
+        await h.close();
+      }
+    }
+  );
+
+  it('records failures even on human turns and grandchild sessions', async () => {
+    const h = await boardHarness();
+    try {
+      await h.add('parent');
+      await h.add('reviewer', { parentSessionId: 'parent' as SessionId });
+      await h.append('reviewer', h.input('failed-review', { human: true, status: 'failed' }));
+      h.coordinator.start();
+      await h.drain();
+      expect(h.reports()).toHaveLength(1);
+      expect(h.store.get(h.coordinatorId, h.reports()[0]!.operationId).completion).toMatchObject({
+        value: { boardReport: { events: [{ kind: 'failed' }] } },
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('coalesces streaming Mirror notifications without rereading unrelated members or scanning the repo', async () => {
+    const h = await boardHarness();
+    const remote = new LoroDoc();
+    let remoteMirror: import('@lody/shared').SessionMirror | undefined;
+    try {
+      const active = await h.add('active');
+      const quiet = await h.add('quiet');
+      await h.append('active', h.input('stream'));
+      await h.append('quiet', h.input('quiet-turn'));
+      h.coordinator.start();
+      await h.drain();
+      const { createSessionMirror } = await import('@lody/shared');
+      remote.import(active.loro.export({ mode: 'snapshot' }));
+      remoteMirror = createSessionMirror({ doc: remote, initialState: {} });
+      const scan = vi.spyOn(h.repo.getMeta(), 'scan');
+      const quietRead = vi.spyOn(quiet.sessionData.history, 'readDirectory');
+      const activeRead = vi.spyOn(active.sessionData.history, 'readDirectory');
+      const coverageRead = vi.spyOn(h.store, 'boardCoveredTargets');
+      for (let i = 0; i < 30; i++) {
+        remoteMirror.setState((draft) => {
+          const last = draft.history.at(-1);
+          if (last?.role === 'assistant') last.items = [{ type: 'text', text: `stream ${i}` }];
+          else
+            draft.history.push({
+              id: 'stream-answer',
+              role: 'assistant',
+              userTurnId: 'stream',
+              timestamp: new Date(TEST_NOW_MS + 1001).toISOString(),
+              items: [{ type: 'text', text: `stream ${i}` }],
+              finished: false,
+            });
+        });
+        active.loro.import(remote.export({ mode: 'update', from: active.loro.version() }));
+      }
+      await h.drain();
+      expect(h.reports()).toEqual([]);
+      expect(scan).not.toHaveBeenCalled();
+      expect(quietRead).not.toHaveBeenCalled();
+      expect(activeRead.mock.calls.length).toBeLessThanOrEqual(2);
+      expect(coverageRead).not.toHaveBeenCalled();
+      activeRead.mockClear();
+      await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+        lastMessageAt: TEST_NOW_MS + 1050,
+      });
+      await h.drain();
+      expect(activeRead).not.toHaveBeenCalled();
+      expect(quietRead).not.toHaveBeenCalled();
+      expect(h.reports()).toEqual([]);
+      remoteMirror.setState((draft) => {
+        const last = draft.history.at(-1)!;
+        last.finished = true;
+        last.endedAt = TEST_NOW_MS + 1100;
+      });
+      active.loro.import(remote.export({ mode: 'update', from: active.loro.version() }));
+      await h.drain();
+      expect(h.reports()).toHaveLength(1);
+    } finally {
+      remoteMirror?.dispose();
+      remote.free();
+      await h.close();
+    }
+  });
+});
+
+describe('Board coordinator admission', () => {
+  it('keeps stopped-tree results queued, then launches the existing Inbox when the tree resumes', async () => {
+    const h = await boardHarness();
+    try {
+      await h.add('member');
+      await h.append('member', h.input('work'));
+      await h.finish('member', 'work');
+      await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), { collaborationStopped: true });
+      h.release();
+      h.coordinator.start();
+      await h.drain();
+      expect(h.reports()).toHaveLength(1);
+      expect(h.launches).toEqual([]);
+      await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+        collaborationStopped: false,
+      });
+      await h.drain();
+      expect(h.launches).toHaveLength(1);
+      expect(h.launches[0]).toMatchObject({
+        sessionId: h.coordinatorId,
+        memberCount: 1,
+        chainDepth: 1,
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('writes one durable limit notice at 15 -> 16 and leaves the report for a human batch', async () => {
+    const h = await boardHarness();
+    try {
+      await h.append(h.coordinatorId, h.input('last-autonomous', { role: 'system', depth: 15 }));
+      await h.add('member');
+      await h.append('member', h.input('work'));
+      await h.finish('member', 'work');
+      h.coordinator.start();
+      await h.drain();
+      await h.drain();
+      expect(h.store.inbox.depthLimitedSessions(h.workspaceId)).toEqual([h.coordinatorId]);
+      const notices = () =>
+        h.docs
+          .get(h.coordinatorId)!
+          .mirror.getState()
+          .history.flatMap((turn) => turn.items ?? [])
+          .filter((item) => item.type === 'system_notice' && item.name === 'board_chain_limit');
+      expect(notices()).toHaveLength(1);
+      await h.drain();
+      expect(notices()).toHaveLength(1);
+      expect(h.launches).toEqual([]);
+      const human = {
+        workspaceId: h.workspaceId,
+        sessionId: h.coordinatorId,
+        userId: 'user-1',
+        kind: 'human' as const,
+        inputId: 'continue-human',
+        config: { chainDepth: 0 },
+      };
+      h.store.inbox.accept(human);
+      const pending = h.store.inbox.prepare(human, 'board-worker');
+      expect(pending).toMatchObject({ chainDepth: 0, memberCount: 1 });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('only observes boards whose fixed coordinator belongs to this worker machine', async () => {
+    const h = await boardHarness();
+    try {
+      await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+        machineId: 'another-machine',
+      });
+      await h.add('member');
+      await h.append('member', h.input('work'));
+      await h.finish('member', 'work');
+      h.coordinator.start();
+      await h.drain();
+      expect(h.reports()).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+it('reconciles the coordinator receipt before Board deduplication and retains that coverage', async () => {
+  const h = await boardHarness();
+  try {
+    await h.add('member');
+    await h.append('member', h.input('delegated'));
+    await h.finish('member', 'delegated');
+    h.store.accept({
+      workspaceId: h.workspaceId,
+      ownerMachineId: h.machineId,
+      requesterSessionId: h.coordinatorId,
+      requesterUserId: 'user-1',
+      operationId: 'direct-chat',
+      kind: 'session_chat',
+      canonicalCommand: {},
+      frozenContinuationConfig: {
+        inputConfig: { chainDepth: 0 },
+        sourceTurnId: 'coordinator-input',
+      },
+      initiatorChainDepth: 0,
+      createdAt: new Date(TEST_NOW_MS).toISOString(),
+      deadlineAt: new Date(TEST_NOW_MS + 60000).toISOString(),
+      items: [
+        {
+          status: 'active',
+          inputDurable: true,
+          target: { sessionId: 'member' as SessionId, userTurnId: 'delegated' },
+        },
+      ],
+    });
+    h.coordinator.start();
+    await h.drain();
+    expect(h.store.get(h.coordinatorId, 'direct-chat')).toMatchObject({
+      state: 'finished',
+      items: [{ status: 'succeeded' }],
+    });
+    expect(h.reports()).toEqual([]);
+    expect(h.store.readBoardReportCursor(h.board.id, 'member' as SessionId).lastTurnId).toBe(
+      'delegated'
+    );
+    await h.drain();
+    expect(h.reports()).toEqual([]);
+  } finally {
+    await h.close();
+  }
+});
+
+it.each(['cancelled', 'timeout'] as const)(
+  'reports a late target after its original Operation was %s',
+  async (state) => {
+    const h = await boardHarness();
+    try {
+      await h.add('member');
+      await h.append('member', h.input('delegated'));
+      const target = { sessionId: 'member' as SessionId, userTurnId: 'delegated' };
+      h.store.accept({
+        workspaceId: h.workspaceId,
+        ownerMachineId: h.machineId,
+        requesterSessionId: h.coordinatorId,
+        requesterUserId: 'user-1',
+        operationId: 'expired-chat',
+        kind: 'session_chat',
+        canonicalCommand: {},
+        frozenContinuationConfig: { inputConfig: {} },
+        initiatorChainDepth: 0,
+        createdAt: new Date(TEST_NOW_MS).toISOString(),
+        deadlineAt: new Date(TEST_NOW_MS + 60000).toISOString(),
+        items: [{ status: 'active', inputDurable: true, target }],
+      });
+      if (state === 'cancelled') h.store.cancel(h.coordinatorId, 'expired-chat');
+      else {
+        const item = {
+          status: 'failed' as const,
+          target,
+          error: { code: 'TARGET_TIMEOUT', message: 'Timed out', retryable: false },
+        };
+        h.store.updateItems(h.coordinatorId, 'expired-chat', [item]);
+        h.store.finish(h.coordinatorId, 'expired-chat', {
+          type: 'result',
+          value: { items: [item] },
+        });
+      }
+      h.coordinator.start();
+      await h.drain();
+      expect(h.reports()).toEqual([]);
+      await h.finish('member', 'delegated');
+      await h.drain();
+      expect(h.reports()).toHaveLength(1);
+    } finally {
+      await h.close();
+    }
+  }
+);
+
+it('retries a rolled-back Board report on the owned backoff without another metadata event', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  const h = await boardHarness();
+  try {
+    await h.add('member');
+    await h.append('member', h.input('work'));
+    await h.finish('member', 'work');
+    const db = (h.store as unknown as { db: Database.Database }).db;
+    db.exec(
+      "CREATE TRIGGER reject_board_cursor BEFORE INSERT ON board_report_cursors BEGIN SELECT RAISE(ABORT,'retry cursor'); END;"
+    );
+    h.coordinator.start();
+    await h.drain();
+    expect(h.reports()).toEqual([]);
+    expect(h.store.readBoardReportCursor(h.board.id, 'member' as SessionId)).toEqual({});
+    db.exec('DROP TRIGGER reject_board_cursor');
+    await vi.advanceTimersByTimeAsync(1000);
+    await h.coordinator.idle();
+    expect(h.reports()).toHaveLength(1);
+    expect(h.store.readBoardReportCursor(h.board.id, 'member' as SessionId).lastTurnId).toBe(
+      'work'
+    );
+  } finally {
+    await h.close();
+    vi.useRealTimers();
   }
 });

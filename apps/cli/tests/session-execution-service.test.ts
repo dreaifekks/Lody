@@ -4396,6 +4396,10 @@ describe('SessionExecutionService', () => {
         expect(text.includes('EXECUTOR_CONSTRAINT')).toBe(boardPromptExpected);
         if (boardPromptExpected) {
           expect(text.split('EXECUTOR_CONSTRAINT')).toHaveLength(2);
+          if (boardRole !== 'coordinator') {
+            expect(text).toContain('include them verbatim in your reply');
+            expect(text).toContain('Do not make changes based on those conclusions yourself');
+          }
           expect(text).toContain(
             boardRole === 'coordinator'
               ? 'You are the coordinator of Board "Shipping"'

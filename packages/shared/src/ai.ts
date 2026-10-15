@@ -1342,7 +1342,8 @@ export type SystemNoticeName =
   | 'agent_warning'
   | 'task_proposal'
   | 'schedule_proposal'
-  | 'session_fork_origin';
+  | 'session_fork_origin'
+  | 'board_chain_limit';
 
 /**
  * Metadata for the resume_from_external_chat_history system notice
@@ -1521,6 +1522,7 @@ export type SystemNoticeMeta = {
   task_proposal: TaskProposalMeta;
   schedule_proposal: ScheduleProposalMeta;
   session_fork_origin: SessionForkOriginMeta;
+  board_chain_limit: { boardId: string; drivingTurnId: string };
 };
 
 export const SESSION_IMAGE_MAX_SIZE_BYTES = 5 * 1024 * 1024;

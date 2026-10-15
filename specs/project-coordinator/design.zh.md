@@ -145,7 +145,7 @@ worktree 由根 session 拥有且随根归档清理（`session-worktree-lifecycl
 - 它在 `inbox_results` 里的那一行，由现有的 `InboxSqlite.indexCompletion()` 在同一事务
   里写入，和普通 Operation 回执完全同构；
 - `board_report_cursors(board_id, session_id, last_turn_id, last_awaiting_since,
-  last_notice_id)`：每个成员上次处理到哪里。
+  last_awaiting_turn_id, last_notice_id)`：每个成员上次处理到哪里。
 
 三者在一个 `BEGIN IMMEDIATE` 事务里提交。没有 Delivery 表，也没有第二套投递状态：
 领取、合批、结算、过期全部是 Inbox 的现成语义。
@@ -287,8 +287,9 @@ review 改完」永远不会回报。
    接受的输入时顺手登记一个 pending intent。这一步没有看板特例。
 3. 前移该成员的游标。
 
-Operation id 是确定性的：`board:<成员 id>:<驱动回合 id>:<事件>`，`waiting_user` 和
-`notice` 再拼上 `awaitingUserSince` / `agentNotice.id`。`operations` 主键
+Operation id 是确定性的：对成员 id、驱动回合 id、事件，以及 `waiting_user` / `notice`
+的 `awaitingUserSince` / `agentNotice.id` 组成的 JSON 元组散列，取 `board-` + SHA-256
+前 58 个十六进制字符，满足现有 64 字符的 id 契约。`operations` 主键
 `(requester_session_id, operation_id)` 和 `operation_retired_ids` 触发器因此天然实现
 「接收的协调者 + 源事件」去重，重启、重复扫描、七天过期后都不会二次接受。完成体受
 现有 64 KiB 上限约束（`assertCompletionBound`），截断的让协调者用 `lody_session_history`
@@ -372,8 +373,8 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
 - 回报写入失败（SQLite 忙、事务失败）时三件事一起回滚，游标不前移，下一次唤醒重试，
   重试走 `coordinator-activity` 已有的有界退避，不加新的定时器。
 - 结果不会因为守护进程停机太久被静默丢弃：`inbox_results` 里未消费的行不过期，pending
-  intent 持久化并在启动扫描时恢复（`repo.pending`）；回报 Operation 创建即完成，没有
-  deadline；已消费的载荷七天后清理，但历史里的批次卡片留下。
+  intent 持久化并在启动扫描时恢复（`repo.pending`）；回报 Operation 创建即完成，不进入
+  deadline 调度；已消费的载荷七天后清理，但历史里的批次卡片留下。
 - 批次提交后模型是否收到不确定（`unknown` 结算）时，上游不重新合批，历史卡片标「模型
   投递不确定」。看板不补发：Overview 和 `lody_board_overview` 始终是当前状态的真相，
   协调者下一次被唤醒时可以自己看。
@@ -742,3 +743,25 @@ Board 自动回报、轮数拒绝和交接尚未实现；已有 Operation 回执
 PR2 评审修正：目录和笔记同步失败仅记录警告，创建和工具调用继续使用本地副本；
 本地持久化成功即完成写入，上传仍在后台进行。协调者身份与默认笔记标题使用调用上下文的
 session id，不要求稀疏元数据包含 id。线程约束由 Lody 在首条消息注入一次，协调者不重复转述。
+
+## PR3 已实现
+
+PR3 已接入上游 Operation Inbox：成员目录/元数据和历史订阅只标脏相关成员，原生
+协调器先完成普通 Operation reconcile，再推导看板事件并接受持久结果。每条事件一个
+已完成 `board_report` Operation，和 Inbox 索引、成员游标同事务提交；忙时积累、人工
+优先、暂停、停止和合批全部保留上游语义。孙会话的完成由父成员续接后的回复带回，
+等待用户、失败和通知仍回报；线程启动提示明确要求原样回复子会话结论，由协调者决定修改。
+
+与设计记法的最小调整：事件源标识散列为 `board-` + SHA-256 前 58 个十六进制字符，
+满足既有 Operation ID 的字符/长度契约。已完成行仍填入类型必需的 `deadlineAt`（创建
+时刻），但不参与 deadline 调度。游标增加 `last_awaiting_turn_id`，以回合身份保证一次
+等待回报，而非依赖时钟精度。共享浅历史目录补充 system 配置和 `chainDepth`，避免漏掉
+续接且不读取整个正文。观察逻辑放在同一原生协调器调用的独立模块，未新增调度循环。
+
+链上限通知读取真正的 `depth_limited` intent；领取检查同时保留当时水位供观察，不改变
+领取/深度算法。通知只写历史，一次驱动回合一条；人工输入后旧通知不再让 Overview
+显示停止。协调者 Overview 使用最新驱动回合的深度，也显示本会话/祖先的停止标记。
+批次回报复用紧凑任务行、现有导航和实时标题，新增等待/通知标签。PR4/PR5 未实现，
+启动提示没有承诺轮数拒绝、交接或每日摘要。
+
+实现与验证见 [PR3 Agent Note](../../.agents/notes/implemented/feature/2026-10-16-board-inbox-reports.zh.md)。

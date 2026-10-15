@@ -68,6 +68,7 @@ const nativeFiles = [
     )
     .map((n) => 'apps/cli/src/orchestration/inbox/' + n),
   ...[
+    'board-report-workflow.ts',
     'coordinator-activity.ts',
     'coordinator-workflow.ts',
     'coordinator-model.ts',

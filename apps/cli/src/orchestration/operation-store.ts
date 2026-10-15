@@ -1,3 +1,10 @@
+import type { AcceptBoardReportInput } from './operation-repository';
+import {
+  boardReportOperationId,
+  type BoardId,
+  type BoardReportCursor,
+  type LodyOperationResult,
+} from '@lody/shared';
 import { SessionInputAttachmentsSchema } from '@/lib/session-input-content';
 import {
   AgentMessageAuthorSchema,
@@ -52,6 +59,7 @@ const OperationKindSchema = z.enum([
   'session_create_many',
   'session_chat',
   'session_chat_many',
+  'board_report',
 ]);
 
 const FrozenConfigSchema = z
@@ -236,7 +244,36 @@ const boundCompletionFreeText = (
     omittedBytes += bounded.omittedBytes;
     return { ...error, message: bounded.value };
   };
-  const boundResult = (result: { items: LodyOperationItemResult[] }) => ({
+  const boundResult = (result: LodyOperationResult) => ({
+    ...result,
+    ...(result.boardReport
+      ? {
+          boardReport: {
+            ...result.boardReport,
+            events: result.boardReport.events.map((event) => {
+              const title =
+                event.title === undefined ? undefined : truncateUtf8(event.title, maxBytesPerText);
+              const output = event.output
+                ? truncateUtf8(event.output.text, maxBytesPerText)
+                : undefined;
+              omittedBytes += (title?.omittedBytes ?? 0) + (output?.omittedBytes ?? 0);
+              const outputOmitted = (event.output?.omittedBytes ?? 0) + (output?.omittedBytes ?? 0);
+              return {
+                ...event,
+                title: title?.value,
+                output: output
+                  ? {
+                      text: output.value,
+                      ...(outputOmitted
+                        ? { truncated: true as const, omittedBytes: outputOmitted }
+                        : {}),
+                    }
+                  : undefined,
+              };
+            }),
+          },
+        }
+      : {}),
     items: result.items.map((item): LodyOperationItemResult => {
       const boundedLabel = item.label ? truncateUtf8(item.label, maxBytesPerText) : undefined;
       if (boundedLabel) omittedBytes += boundedLabel.omittedBytes;
@@ -350,6 +387,19 @@ export class LodyOperationStore {
     try {
       this.migrate();
       InboxSqlite.migrate(this.db);
+      if (
+        !this.db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='board_report_cursors'")
+          .get()
+      ) {
+        this.transaction(() =>
+          this.db.exec(`CREATE TABLE IF NOT EXISTS board_report_cursors (
+          board_id TEXT NOT NULL, session_id TEXT NOT NULL,
+          last_turn_id TEXT, last_awaiting_since INTEGER, last_awaiting_turn_id TEXT, last_notice_id TEXT,
+          PRIMARY KEY(board_id, session_id)
+        )`)
+        ).immediate();
+      }
       this.inbox = new InboxSqlite(
         this.db,
         () => new Date(this.now()).toISOString(),
@@ -503,6 +553,124 @@ export class LodyOperationStore {
     const accepted = transaction.immediate();
     this.cleanupExpired(false);
     return accepted;
+  }
+
+  readBoardReportCursor(boardId: BoardId, sessionId: SessionId): BoardReportCursor {
+    const row = this.db
+      .prepare(
+        `SELECT last_turn_id,last_awaiting_since,last_awaiting_turn_id,last_notice_id FROM board_report_cursors WHERE board_id=? AND session_id=?`
+      )
+      .get(boardId, sessionId) as
+      | {
+          last_turn_id: string | null;
+          last_awaiting_since: number | null;
+          last_awaiting_turn_id: string | null;
+          last_notice_id: string | null;
+        }
+      | undefined;
+    return row
+      ? {
+          lastTurnId: row.last_turn_id ?? undefined,
+          lastAwaitingSince: row.last_awaiting_since ?? undefined,
+          lastAwaitingTurnId: row.last_awaiting_turn_id ?? undefined,
+          lastNoticeId: row.last_notice_id ?? undefined,
+        }
+      : {};
+  }
+
+  /** A filtered event advances the same cursor without manufacturing an Inbox result. */
+  acceptBoardReport(input: AcceptBoardReportInput): void {
+    this.transaction(() => {
+      for (const event of input.events) {
+        const operationId = boardReportOperationId(event);
+        if (
+          this.db
+            .prepare(
+              `SELECT 1 FROM operations WHERE requester_session_id=? AND operation_id=? UNION ALL SELECT 1 FROM operation_retired_ids WHERE requester_session_id=? AND operation_id=?`
+            )
+            .get(input.requesterSessionId, operationId, input.requesterSessionId, operationId)
+        )
+          continue;
+        const completion = this.assertCompletionBound({
+          type: 'result',
+          value: { items: [], boardReport: { boardId: input.boardId, events: [event] } },
+        });
+        const timestamp = new Date(this.now()).toISOString();
+        const canonical = canonicalizeLodyCommand({ boardId: input.boardId, eventId: operationId });
+        const operation: StoredLodyOperation = {
+          workspaceId: input.workspaceId,
+          ownerMachineId: input.ownerMachineId,
+          requesterSessionId: input.requesterSessionId,
+          requesterUserId: input.requesterUserId,
+          operationId,
+          kind: 'board_report',
+          fingerprint: fingerprintLodyCommand('board_report', canonical),
+          canonicalCommand: JSON.parse(canonical),
+          frozenContinuationConfig: input.frozenContinuationConfig,
+          initiatorChainDepth: input.frozenContinuationConfig.inputConfig.chainDepth ?? 0,
+          createdAt: timestamp,
+          deadlineAt: timestamp,
+          finishedAt: timestamp,
+          state: 'finished',
+          items: [],
+          completion,
+        };
+        this.db
+          .prepare(`INSERT INTO operations (
+          workspace_id,owner_machine_id,requester_session_id,requester_user_id,operation_id,kind,fingerprint,canonical_command_json,frozen_config_json,initiator_chain_depth,created_at,deadline_at,state,items_json,completion_json,finished_at
+        ) VALUES (?,?,?,?,?,'board_report',?,?,?,?,?,?,'finished','[]',?,?)`)
+          .run(
+            operation.workspaceId,
+            operation.ownerMachineId,
+            operation.requesterSessionId,
+            operation.requesterUserId,
+            operationId,
+            operation.fingerprint,
+            canonical,
+            JSON.stringify(FrozenConfigSchema.parse(input.frozenContinuationConfig)),
+            operation.initiatorChainDepth,
+            timestamp,
+            timestamp,
+            JSON.stringify(completion),
+            timestamp
+          );
+        this.inbox.indexCompletion(operation);
+      }
+      this.db
+        .prepare(`INSERT INTO board_report_cursors (board_id,session_id,last_turn_id,last_awaiting_since,last_awaiting_turn_id,last_notice_id)
+        VALUES (?,?,?,?,?,?) ON CONFLICT(board_id,session_id) DO UPDATE SET last_turn_id=excluded.last_turn_id,last_awaiting_since=excluded.last_awaiting_since,last_awaiting_turn_id=excluded.last_awaiting_turn_id,last_notice_id=excluded.last_notice_id`)
+        .run(
+          input.boardId,
+          input.sessionId,
+          input.cursor.lastTurnId ?? null,
+          input.cursor.lastAwaitingSince ?? null,
+          input.cursor.lastAwaitingTurnId ?? null,
+          input.cursor.lastNoticeId ?? null
+        );
+    }).immediate();
+  }
+
+  boardCoveredTargets(requesterSessionId: SessionId): Set<string> {
+    const operations = this.db
+      .prepare(
+        `SELECT * FROM operations WHERE requester_session_id=? AND kind IN ('session_create','session_create_many','session_chat','session_chat_many')`
+      )
+      .all(requesterSessionId);
+    const targets = new Set<string>();
+    for (const row of operations) {
+      const operation = this.decodeOperation(row);
+      for (const item of operation.items) {
+        if (!item.target) continue;
+        if (
+          operation.state === 'active' ||
+          item.status === 'succeeded' ||
+          (item.status === 'failed' && item.error.code === 'TARGET_FAILED') ||
+          (item.status === 'cancelled' && item.cancellationReason === 'user_stop')
+        )
+          targets.add(JSON.stringify([item.target.sessionId, item.target.userTurnId]));
+      }
+    }
+    return targets;
   }
 
   get(requesterSessionId: SessionId, operationId: string): StoredLodyOperation {

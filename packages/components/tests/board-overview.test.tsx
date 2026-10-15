@@ -1,3 +1,4 @@
+import { createLoroSessionData } from '@lody/shared/session-data';
 import { CreateBoardDialog } from '../src/components/boards/create-board-dialog';
 import { userAtom, currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms';
 import { agentConfigMetaCacheAtom } from '../src/atoms/doc-meta';
@@ -74,7 +75,10 @@ vi.mock('@/components/sessions/desktop-run-config-menu', async (importOriginal) 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     i18n: { language: 'en' },
-    t: (_key: string, fallback: string) => fallback,
+    t: (_key: string, fallback: string, values?: Record<string, unknown>) =>
+      typeof fallback === 'string'
+        ? fallback.replace(/{{(\w+)}}/g, (_match, key) => String(values?.[key] ?? ''))
+        : _key,
   }),
 }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -289,15 +293,17 @@ it('joins and removes a session through real metadata without altering its ordin
   } as Parameters<typeof changeBoardMembership>[0];
   try {
     await repo.upsertDocMeta(getSessionRoomId(session.id), session);
-    await changeBoardMembership(runtime, session, board);
+    await changeBoardMembership(runtime, session, board, 100);
     expect((await repo.getDocMeta(getSessionRoomId(session.id)))?.meta).toMatchObject({
       title: session.title,
       boardId: board.id,
+      boardJoinedAtMs: 100,
     });
     await changeBoardMembership(runtime, session);
     const meta = (await repo.getDocMeta(getSessionRoomId(session.id)))?.meta;
     expect(meta?.title).toBe(session.title);
     expect(meta).not.toHaveProperty('boardId');
+    expect(meta).not.toHaveProperty('boardJoinedAtMs');
     await repo.upsertDocMeta(getSessionRoomId(session.id), {
       boardId: board.id,
       boardRole: 'coordinator',
@@ -437,5 +443,77 @@ it('submits a new Board thread as chat without the coordinator role', async () =
     container.remove();
     creation.startSession = undefined;
     creation.machines.clear();
+  }
+});
+
+it('shows the system driving depth and the limit notice, then clears stopped on a fresh human turn', async () => {
+  const id = 'chain-coordinator' as SessionId;
+  const doc = buildSessionDoc([
+    {
+      id: 'human',
+      role: 'user',
+      timestamp: '2026-10-16T00:00:00Z',
+      inputConfig: { chainDepth: 0 },
+      items: [],
+    },
+    {
+      id: 'automatic',
+      role: 'system',
+      timestamp: '2026-10-16T00:00:01Z',
+      inputConfig: { chainDepth: 15 },
+      items: [],
+    },
+    {
+      id: 'limit',
+      role: 'system',
+      timestamp: '2026-10-16T00:00:02Z',
+      items: [
+        {
+          type: 'system_notice',
+          name: 'board_chain_limit',
+          meta: { boardId: 'bd_test', drivingTurnId: 'automatic' },
+        },
+      ],
+    },
+  ]);
+  const data = createLoroSessionData({ sessionId: id, doc });
+  const history = await openReaderView(doc, { sessionId: id });
+  docReads.histories.set(id, history);
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        <Provider>
+          <BoardSessionRow
+            session={makeSession(id, { boardRole: 'coordinator' })}
+            depth={0}
+            onOpen={() => {}}
+          />
+        </Provider>
+      )
+    );
+    expect(container.textContent).toContain('Stopped');
+    expect(container.textContent).toContain('15/16');
+    await act(async () =>
+      data.commands.appendTurn({
+        id: 'fresh-human',
+        role: 'user',
+        timestamp: '2026-10-16T00:00:03Z',
+        author: { v: 1, kind: 'human', userId: 'user' },
+        inputConfig: { chainDepth: 0 },
+        items: [],
+        fileDiff: [],
+      })
+    );
+    expect(container.textContent).not.toContain('Stopped');
+    expect(container.textContent).toContain('0/16');
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    history.dispose();
+    doc.free();
+    docReads.histories.delete(id);
   }
 });

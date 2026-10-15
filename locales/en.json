@@ -5398,5 +5398,9 @@
   "boards.noAvailable": "Create a board first.",
   "boards.membershipFailed": "Could not change board membership.",
   "boards.newThread": "+ New thread",
-  "boards.threadHelp": "Choose an agent and describe its task. The session joins this board."
+  "boards.threadHelp": "Choose an agent and describe its task. The session joins this board.",
+  "sessions.openedBy.status.waitingUser": "Waiting for you",
+  "sessions.openedBy.status.notice": "Notice",
+  "boards.status.stopped": "Stopped",
+  "boards.chainLimit": "Autonomous chain reached its limit. Send a message to continue."
 }

@@ -181,3 +181,37 @@ have a consumed Inbox tombstone in the finish transaction: no intent, no future
 human batch, and no duplicate/restart replay, while normal retention still works.
 Partial batches deliver the remaining targets. Requester cancellation, failed
 turns and timeouts do not acquire a user-stop cause.
+
+## Board reports
+
+`board-report-workflow.ts` is a branch of the same native coordinator reconciliation,
+after ordinary Operations and before the Inbox wake. Workspace Board rows and
+`repo.watch` metadata events maintain membership; real history subscriptions mark
+only the affected member dirty. The host opens documents only for active Boards whose
+fixed coordinator runs on this machine. Scope owns detachment; failures retain dirty
+work and arm the existing activity backoff. Board failures do not suppress ordinary
+Inbox wakes.
+
+Shared helpers select the latest user or system driving turn, derive current events,
+apply human/grandchild filters and build bounded previews. Receipt coverage is queried
+only for new finished/failed candidates, not on streaming updates. Shallow directory
+configuration includes system inputs and `chainDepth`; only the selected input and
+its following output bodies are read. Filtered events advance cursors too. A separate
+waiting-turn id ensures repeated permission requests in one turn report once even
+when timestamps coincide. Manual joins use `boardJoinedAtMs`.
+
+`acceptBoardReport` writes finished `board_report` Operations, Inbox results/intents
+and the member cursor in one synchronous transaction. IDs are `board-` plus a SHA-256
+prefix of the source identity, fitting the existing 64-character Operation contract;
+retired IDs prevent replay. `deadlineAt` is the creation timestamp because the stored
+record requires it; the finished row never enters deadline scheduling. Unconsumed
+reports retain normal Inbox persistence. Active and retained real target receipts
+suppress duplicate completion/failure reports; timed-out or cancelled roots do not
+hide targets that later finish.
+
+Pause, human priority, release, batching, Stop and the 16-hop limit remain Inbox rules.
+A depth-limited intent retains its claim watermark for observation; the coordinator
+writes one stable `board_chain_limit` notice for that driving turn, without dispatching
+it. New human input consumes pending results at its own depth. Prompts ask threads to
+quote child conclusions verbatim and leave changes to the coordinator. The UI reuses
+compact result rows. Rounds, handoff and daily digests are outside this implementation.

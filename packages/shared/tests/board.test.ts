@@ -1,3 +1,12 @@
+import {
+  readLatestDrivingTurn,
+  boardReportOperationId,
+  assistantOutputPreview,
+  isBoardSessionStopped,
+} from '../src/board';
+import { LodyOperationIdSchema } from '../src/session-orchestration';
+import type { SessionId } from '../src/ids';
+import type { SessionHistoryInput, SessionMeta } from '../src/schema';
 import { LoroDoc } from 'loro-crdt';
 import { readBoardDocument, writeBoardNotes, BOARD_NOTES_MAX_BYTES } from '../src/board-repository';
 import { describe, expect, it } from 'vitest';
@@ -133,4 +142,53 @@ describe('shared Board notes', () => {
     writeBoardNotes(doc, { kind: 'replace', text: 'short', updatedBy: 'user', now: 3 });
     expect(readBoardDocument(doc).notes).toBe('short');
   });
+});
+
+describe('Board report state', () => {
+  const turn = (id: string, extra: Partial<SessionHistoryInput> = {}): SessionHistoryInput => ({
+    id,
+    role: 'user',
+    timestamp: '2026-10-16T00:00:00.000Z',
+    inputConfig: { chainDepth: 2 },
+    items: [],
+    ...extra,
+  });
+  it('finds system-driven work without treating progress and limit notices as inputs', () => {
+    const continuation = turn('batch', { role: 'system' });
+    expect(
+      readLatestDrivingTurn([
+        turn('user'),
+        continuation,
+        turn('progress', { role: 'system', inputConfig: undefined }),
+      ])
+    ).toEqual(continuation);
+  });
+  it('produces scoped deterministic ids accepted by the existing Operation schema', () => {
+    const event = {
+      sessionId: 'very:long/member/'.repeat(20) as SessionId,
+      turnId: 'turn:with:punctuation',
+      kind: 'notice' as const,
+      noticeId: 'notice',
+    };
+    const id = boardReportOperationId(event);
+    expect(LodyOperationIdSchema.parse(id)).toBe(id);
+    expect(boardReportOperationId(event)).toBe(id);
+    expect(boardReportOperationId({ ...event, noticeId: 'other' })).not.toBe(id);
+  });
+  it('keeps a tail-weighted UTF-8 preview and omission evidence', () => {
+    const text = 'Start '.repeat(5000) + 'End 结论'.repeat(10000);
+    const output = assistantOutputPreview({ items: [{ type: 'text', text }] })!;
+    expect(new TextEncoder().encode(output.text).byteLength).toBeLessThanOrEqual(32 * 1024);
+    expect(output).toMatchObject({ truncated: true });
+    expect(output.text.startsWith('Start')).toBe(true);
+    expect(output.text.endsWith('End 结论')).toBe(true);
+    expect(output.omittedBytes).toBeGreaterThan(0);
+  });
+});
+
+it('shows an inherited collaboration stop even when the ancestor is outside the Board', () => {
+  const root = { id: 'root', collaborationStopped: true } as SessionMeta;
+  const member = { id: 'member', openedBySessionId: 'root' } as SessionMeta;
+  expect(isBoardSessionStopped(member, (id) => (id === root.id ? root : undefined))).toBe(true);
+  expect(deriveBoardSessionStatus({ collaborationStopped: true })).toBe('stopped');
 });

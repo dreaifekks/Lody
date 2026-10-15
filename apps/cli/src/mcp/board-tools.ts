@@ -101,6 +101,7 @@ export function registerBoardTools(
               lastMessageAt: meta.lastMessageAt,
               status: deriveBoardSessionStatus({
                 liveStatus: findFreshSessionPresenceState(presence, meta.id, Date.now())?.status,
+                collaborationStopped: meta.collaborationStopped,
                 awaitingUserSince: meta.awaitingUserSince,
                 lastMessageAt: meta.lastMessageAt,
               }),

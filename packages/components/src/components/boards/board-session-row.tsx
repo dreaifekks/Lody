@@ -1,3 +1,4 @@
+import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { useState } from 'react';
 import { useAtomValue } from 'jotai';
 import * as stylex from '@stylexjs/stylex';
@@ -5,6 +6,9 @@ import { useTranslation } from 'react-i18next';
 import {
   type LocalProjectMeta,
   deriveBoardSessionStatus,
+  readLatestDrivingTurn,
+  isBoardSessionStopped,
+  getSessionRoomId,
   LODY_MAX_CHAIN_DEPTH,
   type SessionMeta,
 } from '@lody/shared';
@@ -27,6 +31,7 @@ export function BoardSessionRow({
   onOpen: () => void;
 }) {
   const [expanded, setExpanded] = useState(session.boardRole === 'coordinator');
+  const sessionMetas = useAtomValue(sessionMetaCacheAtom);
   const liveStatus = useAtomValue(sessionLiveStatusAtomFamily(session.id));
   const machines = useAtomValue(getMachineMetaMapAtom);
   const agents = useAtomValue(getAllAgentConfigAtom);
@@ -34,7 +39,17 @@ export function BoardSessionRow({
   // No session document is acquired for a collapsed row.
   const { history, ready } = useSessionDoc(session.id, { enabled: expanded });
   const { turns } = useConversationTail(expanded ? history : null, { extendToLastUserTurn: true });
-  const lastUser = turns.findLast((turn) => turn.role === 'user');
+  const lastUser = readLatestDrivingTurn(turns);
+  const chainLimited = turns
+    .slice(lastUser ? turns.indexOf(lastUser) : turns.length)
+    .some((turn) =>
+      turn.items?.some(
+        (item) =>
+          item.type === 'system_notice' &&
+          item.name === 'board_chain_limit' &&
+          item.meta?.drivingTurnId === lastUser?.id
+      )
+    );
   const lastAssistant = turns.findLast((turn) => turn.role === 'assistant');
   const text = (turn: typeof lastUser) =>
     turn?.items?.flatMap((item) => (item.type === 'text' ? [item.text] : [])).join('\n') ?? '';
@@ -43,6 +58,8 @@ export function BoardSessionRow({
     awaitingUserSince: session.awaitingUserSince,
     lastMessageAt: session.lastMessageAt,
     lastUserTurn: lastUser,
+    collaborationStopped:
+      isBoardSessionStopped(session, (id) => sessionMetas[getSessionRoomId(id)]) || chainLimited,
     chatFailed: turns
       .slice(lastUser ? turns.indexOf(lastUser) : turns.length)
       .some(
