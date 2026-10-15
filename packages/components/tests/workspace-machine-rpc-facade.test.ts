@@ -445,76 +445,83 @@ describe('createWorkspaceMachineRpcFacade', () => {
     });
   });
 
-  it('opens media of another LAN member as a ranged resource, and anything else as before', async () => {
-    const invoke = vi.fn(async (_channel: string, _input: unknown) => ({
-      ok: true as const,
-      url: 'lody-resource://member/token',
-      sizeBytes: 700_000_000,
-    }));
-    vi.stubGlobal('window', { __LODY_ELECTRON__: true, ipc: { invoke } });
-    const requestFilePreview = vi.fn(async (request: { path: string }) => ({
-      status: 'error' as const,
-      v: 3 as const,
-      code: 'too_large' as const,
-      message: 'File is too large to preview.',
-      path: request.path,
-    }));
-    const facadeFor = (protocolCapabilities: Record<string, number>) =>
-      createWorkspaceMachineRpcFacade({
-        workspaceId,
-        getMachineProtocolCapabilities: async () => protocolCapabilities,
-        targetRouter: {
-          getPlaneForMachine: () => 'cloud',
-          resolvePlaneForMachine: async () => 'cloud',
-        },
-        getMachineRpcClient: async () => ({ requestFilePreview }) as never,
+  it.each(['mp4', 'ogv', 'mkv', 'avi', 'wav'])(
+    'opens %s of another LAN member as a ranged resource, and anything else as before',
+    async (extension) => {
+      const invoke = vi.fn(async (_channel: string, _input: unknown) => ({
+        ok: true as const,
+        url: 'lody-resource://member/token',
+        sizeBytes: 700_000_000,
+      }));
+      vi.stubGlobal('window', { __LODY_ELECTRON__: true, ipc: { invoke } });
+      const requestFilePreview = vi.fn(async (request: { path: string }) => ({
+        status: 'error' as const,
+        v: 3 as const,
+        code: 'too_large' as const,
+        message: 'File is too large to preview.',
+        path: request.path,
+      }));
+      const facadeFor = (protocolCapabilities: Record<string, number>) =>
+        createWorkspaceMachineRpcFacade({
+          workspaceId,
+          getMachineProtocolCapabilities: async () => protocolCapabilities,
+          targetRouter: {
+            getPlaneForMachine: () => 'cloud',
+            resolvePlaneForMachine: async () => 'cloud',
+          },
+          getMachineRpcClient: async () => ({ requestFilePreview }) as never,
+        });
+      const member = facadeFor({ lanFiles: 1, lanFileRanges: 1 });
+
+      expect(
+        await member.requestFilePreview(remoteMachineId, {
+          sessionId,
+          path: `out/demo.${extension}`,
+        })
+      ).toEqual({
+        status: 'resource',
+        path: `out/demo.${extension}`,
+        external: false,
+        kind: 'binary',
+        sizeBytes: 700_000_000,
+        url: 'lody-resource://member/token',
       });
-    const member = facadeFor({ lanFiles: 1, lanFileRanges: 1 });
+      expect(invoke.mock.calls).toEqual([
+        [
+          'machineRpc.openMemberFile',
+          { workspaceId, machineId: remoteMachineId, sessionId, path: `out/demo.${extension}` },
+        ],
+      ]);
 
-    expect(
-      await member.requestFilePreview(remoteMachineId, { sessionId, path: 'out/demo.mp4' })
-    ).toEqual({
-      status: 'resource',
-      path: 'out/demo.mp4',
-      external: false,
-      kind: 'binary',
-      sizeBytes: 700_000_000,
-      url: 'lody-resource://member/token',
-    });
-    expect(invoke.mock.calls).toEqual([
-      [
-        'machineRpc.openMemberFile',
-        { workspaceId, machineId: remoteMachineId, sessionId, path: 'out/demo.mp4' },
-      ],
-    ]);
-    expect(requestFilePreview).not.toHaveBeenCalled();
-
-    // Not media: the bounded preview answers, as it does for every other file.
-    await member.requestFilePreview(remoteMachineId, { sessionId, path: 'out/build.zip' });
-    // A member that gives no parts is not asked for one.
-    await facadeFor({ lanFiles: 1 }).requestFilePreview(remoteMachineId, {
-      sessionId,
-      path: 'out/demo.mp4',
-    });
-    // A caller that bounds the read itself asks whether the file is there, and
-    // the member's answer names it as the member spells it.
-    await member.requestFilePreview(remoteMachineId, {
-      sessionId,
-      path: '~/demo.mp4',
-      maxBytes: 1,
-    });
-    // A resource the desktop could not open falls back to what was there before.
-    invoke.mockResolvedValueOnce({ ok: false, error: 'unsupported' } as never);
-    expect(
-      await member.requestFilePreview(remoteMachineId, { sessionId, path: 'out/voice.mp3' })
-    ).toMatchObject({ status: 'error', code: 'too_large' });
-    expect(requestFilePreview.mock.calls.map(([request]) => request.path)).toEqual([
-      'out/build.zip',
-      'out/demo.mp4',
-      '~/demo.mp4',
-      'out/voice.mp3',
-    ]);
-  });
+      // Not media: the bounded preview answers, as it does for every other file.
+      expect(
+        await member.requestFilePreview(remoteMachineId, { sessionId, path: 'out/build.zip' })
+      ).toMatchObject({ status: 'error', code: 'too_large', path: 'out/build.zip' });
+      // A member that gives no parts is not asked for one.
+      await facadeFor({ lanFiles: 1 }).requestFilePreview(remoteMachineId, {
+        sessionId,
+        path: `out/demo.${extension}`,
+      });
+      // A caller that bounds the read itself asks whether the file is there, and
+      // the member's answer names it as the member spells it.
+      await member.requestFilePreview(remoteMachineId, {
+        sessionId,
+        path: `~/demo.${extension}`,
+        maxBytes: 1,
+      });
+      // A resource the desktop could not open falls back to what was there before.
+      invoke.mockResolvedValueOnce({ ok: false, error: 'unsupported' } as never);
+      expect(
+        await member.requestFilePreview(remoteMachineId, { sessionId, path: 'out/voice.mp3' })
+      ).toMatchObject({ status: 'error', code: 'too_large' });
+      expect(requestFilePreview.mock.calls.map(([request]) => request.path)).toEqual([
+        'out/build.zip',
+        `out/demo.${extension}`,
+        `~/demo.${extension}`,
+        'out/voice.mp3',
+      ]);
+    }
+  );
 
   it('does not fall back to a cloud preview while Electron local routing is unresolved', async () => {
     const invoke = vi.fn();

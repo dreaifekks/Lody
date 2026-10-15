@@ -57,59 +57,6 @@ describe('SessionFileBinaryPreview', () => {
     expect(markup).toContain('This binary file cannot be previewed.');
   });
 
-  it.each([
-    ['audio', 'recordings/voice.m4a', '<audio'],
-  ])(
-    'plays a %s file from its resource with the player controls, not by itself',
-    (_k, path, tag) => {
-      const markup = renderToStaticMarkup(
-        createElement(SessionFileBinaryPreview, { path, url: 'lody-resource://member/clip' })
-      );
-
-      expect(markup).toContain(tag);
-      expect(markup).toContain('src="lody-resource://member/clip"');
-      expect(markup).toContain('controls=""');
-      expect(markup).toContain('preload="metadata"');
-      expect(markup).not.toContain('autoplay');
-      expect(markup).not.toContain('This binary file cannot be previewed.');
-    }
-  );
-
-  it('pauses an audio player whose panel leaves the screen, and keeps what it was playing', async () => {
-    const paused = new Set<Element>();
-    const pause = vi
-      .spyOn(HTMLMediaElement.prototype, 'pause')
-      .mockImplementation(function (this: HTMLMediaElement) {
-        paused.add(this);
-      });
-    const container = document.createElement('div');
-    const root = createRoot(container);
-    const show = async (active: boolean) => {
-      await act(async () => {
-        root.render(
-          createElement(SessionFileBinaryPreview, {
-            path: 'recordings/voice.m4a',
-            url: 'lody-resource://member/clip',
-            active,
-          })
-        );
-      });
-      return container.querySelector('audio');
-    };
-
-    const video = await show(true);
-    expect(video).not.toBeNull();
-    expect(paused.size).toBe(0);
-    const hidden = await show(false);
-
-    // The same player with the same source: its place in the file is kept.
-    expect(hidden).toBe(video);
-    expect(hidden?.getAttribute('src')).toBe('lody-resource://member/clip');
-    expect(video && paused.has(video)).toBe(true);
-    await act(async () => root.unmount());
-    pause.mockRestore();
-  });
-
   it('keeps a media file nothing was read of on the notice, with a download where one is offered', () => {
     const markup = renderToStaticMarkup(
       createElement(SessionFileBinaryPreview, {
@@ -302,7 +249,10 @@ describe('worker-backed XLSX clipboard', () => {
   });
 });
 
-describe('video preview lifecycle', () => {
+describe.each([
+  ['video', 'webm', 'mp4', 'video/webm', 'video/mp4', 'Video'],
+  ['audio', 'wav', 'm4a', 'audio/wav', 'audio/mp4', 'Audio'],
+] as const)('%s preview lifecycle', (kind, extension, nextExtension, mime, nextMime, title) => {
   it('recognizes video containers without treating bare names or directories as videos', () => {
     expect(getVideoMimeTypeForPath('clip.WEBM')).toBe('video/webm');
     expect(getVideoMimeTypeForPath('clip.mp4?version=1')).toBe('video/mp4');
@@ -357,29 +307,50 @@ describe('video preview lifecycle', () => {
         root.render(createElement(SessionFileBinaryPreview, { path, bytes, active }))
       );
     };
-    await render('clip.WEBM');
-    const video = container.querySelector('video')!;
+    await render(`clip.${extension}`);
+    const video = container.querySelector<HTMLMediaElement>(kind)!;
     expect(video).not.toBeNull();
     expect(video.controls).toBe(true);
-    expect(video.playsInline).toBe(true);
+    if (video instanceof HTMLVideoElement) expect(video.playsInline).toBe(true);
+    expect(video.preload).toBe('metadata');
     expect(video.autoplay).toBe(false);
-    expect(blobs.get(video.src)).toMatchObject({ type: 'video/webm', size: bytes.length });
+    expect(blobs.get(video.src)).toMatchObject({ type: mime, size: bytes.length });
     Object.defineProperty(video, 'paused', { configurable: true, value: false });
-    await render('clip.WEBM', false);
-    expect(container.querySelector('video')).toBeNull();
+    await render(`clip.${extension}`, false);
+    expect(container.querySelector<HTMLMediaElement>(kind)).toBeNull();
     expect(video.paused).toBe(true);
     expect(video.hasAttribute('src')).toBe(false);
     expect(blobs.size).toBe(0);
 
-    await render('clip.WEBM');
-    const resumed = container.querySelector('video')!;
+    await render(`clip.${extension}`);
+    const resumed = container.querySelector<HTMLMediaElement>(kind)!;
     expect(resumed).not.toBe(video);
     expect(resumed.autoplay).toBe(false);
     const oldUrl = resumed.src;
-    await render('next.mp4');
+    await render(`next.${nextExtension}`);
     expect(blobs.has(oldUrl)).toBe(false);
-    expect(blobs.get(container.querySelector('video')!.src)?.type).toBe('video/mp4');
+    expect(blobs.get(container.querySelector<HTMLMediaElement>(kind)!.src)?.type).toBe(nextMime);
   });
+
+  if (kind === 'video')
+    it.each(['mp4', 'webm', 'm4v', 'mov', 'ogv', 'mkv', 'avi'])(
+      'routes %s through the unified video player',
+      async (ext) => {
+        await act(async () =>
+          root.render(
+            createElement(SessionFileBinaryPreview, {
+              path: `clip.${ext}`,
+              url: 'blob:authorized',
+            })
+          )
+        );
+        const player = container.querySelector('video')!;
+        expect(player.getAttribute('aria-label')).toBe('Video preview');
+        await act(async () => player.dispatchEvent(new Event('error')));
+        expect(container.textContent).toContain('Video unavailable');
+        expect(player.hasAttribute('src')).toBe(false);
+      }
+    );
 
   it('shows file actions on decode failure and resets the error for a replacement source', async () => {
     let copied = false;
@@ -388,7 +359,7 @@ describe('video preview lifecycle', () => {
       await act(async () =>
         root.render(
           createElement(SessionFileBinaryPreview, {
-            path: 'clip.webm',
+            path: `clip.${extension}`,
             url,
             fileActions: {
               onCopyPath: () => {
@@ -403,10 +374,10 @@ describe('video preview lifecycle', () => {
       );
     };
     await render('blob:authorized-first');
-    const failed = container.querySelector('video')!;
+    const failed = container.querySelector<HTMLMediaElement>(kind)!;
     await act(async () => failed.dispatchEvent(new Event('error')));
-    expect(container.textContent).toContain('Video unavailable');
-    expect(container.querySelector('video')).toBeNull();
+    expect(container.textContent).toContain(`${title} unavailable`);
+    expect(container.querySelector<HTMLMediaElement>(kind)).toBeNull();
     expect(failed.hasAttribute('src')).toBe(false);
     const buttons = Array.from(container.querySelectorAll('button'));
     await act(async () => {
@@ -415,8 +386,10 @@ describe('video preview lifecycle', () => {
     });
     expect(copied && shared).toBe(true);
     await render('blob:authorized-second');
-    expect(container.textContent).not.toContain('Video unavailable');
-    expect(container.querySelector('video')!.getAttribute('src')).toBe('blob:authorized-second');
+    expect(container.textContent).not.toContain(`${title} unavailable`);
+    expect(container.querySelector<HTMLMediaElement>(kind)!.getAttribute('src')).toBe(
+      'blob:authorized-second'
+    );
     expect(blobs.size).toBe(0);
   });
 
@@ -426,11 +399,14 @@ describe('video preview lifecycle', () => {
         createElement(
           StrictMode,
           null,
-          createElement(SessionFileBinaryPreview, { path: 'clip.webm', bytes: Uint8Array.of(1) })
+          createElement(SessionFileBinaryPreview, {
+            path: `clip.${extension}`,
+            bytes: Uint8Array.of(1),
+          })
         )
       )
     );
-    const video = container.querySelector('video')!;
+    const video = container.querySelector<HTMLMediaElement>(kind)!;
     expect(video.hasAttribute('src')).toBe(true);
     expect(blobs.has(video.src)).toBe(true);
     expect(blobs.size).toBe(1);
@@ -439,10 +415,13 @@ describe('video preview lifecycle', () => {
   it('pauses when the app backgrounds and does not resume automatically', async () => {
     await act(async () =>
       root.render(
-        createElement(SessionFileBinaryPreview, { path: 'clip.webm', url: 'blob:authorized' })
+        createElement(SessionFileBinaryPreview, {
+          path: `clip.${extension}`,
+          url: 'blob:authorized',
+        })
       )
     );
-    const video = container.querySelector('video')!;
+    const video = container.querySelector<HTMLMediaElement>(kind)!;
     Object.defineProperty(video, 'paused', { configurable: true, value: false });
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
     document.dispatchEvent(new Event('visibilitychange'));
@@ -454,19 +433,19 @@ describe('video preview lifecycle', () => {
 
   it('leaves unavailable bytes on the binary notice and does not load inactive videos', async () => {
     await act(async () =>
-      root.render(createElement(SessionFileBinaryPreview, { path: 'clip.webm' }))
+      root.render(createElement(SessionFileBinaryPreview, { path: `clip.${extension}` }))
     );
     expect(container.textContent).toContain('This binary file cannot be previewed.');
     await act(async () =>
       root.render(
         createElement(SessionFileBinaryPreview, {
-          path: 'clip.webm',
+          path: `clip.${extension}`,
           bytes: Uint8Array.of(1),
           active: false,
         })
       )
     );
-    expect(container.querySelector('video')).toBeNull();
+    expect(container.querySelector<HTMLMediaElement>(kind)).toBeNull();
     expect(blobs.size).toBe(0);
   });
 });

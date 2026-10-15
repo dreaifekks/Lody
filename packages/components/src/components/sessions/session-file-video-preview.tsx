@@ -11,6 +11,7 @@ interface SessionFileVideoPreviewProps {
   readonly bytes?: Uint8Array;
   readonly url?: string;
   readonly active?: boolean;
+  readonly compact?: boolean;
   readonly fileActions?: SessionFileErrorActions;
 }
 
@@ -24,6 +25,8 @@ const styles = stylex.create({
     padding: space[3],
   },
   video: { width: '100%', maxHeight: '100%', objectFit: 'contain' },
+  compactFrame: { width: '100%', height: 'auto', boxSizing: 'border-box' },
+  compact: { height: 'auto', maxHeight: '20rem' },
 });
 
 /** Only consumes provider-authorized sources; never resolves host file paths. */
@@ -32,6 +35,7 @@ export function SessionFileVideoPreview({
   bytes,
   url,
   active = true,
+  compact = false,
   fileActions,
 }: SessionFileVideoPreviewProps) {
   const mimeType = getVideoMimeTypeForPath(path);
@@ -43,7 +47,7 @@ export function SessionFileVideoPreview({
   }>();
 
   useEffect(() => {
-    if (!active || !mimeType) return undefined;
+    if (!active || (!mimeType && !url)) return undefined;
     const src =
       url ?? (bytes && URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: mimeType })));
     if (!src) return undefined;
@@ -58,14 +62,18 @@ export function SessionFileVideoPreview({
   if (!active || !source || source.path !== path || source.bytes !== bytes || source.url !== url) {
     return null;
   }
-  return <VideoPlayback key={source.src} src={source.src} fileActions={fileActions} />;
+  return (
+    <VideoPlayback key={source.src} src={source.src} compact={compact} fileActions={fileActions} />
+  );
 }
 
 function VideoPlayback({
   src,
+  compact,
   fileActions,
 }: {
   readonly src: string;
+  readonly compact: boolean;
   readonly fileActions?: SessionFileErrorActions;
 }) {
   const { t } = useTranslation();
@@ -105,10 +113,10 @@ function VideoPlayback({
   }
 
   return (
-    <div {...stylex.props(styles.frame)}>
+    <div {...stylex.props(styles.frame, compact && styles.compactFrame)}>
       <video
         ref={videoRef}
-        {...stylex.props(styles.video)}
+        {...stylex.props(styles.video, compact && styles.compact)}
         src={src}
         controls
         playsInline

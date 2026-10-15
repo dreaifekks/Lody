@@ -103,8 +103,11 @@ this page is the full text of the rules summarised there.
   memoized rows, so they must stay referentially stable, and only FILE rows get
   a menu (`item.children === undefined`; `hasChildren` is false for an empty
   directory too).
-- Videos use the static `SessionFileVideoPreview` with native controls and inline
-  mobile playback. `video-file-preview.ts` recognizes container candidates, not
+- Videos in file panels and chat attachments use `SessionFileVideoPreview`; audio
+  uses `SessionFileAudioPreview` with the same layout and lifecycle. Both use native
+  controls, metadata preload, and no autoplay; videos retain inline mobile playback.
+  `video-file-preview.ts` owns audio/video format recognition for presentation and
+  member Range URL routing (including ogv, mkv and avi). It recognizes candidates, not
   codec guarantees. Provider bytes become typed object URLs; local resource URLs
   go directly to the media element. Deactivation destroys the player and releases
   its blob; document visibility pauses background playback without auto-resuming.

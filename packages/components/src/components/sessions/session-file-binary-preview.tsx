@@ -1,5 +1,5 @@
 import type { SessionFileErrorActions } from '@/lib/session-file-actions';
-import { memo, useState } from 'react';
+import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getImageMimeTypeForPath } from '@/lib/image-file-preview';
 import { isPdfFilePath } from '@/lib/pdf-file-preview';
@@ -8,7 +8,7 @@ import { getSessionFileKind } from '@/lib/session-file-presentation';
 import { getVideoMimeTypeForPath } from '@/lib/video-file-preview';
 import { SessionFileVideoPreview } from './session-file-video-preview';
 import { SessionFileImagePreview } from './session-file-image-preview';
-import { SessionFileMediaPreview } from './session-file-media-preview';
+import { SessionFileAudioPreview } from './session-file-media-preview';
 import { SessionFileOfficePreview } from './session-file-office-preview';
 import { SessionFilePdfPreview } from './session-file-pdf-preview';
 import { SessionFileNoticeCard } from './session-file-error-state';
@@ -36,9 +36,6 @@ export const SessionFileBinaryPreview = memo(function SessionFileBinaryPreview({
   const { t } = useTranslation();
   const officeKind = getOfficePreviewKind(path);
   const fileKind = getSessionFileKind(path);
-  const source = url ?? (bytes && bytes.byteLength > 0 ? path : undefined);
-  // A file the player cannot play falls back to the notice and its actions.
-  const [unplayable, setUnplayable] = useState<string | undefined>(undefined);
 
   if (getVideoMimeTypeForPath(path) && (url || bytes !== undefined)) {
     return (
@@ -67,15 +64,14 @@ export const SessionFileBinaryPreview = memo(function SessionFileBinaryPreview({
     return <SessionFileImagePreview path={path} bytes={bytes} url={url} />;
   }
 
-  if ((fileKind === 'audio' || fileKind === 'video') && source && unplayable !== source) {
+  if (fileKind === 'audio' && (url || bytes !== undefined)) {
     return (
-      <SessionFileMediaPreview
-        kind={fileKind}
+      <SessionFileAudioPreview
         path={path}
         bytes={bytes}
         url={url}
         active={active}
-        onError={() => setUnplayable(source)}
+        fileActions={fileActions}
       />
     );
   }

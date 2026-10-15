@@ -1,3 +1,4 @@
+import { getAudioMimeTypeForPath, getVideoMimeTypeForPath } from './video-file-preview';
 import { getServerNow, SESSION_FILE_RETENTION_DAYS, type SessionFilePayload } from '@lody/shared';
 
 /** Human-readable byte size. Mirrors the All-Changes formatBytes shape. */
@@ -111,8 +112,6 @@ const IMAGE_EXTENSIONS = new Set([
   'avif',
   'heic',
 ]);
-const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus']);
-const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v']);
 // Plain-text-ish files: neutral icon tile. Kept distinct from DOCUMENT (pdf/
 // word) so prose docs and logs/markdown don't share the same accent.
 const TEXT_EXTENSIONS = new Set(['txt', 'text', 'log', 'md', 'markdown', 'mdx', 'rst']);
@@ -136,6 +135,8 @@ export const isHtmlSessionFile = (
 
 /** Pick a coarse file kind from the name (then MIME) for icon selection. */
 export const getSessionFileKind = (fileName: string, mimeType?: string): SessionFileKind => {
+  if (getAudioMimeTypeForPath(fileName)) return 'audio';
+  if (getVideoMimeTypeForPath(fileName)) return 'video';
   const ext = getExtension(fileName);
   if (ext) {
     if (TEXT_EXTENSIONS.has(ext)) return 'text';
@@ -144,8 +145,6 @@ export const getSessionFileKind = (fileName: string, mimeType?: string): Session
     if (SPREADSHEET_EXTENSIONS.has(ext)) return 'spreadsheet';
     if (ARCHIVE_EXTENSIONS.has(ext)) return 'archive';
     if (IMAGE_EXTENSIONS.has(ext)) return 'image';
-    if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
-    if (VIDEO_EXTENSIONS.has(ext)) return 'video';
     if (DOCUMENT_EXTENSIONS.has(ext)) return 'document';
   }
   const mime = (mimeType ?? '').toLowerCase();

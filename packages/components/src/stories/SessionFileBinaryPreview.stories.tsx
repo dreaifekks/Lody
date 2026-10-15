@@ -1,6 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import * as stylex from '@stylexjs/stylex';
 import { fn } from 'storybook/test';
+import { useEffect, useState } from 'react';
+import type { SessionFilePayload } from '@lody/shared';
+import { SessionKeptMediaFile } from '@/components/ai-gui/session-kept-media-file';
+import { SessionFileCard, SessionFileCardList } from '@/components/ai-gui/session-file-card';
+import { getAudioMimeTypeForPath, getVideoMimeTypeForPath } from '@/lib/video-file-preview';
 import { useTranslation } from 'react-i18next';
 import { resolveRevealFileLabel } from '@/lib/session-file-actions';
 import { SessionFileBinaryPreview } from '@/components/sessions/session-file-binary-preview';
@@ -131,7 +136,11 @@ const createSampleWav = (): Uint8Array => {
 };
 
 export const AudioRecording: Story = {
-  args: { path: 'recordings/tone.wav', bytes: createSampleWav() },
+  args: {
+    path: 'recordings/tone.wav',
+    bytes: createSampleWav(),
+    fileActions: { onCopyPath: fn(), onDownload: fn() },
+  },
 };
 
 export const NativeArchive: Story = {
@@ -210,4 +219,80 @@ export const UnsupportedVideo: Story = {
 
 export const InactiveVideo: Story = {
   args: { path: 'clip.webm', bytes: Uint8Array.of(1), active: false },
+};
+
+export const UnsupportedAudio: Story = {
+  args: {
+    path: 'broken.wav',
+    bytes: Uint8Array.of(1, 2, 3),
+    fileActions: { onCopyPath: fn(), onDownload: fn() },
+  },
+};
+
+export const InactiveAudio: Story = {
+  args: { path: 'recordings/tone.wav', bytes: createSampleWav(), active: false },
+};
+
+/** Only the member resource response is mocked; both the player and attachment card are real. */
+function ChatMediaStory({ path, bytes }: { path: string; bytes: Uint8Array }) {
+  const [ready, setReady] = useState(false);
+  const mimeType = getAudioMimeTypeForPath(path) ?? getVideoMimeTypeForPath(path) ?? '';
+  useEffect(() => {
+    const previous = window.ipc;
+    const url = URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: mimeType }));
+    window.ipc = {
+      invoke: async () => ({ ok: true, url, sizeBytes: bytes.length }),
+      on: () => () => {},
+      send: () => {},
+    };
+    setReady(true);
+    return () => {
+      window.ipc = previous;
+      URL.revokeObjectURL(url);
+    };
+  }, [bytes, mimeType]);
+  const file: SessionFilePayload = {
+    type: 'file',
+    fileId: path,
+    fileName: path,
+    mimeType,
+    sizeBytes: bytes.length,
+    sha256: 'a'.repeat(64),
+    textPreview: false,
+    transport: 'local',
+    machineId: 'devnuc',
+    uploadedAt: 1,
+  };
+  return ready ? (
+    <SessionFileCardList>
+      <SessionKeptMediaFile
+        file={file}
+        workspaceId="story-workspace"
+        sessionId="story-session"
+        card={
+          <SessionFileCard
+            file={file}
+            uploads={false}
+            pendingMachineName="devnuc"
+            onDownload={fn()}
+          />
+        }
+      />
+    </SessionFileCardList>
+  ) : null;
+}
+
+export const ChatVideo: Story = {
+  ...WebmVideo,
+  render: (args, { loaded }) => <ChatMediaStory path={args.path} bytes={loaded.bytes} />,
+};
+
+export const ChatAudio: Story = {
+  args: { path: 'recording.wav', bytes: createSampleWav() },
+  render: (args) => <ChatMediaStory path={args.path} bytes={args.bytes!} />,
+};
+
+export const ChatAudioError: Story = {
+  args: { path: 'broken.wav', bytes: Uint8Array.of(1, 2, 3) },
+  render: (args) => <ChatMediaStory path={args.path} bytes={args.bytes!} />,
 };

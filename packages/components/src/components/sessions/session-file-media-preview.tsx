@@ -1,91 +1,122 @@
-import { memo, useEffect, useRef, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
+import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { space } from '@lody/ui/tokens/scales.stylex';
+import type { SessionFileErrorActions } from '@/lib/session-file-actions';
+import { getAudioMimeTypeForPath } from '@/lib/video-file-preview';
+import { SessionFileNoticeCard } from './session-file-error-state';
+
+interface SessionFileAudioPreviewProps {
+  readonly path: string;
+  readonly bytes?: Uint8Array;
+  readonly url?: string;
+  readonly active?: boolean;
+  readonly fileActions?: SessionFileErrorActions;
+}
 
 const styles = stylex.create({
   frame: {
     display: 'flex',
-    height: '100%',
-    minHeight: 0,
+    width: '100%',
+    boxSizing: 'border-box',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: '12px',
+    height: '100%',
+    minHeight: 0,
+    padding: space[3],
   },
-  video: { maxWidth: '100%', maxHeight: '100%', backgroundColor: '#000' },
-  audio: { width: '100%', maxWidth: '28rem' },
+  audio: { width: '100%' },
 });
 
-interface SessionFileMediaPreviewProps {
-  readonly kind: 'audio' | 'video';
-  readonly path: string;
-  /** Bytes a bounded preview brought; played from an object URL. */
-  readonly bytes?: Uint8Array;
-  /** A resource URL, read in ranges as the player asks for them. */
-  readonly url?: string;
-  /** False while the panel or the tab that holds the player is not on screen. */
-  readonly active?: boolean;
-  /** The player could not play it: a format or a file it cannot read. */
-  readonly onError: () => void;
-}
-
-/**
- * Plays an audio or a video file with the platform's own controls. Nothing
- * plays until the user starts it; only what the player needs to show its
- * length and first frame is read before that. A player that leaves the screen
- * is paused where it is: a hidden panel stays mounted, and would go on playing.
- */
-export const SessionFileMediaPreview = memo(function SessionFileMediaPreview({
-  kind,
+/** Only consumes provider-authorized sources; never resolves host file paths. */
+export function SessionFileAudioPreview({
   path,
   bytes,
   url,
   active = true,
-  onError,
-}: SessionFileMediaPreviewProps) {
-  const [objectUrl, setObjectUrl] = useState<string | undefined>(undefined);
-  const playerRef = useRef<HTMLVideoElement & HTMLAudioElement>(null);
+  fileActions,
+}: SessionFileAudioPreviewProps) {
+  const mimeType = getAudioMimeTypeForPath(path);
+  const [source, setSource] = useState<{
+    path: string;
+    bytes?: Uint8Array;
+    url?: string;
+    src: string;
+  }>();
 
   useEffect(() => {
-    if (!active) playerRef.current?.pause();
-  }, [active]);
+    if (!active || (!mimeType && !url)) return undefined;
+    const src =
+      url ?? (bytes && URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: mimeType })));
+    if (!src) return undefined;
+    setSource({ path, bytes, url, src });
+    return () => {
+      setSource(undefined);
+      if (!url) URL.revokeObjectURL(src);
+    };
+  }, [active, path, bytes, url, mimeType]);
+
+  // Never mount a previous file's source while its replacement effect is pending.
+  if (!active || !source || source.path !== path || source.bytes !== bytes || source.url !== url) {
+    return null;
+  }
+  return <AudioPlayback key={source.src} src={source.src} fileActions={fileActions} />;
+}
+
+function AudioPlayback({
+  src,
+  fileActions,
+}: {
+  readonly src: string;
+  readonly fileActions?: SessionFileErrorActions;
+}) {
+  const { t } = useTranslation();
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    if (url || !bytes || bytes.byteLength === 0) {
-      setObjectUrl(undefined);
-      return undefined;
-    }
-    const blobUrl = URL.createObjectURL(new Blob([Uint8Array.from(bytes)]));
-    setObjectUrl(blobUrl);
-    return () => URL.revokeObjectURL(blobUrl);
-  }, [bytes, url]);
+    const audio = audioRef.current;
+    if (!audio) return undefined;
+    // Restore after React StrictMode replays setup/cleanup on the same element.
+    audio.setAttribute('src', src);
+    const pauseWhenHidden = () => {
+      if (document.hidden) audio.pause();
+    };
+    document.addEventListener('visibilitychange', pauseWhenHidden);
+    return () => {
+      document.removeEventListener('visibilitychange', pauseWhenHidden);
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+    };
+  }, [failed, src]);
 
-  const source = url ?? objectUrl;
-  if (!source) return null;
+  if (failed) {
+    return (
+      <SessionFileNoticeCard
+        presentation={{
+          title: t('sessions.audioPreview.failedTitle', 'Audio unavailable'),
+          description: t(
+            'sessions.audioPreview.failedMessage',
+            'This audio could not be played. Its format may not be supported on this device, or the file could not be read.'
+          ),
+        }}
+        fileActions={fileActions}
+      />
+    );
+  }
+
   return (
     <div {...stylex.props(styles.frame)}>
-      {kind === 'video' ? (
-        <video
-          ref={playerRef}
-          key={source}
-          src={source}
-          controls
-          playsInline
-          preload="metadata"
-          aria-label={path}
-          onError={onError}
-          {...stylex.props(styles.video)}
-        />
-      ) : (
-        <audio
-          ref={playerRef}
-          key={source}
-          src={source}
-          controls
-          preload="metadata"
-          aria-label={path}
-          onError={onError}
-          {...stylex.props(styles.audio)}
-        />
-      )}
+      <audio
+        ref={audioRef}
+        {...stylex.props(styles.audio)}
+        src={src}
+        controls
+        preload="metadata"
+        aria-label={t('sessions.audioPreview.label', 'Audio preview')}
+        onError={() => setFailed(true)}
+      />
     </div>
   );
-});
+}

@@ -555,6 +555,12 @@ describe('audio and video a machine keeps', () => {
 
   beforeEach(async () => {
     await initI18n('en');
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(
+      function (this: HTMLMediaElement) {
+        Object.defineProperty(this, 'paused', { configurable: true, value: true });
+      }
+    );
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
     (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__ = true;
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -566,6 +572,7 @@ describe('audio and video a machine keeps', () => {
       root?.unmount();
     });
     container?.remove();
+    vi.restoreAllMocks();
     delete (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__;
   });
 
@@ -639,7 +646,9 @@ describe('audio and video a machine keeps', () => {
       expect(player?.preload).toBe('metadata');
     }
     // The card stays: it names the file, says where it is kept, and downloads it.
-    expect(view.textContent).toContain('clip.mp4');
+    expect(view.textContent?.split('clip.mp4')).toHaveLength(2);
+    expect(video?.getAttribute('aria-label')).toBe('Video preview');
+    expect(audio?.getAttribute('aria-label')).toBe('Audio preview');
     expect(view.textContent).toContain('voice.m4a');
     expect(view.textContent).toContain('On devnuc');
   });
@@ -660,21 +669,35 @@ describe('audio and video a machine keeps', () => {
     expect(asked).toEqual(['old-member']);
   });
 
-  it('gives the card back when the player cannot play the file', async () => {
+  it.each([
+    ['video', 'mkv', 'Video'],
+    ['audio', 'wav', 'Audio'],
+  ])('keeps one downloadable card after %s playback fails', async (kind, ext, label) => {
     openMemberFile = async (input) => ({
       ok: true,
       url: `lody-resource://member/${input.fileId}`,
       sizeBytes: 1,
     });
-    const view = await show([kept('odd-codec', { fileName: 'odd-codec.mkv' })]);
-    expect(view.querySelector('video')).not.toBeNull();
+    const view = await show([kept(`odd-codec-${ext}`, { fileName: `odd-codec.${ext}` })]);
+    const player = view.querySelector<HTMLMediaElement>(kind)!;
+    expect(player).not.toBeNull();
 
     await act(async () => {
-      view.querySelector('video')?.dispatchEvent(new Event('error'));
+      player.dispatchEvent(new Event('error'));
     });
 
     expect(view.querySelector('video')).toBeNull();
-    expect(view.textContent).toContain('odd-codec.mkv');
+    expect(view.textContent?.split(`odd-codec.${ext}`)).toHaveLength(2);
+    expect(view.textContent).toContain(`${label} unavailable`);
+    expect(player.hasAttribute('src')).toBe(false);
+    expect(view.querySelectorAll('button')).toHaveLength(1);
+    const downloaded: string[] = [];
+    readKeptFile = async (input) => {
+      downloaded.push(input.fileId);
+      return { ok: false, error: 'synthetic download boundary' };
+    };
+    await act(async () => view.querySelector('button')!.click());
+    expect(downloaded).toEqual([`odd-codec-${ext}`]);
   });
 });
 

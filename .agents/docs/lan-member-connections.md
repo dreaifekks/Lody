@@ -272,7 +272,8 @@ Three things use it on a desktop:
 - An audio or a video file a message carries is played above its card
   (`session-kept-media-file.tsx`), with the player's own controls. Before the
   user starts it, only what the player needs for the length and the first
-  frame is read. The card stays: it names the file and downloads it.
+  frame is read. This resource layer delegates to the same video/audio players
+  as the file panel. The card stays: it names the file and downloads it once.
 - In the file panel, audio and video of a session another member runs play the
   same way. For these the window asks for a resource instead of sending
   `file/preview`; every other file is previewed as before.
@@ -378,7 +379,8 @@ one to retry (`SYNC_UNAVAILABLE`), not as something that does not exist.
   from there, so they cannot while that machine is offline, and it is gone with
   that machine's data directory.
 - A player plays what Chromium plays. Nothing is converted: a video in a
-  format or codec it does not know leaves the card, and the download.
+  format or codec it does not know shows a playback notice and keeps the
+  file card and download.
 - Only audio and video of another member open from a resource. A PDF, an
   Office file or a picture there still has to fit the bounded preview
   response, and is downloaded otherwise.

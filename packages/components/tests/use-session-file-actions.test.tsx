@@ -358,32 +358,35 @@ describe('download from a LAN member that gives parts of its files', () => {
   const toastOf = (filePath: string) =>
     toasts.get(`session-file-download:${session.id}:${filePath}`);
 
-  it('asks the desktop to save the file itself, and says how that ended', async () => {
-    const actions = await resolveActions({ lanFileRanges: 1 });
+  it.each(['mp4', 'ogv', 'mkv', 'wav'])(
+    'saves the complete %s file and reports the result',
+    async (extension) => {
+      const actions = await resolveActions({ lanFileRanges: 1 });
 
-    await act(async () => actions.download?.('out/demo.mp4'));
-    expect(saveMemberFile.mock.calls[0]?.[0]).toEqual({
-      workspaceId: 'lw_home',
-      machineId: session.machineId,
-      sessionId: session.id,
-      path: 'out/demo.mp4',
-      fileName: 'out/demo.mp4',
-    });
-    expect(toastOf('out/demo.mp4')).toBe('success: Saved out/demo.mp4');
+      await act(async () => actions.download?.(`out/demo.${extension}`));
+      expect(saveMemberFile.mock.calls[0]?.[0]).toEqual({
+        workspaceId: 'lw_home',
+        machineId: session.machineId,
+        sessionId: session.id,
+        path: `out/demo.${extension}`,
+        fileName: `out/demo.${extension}`,
+      });
+      expect(toastOf(`out/demo.${extension}`)).toBe(`success: Saved out/demo.${extension}`);
 
-    saveMemberFile.mockResolvedValueOnce({ ok: false, error: 'devbox: file_changed' });
-    await act(async () => actions.download?.('out/changing.mp4'));
-    expect(toastOf('out/changing.mp4')).toBe(
-      'error: Could not download that file. (devbox: file_changed)'
-    );
+      saveMemberFile.mockResolvedValueOnce({ ok: false, error: 'devbox: file_changed' });
+      await act(async () => actions.download?.('out/changing.mp4'));
+      expect(toastOf('out/changing.mp4')).toBe(
+        'error: Could not download that file. (devbox: file_changed)'
+      );
 
-    // A save dialog the user closed leaves nothing on screen.
-    saveMemberFile.mockResolvedValueOnce({ ok: true, saved: false });
-    await act(async () => actions.download?.('out/cancelled.mp4'));
-    expect(toasts.has(`session-file-download:${session.id}:out/cancelled.mp4`)).toBe(true);
-    expect(toastOf('out/cancelled.mp4')).toBeUndefined();
-    expect(downloadBytesAsFile).not.toHaveBeenCalled();
-  });
+      // A save dialog the user closed leaves nothing on screen.
+      saveMemberFile.mockResolvedValueOnce({ ok: true, saved: false });
+      await act(async () => actions.download?.('out/cancelled.mp4'));
+      expect(toasts.has(`session-file-download:${session.id}:out/cancelled.mp4`)).toBe(true);
+      expect(toastOf('out/cancelled.mp4')).toBeUndefined();
+      expect(downloadBytesAsFile).not.toHaveBeenCalled();
+    }
+  );
 
   it('shows the file as downloading until the desktop answers', async () => {
     let answer: (result: SaveMemberFileResult) => void = () => {};

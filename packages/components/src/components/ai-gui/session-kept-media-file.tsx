@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import * as stylex from '@stylexjs/stylex';
-import { colors } from '@lody/ui/tokens/colors.stylex';
-import { corner, radius } from '@lody/ui/tokens/scales.stylex';
+import { SessionFileVideoPreview } from '../sessions/session-file-video-preview';
+import { SessionFileAudioPreview } from '../sessions/session-file-media-preview';
 import type { SessionFilePayload } from '@lody/shared';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { getSessionFileKind } from '@/lib/session-file-presentation';
@@ -15,24 +14,6 @@ import { isReadableKeptFile } from './session-local-image-file';
  * what the player needs for the length and the first frame is read before the
  * user starts it.
  */
-const styles = stylex.create({
-  video: {
-    display: 'block',
-    // One height whatever the video's shape, so the row does not move once
-    // its first frame is there.
-    height: '13.5rem',
-    width: 'min(100%, 24rem)',
-    borderRadius: radius.large,
-    cornerShape: corner.shape,
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderColor: colors.separator,
-    backgroundColor: '#000',
-    objectFit: 'contain',
-  },
-  audio: { display: 'block', width: 'min(100%, 24rem)' },
-});
-
 const mediaKindOf = (file: SessionFilePayload): 'audio' | 'video' | null => {
   const kind = getSessionFileKind(file.fileName, file.mimeType);
   return kind === 'audio' || kind === 'video' ? kind : null;
@@ -48,7 +29,11 @@ const opened = new Map<string, string>();
 const resourceKey = (file: SessionFilePayload, sessionId: string) =>
   `${file.machineId}\0${sessionId}\0${file.fileId}\0${file.sha256}`;
 
-export function SessionKeptMediaFile({
+export function SessionKeptMediaFile(props: Parameters<typeof KeptMediaResource>[0]) {
+  return <KeptMediaResource key={resourceKey(props.file, props.sessionId)} {...props} />;
+}
+
+function KeptMediaResource({
   file,
   workspaceId,
   sessionId,
@@ -92,32 +77,12 @@ export function SessionKeptMediaFile({
   }, [key, workspaceId]);
 
   if (!url || !kind) return card;
-  // A format the player cannot play, or a resource that ended, leaves the card.
-  const drop = () => {
-    if (opened.get(key) === url) opened.delete(key);
-    setUrl(undefined);
-  };
   return (
     <>
       {kind === 'video' ? (
-        <video
-          src={url}
-          controls
-          playsInline
-          preload="metadata"
-          aria-label={file.fileName}
-          onError={drop}
-          {...stylex.props(styles.video)}
-        />
+        <SessionFileVideoPreview path={file.fileName} url={url} compact />
       ) : (
-        <audio
-          src={url}
-          controls
-          preload="metadata"
-          aria-label={file.fileName}
-          onError={drop}
-          {...stylex.props(styles.audio)}
-        />
+        <SessionFileAudioPreview path={file.fileName} url={url} />
       )}
       {card}
     </>
