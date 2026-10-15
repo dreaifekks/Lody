@@ -22,6 +22,7 @@ export class BoardReportWorkflow {
   private catalog?: CoordinatorBoardCatalog;
   private catalogDirty = true;
   private seeded = false;
+  private metadataSubscription?: Effect.Effect<void>;
   private readonly boards = new Map<BoardId, BoardMeta>();
   private readonly members = new Map<SessionId, SessionMeta>();
   private readonly metadataDirty = new Set<SessionId>();
@@ -72,13 +73,6 @@ export class BoardReportWorkflow {
           }).pipe(Effect.andThen(this.signal()))
         )
       );
-      yield* this.own(
-        yield* this.ports.observeBoardMetadata((id) =>
-          Effect.sync(() => {
-            this.metadataDirty.add(id);
-          }).pipe(Effect.andThen(this.signal()))
-        )
-      );
       this.catalog = catalog;
     }.bind(this)
   );
@@ -96,6 +90,21 @@ export class BoardReportWorkflow {
           if (board.archivedAtMs === undefined) this.boards.set(board.id, board);
         }
         for (const id of this.members.keys()) this.dirty.add(id);
+      }
+      if (this.boards.size && !this.metadataSubscription) {
+        this.metadataSubscription = yield* this.ports.observeBoardMetadata((id) =>
+          Effect.sync(() => {
+            this.metadataDirty.add(id);
+          }).pipe(Effect.andThen(this.signal()))
+        );
+        yield* this.own(this.metadataSubscription);
+      } else if (!this.boards.size && this.metadataSubscription) {
+        yield* this.metadataSubscription;
+        this.subscriptions.delete(this.metadataSubscription);
+        this.metadataSubscription = undefined;
+        this.seeded = false;
+        this.members.clear();
+        this.metadataDirty.clear();
       }
       if (!this.seeded && this.boards.size) {
         // One startup snapshot, then doc-metadata events maintain membership.

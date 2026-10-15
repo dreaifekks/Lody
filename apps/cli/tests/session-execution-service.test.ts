@@ -11061,6 +11061,50 @@ describe('Operation Inbox execution boundary', () => {
     };
   }
 
+  it('does not enqueue Board reconciliation for metadata in workspaces without active Boards', async () => {
+    const h = await boardExecutionFixture();
+    try {
+      h.catalog.flock.delete(workspaceFlockKeys.board(h.board.id));
+      await h.reconcile();
+      h.takeWakes();
+      await h.repo.upsertDocMeta(getSessionRoomId(h.member.message.sessionId), {
+        agentNotice: { id: 'before-board', body: 'Update', at: 1 },
+      });
+      await h.repo.flush();
+      expect(h.takeWakes()).toEqual([]);
+      h.catalog.flock.set(workspaceFlockKeys.board(h.board.id), h.board);
+      await h.repo.flush();
+      expect(h.takeWakes()).toEqual(['board-state']);
+      await h.reconcile();
+      await h.repo.upsertDocMeta(getSessionRoomId(h.member.message.sessionId), {
+        agentNotice: { id: 'with-board', body: 'Update', at: 2 },
+      });
+      await h.repo.flush();
+      expect(h.takeWakes()).toEqual(['board-state']);
+      await h.reconcile();
+      expect(
+        h.coordinator.store.listForRequester(
+          {
+            workspaceId: h.coordinator.message.workspaceId,
+            requesterSessionId: h.coordinator.message.sessionId,
+            requesterUserId: 'user-1',
+          },
+          {}
+        ).items
+      ).toHaveLength(2);
+      h.catalog.flock.set(workspaceFlockKeys.board(h.board.id), { ...h.board, archivedAtMs: 3 });
+      await h.reconcile();
+      h.takeWakes();
+      await h.repo.upsertDocMeta(getSessionRoomId(h.member.message.sessionId), {
+        agentNotice: { id: 'after-archive', body: 'Update', at: 4 },
+      });
+      await h.repo.flush();
+      expect(h.takeWakes()).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('reports a member after its real automatic reviewer continuation and reads its driving depth', async () => {
     const h = await boardExecutionFixture();
     try {
