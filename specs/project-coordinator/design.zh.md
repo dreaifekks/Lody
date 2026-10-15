@@ -7,8 +7,8 @@ Translation: current
 
 把 Claude Projects 的「一个范围里多条并行线程，由内置协调者拆任务、派线程，人随时
 可以点进任意线程插话」搬进 Lody。本文描述意图、数据归属和投递保证；实现细节以各模块
-的 `AGENTS.md` 为准。文末记录用户已经确认的决定、按上游 0.105.0 修订后需要用户拍板的
-新问题，以及 PR1、PR2 的实现记录。
+的 `AGENTS.md` 为准。文末记录用户已经确认的决定（含上游 0.105.0 修订后的六项决定），
+以及 PR1、PR2 的实现记录。
 
 本版按上游 0.105.0 修订：Delivery 已删除（#1523），结果一律走 Operation Inbox 合批
 唤醒；委派链上限改为 16 并新增「停止协作」（#1428）；自动 review 已删除（#1393）；
@@ -202,7 +202,9 @@ Overview。协调者的 agent 默认记住上一次的选择；按用户现行�
 
 线程说明一段：本会话属于看板「{name}」（目标一句）；协调者 session 是 {id}；你的回合
 结束、等人回答或失败时 Lody 会自动通知协调者，不必也不能转发；共享笔记工具；约束：
-{executorConstraints}。交接出的新一代还会在前面加上交接事实（见「交接」）。
+{executorConstraints}。你开的 reviewer 等子会话结论回来后，把结论原样写进你的回复，
+不要自己按结论动手改，改哪些由协调者决定。交接出的新一代还会在前面加上交接事实
+（见「交接」）。
 
 ### 产品逻辑 vs 提示
 
@@ -242,7 +244,7 @@ review 改完」永远不会回报。
 
 人工过滤用 `author.kind !== 'human'`，不用 `=== 'agent'`：system 起因的回合不是人，
 不能被误静音。`reportHumanTurns` 打开时人工驱动的 `finished` 也报。`cancelled` 不作为
-自动回报事件（见待拍板第 3 条）：用户在成员上按 Stop 的结果按 #1553 不能自动唤醒，而
+自动回报事件（见「已决定：Inbox 修订」第 3 条）：用户在成员上按 Stop 的结果按 #1553 不能自动唤醒，而
 跨机器只能从同步文档看到「取消了」，分不清是谁取消的；协调者自己的
 `lody_operation_cancel` 它已经知道。取消只进 Overview。
 
@@ -308,15 +310,15 @@ Operation id 是确定性的：`board:<成员 id>:<驱动回合 id>:<事件>`，
   自动批次深度 ≥ 16（`LODY_MAX_CHAIN_DEPTH`，`inbox/sqlite.ts` 的领取检查）时 intent 记
   为 `depth_limited`，不领取；结果留在队列里，等用户下一句话以深度 0 带走。
 
-回报行的 `chain_depth` 取协调者当时最新驱动回合的深度（待拍板第 1 条）。这样每次自主
+回报行的 `chain_depth` 取协调者当时最新驱动回合的深度（已决定：Inbox 修订第 1 条）。这样每次自主
 唤醒恰好加一跳，用户或定时回合之后回到 0 再数，孙会话的事件不额外消耗跳数，而且和
 协调者自己派发的回执（`initiatorChainDepth` = 派发时的深度）在常见情形下一致。从用户
 的一句话起算，协调者最多自主唤醒 15 次（深度 1–15），第 16 次被 Inbox 拦下。协调者在
 深度 15 仍可派发（上游只拒绝 ≥ 16 的发起者），被派发的成员在 16 不能再派。
 
 Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动回合的 `chainDepth`。到上限
-时上游不写任何历史，Overview 单靠文档看不出「已停」；是否由观察者在协调者历史写一张
-幂等的 `board_chain_limit` 系统通知，见待拍板第 4 条。
+时观察者在协调者历史写一张幂等的 `board_chain_limit` 系统通知：
+「自主链已到上限，说一句话继续」，一次链一张；Overview 据此显示「已停止」。
 
 ### 去重
 
@@ -335,7 +337,8 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
 回报是成员状态向上的唯一通道。提示里不要求、也不能依赖成员转发：被协调者的 chat 唤醒
 的那个回合里，成员对协调者的 `lody_session_chat` 会被 `REVERSE_CHAT_FORBIDDEN` 拒绝；
 孙会话（reviewer）的结果先唤醒它的父成员，父成员随后的完成由观察者补上。孙会话自己
-的 `finished` 是否也单独回报，见待拍板第 2 条。
+的 `finished` 不单独回报，避免每轮评审唤醒协调者两次；`failed` / `waiting_user` /
+`notice` 仍回报。父成员收到子会话结论后原样写进回复，不自行修改，由协调者筛选要改的项。
 
 ### 停止与暂停
 
@@ -351,7 +354,7 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
   （`specs/session-orchestration.md`「User-controlled conversation-tree stop」）。
 - 上游的停止范围是会话树：协调者开的线程及其后代。看板允许手动加入不相关的根会话，
   它们不在协调者的停止范围内，仍会继续跑，事件照常进队列。首版只做会话树停止，看板级
-  的「停止全部成员」不做（待拍板第 6 条）。
+  的「停止全部成员」不做（已决定：Inbox 修订第 6 条）。
 - Inbox 暂停：用户在协调者上按 Stop（Inbox v2 客户端带 `cancelId` / `pauseInbox`）时
   `pause()` 把会话标为 paused，取消排队的输入，释放已准备批次的领取；结果仍在队列
   里。暂停期间不登记 intent；只有新的、受信任的人工输入（`humanInputReceipts`）能清除
@@ -502,8 +505,8 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
   `inputAcceptance('task', paused)` 直接拒绝（`session-execution-service.ts` 的
   `inbox-paused`），暂停不会被清除。PR5 不得给摘要回合伪造人工收据。
 - 协调者的树被停止时，派发把回合标为取消并保留输入，上游已有。
-- 被拒绝的回合今天会悬在历史里「待处理」，直到用户下一句话覆盖它；是否在 handoff 前
-  检查并把这次运行记为 skipped，见待拍板第 5 条。
+- PR5 在 handoff 前检查目的地是否已暂停或已停止，并把跳过的运行记为 skipped，
+  避免被拒绝的回合悬在历史里「待处理」。PR3 仅记录此决定，不实现摘要。
 
 ## MCP 工具
 
@@ -563,7 +566,7 @@ Agent Role / Schedule 写入的权限档位上限不变；看板工具只写 Lod
   `inbox/sqlite.ts` 的 `MemberRow.operation_kind` 枚举加 `board_report`。
 - `apps/cli/src/orchestration/coordinator-workflow.ts` / `operation-coordinator.ts`：
   看板分支（目录与 `doc-metadata` 订阅、脏成员集合、单飞 reconcile、事件推导、去重、
-  接受）；若决定写链上限通知，在这里查 `depth_limited` intent 并写幂等系统通知。
+  接受）；在这里查 `depth_limited` intent 并写幂等系统通知。
   `operation-model.ts` 不改调度语义就不动；改了就补轨迹。
 - `apps/cli/src/mcp/lody-mcp-server.ts`：`lody_operation_get/list` 接受新 kind。
 - `session-execution-helpers.ts` `buildPrompt`：协调者/线程说明换成本版文本。
@@ -576,7 +579,8 @@ Agent Role / Schedule 写入的权限档位上限不变；看板工具只写 Lod
   已完成仍保留的 Operation）；`reportHumanTurns` 开关且关着时游标仍前移；system 驱动
   （续接）的完成被报；同一驱动回合多次权限请求只报一次；深度 15 → 16 时
   `depth_limited`；重启后结果与 intent 都在；游标写入注入失败时整笔回滚；已归档成员跳过；
-  `boardJoinedAtMs` 之前的状态不报；流式导入不触发全量扫描（订阅计数）。
+  `boardJoinedAtMs` 之前的状态不报；流式导入不触发全量扫描（订阅计数）；孙会话
+  `finished` 不产生回报，父成员续接完成后会回报。
 
 ### PR4 轮数、交接
 
@@ -592,7 +596,7 @@ Agent Role / Schedule 写入的权限档位上限不变；看板工具只写 Lod
 
 - 看板设置开关 → Schedule 创建 / 暂停（`schedule-command-service.ts`）；`existing_session`
   目的地指向协调者；固定 prompt；归档看板暂停定时。
-- 暂停与停止：不给摘要回合加人工收据；若决定 handoff 前检查（待拍板第 5 条），在
+- 暂停与停止：不给摘要回合加人工收据；handoff 前检查目的地，在
   `schedule-run-preparation.ts` 的目的地检查旁加「协调者已暂停 / 已停止 → skipped」。
 - 文档：`.agents/docs/experimental.md` 加「看板」一节；本 Spec 更新证据；Agent Note；
   `apps/cli/src/orchestration/README.md` 加看板回报一节。
@@ -605,7 +609,7 @@ Agent Role / Schedule 写入的权限档位上限不变；看板工具只写 Lod
 - 唤醒成本：每个空闲边界一次唤醒，线程多时协调者几乎不闲。缓解靠 Inbox 合批、不报人
   输入的回合、不单独报孙会话的完成；如果仍然太吵，下一步是按看板的最小唤醒间隔。
 - 链深度：15 次自主唤醒后停住，夜里无人时可能停在半路，而且上游在上限处不写历史。先
-  用 Overview 和（待定的）通知卡把它显示出来，再决定要不要单独预算。
+  用 Overview 和幂等系统通知把它显示出来，再决定要不要单独预算。
 - 批次结算 `unknown` 时上游不重发，协调者可能漏看一批；Overview 是真相，摘要和下次
   唤醒能补。
 - Inbox 暂停没有同步证据，Overview 看不出协调者被按过 Stop。
@@ -634,26 +638,16 @@ Agent Role / Schedule 写入的权限档位上限不变；看板工具只写 Lod
 review 保护和对应的状态；交叉评审用普通的 reviewer 子会话。不合入上游的全局委派提示
 （`adff308b`），协调者的做法只放在看板提示里。
 
-## 待拍板
+## 已决定：Inbox 修订
 
-上游机制带来的新问题，每条附建议：
+用户已确认以下六项；完整 Spec 仍为 draft。
 
-1. 回报行的链深度取什么。A：源回合的深度（孙会话的事件多算跳数，和上游「因果链」的字
-   面意思更近）；B：协调者当时驱动回合的深度（每次唤醒恰好加一跳，用户说话后归零，
-   和协调者自己回执的深度一致）。建议 B。
-2. 孙会话（线程自己开的 reviewer 等）的 `finished` 是否单独回报。它的结果本来就会
-   唤醒父成员，父成员随后的完成会带着结论回报；单独报等于每轮评审唤醒协调者两次、
-   多耗一跳。建议不报，孙会话只报 `failed` / `waiting_user` / `notice`。
-3. `cancelled` 是否回报。跨机只能看到「取消了」，分不清是用户 Stop（#1553 规定不能
-   自动唤醒）还是别的；协调者自己的取消它已知道。建议不报，只进 Overview。
-4. 自主链到 16 时上游不写历史。是否由观察者在协调者历史写一张幂等的「自主链已到上限，
-   说一句话继续」系统通知，Overview 也据此显示「已停」。建议写，一次链一张。
-5. 协调者暂停或被停止时的每日摘要。今天会被 Inbox 拒绝并悬在历史里「待处理」。A：
-   handoff 前检查，把这次运行记为 skipped（要在 Schedule 准备路径加一个看板无关的
-   「目的地已暂停/停止」检查）；B：接受上游行为，用户恢复后手动 `schedule run`。建议 A。
-6. 看板级停止。上游只停会话树，手动加入的根会话不在范围内。A：首版不做，Overview 的
-   「已停止」只反映各会话自己的标记；B：加「停止看板」给所有成员根写
-   `collaborationStopped`。建议 A，B 写进「以后再做」。
+1. 回报行深度取协调者当时驱动回合的深度（方案 B）。每次自主唤醒加一跳，人工输入后归零，孙会话事件不额外消耗跳数。
+2. 孙会话（reviewer 等）的 `finished` 不单独回报，由父成员被唤醒后的回复带回结论；`failed` / `waiting_user` / `notice` 仍回报。线程提示明确要求原样写入子会话结论，不自行按结论修改，改哪些由协调者决定。
+3. `cancelled` 不回报，只进 Overview；避免绕过用户 Stop 不唤醒的规则。
+4. 自主链到 16 时写幂等的 `board_chain_limit` 系统通知，一次链一张，提示用户说一句话继续；Overview 显示「已停止」。
+5. 每日摘要在 handoff 前检查目的地暂停/停止，跳过的运行记为 skipped（方案 A）。PR5 实现，PR3 仅更新文档。
+6. 首版不做看板级停止（方案 A）；沿用会话树停止，手动加入的独立根不在范围内。「停止全部看板成员」列入以后再做。
 
 ## 以后再做
 

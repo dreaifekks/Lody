@@ -9,8 +9,8 @@ Bring the Claude Projects pattern into Lody: several parallel threads within a
 scope, a coordinator that delegates work, and a user who can enter any thread
 at any time. This design describes intent, data ownership and delivery guarantees.
 Module `AGENTS.md` files own implementation constraints. The end records the
-decisions the user confirmed, the new questions raised by the upstream 0.105.0
-revision, and the PR1/PR2 implementation records.
+decisions the user confirmed, including the six upstream 0.105.0 revision choices,
+and the PR1/PR2 implementation records.
 
 This revision follows upstream 0.105.0: Delivery is gone (#1523) and every result
 goes through the Operation Inbox's batched wake; the delegation chain cap is 16
@@ -208,8 +208,10 @@ Coordinator instructions state:
 
 Thread instructions state the Board name, goal, coordinator id, automatic completion/
 waiting/failure reports (forwarding is neither needed nor possible), notes tools and
-executor constraints. A successor also gets handoff facts before the coordinator-authored
-prompt.
+executor constraints. When conclusions from reviewer or other child sessions arrive,
+include them verbatim in your reply. Do not make changes based on those conclusions
+yourself; the coordinator decides which changes to make. A successor also gets handoff
+facts before the coordinator-authored prompt.
 
 ### Product logic versus instructions
 
@@ -252,8 +254,7 @@ system-driven turns, so "the executor finished applying the review" would never 
 
 The human filter is `author.kind !== 'human'`, never `=== 'agent'`: system-driven turns
 are not human and must not be muted. With `reportHumanTurns` on, human-driven
-`finished` reports too. `cancelled` is not an automatic report event (see Open
-decision 3): per #1553 a user Stop on a member must not wake anyone, and a synced
+`finished` reports too. `cancelled` is not an automatic report event (see Decided: Inbox revision, item 3): per #1553 a user Stop on a member must not wake anyone, and a synced
 document only shows "cancelled", not by whom; the coordinator already knows about its
 own `lody_operation_cancel`. Cancellation is Overview-only.
 
@@ -332,7 +333,7 @@ Batching is entirely upstream:
   stay queued until the user's next message carries them at depth 0.
 
 A report row's `chain_depth` is the depth of the coordinator's latest driving turn at
-observation time (Open decision 1). Each autonomous wake then costs exactly one hop, a
+observation time (Decided: Inbox revision, item 1). Each autonomous wake then costs exactly one hop, a
 user or scheduled turn resets to 0, grandchild events cost no extra hops, and the value
 matches the coordinator's own delegation receipts (`initiatorChainDepth` = depth at
 delegation) in the common case. From one user message the coordinator wakes
@@ -341,9 +342,9 @@ depth 15 the coordinator may still delegate (upstream refuses initiators at >= 1
 the member at 16 cannot delegate further.
 
 Overview's coordinator row shows `chain n/16`, with n from the coordinator's latest
-driving turn. Upstream writes nothing to history at the cap, so Overview cannot see
-"stopped" from documents alone; whether the observer writes one idempotent
-`board_chain_limit` system notice into the coordinator history is Open decision 4.
+driving turn. At the cap the observer writes an idempotent `board_chain_limit` system
+notice: "Autonomous chain reached its limit; send a message to continue", once per
+chain. Overview uses it to show Stopped.
 
 ### Deduplication
 
@@ -366,8 +367,10 @@ Reports are the only upward channel for member state. Instructions neither requi
 rely on forwarding: in the turn a coordinator chat started, the member's
 `lody_session_chat` to the coordinator is refused with `REVERSE_CHAT_FORBIDDEN`. A
 grandchild's (reviewer's) result first wakes its parent member; the parent's subsequent
-completion is reported by the observer. Whether a grandchild's own `finished` is also
-reported is Open decision 2.
+completion is reported by the observer. A grandchild's own `finished` is not reported
+separately, avoiding two wakes per review cycle; `failed` / `waiting_user` / `notice`
+still report. The parent includes the child's conclusions verbatim in its reply without
+making changes itself; the coordinator selects the changes.
 
 ### Stop and pause
 
@@ -386,7 +389,8 @@ Everything is reused from upstream; the Board adds no rule and only states the s
 - Upstream's stop scope is the conversation tree: threads the coordinator opened and
   their descendants. A Board may manually join unrelated root sessions; they are
   outside the coordinator's stop scope, keep running and keep queuing events. The first
-  release does tree stop only; a Board-level "stop all members" is Open decision 6.
+  release does tree stop only; Board-level "stop all members" is deferred (Decided:
+  Inbox revision, item 6).
 - Inbox pause: a Stop on the coordinator from an Inbox v2 client (`cancelId` /
   `pauseInbox`) runs `pause()`: the session is paused, queued inputs cancelled, claims
   of prepared batches released; results stay queued. No intent is recorded while
@@ -540,9 +544,9 @@ The digest must respect stop and pause:
   PR5 must not forge a human receipt for the digest turn.
 - While the coordinator's tree is stopped, dispatch cancels the turn and preserves its
   input; upstream already does this.
-- Today a refused turn stays pending in history until the user's next message
-  overrides it; whether to check before handoff and record the run as skipped is Open
-  decision 5.
+- PR5 checks destination pause/stop before handoff and records skipped runs as skipped,
+  avoiding refused turns left pending in history. PR3 only records this decision;
+  it does not implement the digest.
 
 ## MCP tools
 
@@ -603,9 +607,8 @@ are listed.
   `MemberRow.operation_kind` in `inbox/sqlite.ts` accepts `board_report`.
 - `apps/cli/src/orchestration/coordinator-workflow.ts` / `operation-coordinator.ts`:
   the Board branch (catalog and `doc-metadata` subscriptions, dirty member set,
-  single-flight reconcile, event derivation, dedupe, acceptance); if the chain-limit
-  notice is approved, query `depth_limited` intents here and write the idempotent
-  notice. `operation-model.ts` stays untouched unless scheduling semantics change.
+  single-flight reconcile, event derivation, dedupe, acceptance); query `depth_limited`
+  intents here and write the idempotent chain-limit notice. `operation-model.ts` stays untouched unless scheduling semantics change.
 - `apps/cli/src/mcp/lody-mcp-server.ts`: `lody_operation_get/list` accept the kind.
 - `session-execution-helpers.ts` `buildPrompt`: coordinator/thread instructions from
   this revision.
@@ -623,7 +626,8 @@ are listed.
   report once; depth 15 → 16 yields `depth_limited`; results and intents survive
   restart; an injected cursor write failure rolls back everything; archived members are
   skipped; state before `boardJoinedAtMs` is not reported; streaming imports do not
-  trigger full scans (subscription counting).
+  trigger full scans (subscription counting); a grandchild `finished` produces no
+  report, while its parent's subsequent continuation completion does.
 
 ### PR4 Rounds and handoff
 
@@ -640,9 +644,9 @@ are listed.
 
 - Board toggle creates/pauses a Schedule (`schedule-command-service.ts`) targeting the
   coordinator as `existing_session`, with the fixed prompt; archiving pauses it.
-- Pause and stop: no human receipt for the digest turn; if the pre-handoff check is
-  approved (Open decision 5), add a Board-agnostic "destination paused/stopped →
-  skipped" check beside the destination checks in `schedule-run-preparation.ts`.
+- Pause and stop: no human receipt for the digest turn; before handoff, add a
+  Board-agnostic "destination paused/stopped → skipped" check beside the destination
+  checks in `schedule-run-preparation.ts`.
 - Documentation: a Boards section in `.agents/docs/experimental.md`, Spec evidence, the
   Agent Note, and a Board reports section in `apps/cli/src/orchestration/README.md`.
 - Tests: the definition the command service creates (cron, destination, prompt); toggle
@@ -657,7 +661,7 @@ are listed.
   excluding human completions and not reporting grandchild completions reduce this; a
   minimum wake interval may be needed later.
 - Fifteen autonomous wakes may stop overnight work, and upstream writes nothing to
-  history at the cap. Show it in Overview and the (pending) notice before adding a budget.
+  history at the cap. Show it in Overview and the idempotent system notice before adding a budget.
 - An `unknown` batch settlement is never resent upstream, so the coordinator may miss a
   batch; Overview is the truth, and the digest or next wake catches up.
 - Inbox pause has no synced evidence, so Overview cannot show a stopped coordinator.
@@ -690,35 +694,16 @@ Also settled: automatic review was removed upstream, so the design has no
 ordinary reviewer child sessions. Upstream's global delegation prompt (`adff308b`) is not
 merged; the coordinator's working method lives only in the Board prompt.
 
-## Open decisions
+## Decided: Inbox revision
 
-New questions raised by upstream mechanisms, each with a recommendation:
+The user confirmed these six choices; the complete specification remains a draft.
 
-1. Which depth a report row takes. A: the source turn's depth (grandchild events cost
-   more hops, closer to the literal "causal chain"); B: the coordinator's driving-turn
-   depth at the time (each wake costs exactly one hop, resets after the user speaks,
-   matches the coordinator's own receipts). Recommend B.
-2. Whether a grandchild's (reviewer's) `finished` is reported separately. Its result
-   already wakes the parent member, whose subsequent completion reports the conclusion;
-   a separate report wakes the coordinator twice per review cycle and costs an extra
-   hop. Recommend not reporting it; grandchildren report only `failed` /
-   `waiting_user` / `notice`.
-3. Whether `cancelled` is reported. Across machines only "cancelled" is visible, not
-   whether it was a user Stop (#1553 forbids an automatic wake) or something else; the
-   coordinator already knows its own cancellations. Recommend not reporting; Overview only.
-4. Upstream writes nothing to history at depth 16. Should the observer write one
-   idempotent "autonomous chain reached its limit, send a message to continue" system
-   notice into the coordinator history, which Overview also uses to show Stopped?
-   Recommend yes, one per chain.
-5. The daily digest while the coordinator is paused or stopped. Today the Inbox refuses
-   it and the turn hangs as pending. A: check before handoff and record the run as
-   skipped (a Board-agnostic "destination paused/stopped" check in Schedule
-   preparation); B: accept upstream behavior and let the user run `schedule run` after
-   restoring. Recommend A.
-6. Board-level stop. Upstream stops a conversation tree; manually joined roots are
-   outside it. A: not in the first release, Overview's Stopped reflects each session's
-   own marker; B: add Stop board, writing `collaborationStopped` on every member root.
-   Recommend A, with B under Later.
+1. Report depth is the coordinator's driving-turn depth at observation time (option B). Each autonomous wake adds one hop, human input resets the chain, and grandchild events cost no extra hops.
+2. Grandchild (reviewer) `finished` is not reported separately; its parent includes the conclusion after its own wake. `failed` / `waiting_user` / `notice` still report. Thread instructions require verbatim child conclusions in the reply and no changes based on them; the coordinator decides what to change.
+3. Do not report `cancelled`; show it only in Overview so reports cannot bypass the user Stop no-wake rule.
+4. At chain depth 16, write one idempotent `board_chain_limit` system notice per chain asking the user to send a message to continue; Overview shows Stopped.
+5. Check digest destinations for pause/stop before handoff and record skipped runs as skipped (option A). PR5 implements it; PR3 only updates the documentation.
+6. No Board-level stop in the first release (option A). Keep conversation-tree stop; independently joined roots are outside it. Stop all Board members is deferred to Later.
 
 ## Later
 
