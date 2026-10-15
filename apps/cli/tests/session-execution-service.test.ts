@@ -11301,11 +11301,12 @@ describe('Provider quota refresh', () => {
     ],
   };
 
-  function quotaHarness(query = true) {
+  function quotaHarness(query = true, overrides: Partial<AgentConfigMeta> = {}) {
     let config: AgentConfigMeta | null = createLaunchConfig({
       cliType: 'custom',
       agentType: 'example',
       env: {},
+      ...overrides,
     });
     const rows = new Map<string, unknown>();
     const deps = createBaseDeps({});
@@ -11329,6 +11330,31 @@ describe('Provider quota refresh', () => {
       },
     };
   }
+
+  it.each([
+    [{ NMEM_AGENT_ID: 'lody' }, true],
+    [{ ANTHROPIC_API_KEY: 'synthetic-key' }, false],
+    [{ ANTHROPIC_BASE_URL: 'https://provider.example' }, false],
+  ] as const)(
+    'refreshes subscription quota only for unchanged auth routing: %j',
+    async (env, eligible) => {
+      const read = vi.spyOn(quotaRunner, 'queryLocalAcpRateLimits').mockResolvedValue(snapshot);
+      try {
+        const harness = quotaHarness(true, {
+          cliType: 'builtin',
+          agentType: 'claude',
+          env,
+          runtimeOverrides: {},
+        });
+        expect((await harness.service.refreshProviderRateLimits(capabilityConfigId)).success).toBe(
+          eligible
+        );
+        expect([...harness.rows.values()]).toEqual(eligible ? snapshot.rateLimits : []);
+      } finally {
+        read.mockRestore();
+      }
+    }
+  );
 
   it('publishes a cold query for its exact Provider and coalesces concurrent consumers', async () => {
     const pending = createDeferred<typeof snapshot>();

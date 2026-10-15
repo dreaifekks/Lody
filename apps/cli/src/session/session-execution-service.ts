@@ -1,4 +1,4 @@
-import { readMessageAuthor } from '@lody/shared';
+import { hasBuiltinEnvAuthRouting, readMessageAuthor } from '@lody/shared';
 import { type AcpLauncher, resolveAcpLauncher } from '@/agent/acp-analytics';
 import type { LodyRateLimitsCapability } from 'acp-extension-core';
 import { queryLocalAcpRateLimits, AcpQuotaCleanupError } from '@/agent/acp-runner';
@@ -1000,7 +1000,7 @@ export class SessionExecutionService {
     if (
       config.cliType === 'builtin' &&
       (config.brandId ||
-        Object.keys(config.env ?? {}).length ||
+        hasBuiltinEnvAuthRouting(config.agentType, config.env) ||
         config.codexAuth?.mode === 'api-key')
     )
       return response;
