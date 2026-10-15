@@ -15,6 +15,7 @@ import {
 import { canReadProcNetTcp, lookupLoopbackPeerUid } from './loopback-peer-uid';
 import {
   MCP_HTTP_AGENT_TOOLS_HEADER,
+  MCP_HTTP_BOARD_ID_HEADER,
   MCP_HTTP_MACHINE_ID_HEADER,
   MCP_HTTP_PREFERRED_PORT_ENV,
   MCP_HTTP_SESSION_ID_HEADER,
@@ -213,6 +214,7 @@ const parseSessionContextHeaders = (req: http.IncomingMessage): McpSessionContex
     machineId,
     workdir,
     localControlSocketPath: getLocalControlSocketPath(),
+    boardId: singleHeader(req, MCP_HTTP_BOARD_ID_HEADER) ?? undefined,
     agentTools: parseLodyAgentToolIds(singleHeader(req, MCP_HTTP_AGENT_TOOLS_HEADER)),
   };
 };

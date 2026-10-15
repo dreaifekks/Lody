@@ -1,3 +1,5 @@
+import { BoardMembershipDialog } from '../boards/board-membership-dialog';
+import { boardEnabledAtom } from '@/atoms/settings';
 import { useIosSimulatorPreviewRequest } from './ios-simulator/use-ios-simulator-preview-request';
 import { createLoroSyncErrorTools } from '@lody/shared/loro-sync-errors';
 import { RepoSyncError, RepoTransportError } from 'loro-repo';
@@ -1423,6 +1425,8 @@ export function SessionHeaderMenu({
     sharing?.visibility === 'unknown' ||
     (sharing?.visibility === 'private' &&
       (sharing.privateReason === 'machine-not-registered' || !sharing.canManage));
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  const [boardMembershipOpen, setBoardMembershipOpen] = useState(false);
   const conversationWide = useAtomValue(conversationWideModeAtom);
   const setConversationWide = useSetAtom(conversationWideModeAtom);
 
@@ -1564,6 +1568,13 @@ export function SessionHeaderMenu({
         </Menu.Trigger>
         <Menu.Content align="end" className={SESSION_HEADER_MENU_CONTENT_CLASS}>
           <SessionWindowMenuItem sessionId={session.id} dropdown />
+          {boardsEnabled && session.boardRole !== 'coordinator' && !isArchived ? (
+            <Menu.Item onClick={() => setBoardMembershipOpen(true)}>
+              {session.boardId
+                ? t('boards.remove', 'Remove from board')
+                : t('boards.join', 'Join board')}
+            </Menu.Item>
+          ) : null}
           {/* Identity stays inline: a group label wastes a row, and a submenu hides
               repo/branch/machine behind another step. */}
           {!compact && showSessionContext ? (
@@ -2022,6 +2033,9 @@ export function SessionHeaderMenu({
               )}
         </Menu.Content>
       </Menu.Root>
+      {boardMembershipOpen ? (
+        <BoardMembershipDialog session={session} onClose={() => setBoardMembershipOpen(false)} />
+      ) : null}
     </>
   );
 }

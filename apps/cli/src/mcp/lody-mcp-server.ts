@@ -1,4 +1,7 @@
 import { loadWorkspaceAgentRoleCatalog } from '@/lib/agent-role-create';
+
+import { registerBoardTools } from './board-tools';
+import { LODY_MCP_BOARD_ID_ENV } from './lody-mcp-http-protocol';
 import {
   composeAgentRolePrompt,
   snapshotAgentRole,
@@ -1004,6 +1007,8 @@ export interface McpSessionContext {
   workdir: string;
   /** A terminal command: `sessionId` is a placeholder and no Turn is active. */
   terminal?: true;
+  /** Board membership advertised at startup, never used for authorization. */
+  boardId?: string;
   /** Experimental tools the daemon offered this agent when it started. */
   agentTools?: readonly LodyAgentToolId[];
 }
@@ -4030,6 +4035,7 @@ const SESSION_COLLABORATION_GUIDANCE = [
  * from its environment; the HTTP host passes the requesting session's.
  */
 export function buildLodyMcpServer(options?: {
+  boardId?: string;
   agentTools?: readonly LodyAgentToolId[];
 }): McpServer {
   return buildSessionToolServer(undefined, options);
@@ -4037,7 +4043,7 @@ export function buildLodyMcpServer(options?: {
 
 export function buildSessionToolServer(
   handlers?: SessionToolHandlers,
-  surface?: { agentTools?: readonly LodyAgentToolId[] }
+  surface?: { agentTools?: readonly LodyAgentToolId[]; boardId?: string }
 ): McpServer {
   // The HTTP host is long-lived and the stdio server normally lives for the
   // Agent session. Initialization is idempotent and local-platform telemetry
@@ -4114,6 +4120,8 @@ export function buildSessionToolServer(
     notifyConfigChange: (sessionId, notice) =>
       getSessionCommandEnvironment()?.host.notifyConfigChange?.(sessionId, notice),
   });
+  if (handlers || surface?.boardId || readOptionalEnv(LODY_MCP_BOARD_ID_ENV))
+    registerBoardTools(registerSessionTool, getSessionContext);
   registerScheduleTools(server, registerSessionTool, {
     execute: async (command) => {
       const ctx = getSessionContext();

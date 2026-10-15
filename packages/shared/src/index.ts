@@ -1,3 +1,5 @@
+import { BOARD_DOC_PREFIX } from './board-repository';
+export * from './board-repository';
 export * from './preview-control';
 import { CliType } from './ai';
 export * from './history-writer';
@@ -423,6 +425,9 @@ export const isCodeCollabFileIndexSignalFlockDocId = (value: string): boolean =>
   return parts.length === 3 && parts[1] === LORO_CODE_COLLAB_FILE_INDEX_SIGNAL_STREAM_SEGMENT;
 };
 export const getLoroStreamIdForDocId = (workspaceId: WorkspaceId, docId: string): string => {
+  if (docId.startsWith(BOARD_DOC_PREFIX)) {
+    return `${workspaceId}:bd:${docId.slice(BOARD_DOC_PREFIX.length)}`;
+  }
   if (docId.startsWith(SCHEDULE_DOC_PREFIX)) {
     return getLoroScheduleStreamId(workspaceId, docId.slice(SCHEDULE_DOC_PREFIX.length));
   }

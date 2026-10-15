@@ -1,3 +1,4 @@
+import { normalizeBoardMeta } from '@lody/shared';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalProjectId } from '@lody/shared';
 
@@ -87,4 +88,40 @@ describe('session execution prompt helpers', () => {
         '`lody-lan lan forward <machine> <port>` reaches a port there; see `lody-lan lan --help`.'
     );
   });
+});
+
+it('adds role-specific Board instructions while retaining the task and existing reminders', () => {
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_prompt',
+    name: 'Ship',
+    purpose: 'A working release',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+    rules: { executorConstraints: 'Commit only. Run tests.', maxRoundsPerThread: 4 },
+  });
+  if (!board) throw new Error('Invalid fixture');
+  const coordinator = buildPrompt('My task', undefined, undefined, undefined, {
+    boardContext: { board, role: 'coordinator' },
+    branchToRename: 'lody/test',
+  });
+  expect(coordinator).toMatch(/^My task/);
+  expect(coordinator).toContain(SESSION_REMINDERS);
+  expect(coordinator).toContain('git branch -m lody/test <name>');
+  expect(coordinator).toContain(
+    'You are the coordinator of Board "Ship". Goal: A working release.'
+  );
+  expect(coordinator).toContain('lody_board_overview');
+  expect(coordinator).toContain('end your turn');
+  expect(coordinator).toContain('round enforcement and handoff are not available yet');
+  expect(coordinator).toContain('Commit only. Run tests.');
+  expect(coordinator).toContain('lody_board_notes_replace');
+  const thread = buildPrompt('Implement', undefined, undefined, undefined, {
+    boardContext: { board },
+  });
+  expect(thread).toContain('Coordinator session: coordinator');
+  expect(thread).toContain('lody_board_notes_append');
+  expect(thread).toContain('Commit only. Run tests.');
+  expect(thread).not.toContain('You are the coordinator');
 });

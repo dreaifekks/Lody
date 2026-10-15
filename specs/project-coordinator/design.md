@@ -479,3 +479,36 @@ failure/waiting-coordinator facts and message previews. The coordinator starts
 expanded to show chain depth. Rounds/generation switching/review remain PR4.
 Like existing catalog operations, the count limit and cross-document creation
 are not distributed transactions across devices.
+
+## PR2 implemented
+
+PR2 adds new threads in Overview, join/remove actions in desktop and mobile Session menus,
+role instructions, five Board MCP tools and a shared notes panel. New threads reuse the
+Board dialog's Agent/Role controls and ordinary Session admission with a chat work context;
+they do not overwrite the remembered coordinator choice. Manual membership edits affect
+only the selected Session, not existing child Tabs; creation-time Tab inheritance remains
+as in PR1. The fixed coordinator cannot be removed through this action.
+
+Instructions are appended by `buildPrompt` on the creation path, not repeated on continuation.
+They explicitly state that Board-wide reports, round refusal and handoff are not implemented.
+Existing Operation completions still work; other events need an agreed explicit reporting
+path. The full built-in template's PR3/PR4 promises await those implementations so the
+coordinator does not wait for nonexistent notifications. Existing Sessions added to a Board
+receive the tool list on the next ACP establishment; removed members are rejected immediately
+against current metadata.
+
+`lody_board_overview` uses the same metadata/presence status as collapsed UI rows without
+opening all Session documents. Failures and conclusions are read on demand with
+`session_history`. Replies are bounded to 100 rows and 64 KiB with `truncated` on overflow.
+Generation and round presentation remain PR4 work.
+
+Notes are native LoroText in `board-<id>`, with shared reads/writes and UTF-8 capacity checks.
+CLI opens/syncs through the daemon's existing repo; the renderer subscribes only while the
+panel is open and offers textarea editing and Markdown preview. The 256 KiB limit applies
+to each local write, not a global cross-machine lock. Merging individually valid concurrent
+appends can exceed it: preserve all content, reject further growth, and allow the coordinator
+or user to reduce it through replacement. Board rows remain the discovery mechanism, with
+no new registry. Long-term memory, automatic reports, handoff, round enforcement and daily
+digests remain outside this PR.
+
+Implementation and validation: [PR2 Agent Note](../../.agents/notes/implemented/feature/2026-10-15-board-tools-notes.md).

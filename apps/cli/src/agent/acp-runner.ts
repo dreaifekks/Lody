@@ -120,6 +120,7 @@ export type CreateAcpClientOptions = {
   onSessionTitleUpdate?(title: string): void;
   onAgentWarning?(warning: AgentSessionWarning): void;
   loadExternalMcpServers?: AgentClientOptions['loadExternalMcpServers'];
+  loadBoardId?: AgentClientOptions['loadBoardId'];
   loadLodyAgentTools?: AgentClientOptions['loadLodyAgentTools'];
   loadPromptSuggestionsEnabled?: AgentClientOptions['loadPromptSuggestionsEnabled'];
   onPromptSuggestion?(suggestion: string): void;
@@ -160,6 +161,7 @@ export const createAcpClient = async (options: CreateAcpClientOptions) => {
     onAgentWarning: options.onAgentWarning,
     loadExternalMcpServers: options.loadExternalMcpServers,
     loadLodyAgentTools: options.loadLodyAgentTools,
+    loadBoardId: options.loadBoardId,
     loadPromptSuggestionsEnabled: options.loadPromptSuggestionsEnabled,
     onPromptSuggestion: options.onPromptSuggestion,
     onImageGenerationBegin: options.onImageGenerationBegin,

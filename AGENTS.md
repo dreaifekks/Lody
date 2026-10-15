@@ -58,7 +58,7 @@ responsibility split only when it improves a large mixed module.
   Public runtimes and fork releases are exceptions. Shared packages stay platform-neutral;
   local telemetry is hard-disabled.
 - Before LAN work, read [LAN rules](packages/platform/AGENTS.md#lans).
-- Before changing Board membership, creation or Overview, read [Board contracts](packages/components/src/components/boards/AGENTS.md).
+- Before changing Board membership, creation, Overview, notes, prompts or tools, read [Board contracts](packages/components/src/components/boards/AGENTS.md).
 - Before changing composition, capability-gated settings, telemetry, or runtime
   downloads, read [platform contracts](packages/platform/AGENTS.md).
 - Before changing daemon protocol negotiation, MCP/Role catalogs or their UI

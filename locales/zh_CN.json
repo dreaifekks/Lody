@@ -5384,5 +5384,19 @@
   "boards.pullRequest": "拉取请求",
   "boards.experimentHelper": "围绕协调者组织会话，并查看各线程进度。",
   "boards.localProject": "本地项目",
-  "boards.worktree": "工作树"
+  "boards.worktree": "工作树",
+  "boards.notes": "共享笔记",
+  "boards.editNotes": "编辑",
+  "boards.previewNotes": "预览",
+  "boards.saveNotes": "保存笔记",
+  "boards.notesCapacity": "笔记超过 256 KiB 容量上限。",
+  "boards.notesSaveFailed": "未能保存笔记，草稿已保留。",
+  "boards.closeNotes": "关闭笔记",
+  "boards.notesLoadFailed": "未能加载笔记。",
+  "boards.remove": "移出看板",
+  "boards.join": "加入看板",
+  "boards.noAvailable": "请先创建看板。",
+  "boards.membershipFailed": "未能更改看板成员资格。",
+  "boards.newThread": "+ 新线程",
+  "boards.threadHelp": "选择 Agent 并描述任务，会话将加入此看板。"
 }

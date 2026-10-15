@@ -1,3 +1,4 @@
+import { BoardNotesPanel } from './board-notes-panel';
 import { useId, useMemo, useState } from 'react';
 import { useMachineFlockRowsByMachineIds } from '@/hooks/use-machine-flock-rows';
 import { FocusScope, useListKeyboardNavigation } from '@/ui/focus-scope';
@@ -58,6 +59,8 @@ function BoardsContent({ boardId }: { boardId?: string }) {
   const { boards } = useWorkspaceCatalog();
   const { allActiveSessions } = useVisibleSessionMetas();
   const { archivedSessions } = useVisibleArchivedSessionMetas();
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [threadCreating, setThreadCreating] = useState(false);
   const [creating, setCreating] = useState(false);
   const board = boards.find((entry) => entry.id === boardId);
   const openBoard = (entry: BoardMeta) => {
@@ -100,47 +103,49 @@ function BoardsContent({ boardId }: { boardId?: string }) {
           </Button>
           {board ? (
             <>
-              <h1 {...stylex.props(boardStyles.title)}>{board.name}</h1>
-              <p>{board.purpose}</p>
-              <h2>{t('boards.coordinator', 'Coordinator')}</h2>
-              <div {...stylex.props(boardStyles.card)}>
-                {coordinator ? (
-                  <BoardSessionRow
-                    session={coordinator}
-                    localProjects={localProjectsByMachine.get(coordinator.machineId)}
-                    depth={0}
-                    onOpen={() => openSession(coordinator)}
-                  />
-                ) : (
-                  <p {...stylex.props(boardStyles.preview)}>
-                    {t('boards.coordinatorUnavailable', 'Coordinator unavailable or archived.')}
-                  </p>
-                )}
+              <div {...stylex.props(boardStyles.controls)}>
+                <h1 {...stylex.props(boardStyles.title)}>{board.name}</h1>
+                <Button variant="ghost" onClick={() => setNotesOpen(!notesOpen)}>
+                  {t('boards.notes', 'Shared notes')}
+                </Button>
               </div>
-              <h2>{t('boards.threads', 'Threads')}</h2>
-              {threads.length === 0 ? (
-                <p {...stylex.props(boardStyles.muted)}>
-                  {t('boards.noThreads', 'Sessions created by the coordinator will appear here.')}
-                </p>
-              ) : null}
-              <div {...stylex.props(boardStyles.card)}>
-                {buildBoardRows(threads).map(({ session, depth }) => (
-                  <BoardSessionRow
-                    key={session.id}
-                    session={session}
-                    localProjects={localProjectsByMachine.get(session.machineId)}
-                    depth={depth}
-                    onOpen={() => openSession(session)}
-                  />
-                ))}
-              </div>
-              {archived.length ? (
-                <details>
-                  <summary>
-                    {t('boards.archived', 'Archived ({{count}})', { count: archived.length })}
-                  </summary>
+              <div {...stylex.props(boardStyles.split)}>
+                <section {...stylex.props(boardStyles.overview)}>
+                  <p>{board.purpose}</p>
+                  <h2>{t('boards.coordinator', 'Coordinator')}</h2>
                   <div {...stylex.props(boardStyles.card)}>
-                    {buildBoardRows(archived).map(({ session, depth }) => (
+                    {coordinator ? (
+                      <BoardSessionRow
+                        session={coordinator}
+                        localProjects={localProjectsByMachine.get(coordinator.machineId)}
+                        depth={0}
+                        onOpen={() => openSession(coordinator)}
+                      />
+                    ) : (
+                      <p {...stylex.props(boardStyles.preview)}>
+                        {t('boards.coordinatorUnavailable', 'Coordinator unavailable or archived.')}
+                      </p>
+                    )}
+                  </div>
+                  <div {...stylex.props(boardStyles.header)}>
+                    <h2>{t('boards.threads', 'Threads')}</h2>
+                    <Button
+                      disabled={board.archivedAtMs !== undefined}
+                      onClick={() => setThreadCreating(true)}
+                    >
+                      {t('boards.newThread', '+ New thread')}
+                    </Button>
+                  </div>
+                  {threads.length === 0 ? (
+                    <p {...stylex.props(boardStyles.muted)}>
+                      {t(
+                        'boards.noThreads',
+                        'Sessions created by the coordinator will appear here.'
+                      )}
+                    </p>
+                  ) : null}
+                  <div {...stylex.props(boardStyles.card)}>
+                    {buildBoardRows(threads).map(({ session, depth }) => (
                       <BoardSessionRow
                         key={session.id}
                         session={session}
@@ -150,8 +155,33 @@ function BoardsContent({ boardId }: { boardId?: string }) {
                       />
                     ))}
                   </div>
-                </details>
-              ) : null}
+                  {archived.length ? (
+                    <details>
+                      <summary>
+                        {t('boards.archived', 'Archived ({{count}})', { count: archived.length })}
+                      </summary>
+                      <div {...stylex.props(boardStyles.card)}>
+                        {buildBoardRows(archived).map(({ session, depth }) => (
+                          <BoardSessionRow
+                            key={session.id}
+                            session={session}
+                            localProjects={localProjectsByMachine.get(session.machineId)}
+                            depth={depth}
+                            onOpen={() => openSession(session)}
+                          />
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
+                </section>
+                {notesOpen ? (
+                  <BoardNotesPanel
+                    key={board.id}
+                    boardId={board.id}
+                    onClose={() => setNotesOpen(false)}
+                  />
+                ) : null}
+              </div>
             </>
           ) : (
             <p>{t('boards.notFound', 'Board not found.')}</p>
@@ -164,6 +194,13 @@ function BoardsContent({ boardId }: { boardId?: string }) {
           onOpen={openBoard}
         />
       )}
+      {threadCreating && board ? (
+        <CreateBoardDialog
+          existingBoard={board}
+          onClose={() => setThreadCreating(false)}
+          onCreated={() => setThreadCreating(false)}
+        />
+      ) : null}
       {creating ? (
         <CreateBoardDialog
           onClose={() => setCreating(false)}

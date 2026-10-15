@@ -1,3 +1,7 @@
+import { LoroRepo } from 'loro-repo';
+import { normalizeBoardMeta } from '@lody/shared';
+import { changeBoardMembership } from '../src/components/boards/board-membership-dialog';
+import { BoardNotesEditor } from '../src/components/boards/board-notes-panel';
 import { buildSessionDoc, openReaderView } from './conversation-view-fixtures';
 import type { ConversationView } from '../src/lib/conversation-view';
 // @vitest-environment jsdom
@@ -222,4 +226,81 @@ describe('board Overview', () => {
       host.remove();
     }
   });
+});
+
+it('joins and removes a session through real metadata without altering its ordinary fields', async () => {
+  const repo = await LoroRepo.create({});
+  const session = makeSession('membership', { boardId: undefined });
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_join',
+    name: 'Join',
+    purpose: 'Ship',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+  });
+  if (!board) throw new Error('Invalid fixture');
+  const runtime = {
+    repo,
+    writer: {
+      upsertDocMeta: (id: string, patch: Record<string, unknown>) => repo.upsertDocMeta(id, patch),
+    },
+  } as Parameters<typeof changeBoardMembership>[0];
+  try {
+    await repo.upsertDocMeta(getSessionRoomId(session.id), session);
+    await changeBoardMembership(runtime, session, board);
+    expect((await repo.getDocMeta(getSessionRoomId(session.id)))?.meta).toMatchObject({
+      title: session.title,
+      boardId: board.id,
+    });
+    await changeBoardMembership(runtime, session);
+    const meta = (await repo.getDocMeta(getSessionRoomId(session.id)))?.meta;
+    expect(meta?.title).toBe(session.title);
+    expect(meta).not.toHaveProperty('boardId');
+    await repo.upsertDocMeta(getSessionRoomId(session.id), {
+      boardId: board.id,
+      boardRole: 'coordinator',
+    });
+    await expect(changeBoardMembership(runtime, session)).rejects.toThrow(
+      'BOARD_COORDINATOR_FIXED'
+    );
+    expect((await repo.getDocMeta(getSessionRoomId(session.id)))?.meta?.boardId).toBe(board.id);
+  } finally {
+    await repo.destroy();
+  }
+});
+
+it('edits and previews shared notes and retains an unsaved draft on write failure', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  let saved = '';
+  const onSave = async (text: string) => {
+    saved = text;
+    throw new Error('disk full');
+  };
+  try {
+    await act(async () => root.render(<BoardNotesEditor notes="# Original" onSave={onSave} />));
+    const input = container.querySelector('textarea')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        input,
+        '# Updated'
+      );
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const button = (label: string) =>
+      [...container.querySelectorAll('button')].find((b) => b.textContent === label)!;
+    await act(async () => button('Preview').click());
+    expect(container.querySelector('h1')?.textContent).toBe('Updated');
+    await act(async () => button('Save notes').click());
+    expect(saved).toBe('# Updated');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('draft is retained');
+    await act(async () => button('Edit').click());
+    expect(container.querySelector('textarea')?.value).toBe('# Updated');
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
 });

@@ -205,7 +205,7 @@ per-device switch.
 
 ## Boards
 
-Settings > Experimental features > Experimental · Sessions > Boards enables
+Settings > Experimental features > Boards enables
 this device's Board navigation. Desktop uses `/boards` and `/boards/$boardId`
 inside the workspace; mobile also offers a Boards tab with the same page.
 Creating a Board selects its coordinator through the Schedule agent controls,
@@ -215,11 +215,12 @@ The choice of agent, Role instance and run config is remembered on the device.
 PR1 provides a read-only Overview: live status, waiting for the user, machine,
 agent, work context, PR/diff hints and recent activity. Expanding a row acquires
 its session document for latest messages and transcript-derived status. The
-coordinator starts expanded and shows its chain depth against the existing
-32-hop limit. Child Tabs and independently opened sessions keep their normal
+coordinator starts expanded and shows its chain depth against the shared
+`LODY_MAX_CHAIN_DEPTH` limit (16). Child Tabs and independently opened sessions keep their normal
 sidebar placement and automatically inherit membership.
 
-The stored round/report rules are not enforced yet. Automatic reports, shared
-notes, handoff and daily digests are later steps in the
+PR2 adds shared notes, Board MCP tools, New thread and Join/Remove actions.
+The stored round/report rules are not enforced yet. Automatic reports, handoff
+and daily digests remain later steps in the
 [Board design](../../specs/project-coordinator/design.md). Disabling the experiment
 hides its surfaces and keeps sessions and Board data intact.

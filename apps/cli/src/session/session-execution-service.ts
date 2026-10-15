@@ -4,6 +4,7 @@ import type { LodyRateLimitsCapability } from 'acp-extension-core';
 import { queryLocalAcpRateLimits, AcpQuotaCleanupError } from '@/agent/acp-runner';
 import type { MachineProviderRateLimitsRefreshResponse } from '@lody/shared';
 import { ProviderQuotaRefreshCache } from './provider-quota-refresh-cache';
+import { getWorkspaceFlockDocId, normalizeBoardMeta, workspaceFlockKeys } from '@lody/shared';
 import {
   type AcpModelControls,
   type AcpSessionNotification,
@@ -6473,6 +6474,21 @@ export class SessionExecutionService {
             self.captureStatusChanged(sessionId, 'initializing', 'git-clone', 'session_create');
           }
 
+          if (existingMeta?.boardId) {
+            yield* self.tryPromise(() =>
+              self.deps.workspaceDocument.syncFlockDocOrThrow(getWorkspaceFlockDocId(workspaceId), {
+                reason: 'board-prompt',
+              })
+            );
+          }
+          const board = existingMeta?.boardId
+            ? normalizeBoardMeta(
+                (yield* self.tryPromise(() =>
+                  self.deps.workspaceDocument.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId))
+                )).flock.get(workspaceFlockKeys.board(existingMeta.boardId))
+              )
+            : null;
+          if (existingMeta?.boardId && !board) throw new Error('BOARD_NOT_FOUND');
           const startPromptBlocksBuild = async (session: ISession) => {
             let branchToRename: string | undefined;
             if (newWorktree) {
@@ -6502,7 +6518,10 @@ export class SessionExecutionService {
                 project,
                 agentConfig.issuePRMentions,
                 fromFeedbackPostId,
-                { branchToRename }
+                {
+                  branchToRename,
+                  boardContext: board ? { board, role: existingMeta?.boardRole } : undefined,
+                }
               ),
             });
             return traceAsync(

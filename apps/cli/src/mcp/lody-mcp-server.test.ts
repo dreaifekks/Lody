@@ -206,8 +206,8 @@ describe('shared Operation store path', () => {
   });
 });
 
-const listPublishedToolNames = async (): Promise<string[]> => {
-  const server = buildLodyMcpServer();
+const listPublishedToolNames = async (boardId?: string): Promise<string[]> => {
+  const server = buildLodyMcpServer({ boardId });
   const client = new Client({ name: 'mcp-catalog-test-client', version: '1.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -244,6 +244,25 @@ describe('Lody MCP tool catalog', () => {
     }
   });
 
+  it('advertises Board tools only for member startups on HTTP and stdio', async () => {
+    expect(
+      (await listPublishedToolNames()).filter((name) => name.startsWith('lody_board_'))
+    ).toEqual([]);
+    const expected = [
+      'lody_board_get',
+      'lody_board_overview',
+      'lody_board_notes_get',
+      'lody_board_notes_append',
+      'lody_board_notes_replace',
+    ];
+    expect(await listPublishedToolNames('bd_member')).toEqual(expect.arrayContaining(expected));
+    vi.stubEnv('LODY_MCP_BOARD_ID', 'bd_member');
+    try {
+      expect(await listPublishedToolNames()).toEqual(expect.arrayContaining(expected));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it('publishes session tools and never advertises a Task family', async () => {
     const names = await listPublishedToolNames();
     expect(names).toContain('lody_feedback');

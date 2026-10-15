@@ -1,3 +1,5 @@
+import { LoroDoc } from 'loro-crdt';
+import { readBoardDocument, writeBoardNotes, BOARD_NOTES_MAX_BYTES } from '../src/board-repository';
 import { describe, expect, it } from 'vitest';
 import { normalizeBoardMeta, deriveBoardSessionStatus } from '../src/board';
 import {
@@ -97,5 +99,38 @@ describe('board status', () => {
       })
     ).toBe('idle');
     expect(deriveBoardSessionStatus({})).toBe('idle');
+  });
+});
+
+describe('shared Board notes', () => {
+  it('merges simultaneous appends from two replicas without losing either section', () => {
+    const a = new LoroDoc();
+    writeBoardNotes(a, { kind: 'replace', text: 'Goal\n', updatedBy: 'user', now: 1 });
+    const b = new LoroDoc();
+    b.import(a.export({ mode: 'snapshot' }));
+    writeBoardNotes(a, { kind: 'append', text: '## A\nresult A\n', updatedBy: 'a', now: 2 });
+    writeBoardNotes(b, { kind: 'append', text: '## B\nresult B\n', updatedBy: 'b', now: 2 });
+    const aChanges = a.export({ mode: 'update' });
+    const bChanges = b.export({ mode: 'update' });
+    a.import(bChanges);
+    b.import(aChanges);
+    expect(readBoardDocument(a)).toEqual(readBoardDocument(b));
+    expect(readBoardDocument(a).notes).toMatch(/^Goal\n/);
+    expect(readBoardDocument(a).notes).toContain('## A\nresult A\n');
+    expect(readBoardDocument(a).notes).toContain('## B\nresult B\n');
+  });
+  it('rejects UTF-8 overflow before modifying text or metadata and permits a reducing replacement', () => {
+    const doc = new LoroDoc();
+    const full = 'x'.repeat(BOARD_NOTES_MAX_BYTES - 2);
+    writeBoardNotes(doc, { kind: 'replace', text: full, updatedBy: 'user', now: 1 });
+    expect(() =>
+      writeBoardNotes(doc, { kind: 'append', text: '看', updatedBy: 'agent', now: 2 })
+    ).toThrow('BOARD_NOTES_CAPACITY');
+    expect(readBoardDocument(doc)).toEqual({
+      notes: full,
+      meta: { updatedBy: 'user', updatedAtMs: 1 },
+    });
+    writeBoardNotes(doc, { kind: 'replace', text: 'short', updatedBy: 'user', now: 3 });
+    expect(readBoardDocument(doc).notes).toBe('short');
   });
 });

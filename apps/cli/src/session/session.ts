@@ -773,6 +773,7 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
           onAgentWarning: callbacks.onAgentWarning,
           loadExternalMcpServers: callbacks.loadExternalMcpServers,
           loadLodyAgentTools: callbacks.loadLodyAgentTools,
+          loadBoardId: callbacks.loadBoardId,
           loadPromptSuggestionsEnabled: callbacks.loadPromptSuggestionsEnabled,
           onPromptSuggestion: callbacks.onPromptSuggestion,
           onImageGenerationBegin: callbacks.onImageGenerationBegin,

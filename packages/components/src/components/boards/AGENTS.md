@@ -18,5 +18,14 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   ConversationView, never a materialized full-history mirror.
 - The experiment gates navigation and the page. Turning it off retains data and
   does not stop ordinary sessions or their membership inheritance.
-- PR1 is read-only except Board/coordinator creation. Reports, notes, handoff,
-  round enforcement and digest scheduling remain separate implementation steps.
+- Manual membership changes affect only the selected Session, clear its generation,
+  and never detach the fixed coordinator. Tab inheritance happens at creation.
+- Board tools are advertised at ACP startup, but the daemon authorizes against
+  current metadata on every call. A header is never membership authority.
+- Notes use one LoroText in `board-<id>` on `<workspace>:bd:<id>`. Each local write
+  checks UTF-8 capacity before mutation; replicas may exceed it after merging
+  concurrent writes. Never truncate a merge; allow a reducing replacement.
+- Only the coordinator (both role and catalog id) or the user may replace notes.
+  Durable local writes do not fail because upload failed.
+- Startup prompts describe implemented capabilities. Board-wide reports, round
+  enforcement, handoff and digest scheduling remain separate implementation steps.

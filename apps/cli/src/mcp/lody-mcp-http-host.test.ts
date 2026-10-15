@@ -4,6 +4,7 @@ import type { Logger } from '@/utils/logger';
 import { createMcpHttpServer } from './lody-mcp-http-host';
 import {
   MCP_HTTP_AGENT_TOOLS_HEADER,
+  buildLodyMcpHttpHeaders,
   MCP_HTTP_MACHINE_ID_HEADER,
   MCP_HTTP_SESSION_ID_HEADER,
   MCP_HTTP_WORKDIR_B64_HEADER,
@@ -211,6 +212,29 @@ describe('MCP HTTP host wire behavior', () => {
         ).result?.tools ?? []
       ).map((tool) => tool.name);
     const AGENT_TOOLS = ['lody_notify_user', 'lody_request_review', 'lody_show_widget'];
+
+    it('carries the startup Board header through the HTTP host to its tool catalog', async () => {
+      const headers = Object.fromEntries(
+        buildLodyMcpHttpHeaders(
+          { url: baseUrl, token: TOKEN },
+          {
+            sessionId: 'session-under-test',
+            workspaceId: 'workspace-under-test',
+            machineId: 'machine-under-test',
+            workdir: '/tmp/workdir',
+            boardId: 'bd_http',
+          }
+        ).map(({ name, value }) => [name.toLowerCase(), value])
+      );
+      expect(await listNames(headers)).toEqual(
+        expect.arrayContaining([
+          'lody_board_get',
+          'lody_board_notes_append',
+          'lody_board_notes_replace',
+        ])
+      );
+      expect((await listNames()).filter((name) => name.startsWith('lody_board_'))).toEqual([]);
+    });
 
     it('lists none of them while the experiments are off', async () => {
       const names = await listNames();

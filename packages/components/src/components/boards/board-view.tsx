@@ -9,6 +9,16 @@ import { toIntlLocaleOrEn } from '@/lib/intl-locale';
 import type { ReactNode } from 'react';
 
 export const boardStyles = stylex.create({
+  split: { display: 'flex', flexWrap: 'wrap', gap: space[4], alignItems: 'flex-start' },
+  overview: { flex: '2 1 500px', minWidth: 0 },
+  notesPanel: {
+    flex: '1 1 300px',
+    minWidth: 0,
+    maxWidth: '100%',
+    padding: space[3],
+    backgroundColor: colors.elevatedBackground,
+    borderRadius: radius.large,
+  },
   page: { padding: space[6], overflow: 'auto', height: '100%', minHeight: 0, color: colors.label },
   header: {
     display: 'flex',

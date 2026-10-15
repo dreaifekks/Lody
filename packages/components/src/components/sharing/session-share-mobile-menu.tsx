@@ -1,5 +1,8 @@
+import { useAtomValue } from 'jotai';
+import { boardEnabledAtom } from '@/atoms/settings';
+import { BoardMembershipDialog } from '../boards/board-membership-dialog';
 import { useState } from 'react';
-import { Share2 } from 'lucide-react';
+import { PanelsTopLeft, Share2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useAppCapability } from '@/lib/app-platform';
 import type { SessionMeta, WorkspaceId } from '@lody/shared';
@@ -21,6 +24,23 @@ export function SessionShareMobileMenu({
 }) {
   const { t } = useTranslation();
   const available = useAppCapability('teamSharing');
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  const [boardOpen, setBoardOpen] = useState(false);
+  const actions = [
+    ...menu.actions,
+    ...(boardsEnabled && session && !session.isArchived && session.boardRole !== 'coordinator'
+      ? [
+          {
+            id: 'board',
+            icon: <PanelsTopLeft />,
+            label: session.boardId
+              ? t('boards.remove', 'Remove from board')
+              : t('boards.join', 'Join board'),
+            onClick: () => setBoardOpen(true),
+          },
+        ]
+      : []),
+  ];
   const [sharing, setSharing] = useState(false);
   const enabled = available && workspaceId !== null && session !== null;
   return (
@@ -30,7 +50,7 @@ export function SessionShareMobileMenu({
         actions={
           enabled
             ? [
-                ...menu.actions,
+                ...actions,
                 {
                   id: 'public-share',
                   icon: <Share2 className="h-3.5 w-3.5" />,
@@ -38,9 +58,12 @@ export function SessionShareMobileMenu({
                   onClick: () => setSharing(true),
                 },
               ]
-            : menu.actions
+            : actions
         }
       />
+      {boardOpen && session ? (
+        <BoardMembershipDialog session={session} onClose={() => setBoardOpen(false)} />
+      ) : null}
       {enabled && sharing && (
         <SessionShareDialog
           workspaceId={workspaceId}

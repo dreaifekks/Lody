@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { BoardNotesEditor } from '../components/boards/board-notes-panel';
 import type { Meta, StoryObj } from '@storybook/react';
 import { BoardListView, BoardSessionRowView } from '../components/boards/board-view';
 import { normalizeBoardMeta, type SessionMeta } from '@lody/shared';
@@ -48,4 +50,21 @@ export const OverviewRows: Story = {
       ))}
     </>
   ),
+};
+
+export const Notes: Story = {
+  args: { boards: [] },
+  render: function NotesStory() {
+    const [notes, setNotes] = useState(
+      '# Release decisions\n\n- Keep the implementation small.\n- Verify the desktop and mobile layouts.'
+    );
+    return (
+      <BoardNotesEditor
+        notes={notes}
+        onSave={async (text) => {
+          setNotes(text);
+        }}
+      />
+    );
+  },
 };

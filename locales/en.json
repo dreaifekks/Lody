@@ -5384,5 +5384,19 @@
   "boards.pullRequest": "Pull request",
   "boards.experimentHelper": "Group sessions around a coordinator and view their progress.",
   "boards.localProject": "Local project",
-  "boards.worktree": "Worktree"
+  "boards.worktree": "Worktree",
+  "boards.notes": "Shared notes",
+  "boards.editNotes": "Edit",
+  "boards.previewNotes": "Preview",
+  "boards.saveNotes": "Save notes",
+  "boards.notesCapacity": "Notes exceed the 256 KiB limit.",
+  "boards.notesSaveFailed": "Could not save notes. Your draft is retained.",
+  "boards.closeNotes": "Close notes",
+  "boards.notesLoadFailed": "Could not load notes.",
+  "boards.remove": "Remove from board",
+  "boards.join": "Join board",
+  "boards.noAvailable": "Create a board first.",
+  "boards.membershipFailed": "Could not change board membership.",
+  "boards.newThread": "+ New thread",
+  "boards.threadHelp": "Choose an agent and describe its task. The session joins this board."
 }

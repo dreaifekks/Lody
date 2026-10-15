@@ -22,6 +22,7 @@ import {
   type AgentRoleInstanceId,
   type BoardMeta,
   type MachineId,
+  type SessionId,
 } from '@lody/shared';
 import { userAtom } from '@/atoms';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
@@ -57,7 +58,9 @@ const lastBoardAgentAtom = atomWithStorage<{
 export function CreateBoardDialog({
   onClose,
   onCreated,
+  existingBoard,
 }: {
+  existingBoard?: BoardMeta;
   onClose: () => void;
   onCreated: (board: BoardMeta) => void;
 }) {
@@ -113,7 +116,7 @@ export function CreateBoardDialog({
   const [rules, setRules] = useState(DEFAULT_BOARD_RULES);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [ids] = useState(() => ({ board: `bd_${uuid()}`, session: uuid() }));
+  const [ids] = useState(() => ({ board: `bd_${uuid()}`, session: uuid() as SessionId }));
   const chooseMachine = (id: MachineId) => {
     const next = pickScheduleAgent({
       landing: { machineId: id },
@@ -129,16 +132,18 @@ export function CreateBoardDialog({
   };
   const create = async () => {
     if (!runtime || !user || !machine || !config || !shownAgent || saving) return;
-    const board = normalizeBoardMeta({
-      version: 1,
-      id: ids.board,
-      name: name.trim(),
-      purpose: purpose.trim(),
-      rules,
-      coordinatorSessionId: ids.session,
-      createdAtMs: Date.now(),
-      createdByUserId: user.id,
-    });
+    const board =
+      existingBoard ??
+      normalizeBoardMeta({
+        version: 1,
+        id: ids.board,
+        name: name.trim(),
+        purpose: purpose.trim(),
+        rules,
+        coordinatorSessionId: ids.session,
+        createdAtMs: Date.now(),
+        createdByUserId: user.id,
+      });
     if (!board) {
       setError(
         t(
@@ -154,9 +159,10 @@ export function CreateBoardDialog({
     }
     setSaving(true);
     setError('');
-    const inputBlocks = [{ type: 'text' as const, text: board.purpose }];
+    const task = existingBoard ? purpose.trim() : board.purpose;
+    const inputBlocks = [{ type: 'text' as const, text: task }];
     const prompt = buildAgentPrompt(
-      board.purpose,
+      task,
       buildAgentPrompt(role?.role.promptPrefix ?? '', config.prompt)
     );
     const selectors = buildAcpSelectorOptions({
@@ -194,10 +200,10 @@ export function CreateBoardDialog({
       return;
     }
     try {
-      const created = await createWorkspaceBoard(runtime, board, () =>
+      const start = () =>
         startSession(
           {
-            sessionId: board.coordinatorSessionId,
+            sessionId: existingBoard ? ids.session : board.coordinatorSessionId,
             userId: user.id,
             machineId: machine.id,
             cliType: config.cliType,
@@ -206,9 +212,9 @@ export function CreateBoardDialog({
             customAcp: config.customAcp,
             runtimeOverrides: config.runtimeOverrides,
             env: config.env,
-            title: board.name,
+            title: existingBoard ? name.trim() : board.name,
             boardId: board.id,
-            boardRole: 'coordinator',
+            ...(existingBoard ? {} : { boardRole: 'coordinator' as const }),
             ...(role
               ? {
                   agentRoleId: role.role.id,
@@ -218,18 +224,19 @@ export function CreateBoardDialog({
               : {}),
           },
           history
-        )
-      );
+        );
+      const created = await (existingBoard ? start() : createWorkspaceBoard(runtime, board, start));
       // The accepted turn already owns dispatch. RPC only accelerates it.
       void requestSessionDispatch(created.sessionId, created.historyEntry.id, {
         inputConfig,
         machineId: machine.id,
       }).catch((cause: unknown) => console.warn('Board coordinator dispatch deferred', cause));
-      setLastAgent({
-        machineId: machine.id,
-        agent: shownAgent,
-        instanceId: role?.instance.id ?? null,
-      });
+      if (!existingBoard)
+        setLastAgent({
+          machineId: machine.id,
+          agent: shownAgent,
+          instanceId: role?.instance.id ?? null,
+        });
       onCreated(board);
     } catch (cause) {
       setError(
@@ -255,9 +262,21 @@ export function CreateBoardDialog({
     >
       <Dialog.Content>
         <Dialog.Header>
-          <Dialog.Title>{t('boards.create', 'New board')}</Dialog.Title>
+          <Dialog.Title>
+            {existingBoard
+              ? t('boards.newThread', '+ New thread')
+              : t('boards.create', 'New board')}
+          </Dialog.Title>
           <Dialog.Description>
-            {t('boards.createHelp', 'Choose a coordinator. Your goal will be its first message.')}
+            {existingBoard
+              ? t(
+                  'boards.threadHelp',
+                  'Choose an agent and describe its task. The session joins this board.'
+                )
+              : t(
+                  'boards.createHelp',
+                  'Choose a coordinator. Your goal will be its first message.'
+                )}
           </Dialog.Description>
         </Dialog.Header>
         <form
@@ -317,43 +336,53 @@ export function CreateBoardDialog({
               }}
             />
           </div>
-          <label {...stylex.props(boardStyles.field)}>
-            {t('boards.maxRounds', 'Rounds per thread')}
-            <Input
-              type="number"
-              min={1}
-              value={rules.maxRoundsPerThread}
-              onChange={(e) => setRules({ ...rules, maxRoundsPerThread: Number(e.target.value) })}
-            />
-          </label>
-          <label {...stylex.props(boardStyles.controls)}>
-            <Switch
-              checked={rules.reportHumanTurns}
-              onCheckedChange={(value) => setRules({ ...rules, reportHumanTurns: value })}
-            />
-            {t('boards.reportHumanTurns', 'Report completed human turns')}
-          </label>
-          <label {...stylex.props(boardStyles.field)}>
-            {t('boards.constraints', 'Executor instructions')}
-            <Textarea
-              value={rules.executorConstraints}
-              onChange={(e) => setRules({ ...rules, executorConstraints: e.target.value })}
-              rows={3}
-            />
-          </label>
-          <p {...stylex.props(boardStyles.muted)}>
-            {t(
-              'boards.rulesLater',
-              'Rules are saved for the upcoming reporting and handoff features.'
-            )}
-          </p>
+          {!existingBoard ? (
+            <>
+              <label {...stylex.props(boardStyles.field)}>
+                {t('boards.maxRounds', 'Rounds per thread')}
+                <Input
+                  type="number"
+                  min={1}
+                  value={rules.maxRoundsPerThread}
+                  onChange={(e) =>
+                    setRules({ ...rules, maxRoundsPerThread: Number(e.target.value) })
+                  }
+                />
+              </label>
+              <label {...stylex.props(boardStyles.controls)}>
+                <Switch
+                  checked={rules.reportHumanTurns}
+                  onCheckedChange={(value) => setRules({ ...rules, reportHumanTurns: value })}
+                />
+                {t('boards.reportHumanTurns', 'Report completed human turns')}
+              </label>
+              <label {...stylex.props(boardStyles.field)}>
+                {t('boards.constraints', 'Executor instructions')}
+                <Textarea
+                  value={rules.executorConstraints}
+                  onChange={(e) => setRules({ ...rules, executorConstraints: e.target.value })}
+                  rows={3}
+                />
+              </label>
+              <p {...stylex.props(boardStyles.muted)}>
+                {t(
+                  'boards.rulesLater',
+                  'Rules are saved for the upcoming reporting and handoff features.'
+                )}
+              </p>
+            </>
+          ) : null}
           {error ? (
             <p role="alert" {...stylex.props(boardStyles.error)}>
               {error}
             </p>
           ) : null}
           <Button type="submit" disabled={saving || !config || !machine}>
-            {saving ? t('boards.creating', 'Creating…') : t('boards.create', 'New board')}
+            {saving
+              ? t('boards.creating', 'Creating…')
+              : existingBoard
+                ? t('boards.newThread', '+ New thread')
+                : t('boards.create', 'New board')}
           </Button>
         </form>
       </Dialog.Content>

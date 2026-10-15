@@ -223,3 +223,13 @@ a fixed, Session/user-bound batch without new work. Pages are bounded to 128 KiB
 individual members return ordered `member-json` fragments. This reader does not grant
 submission permission. Human recovery provenance comes from fixed UI/CLI producers,
 never model tool fields, role or userId.
+
+## Board tools
+
+`board-tools.ts` registers Board get/overview and notes get/append/replace through
+`createSessionToolRegistrar`, so local calls use `session/call-tool` and the daemon repo.
+`x-lody-mcp-board-id` / `LODY_MCP_BOARD_ID` advertises tools at ACP establishment; every
+call reads current Session membership. Replacement also requires the coordinator role
+and matching Board coordinator id. Overview reads bounded metadata/presence rows; inspect
+individual histories for conclusions. Notes use the shared LoroText writer and the daemon's
+existing persistence/sync path. See the [Board design](../../../../specs/project-coordinator/design.md#pr2-implemented).
