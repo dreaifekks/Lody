@@ -121,6 +121,32 @@ describe('SessionHeaderMenu', () => {
     expect(container?.querySelector('[data-testid="fork-result"]')?.textContent).toBe('none');
   }
 
+  it.each([
+    [false, 'Local'],
+    [true, 'Worktree'],
+  ] as const)('shows the owning machine and %s worktree state as %s', async (isWorktree, label) => {
+    await act(async () =>
+      root?.render(
+        <ForkMenuHarness
+          machineName="LAN workstation"
+          session={
+            {
+              ...session,
+              project: { kind: 'local', localProjectId: 'local-project-menu-test' },
+              isWorktree,
+            } as SessionMeta
+          }
+        />
+      )
+    );
+    await openMenu();
+    const machineName = Array.from(document.querySelectorAll('span')).find(
+      (element) => element.textContent === 'LAN workstation'
+    );
+    expect(machineName).toBeDefined();
+    expect(machineName?.parentElement?.textContent).toBe(`Machine: LAN workstation${label}`);
+  });
+
   it('opens the submenu and forks to a new tab', async () => {
     await act(async () => root?.render(<ForkMenuHarness />));
     await openForkMenu();

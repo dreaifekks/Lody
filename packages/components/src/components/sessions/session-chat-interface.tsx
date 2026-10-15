@@ -6811,6 +6811,7 @@ export const SessionChatInterface = memo(
     );
     const headerMenuNode = (
       <SessionHeaderMenu
+        machineName={sessionMachine?.name}
         key={`${workspaceId}:${session.id}`}
         onOpenPublicShare={
           publicShareWorkspaceId ? () => setPublicShareSessionId(session.id) : undefined
@@ -7091,29 +7092,30 @@ export const SessionChatInterface = memo(
                         sessionCompleted={session.status?.type === 'idle' && !isSessionWorking}
                       />
 
-                    {/* Session info bar (desktop AND mobile): the canonical
+                      {/* Session info bar (desktop AND mobile): the canonical
                       cluster + fixed stage row merging status, goal, schedule,
                       and work context, glued to the composer shell. It
                       replaced the mobile status strip / goal banner /
                       in-composer scheduled panel. */}
                       <SessionInfoBar
                         status={statusStripState}
-                      machine={
-                        sessionMachine
-                          ? {
-                              machineId: session.machineId,
-                              name: sessionMachine.name,
-                              ownerName: workspaceMembers.find(
-                                (member) => member.userId === sessionMachine.ownerUserId
-                              )?.name,
-                              isOwn:
-                                !!currentUser?.id && sessionMachine.ownerUserId === currentUser.id,
-                              isCurrent: localMachineId ? isLocalSession : undefined,
-                              onlineStatus: sessionMachineOnlineStatus,
-                            }
-                          : null
-                      }
-                      compactMachineInfo={isMobile}
+                        machine={
+                          sessionMachine
+                            ? {
+                                machineId: session.machineId,
+                                name: sessionMachine.name,
+                                ownerName: workspaceMembers.find(
+                                  (member) => member.userId === sessionMachine.ownerUserId
+                                )?.name,
+                                isOwn:
+                                  !!currentUser?.id &&
+                                  sessionMachine.ownerUserId === currentUser.id,
+                                isCurrent: localMachineId ? isLocalSession : undefined,
+                                onlineStatus: sessionMachineOnlineStatus,
+                              }
+                            : null
+                        }
+                        compactMachineInfo={isMobile}
                         goal={latestGoal}
                         goalCommands={goalCommands}
                         goalPendingCommand={
