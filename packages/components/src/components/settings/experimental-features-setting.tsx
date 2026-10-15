@@ -9,7 +9,6 @@ import {
   experimentalFeaturesEnabledAtom,
   inlineWidgetExperimentEnabledAtom,
   planReviewExperimentEnabledAtom,
-  reviewAgentExperimentEnabledAtom,
   voiceExperimentEnabledAtom,
 } from '@/atoms/settings';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
@@ -17,17 +16,18 @@ import { writeWorkspaceAgentTools } from '@/lib/workspace-catalog-write';
 import { CompactRow, CompactSection } from './compact-layout';
 import { VoiceAgentRows } from './voice-agent-select';
 
+export function ExperimentalFeaturesSection() {
+  const { t } = useTranslation();
+  return <CompactSection title={t('settings.experimental.title', 'Experimental features')}><ExperimentalFeatureRows /></CompactSection>;
+}
+
 /**
  * User-facing experimental features.
  *
- * Unlike the Developer-mode beta section, the master switch is always visible:
- * a feature nobody can find is a feature nobody evaluates. Turning the master
- * switch off hides the features but keeps each opt-in, so flipping it back on
- * restores the previous choices rather than silently resetting them. While it
- * is on, the features follow in two groups: what changes a session, and the
- * tools agents are offered.
+ * Unlike the Developer-mode beta section, the master switch is always visible.
+ * It does not control developer-only features.
  */
-export function ExperimentalFeaturesSection() {
+export function ExperimentalFeatureRows() {
   const { t } = useTranslation();
   const [experimentalEnabled, setExperimentalEnabledAtom] = useAtom(
     experimentalFeaturesEnabledAtom
@@ -37,12 +37,10 @@ export function ExperimentalFeaturesSection() {
     setExperimentalEnabledAtom(value);
     syncAgentTools();
   };
-  const [reviewAgentEnabled, setReviewAgentEnabled] = useAtom(reviewAgentExperimentEnabledAtom);
   const [voiceEnabled, setVoiceEnabled] = useAtom(voiceExperimentEnabledAtom);
 
   return (
     <>
-      <CompactSection title={t('settings.experimental.title', 'Experimental features')}>
         <CompactRow label={t('settings.experimental.enable', 'Enable experimental features')}>
           <Switch
             checked={experimentalEnabled}
@@ -50,26 +48,10 @@ export function ExperimentalFeaturesSection() {
             aria-label={t('settings.experimental.enable', 'Enable experimental features')}
           />
         </CompactRow>
-      </CompactSection>
 
       {experimentalEnabled ? (
         <>
-          <CompactSection
-            title={t('settings.experimental.sessionsTitle', 'Experimental · Sessions')}
-          >
-            <CompactRow
-              label={t('settings.experimental.reviewAgent', 'Review agent')}
-              helper={t(
-                'settings.experimental.reviewAgentHelper',
-                'Let a review agent check a branch, hand fixes back to the session, and merge once CI is green. You choose per session.'
-              )}
-            >
-              <Switch
-                checked={reviewAgentEnabled}
-                onCheckedChange={setReviewAgentEnabled}
-                aria-label={t('settings.experimental.reviewAgent', 'Review agent')}
-              />
-            </CompactRow>
+
             <CompactRow
               label={t('settings.experimental.voice', 'Voice')}
               helper={t(
@@ -84,10 +66,7 @@ export function ExperimentalFeaturesSection() {
               />
             </CompactRow>
             {voiceEnabled ? <VoiceAgentRows /> : null}
-          </CompactSection>
-          <CompactSection
-            title={t('settings.experimental.agentToolsTitle', 'Experimental · Agent tools')}
-          >
+
             <AgentToolRow
               atom={agentNotifyExperimentEnabledAtom}
               label={t('settings.experimental.agentNotify', 'Notifications from agents')}
@@ -112,7 +91,6 @@ export function ExperimentalFeaturesSection() {
                 'Agents can draw clickable diagrams and charts in the conversation. Clicking one asks about it in a side chat.'
               )}
             />
-          </CompactSection>
         </>
       ) : null}
     </>

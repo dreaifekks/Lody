@@ -26,6 +26,7 @@ export interface SessionConfig {
   agentCliType: AgentConfigCliType;
   agentType: string;
   /** Config selected by the driving turn and carried into ACP session startup. */
+  modelId?: SessionTurnInputConfig['modelId'];
   configOptionValues?: SessionTurnInputConfig['configOptionValues'];
   /** Selection carried by the dispatching turn; ACP startup must not re-read history for it. */
   memory?: import('@lody/shared').MemoryBinding;
@@ -34,18 +35,12 @@ export interface SessionConfig {
   customAcp?: CustomAcpLaunchSpec;
   /** Advanced runtime binary override for builtin Claude/Codex. */
   runtimeOverrides?: BuiltinRuntimeOverrides;
+  magpieGatewayUrl?: string;
   project?: ProjectRef;
   // undefined means create a new session
   sessionId?: SessionId;
   // promptBuildConfig: PromptBuildConfig;
   env?: Record<string, string>;
-  /** Runtime-only policy, derived from the driving requester (never environment flags). */
-  githubCredentialPolicy?: {
-    allowLocalAuth: boolean;
-    /** Requester enabled "Act as you"; commits and credentials prefer their identity. */
-    personalEnabled?: boolean;
-    stateFilePath?: string;
-  };
   assumeDocExisting?: boolean;
   // for local session
   title?: string;

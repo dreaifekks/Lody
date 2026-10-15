@@ -87,9 +87,8 @@ export type AgentRoleRunConfigIssue =
 /**
  * Which parts of a saved run config the selected agent no longer supports.
  *
- * Reported rather than repaired. A Role whose model disappeared must say so and
- * stay unavailable until its owner picks a new one — quietly substituting the
- * agent's default is the failure mode this feature exists to avoid.
+ * Opening the editor reports rather than repairs. Explicit Save reconciles option
+ * controls; a missing model or mode stays pinned until the owner selects a new one.
  */
 export const findAgentRoleRunConfigIssues = (
   runConfig: AgentRoleRunConfig,
@@ -170,3 +169,18 @@ export const describeAgentRoleRunConfigIssue = (
 export const selectAuthorableAgentRoleConfigOptions = <T extends { configId: string }>(
   selectors: readonly T[]
 ): T[] => selectors.filter((selector) => !isSensitiveAgentRoleConfigOptionKey(selector.configId));
+
+/** Reconcile each instance only on an explicit Save with authoritative capabilities. */
+export const prepareAgentRoleInstanceForSave = (
+  value: AgentRoleFormInstance,
+  selectorOptions: AcpSelectorOptions | null | undefined
+): AgentRoleFormInstance => {
+  if (selectorOptions?.capabilityAuthority !== 'authoritative') return value;
+  return { ...value, configOptionValues: Object.fromEntries(
+    selectAuthorableAgentRoleConfigOptions(selectorOptions.configOptionSelectors).map(selector => [
+      selector.configId,
+      isConfigOptionValueValid(selector, value.configOptionValues[selector.configId])
+        ? value.configOptionValues[selector.configId] : selector.currentValue,
+    ])
+  ) };
+};

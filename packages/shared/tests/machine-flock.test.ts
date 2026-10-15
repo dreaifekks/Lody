@@ -33,6 +33,7 @@ import {
 } from '../src/machine-flock';
 import {
   getRateLimitEntryKey,
+  parseRateLimitEntryKey,
   getAcpCapabilityCacheKey,
   type AgentConfigId,
   type LocalProjectId,
@@ -427,6 +428,7 @@ describe('machine Flock helpers', () => {
         name: 'Codex',
         cliType: 'builtin',
         agentType: 'codex',
+        magpieGatewayUrl: 'http://127.0.0.1:3425',
         env: {},
         prompt: '',
       },
@@ -582,6 +584,25 @@ describe('machine Flock helpers', () => {
     });
   });
 
+  it('round-trips arbitrary ACP provider names through scoped quota rows', () => {
+    const flock = new FakeMachineFlock();
+    const configId = 'example-provider' as AgentConfigId;
+    const agentType = 'example::custom/agent';
+    const key = machineFlockKeys.rateLimit(configId, agentType, 'weekly');
+    const value = { limitId: 'weekly', scope: { providerId: 'example' }, windows: [] };
+    writeMachineFlockRowToFlock(flock, { key, value });
+    const limits = getMachineFlockRateLimits(
+      readMachineFlockRowsFromFlock(flock, { families: ['rateLimit'] })
+    );
+    const entryKey = getRateLimitEntryKey(agentType, 'weekly', configId);
+    expect(limits[entryKey]).toEqual(value);
+    expect(parseRateLimitEntryKey(entryKey)).toEqual({
+      agentConfigId: configId,
+      cliType: agentType,
+      limitId: 'weekly',
+    });
+  });
+
   it('extracts rate limit rows', () => {
     const configId = 'config-codex' as AgentConfigId;
     const row = {
@@ -602,7 +623,7 @@ describe('machine Flock helpers', () => {
     });
   });
 
-  it('keeps Antigravity provider rate limits and drops other registry agent types', () => {
+  it('keeps Antigravity and other declared provider rate-limit keys', () => {
     const configId = 'config-antigravity' as AgentConfigId;
     const row = {
       key: machineFlockKeys.rateLimit(configId, 'antigravity-acp', 'gemini'),
@@ -616,6 +637,7 @@ describe('machine Flock helpers', () => {
       )
     ).toEqual({
       [getRateLimitEntryKey('antigravity-acp', 'gemini', configId)]: row.value,
+      [getRateLimitEntryKey('gemini', 'gemini', configId)]: foreign.value,
     });
   });
 

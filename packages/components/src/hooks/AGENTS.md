@@ -12,6 +12,11 @@ Parent AGENTS apply. Edit `AGENTS.md`, not its `CLAUDE.md` symlink. Background: 
 - A cached session renders in the frame after its click: no promise tick,
   effect-only state or deferred setState before its first cycle.
 
+## GitHub PR access
+
+- Public PR reads grant no hosted write access and never reuse authenticated
+  caches. Known repository IDs must match.
+
 ## Sharing errors
 
 - Keep error operation context independent of React progress state (which resets in
@@ -19,6 +24,16 @@ Parent AGENTS apply. Edit `AGENTS.md`, not its `CLAUDE.md` symlink. Background: 
   never display raw errors or claim a lost mutation response proves failure.
 
 ## Session, auth, and app shell
+
+- Authenticated cloud queries share one subscription/retry budget per client,
+  session and arguments. Retry only opaque server failures; return loading instead
+  of stale access rows, then throw on exhaustion. Keep auth recovery separate and
+  crash-screen recovery user initiated. [Implementation](README.md#cloud-query-recovery).
+
+- Cloud auth recovery has a per-session attempt budget and per-attempt deadline.
+  Loading/visibility transitions must not reset it; exhausted recovery requires
+  explicit retry or sign-in. Preserve mounted routes and local data.
+  [Contract](../../../../specs/auth-recovery.md).
 
 - Session ACP catalogs use the bound Provider's runtime overrides.
 

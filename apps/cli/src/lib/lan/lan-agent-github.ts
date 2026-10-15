@@ -2,8 +2,9 @@
 // none gets the token the LAN host keeps: `gh` reads it from GH_TOKEN, and Git
 // asks a credential helper placed after every helper the machine configured,
 // so credentials Git already finds on the machine still win.
-import { execFile } from 'node:child_process';
-import { getLoginShellEnv } from '@/agent/login-shell-env';
+import { runCommandTextLegacy } from '@lody/shared/node/process';
+import { toShared } from '@/platform/process-options';
+import { getLoginShellEnvLegacy } from '@/agent/login-shell-env';
 import { getGhTokenFingerprint, LODY_MANAGED_GH_TOKEN_SHA256_ENV } from '@/lib/gh-token-env';
 
 /** A login or logout on the machine is seen within this long. */
@@ -24,15 +25,18 @@ export type GhLoginProbe = () => Promise<boolean>;
  * shell's environment so a daemon started outside a shell finds `gh` as agents do.
  */
 export const readGhAuthToken = async (): Promise<string | null> => {
-  const env = { ...process.env, ...(await getLoginShellEnv()) };
-  return await new Promise((resolve) => {
-    execFile(
-      'gh',
-      ['auth', 'token', '--hostname', 'github.com'],
-      { env, timeout: GH_TIMEOUT_MS, windowsHide: true },
-      (error, stdout) => resolve((!error && String(stdout).trim()) || null)
-    );
-  });
+  const env = { ...process.env, ...(await getLoginShellEnvLegacy()) };
+  const result = await runCommandTextLegacy(
+    {
+      command: 'gh',
+      args: ['auth', 'token', '--hostname', 'github.com'],
+      env,
+      timeout: GH_TIMEOUT_MS,
+      check: 'none',
+    },
+    toShared()
+  ).catch(() => null);
+  return result?.code === 0 ? result.stdout.trim() || null : null;
 };
 
 const runGhAuthToken = async (): Promise<boolean> => (await readGhAuthToken()) !== null;

@@ -20,6 +20,51 @@ been removed.
   handlers.
 - `README.md` — package smoke-test notes.
 
+## History readiness and error provenance
+
+History RPC verifies session identity, owning machine and the persisted Roost backend
+before opening storage. Its CLI readiness kernel subscribes and snapshots at one Repo
+boundary; missing/partial metadata waits for that session only, with a ten-second
+deadline and cancellation on shutdown. Confirmed foreign/deleted owners fail immediately.
+This handles metadata and request streams arriving independently without a Repo-wide flush.
+
+History failures projected by the client retain `rpcFailure` provenance, code, request
+ID and target machine. It is a client-only field, never part of an encrypted history
+result. Request append failures and response timeouts are transport failures with
+potentially unknown write outcomes; the renderer does not send users to owner-local
+storage logs for them. Owner storage errors keep their existing safe diagnostic string.
+Server metadata refusals keep a stable RPC error code and log request-correlated,
+content-free ownership context. No failure authorizes replay or backend fallback.
+
+The request stream can replay unexpired requests after server restart. The CLI saves
+history precondition refusals in a separate machine-local SQLite store before replying,
+then returns that saved refusal on replay even if metadata became ready. Records bind
+workspace, machine, request ID and a hash of the complete request; they contain no history
+payload or credentials and expire with the original request. A new request ID can retry.
+Writable history requires this injected store, and lookup/save failures fail closed.
+Identical concurrent history requests share one handler; conflicting reuse of an ID is
+rejected. Expiry and server stop are checked again after metadata readiness, before
+history handoff. Dispatched write outcomes retain their existing recovery policy.
+
+`sessionInputAcceptance` version 1 adds `accept_input` and the read-only
+`inputAcceptance` query. The source keeps the original prepared input and target;
+the owner binds its immutable fingerprint to the history mutation atomically.
+An absent query result remains unknown, but delivering that identical input
+again is safe because the receipt wins over current placement. The CLI searches
+retained history generations before accepting it, including receipts for removed
+history. Request IDs can change; input IDs and content cannot. This capability
+does not grant history access, confirm execution, or permit steer replay.
+
+Ordinary input additionally negotiates `sessionInputDispatch` version 1 for
+`accept_input_and_dispatch`. The owner records trusted human provenance, accepts
+immutable history and publishes guarded activation in its existing writer queue;
+the host wakes its history dispatcher without waiting for Agent execution. The
+source uses this receipt for delivery feedback without history readback or another
+dispatch request. Recovery repeats the same immutable combined operation, retaining
+the existing identity, membership and metadata guards. Plain acceptance and guide
+application keep their separate contracts. See the
+[owner protocol](../../apps/cli/src/session/README.md#immutable-input-acceptance).
+
 ## Remote lifecycle acknowledgements
 
 For accepted restart/upgrade responses, `settleMachineLifecycleResponse` attempts

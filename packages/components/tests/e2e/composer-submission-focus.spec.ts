@@ -567,3 +567,199 @@ test.describe('composer selector leading column', () => {
     });
   }
 });
+
+test('a previous queued edit acknowledgement preserves the next edit and its focus', async ({
+  page,
+}) => {
+  await page.goto('/iframe.html?id=sessions-messagequeuedisplay--deferred-editing&viewMode=story');
+  await page.getByRole('button', { name: 'Edit queued message', exact: true }).first().click();
+  const input = page.getByRole('textbox', { name: 'Edit queued message', exact: true });
+  await input.fill('Refactor the queue; preserve existing ordering.');
+  await page.getByRole('button', { name: 'Edit queued message', exact: true }).click();
+  await expect(input).toHaveValue(
+    'Add tests for the Loro mirror schema migrations around session history'
+  );
+  await input.fill('Add regression tests for message ordering and cancellation.');
+  await page.evaluate(() => window.dispatchEvent(new Event('storybook:release-queue-save')));
+  await expect(input).toHaveValue('Add regression tests for message ordering and cancellation.');
+  await expect(input).toBeFocused();
+  await input.press('Enter');
+  await expect(input).toHaveCount(0);
+  await expect(
+    page.getByText('Refactor the queue; preserve existing ordering.', { exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByText('Add regression tests for message ordering and cancellation.', { exact: true })
+  ).toBeVisible();
+});
+
+test.describe('question request recovery', () => {
+  test('shows a failed answer, retains its fields, and accepts the unchanged retry', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      const writes: unknown[] = [];
+      (window as typeof window & { questionWrites: unknown[] }).questionWrites = writes;
+      window.addEventListener('storybook:question-write', (event) =>
+        writes.push((event as CustomEvent).detail)
+      );
+    });
+    for (const width of [390, 1000]) {
+      await page.setViewportSize({ width, height: 650 });
+      await page.goto(
+        '/iframe.html?id=sessions-floatingpermissionrequest--question-send-recovery&viewMode=story'
+      );
+      const choice = page.getByRole('button', { name: 'Small change', exact: true });
+      const note = page.getByRole('textbox', { name: 'Additional context', exact: true });
+      await choice.click();
+      await note.fill('Keep the public API stable.');
+      const submit = page.getByRole('button', { name: 'Submit', exact: true });
+      await submit.click();
+      await expect(page.getByRole('alert')).toHaveText(
+        "Your answer didn't reach the agent. Try again."
+      );
+      await expect(choice).toHaveAttribute('aria-pressed', 'true');
+      await expect(note).toHaveValue('Keep the public API stable.');
+      await expect(submit).toBeEnabled();
+      const card = await note.evaluate((node) => {
+        const bounds = node.closest('label')!.parentElement!.getBoundingClientRect();
+        return { x: bounds.x, y: bounds.y, right: bounds.right, bottom: bounds.bottom };
+      });
+      const feedback = await page.getByRole('alert').boundingBox();
+      const action = await submit.boundingBox();
+      expect(feedback).not.toBeNull();
+      expect(action).not.toBeNull();
+      expect(feedback!.x).toBeGreaterThanOrEqual(card.x);
+      expect(feedback!.x + feedback!.width).toBeLessThanOrEqual(card.right);
+      expect(feedback!.y).toBeGreaterThanOrEqual(card.y);
+      expect(feedback!.y + feedback!.height).toBeLessThanOrEqual(card.bottom);
+      expect(feedback!.y + feedback!.height).toBeLessThanOrEqual(action!.y);
+
+      await submit.click();
+      await expect(page.getByText('Which constraints matter?', { exact: true })).toBeVisible();
+      await expect(page.getByRole('alert')).toHaveCount(0);
+      const writes = await page.evaluate(
+        () => (window as typeof window & { questionWrites: unknown[] }).questionWrites
+      );
+      expect(writes).toEqual([
+        { requestId: 'request-approach', accepted: false },
+        {
+          requestId: 'request-approach',
+          accepted: true,
+          outcome: {
+            outcome: 'selected',
+            optionId: 'answer',
+            _meta: {
+              lody: {
+                elicitation: {
+                  version: 1,
+                  answers: {
+                    approach: 'Small change',
+                    approach_note: 'Keep the public API stable.',
+                  },
+                },
+              },
+            },
+          },
+        },
+      ]);
+    }
+  });
+
+  for (const touch of [false, true]) {
+    test.describe(`request navigation touch=${touch}`, () => {
+      test.use({ hasTouch: touch });
+      test('keeps independent drafts and removes each form after its answer is accepted', async ({
+        page,
+      }) => {
+        await page.goto(
+          '/iframe.html?id=sessions-floatingpermissionrequest--parallel-questions&viewMode=story'
+        );
+        const press = async (locator: import('@playwright/test').Locator) =>
+          touch ? locator.tap() : locator.click();
+        const custom = page.getByRole('textbox', { name: 'Type a custom answer...', exact: true });
+        const note = page.getByRole('textbox', { name: 'Additional context', exact: true });
+        await custom.fill('Use a small, reversible change.');
+        await note.fill('Keep the public API stable.');
+        await press(page.getByRole('button', { name: 'Next request', exact: true }));
+        await expect(page.getByText('Which constraints matter?', { exact: true })).toBeVisible();
+        await press(page.getByRole('button', { name: 'Offline', exact: true }));
+        await press(page.getByRole('button', { name: 'Compatibility', exact: true }));
+        await note.fill('Must work without network access.');
+        await press(page.getByRole('button', { name: 'Previous request', exact: true }));
+        await expect(custom).toHaveValue('Use a small, reversible change.');
+        await expect(note).toHaveValue('Keep the public API stable.');
+        await press(page.getByRole('button', { name: 'Submit', exact: true }));
+        await expect(page.getByText('Which approach should we use?', { exact: true })).toHaveCount(
+          0
+        );
+        await expect(page.getByRole('button', { name: 'Offline', exact: true })).toHaveAttribute(
+          'aria-pressed',
+          'true'
+        );
+        await expect(
+          page.getByRole('button', { name: 'Compatibility', exact: true })
+        ).toHaveAttribute('aria-pressed', 'true');
+        await expect(note).toHaveValue('Must work without network access.');
+        await press(page.getByRole('button', { name: 'Submit', exact: true }));
+        await expect(page.getByRole('textbox')).toHaveCount(0);
+        await expect(page.locator('textarea,input')).toHaveCount(0);
+      });
+    });
+  }
+
+  test('retains a question draft across an ordinary permission prompt and cancellation', async ({
+    page,
+  }) => {
+    await page.goto(
+      '/iframe.html?id=sessions-floatingpermissionrequest--mixed-requests&viewMode=story'
+    );
+    const choice = page.getByRole('button', { name: 'Small change', exact: true });
+    const note = page.getByRole('textbox', { name: 'Additional context', exact: true });
+    await choice.click();
+    await note.fill('Keep the public API stable.');
+    await page.getByRole('button', { name: 'Next request', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Allow once', exact: true })).toBeVisible();
+    await expect(page.getByRole('textbox')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Previous request', exact: true }).click();
+    await expect(choice).toHaveAttribute('aria-pressed', 'true');
+    await expect(note).toHaveValue('Keep the public API stable.');
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.getByText('Which approach should we use?', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Allow once', exact: true })).toBeVisible();
+  });
+});
+
+for (const imeSignal of [{ isComposing: true }, { keyCode: 229 }, { which: 229 }]) {
+  test(`custom question answer retains IME candidate confirmation ${JSON.stringify(imeSignal)}`, async ({
+    page,
+  }) => {
+    await page.goto(
+      '/iframe.html?id=sessions-askuserquestioncard--legacy-custom-answer&viewMode=story'
+    );
+    const input = page.getByRole('textbox', { name: 'Type a custom answer...', exact: true });
+    await input.fill('保留现有接口，先修改队列编辑。');
+    const prevented = await input.evaluate((node, signal) => {
+      const event = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+        ...signal,
+      });
+      // Chromium derives `which` from keyCode and ignores it in KeyboardEventInit.
+      // Override the readonly field to exercise the legacy native-event signal.
+      if (signal.which !== undefined)
+        Object.defineProperty(event, 'which', { value: signal.which });
+      node.dispatchEvent(event);
+      return event.defaultPrevented;
+    }, imeSignal);
+    expect(prevented).toBe(false);
+    await expect(page.getByText('Answered', { exact: true })).toHaveCount(0);
+    await expect(input).toBeEnabled();
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue('保留现有接口，先修改队列编辑。');
+    await input.press('Enter');
+    await expect(page.getByText('Answered', { exact: true })).toBeVisible();
+    await expect(input).toHaveValue('保留现有接口，先修改队列编辑。');
+  });
+}

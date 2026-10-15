@@ -1,4 +1,5 @@
-import { spawnSync } from 'node:child_process';
+import { runCommandTextSyncLegacy } from '@lody/shared/node/process';
+import { toShared } from '@/platform/process-options';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -788,11 +789,16 @@ async function readStdin(): Promise<string> {
 }
 
 function readGhLoginToken(): string {
-  const result = spawnSync('gh', ['auth', 'token', '--hostname', 'github.com'], {
-    encoding: 'utf8',
-    timeout: 10_000,
-  });
-  const token = result.status === 0 ? result.stdout.trim() : '';
+  const result = runCommandTextSyncLegacy(
+    {
+      command: 'gh',
+      args: ['auth', 'token', '--hostname', 'github.com'],
+      timeout: 10_000,
+      check: 'none',
+    },
+    toShared()
+  );
+  const token = result.code === 0 ? result.stdout.trim() : '';
   if (!token) throw new Error('`gh` on this machine is not logged in to github.com');
   return token;
 }

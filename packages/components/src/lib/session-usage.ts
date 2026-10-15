@@ -1,10 +1,11 @@
+import type { AcpCapabilityCacheEntry } from '@lody/shared';
 import {
   ANTIGRAVITY_AGENT_TYPE,
   CODEX_SPARK_LIMIT_ID,
   hasBuiltinEnvAuthRouting,
+  resolveAgentBrandId,
   normalizePersistedRateLimit,
   parseRateLimitEntryKey,
-  resolveAgentBrandId,
   type AgentConfigCliType,
   type AgentConfigId,
   type AgentConfigMeta,
@@ -119,30 +120,24 @@ export function getContextWindowUsageData(
 }
 
 export function canShowSubscriptionRateLimits({
-  cliType,
+  capability,
   agentType,
+  cliType,
   config,
 }: {
   cliType: AgentConfigCliType;
   agentType: string;
-  config?: Pick<AgentConfigMeta, 'brandId' | 'env'> | null;
+  config?: Pick<AgentConfigMeta, 'brandId' | 'env' | 'codexAuth'> | null;
+  capability?: AcpCapabilityCacheEntry['rateLimits'];
 }): boolean {
-  // Antigravity's quota is read by the daemon from the ACP server's own sign-in.
+  // Antigravity is refreshed by the daemon rather than an ACP quota extension.
   if (cliType === 'registry' && agentType === ANTIGRAVITY_AGENT_TYPE) return true;
-  if (
-    cliType !== 'builtin' ||
-    (agentType !== 'claude' &&
-      agentType !== 'codex' &&
-      agentType !== 'grok' &&
-      agentType !== 'kimi')
-  ) {
-    return false;
-  }
-  if (!config) return true;
-
   return (
-    !hasBuiltinEnvAuthRouting(agentType, config.env) &&
-    !resolveAgentBrandId({ brandId: config.brandId, env: config.env })
+    capability?.version === 1 &&
+    (cliType !== 'builtin' ||
+      (!hasBuiltinEnvAuthRouting(agentType, config?.env) &&
+        !resolveAgentBrandId({ brandId: config?.brandId, env: config?.env }) &&
+        config?.codexAuth?.mode !== 'api-key'))
   );
 }
 

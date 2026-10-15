@@ -96,18 +96,9 @@ describe('General settings sections', () => {
   it('groups experimental features by use and leaves Advanced with clearing the cache', async () => {
     await render(true);
     const titles = sections().map((entry) => entry.title);
-    expect(titles.slice(-4)).toEqual([
-      'Experimental features',
-      'Experimental · Sessions',
-      'Experimental · Agent tools',
-      'Advanced',
-    ]);
-    expect(section('Experimental features')?.switches).toEqual(['Enable experimental features']);
-    expect(section('Experimental · Sessions')?.switches).toEqual(['Review agent', 'Voice']);
-    expect(section('Experimental · Agent tools')?.switches).toEqual([
-      'Notifications from agents',
-      'Plan review',
-      'Interactive widgets',
+    expect(titles.slice(-2)).toEqual(['Experimental features', 'Advanced']);
+    expect(section('Experimental features')?.switches).toEqual([
+      'Enable experimental features', 'Voice', 'Notifications from agents', 'Plan review', 'Interactive widgets',
     ]);
     const advanced = section('Advanced');
     expect(advanced?.switches).toEqual([]);

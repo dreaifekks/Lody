@@ -5,7 +5,9 @@
 //
 // The upstream server has no authentication, so it only ever listens on
 // loopback; the gate is the sole network entry point.
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { startProcessLegacy, runCommandTextSyncLegacy } from '@lody/shared/node/process';
+import { toShared } from '@/platform/process-options';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -77,7 +79,7 @@ export type LanHubUpstream = {
   port: number;
   /** Resolves with the exit code once the upstream is gone. */
   exited: Promise<number | null>;
-  stop(): void;
+  stop(): void | Promise<void>;
 };
 
 export type LanHubServerOptions = {
@@ -184,12 +186,17 @@ function ensureSqliteBinding(loroCliManifestPath: string): void {
     createRequire(loroCliManifestPath).resolve('better-sqlite3/package.json')
   );
   if (fs.existsSync(path.join(sqliteDir, 'build', 'Release', 'better_sqlite3.node'))) return;
-  const result = spawnSync(
-    process.platform === 'win32' ? 'npm.cmd' : 'npm',
-    ['run', 'install', '--silent'],
-    { cwd: sqliteDir, stdio: ['ignore', 'ignore', 'inherit'] }
+  const result = runCommandTextSyncLegacy(
+    {
+      command: process.platform === 'win32' ? 'npm.cmd' : 'npm',
+      args: ['run', 'install', '--silent'],
+      cwd: sqliteDir,
+      timeout: 120_000,
+      check: 'none',
+    },
+    toShared()
   );
-  if (result.status !== 0) {
+  if (result.code !== 0) {
     throw new LanHubUnavailableError(
       `Failed to install the SQLite binding of the Streams server in ${sqliteDir}`
     );
@@ -263,31 +270,36 @@ export const LAN_HUB_STREAMS_GUARD_IMPORT = `data:text/javascript,${encodeURICom
 async function startStreamsServer(options: { dataDir: string }): Promise<LanHubUpstream> {
   const loroCli = resolveLoroCli();
   ensureSqliteBinding(loroCli.manifestPath);
-  const child = spawn(
-    process.execPath,
-    [
-      '--import',
-      LAN_HUB_STREAMS_GUARD_IMPORT,
-      loroCli.binPath,
-      'dev',
-      '--host',
-      '127.0.0.1',
-      '--port',
-      '0',
-      '--protocol',
-      'http1',
-      '--db-path',
-      path.join(options.dataDir, DATABASE_FILE_NAME),
-      '--json',
-    ],
-    { stdio: ['ignore', 'pipe', 'inherit'] }
+  const handle = startProcessLegacy(
+    {
+      command: process.execPath,
+      args: [
+        '--import',
+        LAN_HUB_STREAMS_GUARD_IMPORT,
+        loroCli.binPath,
+        'dev',
+        '--host',
+        '127.0.0.1',
+        '--port',
+        '0',
+        '--protocol',
+        'http1',
+        '--db-path',
+        path.join(options.dataDir, DATABASE_FILE_NAME),
+        '--json',
+      ],
+      processGroup: true,
+      options: { stdio: ['ignore', 'pipe', 'inherit'] },
+    },
+    toShared()
   );
+  const child = handle.child;
   const exited = new Promise<number | null>((resolve) => child.once('exit', resolve));
   try {
     const port = await waitForUpstreamPort(child);
-    return { port, exited, stop: () => void child.kill('SIGTERM') };
+    return { port, exited, stop: () => handle.terminate({ graceMs: 3_000, killWaitMs: 3_000 }) };
   } catch (error) {
-    child.kill('SIGTERM');
+    await handle.terminate({ graceMs: 3_000, killWaitMs: 3_000 });
     throw error;
   }
 }
@@ -673,7 +685,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     shares.close();
     apns.close();
     if (state.kind === 'serving') {
-      state.upstream.stop();
+      await state.upstream.stop();
       await state.upstream.exited;
     }
     if (state.kind === 'handing-over') clearTimeout(state.timer);
@@ -771,7 +783,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     timer.unref?.();
     state = { kind: 'handing-over', timer };
     options.log?.('[handover] A new host asked for this LAN; stopping the Streams server.');
-    upstream.stop();
+    await upstream.stop();
     await upstream.exited;
     // A share being committed lands before its files are read.
     await shares.idle();
@@ -870,7 +882,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     }
     state = { kind: 'moved', moved };
     if (previous.kind === 'serving') {
-      previous.upstream.stop();
+      await previous.upstream.stop();
       await previous.upstream.exited;
     }
     if (previous.kind === 'handing-over') clearTimeout(previous.timer);

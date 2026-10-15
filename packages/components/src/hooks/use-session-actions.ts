@@ -1,3 +1,4 @@
+import { useAppCapabilityCheck } from '@/lib/app-platform';
 import type { SessionAttachmentDraft } from '@/lib/session-attachment-draft';
 import { useCallback, useMemo } from 'react';
 import { useCloudMutation } from '@lody/platform/react';
@@ -24,23 +25,33 @@ import {
   getMachineFlockDeleteLocalProjectIds,
   getMachineFlockLocalProjects,
   getSessionRoomId,
+  getSessionCancelRequestMarker,
   machineFlockKeys,
   SessionStatusFactory,
   getLocalProjectHistoryProviderKey,
   getServerNow,
+  LEGACY_SESSION_HISTORY_BACKEND,
+  ROOST_SESSION_HISTORY_BACKEND,
   evaluateSessionCreateQuota,
   formatSessionQuotaRejection,
   isConvexUnauthenticatedError,
   isLoroRepoDocDeleted,
   readMachineFlockRowsFromFlock,
   sanitizeMessageTextSpans,
+  machineSupportsProtocolCapability,
+  MACHINE_PROTOCOL_CAPABILITIES,
+  OPERATION_INBOX_PROTOCOL_VERSION,
 } from '@lody/shared';
 import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { usePostHog } from '@posthog/react';
 // Default import: `debug` is CJS. Named `{ debug }` breaks Vite 8 / TanStack
 // module-runner interop used by site-docs SSR (UNEXPECTED named-export error).
 import debug from 'debug';
-import { activeWorkspaceRuntimeAtom, type WorkspaceRuntime } from '@/atoms/runtime';
+import {
+  activeWorkspaceRuntimeAtom,
+  type SessionDocDraft,
+  type WorkspaceRuntime,
+} from '@/atoms/runtime';
 import {
   clearSessionRunConfigDraftsAtom,
   sessionRunConfigDraftAccountAtom,
@@ -58,6 +69,7 @@ import {
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
 import { sendIpc } from '@/lib/electron-ipc-client';
 import { useAuthenticatedConvex } from './use-authenticated-convex';
+import { roostHistoryFeatureEnabledAtom } from '@/atoms/settings';
 import {
   createSessionSubmission,
   type CreateSessionResult,
@@ -259,6 +271,7 @@ export type SessionActions = {
   /** Delete exactly the supplied Sessions without discovering related Sessions. */
   deleteSessions: (sessionIds: SessionId[]) => Promise<void>;
   archiveSession: (sessionId: SessionId) => Promise<void>;
+  setTreeCollaborationStopped: (sessionId: SessionId, stopped: boolean) => Promise<void>;
   setSessionTabClosed: (sessionId: SessionId, closed: boolean) => Promise<void>;
   restoreSession: (sessionId: SessionId) => Promise<void>;
   deleteArchivedSession: (sessionId: SessionId) => Promise<void>;
@@ -351,6 +364,10 @@ export async function touchSessionActivityMeta(
 
 export function useSessionActions(): SessionActions {
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
+  const roostHistoryRequested = useAtomValue(roostHistoryFeatureEnabledAtom);
+  const supports = useAppCapabilityCheck();
+  const lanPlatform = supports('lanSharing') && !supports('teamSharing');
+  const roostHistoryEnabled = roostHistoryRequested && !lanPlatform;
   const setDocMetaByRoomId = useSetAtom(setDocMetaByRoomIdAtom);
   const store = useStore();
   // Convex dedupes identical subscriptions client-side, so this shares the
@@ -414,6 +431,9 @@ export function useSessionActions(): SessionActions {
     () =>
       createSessionSubmission({
         runtime,
+        defaultHistoryBackend: roostHistoryEnabled
+          ? ROOST_SESSION_HISTORY_BACKEND
+          : LEGACY_SESSION_HISTORY_BACKEND,
         assertSessionCreateAllowed,
         recordWorkspaceActivity,
         publishSessionMeta: setDocMetaByRoomId,
@@ -440,6 +460,7 @@ export function useSessionActions(): SessionActions {
       }),
     [
       runtime,
+      roostHistoryEnabled,
       assertSessionCreateAllowed,
       recordWorkspaceActivity,
       setDocMetaByRoomId,
@@ -486,10 +507,22 @@ export function useSessionActions(): SessionActions {
       if (isLoroRepoDocDeleted(existing)) return;
       const meta = existing?.meta as SessionMeta | undefined;
       const machineId = meta?.machineId;
+      const machine = machineId
+        ? await runtime.repo.getDocMeta(getMachineRoomId(machineId))
+        : undefined;
+      const supportsInbox = machineSupportsProtocolCapability(
+        machine?.meta,
+        MACHINE_PROTOCOL_CAPABILITIES.operationInbox,
+        OPERATION_INBOX_PROTOCOL_VERSION
+      );
+      const cancelId = supportsInbox ? crypto.randomUUID() : undefined;
       if (machineId) {
-        // Fast-path RPC is intentionally redundant with the durable meta fallback below.
+        // RPC and the durable control request share an identity, even if either arrives late.
         void runtime
-          .requestSessionCancel(machineId, sessionId, turnId, { timeoutMs: 2_000 })
+          .requestSessionCancel(machineId, sessionId, turnId, {
+            timeoutMs: 2_000,
+            ...(cancelId ? { cancelId } : {}),
+          })
           .then((response) => {
             if (response && !response.success) {
               log('session cancel rpc failed for %s/%s: %s', sessionId, turnId, response.error);
@@ -499,9 +532,16 @@ export function useSessionActions(): SessionActions {
             log('session cancel rpc threw for %s/%s: %o', sessionId, turnId, error);
           });
       }
+      if (cancelId) {
+        await runtime.sendResources.withSessionStore(sessionId, (sessionStore) => {
+          sessionStore.setState((draft: SessionDocDraft) => {
+            draft.cancelRequest = { id: cancelId, turnId };
+          });
+        });
+        await runtime.repo.flush();
+      }
       await runtime.writer.upsertDocMeta(roomId, {
-        // Stop targets the assistant turn currently on screen, not the originating user turn.
-        lastCanceledTurn: turnId,
+        lastCanceledTurn: cancelId ? getSessionCancelRequestMarker(cancelId) : turnId,
       } as Partial<SessionMeta>);
     },
     [runtime]
@@ -737,6 +777,36 @@ export function useSessionActions(): SessionActions {
     [runtime, deleteSessionDocuments]
   );
 
+  const setTreeCollaborationStopped = useCallback(
+    async (sessionId: SessionId, stopped: boolean) => {
+      if (!runtime) throw new Error('Runtime not ready');
+      const targets = await runtime.readSessionOperationTargets(sessionId, 'collaboration');
+      for (const machineId of new Set(targets.map((target) => target.machineId))) {
+        const machine = await runtime.repo.getDocMeta(getMachineRoomId(machineId));
+        if (
+          !machineSupportsProtocolCapability(
+            machine?.meta,
+            MACHINE_PROTOCOL_CAPABILITIES.sessionCollaborationControl
+          )
+        )
+          throw new Error(
+            'Update every machine in this conversation tree before controlling collaboration'
+          );
+      }
+      if (store.get(activeWorkspaceRuntimeAtom) !== runtime) {
+        throw new Error('Workspace changed before controlling collaboration');
+      }
+      // Stop the root first, so late descendants inherit its barrier. Restore it last.
+      for (const target of stopped ? targets : [...targets].reverse()) {
+        await runtime.writer.upsertDocMeta(getSessionRoomId(target.id), {
+          collaborationStopped: stopped,
+        } as Partial<SessionMeta>);
+      }
+      if (stopped) await runtime.pendingSends?.cancelSessions(targets.map((target) => target.id));
+    },
+    [runtime, store]
+  );
+
   const archiveSession = useCallback(
     async (sessionId: SessionId) => {
       log('[session-archive] start', { sessionId });
@@ -884,6 +954,7 @@ export function useSessionActions(): SessionActions {
     markSessionUnread,
     deleteSessions,
     archiveSession,
+    setTreeCollaborationStopped,
     restoreSession,
     deleteArchivedSession,
     setSessionPinned,

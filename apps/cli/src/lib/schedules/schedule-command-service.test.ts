@@ -234,7 +234,10 @@ async function fixture() {
     /** The target machine's record and Agent reach this replica only with a sync. */
     deferTargetToSync: () => {
       agentPresent = false;
-      const manager = context.manager as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      const manager = context.manager as unknown as Record<
+        string,
+        ReturnType<typeof vi.fn<() => Promise<void>>>
+      >;
       manager.syncMetaOrThrow!.mockImplementation(async () => {
         machinePresent = true;
       });

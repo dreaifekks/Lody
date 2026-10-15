@@ -33,12 +33,12 @@
   (`ScheduleDetailToolbar`) is close plus compact icon actions; run history is
   the panel's last section, under the editor (no second drawer). Top-of-pane headers join the Electron drag strip
   (`useWindowDragRegionClass`) with buttons `WINDOW_DRAG_EXEMPT_CLASS`, or the
-  strip swallows their clicks. Saving and closing return to the full list.
+  strip swallows their clicks. Saving and closing return to the full list. Hidden
+  desktop nav: PanelLeft expand at 96px on macOS Electron (Chat Landing/Archive).
 - The editor reuses the composer's parts: one box holds name, a hairline, the
   prompt and, along its bottom, the composer's Agent controls
   (`ScheduleAgentControls` = `DesktopRunConfigMenu` + `DesktopPermissionModeButton`).
-  A picked Role is kept as a reference:
-  [rules](../../../../../apps/cli/src/lib/schedules/AGENTS.md).
+  Roles: [rules](../../../../../apps/cli/src/lib/schedules/AGENTS.md).
   Preserve ACP value types through save; never stringify option values.
   Under the box are the chat landing's context pills — `DesktopMachineMenu`, the
   project chip, the worktree checkbox. Destination and trigger share one card;
@@ -75,11 +75,11 @@
   schedule id + `epoch`, "Start a new chat" = `epoch + 1`, never stored), or a
   picked chat. A chat destination has no project and follows the chat's Agent;
   mismatches are `invalid` issues on the Agent controls / chat row.
-- An agent PROPOSES (`schedule_proposal` notice → `ScheduleProposalNotice`)
-  unless MCP lets it write within its tier; Create on the card is the creation, with
+- Agents propose (`schedule_proposal` → `ScheduleProposalNotice`) or use tier-capped MCP writes.
+  Create on the card persists, with
   `proposalId` as schedule id. Edit reshapes name, prompt and rule in the card
   only (never written back to the notice, so a retried proposal still matches);
-  a created card has no edit. Shared `resolveScheduleProposalTarget` (MCP writes too) defaults to the
+  Created cards are immutable. `resolveScheduleProposalTarget` defaults to the
   proposing conversation; a named Role/Agent/machine/project overrides only that
   part; a named Agent without a Role gets the builtin default mode. Same save
   rule, same gate, trigger on the target machine's clock.

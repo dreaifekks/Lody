@@ -1,7 +1,7 @@
-# Repository guidelines
+# Repository rules
 
-`CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
-Repository map and entry points: [README.md](README.md#repository).
+`CLAUDE.md` symlinks here; edit `AGENTS.md` only.
+[Repository map](README.md#repository).
 
 ## Context and documentation
 
@@ -12,19 +12,39 @@ Repository map and entry points: [README.md](README.md#repository).
 - Specs express intent, docs explain implementation, notes record decisions.
   Distinguish bugs, stale docs, and unimplemented intent using code and evidence;
   never change a Spec to justify a bug.
-- Changed intent/guarantees require a [Spec](specs/AGENTS.md) updated as `draft`.
-  `approved` requires linked human approval of that revision; `outdated` needs
-  review. Only meaning-preserving editorial edits may retain approval.
+- Reserve [Specs](specs/AGENTS.md) for consequential product, architecture, or
+  protocol decisions needing human review. Prefer updating an existing Spec;
+  ordinary fixes and implementation changes do not require a new one.
+  Changes to reviewed intent/guarantees return that Spec to `draft`. `approved`
+  requires linked human approval of that revision; `outdated` needs review.
+  Only meaning-preserving editorial edits may retain approval.
 - Non-trivial work MUST add/update the owning [Agent Note](.agents/notes/AGENTS.md#when-to-write)
   in the same PR; substantial research/design also requires a note without a PR.
-  Only mechanical/local edits without changed decisions are exempt. Link different
-  decisions; proposals stay `proposed`. Read-only tasks report deferred updates.
+  Mechanical edits with unchanged decisions are exempt. Link decisions; proposals
+  stay `proposed`. Read-only tasks report deferred updates.
 - Update affected docs/READMEs. Run `pnpm run docs status` at start and
   `pnpm run docs check` at finish; review SHA-protected changes before confirming.
-  Checks and translations prove neither correctness nor approval. Translation may
-  follow later. Details: [document maintenance](.agents/README.md).
-- Keep binding rules in the nearest `AGENTS.md` (<8 KiB; new scopes need a
+  Checks/translations prove neither correctness nor approval; translation may follow. Details: [document maintenance](.agents/README.md).
+- Keep rules in the nearest `AGENTS.md` (<8 KiB; new scopes need a
   `CLAUDE.md` symlink). Keep explanations and rationale in their owning docs/notes.
+
+## Effect reference
+
+For Effect work, use the [Effect skill](.agents/skills/effect-ts/SKILL.md) to select
+review, debug, feature/fix or migration mode. Read the consuming package's resolved
+`effect/AGENTS.md` once per version in the current context, then relevant links/source.
+Preserve locked versions and behavioral acceptance. Explicit v3 migrations also use
+[the migration skill](.agents/skills/effect-v3-to-v4/SKILL.md).
+
+For feature/fix work, assess a small complete native Effect v4 unit when it helps
+the task, dependencies are ready, and behavior can be verified. Roughly 500 extra
+changed lines is guidance, not an approval gate. Keep pure computation ordinary;
+preserve unrelated behavior and avoid unfinished dependency chains.
+For migration scope, read relevant [charter/ledger](.agents/notes/proposed/architecture/2026-09-27-effect-lifecycle-migration-roadmap.md#unit-ledger)
+and [selection guide](.agents/docs/cli-effect-ts.md#small-migrations-during-feature-and-fix-work).
+Meet the charter's completion criteria. Update the ledger for changed dependencies,
+native boundaries, consumers or ownership. Keep modules cohesive; use the guide's
+responsibility split only when it improves a large mixed module.
 
 ## Repository boundary
 
@@ -35,15 +55,9 @@ Repository map and entry points: [README.md](README.md#repository).
   API declarations. Optional-cloud protocol names/DTOs belong in `packages/cloud-api`;
   shared product code uses `packages/platform` capabilities and ports.
 - The OSS desktop is local-only; authenticated product-cloud requests are forbidden.
-  Public managed-runtime downloads are the exception, as are the public releases a
-  fork build follows. Shared packages stay platform-neutral; local telemetry is
-  hard-disabled.
-- A LAN is a self-hosted hub whose members share one user; its credential never
-  reaches a renderer or a log. Before changing LAN settings, identity, the hub
-  bridge, member terminals, files and folders, requests between members, updates
-  or the fork build, read [LANs](.agents/docs/lan.md). A fork build follows only
-  the releases of the repository that built it, installs only a later build, and
-  checks every file against the release's manifest before anything is replaced.
+  Public runtimes and fork releases are exceptions. Shared packages stay platform-neutral;
+  local telemetry is hard-disabled.
+- Before LAN work, read [LAN rules](packages/platform/AGENTS.md#lans).
 - Before changing composition, capability-gated settings, telemetry, or runtime
   downloads, read [platform contracts](packages/platform/AGENTS.md).
 - Before changing daemon protocol negotiation, MCP/Role catalogs or their UI
@@ -53,6 +67,9 @@ Repository map and entry points: [README.md](README.md#repository).
   artifact and versioned ACP contract. Shared ACP extension contracts belong in the
   public `LodyAI/acp-extension-core` submodule, consumed through the root workspace;
   never duplicate them locally.
+- Magpie: require local desktop confirmation, fixed loopback mappings and public token.
+  Keep gateway metadata outside env and catalogs under Lody data, never user profiles.
+  [Contract](specs/magpie-provider-import.md).
 - Pi provider migration requires owner confirmation and the target's `builtinPi`
   protocol capability. Preserve provider IDs and settings; never convert legacy
   native session IDs. Contract: [builtin Pi](specs/builtin-pi.md).
@@ -80,17 +97,17 @@ Repository map and entry points: [README.md](README.md#repository).
   fixtures; no real sleeps, wall-clock races, network, machine load, or scheduler
   luck. Assert observable behavior, not mock call counts.
 - Delete shallow tests in the changed scope: source-string/regex assertions,
-  mock-call-only checks and duplicates that cannot detect a behavioral regression.
+  mock-call-only checks and ineffective duplicates.
   Test the real boundary and resulting state, including failure paths; retain
   meaningful compile-failure contracts. Extend the owning suite instead of adding
-  a file per small fix. Do not delete behavioral coverage merely to reduce counts.
-- Keep PR documentation compact: update the owning Spec and Note instead of adding
-  incremental fix/run-log documents. Consolidate redundant PR-local notes, retaining
-  decisions, reproducible evidence and unresolved limits; repair inbound links.
-- Keep edits traceable to the request and preserve unrelated work. Prefer explicit
+  a file per small fix. Do not delete behavioral coverage to reduce counts.
+- For future work, follow
+  [documentation consolidation](.agents/AGENTS.md#documentation-at-submission).
+  Update owning docs and Notes; update a Spec only when reviewed intent is affected.
+  Consolidate redundant PR-local notes and repair inbound links.
+- Keep edits request-scoped; preserve unrelated work. Prefer explicit
   contracts over hidden fallbacks; remove only unused code. Update the nearest
   public `AGENTS.md` when an invariant or boundary changes.
-
 
 ## Code Review Rules
 

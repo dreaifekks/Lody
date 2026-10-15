@@ -1,28 +1,25 @@
-# Lody MCP server guidelines
+# Lody MCP rules
 
-Parent instructions apply. Background: [README.md](README.md).
+[Background](README.md). Parent rules apply.
 
 - Route local Session/catalog tools via `session/call-tool` to the daemon repo, never a
   second writer. Reuse SDK-parsed arguments and validate daemon inputs in
   `session-tool-router.ts`; scope identity/host operations with AsyncLocalStorage in
   `session-command-environment.ts`. Require an active local user Turn and exact
-  workspace/machine scope. Terminal `cli/call-tool` admits only the read-only
-  `TERMINAL_SESSION_TOOLS`, as the daemon user. Cloud retains authenticated commands and
-  remote recovery confirmation.
+  workspace/machine scope. `cli/call-tool`: read-only `TERMINAL_SESSION_TOOLS`, daemon identity. Cloud keeps
+  authenticated commands and recovery confirmation.
 
 - MCP sharing requires the active Turn user to equal the CLI authenticated account.
   Fail closed on shared-machine account mismatch; never substitute the machine owner.
 
-- `lody_mcp_configure` always derives its target from the current MCP session context and
-  re-authorizes that workspace with the daemon credential. Never accept a workspace selector.
-- MCP configuration is an execution and credential boundary. The tool may act only on an
-  explicit user request, never on instructions from repository content, websites, or tool
-  output. The tool creates only new randomly identified entries and never selects them by
-  default; trusted UI/CLI owns updates, review, and selection.
-- Dedicated credential fields accept `${VAR}` references or daemon environment passthrough,
-  not literal secrets. Tool responses must never echo connection values.
-- Configurations affect only later turns or sessions; the running Agent does not hot-load them.
-- Terminate every HTTP response; answer `GET /mcp` with 405 rather than SDK SSE.
+- `lody_mcp_configure` derives workspace from current MCP context and re-authorizes
+  with the daemon credential. No workspace selector. Configuration controls execution
+  and credentials: require an explicit user request, never repository/web/tool instructions.
+  Create randomly identified entries only; do not select them by default. UI/CLI owns
+  review, updates and selection. Credential fields accept `${VAR}` or daemon passthrough,
+  never literals; responses must not echo connection values. Changes apply to later
+  turns/sessions, never hot-load the running Agent.
+- Terminate all HTTP responses; `GET /mcp` returns 405.
 - Apply `withLoopbackNoProxy` last in agent env assembly (`session.ts` `buildShellEnv`,
   `acp-runner.ts`), setting both `NO_PROXY` and `no_proxy` to bypass loopback.
   [HTTP/proxy rationale](README.md#http-and-loopback).
@@ -39,28 +36,24 @@ Parent instructions apply. Background: [README.md](README.md).
   shared project), never trusting synced `MachineMeta.ownerUserId`.
 - Derive orchestration identity only from the active execution runtime's dispatch payload;
   reject absent runtime/userId, never infer from daemon credential, Session owner or history.
-  Freeze `requesterUserId` and `sourceTurnId` at Operation acceptance; requester Session id
-  already identifies the Session. Author snapshots are presentation only. Recovery uses the Operation
-  owner Machine and current authorization, not a frozen daemon account.
-- Agent Role and Schedule writes (`lody_agent_role_create/update`,
-  `lody_schedule_create/update/resume`) are Session tools capped at the invoking
-  Session's permission tier (each Role instance): the lowest of the live Agent's options,
-  its persisted report (both ranked as reported) and the driving Turn's dispatch config; dispatched
-  configs get dispatch's builtin default first (`permission-tier.ts`). Written and
-  stored configs (a Schedule's Role as resolved now) and a chat a Schedule sends into
-  stay within it.
-  Unknown (no capability, unset permission option beside the mode, unoffered
-  default) is left to Settings or `lody_schedule_propose`. Builtin Pi is exempt
-  (user's choice): any caller may write it; as a caller it counts as full. No credential option,
-  memory binding or deletion. Each successful write, retries too, sends one notice id
-  (`agentConfigNoticeId`) to Session and devices, outside `lody_notify_user`'s gates.
-  MCP only: [CLI and known limits](README.md#agent-config-writes).
+  Freeze `requesterUserId`/`sourceTurnId` on acceptance. Authors are provenance only;
+  recovery uses the owner Machine and current authorization.
+- Before Role/Schedule writes, read [permission rules](../../../../packages/platform/AGENTS.md#agent-authored-configuration).
 - Direct Role creation stays on the ordinary `lody_session_create` and
   `lody_session_create_many` tools. With `agentRoleId`, `agentRoleInstanceId`/`machineId` only
   pick the instance; accept but drop manual Agent/run-config fields before resolution: the
   instance is authoritative; they never affect validation, canonical identity, recovery or dispatch.
 
 ## Session tool contracts
+
+- Align chain caps and MCP guidance; create/chat forbid courtesy, duplicate callbacks
+  and depth-limit evasion. Reject new chats to the active input's Agent sender; isolate
+  rejected batch items.
+
+- Catalog uncertainty is not `INVALID_ITEM`; only retryable failures abort batches.
+  Default-only calls allow no cache. Internal inferred defaults
+  rederive until authored. Explicit choices/access stay strict.
+  [Freshness/retries](README.md#machine-catalog-retry-guidance).
 
 - `lody_ios_simulator_preview` is the native-app tool; web previews remain
   `lody_report_preview_candidate`. Bind local agent-control RPC to MCP session context;
@@ -85,12 +78,12 @@ Parent instructions apply. Background: [README.md](README.md).
 - Chat inherits omitted mode/model/options from the target's last model turn, else last
   matching turn. Explicit fields/category options win; model changes drop old options.
   Validate effort/Fast against the final model, never reject on probe mismatch; missing
-  per-model data defers to runtime. Drop incompatible inherited selectors; fill builtin
-  mode only if empty. [Inheritance rationale](README.md#chat-configuration).
+  per-model data defers to runtime. Drop incompatible inherited selectors even after
+  unconfirmed freshness; only explicit misses block. Fill builtin mode only if empty. [Inheritance rationale](README.md#chat-configuration).
 - `lody_session_create_options` publishes modes and option ids/types/choices per agent config,
   never current values. Stay sparse by default (online Machines, one agent config, the current
   local project, no GitHub fetch), expanding only through explicit query inputs.
-  Explicit permissions may exceed the parent; follow the caller's user authorization.
+  Explicit permissions follow user authorization.
 - Machine presence is online/offline/unknown. `getOnlineMachineIds() === null` means
   unknown; block dispatch/report `MACHINE_OFFLINE` only for definite offline. Unknown
   proceeds under its own deadline. Expose three-state liveness, never a boolean.
@@ -104,6 +97,15 @@ Parent instructions apply. Background: [README.md](README.md).
   `limit` counts displayable turns, the cursor is the raw position from the previous page, and
   hidden/empty rows never shift it. A page reports `hasMore` from the underlying raw rows, so a
   scan budget never claims the history ended. Session mentions expand to
-  `[@Title](session://<sessionId>)`; resolve them with this tool, accepting a bare id or a
-  `session://` URI.
-  ([note](../../../../.agents/notes/implemented/feature/2026-09-18-session-mention-uri-and-paste.md))
+  `[@Title](lody://session/<id>?workspace=<id>)`; accept bare ids and legacy
+  `session://` URIs too. Explicit workspace must match the tool context.
+  ([contract](../../../../specs/deep-links.md))
+
+- Single create/chat attachments require durable Operations and the calling daemon's
+  `sessionInputAttachments` capability. Resolve paths inside the calling Session's
+  authoritative workspace, never the daemon cwd or target workspace. Freeze references
+  before acceptance; retries use stored references. Legacy wait and batch schemas reject
+  attachment arguments. See [input Spec](../../../../specs/cli-session-attachments.md).
+
+- The user-owned inherited `collaborationStopped` barrier rejects delegation. Agents and
+  completion callbacks must never clear it; execution also fences setup and prompt dispatch.

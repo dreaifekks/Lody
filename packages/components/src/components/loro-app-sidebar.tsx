@@ -1,5 +1,6 @@
 import { parseLanHubRole } from '@lody/shared/lan-hub-role';
 import { openSessionOnModifiedClick } from '@/lib/desktop-window';
+import { buildSessionLink } from '@lody/shared/session-link';
 import { jsonValueEqual } from '@/lib/json-value-equal';
 import { lanMachineNameStyle } from '@/lib/lan-machine-color';
 import { LanConnectionIndicator } from '@/components/lan-connection-indicator';
@@ -31,6 +32,7 @@ import {
   findFreshSessionPresenceState,
   machineSupportsLocalProjectRemovalProtocol,
   resolveProjectGitHubRepo,
+  resolveSessionHistoryBackendKind,
   type LocalProjectId,
   type LocalProjectMeta,
   type LocalProjectWorktreeCleanupPreflightResult,
@@ -79,6 +81,7 @@ import {
 } from '@/atoms';
 import {
   activeWorkspaceRuntimeAtom,
+  workspaceRuntimeInitFailureAtom,
   bugReportDialogOpenAtom,
   joinCommunityDialogOpenAtom,
   currentWorkspaceIdAtom,
@@ -90,7 +93,8 @@ import { useWorkspaceRouteTargetSlug } from '../providers/workspace-route-target
 import { resolveWorkspaceDataScope } from '@/lib/workspace-data-scope';
 
 import { lodyConnectionUiStateAtom } from '@/atoms/control-connection';
-import { localMachineIdAtom } from '@/atoms/local-probe';
+import { lastKnownLocalMachineIdAtom, localMachineIdAtom } from '@/atoms/local-probe';
+import { compareSidebarMachineOrder } from './sidebar-machine-order';
 import { getLocalProjectVisibilityKey } from '@/lib/visible-local-project-index';
 import { selectAndWriteLocalProject } from '@/lib/local-project-import';
 import { importSidebarLocalProject } from '@/components/sidebar-local-project-import';
@@ -964,6 +968,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
           repoFullName={prRepoFullName}
           folderName={projectName}
           machineName={machineName}
+          historyBackend={resolveSessionHistoryBackendKind(session)}
           branchName={session.branchName}
           prStatus={showPr ? prStatus : undefined}
           prCiState={prInfo.ciState}
@@ -1725,6 +1730,7 @@ export function LoroAppSidebar({
 
   const { organizations, activeOrganization, switchOrganization } = useOrganization();
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
+  const runtimeInitFailure = useAtomValue(workspaceRuntimeInitFailureAtom);
   const docMetaScope = useAtomValue(docMetaCacheScopeAtom);
   const organizationsReady = Array.isArray(organizations);
   const expectedWorkspace = useMemo(() => {
@@ -1745,12 +1751,20 @@ export function LoroAppSidebar({
         ? resolveWorkspaceDataScope({
             targetSlug: workspaceSlug,
             runtime,
+            runtimeInitFailure,
             docMetaScope,
             organizationsReady,
             expectedWorkspaceId,
           })
         : null,
-    [docMetaScope, expectedWorkspaceId, organizationsReady, runtime, workspaceSlug]
+    [
+      docMetaScope,
+      expectedWorkspaceId,
+      organizationsReady,
+      runtime,
+      runtimeInitFailure,
+      workspaceSlug,
+    ]
   );
   const workspaceDataReady = workspaceDataScope?.status === 'ready';
   const scopedWorkspaceId = workspaceDataReady ? workspaceDataScope.workspaceId : null;
@@ -1771,6 +1785,7 @@ export function LoroAppSidebar({
     enabled: workspaceDataReady,
   });
   const localMachineId = useAtomValue(localMachineIdAtom);
+  const lastKnownLocalMachineId = useAtomValue(lastKnownLocalMachineIdAtom);
   const onlineMachineIds = useOnlineMachineIds();
   const visibleMachineIds = useMemo(() => Array.from(machineMetaMap.keys()), [machineMetaMap]);
   const pendingLocalProjectRemovals = usePendingLocalProjectRemovals(visibleMachineIds);
@@ -1926,25 +1941,13 @@ export function LoroAppSidebar({
 
   const copySessionUrl = useCallback(
     async (sessionId: string, successMessage: string) => {
-      if (!workspaceSlug) return;
+      if (!workspaceId) return;
       if (typeof window === 'undefined') return;
-      const path = `/${workspaceSlug}/sessions/${sessionId}`;
-      // Construct an absolute web URL even on Electron (where window.location.origin
-      // is a `file://` URL). Falling back to the configured site origin keeps the
-      // copied link openable on any device the user pastes it into.
-      const electronOrigin = isElectronRenderer()
-        ? import.meta.env.VITE_SITE_URL?.trim() || ''
-        : '';
-      const origin =
-        electronOrigin ||
-        (window.location.protocol === 'file:'
-          ? import.meta.env.VITE_SITE_URL?.trim() || ''
-          : window.location.origin);
-      const url = origin ? `${origin}${path}` : path;
+      const url = buildSessionLink({ sessionId, workspaceId });
       await navigator.clipboard.writeText(url);
       toast.success(successMessage);
     },
-    [workspaceSlug]
+    [workspaceId]
   );
 
   const [pendingSessionShare, setPendingSessionShare] = useState<PendingSessionShare | null>(null);
@@ -2468,9 +2471,14 @@ export function LoroAppSidebar({
       .sort((left, right) => {
         const leftMachine = left[1][0]!.machine;
         const rightMachine = right[1][0]!.machine;
-        const byOwner =
-          Number(isTeammateMachine(leftMachine)) - Number(isTeammateMachine(rightMachine));
-        return byOwner || leftMachine.name.localeCompare(rightMachine.name);
+        // A missing CLI snapshot changes available actions, not the machine's
+        // position. The live identity still owns localSection above.
+        return compareSidebarMachineOrder(
+          leftMachine,
+          rightMachine,
+          lastKnownLocalMachineId,
+          userId
+        );
       })
       .map(([machineId, entries]) => {
         const machine = entries[0]!.machine;
@@ -2518,6 +2526,7 @@ export function LoroAppSidebar({
       }),
     }));
   }, [
+    lastKnownLocalMachineId,
     localMachineId,
     localProjectOrder,
     machineMetaMap,
@@ -2587,6 +2596,7 @@ export function LoroAppSidebar({
         sectionLabel: chatsLabel,
         subtitle: null,
         machineName: task.machineName ?? null,
+        historyBackend: task.historyBackend,
         latestMessageAt: task.latestMessageAt,
         isPinned: task.isPinned,
         isWorking: task.isWorking,
@@ -2613,6 +2623,7 @@ export function LoroAppSidebar({
         repoFullName: repoName || null,
         branchName: task.branchName,
         machineName: task.machineName ?? null,
+        historyBackend: task.historyBackend,
         latestMessageAt: task.latestMessageAt,
         isPinned: task.isPinned,
         isWorking: task.isWorking,
@@ -2661,6 +2672,7 @@ export function LoroAppSidebar({
             subtitle: project.name,
             repoFullName: resolveProjectGitHubRepo(session.project) ?? null,
             machineName: section.machineDisplayName,
+            historyBackend: resolveSessionHistoryBackendKind(session),
             owner: resolveSessionAuthor(session),
             latestMessageAt: activity.latestMessageAt,
             isPinned: Boolean(session.isPinned),

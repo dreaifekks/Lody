@@ -1,3 +1,4 @@
+import { bindTestPresenceApplication } from './presence-application-fixture';
 import { resolveSessionMessageAuthor } from '../src/session/message-author';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -70,7 +71,10 @@ describe('local platform zero-cloud integration', () => {
   let cloudConnectionAttempts: number;
   let originalEnv: NodeJS.ProcessEnv;
 
+  let presenceApplication: ReturnType<typeof bindTestPresenceApplication>;
+
   beforeEach(async () => {
+    presenceApplication = bindTestPresenceApplication(createSilentLogger());
     originalEnv = { ...process.env };
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lody-zero-cloud-'));
     cloudConnectionAttempts = 0;
@@ -98,6 +102,7 @@ describe('local platform zero-cloud integration', () => {
   });
 
   afterEach(async () => {
+    await presenceApplication.closeLegacy();
     process.env = originalEnv;
     await new Promise<void>((resolve, reject) => {
       trapServer.close((error) => (error ? reject(error) : resolve()));
@@ -337,7 +342,38 @@ describe('local platform zero-cloud integration', () => {
           }),
         },
       };
-      const chat = await runWithSessionCommandEnvironment(fromTarget, () =>
+      const reverse = await runWithSessionCommandEnvironment(fromTarget, () =>
+        executeDaemonSessionTool({ ...context, sessionId: targetId }, 'lody_session_chat', {
+          operationId: 'rejected-reverse',
+          sessionId,
+          prompt: 'Review completed.',
+        })
+      );
+      expect(reverse.isError).toBe(true);
+      expect(JSON.stringify(reverse)).toContain('REVERSE_CHAT_FORBIDDEN');
+      const humanTurnId = 'independent-human-turn';
+      await doc.sessionData.commands.appendTurn({
+        id: humanTurnId,
+        role: 'user',
+        userId,
+        author: { v: 1, kind: 'human', userId },
+        timestamp: targetInput.timestamp,
+        items: [{ type: 'text', text: 'Send my new follow-up.' }],
+        fileDiff: [],
+        status: 'processing',
+        inputConfig: targetInput.inputConfig,
+      });
+      const freshTarget = {
+        ...fromTarget,
+        host: {
+          ...fromTarget.host,
+          readInvocation: (id: SessionId) => ({
+            ...fromTarget.host.readInvocation(id),
+            sourceTurnId: humanTurnId,
+          }),
+        },
+      };
+      const chat = await runWithSessionCommandEnvironment(freshTarget, () =>
         executeDaemonSessionTool({ ...context, sessionId: targetId }, 'lody_session_chat', {
           operationId: 'reply-to-source',
           sessionId,
@@ -351,7 +387,7 @@ describe('local platform zero-cloud integration', () => {
         userId,
         author: {
           sessionId: targetId,
-          turnId: targetInput.id,
+          turnId: humanTurnId,
           role: { id: 'reviewer', name: 'Reviewer' },
         },
       });
@@ -638,6 +674,8 @@ describe('local platform zero-cloud integration', () => {
         ownerUserId: userId,
       } as Parameters<typeof manager.repo.upsertDocMeta>[1]);
       const sessionId = await manager.createSession(machineId, 'custom', 'claude');
+      const sourceDoc = await manager.getOrCreateSessionDoc(sessionId);
+      await sourceDoc.appendUserTurn({ id: 'source-turn', role: 'user', userId, timestamp: new Date(0).toISOString(), items: [{ type: 'text', text: 'Continue the peer work.' }] });
       // A session on the other machine, in a project this replica has not received yet.
       const peerSessionId = await manager.createSession(peerId, 'custom', 'claude');
       await manager.repo.upsertDocMeta(getSessionRoomId(peerSessionId), {
@@ -1058,129 +1096,31 @@ describe('local platform zero-cloud integration', () => {
         fs.readFile(path.join(String(exported.outputDir), 'sessions', 'index.json'), 'utf8')
       ).resolves.toContain(requester);
       await expect(run({ command: 'export', outputDir: 'relative' })).rejects.toThrow('absolute');
+      const catalog = await manager.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
+      writeWorkspaceAgentRoleToFlock(catalog.flock, {
+        v: AGENT_ROLE_VERSION, id: 'terminal-role' as AgentRoleId, name: 'Terminal reviewer',
+        ownerUserId: userId, visibility: 'private', machineId, agentConfigId: configId,
+        runConfig: {}, promptPrefix: 'Review carefully.', revision: 1, createdAt: 1, updatedAt: 1,
+      });
+      await manager.repo.flush();
+      const attachmentPath = path.join(tempDir, 'terminal-attachment.txt');
+      await fs.writeFile(attachmentPath, 'synthetic attachment');
+      const roleSession = (await run({ command: 'create', prompt: 'Inspect this.',
+        agentRole: 'Terminal reviewer', attach: [attachmentPath] })).sessionId as SessionId;
+      expect(await meta(roleSession)).toMatchObject({ agentRoleId: 'terminal-role', agentConfigId: configId });
+      const roleItems = await userPrompts(roleSession);
+      expect(roleItems[0]).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'text', text: 'Review carefully.\n\nInspect this.' }),
+        expect.objectContaining({ type: 'file', transport: 'local', machineId }),
+      ]));
+      await run({ command: 'chat', sessionId: roleSession, prompt: '', attach: [attachmentPath] });
+      expect((await userPrompts(roleSession))[1]).toEqual([
+        expect.objectContaining({ type: 'file', transport: 'local', machineId }),
+      ]);
+
       expect(cloudConnectionAttempts).toBe(0);
     } finally {
       vi.unstubAllGlobals();
-      await manager.cleanUp({ fast: true, preserveSessionStatus: true });
-    }
-  });
-
-  it('starts and drives an auto review session as the machine, with no hosted account', async () => {
-    applyLocalPlatformEnv();
-    const workspaceId = 'lw_auto_review' as WorkspaceId;
-    const machineId = 'auto-review-desk' as MachineId;
-    const userId = 'local:auto-review';
-    const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
-    const dispatched: SessionId[] = [];
-    let reviewerTurnRunning = false;
-    try {
-      await manager.registerMachine(machineId, {
-        id: machineId,
-        name: 'Desk',
-        ownerUserId: userId,
-      });
-      const configId = await manager.createAgentConfig('custom', 'claude', machineId, 'Synthetic');
-      await manager.repo.flush();
-      const environment = createLocalSessionCommandEnvironment({
-        manager,
-        workspaceId,
-        machineId,
-        machineName: 'Desk',
-        userId,
-        host: {
-          readInvocation: (id) =>
-            reviewerTurnRunning
-              ? {
-                  type: 'session/active-invocation-context',
-                  active: true,
-                  sessionId: id,
-                  requesterUserId: userId,
-                  sourceTurnId: 'review-turn',
-                  inputConfig: { cliType: 'custom', agentType: 'claude' },
-                }
-              : { type: 'session/active-invocation-context', sessionId: id, active: false },
-          readLiveStatus: async (id) => ({ sessionId: id, machineOnline: true, fresh: true }),
-          cancelSession: async () => ({ success: true }),
-          dispatchSession: async (id) => {
-            dispatched.push(id);
-          },
-          githubToken: async () => null,
-        },
-      });
-      const { createSessionResult, resolveTurnDispatchConfig, sendSessionChatResult } =
-        await import('../src/commands/session');
-      const workspace = { id: workspaceId, name: 'LAN', slug: 'lan' } as Parameters<
-        typeof createSessionResult
-      >[1];
-      // What auto review does: a reviewer under the authoring session, then a follow-up.
-      const author = await runWithSessionCommandEnvironment(environment, () =>
-        createSessionResult(
-          environment.auth,
-          workspace,
-          manager,
-          'Write it.',
-          { agentConfig: configId },
-          resolveTurnDispatchConfig({})
-        )
-      );
-      const reviewer = await runWithSessionCommandEnvironment(environment, () =>
-        createSessionResult(
-          environment.auth,
-          workspace,
-          manager,
-          'Review it.',
-          { parent: author.sessionId, title: 'Review', agentConfig: configId },
-          resolveTurnDispatchConfig({})
-        )
-      );
-      await runWithSessionCommandEnvironment(environment, () =>
-        sendSessionChatResult(
-          environment.auth,
-          workspace,
-          manager,
-          reviewer.sessionId as SessionId,
-          'Look again.',
-          resolveTurnDispatchConfig({})
-        )
-      );
-
-      expect(dispatched).toEqual([author.sessionId, reviewer.sessionId, reviewer.sessionId]);
-      expect(
-        (await manager.repo.getDocMeta(getSessionRoomId(reviewer.sessionId as SessionId)))?.meta
-      ).toMatchObject({ parentSessionId: author.sessionId, title: 'Review' });
-      // Another identity than the environment's is refused, not checked against a hosted account.
-      await expect(
-        runWithSessionCommandEnvironment(environment, () =>
-          createSessionResult(
-            { ...environment.auth },
-            workspace,
-            manager,
-            'Again.',
-            { agentConfig: configId },
-            resolveTurnDispatchConfig({})
-          )
-        )
-      ).rejects.toThrow('identity mismatch');
-
-      // The reviewer reports through the daemon, which answers from the workspace's
-      // review runs instead of a hosted account; this one belongs to no run.
-      reviewerTurnRunning = true;
-      const submitted = await runWithSessionCommandEnvironment(environment, () =>
-        executeDaemonSessionTool(
-          {
-            machineId,
-            workspaceId,
-            sessionId: reviewer.sessionId as SessionId,
-            localControlSocketPath: undefined,
-            workdir: os.tmpdir(),
-          },
-          'lody_review_submit',
-          { verdict: 'approve' }
-        )
-      );
-      expect(submitted.content[0]?.text).toContain('REVIEW_RUN_NOT_FOUND');
-      expect(cloudConnectionAttempts).toBe(0);
-    } finally {
       await manager.cleanUp({ fast: true, preserveSessionStatus: true });
     }
   });

@@ -52,7 +52,11 @@ their hands already are, and they must not answer by accident.
 - **A way out.** The prompt offers Stop, because the composer that holds Stop is
   hidden while a request is pending.
 - Questions (AskUserQuestion forms) are answered in the same place and queue,
-  with the question form rather than the option list.
+  with the question form rather than the option list. Switching between pending
+  requests preserves each form's choices, replacement answer, notes, and current
+  page within the mounted session surface. Only the displayed form is answerable.
+  Accepted answers, accepted cancellation, withdrawal, or surface unmount release
+  that request's local draft; persistence across app restart is not promised.
 
 ## Open questions
 
@@ -66,5 +70,7 @@ their hands already are, and they must not answer by accident.
 
 - Implementation: `packages/components/src/components/sessions/floating-permission-request.tsx`,
   `packages/components/src/lib/permission-request-presentation.ts`.
-- Validation: `packages/components/tests/permission-prompt.test.tsx`.
+- Validation: `packages/components/tests/permission-prompt.test.tsx` and
+  `packages/components/tests/e2e/composer-submission-focus.spec.ts`.
 - Decision record: [permission prompt note](../.agents/notes/implemented/feature/2026-09-24-permission-prompt.md).
+- [Question recovery decision](../.agents/notes/implemented/bug-fix/2026-10-13-question-request-continuity.md).

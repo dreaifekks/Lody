@@ -1,4 +1,8 @@
-import type { LodyClientExtensionCapabilities, LodyWorktreeProject } from 'acp-extension-core';
+import type {
+  LodyClientExtensionCapabilities,
+  LodyWorktreeProject,
+  LodySessionConfig,
+} from 'acp-extension-core';
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -580,6 +584,7 @@ export interface AgentClientOptions {
   /** `initialize.clientInfo`, from the resolved launch; absent sends none. */
   clientInfo?: acp.Implementation;
   /** Config selected before ACP session establishment. */
+  modelId?: SessionTurnInputConfig['modelId'];
   configOptionValues?: SessionTurnInputConfig['configOptionValues'];
   /** Launcher family (npx/uvx/local) for ACP startup analytics; non-PII. */
   launcher?: AcpLauncher;
@@ -1393,6 +1398,10 @@ export class AgentClient implements acp.Client {
     return {};
   }
 
+  getRateLimitsCapability() {
+    return this.lodyExtensionCapabilities.rateLimits;
+  }
+
   async getRateLimits(request: RateLimitsGetRequest = {}): Promise<RateLimitsSnapshot> {
     if (this.lodyExtensionCapabilities.rateLimits?.query !== true) {
       throw new Error('[ACP_RATE_LIMITS_UNSUPPORTED] Agent did not advertise rate-limit queries');
@@ -1802,18 +1811,20 @@ export class AgentClient implements acp.Client {
 
   private getSessionStartMeta(forkSessionTurnId?: string) {
     const clientIdentifier = this.getGrokClientIdentifier();
+    const modelId = this.currentModel?.modelId ?? this.options.modelId;
     const lody = {
       ...(this.worktreeProject ? { worktreeProject: this.worktreeProject } : {}),
       ...(forkSessionTurnId !== undefined
         ? { forkAtTurn: { version: 1 as const, turnId: forkSessionTurnId } }
         : {}),
       ...(this.promptSuggestionsRequested ? { promptSuggestions: { version: 1 as const } } : {}),
-      ...(Object.keys(this.configOptionValues).length > 0
+      ...(modelId || Object.keys(this.configOptionValues).length > 0
         ? {
             sessionConfig: {
               version: 1 as const,
+              ...(modelId ? { modelId } : {}),
               configOptionValues: { ...this.configOptionValues },
-            },
+            } satisfies LodySessionConfig,
           }
         : {}),
     };

@@ -5,6 +5,8 @@ import { getImageMimeTypeForPath } from '@/lib/image-file-preview';
 import { isPdfFilePath } from '@/lib/pdf-file-preview';
 import { getOfficePreviewKind } from '@/lib/session-file-office-source';
 import { getSessionFileKind } from '@/lib/session-file-presentation';
+import { getVideoMimeTypeForPath } from '@/lib/video-file-preview';
+import { SessionFileVideoPreview } from './session-file-video-preview';
 import { SessionFileImagePreview } from './session-file-image-preview';
 import { SessionFileMediaPreview } from './session-file-media-preview';
 import { SessionFileOfficePreview } from './session-file-office-preview';
@@ -37,6 +39,18 @@ export const SessionFileBinaryPreview = memo(function SessionFileBinaryPreview({
   const source = url ?? (bytes && bytes.byteLength > 0 ? path : undefined);
   // A file the player cannot play falls back to the notice and its actions.
   const [unplayable, setUnplayable] = useState<string | undefined>(undefined);
+
+  if (getVideoMimeTypeForPath(path) && (url || bytes !== undefined)) {
+    return (
+      <SessionFileVideoPreview
+        path={path}
+        bytes={bytes}
+        url={url}
+        active={active}
+        fileActions={fileActions}
+      />
+    );
+  }
 
   if (isPdfFilePath(path) && (url || bytes !== undefined)) {
     return (

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { Effect } from 'effect';
 import path from 'node:path';
 import {
   createStore,
@@ -7,7 +8,11 @@ import {
   type ReadonlyStore,
   type WorkspaceSummary,
 } from '@lody/platform';
-import { createStaticLoroStreamsTokenProvider } from '@lody/shared';
+import {
+  createStaticLoroStreamsTokenProvider,
+  LoroStreamsTokenAuthError,
+  type LoroStreamsTokenProvider,
+} from '@lody/shared';
 import { normalizeLanHubUrl } from '@lody/shared/lan-hub';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import { z } from 'zod';
@@ -113,7 +118,38 @@ export class LanMembership {
   get streamsTokens(): CloudStreamsTokenPort | null {
     if (this.options.settings.hubs.length === 0) return null;
     return {
-      createTokenProvider: ({ workspaceId }) => {
+      createTokenProvider: ({ workspaceId }) =>
+        Effect.sync((): LoroStreamsTokenProvider => {
+          const initial = this.hubOf(workspaceId);
+          if (!initial) throw new Error(`No LAN carries workspace ${workspaceId}`);
+          const current = () => this.hubOf(workspaceId) ?? initial;
+          const getToken: LoroStreamsTokenProvider['getToken'] = (context) =>
+            context?.reason === 'unauthorized'
+              ? Effect.fail(new LoroStreamsTokenAuthError('LAN credential rejected', 401))
+              : Effect.sync(() => current().token);
+          return {
+            getToken,
+            createAuthCallback: () => getToken,
+            getGatewayBaseUrl: () => current().url,
+            getShardHostSuffix: () => undefined,
+            invalidate: () => Effect.void,
+            close: Effect.void,
+            retryCleanup: Effect.void,
+            health: Effect.succeed({
+              state: 'open',
+              closed: false,
+              generation: 0,
+              activeReads: 0,
+              leases: 0,
+              refreshRunning: false,
+              pendingRawWork: false,
+              hasCachedToken: false,
+              terminalAuthStatus: undefined,
+              cleanupError: undefined,
+            }),
+          };
+        }),
+      createTokenProviderLegacy: ({ workspaceId }) => {
         const initial = this.hubOf(workspaceId);
         if (!initial) {
           // Reached when a workspace outlives its LAN for a moment; the attach

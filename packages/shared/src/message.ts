@@ -37,6 +37,8 @@ import type {
   SessionImageGroupContent,
   SessionImagePayload,
   SessionFilePayload,
+  SessionHistoryInput,
+  SessionHistoryChange,
   SessionTurnInputConfig,
   AcpCapabilityCacheEntry,
   SessionGoalAction,
@@ -158,6 +160,10 @@ export interface SessionCancelRequest {
   workspaceId: WorkspaceId;
   /** Target assistant turn id. This is intentionally not the userTurnId. */
   turnId: string;
+  /** Shared identity for the Stop RPC and its durable fallback. */
+  cancelId?: string;
+  /** Internal cancellation does not persist a user message pause. */
+  pauseInbox?: boolean;
   /** When present, cancel only this native subagent; never cancel the parent turn. */
   subagentTaskId?: string;
 }
@@ -360,6 +366,20 @@ export interface MachineUpgradeResponse {
   currentVersion?: string;
   targetVersion?: string;
   error?: string;
+}
+
+export interface MachineProviderRateLimitsRefreshRequest {
+  type: 'machine/provider-rate-limits-refresh';
+  machineId: MachineId;
+  workspaceId: WorkspaceId;
+  configId: AgentConfigId;
+}
+
+export interface MachineProviderRateLimitsRefreshResponse {
+  type: 'machine/provider-rate-limits-refresh_response';
+  machineId: MachineId;
+  configId: AgentConfigId;
+  success: boolean;
 }
 
 export interface MachineAcpCapabilitiesRefreshRequest {
@@ -828,6 +848,77 @@ export interface SessionFileReadLocalResponse {
   message?: string;
 }
 
+/**
+ * Local renderer bridge for history owned by a machine-side backend such as
+ * Roost. The payload is deliberately storage-neutral: the CLI resolves the
+ * selected SessionBackend and the renderer never receives physical segments.
+ */
+export interface SessionHistoryReadRequest {
+  type: 'session/history-read';
+  machineId: MachineId;
+  workspaceId: WorkspaceId;
+  sessionId: SessionId;
+  query: SessionHistoryReadQuery;
+}
+
+/** Bounded logical reads over the owner session's active history branch. */
+export type SessionHistoryReadQuery =
+  | { readonly kind: 'inputAcceptance'; readonly entry: unknown }
+  | { readonly kind: 'count' }
+  | { readonly kind: 'readAt'; readonly position: number }
+  | { readonly kind: 'readTurn'; readonly turnId: string }
+  | { readonly kind: 'readRange'; readonly from: number; readonly to: number }
+  | { readonly kind: 'readDirectory'; readonly from: number; readonly to: number }
+  | { readonly kind: 'readLatestPage'; readonly limit: number }
+  | { readonly kind: 'readOlderPage'; readonly cursor: string; readonly limit: number }
+  | { readonly kind: 'readAll' }
+  | { readonly kind: 'readTurnOutput'; readonly userTurnId: string };
+
+export interface SessionHistoryReadResponse {
+  type: 'session/history-read_response';
+  sessionId: SessionId;
+  success: boolean;
+  result?: unknown;
+  /** One locally durable observation, including the bounded page's bodies. */
+  historyRevision?: number;
+  historyCount?: number;
+  historyChange?: SessionHistoryChange | null;
+  pageTurns?: readonly SessionHistoryInput[];
+  error?: string;
+}
+
+export type SessionHistoryWriteOperation =
+  | 'accept_input'
+  | 'accept_input_and_dispatch'
+  | 'append'
+  | 'replace'
+  | 'respond_permission'
+  | 'apply_action'
+  | 'replace_editable_tail'
+  | 'apply_import'
+  | 'copy_history';
+
+export interface SessionHistoryWriteRequest {
+  type: 'session/history-write';
+  machineId: MachineId;
+  workspaceId: WorkspaceId;
+  sessionId: SessionId;
+  operation: SessionHistoryWriteOperation;
+  payload: unknown;
+}
+
+export interface SessionHistoryWriteResponse {
+  type: 'session/history-write_response';
+  sessionId: SessionId;
+  operation: SessionHistoryWriteOperation;
+  success: boolean;
+  result?: unknown;
+  historyRevision?: number;
+  historyCount?: number;
+  historyChange?: SessionHistoryChange | null;
+  error?: string;
+}
+
 // Local CLI control (Electron -> local CLI) message subsets
 export type LocalSessionControlRequest =
   | SessionCreateRequest
@@ -838,6 +929,7 @@ export type LocalSessionControlRequest =
   | MachinePingRequest
   | MachineRestartRequest
   | MachineUpgradeRequest
+  | MachineProviderRateLimitsRefreshRequest
   | MachineAcpCapabilitiesRefreshRequest
   | MachineAcpAuthenticateRequest
   | MachineAcpBinaryStatusRequest
@@ -847,6 +939,8 @@ export type LocalSessionControlRequest =
   | SessionFileUploadRequest
   | SessionFileSendLocalRequest
   | SessionFileReadLocalRequest
+  | SessionHistoryReadRequest
+  | SessionHistoryWriteRequest
   | PreviewCandidateReportRequest
   | SessionPreviewCreateRequest
   | SessionPreviewRevokeRequest
@@ -864,6 +958,7 @@ export type LocalSessionControlResponse =
   | MachinePingResponse
   | MachineRestartResponse
   | MachineUpgradeResponse
+  | MachineProviderRateLimitsRefreshResponse
   | MachineAcpCapabilitiesRefreshResponse
   | MachineAcpAuthenticateResponse
   | MachineAcpAuthenticationProgressMessage
@@ -875,6 +970,8 @@ export type LocalSessionControlResponse =
   | SessionFileUploadResponse
   | SessionFileSendLocalResponse
   | SessionFileReadLocalResponse
+  | SessionHistoryReadResponse
+  | SessionHistoryWriteResponse
   | PreviewCandidateReportResponse
   | SessionPreviewCreateResponse
   | SessionPreviewRevokeResponse
@@ -1083,6 +1180,13 @@ export type LocalProjectControlRequest =
       showHidden?: boolean;
       limit?: number;
       cursor?: string;
+    }
+  | {
+      type: 'local-project/create-directory';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      parentPath: string;
+      name: string;
     }
   | {
       type: 'local-project/delete';
@@ -1308,6 +1412,7 @@ export type LocalProjectControlErrorCode =
   | 'access_denied'
   | 'local_project_not_found'
   | 'path_invalid'
+  | 'already_exists'
   | 'execution_failed'
   | 'invalid_response';
 
@@ -1360,6 +1465,7 @@ export type LocalProjectControlResponse =
     >
   | LocalProjectControlOkResponse<'local-project/list-roots', LocalProjectBrowseRootsResult>
   | LocalProjectControlOkResponse<'local-project/browse-dir', LocalProjectBrowseDirectoryResult>
+  | LocalProjectControlOkResponse<'local-project/create-directory', { path: string }>
   | LocalProjectControlOkResponse<
       'local-project/delete',
       {
@@ -1431,6 +1537,7 @@ export type ClientToServer =
   | MachinePingRequest
   | MachineRestartRequest
   | MachineUpgradeRequest
+  | MachineProviderRateLimitsRefreshRequest
   | MachineAcpCapabilitiesRefreshRequest
   | MachineAcpAuthenticateRequest
   | MachineAcpBinaryStatusRequest
@@ -1448,6 +1555,7 @@ export type ServerToClient =
   | MachinePingResponse
   | MachineRestartResponse
   | MachineUpgradeResponse
+  | MachineProviderRateLimitsRefreshResponse
   | MachineAcpCapabilitiesRefreshResponse
   | MachineAcpAuthenticateResponse
   | MachineAcpAuthenticationProgressMessage
@@ -1465,6 +1573,7 @@ export type MachineToServer =
   | MachinePingResponse
   | MachineRestartResponse
   | MachineUpgradeResponse
+  | MachineProviderRateLimitsRefreshResponse
   | MachineAcpCapabilitiesRefreshResponse
   | MachineAcpAuthenticateResponse
   | MachineAcpAuthenticationProgressMessage
@@ -1482,6 +1591,7 @@ export type ServerToMachine =
   | MachinePingRequest
   | MachineRestartRequest
   | MachineUpgradeRequest
+  | MachineProviderRateLimitsRefreshRequest
   | MachineAcpCapabilitiesRefreshRequest
   | MachineAcpAuthenticateRequest
   | MachineAcpBinaryStatusRequest

@@ -28,9 +28,8 @@ rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
   require the session in the local metadata cache; opening it closes the desktop
   settings overlay. Rationale:
   [share inventory jump](../../../../../.agents/notes/implemented/feature/2026-09-15-share-inventory-session-jump.md).
-  A LAN workspace (`lanSharing` without `teamSharing`) renders
-  `lan-share-management-setting.tsx` instead: the shares its hub keeps, which
-  every member manages; a LAN link is the address alone, with no credential.
+  LAN (`lanSharing` only): `lan-share-management-setting.tsx`; every member manages
+  hub shares. Links contain no credential.
 
 - Desktop Settings > Projects stacks every source (each machine, then GitHub
   owners) as a `CompactSection` of ruled project rows. Clicking a project opens
@@ -49,8 +48,9 @@ rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
 - Agent configuration lives in `agent-config-dialog.tsx` plus `env-vars-textarea.tsx`.
   DeepSeek Harness official vs custom endpoint is dialog form state only: persist
   `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` (official always writes
-  `https://api.deepseek.com`) and never a new AgentConfigMeta field. Model ids come from
-  the endpoint's OpenAI-compatible discovery response during live verification; do not
+  `https://api.deepseek.com/anthropic`) and never a new AgentConfigMeta field. Model ids come from
+  the endpoint's OpenAI-compatible discovery response during live verification; official
+  Messages and legacy Chat roots share the provider's official `/models` endpoint. Do not
   add a parallel manual catalog field. Additional env cannot override either connection
   key, and changing endpoint or credential invalidates the dialog's prior live
   verification.
@@ -64,7 +64,12 @@ rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
   names stay on the default interface font. Five tiers write `--ui-font-size`;
   sizes use `@lody/ui` text tokens. Font ligatures in the Text group writes
   `--lody-font-ligatures` for conversation, code, and tool output.
-- The Codex reset forecast chip in the provider row must not fetch on mount:
+- Quota UI requires Core `rateLimits`; refresh also requires `query: true`.
+  Keep cached values while the shared Provider RPC refreshes.
+- Provider rows show identity, read-only remaining quota, a direct flat forecast
+  action, and a persistent Provider `…` menu. The forecast action opens its dialog
+  in one step; no quota-details interstitial or forecast probability belongs in
+  the overview. Listing rows does not fetch forecasts:
   [../codex-reset/AGENTS.md](../codex-reset/AGENTS.md).
 - The usage share card is a fixed-format report, not a second `ChatShareCard`:
   fixed aspects, period = page range, headline = range total.
@@ -92,18 +97,13 @@ component details.
 
 - Before changing Role settings or dispatch, read the authoritative
   [shared Role contracts](../../../../shared/AGENTS.md#workspace-mcp-and-agent-roles).
-  Each instance keeps its own memory reference, chosen from its machine's imported
-  identities; discovery and creation use that machine's Provider RPC. Memory settings
-  reuse Agents machine tabs/pills and catalog rows. A missing nmem install stays
-  on the page with the provider URL; it must not open a blocking dialog.
-  The editor has no tabs: template fields, then the instance list (an optional alias
-  per instance; a second instance of one group on a machine is refused); memory is picked
-  inside an instance (`RoleMemoryPicker`), which marks a reference its machine has not
-  imported and links to Memory settings. The Role list shows each Role once, never
-  grouped by machine. The editor and catalog writers take a `CatalogAgentRole`; a
-  composer opens it by Role id, never from one of its entries.
-  Only a ready Provider inventory can mark an identity missing; deleting a link never
-  deletes provider data.
+  Each instance uses its own machine's Provider RPC and memory identity.
+  Memory settings reuse Agents machine pills/catalog rows; missing nmem shows its URL,
+  never a blocking dialog. Only ready Provider inventory marks missing identities;
+  unlinking never deletes provider data.
+  The Role editor has template fields then instances, no tabs. Instances have optional
+  aliases, one per group/machine. `RoleMemoryPicker` marks missing imports and links Memory.
+  List each Role once. Editors/writers take `CatalogAgentRole`; composers pass Role ids.
 
 ## Workspace ownership
 
@@ -114,3 +114,11 @@ component details.
   failed. Card changes use the billing Portal separately; transfer keeps the current card.
 
 - Nightly downloads live below Download apps in desktop/Web About.
+
+## Seat billing
+
+- Reuse `SeatCostNotice` in invitation and approval entry points. Approval must show
+  the current cost and deferred collection policy before committing membership.
+- Removal/leave do not cancel accrued service fees. Deleted workspace invoices stay
+  reachable for the retained billing owner through `deleted-workspace-billing.tsx`
+  in personal Account settings; invoice details reuse `BillingInvoiceDetails`.

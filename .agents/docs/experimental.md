@@ -2,8 +2,8 @@
 
 Features that are opt-in and still change. This page lists each one: what it
 does, where it is turned on, what it needs, its known limits and where its
-code starts. One of them, the review agent, comes from upstream; the others are
-the fork's.
+code starts. The fork keeps voice and agent tools; upstream retired automatic
+review and merge.
 
 ## The switches
 
@@ -11,15 +11,14 @@ Settings > Preferences has **Experimental features** just above Advanced
 (`packages/components/src/components/settings/experimental-features-setting.tsx`).
 Its master switch, "Enable experimental features", is
 `experimentalFeaturesEnabledAtom` in `packages/components/src/atoms/settings.ts`.
-While it is on, two groups follow:
+While it is on, its rows follow the master switch in the same section:
 
-| Group                      | Switch                    | Atom (localStorage key)                                                       |
-| -------------------------- | ------------------------- | ----------------------------------------------------------------------------- |
-| Experimental · Sessions    | Review agent              | `reviewAgentExperimentEnabledAtom` (`lody-review-agent-enabled`)              |
-|                            | Voice                     | `voiceExperimentEnabledAtom` (`lody-voice-experiment-enabled`)                |
-| Experimental · Agent tools | Notifications from agents | `agentNotifyExperimentEnabledAtom` (`lody-agent-notify-experiment-enabled`)   |
-|                            | Plan review               | `planReviewExperimentEnabledAtom` (`lody-plan-review-experiment-enabled`)     |
-|                            | Interactive widgets       | `inlineWidgetExperimentEnabledAtom` (`lody-inline-widget-experiment-enabled`) |
+| Switch | Atom (localStorage key) |
+| --- | --- |
+| Voice | `voiceExperimentEnabledAtom` (`lody-voice-experiment-enabled`) |
+| Notifications from agents | `agentNotifyExperimentEnabledAtom` (`lody-agent-notify-experiment-enabled`) |
+| Plan review | `planReviewExperimentEnabledAtom` (`lody-plan-review-experiment-enabled`) |
+| Interactive widgets | `inlineWidgetExperimentEnabledAtom` (`lody-inline-widget-experiment-enabled`) |
 
 Every switch is this device's own. A feature is on where both the master switch
 and its own switch are (`*FeatureEnabledAtom`). Turning the master switch off
@@ -55,22 +54,9 @@ renders the calls specially only while its own switch is on; otherwise they
 are ordinary tool steps. Widgets an agent shows without Lody's tool (below)
 depend on that device switch alone, not on the workspace row.
 
-## Review agent
-
-From upstream. A review agent checks a session's branch, hands fixes back to
-the session and merges once CI is green; the user chooses it per session in the
-`…` menu. A session starts it only after its machine has a reviewer configured
-in the workspace's review settings. Turning the switch off hides the controls;
-a run already authorized on a session keeps going.
-
-- Needs: a reviewer agent configured per machine (Settings > Agents), and on a
-  LAN the GitHub credential described in
-  [LAN credentials](lan-credentials.md#github).
-- Code: `reviewAgentFeatureEnabledAtom`, `auto-review-menu-item.tsx` in
-  `packages/components/src/components/sessions/`,
-  `review-policy-setting.tsx` and `machine-agent-settings.tsx` in
-  `packages/components/src/components/settings/`.
-- More: [auto review and merge](sessions-auto-review.md).
+Roost history remains disabled for the LAN platform, including its developer switch.
+Existing conversations retain Loro history; the native Roost runtime is still packaged
+because the upstream daemon imports it during startup.
 
 ## Voice
 

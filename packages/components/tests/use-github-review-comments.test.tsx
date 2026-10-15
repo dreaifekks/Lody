@@ -163,3 +163,24 @@ it('on the local platform, uses the Git remote name without a hosted identity', 
   expect(saved).toEqual({ saved: true });
   expect(writes).toEqual(['https://api.github.com/repos/org/old/pulls/7/comments']);
 });
+
+it('allows anonymous review reads without allowing comment writes', async () => {
+  mocks.versions = { identityPending: true };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () => new Response(JSON.stringify({ id: 101, private: false, full_name: 'org/old' }))
+    )
+  );
+  await render();
+  expect(result.error).toBeNull();
+  await expect(
+    result.runWithToken('read', async (token, repo) => ({ token, repo }))
+  ).resolves.toEqual({ token: '', repo: 'org/old' });
+  await expect(
+    result.runWithToken('write', async () => {
+      writes.push('unsafe');
+    })
+  ).rejects.toThrow('repository identity');
+  expect(writes).toEqual([]);
+});

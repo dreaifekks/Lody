@@ -17,6 +17,7 @@ import {
   deriveLocationsFromRawInput,
   deriveLocationsFromToolCallContent,
   stripToolCallContentForHistory,
+  stripToolCallPayloadsForHistory,
 } from './tool-call-history';
 import {
   parseLodyTaskMeta,
@@ -253,6 +254,103 @@ const normalizeTerminalOutputsForHistory = (
   return next;
 };
 
+/**
+ * Durable budget for one `terminal_command` (command plus args, UTF-8 bytes).
+ * Agents inline whole files or base64 images into shell commands; the stored
+ * command is a display label, and the full text stays with the agent.
+ */
+export const MAX_STORED_TERMINAL_COMMAND_BYTES = 1024;
+const TERMINAL_COMMAND_TRUNCATION_MARKER = '…';
+const TERMINAL_COMMAND_TRUNCATION_MARKER_BYTES = 3;
+
+/**
+ * The longest head of `value` within `maxBytes` UTF-8 bytes that does not split
+ * a code point. Counts in place so a multi-megabyte string is never encoded.
+ */
+const utf8Head = (value: string, maxBytes: number): { end: number; bytes: number } => {
+  let end = 0;
+  let bytes = 0;
+  while (end < value.length) {
+    const unit = value.charCodeAt(end);
+    const isPair =
+      unit >= 0xd800 &&
+      unit <= 0xdbff &&
+      end + 1 < value.length &&
+      (value.charCodeAt(end + 1) & 0xfc00) === 0xdc00;
+    // A lone surrogate encodes as U+FFFD: three bytes.
+    const width = unit < 0x80 ? 1 : unit < 0x800 ? 2 : isPair ? 4 : 3;
+    if (bytes + width > maxBytes) break;
+    bytes += width;
+    end += isPair ? 2 : 1;
+  }
+  return { end, bytes };
+};
+
+/** Keep the head of a command and its args within one shared 1 KiB budget. */
+export const truncateTerminalCommandForHistory = <
+  T extends { command: string; args?: string[]; truncated?: boolean },
+>(
+  block: T
+): T => {
+  const parts = [block.command, ...(block.args ?? [])];
+  let remaining = MAX_STORED_TERMINAL_COMMAND_BYTES;
+  let fits = true;
+  for (const part of parts) {
+    const head = utf8Head(part, remaining);
+    if (head.end < part.length) {
+      fits = false;
+      break;
+    }
+    remaining -= head.bytes;
+  }
+  // Already-truncated commands fit, so re-compacting a stored block is a no-op.
+  if (fits) return block;
+
+  let budget = MAX_STORED_TERMINAL_COMMAND_BYTES - TERMINAL_COMMAND_TRUNCATION_MARKER_BYTES;
+  const kept: string[] = [];
+  for (const part of parts) {
+    const head = utf8Head(part, budget);
+    if (head.end === part.length) {
+      kept.push(part);
+      budget -= head.bytes;
+      continue;
+    }
+    kept.push(part.slice(0, head.end) + TERMINAL_COMMAND_TRUNCATION_MARKER);
+    break;
+  }
+  const [command = '', ...args] = kept;
+  return { ...block, command, ...(block.args === undefined ? {} : { args }), truncated: true };
+};
+
+/**
+ * Agents often use the full shell command as a tool title, so the title gets
+ * the same head-keeping 1 KiB bound as the command it repeats.
+ */
+export const truncateToolTitleForHistory = <T extends string | null | undefined>(title: T): T =>
+  typeof title === 'string'
+    ? (truncateTerminalCommandForHistory({ command: title }).command as T)
+    : title;
+
+/**
+ * Whether a stored tool title is the output of `truncateToolTitleForHistory`.
+ * Titles have no flag field: a cut title ends with the marker and fills the
+ * budget to within one code point, which an ordinary title practically never does.
+ */
+export const isToolTitleTruncatedForHistory = (title: string): boolean => {
+  if (!title.endsWith(TERMINAL_COMMAND_TRUNCATION_MARKER)) return false;
+  const { end, bytes } = utf8Head(title, MAX_STORED_TERMINAL_COMMAND_BYTES);
+  return end === title.length && bytes > MAX_STORED_TERMINAL_COMMAND_BYTES - 4;
+};
+
+const normalizeTerminalCommandsForHistory = (
+  contents: StoredToolCallContent
+): StoredToolCallContent =>
+  contents.some((block) => block.type === 'terminal_command')
+    ? contents.map((block) =>
+        block.type === 'terminal_command' ? truncateTerminalCommandForHistory(block) : block
+      )
+    : contents;
+
 const extractTerminalCommandContent = (
   rawInput: unknown,
   kind?: ToolKind | null
@@ -391,6 +489,21 @@ const extractTerminalOutputContent = (
     !NON_TERMINAL_TOOL_KINDS.has(kind ?? '')
   ) {
     return buildTerminalOutputBlocks({ output: rawOutput });
+  }
+
+  // Pi: a shell result is `{ content: [{ type: 'text', text }], details }`. Other Pi
+  // tools share that shape, so only an execute call's result is terminal output.
+  if (kind === 'execute') {
+    const content = asRecordOrUndefined(rawOutput)?.content;
+    if (Array.isArray(content)) {
+      const output = content
+        .flatMap((block) => {
+          const record = asRecordOrUndefined(block);
+          return record?.type === 'text' && typeof record.text === 'string' ? [record.text] : [];
+        })
+        .join('');
+      if (output.length > 0) return buildTerminalOutputBlocks({ output });
+    }
   }
 
   return [];
@@ -651,6 +764,7 @@ const compactToolCallContentForHistory = (
 
   compacted = stripDuplicateFencedToolContent(compacted);
   compacted = normalizeTerminalOutputsForHistory(compacted);
+  compacted = normalizeTerminalCommandsForHistory(compacted);
 
   // Post-filtering may have created adjacent duplicates again.
   return dedupeAdjacentToolCallContent(compacted);
@@ -943,7 +1057,7 @@ const mergeToolCallMessage = (
     toolCallId: incoming.toolCallId,
     // `null` title/kind means "no information" on the wire (zod allows explicit null);
     // it must keep the previously persisted value, not wipe it.
-    title: incoming.title ?? prev.title,
+    title: truncateToolTitleForHistory(incoming.title ?? prev.title),
     kind: nextKind ?? undefined,
     status: nextStatus,
     content: mergedContent.length
@@ -1095,6 +1209,70 @@ const parseAssistantTextTags = (text: string, turnId: string): MessageContent[] 
   });
 };
 
+type ToolUpdate = Extract<
+  AcpSessionNotification['update'],
+  { sessionUpdate: 'tool_call' | 'tool_call_update' }
+>;
+
+// Subagent/background task lifecycle rides the tool_call transport (see
+// claude-subagent-task.ts). Materialize it as a first-class `subagent_task`
+// item instead of persisting a tool_call; the applier merges by taskId.
+const toolUpdateSubagentTasks = (update: ToolUpdate): MessageContent[] => {
+  const subagentTask =
+    parseLodyTaskMeta((update as ToolCallUpdateWithMeta)._meta) ??
+    parseDevinSubagentTaskMeta((update as ToolCallUpdateWithMeta)._meta) ??
+    parseSubagentTaskWire(update.rawInput);
+  if (subagentTask) {
+    const devinSubagentId = getDevinSubagentContextId((update as ToolCallUpdateWithMeta)._meta);
+    return [
+      {
+        type: 'subagent_task',
+        ...(devinSubagentId !== null ? { parentTaskId: devinSubagentId } : {}),
+        ...subagentTask,
+      },
+    ];
+  }
+  return parseCodexCollabAgentTasks(update.title, update.rawInput).map((task) => ({
+    type: 'subagent_task',
+    ...task,
+  }));
+};
+
+/**
+ * The tool calls a batch looks up when everything it writes is target-local: its
+ * active turn's tail and fields, plus tool rows matched by `toolCallId` wherever they
+ * are stored. Undefined when any update needs the whole history (subagent tasks and
+ * events, Devin subagent internals, singleton commands, other kinds).
+ */
+export const targetLocalToolCallIds = (
+  notifications: readonly AcpSessionNotification[]
+): string[] | undefined => {
+  const ids = new Set<string>();
+  for (const { update } of notifications) {
+    if (getDevinSubagentContextId(update._meta) !== null) return undefined;
+    switch (update.sessionUpdate) {
+      case 'agent_message_chunk':
+      case 'agent_thought_chunk':
+      case 'user_message_chunk':
+      case 'config_option_update':
+      case 'usage_update':
+      case 'plan':
+        continue;
+      case 'plan_update':
+        if (update.plan.type !== 'items') return undefined;
+        continue;
+      case 'tool_call':
+      case 'tool_call_update':
+        if (toolUpdateSubagentTasks(update).length > 0) return undefined;
+        ids.add(update.toolCallId);
+        continue;
+      default:
+        return undefined;
+    }
+  }
+  return [...ids];
+};
+
 export const buildMessageContentFromNotification = (
   message: AcpSessionNotification,
   previousTool?: ToolCallMessage
@@ -1132,28 +1310,8 @@ export const buildMessageContentFromNotification = (
       return [];
     case 'tool_call':
     case 'tool_call_update': {
-      // Subagent/background task lifecycle rides the tool_call transport (see
-      // claude-subagent-task.ts). Materialize it as a first-class `subagent_task`
-      // item instead of persisting a tool_call; the applier merges by taskId.
-      const subagentTask =
-        parseLodyTaskMeta((update as ToolCallUpdateWithMeta)._meta) ??
-        parseDevinSubagentTaskMeta((update as ToolCallUpdateWithMeta)._meta) ??
-        parseSubagentTaskWire(update.rawInput);
-      if (subagentTask) {
-        const devinSubagentId = getDevinSubagentContextId((update as ToolCallUpdateWithMeta)._meta);
-        return [
-          {
-            type: 'subagent_task',
-            ...(devinSubagentId !== null ? { parentTaskId: devinSubagentId } : {}),
-            ...subagentTask,
-          },
-        ];
-      }
-
-      const codexCollabTasks = parseCodexCollabAgentTasks(update.title, update.rawInput);
-      if (codexCollabTasks.length > 0) {
-        return codexCollabTasks.map((task) => ({ type: 'subagent_task', ...task }));
-      }
+      const subagentTasks = toolUpdateSubagentTasks(update);
+      if (subagentTasks.length > 0) return subagentTasks;
 
       const kind = (update.kind ?? previousTool?.kind) as ToolKind | null | undefined;
 
@@ -1225,11 +1383,13 @@ export const buildMessageContentFromNotification = (
           if (fenced && candidateOutputs.has(normalizeTerminalOutputForComparison(fenced.body))) {
             return false;
           }
-          // Check plain text match (Kimi style: content text is identical to terminal output)
+          // Check plain text match (Kimi/Pi style: content text is identical to terminal
+          // output). Indented output such as `launchctl print` only matches untrimmed.
           const plainText = c.content.text.trim();
           if (
             plainText.length > 0 &&
-            candidateOutputs.has(normalizeTerminalOutputForComparison(plainText))
+            (candidateOutputs.has(normalizeTerminalOutputForComparison(plainText)) ||
+              candidateOutputs.has(normalizeTerminalOutputForComparison(c.content.text)))
           ) {
             return false;
           }
@@ -1256,7 +1416,7 @@ export const buildMessageContentFromNotification = (
         {
           type: 'tool_call',
           toolCallId: update.toolCallId,
-          title: update.title,
+          title: truncateToolTitleForHistory(update.title),
           toolName,
           kind: kind ?? undefined,
           status: update.status ?? previousTool?.status ?? 'pending',
@@ -1596,8 +1756,9 @@ class NotificationOnHistoryApplier {
         );
         const previous = run.items[index];
         const tool = previous?.type === 'tool_call' ? previous : undefined;
-        // Keep child tool payloads intact. The parent's compact terminal projection
-        // intentionally discards diffs and read results, unsuitable for the detail view.
+        const input = asRecordOrUndefined(update.rawInput);
+        // Keep child diffs and read results for the detail view, but discard tool
+        // images just as the parent history does.
         const content: Extract<SubagentRunItem, { type: 'tool_call' }> = {
           ...tool,
           ...(identity.nativeTurnId !== undefined ? { nativeTurnId: identity.nativeTurnId } : {}),
@@ -1605,39 +1766,39 @@ class NotificationOnHistoryApplier {
           type: 'tool_call',
           toolCallId: update.toolCallId,
           status: update.status ?? tool?.status ?? 'pending',
-          title: update.title ?? tool?.title,
+          title: truncateToolTitleForHistory(update.title ?? tool?.title),
           kind: update.kind ?? tool?.kind,
-          content: update.content ?? tool?.content,
+          content:
+            update.content != null
+              ? stripToolCallPayloadsForHistory(update.content)
+              : tool?.content,
           locations: update.locations ?? tool?.locations,
-          rawInput: asRecordOrUndefined(update.rawInput) ?? tool?.rawInput,
+          // Plan approval is the UI's sole child raw-input consumer.
+          rawInput:
+            update.rawInput != null
+              ? typeof input?.plan === 'string'
+                ? { plan: input.plan }
+                : undefined
+              : tool?.rawInput,
           rawOutput: asRecordOrUndefined(update.rawOutput) ?? tool?.rawOutput,
           toolName: resolveAcpToolName(update._meta) ?? tool?.toolName,
           _meta: update._meta ?? tool?._meta,
         };
-        for (const [key, value] of [
-          ['rawInput', update.rawInput],
-          ['rawOutput', update.rawOutput],
-        ] as const) {
-          if (value == null || asRecordOrUndefined(value)) continue;
-          // MessageContent's historical raw fields accept records. Retain other
-          // JSON values in metadata, and make scalar output readable in the UI.
-          const meta = content._meta ?? {};
-          const lody = asRecordOrUndefined(meta.lody) ?? {};
-          const raw = asRecordOrUndefined(lody.subagentRaw) ?? {};
-          content._meta = { ...meta, lody: { ...lody, subagentRaw: { ...raw, [key]: value } } };
-          if (key === 'rawOutput') {
-            const text = typeof value === 'string' ? value : JSON.stringify(value);
-            const blocks = content.content ?? [];
-            if (
-              !blocks.some(
-                (block) =>
-                  block.type === 'content' &&
-                  block.content.type === 'text' &&
-                  block.content.text === text
-              )
-            ) {
-              content.content = [...blocks, { type: 'content', content: { type: 'text', text } }];
-            }
+        const value = update.rawOutput;
+        if (value != null && !asRecordOrUndefined(value)) {
+          // Keep the readable copy; the old _meta.lody.subagentRaw duplicate
+          // had no consumer. Preserve full text and arrays, without new limits.
+          const text = typeof value === 'string' ? value : JSON.stringify(value);
+          const blocks = content.content ?? [];
+          if (
+            !blocks.some(
+              (block) =>
+                block.type === 'content' &&
+                block.content.type === 'text' &&
+                block.content.text === text
+            )
+          ) {
+            content.content = [...blocks, { type: 'content', content: { type: 'text', text } }];
           }
         }
         if (index >= 0) run.items[index] = content;
@@ -1990,6 +2151,7 @@ class NotificationOnHistoryApplier {
 
     items.push({
       ...incoming,
+      ...(incoming.title ? { title: truncateToolTitleForHistory(incoming.title) } : {}),
       status: incoming.status || 'pending',
       content: incoming.content
         ? compactToolCallContentForHistory(incoming.content, {
@@ -2291,6 +2453,7 @@ export const applyMessageContentsBatch = (
     } else {
       state.items.push({
         ...incoming,
+        ...(incoming.title ? { title: truncateToolTitleForHistory(incoming.title) } : {}),
         status: incoming.status || 'pending',
         content: incoming.content
           ? compactToolCallContentForHistory(incoming.content, {

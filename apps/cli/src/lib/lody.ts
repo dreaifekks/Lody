@@ -16,8 +16,9 @@ import {
   type LanMemberControlRequest,
   type LanMemberControlResponse,
 } from '@lody/shared';
-import { getLoginShellEnv } from '@/agent/login-shell-env';
+import { getLoginShellEnvLegacy } from '@/agent/login-shell-env';
 import { SessionManager } from '@/session/session-manager';
+import { installRoostNodeSessionBackend } from '@/session/roost-node-session';
 import pkg from '@/pkg';
 import { formatErrorMessage } from '@/utils/format-error';
 import type { LocalWorkspaceCatalogService } from '@/lib/local-workspace-catalog';
@@ -79,6 +80,10 @@ export class Lody {
   private builtinAgentRegistrationStarted = false;
 
   static async create(options: LodyOptions): Promise<Lody> {
+    // Register the optional local Roost adapter before any session document can
+    // resolve its backend. The selector remains metadata-driven, so legacy and
+    // new Loro sessions continue to use the built-in backend by default.
+    installRoostNodeSessionBackend();
     const manager = await traceAsync(
       options.logger,
       'startup.loro_document_manager',
@@ -153,9 +158,9 @@ export class Lody {
   async start(): Promise<void> {
     // Warm the login-shell env probe (~100-300ms) concurrently with startup so
     // synchronous terminal environment callbacks usually read a populated PATH.
-    // ACP startup awaits the same cached probe before spawning. Fire-and-forget:
-    // getLoginShellEnv swallows failures and fails open to an empty overlay.
-    void getLoginShellEnv();
+    // ACP startup awaits the same cached probe before spawning. The Legacy cache
+    // retains and reports failures; launchers receive them on later reads.
+    void getLoginShellEnvLegacy().catch(() => undefined);
     await traceAsync(
       this.logger,
       'startup.machine_runtime',

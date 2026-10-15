@@ -1,3 +1,19 @@
+import { SESSION_IMAGE_ALLOWED_MIME_TYPES, SESSION_IMAGE_MAX_SIZE_BYTES } from '@lody/shared';
+import type { SessionActivePresencePhase } from './loro/session-active-presence';
+import { fileLocksLegacy } from '@/utils/file-lock';
+import { Effect } from 'effect';
+import { awaitSessionHistoryOwner } from '@/session/session-history-owner';
+import {
+  getSessionHistoryRpcRejection,
+  putSessionHistoryRpcRejection,
+} from '@/session/session-history-rpc-rejections';
+import {
+  SessionAttachmentTransfer,
+  type UploadableImageFile,
+  type UploadedSessionImage,
+  type ValidatedUploadFile,
+  type UploadedSessionFile,
+} from './session-attachment-transfer';
 import { handleMemoryProviderRequest } from './memory-providers';
 import { readMessageAuthor } from '@lody/shared';
 import { resolveSessionMessageAuthor } from '@/session/message-author';
@@ -11,8 +27,7 @@ import crypto from 'crypto';
 import { pathToFileURL } from 'url';
 
 import { v4 as uuidV4 } from 'uuid';
-import { z } from 'zod';
-import { Effect } from 'effect';
+import { describeRoostHistoryFailure } from '@/session/roost-history-diagnostics';
 import {
   createLoroStreamsJsonStreamClient,
   LoroStreamsMachineRpcClient,
@@ -24,9 +39,11 @@ import {
 } from '@lody/loro-streams-rpc';
 import {
   HistoryWriteError,
+  HistoryEntryWriteSchema,
+  parseHistoryWrite,
+  PermissionOutcomeSchema,
   MachineId,
   WorkspaceId,
-  SessionInputBlockSchema,
   SessionId,
   SessionImageUploadRequestValidated,
   SessionImageUploadResponse,
@@ -39,7 +56,6 @@ import {
   SessionCreateRequestValidated,
   SessionChatRequestValidated,
   SessionCancelRequestValidated,
-  CliType,
   AgentConfigCliType,
   type AgentConfigId,
   type BuiltinRuntimeOverrides,
@@ -62,6 +78,8 @@ import {
   getSessionIdFromRoomId,
   getSessionRoomId,
   TerminalCommandResultSchema,
+  SessionHistoryChangeSchema,
+  type SessionHistoryChange,
   type IssuePRMention,
   type SessionImageGroupContent,
   type SessionInputBlock,
@@ -71,6 +89,11 @@ import {
   getCodeCollabFileIndexSignalFlockDocId,
   type SessionContextWindowUsage,
   type SessionHistoryInput,
+  type SessionHistoryReadResponse,
+  type SessionHistoryReadQuery,
+  type SessionHistoryWriteOperation,
+  type SessionHistoryWriteResponse,
+  type PermissionOutcome,
   type SessionLegacyMetaFields,
   PERMISSION_REQUEST_TIMEOUT_MS,
   type ChatFailedCode,
@@ -112,28 +135,12 @@ import {
   SessionPreviewCreateRequestValidated,
   SessionPreviewRevokeRequestValidated,
   type SessionStatus,
-  buildSessionImageApiUrl,
-  getSessionImageDownloadApiPath,
-  getSessionImageUploadApiPath,
   buildSessionFileApiUrl,
-  buildSessionFileUploadMetadataHeaders,
   getSessionFileDownloadApiPath,
-  getSessionFileUploadApiPath,
-  getSessionFileMultipartCreateApiPath,
-  getSessionFileMultipartPartApiPath,
-  getSessionFileMultipartCompleteApiPath,
-  getSessionFilePartCount,
-  shouldUseSingleShotUpload,
-  isTextPreviewable,
   inputBlocksToHistoryItems,
   SESSION_FILE_MAX_COUNT,
-  SESSION_FILE_MAX_SIZE_BYTES,
-  SESSION_FILE_PART_SIZE_BYTES,
-  SESSION_FILE_PREVIEW_SNIFF_BYTES,
   type AcpConfigOptionSummary,
-  SESSION_IMAGE_ALLOWED_MIME_TYPES,
   SESSION_IMAGE_MAX_COUNT,
-  SESSION_IMAGE_MAX_SIZE_BYTES,
   isAskUserQuestionPermissionRequest,
   getAskUserQuestionPermissionDisplayTitle,
   parseAskUserQuestionPermissionMeta,
@@ -195,6 +202,7 @@ import {
 } from '@lody/shared';
 import { getHostMachineProtocolCapabilities } from '../agent/managed-agent-runtime';
 import { ISession, SessionManager } from '../session/session-manager';
+import { getDefaultSessionWorkdir } from '../session/session';
 import { captureCli } from '@/lib/analytics/posthog';
 import { LoroDocumentManager, SessionDocument, subscribeSessionChanges } from './loro/doc';
 import { createSessionBackend, type SessionBackend } from '@/session/session-backend';
@@ -213,7 +221,7 @@ import type {
   CloudGithubTokenManager,
   CloudPort,
   CloudUsagePort,
-  LoroStreamsTokenProvider,
+  LoroStreamsTokenProviderLegacy,
 } from '@lody/platform';
 import { Logger } from '@/utils/logger';
 import { ProviderSetupManager } from './provider-setup-manager';
@@ -258,10 +266,9 @@ import {
   buildAttachmentPromptText,
   buildUnavailableAttachmentPromptText,
   ensureAttachmentsGitExcluded,
-  resolveContainedUploadPath,
 } from '@/lib/session-file-attachments';
 import { deriveRepoIdFromGitHubRepo } from '@/utils/github';
-import { getLocalProjectGitStateAtRootPath } from '@lody/shared/node/local-project';
+import { localProjectsLegacy } from '@lody/shared/node/local-project';
 import { deriveRepoIdFromLocalProjectPath } from '@lody/shared/node/worktree-paths';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import {
@@ -290,10 +297,7 @@ import {
 } from './agent-notice';
 import { generateTitleIsolated, sanitizeTitle } from '@/agent/title-generator';
 import type { AgentSessionWarning } from '@/agent/agent-client';
-import {
-  SessionActivePresenceController,
-  type SessionActivePresencePhase,
-} from './loro/session-active-presence';
+import { SessionActivePresenceControllerLegacy } from './loro/session-active-presence-legacy';
 import {
   resolveImageGenerationPresencePhase,
   shouldRestoreRunningAfterPermission,
@@ -374,7 +378,10 @@ import {
   type CodeCollabV2WorkspaceResolveOptions,
   type CodeCollabV2WorkspaceResolver,
 } from '@/lib/code-collab/code-collab-v2-service';
-import { FilePreviewService } from '@/lib/file-preview/file-preview-service';
+import {
+  FilePreviewService,
+  type FilePreviewLocalWorkspaceResolver,
+} from '@/lib/file-preview/file-preview-service';
 import {
   CodeCollabV2DiffStore,
   type CodeCollabV2DiffStoreEvent,
@@ -404,7 +411,10 @@ import {
   isACPAgentRichContentNotification,
   materializeACPAgentRichContent,
 } from '@/lib/acp-agent-attachments';
-import { LocalProjectControlService } from '@/lib/local-project-control-service';
+import {
+  LocalProjectControlService,
+  LocalProjectCreateDirectoryError,
+} from '@/lib/local-project-control-service';
 import {
   makeLocalWorkspaceCatalog,
   type LocalCatalogAccessSnapshot,
@@ -435,6 +445,15 @@ import {
 import { resolveSessionWorktreeCleanupConfig } from '@/session/worktree/worktree-config-resolver';
 import { AntigravityQuotaPoller, createAntigravityQuotaClient } from '@/lib/antigravity-quota';
 
+type SessionHistoryReadRequest = Extract<
+  LocalSessionControlRequestValidated,
+  { type: 'session/history-read' }
+>;
+type SessionHistoryWriteRequest = Extract<
+  LocalSessionControlRequestValidated,
+  { type: 'session/history-write' }
+>;
+
 type RepoDocMetaPatch = Parameters<LoroDocumentManager['repo']['upsertDocMeta']>[1];
 type LocalProjectFileRpcRequest = Extract<
   LocalProjectControlRequest,
@@ -457,6 +476,7 @@ type LocalProjectOwnerOnlyRpcRequest = Extract<
       | 'local-project/add'
       | 'local-project/prepare-add'
       | 'local-project/list-roots'
+      | 'local-project/create-directory'
       | 'local-project/browse-dir';
   }
 >;
@@ -489,6 +509,7 @@ function isLocalProjectOwnerOnlyRpcRequest(
     request.type === 'local-project/add' ||
     request.type === 'local-project/prepare-add' ||
     request.type === 'local-project/list-roots' ||
+    request.type === 'local-project/create-directory' ||
     request.type === 'local-project/browse-dir'
   );
 }
@@ -677,18 +698,6 @@ type ConversationTurnGateContext = {
   deferACPUpdateTarget?: boolean;
 };
 
-type UploadableImageFile = {
-  absolutePath: string;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  // Bytes are read inside the validation function while the file is open with
-  // O_NOFOLLOW. Carrying them to upload avoids a second `readFile` that would
-  // re-open the path and follow a symlink swapped in after validation (TOCTOU).
-  bytes: Buffer;
-};
-
-type UploadedSessionImage = NonNullable<SessionImageUploadResponse['images']>[number];
 /**
  * What an image an agent publishes becomes in history: an image group in the
  * relay store, or a file of an image type kept by this machine without one.
@@ -702,18 +711,6 @@ type SessionImageUploadOptions = {
   attachTarget?: SessionImageUploadAttachTarget;
 };
 
-type ValidatedUploadFile = {
-  absolutePath: string;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  sha256: string;
-  textPreview: boolean;
-};
-
-// A file kept by this machine, where no relay store exists, has no downloadUrl.
-type UploadedSessionFile = SessionFilePayload & { downloadUrl?: string };
-
 /**
  * Persist workspace-relative attachment provenance with one cross-platform
  * separator convention so downstream canonical-path consumers can open it.
@@ -724,65 +721,6 @@ export function normalizeSessionFileSourcePath(
 ): string {
   return separator === '/' ? sourcePath : sourcePath.split(separator).join('/');
 }
-
-const SESSION_FILE_MAX_PART_RETRIES = 3;
-
-// Best-effort MIME type from a file extension for the agent-send path. The
-// server treats this as advisory only; preview gating re-sniffs content.
-const SESSION_FILE_MIME_TYPE_BY_EXTENSION: Record<string, string> = {
-  txt: 'text/plain',
-  text: 'text/plain',
-  log: 'text/plain',
-  md: 'text/markdown',
-  markdown: 'text/markdown',
-  json: 'application/json',
-  csv: 'text/csv',
-  tsv: 'text/tab-separated-values',
-  xml: 'application/xml',
-  html: 'text/html',
-  htm: 'text/html',
-  css: 'text/css',
-  js: 'text/javascript',
-  ts: 'text/plain',
-  yaml: 'application/yaml',
-  yml: 'application/yaml',
-  pdf: 'application/pdf',
-  zip: 'application/zip',
-  gz: 'application/gzip',
-  tar: 'application/x-tar',
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-};
-
-const DEFAULT_SESSION_FILE_MIME_TYPE = 'application/octet-stream';
-
-// Backend multipart contract (backend/server/src/session-file-server.ts). Validated
-// at the trust boundary since these are HTTP responses (cli-type-safety rule).
-const MultipartCreateResponseSchema = z.object({
-  success: z.literal(true),
-  uploadId: z.string().min(1),
-  fileId: z.string().min(1),
-});
-const MultipartPartResponseSchema = z.object({
-  success: z.literal(true),
-  partNumber: z.number().int(),
-  etag: z.string().min(1),
-});
-
-const SESSION_IMAGE_MIME_TYPE_BY_EXTENSION: Record<
-  string,
-  (typeof SESSION_IMAGE_ALLOWED_MIME_TYPES)[number]
-> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  webp: 'image/webp',
-  gif: 'image/gif',
-};
 
 // ACP ToolCallStatus values that represent a finished image generation.
 // `pending`/`in_progress` keep the captured turnId alive for retries; everything
@@ -842,7 +780,8 @@ export class MessageHandler {
   private readonly promptSuggestionSourceTurns = new Map<SessionId, string>();
   private pendingProcessLifecycleAction: MachineProcessLifecycleAction | null = null;
   private readonly store = new SessionTransientStore();
-  private sessionActivePresence!: SessionActivePresenceController;
+  private readonly historyOwnerAbort = new AbortController();
+  private sessionActivePresence!: SessionActivePresenceControllerLegacy;
   private readonly titleGenerationInFlight = new Map<SessionId, Promise<string | null>>();
   // Note: titleGenerationInFlight, archiveInFlight are self-cleaning
   // and stay as independent tracking. All other per-session state lives in this.store.
@@ -933,7 +872,7 @@ export class MessageHandler {
   private localProjectControlService: LocalProjectControlService;
   private localWorkspaceCatalog: LocalWorkspaceCatalogService;
   private machineRpcServer: LoroStreamsMachineRpcServer | null = null;
-  private machineRpcTokenProvider: LoroStreamsTokenProvider | null = null;
+  private machineRpcTokenProvider: LoroStreamsTokenProviderLegacy | null = null;
   private machineRpcStreamClient: ReturnType<typeof createLoroStreamsJsonStreamClient> | null =
     null;
   private machineRpcGatewayBaseUrl: string | null = null;
@@ -1858,123 +1797,23 @@ export class MessageHandler {
     return serverUrl.endsWith('/') ? serverUrl.slice(0, -1) : serverUrl;
   }
 
-  private async validateSessionImageUploadPath(filePath: string): Promise<UploadableImageFile> {
-    const trimmed = filePath.trim();
-    if (!trimmed) {
-      throw new Error('Image path is empty');
-    }
-
-    const absolutePath = path.resolve(trimmed);
-    // O_NOFOLLOW makes the open() fail with ELOOP if the final path component is a
-    // symlink. We then fstat / read through the same fd, so an attacker who swaps
-    // the file after validation cannot redirect us at a different inode.
-    let handle: fs.promises.FileHandle;
-    try {
-      handle = await fs.promises.open(
-        absolutePath,
-        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW
-      );
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      if (code === 'ELOOP') {
-        throw new Error(`Image path must not be a symlink: ${filePath}`, { cause: error });
-      }
-      throw new Error(`Image file not found: ${filePath}`, { cause: error });
-    }
-
-    try {
-      const stat = await handle.stat();
-
-      if (!stat.isFile()) {
-        throw new Error(`Image path is not a file: ${filePath}`);
-      }
-
-      if (stat.size <= 0) {
-        throw new Error(`Image is empty: ${filePath}`);
-      }
-
-      if (stat.size > SESSION_IMAGE_MAX_SIZE_BYTES) {
-        throw new Error(
-          `Image must be <= ${Math.floor(SESSION_IMAGE_MAX_SIZE_BYTES / (1024 * 1024))}MB: ${filePath}`
-        );
-      }
-
-      const fileName = path.basename(absolutePath);
-      const extension = path.extname(fileName).slice(1).trim().toLowerCase();
-      const mimeType = SESSION_IMAGE_MIME_TYPE_BY_EXTENSION[extension];
-      if (!mimeType) {
-        throw new Error(`Unsupported image file extension: ${fileName}`);
-      }
-
-      const bytes = await handle.readFile();
-
-      return {
-        absolutePath,
-        fileName,
-        mimeType,
-        sizeBytes: stat.size,
-        bytes,
-      };
-    } finally {
-      await handle.close();
-    }
+  private attachmentTransfer(): SessionAttachmentTransfer {
+    return new SessionAttachmentTransfer(
+      this.token,
+      this.cloudPort.attachmentUpload?.serverBaseUrl
+    );
   }
 
-  private async uploadSessionImageFile(args: {
+  private validateSessionImageUploadPath(filePath: string) {
+    return this.attachmentTransfer().validateSessionImageUploadPath(filePath);
+  }
+
+  private uploadSessionImageFile(args: {
     workspaceId: WorkspaceId;
     sessionId: SessionId;
     file: UploadableImageFile;
   }): Promise<UploadedSessionImage> {
-    const serverBaseUrl = this.resolveServerBaseUrl();
-    const uploadUrl = buildSessionImageApiUrl(
-      serverBaseUrl,
-      getSessionImageUploadApiPath(args.workspaceId)
-    );
-
-    const formData = new FormData();
-    formData.set('sessionId', args.sessionId);
-    const fileBytes = new Uint8Array(args.file.bytes.byteLength);
-    fileBytes.set(args.file.bytes);
-    formData.set('file', new Blob([fileBytes], { type: args.file.mimeType }), args.file.fileName);
-
-    const response = await fetch(uploadUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-      },
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => '');
-      const detail = errorBody ? `: ${errorBody.slice(0, 200)}` : '';
-      throw new Error(`Failed to upload image (${response.status})${detail}`);
-    }
-
-    const responseBody = await response.json().catch(() => null);
-    const parsed = SessionInputBlockSchema.safeParse(
-      responseBody && typeof responseBody === 'object' && 'image' in responseBody
-        ? (responseBody as Record<string, unknown>).image
-        : undefined
-    );
-    if (!parsed.success || parsed.data.type !== 'image') {
-      throw new Error('Invalid image upload payload');
-    }
-
-    const downloadUrl = buildSessionImageApiUrl(
-      serverBaseUrl,
-      getSessionImageDownloadApiPath(args.workspaceId, args.sessionId, parsed.data.imageId)
-    );
-
-    return {
-      imageId: parsed.data.imageId,
-      mimeType: parsed.data.mimeType,
-      fileName: parsed.data.fileName,
-      sizeBytes: parsed.data.sizeBytes,
-      width: parsed.data.width,
-      height: parsed.data.height,
-      downloadUrl,
-    };
+    return this.attachmentTransfer().uploadSessionImageFile(args);
   }
 
   private async appendAssistantImageGroupToActiveTurn(args: {
@@ -2760,7 +2599,7 @@ export class MessageHandler {
     }
 
     try {
-      const state = await getLocalProjectGitStateAtRootPath(rootPath);
+      const state = await localProjectsLegacy.getLocalProjectGitStateAtRootPath(rootPath);
       return {
         type: 'local-project/git-state_response',
         machineId: this.machineId,
@@ -2963,7 +2802,7 @@ export class MessageHandler {
     }
     const command = selected as Record<string, unknown>;
     const prompt = typeof command.prompt === 'string' ? command.prompt : undefined;
-    if (!prompt) {
+    if (prompt === undefined || (!prompt && !operation.targetInputAttachments?.[index]?.length)) {
       throw new Error(`Operation ${operation.operationId} item ${index} has no prompt.`);
     }
 
@@ -3018,6 +2857,7 @@ export class MessageHandler {
             }),
         defaultMachineId: requester.machineId,
         sessionId: item.target.sessionId,
+        inputAttachments: operation.targetInputAttachments?.[index],
         userTurnId: item.target.userTurnId,
         agentRoleSnapshot: operation.targetRoleSnapshots?.[index] ?? undefined,
         chainDepth: operation.initiatorChainDepth + 1,
@@ -3068,7 +2908,8 @@ export class MessageHandler {
         chainDepth: operation.initiatorChainDepth + 1,
         bypassSessionQuota: shouldBypassSessionQuota(operation.kind),
       },
-      delegatedRequester
+      delegatedRequester,
+      { attachments: operation.targetInputAttachments?.[index] }
     );
   }
 
@@ -3091,16 +2932,11 @@ export class MessageHandler {
     this.machineNameExplicit = config.machineNameExplicit ?? false;
     this.cliVersion = config.cliVersion;
     this.machineId = config.machineId as MachineId;
-    this.sessionActivePresence = new SessionActivePresenceController(
+    this.sessionActivePresence = new SessionActivePresenceControllerLegacy(
       this.workspaceDocument,
       this.machineId,
       this.logger,
-      {
-        // Late-bound: the execution service is constructed further down this
-        // constructor, and the watchdog can only fire once a turn is running.
-        onInitializationStalled: (sessionId, stall) =>
-          this.executionService.notifyInitializationStalled(sessionId, stall),
-      }
+      { refreshRunningSeen: config.lanWorkspace === true }
     );
     this.supportRegistryAgentTypes = config.supportRegistryAgentTypes ?? [];
     this.closeSessionTerminals = config.closeSessionTerminals;
@@ -3193,6 +3029,7 @@ export class MessageHandler {
       },
     });
     this.filePreviewService = new FilePreviewService({
+      resolveLocalWorkspace: this.resolveLocalFilePreviewWorkspace,
       resolveWorkspace: async (sessionId) => {
         const resolved = await this.resolveCodeCollabV2Workspace(sessionId);
         return resolved.ok
@@ -3233,8 +3070,8 @@ export class MessageHandler {
       workspaceId: this.workspaceId,
       preferredBaseBranch: this.preferredBaseBranch,
       touchSession: (sessionId) => this.touchSession(sessionId),
-      startSessionActivePresence: (sessionId, phase) =>
-        this.startSessionActivePresence(sessionId, phase),
+      holdSessionActivePresence: (sessionId, phase) =>
+        this.sessionActivePresence.native.hold(sessionId, phase),
       clearSessionActivePresence: (sessionId) => this.clearSessionActivePresence(sessionId),
       setSessionActivePresencePhase: (sessionId, phase, detail) =>
         this.setSessionActivePresencePhase(sessionId, phase, detail),
@@ -3438,7 +3275,7 @@ export class MessageHandler {
       this.logger.debug(
         `[rpc-server:${this.machineId}] using Loro Streams RPC connect timeout ${rpcConnectTimeoutMs}ms`
       );
-      const streamsTokenProvider = streamsTokens.createTokenProvider({
+      const streamsTokenProvider = streamsTokens.createTokenProviderLegacy({
         workspaceId: this.workspaceId,
       });
       this.machineRpcTokenProvider = streamsTokenProvider;
@@ -3461,6 +3298,25 @@ export class MessageHandler {
         rpcVersion: LORO_STREAMS_RPC_VERSION,
         retentionSeconds: LORO_STREAMS_RPC_RETENTION_SECONDS,
         now: getServerNow,
+        historyRequestRejections: {
+          get: (request) =>
+            Effect.runPromise(
+              getSessionHistoryRpcRejection(
+                path.join(getLodyDataDir(), 'session-history-rpc-rejections.sqlite3'),
+                request,
+                getServerNow()
+              )
+            ),
+          put: (request, rejection) =>
+            Effect.runPromise(
+              putSessionHistoryRpcRejection(
+                path.join(getLodyDataDir(), 'session-history-rpc-rejections.sqlite3'),
+                request,
+                rejection,
+                getServerNow()
+              )
+            ),
+        },
         getMachineStatus: async () =>
           await this.executionService.getMachineStatus({
             type: 'machine/status',
@@ -3498,6 +3354,8 @@ export class MessageHandler {
             this.triggerPendingProcessLifecycleAction(response.requestId);
           }
         },
+        refreshMachineProviderRateLimits: async (configId) =>
+          this.executionService.refreshProviderRateLimits(configId),
         refreshMachineAcpCapabilities: async ({ configId, force, onAcpBinaryProgress, signal }) =>
           await this.executionService.refreshMachineAcpCapabilities(
             {
@@ -3588,7 +3446,7 @@ export class MessageHandler {
             machineUserId: this.userId,
           });
         },
-        cancelSession: async ({ sessionId, turnId, subagentTaskId }) => {
+        cancelSession: async ({ sessionId, turnId, subagentTaskId, cancelId, pauseInbox }) => {
           const result = await this.executionService.cancelSession(
             {
               type: 'session/cancel',
@@ -3597,8 +3455,10 @@ export class MessageHandler {
               sessionId,
               turnId,
               subagentTaskId,
+              cancelId,
+              pauseInbox,
             },
-            { pendingInput: 'promote', prePromptSession: 'discard' }
+            { pendingInput: 'preserve', prePromptSession: 'discard' }
           );
           return {
             type: 'session/cancel_response' as const,
@@ -3627,12 +3487,20 @@ export class MessageHandler {
         terminateSession: async ({ sessionId }) => await this.terminateAcpSession(sessionId),
         forkSession: async (args) => await this.forkSessionWithAccessCheck(args),
         editAndResendSession: async (args) => await this.editAndResendSessionWithAccessCheck(args),
-        dispatchSessionTurn: async ({ sessionId, userTurnId, userId, timestamp, inputConfig }) => {
+        dispatchSessionTurn: async ({
+          sessionId,
+          userTurnId,
+          userId,
+          timestamp,
+          inputConfig,
+          inputOrigin,
+        }) => {
           const disposition = await this.sessionDispatchWatcher.offerRpcTurn({
             sessionId,
             userTurnId,
             userId,
             timestamp,
+            inputOrigin,
             inputConfig,
           });
           return {
@@ -3649,6 +3517,11 @@ export class MessageHandler {
         prepareSession: async (spec) => await this.prepareSessionWithAccessCheck(spec),
         cancelSessionPreparation: async (args) =>
           await this.cancelSessionPreparationWithAccessCheck(args),
+        resolveSessionHistoryOwnerSessionId: this.resolveSessionHistoryOwnerSessionId,
+        readSessionHistory: async ({ sessionId, query }) =>
+          await this.readSessionHistoryForRpc(sessionId, query),
+        writeSessionHistory: async ({ sessionId, operation, payload }) =>
+          await this.writeSessionHistoryForRpc(sessionId, operation, payload),
         resolveCodeCollabOwnerSessionId: this.resolveCodeCollabV2OwnerSessionId,
         previewFile: async (request) => await this.filePreviewService.previewFile(request),
         openCodeCollabText: async (request) => await this.codeCollabV2Service.openText(request),
@@ -3974,9 +3847,10 @@ export class MessageHandler {
       (
         machineId: MachineId,
         agentConfigId: AgentConfigId | undefined,
-        cliType: CliType,
+        cliType: string,
         limits: RateLimit
       ) => {
+        if (agentConfigId) this.executionService.noteProviderRateLimitsUpdate(agentConfigId);
         void this.workspaceDocument.updateRateLimits(machineId, agentConfigId, cliType, limits);
       }
     );
@@ -4200,6 +4074,19 @@ export class MessageHandler {
     }
     const { repo } = this.workspaceDocument;
     this.sessionLifecycleWatchHandles = [
+      repo.watch(
+        (event) => {
+          if (event.kind !== 'doc-metadata') return;
+          if (!getSessionIdFromRoomId(event.docId)) return;
+          if ((event.patch as Partial<SessionMeta>).collaborationStopped !== true) return;
+          void this.executionService.reconcileCollaborationStops().catch((error: unknown) => {
+            this.logger.warn(
+              `[session-collaboration] Stop reconciliation failed: ${formatErrorMessage(error)}`
+            );
+          });
+        },
+        { kinds: ['doc-metadata'], metadataFields: ['collaborationStopped'] }
+      ),
       repo.watch(
         (event) => {
           if (event.kind !== 'doc-metadata') return;
@@ -4448,7 +4335,7 @@ export class MessageHandler {
 
     if (this.sessionManager.hasSession(sessionId)) {
       this.logger.debug(`[${sessionId}] Terminating active session`);
-      await this.sessionManager.terminateSession(sessionId, true);
+      await this.terminateSessionForRelease(sessionId);
       if (options.writeIdleStatus !== false) {
         await this.workspaceDocument.repo.upsertDocMeta(getSessionRoomId(sessionId), {
           status: SessionStatusFactory.idle(),
@@ -4729,6 +4616,21 @@ export class MessageHandler {
     return cleanupResult;
   }
 
+  /**
+   * Archive and delete release the Session whether or not every process tree
+   * could be proven gone: the Session is not reused, so a survivor is an
+   * orphan to report, not a reason to leave the archive half done.
+   */
+  private async terminateSessionForRelease(sessionId: SessionId): Promise<void> {
+    try {
+      await this.sessionManager.terminateSession(sessionId, true);
+    } catch (error) {
+      this.logger.warn(
+        `[${sessionId}] Releasing the session although its processes could not all be terminated: ${formatErrorMessage(error)}`
+      );
+    }
+  }
+
   private async terminateActiveChildSessions(
     parentSessionId: SessionId,
     reason: string
@@ -4748,7 +4650,7 @@ export class MessageHandler {
         await this.iosSimulatorService.closeSession(childSessionId);
         await this.finalizeACPState(childSessionId);
         await this.previewService.closeSessionPreviewForCleanup(childSessionId, reason);
-        await this.sessionManager.terminateSession(childSessionId, true);
+        await this.terminateSessionForRelease(childSessionId);
         this.store.get(childSessionId).logger = null;
       })
     );
@@ -6036,7 +5938,7 @@ export class MessageHandler {
   }
 
   private clearSessionActivePresence(sessionId: SessionId): void {
-    this.sessionActivePresence.clear(sessionId);
+    this.sessionActivePresence.clearUnleased(sessionId);
   }
 
   private createRuntimeDispatchContext(): MessageDispatchContext {
@@ -6085,7 +5987,7 @@ export class MessageHandler {
   private async recordWorkspaceAccessSnapshot(
     accessSnapshot: LocalCatalogAccessSnapshot | null
   ): Promise<void> {
-    await Effect.runPromise(
+    await fileLocksLegacy.runPromise(
       this.localWorkspaceCatalog.recordWorkspaceAccessSnapshot({
         workspaceId: this.workspaceId,
         accessSnapshot,
@@ -6585,23 +6487,58 @@ export class MessageHandler {
       };
     }
 
-    // A chat without a project runs in its own directory under the data root. Once
-    // its agent process is gone, that directory is the only record of where it ran,
-    // and previews of the files the agent wrote there must keep working.
-    const chatWorkdir = path.join(getLodyDataDir(), 'chats', ownerSessionId);
-    if (fs.existsSync(chatWorkdir)) {
-      return {
-        ok: true,
-        workspaceRoot: chatWorkdir,
-        source: `chat-workdir:${ownerSessionId}`,
-        ...ownerSessionIdField(ownerSessionId),
-      };
+    // Ordinary chats keep their files after the runtime is evicted. Derive the
+    // same owner directory as Session.getWorkdir(), without creating it or
+    // restoring an agent just to read a file. Never mask an unresolved project.
+    if (!project && !meta.isWorktree) {
+      const ownerMeta =
+        ownerSessionId === sessionId
+          ? meta
+          : await this.resolveCodeCollabOwnerSessionMeta(ownerSessionId);
+      if (!ownerMeta) {
+        return {
+          ok: false,
+          error: 'session_not_found',
+          message: 'Session metadata is not available.',
+        };
+      }
+      if (ownerMeta.isArchived) {
+        return { ok: false, error: 'session_archived', message: 'Session is archived.' };
+      }
+      if (meta.machineId !== this.machineId || ownerMeta.machineId !== this.machineId) {
+        return {
+          ok: false,
+          error: 'permission_denied',
+          message: 'Session workspace belongs to another machine.',
+        };
+      }
+      if (
+        !ownerMeta.project &&
+        !ownerMeta.repoFullName?.trim() &&
+        !ownerMeta.isWorktree &&
+        !ownerMeta.parentSessionId
+      ) {
+        const workspaceRoot = getDefaultSessionWorkdir(ownerSessionId);
+        if (!fs.statSync(workspaceRoot, { throwIfNoEntry: false })?.isDirectory()) {
+          return {
+            ok: false,
+            error: 'workspace_unavailable',
+            message: 'Session chat workspace directory is unavailable.',
+          };
+        }
+        return {
+          ok: true,
+          workspaceRoot,
+          source: `chat-workspace:${ownerSessionId}`,
+          ...ownerSessionIdField(ownerSessionId),
+        };
+      }
     }
 
     return {
       ok: false,
       error: 'workspace_unavailable',
-      message: 'Session has no local project or GitHub repository workspace.',
+      message: 'Session workspace could not be resolved from its metadata.',
     };
   }
 
@@ -6641,7 +6578,7 @@ export class MessageHandler {
           message: resolved.message,
         };
       }
-      if (resolved.error === 'session_archived') {
+      if (resolved.error === 'session_archived' || resolved.error === 'permission_denied') {
         return {
           ok: false,
           code: 'permission_denied',
@@ -6660,6 +6597,50 @@ export class MessageHandler {
         message: formatErrorMessage(error),
       };
     }
+  };
+
+  private readonly resolveLocalFilePreviewWorkspace: FilePreviewLocalWorkspaceResolver = async (
+    sessionId
+  ) => {
+    // Local IPC grants filesystem reads, but must retain the session/machine and
+    // child-owner checks without requiring a live agent or an existing directory.
+    const meta = await this.resolveCodeCollabOwnerSessionMeta(sessionId);
+    if (!meta)
+      return {
+        ok: false,
+        code: 'session_not_found',
+        message: 'Session metadata is not available.',
+      };
+    const ownerSessionId = meta.parentSessionId ?? sessionId;
+    const ownerMeta =
+      ownerSessionId === sessionId
+        ? meta
+        : await this.resolveCodeCollabOwnerSessionMeta(ownerSessionId);
+    if (!ownerMeta)
+      return {
+        ok: false,
+        code: 'session_not_found',
+        message: 'Owner session metadata is not available.',
+      };
+    if (
+      meta.isArchived ||
+      ownerMeta.isArchived ||
+      meta.machineId !== this.machineId ||
+      ownerMeta.machineId !== this.machineId ||
+      ownerMeta.parentSessionId
+    ) {
+      return {
+        ok: false,
+        code: 'permission_denied',
+        message: 'Local file preview session ownership is invalid.',
+      };
+    }
+    const resolved = await this.resolveCodeCollabV2Workspace(sessionId);
+    if (resolved.ok) return { ok: true, ownerSessionId, workspaceRoot: resolved.workspaceRoot };
+    if (resolved.code === 'workspace_root_unavailable') {
+      return { ok: true, ownerSessionId, workspaceRoot: null };
+    }
+    return resolved;
   };
 
   private readonly resolveCodeCollabV2OwnerSessionId = async (
@@ -6813,10 +6794,17 @@ export class MessageHandler {
                 sessionId,
                 ...(turnId ? { turnId } : {}),
               },
-              { pendingInput: 'promote', prePromptSession: 'discard' }
+              { pendingInput: 'preserve', prePromptSession: 'discard', pauseInbox: false }
             );
           },
-          dispatchSession: async (sessionId) => {
+          dispatchSession: async (sessionId, input) => {
+            if (input?.inputOrigin === 'human')
+              await this.executionService.acceptInboxHumanInput({
+                sessionId,
+                inputId: input.inputId,
+                userId: input.userId,
+                config: input.config,
+              });
             void this.sessionDispatchWatcher.enqueueSessionCheck(sessionId);
           },
           githubToken: async (repoFullName) => await this.readGitHubToken(repoFullName),
@@ -6960,6 +6948,10 @@ export class MessageHandler {
         )
           throw new Error('Session tool scope mismatch');
         const { executeDaemonSessionTool } = await import('@/mcp/daemon-session-tools');
+        const sourceWorkdir = this.resolveSessionWorkspaceRoot(sessionId);
+        if (!sourceWorkdir && args && typeof args === 'object' && 'attachments' in args)
+          throw new Error('Requester Session workspace is unavailable');
+
         return this.withSessionCommandEnvironment(() =>
           executeDaemonSessionTool(
             {
@@ -6967,7 +6959,7 @@ export class MessageHandler {
               workspaceId: this.workspaceId,
               sessionId,
               localControlSocketPath: undefined,
-              workdir: process.cwd(),
+              workdir: sourceWorkdir ?? process.cwd(),
             },
             name,
             args
@@ -7039,8 +7031,10 @@ export class MessageHandler {
         await assertOwner(request.params.sessionId as SessionId);
         return await this.filePreviewService.previewFile(request.params);
       case 'file/resolve-local':
-        await assertOwner(request.params.sessionId as SessionId);
-        return await this.filePreviewService.resolveLocalFile(request.params);
+        return await this.filePreviewService.resolveLocalFile(
+          request.params,
+          request.ownerSessionId
+        );
       case 'session/get-active-invocation-context': {
         const sessionId = request.params.sessionId as SessionId;
         const invocation = this.executionService.getActiveInvocationContext(sessionId);
@@ -7066,8 +7060,10 @@ export class MessageHandler {
             sessionId: request.params.sessionId,
             turnId: request.params.turnId,
             subagentTaskId: request.params.subagentTaskId,
+            cancelId: request.params.cancelId,
+            pauseInbox: request.params.pauseInbox,
           },
-          { pendingInput: 'promote', prePromptSession: 'discard' }
+          { pendingInput: 'preserve', prePromptSession: 'discard' }
         );
         return {
           type: 'session/cancel_response' as const,
@@ -7096,6 +7092,7 @@ export class MessageHandler {
           userTurnId: request.params.userTurnId,
           userId: request.params.userId,
           timestamp: request.params.timestamp,
+          inputOrigin: request.params.inputOrigin,
           inputConfig,
         });
         return {
@@ -7286,6 +7283,11 @@ export class MessageHandler {
       case 'machine/upgrade':
         await this.handleMachineUpgrade(message, context);
         break;
+      case 'machine/provider-rate-limits-refresh':
+        if (message.machineId !== this.machineId || message.workspaceId !== this.workspaceId)
+          return;
+        context.send(await this.executionService.refreshProviderRateLimits(message.configId));
+        break;
       case 'machine/acp-capabilities-refresh':
         await this.handleMachineAcpCapabilitiesRefresh(message, context);
         break;
@@ -7310,6 +7312,12 @@ export class MessageHandler {
       case 'session/file-send-local':
         await this.handleSessionFileSendLocal(message, context);
         break;
+      case 'session/history-read':
+        await this.handleSessionHistoryRead(message, context);
+        break;
+      case 'session/history-write':
+        await this.handleSessionHistoryWrite(message, context);
+        break;
       case 'session/preview-candidate-report':
         await this.handlePreviewCandidateReport(message, context);
         break;
@@ -7323,6 +7331,344 @@ export class MessageHandler {
         context.send(await this.previewService.getStatus(message));
         break;
     }
+  }
+
+  private readonly resolveSessionHistoryOwnerSessionId = async (
+    sessionId: SessionId,
+    options?: { signal?: AbortSignal }
+  ): Promise<SessionId> => {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.historyOwnerAbort.signal])
+      : this.historyOwnerAbort.signal;
+    return await Effect.runPromise(
+      awaitSessionHistoryOwner(this.workspaceDocument.repo, sessionId, this.machineId, this.logger),
+      { signal }
+    );
+  };
+
+  private async readSessionHistoryForRpc(
+    sessionId: SessionId,
+    query: SessionHistoryReadQuery
+  ): Promise<SessionHistoryReadResponse> {
+    try {
+      await this.resolveSessionHistoryOwnerSessionId(sessionId);
+      this.touchSession(sessionId);
+      const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
+      const backend = await this.getSessionBackend(sessionDoc);
+      if (backend.kind !== 'roost') {
+        throw new Error(`Session ${sessionId} does not use Roost history.`);
+      }
+      const history = backend.history;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        // The read and its revision must straddle no unpublished history write.
+        // These are local durability barriers, never remote synchronization.
+        await backend.flushLocalWrites();
+        const before = await sessionDoc.getRoostHistoryCursor();
+        let result: unknown;
+        let pageTurns: SessionHistoryReadResponse['pageTurns'];
+        switch (query.kind) {
+          case 'count':
+            result = await history.count();
+            break;
+          case 'readAt':
+            result = await history.readAt(query.position);
+            break;
+          case 'readTurn':
+            result = await history.readTurn(query.turnId);
+            break;
+          case 'inputAcceptance':
+            if (!backend.inputAcceptance) throw new Error('Input acceptance is unavailable');
+            result = await backend.inputAcceptance.lookup(
+              parseHistoryWrite(HistoryEntryWriteSchema, query.entry) as never
+            );
+            break;
+          case 'readRange':
+            result = await history.readRange(query.from, query.to);
+            break;
+          case 'readDirectory':
+            result = await history.readDirectory(query.from, query.to);
+            break;
+          case 'readLatestPage':
+            if (!history.readLatestDirectoryPage) {
+              throw new Error(
+                `Session ${sessionId} history backend does not support reverse pages.`
+              );
+            }
+            {
+              const page = await history.readLatestDirectoryPage(query.limit);
+              result = page;
+              pageTurns = (
+                await history.readRange(page.startPosition, page.startPosition + page.rows.length)
+              ).map((read) => {
+                if (read.state !== 'ready') throw new Error('History page body is unavailable');
+                return read.turn as SessionHistoryInput;
+              });
+            }
+            break;
+          case 'readOlderPage':
+            if (!history.readOlderDirectoryPage) {
+              throw new Error(
+                `Session ${sessionId} history backend does not support reverse pages.`
+              );
+            }
+            {
+              const page = await history.readOlderDirectoryPage(query.cursor, query.limit);
+              result = page;
+              pageTurns = (
+                await history.readRange(page.startPosition, page.startPosition + page.rows.length)
+              ).map((read) => {
+                if (read.state !== 'ready') throw new Error('History page body is unavailable');
+                return read.turn as SessionHistoryInput;
+              });
+            }
+            break;
+          case 'readAll':
+            result = await history.readAll();
+            break;
+          case 'readTurnOutput':
+            result = await history.readTurnOutput(query.userTurnId);
+            break;
+        }
+        await backend.flushLocalWrites();
+        const after = await sessionDoc.getRoostHistoryCursor();
+        if (before?.historyRevision !== after?.historyRevision) continue;
+        if (after?.historyRevision === undefined || after.historyCount === undefined) {
+          throw new Error('Roost history has no durable revision');
+        }
+        let historyChange: SessionHistoryReadResponse['historyChange'];
+        if (after.historyChangeJson) {
+          try {
+            historyChange = SessionHistoryChangeSchema.nullable().parse(
+              JSON.parse(after.historyChangeJson)
+            );
+          } catch {
+            historyChange = { kind: 'structure', from: 0, to: after.historyCount };
+          }
+        }
+        return {
+          type: 'session/history-read_response',
+          sessionId,
+          success: true,
+          result,
+          historyRevision: after.historyRevision,
+          historyCount: after.historyCount,
+          historyChange,
+          ...(pageTurns ? { pageTurns } : {}),
+        };
+      }
+      throw new Error('History changed during the read; retry the observation');
+    } catch (error) {
+      const detail =
+        describeRoostHistoryFailure(error, {
+          stage: 'read',
+          sessionId,
+          operation: query.kind,
+        }) ?? formatErrorMessage(error);
+      this.logger.debug(`[${sessionId}] History read failed: ${detail}`);
+      return {
+        type: 'session/history-read_response',
+        sessionId,
+        success: false,
+        error: detail,
+      };
+    }
+  }
+
+  private async writeSessionHistoryForRpc(
+    sessionId: SessionId,
+    operation: SessionHistoryWriteOperation,
+    rawPayload: Record<string, unknown>
+  ): Promise<SessionHistoryWriteResponse> {
+    try {
+      await this.resolveSessionHistoryOwnerSessionId(sessionId);
+      this.touchSession(sessionId);
+      const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
+      const backend = await this.getSessionBackend(sessionDoc);
+      if (backend.kind !== 'roost') {
+        throw new Error(`Session ${sessionId} does not use Roost history.`);
+      }
+      const payload = rawPayload;
+      let result: unknown;
+      switch (operation) {
+        case 'accept_input_and_dispatch': {
+          if (!backend.inputAcceptance?.acceptAndDispatch)
+            throw new Error('Input dispatch is unavailable');
+          const receipt = await backend.inputAcceptance.acceptAndDispatch(
+            parseHistoryWrite(HistoryEntryWriteSchema, payload.entry) as never
+          );
+          result = receipt;
+          if (receipt.status === 'accepted' && receipt.active && !this.cleanedUp)
+            void this.sessionDispatchWatcher.enqueueSessionCheck(sessionId);
+          break;
+        }
+        case 'accept_input':
+          if (!backend.inputAcceptance) throw new Error('Input acceptance is unavailable');
+          result = await backend.inputAcceptance.accept(
+            parseHistoryWrite(HistoryEntryWriteSchema, payload.entry) as never
+          );
+          break;
+        case 'append':
+          if (!('entry' in payload)) throw new Error('History append payload is missing entry');
+          await backend.appendHistoryTurn(
+            parseHistoryWrite(HistoryEntryWriteSchema, payload.entry) as SessionHistoryInput
+          );
+          break;
+        case 'replace': {
+          if (typeof payload.turnId !== 'string' || !('entry' in payload)) {
+            throw new Error('History replace payload requires turnId and entry');
+          }
+          const replacement = parseHistoryWrite(
+            HistoryEntryWriteSchema,
+            payload.entry
+          ) as SessionHistoryInput;
+          if (replacement.id !== payload.turnId) {
+            throw new Error('History replace payload turnId does not match entry id');
+          }
+          const existing = await backend.readTurn(payload.turnId);
+          if (existing.state !== 'ready')
+            throw new Error(`History turn ${payload.turnId} was not found`);
+          result = await backend.applyHistoryAction({ kind: 'upsert-turn', turn: replacement });
+          break;
+        }
+        case 'respond_permission':
+          if (typeof payload.requestId !== 'string' || !('outcome' in payload)) {
+            throw new Error('Permission response payload requires requestId and outcome');
+          }
+          result = await backend.respondPermission(
+            payload.requestId,
+            parseHistoryWrite(PermissionOutcomeSchema, payload.outcome) as PermissionOutcome,
+            payload.options as { readonly turnId?: string } | undefined
+          );
+          break;
+        case 'apply_action':
+          if (!('action' in payload)) throw new Error('History action payload is missing action');
+          result = await backend.applyHistoryAction(payload.action as never);
+          break;
+        case 'replace_editable_tail':
+          if (!('input' in payload)) throw new Error('Editable-tail payload is missing input');
+          result = await backend.replaceEditableTail(payload.input as never);
+          break;
+        case 'apply_import':
+          if (!('input' in payload)) throw new Error('History import payload is missing input');
+          result = await backend.applyHistoryImport(payload.input as never);
+          break;
+        case 'copy_history': {
+          if (!Array.isArray(payload.history))
+            throw new Error('History copy payload is missing history');
+          const entries = payload.history.map(
+            (entry) => parseHistoryWrite(HistoryEntryWriteSchema, entry) as SessionHistoryInput
+          );
+          const existingIds = new Set((await backend.readHistory()).map((entry) => entry.id));
+          for (const entry of entries) {
+            if (existingIds.has(entry.id))
+              throw new Error(`History copy target already contains ${entry.id}`);
+            await backend.appendHistoryTurn(entry);
+            existingIds.add(entry.id);
+          }
+          result = { copied: entries.length };
+          break;
+        }
+      }
+      const historyCursor = await sessionDoc.getRoostHistoryCursor();
+      let historyChange: SessionHistoryChange | null = null;
+      if (historyCursor?.historyChangeJson) {
+        try {
+          historyChange = SessionHistoryChangeSchema.nullable().parse(
+            JSON.parse(historyCursor.historyChangeJson)
+          );
+        } catch {
+          historyChange = {
+            kind: 'structure',
+            from: 0,
+            to: historyCursor.historyCount ?? 0,
+          };
+        }
+      }
+      return {
+        type: 'session/history-write_response',
+        sessionId,
+        operation,
+        success: true,
+        ...(result === undefined ? {} : { result }),
+        ...(historyCursor?.historyRevision === undefined
+          ? {}
+          : {
+              historyRevision: historyCursor.historyRevision,
+              ...(historyCursor.historyCount === undefined
+                ? {}
+                : { historyCount: historyCursor.historyCount }),
+              ...(historyChange === undefined ? {} : { historyChange }),
+            }),
+      };
+    } catch (error) {
+      const detail =
+        describeRoostHistoryFailure(error, {
+          stage: 'write',
+          sessionId,
+          operation,
+        }) ?? formatErrorMessage(error);
+      this.logger.debug(`[${sessionId}] History write failed (${operation}): ${detail}`);
+      return {
+        type: 'session/history-write_response',
+        sessionId,
+        operation,
+        success: false,
+        error: detail,
+      };
+    }
+  }
+
+  private async handleSessionHistoryRead(
+    message: SessionHistoryReadRequest,
+    dispatchContext: MessageDispatchContext
+  ): Promise<void> {
+    if (message.workspaceId !== this.workspaceId) {
+      dispatchContext.send({
+        type: 'session/history-read_response',
+        sessionId: message.sessionId,
+        success: false,
+        error: `Workspace mismatch for session ${message.sessionId}`,
+      });
+      return;
+    }
+    dispatchContext.send(await this.readSessionHistoryForRpc(message.sessionId, message.query));
+  }
+
+  private async handleSessionHistoryWrite(
+    message: SessionHistoryWriteRequest,
+    dispatchContext: MessageDispatchContext
+  ): Promise<void> {
+    if (message.workspaceId !== this.workspaceId) {
+      dispatchContext.send({
+        type: 'session/history-write_response',
+        sessionId: message.sessionId,
+        operation: message.operation,
+        success: false,
+        error: `Workspace mismatch for session ${message.sessionId}`,
+      });
+      return;
+    }
+    if (
+      typeof message.payload !== 'object' ||
+      message.payload === null ||
+      Array.isArray(message.payload)
+    ) {
+      dispatchContext.send({
+        type: 'session/history-write_response',
+        sessionId: message.sessionId,
+        operation: message.operation,
+        success: false,
+        error: `Invalid payload for history operation ${message.operation}`,
+      });
+      return;
+    }
+    dispatchContext.send(
+      await this.writeSessionHistoryForRpc(
+        message.sessionId,
+        message.operation,
+        message.payload as Record<string, unknown>
+      )
+    );
   }
 
   private async handleCodeCollabHostStart(
@@ -7610,318 +7956,17 @@ export class MessageHandler {
    * symlink final component), reject non-files/empty/oversize, compute sha256
    * and text-previewability by streaming (bounded memory).
    */
-  private async validateSessionFileUploadPath(
-    filePath: string,
-    options?: {
-      /**
-       * Reject paths outside this root (realpath-canonicalized, parent-symlink
-       * safe). REQUIRED for the agent-facing MCP channel so the upload tool
-       * cannot bypass the agent's own out-of-workspace read approval gate.
-       * Omitted for the desktop local handoff, whose user-picked files are
-       * staged in tmpdir by the user's own Electron process.
-       */
-      containWithin?: string;
-    }
-  ): Promise<ValidatedUploadFile> {
-    const trimmed = filePath.trim();
-    if (!trimmed) {
-      throw new Error('File path is empty');
-    }
-    const absolutePath = options?.containWithin
-      ? await resolveContainedUploadPath(trimmed, options.containWithin)
-      : path.resolve(trimmed);
-
-    let handle: fs.promises.FileHandle;
-    try {
-      handle = await fs.promises.open(
-        absolutePath,
-        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW
-      );
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      if (code === 'ELOOP') {
-        throw new Error(`File path must not be a symlink: ${filePath}`, { cause: error });
-      }
-      throw new Error(`File not found: ${filePath}`, { cause: error });
-    }
-
-    try {
-      const stat = await handle.stat();
-      if (!stat.isFile()) {
-        throw new Error(`Path is not a file: ${filePath}`);
-      }
-      if (stat.size <= 0) {
-        throw new Error(`File is empty: ${filePath}`);
-      }
-      if (stat.size > SESSION_FILE_MAX_SIZE_BYTES) {
-        throw new Error(
-          `File must be <= ${Math.floor(SESSION_FILE_MAX_SIZE_BYTES / (1024 * 1024))}MB: ${filePath}`
-        );
-      }
-
-      const fileName = path.basename(absolutePath);
-      const extension = path.extname(fileName).slice(1).trim().toLowerCase();
-      const mimeType =
-        SESSION_FILE_MIME_TYPE_BY_EXTENSION[extension] ?? DEFAULT_SESSION_FILE_MIME_TYPE;
-
-      // Stream the file once: hash incrementally, capture the first 8 KB for the
-      // text-preview sniff. Avoids reading the whole (up to 100 MB) file into RAM.
-      const hash = crypto.createHash('sha256');
-      const sniffPrefix = Buffer.alloc(SESSION_FILE_PREVIEW_SNIFF_BYTES);
-      let sniffLength = 0;
-      const stream = handle.createReadStream({ autoClose: false });
-      for await (const chunk of stream) {
-        const buf = chunk as Buffer;
-        hash.update(buf);
-        if (sniffLength < SESSION_FILE_PREVIEW_SNIFF_BYTES) {
-          const take = Math.min(SESSION_FILE_PREVIEW_SNIFF_BYTES - sniffLength, buf.length);
-          buf.copy(sniffPrefix, sniffLength, 0, take);
-          sniffLength += take;
-        }
-      }
-
-      const sha256 = hash.digest('hex');
-      const textPreview = isTextPreviewable(
-        fileName,
-        mimeType,
-        sniffPrefix.subarray(0, sniffLength)
-      );
-
-      return {
-        absolutePath,
-        fileName,
-        mimeType,
-        sizeBytes: stat.size,
-        sha256,
-        textPreview,
-      };
-    } finally {
-      await handle.close();
-    }
+  private validateSessionFileUploadPath(filePath: string, options?: { containWithin?: string }) {
+    return this.attachmentTransfer().validateSessionFileUploadPath(filePath, options);
   }
 
-  private buildSessionFileUploadHeaders(file: ValidatedUploadFile, sessionId: SessionId): Headers {
-    const headers = new Headers(
-      buildSessionFileUploadMetadataHeaders({
-        sessionId,
-        fileName: file.fileName,
-        mimeType: file.mimeType,
-        sha256: file.sha256,
-        sizeBytes: file.sizeBytes,
-        textPreview: file.textPreview,
-      })
-    );
-    headers.set('Authorization', `Bearer ${this.token}`);
-    return headers;
-  }
-
-  /** Parse the server's `{ success, file: SessionFilePayload }` upload response. */
-  private parseUploadedFileResponse(
-    body: unknown,
-    serverBaseUrl: string,
-    sessionId: SessionId,
-    workspaceId: WorkspaceId
-  ): UploadedSessionFile {
-    const parsed = SessionInputBlockSchema.safeParse(
-      body && typeof body === 'object' && 'file' in body
-        ? (body as Record<string, unknown>).file
-        : undefined
-    );
-    if (!parsed.success || parsed.data.type !== 'file') {
-      throw new Error('Invalid file upload payload');
-    }
-    const downloadUrl = buildSessionFileApiUrl(
-      serverBaseUrl,
-      getSessionFileDownloadApiPath(workspaceId, sessionId, parsed.data.fileId)
-    );
-    return { ...parsed.data, downloadUrl };
-  }
-
-  private async uploadSessionFileSingleShot(args: {
+  private uploadValidatedSessionFile(args: {
     workspaceId: WorkspaceId;
     sessionId: SessionId;
     file: ValidatedUploadFile;
     signal?: AbortSignal;
   }): Promise<UploadedSessionFile> {
-    const serverBaseUrl = this.resolveServerBaseUrl();
-    const uploadUrl = buildSessionFileApiUrl(
-      serverBaseUrl,
-      getSessionFileUploadApiPath(args.workspaceId)
-    );
-
-    const bytes = await fs.promises.readFile(args.file.absolutePath);
-    const headers = this.buildSessionFileUploadHeaders(args.file, args.sessionId);
-    headers.set('Content-Type', 'application/octet-stream');
-
-    const response = await fetch(uploadUrl, {
-      method: 'POST',
-      headers,
-      body: bytes,
-      signal: args.signal,
-    });
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => '');
-      const detail = errorBody ? `: ${errorBody.slice(0, 200)}` : '';
-      throw new Error(`Failed to upload file (${response.status})${detail}`);
-    }
-    const body = await response.json().catch(() => null);
-    return this.parseUploadedFileResponse(body, serverBaseUrl, args.sessionId, args.workspaceId);
-  }
-
-  private async uploadSessionFileMultipart(args: {
-    workspaceId: WorkspaceId;
-    sessionId: SessionId;
-    file: ValidatedUploadFile;
-    signal?: AbortSignal;
-  }): Promise<UploadedSessionFile> {
-    const serverBaseUrl = this.resolveServerBaseUrl();
-
-    // 1. create
-    const createUrl = buildSessionFileApiUrl(
-      serverBaseUrl,
-      getSessionFileMultipartCreateApiPath(args.workspaceId)
-    );
-    const createResponse = await fetch(createUrl, {
-      method: 'POST',
-      headers: this.buildSessionFileUploadHeaders(args.file, args.sessionId),
-      signal: args.signal,
-    });
-    if (!createResponse.ok) {
-      const errorBody = await createResponse.text().catch(() => '');
-      const detail = errorBody ? `: ${errorBody.slice(0, 200)}` : '';
-      throw new Error(`Failed to create multipart upload (${createResponse.status})${detail}`);
-    }
-    const createBody = MultipartCreateResponseSchema.safeParse(
-      await createResponse.json().catch(() => null)
-    );
-    if (!createBody.success) {
-      throw new Error('Invalid multipart create response');
-    }
-    const { uploadId, fileId } = createBody.data;
-
-    // 2. upload parts (1-based), retrying each part up to N times.
-    const partCount = getSessionFilePartCount(args.file.sizeBytes);
-    const completedParts: Array<{ partNumber: number; etag: string }> = [];
-    const handle = await fs.promises.open(args.file.absolutePath, 'r');
-    try {
-      for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
-        const offset = (partNumber - 1) * SESSION_FILE_PART_SIZE_BYTES;
-        const length = Math.min(SESSION_FILE_PART_SIZE_BYTES, args.file.sizeBytes - offset);
-        const partBuffer = Buffer.alloc(length);
-        // POSIX read may return fewer bytes than requested; loop until the
-        // part buffer is full (a zero-filled tail would only fail later at the
-        // server's sha256 verification, with a far less actionable error).
-        let filled = 0;
-        while (filled < length) {
-          const { bytesRead } = await handle.read(
-            partBuffer,
-            filled,
-            length - filled,
-            offset + filled
-          );
-          if (bytesRead <= 0) {
-            throw new Error(
-              `Short read for part ${partNumber}: got ${filled} of ${length} bytes (file changed during upload?)`
-            );
-          }
-          filled += bytesRead;
-        }
-
-        const partUrl = buildSessionFileApiUrl(
-          serverBaseUrl,
-          getSessionFileMultipartPartApiPath(args.workspaceId, uploadId, partNumber)
-        );
-        const partHeaders = new Headers();
-        partHeaders.set('Authorization', `Bearer ${this.token}`);
-        partHeaders.set('x-session-id', args.sessionId);
-        partHeaders.set('x-file-id', fileId);
-        partHeaders.set('x-file-part-size-bytes', String(length));
-        partHeaders.set('Content-Type', 'application/octet-stream');
-
-        let lastError: unknown = null;
-        let uploaded = false;
-        for (let attempt = 1; attempt <= SESSION_FILE_MAX_PART_RETRIES; attempt += 1) {
-          try {
-            const partResponse = await fetch(partUrl, {
-              method: 'PUT',
-              headers: partHeaders,
-              body: partBuffer,
-              signal: args.signal,
-            });
-            if (!partResponse.ok) {
-              const errorBody = await partResponse.text().catch(() => '');
-              throw new Error(
-                `part ${partNumber} failed (${partResponse.status})${errorBody ? `: ${errorBody.slice(0, 120)}` : ''}`
-              );
-            }
-            const partBody = MultipartPartResponseSchema.safeParse(
-              await partResponse.json().catch(() => null)
-            );
-            if (!partBody.success) {
-              throw new Error(`part ${partNumber} returned an invalid response`);
-            }
-            completedParts.push({ partNumber, etag: partBody.data.etag });
-            uploaded = true;
-            break;
-          } catch (error) {
-            lastError = error;
-            // An aborted upload (backfill revoke) can never succeed on retry.
-            if (args.signal?.aborted) {
-              break;
-            }
-          }
-        }
-        if (!uploaded) {
-          throw new Error(
-            `Failed to upload part ${partNumber} after ${SESSION_FILE_MAX_PART_RETRIES} attempts: ${formatErrorMessage(lastError)}`
-          );
-        }
-      }
-    } finally {
-      await handle.close();
-    }
-
-    // 3. complete
-    const completeUrl = buildSessionFileApiUrl(
-      serverBaseUrl,
-      getSessionFileMultipartCompleteApiPath(args.workspaceId, uploadId)
-    );
-    const completeHeaders = new Headers();
-    completeHeaders.set('Authorization', `Bearer ${this.token}`);
-    completeHeaders.set('x-session-id', args.sessionId);
-    completeHeaders.set('x-file-id', fileId);
-    completeHeaders.set('Content-Type', 'application/json');
-    const completeResponse = await fetch(completeUrl, {
-      method: 'POST',
-      headers: completeHeaders,
-      body: JSON.stringify({ parts: completedParts }),
-      signal: args.signal,
-    });
-    if (!completeResponse.ok) {
-      const errorBody = await completeResponse.text().catch(() => '');
-      const detail = errorBody ? `: ${errorBody.slice(0, 200)}` : '';
-      throw new Error(`Failed to complete multipart upload (${completeResponse.status})${detail}`);
-    }
-    const completeBody = await completeResponse.json().catch(() => null);
-    return this.parseUploadedFileResponse(
-      completeBody,
-      serverBaseUrl,
-      args.sessionId,
-      args.workspaceId
-    );
-  }
-
-  private async uploadValidatedSessionFile(args: {
-    workspaceId: WorkspaceId;
-    sessionId: SessionId;
-    file: ValidatedUploadFile;
-    /** Cancels the relay upload mid-flight (backfill revoke, S5/D10). */
-    signal?: AbortSignal;
-  }): Promise<UploadedSessionFile> {
-    if (shouldUseSingleShotUpload(args.file.sizeBytes)) {
-      return await this.uploadSessionFileSingleShot(args);
-    }
-    return await this.uploadSessionFileMultipart(args);
+    return this.attachmentTransfer().uploadValidatedSessionFile(args);
   }
 
   /**
@@ -8573,7 +8618,7 @@ export class MessageHandler {
           sessionId,
           turnId,
         },
-        { pendingInput: 'preserve', prePromptSession: 'discard' }
+        { pendingInput: 'preserve', prePromptSession: 'discard', pauseInbox: false }
       );
     }
   }
@@ -8633,7 +8678,7 @@ export class MessageHandler {
   ): Promise<void> {
     const { sessionId } = message;
     const result = await this.executionService.cancelSession(message, {
-      pendingInput: 'promote',
+      pendingInput: 'preserve',
       prePromptSession: 'discard',
     });
     dispatchContext.send({
@@ -9701,7 +9746,7 @@ export class MessageHandler {
     runtimeOverrides?: BuiltinRuntimeOverrides,
     titleConfig?: TitleGenerationConfig
   ): Promise<void> {
-    // Builtin Claude, Codex and Grok generate their own titles and publish them
+    // Builtin Claude and Grok generate their own titles and publish them
     // as session_info_update; the isolated agent would only duplicate that work.
     if (acpOwnsSessionTitleGeneration(cliType, agentType, runtimeOverrides)) {
       return;
@@ -9749,6 +9794,8 @@ export class MessageHandler {
         ? await getCodexProfileStore().resolve(this.workspaceId, provider)
         : undefined;
       const title = await generateTitleIsolated({
+        agentConfigId: provider?.id,
+        magpieGatewayUrl: provider?.magpieGatewayUrl,
         codexProfile: codexProfile ? { profile: codexProfile } : undefined,
         cliType,
         agentType,
@@ -9938,6 +9985,24 @@ export class MessageHandler {
         };
       }
 
+      if (request.type === 'local-project/create-directory') {
+        if (request.workspaceId !== this.workspaceId) {
+          return this.toLocalProjectControlError(
+            requestType,
+            'workspace_not_found',
+            'Workspace mismatch.'
+          );
+        }
+        return {
+          ok: true,
+          type: request.type,
+          result: await this.localProjectControlService.createDirectory(
+            request.parentPath,
+            request.name
+          ),
+        };
+      }
+
       if (request.type === 'local-project/prepare-add') {
         if (request.workspaceId !== this.workspaceId) {
           return this.toLocalProjectControlError(
@@ -9992,7 +10057,7 @@ export class MessageHandler {
     } catch (error) {
       return this.toLocalProjectControlError(
         requestType,
-        'execution_failed',
+        error instanceof LocalProjectCreateDirectoryError ? error.code : 'execution_failed',
         formatErrorMessage(error)
       );
     }
@@ -10398,6 +10463,11 @@ export class MessageHandler {
    * Flush pending ACP updates and tear down session resources.
    */
   async cleanup(): Promise<void> {
+    const inboxShutdown = this.operationCoordinator.recoverStop();
+    void inboxShutdown.catch((cause) =>
+      this.logger.error('Inbox shutdown retains resources', cause)
+    );
+    this.historyOwnerAbort.abort();
     await this.iosSimulatorService.closeAll();
     await this.voiceHostInstance?.dispose();
     for (const timer of this.alertGraceTimers) clearTimeout(timer);
@@ -10409,6 +10479,7 @@ export class MessageHandler {
     this.liveActivityDetail?.dispose();
     this.logger.debug('Cleaning up message handler resources');
     this.cleanedUp = true;
+    this.sessionActivePresence.native.retire();
     this.cancelAllCodeCollabTurnRetryTimers();
     if (this.machineRpcServerRetryTimer) {
       clearTimeout(this.machineRpcServerRetryTimer);
@@ -10419,7 +10490,6 @@ export class MessageHandler {
     this.sessionFileBackfillStopped = true;
     this.cancelPendingPermissionRequests();
     this.machineRpcServer?.stop();
-    this.operationCoordinator.stop();
     this.sessionDispatchWatcher.stop();
     this.codeCollabV2Service.dispose();
     for (const handle of this.sessionLifecycleWatchHandles) handle.unsubscribe();
@@ -10434,7 +10504,6 @@ export class MessageHandler {
     this.antigravityQuotaPoller = null;
     this.machineFlockCommandWatcher.stop();
     this.providerSetupManager.stop();
-    this.sessionActivePresence.clearAll();
     this.detachInterruptedSessionSyncListener?.();
     this.detachInterruptedSessionSyncListener = null;
     // The turns still running are about to be cut off. Remember them first so
@@ -10450,9 +10519,10 @@ export class MessageHandler {
     // but none can arrive after this await. Keep the document manager open so
     // those callbacks can be flushed below.
     await this.sessionManager.cleanUp({ keepWorkspaceDocumentOpen: true });
-    // Each cut-off turn records "Lody restarted" on its own fiber; give those
-    // a bounded moment to land before the documents close below.
-    await this.waitForInterruptedTurnsToSettle(interruptedTurns);
+    // Turn finalizers can still write history/evidence after producers stop.
+    // Keep every store open until their leases and monitoring actually release.
+    await this.sessionActivePresence.close();
+    await inboxShutdown;
     await this.flushAllACPUpdates();
     // Wait for any in-flight flushes to complete
     const inFlightPromises = this.store

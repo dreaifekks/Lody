@@ -1457,7 +1457,7 @@ describe('unstable_createElicitation (AskUserQuestion bridge)', () => {
       mode: 'form',
       sessionId: 'acp-test',
       toolCallId: 'codex-question',
-      message: 'What next?',
+      message: 'Input requested',
       requestedSchema: {
         type: 'object',
         properties: {
@@ -1465,7 +1465,7 @@ describe('unstable_createElicitation (AskUserQuestion bridge)', () => {
             type: 'string',
             title: 'Next step',
             description: 'What next?',
-            oneOf: [{ const: 'Ship', title: 'Ship' }],
+            oneOf: [{ const: 'Ship', title: 'Ship', description: 'Use the current plan' }],
             _meta: { lody: { elicitation: { version: 1, secret: false } } },
           },
           next_step__other: {
@@ -1489,6 +1489,12 @@ describe('unstable_createElicitation (AskUserQuestion bridge)', () => {
     expect(parsed?.source).toBe('lody');
     expect(parsed?.autoResolveAt).toEqual(expect.any(Number));
     expect(parsed?.questions[0]?.allowCustomAnswer).toBe(true);
+    expect(parsed?.questions[0]).toMatchObject({
+      header: 'Next step',
+      question: 'What next?',
+      options: [{ label: 'Ship', description: 'Use the current plan' }],
+    });
+    expect(request?.toolCall.title).toBe('What next?');
     expect(request?._meta).toMatchObject({
       lody: { elicitation: { version: 1 } },
       codex: {

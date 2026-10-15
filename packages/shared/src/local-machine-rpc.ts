@@ -1,3 +1,4 @@
+import { SESSION_FILE_MAX_COUNT } from './ai';
 import { MemoryProviderRequestSchema, MemoryProviderResponseSchema } from './memory-provider';
 import {
   IosSimulatorCommandSchema,
@@ -120,14 +121,14 @@ const SessionToolCallSchema = z.object({
 
 const TerminalSessionIdSchema = z.string().trim().min(1).max(200);
 const TerminalPromptShape = {
-  prompt: z
-    .string()
-    .min(1)
-    .max(1024 * 1024),
+  prompt: z.string().max(1024 * 1024),
+  attach: z.array(z.string().min(1)).max(SESSION_FILE_MAX_COUNT).optional(),
   mode: z.string().trim().min(1).optional(),
   model: z.string().trim().min(1).optional(),
   configOption: z.array(z.string().min(1)).max(50).optional(),
 };
+const hasTerminalInput = (value: { prompt: string; attach?: string[] }) =>
+  value.prompt.trim().length > 0 || (value.attach?.length ?? 0) > 0;
 const TerminalSessionTargetSchema = <const T extends string>(command: T) =>
   z.object({ command: z.literal(command), sessionId: TerminalSessionIdSchema }).strict();
 
@@ -231,6 +232,7 @@ export const TerminalCommandSchema = z.discriminatedUnion('command', [
     .object({
       command: z.literal('create'),
       ...TerminalPromptShape,
+      agentRole: z.string().trim().min(1).optional(),
       title: z.string().trim().min(1).max(500).optional(),
       machine: z.string().trim().min(1).optional(),
       agentConfig: z.string().trim().min(1).optional(),
@@ -243,14 +245,14 @@ export const TerminalCommandSchema = z.discriminatedUnion('command', [
       worktree: z.boolean().optional(),
       branch: z.string().trim().min(1).optional(),
     })
-    .strict(),
+    .strict().refine(hasTerminalInput, 'A message needs text or at least one attachment'),
   z
     .object({
       command: z.literal('chat'),
       sessionId: TerminalSessionIdSchema,
       ...TerminalPromptShape,
     })
-    .strict(),
+    .strict().refine(hasTerminalInput, 'A message needs text or at least one attachment'),
   z
     .object({
       command: z.literal('wait'),
@@ -429,6 +431,8 @@ export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
       .object({
         sessionId: SessionIdSchema,
         turnId: z.string().trim().min(1),
+        cancelId: z.string().uuid().optional(),
+        pauseInbox: z.boolean().optional(),
         subagentTaskId: z.string().trim().min(1).optional(),
       })
       .strict(),
@@ -449,6 +453,7 @@ export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
         userTurnId: z.string().trim().min(1),
         userId: z.string().trim().min(1),
         timestamp: z.string().trim().min(1),
+        inputOrigin: z.enum(['human', 'agent']).optional(),
         // Opaque at the transport layer; the CLI normalizes it with
         // `normalizeSessionTurnInputConfig` before offering the turn, the same
         // guard the Loro Streams Machine RPC server applies.

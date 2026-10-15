@@ -286,6 +286,10 @@ export type WorkspaceRuntime = {
     requestId: string,
     options?: { timeoutMs?: number }
   ) => Promise<MachineUpgradeResponse | null>;
+  requestProviderRateLimitsRefresh?: (
+    machineId: MachineId,
+    configId: AgentConfigId
+  ) => Promise<boolean>;
   requestMachineAcpCapabilitiesRefresh: (
     request: Extract<ClientToServer, { type: 'machine/acp-capabilities-refresh' }>,
     options?: {
@@ -326,7 +330,7 @@ export type WorkspaceRuntime = {
     machineId: MachineId,
     sessionId: SessionId,
     turnId: string,
-    options?: { timeoutMs?: number; subagentTaskId?: string }
+    options?: { timeoutMs?: number; subagentTaskId?: string; cancelId?: string }
   ) => Promise<SessionCancelResponse | null>;
   requestSessionSteer: (
     machineId: MachineId,
@@ -544,6 +548,14 @@ export type WorkspaceRuntime = {
 };
 
 export const runtimeAtom = atom<WorkspaceRuntime | null>(null);
+
+/**
+ * Why the last attempt to create a runtime rejected, kept until the next
+ * attempt. Only the error name is kept: a message can carry stream URLs.
+ */
+export type WorkspaceRuntimeInitFailure = { workspaceSlug: string; errorType: string };
+
+export const workspaceRuntimeInitFailureAtom = atom<WorkspaceRuntimeInitFailure | null>(null);
 
 export type ActiveWorkspaceRuntimeState =
   | { status: 'ready'; runtime: WorkspaceRuntime }

@@ -37,6 +37,9 @@ vi.mock('@/agent/setting', async (importOriginal) => {
 });
 
 vi.mock('@/agent/acp-runner', () => ({
+  terminateAcpProcessTree: async (child: SilentAdapter) => {
+    child.kill('SIGTERM');
+  },
   spawnAcpProcess: () => {
     launchGate.spawned += 1;
     if (launchGate.child) return launchGate.child();
@@ -44,7 +47,7 @@ vi.mock('@/agent/acp-runner', () => ({
   },
 }));
 
-vi.mock('@/agent/login-shell-env', () => ({ getLoginShellEnv: async () => ({}) }));
+vi.mock('@/agent/login-shell-env', () => ({ getLoginShellEnvLegacy: async () => ({}) }));
 
 /** An adapter process that starts but never answers `initialize`. */
 class SilentAdapter extends EventEmitter {

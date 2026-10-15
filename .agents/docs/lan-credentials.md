@@ -20,13 +20,14 @@ Three places ask the host:
   process, and uses the machine's `gh` login when none keeps a token.
 - The agent service hands the host's token to the hosted token port of each
   LAN workspace. PR status checks prefer it over the machine's `gh` login,
-  and auto review and merge, which upstream starts only when that port exists,
-  now runs on a LAN.
+  through the same workspace token port. Automated review and merge are no longer available.
 - An agent gets the token only on a machine whose `gh` is not logged in:
   `GH_TOKEN` for `gh`, and a Git credential helper for github.com placed after
   every helper the machine has. Credentials the machine has win, and an SSH
   remote still needs a key of the machine. A session keeps the token it
-  started with.
+  started with. Its runtime credential lease follows speculative preparation into
+  the adopted session, and is released after that runtime stops. Host Git receives
+  the same lease; tokens are not placed in the serializable session configuration.
 
 There is no repository registry either: the repositories an agent's
 discovery tools and the desktop's pickers offer are the ones the credential

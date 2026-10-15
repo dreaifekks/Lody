@@ -36,7 +36,10 @@ Agent 工作途中询问：能否运行 `pnpm install`、编辑两个文件、�
 - **失败可见。** 回答未到达 Agent 时显示错误并允许重试。工作区连接中禁用回答并说明
   原因。
 - **保留退出路径。** 提示提供 Stop，因为原输入框里的 Stop 已被隐藏。
-- AskUserQuestion 表单使用同一位置和队列，以问答表单代替权限选项。
+- AskUserQuestion 表单使用同一位置和队列，以问答表单代替权限选项。在当前会话交互面
+  保持挂载期间，切换待回答请求保留各表单的选项、替代答案、备注和当前页，仅展示中的
+  表单可以回答。回答被接受、取消被接受、请求撤回或交互面卸载后释放对应的本地草稿；
+  不保证应用重启后保留。
 
 ## 待解决问题
 
@@ -48,5 +51,7 @@ Agent 工作途中询问：能否运行 `pnpm install`、编辑两个文件、�
 
 - 实现：`packages/components/src/components/sessions/floating-permission-request.tsx`、
   `packages/components/src/lib/permission-request-presentation.ts`。
-- 验证：`packages/components/tests/permission-prompt.test.tsx`。
+- 验证：`packages/components/tests/permission-prompt.test.tsx` 与
+  `packages/components/tests/e2e/composer-submission-focus.spec.ts`。
 - 决策记录：[权限提示设计](../.agents/notes/implemented/feature/2026-09-24-permission-prompt.md)。
+- [提问恢复决策](../.agents/notes/implemented/bug-fix/2026-10-13-question-request-continuity.zh.md)。

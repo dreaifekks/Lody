@@ -30,6 +30,11 @@ this page is the full text of the rules summarised there.
   the default container of every modal.
 - Editor window (Monaco): `session-monaco-text-viewer.tsx` inside
   `session-file-content-view.tsx`.
+  File-link line anchors move Monaco's cursor as well as its viewport, using an
+  immediate reveal so initial language setup and wrapped-line layout cannot leave
+  the cursor at line 1 and cancel navigation. The line decoration uses Monaco's
+  themed `rangeHighlight` class. See the
+  [first-click navigation fix](../notes/implemented/bug-fix/2026-10-05-file-link-line-navigation.md).
   The save hook compares the complete editor text with the accepted open/refresh
   snapshot or successful save result. Undo to that baseline clears Unsaved, disables
   Save, enables Refresh and releases leave protection; redo restores pending edits.
@@ -98,6 +103,14 @@ this page is the full text of the rules summarised there.
   memoized rows, so they must stay referentially stable, and only FILE rows get
   a menu (`item.children === undefined`; `hasChildren` is false for an empty
   directory too).
+- Videos use the static `SessionFileVideoPreview` with native controls and inline
+  mobile playback. `video-file-preview.ts` recognizes container candidates, not
+  codec guarantees. Provider bytes become typed object URLs; local resource URLs
+  go directly to the media element. Deactivation destroys the player and releases
+  its blob; document visibility pauses background playback without auto-resuming.
+  Media errors preserve the file-action notice. Remote binary limits still apply;
+  the player adds neither a transport nor transcoding. The mobile project file
+  browser shares the player. Intent: [local file links](../../specs/local-file-link-actions.md).
 - Session PDFs use the PDF.js paged viewer. Electron's `lody-resource://` URL is a
   custom scheme; PDF.js's URL loader only enables its network range reader for
   HTTP(S), so passing that URL directly can consume the whole file. Use
@@ -143,6 +156,9 @@ this page is the full text of the rules summarised there.
   and 200,000 cells, and virtualizes rows and columns. Search also stays in the
   worker. Hiding the panel terminates the worker; source editing stays in the
   existing Monaco/native text surface.
+- CSV/TSV and XLSX support preview-only resize and rectangular selection copy.
+  Clipboard values preserve table structure; XLSX reads from its worker through
+  a bounded adapter. See the [decision](../notes/implemented/feature/2026-10-09-spreadsheet-preview-controls.md).
 - **Core viewers are intentionally NOT code-split** (file viewer, diff viewer,
   diff panel, inner Monaco/Markdown remain static imports). The old
   `lazy(() => import())` wrappers produced stale-chunk load failures in the

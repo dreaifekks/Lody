@@ -1,12 +1,24 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { useAtomValue } from 'jotai';
-import { AlertCircle, Clock3, Download, Eye, Image as ImageIcon } from 'lucide-react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Circle,
+  Clock3,
+  Download,
+  Eye,
+  Image as ImageIcon,
+} from 'lucide-react';
 import * as stylex from '@stylexjs/stylex';
+import { colors } from '@lody/ui/tokens/colors.stylex';
+import { space } from '@lody/ui/tokens/scales.stylex';
 import { useTranslation } from 'react-i18next';
 import type { SessionId, WorkspaceId } from '@lody/shared';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
+import { getRpcDeliveredTurnKey, rpcDeliveredTurnsAtom } from '@/atoms/session-dispatch-delivery';
 import { DEFAULT_CONVERSATION_FONT_SIZE, type ConversationFontSize } from '@/atoms/settings';
 import { conversationTextFontSizeStyle } from '@/components/ai-gui/conversation-font-size-classes';
+import { useIsMessageSendingVisible } from '@/components/ai-gui/message-send-status-context';
 import {
   getSessionFileIcon,
   SessionFileCardLayout,
@@ -14,7 +26,7 @@ import {
 } from '@/components/ai-gui/session-file-card';
 import { formatFileSize } from '@/lib/session-file-presentation';
 import { peekSessionImageUrl } from '@/lib/session-image-cache';
-import type { SessionChatUser } from '@/components/ai-gui/view';
+import { UserChatBubble, type SessionChatUser } from '@/components/ai-gui/view';
 import { ConversationColumn } from '@/components/shared/conversation-column';
 import { UserAvatar } from '@/components/user-avatar';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -115,6 +127,18 @@ const styles = stylex.create({
   timestamp: { flexShrink: 0, whiteSpace: 'nowrap' },
   status: { minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' },
   statusLabel: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' },
+  acceptedBubble: { position: 'relative', minWidth: 0, maxWidth: '100%' },
+  sendingSpinner: {
+    position: 'absolute',
+    bottom: 13,
+    right: '100%',
+    marginRight: space[1.5],
+    width: space[4],
+    height: space[4],
+    color: colors.secondaryLabel,
+    display: { default: 'none', '@container (min-width: 520px)': 'inline-flex' },
+  },
+  sendingGlyph: { width: '100%', height: '100%' },
 });
 
 /** Overlay the delivered card's bottom edge without adding a layout row. */
@@ -287,6 +311,14 @@ export function PendingMessageRow({
     locale: toIntlLocale(i18n?.resolvedLanguage ?? i18n?.language),
   });
   const failed = Boolean(record.error);
+  const acceptedInput = Boolean(record.inputState);
+  const delivered = useAtomValue(rpcDeliveredTurnsAtom).has(
+    getRpcDeliveredTurnKey(record.sessionId, record.id)
+  );
+  const showSendingSpinner = useIsMessageSendingVisible(
+    record.id,
+    acceptedInput && !delivered && !failed
+  );
   const images = record.attachments.filter((attachment) => attachment.kind === 'image');
   const files = record.attachments.filter((attachment) => attachment.kind === 'file');
   const uploading = record.attachments.some((attachment) => !attachment.ready);
@@ -324,76 +356,106 @@ export function PendingMessageRow({
                 {timestampLabel}
               </span>
             ) : null}
-            {/* Where the delivered row shows its read mark. Neutral on purpose:
-                the icon and the word already say "not sent", and the failure
-                itself is framed below. */}
-            <span
-              className={cn(
-                'inline-flex items-center gap-1 text-muted-foreground',
-                stylex.props(styles.status).className
-              )}
-              role="status"
-              title={messageStatus}
-            >
-              {failed ? (
-                <AlertCircle className="size-3.5" strokeWidth={2} aria-hidden="true" />
-              ) : (
-                <Clock3 className="size-3.5" strokeWidth={2} aria-hidden="true" />
-              )}
-              {isMobile ? (
-                <span className="sr-only">{messageStatus}</span>
-              ) : (
-                <span {...stylex.props(styles.statusLabel)}>{messageStatus}</span>
-              )}
-            </span>
+            {acceptedInput ? (
+              <span
+                title={
+                  delivered
+                    ? t('sessions.sendStatus.delivered')
+                    : t('sessions.sendStatus.sendingWithoutSize')
+                }
+              >
+                {delivered ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 text-primary" strokeWidth={2} />
+                ) : (
+                  <Circle className="h-3.5 w-3.5 text-muted-foreground" strokeWidth={2} />
+                )}
+              </span>
+            ) : (
+              <span
+                className={cn(
+                  'inline-flex items-center gap-1 text-muted-foreground',
+                  stylex.props(styles.status).className
+                )}
+                role="status"
+                title={messageStatus}
+              >
+                {failed ? (
+                  <AlertCircle className="size-3.5" strokeWidth={2} aria-hidden="true" />
+                ) : (
+                  <Clock3 className="size-3.5" strokeWidth={2} aria-hidden="true" />
+                )}
+                {isMobile ? (
+                  <span className="sr-only">{messageStatus}</span>
+                ) : (
+                  <span {...stylex.props(styles.statusLabel)}>{messageStatus}</span>
+                )}
+              </span>
+            )}
           </div>
-          <div className="flex min-w-0 max-w-full flex-col items-end gap-2">
-            {images.length ? (
-              <div className="flex w-full flex-wrap justify-end gap-2 px-2 pt-1">
-                {images.map((attachment) => (
-                  <PendingImageAttachment
-                    key={attachment.id}
-                    attachment={attachment}
-                    active={!failed}
-                    single={images.length === 1}
-                    workspaceId={record.workspaceId as WorkspaceId}
-                    sessionId={record.sessionId}
-                  />
-                ))}
-              </div>
-            ) : null}
-            {files.length ? (
-              <SessionFileCardList align="end">
-                {files.map((attachment) => (
-                  <PendingFileAttachment
-                    key={attachment.id}
-                    attachment={attachment}
-                    active={!failed}
-                  />
-                ))}
-              </SessionFileCardList>
-            ) : null}
-            {text ? (
-              <div className="flex max-w-full justify-end sm:pl-2">
-                <div className="min-w-0 max-w-full rounded-[1.15rem] bg-foreground/[0.05] px-3.5 py-2 sm:rounded-2xl sm:px-4 sm:py-2.5">
-                  <div
-                    className="min-w-0 max-w-full whitespace-pre-wrap text-reading [overflow-wrap:anywhere]"
-                    style={conversationTextFontSizeStyle(conversationFontSize)}
-                  >
-                    {text}
+          {acceptedInput ? (
+            <div {...stylex.props(styles.acceptedBubble)}>
+              {showSendingSpinner ? (
+                <span {...stylex.props(styles.sendingSpinner)}>
+                  <Spinner {...stylex.props(styles.sendingGlyph)} />
+                </span>
+              ) : null}
+              <UserChatBubble
+                message={{ id: record.id, items: record.entry.items ?? [] }}
+                sessionId={record.sessionId}
+                conversationFontSize={conversationFontSize}
+              />
+            </div>
+          ) : (
+            <div className="flex min-w-0 max-w-full flex-col items-end gap-2">
+              {images.length ? (
+                <div className="flex w-full flex-wrap justify-end gap-2 px-2 pt-1">
+                  {images.map((attachment) => (
+                    <PendingImageAttachment
+                      key={attachment.id}
+                      attachment={attachment}
+                      active={!failed}
+                      single={images.length === 1}
+                      workspaceId={record.workspaceId as WorkspaceId}
+                      sessionId={record.sessionId}
+                    />
+                  ))}
+                </div>
+              ) : null}
+              {files.length ? (
+                <SessionFileCardList align="end">
+                  {files.map((attachment) => (
+                    <PendingFileAttachment
+                      key={attachment.id}
+                      attachment={attachment}
+                      active={!failed}
+                    />
+                  ))}
+                </SessionFileCardList>
+              ) : null}
+              {text ? (
+                <div className="flex max-w-full justify-end sm:pl-2">
+                  <div className="min-w-0 max-w-full rounded-[1.15rem] bg-foreground/[0.05] px-3.5 py-2 sm:rounded-2xl sm:px-4 sm:py-2.5">
+                    <div
+                      className="min-w-0 max-w-full whitespace-pre-wrap text-reading [overflow-wrap:anywhere]"
+                      style={conversationTextFontSizeStyle(conversationFontSize)}
+                    >
+                      {text}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ) : null}
-          </div>
+              ) : null}
+            </div>
+          )}
           {failed && !reasonOnACard ? <PendingFailureNotice reason={record.error!} clamp /> : null}
           {/* Always in the flow at the delivered row's 28px action height, so
               committing (which swaps these for hover-revealed copy/fork) does
               not move anything below. */}
           <div className="flex min-h-7 flex-wrap items-center justify-end gap-2">
-            <Button size="small" variant="ghost" disabled={busy} onClick={onCancel}>
-              {t('sessions.cancelPendingSend')}
-            </Button>
+            {!acceptedInput || failed ? (
+              <Button size="small" variant="ghost" disabled={busy} onClick={onCancel}>
+                {t(acceptedInput ? 'sessions.removeLocalInput' : 'sessions.cancelPendingSend')}
+              </Button>
+            ) : null}
             {failed ? (
               <Button size="small" disabled={busy} onClick={onRetry}>
                 {t('sessions.retryPendingSend')}
@@ -444,6 +506,12 @@ export function SessionPendingMessages({
   );
   const landedKey = useSyncExternalStore(subscribeHistory, readLanded, readLanded);
   const landed = new Set(landedKey ? landedKey.split('\n') : []);
+  useEffect(() => {
+    if (!landedKey || !pendingSends?.acknowledgeLanded) return;
+    void pendingSends.acknowledgeLanded(landedKey.split('\n')).catch((error: unknown) => {
+      console.warn('Confirmed input cleanup failed', error);
+    });
+  }, [pendingSends, landedKey, sends]);
   const { t } = useTranslation();
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);

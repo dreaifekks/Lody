@@ -7,6 +7,7 @@ import {
   buildSessionTurnInputConfig,
   normalizeSessionTurnInputConfig,
   getSessionRoomId,
+  isSessionCancelRequestMarker,
   type ChatFailedReason,
   isLoroRepoDocDeleted,
   isSessionDocRoomId,
@@ -124,7 +125,7 @@ type SessionDispatchWatcherDeps = {
 /** A running verify-with-retry fiber for a transient access failure on `turnId`. */
 type AccessRetryHandle = {
   turnId: string;
-  fiber: Fiber.RuntimeFiber<void, never>;
+  fiber: Fiber.Fiber<void, never>;
 };
 
 type WatchedSession = {
@@ -175,6 +176,7 @@ type LifecycleCancelSubscriber = {
 
 /** A user turn pushed over Machine RPC ahead of history CRDT sync. */
 export type SessionRpcTurnOffer = {
+  inputOrigin?: 'human' | 'agent';
   sessionId: SessionId;
   userTurnId: string;
   userId: string;
@@ -288,8 +290,9 @@ const isConfigOptionValueRecord = (
  *
  * ```
  * 1. Guard: not owned / archived / no lastCanceledTurn → noop
- * 2. Guard: lastCanceledTurn === already-seen turn     → noop (deduplicate)
- * 3. Execute cancel, record the turn as seen.
+ * 2. Guard: lastCanceledTurn === already-seen marker   → noop (deduplicate)
+ * 3. New marker: await its matching control-document payload.
+ * 4. Execute cancel, record the marker as seen.
  * ```
  *
  * ### Concurrency Model
@@ -388,9 +391,9 @@ export class SessionDispatchWatcher {
   private readonly cancelCheckChains = new Map<SessionId, Promise<void>>();
 
   /**
-   * Tracks the last `meta.lastCanceledTurn` value we have already processed per session.
-   * Used to deduplicate cancel requests — the same `lastCanceledTurn` value should
-   * only trigger one cancel call.
+   * Tracks the last Stop marker processed per session (legacy markers are turn IDs).
+   * RPC and the durable control payload share one request; a new Stop for the same execution
+   * has a new request identity.
    */
   private readonly cancelSeenTurn = new Map<SessionId, string>();
 
@@ -736,6 +739,15 @@ export class SessionDispatchWatcher {
       });
       if (!pendingEntry) {
         return finish('error');
+      }
+
+      if (offer.inputOrigin === 'human') {
+        await this.deps.executionService.acceptInboxHumanInput?.({
+          sessionId,
+          inputId: userTurnId,
+          userId: offer.userId,
+          config: offer.inputConfig,
+        });
       }
 
       // Sweep expired entries across all sessions on every accept. A turn that
@@ -1226,6 +1238,7 @@ export class SessionDispatchWatcher {
         if (!this.watchedSessions.has(sessionId)) {
           const unsubscribe = subscribeSessionChanges(sessionDoc, () => {
             if (isActive()) {
+              void this.enqueueCancelCheck(sessionId, lifecycleGeneration);
               void this.enqueueSessionCheck(sessionId, { lifecycleGeneration });
             }
           });
@@ -1888,10 +1901,17 @@ export class SessionDispatchWatcher {
       return;
     }
 
+    const cancelRequest =
+      typeof meta?.lastCanceledTurn === 'string' &&
+      isSessionCancelRequestMarker(meta.lastCanceledTurn)
+        ? (await sessionDoc.getDocState())?.cancelRequest
+        : undefined;
+    if (!isActive()) return;
     const action = resolveSessionCancelAction(
       meta ?? undefined,
       this.cancelSeenTurn.get(sessionId),
-      this.deps.machineId
+      this.deps.machineId,
+      cancelRequest
     );
 
     if (action.type === 'noop') {
@@ -1901,7 +1921,7 @@ export class SessionDispatchWatcher {
     if (!isActive()) {
       return;
     }
-    this.cancelSeenTurn.set(sessionId, action.turnId);
+    this.cancelSeenTurn.set(sessionId, meta!.lastCanceledTurn!);
     await this.deps.executionService.cancelSession(
       {
         type: 'session/cancel',
@@ -1909,8 +1929,9 @@ export class SessionDispatchWatcher {
         machineId: this.deps.machineId,
         workspaceId: this.deps.workspaceId,
         turnId: action.turnId,
+        cancelId: action.cancelId,
       },
-      { pendingInput: 'promote', prePromptSession: 'discard' }
+      { pendingInput: 'preserve', prePromptSession: 'discard' }
     );
     if (!isActive()) {
       return;
@@ -2002,6 +2023,7 @@ export class SessionDispatchWatcher {
         agentType: entry.inputConfig?.agentType ?? meta.agentType,
         customAcp: launchConfig?.customAcp,
         runtimeOverrides: launchConfig?.runtimeOverrides,
+        magpieGatewayUrl: launchConfig?.magpieGatewayUrl,
         modeId: entry.inputConfig?.modeId,
         modelId: entry.inputConfig?.modelId,
         configOptionValues: entry.inputConfig?.configOptionValues,
@@ -2047,6 +2069,7 @@ export class SessionDispatchWatcher {
         agentType: entry.inputConfig?.agentType ?? meta.agentType,
         customAcp: launchConfig?.customAcp,
         runtimeOverrides: launchConfig?.runtimeOverrides,
+        magpieGatewayUrl: launchConfig?.magpieGatewayUrl,
         modeId: entry.inputConfig?.modeId,
         modelId: entry.inputConfig?.modelId,
         configOptionValues: entry.inputConfig?.configOptionValues,
@@ -2290,6 +2313,25 @@ export class SessionDispatchWatcher {
       }
 
       const queuedTurnId = queuedItem.userTurnId?.trim() || `queued-${queuedItem.$cid}`;
+      if (this.deps.executionService.isInboxInputCanceled?.(meta.id, queuedTurnId)) {
+        const canceled = this.buildQueuedMessageEntry(queuedItem, meta, queuedTurnId);
+        if (canceled) {
+          await backend.applyHistoryAction({
+            kind: 'upsert-turn',
+            turn: {
+              ...canceled,
+              status: 'canceled',
+              read: true,
+              cancellationReason: this.deps.executionService.getInboxInputCancellationReason?.(
+                meta.id,
+                queuedTurnId
+              ),
+            },
+          });
+          await backend.removeMessageQueueItem(queuedItem.$cid);
+        }
+        return null;
+      }
       const operationId = backend.getQueueOperationId(queuedItem);
       const existing = findLastHistoryEntry(history, queuedTurnId);
       if (existing) {
@@ -2922,7 +2964,51 @@ export class SessionDispatchWatcher {
       if (!isActive()) {
         return { turn: null, history };
       }
-      const turn = findNextDispatchableUserTurn(history, meta);
+      for (const entry of history) {
+        if (
+          entry.role === 'user' &&
+          ['pending', 'seen', 'prepared', 'pending_apply'].includes(entry.status ?? '') &&
+          this.deps.executionService.isInboxInputCanceled?.(meta.id, entry.id)
+        ) {
+          await backend.applyHistoryAction({
+            kind: 'user-status',
+            turnId: entry.id,
+            status: 'canceled',
+            cancellationReason: this.deps.executionService.getInboxInputCancellationReason?.(
+              meta.id,
+              entry.id
+            ),
+          });
+          entry.status = 'canceled';
+          entry.cancellationReason = this.deps.executionService.getInboxInputCancellationReason?.(
+            meta.id,
+            entry.id
+          );
+        }
+      }
+      let preferred = this.deps.executionService.getPreferredInboxHumanInput?.(meta.id);
+      if (
+        preferred &&
+        (meta.lastMissingHistoryUserMsgId === preferred ||
+          meta.lastHandledUserMsgId === preferred ||
+          history.some(
+            (e) =>
+              e.id === preferred &&
+              ['handled', 'failed', 'canceled', 'delivery_unknown'].includes(e.status ?? '')
+          ))
+      ) {
+        await this.deps.executionService.abandonInboxInput?.(meta.id, preferred);
+        preferred = this.deps.executionService.getPreferredInboxHumanInput?.(meta.id);
+      }
+      const turn = preferred
+        ? (history.find(
+            (e) =>
+              e.id === preferred &&
+              e.role === 'user' &&
+              ['pending', 'seen', 'prepared'].includes(e.status ?? '')
+          ) ?? this.peekStashedRpcTurn(meta.id, meta, history))
+        : findNextDispatchableUserTurn(history, meta);
+      if (preferred && !turn) return { turn: null, history };
       if (turn) {
         if (repairedTurnIds.has(turn.id)) {
           this.deps.logger.warn(
@@ -2985,6 +3071,8 @@ export class SessionDispatchWatcher {
       sessionId,
       turn.id
     );
+    if (this.deps.executionService.isInboxInputCanceled?.(sessionId, turn.id))
+      terminalStatus = 'canceled';
     if (!terminalStatus && ['pending', 'seen', 'processing'].includes(turn.status ?? '')) {
       // Restart backstop (in-memory record is gone): a completed assistant
       // entry linked to this user turn is positive proof it ran to completion.
@@ -3021,6 +3109,10 @@ export class SessionDispatchWatcher {
       kind: 'user-status',
       turnId: turn.id,
       status,
+      cancellationReason:
+        status === 'canceled'
+          ? this.deps.executionService.getInboxInputCancellationReason?.(sessionId, turn.id)
+          : undefined,
     });
     this.deps.executionService.clearTerminalUserTurnStatusWithoutEntry?.(sessionId, turn.id);
     this.consumeStashedRpcTurn(sessionId, turn.id);

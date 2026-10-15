@@ -26,6 +26,13 @@ see [attachment rendering](../ai-gui/session-files-rendering.md#upload-to-histor
 
 ## Why the rules read the way they do
 
+- **Composer measurement outside layout.** `chat-composer.tsx` uses
+  `textarea-measurement.ts` to measure a hidden fixed textarea with resolved text
+  and box metrics. The live textarea receives its final height once. Resetting
+  the live height to `auto` temporarily expands the sibling conversation viewport
+  and can clamp its reading offset even if the final height does not change.
+  Empty drafts still skip measurement and use the minimum height.
+
 - **MCP as a second menu level.** The workspace MCP catalog is multi-select and
   unbounded, so it cannot sit in the footer selector row. Desktop has hover and
   opens a submenu; touch does not, so mobile pushes the panel onto the same
@@ -61,3 +68,7 @@ see [attachment rendering](../ai-gui/session-files-rendering.md#upload-to-histor
   nothing.
 - Draft ACP preparation has a longer contract that remains in the private
   architecture context.
+
+Chat Landing no longer emits the legacy onboarding project-source, project-selection,
+or agent-selection events. Onboarding owns its route-scoped flow, step and operation
+telemetry; see [event semantics](../../../../../specs/onboarding-analytics.md).

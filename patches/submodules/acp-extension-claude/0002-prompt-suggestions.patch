@@ -1,8 +1,8 @@
 diff --git a/src/acp-agent.ts b/src/acp-agent.ts
-index 4a5e328..1244e7b 100644
+index d272f3c..c29e004 100644
 --- a/src/acp-agent.ts
 +++ b/src/acp-agent.ts
-@@ -616,6 +616,19 @@ function getLodyForkTurnId(meta: unknown): string | undefined {
+@@ -681,6 +681,19 @@ function getLodyForkTurnId(meta: unknown): string | undefined {
    return version === 1 && typeof turnId === "string" && turnId.length > 0 ? turnId : undefined;
  }
  
@@ -22,7 +22,7 @@ index 4a5e328..1244e7b 100644
  /** Stops one Claude background task without cancelling the parent prompt turn. */
  const ASYNC_TASK_STOP_METHOD = "_session/async_task/stop";
  
-@@ -1572,6 +1585,7 @@ export function computeSessionFingerprint(params: {
+@@ -1670,6 +1683,7 @@ export function computeSessionFingerprint(params: {
        systemPrompt: meta?.systemPrompt,
        disableBuiltInTools: meta?.disableBuiltInTools,
        emitRawSDKMessages: meta?.claudeCode?.emitRawSDKMessages,
@@ -30,7 +30,7 @@ index 4a5e328..1244e7b 100644
        options,
      }),
    );
-@@ -6875,7 +6889,16 @@ export class ClaudeAcpAgent {
+@@ -7532,7 +7546,16 @@ export class ClaudeAcpAgent {
              break;
            }
            case "tool_use_summary":
@@ -47,7 +47,7 @@ index 4a5e328..1244e7b 100644
              break;
            case "auth_status":
              if (!message.isAuthenticating && message.error === undefined) {
-@@ -9116,6 +9139,7 @@ export class ClaudeAcpAgent {
+@@ -10039,6 +10062,7 @@ export class ClaudeAcpAgent {
        settingSources: ["user", "project", "local"],
        ...(thinking !== undefined && { thinking }),
        ...userProvidedOptions,
@@ -56,10 +56,10 @@ index 4a5e328..1244e7b 100644
        // for clients that negotiated per-turn file-change reports; this avoids
        // snapshot I/O for every other session.
 diff --git a/src/tests/acp-agent.test.ts b/src/tests/acp-agent.test.ts
-index c87ec1b..f7cee85 100644
+index 8429b7a..66e0c11 100644
 --- a/src/tests/acp-agent.test.ts
 +++ b/src/tests/acp-agent.test.ts
-@@ -14142,6 +14142,79 @@ describe("emitRawSDKMessages", () => {
+@@ -14976,6 +14976,79 @@ describe("emitRawSDKMessages", () => {
      expect(sdkMessages.length).toBeGreaterThanOrEqual(3);
    });
  
@@ -140,10 +140,10 @@ index c87ec1b..f7cee85 100644
      const { agent, updates, extNotifications } = createMockAgentWithExtNotification();
      const taskStarted = {
 diff --git a/src/tests/create-session-options.test.ts b/src/tests/create-session-options.test.ts
-index 468539b..d17bf36 100644
+index c4bccb4..08a248e 100644
 --- a/src/tests/create-session-options.test.ts
 +++ b/src/tests/create-session-options.test.ts
-@@ -99,6 +99,30 @@ describe("createSession options merging", () => {
+@@ -120,6 +120,30 @@ describe("createSession options merging", () => {
      agent = new ClaudeAcpAgent(createMockClient());
    });
  

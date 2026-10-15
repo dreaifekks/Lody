@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { runCommandTextLegacy, startProcessLegacy } from '@lody/shared/node/process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { app, BrowserWindow, net, powerMonitor } from 'electron'
@@ -52,24 +52,8 @@ const QUIT_TIMEOUT_MS = 45_000
 
 const netFetch: LanReleaseFetch = (url, init) => net.fetch(url, init)
 
-function run(command: string, args: string[], timeoutMs: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] })
-    let stderr = ''
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr = `${stderr}${chunk.toString()}`.slice(-2000)
-    })
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
-    child.once('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    child.once('close', (code) => {
-      clearTimeout(timer)
-      if (code === 0) resolve()
-      else reject(new Error(stderr.trim() || `${path.basename(command)} exited with ${code}`))
-    })
-  })
+async function run(command: string, args: string[], timeoutMs: number): Promise<void> {
+  await runCommandTextLegacy({ command, args, timeout: timeoutMs, check: 'exit-0' })
 }
 
 /**
@@ -349,11 +333,16 @@ export class LanUpdaterService implements AppUpdater {
       clearTimeout(refused)
       try {
         if (target.kind !== 'nsis') fs.mkdirSync(path.dirname(target.report), { recursive: true })
-        spawn(command.command, command.args, {
-          detached: true,
-          stdio: 'ignore',
-          env: { ...process.env, ...command.env }
-        }).unref()
+        startProcessLegacy({
+          command: command.command,
+          args: command.args,
+          processGroup: true,
+          windowsDetached: true,
+          options: {
+            stdio: 'ignore',
+            env: { ...process.env, ...command.env }
+          }
+        }).child.unref()
       } catch (error) {
         console.error('[lan-updater] Could not start the replacement', error)
       }

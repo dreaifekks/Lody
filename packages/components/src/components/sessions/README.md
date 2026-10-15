@@ -4,6 +4,9 @@ What each file in this directory is responsible for. Binding rules live in
 [AGENTS.md](AGENTS.md); the long-form explanations it links to live under
 [`.agents/docs/`](../../../../../.agents/docs/) with the `sessions-` prefix.
 
+Session control event meanings and retired request events are described in the
+[auth/session analytics draft](../../../../../specs/auth-session-analytics.md).
+
 ## Page shell and tabs
 
 `ask-user-question-card.tsx` owns interactive and read-only question presentation,
@@ -36,21 +39,32 @@ describes the shared parsing and persistence boundary.
 | [`chat-share-image-dialog.tsx`](chat-share-image-dialog.tsx)    | Selected-message card styling, historical metadata, PNG export, and local image copying; [draft contract](../../../../../specs/chat-share-image.md) |
 | `draft-session-chat-interface.tsx`                              | Draft variant of the conversation surface                                                                                                           |
 | `session-chat-input-area.tsx`                                   | Composer: attachments, run-config footer, [upload waiting](../../../../../specs/composer-send-during-upload.md), submit                             |
-| `message-queue/`                                                | Queued turns ([scope AGENTS.md](message-queue/AGENTS.md))                                                                                           |
+| `message-queue/`                                                | Queued turns and edit-operation ownership ([scope AGENTS.md](message-queue/AGENTS.md))                                                                                           |
 | `session-message-submit-route.ts`                               | Capability-gated send, regular queue, and native steer routing                                                                                      |
 | `desktop-run-config-menu.tsx`                                   | Desktop run-config dropdown + permission-mode button                                                                                                |
 | `recent-run-config-menu-group.tsx`                              | "Recently used" run-config entries                                                                                                                  |
 | `composer-agent-role-panel.tsx`, `agent-role-detail-pane.tsx`   | Agent Role selection and the single Role detail pane                                                                                                |
-| `floating-permission-request.tsx`, `ask-user-question-card.tsx` | Floating permission requests and agent questions                                                                                                    |
+| `floating-permission-request.tsx`, `ask-user-question-card.tsx` | Permission/question queue, draft continuity, and answer recovery                                                                                                    |
 | `notification-permission-prompt.tsx`                            | Notification permission ask                                                                                                                         |
 | `session-fork-destination-menu.tsx`                             | Fork target choice (shared workspace tab vs. new worktree)                                                                                          |
 | `rename-session-dialog.tsx`                                     | Session rename dialog                                                                                                                               |
 
 ## Info bar, status, and session actions
 
+`session-machine-info.tsx` shows a monitor icon and machine name on desktop,
+or a compact icon button on mobile. Tap/click (also hover on desktop) opens its
+owner, device and connection details. A machine-only info bar has no raised
+background. The
+[draft Spec](../../../../../specs/composer-machine-owner.md) and
+[proposal](../../../../../.agents/notes/proposed/feature/2026-10-11-composer-machine-info-card.md)
+record the presentation decision awaiting visual review.
+In narrow mobile bars the private-access badge keeps its lock and sharing action,
+with the full access description in its accessible name/title.
+
 | File                                                                          | Responsibility                                                   |
 | ----------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | `session-info-bar.tsx`, `session-info-chips.tsx`, `info-chip.tsx`             | Canonical cluster + fixed stage bar above the composer           |
+| `session-machine-info.tsx`                                                    | Execution target and its on-demand ownership details             |
 | `session-info-action-state.ts`                                                | Which repository action the context stage offers                 |
 | `session-status-strip.tsx`                                                    | Priority-ordered connection/machine status (story coverage only) |
 | `session-syncing-indicator.tsx`                                               | Catch-up spinner pinned to the bar's right edge                  |
@@ -62,7 +76,6 @@ describes the shared parsing and persistence boundary.
 | `pr-tab-container.tsx`, `pr-tab-view.tsx`                                     | PR side-panel tab                                                |
 | `create-pr-prompt.ts`, `session-pr-prompts.ts`, `session-pr-agent-action.ts`  | Agent prompts behind Create PR / Fix CI / Resolve Conflicts      |
 | `diff-pr-analytics.ts`                                                        | Analytics for diff and PR surfaces                               |
-| `auto-review-menu-item.tsx`, `auto-review-info.tsx`, `auto-review-status.tsx` | Auto review checkbox, setup explanation, and run banner          |
 | `use-capacity-auto-retry.ts`                                                  | Capacity-error retry behaviour                                   |
 
 ## File, diff, and browser surfaces
@@ -97,14 +110,14 @@ describes the shared parsing and persistence boundary.
 - [Run config and Agent Roles](../../../../../.agents/docs/sessions-run-config.md)
 - [Live status and dispatch](../../../../../.agents/docs/sessions-live-status.md)
 - [Composer info bar](../../../../../.agents/docs/sessions-info-bar.md)
-- [Auto review and status slot](../../../../../.agents/docs/sessions-auto-review.md)
+- [Session status slot](../../../../../.agents/docs/sessions-auto-review.md)
 - [File surfaces](../../../../../.agents/docs/sessions-file-surfaces.md)
 - [Render-cost invariants](../../../../../.agents/docs/sessions-render-cost.md)
 - [Stories and Storybook fidelity](../../../../../.agents/docs/sessions-stories.md)
 
 ## Binary previews
 
-`session-file-binary-preview.tsx` renders supported images, PDFs, DOCX, XLSX, and
+`session-file-binary-preview.tsx` renders supported images, videos, PDFs, DOCX, XLSX, and
 PPTX, and otherwise shows a binary notice. The [PDF viewer](session-file-pdf-preview.tsx) reads local
 resources in 64 KiB byte ranges, keeps page canvases within an 8-megapixel budget,
 and provides page and thumbnail navigation, rotation, fit and percentage zoom,
@@ -122,3 +135,8 @@ with a reason-specific next step. See the
 
 Binary previews share `SessionFileNoticeCard` with unavailable-file states, including
 the same card spacing, full-width actions and Copy file path callback.
+
+The [video viewer](session-file-video-preview.tsx) uses native controls for
+browser-decodable WebM, MP4/M4V, MOV, and OGV. It consumes authorized bytes or
+resource URLs, releases the player when inactive, and preserves file actions on
+failure. The mobile project browser uses the same player.

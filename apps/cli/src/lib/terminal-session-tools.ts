@@ -77,16 +77,16 @@ async function sendTerminalRequest(
   const outcome = await Effect.runPromise(
     makeLocalControlClientAuto()
       .machineRpc(LocalMachineRpcRequestSchema.parse(request), { timeoutMs })
-      .pipe(Effect.either)
+      .pipe(Effect.result)
   );
-  if (outcome._tag === 'Left') {
-    if (outcome.left instanceof IpcProtocolError && outcome.left.status === 400)
+  if (outcome._tag === 'Failure') {
+    if (outcome.failure instanceof IpcProtocolError && outcome.failure.status === 400)
       throw new Error(
         'The running daemon is older than this command line and cannot answer it; restart or update the daemon.'
       );
-    throw classifyLocalDaemonIpcError(outcome.left);
+    throw classifyLocalDaemonIpcError(outcome.failure);
   }
-  const response = outcome.right;
+  const response = outcome.success;
   if (!response.ok) throw new Error(response.error);
   return response.result;
 }

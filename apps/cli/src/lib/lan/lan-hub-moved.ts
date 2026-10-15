@@ -3,7 +3,8 @@
 // may live on any machine, so every member runs the hook of its own data
 // directory; and the machine that hosts the hub now tells the phones, which
 // keep the address they were given.
-import { spawn } from 'node:child_process';
+import { startProcessLegacy } from '@lody/shared/node/process';
+import { toShared } from '@/platform/process-options';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
@@ -86,22 +87,36 @@ export async function runLanHubMovedHook(
     output = Buffer.concat([output, chunk]).subarray(-HOOK_OUTPUT_MAX_BYTES);
   };
   let outcome: string;
+  let termination: Promise<void> | undefined;
   try {
     outcome = await new Promise<string>((resolve, reject) => {
       // A group of its own: what the hook started is stopped with it.
-      const child = spawn(hookPath, [], {
-        cwd: path.dirname(hookPath),
-        env: lanHubMovedHookEnvironment(move, options.env),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      });
+      const handle = startProcessLegacy(
+        {
+          command: hookPath,
+          args: [],
+          processGroup: true,
+          options: {
+            cwd: path.dirname(hookPath),
+            env: lanHubMovedHookEnvironment(move, options.env),
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        },
+        toShared({ logger: options.logger })
+      );
+      const child = handle.child;
       let stopped = false;
       const timer = setTimeout(() => {
         stopped = true;
-        if (child.pid) process.kill(-child.pid, 'SIGKILL');
+        termination = handle.terminate({
+          gracefulSignal: 'SIGKILL',
+          graceMs: 0,
+          killWaitMs: 3_000,
+        });
+        void termination.catch(reject);
       }, timeoutMs);
-      child.stdout.on('data', keep);
-      child.stderr.on('data', keep);
+      child.stdout!.on('data', keep);
+      child.stderr!.on('data', keep);
       child.once('error', (error) => {
         clearTimeout(timer);
         reject(error);
@@ -115,14 +130,15 @@ export async function runLanHubMovedHook(
             : `exited with ${code ?? signal}`;
         // What the hook left running may hold its output open; that is not waited for.
         const settle = () => {
-          child.stdout.destroy();
-          child.stderr.destroy();
+          child.stdout!.destroy();
+          child.stderr!.destroy();
           resolve(ended);
         };
         child.once('close', settle);
         setTimeout(settle, options.outputGraceMs ?? HOOK_OUTPUT_GRACE_MS).unref();
       });
     });
+    await termination;
   } catch (error) {
     outcome = `could not start: ${formatErrorMessage(error)}`;
   }

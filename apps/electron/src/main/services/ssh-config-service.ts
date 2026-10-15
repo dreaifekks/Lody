@@ -1,11 +1,11 @@
-import { spawn } from 'node:child_process'
+import { runCommandTextLegacy, READ_ONLY_ABANDON_POLICY } from '@lody/shared/node/process'
 import { lookup } from 'node:dns/promises'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { LanSshDestination, SshDestination } from '@lody/shared/lan-ssh'
 import { probeSshServer } from '@lody/shared/node/ssh-probe'
-import { getUserShellEnvCached } from './shell-env'
+import { getUserShellEnvCachedLegacy } from './shell-env'
 import {
   findSshConfigDestination,
   parseSshEvaluation,
@@ -47,33 +47,18 @@ const files: SshConfigFiles = {
  * to nothing for that; it reads the configuration as it does before it would.
  */
 async function evaluate(host: string): Promise<SshConfigEntry | null> {
-  const shellEnv = await getUserShellEnvCached()
+  const shellEnv = await getUserShellEnvCachedLegacy()
   const env = shellEnv ? { ...process.env, ...shellEnv } : process.env
-  return await new Promise<SshConfigEntry | null>((done) => {
-    let settled = false
-    let output = ''
-    const finish = (entry: SshConfigEntry | null): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      done(entry)
-    }
-    const child = spawn('ssh', ['-G', host], {
-      env,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true
-    })
-    const timer = setTimeout(() => {
-      child.kill()
-      finish(null)
-    }, EVALUATE_TIMEOUT_MS)
-    child.stdout.on('data', (chunk: Buffer) => {
-      if (output.length < EVALUATE_OUTPUT_MAX) output += chunk.toString('utf8')
-    })
-    child.once('error', () => finish(null))
-    child.once('close', (code) => finish(code === 0 ? parseSshEvaluation(output) : null))
-  })
+  const result = await runCommandTextLegacy({
+    command: 'ssh',
+    args: ['-G', host],
+    env,
+    timeout: EVALUATE_TIMEOUT_MS,
+    maxOutputBytes: EVALUATE_OUTPUT_MAX,
+    abandonPolicy: READ_ONLY_ABANDON_POLICY,
+    check: 'none'
+  }).catch(() => null)
+  return result?.code === 0 ? parseSshEvaluation(result.stdout) : null
 }
 
 async function resolve(hostName: string): Promise<string[]> {

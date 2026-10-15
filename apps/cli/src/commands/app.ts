@@ -7,8 +7,7 @@ import type {
   MachineId,
 } from '@lody/shared';
 import {
-  createLocalProjectId,
-  ensureLocalProjectRootPath,
+  localProjectsLegacy,
   getLocalProjectNameFromRootPath,
 } from '@lody/shared/node/local-project';
 import {
@@ -93,7 +92,7 @@ export async function resolveLocalProjectForApp(args: {
       // that is already registered stays selectable. A brand new one is not, and
       // the caller warns about that.
       return {
-        localProjectId: createLocalProjectId(args.rootPath),
+        localProjectId: localProjectsLegacy.createLocalProjectId(args.rootPath),
         name: getLocalProjectNameFromRootPath(args.rootPath),
         workspaceSlug: null,
         registered: false,
@@ -155,7 +154,9 @@ export const appCommand = new Command('app')
     await runOneShotCommand('app', options, async () => {
       const logger = getLogger('app');
       const auth = { machineId: await resolveAppMachineId() };
-      const rootPath = ensureLocalProjectRootPath(path.resolve(projectPath ?? '.'));
+      const rootPath = localProjectsLegacy.ensureLocalProjectRootPath(
+        path.resolve(projectPath ?? '.')
+      );
 
       const target = await resolveLocalProjectForApp({
         machineId: auth.machineId,

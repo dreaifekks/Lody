@@ -59,7 +59,7 @@ macOS、Windows 和 Linux 的桌面安装包附在[滚动发布](https://github.
 | 其他机器的文件夹   | 别的成员上的会话文件夹，可以在本机编辑器里通过 SSH 打开                                                                                                       |
 | 机器与更新         | Settings > LAN 列出所有机器及其构建版本；任一成员都能更新服务器，桌面应用自我更新                                                                             |
 | 手机提醒           | hub 用你自己的 APNs 密钥（`lody-lan lan push setup`）向注册过的 iOS 客户端推送提醒和实时活动，并可以在实时活动里直接审批权限请求                              |
-| Pull Request       | PR 面板、合并、评论、PR 驱动的自动归档以及自动 review 与合并都在本地可用，用 hub 保存的一个 GitHub token（`lody-lan lan github setup`），或者本机的 `gh` 登录 |
+| Pull Request       | PR 面板、合并、评论、PR 驱动的自动归档都在本地可用，用 hub 保存的一个 GitHub token（`lody-lan lan github setup`），或者本机的 `gh` 登录 |
 | 原生会话           | Lody 会话会补上在 Lody 之外写进对应 Claude 或 Codex 会话的轮次                                                                                                |
 | 托管配置导入       | 读取托管版 Lody 在某台机器上的配置                                                                                                                            |
 | hub 迁移与热备     | `lody-lan lan take-over` 把 hub 迁到另一台服务器；热备服务器保存一份副本，hub 长时间离线时自动接管；Settings > LAN 会标出两者                                 |

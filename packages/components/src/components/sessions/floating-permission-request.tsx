@@ -490,6 +490,15 @@ export function PermissionPrompt({
         </div>
       ) : null}
 
+      {subject?.type === 'command' && subject.truncated ? (
+        <p role="note" {...stylex.props(styles.status, styles.statusError)}>
+          {t(
+            'sessions.permission.commandTruncated',
+            'This command is longer than 1 KB and only its beginning is shown. Approve only if you trust the rest.'
+          )}
+        </p>
+      ) : null}
+
       {error ? (
         <p role="alert" {...stylex.props(styles.status, styles.statusError)}>
           {error}
@@ -676,12 +685,12 @@ export function FloatingPermissionRequest({
         }
       : undefined;
 
-  if (current.isAskUserQuestion) {
-    // A question is a form rather than a yes or no, and it replaces the
-    // composer's keyboard behaviour: lift on iOS, resize naturally on Android,
-    // and keep a focused custom-answer field visible inside the cap.
-    return (
+  // Keep each pending form mounted across request navigation. Only the current
+  // one is visible and answerable; removing a request releases its local draft.
+  return (
+    <>
       <ScrollArea
+        hidden={!current.isAskUserQuestion}
         className={cn(
           'mx-3 mb-[calc(0.5rem+var(--native-keyboard-height,0px))]',
           'max-h-[calc(100dvh-var(--native-keyboard-height,0px)-4rem)]',
@@ -699,37 +708,53 @@ export function FloatingPermissionRequest({
               <PositionControl position={position} />
             </div>
           ) : null}
-          <QuestionRequest
-            key={requestId}
-            entry={current}
-            isReady={isReady}
-            sendingOptionId={sendingOptionId}
-            onRespond={respond}
-          />
+          {pendingList
+            .filter((entry) => entry.isAskUserQuestion)
+            .map((entry) => {
+              const isCurrent = entry.permission.requestId === requestId;
+              return (
+                <div
+                  key={`${sessionId}:${entry.permission.requestId}`}
+                  hidden={!isCurrent}
+                  inert={!isCurrent}
+                >
+                  <QuestionRequest
+                    entry={entry}
+                    isReady={isReady && isCurrent}
+                    sendingOptionId={
+                      sending?.requestId === entry.permission.requestId ? sending.optionId : null
+                    }
+                    error={
+                      sendError?.requestId === entry.permission.requestId ? sendError.message : null
+                    }
+                    onRespond={respond}
+                  />
+                </div>
+              );
+            })}
         </ConversationColumn>
       </ScrollArea>
-    );
-  }
-
-  return (
-    <div className="mx-3 mb-2">
-      <ConversationColumn>
-        <PermissionPrompt
-          key={requestId}
-          toolCall={current.toolCall}
-          permission={current.permission}
-          isReady={isReady}
-          sendingOptionId={sendingOptionId}
-          error={error}
-          position={position}
-          onStop={onStop}
-          autoFocus
-          onSelect={(optionId) => {
-            void respond(current, optionId, { outcome: 'selected', optionId });
-          }}
-        />
-      </ConversationColumn>
-    </div>
+      {!current.isAskUserQuestion ? (
+        <div className="mx-3 mb-2">
+          <ConversationColumn>
+            <PermissionPrompt
+              key={`${sessionId}:${requestId}`}
+              toolCall={current.toolCall}
+              permission={current.permission}
+              isReady={isReady}
+              sendingOptionId={sendingOptionId}
+              error={error}
+              position={position}
+              onStop={onStop}
+              autoFocus
+              onSelect={(optionId) => {
+                void respond(current, optionId, { outcome: 'selected', optionId });
+              }}
+            />
+          </ConversationColumn>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -742,11 +767,13 @@ function QuestionRequest({
   entry,
   isReady,
   sendingOptionId,
+  error,
   onRespond,
 }: {
   entry: PendingPermission;
   isReady: boolean;
   sendingOptionId: string | null;
+  error: string | null;
   onRespond: (
     entry: PendingPermission,
     optionId: string,
@@ -786,6 +813,7 @@ function QuestionRequest({
         kind: 'interactive',
         isReady,
         disabled: false,
+        error,
         isPendingSubmit: sendingOptionId !== null && sendingOptionId === answerOptionId,
         isPendingCancel: sendingOptionId !== null && sendingOptionId === cancelOptionId,
         onSubmit: (answers: AskUserQuestionAnswers) => {
@@ -798,7 +826,10 @@ function QuestionRequest({
         },
         onCancel: () => {
           if (!cancelOptionId) return;
-          void onRespond(entry, cancelOptionId, { outcome: 'selected', optionId: cancelOptionId });
+          void onRespond(entry, cancelOptionId, {
+            outcome: 'selected',
+            optionId: cancelOptionId,
+          });
         },
       }}
     />

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -16,6 +16,10 @@ import {
 
 import { ProviderRow } from '../src/components/settings/provider-row';
 import { initI18n } from '../src/i18n';
+import {
+  createCodexResetForecastStore,
+  setCodexResetForecastStoreForTests,
+} from '../src/lib/codex-reset-forecast-store';
 
 const machineId = 'machine-test' as MachineId;
 const machine: MachineViewMeta = {
@@ -53,6 +57,7 @@ describe('ProviderRow reauthentication', () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    setCodexResetForecastStoreForTests(null);
   });
 
   const renderConfig = async (config: AgentConfigMeta) => {
@@ -62,6 +67,44 @@ describe('ProviderRow reauthentication', () => {
       );
     });
   };
+
+  it('shows quota only for a Provider that declares the capability, including custom ACP', async () => {
+    const config = makeConfig({ cliType: 'custom', agentType: 'example' });
+    const quotaMachine: MachineViewMeta = { ...machine };
+    // Use the same public key encoder as the daemon's Flock projection.
+    quotaMachine.raceLimits = {
+      [getRateLimitEntryKey('example', 'example', config.id)]: {
+        limitId: 'example',
+        scope: { providerId: 'example' },
+        windows: [{ usedPercent: 30, windowDurationSeconds: 18000, resetsAtEpochSeconds: null }],
+      },
+    };
+    const render = async () =>
+      act(async () => {
+        root.render(
+          <ProviderRow
+            config={config}
+            machine={{ ...quotaMachine }}
+            onEdit={() => {}}
+            onRefresh={() => {}}
+          />
+        );
+      });
+    await render();
+    expect(container.textContent).not.toContain('70%');
+    quotaMachine.acpCapabilities = {
+      [config.id]: {
+        cliType: 'custom',
+        agentType: 'example',
+        modes: [],
+        models: [],
+        fetchedAt: 1,
+        rateLimits: { version: 1 },
+      },
+    };
+    await render();
+    expect(container.textContent).toContain('70%');
+  });
 
   // Asserts on rendered text rather than a mocked panel: the row must not grow a
   // sign-in affordance again, whichever component would provide it.
@@ -84,9 +127,16 @@ describe('ProviderRow reauthentication', () => {
 
   it('still opens the provider detail when the row is clicked', async () => {
     const config = makeConfig({ cliType: 'builtin', agentType: 'claude' });
-    const onEdit = vi.fn();
+    function DetailHarness() {
+      const [selected, setSelected] = useState<AgentConfigMeta | null>(null);
+      return selected ? (
+        <p>Opened detail for {selected.name}</p>
+      ) : (
+        <ProviderRow config={config} machine={machine} onEdit={setSelected} />
+      );
+    }
     await act(async () => {
-      root.render(<ProviderRow config={config} machine={machine} onEdit={onEdit} />);
+      root.render(<DetailHarness />);
     });
 
     const row = container.querySelector<HTMLButtonElement>('button[aria-label="Edit Config"]');
@@ -94,7 +144,29 @@ describe('ProviderRow reauthentication', () => {
       row?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(onEdit).toHaveBeenCalledWith(config);
+    expect(container.textContent).toContain('Opened detail for claude');
+  });
+
+  it('loads the forecast only after its direct action is selected', async () => {
+    const store = createCodexResetForecastStore({
+      fetchStatus: async () => ({
+        status: { watch: null, scheduledReset: null, latestReset: null },
+        etag: null,
+        maxAgeMs: 60_000,
+      }),
+    });
+    setCodexResetForecastStoreForTests(store);
+    await renderConfig(makeConfig({ cliType: 'builtin', agentType: 'codex' }));
+    expect(store.getState().status).toBe('idle');
+    expect(container.textContent).toContain('Reset forecast');
+    expect(container.textContent).not.toContain('Quota details');
+    const forecast = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Reset forecast'
+    );
+    expect(forecast).toBeDefined();
+    await act(async () => forecast?.click());
+    expect(store.getState().status).toBe('ready');
+    expect(document.body.textContent).toContain('No reset forecast right now.');
   });
 });
 
@@ -196,7 +268,7 @@ describe('ProviderRow Antigravity quota', () => {
     },
   };
   const meterTitles = () =>
-    Array.from(container.querySelectorAll('[title]')).map((node) => node.getAttribute('title'));
+    Array.from(container.querySelectorAll('[role="meter"]')).map((node) => node.getAttribute('aria-label'));
 
   const render = async (env: Record<string, string>) => {
     await act(async () => {
@@ -219,8 +291,8 @@ describe('ProviderRow Antigravity quota', () => {
   ])('shows only the Gemini quota (offers Claude: $offersClaude)', async ({ env }) => {
     await render(env);
 
-    expect(meterTitles()).toContain('5h: 90%');
-    expect(meterTitles()).not.toContain('5h: 40%');
+    expect(meterTitles()).toContain('5h: 90% left');
+    expect(meterTitles()).not.toContain('5h: 40% left');
     expect(meterTitles().some((title) => title?.includes('Claude / GPT'))).toBe(false);
   });
 });

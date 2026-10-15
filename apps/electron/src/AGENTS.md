@@ -17,6 +17,9 @@ native-dependency, and OSS-composition rules stay in `apps/electron/AGENTS.md`.
 - Put domain services in `src/main/services/*`, IPC handlers and input validation in
   `src/main/ipc/*`, and local-project worker/storage code in
   `src/main/local-project/*`.
+- Main starts, awaits and signals processes only through `@lody/shared/node/process`
+  (never `child_process` or `kill`); `check:cli-process-boundary` enforces it.
+  Rules: [process layer](../../../packages/shared/src/node/AGENTS.md).
 - Main-process-only helpers belong in `src/main/utils.ts`. Put cross-runtime types and
   pure logic in `@lody/shared`; shared Electron IPC contracts live in the narrow
   `@lody/shared/electron-ipc` export.
@@ -102,13 +105,9 @@ native-dependency, and OSS-composition rules stay in `apps/electron/AGENTS.md`.
   cross-origin readers can inspect `Accept-Ranges` and `Content-Range`.
   Raster header dimensions bound decode cost.
   The scheme never bypasses CSP, executes file content, or authorizes a remote RPC.
-- `lody-resource://member/<token>` (`member-file-resource.ts`) stands for a file only
-  the agent service can read: a block a session keeps, or a file of another
-  [LAN member](../../../.agents/docs/lan-member-connections.md#parts-of-a-file). Each
-  Range request is one ranged read over the local file socket; the shell never
-  connects to a member or holds its credential. Local platform only; same opaque,
-  renderer-lifetime, bounded tokens. `member-file-resource-protocol.ts` adds the host
-  once the application loads: the entry reaches `local-file-resource-protocol.ts`
-  before that, so it must gain no business import. Every part after the first carries the revision
-  the resource was opened on, and a changed file answers 409. Saving streams to a
-  `.part` file beside the chosen path; never buffer such a file whole.
+- `lody-resource://member/<token>` uses local file IPC for session blobs and
+  [LAN member files](../../../.agents/docs/lan-member-connections.md#parts-of-a-file).
+  Main holds no member credential/connection; tokens are opaque, bounded and renderer-owned.
+  Register its protocol after app load; keep business imports out of the early local protocol.
+  Each Range carries the initial revision; changes return 409. Save through an adjacent
+  `.part` stream, never a whole-file buffer.

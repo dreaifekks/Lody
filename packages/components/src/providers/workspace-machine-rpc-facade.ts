@@ -33,6 +33,7 @@ import {
   IosSimulatorResponseSchema,
   type IosSimulatorCommand,
   type IosSimulatorResponse,
+  machineSupportsSessionHistoryProtocol,
   type MachineProtocolCapabilities,
   type AgentConfigId,
   type CodeCollabV2Error,
@@ -91,6 +92,10 @@ import {
   type SessionEditAndResendResponse,
   type SessionEditAndResendSpec,
   type SessionTurnInputConfig,
+  type SessionHistoryReadResponse,
+  type SessionHistoryReadQuery,
+  type SessionHistoryWriteOperation,
+  type SessionHistoryWriteResponse,
   type WorkspaceId,
   sessionForkFailure,
   sessionEditAndResendFailure,
@@ -212,6 +217,62 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
     options?.ownerSessionId === undefined
       ? {}
       : { ownerSessionId: options.ownerSessionId.toString() };
+
+  const requireSessionHistoryCapability = async (machineId: MachineId): Promise<void> => {
+    if (
+      !machineSupportsSessionHistoryProtocol({
+        protocolCapabilities: await deps.getMachineProtocolCapabilities(machineId),
+      })
+    ) {
+      throw new Error('This machine does not support Roost session history. Update the machine.');
+    }
+  };
+
+  const requestSessionHistoryRead = async (
+    machineId: MachineId,
+    sessionId: SessionId,
+    query: SessionHistoryReadQuery,
+    options?: { timeoutMs?: number }
+  ): Promise<SessionHistoryReadResponse> => {
+    await requireSessionHistoryCapability(machineId);
+    const plane = await resolveMachineTargetPlane(machineId);
+    if (plane === 'local') {
+      throw new Error('Local Roost history must use the local session control bridge.');
+    }
+    const response = await (
+      await getMachineRpcClient(machineId)
+    ).requestSessionHistoryRead({
+      sessionId,
+      query,
+      timeoutMs: options?.timeoutMs ?? 30_000,
+    });
+    if (!response) throw new Error('Roost session history read request timed out.');
+    return response;
+  };
+
+  const requestSessionHistoryWrite = async (
+    machineId: MachineId,
+    args: {
+      sessionId: SessionId;
+      operation: SessionHistoryWriteOperation;
+      payload: Record<string, unknown>;
+    },
+    options?: { timeoutMs?: number }
+  ): Promise<SessionHistoryWriteResponse> => {
+    await requireSessionHistoryCapability(machineId);
+    const plane = await resolveMachineTargetPlane(machineId);
+    if (plane === 'local') {
+      throw new Error('Local Roost history must use the local session control bridge.');
+    }
+    const response = await (
+      await getMachineRpcClient(machineId)
+    ).requestSessionHistoryWrite({
+      ...args,
+      timeoutMs: options?.timeoutMs ?? 30_000,
+    });
+    if (!response) throw new Error('Roost session history write request timed out.');
+    return response;
+  };
 
   /**
    * File Preview v3. Its own transport wrapper (rather than `requestCodeCollab`)
@@ -566,7 +627,7 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
     machineId: MachineId,
     sessionId: SessionId,
     turnId: string,
-    options?: { timeoutMs?: number; subagentTaskId?: string }
+    options?: { timeoutMs?: number; subagentTaskId?: string; cancelId?: string }
   ): Promise<SessionCancelResponse | null> => {
     try {
       if (
@@ -581,7 +642,12 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
           machineId,
           workspaceId,
           method: 'session/cancel',
-          params: { sessionId, turnId, subagentTaskId: options?.subagentTaskId },
+          params: {
+            sessionId,
+            turnId,
+            subagentTaskId: options?.subagentTaskId,
+            ...(options?.cancelId ? { cancelId: options.cancelId } : {}),
+          },
           timeoutMs: options?.timeoutMs ?? 2_000,
         });
         if (response && !response.ok) {
@@ -601,6 +667,7 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
         sessionId,
         turnId,
         subagentTaskId: options?.subagentTaskId,
+        ...(options?.cancelId ? { cancelId: options.cancelId } : {}),
         timeoutMs: options?.timeoutMs ?? 2_000,
       });
     } catch (error) {
@@ -656,12 +723,22 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
     options?: { timeoutMs?: number }
   ): Promise<SessionDispatchTurnResponse | null> => {
     try {
+      const protocolCapabilities = await deps.getMachineProtocolCapabilities(machineId);
+      const input = {
+        ...args,
+        ...(machineSupportsProtocolCapability(
+          { protocolCapabilities },
+          MACHINE_PROTOCOL_CAPABILITIES.operationInbox
+        )
+          ? { inputOrigin: 'human' as const }
+          : {}),
+      };
       if (await canUseLocalMachineRpc(machineId)) {
         const response = await getLocalMachineRpcSender()?.({
           machineId,
           workspaceId,
           method: 'session/dispatch-turn',
-          params: args,
+          params: input,
           timeoutMs: options?.timeoutMs ?? 15_000,
         });
         if (response && !response.ok) {
@@ -679,7 +756,7 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
       return await (
         await getMachineRpcClient(machineId)
       ).requestSessionDispatchTurn({
-        ...args,
+        ...input,
         timeoutMs: options?.timeoutMs ?? 15_000,
       });
     } catch (error) {
@@ -1600,6 +1677,8 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
     requestSessionDispatchTurn,
     requestSessionPrepare,
     requestSessionPrepareCancel,
+    requestSessionHistoryRead,
+    requestSessionHistoryWrite,
     requestFilePreview,
     requestLocalCodeCollabFileIndex,
     requestCodeCollabOpenText,

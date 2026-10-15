@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import os from 'node:os';
-import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { machineShellScope, type TerminalServerEvent } from '@lody/shared';
 import type { Logger } from '@/utils/logger';
@@ -30,6 +29,7 @@ describe('a machine shell in a real terminal', () => {
   const previousShell = process.env.SHELL;
 
   beforeEach(() => {
+    vi.stubEnv('LODY_DISABLE_SHELL_ENV', '1');
     directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-pty-'));
     // A plain shell: the login shell of whoever runs the suite may print anything.
     process.env.SHELL = '/bin/sh';
@@ -41,6 +41,7 @@ describe('a machine shell in a real terminal', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     setLanSessionCommand(null);
     pty.closeAll();
     if (previousShell === undefined) delete process.env.SHELL;
@@ -114,5 +115,69 @@ describe('a machine shell in a real terminal', () => {
 
     expect(shellExitStatus(exit)).toBe(0);
     expect(output()).toContain('[["lan","shell","mba","--","uname -a"],"lody-lan","1"]');
+  });
+});
+
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import type { TerminalExitEvent } from '@lody/shared';
+import { vi } from 'vitest';
+
+const logger = {
+  debug: () => {},
+  trace: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+} as unknown as Logger;
+
+// A real PTY: the process-group semantics under test are the kernel's, not a model's.
+describe.skipIf(process.platform === 'win32')('terminal PTY termination', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'lody-terminal-pty-'));
+    vi.stubEnv('LODY_DISABLE_SHELL_ENV', '1');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('ends a shell that ignores the hangup instead of leaking it', async () => {
+    const shell = path.join(root, 'stubborn-shell');
+    await writeFile(
+      shell,
+      "#!/bin/sh\ntrap '' HUP TERM\necho ready\nwhile read line; do :; done\n",
+      { mode: 0o700 }
+    );
+    vi.stubEnv('SHELL', shell);
+    const service = makeTerminalPtyService({ logger, resolveSessionWorkdir: async () => root });
+    const ready = Promise.withResolvers<void>();
+    const exited = Promise.withResolvers<TerminalExitEvent>();
+    let output = '';
+    service.onEvent((event) => {
+      if (event.type === 'data') {
+        output += event.data;
+        if (output.includes('ready')) ready.resolve();
+      }
+      if (event.type === 'exit') exited.resolve(event);
+    });
+
+    const { terminalId } = await service.open({
+      sessionId: 'session-pty',
+      cols: 80,
+      rows: 24,
+    });
+    await ready.promise;
+    service.close(terminalId);
+
+    const exit = await exited.promise;
+    expect(exit.terminalId).toBe(terminalId);
+    // The hangup did not end it; the process layer's SIGKILL did.
+    expect(exit.signal).toBe('9');
+    expect(service.list('session-pty')).toEqual([]);
   });
 });

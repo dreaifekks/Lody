@@ -1,7 +1,8 @@
 // Replaces an agent service that the install script installed with the newest
 // build of the release it follows. The running process keeps the code it
 // loaded; whoever calls this starts the service again afterwards.
-import { spawn } from 'node:child_process';
+import { startProcessLegacy } from '@lody/shared/node/process';
+import { toShared } from '@/platform/process-options';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -67,20 +68,31 @@ const PROBE_TIMEOUT_MS = 60_000;
 const OUTPUT_LIMIT = 16 * 1024;
 
 export const runLanUpdateCommand: LanUpdateCommandRunner = (command, args, options) =>
-  new Promise((resolve) => {
-    const child = spawn(command, [...args], {
-      env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+  new Promise((resolve, reject) => {
+    const handle = startProcessLegacy(
+      {
+        command,
+        args,
+        processGroup: true,
+        options: {
+          env: options.env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      },
+      toShared()
+    );
+    const child = handle.child;
+    let termination: Promise<void> | undefined;
     let stdout = '';
     let stderr = '';
     const keep = (current: string, chunk: Buffer) =>
       `${current}${chunk.toString()}`.slice(-OUTPUT_LIMIT);
-    child.stdout.on('data', (chunk: Buffer) => (stdout = keep(stdout, chunk)));
-    child.stderr.on('data', (chunk: Buffer) => (stderr = keep(stderr, chunk)));
+    child.stdout!.on('data', (chunk: Buffer) => (stdout = keep(stdout, chunk)));
+    child.stderr!.on('data', (chunk: Buffer) => (stderr = keep(stderr, chunk)));
     const timer = setTimeout(() => {
       stderr = keep(stderr, Buffer.from(`\ntimed out after ${options.timeoutMs}ms`));
-      child.kill('SIGKILL');
+      termination = handle.terminate({ gracefulSignal: 'SIGKILL', graceMs: 0, killWaitMs: 3_000 });
+      void termination.catch(reject);
     }, options.timeoutMs);
     timer.unref();
     child.once('error', (error) => {
@@ -89,7 +101,7 @@ export const runLanUpdateCommand: LanUpdateCommandRunner = (command, args, optio
     });
     child.once('close', (code) => {
       clearTimeout(timer);
-      resolve({ code, stdout, stderr });
+      void Promise.resolve(termination).then(() => resolve({ code, stdout, stderr }), reject);
     });
   });
 

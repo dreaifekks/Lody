@@ -1,3 +1,4 @@
+import { fileLocksLegacy } from '@/utils/file-lock';
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
@@ -245,7 +246,7 @@ export async function ensureImplicitLocalWorkspace(options: {
     slug: LOCAL_WORKSPACE_SLUG,
     role: 'owner',
   };
-  await Effect.runPromise(
+  await fileLocksLegacy.runPromise(
     catalog.cacheRemoteWorkspaces({
       identity: { userId: identity.userId },
       machine: { machineId, machineName },

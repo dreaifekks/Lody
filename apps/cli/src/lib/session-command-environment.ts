@@ -27,7 +27,15 @@ export interface SessionCommandHost {
     sessionId: SessionId,
     turnId?: string
   ): Promise<{ success: boolean; error?: string }>;
-  dispatchSession(sessionId: SessionId): Promise<void>;
+  dispatchSession(
+    sessionId: SessionId,
+    input?: {
+      inputId: string;
+      userId: string;
+      config: import('@lody/shared').SessionTurnInputConfig;
+      inputOrigin: 'human' | 'agent';
+    }
+  ): Promise<void>;
   /**
    * The GitHub credential this machine uses for a repository: its own `gh`
    * login, else the LAN host's token; `null` when it has neither.

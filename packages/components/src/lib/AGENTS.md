@@ -4,7 +4,9 @@ Rules bind callers too.
 Background: [components](../../../../.agents/docs/components-package.md),
 [files](../../../../.agents/docs/components-file-paths.md).
 
-- Send acceptance and RPC await local commits, never Repo-wide flush.
+- Send/RPC await local commits, never Repo flush. Save `humanInputReceipts` before activation; RPC is redundant.
+- Retry immutable Roost input; absent receipts stay unknown. Cache/refresh keeps
+  all input. Resolve owner routing per call.
 
 ## Electron IPC types
 
@@ -12,39 +14,36 @@ Background: [components](../../../../.agents/docs/components-package.md),
   registration with `import type` only. Browser/mobile bundles must erase the edge;
   never add an Electron runtime/package dependency or allow Node APIs in shared UI.
 - Keep `experimentalDecorators` and the direct catalog-pinned `@types/node` dependency
-  for the source declarations. Service classes and their single constructor list own
-  invoke signatures; never duplicate them in a handwritten contract, spec, or one-for-one
-  platform port. Fix resolution/erasure at this boundary or reconsider caller ownership.
+  for the source declarations. Service constructors own invoke signatures; never duplicate them in contracts,
+  Specs or platform ports. Fix resolution/erasure here or reconsider ownership.
   Push events and one-way sends stay in `@lody/shared/electron-ipc`.
 
 ## Crash recovery and diagnostics
 
-- `ErrorBoundary`'s `error-boundary-fallback.tsx` displays the real error and one-click
-  full-report copy on every build. Details default visible (`showErrorDetails` opts out);
-  `lib/error-boundary-report.ts` is the pure copy builder.
+- `ErrorBoundary`'s `error-boundary-fallback.tsx` shows the real error and one-click
+  full-report copy on every build; details visible by default (`showErrorDetails` opts
+  out). `lib/error-boundary-report.ts` is the pure copy builder.
 - Error/not-found screens use `components/status-page.tsx`; pre-React `boot-failure.ts`
   draws that column in plain DOM with copied V2 token values, never React/StyleX/Tailwind.
 - Crash screens never reload/restart/reset themselves. `resetKeys` must not clear a captured
-  error; the copyable fallback stays visible until the user presses a recovery button.
+  error; the copyable fallback stays until the user presses a recovery button.
 - A cloud query throws into render and keeps throwing. An optional surface inside a larger
-  boundary owns an inline `ErrorBoundary`, so a backend failure degrades locally instead of
-  replacing the host subtree.
-- `lib/clear-local-cache.ts` owns `markCacheClearPending` (recoverable `lody*` caches,
-  still signed in) and `startHardReset` (full wipe/sign-out with its own confirmation
-  dialog). Defer asynchronous deletes to next boot; clear synchronous storage BEFORE
-  writing the boot flag.
-- Cache-level clearing uses an explicit localStorage DELETE list, never a keep-allowlist.
-  Include connection caches (Streams JWT/gateway, cursor-bypass markers, workspace-info
-  map); register new `lody:*` cache keys there. Auth tokens and preferences survive.
-- Include the tail of `lib/session-render-trace.ts` in copied reports. Its module-level
-  ring records render/mount/navigation, collapsing consecutive duplicates into ×N.
-  Writers append one compact diagnostic line, never drive behavior from the trace;
-  surface mount/unmount uses a layout effect.
-- `maybeClearLodyCacheOnBoot` runs once at most per page load, shared by `AppInitializer`
-  and `RuntimeProvider`; the latter awaits it before opening repo IndexedDB.
-- Mount `stuck-connection-banner.tsx` once in `MainLayout`. After 45s of continuous
-  control-connection `loading`, offer the same cache-clear flow; never interrupt,
-  retry, or time out the connection attempt.
+  boundary owns an inline `ErrorBoundary`, so a backend failure degrades locally.
+- `lib/clear-local-cache.ts` owns `restartIntoCacheClear` (recoverable `lody*` caches,
+  still signed in; reloads one window) and `startHardReset` (full wipe/sign-out,
+  host-native first, own confirmation). Defer deletes to next boot; clear synchronous
+  storage BEFORE the flag. Record a clear's result; never re-run it unasked.
+- Cache clearing uses a localStorage DELETE list, never a keep-allowlist. Include
+  connection caches (Streams JWT/gateway, cursor-bypass, workspace-info) and new
+  `lody:*` cache keys; retain auth tokens and preferences.
+- Reports copy the `lib/session-render-trace.ts` tail; writers append one compact line,
+  never drive behavior from it; surface mount/unmount uses a layout effect.
+- `maybeClearLodyCacheOnBoot` runs once per page load, shared by `AppInitializer` and
+  `RuntimeProvider`, which awaits it before opening repo IndexedDB.
+- Route waits are `BlockingWaitPlaceholder` (recovery at 30s), never bare
+  `LoadingPlaceholder`/`BootShell`; failures are `RouteMessage` with a `gate` (`null`:
+  not a failure). `stuck-connection-banner.tsx` (`MainLayout`, 45s `loading`) opens
+  the same recovery page. Nothing clears automatically: replicas may hold unsynced edits.
 
 ## File Preview and Code Collab
 
@@ -119,4 +118,4 @@ Background: [components](../../../../.agents/docs/components-package.md),
 - Before creating top-level or child sessions, call `filterAcpSessionConfigOptionValues()`
   so cached values outside the current selector schema are neither dispatched nor persisted.
 
-Attachment transfer lifecycle changes follow [workspace ownership](../providers/AGENTS.md#attachment-transfer-ownership).
+Attachment lifetime: [workspace ownership](../providers/AGENTS.md#attachment-transfer-ownership).

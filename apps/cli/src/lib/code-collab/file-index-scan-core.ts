@@ -1,8 +1,6 @@
-import { execFile } from 'node:child_process';
 import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
 import type {
   CodeCollabV2AllChangesState,
@@ -10,18 +8,18 @@ import type {
   CodeCollabV2FileTreeValue,
 } from '@lody/shared';
 
+// The shared facade directly: the CLI one loads the daemon's winston logger.
+import { runCommandTextLegacy } from '@lody/shared/node/process';
+
 import { countTextLines } from './diff-line-counts';
 import { gitDiffBaseRefCandidates } from '../git/git-diff-base';
 
 // Pure Git-backed scanning + All Changes computation shared by the file-index
 // Tinypool worker (`file-index-scan-worker.ts`) and the main-thread fallback in
-// `code-collab-v2-service.ts`. Keep this module dependency-light (node builtins +
-// `@lody/shared` types only) so the worker bundle stays free of wasm/top-level-await
-// imports. The filesystem (`opendir`) directory-scan fallback is intentionally NOT
-// here: its error classification differs between the worker and the service. The
-// one-level read of an ignored directory is here because both share it unchanged.
-
-const execFileAsync = promisify(execFile);
+// `code-collab-v2-service.ts`. Keep this module dependency-light (node builtins,
+// `@lody/shared` types and the shared process facade only) so the worker bundle stays
+// free of wasm/top-level-await imports. The filesystem (`opendir`) directory-scan fallback is intentionally NOT
+// here: its error classification differs between the worker and the service.
 
 const GIT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
@@ -145,56 +143,49 @@ export function isIgnoredLazyDirectoryValue(value: CodeCollabV2FileTreeValue | u
 async function runGitLsFiles(
   cwd: string
 ): Promise<{ readonly ok: true; readonly paths: readonly GitTreePath[] } | { readonly ok: false }> {
-  try {
-    const [{ stdout }, deleted, ignored] = await Promise.all([
-      execFileAsync(
-        'git',
-        [
-          '-C',
-          cwd,
-          'ls-files',
-          '-z',
-          '--cached',
-          '--others',
-          '--exclude-standard',
-          '--deduplicate',
-          '--',
-          '.',
-        ],
-        { maxBuffer: GIT_MAX_BUFFER_BYTES }
-      ),
-      runGit(cwd, ['ls-files', '--deleted', '-z', '--', '.']),
-      // `--directory` folds a wholly ignored directory into one `dir/` line instead
-      // of walking it, which keeps this to tens of lines where a full listing of
-      // `node_modules` would be hundreds of thousands.
-      runGit(cwd, [
-        'ls-files',
-        '-z',
-        '--others',
-        '--ignored',
-        '--exclude-standard',
-        '--directory',
-        '--',
-        '.',
-      ]),
-    ]);
-    const deletedPaths = deleted.ok
-      ? new Set(deleted.stdout.split('\0').map(normalizeGitPath).filter(isValidRelativeGitPath))
-      : new Set<string>();
-    return {
-      ok: true,
-      paths: [
-        ...stdout
-          .split('\0')
-          .map(normalizeGitPath)
-          .filter((filePath) => isValidRelativeGitPath(filePath) && !deletedPaths.has(filePath))
-          .map((relativePath): GitTreePath => ({ relativePath, value: true })),
-        ...(ignored.ok ? parseIgnoredGitPaths(ignored.stdout) : []),
-      ],
-    };
-  } catch {
+  // `runGit` never rejects, so both children are joined before either outcome is used.
+  // Returning on the first failure left the sibling `git` unawaited; with Tinypool's
+  // `Atomics.wait` idle worker it could stay unreaped as a daemon zombie on macOS.
+  const [listed, deleted, ignored] = await Promise.all([
+    runGit(cwd, [
+      'ls-files',
+      '-z',
+      '--cached',
+      '--others',
+      '--exclude-standard',
+      '--deduplicate',
+      '--',
+      '.',
+    ]),
+    runGit(cwd, ['ls-files', '--deleted', '-z', '--', '.']),
+    runGit(cwd, [
+      'ls-files',
+      '-z',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '--directory',
+      '--',
+      '.',
+    ]),
+  ]);
+  if (!listed.ok) {
     return { ok: false };
   }
+  const deletedPaths = deleted.ok
+    ? new Set(deleted.stdout.split('\0').map(normalizeGitPath).filter(isValidRelativeGitPath))
+    : new Set<string>();
+  return {
+    ok: true,
+    paths: [
+      ...listed.stdout
+        .split('\0')
+        .map(normalizeGitPath)
+        .filter((filePath) => isValidRelativeGitPath(filePath) && !deletedPaths.has(filePath))
+        .map((relativePath): GitTreePath => ({ relativePath, value: true })),
+      ...(ignored.ok ? parseIgnoredGitPaths(ignored.stdout) : []),
+    ],
+  };
 }
 
 function parseIgnoredGitPaths(stdout: string): GitTreePath[] {
@@ -377,8 +368,11 @@ async function runGit(
   args: readonly string[]
 ): Promise<{ readonly ok: true; readonly stdout: string } | { readonly ok: false }> {
   try {
-    const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], {
-      maxBuffer: GIT_MAX_BUFFER_BYTES,
+    const { stdout } = await runCommandTextLegacy({
+      command: 'git',
+      args: ['-C', cwd, ...args],
+      maxOutputBytes: GIT_MAX_BUFFER_BYTES,
+      check: 'exit-0',
     });
     return { ok: true, stdout };
   } catch {

@@ -55,7 +55,24 @@
   turn identity, plan, tools, or accounting. Ignore unregistered/terminal output,
   reject lineage cycles, and retain incomplete observation across snapshots. Declare
   nested transcript streaming fields in `schema.ts`; legacy rows stay unchanged.
+- New root/child tool content drops ACP images and image blobs and clears unused
+  non-image resource blob bytes through `acp/tool-call-history.ts`; replay shares
+  the rule. Keep resource/download identity, audio, readable output, complete diffs
+  and sparse semantics. Child raw input retains its displayed plan; scalar/array
+  raw output has one readable copy, never a duplicate in metadata. Permission
+  enrichment preserves stored content; malformed new values reach writer validation.
 
 - Submissions append on the live doc as local commits; transports upload only
   local events. Never author on a fork and import the export: it misses upload,
   copies the whole doc and adds a permanent peer.
+- Optional `inputAcceptance` separates an immutable owner-history receipt from
+  execution. Preserve its source identity and expose the bound target in renderer
+  adapters. Missing receipt lookup never proves non-delivery. Accepted history
+  removed from the active branch must not be resurrected by a repeated accept.
+  Optional `acceptAndDispatch` requires independent `sessionInputDispatch` v1
+  negotiation; it joins ordinary acceptance and owner activation without claiming
+  execution. Plain acceptance and guide application retain their own boundaries.
+
+- `operation_completion_batch` is one stable system item with fixed batch identity/member count.
+  Receipt projections target its exact turn and batch, preserve user text/config and do not
+  rewrite unchanged status. Full result bodies remain in the scoped orchestration repository.

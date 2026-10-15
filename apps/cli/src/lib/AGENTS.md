@@ -1,15 +1,15 @@
-# apps/cli/src/lib — Index
+# CLI library
 
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only. File index:
 [README.md](README.md). Scoped rules: [acp](acp/AGENTS.md),
 [code-collab](code-collab/AGENTS.md), [file-preview](file-preview/AGENTS.md),
-[loro](loro/AGENTS.md), [pr-poller](pr-poller/AGENTS.md),
-[review-automation](review-automation/AGENTS.md).
+[loro](loro/AGENTS.md), [pr-poller](pr-poller/AGENTS.md).
 
-**Before touching message dispatch/sync here, read context/message-flow.md**, the
-end-to-end map. The WS/DO control-plane path is DEPRECATED; do not add to it.
+**Before dispatch/sync changes, read context/message-flow.md.** The WS/DO control-plane path is DEPRECATED; do not add to it.
 
 ## Composition and transports
+
+- Cloud commands share workspace managers.
 
 - GitHub auth: conversation-owner personal → matching-owner machine → repo App,
   once per source. Failures advance without a policy RPC; local context grants
@@ -27,8 +27,8 @@ end-to-end map. The WS/DO control-plane path is DEPRECATED; do not add to it.
   declarations and private workspace packages are forbidden. Prime the token provider
   before reading `getGatewayBaseUrl()`, and never let runtime transports or Machine RPC
   require `LODY_LORO_STREAMS_BASE_URL` as a parallel hidden composition path.
-- PR association uses the HTTP action proxy at `authSiteUrl`, not the public Convex
-  RPC endpoint at `authBaseUrl`; the association function is internal-only.
+- `cloud-pr-association.ts`: use `authSiteUrl`, not `authBaseUrl` (internal proxy).
+  Six failures/workspace/repo, no eviction; reset on client recreation. Log once.
 - Local session control preserves every intermediate response: new clients negotiate
   NDJSON, legacy clients keep the buffered JSON envelope. `MachineRuntime` may collect
   responses for completion, but must also forward each to the streaming observer as it
@@ -57,7 +57,8 @@ writing machine Flock rows, or reacting to reconnection. Before changing
 [rules and design](../../../../.agents/docs/cli-lib-local-loro-data-plane.md): named
 `LoroDocumentManager` options, scheduler and bulk-writer limits, sender-enforced
 framing, the RAW-chunk `createJsonLineSplitter` requirement, renderer room lifetime.
-Two are never negotiable: a renderer joining a Session Doc room must not call
+The room engine remains explicitly Legacy; outbound work uses the single native
+process writer facade, and cleanup awaits its release receipt. Two are never negotiable: a renderer joining a Session Doc room must not call
 `getOrCreateSessionDoc` or retain a live cloud room, and the CLI's cloud room status is
 never pushed to renderers as local room health.
 
@@ -70,14 +71,12 @@ never pushed to renderers as local room health.
   anything looks like pressure; re-check with a short delay before failing a turn; keep
   eviction bounded per call. The threshold is a safety MARGIN, never "what a turn
   needs". [Per-OS signals](../../../../.agents/docs/cli-lib-memory-pressure.md).
-- **Session file attachments** (spec: `specs/session-files.md`): read the
-  [lifecycle rules](../../../../.agents/docs/cli-lib-session-files.md) before changing
-  upload, dispatch materialization, or backfill. Dispatch sends ACP `resource_link`
-  blocks with `file://` URIs; never degrade this to text-only paths. Backfill commits
-  are gated by an authorization generation plus an AbortController owned by
-  `MessageHandler`, so `disableRemoteBackfill` (offline/revoke) aborts the in-flight
-  upload and supersedes started tasks (S5/D10). Accept agent `resource_link file://...`
-  output only inside the session workspace.
+- **Session attachments**: before changing preparation, transfer, materialization,
+  or backfill, read the [lifecycle rules](../../../../.agents/docs/cli-lib-session-files.md).
+  CLI/MCP input preparation must finish before history/dispatch; recovery uses frozen
+  references, never source paths. [Input contract](../../../../specs/cli-session-attachments.md).
+  Keep ACP `resource_link` file URIs, workspace-contained agent output, and
+  MessageHandler-owned authorization-generation/AbortController backfill fencing.
 - [acp/AGENTS.md](acp/AGENTS.md) specifies ACP buffering/flush in `message-handler.ts`,
   turn-evidence persistence, shutdown ordering, the non-expiring late-ACP target in
   `session-transient-store.ts`, and the `awaitTurnHistoryGate` requirement for
@@ -86,7 +85,7 @@ never pushed to renderers as local room health.
 
 ## Projects, providers, tasks
 
-- Builtin Codex local-project history import is read-only: require
+- Builtin Codex/DeepSeek local-project history import is read-only: require
   `_meta.lody.sessionHistory` v1 and call the Core-defined history method; never fall
   back to `loadSession`, which resumes the thread. Publish an imported Session only
   after history and its cursor are durable; legacy `metadata_only` shells stay

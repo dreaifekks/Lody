@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process'
-import { getUserShellEnvCached } from './shell-env'
+import { runCommandTextLegacy } from '@lody/shared/node/process'
+import { getUserShellEnvCachedLegacy } from './shell-env'
 
 /**
  * The github.com token of this machine's own `gh` login. The local desktop has
@@ -16,30 +16,28 @@ export type RunGhAuthToken = (
   env: NodeJS.ProcessEnv
 ) => Promise<{ exitCode: number | 'missing'; stdout: string }>
 
-const runGhAuthToken: RunGhAuthToken = async (env) =>
-  await new Promise((resolve) => {
-    execFile(
-      'gh',
-      ['auth', 'token', '--hostname', 'github.com'],
-      { env, timeout: GH_TIMEOUT_MS, windowsHide: true },
-      (error, stdout) => {
-        if (!error) {
-          resolve({ exitCode: 0, stdout: String(stdout) })
-          return
-        }
-        const code = (error as NodeJS.ErrnoException).code
-        resolve({
-          exitCode: code === 'ENOENT' ? 'missing' : typeof code === 'number' ? code : 1,
-          stdout: ''
-        })
-      }
-    )
-  })
+const runGhAuthToken: RunGhAuthToken = async (env) => {
+  try {
+    const result = await runCommandTextLegacy({
+      command: 'gh',
+      args: ['auth', 'token', '--hostname', 'github.com'],
+      env,
+      timeout: GH_TIMEOUT_MS,
+      check: 'none'
+    })
+    return { exitCode: result.code ?? 1, stdout: result.stdout }
+  } catch (error) {
+    return {
+      exitCode: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 1,
+      stdout: ''
+    }
+  }
+}
 
 export async function readGitHubCliToken(
   run: RunGhAuthToken = runGhAuthToken
 ): Promise<GitHubCliTokenResult> {
-  const shellEnv = await getUserShellEnvCached()
+  const shellEnv = await getUserShellEnvCachedLegacy()
   const env = shellEnv ? { ...process.env, ...shellEnv } : process.env
   const { exitCode, stdout } = await run(env)
   if (exitCode === 'missing') {

@@ -1,3 +1,8 @@
+import {
+  applyAgentRoleCreateTarget,
+  resolveAgentRoleCreateFromCatalog,
+} from '@/lib/agent-role-create';
+import type { CreateOptions } from './session';
 import type {
   AgentConfigId,
   MachineId,
@@ -68,17 +73,28 @@ export async function executeTerminalCommand(
   switch (command.command) {
     case 'create': {
       const { command: _, prompt, mode, model, configOption, ...selection } = command;
+      const options: CreateOptions = {
+        ...selection,
+        workspace: workspace.id,
+        currentSessionId: selection.currentSessionId as SessionId | undefined,
+      };
+      const role = selection.agentRole
+        ? await resolveAgentRoleCreateFromCatalog({
+            manager,
+            workspaceId: workspace.id as WorkspaceId,
+            selector: selection.agentRole,
+            prompt,
+            overrides: { ...selection, mode, model, configOption },
+          })
+        : undefined;
+      if (role) applyAgentRoleCreateTarget(options, role);
       const result = await createSessionResult(
         auth,
         workspace,
         manager,
-        prompt,
-        {
-          ...selection,
-          workspace: workspace.id,
-          currentSessionId: selection.currentSessionId as SessionId | undefined,
-        },
-        resolveTurnDispatchConfig({ mode, model, configOption })
+        role?.prompt ?? prompt,
+        options,
+        role?.dispatchConfig ?? resolveTurnDispatchConfig({ mode, model, configOption })
       );
       return {
         sessionId: result.sessionId,
@@ -104,7 +120,12 @@ export async function executeTerminalCommand(
           mode: command.mode,
           model: command.model,
           configOption: command.configOption,
-        })
+        }),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { paths: command.attach }
       );
       return {
         sessionId: result.sessionId,

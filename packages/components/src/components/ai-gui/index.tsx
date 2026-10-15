@@ -1,4 +1,4 @@
-import { forwardRef, memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { forwardRef, memo, useCallback, useMemo, useState, type ReactNode } from 'react';
 import type {
   SessionFilePayload,
   SessionHistoryParsed,
@@ -103,7 +103,6 @@ export interface SessionChatStreamProps {
   forkingAssistantMessageId?: string | null;
   /** Opens another session from an in-conversation link (e.g. a fork's origin). */
   onNavigateSession?: (target: SessionNavigationTarget) => void;
-  onLastCompletedAssistantMessageIdChange?: (messageId: string | null) => void;
   conversationFontSize?: ConversationFontSize;
   /** Full-page overlay that keeps the conversation outline independent of composer height. */
   outlineOverlayRoot?: HTMLElement | null;
@@ -193,7 +192,6 @@ const SessionChatStreamImpl = forwardRef<SessionChatStreamHandle, SessionChatStr
       onEditLastUser,
       onResendUndelivered,
       capacityRetry,
-      onLastCompletedAssistantMessageIdChange,
       conversationFontSize = DEFAULT_CONVERSATION_FONT_SIZE,
       suppressStickyAutoScrollRef,
       outlineOverlayRoot,
@@ -215,9 +213,6 @@ const SessionChatStreamImpl = forwardRef<SessionChatStreamHandle, SessionChatStr
       onOutlinePreviewRound: handleOutlinePreviewRound,
       onRetainedTurnIdsChange,
     } = useConversationStreamItems(view, sessionId, { initialFocusTurnId });
-    useEffect(() => {
-      onLastCompletedAssistantMessageIdChange?.(lastCompletedAssistantMessageId);
-    }, [lastCompletedAssistantMessageId, onLastCompletedAssistantMessageIdChange]);
 
     /* The edit-and-resend save path needs the same before-send expansion the
        composer's send runs; mounting it here (rather than inside each row)

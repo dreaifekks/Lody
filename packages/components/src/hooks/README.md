@@ -37,6 +37,20 @@ Missing or mismatched Providers expose no catalog; extension changes invalidate
 old capabilities until a matching probe arrives. A matching extension catalog
 must not be read as though no extensions were selected.
 
+## Cloud query recovery
+
+`use-recoverable-convex-query.ts` owns the authenticated query adapter. Each client,
+session and semantic query shares one watch and three retries after 1, 2 and 4 seconds.
+All consumers release the failed watch before a new one starts, which waits for a
+server update rather than reading the SDK's cached error. Opaque server failures
+return loading during bounded recovery; application errors and exhausted failures throw to the nearest
+boundary. Auth expiry continues through the central supervisor and retains only a
+matching committed snapshot. Brief success and temporary auth skips do not replenish
+attempts; 30 seconds of continuously observed success resets the budget. Skipped or
+unmounted queries stop retries, and session/query identity fences callbacks and results.
+Public queries, mutations/actions and local-only clients keep their existing behavior.
+See the [decision](../../../../.agents/notes/implemented/bug-fix/2026-10-10-cloud-query-server-recovery.md).
+
 ## Session lifecycle
 
 `use-session-actions.ts` reads archive, restore, and archived-root deletion targets
@@ -90,6 +104,12 @@ reading window. A new view, even with the same session id, must pass initial
 loading again. Before the first viewport report, the window is the
 retained tail plus the turn of the engine's restored reading anchor, so a restored
 position opens on real rows instead of placeholders.
+
+Paged histories acquire a directory lease through the saved turn ID before
+reporting initial readiness. Search and complete index/fact consumers acquire the
+whole directory through the same cancellable page loader. They do not depend on
+the user scrolling back manually; bodies still follow their existing leases and
+are released after a fact chunk, preview, or search completes.
 
 The rendered body set belongs to the reading window, the retained 40-turn tail,
 and native text selection. Other consumers may hydrate the same cache for facts,
@@ -218,3 +238,14 @@ already-alerted early return.
 every desktop build would rebuild a summary it can never show. The activity id is
 derived outside that gate so the disable and unmount paths can still end an activity
 the payload no longer describes.
+
+## Public PR reads
+
+`use-github-pr-identity.ts` keeps hosted repository identity separate from public
+read access. When a session association is unresolved, an anonymous GitHub metadata
+request may establish a public repository ID for details, reviews and diffs. It
+never grants write access or mints a token. An existing numeric ID must still match;
+redirects, private repositories and failed probes retain the recoverable error.
+Public details do not hydrate or write authenticated caches; review caches and
+in-flight detail reads use a separate public key. Public CI polling runs every
+five minutes without the fast mergeability loop; manual refresh remains available.

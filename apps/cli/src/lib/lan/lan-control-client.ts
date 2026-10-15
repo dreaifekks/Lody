@@ -26,10 +26,10 @@ const ASK_TIMEOUT_MS = 150_000;
 /** The agent service names its machine itself, so no account is involved. */
 export async function resolveLocalMachineId(): Promise<MachineId> {
   const health = await Effect.runPromise(
-    Effect.either(makeLocalProbeClientAuto().health({ timeoutMs: PROBE_TIMEOUT_MS }))
+    Effect.result(makeLocalProbeClientAuto().health({ timeoutMs: PROBE_TIMEOUT_MS }))
   );
-  if (health._tag === 'Left') throw new Error(describeLocalDaemonConnectFailure(health.left));
-  return health.right.machineId as MachineId;
+  if (health._tag === 'Failure') throw new Error(describeLocalDaemonConnectFailure(health.failure));
+  return health.success.machineId as MachineId;
 }
 
 export async function listLanMachinesOfThisMachine(machineId: MachineId): Promise<LanMachines> {

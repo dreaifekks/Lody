@@ -322,6 +322,7 @@ describe('createLocalCloudPort', () => {
     const office = { id: 'lw_office', name: 'Office', slug: 'office', role: 'owner' };
     const live = createStore<readonly (typeof home)[]>([home]);
     const tokens = {
+      createTokenProviderLegacy: () => { throw new Error('not used'); },
       createTokenProvider: () => {
         throw new Error('not used');
       },

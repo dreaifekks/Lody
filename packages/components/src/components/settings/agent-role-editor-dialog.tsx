@@ -1,3 +1,4 @@
+import { prepareAgentRoleInstanceForSave } from '@/lib/agent-role-form';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { usePostHog } from '@posthog/react';
@@ -261,7 +262,7 @@ export function AgentRoleEditorDialog({
 
   const save = async () => {
     if (!openEditor || !editor || !editorValue || formErrors.length > 0 || !currentUserId) return;
-    const role = buildAgentRoleFromForm(editorValue, {
+    const role = buildAgentRoleFromForm({ ...editorValue, instances: editorValue.instances.map(instance => prepareAgentRoleInstanceForSave(instance, selectorOptionsByInstance.get(instance.id))) }, {
       existing: editor.mode === 'edit' ? editor.role : undefined,
       ownerUserId: currentUserId,
       now: getServerNow(),

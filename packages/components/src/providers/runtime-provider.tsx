@@ -2,7 +2,7 @@ import { SessionPendingSendsHost } from '../components/chat/session-pending-send
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { LODY_PRESENCE_HEARTBEAT_MS, type MachineId, type WorkspaceId } from '@lody/shared';
-import { authTokenAtom, runtimeAtom } from '@/atoms/runtime';
+import { authTokenAtom, runtimeAtom, workspaceRuntimeInitFailureAtom } from '@/atoms/runtime';
 import { setSessionRunConfigDraftAccountAtom } from '@/atoms/session-run-config-drafts';
 import { currentWorkspaceIdAtom, currentWorkspaceSlugAtom, userAtom } from '@/atoms';
 import {
@@ -39,6 +39,7 @@ import { getLocalWorkspaceSlug, useLocalWorkspace } from './local-platform-provi
 import { isWarmWindow } from '@/lib/desktop-window';
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
 import { maybeClearLodyCacheOnBoot } from '@/lib/clear-local-cache';
+import { describeErrorType } from '@/lib/workspace-data-scope';
 import { isElectronRenderer } from '@/lib/electron';
 import { isNativeAppShell } from '@/lib/native-platform';
 import { resolvePlatformSync } from '@lody/platform';
@@ -85,6 +86,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const previousShutdown = useRef<Promise<void>>(Promise.resolve());
   const runtime = useAtomValue(runtimeAtom);
   const setRuntime = useSetAtom(runtimeAtom);
+  const setRuntimeInitFailure = useSetAtom(workspaceRuntimeInitFailureAtom);
   const store = useStore();
   const setControlConnectionState = useSetAtom(lodyControlConnectionStateAtom);
   const setRuntimeInitializing = useSetAtom(runtimeInitializingAtom);
@@ -254,6 +256,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   // - If cached id exists for this slug: initialize immediately (offline-first)
   // - Otherwise: wait for server to respond with workspaceId
   useEffect(() => {
+    // A failure describes one attempt; every new attempt starts without one.
+    setRuntimeInitFailure(null);
     if (!workspaceSlug) {
       console.info('RuntimeProvider: clear runtime due to missing workspaceSlug');
       setRuntime(null);
@@ -289,6 +293,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     }
 
     let disposed = false;
+    const initializationAbort = new AbortController();
     let workspaceRuntime: Awaited<ReturnType<typeof createWorkspaceRuntime>> | null = null;
     // Logging-only workspace id resolution inputs intentionally stay out of
     // this effect's dependency list. A cached id can create the runtime before
@@ -318,6 +323,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
           eagerSyncSurface,
         });
         workspaceRuntime = await createWorkspaceRuntime({
+          signal: initializationAbort.signal,
           accountId,
           workspaceSlug,
           workspaceId: effectiveWorkspaceId,
@@ -401,6 +407,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
           return;
         }
         setRuntime(null);
+        setRuntimeInitFailure({
+          workspaceSlug,
+          errorType: describeErrorType(error),
+        });
         setControlConnectionState('error');
         setRuntimeInitializing(false);
       }
@@ -411,6 +421,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         workspaceSlug,
       });
       disposed = true;
+      initializationAbort.abort();
       setRuntime(null);
       setControlConnectionState('idle');
       // Reset to true for next initialization cycle
@@ -434,6 +445,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     setControlConnectionState,
     setRuntimeInitializing,
     setRuntime,
+    setRuntimeInitFailure,
     setPresenceStates,
     setPresenceSyncState,
     store,

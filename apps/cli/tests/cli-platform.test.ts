@@ -1,3 +1,4 @@
+import { fileLocksLegacy } from '@lody/shared/node/file-lock';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -221,7 +222,7 @@ describe('the implicit workspace of an installation that joins and leaves LANs',
       logger,
       identityPath,
     });
-    await Effect.runPromise(
+    await fileLocksLegacy.runPromise(
       catalog.cacheRemoteWorkspaces({ identity: { userId: LAN_OWNER }, machine, workspaces })
     );
   };
@@ -263,7 +264,7 @@ describe('the implicit workspace of an installation that joins and leaves LANs',
       identityPath,
       JSON.stringify({ userId: identity!.userId, createdAt: identity!.createdAt })
     );
-    await Effect.runPromise(
+    await fileLocksLegacy.runPromise(
       catalog.cacheRemoteWorkspaces({
         identity: { userId: LAN_OWNER },
         machine,
@@ -288,7 +289,7 @@ describe('the implicit workspace of an installation that joins and leaves LANs',
     // An earlier run belonged to two LANs and left one of them. That LAN is
     // displaced like the implicit workspace, and the two cannot be told apart.
     for (const workspaces of [[lanWorkspace, otherLan], [lanWorkspace]]) {
-      await Effect.runPromise(
+      await fileLocksLegacy.runPromise(
         catalog.cacheRemoteWorkspaces({ identity: { userId: LAN_OWNER }, machine, workspaces })
       );
     }

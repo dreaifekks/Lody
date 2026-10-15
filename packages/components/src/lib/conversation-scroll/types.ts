@@ -78,6 +78,8 @@ export interface CycleDiagnostic {
   passes: number;
   covered: boolean;
   pendingExternalMove: boolean;
+  /** Present when repeated unsettled commits exhaust the synchronous update budget. */
+  synchronousCommits?: number;
   /** The reading anchor's recorded row and the row it resolved to (ids only). */
   anchorKey: string | null;
   resolvedKey: string | null;

@@ -1,5 +1,5 @@
 import os from 'os';
-import { type ChildProcess } from 'child_process';
+import type { ChildProcess } from 'node:child_process';
 import * as acp from '@agentclientprotocol/sdk';
 import { ndJsonStream } from '@agentclientprotocol/sdk';
 import {
@@ -17,21 +17,20 @@ import {
   type MachineVoiceResponse,
 } from '@lody/shared';
 
-import { spawnAcpProcess } from '@/agent/acp-runner';
+import { spawnAcpProcess, terminateAcpProcessTree } from '@/agent/acp-runner';
 import { withAcpSessionStartSlot } from '@/agent/acp-session-start-gate';
 import { getCodexProfileStore, type ResolvedCodexProfile } from '@/agent/codex-profile-store';
 import {
   codexProfileSpawnEnvironment,
   registerCodexProfileProcess,
 } from '@/agent/codex-profile-runtime';
-import { getLoginShellEnv } from '@/agent/login-shell-env';
+import { getLoginShellEnvLegacy } from '@/agent/login-shell-env';
 import {
   mergeACPProcessEnv,
   mergeLoginShellEnv,
   resolveACPProcessLaunchAsync,
   withDefaultAcpPathEntries,
 } from '@/agent/setting';
-import { terminateChildProcess } from '@/lib/history-session-catalog-client';
 import { createStdinWritableStream, createStdoutReadableStream } from '@/utils/stream';
 import { formatErrorMessage } from '@/utils/format-error';
 import type { Logger } from '@/utils/logger';
@@ -144,7 +143,15 @@ export class VoiceHost {
     this.hosts.clear();
     const started = [...this.startedHosts];
     this.startedHosts.clear();
-    await Promise.all(started.map((host) => terminateChildProcess(host.process).catch(() => {})));
+    await Promise.all(
+      started.map((host) =>
+        terminateAcpProcessTree(host.process, {
+          logger: this.deps.logger,
+          sessionLabel: 'voice',
+          exitTimeoutMs: 3_000,
+        }).catch(() => {})
+      )
+    );
   }
 
   private async start(request: VoiceStartRequest): Promise<MachineVoiceResponse> {
@@ -207,7 +214,11 @@ export class VoiceHost {
   private releaseIfIdle(host: VoiceHostProcess): void {
     if (host.calls.size > 0 || host.leases > 0) return;
     if (this.hosts.get(host.configId) === host.entry) this.hosts.delete(host.configId);
-    void terminateChildProcess(host.process).catch(() => {});
+    void terminateAcpProcessTree(host.process, {
+      logger: this.deps.logger,
+      sessionLabel: 'voice',
+      exitTimeoutMs: 3_000,
+    }).catch(() => {});
   }
 
   private openCall(host: VoiceHostProcess, voiceSessionId: string, sdp: string) {
@@ -360,7 +371,7 @@ export class VoiceHost {
     const env = withDefaultAcpPathEntries(
       mergeLoginShellEnv(
         mergeACPProcessEnv(launch, { ...process.env, ...config.env }),
-        await getLoginShellEnv()
+        await getLoginShellEnvLegacy()
       ),
       config.agentType
     );
@@ -399,7 +410,11 @@ export class VoiceHost {
           throw error;
         }
         if (!child.stdout || !child.stdin) {
-          await terminateChildProcess(child);
+          await terminateAcpProcessTree(child, {
+            logger: this.deps.logger,
+            sessionLabel: 'voice',
+            exitTimeoutMs: 3_000,
+          });
           await release();
           throw new Error('The Codex agent did not expose stdio streams');
         }
@@ -419,7 +434,12 @@ export class VoiceHost {
         };
         this.startedHosts.add(host);
         // A shutdown during `initialize` ends the process, which fails the handshake.
-        const stopOnShutdown = () => void terminateChildProcess(child).catch(() => {});
+        const stopOnShutdown = () =>
+          void terminateAcpProcessTree(child, {
+            logger: this.deps.logger,
+            sessionLabel: 'voice',
+            exitTimeoutMs: 3_000,
+          }).catch(() => {});
         signal.addEventListener('abort', stopOnShutdown, { once: true });
         child.once('exit', () => {
           signal.removeEventListener('abort', stopOnShutdown);
@@ -470,7 +490,11 @@ export class VoiceHost {
           host.voices = voice.voices === true;
           signal.throwIfAborted();
         } catch (error) {
-          await terminateChildProcess(child);
+          await terminateAcpProcessTree(child, {
+            logger: this.deps.logger,
+            sessionLabel: 'voice',
+            exitTimeoutMs: 3_000,
+          });
           throw error;
         }
         return host;

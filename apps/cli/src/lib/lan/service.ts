@@ -1,7 +1,8 @@
 // Keeps a LAN host and its agent service running across logins and reboots as
 // systemd user services. Servers are the machines that need this: a desktop
 // starts its own agent service.
-import { spawn } from 'node:child_process';
+import { runCommandTextLegacy } from '@lody/shared/node/process';
+import { toShared } from '@/platform/process-options';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,16 +24,12 @@ const AGENT_FINAL_EXIT_CODES = [3, 44, 45];
 export type CommandResult = { code: number | null; stdout: string; stderr: string };
 export type CommandRunner = (command: string, args: readonly string[]) => Promise<CommandResult>;
 
-export const runCommand: CommandRunner = (command, args) =>
-  new Promise((resolve) => {
-    const child = spawn(command, [...args], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
-    child.once('error', (error) => resolve({ code: null, stdout, stderr: String(error) }));
-    child.once('close', (code) => resolve({ code, stdout, stderr }));
-  });
+export const runCommand: CommandRunner = async (command, args) =>
+  runCommandTextLegacy({ command, args, check: 'none' }, toShared()).catch((error: unknown) => ({
+    code: null,
+    stdout: '',
+    stderr: String(error),
+  }));
 
 /**
  * systemd splits a command line on whitespace, expands `$VARIABLE` and `%`

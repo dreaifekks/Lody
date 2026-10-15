@@ -1,3 +1,4 @@
+import { createLanSessionCredentials, nativeSessionCredentials, type SessionCredentials } from '../src/session/session-credentials';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,12 +13,8 @@ import type { SessionId, WorkspaceId } from '@lody/shared';
 const loginShellOverlay = vi.hoisted(() => ({ value: {} as NodeJS.ProcessEnv }));
 const resolvedLoginShellOverlay = vi.hoisted(() => ({ value: {} as NodeJS.ProcessEnv }));
 vi.mock('@/agent/login-shell-env', () => ({
-  getCachedLoginShellEnvSync: () => loginShellOverlay.value,
-  getLoginShellEnv: async () => resolvedLoginShellOverlay.value,
-  resetLoginShellEnvCache: () => {
-    loginShellOverlay.value = {};
-    resolvedLoginShellOverlay.value = {};
-  },
+  getCachedLoginShellEnvSyncLegacy: () => loginShellOverlay.value,
+  getLoginShellEnvLegacy: async () => resolvedLoginShellOverlay.value,
 }));
 
 import { installLanSessionCommand, setLanSessionCommand } from '../src/lib/lan/lan-session-command';
@@ -288,11 +285,11 @@ describe('the lody-lan command of a session', () => {
   });
 
   // A PATH of its own: the one the suite runs with may lead with a gh shim.
-  const buildEnv = (overrides: Partial<SessionConfig> = {}): NodeJS.ProcessEnv =>
+  const buildEnv = (overrides: Partial<SessionConfig> = {}, credentials: SessionCredentials = nativeSessionCredentials): NodeJS.ProcessEnv =>
     (
       new Session(
         createConfig({ env: { PATH: '/usr/bin' }, ...overrides }),
-        createSilentLogger()
+        createSilentLogger(), undefined, undefined, credentials
       ) as unknown as { buildShellEnv(): NodeJS.ProcessEnv }
     ).buildShellEnv();
 
@@ -340,16 +337,21 @@ describe('the lody-lan command of a session', () => {
     const binDir = install();
 
     const entries = (
-      buildEnv({
-        githubCredentialPolicy: {
-          allowLocalAuth: true,
-          stateFilePath: path.join(directory, 'broker.json'),
-        },
-      }).PATH ?? ''
+      buildEnv({}, { mode: 'managed', lease: { active: true, allowLocalAuth: true, stateFilePath: path.join(directory, 'broker.json') }, release: async () => {} } as SessionCredentials).PATH ?? ''
     ).split(delimiter);
 
     expect(path.basename(path.dirname(entries[0] ?? ''))).toBe('gh-session-bin');
     expect(entries[1]).toBe(binDir);
+  });
+
+  it('keeps LAN tokens in a runtime lease and refuses them after release', async () => {
+    const credentials = createLanSessionCredentials({ GH_TOKEN: 'synthetic-lan-token',
+      LODY_MANAGED_GH_TOKEN_SHA256: 'synthetic-marker', NMEM_AGENT_ID: 'not-a-credential' });
+    expect(buildEnv({}, credentials).GH_TOKEN).toBe('synthetic-lan-token');
+    if (credentials.mode !== 'lan') throw new Error('expected LAN lease');
+    expect(credentials.env).not.toHaveProperty('NMEM_AGENT_ID');
+    await credentials.release();
+    expect(() => buildEnv({}, credentials)).toThrow('github_runtime_context_released');
   });
 
   it('offers no command it could not write, and tells no agent of one', () => {

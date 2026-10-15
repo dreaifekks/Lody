@@ -19,15 +19,20 @@ import { createRoot, type Root } from 'react-dom/client';
 import { Provider, createStore } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LoroRepo } from 'loro-repo';
+import { LoroDoc } from 'loro-crdt';
 import {
   FREE_SESSION_LIMIT_PER_WORKSPACE,
   SESSION_DOC_PREFIX,
   getMachineRoomId,
+  CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
   getSessionRoomId,
+  getSessionCancelRequestMarker,
+  createSessionControlPlaneMirror,
   isLoroRepoDocDeleted,
   machineFlockKeys,
   type LocalProjectId,
   readSessionOperationTargets,
+  isSessionCollaborationStopped,
   type MachineId,
   type SessionHistory,
   type SessionId,
@@ -112,6 +117,11 @@ import {
   setSessionRunConfigDraftAccountAtom,
 } from '../src/atoms/session-run-config-drafts';
 import { currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms/workspace-context';
+import {
+  developerModeEnabledAtom,
+  experimentalFeaturesEnabledAtom,
+  roostHistoryExperimentEnabledAtom,
+} from '../src/atoms/settings';
 import {
   countSessionMentions,
   SessionCreateBillingError,
@@ -293,7 +303,11 @@ const createRuntime = (
     ({
       upsertDocMeta: vi.fn(async () => undefined),
       getDocMeta: vi.fn(async (roomId: string) => ({
-        meta: { id: roomId.slice(SESSION_DOC_PREFIX.length), machineId: 'machine-1' },
+        meta: {
+          id: roomId.slice(SESSION_DOC_PREFIX.length),
+          machineId: 'machine-1',
+          protocolCapabilities: CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
+        },
       })),
     } as unknown as WorkspaceRuntime['repo']);
 
@@ -551,6 +565,160 @@ describe('useSessionActions', () => {
     return actions;
   };
 
+  it('uses released Stop wire fields and turn marker when the target has no Inbox capability', async () => {
+    const sessionId = 'legacy-stop' as SessionId;
+    const metaRepo = createSessionMetaRepo([
+      { id: sessionId, machineId: 'old-machine', userId: 'user-1' } as SessionMeta,
+    ]);
+    const runtime = createRuntime({ repo: metaRepo.repo });
+    const received: unknown[] = [];
+    runtime.requestSessionCancel = async (_machine, _session, turnId, options) => {
+      expect(Object.keys(options ?? {})).toEqual(['timeoutMs']);
+      received.push(turnId);
+      return { success: true } as never;
+    };
+    const actions = await renderActions(runtime);
+    await actions.requestSessionCancel(sessionId, 'assistant-legacy');
+    expect(received).toEqual(['assistant-legacy']);
+    expect(metaRepo.getSession(sessionId)?.lastCanceledTurn).toBe('assistant-legacy');
+  });
+
+  it('persists Stop details before publishing only its marker, and reuses the request on RPC', async () => {
+    const sessionId = 'session-stop-control' as SessionId;
+    const metaRepo = createSessionMetaRepo([
+      {
+        id: sessionId,
+        machineId: 'machine-1',
+        userId: 'user-1',
+        createdAt: '2026-10-13T00:00:00.000Z',
+        cliType: 'builtin',
+        agentType: 'codex',
+      },
+    ]);
+    metaRepo.setMeta(getMachineRoomId('machine-1'), {
+      protocolCapabilities: CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
+    });
+    const doc = new LoroDoc();
+    const control = createSessionControlPlaneMirror({
+      doc,
+      initialState: { session: { id: sessionId } },
+    });
+    const runtime = createRuntime({ repo: metaRepo.repo });
+    runtime.withSessionStore = async (_id, fn) =>
+      fn({ ...control, sessionData: sessionDataOver([]) } as never);
+    const flushEntered = createDeferred();
+    const durable = createDeferred();
+    let holdFlush = true;
+    runtime.repo.flush = async () => {
+      if (holdFlush) {
+        flushEntered.resolve();
+        await durable.promise;
+      }
+    };
+    const rpcReceipts: { turnId: string; cancelId?: string }[] = [];
+    runtime.requestSessionCancel = async (_machine, _session, turnId, options) => {
+      rpcReceipts.push({ turnId, cancelId: options?.cancelId });
+      return undefined; // RPC timeout/loss still leaves a complete durable request.
+    };
+    try {
+      const actions = await renderActions(runtime);
+      const stopped = actions.requestSessionCancel(sessionId, 'assistant-stop');
+      await flushEntered.promise;
+      expect(control.getState().cancelRequest?.turnId).toBe('assistant-stop');
+      expect(metaRepo.getSession(sessionId)?.lastCanceledTurn).toBeUndefined();
+      expect(rpcReceipts).toEqual([
+        {
+          turnId: 'assistant-stop',
+          cancelId: control.getState().cancelRequest!.id,
+        },
+      ]);
+      holdFlush = false;
+      durable.resolve();
+      await stopped;
+      const first = control.getState().cancelRequest!;
+      expect(metaRepo.getSession(sessionId)?.lastCanceledTurn).toBe(
+        getSessionCancelRequestMarker(first.id)
+      );
+      expect(Object.keys(metaRepo.getSession(sessionId)!)).toEqual([
+        'id',
+        'machineId',
+        'userId',
+        'createdAt',
+        'cliType',
+        'agentType',
+        'lastCanceledTurn',
+      ]);
+      expect(rpcReceipts).toEqual([{ turnId: 'assistant-stop', cancelId: first.id }]);
+
+      await actions.requestSessionCancel(sessionId, 'assistant-stop');
+      const second = control.getState().cancelRequest!;
+      expect(second.id).not.toBe(first.id);
+      expect(metaRepo.getSession(sessionId)?.lastCanceledTurn).toBe(
+        getSessionCancelRequestMarker(second.id)
+      );
+      const reopened = new LoroDoc();
+      reopened.import(doc.export({ mode: 'snapshot' }));
+      const reopenedControl = createSessionControlPlaneMirror({
+        doc: reopened,
+        initialState: { session: { id: sessionId } },
+      });
+      try {
+        expect(reopenedControl.getState().cancelRequest).toMatchObject({
+          id: second.id,
+          turnId: 'assistant-stop',
+        });
+      } finally {
+        reopenedControl.dispose();
+      }
+    } finally {
+      durable.resolve();
+      control.dispose();
+    }
+  });
+
+  it('stops and restores the whole authoritative tree from a leaf, including hidden descendants', async () => {
+    const tree = createContainmentSessions('collaboration', false);
+    const unrelated = { ...tree.rootSession, id: 'unrelated' as SessionId };
+    const metaRepo = createSessionMetaRepo([...tree.sessions, unrelated]);
+    for (const session of [...tree.sessions, unrelated]) {
+      metaRepo.setMeta(getMachineRoomId(session.machineId), {
+        id: session.machineId,
+        protocolCapabilities: CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
+      });
+    }
+    const actions = await renderActions(createRuntime({ repo: metaRepo.repo }), {
+      sessionMetaCache: {},
+    });
+    await actions.setTreeCollaborationStopped(tree.openedFromTabSession.id, true);
+    for (const session of tree.sessions) {
+      expect(metaRepo.getSession(session.id)?.collaborationStopped).toBe(true);
+    }
+    expect(metaRepo.getSession(unrelated.id)?.collaborationStopped).toBeUndefined();
+    const lateChild = 'late-child' as SessionId;
+    metaRepo.setMeta(getSessionRoomId(lateChild), {
+      ...tree.openedSession,
+      id: lateChild,
+      openedBySessionId: tree.rootSession.id,
+    });
+    expect(await isSessionCollaborationStopped(metaRepo.repo, lateChild)).toBe(true);
+    await actions.setTreeCollaborationStopped(tree.rootSession.id, false);
+    for (const id of [...tree.sessions.map((session) => session.id), lateChild]) {
+      expect(await isSessionCollaborationStopped(metaRepo.repo, id)).toBe(false);
+    }
+  });
+
+  it('rejects collaboration control before writes when a target daemon lacks support', async () => {
+    const tree = createContainmentSessions('unsupported-collaboration', false);
+    const metaRepo = createSessionMetaRepo(tree.sessions);
+    const actions = await renderActions(createRuntime({ repo: metaRepo.repo }));
+    await expect(actions.setTreeCollaborationStopped(tree.rootSession.id, true)).rejects.toThrow(
+      'Update every machine'
+    );
+    expect(
+      tree.sessions.map((session) => metaRepo.getSession(session.id)?.collaborationStopped)
+    ).toEqual([undefined, undefined, undefined, undefined]);
+  });
+
   it('does not block session creation on remote stream pre-creation', async () => {
     const sessionId = 'session-create-stream-pending' as SessionId;
     const streamCreate = createDeferred();
@@ -779,7 +947,8 @@ describe('useSessionActions', () => {
         },
       },
     ];
-    const setState = vi.fn();
+    const control: { humanInputReceipts?: Record<string, { userId: string }> } = {};
+    const setState = (update: (draft: typeof control) => void) => update(control);
     const waitUntilSynced = vi.fn(async () => undefined);
     const upsertDocMeta = vi.fn(() => metaWrite.promise);
     const requestSessionDispatchTurn = vi.fn(async () => ({
@@ -818,7 +987,7 @@ describe('useSessionActions', () => {
     expect(upsertDocMeta).toHaveBeenCalledWith(getSessionRoomId(sessionId), {
       latestUserMsgId: userTurnId,
     });
-    expect(setState).not.toHaveBeenCalled();
+    expect(control.humanInputReceipts?.[userTurnId]).toEqual({ userId: 'user-1' });
     expect(waitUntilSynced).toHaveBeenCalledTimes(1);
 
     metaWrite.resolve();
@@ -1032,6 +1201,80 @@ describe('useSessionActions', () => {
       lastMessageAt: expect.any(Number),
     });
     expect(result.historyEntry.inputConfig?.inputBlocks).toEqual([{ type: 'text', text: 'hi' }]);
+  });
+
+  it('selects Roost for new sessions with developer opt-in while experiments are off', async () => {
+    const store = createStore();
+    store.set(developerModeEnabledAtom, true);
+    store.set(experimentalFeaturesEnabledAtom, false);
+    store.set(roostHistoryExperimentEnabledAtom, true);
+    const runtime = createRuntime({});
+    const actions = await renderActions(runtime, { store });
+
+    const result = await actions.createSession(
+      createSessionPayload('session-roost-gated' as SessionId)
+    );
+
+    expect(result.sessionMeta.historyBackend).toBe('roost');
+  });
+
+  it.each([
+    { developerMode: false, roostHistory: true },
+    { developerMode: true, roostHistory: false },
+  ])('keeps Loro when a developer gate is off: %j', async ({ developerMode, roostHistory }) => {
+    const store = createStore();
+    store.set(developerModeEnabledAtom, developerMode);
+    store.set(experimentalFeaturesEnabledAtom, true);
+    store.set(roostHistoryExperimentEnabledAtom, roostHistory);
+    const runtime = createRuntime({});
+    const actions = await renderActions(runtime, { store });
+
+    const result = await actions.createSession(
+      createSessionPayload('session-roost-developer-gate-off' as SessionId)
+    );
+
+    expect(result.sessionMeta.historyBackend).toBe('loro');
+  });
+
+  it('keeps creating ordinary Loro sessions on targets without Roost capability', async () => {
+    const store = createStore();
+    store.set(developerModeEnabledAtom, true);
+    store.set(experimentalFeaturesEnabledAtom, false);
+    store.set(roostHistoryExperimentEnabledAtom, true);
+    const metaRepo = createSessionMetaRepo([]);
+    const runtime = createRuntime({ repo: metaRepo.repo });
+    const actions = await renderActions(runtime, { store });
+    const result = await actions.createSession(
+      createSessionPayload('old-machine-session' as SessionId)
+    );
+    expect(result.sessionMeta.historyBackend).toBe('loro');
+    expect(metaRepo.repo.upsertDocMeta).toHaveBeenCalledWith(
+      getSessionRoomId(result.sessionId),
+      expect.objectContaining({ historyBackend: 'loro' })
+    );
+  });
+
+  it('rejects explicit Roost creation before metadata, history or warm-up on unsupported targets', async () => {
+    const metaRepo = createSessionMetaRepo([]);
+    const runtime = createRuntime({ repo: metaRepo.repo });
+    const actions = await renderActions(runtime);
+    const payload = {
+      ...createSessionPayload('unsupported-roost-session' as SessionId),
+      historyBackend: 'roost' as const,
+    };
+    await expect(actions.createSession(payload)).rejects.toThrow('Update the machine');
+    await expect(
+      actions.startSession(payload, {
+        role: 'user',
+        userId: 'user-1',
+        timestamp: '2026-10-09T00:00:00.000Z',
+        items: [{ type: 'text', text: 'hello' }],
+        fileDiff: [],
+        inputConfig: { inputBlocks: [{ type: 'text', text: 'hello' }] },
+      } as never)
+    ).rejects.toThrow('Update the machine');
+    expect(metaRepo.repo.upsertDocMeta).not.toHaveBeenCalled();
+    expect(runtime.ensureDocStream).not.toHaveBeenCalled();
   });
 
   it('keeps a local branch selector out of baseBranch until the target machine resolves it', async () => {

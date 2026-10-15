@@ -15,6 +15,11 @@ Child directories such as `sessions/`, `mobile/`, `chat/`, and `archive/` own th
 
 ## Sidebar and session rows
 
+Machine-section ordering uses [`sidebar-machine-order.ts`](sidebar-machine-order.ts)
+and the presentation identity in [`local-probe.ts`](../atoms/local-probe.ts).
+CLI outages preserve the known desktop machine's position; local actions still
+use the live identity. See the [ordering Spec](../../../../specs/sidebar-project-ordering.md).
+
 The sidebar spans `loro-sidebar.tsx`, `loro-app-sidebar.tsx`, `session-list.tsx`, and
 `sidebar-*.tsx`. `sessions/session-list-rows.ts` resolves row relationships, while
 `lib/session-opened-by-tree.ts` builds the presentation tree.
@@ -48,6 +53,13 @@ and [display preference](../../../../.agents/notes/implemented/feature/2026-09-2
 
 ## Entry points and layout
 
+- Remote Add folder: `local-projects/use-remote-directory-picker.ts` owns navigation,
+  creation and registration state. Both layouts use `remote-directory-new-folder-control.tsx`
+  for a single-name form, shown only when the target advertises
+  `localProjectCreateDirectory`. Creation enters the new directory; Add registers it
+  separately. Errors preserve the name, and pending operations cannot be repeated.
+  [Decision and verification](../../../../.agents/notes/implemented/feature/2026-10-14-remote-directory-creation.md).
+
 - Entry and workspace-gate redirects use `BootNavigate`; `PreloadedMainLayout`
   owns its boot-shell Suspense fallback for local and cloud paths. The ready layout
   keeps the existing content gate while workspace data resolves. See
@@ -72,6 +84,11 @@ and [display preference](../../../../.agents/notes/implemented/feature/2026-09-2
   keeps an accessible name and a hover tooltip. The page and its editors stay
   mounted through resizing; header actions wrap within the pane. [Decision and
   verification](../../../../.agents/notes/implemented/bug-fix/2026-10-01-narrow-settings-panel.md).
+- GitHub personal identity authorization stays available in cloud-capable native
+  clients: Authorize opens the current workspace's `/settings/github` on
+  `VITE_SITE_URL` (default `https://lody.ai`) in the external browser. Complete
+  account linking there with the same Lody account; the client's reactive settings
+  query reflects completion. Browser settings keep their existing OAuth flow.
 - Browser desktop sign-in handoff: `login-page.tsx` under `?client_id=electron`,
   the page the desktop app opens in the system browser. A desktop sign-out leaves
   this browser signed in as the previous account, so the page names that account

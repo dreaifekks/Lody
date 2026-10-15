@@ -1,3 +1,4 @@
+import { TestCloudPlatformProvider } from './test-platform';
 // @vitest-environment jsdom
 
 // A failed pending send is an ordinary user message, not an error report: the
@@ -10,11 +11,24 @@ import { act, createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionHistory, SessionId, WorkspaceId } from '@lody/shared';
+import {
+  inputBlocksToHistoryItems,
+  type SessionHistory,
+  type SessionHistoryParsed,
+  type SessionId,
+  type WorkspaceId,
+} from '@lody/shared';
 
 import { Provider, createStore } from 'jotai';
+import {
+  addRpcDeliveredTurn,
+  getRpcDeliveredTurnKey,
+  rpcDeliveredTurnsAtom,
+} from '../src/atoms/session-dispatch-delivery';
 
 import { authTokenAtom, runtimeAtom } from '../src/atoms/runtime';
+import { MessageRowView } from '../src/components/ai-gui/view';
+import { MessageSendStatusContext } from '../src/components/ai-gui/message-send-status-context';
 import {
   PendingMessageRow,
   SessionPendingMessages,
@@ -104,6 +118,68 @@ describe('PendingMessageRow failure presentation', () => {
   const onRetry = vi.fn();
   const onCancel = vi.fn();
 
+  it('renders a ready accepted input as an ordinary message without another send status or controls', () => {
+    const html = renderToStaticMarkup(
+      createElement(PendingMessageRow, {
+        record: record({ inputState: 'sending', persisted: true, historyBackend: 'roost' }),
+        onRetry,
+        onCancel,
+      })
+    );
+    const content = document.createElement('div');
+    content.innerHTML = html;
+    expect(content.textContent).toContain('Take a look at these.');
+    expect(content.querySelector('[role="status"]')).toBeNull();
+    expect(content.querySelector('button')).toBeNull();
+  });
+
+  it('shows already prepared media from the immutable message without attachment drafts', async () => {
+    const identity = {
+      workspaceId: 'pending-row-workspace' as WorkspaceId,
+      sessionId,
+      imageId: 'prepared-image',
+    };
+    await seedSessionImageCache(identity, new Blob(['image']));
+    const base = record();
+    const store = createStore();
+    store.set(currentWorkspaceIdAtom, identity.workspaceId);
+    store.set(authTokenAtom, 'synthetic-preview-token');
+    const html = renderToStaticMarkup(
+      createElement(TestCloudPlatformProvider, null, createElement(
+        Provider,
+        { store },
+        createElement(PendingMessageRow, {
+          record: record({
+            inputState: 'sending',
+            persisted: true,
+            historyBackend: 'roost',
+            attachments: [],
+            entry: {
+              ...base.entry,
+              items: inputBlocksToHistoryItems([
+                { type: 'image', imageId: 'prepared-image', mimeType: 'image/png', sizeBytes: 5 },
+                {
+                  type: 'file',
+                  fileId: 'prepared-file',
+                  fileName: 'prepared.txt',
+                  mimeType: 'text/plain',
+                  sizeBytes: 5,
+                },
+              ]),
+            },
+          }),
+          onRetry,
+          onCancel,
+        })
+      ))
+    );
+    const content = document.createElement('div');
+    content.innerHTML = html;
+    expect(content.textContent).toContain('prepared.txt');
+    expect(content.querySelector('img')?.getAttribute('src')).toBe(peekSessionImageUrl(identity));
+    expect(content.querySelector('[role="status"]')).toBeNull();
+  });
+
   beforeEach(async () => {
     await initI18n('en');
     // jsdom ships no object-URL support; the image card needs one to preview.
@@ -134,6 +210,7 @@ describe('PendingMessageRow failure presentation', () => {
     container?.remove();
     container = undefined;
     clearSessionImageCache();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -143,6 +220,147 @@ describe('PendingMessageRow failure presentation', () => {
     });
     return container!;
   };
+
+  it('keeps the delivery circle from local admission through history handoff and only checks a delivered turn', async () => {
+    for (const inputState of ['saving', 'sending', 'unknown', 'confirmed'] as const) {
+      const host = await render(record({ inputState, historyBackend: 'roost' }));
+      expect(host.textContent).toContain('Take a look at these.');
+      expect(host.querySelector('[title="Sending"] svg circle')).not.toBeNull();
+      expect(host.querySelector('[title="Delivered"]')).toBeNull();
+      expect(host.querySelector('[role="status"]')).toBeNull();
+      expect(host.querySelector('button')).toBeNull();
+    }
+
+    const renderHistory = async (status: 'pending' | 'seen') => {
+      await act(async () => {
+        root?.render(
+          createElement(MessageRowView, {
+            sessionId,
+            message: { ...record().entry, status } as unknown as SessionHistoryParsed,
+          })
+        );
+      });
+    };
+    await renderHistory('pending');
+    expect(container?.querySelector('[title="Sending"] svg circle')).not.toBeNull();
+    expect(container?.querySelector('[title="Delivered"]')).toBeNull();
+
+    await renderHistory('seen');
+    expect(container?.querySelector('[title="Sending"]')).toBeNull();
+    expect(container?.querySelector('[title="Delivered"] svg')).not.toBeNull();
+  });
+
+  it('shows owner confirmation on the local row and keeps the check across pending history handoff', async () => {
+    const store = createStore();
+    const input = record({ inputState: 'sending', historyBackend: 'roost' });
+    const draw = async (row: ReturnType<typeof createElement>) =>
+      act(async () => {
+        root?.render(createElement(Provider, { store }, row));
+      });
+    await draw(createElement(PendingMessageRow, { record: input, onRetry, onCancel }));
+    expect(container?.querySelector('[title="Sending"] svg circle')).not.toBeNull();
+    await act(async () => {
+      store.set(rpcDeliveredTurnsAtom, (previous) =>
+        addRpcDeliveredTurn(previous, getRpcDeliveredTurnKey(sessionId, input.id))
+      );
+    });
+    expect(container?.querySelector('[title="Delivered"] svg')).not.toBeNull();
+    expect(container?.querySelector('[title="Sending"]')).toBeNull();
+    await draw(
+      createElement(MessageRowView, {
+        sessionId,
+        message: { ...input.entry, status: 'pending' } as unknown as SessionHistoryParsed,
+      })
+    );
+    expect(container?.querySelector('[title="Delivered"] svg')).not.toBeNull();
+    expect(container?.querySelector('[title="Sending"]')).toBeNull();
+  });
+
+  it.each(['loro', 'roost'] as const)(
+    'shows delayed loading feedback for %s until actual delivery confirmation',
+    async (backend) => {
+      vi.useFakeTimers();
+      const store = createStore();
+      const input = record({ inputState: 'sending', historyBackend: 'roost' });
+      const draw = async (row: ReturnType<typeof createElement>) =>
+        act(async () => {
+          root?.render(createElement(Provider, { store }, row));
+        });
+      await draw(
+        backend === 'roost'
+          ? createElement(PendingMessageRow, { record: input, onRetry, onCancel })
+          : createElement(
+              MessageSendStatusContext.Provider,
+              { value: new Set([input.id]) },
+              createElement(MessageRowView, {
+                sessionId,
+                message: input.entry as unknown as SessionHistoryParsed,
+              })
+            )
+      );
+      expect(container?.textContent).toContain('Take a look at these.');
+      expect(container?.querySelector('[title="Sending"] svg circle')).not.toBeNull();
+      expect(container?.querySelector('.animate-spin')).toBeNull();
+      await act(async () => vi.advanceTimersByTime(499));
+      expect(container?.querySelector('.animate-spin')).toBeNull();
+      await act(async () => vi.advanceTimersByTime(1));
+      expect(container?.querySelectorAll('.animate-spin')).toHaveLength(1);
+      expect(container?.querySelector('[title="Delivered"]')).toBeNull();
+
+      await act(async () => {
+        store.set(rpcDeliveredTurnsAtom, (previous) =>
+          addRpcDeliveredTurn(previous, getRpcDeliveredTurnKey(sessionId, input.id))
+        );
+      });
+      expect(container?.querySelector('.animate-spin')).toBeNull();
+      expect(container?.querySelector('[title="Sending"]')).toBeNull();
+      expect(container?.querySelector('[title="Delivered"] svg')).not.toBeNull();
+      await draw(
+        createElement(MessageRowView, {
+          sessionId,
+          message: input.entry as unknown as SessionHistoryParsed,
+        })
+      );
+      expect(container?.querySelector('.animate-spin')).toBeNull();
+      expect(container?.querySelector('[title="Delivered"] svg')).not.toBeNull();
+    }
+  );
+
+  it('stops loading on a local input error and cancels the retry delay on an early owner receipt', async () => {
+    vi.useFakeTimers();
+    const store = createStore();
+    const input = record({ inputState: 'sending', historyBackend: 'roost' });
+    const draw = async (value: PendingSessionSend) =>
+      act(async () => {
+        root?.render(
+          createElement(
+            Provider,
+            { store },
+            createElement(PendingMessageRow, { record: value, onRetry, onCancel })
+          )
+        );
+      });
+    await draw(input);
+    await act(async () => vi.advanceTimersByTime(500));
+    expect(container?.querySelectorAll('.animate-spin')).toHaveLength(1);
+    await draw({ ...input, inputState: 'unknown', error: 'Owner confirmation unavailable' });
+    expect(container?.querySelector('.animate-spin')).toBeNull();
+    expect(container?.textContent).toContain('Owner confirmation unavailable');
+    expect(container?.querySelector('[title="Delivered"]')).toBeNull();
+
+    await draw(input);
+    await act(async () => vi.advanceTimersByTime(499));
+    expect(container?.querySelector('.animate-spin')).toBeNull();
+    await act(async () => {
+      store.set(rpcDeliveredTurnsAtom, (previous) =>
+        addRpcDeliveredTurn(previous, getRpcDeliveredTurnKey(sessionId, input.id))
+      );
+    });
+    await act(async () => vi.advanceTimersByTime(500));
+    expect(container?.querySelector('.animate-spin')).toBeNull();
+    expect(container?.querySelector('[title="Delivered"] svg')).not.toBeNull();
+    expect(container?.textContent).not.toContain('Owner confirmation unavailable');
+  });
 
   /**
    * Counts only LEAF elements carrying the reason. An ancestor inherits the same

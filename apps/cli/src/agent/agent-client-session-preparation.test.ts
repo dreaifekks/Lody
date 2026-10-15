@@ -129,7 +129,8 @@ describe('AgentClient session preparation gate', () => {
         sessionId: 'session-1' as SessionId,
         terminalManager: {} as never,
         resolveWorktreeProject: async () => project,
-        configOptionValues: { model: 'selected-model' },
+        modelId: 'selected-model',
+        configOptionValues: { reasoning_effort: 'high' },
         onUpdateMessage: vi.fn(),
         onRequestPermission: vi.fn(),
       });
@@ -160,7 +161,11 @@ describe('AgentClient session preparation gate', () => {
           _meta: {
             lody: {
               worktreeProject: project,
-              sessionConfig: { version: 1, configOptionValues: { model: 'selected-model' } },
+              sessionConfig: {
+                version: 1,
+                modelId: 'selected-model',
+                configOptionValues: { reasoning_effort: 'high' },
+              },
             },
           },
         })
@@ -569,6 +574,7 @@ describe('AgentClient session preparation gate', () => {
       sessionId: 'session-agent-config-update' as SessionId,
       terminalManager: {} as never,
       agentConfig: { cliType: 'builtin', agentType: 'codex' },
+      modelId: 'original-model',
       configOptionValues: { collaboration_mode: 'plan', reasoning_effort: 'high' },
       onUpdateMessage: vi.fn(),
       onRequestPermission: vi.fn(),
@@ -580,6 +586,14 @@ describe('AgentClient session preparation gate', () => {
       update: {
         sessionUpdate: 'config_option_update',
         configOptions: [
+          {
+            id: 'model',
+            category: 'model',
+            type: 'select',
+            name: 'Model',
+            currentValue: 'updated-model',
+            options: [],
+          },
           {
             id: 'collaboration_mode',
             category: 'collaboration_mode',
@@ -600,6 +614,7 @@ describe('AgentClient session preparation gate', () => {
       },
     } as never);
 
+    expect(client.currentModel?.modelId).toBe('updated-model');
     connectionMocks.newSession.mockResolvedValueOnce({ sessionId: 'acp-session-2' });
     await client.prepareReplacementSession();
 
@@ -610,7 +625,9 @@ describe('AgentClient session preparation gate', () => {
         lody: {
           sessionConfig: {
             version: 1,
+            modelId: 'updated-model',
             configOptionValues: {
+              model: 'updated-model',
               collaboration_mode: 'default',
               reasoning_effort: 'low',
             },

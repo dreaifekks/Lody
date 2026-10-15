@@ -103,9 +103,6 @@ describe('MessageHandler cleanup with a voice call still starting', () => {
     // A Claude turn is running while the daemon stops.
     const runningTurn = { sessionId: 'session-1' as SessionId, turnId: 'turn-1' };
     vi.spyOn(internals.executionService, 'getActiveTurnIds').mockReturnValue([runningTurn]);
-    const released = vi
-      .spyOn(internals.executionService, 'waitForTurnRelease')
-      .mockResolvedValue(undefined);
     const recorded: SessionId[][] = [];
     internals.interruptedSessionSync = {
       record: async (ids) => {
@@ -135,7 +132,6 @@ describe('MessageHandler cleanup with a voice call still starting', () => {
     expect(shutdown.finished).toBe(true);
     expect(elapsed).toBeLessThan(SHUTDOWN_DEADLINE_MS);
     expect(recorded).toEqual([['session-1']]);
-    expect(released).toHaveBeenCalledWith('session-1', 'turn-1');
     expect(sessionManager.cleanUp).toHaveBeenCalledWith({ keepWorkspaceDocumentOpen: true });
     await expect(voiceStart).resolves.toMatchObject({ success: false });
   });

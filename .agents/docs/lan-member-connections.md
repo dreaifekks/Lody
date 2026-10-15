@@ -160,6 +160,10 @@ the forms of a forwarded port mean. Help printed through a launcher that sets
 
 ## Files of a message
 
+CLI and MCP input attachments first freeze private file snapshots. For another
+LAN member, the local daemon sends those snapshots through the same file handoff
+as the desktop; no hosted relay is involved. Failed handoff leaves the input unaccepted.
+
 An image or a file a message carries has to be on the machine that runs the
 session, where the agent reads it. The hosted product uploads it to a store
 every machine downloads from; a LAN has none, and the hub is no place for it:

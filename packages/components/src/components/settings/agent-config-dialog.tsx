@@ -1,3 +1,4 @@
+import { useMachineFlockRows } from '@/hooks/use-machine-flock-rows';
 import {
   useCallback,
   useEffect,
@@ -18,6 +19,8 @@ import {
   computeTitleGenerationDefaults,
   DEEPSEEK_HARNESS_API_KEY_ENV,
   DEEPSEEK_HARNESS_BASE_URL_ENV,
+  DEEPSEEK_HARNESS_OFFICIAL_BASE_URL,
+  isDeepSeekOfficialBaseUrl,
   formatCustomAcpCommandLine,
   getAcpCapabilityCacheEntryAuthority,
   getAcpCapabilityCacheKey,
@@ -27,6 +30,9 @@ import {
   hasBuiltinRuntimeOverrideValues,
   machineSupportsProviderSetupProtocol,
   machineSupportsProtocolCapability,
+  getDeepSeekHarnessProviderConfigPath,
+  getMachineFlockDotlodyPath,
+  MACHINE_PROTOCOL_CAPABILITIES,
   CodexAuthProfileSchema,
   type CodexAuthProfile,
   machineSupportsPiExtensions,
@@ -395,6 +401,7 @@ const styles = stylex.create({
     fontSize: '12px',
     color: colors.success,
   },
+  configPath: { overflowWrap: 'anywhere' },
   hint: { margin: 0, fontSize: '11px', lineHeight: 1.375, color: colors.secondaryLabel },
   note: { margin: 0, fontSize: '12px', lineHeight: 1.375, color: colors.secondaryLabel },
   /** A status inside the form: the region rung's fill, copy at the caption step. */
@@ -610,6 +617,7 @@ const styles = stylex.create({
     flexDirection: 'column',
     gap: space[2],
     paddingInline: space[3],
+    paddingBlockStart: focus.ringWidth,
     paddingBottom: space[3],
   },
   sectionHint: {
@@ -635,7 +643,6 @@ const styles = stylex.create({
 
 export const DEEPSEEK_CLAUDE_PRESET_ID = 'deepseek-over-claude-code';
 export const DEEPSEEK_REASONIX_PRESET_ID = 'deepseek-reasonix';
-const DEEPSEEK_OFFICIAL_BASE_URL = 'https://api.deepseek.com';
 const LEGACY_DSH_MODELS_ENV = 'ACP_EXTENSION_DSH_MODELS';
 type DeepSeekEndpointMode = 'official' | 'custom';
 export const MIMO_CLAUDE_PRESET_ID = 'mimo-over-claude-code';
@@ -1077,7 +1084,7 @@ const BUILTIN_OPTIONS: AgentTypeOption[] = [
     value: 'builtin:dimcode',
     label: 'Dimcode',
     descriptionKey: 'settings.agent.dialog.option.dimcode.description',
-    descriptionDefault: 'Dimcode coding agent over ACP',
+    descriptionDefault: 'Use your installed Dimcode (you manage its version)',
     cliType: 'builtin',
     agentType: 'dimcode',
     searchKeys: 'dimcode dim dimagent acp',
@@ -1166,6 +1173,7 @@ export type AgentConfigFormData = {
 };
 
 export type AgentConfigSubmitPayload = {
+  magpieGatewayUrl?: string;
   codexAuth?: CodexAuthProfile;
   id: AgentConfigId;
   name: string;
@@ -1360,27 +1368,6 @@ function getDeepSeekEndpointMode(form: AgentConfigFormData): DeepSeekEndpointMod
   return form.deepseekEndpointMode === 'custom' ? 'custom' : 'official';
 }
 
-/**
- * Official DeepSeek API, including trailing slashes and a bare `/v1` path.
- * Other hosts, ports, query strings, or extra path segments are custom.
- */
-function isDeepSeekOfficialBaseUrl(value: string | undefined): boolean {
-  const trimmed = value?.trim() ?? '';
-  if (!trimmed) return false;
-  try {
-    const url = new URL(trimmed);
-    if (url.protocol !== 'https:') return false;
-    if (url.username || url.password) return false;
-    if (url.hostname.toLowerCase() !== 'api.deepseek.com') return false;
-    if (url.port !== '' && url.port !== '443') return false;
-    if (url.search !== '' || url.hash !== '') return false;
-    const path = url.pathname.replace(/\/+$/, '').toLowerCase();
-    return path === '' || path === '/v1';
-  } catch {
-    return false;
-  }
-}
-
 function resolveDeepSeekEndpointForm(
   env: Record<string, string>,
   explicit?: Pick<AgentConfigFormData, 'deepseekEndpointMode' | 'deepseekCustomBaseUrl'>
@@ -1440,7 +1427,7 @@ function buildDeepSeekSubmitEnv(formData: AgentConfigFormData): Record<string, s
   env[DEEPSEEK_HARNESS_BASE_URL_ENV] =
     getDeepSeekEndpointMode(formData) === 'custom'
       ? (formData.deepseekCustomBaseUrl ?? '').trim()
-      : DEEPSEEK_OFFICIAL_BASE_URL;
+      : DEEPSEEK_HARNESS_OFFICIAL_BASE_URL;
   return env;
 }
 
@@ -1799,6 +1786,15 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
   // that don't change the parsed argv (extra whitespace) don't re-probe.
   const customAcpKey = parsedCustomAcp ? formatCustomAcpCommandLine(parsedCustomAcp) : '';
 
+  const pathRows = useMachineFlockRows(machine.id, { families: ['dotlodyPath'] });
+  const machineDataRoot = getMachineFlockDotlodyPath(pathRows);
+  const dshConfigPath =
+    isDeepSeekBuiltin &&
+    machineDataRoot &&
+    machineSupportsProtocolCapability(machine, MACHINE_PROTOCOL_CAPABILITIES.dshProviderIsolation)
+      ? getDeepSeekHarnessProviderConfigPath(machineDataRoot, agentConfigId)
+      : undefined;
+
   const cacheKey = getAcpCapabilityCacheKey(agentConfigId);
   const configCapability = machine.acpCapabilities?.[cacheKey];
   const cachedCapabilityAuthority = getAcpCapabilityCacheEntryAuthority(
@@ -1890,6 +1886,7 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
       agentType,
       customAcp: isCustom ? (parsedCustomAcp ?? undefined) : undefined,
       runtimeOverrides: formData.runtimeOverrides,
+      magpieGatewayUrl: mode.kind === 'edit' ? mode.config.magpieGatewayUrl : undefined,
       prompt: formData.prompt,
       env,
       titleGeneration,
@@ -1904,6 +1901,7 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
     agentConfigId,
     codexAuth,
     backgroundBuiltinSetup,
+    mode,
     formData,
     isCustom,
     isPreset,
@@ -2951,6 +2949,12 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
             </Field>
           ) : null}
 
+          {dshConfigPath ? (
+            <p {...stylex.props(styles.hint, styles.configPath)}>
+              {t('settings.agent.dialog.deepseek.configPath', { path: dshConfigPath })}
+            </p>
+          ) : null}
+
           {isDeepSeekBuiltin ? (
             <DeepSeekHarnessPanel
               endpointMode={deepseekEndpointMode}
@@ -3044,7 +3048,10 @@ export function AgentConfigDialog(props: AgentConfigDialogProps) {
                                   '/path/to/grok'
                                 )
                               : formData.agentType === 'pi'
-                                ? t('settings.agent.dialog.runtimeOverride.piPlaceholder', '/path/to/pi')
+                                ? t(
+                                    'settings.agent.dialog.runtimeOverride.piPlaceholder',
+                                    '/path/to/pi'
+                                  )
                                 : t(
                                     'settings.agent.dialog.runtimeOverride.claudePlaceholder',
                                     '/path/to/claude'

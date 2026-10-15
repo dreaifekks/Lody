@@ -8,6 +8,7 @@ import { CommandShortcutHost } from '../lib/commands/shortcut-host';
 import { rehydrateAvatarMemoryCacheFromPersistent } from '../lib/avatar-cache';
 import { languageAtom } from '../atoms/settings';
 import { maybeClearLodyCacheOnBoot } from '../lib/clear-local-cache';
+import { installAppActivityTracking } from '../lib/app-activity-gap';
 import { getIpcServices } from '../lib/electron-ipc-client';
 import { useSetAtom } from 'jotai';
 import { installFocusModality } from '@lody/ui/focus-modality';
@@ -64,6 +65,8 @@ const AppInitializer = ({ children }: { children: React.ReactNode }) => {
   useEffect(() => {
     void maybeClearLodyCacheOnBoot();
   }, []);
+
+  useEffect(() => installAppActivityTracking(), []);
 
   useEffect(() => {
     const syncLanguage = (language: string) => {

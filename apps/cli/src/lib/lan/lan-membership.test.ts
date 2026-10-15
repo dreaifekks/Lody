@@ -1,3 +1,4 @@
+import { Effect } from 'effect';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -87,7 +88,7 @@ function createMembership(initial: LanHubSettings) {
 }
 
 const gatewayOf = (membership: LanMembership, workspaceId: string) => {
-  const provider = membership.streamsTokens?.createTokenProvider({
+  const provider = membership.streamsTokens?.createTokenProviderLegacy({
     workspaceId: workspaceId as never,
   });
   return provider ? { url: provider.getGatewayBaseUrl(), token: provider.getToken() } : null;
@@ -185,7 +186,7 @@ describe('LanMembership', () => {
   it('follows a hub to another address without a restart', async () => {
     const harness = createMembership(settings([home, office]));
     // Built before the move, as the machine RPC client is.
-    const provider = harness.membership.streamsTokens?.createTokenProvider({
+    const provider = harness.membership.streamsTokens?.createTokenProviderLegacy({
       workspaceId: `lw_${home.id}` as never,
     });
     const moves: string[][] = [];
@@ -465,4 +466,23 @@ describe('LanMembership', () => {
       expect(target.fetch).toBe(original);
     });
   });
+});
+
+it('provides native Streams credentials and rejects an unauthorized handshake without refresh', async () => {
+  const { membership } = createMembership(settings([home]));
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const provider = yield* membership.streamsTokens!.createTokenProvider({
+          workspaceId: `lw_${home.id}` as never,
+        });
+        expect(provider.getGatewayBaseUrl()).toBe(home.url);
+        expect(yield* provider.getToken()).toBe(home.token);
+        const result = yield* Effect.result(
+          provider.createAuthCallback()({ reason: 'unauthorized' })
+        );
+        expect(result).toMatchObject({ _tag: 'Failure', failure: { status: 401 } });
+      })
+    )
+  );
 });

@@ -47,6 +47,8 @@ export class ScrollSim implements ScrollHost {
   contentTop = 24;
   paddingBottom = 24;
   top = 0;
+  /** WebKit rubber-band displacement, retained until a programmatic write. */
+  elasticOffset = 0;
   extent = 0;
   replyRoom = 0;
   mounted = new Map<string, number>();
@@ -65,6 +67,8 @@ export class ScrollSim implements ScrollHost {
   private frames: Array<(time: number) => void> = [];
   private time = 0;
   private sourceGeneration = 1;
+  private microtasks: Array<() => void> = [];
+  private taskDepth = 0;
 
   constructor(rows: SimRow[], viewport: number, options: Omit<ControllerOptions, 'host'> = {}) {
     this.rows = rows;
@@ -79,7 +83,7 @@ export class ScrollSim implements ScrollHost {
   // ---- ScrollHost ---------------------------------------------------------
 
   readScrollTop() {
-    return this.hidden ? 0 : Math.min(this.top, this.maxTop());
+    return this.hidden ? 0 : Math.min(this.top, this.maxTop()) + this.elasticOffset;
   }
   readScrollHeight() {
     if (this.hidden) return 0;
@@ -129,6 +133,9 @@ export class ScrollSim implements ScrollHost {
   requestCommit() {
     this.queued = true;
   }
+  scheduleMicrotask(callback: () => void) {
+    this.microtasks.push(callback);
+  }
   isSuppressed() {
     return this.suppressed;
   }
@@ -161,10 +168,20 @@ export class ScrollSim implements ScrollHost {
 
   /** One task: `action`, then every commit it requested, like React before paint. */
   task(action: () => void = () => {}) {
-    this.commitsThisTask = 0;
-    action();
-    this.drain();
-    this.maxCommitsPerTask = Math.max(this.maxCommitsPerTask, this.commitsThisTask);
+    if (this.taskDepth === 0) this.commitsThisTask = 0;
+    this.taskDepth += 1;
+    try {
+      action();
+      this.drain();
+      this.maxCommitsPerTask = Math.max(this.maxCommitsPerTask, this.commitsThisTask);
+    } finally {
+      this.taskDepth -= 1;
+      if (this.taskDepth === 0) {
+        const callbacks = this.microtasks;
+        this.microtasks = [];
+        for (const callback of callbacks) callback();
+      }
+    }
   }
 
   /** A React render of new rows (props changed), then its commit. */
@@ -173,17 +190,17 @@ export class ScrollSim implements ScrollHost {
     this.task(() => this.commit());
   }
 
-  /** One frame: the scroll event if the offset changed, then ResizeObserver delivery. */
+  /** One frame: scroll steps, animation callbacks, then ResizeObserver delivery. */
   frame() {
     this.time += 16;
-    const callbacks = this.frames;
-    this.frames = [];
-    for (const callback of callbacks) this.task(() => callback(this.time));
     this.clampNow();
     if (this.pendingScroll) {
       this.pendingScroll = false;
       this.task(() => this.controller.onScrollEvent());
     }
+    const callbacks = this.frames;
+    this.frames = [];
+    for (const callback of callbacks) this.task(() => callback(this.time));
     const entries: Array<{ key: string; height: number }> = [];
     for (const key of this.mounted.keys()) {
       const found = this.rows.find((row) => row.key === key)?.height;
@@ -281,6 +298,7 @@ export class ScrollSim implements ScrollHost {
   }
 
   private setTop(value: number) {
+    this.elasticOffset = 0;
     const next = Number.isFinite(value) ? Math.min(Math.max(0, value), this.maxTop()) : 0;
     if (next !== this.top) this.pendingScroll = true;
     this.top = next;

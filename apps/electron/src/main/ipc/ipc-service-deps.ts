@@ -26,6 +26,7 @@ export type IpcServiceDeps = {
   lanHubStore: LanHubStore | null
   getMainWindow: () => BrowserWindow | null
   completeOnboarding: (window: BrowserWindow) => void
+  restartOnboarding: (window: BrowserWindow) => void
   reloadMainWindowForDevbar: (window: BrowserWindow, enabled: boolean) => Promise<void>
 }
 

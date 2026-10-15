@@ -32,6 +32,13 @@ it. The editor and shared normalizer cap it at 140 Unicode code points; discover
 list/get results expose it separately from the execution prompt prefix. Older rows
 without the field display as blank. See the [description Spec](../../specs/agent-role-description.md).
 
+Explicit Save reconciles the Role's option values against the selected agent's
+authoritative, model-specific editor controls. It drops retired keys, retains valid
+choices and uses current defaults for unset or invalid values. Opening or cancelling
+the editor does not rewrite the catalog. Missing/provisional capabilities preserve
+stored options; model and mode pins remain explicit user choices. The existing
+content comparison advances the revision once when reconciliation changes the row.
+
 Workspace startup also reconciles owned Roles against fresh runtime schemas without
 opening Settings. A conditional writer transaction fences delayed probe results
 against edits and deletion, then uses the same durability/upload split. See the
@@ -51,3 +58,7 @@ durability/upload split applies. Linking is put-if-absent; editing cannot resurr
 a deleted row. Deleting an association leaves the external identity and existing
 Role/turn references intact. See the
 [association decision](../notes/implemented/feature/2026-10-05-memory-association-catalog.md).
+
+Memory batch import reuses these per-row writes sequentially. The editor removes
+successful rows from its checkbox selection, stops on the first failed write, and
+keeps remaining selections for retry; it does not roll back earlier durable rows.

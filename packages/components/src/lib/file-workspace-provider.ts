@@ -33,6 +33,7 @@ export type FileWorkspaceProviderEntry = {
 
 export type FileWorkspaceTextSnapshot = {
   readonly kind: 'text';
+  readonly truncated?: boolean;
   readonly text: string;
   readonly eol?: 'lf' | 'crlf' | 'mixed' | 'unknown';
 };

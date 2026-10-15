@@ -48,6 +48,7 @@ export type SessionTurn = {
   readonly tokenUsage?: SessionTurnTokenUsage;
   readonly fileDiff?: readonly unknown[];
   readonly status?: SessionTurnStatus;
+  readonly cancellationReason?: 'user_stop';
   readonly inputConfig?: unknown;
   readonly startedAt?: number;
   readonly endedAt?: number;
@@ -73,6 +74,7 @@ export interface SessionTurnWritableValues {
   tokenUsage: SessionTurnTokenUsage | undefined;
   fileDiff: readonly unknown[] | undefined;
   status: SessionTurnStatus | undefined;
+  cancellationReason: 'user_stop' | undefined;
   inputConfig: unknown;
   startedAt: number | undefined;
   endedAt: number | undefined;
@@ -123,6 +125,7 @@ export type SessionDirectoryScalars = {
   readonly role: SessionTurnRole;
   readonly timestamp: string;
   readonly status?: SessionTurnStatus;
+  readonly cancellationReason?: 'user_stop';
   readonly finished?: boolean;
   readonly endedAt?: number;
   readonly sendStatus?: 'timeout';
