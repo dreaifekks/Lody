@@ -4440,6 +4440,7 @@ export class SessionExecutionService {
                 yield* self.tryPromise(() =>
                   backend.applyHistoryAction({
                     kind: 'upsert-turn',
+                    beforeTurnId: runtime.turnId,
                     turn: {
                       id:
                         inboxBatch!.kind === 'automatic'
@@ -4448,6 +4449,9 @@ export class SessionExecutionService {
                       role: 'system',
                       author: { v: 1, kind: 'system' },
                       userId: inboxBatch!.userId,
+                      ...(inboxBatch!.kind === 'automatic'
+                        ? { inputConfig: invocation?.inputConfig }
+                        : {}),
                       timestamp: new Date(getServerNow()).toISOString(),
                       finished: true,
                       fileDiff: [],

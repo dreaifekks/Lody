@@ -36,7 +36,7 @@ import {
   type WorkspaceId,
 } from '@lody/shared';
 import Database from 'better-sqlite3';
-import { Effect, Fiber } from 'effect';
+import { Effect, Exit, Fiber, Layer, ManagedRuntime, Scope } from 'effect';
 import type { LoroRepo } from 'loro-repo';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -65,7 +65,12 @@ import {
   SessionExecutionService,
   type SessionExecutionServiceDeps,
 } from '../src/session/session-execution-service';
-import { normalizeBoardMeta } from '@lody/shared';
+import { normalizeBoardMeta, getWorkspaceFlockDocId, workspaceFlockKeys } from '@lody/shared';
+import { BoardReportWorkflow } from '../src/orchestration/board-report-workflow';
+import { CoordinatorPorts } from '../src/orchestration/coordinator-ports';
+import { OperationRepository } from '../src/orchestration/operation-repository';
+import { coordinatorSessionsLayer } from '../src/orchestration/platform/coordinator-sessions';
+import { operationRepositoryLayer } from '../src/orchestration/platform/operations';
 import type { SessionManager } from '../src/session/session-manager';
 import { GitExecutableNotFoundError } from '../src/session/worktree/git-process-error';
 import type { Logger } from '../src/utils/logger';
@@ -10739,13 +10744,13 @@ describe('Operation Inbox execution boundary', () => {
   function inboxExecutionFixture(
     prompt: (blocks: ContentBlock[]) => Promise<unknown>,
     build?: (blocks: SessionInputBlock[]) => Promise<ContentBlock[]>,
-    automaticFinished?: () => void
+    automaticFinished?: () => void,
+    sessionId = 'inbox-session' as SessionId
   ) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-inbox-execution-'));
     const store = new LodyOperationStore(path.join(root, 'operations.sqlite3'), () =>
       Date.parse('2026-10-12T00:00:00Z')
     );
-    const sessionId = 'inbox-session' as SessionId;
     let meta: Partial<SessionMeta> = {
       id: sessionId,
       machineId: 'machine-1',
@@ -10756,6 +10761,7 @@ describe('Operation Inbox execution boundary', () => {
       isArchived: false,
     };
     const repo = {
+      flush: async () => {},
       getDocMeta: async () => ({ meta }),
       upsertDocMeta: async (_id: string, patch: Partial<SessionMeta>) => {
         meta = { ...meta, ...patch };
@@ -10842,6 +10848,15 @@ describe('Operation Inbox execution boundary', () => {
         });
       },
     });
+    deps.turnFinalization.finalizeACPState = async (_id, turnId) => {
+      const backend = await createSessionBackend(doc);
+      const entry = await backend.readTurn(turnId);
+      if (entry.state === 'ready')
+        await backend.applyHistoryAction({
+          kind: 'upsert-turn',
+          turn: { ...entry.turn, finished: true, endedAt: Date.parse('2026-10-12T00:00:01Z') },
+        });
+    };
     const service = new SessionExecutionService(deps);
     store.inbox.activate('workspace-1', 'owner');
     const bridge = operationInboxLegacy({
@@ -10922,10 +10937,238 @@ describe('Operation Inbox execution boundary', () => {
       add,
       accept,
       close,
+      bridge,
       wake: () => bridge.wake(),
       storePath: path.join(root, 'operations.sqlite3'),
     };
   }
+
+  async function boardExecutionFixture() {
+    const { LoroRepo } = await import('loro-repo');
+    const repo = await LoroRepo.create({});
+    let completed = createDeferred<void>();
+    const coordinator = inboxExecutionFixture(
+      async () => ({ stopReason: 'end_turn' }),
+      undefined,
+      () => completed.resolve()
+    );
+    const memberDone = createDeferred<void>();
+    const member = inboxExecutionFixture(
+      async () => ({ stopReason: 'end_turn' }),
+      undefined,
+      () => memberDone.resolve(),
+      'member' as SessionId
+    );
+    const workspaceId = coordinator.message.workspaceId;
+    const machineId = 'machine-1' as MachineId;
+    const board = normalizeBoardMeta({
+      version: 1,
+      id: 'bd_execution',
+      name: 'Execution',
+      purpose: 'Test reports',
+      coordinatorSessionId: coordinator.message.sessionId,
+      createdAtMs: 1,
+      createdByUserId: 'user-1',
+    })!;
+    const catalog = await repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
+    catalog.flock.set(workspaceFlockKeys.board(board.id), board);
+    const docs = new Map([coordinator, member].map((f) => [f.message.sessionId, f.doc]));
+    for (const f of [coordinator, member]) {
+      await repo.openPersistedDoc(getSessionRoomId(f.message.sessionId));
+      await repo.upsertDocMeta(getSessionRoomId(f.message.sessionId), {
+        ...(await f.doc.getMetaState()),
+        workspaceId,
+        boardId: board.id,
+        ...(f === coordinator ? { boardRole: 'coordinator' } : {}),
+      });
+    }
+    const runtime = ManagedRuntime.make(
+      Layer.mergeAll(
+        operationRepositoryLayer(coordinator.store),
+        coordinatorSessionsLayer(
+          {
+            workspaceId,
+            machineId,
+            workspaceDocument: {
+              repo,
+              getOrCreateSessionDoc: async (id: SessionId) => docs.get(id),
+            },
+            now: () => Date.parse('2026-10-12T00:00:02Z'),
+          } as never,
+          coordinator.store,
+          coordinator.bridge,
+          () => true,
+          (effect) => Effect.runSync(effect),
+          new Map(),
+          new Set(),
+          'board-test'
+        )
+      )
+    );
+    const ports = await runtime.runPromise(CoordinatorPorts);
+    const operations = await runtime.runPromise(OperationRepository);
+    const scope = await Effect.runPromise(Scope.make());
+    const wakes: string[] = [];
+    const workflow = new BoardReportWorkflow(
+      { workspaceId, machineId },
+      ports,
+      operations,
+      {
+        signal: (reason) =>
+          Effect.sync(() => {
+            wakes.push(reason);
+          }),
+        wake: () => Effect.void,
+        arm: () => Effect.void,
+        cancel: () => Effect.void,
+        cancelWhere: () => Effect.void,
+        has: () => false,
+        drain: Effect.void,
+      },
+      scope
+    );
+    const reconcile = async () => {
+      await repo.flush();
+      await Effect.runPromise(workflow.reconcile());
+    };
+    return {
+      coordinator,
+      member,
+      board,
+      repo,
+      catalog,
+      reconcile,
+      takeWakes: () => wakes.splice(0),
+      readDrivingState: async (id: SessionId) =>
+        Effect.runPromise((await Effect.runPromise(ports.session(id))).readDrivingState),
+      receiveReview: async () => {
+        member.add('reviewer-result', 3);
+        await member.wake();
+        await memberDone.promise;
+      },
+      wakeCoordinator: async () => {
+        await coordinator.wake();
+        await completed.promise;
+        completed = createDeferred<void>();
+      },
+      close: async () => {
+        await Effect.runPromise(Scope.close(scope, Exit.void));
+        await runtime.dispose();
+        await member.close();
+        await coordinator.close();
+        await repo.destroy();
+      },
+    };
+  }
+
+  it('reports a member after its real automatic reviewer continuation and reads its driving depth', async () => {
+    const h = await boardExecutionFixture();
+    try {
+      await h.reconcile();
+      await h.receiveReview();
+      const state = await h.readDrivingState(h.member.message.sessionId);
+      expect(state?.turn.id).toMatch(/^inbox:completion:/);
+      expect(state?.turn.inputConfig?.chainDepth).toBe(4);
+      const item = state?.turn.items.find((i) => i.type === 'operation_completion_batch');
+      if (item?.type !== 'operation_completion_batch') throw new Error('Missing batch');
+      const batch = h.member.store.inbox.getBatch(item.batchId, {
+        workspaceId: h.member.message.workspaceId,
+        sessionId: h.member.message.sessionId,
+        userId: 'user-1',
+      });
+      expect(state?.turn.inputConfig?.chainDepth).toBe(batch?.chainDepth);
+      await h.reconcile();
+      const reports = h.coordinator.store.listForRequester(
+        {
+          workspaceId: h.coordinator.message.workspaceId,
+          requesterSessionId: h.coordinator.message.sessionId,
+          requesterUserId: 'user-1',
+        },
+        {}
+      ).items;
+      expect(reports).toHaveLength(1);
+      expect(
+        h.coordinator.store.get(h.coordinator.message.sessionId, reports[0]!.operationId)
+      ).toMatchObject({
+        completion: {
+          value: {
+            boardReport: {
+              events: [
+                {
+                  kind: 'finished',
+                  sessionId: h.member.message.sessionId,
+                  turnId: state?.turn.id,
+                  origin: 'system',
+                  output: { text: 'response' },
+                },
+              ],
+            },
+          },
+        },
+      });
+      await h.wakeCoordinator();
+      const received = await h.readDrivingState(h.coordinator.message.sessionId);
+      const delivered = received?.turn.items.find((i) => i.type === 'operation_completion_batch');
+      expect(delivered).toMatchObject({
+        deliveryStatus: 'settled',
+        members: [
+          {
+            operationKind: 'board_report',
+            completion: {
+              value: { boardReport: { events: [{ kind: 'finished', turnId: state?.turn.id }] } },
+            },
+          },
+        ],
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('accumulates real report-only wake depths to 16 and attaches the limit to that driving turn', async () => {
+    const h = await boardExecutionFixture();
+    try {
+      await h.reconcile();
+      const limited = createDeferred<void>();
+      const prepare = h.coordinator.store.inbox.prepare.bind(h.coordinator.store.inbox);
+      vi.spyOn(h.coordinator.store.inbox, 'prepare').mockImplementation((...args) => {
+        const batch = prepare(...args);
+        if (
+          h.coordinator.store.inbox.depthLimitedSessions(h.coordinator.message.workspaceId).length
+        )
+          limited.resolve();
+        return batch;
+      });
+      for (let depth = 1; depth <= 16; depth++) {
+        await h.repo.upsertDocMeta(getSessionRoomId(h.member.message.sessionId), {
+          agentNotice: { id: `notice-${depth}`, body: 'Synthetic update', at: depth },
+        });
+        await h.reconcile();
+        if (depth < 16) {
+          await h.wakeCoordinator();
+          const state = await h.readDrivingState(h.coordinator.message.sessionId);
+          expect(state?.turn.id).toMatch(/^inbox:completion:/);
+          expect(state?.turn.inputConfig?.chainDepth).toBe(depth);
+        } else {
+          await h.coordinator.wake();
+          await limited.promise;
+        }
+      }
+      expect(
+        h.coordinator.store.inbox.depthLimitedSessions(h.coordinator.message.workspaceId)
+      ).toEqual([h.coordinator.message.sessionId]);
+      await h.reconcile();
+      const state = await h.readDrivingState(h.coordinator.message.sessionId);
+      expect(state?.turn.inputConfig?.chainDepth).toBe(15);
+      expect(state?.following.flatMap((t) => t.items)).toContainEqual({
+        type: 'system_notice',
+        name: 'board_chain_limit',
+        meta: { boardId: h.board.id, drivingTurnId: state?.turn.id },
+      });
+    } finally {
+      await h.close();
+    }
+  });
 
   it('journals later resources through the active Session adapter before releasing execution', async () => {
     const started = createDeferred<void>();
@@ -11119,6 +11362,7 @@ describe('Operation Inbox execution boundary', () => {
       const history = await (await createSessionBackend(f.doc)).readHistory();
       const input = history.find((e) => e.id === 'human-input')!;
       expect(input.inputConfig?.chainDepth).toBe(0);
+      expect(history.find((e) => e.id.startsWith('operation-batch:'))?.inputConfig).toBeUndefined();
       expect(input.items).toEqual([{ type: 'text', text: 'CURRENT_REQUEST' }]);
       const item = history
         .flatMap((e) => e.items ?? [])

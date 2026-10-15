@@ -3986,6 +3986,7 @@ export const OperationCompletionContentSchema = z.object({
     'session_create_many',
     'session_chat',
     'session_chat_many',
+    'board_report',
   ]),
   progressMessageId: z.string().trim().min(1).optional(),
   completion: LodyOperationCompletionSchema,
