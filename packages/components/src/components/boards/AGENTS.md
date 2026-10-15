@@ -22,6 +22,8 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   and never detach the fixed coordinator. Tab inheritance happens at creation.
 - Board tools are advertised at ACP startup, but the daemon authorizes against
   current metadata on every call. A header is never membership authority.
+- Catalog/notes refresh is best effort: warn on sync failure and use the local replica.
+  Recheck local membership before notes writes; never use sparse metadata ids as caller identity.
 - Notes use one LoroText in `board-<id>` on `<workspace>:bd:<id>`. Each local write
   checks UTF-8 capacity before mutation; replicas may exceed it after merging
   concurrent writes. Never truncate a merge; allow a reducing replacement.

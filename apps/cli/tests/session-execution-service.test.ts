@@ -7,7 +7,34 @@ import {
   type PromptRequest,
   type PromptResponse,
 } from '@agentclientprotocol/sdk';
-import { ACP_CAPABILITY_CACHE_VERSION, ACP_CAPABILITY_REFRESH_CACHE_TTL_MS, type AcpCapabilityCacheEntry, getCurrentPromptSuggestion, getMachineRoomId, getSessionRoomId, parseSessionNotification, SESSION_CANCEL_NO_ACTIVE_TURN_ERROR, buildSessionTurnInputConfig, inputBlocksToHistoryItems, SessionStatusFactory, type ACPSessionId, type AgentConfigId, type AgentConfigMeta, type AgentRoleId, type ChatFailedReason, type LocalProjectId, type MachineFlockKey, type MachineId, type SessionGoalMessage, type SessionHistoryInput, type SessionId, type SessionInputBlock, type SessionMeta, type SessionStatus, type WorkspaceId } from '@lody/shared';
+import {
+  ACP_CAPABILITY_CACHE_VERSION,
+  ACP_CAPABILITY_REFRESH_CACHE_TTL_MS,
+  type AcpCapabilityCacheEntry,
+  getCurrentPromptSuggestion,
+  getMachineRoomId,
+  getSessionRoomId,
+  parseSessionNotification,
+  SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
+  buildSessionTurnInputConfig,
+  inputBlocksToHistoryItems,
+  SessionStatusFactory,
+  type ACPSessionId,
+  type AgentConfigId,
+  type AgentConfigMeta,
+  type AgentRoleId,
+  type ChatFailedReason,
+  type LocalProjectId,
+  type MachineFlockKey,
+  type MachineId,
+  type SessionGoalMessage,
+  type SessionHistoryInput,
+  type SessionId,
+  type SessionInputBlock,
+  type SessionMeta,
+  type SessionStatus,
+  type WorkspaceId,
+} from '@lody/shared';
 import Database from 'better-sqlite3';
 import { Effect, Fiber } from 'effect';
 import type { LoroRepo } from 'loro-repo';
@@ -38,6 +65,7 @@ import {
   SessionExecutionService,
   type SessionExecutionServiceDeps,
 } from '../src/session/session-execution-service';
+import { normalizeBoardMeta } from '@lody/shared';
 import type { SessionManager } from '../src/session/session-manager';
 import { GitExecutableNotFoundError } from '../src/session/worktree/git-process-error';
 import type { Logger } from '../src/utils/logger';
@@ -4193,9 +4221,15 @@ describe('SessionExecutionService', () => {
     }
   });
 
-  it.each(['create', 'continue', 'restore'] as const)(
-    'retains frozen execution input after a failed start retried through %s',
-    async (retryPath) => {
+  it.each([
+    { retryPath: 'create', boardRole: undefined, member: false },
+    { retryPath: 'continue', boardRole: undefined, member: false },
+    { retryPath: 'restore', boardRole: undefined, member: false },
+    { retryPath: 'create', boardRole: 'coordinator', member: true },
+    { retryPath: 'continue', boardRole: undefined, member: true },
+  ] as const)(
+    'retains frozen execution input through $retryPath (Board member=$member, role=$boardRole), even with hub sync unavailable',
+    async ({ retryPath, member, boardRole }) => {
       const sessionId = 'session-frozen-retry' as SessionId;
       const userTurnId = 'turn-frozen';
       const fileBlock: SessionInputBlock = {
@@ -4218,8 +4252,29 @@ describe('SessionExecutionService', () => {
         agentRoleRevision: 7,
         agentRoleSnapshot: { id: 'role-frozen', revision: 7, name: 'Reviewer', emoji: '' },
       });
-      let meta: Partial<SessionMeta> = { id: sessionId, isArchived: false };
+      const board = normalizeBoardMeta({
+        version: 1,
+        id: 'bd_prompt',
+        name: 'Shipping',
+        purpose: 'Ship a release',
+        coordinatorSessionId: sessionId,
+        createdAtMs: 1,
+        createdByUserId: 'user-1',
+        rules: { executorConstraints: 'EXECUTOR_CONSTRAINT' },
+      });
+      if (!board) throw new Error('Invalid fixture');
+      let meta: Partial<SessionMeta> = {
+        id: sessionId,
+        isArchived: false,
+        ...(member ? { boardId: board.id, boardRole } : {}),
+      };
       const repo = {
+        openFlockDoc: async () => ({
+          flock: {
+            scan: () => [],
+            get: (key: string[]) => (key[0] === 'board' && key[1] === board.id ? board : undefined),
+          },
+        }),
         getDocMeta: async () => ({ meta }),
         upsertDocMeta: async (_room: string, patch: Partial<SessionMeta>) => {
           meta = { ...meta, ...patch };
@@ -4285,6 +4340,9 @@ describe('SessionExecutionService', () => {
         } as unknown as SessionManager,
         workspaceDocument: {
           repo,
+          syncFlockDocOrThrow: async () => {
+            throw new Error('hub unavailable');
+          },
           getOrCreateSessionDoc: async () => sessionDoc,
           updateAcpCapabilities: async () => {},
         } as unknown as LoroDocumentManager,
@@ -4329,11 +4387,21 @@ describe('SessionExecutionService', () => {
       }
       await readRequest(); // Frozen config remains intact after both attempts.
       expect(requests).toHaveLength(2);
-      for (const request of requests) {
+      for (const [index, request] of requests.entries()) {
         const text = request
           .filter((block) => block.type === 'text')
           .map((block) => block.text)
           .join('\n');
+        const boardPromptExpected = member && (index === 0 || retryPath === 'create');
+        expect(text.includes('EXECUTOR_CONSTRAINT')).toBe(boardPromptExpected);
+        if (boardPromptExpected) {
+          expect(text.split('EXECUTOR_CONSTRAINT')).toHaveLength(2);
+          expect(text).toContain(
+            boardRole === 'coordinator'
+              ? 'You are the coordinator of Board "Shipping"'
+              : 'This session belongs to Board "Shipping"'
+          );
+        }
         for (const instruction of ['CONFIG_INSTRUCTION', 'ROLE_INSTRUCTION', 'TASK_TEXT']) {
           expect(text.split(instruction)).toHaveLength(2);
         }
@@ -11225,7 +11293,11 @@ describe('Operation Inbox execution boundary', () => {
       });
       release.resolve();
       await running;
-      expect((await (await createSessionBackend(f.doc)).readHistory()).find((turn) => turn.id === 'human-input')).toMatchObject({ status: 'canceled', cancellationReason: 'user_stop' });
+      expect(
+        (await (await createSessionBackend(f.doc)).readHistory()).find(
+          (turn) => turn.id === 'human-input'
+        )
+      ).toMatchObject({ status: 'canceled', cancellationReason: 'user_stop' });
       expect(received).toEqual([]);
       expect(
         (f.store as unknown as { db: Database.Database }).db

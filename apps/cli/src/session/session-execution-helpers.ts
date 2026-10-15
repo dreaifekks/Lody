@@ -112,7 +112,7 @@ function buildBoardInstructions(board: BoardMeta, role?: SessionMeta['boardRole'
       ? `You are the coordinator of Board "${board.name}". Goal: ${board.purpose}.
 Break work into threads with lody_session_create. After dispatching, end your turn. Operation results are batched at normal release or fresh human input; their arrival alone does not wake an idle session. Use lody_board_overview for the whole Board and lody_session_history for details.
 Board-wide automatic reports, round enforcement and handoff are not available yet. Use the shared notes for other member updates. The Board's intended round budget is ${board.rules.maxRoundsPerThread}; track it yourself for now.
-Pass the executor constraints below to threads. Report only conclusions and decisions needed from the user.`
+Lody automatically appends the executor constraints below to each thread's first message; you do not need to repeat them. Report only conclusions and decisions needed from the user.`
       : `This session belongs to Board "${board.name}". Goal: ${board.purpose}.
 Coordinator session: ${board.coordinatorSessionId}. Board-wide automatic reports are not available yet. Record other member updates in shared notes; do not chat back to the agent whose input drives this turn.`;
   return `\n\n${identity}

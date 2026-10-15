@@ -6476,9 +6476,15 @@ export class SessionExecutionService {
 
           if (existingMeta?.boardId) {
             yield* self.tryPromise(() =>
-              self.deps.workspaceDocument.syncFlockDocOrThrow(getWorkspaceFlockDocId(workspaceId), {
-                reason: 'board-prompt',
-              })
+              self.deps.workspaceDocument
+                .syncFlockDocOrThrow(getWorkspaceFlockDocId(workspaceId), {
+                  reason: 'board-prompt',
+                })
+                .catch((error) => {
+                  self.deps.logger.warn(
+                    `Board catalog refresh failed; using local rows: ${formatErrorMessage(error)}`
+                  );
+                })
             );
           }
           const board = existingMeta?.boardId
@@ -6488,7 +6494,10 @@ export class SessionExecutionService {
                 )).flock.get(workspaceFlockKeys.board(existingMeta.boardId))
               )
             : null;
-          if (existingMeta?.boardId && !board) throw new Error('BOARD_NOT_FOUND');
+          if (existingMeta?.boardId && !board) {
+            yield* Effect.fail(new Error('BOARD_NOT_FOUND'));
+            return undefined;
+          }
           const startPromptBlocksBuild = async (session: ISession) => {
             let branchToRename: string | undefined;
             if (newWorktree) {

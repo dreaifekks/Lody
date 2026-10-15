@@ -166,7 +166,8 @@ Coordinator instructions state:
    `lody_board_overview` and `lody_session_history` for detail.
 3. The configured round limit; hand off when reached; chat refuses during auto review;
    use `followUp: true` only for additions to the same assignment.
-4. Copy the Board's executor constraints into delegated work.
+4. Lody automatically appends the Board's executor constraints to each thread's first
+   message; the coordinator does not need to repeat them.
 5. Record conclusions/decisions with `lody_board_notes_*`.
 6. Report conclusions and decisions the user needs to make.
 
@@ -512,3 +513,9 @@ no new registry. Long-term memory, automatic reports, handoff, round enforcement
 digests remain outside this PR.
 
 Implementation and validation: [PR2 Agent Note](../../.agents/notes/implemented/feature/2026-10-15-board-tools-notes.md).
+
+PR2 review corrections: catalog and notes sync failures log a warning, while creation and
+tool calls continue from the local replica. Local durability completes writes; upload
+remains in the background. Coordinator identity and default note headings use the invoking
+Session id rather than requiring an id in sparse metadata. Lody injects thread constraints
+once in the first message; the coordinator does not repeat them.

@@ -1,3 +1,13 @@
+import { CreateBoardDialog } from '../src/components/boards/create-board-dialog';
+import { userAtom, currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms';
+import { agentConfigMetaCacheAtom } from '../src/atoms/doc-meta';
+import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
+import type {
+  SessionToCreate,
+  SessionHistoryInput,
+  AgentConfigMeta,
+  WorkspaceId,
+} from '@lody/shared';
 import { LoroRepo } from 'loro-repo';
 import { normalizeBoardMeta } from '@lody/shared';
 import { changeBoardMembership } from '../src/components/boards/board-membership-dialog';
@@ -5,7 +15,7 @@ import { BoardNotesEditor } from '../src/components/boards/board-notes-panel';
 import { buildSessionDoc, openReaderView } from './conversation-view-fixtures';
 import type { ConversationView } from '../src/lib/conversation-view';
 // @vitest-environment jsdom
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createStore, Provider, useAtomValue } from 'jotai';
 import { describe, it, expect, vi } from 'vitest';
@@ -30,7 +40,37 @@ vi.mock('@/hooks/use-session-doc', () => ({
     return { history: options.enabled ? (docReads.histories.get(id) ?? null) : null, ready: true };
   },
 }));
-vi.mock('@/components/boards/create-board-dialog', () => ({ CreateBoardDialog: () => null }));
+const creation = vi.hoisted(() => ({
+  machines: new Map<string, unknown>(),
+  startSession: undefined as undefined | ((...args: unknown[]) => Promise<unknown>),
+}));
+vi.mock('@/hooks/use-visible-machine-metas', () => ({
+  useVisibleMachineMetas: () => ({ machines: creation.machines }),
+}));
+vi.mock('@/hooks/use-machine-flock-agent-configs', () => ({
+  useMachineFlockAgentConfigs: () => {},
+}));
+vi.mock('@/hooks/use-workspace-catalog', () => ({
+  useWorkspaceCatalog: () => ({ servers: [], boards: [] }),
+}));
+vi.mock('@/hooks/use-workspace-agent-roles', () => ({
+  useWorkspaceAgentRoles: () => ({ roles: [] }),
+  useAgentRoleAvailability: () => ({ resolveInstance: () => ({ kind: 'available' }) }),
+  useComposerAgentRoleNames: () => ({ machine: () => 'Desktop', unknownAgent: 'Unknown' }),
+}));
+vi.mock('@/hooks/use-session-actions', () => ({
+  useSessionActions: () => ({
+    startSession: (...args: unknown[]) => creation.startSession?.(...args),
+    requestSessionDispatch: async () => {},
+  }),
+}));
+vi.mock('@/components/schedules/schedule-agent-controls', () => ({
+  ScheduleAgentControls: () => null,
+}));
+vi.mock('@/components/sessions/desktop-run-config-menu', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  DesktopMachineMenu: () => null,
+}));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     i18n: { language: 'en' },
@@ -302,5 +342,100 @@ it('edits and previews shared notes and retains an unsaved draft on write failur
   } finally {
     await act(async () => root.unmount());
     container.remove();
+  }
+});
+
+it('submits a new Board thread as chat without the coordinator role', async () => {
+  const store = createStore();
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_new_thread',
+    name: 'Release',
+    purpose: 'Ship',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+  });
+  if (!board) throw new Error('Invalid fixture');
+  store.set(userAtom, { id: 'user', name: 'User', email: 'user@example.com' });
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(currentWorkspaceSlugAtom, 'ws');
+  store.set(runtimeAtom, { workspaceId: 'ws', workspaceSlug: 'ws' } as WorkspaceRuntime);
+  const config = {
+    id: 'config',
+    machineId: 'machine',
+    cliType: 'builtin',
+    agentType: 'claude',
+    name: 'Agent',
+    prompt: 'Agent instructions',
+  } as AgentConfigMeta;
+  store.set(agentConfigMetaCacheAtom, { config });
+  creation.machines = new Map([
+    ['machine', { id: 'machine', name: 'Desktop', ownerUserId: 'user' }],
+  ]);
+  const accepted: { payload: SessionToCreate; history: Omit<SessionHistoryInput, 'id'> }[] = [];
+  creation.startSession = async (...args: unknown[]) => {
+    const [payload, history] = args as [SessionToCreate, Omit<SessionHistoryInput, 'id'>];
+    accepted.push({ payload, history });
+    return { sessionId: payload.sessionId, historyEntry: { ...history, id: 'first-turn' } };
+  };
+  function NewThread() {
+    const [created, setCreated] = useState(false);
+    return created ? (
+      <p>Thread accepted</p>
+    ) : (
+      <CreateBoardDialog
+        existingBoard={board!}
+        onClose={() => {}}
+        onCreated={() => setCreated(true)}
+      />
+    );
+  }
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        <Provider store={store}>
+          <NewThread />
+        </Provider>
+      )
+    );
+    await act(async () => {
+      const name = document.querySelector('input')!;
+      const task = document.querySelector('textarea')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        name,
+        'Implement notes'
+      );
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        task,
+        'Build shared notes'
+      );
+      task.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      document
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    expect(container.textContent).toBe('Thread accepted');
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0]?.payload).toMatchObject({
+      boardId: board.id,
+      title: 'Implement notes',
+      machineId: 'machine',
+    });
+    expect(accepted[0]?.payload).not.toHaveProperty('boardRole');
+    expect(accepted[0]?.payload).not.toHaveProperty('project');
+    expect(accepted[0]?.payload.sessionId).not.toBe(board.coordinatorSessionId);
+    expect(accepted[0]?.history.inputConfig?.prompt).toContain('Build shared notes');
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    creation.startSession = undefined;
+    creation.machines.clear();
   }
 });

@@ -119,131 +119,148 @@ describe('local platform zero-cloud integration', () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it('routes Board tools through the daemon and checks current membership, replacement rights and UTF-8 capacity', async () => {
-    applyLocalPlatformEnv();
-    const workspaceId = 'lw_board_tools' as WorkspaceId;
-    const machineId = 'board-machine' as MachineId;
-    const userId = 'local:board-tools';
-    const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
-    try {
-      await manager.registerMachine(machineId, {
-        id: machineId,
-        name: 'Desk',
-        ownerUserId: userId,
-      });
-      const sessionId = await manager.createSession(machineId, 'custom', 'claude');
-      const board = normalizeBoardMeta({
-        version: 1,
-        id: 'bd_tools',
-        name: 'Board',
-        purpose: 'Ship',
-        coordinatorSessionId: sessionId,
-        createdAtMs: 1,
-        createdByUserId: userId,
-      });
-      if (!board) throw new Error('Invalid fixture');
-      const catalog = await manager.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
-      catalog.flock.set(workspaceFlockKeys.board(board.id), board);
-      await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
-        boardId: board.id,
-        title: 'Worker',
-      });
-      const environment = createLocalSessionCommandEnvironment({
-        manager,
-        workspaceId,
-        machineId,
-        machineName: 'Desk',
-        userId,
-        host: {
-          readInvocation: (id) => ({
-            type: 'session/active-invocation-context',
-            active: true,
-            sessionId: id,
-            requesterUserId: userId,
-            sourceTurnId: 'turn',
-            inputConfig: {},
-          }),
-          readLiveStatus: async (id) => ({
-            sessionId: id,
-            machineOnline: true,
-            fresh: true,
-            state: 'idle',
-          }),
-          cancelSession: async () => ({ success: true }),
-          dispatchSession: async () => {},
-        },
-      });
-      const call = (name: string, args: unknown = {}) =>
-        runWithSessionCommandEnvironment(environment, () =>
-          executeDaemonSessionTool(
-            {
-              machineId,
-              workspaceId,
-              sessionId,
-              boardId: 'bd_untrusted',
-              localControlSocketPath: undefined,
-              workdir: tempDir,
-            },
-            name,
-            args
-          )
-        );
-      const get = await call('lody_board_get');
-      expect(JSON.parse(get.content[0]!.text!)).toMatchObject({ id: board.id, role: 'thread' });
-      expect((await call('lody_board_notes_replace', { text: 'forbidden' })).isError).toBe(true);
-      expect(
-        (await call('lody_board_notes_append', { text: 'A', heading: 'Decision' })).isError
-      ).not.toBe(true);
-      expect((await call('lody_board_notes_get')).content[0]?.text).toContain('Decision');
-      await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), { boardRole: 'coordinator' });
-      expect(
-        (await call('lody_board_notes_replace', { text: 'x'.repeat(BOARD_NOTES_MAX_BYTES) }))
-          .isError
-      ).not.toBe(true);
-      expect((await call('lody_board_notes_append', { text: '看' })).content[0]?.text).toContain(
-        'BOARD_NOTES_CAPACITY'
-      );
-      const doc = (await manager.repo.openPersistedDoc(getBoardRoomId(board.id))).doc as LoroDoc;
-      expect(readBoardDocument(doc).notes).toBe('x'.repeat(BOARD_NOTES_MAX_BYTES));
-      expect((await call('lody_board_notes_replace', { text: 'short' })).isError).not.toBe(true);
-      const overview = JSON.parse((await call('lody_board_overview')).content[0]!.text!);
-      expect(overview.rows).toEqual([
-        expect.objectContaining({ sessionId, title: 'Worker', role: 'coordinator' }),
-      ]);
-      for (let i = 0; i < 101; i++) {
-        const id = `member-${i}` as SessionId;
-        await manager.repo.upsertDocMeta(getSessionRoomId(id), {
-          id,
-          machineId,
-          userId,
-          createdAt: '2026-10-15T00:00:00Z',
-          boardId: board.id,
-          title: '看'.repeat(1000),
+  it.each([false, true])(
+    'routes Board tools with failed sync=%s, checking membership, replacement rights and capacity',
+    async (syncFails) => {
+      applyLocalPlatformEnv();
+      const workspaceId = 'lw_board_tools' as WorkspaceId;
+      const machineId = 'board-machine' as MachineId;
+      const userId = 'local:board-tools';
+      const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
+      try {
+        await manager.registerMachine(machineId, {
+          id: machineId,
+          name: 'Desk',
+          ownerUserId: userId,
         });
-      }
-      const bounded = await call('lody_board_overview');
-      const boundedText = bounded.content[0]?.text ?? '';
-      expect(Buffer.byteLength(boundedText)).toBeLessThanOrEqual(64 * 1024);
-      expect(JSON.parse(boundedText)).toMatchObject({ truncated: true });
-      expect(JSON.parse(boundedText).rows.length).toBeLessThanOrEqual(100);
-      await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
-        boardId: undefined,
-        boardRole: undefined,
-      });
-      for (const name of ['get', 'overview', 'notes_get', 'notes_append', 'notes_replace']) {
-        const result = await call(
-          `lody_board_${name}`,
-          name === 'notes_append' || name === 'notes_replace' ? { text: 'denied' } : {}
+        const sessionId = await manager.createSession(machineId, 'custom', 'claude');
+        const board = normalizeBoardMeta({
+          version: 1,
+          id: 'bd_tools',
+          name: 'Board',
+          purpose: 'Ship',
+          coordinatorSessionId: sessionId,
+          createdAtMs: 1,
+          createdByUserId: userId,
+        });
+        if (!board) throw new Error('Invalid fixture');
+        const catalog = await manager.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
+        catalog.flock.set(workspaceFlockKeys.board(board.id), board);
+        await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
+          boardId: board.id,
+          title: 'Worker',
+        });
+        const environment = createLocalSessionCommandEnvironment({
+          manager,
+          workspaceId,
+          machineId,
+          machineName: 'Desk',
+          userId,
+          host: {
+            readInvocation: (id) => ({
+              type: 'session/active-invocation-context',
+              active: true,
+              sessionId: id,
+              requesterUserId: userId,
+              sourceTurnId: 'turn',
+              inputConfig: {},
+            }),
+            readLiveStatus: async (id) => ({
+              sessionId: id,
+              machineOnline: true,
+              fresh: true,
+              state: 'idle',
+            }),
+            cancelSession: async () => ({ success: true }),
+            dispatchSession: async () => {},
+          },
+        });
+        const call = (name: string, args: unknown = {}) =>
+          runWithSessionCommandEnvironment(environment, () =>
+            executeDaemonSessionTool(
+              {
+                machineId,
+                workspaceId,
+                sessionId,
+                boardId: 'bd_untrusted',
+                localControlSocketPath: undefined,
+                workdir: tempDir,
+              },
+              name,
+              args
+            )
+          );
+        if (syncFails) {
+          vi.spyOn(manager, 'syncFlockDocOrThrow').mockRejectedValue(new Error('hub unavailable'));
+          vi.spyOn(manager, 'syncDocOrThrow').mockRejectedValue(new Error('hub unavailable'));
+        }
+        const get = await call('lody_board_get');
+        expect(JSON.parse(get.content[0]!.text!)).toMatchObject({ id: board.id, role: 'thread' });
+        expect((await call('lody_board_notes_replace', { text: 'forbidden' })).isError).toBe(true);
+        expect(
+          (await call('lody_board_notes_append', { text: 'A', heading: 'Decision' })).isError
+        ).not.toBe(true);
+        expect((await call('lody_board_notes_get')).content[0]?.text).toContain('Decision');
+        // Metadata may be sparse: the authenticated invocation still identifies this coordinator.
+        await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
+          boardRole: 'coordinator',
+          id: undefined,
+          title: undefined,
+        });
+        expect(
+          (await call('lody_board_notes_append', { text: 'Default heading' })).isError
+        ).not.toBe(true);
+        const notes = JSON.parse((await call('lody_board_notes_get')).content[0]?.text ?? '{}');
+        expect(notes.notes).toContain(` · ${sessionId}\n\nDefault heading`);
+        expect(
+          (await call('lody_board_notes_replace', { text: 'x'.repeat(BOARD_NOTES_MAX_BYTES) }))
+            .isError
+        ).not.toBe(true);
+        expect((await call('lody_board_notes_append', { text: '看' })).content[0]?.text).toContain(
+          'BOARD_NOTES_CAPACITY'
         );
-        expect(result.isError).toBe(true);
-        expect(result.content[0]?.text).toContain('BOARD_NOT_MEMBER');
+        const doc = (await manager.repo.openPersistedDoc(getBoardRoomId(board.id))).doc as LoroDoc;
+        expect(readBoardDocument(doc).notes).toBe('x'.repeat(BOARD_NOTES_MAX_BYTES));
+        expect((await call('lody_board_notes_replace', { text: 'short' })).isError).not.toBe(true);
+        const overview = JSON.parse((await call('lody_board_overview')).content[0]!.text!);
+        expect(overview.rows).toEqual([
+          expect.objectContaining({ sessionId, role: 'coordinator' }),
+        ]);
+        for (let i = 0; i < 101; i++) {
+          const id = `member-${i}` as SessionId;
+          await manager.repo.upsertDocMeta(getSessionRoomId(id), {
+            id,
+            machineId,
+            userId,
+            createdAt: '2026-10-15T00:00:00Z',
+            boardId: board.id,
+            title: '看'.repeat(1000),
+          });
+        }
+        const bounded = await call('lody_board_overview');
+        const boundedText = bounded.content[0]?.text ?? '';
+        expect(Buffer.byteLength(boundedText)).toBeLessThanOrEqual(64 * 1024);
+        expect(JSON.parse(boundedText)).toMatchObject({ truncated: true });
+        expect(JSON.parse(boundedText).rows.length).toBeLessThanOrEqual(100);
+        await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
+          boardId: undefined,
+          boardRole: undefined,
+        });
+        for (const name of ['get', 'overview', 'notes_get', 'notes_append', 'notes_replace']) {
+          const result = await call(
+            `lody_board_${name}`,
+            name === 'notes_append' || name === 'notes_replace' ? { text: 'denied' } : {}
+          );
+          expect(result.isError).toBe(true);
+          expect(result.content[0]?.text).toContain('BOARD_NOT_MEMBER');
+        }
+        expect(readBoardDocument(doc).notes).toBe('short');
+        expect(cloudConnectionAttempts).toBe(0);
+      } finally {
+        await manager.cleanUp({ fast: true, preserveSessionStatus: true });
       }
-      expect(readBoardDocument(doc).notes).toBe('short');
-      expect(cloudConnectionAttempts).toBe(0);
-    } finally {
-      await manager.cleanUp({ fast: true, preserveSessionStatus: true });
     }
-  });
+  );
 
   it('creates a Role Session with the daemon repo, freezes its prompt and dispatches without cloud login', async () => {
     applyLocalPlatformEnv();

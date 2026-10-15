@@ -55,13 +55,17 @@ export function registerBoardTools(
         if (!environment) throw new Error('Board tools require the local daemon');
         const { manager, workspace } = environment;
         const sessionId = context().sessionId;
-        const readMember = async () => {
-          await manager.syncFlockDocOrThrow(getWorkspaceFlockDocId(workspace.id as WorkspaceId), {
+        await manager
+          .syncFlockDocOrThrow(getWorkspaceFlockDocId(workspace.id as WorkspaceId), {
             reason: 'board-tools',
+          })
+          .catch((error) => {
+            console.warn('Board catalog refresh failed; using local rows', error);
           });
-          const catalog = await manager.repo.openFlockDoc(
-            getWorkspaceFlockDocId(workspace.id as WorkspaceId)
-          );
+        const catalog = await manager.repo.openFlockDoc(
+          getWorkspaceFlockDocId(workspace.id as WorkspaceId)
+        );
+        const readMember = async () => {
           const row = await manager.repo.getDocMeta(getSessionRoomId(sessionId));
           const session = row?.meta as SessionMeta | undefined;
           if (!session?.boardId) throw new Error('BOARD_NOT_MEMBER');
@@ -115,7 +119,9 @@ export function registerBoardTools(
           const roomId = getBoardRoomId(board.id);
           const handle = await manager.repo.openPersistedDoc(roomId);
           // sync() uses the daemon's configured transport; local-only replicas need no network.
-          await manager.syncDocOrThrow(roomId, { reason: 'board-notes' });
+          await manager.syncDocOrThrow(roomId, { reason: 'board-notes' }).catch((error) => {
+            console.warn('Board notes refresh failed; using local document', error);
+          });
           const current = await readMember();
           if (current.board.id !== board.id) throw new Error('BOARD_NOT_MEMBER');
           ({ session, board } = current);
@@ -124,14 +130,14 @@ export function registerBoardTools(
           else {
             if (
               name === 'lody_board_notes_replace' &&
-              (session.boardRole !== 'coordinator' || board.coordinatorSessionId !== session.id)
+              (session.boardRole !== 'coordinator' || board.coordinatorSessionId !== sessionId)
             )
               throw new Error('BOARD_COORDINATOR_REQUIRED');
             const body = 'text' in input ? input.text : '';
             const heading =
               'heading' in input && input.heading !== undefined
                 ? input.heading
-                : `${new Date().toISOString().slice(0, 10)} · ${session.title || session.id}`;
+                : `${new Date().toISOString().slice(0, 10)} · ${session.title || sessionId}`;
             result = writeBoardNotes(doc, {
               kind: name === 'lody_board_notes_append' ? 'append' : 'replace',
               text: name === 'lody_board_notes_append' ? `\n\n## ${heading}\n\n${body}\n` : body,

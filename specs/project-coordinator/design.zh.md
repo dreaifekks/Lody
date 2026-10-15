@@ -176,7 +176,8 @@ Overview。协调者的 agent 默认记住上一次的选择；按用户现行�
    `lody_session_chat` 会被拒绝，改用 `lody_board_thread_handoff` 交接；线程在跑自动
    review 时 `lody_session_chat` 会被拒绝，等回报；对当前这轮的补充用 `followUp: true`，
    不计轮数。
-4. 执行线程的固定约束（原样转给线程）：{executorConstraints}。
+4. 执行线程的固定约束：{executorConstraints}。Lody 会自动附在每个线程的第一条消息里，
+   协调者不用转述。
 5. 共享笔记：`lody_board_notes_*`；结论和决定写进笔记，别只留在对话里。
 6. 只向用户汇报结论和需要用户决定的事。
 
@@ -562,3 +563,7 @@ Board 自动回报、轮数拒绝和交接尚未实现；已有 Operation 回执
 看板行，不新增注册表。长期记忆、自动回报、交接、轮数限制、每日摘要未纳入本 PR。
 
 实现与验证：[PR2 Agent Note](../../.agents/notes/implemented/feature/2026-10-15-board-tools-notes.zh.md)。
+
+PR2 评审修正：目录和笔记同步失败仅记录警告，创建和工具调用继续使用本地副本；
+本地持久化成功即完成写入，上传仍在后台进行。协调者身份与默认笔记标题使用调用上下文的
+session id，不要求稀疏元数据包含 id。线程约束由 Lody 在首条消息注入一次，协调者不重复转述。
