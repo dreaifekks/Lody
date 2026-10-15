@@ -5402,5 +5402,13 @@
   "sessions.openedBy.status.waitingUser": "等你回答",
   "sessions.openedBy.status.notice": "通知",
   "boards.status.stopped": "已停止",
-  "boards.chainLimit": "自主链已到上限，说一句话继续。"
+  "boards.chainLimit": "自主链已到上限，说一句话继续。",
+  "boards.story.reportsTask": "实现自动回报",
+  "boards.story.buildTask": "构建验证",
+  "boards.story.reviewTask": "评审需要决策",
+  "boards.story.researchTask": "发布调研",
+  "boards.story.reportsOutput": "实现已完成，可以开始评审。",
+  "boards.story.buildOutput": "构建需要补齐缺失的依赖。",
+  "boards.story.reviewOutput": "这次评审应覆盖哪个目标？",
+  "boards.story.researchOutput": "原始调研结论可在会话中查看。"
 }

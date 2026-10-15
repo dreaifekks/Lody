@@ -5402,5 +5402,13 @@
   "sessions.openedBy.status.waitingUser": "Waiting for you",
   "sessions.openedBy.status.notice": "Notice",
   "boards.status.stopped": "Stopped",
-  "boards.chainLimit": "Autonomous chain reached its limit. Send a message to continue."
+  "boards.chainLimit": "Autonomous chain reached its limit. Send a message to continue.",
+  "boards.story.reportsTask": "Implement Inbox reports",
+  "boards.story.buildTask": "Build verification",
+  "boards.story.reviewTask": "Reviewer needs a decision",
+  "boards.story.researchTask": "Release research",
+  "boards.story.reportsOutput": "Implementation is ready for review.",
+  "boards.story.buildOutput": "Build requires the missing dependency.",
+  "boards.story.reviewOutput": "Which target should the review cover?",
+  "boards.story.researchOutput": "Original findings are available in the session."
 }
