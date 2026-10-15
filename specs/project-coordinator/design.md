@@ -822,6 +822,8 @@ returns through its parent's continuation reply; waiting, failure and notices st
 report. Thread startup instructions require verbatim child conclusions and leave
 change decisions to the coordinator.
 
+The upstream execution writer saves `invocation.inputConfig` only for automatic `inbox:completion:*` turns and places each batch before its assistant turn; human-attached `operation-batch:*` rows carry no configuration, preserving driving-turn selection, continuation reports and chain depth. The history message schema also accepts `board_report` so real batches pass write validation.
+
 Minimal adjustments to the design notation: source identities hash to `board-` plus
 the first 58 SHA-256 hex characters to fit the existing Operation ID contract. Finished
 rows retain the required `deadlineAt` field, set to creation time, without deadline

@@ -752,6 +752,8 @@ PR3 已接入上游 Operation Inbox：成员目录/元数据和历史订阅只�
 优先、暂停、停止和合批全部保留上游语义。孙会话的完成由父成员续接后的回复带回，
 等待用户、失败和通知仍回报；线程启动提示明确要求原样回复子会话结论，由协调者决定修改。
 
+上游执行写入路径仅为自动 `inbox:completion:*` 回合保存 `invocation.inputConfig`，并将批次行放在对应 assistant 行前；人工附带的 `operation-batch:*` 不保存配置，确保最新驱动回合、续接完成回报和链深度读取正确。历史消息 schema 同时接受 `board_report`，避免真实批次在写入时被拒绝。
+
 与设计记法的最小调整：事件源标识散列为 `board-` + SHA-256 前 58 个十六进制字符，
 满足既有 Operation ID 的字符/长度契约。已完成行仍填入类型必需的 `deadlineAt`（创建
 时刻），但不参与 deadline 调度。游标增加 `last_awaiting_turn_id`，以回合身份保证一次

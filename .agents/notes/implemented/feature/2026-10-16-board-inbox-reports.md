@@ -42,6 +42,10 @@ only selected input/output bodies are materialized. The depth-limit watermark is
 observational evidence, not a new scheduling rule. One stable history notice exposes
 that limit and does not itself drive an agent.
 
+Review correction: the real execution writer omitted automatic batch configuration and appended batches after their assistant entries; the history schema also omitted `board_report`. Automatic batches now retain frozen configuration, batches precede their replies, and human-attached batches carry no driving configuration. Regression tests cross actual execution writes, directory reads and Inbox wakes for reviewer continuations and report-only depth accumulation. Upstream rejects a candidate depth of 16; the limit notice belongs to the last actual driving turn (depth 15).
+
+Workspaces without active Boards do not subscribe to Board metadata. Archiving the last Board detaches that subscription; activating a Board reseeds membership. Leaving or switching Boards removes old membership cursors; permanent deletion removes that session’s cursors in the existing Operation cleanup transaction. Archiving retains cursors, and absent metadata is not treated as permanent deletion. Tool Overview uses the same ancestor-stop helper as the UI. InboxReports story titles, bodies and chain copy use translation keys.
+
 The UI uses existing compact result rows and live titles. Thread prompts require
 verbatim child conclusions and no edits before the coordinator selects them. Rounds,
 handoff, digest scheduling and Board-wide stop remain outside PR3.
@@ -56,10 +60,10 @@ batches, navigation, live titles, system driving depth and stopped-state reset.
 The exact startup payload sent to ACP includes the reviewer instruction.
 
 With official Node 22.22.1 and native TypeScript stripping, the complete `pnpm check`
-passed: CLI 4806 passed / 1 skipped, shared 1741, components 5849 and Electron 303
+passed: CLI 4811 passed / 1 skipped, shared 1741, components 5849 and Electron 303
 passed. This includes repository-wide type checking, lint/Effect lint, i18n and all
 boundary guards. `pnpm format`, `pnpm format:check` and `pnpm run docs check` passed.
-Playwright checked the synthetic InboxReports story at 1440px and 390px: status labels
-remain inside the viewport and the narrow layout has no horizontal overflow. Screenshots
-are outside the repository. Cross-machine synchronization and real agents still require
+Playwright checked the Chinese InboxReports story at 1440px and 390px: titles, bodies
+and chain text contain no English; status labels remain inside the viewport and the
+narrow layout has no horizontal overflow. Screenshots are in `/tmp`. Cross-machine synchronization and real agents still require
 LAN validation; synthetic tests do not establish those runtime outcomes.
