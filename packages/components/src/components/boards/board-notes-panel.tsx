@@ -5,7 +5,6 @@ import { Button } from '@lody/ui/button';
 import { Textarea } from '@lody/ui/textarea';
 import { BOARD_NOTES_MAX_BYTES } from '@lody/shared';
 import { MarkdownRenderer } from '@/components/ai-gui/markdown-renderer';
-import { useBoardDocument } from '@/hooks/use-board-document';
 import { boardStyles } from './board-view';
 
 export function BoardNotesEditor({
@@ -67,29 +66,5 @@ export function BoardNotesEditor({
         </p>
       ) : null}
     </div>
-  );
-}
-
-export function BoardNotesPanel({ boardId, onClose }: { boardId: string; onClose: () => void }) {
-  const { t } = useTranslation();
-  const { document, save, error } = useBoardDocument(boardId);
-  return (
-    <aside {...stylex.props(boardStyles.notesPanel)}>
-      <header {...stylex.props(boardStyles.header)}>
-        <h2>{t('boards.notes', 'Shared notes')}</h2>
-        <Button variant="ghost" onClick={onClose}>
-          {t('boards.closeNotes', 'Close notes')}
-        </Button>
-      </header>
-      {document && save ? (
-        <BoardNotesEditor key={boardId} notes={document.notes} onSave={save} />
-      ) : (
-        <p>
-          {error
-            ? t('boards.notesLoadFailed', 'Could not load notes.')
-            : t('boards.loading', 'Loading…')}
-        </p>
-      )}
-    </aside>
   );
 }

@@ -2,7 +2,7 @@ import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
-import { ArrowLeft, FileText, Plus } from 'lucide-react';
+import { ArrowLeft, FileText } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
 
@@ -42,26 +42,31 @@ const styles = stylex.create({
     fontSize: text.footnoteSize,
     color: colors.secondaryLabel,
   },
-  footer: { paddingInline: space[2], paddingTop: space[1] },
   editor: { display: 'flex', flexDirection: 'column', gap: space[2], padding: space[3] },
   editorHeader: { display: 'flex', alignItems: 'center', gap: space[1] },
   editorName: { fontSize: text.bodySize, fontWeight: 600 },
+  note: {
+    margin: 0,
+    paddingInline: space[2],
+    paddingBlock: space[3],
+    fontSize: text.footnoteSize,
+    color: colors.secondaryLabel,
+  },
 });
 
 /**
- * The Board's shared files: text every member reads and writes. The existing
- * shared notes are the first file; "New file" adds another beside it.
+ * The Board's shared files. The shared notes lead the list; the Board's shared
+ * directory follows (until it lands, `note` says where it will live).
  */
 export function BoardFilesView({
   files,
   onOpen,
-  onCreate,
+  note,
 }: {
   files: readonly BoardFileItem[];
   onOpen: (id: string) => void;
-  onCreate: () => void;
+  note?: string;
 }) {
-  const { t } = useTranslation();
   return (
     <div {...stylex.props(styles.list)}>
       {files.map((file) => (
@@ -78,12 +83,7 @@ export function BoardFilesView({
           <span {...stylex.props(styles.detail)}>{file.detail}</span>
         </button>
       ))}
-      <div {...stylex.props(styles.footer)}>
-        <Button variant="ghost" size="small" onClick={onCreate}>
-          <Plus size={14} aria-hidden />
-          {t('boards.files.create', 'New file')}
-        </Button>
-      </div>
+      {note !== undefined ? <p {...stylex.props(styles.note)}>{note}</p> : null}
     </div>
   );
 }

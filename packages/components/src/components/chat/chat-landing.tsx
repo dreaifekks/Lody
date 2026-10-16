@@ -1,3 +1,4 @@
+import { isBoardCoordinator } from '../boards/board-threads';
 import { buildAgentRoleFormValueFromRunConfig, type AgentRoleInstanceId } from '@lody/shared';
 import { useProviderQuotaRefresh } from '@/hooks/use-provider-quota-refresh';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
@@ -4786,6 +4787,8 @@ function WorkspaceChatLanding({
     };
     return sourceSessions
       .filter((session) => {
+        // A coordinator is its Board; the sidebar's Boards section lists it.
+        if (isBoardCoordinator(session)) return false;
         if (chatScope === 'my' && myUserId && session.userId !== myUserId) return false;
         if (chatExcludedMachines.has(session.machineId)) return false;
         return true;

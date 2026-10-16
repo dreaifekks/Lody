@@ -11,6 +11,7 @@ import {
   Plus,
   Smartphone,
   ClipboardCheck,
+  LayoutDashboard,
   X,
 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
@@ -31,6 +32,7 @@ export type SessionSidePanelTabItem = {
     | 'browser'
     | 'ios-simulator'
     | 'plan-review'
+    | 'board'
     | 'session'
     | 'file'
     | 'diff';
@@ -44,8 +46,24 @@ export type SessionSidePanelTabItem = {
 };
 
 export type SessionSidePanelOption = Omit<SessionSidePanelTabItem, 'id' | 'kind'> & {
-  id: 'files' | 'changes' | 'pr' | 'browser' | 'ios-simulator' | 'plan-review' | 'side-session';
-  kind: 'files' | 'changes' | 'pr' | 'browser' | 'ios-simulator' | 'plan-review' | 'session';
+  id:
+    | 'files'
+    | 'changes'
+    | 'pr'
+    | 'browser'
+    | 'ios-simulator'
+    | 'plan-review'
+    | 'board'
+    | 'side-session';
+  kind:
+    | 'files'
+    | 'changes'
+    | 'pr'
+    | 'browser'
+    | 'ios-simulator'
+    | 'plan-review'
+    | 'board'
+    | 'session';
 };
 
 const SIDE_SESSION_PANEL_PREFIX = 'side-session:';
@@ -531,6 +549,8 @@ function SidePanelTabIcon({ tab }: { tab: SessionSidePanelTabItem }) {
       return <Smartphone {...stylex.props(styles.tabGlyphDimmed)} />;
     case 'plan-review':
       return <ClipboardCheck {...stylex.props(styles.tabGlyphDimmed)} />;
+    case 'board':
+      return <LayoutDashboard {...stylex.props(styles.tabGlyphDimmed)} />;
     case 'session':
       return <MessageSquare {...stylex.props(styles.tabGlyphDimmed)} />;
     case 'file':

@@ -1,52 +1,57 @@
-import { createLoroSessionData } from '@lody/shared/session-data';
-import { CreateBoardDialog } from '../src/components/boards/create-board-dialog';
-import { userAtom, currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms';
-import { agentConfigMetaCacheAtom } from '../src/atoms/doc-meta';
-import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
-import type {
-  SessionToCreate,
-  SessionHistoryInput,
-  AgentConfigMeta,
-  WorkspaceId,
-} from '@lody/shared';
-import { LoroRepo } from 'loro-repo';
-import { normalizeBoardMeta } from '@lody/shared';
-import { changeBoardMembership } from '../src/components/boards/board-membership-dialog';
-import { BoardNotesEditor } from '../src/components/boards/board-notes-panel';
-import { buildSessionDoc, openReaderView } from './conversation-view-fixtures';
-import type { ConversationView } from '../src/lib/conversation-view';
 // @vitest-environment jsdom
 import { act, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { createStore, Provider, useAtomValue } from 'jotai';
+import { createStore, Provider } from 'jotai';
 import { describe, it, expect, vi } from 'vitest';
+import { LoroRepo } from 'loro-repo';
 import {
   getSessionRoomId,
-  type SessionHistory,
-  type SessionMeta,
+  normalizeBoardMeta,
+  type AgentConfigMeta,
+  type BoardMeta,
+  type SessionHistoryInput,
   type SessionId,
+  type SessionMeta,
+  type SessionStatus,
+  type SessionToCreate,
+  type WorkspaceId,
 } from '@lody/shared';
-import { sessionMetaCacheAtom, allActiveSessionsAtom } from '../src/atoms/doc-meta';
-import { lodyPresenceStatesAtom, lodyPresenceNowMsAtom } from '../src/atoms/presence';
-import { BoardSessionRow } from '../src/components/boards/board-session-row';
-import { buildBoardRows } from '../src/components/boards/boards-workspace';
+import { userAtom, currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms';
+import { agentConfigMetaCacheAtom, sessionMetaCacheAtom } from '../src/atoms/doc-meta';
+import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '../src/atoms/presence';
+import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
+import { CreateBoardDialog } from '../src/components/boards/create-board-dialog';
+import { changeBoardMembership } from '../src/components/boards/board-membership-dialog';
+import { BoardNotesEditor } from '../src/components/boards/board-notes-panel';
+import { BoardSidePanel } from '../src/components/boards/board-side-panel';
+import { BoardSettingsDialog } from '../src/components/boards/board-settings-panel';
+import { useBoardLifecycle } from '../src/components/boards/board-lifecycle';
+import { boardActivity } from '../src/components/boards/board-threads';
 
-const docReads = vi.hoisted(() => ({
-  enabled: new Set<string>(),
-  histories: new Map<string, ConversationView>(),
-}));
-vi.mock('@/hooks/use-session-doc', () => ({
-  useSessionDoc: (id: string, options: { enabled: boolean }) => {
-    if (options.enabled) docReads.enabled.add(id);
-    return { history: options.enabled ? (docReads.histories.get(id) ?? null) : null, ready: true };
-  },
-}));
 const creation = vi.hoisted(() => ({
   machines: new Map<string, unknown>(),
   startSession: undefined as undefined | ((...args: unknown[]) => Promise<unknown>),
+  /** Lifecycle requests that reached the session actions, in order. */
+  actions: [] as string[],
 }));
 vi.mock('@/hooks/use-visible-machine-metas', () => ({
   useVisibleMachineMetas: () => ({ machines: creation.machines }),
+}));
+// Visibility is its own concern; the panel reads every member from the real atoms.
+vi.mock('@/hooks/use-visible-session-metas', async () => {
+  const { useAtomValue: read } = await import('jotai');
+  const { allActiveSessionsAtom: active, archivedSessionListAtom: archived } =
+    await import('../src/atoms/doc-meta');
+  return {
+    useVisibleSessionMetas: () => ({ allActiveSessions: read(active) }),
+    useVisibleArchivedSessionMetas: () => ({ archivedSessions: read(archived) }),
+  };
+});
+vi.mock('@/hooks/use-machine-flock-rows', () => ({
+  useMachineFlockRowsByMachineIds: () => new Map(),
+}));
+vi.mock('@/hooks/use-board-document', () => ({
+  useBoardDocument: () => ({ document: { notes: '# Shared' }, save: async () => {} }),
 }));
 vi.mock('@/hooks/use-machine-flock-agent-configs', () => ({
   useMachineFlockAgentConfigs: () => {},
@@ -63,6 +68,10 @@ vi.mock('@/hooks/use-session-actions', () => ({
   useSessionActions: () => ({
     startSession: (...args: unknown[]) => creation.startSession?.(...args),
     requestSessionDispatch: async () => {},
+    archiveSession: async (id: string) => void creation.actions.push(`archive:${id}`),
+    restoreSession: async (id: string) => void creation.actions.push(`restore:${id}`),
+    updateSessionTitle: async (id: string, title: string) =>
+      void creation.actions.push(`title:${id}:${title}`),
   }),
 }));
 vi.mock('@/components/schedules/schedule-agent-controls', () => ({
@@ -94,182 +103,303 @@ const makeSession = (id: string, extra: Partial<SessionMeta> = {}) =>
     ...extra,
   }) as SessionMeta;
 
-function Rows() {
-  const sessions = useAtomValue(allActiveSessionsAtom).filter(
-    (entry) => entry.boardId === 'bd_test'
-  );
-  return (
-    <>
-      {buildBoardRows(sessions).map(({ session, depth }) => (
-        <BoardSessionRow key={session.id} session={session} depth={depth} onOpen={() => {}} />
-      ))}
-    </>
-  );
+const testBoard = (extra: Partial<BoardMeta> = {}) => {
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_test',
+    name: 'Release',
+    purpose: 'Ship it',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+    ...extra,
+  });
+  if (!board) throw new Error('Invalid fixture');
+  return board;
+};
+
+/** A catalog writer over an in-memory row map, the shape `WorkspaceCatalogWriteDeps` needs. */
+function catalogRuntime(rows = new Map<string, { key: readonly unknown[]; value: unknown }>()) {
+  const runtime = {
+    workspaceId: 'ws',
+    workspaceSlug: 'ws',
+    repo: {
+      openFlockDoc: async () => ({
+        flock: { scan: () => rows.values() },
+        syncOnce: async () => {},
+      }),
+    },
+    writer: {
+      flockRowPut: async (_doc: string, key: readonly unknown[], value: unknown) => {
+        rows.set(JSON.stringify(key), { key, value });
+      },
+      flockRowDelete: async (_doc: string, key: readonly unknown[]) => {
+        rows.delete(JSON.stringify(key));
+      },
+    },
+  } as unknown as WorkspaceRuntime;
+  const board = (id: string) => rows.get(JSON.stringify(['board', id]))?.value as BoardMeta;
+  return { runtime, rows, board };
 }
 
-describe('board Overview', () => {
-  it.each([
-    {
-      name: 'failed user turn',
-      failed: true,
-      currentFailure: false,
-      oldFailure: false,
-      expected: 'Failed',
-    },
-    {
-      name: 'current chat_failed notice',
-      failed: false,
-      currentFailure: true,
-      oldFailure: false,
-      expected: 'Failed',
-    },
-    {
-      name: 'agent turn after an old failure',
-      failed: false,
-      currentFailure: false,
-      oldFailure: true,
-      expected: 'Idle · waiting for coordinator',
-    },
-  ])(
-    'reads a Loro-backed transcript: $name',
-    async ({ failed, currentFailure, oldFailure, expected }) => {
-      const id = 'transcript' as SessionId;
-      const entry = (turnId: string, patch: Partial<SessionHistory>): SessionHistory => ({
-        id: turnId,
-        role: 'user',
-        timestamp: '2026-10-15T00:00:00Z',
-        finished: true,
-        items: [],
-        ...patch,
-      });
-      const failure = (turnId: string) =>
-        entry(turnId, {
-          role: 'system',
-          items: [
-            { type: 'system_notice', name: 'chat_failed', meta: { reason: 'agent_no_output' } },
-          ],
-        });
-      const turns = [
-        ...(oldFailure ? [entry('old-user', {}), failure('old-failure')] : []),
-        entry('latest-user', {
-          status: failed ? 'failed' : 'handled',
-          author: {
-            v: 1,
-            kind: 'agent',
-            sessionId: 'coordinator',
-            turnId: 'assignment',
-            name: 'Coordinator',
-          },
-          items: [{ type: 'text', text: 'Implement the next step.\nKeep the result small.' }],
-        }),
-        entry('latest-assistant', {
-          role: 'assistant',
-          items: [{ type: 'text', text: 'Latest conclusion from the real transcript.' }],
-        }),
-        ...(currentFailure ? [failure('latest-failure')] : []),
-      ];
-      const doc = buildSessionDoc(turns);
-      const history = await openReaderView(doc, { sessionId: id });
-      docReads.histories.set(id, history);
-      const host = document.createElement('div');
-      document.body.append(host);
-      const root = createRoot(host);
-      try {
-        await act(async () =>
-          root.render(
-            <Provider store={createStore()}>
-              <BoardSessionRow
-                session={makeSession(id, { awaitingUserSince: 10, lastMessageAt: 20 })}
-                depth={0}
-                onOpen={() => {}}
-              />
-            </Provider>
-          )
-        );
-        expect(host.textContent).not.toContain('Latest conclusion');
-        await act(async () =>
-          host.querySelector<HTMLButtonElement>('button[aria-expanded]')?.click()
-        );
-        expect(host.textContent).toContain(expected);
-        expect(host.textContent).toContain('Implement the next step.');
-        expect(host.textContent).not.toContain('Keep the result small.');
-        expect(host.textContent).toContain('Latest conclusion from the real transcript.');
-        if (oldFailure) expect(host.textContent).not.toContain('Failed');
-      } finally {
-        await act(async () => root.unmount());
-        host.remove();
-        docReads.histories.delete(id);
-        history.dispose();
-        doc.free();
-      }
-    }
-  );
-
-  it('updates membership from real metadata atoms, shows tabs/opened sessions, and uses presence rather than stale status', async () => {
-    const store = createStore();
-    const a = makeSession('root');
-    const tab = makeSession('review', { parentSessionId: a.id });
-    const child = makeSession('independent', { openedBySessionId: a.id });
-    const other = makeSession('other', { boardId: 'bd_other' as never });
-    const cache = Object.fromEntries(
-      [a, tab, child, other].map((entry) => [getSessionRoomId(entry.id), entry])
-    );
-    store.set(sessionMetaCacheAtom, cache);
-    store.set(lodyPresenceNowMsAtom, 1000);
-    const host = document.createElement('div');
-    document.body.append(host);
-    const root = createRoot(host);
-    docReads.enabled.clear();
-    try {
-      await act(async () =>
-        root.render(
-          <Provider store={store}>
-            <Rows />
-          </Provider>
-        )
-      );
-      expect(
-        [...host.querySelectorAll('[data-board-session]')].map((node) =>
-          node.getAttribute('data-board-session')
-        )
-      ).toEqual(['root', 'review', 'independent']);
-      expect(host.textContent).not.toContain('Running');
-      expect(docReads.enabled.size).toBe(0);
-      await act(async () =>
-        store.set(lodyPresenceStatesAtom, {
-          live: {
-            kind: 'session',
-            sessionId: a.id,
-            machineId: a.machineId,
-            instanceId: 'instance' as never,
-            updatedAt: 1000,
-            status: { type: 'running', phase: 'finalizing' },
-          },
-        })
-      );
-      expect(host.querySelector('[data-board-session="root"]')?.textContent).toContain(
-        'Finalizing'
-      );
-      await act(async () =>
-        host
-          .querySelector<HTMLButtonElement>('[data-board-session="review"] button[aria-expanded]')
-          ?.click()
-      );
-      expect([...docReads.enabled]).toEqual(['review']);
-      await act(async () =>
-        store.set(sessionMetaCacheAtom, {
-          ...cache,
-          [getSessionRoomId(a.id)]: { ...a, boardId: undefined },
-        })
-      );
-      expect(host.querySelector('[data-board-session="root"]')).toBeNull();
-      expect(host.querySelector('[data-board-session="review"]')).not.toBeNull();
-      expect(host.querySelector('[data-board-session="independent"]')).not.toBeNull();
-    } finally {
+async function mount(node: React.ReactNode) {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  await act(async () => root.render(node));
+  return {
+    host,
+    async unmount() {
       await act(async () => root.unmount());
       host.remove();
+    },
+  };
+}
+
+const live = (session: SessionMeta, status: SessionStatus) => ({
+  [session.id]: {
+    kind: 'session' as const,
+    sessionId: session.id,
+    machineId: session.machineId,
+    instanceId: 'instance' as never,
+    updatedAt: 1000,
+    status,
+  },
+});
+
+describe('Board side panel', () => {
+  it('lists members from metadata and presence, groups them, and opens one in the panel', async () => {
+    const store = createStore();
+    const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+    const root = makeSession('root', { lastMessageAt: 50 });
+    const tab = makeSession('review', { parentSessionId: root.id });
+    const waiting = makeSession('waiting', { awaitingUserSince: 20, lastMessageAt: 10 });
+    const answered = makeSession('answered', { awaitingUserSince: 10, lastMessageAt: 20 });
+    const stopped = makeSession('stopped-child', { openedBySessionId: 'halted' as SessionId });
+    const halted = makeSession('halted', { boardId: undefined, collaborationStopped: true });
+    const other = makeSession('other', { boardId: 'bd_other' as never });
+    const sessions = [coordinator, root, tab, waiting, answered, stopped, halted, other];
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(sessions.map((entry) => [getSessionRoomId(entry.id), entry]))
+    );
+    store.set(lodyPresenceNowMsAtom, 1000);
+    store.set(lodyPresenceStatesAtom, live(root, { type: 'running' } as SessionStatus));
+    const opened: (string | null)[] = [];
+    function Panel() {
+      const [openThreadId, setOpenThreadId] = useState<SessionId | null>(null);
+      return (
+        <BoardSidePanel
+          board={testBoard()}
+          openThreadId={openThreadId}
+          onOpenThread={(thread) => {
+            opened.push(thread?.id ?? null);
+            setOpenThreadId(thread?.id ?? null);
+          }}
+          onOpenThreadFull={() => {}}
+          renderThread={(thread) => <p data-thread-surface={thread.id}>{thread.title}</p>}
+          onArchived={() => {}}
+        />
+      );
+    }
+    const view = await mount(
+      <Provider store={store}>
+        <Panel />
+      </Provider>
+    );
+    try {
+      const ids = () =>
+        [...view.host.querySelectorAll('[data-scope-item="row"]')].map((row) =>
+          row.getAttribute('data-id')
+        );
+      const groups = () =>
+        [...view.host.querySelectorAll('button[aria-expanded]')].map(
+          (button) => button.textContent
+        );
+      // The coordinator is the Board itself; a stopped opener stops its member;
+      // stale durable status never reads as work.
+      expect(ids()).toEqual(['stopped-child', 'waiting', 'root', 'review', 'answered']);
+      expect(groups()).toEqual(['Needs you2', 'Working1', 'Idle2']);
+      await act(async () => store.set(lodyPresenceStatesAtom, {}));
+      expect(groups()).toEqual(['Needs you2', 'Idle3']);
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('[data-id="review"]')?.click()
+      );
+      expect(opened).toEqual(['review']);
+      expect(view.host.querySelector('[data-thread-surface="review"]')).not.toBeNull();
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('button[aria-label="Back to threads"]')?.click()
+      );
+      expect(view.host.querySelector('[data-thread-surface]')).toBeNull();
+      const filesTab = [...view.host.querySelectorAll('[role="tab"]')].find(
+        (node) => node.textContent === 'Files'
+      ) as HTMLElement;
+      await act(async () => filesTab.click());
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('[data-id="notes"]')?.click()
+      );
+      expect(view.host.querySelector('textarea')?.value).toBe('# Shared');
+    } finally {
+      await view.unmount();
     }
   });
+
+  it('marks a Board by its strongest member state', () => {
+    const board = testBoard();
+    const working = makeSession('working');
+    const waiting = makeSession('waiting', { awaitingUserSince: 20, lastMessageAt: 10 });
+    const answered = makeSession('answered', { awaitingUserSince: 10, lastMessageAt: 20 });
+    const elsewhere = makeSession('elsewhere', { boardId: 'bd_other' as never });
+    const running = new Map<string, SessionStatus>([
+      [working.id, { type: 'running' } as SessionStatus],
+      [elsewhere.id, { type: 'requestPermission' } as SessionStatus],
+    ]);
+    expect(boardActivity(board, [answered], new Map())).toBeNull();
+    expect(boardActivity(board, [answered, working, elsewhere], running)).toBe('working');
+    expect(boardActivity(board, [working, waiting], running)).toBe('waiting');
+    expect(
+      boardActivity(
+        board,
+        [working],
+        new Map([[working.id, { type: 'requestPermission' } as SessionStatus]])
+      )
+    ).toBe('waiting');
+  });
+});
+
+it('saves Board settings to the catalog row and renames the coordinator with the Board', async () => {
+  const store = createStore();
+  const { runtime, board } = catalogRuntime();
+  store.set(runtimeAtom, runtime);
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  creation.actions = [];
+  let closed = false;
+  const view = await mount(
+    <Provider store={store}>
+      <BoardSettingsDialog board={testBoard()} onClose={() => (closed = true)} />
+    </Provider>
+  );
+  try {
+    const name = document.querySelector<HTMLInputElement>('input[aria-label="Name"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        name,
+        ' Launch '
+      );
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(document.body.textContent).not.toContain('Archive Board');
+    await act(async () => {
+      document
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    expect(closed).toBe(true);
+    expect(board('bd_test')).toMatchObject({ name: 'Launch', purpose: 'Ship it' });
+    expect(creation.actions).toEqual(['title:coordinator:Launch']);
+  } finally {
+    await view.unmount();
+  }
+});
+
+it('archives a Board with its coordinator and member roots, then restores them all', async () => {
+  const store = createStore();
+  const { runtime, board } = catalogRuntime();
+  store.set(runtimeAtom, runtime);
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  creation.actions = [];
+  const sessions = [
+    makeSession('coordinator', { boardRole: 'coordinator' }),
+    makeSession('root'),
+    makeSession('review', { parentSessionId: 'root' as SessionId }),
+    makeSession('other', { boardId: 'bd_other' as never }),
+  ];
+  let lifecycle!: ReturnType<typeof useBoardLifecycle>;
+  function Probe() {
+    lifecycle = useBoardLifecycle();
+    return null;
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <Probe />
+    </Provider>
+  );
+  try {
+    await act(async () => lifecycle.archiveBoard(testBoard(), sessions));
+    expect(creation.actions).toEqual(['archive:coordinator', 'archive:root']);
+    expect(board('bd_test').archivedAtMs).toEqual(expect.any(Number));
+    creation.actions = [];
+    await act(async () => lifecycle.restoreBoard(board('bd_test'), sessions));
+    expect(board('bd_test')).not.toHaveProperty('archivedAtMs');
+    expect(creation.actions).toEqual(['restore:coordinator', 'restore:root']);
+  } finally {
+    await view.unmount();
+  }
+});
+
+it('creates a Board from its goal, naming it after the first line with default rules', async () => {
+  const store = createStore();
+  const { runtime, board } = catalogRuntime();
+  store.set(userAtom, { id: 'user', name: 'User', email: 'user@example.com' });
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(currentWorkspaceSlugAtom, 'ws');
+  store.set(runtimeAtom, runtime);
+  store.set(agentConfigMetaCacheAtom, {
+    config: {
+      id: 'config',
+      machineId: 'machine',
+      cliType: 'builtin',
+      agentType: 'claude',
+      name: 'Agent',
+      prompt: '',
+    } as AgentConfigMeta,
+  });
+  creation.machines = new Map([
+    ['machine', { id: 'machine', name: 'Desktop', ownerUserId: 'user' }],
+  ]);
+  const accepted: SessionToCreate[] = [];
+  creation.startSession = async (...args: unknown[]) => {
+    const [payload, history] = args as [SessionToCreate, Omit<SessionHistoryInput, 'id'>];
+    accepted.push(payload);
+    return { sessionId: payload.sessionId, historyEntry: { ...history, id: 'first-turn' } };
+  };
+  const created: BoardMeta[] = [];
+  const view = await mount(
+    <Provider store={store}>
+      <CreateBoardDialog onClose={() => {}} onCreated={(entry) => created.push(entry)} />
+    </Provider>
+  );
+  try {
+    expect(document.querySelectorAll('input[type="number"]')).toHaveLength(0);
+    const goal = document.querySelector('textarea')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        goal,
+        'Ship the Board home\nKeep it small.'
+      );
+      goal.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      document
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    expect(created).toHaveLength(1);
+    expect(board(created[0]!.id)).toMatchObject({
+      name: 'Ship the Board home',
+      purpose: 'Ship the Board home\nKeep it small.',
+      rules: { maxRoundsPerThread: 4, reportHumanTurns: false, executorConstraints: '' },
+    });
+    expect(accepted[0]).toMatchObject({
+      boardId: created[0]!.id,
+      boardRole: 'coordinator',
+      title: 'Ship the Board home',
+    });
+  } finally {
+    await view.unmount();
+    creation.startSession = undefined;
+    creation.machines.clear();
+  }
 });
 
 it('joins and removes a session through real metadata without altering its ordinary fields', async () => {
@@ -443,77 +573,5 @@ it('submits a new Board thread as chat without the coordinator role', async () =
     container.remove();
     creation.startSession = undefined;
     creation.machines.clear();
-  }
-});
-
-it('shows the system driving depth and the limit notice, then clears stopped on a fresh human turn', async () => {
-  const id = 'chain-coordinator' as SessionId;
-  const doc = buildSessionDoc([
-    {
-      id: 'human',
-      role: 'user',
-      timestamp: '2026-10-16T00:00:00Z',
-      inputConfig: { chainDepth: 0 },
-      items: [],
-    },
-    {
-      id: 'automatic',
-      role: 'system',
-      timestamp: '2026-10-16T00:00:01Z',
-      inputConfig: { chainDepth: 15 },
-      items: [],
-    },
-    {
-      id: 'limit',
-      role: 'system',
-      timestamp: '2026-10-16T00:00:02Z',
-      items: [
-        {
-          type: 'system_notice',
-          name: 'board_chain_limit',
-          meta: { boardId: 'bd_test', drivingTurnId: 'automatic' },
-        },
-      ],
-    },
-  ]);
-  const data = createLoroSessionData({ sessionId: id, doc });
-  const history = await openReaderView(doc, { sessionId: id });
-  docReads.histories.set(id, history);
-  const container = document.createElement('div');
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  try {
-    await act(async () =>
-      root.render(
-        <Provider>
-          <BoardSessionRow
-            session={makeSession(id, { boardRole: 'coordinator' })}
-            depth={0}
-            onOpen={() => {}}
-          />
-        </Provider>
-      )
-    );
-    expect(container.textContent).toContain('Stopped');
-    expect(container.textContent).toContain('15/16');
-    await act(async () =>
-      data.commands.appendTurn({
-        id: 'fresh-human',
-        role: 'user',
-        timestamp: '2026-10-16T00:00:03Z',
-        author: { v: 1, kind: 'human', userId: 'user' },
-        inputConfig: { chainDepth: 0 },
-        items: [],
-        fileDiff: [],
-      })
-    );
-    expect(container.textContent).not.toContain('Stopped');
-    expect(container.textContent).toContain('0/16');
-  } finally {
-    await act(async () => root.unmount());
-    container.remove();
-    history.dispose();
-    doc.free();
-    docReads.histories.delete(id);
   }
 });

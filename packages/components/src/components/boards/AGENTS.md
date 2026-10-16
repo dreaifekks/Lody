@@ -8,16 +8,25 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 - CLI/MCP independent creates inherit the invoking session's board; contained Tabs
   inherit only their parent, including when that parent has no Board. The renderer's `createSession` and `startSession` must do
   this too. Never inherit `boardRole` or `boardGeneration` implicitly.
-- The 50-Board creation limit counts only unarchived rows and is checked once
-  in the catalog writer.
-- Overview acquires machine localProject catalogs at list level, once per machine.
-  Live activity takes priority over waiting markers; without presence, only a
-  marker newer than `lastMessageAt` means waiting for the user.
-- Overview uses visible session metadata and live presence. Only expanded rows
-  acquire session documents; the coordinator starts expanded. History reads use
-  ConversationView, never a materialized full-history mirror.
-- The experiment gates navigation and the page. Turning it off retains data and
-  does not stop ordinary sessions or their membership inheritance.
+- The 50-Board limit counts only unarchived rows and is checked in the catalog
+  writer, on create and on restore.
+- A coordinator is its Board: the sidebar, mobile home and Archive lists drop
+  `boardRole === 'coordinator'` at their own sources, never in shared atoms. A Board
+  opens as the coordinator's Session page with the `board` side panel;
+  `/boards/<id>` redirects there with `?board=1`, applied once and then removed.
+- The panel's thread rows use visible metadata and one derived presence atom; they
+  never acquire member documents. Live activity takes priority over waiting markers;
+  without presence, only a marker newer than `lastMessageAt` means waiting.
+  localProject catalogs are acquired at list level, once per machine.
+- A thread opened in the panel is a `SessionChatInterface` whose workspace session
+  is the thread itself. Never give it a `side-session:` tab id: closing those
+  deletes the Session. Narrow windows open the thread's own page instead.
+- Archiving a Board archives the coordinator and member roots, then writes
+  `archivedAtMs`; restoring restores every root, since Session restore covers
+  only direct Tabs.
+- The experiment gates the sidebar section, the Board panel and archived Boards.
+  Turning it off retains data and does not stop ordinary sessions or their
+  membership inheritance.
 - Manual membership changes affect only the selected Session, clear its generation,
   and never detach the fixed coordinator. Tab inheritance happens at creation.
 - Board tools are advertised at ACP startup, but the daemon authorizes against

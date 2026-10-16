@@ -11,7 +11,6 @@ import { v4 as uuid } from 'uuid';
 import { Button } from '@lody/ui/button';
 import { Input } from '@lody/ui/input';
 import { Textarea } from '@lody/ui/textarea';
-import { Switch } from '@lody/ui/switch';
 import { Dialog } from '@/ui/dialog';
 import {
   DEFAULT_BOARD_RULES,
@@ -48,6 +47,7 @@ import { pickScheduleAgent, seedScheduleAgentRunRef } from '../schedules/schedul
 import { DesktopMachineMenu } from '../sessions/desktop-run-config-menu';
 import type { AgentRunRef } from '../shared/agent-run-ref';
 import { boardStyles } from './board-view';
+import { BoardCreateDialogView, boardNameFromGoal } from './board-create-dialog-view';
 
 const lastBoardAgentAtom = atomWithStorage<{
   machineId: MachineId;
@@ -113,7 +113,6 @@ export function CreateBoardDialog({
   const config = agents.find((entry) => entry.id === shownAgent?.agentConfigId);
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
-  const [rules, setRules] = useState(DEFAULT_BOARD_RULES);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [ids] = useState(() => ({ board: `bd_${uuid()}`, session: uuid() as SessionId }));
@@ -137,9 +136,9 @@ export function CreateBoardDialog({
       normalizeBoardMeta({
         version: 1,
         id: ids.board,
-        name: name.trim(),
+        name: name.trim() || boardNameFromGoal(purpose),
         purpose: purpose.trim(),
-        rules,
+        rules: DEFAULT_BOARD_RULES,
         coordinatorSessionId: ids.session,
         createdAtMs: Date.now(),
         createdByUserId: user.id,
@@ -253,6 +252,59 @@ export function CreateBoardDialog({
       setSaving(false);
     }
   };
+  const coordinatorControls = (
+    <div {...stylex.props(boardStyles.controls)}>
+      <DesktopMachineMenu
+        value={machineId ?? null}
+        options={[...ownedMachines.values()]
+          .filter((entry) => agents.some((a) => a.machineId === entry.id))
+          .map((entry) => ({ value: entry.id, label: entry.name }))}
+        selectedLabel={machine?.name}
+        onChange={chooseMachine}
+      />
+      <ScheduleAgentControls
+        machine={machine}
+        agentConfigs={agents.filter((a) => a.machineId === machineId)}
+        value={shownAgent}
+        onChange={(next) => {
+          if (machineId) setChoice({ machineId, agent: next, instanceId: null });
+        }}
+        agentRoles={{
+          items: roleItems,
+          selectedInstanceId: role?.instance.id ?? null,
+          machine: machine ?? null,
+          onSelect: (id) => {
+            const item = findComposerAgentRoleItem(roleItems, id);
+            if (item)
+              setChoice({
+                machineId: item.instance.machineId,
+                agent: {
+                  agentConfigId: item.instance.agentConfigId,
+                  ...item.instance.runConfig,
+                },
+                instanceId: id,
+              });
+            else if (shownAgent && machineId)
+              setChoice({ machineId, agent: shownAgent, instanceId: null });
+          },
+        }}
+      />
+    </div>
+  );
+  if (!existingBoard)
+    return (
+      <BoardCreateDialogView
+        goal={purpose}
+        name={name}
+        onGoalChange={setPurpose}
+        onNameChange={setName}
+        coordinator={coordinatorControls}
+        saving={saving}
+        error={error}
+        onSubmit={() => void create()}
+        onClose={onClose}
+      />
+    );
   return (
     <Dialog.Root
       open
@@ -262,21 +314,12 @@ export function CreateBoardDialog({
     >
       <Dialog.Content>
         <Dialog.Header>
-          <Dialog.Title>
-            {existingBoard
-              ? t('boards.newThread', '+ New thread')
-              : t('boards.create', 'New board')}
-          </Dialog.Title>
+          <Dialog.Title>{t('boards.newThread', '+ New thread')}</Dialog.Title>
           <Dialog.Description>
-            {existingBoard
-              ? t(
-                  'boards.threadHelp',
-                  'Choose an agent and describe its task. The session joins this board.'
-                )
-              : t(
-                  'boards.createHelp',
-                  'Choose a coordinator. Your goal will be its first message.'
-                )}
+            {t(
+              'boards.threadHelp',
+              'Choose an agent and describe its task. The session joins this board.'
+            )}
           </Dialog.Description>
         </Dialog.Header>
         <form
@@ -299,90 +342,14 @@ export function CreateBoardDialog({
               rows={4}
             />
           </label>
-          <div {...stylex.props(boardStyles.controls)}>
-            <DesktopMachineMenu
-              value={machineId ?? null}
-              options={[...ownedMachines.values()]
-                .filter((entry) => agents.some((a) => a.machineId === entry.id))
-                .map((entry) => ({ value: entry.id, label: entry.name }))}
-              selectedLabel={machine?.name}
-              onChange={chooseMachine}
-            />
-            <ScheduleAgentControls
-              machine={machine}
-              agentConfigs={agents.filter((a) => a.machineId === machineId)}
-              value={shownAgent}
-              onChange={(next) => {
-                if (machineId) setChoice({ machineId, agent: next, instanceId: null });
-              }}
-              agentRoles={{
-                items: roleItems,
-                selectedInstanceId: role?.instance.id ?? null,
-                machine: machine ?? null,
-                onSelect: (id) => {
-                  const item = findComposerAgentRoleItem(roleItems, id);
-                  if (item)
-                    setChoice({
-                      machineId: item.instance.machineId,
-                      agent: {
-                        agentConfigId: item.instance.agentConfigId,
-                        ...item.instance.runConfig,
-                      },
-                      instanceId: id,
-                    });
-                  else if (shownAgent && machineId)
-                    setChoice({ machineId, agent: shownAgent, instanceId: null });
-                },
-              }}
-            />
-          </div>
-          {!existingBoard ? (
-            <>
-              <label {...stylex.props(boardStyles.field)}>
-                {t('boards.maxRounds', 'Rounds per thread')}
-                <Input
-                  type="number"
-                  min={1}
-                  value={rules.maxRoundsPerThread}
-                  onChange={(e) =>
-                    setRules({ ...rules, maxRoundsPerThread: Number(e.target.value) })
-                  }
-                />
-              </label>
-              <label {...stylex.props(boardStyles.controls)}>
-                <Switch
-                  checked={rules.reportHumanTurns}
-                  onCheckedChange={(value) => setRules({ ...rules, reportHumanTurns: value })}
-                />
-                {t('boards.reportHumanTurns', 'Report completed human turns')}
-              </label>
-              <label {...stylex.props(boardStyles.field)}>
-                {t('boards.constraints', 'Executor instructions')}
-                <Textarea
-                  value={rules.executorConstraints}
-                  onChange={(e) => setRules({ ...rules, executorConstraints: e.target.value })}
-                  rows={3}
-                />
-              </label>
-              <p {...stylex.props(boardStyles.muted)}>
-                {t(
-                  'boards.rulesLater',
-                  'Rules are saved for the upcoming reporting and handoff features.'
-                )}
-              </p>
-            </>
-          ) : null}
+          {coordinatorControls}
           {error ? (
             <p role="alert" {...stylex.props(boardStyles.error)}>
               {error}
             </p>
           ) : null}
           <Button type="submit" disabled={saving || !config || !machine}>
-            {saving
-              ? t('boards.creating', 'Creating…')
-              : existingBoard
-                ? t('boards.newThread', '+ New thread')
-                : t('boards.create', 'New board')}
+            {saving ? t('boards.creating', 'Creating…') : t('boards.newThread', '+ New thread')}
           </Button>
         </form>
       </Dialog.Content>

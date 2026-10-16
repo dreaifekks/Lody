@@ -4,13 +4,17 @@ import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
 import { Hand, LayoutDashboard, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { SessionId } from '@lody/shared';
 import { SessionRowStatusIndicator, SidebarSectionHeader } from '../sidebar-row-shared';
+import type { BoardActivity } from './board-threads';
 
 export interface BoardSidebarItem {
   id: string;
   name: string;
+  /** Opening the Board opens this conversation. */
+  coordinatorSessionId: SessionId;
   /** Strongest member state: someone waits for the user, or someone works. */
-  activity: 'waiting' | 'working' | null;
+  activity: BoardActivity;
 }
 
 const styles = stylex.create({
@@ -51,6 +55,7 @@ export function BoardSidebarSection({
   boards,
   selectedId,
   collapsed,
+  isMobile,
   onToggleCollapsed,
   onOpen,
   onCreate,
@@ -58,8 +63,9 @@ export function BoardSidebarSection({
   boards: readonly BoardSidebarItem[];
   selectedId?: string | null;
   collapsed: boolean;
+  isMobile?: boolean;
   onToggleCollapsed: () => void;
-  onOpen: (id: string) => void;
+  onOpen: (board: BoardSidebarItem) => void;
   onCreate: () => void;
 }) {
   const { t } = useTranslation();
@@ -69,6 +75,7 @@ export function BoardSidebarSection({
         label={t('boards.title', 'Boards')}
         collapsed={collapsed}
         onToggleCollapsed={onToggleCollapsed}
+        isMobile={isMobile}
         toggleLabel={t('boards.title', 'Boards')}
         action={
           <Button
@@ -90,8 +97,9 @@ export function BoardSidebarSection({
               type="button"
               data-scope-item="row"
               data-id={board.id}
+              data-sidebar-session-id={board.coordinatorSessionId}
               aria-current={board.id === selectedId ? 'page' : undefined}
-              onClick={() => onOpen(board.id)}
+              onClick={() => onOpen(board)}
               {...stylex.props(styles.row, board.id === selectedId && styles.selected)}
             >
               <LayoutDashboard size={14} aria-hidden {...stylex.props(styles.glyph)} />

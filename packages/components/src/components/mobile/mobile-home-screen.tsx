@@ -1,8 +1,3 @@
-import { ListTodo } from 'lucide-react';
-import { useAtomValue } from 'jotai';
-import { useTranslation } from 'react-i18next';
-import { boardEnabledAtom } from '@/atoms/settings';
-import { BoardsWorkspace } from '../boards/boards-workspace';
 import { SchedulesWorkspace } from '../schedules/schedules-workspace';
 import {
   forwardRef,
@@ -103,7 +98,7 @@ export type { MobileChatGroupBy };
    multi-member workspaces and occupies the natural "home" position.
    The 项目 tab merges Local + GitHub via an inner sub-tab; the 设置
    surface lives in the header's gear button. */
-export type MobileHomeTab = 'inbox' | 'chat' | 'projects' | 'schedules' | 'boards';
+export type MobileHomeTab = 'inbox' | 'chat' | 'projects' | 'schedules';
 
 /* Sub-tab inside the "项目" tab. Drives both the heading + full list
    below the segmented selector. Persisted via `mobileHomeProjectsSubTabAtom`
@@ -1032,8 +1027,7 @@ function RecentItemsRow<TItem extends { id: string }>({
    `<MobileWorkspaceTabBar>` via plain props, not closures. */
 function workspaceTabSpecs(
   labels: MobileHomeScreenLabels,
-  showInboxTab = false,
-  boardsLabel?: string
+  showInboxTab = false
 ): ReadonlyArray<MobileBottomTabBarTabSpec<MobileHomeTab>> {
   /* Icons at 24px (h-6) — the dock pill is h-14, so h-5/20px read as
      under-drawn next to the label. Material icons go through MobileReactIcon
@@ -1055,16 +1049,6 @@ function workspaceTabSpecs(
       material: <MobileReactIcon icon={MdChat} className="h-6 w-6" />,
       label: labels.chatTab ?? 'Chat',
     },
-    ...(boardsLabel
-      ? [
-          {
-            key: 'boards' as const,
-            ios: <ListTodo size={24} />,
-            material: <ListTodo size={24} />,
-            label: boardsLabel,
-          },
-        ]
-      : []),
     {
       key: 'schedules',
       ios: <Clock3 className="h-6 w-6" />,
@@ -1407,9 +1391,7 @@ export function MobileHomeScreen({
     return map;
   }, [machines]);
 
-  const boardsEnabled = useAtomValue(boardEnabledAtom);
-  const { t } = useTranslation();
-  const scheduleTabActive = selectedTab === 'schedules' || selectedTab === 'boards';
+  const scheduleTabActive = selectedTab === 'schedules';
 
   const resolvedTheme: 'ios' | 'material' =
     theme ?? (isIOSRuntimeEnvironment() ? 'ios' : 'material');
@@ -1749,15 +1731,11 @@ export function MobileHomeScreen({
              is the one that filters the list. */}
           {scheduleTabActive ? (
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              {selectedTab === 'boards' ? (
-                <BoardsWorkspace />
-              ) : (
-                <SchedulesWorkspace
-                  hideHeader
-                  query={searchQuery}
-                  createScheduleRef={createScheduleRef}
-                />
-              )}
+              <SchedulesWorkspace
+                hideHeader
+                query={searchQuery}
+                createScheduleRef={createScheduleRef}
+              />
             </div>
           ) : null}
         </div>
@@ -1768,11 +1746,7 @@ export function MobileHomeScreen({
             bottom tabs. Tabs are built locally so the translations stay
             co-located with the other screen copy. */}
         <MobileWorkspaceTabBar<MobileHomeTab>
-          tabs={workspaceTabSpecs(
-            labels,
-            showInboxTab,
-            boardsEnabled ? t('boards.title', 'Boards') : undefined
-          )}
+          tabs={workspaceTabSpecs(labels, showInboxTab)}
           selectedTab={selectedTab}
           onTabSelect={(tab) => onTabSelect?.(tab)}
           onNewChat={onNewChat}

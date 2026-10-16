@@ -72,3 +72,9 @@ submodules unchanged, as permitted for the known check limitation.
 The original PR1 browser checks covered desktop and 390px list/row previews.
 Real LAN dispatch remains manual. No report observer, Board MCP tools, notes
 document, round rejection or digest is shipped in PR1.
+
+## Later change
+
+The read-only Overview page, its expand-to-read rows and the Boards navigation item
+were replaced on 2026-10-16 by the Board side panel on the coordinator's page; see
+[Board home](2026-10-16-board-home.md). Membership and creation above still apply.

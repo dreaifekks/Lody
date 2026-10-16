@@ -134,19 +134,31 @@ export const deleteWorkspaceBoard = (
   id: BoardMeta['id']
 ): Promise<void> => deleteRow(deps, workspaceFlockKeys.board(id));
 
+const countActiveBoards = async (deps: WorkspaceCatalogWriteDeps): Promise<number> => {
+  const handle = await deps.repo.openFlockDoc(getWorkspaceFlockDocId(deps.workspaceId));
+  return listWorkspaceBoards(readWorkspaceFlockRowsFromFlock(handle.flock)).filter(
+    (entry) => entry.archivedAtMs === undefined
+  ).length;
+};
+
+/** Restoring brings a Board back under the active limit, so it is checked here too. */
+export async function restoreWorkspaceBoard(
+  deps: WorkspaceCatalogWriteDeps,
+  board: BoardMeta
+): Promise<BoardMeta> {
+  if ((await countActiveBoards(deps)) >= MAX_BOARDS_PER_WORKSPACE) throw new Error('BOARD_LIMIT');
+  const { archivedAtMs: _archivedAtMs, ...restored } = board;
+  await writeWorkspaceBoard(deps, restored);
+  return restored;
+}
+
 /** Board creation compensates only a rejected first-turn acceptance, never upload. */
 export async function createWorkspaceBoard<T>(
   deps: WorkspaceCatalogWriteDeps,
   board: BoardMeta,
   startCoordinator: () => Promise<T>
 ): Promise<T> {
-  const handle = await deps.repo.openFlockDoc(getWorkspaceFlockDocId(deps.workspaceId));
-  if (
-    listWorkspaceBoards(readWorkspaceFlockRowsFromFlock(handle.flock)).filter(
-      (entry) => entry.archivedAtMs === undefined
-    ).length >= MAX_BOARDS_PER_WORKSPACE
-  )
-    throw new Error('BOARD_LIMIT');
+  if ((await countActiveBoards(deps)) >= MAX_BOARDS_PER_WORKSPACE) throw new Error('BOARD_LIMIT');
   await writeWorkspaceBoard(deps, board);
   try {
     return await startCoordinator();

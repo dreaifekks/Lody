@@ -16,11 +16,18 @@ const styles = stylex.create({
   note: { margin: 0, fontSize: text.footnoteSize, color: colors.secondaryLabel },
 });
 
+/** The name a Board takes when none is typed: the goal's first line, cut to the row limit. */
+export function boardNameFromGoal(goal: string): string {
+  return Array.from(goal.trim().split('\n')[0] ?? '')
+    .slice(0, 80)
+    .join('')
+    .trim();
+}
+
 /**
  * Creating a Board asks only what the first message needs: the goal, and who
- * coordinates. The name defaults to the goal's first line; the project scope
- * defaults to every project; rules, memory and the digest start from defaults
- * and change later in Board settings.
+ * coordinates. The name defaults to the goal's first line; rules start from
+ * defaults and change later in Board settings.
  */
 export function BoardCreateDialogView({
   goal,
@@ -40,15 +47,15 @@ export function BoardCreateDialogView({
   onNameChange: (value: string) => void;
   /** Machine + agent (or Agent Role) picker, as in the current dialog. */
   coordinator: ReactNode;
-  /** "All projects" until narrowed; opens the same chooser the settings use. */
-  projectScope: ReactNode;
+  /** "All projects" until narrowed; joins the dialog with the project-scope step. */
+  projectScope?: ReactNode;
   saving?: boolean;
   error?: string;
   onSubmit: () => void;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const firstLine = goal.trim().split('\n')[0] ?? '';
+  const firstLine = boardNameFromGoal(goal);
   return (
     <Dialog.Root
       open
@@ -99,7 +106,7 @@ export function BoardCreateDialogView({
           <p {...stylex.props(styles.note)}>
             {t(
               'boards.createForm.later',
-              'Rules, memory and the daily digest start from defaults. Change them in Board settings.'
+              'Rules start from defaults. Change them in Board settings.'
             )}
           </p>
           {error !== '' ? (

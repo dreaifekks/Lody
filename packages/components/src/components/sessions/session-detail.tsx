@@ -83,7 +83,7 @@ import {
 } from '@/components/sessions/draft-session-chat-interface';
 import { SessionMentionDropLayer } from '@/components/sessions/session-mention-drop-layer';
 import { BaseHeader } from '@/components/page-headers/base-header';
-import { useIsMobile } from '@/hooks/use-mobile';
+import { useIsCompactDesktop, useIsMobile } from '@/hooks/use-mobile';
 import { usePublishSessionViewing } from '@/hooks/use-publish-session-viewing';
 import { useFireOncePerKey } from '@/hooks/use-fire-once';
 import { useMachineOnlineStatus } from '@/hooks/use-machine-online-status';
@@ -193,7 +193,9 @@ import { getCommandKeybindings, useCommand } from '@/lib/commands';
 import { useDesktopTabCloser } from '@/lib/desktop-tab-or-window-close';
 import { useSemanticActionRouter } from '@/lib/commands/use-semantic-action-router';
 import type { SemanticActionRouter } from '@/lib/commands/semantic-action-router';
-import { semanticShortcutsFeatureEnabledAtom } from '@/atoms/settings';
+import { boardEnabledAtom, semanticShortcutsFeatureEnabledAtom } from '@/atoms/settings';
+import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
+import { BoardSidePanel } from '../boards/board-side-panel';
 import { cn, getBasename } from '@/lib';
 
 import {
@@ -514,6 +516,7 @@ const MOBILE_DRAWER_HEADER_INSET = 'calc(3.5rem + var(--safe-area-top))';
    Namespaced so they never collide with a real file/diff `ViewerTabItem.id`. */
 const EMPTY_LOCAL_PROJECTS: Record<LocalProjectId, LocalProjectMeta> = {};
 const MOBILE_PR_VIEWER_ID = 'mobile-viewer:pr';
+const MOBILE_BOARD_VIEWER_ID = 'mobile-viewer:board';
 const MOBILE_BROWSER_VIEWER_ID = 'mobile-viewer:browser';
 const MOBILE_IOS_SIMULATOR_VIEWER_ID = 'mobile-viewer:ios-simulator';
 const MOBILE_FILES_VIEWER_ID = 'mobile-viewer:files';
@@ -1011,6 +1014,7 @@ const SessionDetail = ({
   urlPrNumber,
   urlBrowser,
   urlSimulator,
+  urlBoard,
   onMobileBack,
 }: {
   sessionId: SessionId;
@@ -1018,6 +1022,8 @@ const SessionDetail = ({
   urlPrNumber?: number;
   urlBrowser?: boolean;
   urlSimulator?: boolean;
+  /** `?board=1`: open the Board panel of a coordinator's page once. */
+  urlBoard?: boolean;
   onMobileBack?: () => void;
 }) => {
   const { t } = useTranslation();
@@ -1079,6 +1085,12 @@ const SessionDetail = ({
     sessionId: SessionId;
     prNumber: number;
   } | null>(null);
+  // `?board=1` follows the same once-per-session state guard as `?pr`.
+  const [restoredBoardPanel, setRestoredBoardPanel] = useState<SessionId | null>(null);
+  // The thread open inside the Board panel. Page state, because the compact
+  // layout remounts the panel subtree.
+  const [boardThreadId, setBoardThreadId] = useState<SessionId | null>(null);
+  const [mobileBoardOpen, setMobileBoardOpen] = useState(false);
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab | null>(
     () => initialTabState.sidePanel.tab
   );
@@ -1193,6 +1205,14 @@ const SessionDetail = ({
   const docMetaCacheReady = useAtomValue(docMetaCacheReadyAtom);
   const docMetaCacheSettled = useAtomValue(sessionMetaCacheSettledAtomFamily(sessionId));
   const activeSession = session ?? null;
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  const { boards } = useWorkspaceCatalog();
+  const isCompactDesktop = useIsCompactDesktop();
+  // A coordinator's page is its Board: only it carries the Board panel.
+  const activeBoard =
+    boardsEnabled && activeSession?.boardRole === 'coordinator'
+      ? (boards.find((board) => board.coordinatorSessionId === activeSession.id) ?? null)
+      : null;
   const activeSessionSharing = useMemo(
     () => (showSessionSharing && activeSession ? resolveSessionSharing(activeSession) : null),
     [activeSession, resolveSessionSharing, showSessionSharing]
@@ -1391,6 +1411,8 @@ const SessionDetail = ({
     setMobileDiffState(null);
     setMobileFilesBrowserOpen(false);
     setFileProviderRequestedByInteraction(false);
+    setBoardThreadId(null);
+    setMobileBoardOpen(false);
   }
 
   const setDraftTabs = useCallback(
@@ -3506,11 +3528,43 @@ const SessionDetail = ({
     setRestoredPrSidebar(null);
   }
 
+  if (urlBoard === true && activeBoard) {
+    if (restoredBoardPanel !== sessionId) {
+      setRestoredBoardPanel(sessionId);
+      if (isMobile) {
+        setMobileBoardOpen(true);
+      } else {
+        setSidebarRestoreSeq((seq) => seq + 1);
+        setIsSidebarOpen(true);
+        activateSidebarTab('board');
+      }
+    }
+  } else if (urlBoard !== true && restoredBoardPanel !== null) {
+    setRestoredBoardPanel(null);
+  }
+
   // The PR restore token is committed with the open panel and restore sequence.
   // Clear the transient Zen override before paint without writing Jotai during render.
   useLayoutEffect(() => {
     if (restoredPrSidebar !== null) setZenLayoutMode(false);
   }, [restoredPrSidebar, setZenLayoutMode]);
+
+  // `?board=1` is an opening request, not a state: once applied it leaves the
+  // URL, so opening the Board again from the sidebar applies it again.
+  useEffect(() => {
+    if (urlBoard !== true || restoredBoardPanel !== sessionId || !workspaceSlug) return;
+    setZenLayoutMode(false);
+    void router.navigate({
+      to: '/$workspaceName/sessions/$sessionId',
+      params: { workspaceName: workspaceSlug, sessionId },
+      search: (prev) => {
+        const next = { ...prev };
+        delete next.board;
+        return next;
+      },
+      replace: true,
+    });
+  }, [restoredBoardPanel, router, sessionId, setZenLayoutMode, urlBoard, workspaceSlug]);
 
   // Once restored, a user switching away from the PR tab (or closing the
   // sidebar) clears `?pr` so the URL stays consistent. The URL write must be
@@ -4511,6 +4565,9 @@ const SessionDetail = ({
   // only merge for display.
   const sidePanelFixedOptions = useMemo<(SessionSidePanelOption & { id: SidebarTab })[]>(() => {
     const options: (SessionSidePanelOption & { id: SidebarTab })[] = [
+      ...(activeBoard
+        ? [{ id: 'board' as const, label: t('boards.panelTab', 'Board'), kind: 'board' as const }]
+        : []),
       {
         id: 'files',
         label: t('sessions.detailTabs.files', 'Files'),
@@ -4552,6 +4609,7 @@ const SessionDetail = ({
     }
     return options;
   }, [
+    activeBoard,
     activeBrowserSession,
     activeIosSimulatorSession,
     activePlanReview,
@@ -5534,6 +5592,14 @@ const SessionDetail = ({
 
   const mobileViewers = useMemo<ViewerTabEntry[]>(() => {
     const list: ViewerTabEntry[] = [];
+    if (activeBoard) {
+      list.push({
+        id: MOBILE_BOARD_VIEWER_ID,
+        label: t('boards.panelTab', 'Board'),
+        kind: 'board',
+        active: false,
+      });
+    }
     /* Files leads the group and is unconditional: it is the mobile
        counterpart of the desktop Files side panel, and it is the only way
        to reach a file the conversation never mentioned. Availability is
@@ -5582,6 +5648,7 @@ const SessionDetail = ({
     }
     return list;
   }, [
+    activeBoard,
     canShowGitHubActions,
     latestPr,
     latestPrNumber,
@@ -5651,6 +5718,10 @@ const SessionDetail = ({
       }
       if (id === MOBILE_FILES_VIEWER_ID) {
         setMobileFilesBrowserOpen(true);
+        return;
+      }
+      if (id === MOBILE_BOARD_VIEWER_ID) {
+        setMobileBoardOpen(true);
         return;
       }
       const viewerTab = viewerTabs.find((tab) => tab.id === id);
@@ -6049,6 +6120,44 @@ const SessionDetail = ({
     );
 
   // Mobile layout
+  const navigateToChat = () => {
+    if (workspaceSlug)
+      void router.navigate({
+        to: '/$workspaceName/chat',
+        params: { workspaceName: workspaceSlug },
+      });
+  };
+  const boardPanel = activeBoard ? (
+    <BoardSidePanel
+      board={activeBoard}
+      openThreadId={isMobile ? null : boardThreadId}
+      onOpenThread={(thread) => {
+        // A narrow window has no room for a second conversation: open the page.
+        if (thread && (isMobile || isCompactDesktop)) {
+          setMobileBoardOpen(false);
+          handleNavigateSession({ sessionId: thread.id });
+          return;
+        }
+        setBoardThreadId(thread?.id ?? null);
+      }}
+      onOpenThreadFull={(thread) => handleNavigateSession({ sessionId: thread.id })}
+      renderThread={(thread) => (
+        <SessionChatInterface
+          key={thread.id}
+          session={thread}
+          // The thread owns its repository, PR and diff state, not the coordinator.
+          workspaceSession={thread}
+          className={stylex.props(detailStyles.rootFill).className}
+          hideHeader
+          syncEnabled
+          isVisible={isSidebarVisible}
+          onNavigateSession={handleNavigateSession}
+        />
+      )}
+      onArchived={navigateToChat}
+    />
+  ) : null;
+
   if (isMobile) {
     const handleMobileSessionBack = () => {
       if (onMobileBack) {
@@ -6683,6 +6792,43 @@ const SessionDetail = ({
             </VaulDrawerBody>
           </DrawerContent>
         </Drawer>
+        {/* Mobile Board drawer: the Board panel full screen. Opening a thread
+           leaves for that thread's page. */}
+        {activeBoard ? (
+          <Drawer
+            direction="right"
+            repositionInputs={isNativeAppShell()}
+            open={mobileBoardOpen}
+            onOpenChange={setMobileBoardOpen}
+          >
+            <DrawerContent
+              className="w-full! max-w-none! inset-0 border-0 border-l-0! rounded-none"
+              data-sidebar-swipe-open-disabled
+            >
+              <DrawerTitle className={stylex.props(detailStyles.srOnly).className}>
+                {activeBoard.name}
+              </DrawerTitle>
+              <VaulDrawerBody topInset={MOBILE_DRAWER_HEADER_INSET}>
+                <div {...stylex.props(detailStyles.columnFill)}>
+                  <header {...stylex.props(detailStyles.mobileDrawerHeader)}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      icon
+                      className={getSessionDetailTouchIconButtonClassName('-ml-1')}
+                      onClick={() => setMobileBoardOpen(false)}
+                      aria-label={t('common.back', 'Back')}
+                    >
+                      <ArrowLeft {...stylex.props(detailStyles.icon16)} />
+                    </Button>
+                    <span {...stylex.props(detailStyles.mobileTitle)}>{activeBoard.name}</span>
+                  </header>
+                  <div {...stylex.props(detailStyles.relativeFill)}>{boardPanel}</div>
+                </div>
+              </VaulDrawerBody>
+            </DrawerContent>
+          </Drawer>
+        ) : null}
         {/* Mobile PR full-screen drawer. Edge-only interactive back: Vaul drives
            the drag but only from the left-edge zone (the body is wrapped in
            `data-vaul-no-drag`), so PR diffs scroll horizontally without dragging
@@ -6900,7 +7046,9 @@ const SessionDetail = ({
     !isNativeAppShell() && isMacOSElectronRenderer() && !isElectronFullscreen;
 
   const nonBrowserSidebarContent =
-    activeSidebarTab === 'files' ? (
+    activeSidebarTab === 'board' ? (
+      boardPanel
+    ) : activeSidebarTab === 'files' ? (
       <FileTreeView
         session={activeSession}
         handleOpenFile={handleOpenIndexedFile}

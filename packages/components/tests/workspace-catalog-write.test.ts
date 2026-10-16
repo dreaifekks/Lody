@@ -12,6 +12,7 @@ import {
   createWorkspaceBoard,
   deleteWorkspaceMcpServer,
   putWorkspaceMcpServer,
+  restoreWorkspaceBoard,
   uploadWorkspaceCatalog,
   writeWorkspaceAgentRole,
   type WorkspaceCatalogWriteDeps,
@@ -174,4 +175,10 @@ it('creates a board before its coordinator, compensates rejected acceptance, and
   ).resolves.toBe('accepted');
   expect(rows.size).toBe(51);
   expect(rows.get('1')?.value).toMatchObject({ archivedAtMs: 2 });
+  const archived = rows.get('1')?.value as typeof board;
+  await expect(restoreWorkspaceBoard(deps, archived)).rejects.toThrow('BOARD_LIMIT');
+  rows.set('2', { key: ['board', 'bd_2'], value: { ...board, id: 'bd_2', archivedAtMs: 3 } });
+  await expect(restoreWorkspaceBoard(deps, archived)).resolves.not.toHaveProperty('archivedAtMs');
+  expect(rows.get(JSON.stringify(['board', 'bd_1']))?.value).toMatchObject({ id: 'bd_1' });
+  expect(rows.get(JSON.stringify(['board', 'bd_1']))?.value).not.toHaveProperty('archivedAtMs');
 });

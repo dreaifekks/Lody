@@ -2,48 +2,34 @@ import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
-import { Checkbox } from '@lody/ui/checkbox';
 import { Input } from '@lody/ui/input';
 import { Switch } from '@lody/ui/switch';
 import { Textarea } from '@lody/ui/textarea';
+import { useAtomValue } from 'jotai';
+import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ReactNode } from 'react';
+import { normalizeBoardMeta, type BoardMeta } from '@lody/shared';
+import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
+import { writeWorkspaceBoard } from '@/lib/workspace-catalog-write';
+import { useSessionActions } from '@/hooks/use-session-actions';
+import { Dialog } from '@/ui/dialog';
 import { CompactRow, CompactSection } from '../settings/compact-layout';
-
-/** A project the Board may put in its context: a machine's folder or a GitHub repository. */
-export interface BoardProjectOption {
-  key: string;
-  name: string;
-  /** Machine name, or the repository owner for GitHub. */
-  source: string;
-}
+import { boardStyles } from './board-view';
 
 export interface BoardSettingsDraft {
   name: string;
   purpose: string;
-  /** `null` = every project the user can see; otherwise the chosen keys. */
-  projectKeys: readonly string[] | null;
-  memoryEnabled: boolean;
-  memoryText: string;
-  /** Mirror the Board memory into a Nowledge Mem space shared by all members. */
-  memorySpaceEnabled: boolean;
-  memorySpaceLabel?: string;
   maxRoundsPerThread: number;
   reportHumanTurns: boolean;
   executorConstraints: string;
-  digestEnabled: boolean;
-  digestTime: string;
+}
+
+export function boardSettingsDraft(board: BoardMeta): BoardSettingsDraft {
+  return { name: board.name, purpose: board.purpose, ...board.rules };
 }
 
 const styles = stylex.create({
-  root: { display: 'flex', flexDirection: 'column', gap: space[6], padding: space[4] },
-  projects: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: space[2],
-    paddingInline: space[4],
-    paddingBlock: space[2],
-  },
+  root: { display: 'flex', flexDirection: 'column', gap: space[6] },
   stacked: {
     display: 'flex',
     flexDirection: 'column',
@@ -53,20 +39,7 @@ const styles = stylex.create({
   },
   stackedLabel: { margin: 0, color: colors.label },
   stackedHelper: { margin: 0, fontSize: text.footnoteSize, color: colors.secondaryLabel },
-  project: { display: 'flex', alignItems: 'center', gap: space[2], fontSize: text.bodySize },
-  source: { color: colors.secondaryLabel, fontSize: text.footnoteSize },
-  memory: {
-    margin: 0,
-    paddingInline: space[4],
-    paddingBlock: space[2],
-    whiteSpace: 'pre-wrap',
-    overflowWrap: 'anywhere',
-    maxHeight: '160px',
-    overflow: 'auto',
-    color: colors.secondaryLabel,
-    fontSize: text.footnoteSize,
-    lineHeight: text.footnoteLeading,
-  },
+  footer: { display: 'flex', justifyContent: 'flex-end', gap: space[2] },
 });
 
 /** A row whose control is a paragraph of text: the field takes the full width under its name. */
@@ -89,29 +62,22 @@ function StackedRow({
 }
 
 /**
- * Everything about a Board that is set once and rarely revisited. Nothing here
- * is needed to talk to the coordinator or to steer a thread, which is why it
- * lives behind the gear rather than on the page.
+ * What a Board sets once and rarely revisits. Nothing here is needed to talk to
+ * the coordinator or steer a thread, which is why it opens from the gear
+ * instead of standing on the page. The coordinator's model stays in its
+ * composer, the one place it is chosen.
  */
 export function BoardSettingsPanelView({
   value,
   onChange,
-  projects,
-  coordinator,
-  onEditMemory,
   onArchive,
 }: {
   value: BoardSettingsDraft;
   onChange: (patch: Partial<BoardSettingsDraft>) => void;
-  projects: readonly BoardProjectOption[];
-  /** The coordinator's agent picker; the same control the create dialog uses. */
-  coordinator: ReactNode;
-  onEditMemory: () => void;
-  onArchive: () => void;
+  /** Absent for an archived Board. */
+  onArchive?: () => void;
 }) {
   const { t } = useTranslation();
-  const allProjects = value.projectKeys === null;
-  const chosen = new Set(value.projectKeys ?? []);
   return (
     <div {...stylex.props(styles.root)}>
       <CompactSection title={t('boards.settings.board', 'Board')}>
@@ -132,109 +98,6 @@ export function BoardSettingsPanelView({
             onChange={(event) => onChange({ purpose: event.target.value })}
           />
         </StackedRow>
-      </CompactSection>
-
-      <CompactSection
-        title={t('boards.settings.context', 'Context')}
-        description={t(
-          'boards.settings.contextHelper',
-          'What every conversation on this Board starts from.'
-        )}
-      >
-        <CompactRow
-          label={t('boards.settings.allProjects', 'All projects')}
-          helper={
-            allProjects
-              ? t('boards.settings.allProjectsOn', 'Threads may work in any project you can see.')
-              : t(
-                  'boards.settings.allProjectsOff',
-                  'Threads work only in the projects chosen below.'
-                )
-          }
-        >
-          <Switch
-            checked={allProjects}
-            aria-label={t('boards.settings.allProjects', 'All projects')}
-            onCheckedChange={(on) => onChange({ projectKeys: on ? null : [] })}
-          />
-        </CompactRow>
-        {allProjects ? null : (
-          <div {...stylex.props(styles.projects)}>
-            {projects.map((project) => (
-              <label key={project.key} {...stylex.props(styles.project)}>
-                <Checkbox
-                  checked={chosen.has(project.key)}
-                  onCheckedChange={(checked) =>
-                    onChange({
-                      projectKeys: checked
-                        ? [...chosen, project.key]
-                        : [...chosen].filter((key) => key !== project.key),
-                    })
-                  }
-                />
-                <span>{project.name}</span>
-                <span {...stylex.props(styles.source)}>{project.source}</span>
-              </label>
-            ))}
-          </div>
-        )}
-      </CompactSection>
-
-      <CompactSection
-        title={t('boards.settings.memory', 'Board memory')}
-        description={t(
-          'boards.settings.memoryHelper',
-          'Shared by every conversation on this Board. The coordinator keeps it current.'
-        )}
-      >
-        <CompactRow label={t('boards.settings.memoryEnabled', 'Use Board memory')}>
-          <Switch
-            checked={value.memoryEnabled}
-            aria-label={t('boards.settings.memoryEnabled', 'Use Board memory')}
-            onCheckedChange={(on) => onChange({ memoryEnabled: on })}
-          />
-        </CompactRow>
-        {value.memoryEnabled ? (
-          <>
-            <p {...stylex.props(styles.memory)}>
-              {value.memoryText || t('boards.settings.memoryEmpty', 'Nothing remembered yet.')}
-            </p>
-            <CompactRow
-              label={t('boards.settings.memoryEdit', 'Edit memory')}
-              helper={t(
-                'boards.settings.memoryEditHelper',
-                'New conversations read the version saved when they start.'
-              )}
-            >
-              <Button variant="secondary" size="small" onClick={onEditMemory}>
-                {t('boards.editNotes', 'Edit')}
-              </Button>
-            </CompactRow>
-            <CompactRow
-              label={t('boards.settings.memorySpace', 'Also use a Nowledge Mem space')}
-              helper={
-                value.memorySpaceEnabled && value.memorySpaceLabel !== undefined
-                  ? value.memorySpaceLabel
-                  : t(
-                      'boards.settings.memorySpaceHelper',
-                      'Agents with nmem recall from and save to one space for this Board.'
-                    )
-              }
-            >
-              <Switch
-                checked={value.memorySpaceEnabled}
-                aria-label={t('boards.settings.memorySpace', 'Also use a Nowledge Mem space')}
-                onCheckedChange={(on) => onChange({ memorySpaceEnabled: on })}
-              />
-            </CompactRow>
-          </>
-        ) : null}
-      </CompactSection>
-
-      <CompactSection title={t('boards.coordinator', 'Coordinator')}>
-        <CompactRow label={t('boards.settings.coordinatorAgent', 'Agent')}>
-          {coordinator}
-        </CompactRow>
       </CompactSection>
 
       <CompactSection title={t('boards.settings.threads', 'Threads')}>
@@ -275,45 +138,105 @@ export function BoardSettingsPanelView({
         </StackedRow>
       </CompactSection>
 
-      <CompactSection title={t('boards.settings.digest', 'Daily digest')}>
-        <CompactRow
-          label={t('boards.settings.digestEnabled', 'Write a daily digest')}
-          helper={t(
-            'boards.settings.digestHelper',
-            'The coordinator adds the day’s progress to the notes and the Board memory.'
-          )}
-        >
-          <Switch
-            checked={value.digestEnabled}
-            aria-label={t('boards.settings.digestEnabled', 'Write a daily digest')}
-            onCheckedChange={(on) => onChange({ digestEnabled: on })}
-          />
-        </CompactRow>
-        {value.digestEnabled ? (
-          <CompactRow label={t('boards.settings.digestTime', 'Time')}>
-            <Input
-              type="time"
-              aria-label={t('boards.settings.digestTime', 'Time')}
-              value={value.digestTime}
-              onChange={(event) => onChange({ digestTime: event.target.value })}
-            />
+      {onArchive ? (
+        <CompactSection tone="danger" title={t('boards.settings.danger', 'Archive')}>
+          <CompactRow
+            label={t('boards.settings.archive', 'Archive Board')}
+            helper={t(
+              'boards.settings.archiveHelper',
+              'Archives the coordinator and every thread. Restore them from Archive.'
+            )}
+          >
+            <Button variant="secondary" tone="destructive" size="small" onClick={onArchive}>
+              {t('boards.settings.archive', 'Archive Board')}
+            </Button>
           </CompactRow>
-        ) : null}
-      </CompactSection>
-
-      <CompactSection tone="danger" title={t('boards.settings.danger', 'Archive')}>
-        <CompactRow
-          label={t('boards.settings.archive', 'Archive Board')}
-          helper={t(
-            'boards.settings.archiveHelper',
-            'Archives the coordinator and every thread. Restore them from Archive.'
-          )}
-        >
-          <Button variant="secondary" tone="destructive" size="small" onClick={onArchive}>
-            {t('boards.settings.archive', 'Archive Board')}
-          </Button>
-        </CompactRow>
-      </CompactSection>
+        </CompactSection>
+      ) : null}
     </div>
+  );
+}
+
+/** Board settings as a dialog over the Board; saving writes the catalog row. */
+export function BoardSettingsDialog({
+  board,
+  onArchive,
+  onClose,
+}: {
+  board: BoardMeta;
+  onArchive?: () => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
+  const { updateSessionTitle } = useSessionActions();
+  const [draft, setDraft] = useState(() => boardSettingsDraft(board));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const save = async () => {
+    const { name, purpose, ...rules } = draft;
+    const next = normalizeBoardMeta({
+      ...board,
+      name: name.trim(),
+      purpose: purpose.trim(),
+      rules,
+    });
+    if (!next) {
+      setError(t('boards.settings.invalid', 'Enter a name and goal within the limits.'));
+      return;
+    }
+    if (!runtime) return;
+    setSaving(true);
+    setError('');
+    try {
+      await writeWorkspaceBoard(runtime, next);
+      // The coordinator conversation is the Board, so its tab carries the Board's name.
+      if (next.name !== board.name) await updateSessionTitle(board.coordinatorSessionId, next.name);
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Dialog.Root
+      open
+      onOpenChange={(open) => {
+        if (!open && !saving) onClose();
+      }}
+    >
+      <Dialog.Content>
+        <Dialog.Header>
+          <Dialog.Title>{t('boards.settings.title', 'Board settings')}</Dialog.Title>
+        </Dialog.Header>
+        <form
+          {...stylex.props(boardStyles.form)}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
+          <BoardSettingsPanelView
+            value={draft}
+            onChange={(patch) => setDraft({ ...draft, ...patch })}
+            onArchive={onArchive}
+          />
+          {error !== '' ? (
+            <p role="alert" {...stylex.props(boardStyles.error)}>
+              {error}
+            </p>
+          ) : null}
+          <div {...stylex.props(styles.footer)}>
+            <Button variant="ghost" onClick={onClose} disabled={saving}>
+              {t('common.cancel', 'Cancel')}
+            </Button>
+            <Button type="submit" disabled={saving}>
+              {t('common.save', 'Save')}
+            </Button>
+          </div>
+        </form>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }

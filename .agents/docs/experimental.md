@@ -205,22 +205,24 @@ per-device switch.
 
 ## Boards
 
-Settings > Experimental features > Boards enables
-this device's Board navigation. Desktop uses `/boards` and `/boards/$boardId`
-inside the workspace; mobile also offers a Boards tab with the same page.
-Creating a Board selects its coordinator through the Schedule agent controls,
-saves its rules and sends the goal as the coordinator's first chat message.
-The choice of agent, Role instance and run config is remembered on the device.
+Settings > Experimental features > Boards enables this device's Board surfaces.
+The sidebar lists Boards in their own section (also in the mobile drawer); its
+"+" creates one. Creating a Board asks for the goal, an optional name (the goal's
+first line otherwise) and the coordinator, chosen through the Schedule agent
+controls; the goal is the coordinator's first message, rules start from defaults,
+and the choice of agent, Role instance and run config is remembered on the device.
 
-PR1 provides a read-only Overview: live status, waiting for the user, machine,
-agent, work context, PR/diff hints and recent activity. Expanding a row acquires
-its session document for latest messages and transcript-derived status. The
-coordinator starts expanded and shows its chain depth against the shared
-`LODY_MAX_CHAIN_DEPTH` limit (16). Child Tabs and independently opened sessions keep their normal
-sidebar placement and automatically inherit membership.
+Opening a Board opens the coordinator's Session page with the Board side panel
+(`?board=1`; `/boards/<id>` redirects there). The panel has Threads and Files
+tabs. Thread rows group members into Needs you, Working, Idle and Archived from
+metadata and live presence; a thread opens inside the panel, or as its own page on
+narrow windows and phones (where the panel is a full-screen drawer). Files holds
+the shared notes; the shared directory comes later. The gear opens Board settings
+(name, goal, rules, Archive). Archived Boards are listed and restored on the
+Archive page. The coordinator itself is never listed among sessions.
 
-PR2 adds shared notes, Board MCP tools, New thread and Join/Remove actions.
-The stored round/report rules are not enforced yet. Automatic reports, handoff
-and daily digests remain later steps in the
+PR2 adds shared notes, Board MCP tools, New thread and Join/Remove actions; PR3
+delivers member reports to the coordinator through the Operation Inbox. Round
+limits, handoff and daily digests remain later steps in the
 [Board design](../../specs/project-coordinator/design.md). Disabling the experiment
 hides its surfaces and keeps sessions and Board data intact.

@@ -84,7 +84,7 @@ import {
   SIDEBAR_CONTROL_TEXT_CLASS,
 } from './sidebar-row-shared';
 
-export type LoroSidebarNavKey = 'home' | 'archive' | 'schedules' | 'boards';
+export type LoroSidebarNavKey = 'home' | 'archive' | 'schedules';
 
 export type LoroSidebarChatScope = 'my' | 'team';
 export type LoroSidebarOrganizeMode = SidebarOrganizeMode;
@@ -129,7 +129,6 @@ export type LoroSidebarChatItem = {
 export type LoroSidebarLabels = {
   home: string;
   schedules: string;
-  boards: string;
   docs: string;
   joinCommunity: string;
   feedback: string;
@@ -198,6 +197,11 @@ export interface LoroSidebarProps {
   activeNav?: LoroSidebarNavKey | null;
 
   topContent?: ReactNode;
+  /**
+   * The Boards section, first in the scroll viewport after Pinned and in both
+   * organize modes: a Board is opened the way a conversation is.
+   */
+  boardsContent?: ReactNode;
   /** The filter trigger element rendered in-flow on the first visible section
       header. Caller-owned so its open state survives remounting between slots. */
   desktopFilterAction?: ReactNode;
@@ -288,7 +292,6 @@ export interface LoroSidebarProps {
   onHomeClicked?: () => void;
   onArchiveClicked?: () => void;
   /** Shows the Schedules entry; absent where there is nowhere to go. */
-  onBoardsClicked?: () => void;
   onSchedulesClicked?: () => void;
   onSettingsClicked?: () => void;
   onDocsClicked?: () => void;
@@ -360,7 +363,6 @@ const footerStyles = stylex.create({
 const defaultLabels: LoroSidebarLabels = {
   home: 'Home',
   schedules: 'Schedules',
-  boards: 'Boards',
   docs: 'Docs',
   joinCommunity: 'Join community',
   feedback: 'Feedback',
@@ -809,6 +811,7 @@ export const LoroSidebar = memo(function LoroSidebar({
   maxWidth = MAX_DESKTOP_SIDEBAR_WIDTH,
   activeNav = null,
   topContent,
+  boardsContent,
   desktopFilterAction,
   afterSessionListContent,
   bottomFloatingContent,
@@ -848,7 +851,6 @@ export const LoroSidebar = memo(function LoroSidebar({
   onManageLansClicked,
   onHomeClicked,
   onArchiveClicked,
-  onBoardsClicked,
   onSchedulesClicked,
   onSettingsClicked,
   onDocsClicked,
@@ -1010,6 +1012,7 @@ export const LoroSidebar = memo(function LoroSidebar({
   const isWorkspaceEmpty =
     organizeMode === 'workspace' &&
     !topContent &&
+    !boardsContent &&
     !hasPinnedItems &&
     !afterSessionListContent &&
     !sessionListProps?.isLoading;
@@ -1462,15 +1465,6 @@ export const LoroSidebar = memo(function LoroSidebar({
             icon={<SquarePen className="h-4 w-4" strokeWidth={1.75} />}
             onClick={onHomeClicked}
           />
-          {onBoardsClicked ? (
-            <NavButton
-              active={activeNav === 'boards'}
-              isMobile={isMobile}
-              label={mergedLabels.boards}
-              icon={<ListTodo size={16} />}
-              onClick={onBoardsClicked}
-            />
-          ) : null}
           {onSchedulesClicked ? (
             <NavButton
               active={activeNav === 'schedules'}
@@ -1549,6 +1543,7 @@ export const LoroSidebar = memo(function LoroSidebar({
                 />
               </div>
             ) : null}
+            {boardsContent}
             {organizeMode === 'updated' ? (
               // Design intent: 'updated' mode is a flat firehose of recent
               // sessions. It deliberately drops Workspace-mode structure

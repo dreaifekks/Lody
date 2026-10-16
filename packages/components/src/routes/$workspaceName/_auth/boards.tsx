@@ -1,7 +1,4 @@
-import { createFileRoute, useParams } from '@tanstack/react-router';
-import { BoardsWorkspace } from '@/components/boards/boards-workspace';
-export const Route = createFileRoute('/$workspaceName/_auth/boards')({ component: BoardsLayout });
-function BoardsLayout() {
-  const { boardId } = useParams({ strict: false }) as { boardId?: string };
-  return <BoardsWorkspace boardId={boardId} />;
-}
+import { createFileRoute, Outlet } from '@tanstack/react-router';
+
+/** Boards have no page of their own: the sidebar lists them, a Board opens as a conversation. */
+export const Route = createFileRoute('/$workspaceName/_auth/boards')({ component: Outlet });
