@@ -20,6 +20,7 @@ import {
   LODY_OPERATION_COMPLETION_MAX_BYTES,
   type AcpCapabilityCacheEntry,
   type MachineId,
+  type McpServerId,
   type SessionId,
   type WorkspaceId,
 } from '@lody/shared';
@@ -554,7 +555,7 @@ describe('LodyOperationStore', () => {
     }
   });
 
-  it('round-trips a frozen create dispatch config', async () => {
+  it('round-trips frozen per-target dispatch configs', async () => {
     const store = await makeStore();
     try {
       const accepted = store.accept({
@@ -572,7 +573,10 @@ describe('LodyOperationStore', () => {
               inheritedDispatchConfig: { modelId: 'gpt-5', configOptionValues: { fast: true } },
               memory: { providerId: 'nowledge-mem', memoryId: 'reviewer' },
               inheritSessionDefaults: false as const,
+              mcpServerIds: ['search' as McpServerId],
             },
+            // Chat targets freeze only their MCP choice; an explicit none survives.
+            { mcpServerIds: [] },
           ],
         },
       });
@@ -587,7 +591,9 @@ describe('LodyOperationStore', () => {
           inheritedDispatchConfig: { modelId: 'gpt-5', configOptionValues: { fast: true } },
           memory: { providerId: 'nowledge-mem', memoryId: 'reviewer' },
           inheritSessionDefaults: false,
+          mcpServerIds: ['search'],
         },
+        { mcpServerIds: [] },
       ]);
     } finally {
       store.close();

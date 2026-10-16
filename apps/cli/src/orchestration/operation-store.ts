@@ -11,6 +11,7 @@ import {
   AgentRoleSnapshotSchema,
   buildAgentMessageAuthor,
   MemoryBindingSchema,
+  normalizeMcpServerIdSelection,
 } from '@lody/shared';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
@@ -88,6 +89,11 @@ const FrozenConfigSchema = z
             configOptionValues: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
             memory: MemoryBindingSchema.optional(),
             inheritSessionDefaults: z.literal(false).optional(),
+            mcpServerIds: z
+              .array(z.string().min(1).max(256))
+              .max(256)
+              .transform((ids) => normalizeMcpServerIdSelection(ids) ?? [])
+              .optional(),
           })
           // Older stored configs may still carry `taskToolsEnabled`; drop it.
           .strip()

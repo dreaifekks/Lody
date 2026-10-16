@@ -1,7 +1,7 @@
 import type { AgentMessageAuthor } from './message-author';
 import { z } from 'zod';
 
-import type { BoardId, MachineId, SessionId, WorkspaceId } from './ids';
+import type { BoardId, MachineId, McpServerId, SessionId, WorkspaceId } from './ids';
 import type { SessionTurnInputConfig } from './ai';
 
 export const LODY_OPERATION_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
@@ -251,7 +251,7 @@ export type FrozenOperationContinuationConfig = {
   /** Frozen causal Turn for delegated Operations; recovery must not re-resolve it. */
   sourceTurnId?: string;
   /**
-   * Effective per-target create config captured at acceptance. Null entries
+   * Effective per-target config captured at acceptance. Null entries
    * correspond to batch items rejected before a target was accepted.
    */
   targetDispatchConfigs?: Array<{
@@ -269,6 +269,8 @@ export type FrozenOperationContinuationConfig = {
     modelId?: string;
     configOptionValues?: Record<string, string | boolean>;
     inheritSessionDefaults?: false;
+    /** Workspace MCP selection resolved at acceptance; chat targets store only this. */
+    mcpServerIds?: McpServerId[];
   } | null>;
 };
 
