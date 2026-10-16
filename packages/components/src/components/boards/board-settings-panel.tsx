@@ -218,6 +218,7 @@ export function BoardSettingsGeneralView({
           )}
         >
           <Textarea
+            aria-label={t('boards.settings.instructions', 'Instructions')}
             rows={7}
             value={value.instructions}
             onChange={(event) => onChange({ instructions: event.target.value })}

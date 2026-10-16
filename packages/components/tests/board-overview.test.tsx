@@ -798,7 +798,7 @@ it('starts Board settings afresh on another Board, so a draft never saves into i
   }
 });
 
-it('saves the Board instructions from the Memory page and lists the agents memory', async () => {
+it('saves the Board instructions from the General page and lists the agents memory', async () => {
   const env = await boardRuntime([makeSession('coordinator', { boardRole: 'coordinator' })]);
   await writeWorkspaceBoard(env.runtime, testBoard());
   const store = workspaceStore(env.runtime);
@@ -819,15 +819,17 @@ it('saves the Board instructions from the Memory page and lists the agents memor
     </Provider>
   );
   try {
-    const memoryPage = [...document.querySelectorAll('nav button')].find(
-      (button) => button.textContent === 'Memory'
-    ) as HTMLElement;
-    await act(async () => memoryPage.click());
+    // The instructions sit on General, the page the dialog opens on.
     await typeInto(
       document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Instructions"]')!,
       'Check nmem first.'
     );
     expect(document.body.textContent).toContain('17 / 16,000');
+    const memoryPage = [...document.querySelectorAll('nav button')].find(
+      (button) => button.textContent === 'Memory'
+    ) as HTMLElement;
+    await act(async () => memoryPage.click());
+    expect(document.querySelector('textarea[aria-label="Instructions"]')).toBeNull();
     // MEMORY.md, the index, leads the memory files.
     expect(
       [...document.querySelectorAll('[data-scope-item="row"]')].map((row) =>
