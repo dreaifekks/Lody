@@ -53,6 +53,7 @@ import {
   type SessionId,
   type SessionMeta,
   type SessionStatus,
+  type BoardMeta,
   type ConversationMessage,
   type VisualAnnotationReferencePayload,
   type WorkspaceId,
@@ -202,6 +203,8 @@ import { boardEnabledAtom, semanticShortcutsFeatureEnabledAtom } from '@/atoms/s
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { BoardSidePanel, useThreadLocation } from '../boards/board-side-panel';
 import { BoardSettings } from '../boards/board-settings-panel';
+import { useBoardActions } from '../boards/board-lifecycle';
+import { BoardRenameDialog } from '../boards/board-rename-dialog';
 import { cn, getBasename } from '@/lib';
 
 import {
@@ -2386,6 +2389,7 @@ const SessionDetail = ({
     setSessionPinned,
     transferSessionOwner,
   } = useSessionActions();
+  const { archive: archiveBoard, restore: restoreBoard } = useBoardActions();
   const { members: workspaceMembers, isMultiMember: isMultiMemberWorkspace } =
     useWorkspaceMembers();
   const handleTransferSessionOwner = useCallback(
@@ -3102,12 +3106,17 @@ const SessionDetail = ({
     [router, workspaceSlug]
   );
 
-  // Archive the parent session from the header menu (desktop)
+  // Archive the parent session from the header menu (desktop). On a Board's
+  // page that is the whole Board.
   const handleArchiveCurrentSession = useCallback(async () => {
     if (!activeSession) return;
+    if (activeBoard) {
+      if (await archiveBoard(activeBoard)) handleBackToList();
+      return;
+    }
     await archiveSession(activeSession.id);
     handleBackToList();
-  }, [activeSession, archiveSession, handleBackToList]);
+  }, [activeBoard, activeSession, archiveBoard, archiveSession, handleBackToList]);
 
   // Archive the active tab (mobile more menu) — archives child if child is active, parent otherwise
   const handleArchiveActiveTab = useCallback(async () => {
@@ -3119,9 +3128,7 @@ const SessionDetail = ({
     if (activeTabSessionId && activeTabSessionId !== sessionId) {
       await archiveSession(activeTabSessionId as SessionId);
     } else {
-      // Archiving the parent
-      await archiveSession(activeSession.id);
-      handleBackToList();
+      await handleArchiveCurrentSession();
     }
   }, [
     activeDraftTab,
@@ -3129,7 +3136,7 @@ const SessionDetail = ({
     activeTabSessionId,
     archiveSession,
     closeDraftTab,
-    handleBackToList,
+    handleArchiveCurrentSession,
     isEmptyConversation,
     sessionId,
   ]);
@@ -3138,6 +3145,10 @@ const SessionDetail = ({
   // lifecycle action only; every tab keeps its close state.
   const handleRestoreCurrentSession = useCallback(async () => {
     if (!activeSession) return;
+    if (activeBoard) {
+      await restoreBoard(activeBoard);
+      return;
+    }
     try {
       await restoreSession(activeSession.id);
     } catch (error) {
@@ -3153,7 +3164,7 @@ const SessionDetail = ({
       console.error('Failed to restore archived conversation', error);
       toast.error(t('archive.restoreFailed', 'Failed to restore conversation.'));
     }
-  }, [activeSession, restoreSession, t]);
+  }, [activeBoard, activeSession, restoreBoard, restoreSession, t]);
 
   // Confirmation state for permanently deleting the current archived session
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -3168,6 +3179,8 @@ const SessionDetail = ({
   const [renameDialogTarget, setRenameDialogTarget] = useState<RenameSessionDialogTarget | null>(
     null
   );
+  // The Board being renamed, as its row was when the dialog opened.
+  const [renamingBoard, setRenamingBoard] = useState<BoardMeta | null>(null);
 
   // Share-as-image preview target: the selected tab's session plus the plain-text
   // conversation snapshot pulled from its chat surface when the menu item fires.
@@ -5018,11 +5031,16 @@ const SessionDetail = ({
     if (!targetSession || targetSession.isArchived) {
       return;
     }
+    // A coordinator is named after its Board, so renaming it renames the Board.
+    if (activeBoard?.coordinatorSessionId === targetSession.id) {
+      setRenamingBoard(activeBoard);
+      return;
+    }
     setRenameDialogTarget({
       sessionId: targetSession.id,
       initialTitle: targetSession.title ?? '',
     });
-  }, [activeDraftTab, activeTabSession]);
+  }, [activeBoard, activeDraftTab, activeTabSession]);
 
   const handleToggleCurrentSessionPinned = useCallback(() => {
     const targetSession = activeDraftTab ? null : activeTabSession;
@@ -6385,12 +6403,16 @@ const SessionDetail = ({
       mobileMenuActions.push({
         id: 'rename',
         icon: <Pencil {...stylex.props(detailStyles.icon14)} />,
-        label: t('sidebar.renameChat.title', 'Rename Chat'),
+        label: activeBoard
+          ? t('boards.rename', 'Rename Board')
+          : t('sidebar.renameChat.title', 'Rename Chat'),
         onClick: () =>
-          setRenameDialogTarget({
-            sessionId: activeSession.id,
-            initialTitle: activeSession.title ?? '',
-          }),
+          activeBoard
+            ? setRenamingBoard(activeBoard)
+            : setRenameDialogTarget({
+                sessionId: activeSession.id,
+                initialTitle: activeSession.title ?? '',
+              }),
       });
     }
     mobileMenuActions.push(
@@ -6472,29 +6494,35 @@ const SessionDetail = ({
       });
     }
     if (activeSession?.isArchived) {
-      mobileMenuActions.push(
-        {
-          id: 'restore',
-          icon: <ArchiveRestore {...stylex.props(detailStyles.icon14)} />,
-          label: t('archive.restore', 'Restore session'),
-          onClick: () => {
-            void handleRestoreCurrentSession();
-          },
-          separatorBefore: true,
+      mobileMenuActions.push({
+        id: 'restore',
+        icon: <ArchiveRestore {...stylex.props(detailStyles.icon14)} />,
+        label: activeBoard
+          ? t('boards.restoreBoard', 'Restore Board')
+          : t('archive.restore', 'Restore session'),
+        onClick: () => {
+          void handleRestoreCurrentSession();
         },
-        {
+        separatorBefore: true,
+      });
+      // A Board has no permanent delete: removing its coordinator would strand its row.
+      if (!activeBoard) {
+        mobileMenuActions.push({
           id: 'delete',
           icon: <Trash2 {...stylex.props(detailStyles.icon14)} />,
           label: t('archive.delete', 'Delete permanently'),
           onClick: () => handleRequestDeleteCurrentSession(),
           destructive: true,
-        }
-      );
+        });
+      }
     } else {
       mobileMenuActions.push({
         id: 'archive',
         icon: <Archive {...stylex.props(detailStyles.icon14)} />,
-        label: t('sessions.archive', 'Archive session'),
+        label:
+          activeBoard && activeTabSessionId === activeBoard.coordinatorSessionId
+            ? t('boards.settings.archive', 'Archive Board')
+            : t('sessions.archive', 'Archive session'),
         onClick: () => {
           void handleArchiveActiveTab();
         },
@@ -7126,6 +7154,7 @@ const SessionDetail = ({
           target={renameDialogTarget}
           onClose={() => setRenameDialogTarget(null)}
         />
+        <BoardRenameDialog board={renamingBoard} onClose={() => setRenamingBoard(null)} />
         <ChatShareImageDialog
           open={shareImageTarget != null}
           onOpenChange={(open) => {
@@ -7322,10 +7351,16 @@ const SessionDetail = ({
       hideMessageArea
       onArchiveSession={handleArchiveCurrentSession}
       onRestoreSession={handleRestoreCurrentSession}
-      onDeleteSession={handleRequestDeleteCurrentSession}
+      onDeleteSession={activeBoard ? undefined : handleRequestDeleteCurrentSession}
       onOpenSearch={handleOpenSearch}
       onCopyConversationHistory={handleCopyConversationHistory}
-      onRequestRename={!activeDraftTab ? handleRenameCurrentSession : undefined}
+      onRequestRename={
+        activeBoard
+          ? () => setRenamingBoard(activeBoard)
+          : !activeDraftTab
+            ? handleRenameCurrentSession
+            : undefined
+      }
       onForkSession={
         !activeDraftTab && activeTabSession && canForkSession(activeTabSession)
           ? handleForkCurrentSession
@@ -7728,6 +7763,7 @@ const SessionDetail = ({
         target={renameDialogTarget}
         onClose={() => setRenameDialogTarget(null)}
       />
+      <BoardRenameDialog board={renamingBoard} onClose={() => setRenamingBoard(null)} />
       <ChatShareImageDialog
         open={shareImageTarget != null}
         onOpenChange={(open) => {

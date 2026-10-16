@@ -8,9 +8,7 @@ import type { BoardMeta } from '@lody/shared';
 import { boardEnabledAtom } from '@/atoms/settings';
 import { useAtomValue } from 'jotai';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
-import { useVisibleArchivedSessionMetas } from '@/hooks/use-visible-session-metas';
-import { toast } from '@/lib/toast';
-import { useBoardLifecycle } from './board-lifecycle';
+import { useBoardActions } from './board-lifecycle';
 
 const styles = stylex.create({
   section: { display: 'flex', flexDirection: 'column', gap: space[2], paddingBlock: space[3] },
@@ -75,31 +73,14 @@ export function ArchivedBoardsView({
 
 /** Archived Boards on the Archive page; restoring brings back the coordinator and every thread. */
 export function ArchivedBoardsSection() {
-  const { t } = useTranslation();
   const enabled = useAtomValue(boardEnabledAtom);
   const { boards } = useWorkspaceCatalog();
-  const { archivedSessions } = useVisibleArchivedSessionMetas();
-  const { restoreBoard } = useBoardLifecycle();
+  const { restore } = useBoardActions();
   if (!enabled) return null;
   return (
     <ArchivedBoardsView
       boards={boards.filter((board) => board.archivedAtMs !== undefined)}
-      onRestore={(board) => {
-        void restoreBoard(board, archivedSessions).catch((cause: unknown) =>
-          toast.error(
-            cause instanceof Error && cause.message === 'BOARD_LIMIT'
-              ? t(
-                  'boards.restoreLimit',
-                  'A workspace can have up to 50 active Boards. Archive one first.'
-                )
-              : t(
-                  'boards.restoreFailed',
-                  'Could not restore the Board: {{reason}}. It stays archived; try again.',
-                  { reason: cause instanceof Error ? cause.message : String(cause) }
-                )
-          )
-        );
-      }}
+      onRestore={(board) => void restore(board)}
     />
   );
 }

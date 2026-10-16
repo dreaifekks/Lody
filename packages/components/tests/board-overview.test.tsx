@@ -36,7 +36,11 @@ import { BoardSidePanel } from '../src/components/boards/board-side-panel';
 import { BoardSettings, BoardSettingsDialog } from '../src/components/boards/board-settings-panel';
 import { BoardThreadListView } from '../src/components/boards/board-thread-list';
 import { localProbeResultAtom } from '../src/atoms/local-probe';
-import { useBoardLifecycle } from '../src/components/boards/board-lifecycle';
+import { useBoardActions, useBoardLifecycle } from '../src/components/boards/board-lifecycle';
+import { BoardRenameDialog } from '../src/components/boards/board-rename-dialog';
+import { BoardSidebar } from '../src/components/boards/board-sidebar-section';
+import { SessionHeaderMenu } from '../src/components/sessions/session-chat-interface';
+import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';
 import {
   boardActivity,
   boardMemberEntrySearch,
@@ -51,6 +55,8 @@ const creation = vi.hoisted(() => ({
   startSession: undefined as undefined | ((...args: unknown[]) => Promise<unknown>),
   /** The product language, as i18next names it. */
   language: 'en',
+  /** The workspace catalog's Board rows. */
+  boards: [] as BoardMeta[],
 }));
 vi.mock('@/hooks/use-visible-machine-metas', () => ({
   useVisibleMachineMetas: () => ({ machines: creation.machines }),
@@ -75,7 +81,7 @@ vi.mock('@/hooks/use-machine-flock-agent-configs', () => ({
   useMachineFlockAgentConfigs: () => {},
 }));
 vi.mock('@/hooks/use-workspace-catalog', () => ({
-  useWorkspaceCatalog: () => ({ servers: [], boards: [] }),
+  useWorkspaceCatalog: () => ({ servers: [], boards: creation.boards }),
 }));
 vi.mock('@/hooks/use-workspace-agent-roles', () => ({
   useWorkspaceAgentRoles: () => ({ roles: [] }),
@@ -1161,5 +1167,171 @@ it('submits a new Board thread as chat without the coordinator role', async () =
     container.remove();
     creation.startSession = undefined;
     creation.machines.clear();
+  }
+});
+
+/** A Board of three members, its row in the catalog and its Sessions in the metadata cache. */
+async function boardWithMembers() {
+  const sessions = [
+    makeSession('coordinator', { boardRole: 'coordinator', title: 'Release' }),
+    makeSession('root'),
+    makeSession('review', { parentSessionId: 'root' as SessionId }),
+  ];
+  const env = await boardRuntime(sessions);
+  await writeWorkspaceBoard(env.runtime, testBoard());
+  const store = workspaceStore(env.runtime);
+  store.set(experimentalFeaturesEnabledAtom, true);
+  store.set(boardExperimentEnabledAtom, true);
+  store.set(
+    sessionMetaCacheAtom,
+    Object.fromEntries(sessions.map((session) => [getSessionRoomId(session.id), session]))
+  );
+  const archivedIds = async () =>
+    (await Promise.all(sessions.map((session) => env.meta(session.id))))
+      .filter((meta) => meta.isArchived === true)
+      .map((meta) => meta.id);
+  return { env, store, archivedIds };
+}
+
+function menuItem(label: string) {
+  return [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+    (item) => item.textContent === label
+  );
+}
+
+async function renameTo(name: string) {
+  await typeInto(document.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!, name);
+  const save = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+    (button) => button.textContent === 'Save'
+  )!;
+  await act(async () => save.click());
+}
+
+it('renames and archives the whole Board from its page header menu', async () => {
+  const { env, store, archivedIds } = await boardWithMembers();
+  let left = false;
+  // The coordinator page's wiring: the menu's rename and archive act on its Board.
+  function Header() {
+    const { archive } = useBoardActions();
+    const [renaming, setRenaming] = useState<BoardMeta | null>(null);
+    return (
+      <>
+        <SessionHeaderMenu
+          session={makeSession('coordinator', { boardRole: 'coordinator' })}
+          owner={{ members: [], ownerUserId: 'user', onChangeOwner: () => {} }}
+          onCopyUrl={() => {}}
+          onRename={() => setRenaming(env.board('bd_test'))}
+          onArchive={async () => {
+            left = await archive(env.board('bd_test'));
+          }}
+          t={(_key: string, fallback: string) => fallback}
+        />
+        <BoardRenameDialog board={renaming} onClose={() => setRenaming(null)} />
+      </>
+    );
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <Header />
+    </Provider>
+  );
+  const openMenu = async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'requestAnimationFrame'] });
+    try {
+      await act(async () => {
+        document
+          .querySelector('button[aria-label="More actions"]')!
+          .dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+        await vi.advanceTimersByTimeAsync(40);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+  try {
+    await openMenu();
+    // A Board has no owner of its own, and the menu names the Board.
+    expect(menuItem('Change owner')).toBeUndefined();
+    expect(menuItem('Rename Chat')).toBeUndefined();
+    await act(async () => menuItem('Rename Board')!.click());
+    await renameTo('Launch');
+    expect(env.board('bd_test')).toMatchObject({ name: 'Launch', purpose: 'Ship it' });
+    expect((await env.meta('coordinator')).title).toBe('Launch');
+
+    await openMenu();
+    expect(menuItem('Archive session')).toBeUndefined();
+    await act(async () => menuItem('Archive Board')!.click());
+    expect(left).toBe(true);
+    expect(env.board('bd_test').archivedAtMs).toEqual(expect.any(Number));
+    expect(await archivedIds()).toEqual(['coordinator', 'root', 'review']);
+  } finally {
+    await view.unmount();
+    await env.destroy();
+  }
+});
+
+it('shares, renames and archives a Board from its sidebar row menu', async () => {
+  const { env, store, archivedIds } = await boardWithMembers();
+  creation.boards = [env.board('bd_test')];
+  const copied: string[] = [];
+  const archived: string[] = [];
+  const view = await mount(
+    <Provider store={store}>
+      <BoardSidebar
+        boards={[
+          {
+            id: 'bd_test',
+            name: 'Release',
+            coordinatorSessionId: 'coordinator' as SessionId,
+            activity: null,
+          },
+        ]}
+        collapsed={false}
+        onToggleCollapsed={() => {}}
+        onOpen={() => {}}
+        onCreate={() => {}}
+        onCopyUrl={(board) => copied.push(board.coordinatorSessionId)}
+        onArchived={(board) => archived.push(board.id)}
+      />
+    </Provider>
+  );
+  const openRowMenu = async () => {
+    await act(async () => {
+      document
+        .querySelector('[data-id="bd_test"]')!
+        .dispatchEvent(
+          new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 8, clientY: 8 })
+        );
+    });
+  };
+  try {
+    await openRowMenu();
+    await act(async () => menuItem('Copy Board URL')!.click());
+    expect(copied).toEqual(['coordinator']);
+
+    // Sharing a Board opens the share editor on its coordinator's conversation.
+    await openRowMenu();
+    await act(async () => menuItem('Share')!.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Release');
+    await act(async () => {
+      document
+        .querySelector('[role="dialog"]')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    await openRowMenu();
+    await act(async () => menuItem('Rename Board')!.click());
+    await renameTo('Launch');
+    expect(env.board('bd_test').name).toBe('Launch');
+
+    await openRowMenu();
+    await act(async () => menuItem('Archive Board')!.click());
+    expect(archived).toEqual(['bd_test']);
+    expect(await archivedIds()).toEqual(['coordinator', 'root', 'review']);
+  } finally {
+    creation.boards = [];
+    await view.unmount();
+    await env.destroy();
   }
 });

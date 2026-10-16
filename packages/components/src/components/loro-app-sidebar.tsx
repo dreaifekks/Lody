@@ -1,7 +1,7 @@
 import { boardEnabledAtom } from '@/atoms/settings';
 import { boardsSectionCollapsedAtom } from '@/atoms/sidebar-state';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
-import { BoardSidebarSection } from './boards/board-sidebar-section';
+import { BoardSidebar } from './boards/board-sidebar-section';
 import { CreateBoardDialog } from './boards/create-board-dialog';
 import { boardActivity, boardEntrySearch, isBoardSession } from './boards/board-threads';
 import { parseLanHubRole } from '@lody/shared/lan-hub-role';
@@ -2106,7 +2106,7 @@ export function LoroAppSidebar({
     [closeMobileDrawer, router, workspaceSlug]
   );
   const sidebarBoardsContent = boardsEnabled ? (
-    <BoardSidebarSection
+    <BoardSidebar
       boards={boardItems}
       selectedId={boardItems.find((item) => item.coordinatorSessionId === selectedSessionId)?.id}
       collapsed={boardsCollapsed}
@@ -2114,6 +2114,14 @@ export function LoroAppSidebar({
       onToggleCollapsed={() => setBoardsCollapsed(!boardsCollapsed)}
       onOpen={(item) => openBoard(item.coordinatorSessionId)}
       onCreate={() => setCreatingBoard(true)}
+      onCopyUrl={(item) => handleCopySessionUrl(item.coordinatorSessionId)}
+      onArchived={(board) => {
+        if (!workspaceSlug || selectedSessionIdRef.current !== board.coordinatorSessionId) return;
+        void router.navigate({
+          to: '/$workspaceName/chat',
+          params: { workspaceName: workspaceSlug },
+        });
+      }}
     />
   ) : null;
   // `allActiveSessions` is the only view that still contains child Tabs, so it

@@ -57,6 +57,11 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   that writes Board rows must run the same version; no compatibility layer.
 - Instructions (≤16,000 code points) and the directory join each member's start
   prompt, coordinator included; sessions already started keep what they read.
+- A Board's entries act on the whole Board, as a chat's do on the chat: the page's
+  header menu (`SessionHeaderMenu` on a coordinator) and the sidebar row
+  (`BoardSidebar`) rename, archive and restore through `useBoardActions`, which reads
+  members when it runs; share opens the coordinator conversation's share editor. A
+  coordinator offers no permanent delete or owner change.
 - Archiving a Board archives the coordinator and member roots, then writes
   `archivedAtMs`; restoring restores every root (Session restore covers only direct
   Tabs), then clears it. The row changes last, so a failure leaves the Board where it

@@ -24,6 +24,7 @@ import {
   getSessionRoomId,
 } from '@lody/shared';
 import { currentWorkspaceIdAtom } from '@/atoms';
+import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '@/atoms/settings';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { ChatComposer } from '@/components/chat/chat-composer';
 import {
@@ -32,6 +33,9 @@ import {
   type ChatStreamItem,
 } from '@/components/ai-gui/view';
 import { LoroSidebar } from '@/components/loro-sidebar';
+import { SessionAccessControl } from '@/components/session-sharing';
+import { SessionHeaderMenu } from '@/components/sessions/session-chat-interface';
+import { SESSION_PAGE_HEADER_PILLS_CLASS } from '@/components/sessions/session-conversation-page';
 import { DesktopSessionDetailLayout } from '@/components/sessions/desktop-session-detail-layout';
 import { SessionSidePanelTabBar } from '@/components/sessions/session-side-panel-tab-bar';
 import { SessionTabBar } from '@/components/sessions/session-tab-bar';
@@ -56,6 +60,7 @@ import { ArchivedBoardsView } from '@/components/boards/archived-boards-section'
 import { boardThreadItems } from '@/components/boards/board-side-panel';
 import { buildBoardRows } from '@/components/boards/board-threads';
 import { BoardDirectoryFileProvider } from '@/lib/board-directory-file-provider';
+import { cn } from '@/lib/utils';
 import { SettingsStoryProviders } from './settings-story-shell';
 
 const NOW = Date.parse('2026-10-16T09:00:00.000Z');
@@ -501,6 +506,11 @@ const chatRows = [
   isWaitingPermission: false,
 }));
 
+const noop = () => {};
+
+/** A Board's row offers what a conversation row offers, on hover and right click. */
+const boardRowActions = { onRename: noop, onCopyUrl: noop, onShare: noop, onArchive: noop };
+
 function Sidebar({ selectedId, onOpen }: { selectedId: string; onOpen: (id: string) => void }) {
   const [collapsed, setCollapsed] = useState(false);
   return (
@@ -533,6 +543,7 @@ function Sidebar({ selectedId, onOpen }: { selectedId: string; onOpen: (id: stri
           onToggleCollapsed={() => setCollapsed(!collapsed)}
           onOpen={(entry) => onOpen(entry.id)}
           onCreate={() => {}}
+          actions={boardRowActions}
         />
       }
       afterSessionListContent={null}
@@ -541,6 +552,43 @@ function Sidebar({ selectedId, onOpen }: { selectedId: string; onOpen: (id: stri
       onArchiveClicked={() => {}}
       onSchedulesClicked={() => {}}
     />
+  );
+}
+
+/** Boards are an experiment: the page's menu names Board actions only while it is on. */
+const boardsOnStore = createStore();
+boardsOnStore.set(experimentalFeaturesEnabledAtom, true);
+boardsOnStore.set(boardExperimentEnabledAtom, true);
+
+/**
+ * The conversation header's controls as the coordinator's page draws them: the
+ * share control, the "…" menu with the Board's rename/archive, then the gear.
+ */
+function BoardHeaderToolbar() {
+  const { t } = useTranslation();
+  return (
+    <div className="flex h-full shrink-0 items-center gap-1 pl-1 pr-2">
+      <div className={cn(SESSION_PAGE_HEADER_PILLS_CLASS, 'items-center')}>
+        <SessionAccessControl publicShare={{ status: 'none', onOpen: noop }} />
+      </div>
+      <SessionHeaderMenu
+        session={coordinatorSession}
+        machineName="devnuc"
+        workspacePath="/home/dreaife/out/Lody"
+        onCopyConversationHistory={noop}
+        onCopyUrl={noop}
+        onOpenPublicShare={noop}
+        onShareAsImage={noop}
+        onOpenSearch={noop}
+        onFork={noop}
+        onRename={noop}
+        onArchive={noop}
+        t={t}
+      />
+      <Button variant="ghost" size="small" icon aria-label="看板设置">
+        <Settings2 size={16} />
+      </Button>
+    </div>
   );
 }
 
@@ -556,61 +604,59 @@ function CoordinatorPage({ initial }: { initial: PanelState }) {
   ];
   return (
     <SettingsStoryProviders>
-      <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
-        <Sidebar
-          selectedId={entry.board}
-          onOpen={(id) => setEntry({ board: id, seq: entry.seq + 1 })}
-        />
-        <main className="min-w-0 flex-1 overflow-hidden">
-          <DesktopSessionDetailLayout
-            defaultSizes={{ main: 50, sidebar: 50 }}
-            layoutStorageId={null}
-            layoutResetKey={`${entry.board}:${entry.seq}`}
-            topBar={
-              <SessionTabBar
-                variant="session"
-                parentSession={coordinatorSession}
-                childSessions={[]}
-                draftTabs={[]}
-                archivedChildSessions={[]}
-                activeTabSessionId={COORDINATOR}
-                onTabSelect={() => {}}
-                onNewTab={() => {}}
-                rightSlot={
-                  <Button variant="ghost" size="small" icon aria-label="看板设置">
-                    <Settings2 size={16} />
-                  </Button>
-                }
-              />
-            }
-            chatSurfaces={
-              <ChatSurface
-                sessionId={COORDINATOR}
-                messages={coordinatorMessages}
-                placeholder="告诉协调者…"
-              />
-            }
-            terminalDock={null}
-            secondaryPanel={
-              <div className="flex h-full min-h-0 flex-col">
-                <SessionSidePanelTabBar
-                  tabs={sidePanelTabs}
-                  activeTabId="board"
-                  onTabSelect={() => {}}
-                  onTabClose={() => {}}
-                  closeTabLabel={(label) => `关闭 ${label}`}
-                />
-                <div className="min-h-0 flex-1">
-                  <BoardPanel initial={initial} />
-                </div>
-              </div>
-            }
-            sidebarOpen
-            onSidebarCollapse={() => {}}
-            deleteConfirmDialog={null}
+      <Provider store={boardsOnStore}>
+        <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
+          <Sidebar
+            selectedId={entry.board}
+            onOpen={(id) => setEntry({ board: id, seq: entry.seq + 1 })}
           />
-        </main>
-      </div>
+          <main className="min-w-0 flex-1 overflow-hidden">
+            <DesktopSessionDetailLayout
+              defaultSizes={{ main: 50, sidebar: 50 }}
+              layoutStorageId={null}
+              layoutResetKey={`${entry.board}:${entry.seq}`}
+              topBar={
+                <SessionTabBar
+                  variant="session"
+                  parentSession={coordinatorSession}
+                  childSessions={[]}
+                  draftTabs={[]}
+                  archivedChildSessions={[]}
+                  activeTabSessionId={COORDINATOR}
+                  onTabSelect={() => {}}
+                  onNewTab={() => {}}
+                  rightSlot={<BoardHeaderToolbar />}
+                />
+              }
+              chatSurfaces={
+                <ChatSurface
+                  sessionId={COORDINATOR}
+                  messages={coordinatorMessages}
+                  placeholder="告诉协调者…"
+                />
+              }
+              terminalDock={null}
+              secondaryPanel={
+                <div className="flex h-full min-h-0 flex-col">
+                  <SessionSidePanelTabBar
+                    tabs={sidePanelTabs}
+                    activeTabId="board"
+                    onTabSelect={() => {}}
+                    onTabClose={() => {}}
+                    closeTabLabel={(label) => `关闭 ${label}`}
+                  />
+                  <div className="min-h-0 flex-1">
+                    <BoardPanel initial={initial} />
+                  </div>
+                </div>
+              }
+              sidebarOpen
+              onSidebarCollapse={() => {}}
+              deleteConfirmDialog={null}
+            />
+          </main>
+        </div>
+      </Provider>
     </SettingsStoryProviders>
   );
 }

@@ -20,9 +20,7 @@ import { currentWorkspaceIdAtom } from '@/atoms';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { writeWorkspaceBoard } from '@/lib/workspace-catalog-write';
 import { useSessionActions } from '@/hooks/use-session-actions';
-import { useVisibleSessionMetas } from '@/hooks/use-visible-session-metas';
 import { toIntlLocaleOrEn } from '@/lib/intl-locale';
-import { toast } from '@/lib/toast';
 import { Dialog } from '@/ui/dialog';
 import { CompactRow, CompactSection } from '../settings/compact-layout';
 import { settingsSurface as surface } from '../settings/surface';
@@ -32,7 +30,7 @@ import {
   BoardFileRowsView,
   useBoardDirectory,
 } from './board-directory';
-import { useBoardLifecycle } from './board-lifecycle';
+import { useBoardActions } from './board-lifecycle';
 import { boardStyles } from './board-view';
 
 export interface BoardSettingsDraft {
@@ -576,9 +574,7 @@ export function BoardSettings(props: BoardSettingsProps) {
 }
 
 function BoardSettingsContent({ board, onClose, onArchived }: BoardSettingsProps) {
-  const { t } = useTranslation();
-  const { allActiveSessions } = useVisibleSessionMetas();
-  const { archiveBoard } = useBoardLifecycle();
+  const { archive } = useBoardActions();
   return (
     <BoardSettingsDialog
       board={board}
@@ -587,15 +583,9 @@ function BoardSettingsContent({ board, onClose, onArchived }: BoardSettingsProps
         board.archivedAtMs === undefined
           ? () => {
               onClose();
-              void archiveBoard(board, allActiveSessions).then(onArchived, (cause: unknown) =>
-                toast.error(
-                  t(
-                    'boards.archiveFailed',
-                    'Could not archive the Board: {{reason}}. It stays open; try again.',
-                    { reason: cause instanceof Error ? cause.message : String(cause) }
-                  )
-                )
-              );
+              void archive(board).then((archived) => {
+                if (archived) onArchived();
+              });
             }
           : undefined
       }

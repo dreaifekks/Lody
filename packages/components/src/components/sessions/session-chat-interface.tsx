@@ -1426,6 +1426,8 @@ export function SessionHeaderMenu({
     (sharing?.visibility === 'private' &&
       (sharing.privateReason === 'machine-not-registered' || !sharing.canManage));
   const boardsEnabled = useAtomValue(boardEnabledAtom);
+  // A coordinator's page is its Board: rename, archive and restore act on the Board.
+  const isBoard = boardsEnabled && session.boardRole === 'coordinator';
   const [boardMembershipOpen, setBoardMembershipOpen] = useState(false);
   const conversationWide = useAtomValue(conversationWideModeAtom);
   const setConversationWide = useSetAtom(conversationWideModeAtom);
@@ -1835,11 +1837,14 @@ export function SessionHeaderMenu({
                 void onRename();
               }}
             >
-              {t('sidebar.renameChat.title', 'Rename Chat')}
+              {isBoard
+                ? t('boards.rename', 'Rename Board')
+                : t('sidebar.renameChat.title', 'Rename Chat')}
             </Menu.Item>
           )}
 
-          {owner && !isArchived ? (
+          {/* A Board has no owner of its own to hand over. */}
+          {owner && !isArchived && !isBoard ? (
             <Menu.Submenu>
               <Menu.SubmenuTrigger icon={UserRoundCog}>
                 {t('sessions.owner.change', 'Change owner')}
@@ -2002,7 +2007,9 @@ export function SessionHeaderMenu({
                       }}
                       icon={ArchiveRestore}
                     >
-                      {t('archive.restore', 'Restore session')}
+                      {isBoard
+                        ? t('boards.restoreBoard', 'Restore Board')
+                        : t('archive.restore', 'Restore session')}
                     </Menu.Item>
                   )}
                   {onDelete && (
@@ -2027,7 +2034,9 @@ export function SessionHeaderMenu({
                     }}
                     icon={Archive}
                   >
-                    {t('sessions.archive', 'Archive session')}
+                    {isBoard
+                      ? t('boards.settings.archive', 'Archive Board')
+                      : t('sessions.archive', 'Archive session')}
                   </Menu.Item>
                 </>
               )}

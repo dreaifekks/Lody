@@ -1,8 +1,11 @@
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useStore } from 'jotai';
 import { useCallback } from 'react';
-import type { BoardMeta, SessionId, SessionMeta } from '@lody/shared';
+import { useTranslation } from 'react-i18next';
+import { normalizeBoardMeta, type BoardMeta, type SessionId, type SessionMeta } from '@lody/shared';
+import { allActiveSessionsAtom, archivedSessionListAtom } from '@/atoms/doc-meta';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { useSessionActions } from '@/hooks/use-session-actions';
+import { toast } from '@/lib/toast';
 import { restoreWorkspaceBoard, writeWorkspaceBoard } from '@/lib/workspace-catalog-write';
 
 /** Root Sessions of a Board: archive and restore carry their contained Tabs along. */
@@ -53,4 +56,74 @@ export function useBoardLifecycle() {
     [restoreSession, runtime]
   );
   return { archiveBoard, restoreBoard };
+}
+
+/**
+ * What a Board's entries (its page's header menu, its sidebar row, settings,
+ * Archive) do to the whole Board. Members are read when an action runs, so an
+ * entry subscribes to no Session list. Archive and restore report a failure
+ * themselves and resolve whether they succeeded; rename rejects, for its dialog.
+ */
+export function useBoardActions() {
+  const { t } = useTranslation();
+  const store = useStore();
+  const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
+  const { updateSessionTitle } = useSessionActions();
+  const { archiveBoard, restoreBoard } = useBoardLifecycle();
+  const archive = useCallback(
+    async (board: BoardMeta) => {
+      try {
+        await archiveBoard(board, store.get(allActiveSessionsAtom));
+        return true;
+      } catch (cause) {
+        toast.error(
+          t(
+            'boards.archiveFailed',
+            'Could not archive the Board: {{reason}}. It stays open; try again.',
+            { reason: cause instanceof Error ? cause.message : String(cause) }
+          )
+        );
+        return false;
+      }
+    },
+    [archiveBoard, store, t]
+  );
+  const restore = useCallback(
+    async (board: BoardMeta) => {
+      try {
+        await restoreBoard(board, store.get(archivedSessionListAtom));
+        return true;
+      } catch (cause) {
+        toast.error(
+          cause instanceof Error && cause.message === 'BOARD_LIMIT'
+            ? t(
+                'boards.restoreLimit',
+                'A workspace can have up to 50 active Boards. Archive one first.'
+              )
+            : t(
+                'boards.restoreFailed',
+                'Could not restore the Board: {{reason}}. It stays archived; try again.',
+                { reason: cause instanceof Error ? cause.message : String(cause) }
+              )
+        );
+        return false;
+      }
+    },
+    [restoreBoard, store, t]
+  );
+  // The coordinator carries the Board's name as its title, as settings keep it.
+  const rename = useCallback(
+    async (board: BoardMeta, name: string) => {
+      const next = normalizeBoardMeta({ ...board, name });
+      if (!next)
+        throw new Error(
+          t('boards.settings.invalid', 'Enter a name, and keep every field within its limit.')
+        );
+      if (!runtime) throw new Error('Runtime not ready');
+      await writeWorkspaceBoard(runtime, next);
+      await updateSessionTitle(board.coordinatorSessionId, next.name);
+    },
+    [runtime, t, updateSessionTitle]
+  );
+  return { archive, restore, rename };
 }
