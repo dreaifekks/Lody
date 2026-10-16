@@ -14,10 +14,10 @@ export type DesktopSessionDetailLayoutProps = {
     sidebar: number;
   };
   /**
-   * Where the split is remembered. A Board page keeps its own, so its even
-   * split and a chat's narrow panel do not overwrite each other.
+   * Where the split is remembered; `null` remembers nothing, so every mount
+   * opens at `defaultSizes` (a Board page: half each, every time).
    */
-  layoutStorageId?: string;
+  layoutStorageId?: string | null;
   /** Single merged top row: session tabs + right-side window controls. */
   topBar: ReactNode;
   chatSurfaces: ReactNode;
@@ -127,7 +127,10 @@ export function DesktopSessionDetailLayout({
 }: DesktopSessionDetailLayoutProps) {
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null);
   const groupWrapperRef = useRef<HTMLDivElement>(null);
-  const lastSidebarSizeRef = useRef(defaultSizes.sidebar);
+  // The size the side panel reopens at: its last open size in this layout, or
+  // the layout's default. Another layout's width never carries over.
+  const layoutKey = layoutStorageId ?? 'unsaved';
+  const lastSidebarSizeRef = useRef({ layout: layoutKey, size: defaultSizes.sidebar });
   const previousSidebarOpenRef = useRef(sidebarOpen);
   const lastConsumedSidebarRequestSeqRef = useRef(0);
   const [isResizing, setIsResizing] = useState(false);
@@ -158,7 +161,8 @@ export function DesktopSessionDetailLayout({
 
     if (splitSidebarOpen) {
       if (!wasOpen) {
-        let target = lastSidebarSizeRef.current;
+        const last = lastSidebarSizeRef.current;
+        let target = last.layout === layoutKey ? last.size : defaultSizes.sidebar;
         // A pending min-width request raises the restored size — never lowers.
         if (
           sidebarMinWidthRequest &&
@@ -176,11 +180,17 @@ export function DesktopSessionDetailLayout({
     if (wasOpen) {
       const currentSize = panel.getSize();
       if (currentSize > 0) {
-        lastSidebarSizeRef.current = currentSize;
+        lastSidebarSizeRef.current = { layout: layoutKey, size: currentSize };
       }
     }
     panel.collapse();
-  }, [splitSidebarOpen, sidebarMinWidthRequest, sidebarMinWidthToPercent]);
+  }, [
+    defaultSizes.sidebar,
+    layoutKey,
+    splitSidebarOpen,
+    sidebarMinWidthRequest,
+    sidebarMinWidthToPercent,
+  ]);
 
   // The sidebar is already open when the request arrives (e.g. the PR tab
   // takes over the empty state): apply it in place. Declared after the expand
@@ -214,10 +224,10 @@ export function DesktopSessionDetailLayout({
     <div ref={groupWrapperRef} {...stylex.props(styles.root)}>
       <ResizablePanelGroup
         // A stored split is read once, when the group mounts.
-        key={layoutStorageId}
+        key={layoutKey}
         direction="horizontal"
         className={stylex.props(styles.group).className}
-        autoSaveId={layoutStorageId}
+        autoSaveId={layoutStorageId ?? undefined}
       >
         <ResizablePanel
           id="chat"

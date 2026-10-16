@@ -1,5 +1,6 @@
 import * as stylex from '@stylexjs/stylex';
 import { space } from '@lody/ui/tokens/scales.stylex';
+import { Download } from 'lucide-react';
 import { atom, useAtomValue } from 'jotai';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -31,15 +32,15 @@ import {
   useVisibleSessionMetas,
 } from '@/hooks/use-visible-session-metas';
 import { useBoardDocument } from '@/hooks/use-board-document';
+import { FileTreeProviderView } from '@/components/sessions/components/file-tree-view';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { BoardPanelView, BoardThreadPaneView, type BoardPanelTab } from './board-panel-view';
 import { BoardThreadListView, type BoardThreadItem } from './board-thread-list';
 import { BoardFileEditorView, BoardFilesView } from './board-files-view';
 import {
-  BoardDirectoryNote,
   BoardFilePreview,
-  BoardFileRowsView,
-  useBoardDirectory,
+  useBoardDirectoryFileProvider,
+  useBoardFileDownload,
 } from './board-directory';
 import { BoardNotesEditor } from './board-notes-panel';
 import { CreateBoardDialog } from './create-board-dialog';
@@ -47,6 +48,9 @@ import { buildBoardRows, opensInCoordinatorPage } from './board-threads';
 
 const panelStyles = stylex.create({
   padded: { display: 'flex', flexDirection: 'column', gap: space[1], padding: space[2] },
+  files: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 },
+  notes: { flexShrink: 0, padding: space[2], paddingBottom: 0 },
+  tree: { flexGrow: 1, minHeight: 0 },
 });
 
 /** Where a member runs, said once: agent · machine · project. */
@@ -166,7 +170,16 @@ function BoardFiles({ board }: { board: BoardMeta }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState<'notes' | BoardFileEntry | null>(null);
   const { document, save, error } = useBoardDocument(board.id);
-  const directory = useBoardDirectory(board, 'files');
+  const provider = useBoardDirectoryFileProvider(board);
+  const download = useBoardFileDownload(board, 'files');
+  const downloadLabel = t('boards.files.download', 'Download');
+  const menuItems = useMemo(
+    () =>
+      download
+        ? [{ id: 'download' as const, label: downloadLabel, icon: Download, run: download }]
+        : undefined,
+    [download, downloadLabel]
+  );
   const notesName = t('boards.notes', 'Shared notes');
   const back = t('boards.files.back', 'Back to files');
   if (open === 'notes')
@@ -196,29 +209,37 @@ function BoardFiles({ board }: { board: BoardMeta }) {
       </div>
     );
   return (
-    <div {...stylex.props(panelStyles.padded)}>
-      {/* The shared notes stay one Loro document, merged across machines; the
-          directory holds every other file. */}
-      <BoardFilesView
-        files={[
-          {
-            id: 'notes',
-            name: notesName,
-            detail: t('boards.files.notesDetail', 'Every member reads and appends to it.'),
-          },
-        ]}
-        onOpen={() => setOpen('notes')}
-      />
-      {directory.state.status === 'ready' ? (
-        <BoardFileRowsView entries={directory.state.list.entries} onOpen={setOpen} />
-      ) : null}
-      <BoardDirectoryNote
-        state={directory.state}
-        empty={t(
-          'boards.files.empty',
-          'No shared files yet. Members put the files everyone should see here.'
-        )}
-      />
+    <div {...stylex.props(panelStyles.files)}>
+      {/* The shared notes stay one Loro document, merged across machines, above
+          the directory's tree, which is the session file tree over `files/`. */}
+      <div {...stylex.props(panelStyles.notes)}>
+        <BoardFilesView
+          files={[
+            {
+              id: 'notes',
+              name: notesName,
+              detail: t('boards.files.notesDetail', 'Every member reads and appends to it.'),
+            },
+          ]}
+          onOpen={() => setOpen('notes')}
+        />
+      </div>
+      <div {...stylex.props(panelStyles.tree)}>
+        <FileTreeProviderView
+          fileProvider={provider}
+          fileProviderMessage={
+            provider
+              ? t(
+                  'boards.files.empty',
+                  'No shared files yet. Members put the files everyone should see here.'
+                )
+              : t('boards.files.noAgent', 'Board files are read through the desktop app.')
+          }
+          handleOpenFile={(filePath) => setOpen(provider?.entry(filePath) ?? null)}
+          viewStateKey={`board-files:${board.id}`}
+          {...(menuItems ? { fileMenuItems: menuItems } : {})}
+        />
+      </div>
     </div>
   );
 }

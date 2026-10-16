@@ -8,7 +8,7 @@ import type { Meta, StoryObj } from '@storybook/react';
 import { useState } from 'react';
 import { createStore, Provider } from 'jotai';
 import { useTranslation } from 'react-i18next';
-import { ArrowUp, Bot, ChevronDown, Monitor, Settings2 } from 'lucide-react';
+import { ArrowUp, Bot, ChevronDown, Download, Monitor, Settings2 } from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import {
   normalizeBoardMeta,
@@ -55,6 +55,8 @@ import { BoardCreateDialogView } from '@/components/boards/board-create-dialog-v
 import { ArchivedBoardsView } from '@/components/boards/archived-boards-section';
 import { boardThreadItems } from '@/components/boards/board-side-panel';
 import { buildBoardRows } from '@/components/boards/board-threads';
+import { FileTreeProviderView } from '@/components/sessions/components/file-tree-view';
+import { BoardDirectoryFileProvider } from '@/lib/board-directory-file-provider';
 import { SettingsStoryProviders } from './settings-story-shell';
 
 const NOW = Date.parse('2026-10-16T09:00:00.000Z');
@@ -361,6 +363,12 @@ const sharedFiles: BoardFileEntry[] = [
   { path: 'screens/board-home.sketch', sizeBytes: 2_400_000, modifiedAtMs: NOW - 3 * 3_600_000 },
 ];
 
+/** The Board directory's `files/` as the agent service lists it. */
+const sharedFilesProvider = new BoardDirectoryFileProvider(async () => ({
+  entries: sharedFiles,
+  truncated: false,
+}));
+
 /**
  * The workspace the file preview asks through. The desktop's IPC is the
  * stand-in a screenshot script installs; without it the preview names the
@@ -427,17 +435,33 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
           </Provider>
         </div>
       ) : (
-        <div className="flex flex-col gap-1 p-2">
-          <BoardFilesView
-            files={[
-              { id: 'notes', name: t('boards.notes'), detail: t('boards.files.notesDetail') },
-            ]}
-            onOpen={() => setPanel({ kind: 'tabs', tab: 'files', notes: true })}
-          />
-          <BoardFileRowsView
-            entries={sharedFiles}
-            onOpen={(file) => setPanel({ kind: 'tabs', tab: 'files', file })}
-          />
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="shrink-0 p-2 pb-0">
+            <BoardFilesView
+              files={[
+                { id: 'notes', name: t('boards.notes'), detail: t('boards.files.notesDetail') },
+              ]}
+              onOpen={() => setPanel({ kind: 'tabs', tab: 'files', notes: true })}
+            />
+          </div>
+          <div className="min-h-0 flex-1">
+            <FileTreeProviderView
+              fileProvider={sharedFilesProvider}
+              handleOpenFile={(path) => {
+                const file = sharedFilesProvider.entry(path);
+                if (file) setPanel({ kind: 'tabs', tab: 'files', file });
+              }}
+              viewStateKey="board-files:story"
+              fileMenuItems={[
+                {
+                  id: 'download',
+                  label: t('boards.files.download'),
+                  icon: Download,
+                  run: () => {},
+                },
+              ]}
+            />
+          </div>
         </div>
       )}
     </BoardPanelView>
@@ -541,7 +565,7 @@ function CoordinatorPage({ initial }: { initial: PanelState }) {
         <main className="min-w-0 flex-1 overflow-hidden">
           <DesktopSessionDetailLayout
             defaultSizes={{ main: 50, sidebar: 50 }}
-            layoutStorageId="board-detail-panels"
+            layoutStorageId={null}
             topBar={
               <SessionTabBar
                 variant="session"
@@ -612,11 +636,6 @@ const meta = {
   component: CoordinatorPage,
   parameters: { layout: 'fullscreen' },
   args: { initial: { kind: 'tabs', tab: 'threads' } },
-  loaders: [
-    async () => {
-      window.localStorage.removeItem('react-resizable-panels:board-detail-panels');
-    },
-  ],
 } satisfies Meta<typeof CoordinatorPage>;
 export default meta;
 type Story = StoryObj<typeof meta>;

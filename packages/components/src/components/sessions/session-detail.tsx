@@ -7686,7 +7686,8 @@ const SessionDetail = ({
       {boardSettings}
       <DesktopSessionDetailLayout
         defaultSizes={defaultSizes}
-        layoutStorageId={activeBoard ? 'board-detail-panels' : 'session-detail-panels'}
+        // A Board opens half and half on every entry, refresh included.
+        layoutStorageId={activeBoard ? null : 'session-detail-panels'}
         topBar={tabBar}
         chatSurfaces={desktopChatSurfaces}
         terminalDock={<TerminalDockHost />}

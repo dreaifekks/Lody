@@ -546,7 +546,24 @@ describe('Board side panel', () => {
     }
   });
 
-  it('lists the Board directory in the Files tab and previews a file through the local agent', async () => {
+  it('shows the Board directory in the session file tree and previews a file through the local agent', async () => {
+    // jsdom lays nothing out; give the tree's scroll viewport a height, as the
+    // file tree's own suite does, so its virtual rows mount.
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.hasAttribute('data-radix-scroll-area-viewport') ? 400 : 0;
+      },
+    });
     const store = createStore();
     store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
     store.set(localProbeResultAtom, { ok: true, machineId: 'laptop' });
@@ -585,15 +602,19 @@ describe('Board side panel', () => {
         (node) => node.textContent === 'Board files'
       ) as HTMLElement;
       await act(async () => filesTab.click());
-      // The shared notes lead; the directory's files follow.
+      const treeRow = (name: string) =>
+        [...view.host.querySelectorAll<HTMLButtonElement>('[role="treeitem"]')].find(
+          (row) => row.textContent === name
+        );
+      // The shared notes lead; the directory follows as the session file tree,
+      // its folders built from the listed paths.
+      expect(view.host.querySelector('[data-id="notes"]')).not.toBeNull();
+      await vi.waitFor(() => expect(treeRow('design')).toBeDefined());
+      await act(async () => treeRow('design')?.click());
       expect(
-        [...view.host.querySelectorAll('[data-scope-item="row"]')].map((row) =>
-          row.getAttribute('data-id')
-        )
-      ).toEqual(['notes', 'design/plan.md', 'design/mock.sketch']);
-      await act(async () =>
-        view.host.querySelector<HTMLButtonElement>('[data-id="design/plan.md"]')?.click()
-      );
+        [...view.host.querySelectorAll('[role="treeitem"]')].map((row) => row.textContent)
+      ).toEqual(['design', 'mock.sketch', 'plan.md']);
+      await act(async () => treeRow('plan.md')?.click());
       await vi.waitFor(() => expect(view.host.querySelector('h1')?.textContent).toBe('Plan'));
       expect(ipc.requests).toContainEqual({
         method: 'openMemberFile',
@@ -610,9 +631,9 @@ describe('Board side panel', () => {
       await act(async () =>
         view.host.querySelector<HTMLButtonElement>('button[aria-label="Back to files"]')?.click()
       );
-      await act(async () =>
-        view.host.querySelector<HTMLButtonElement>('[data-id="design/mock.sketch"]')?.click()
-      );
+      // The folder stays open on the way back.
+      await vi.waitFor(() => expect(treeRow('mock.sketch')).toBeDefined());
+      await act(async () => treeRow('mock.sketch')?.click());
       expect(view.host.textContent).toContain('No preview for this kind of file.');
       const download = [...view.host.querySelectorAll('button')].find(
         (button) => button.textContent === 'Download'
@@ -632,6 +653,9 @@ describe('Board side panel', () => {
     } finally {
       await view.unmount();
       ipc.remove();
+      vi.unstubAllGlobals();
+      if (offsetHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight);
+      else delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
     }
   });
 

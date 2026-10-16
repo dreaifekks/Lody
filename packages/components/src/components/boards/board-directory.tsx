@@ -4,7 +4,7 @@ import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
 import { ArrowLeft, Download } from 'lucide-react';
 import { useAtomValue } from 'jotai';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   BoardFileListSchema,
@@ -20,6 +20,7 @@ import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { localMachineIdAtom } from '@/atoms/local-probe';
 import { MarkdownRenderer } from '@/components/ai-gui/markdown-renderer';
 import { useStableNow } from '@/hooks/use-stable-now';
+import { BoardDirectoryFileProvider } from '@/lib/board-directory-file-provider';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { toast } from '@/lib/toast';
@@ -32,45 +33,132 @@ export type BoardDirectoryState =
 /**
  * One area of the Board's shared directory, as this machine's agent service
  * lists it: from its own disk, or over the LAN from the machine that keeps it.
- * The coordinator is the member the desktop asks as.
+ * The coordinator is the member the desktop asks as. Rejects with the reason.
  */
+async function listBoardDirectory(
+  target: { workspaceId: string; machineId: string },
+  scope: { boardId: string; sessionId: string; area: BoardFileArea }
+): Promise<BoardFileList> {
+  const send = getIpcServices()?.machineRpc.send;
+  if (!send) throw new Error('no_local_agent');
+  const response = await send({ ...target, method: 'board/files-list', params: scope });
+  if (!response.ok) throw new Error(response.error);
+  const list = BoardFileListSchema.safeParse(response.result);
+  if (!list.success) throw new Error('invalid_answer');
+  return list.data;
+}
+
 export function useBoardDirectory(board: BoardMeta, area: BoardFileArea) {
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
   const machineId = useAtomValue(localMachineIdAtom);
   const [state, setState] = useState<BoardDirectoryState>({ status: 'loading' });
   const [generation, setGeneration] = useState(0);
+  const boardId = board.id;
+  const sessionId = board.coordinatorSessionId;
   useEffect(() => {
-    const send = getIpcServices()?.machineRpc.send;
-    if (!send || !workspaceId || !machineId) {
+    if (!workspaceId || !machineId) {
       setState({ status: 'unavailable', reason: 'no_local_agent' });
       return undefined;
     }
     let cancelled = false;
     setState({ status: 'loading' });
-    void send({
-      machineId,
-      workspaceId,
-      method: 'board/files-list',
-      params: { boardId: board.id, sessionId: board.coordinatorSessionId, area },
-    }).then(
-      (response) => {
-        if (cancelled) return;
-        const list = response.ok ? BoardFileListSchema.safeParse(response.result) : null;
-        setState(
-          list?.success
-            ? { status: 'ready', list: list.data }
-            : { status: 'unavailable', reason: response.ok ? 'invalid_answer' : response.error }
-        );
+    void listBoardDirectory({ workspaceId, machineId }, { boardId, sessionId, area }).then(
+      (list) => {
+        if (!cancelled) setState({ status: 'ready', list });
       },
       (error: unknown) => {
-        if (!cancelled) setState({ status: 'unavailable', reason: String(error) });
+        if (!cancelled)
+          setState({
+            status: 'unavailable',
+            reason: error instanceof Error ? error.message : String(error),
+          });
       }
     );
     return () => {
       cancelled = true;
     };
-  }, [area, board.coordinatorSessionId, board.id, generation, machineId, workspaceId]);
+  }, [area, boardId, generation, machineId, sessionId, workspaceId]);
   return { state, reload: () => setGeneration((value) => value + 1) };
+}
+
+/** The message for a directory that cannot be read. */
+export function useBoardDirectoryUnavailable() {
+  const { t } = useTranslation();
+  return (reason: string) =>
+    t(
+      'boards.files.unavailable',
+      'The shared directory cannot be read now: {{reason}}. The machine that keeps it may be offline.',
+      { reason }
+    );
+}
+
+/**
+ * The `files/` area for the session file tree: a provider per Board and agent
+ * service, so reopening the tab lists it afresh.
+ */
+export function useBoardDirectoryFileProvider(board: BoardMeta) {
+  const { t } = useTranslation();
+  const workspaceId = useAtomValue(currentWorkspaceIdAtom);
+  const machineId = useAtomValue(localMachineIdAtom);
+  const boardId = board.id;
+  const sessionId = board.coordinatorSessionId;
+  return useMemo(
+    () =>
+      workspaceId && machineId && getIpcServices()
+        ? new BoardDirectoryFileProvider(() =>
+            listBoardDirectory(
+              { workspaceId, machineId },
+              { boardId, sessionId, area: 'files' }
+            ).catch((error: unknown) => {
+              throw new Error(
+                t(
+                  'boards.files.unavailable',
+                  'The shared directory cannot be read now: {{reason}}. The machine that keeps it may be offline.',
+                  { reason: error instanceof Error ? error.message : String(error) }
+                )
+              );
+            })
+          )
+        : null,
+    [boardId, machineId, sessionId, t, workspaceId]
+  );
+}
+
+/**
+ * Saves a file of the directory where the user chooses, whatever its size,
+ * from the machine that keeps it. `null` where no agent service is reachable.
+ */
+export function useBoardFileDownload(board: BoardMeta, area: BoardFileArea) {
+  const { t } = useTranslation();
+  const workspaceId = useAtomValue(currentWorkspaceIdAtom);
+  const metas = useAtomValue(sessionMetaCacheAtom);
+  const host = boardFilesMachineId(board, metas[getSessionRoomId(board.coordinatorSessionId)]);
+  const boardId = board.id;
+  const sessionId = board.coordinatorSessionId;
+  return useMemo(() => {
+    const ipc = getIpcServices();
+    if (!ipc || !workspaceId || !host) return null;
+    return (filePath: string) => {
+      const name = filePath.split('/').pop() ?? filePath;
+      void ipc.machineRpc
+        .saveMemberFile({
+          workspaceId,
+          machineId: host,
+          sessionId,
+          boardId,
+          path: `${area}/${filePath}`,
+          fileName: name,
+        })
+        .then((result) => {
+          if (!result.ok)
+            toast.error(t('boards.files.downloadFailed', 'Could not download that file.'), {
+              description: result.error,
+            });
+          else if (result.saved)
+            toast.success(t('boards.files.downloaded', 'Saved {{name}}', { name }));
+        });
+    };
+  }, [area, boardId, host, sessionId, t, workspaceId]);
 }
 
 const styles = stylex.create({
@@ -180,15 +268,12 @@ export function BoardDirectoryNote({
   empty: string;
 }) {
   const { t } = useTranslation();
+  const unavailable = useBoardDirectoryUnavailable();
   const message =
     state.status === 'loading'
       ? t('boards.loading', 'Loading…')
       : state.status === 'unavailable'
-        ? t(
-            'boards.files.unavailable',
-            'The shared directory cannot be read now: {{reason}}. The machine that keeps it may be offline.',
-            { reason: state.reason }
-          )
+        ? unavailable(state.reason)
         : state.list.entries.length === 0
           ? empty
           : state.list.truncated
@@ -279,29 +364,7 @@ export function BoardFilePreview({
     workspaceId,
   ]);
 
-  const name = entry.path.split('/').pop() ?? entry.path;
-  const ipc = getIpcServices();
-  const download =
-    ipc && workspaceId && host
-      ? () =>
-          void ipc.machineRpc
-            .saveMemberFile({
-              workspaceId,
-              machineId: host,
-              sessionId: board.coordinatorSessionId,
-              boardId: board.id,
-              path: `${area}/${entry.path}`,
-              fileName: name,
-            })
-            .then((result) => {
-              if (!result.ok)
-                toast.error(t('boards.files.downloadFailed', 'Could not download that file.'), {
-                  description: result.error,
-                });
-              else if (result.saved)
-                toast.success(t('boards.files.downloaded', 'Saved {{name}}', { name }));
-            })
-      : null;
+  const download = useBoardFileDownload(board, area);
 
   let body: ReactNode;
   if (preview.status === 'loading')
@@ -338,7 +401,7 @@ export function BoardFilePreview({
           {t('boards.files.noPreview', 'No preview for this kind of file.')}
         </p>
         {download ? (
-          <Button variant="secondary" size="small" onClick={download}>
+          <Button variant="secondary" size="small" onClick={() => download(entry.path)}>
             <Download size={14} />
             {t('boards.files.download', 'Download')}
           </Button>

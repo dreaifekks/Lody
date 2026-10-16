@@ -5426,6 +5426,7 @@
   "boards.files.noPreview": "No preview for this kind of file.",
   "boards.files.previewFailed": "Could not read this file: {{reason}}",
   "boards.files.previewCut": "Only the first 256 KiB are shown.",
+  "boards.files.noAgent": "Board files are read through the desktop app.",
   "boards.files.download": "Download",
   "boards.files.downloaded": "Saved {{name}}",
   "boards.files.downloadFailed": "Could not download that file.",

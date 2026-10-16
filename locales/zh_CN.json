@@ -5426,6 +5426,7 @@
   "boards.files.noPreview": "这种文件没有预览。",
   "boards.files.previewFailed": "读不到这个文件：{{reason}}",
   "boards.files.previewCut": "只显示前 256 KiB。",
+  "boards.files.noAgent": "看板文件要在桌面应用里读取。",
   "boards.files.download": "下载",
   "boards.files.downloaded": "已保存 {{name}}",
   "boards.files.downloadFailed": "下载失败。",
