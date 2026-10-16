@@ -5,15 +5,44 @@ import { pipeline } from 'node:stream/promises';
 import {
   BOARD_FILES_LIST_MAX,
   BoardFilePathSchema,
+  getWorkspaceFlockDocId,
+  normalizeBoardMeta,
+  workspaceFlockKeys,
   type BoardFileArea,
   type BoardFileEntry,
   type BoardFileList,
+  type BoardId,
+  type BoardMeta,
+  type WorkspaceId,
 } from '@lody/shared';
+import type { LoroDocumentManager } from './loro/doc';
+import type { Logger } from '@/utils/logger';
+import { formatErrorMessage } from '@/utils/format-error';
 
 /** Ids become one path segment each; anything else is not an id. */
 const SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
 
 const outside = () => new Error('BOARD_PATH_OUTSIDE:the path leaves the Board directory');
+
+/**
+ * A Board row as this daemon reads it. Its replica of the workspace catalog
+ * holds only the rows it has synced, and a daemon syncs the catalog only when
+ * something asks: a Board made on another machine since is not there until
+ * this sync brings it. A failed sync leaves the local rows.
+ */
+export async function readSyncedBoard(
+  manager: Pick<LoroDocumentManager, 'repo' | 'syncFlockDocOrThrow'>,
+  workspaceId: string,
+  boardId: string,
+  logger: Pick<Logger, 'warn'>
+): Promise<BoardMeta | null> {
+  const docId = getWorkspaceFlockDocId(workspaceId as WorkspaceId);
+  await manager.syncFlockDocOrThrow(docId, { reason: 'board-files' }).catch((error: unknown) => {
+    logger.warn(`Board catalog refresh failed; using local rows: ${formatErrorMessage(error)}`);
+  });
+  const catalog = await manager.repo.openFlockDoc(docId);
+  return normalizeBoardMeta(catalog.flock.get(workspaceFlockKeys.board(boardId as BoardId)));
+}
 
 /**
  * The shared directories of the Boards this machine keeps:

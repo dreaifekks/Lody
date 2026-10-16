@@ -17,7 +17,8 @@ import type {
   SessionMeta,
   WorkspaceId,
 } from '@lody/shared';
-import { normalizeBoardMeta } from '@lody/shared';
+import { getWorkspaceFlockDocId, normalizeBoardMeta, workspaceFlockKeys } from '@lody/shared';
+import { LoroRepo } from 'loro-repo';
 import {
   LanFileRangeAnswerSchema,
   type LanFileRangeAnswer,
@@ -26,7 +27,7 @@ import {
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import type { LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import { addLanHub, type LanHub } from '@lody/shared/node/lan-hub';
-import { BoardDirectory } from '@/lib/board-directory';
+import { BoardDirectory, readSyncedBoard } from '@/lib/board-directory';
 import { LocalFileServer } from '@/lib/local-file-server';
 import { getSessionFileBlobPath } from '@/lib/session-file-blob-store';
 import type { Logger } from '@/utils/logger';
@@ -933,7 +934,8 @@ describe('Board shared directories between LAN members', () => {
   /** A member on another machine; its replica may claim more than the keeper's. */
   function startMember(
     endpoint: LanTerminalEndpoint,
-    sessions: Record<string, Partial<SessionMeta>>
+    sessions: Record<string, Partial<SessionMeta>>,
+    readMemberBoard = readBoard
   ) {
     const workspace: LanFileWorkspace = {
       lookupSession: lookupIn(sessions),
@@ -952,7 +954,10 @@ describe('Board shared directories between LAN members', () => {
       hubs: () => [home],
       workspace: (workspaceId) => (workspaceId === HOME ? workspace : null),
       localSessions: (workspaceId) => (workspaceId === HOME ? workspace.lookupSession : null),
-      boards: { directory: new BoardDirectory(() => path.join(scratch, 'member-data')), readBoard },
+      boards: {
+        directory: new BoardDirectory(() => path.join(scratch, 'member-data')),
+        readBoard: readMemberBoard,
+      },
     });
   }
 
@@ -985,6 +990,47 @@ describe('Board shared directories between LAN members', () => {
     const copy = path.join(scratch, 'copy.md');
     await member.readBoardFile(HOME, scope('thread'), 'design/plan.md', copy);
     expect(fs.readFileSync(copy, 'utf8')).toBe('# Plan\n第一步\n');
+  });
+
+  it('reaches a Board made elsewhere once the asking daemon syncs its catalog', async () => {
+    const { endpoint } = await startKeeper(members);
+    // The member daemon's replica of the catalog predates the Board: the row
+    // arrives only with a sync, as the hub delivers it.
+    const repo = await LoroRepo.create({});
+    cleanups.push(() => repo.destroy());
+    const catalogId = getWorkspaceFlockDocId(HOME as WorkspaceId);
+    let reachable = true;
+    const manager = {
+      repo,
+      syncFlockDocOrThrow: async (docId: string) => {
+        if (!reachable) throw new Error('hub unreachable');
+        (await repo.openFlockDoc(docId)).flock.put(workspaceFlockKeys.board(board.id), board);
+      },
+    } as unknown as Parameters<typeof readSyncedBoard>[0];
+    const member = startMember(endpoint, members, (workspaceId, boardId) =>
+      readSyncedBoard(manager, workspaceId, boardId, silentLogger())
+    );
+
+    // Without the hub the local rows are all there is.
+    reachable = false;
+    await expect(member.listBoardFiles(HOME, scope('thread'))).rejects.toThrow('BOARD_NOT_FOUND');
+    expect((await repo.openFlockDoc(catalogId)).flock.get(workspaceFlockKeys.board(board.id))).toBe(
+      undefined
+    );
+    reachable = true;
+    expect(await member.listBoardFiles(HOME, scope('thread'))).toEqual({
+      entries: [],
+      truncated: false,
+    });
+    const source = path.join(scratch, 'brief.md');
+    fs.writeFileSync(source, '# Brief\n');
+    await member.putBoardFile(HOME, scope('thread'), 'notes/brief.md', source);
+    expect((await member.listBoardFiles(HOME, scope('thread'))).entries.map((e) => e.path)).toEqual(
+      ['notes/brief.md']
+    );
+    const copy = path.join(scratch, 'brief-copy.md');
+    await member.readBoardFile(HOME, scope('thread'), 'notes/brief.md', copy);
+    expect(fs.readFileSync(copy, 'utf8')).toBe('# Brief\n');
   });
 
   it('refuses a session the keeper does not know as a member, whatever the asker claims', async () => {

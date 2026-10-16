@@ -5,16 +5,12 @@ import {
   type CliRuntimeConnectivity,
   type CliRuntimeWorkspace,
   CliType,
-  type BoardId,
   MachineId,
   WorkspaceId,
   createServerTimeFetcher,
   getMachineRoomId,
   getSessionRoomId,
   getServerNow,
-  getWorkspaceFlockDocId,
-  normalizeBoardMeta,
-  workspaceFlockKeys,
   isLoroRepoDocDeleted,
   machineShellScope,
   machineSupportsLanShell,
@@ -76,7 +72,7 @@ import { connectLanTerminal, deriveLanTerminalKey } from '@/lib/lan/lan-terminal
 import { askLanMemberRpc, LanRpcNotSentError } from '@/lib/lan/lan-rpc-channel';
 import { LanFileHandoff } from '@/lib/lan/lan-file-handoff';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
-import { BoardDirectory } from './board-directory';
+import { BoardDirectory, readSyncedBoard } from './board-directory';
 import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-control';
 import { createLanGitHubSource } from '@/lib/lan/lan-github-credential';
 import {
@@ -430,11 +426,11 @@ export class LodyFleet {
         readBoard: async (workspaceId, boardId) => {
           const runtime = this.runtimes.get(workspaceId);
           if (!runtime) return null;
-          const catalog = await runtime.lody.documentManager.repo.openFlockDoc(
-            getWorkspaceFlockDocId(workspaceId as WorkspaceId)
-          );
-          return normalizeBoardMeta(
-            catalog.flock.get(workspaceFlockKeys.board(boardId as BoardId))
+          return await readSyncedBoard(
+            runtime.lody.documentManager,
+            workspaceId,
+            boardId,
+            this.logger
           );
         },
       },
