@@ -32,8 +32,14 @@ describe('boards in the workspace catalog', () => {
     expect(normalizeBoardMeta({ ...board, name: '看'.repeat(80), future: true })).toEqual({
       ...board,
       name: '看'.repeat(80),
+      instructions: '',
       rules: { maxRoundsPerThread: 4, reportHumanTurns: false, executorConstraints: '' },
     });
+    // A Board may start from its name alone.
+    const { purpose: _purpose, ...named } = board;
+    expect(normalizeBoardMeta(named)).toMatchObject({ purpose: '', instructions: '' });
+    expect(normalizeBoardMeta({ ...board, instructions: 'x'.repeat(16_000) })).not.toBeNull();
+    expect(normalizeBoardMeta({ ...board, instructions: 'x'.repeat(16_001) })).toBeNull();
     expect(normalizeBoardMeta({ ...board, name: '😀'.repeat(81) })).toBeNull();
     expect(normalizeBoardMeta({ ...board, purpose: 'x'.repeat(4001) })).toBeNull();
     expect(normalizeBoardMeta({ ...board, rules: { maxRoundsPerThread: 0 } })).toBeNull();

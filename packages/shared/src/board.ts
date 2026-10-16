@@ -6,6 +6,8 @@ import type { BoardReportEvent, LodyOperationOutputPreview } from './session-orc
 import { sha256Hex } from './sha256';
 
 export const MAX_BOARDS_PER_WORKSPACE = 50;
+/** The user's standing instructions for every member of a Board, in code points. */
+export const MAX_BOARD_INSTRUCTIONS = 16_000;
 export const DEFAULT_BOARD_RULES = {
   maxRoundsPerThread: 4,
   reportHumanTurns: false,
@@ -16,7 +18,9 @@ const BoardMetaSchema = z.object({
   version: z.literal(1),
   id: z.string().startsWith('bd_').min(4),
   name: boundedText(80).refine((text) => text.trim().length > 0),
-  purpose: boundedText(4000).refine((text) => text.trim().length > 0),
+  // Optional: a Board can start with only a name; the user speaks first.
+  purpose: boundedText(4000).default(''),
+  instructions: boundedText(MAX_BOARD_INSTRUCTIONS).default(''),
   coordinatorSessionId: z.string().min(1),
   createdAtMs: z.number().finite().nonnegative(),
   createdByUserId: z.string().min(1),

@@ -4266,6 +4266,7 @@ describe('SessionExecutionService', () => {
         createdAtMs: 1,
         createdByUserId: 'user-1',
         rules: { executorConstraints: 'EXECUTOR_CONSTRAINT' },
+        instructions: 'BOARD_INSTRUCTION',
       });
       if (!board) throw new Error('Invalid fixture');
       let meta: Partial<SessionMeta> = {
@@ -4399,8 +4400,11 @@ describe('SessionExecutionService', () => {
           .join('\n');
         const boardPromptExpected = member && (index === 0 || retryPath === 'create');
         expect(text.includes('EXECUTOR_CONSTRAINT')).toBe(boardPromptExpected);
+        // The user's Board instructions ride on the same start prompt, coordinator included.
+        expect(text.includes('BOARD_INSTRUCTION')).toBe(boardPromptExpected);
         if (boardPromptExpected) {
           expect(text.split('EXECUTOR_CONSTRAINT')).toHaveLength(2);
+          expect(text.split('BOARD_INSTRUCTION')).toHaveLength(2);
           if (boardRole !== 'coordinator') {
             expect(text).toContain('include them verbatim in your reply');
             expect(text).toContain('Do not make changes based on those conclusions yourself');
