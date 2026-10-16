@@ -6,8 +6,11 @@ import {
   composeAgentRolePrompt,
   snapshotAgentRole,
   readMessageAuthor,
+  normalizeMcpServerIdSelection,
   type AgentMessageAuthor,
+  type McpServerId,
 } from '@lody/shared';
+import { resolveMcpSelectionOrWorkspaceDefault } from '@/lib/session-mcp-selection';
 import { batchPage } from '@/orchestration/inbox/batch-page';
 import { isSessionCollaborationStopped } from '@lody/shared';
 import { MACHINE_CATALOG_RETRY_GUIDANCE } from '@/commands/session-catalog-read';
@@ -119,6 +122,7 @@ import {
   readSessionMachineAccess,
   selectDefaultAgentConfigForCreate,
   resolveTurnDispatchConfig,
+  resolveSessionChatMcpSelection,
   sendSessionChatResult,
   validateSessionChatTarget,
   validateSessionCreateOptions,
@@ -2447,6 +2451,30 @@ const resolveInvokingTurnSource = async (): Promise<InvokingTurnSource> => {
   };
 };
 
+/**
+ * New Sessions inherit the driving Turn's explicit MCP choice, else start with
+ * workspace defaults. Dispatch reports an absent choice as `[]`, so read the
+ * stored Turn to keep "no choice" apart from an explicit empty selection.
+ */
+const resolveCreateMcpSelection = async (
+  manager: LoroDocumentManager,
+  session: SessionMeta,
+  invoking: InvokingTurnContext
+): Promise<McpServerId[]> => {
+  const doc = await manager.getOrCreateSessionDoc(session.id);
+  const backend = await createSessionBackend(doc);
+  const turn = await backend.history.readTurn(invoking.identity.sourceTurnId);
+  const inputConfig =
+    turn.state === 'ready'
+      ? normalizeSessionTurnInputConfig(turn.turn.inputConfig)
+      : invoking.frozenInputConfig;
+  return await resolveMcpSelectionOrWorkspaceDefault({
+    manager,
+    workspaceId: getMcpWorkspaceId(getSessionContext()) as WorkspaceId,
+    selection: normalizeMcpServerIdSelection(inputConfig?.mcpServerIds),
+  });
+};
+
 const freezeInvokingAuthor = async (
   manager: LoroDocumentManager,
   session: SessionMeta,
@@ -2955,7 +2983,10 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
         workspace,
         manager,
         options: createOptions,
-        dispatchConfig: resolved.dispatchConfig,
+        dispatchConfig: {
+          ...resolved.dispatchConfig,
+          mcpServerIds: await resolveCreateMcpSelection(manager, currentSession, invoking),
+        },
         skipMachineAvailabilityCheck: true,
       });
     } catch (error) {
@@ -3181,6 +3212,11 @@ const startSessionChatOperation = async (args: SessionChatToolInput): Promise<un
       }
       throw new LodyOperationStoreError('COMMAND_REJECTED', formatMcpErrorMessage(error), false);
     }
+    const mcpServerIds = await resolveSessionChatMcpSelection({
+      manager,
+      workspaceId: workspace.id as WorkspaceId,
+      sessionId: targetSession.id,
+    });
     const preallocatedUserTurnId = randomUUID();
     if (args.attachments?.length) {
       const sourceMachine = await manager.repo.getDocMeta(
@@ -3233,6 +3269,7 @@ const startSessionChatOperation = async (args: SessionChatToolInput): Promise<un
               : {}),
             inputConfig: invoking.frozenInputConfig,
             sourceTurnId: invoking.identity.sourceTurnId,
+            targetDispatchConfigs: [{ mcpServerIds }],
           },
           initiatorChainDepth: invoking.chainDepth,
           ...timing,
@@ -3255,7 +3292,7 @@ const startSessionChatOperation = async (args: SessionChatToolInput): Promise<un
         manager,
         pendingItem.target.sessionId,
         args.prompt,
-        resolveTurnDispatchConfig({}),
+        { ...resolveTurnDispatchConfig({}), mcpServerIds },
         undefined,
         undefined,
         {
@@ -3522,6 +3559,8 @@ const startSessionCreateManyOperation = async (
       };
     }
     const machineLiveness = makeMachineLivenessLookupForMcp(manager, ctx);
+    // One selection for every item: they share the driving Turn and catalog.
+    let mcpSelection: Promise<McpServerId[]> | undefined;
     const validatedItems = await mapWithConcurrency(
       expanded,
       5,
@@ -3594,12 +3633,13 @@ const startSessionCreateManyOperation = async (
         bindMcpCreateContext(options, invoking.identity, requester);
         bindAgentRoleCreateOptions(options, resolved);
         try {
+          mcpSelection ??= resolveCreateMcpSelection(manager, requester, invoking);
           const effectiveDispatchConfig = await validateSessionCreateOptions({
             auth,
             workspace,
             manager,
             options,
-            dispatchConfig: resolved.dispatchConfig,
+            dispatchConfig: { ...resolved.dispatchConfig, mcpServerIds: await mcpSelection },
             skipMachineAvailabilityCheck: true,
           });
           return {
@@ -3806,10 +3846,13 @@ const startSessionChatManyOperation = async (args: SessionChatManyToolInput): Pr
       throw reverseChatError();
     }
     const machineLiveness = makeMachineLivenessLookupForMcp(manager, ctx);
+    const targetDispatchConfigs: ({ mcpServerIds: McpServerId[] } | null)[] = expanded.map(
+      () => null
+    );
     const initialItems = await mapWithConcurrency(
       expanded,
       5,
-      async (item): Promise<LodyOperationItemResult> => {
+      async (item, index): Promise<LodyOperationItemResult> => {
         if (!item.sessionId || !item.prompt) {
           return batchFailure(
             'INVALID_ITEM',
@@ -3855,6 +3898,13 @@ const startSessionChatManyOperation = async (args: SessionChatManyToolInput): Pr
             sessionId: target.id,
             delegatedRequester: toDelegatedSessionRequester(invoking.identity),
           });
+          targetDispatchConfigs[index] = {
+            mcpServerIds: await resolveSessionChatMcpSelection({
+              manager,
+              workspaceId: workspace.id as WorkspaceId,
+              sessionId: target.id,
+            }),
+          };
         } catch (error) {
           if (error instanceof WorkspaceSyncUnavailableError) {
             throw error;
@@ -3891,6 +3941,7 @@ const startSessionChatManyOperation = async (args: SessionChatManyToolInput): Pr
             ...(requester.agentConfigId ? { agentConfigId: requester.agentConfigId } : {}),
             inputConfig: invoking.frozenInputConfig,
             sourceTurnId: invoking.identity.sourceTurnId,
+            targetDispatchConfigs,
           },
           initiatorChainDepth: invoking.chainDepth,
           ...timing,
@@ -3930,7 +3981,10 @@ const startSessionChatManyOperation = async (args: SessionChatManyToolInput): Pr
             manager,
             storedItem.target.sessionId,
             expandedItem.prompt,
-            resolveTurnDispatchConfig({}),
+            {
+              ...resolveTurnDispatchConfig({}),
+              mcpServerIds: targetDispatchConfigs[index]?.mcpServerIds,
+            },
             undefined,
             undefined,
             {
@@ -4534,7 +4588,10 @@ export function buildSessionToolServer(
             manager,
             resolved.prompt,
             options,
-            resolved.dispatchConfig,
+            {
+              ...resolved.dispatchConfig,
+              mcpServerIds: await resolveCreateMcpSelection(manager, currentSession, invoking),
+            },
             buildStructuredOutputOptions(args)
           );
           captureSessionCommandEvent(

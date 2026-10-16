@@ -18,6 +18,11 @@ import { buildCommandInputBlocks, type SessionInputAttachment } from '@/lib/sess
 import { createCommandAttachmentTransfer } from '@/lib/cloud-cli-port';
 import { inputBlocksToHistoryItems, type SessionInputBlock } from '@lody/shared';
 import { resolveSessionConversationConfig } from '@lody/shared';
+import { normalizeMcpServerIdSelection, type McpServerId } from '@lody/shared';
+import {
+  readRecordedSessionMcpSelection,
+  resolveMcpSelectionOrWorkspaceDefault,
+} from '@/lib/session-mcp-selection';
 import type { MessageAuthor, AgentMessageAuthor } from '@lody/shared';
 import {
   ACP_CAPABILITY_ROW_FAMILIES,
@@ -1436,6 +1441,7 @@ function buildCliHistoryInputConfig(args: {
   configOptionValues?: Record<string, string | boolean>;
   resume?: ACPSessionConfig['resume'];
   chainDepth?: number;
+  mcpServerIds?: McpServerId[];
 }): NonNullable<SessionHistoryInput['inputConfig']> {
   return {
     memory: args.memory,
@@ -1453,6 +1459,7 @@ function buildCliHistoryInputConfig(args: {
         : undefined,
     resume: args.resume,
     chainDepth: args.chainDepth,
+    ...(args.mcpServerIds ? { mcpServerIds: args.mcpServerIds } : {}),
   };
 }
 
@@ -1478,6 +1485,12 @@ export type ResolvedTurnDispatchConfig = {
    * agent kind before treating it as inherited defaults.
    */
   frozenInheritedInputConfig?: SessionTurnInputConfig;
+  /**
+   * Workspace MCP selection for the written Turn. Agent and CLI producers do not
+   * choose one, so it is resolved before acceptance (opener's explicit choice,
+   * the chat target's own, else workspace defaults) and frozen for recovery.
+   */
+  mcpServerIds?: McpServerId[];
   /**
    * Semantic run-config selection (model / reasoning effort / fast / plan) that
    * only becomes concrete ACP ids once the target agent's capabilities are
@@ -2125,6 +2138,53 @@ export function resolveTurnDispatchDefaultsFromHistory(
     fallback ??= defaults;
   }
   return fallback;
+}
+
+/**
+ * A new Session inherits its opener's explicit MCP choice. MCP servers are
+ * workspace-wide, so the choice carries across Agent kinds.
+ */
+async function readCreateOpenerMcpSelection(
+  manager: LoroDocumentManager,
+  dispatchConfig: ResolvedTurnDispatchConfig,
+  openedBySessionId: SessionId | undefined
+): Promise<McpServerId[] | undefined> {
+  if (dispatchConfig.frozenInheritedInputConfig !== undefined) {
+    return normalizeMcpServerIdSelection(dispatchConfig.frozenInheritedInputConfig.mcpServerIds);
+  }
+  return openedBySessionId
+    ? await readSessionRecordedMcpSelection(manager, openedBySessionId)
+    : undefined;
+}
+
+async function readSessionRecordedMcpSelection(
+  manager: LoroDocumentManager,
+  sessionId: SessionId
+): Promise<McpServerId[] | undefined> {
+  const sessionDoc = await manager.getOrCreateSessionDoc(sessionId);
+  const backend = await createSessionBackend(sessionDoc, await sessionDoc.getMetaState());
+  return readRecordedSessionMcpSelection(await backend.readHistory());
+}
+
+/**
+ * The selection a chat follow-up runs with: the target's latest recorded choice,
+ * never the sender's, else workspace defaults. Durable callers freeze it at acceptance.
+ */
+export async function resolveSessionChatMcpSelection(args: {
+  manager: LoroDocumentManager;
+  workspaceId: WorkspaceId;
+  sessionId: SessionId;
+}): Promise<McpServerId[]> {
+  await syncDocForRead(
+    args.manager,
+    getSessionRoomId(args.sessionId),
+    `session.chat:${args.sessionId}:mcp-selection`
+  );
+  return await resolveMcpSelectionOrWorkspaceDefault({
+    manager: args.manager,
+    workspaceId: args.workspaceId,
+    selection: await readSessionRecordedMcpSelection(args.manager, args.sessionId),
+  });
 }
 
 async function resolveSessionTurnDispatchDefaults(
@@ -3442,6 +3502,7 @@ export async function resolveEffectiveSessionCreateDispatchConfig(args: {
     builtinDefaultModeId,
     inheritedBuiltinDefaultModeId,
     inheritedDispatchConfig: frozenInheritedConfig,
+    mcpServerIds: requestedMcpServerIds,
     ...dispatchConfig
   } = args.dispatchConfig;
   const frozenInherited = readFrozenInheritedTurnConfig(args.dispatchConfig, args.agentConfig);
@@ -3596,6 +3657,7 @@ export async function resolveEffectiveSessionCreateDispatchConfig(args: {
       ? { inheritedDispatchConfig: inheritedSnapshot }
       : {}),
     inheritSessionDefaults: false,
+    ...(requestedMcpServerIds ? { mcpServerIds: requestedMcpServerIds } : {}),
   };
 }
 
@@ -3769,6 +3831,16 @@ export async function prepareSessionInput(
         : {}),
     }));
   const inputBlocks = buildCommandInputBlocks(prompt, attachments);
+  // Durable callers pass the selection they froze at acceptance; a direct CLI
+  // create resolves it here, without one the Session starts as the composer would.
+  const mcpServerIds = await resolveMcpSelectionOrWorkspaceDefault({
+    manager,
+    workspaceId: workspace.id as WorkspaceId,
+    localOnly: ownerTarget !== undefined,
+    selection:
+      effectiveDispatchConfig.mcpServerIds ??
+      (await readCreateOpenerMcpSelection(manager, dispatchConfig, openedBySessionId)),
+  });
   const repoFullName = resolveProjectGitHubRepo(project);
   const baseBranch = project?.kind === 'local' ? undefined : project?.branch?.trim();
   // An explicit title is final: `user` blocks both the agent-pushed and the
@@ -3844,6 +3916,7 @@ export async function prepareSessionInput(
         modelId: effectiveDispatchConfig.modelId ?? undefined,
         configOptionValues: effectiveDispatchConfig.configOptionValues,
         chainDepth: options.chainDepth,
+        mcpServerIds,
       }),
     },
     fileDiff: [],
@@ -4025,7 +4098,7 @@ export async function sendSessionChatResult(
   manager: LoroDocumentManager,
   sessionId: SessionId,
   prompt: string,
-  dispatchConfig: ResolvedTurnDispatchConfig,
+  requestedDispatchConfig: ResolvedTurnDispatchConfig,
   structuredOutput?: {
     outputMode: StructuredSessionOutputMode;
     timeoutMs: number;
@@ -4046,6 +4119,7 @@ export async function sendSessionChatResult(
   userTurnId: string;
   completionPromise?: Promise<Awaited<ReturnType<typeof waitForTurnCompletion>>>;
 }> {
+  const { mcpServerIds: frozenMcpServerIds, ...dispatchConfig } = requestedDispatchConfig;
   const requester = resolveSessionRequester(auth, requesterUserIdOverride, delegatedRequester);
   const requesterUserId = requester.userId;
   const author = resolveSessionInputAuthor(requesterUserId, delegatedRequester);
@@ -4114,6 +4188,11 @@ export async function sendSessionChatResult(
     !dispatchConfig.runConfig
       ? resolveSessionConversationConfig(historyForDefaults)
       : undefined;
+  const mcpServerIds = await resolveMcpSelectionOrWorkspaceDefault({
+    manager,
+    workspaceId: workspace.id as WorkspaceId,
+    selection: frozenMcpServerIds ?? readRecordedSessionMcpSelection(historyForDefaults),
+  });
   const attachments =
     input?.attachments ??
     (await prepareSessionInputAttachments({
@@ -4154,6 +4233,7 @@ export async function sendSessionChatResult(
         configOptionValues: effectiveDispatchConfig.configOptionValues,
         resume: session.acpSessionId ?? undefined,
         chainDepth: orchestration?.chainDepth,
+        mcpServerIds,
       }),
     },
     preallocatedId: orchestration?.userTurnId,

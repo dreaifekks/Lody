@@ -2143,7 +2143,8 @@ describe('board membership in MCP creation', () => {
       { repo: { getDocMeta: async () => undefined } } as unknown as LoroDocumentManager,
       input.prompt,
       options,
-      { ...resolveTurnDispatchConfig({}), inheritSessionDefaults: false },
+      // MCP creates freeze their selection before preparation.
+      { ...resolveTurnDispatchConfig({}), inheritSessionDefaults: false, mcpServerIds: [] },
       {
         targetMachine: { id: 'machine', ownerUserId: 'owner' } as MachineMeta,
         agentConfig: {

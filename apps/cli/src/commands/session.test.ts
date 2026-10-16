@@ -46,6 +46,7 @@ import {
   type LocalProjectGitState,
   type MachineId,
   type MachineMeta,
+  type McpServerId,
   type SessionHistoryInput,
   type SessionId,
   type SessionMeta,
@@ -93,6 +94,7 @@ import {
   resolveTurnDispatchConfigFromInputConfig,
   resolveTurnDispatchDefaultsFromHistory,
   resolveEffectiveSessionChatDispatchConfig,
+  resolveSessionChatMcpSelection,
   resolveLocalProjectBranchForCreate,
   resolveLocalProjectCreateGitContext,
   resolveLocalProjectRefOrThrow,
@@ -111,6 +113,7 @@ import {
   validateTurnModeAndModel,
   withBuiltinDefaultTurnMode,
   sessionCommand,
+  type ResolvedTurnDispatchConfig,
 } from './session';
 
 const createSessionMeta = (overrides: Partial<SessionMeta> = {}): SessionMeta => ({
@@ -2481,7 +2484,8 @@ describe('prepared command attachment inputs', () => {
         ...options,
         inputAttachments: [file],
       },
-      { inheritSessionDefaults: false },
+      // Host-owned automation freezes its MCP selection before preparation.
+      { inheritSessionDefaults: false, mcpServerIds: [] },
       ownerTarget
     );
     expect(prepared.userTurn.items).toEqual([{ type: 'text', text: 'Analyze' }, file]);
@@ -2548,7 +2552,8 @@ describe('prepared command attachment inputs', () => {
         ...options,
         inputAttachments: [file],
       },
-      { inheritSessionDefaults: false },
+      // Host-owned automation freezes its MCP selection before preparation.
+      { inheritSessionDefaults: false, mcpServerIds: [] },
       ownerTarget
     );
     expect(prepared.userTurn.items).toEqual([file]);
@@ -2566,6 +2571,120 @@ describe('prepared command attachment inputs', () => {
         ownerTarget
       )
     ).rejects.toThrow('text');
+  });
+});
+
+describe('workspace MCP selection on CLI-written Turns', () => {
+  const auth = {
+    machineId: 'machine-1' as MachineId,
+    userId: 'user-1',
+    token: '',
+    userName: 'User',
+    userEmail: 'user@example.test',
+    machineName: 'Local',
+  };
+  const workspace = { id: 'workspace-1', name: 'Workspace', slug: 'workspace', role: 'owner' };
+  const ownerTarget = {
+    targetMachine: { id: auth.machineId, ownerUserId: auth.userId } as MachineMeta,
+    agentConfig: {
+      id: 'agent-1',
+      machineId: auth.machineId,
+      cliType: 'registry',
+      agentType: 'fixture',
+    } as AgentConfigMeta,
+  };
+  const options = {
+    workspaceMetaPrewriteSatisfied: true,
+    bypassSessionQuota: true,
+    historyBackend: 'loro' as const,
+  };
+  const catalogRows = [
+    { id: 'default-mcp', enabledByDefault: true },
+    { id: 'opt-in-mcp', enabledByDefault: false },
+  ].map(({ id, enabledByDefault }) => ({
+    key: ['mcpServer', id],
+    value: { id, name: id, transport: 'stdio', enabledByDefault, createdAt: 0, updatedAt: 0 },
+  }));
+  const catalogManager = (sessions: Record<string, unknown[]> = {}) =>
+    ({
+      repo: { openFlockDoc: async () => ({ flock: { scan: () => catalogRows } }) },
+      syncFlockDocOrThrow: async () => undefined,
+      syncDocOrThrow: async () => undefined,
+      getOrCreateSessionDoc: async (sessionId: SessionId) => {
+        const doc = new LoroDoc();
+        const writer = createHistoryWriter(doc);
+        for (const entry of sessions[sessionId] ?? []) writer.append(entry as never);
+        return {
+          sessionId,
+          sessionData: createLoroSessionData({ doc, sessionId }),
+          getMetaState: async () => ({ historyBackend: 'loro' }),
+        };
+      },
+    }) as never;
+  const userTurn = (id: string, mcpServerIds?: string[]) => ({
+    id,
+    role: 'user',
+    timestamp: '2026-10-17T00:00:00.000Z',
+    items: [{ type: 'text', text: id }],
+    fileDiff: [],
+    finished: true,
+    inputConfig: { prompt: id, ...(mcpServerIds ? { mcpServerIds } : {}) },
+  });
+  const prepare = (manager: unknown, dispatchConfig: ResolvedTurnDispatchConfig) =>
+    prepareSessionInput(
+      auth,
+      workspace,
+      manager as never,
+      'Work',
+      options,
+      { inheritSessionDefaults: false, ...dispatchConfig },
+      ownerTarget
+    );
+
+  it('keeps a frozen selection without reading the catalog again', async () => {
+    const noReads = new Proxy(
+      {},
+      {
+        get: () => {
+          throw new Error('Unexpected catalog read during recovery');
+        },
+      }
+    );
+    for (const mcpServerIds of [['opt-in-mcp'], []] as McpServerId[][]) {
+      const prepared = await prepare(noReads, { mcpServerIds });
+      expect(prepared.userTurn.inputConfig?.mcpServerIds).toEqual(mcpServerIds);
+    }
+  });
+
+  it.each([
+    { opener: ['opt-in-mcp'], expected: ['opt-in-mcp'] },
+    { opener: [], expected: [] },
+    { opener: undefined, expected: ['default-mcp'] },
+  ])(
+    'inherits the opener choice $opener, else starts with workspace defaults',
+    async ({ opener, expected }) => {
+      const prepared = await prepare(catalogManager(), {
+        frozenInheritedInputConfig: opener ? { mcpServerIds: opener as McpServerId[] } : {},
+      });
+      expect(prepared.userTurn.inputConfig?.mcpServerIds).toEqual(expected);
+    }
+  );
+
+  it("follows the chat target's latest choice, never the sender's", async () => {
+    const manager = catalogManager({
+      chosen: [userTurn('older', ['default-mcp']), userTurn('latest', ['opt-in-mcp'])],
+      none: [userTurn('latest', [])],
+      unstated: [userTurn('latest')],
+    });
+    const resolve = (sessionId: string) =>
+      resolveSessionChatMcpSelection({
+        manager,
+        workspaceId: workspace.id as WorkspaceId,
+        sessionId: sessionId as SessionId,
+      });
+    await expect(resolve('chosen')).resolves.toEqual(['opt-in-mcp']);
+    await expect(resolve('none')).resolves.toEqual([]);
+    await expect(resolve('unstated')).resolves.toEqual(['default-mcp']);
   });
 });
 

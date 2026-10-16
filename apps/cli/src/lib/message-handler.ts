@@ -2905,7 +2905,11 @@ export class MessageHandler {
       this.workspaceDocument,
       item.target.sessionId,
       prompt,
-      resolveTurnDispatchConfig({}),
+      {
+        ...resolveTurnDispatchConfig({}),
+        mcpServerIds:
+          operation.frozenContinuationConfig.targetDispatchConfigs?.[index]?.mcpServerIds,
+      },
       undefined,
       delegatedRequester ? undefined : operation.requesterUserId,
       {
