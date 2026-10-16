@@ -201,3 +201,46 @@ through `saveMemberFile`. Screenshots: Storybook + Playwright at 1440px and 390p
 download entry and the settings navigation open, keyboard-focused and hovered. Not
 verified: the save dialog in the real desktop, and the `boardThread` handover on a
 compact desktop (same code path as phones; the panel must be mounted).
+
+## lan.4 field corrections (2026-10-17)
+
+Used on `dev-v0.105.0-lan.4` (every daemon of the five machines on that build), only the
+settings dialog worked. The implementation is recorded in the
+[design](../../../../specs/project-coordinator/design.md), "Board lan.4 field corrections".
+
+- **`BOARD_NOT_FOUND` is a member's unsynced catalog replica.** Field evidence: the
+  desktop's `board/files-list` (Board `bd_ce75…`, coordinator on devNuc) sent straight to
+  each machine's own daemon control socket. devNuc (the host) and homeN100 answered an
+  empty list; mba answered `BOARD_NOT_FOUND:this machine knows no such Board`, which comes
+  from the asking machine's own `LanFileHandoff.boardOf` reading the row, before anything
+  reaches the host. After `lody-lan mcp list` on mba, which makes its daemon sync the
+  workspace catalog, the same request answered the list at once. In code, every other
+  catalog reader (Board tools, member start prompts, Role/MCP reads) calls
+  `syncFlockDocOrThrow` first; only `readBoard` in `lody-fleet.ts` read the local replica.
+  The fix extracts `readSyncedBoard` (`board-directory.ts`): sync first, warn and use the
+  local rows on failure.
+- **The split missed 50/50 because an old width carried in.** mba's desktop localStorage
+  held `board-detail-panels` as `[61.8, 38.2]` and `[100, 0]`. `DesktopSessionDetailLayout`
+  kept the chat's panel width in `lastSidebarSizeRef` across the layout key change,
+  resized to it when the panel opened, and `autoSaveId` stored it under the Board key.
+  A Board page now remembers no split (`layoutStorageId={null}`) and the reopen width is
+  per layout, so the values already stored on users' machines are no longer read.
+- **The Board files tab is the session file tree.** `BoardDirectoryFileProvider` builds
+  on `LazyDirectoryFileProvider`; the root holds every file and the tree builds folders
+  from paths. `openFile` answers unavailable on purpose: the Board preview opens files
+  (and owns downloads). Session viewer tabs were not used: they resolve files by session
+  path, and another source would mean changing the viewer. The shared notes stay above
+  the tree rather than becoming `notes.md`, which needs no migration and keeps merging.
+  The settings Memory page keeps its flat list (`MEMORY.md` first).
+
+Evidence: in the new `lan-files.test.ts` case the member's catalog is a real `LoroRepo`
+that gets the Board row only through a sync; with the sync failing it answers
+`BOARD_NOT_FOUND`, and after it, list, put and read all succeed between two real TLS
+endpoints. `desktop-session-detail-layout.test.tsx` covers a chat dragged to 38% followed
+by a Board page whose panel opens at 50 and stores no split (`resize(38.2)` before the
+fix). The `board-overview.test.tsx` Files case now goes through the tree: expand a
+folder, preview, the folder still open on return, binary download. Screenshots:
+`/tmp/board-lan4fix-files-*.png`. Not verified: the fix is not deployed, so fixed
+reads and writes on the real LAN wait for the next dev build; mba's replica is current
+since the investigation's sync, so the failure reproduces only on members that have not
+synced; the Windows reproduction was not completed because of shell quoting.

@@ -33,6 +33,10 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   (`opensInCoordinatorPage`, for rows and `boardThread` alike).
 - Thread rows keep a thread's opened sessions and Tabs under it, grouped by the
   family's strongest state.
+- A Board page remembers no split: it opens half and half on every entry.
+- The Files tab is the session file tree (`FileTreeProviderView`) over
+  `BoardDirectoryFileProvider`, with the shared notes one row above it; files open in
+  the Board preview, never a session viewer tab.
 - Panel and settings state belong to one Board: `BoardSidePanel` and `BoardSettings`
   key themselves by workspace and Board id. Settings open from the conversation
   header's gear, never from the panel.
@@ -45,6 +49,8 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   working directory, links resolved, as attachments do. Everyone else
   reaches it through its local agent: `board/files-list`, member ranges with
   `boardId`, `lody_board_files_*` over the LAN `files` connection (`lanBoardFiles`).
+  A daemon reads the Board row with `readSyncedBoard`: its catalog replica lacks rows
+  made elsewhere until it syncs.
   The renderer never reads it directly. Shared notes stay the Loro document.
 - Older clients strip `instructions`/`files` and refuse goal-less rows, so every client
   that writes Board rows must run the same version; no compatibility layer.

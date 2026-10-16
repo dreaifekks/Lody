@@ -311,7 +311,9 @@ session working directory once links are resolved. It says that it answers with 
 `lanBoardFiles` protocol capability. Everything goes through the agent service
 of the asking machine (`LanFileHandoff.listBoardFiles/readBoardFile/putBoardFile`):
 the Board file tools of an agent, the `board/files-list` request of a desktop,
-and the member resource a desktop previews a file through.
+and the member resource a desktop previews a file through. Both machines read the
+Board row after syncing the workspace catalog (`readSyncedBoard`): a daemon's replica
+holds a Board made elsewhere only once it has synced.
 
 ## A desktop's requests to other machines
 

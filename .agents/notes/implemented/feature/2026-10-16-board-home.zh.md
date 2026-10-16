@@ -144,3 +144,35 @@ LAN 里所有机器属于同一个用户，同一用户跨机器能碰到文件�
 `saveMemberFile` 下载。截图：Storybook + Playwright，1440px 和 390px，下载入口与设置导航
 的打开、键盘焦点、悬停三态。未验证：真实桌面上的保存对话框、紧凑桌面上 `boardThread` 的
 面板交接（代码路径和手机相同，面板需已挂载）。
+
+## lan.4 实测修正（2026-10-17）
+
+用户在 `dev-v0.105.0-lan.4`（五台机器的守护进程都是这一版）上实际用下来，只有设置浮窗正常。
+实现记在[设计文档](../../../../specs/project-coordinator/design.zh.md)「看板 lan.4 实测修正」。
+
+- **`BOARD_NOT_FOUND` 是成员机器的 catalog 副本没同步。** 现场证据：在每台机器上直接向本机
+  守护进程的 control socket 发桌面用的 `board/files-list`（看板 `bd_ce75…`，协调者在 devNuc）。
+  devNuc（宿主）和 homeN100 返回空列表；mba 返回 `BOARD_NOT_FOUND:this machine knows no such
+  Board`，这条报错来自发起方自己读看板行的 `LanFileHandoff.boardOf`，请求根本没发到宿主机。
+  在 mba 上跑一次会让守护进程同步 workspace catalog 的 `lody-lan mcp list` 之后，同一请求立即
+  返回列表。代码上，读 catalog 的其他地方（看板工具、成员启动提示、Role / MCP 读取）都先
+  `syncFlockDocOrThrow`，只有 `lody-fleet.ts` 的 `readBoard` 直接读本地副本。修法是抽出
+  `readSyncedBoard`（`board-directory.ts`），先同步、失败告警后沿用本地行。
+- **50/50 没生效是旧宽度带进看板。** mba 桌面 localStorage 里的 `board-detail-panels` 存着
+  `[61.8, 38.2]` 和 `[100, 0]`。`DesktopSessionDetailLayout` 的 `lastSidebarSizeRef` 在布局键
+  换掉后仍是普通会话的侧栏宽度，侧栏打开时按它 `resize`，`autoSaveId` 再把它存进看板的键。
+  现在看板页不记忆分栏（`layoutStorageId={null}`），侧栏重开宽度按布局区分，用户机器上已存的
+  旧值也就不再读取。
+- **看板文件 tab 换成会话文件树。** `BoardDirectoryFileProvider` 建在 `LazyDirectoryFileProvider`
+  上，根目录一次给出全部文件，树按路径建目录；`openFile` 明确返回不可用，因为点开文件由看板
+  预览负责（它还管下载）。没有接会话的查看器 tab：那套按会话路径解析文件，换数据源要动查看器。
+  共享笔记留在树上方，不改成 `notes.md`，省掉迁移且不丢合并语义。设置里的「记忆」页仍是平铺列表
+  （`MEMORY.md` 排第一）。
+
+证据：`lan-files.test.ts` 新用例里，成员的 catalog 是一个真实 `LoroRepo`，只有同步时才拿到看板
+行；同步失败时报 `BOARD_NOT_FOUND`，同步后经两个真实 TLS 端点列出、写入、读取都成功。
+`desktop-session-detail-layout.test.tsx` 覆盖「普通会话拖到 38% 后进看板，侧栏按 50 打开且不存
+分栏」（未修时 `resize(38.2)`）。`board-overview.test.tsx` 的「文件」tab 用例改走文件树：展开
+目录、点开预览、返回后目录仍展开、二进制下载。截图 `/tmp/board-lan4fix-files-*.png`。
+未验证：修复版本还没部署，真实 LAN 上的修复后读写要等下一个 dev 包；mba 的副本已经因为调查时那次
+同步变新，修复前状态只能在其他没同步过的成员上再现；Windows 上的复现因 shell 转义没做成。

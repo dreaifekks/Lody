@@ -1250,8 +1250,8 @@ Decisions 9–14:
   `createSession` with no first message. The chosen model and other run config wait as
   a run-config draft in its composer (in memory on this device); a chosen Role comes
   from the session's Role provenance.
-- **Page.** A Board page remembers its split as `board-detail-panels`, half each by
-  default. The settings button sits at the right of the conversation header (on phones,
+- **Page.** A Board page opens half and half every time and remembers no split (see
+  "lan.4 field corrections"). The settings button sits at the right of the conversation header (on phones,
   in the Board drawer's header); the page owns the dialog, whose draft is rebuilt per
   workspace and Board id.
 - **Panel.** Threads and Board files tabs. Threads show as families: a thread with the
@@ -1315,10 +1315,9 @@ coordinator started by the user's first message is confirmed from code only
   style the global settings window shares is unchanged (there, focus and hover use the
   same light fill, see the Agent Note).
 
-**Not implemented yet:** the Files tab described in "Board context" has no file tree yet
-(`BoardDirectoryFileProvider` / `ProjectFileBrowser`), only a flat list; dropping files
-onto the tab does not upload; previews cover text and pictures only, media does not
-play, and large files can only be downloaded.
+**Not implemented yet:** dropping files onto the tab does not upload; previews cover text
+and pictures only, media does not play, and large files can only be downloaded. (The
+file tree came with the "lan.4 field corrections".)
 
 **Known limit: mixed-version clients drop fields on write-back.** Clients from before
 the second round (desktop or daemon) strip the `instructions` and `files` they do not
@@ -1330,3 +1329,24 @@ creation, so the directory usually stays put). A Board with no goal is invisible
 older client, and Board tools on an older daemon answer `BOARD_NOT_FOUND`. The code
 adds no compatibility: Boards are still behind the experiment, and every client that
 can write Boards is required to run the same upgraded version.
+
+## Board lan.4 field corrections
+
+Used on a real five-machine LAN, `dev-v0.105.0-lan.4` needed three fixes:
+
+- **Shared directory unreadable (`BOARD_NOT_FOUND`).** A daemon read the Board row from
+  its own replica of the workspace catalog, which it syncs only when something asks. A
+  member that had not synced since the Board was made on another machine (mba, in the
+  field) did not have the row and failed before the request reached the host. Reading
+  a Board row now syncs the catalog first; a failed sync warns and uses the local rows,
+  as the Board tools and member start prompts already do.
+- **Side panel not at half.** The panel reopened at the width another layout left (a
+  chat dragged to 38%), which `board-detail-panels` then remembered. A Board page now
+  remembers no split and opens half and half on every entry (sidebar, command palette,
+  refresh); a reopening panel reuses a width only within the same layout.
+- **Board files tab.** It is the session Files tree (`FileTreeProviderView`) over
+  `BoardDirectoryFileProvider`: the agent service lists the whole area at once (500
+  files at most) and the tree builds folders from the paths. Opening a file still uses
+  the Board preview (text, pictures, everything else downloads), and the row menu offers
+  Download. The shared notes stay the Loro document, one row above the tree, not moved
+  to `notes.md`.
