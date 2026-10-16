@@ -455,24 +455,23 @@ refused with `COLLABORATION_STOPPED`, like upstream delegation: only the user re
 
 ## Board home
 
-Redesigned on 2026-10-16. This section replaces the former Overview section; it waits
-for user confirmation before implementation. The prototype is the Storybook entry
-`Workspace/Boards/Redesign` (`packages/components/src/stories/BoardRedesign.stories.tsx`).
-It uses synthetic data and no real data. Status derivation and how reports render in
-the conversation carry over from the earlier design; see "Carried over" below.
+Redesigned on 2026-10-16 and confirmed by the user (see "Decided" below). This
+section replaces the former Overview section. Steps 1 and 2 are implemented; see
+"Board home implemented" at the end. Status derivation and how reports render in the
+conversation carry over from the earlier design; see "Carried over" below.
 
 ### Shape
 
 A Board is one coordinator conversation plus one aggregated context. Opening a Board
-opens the coordinator conversation. Threads, files, a single thread and the settings
-take turns in one panel on the right.
+opens the coordinator conversation. Threads, files and a single thread take turns in
+the panel on the right; the rarely used settings live in a dialog.
 
 ```text
 Sidebar
 ├─ Boards ─┬─ Board A ──opens──▶ coordinator conversation (centre) + Board panel (right)
 │          │                       ├─ Threads: member sessions, grouped Needs you / Working / Idle / Archived
-│          │                       ├─ Files: shared text files (the existing notes are the first)
-│          │                       └─ Settings (⚙): context, memory, coordinator, rules, digest, archive
+│          │                       └─ Files: the shared notes + the Board's shared directory
+│          │                     ⚙ Settings dialog: name, goal, context, memory, rules, digest, archive
 │          └─ Board B
 ├─ Machine / project groups (threads stay under their project; the coordinator is no longer listed)
 └─ Chats
@@ -488,7 +487,7 @@ Sidebar
   `boardRole === 'coordinator'`.
 - **Threads remain ordinary sessions.** They have real directories and worktrees, so
   they stay in their machine or project group and also appear in the Board panel.
-  Whether to hide them from project groups is open question 1.
+  They are not hidden from project groups (decision 1).
 - **Projects and Boards.** A project is still a repository or local folder. A Board
   refers to some projects through its project scope but does not own them.
 
@@ -501,7 +500,7 @@ Desktop (≥ 1024px) has three columns:
   and ⚙.
 - Right: a 420px panel.
 
-The panel has five states: closed, threads, files, one thread, settings.
+The panel has four states: closed, threads, files, one thread.
 
 - **Threads tab.** Threads are grouped. Empty groups are not drawn, and Archived is
   folded by default. Each row shows:
@@ -513,9 +512,9 @@ The panel has five states: closed, threads, files, one thread, settings.
   Clicking a row opens the thread in the panel. It shows a breadcrumb "← Threads ›
   title", the thread's own conversation and composer, Open as a full conversation,
   and Close.
-- **Files tab.** A list of files and New file. Opening a file uses the existing notes
-  editor.
-- **Settings.** The same panel, titled Board settings.
+- **Files tab.** A fixed Shared notes row on top opens the existing notes editor;
+  below it is the Board's shared directory (see "Board context › Shared directory").
+- **Settings.** ⚙ opens the Board settings dialog; it does not use the side panel.
 - **While the panel is closed**, its toggle reads "✋ N waiting for you". While the
   panel is open, the count is not repeated.
 
@@ -543,11 +542,11 @@ The implementation reuses existing pages:
 | Coordinator conversation and composer  | The most common action: ask the coordinator, read reports |
 | Thread list (Needs you first)          | Next most common: who waits for me; go in and steer       |
 | A thread open in the panel, with its composer | Steer without leaving the coordinator              |
-| Files tab                              | Threads and the user read and write notes often           |
+| Files tab                              | Threads and the user read and write notes and files often |
 | New thread "+"                         | The same level as a chat's "+"                           |
 | Scope badge (only when narrowed)       | Says which projects the Board uses; nothing for "all"     |
 
-| Settings panel (rare)                                         | Why                              |
+| Settings dialog (rare)                                        | Why                              |
 | ------------------------------------------------------------- | -------------------------------- |
 | Name, goal                                                    | Written once at creation         |
 | Project scope                                                 | Chosen at creation, rarely changed |
@@ -582,7 +581,7 @@ padding and offsets it with a negative margin (`board-view.tsx`, `boardStyles.fo
 | Part         | Built on                                                         | New                                              |
 | ------------ | ---------------------------------------------------------------- | ------------------------------------------------ |
 | Project scope | The Board row; none chosen = all                                | `BoardMeta.context.projects?: BoardProjectRef[]` |
-| Shared files | PR2's Board document `board-<id>`                                | A `files` container in the document              |
+| Shared directory | The data directory of the host (the coordinator's machine at creation) | `BoardMeta.files: { machineId }`     |
 | Board memory | A LoroText in the Board document, given to every member; optionally mirrored to an nmem space | A `memory` container; `BoardMeta.memory?` |
 
 **Project scope**
@@ -616,18 +615,47 @@ The scope is used in four places:
 When the scope is empty (all projects), none of this applies; the instructions only
 say that `lody_project_list` lists every project.
 
-**Shared files**
+**Shared directory**
 
-- The Board document gains `files`:
-  `LoroMap<fileId, { name, text: LoroText, updatedAtMs, updatedBy }>`.
-- The existing `notes` container stays as it is, as the fixed first file "Notes.md".
-  No data moves.
-- Only Markdown and plain text. Each file keeps the 256 KiB local-write limit; a Board
-  holds at most 32 files.
-- Binary files come later, because they need a cross-machine blob channel.
-- Tools: the existing `lody_board_notes_get/append/replace` gain an optional `file`
-  (default: the notes), and `lody_board_files_list` is added. Replacement permissions
-  do not change.
+- **Location.** On the host, the machine the coordinator ran on when the Board was
+  created: `<data directory>/boards/<workspaceId>/<boardId>/files/`. The data
+  directory comes from `getLodyDataDir()` (`~/.lody-oss` on the local platform) and is
+  split by workspace like `session-files/<workspaceId>/…`. The directory is named by
+  Board id, not name, so renaming a Board moves nothing.
+- **Record.** The Board row stores `files: { machineId }`. The host derives the path
+  itself; the row does not store it. The host daemon creates the directory on the
+  first listing or write.
+- **Why the coordinator's machine.** The coordinator is the one fixed member, and its
+  machine must be online for reports anyway, so the directory is available exactly
+  when the Board is. If the coordinator later moves, the host stays: the row stores a
+  machine, not a session. While the host is offline the directory cannot be read;
+  the UI and tools say so, and nothing is cached elsewhere.
+- **Members on the host.** The startup instructions give the absolute path, and the
+  agent uses its own file tools without going through Lody.
+- **Members on other machines.** New Board tools:
+  - `lody_board_files_list`: list the shared directory;
+  - `lody_board_files_read({ name, saveTo })`: copy a file to a path in the caller's
+    workspace;
+  - `lody_board_files_write({ path, name? })`: put a file from the caller's workspace
+    into the shared directory.
+
+  In the daemon these use the LAN's existing `files` connection: reads use the
+  existing `range`; two verbs are added, `list` and `put`, where `put` reuses the
+  attachment handoff's announce / ready / bytes / sha256 handshake. Authorization is
+  by `boardId`: the caller must be a Board member and the path must stay inside the
+  Board directory. The new verbs are announced by the capability key
+  `lanBoardFiles`, so older members never receive them. `lody-lan lan shell` is not
+  used: the Codex sandbox blocks it, binaries would need base64 over a PTY, and it
+  cannot be authorized per Board.
+- **Files tab.** A new `BoardDirectoryFileProvider`, built on
+  `LazyDirectoryFileProvider` after `LocalProjectRpcFileProvider`, feeds the existing
+  `ProjectFileBrowser` and file tree. Previews use the existing `file/preview` and
+  member file resources (media, large downloads). Dropping a file onto the tab is a
+  `put` on the host.
+- **Shared notes.** They stay a LoroText rather than becoming `notes.md` in the
+  directory. They already sync across machines and merge offline edits; the three
+  existing tools and the capacity rules stay unchanged, and no data moves. The
+  directory holds arbitrary files; the notes hold the text everyone appends to.
 
 **Board memory**
 
@@ -659,7 +687,7 @@ Optionally, the memory is mirrored to Nowledge Mem:
 - This requires every member machine's nmem to talk to the same Mem server. Settings
   mark machines that cannot reach it; they still run.
 - It changes `MemoryBindingSchema` (which is `.strict()`) or adds a field, which is a
-  provider contract change. That is why it is the last step; see open question 5.
+  provider contract change. That is why it is the last step (decision 5).
 
 ### Connection to the existing foundation
 
@@ -696,43 +724,48 @@ Changed:
   the sidebar Boards group; make `/boards/$boardId` an alias for the coordinator's
   session page; filter the coordinator out of the sidebar session lists.
 - **Overview.** The read-only `BoardsWorkspace` page is replaced by the `board` side
-  panel. `BoardSessionRow` used to read a document only when a row was expanded. Now,
-  while the panel is visible, it reads the latest conclusion's first line only for
-  Needs-you and failed rows; other rows show agent · machine · project.
-- **Create dialog.** Drop the rule fields and add the project scope. Rules move to
-  settings.
-- **Board row and document.** The row gains `context` and an optional `memory`. The
-  document gains `files` and `memory`.
+  panel. Thread rows use metadata and presence only and never read member
+  documents; the second line shows agent · machine · project. Failed therefore does
+  not appear in the list: it shows once the thread is opened, and the coordinator
+  receives the failure report. A latest-conclusion line comes later.
+- **Settings.** Name, goal and rules are edited in the dialog ⚙ opens; saving writes
+  the Board row.
+- **Create dialog.** Goal first, name optional (defaults to the goal's first line), no
+  rule fields; the project scope joins with step 3.
+- **Board row and document.** The row gains `context`, `files` and an optional
+  `memory`. The document gains `memory`.
 - **Instructions.** Coordinator and thread instructions each gain a project-scope
   section and a Board-memory section.
-- **MCP.** Notes tools gain `file`. Add `lody_board_files_list` and
-  `lody_board_memory_update`. Add the scope check to `lody_session_create`.
+- **MCP.** Add `lody_board_files_list/read/write` and `lody_board_memory_update`. Add
+  the scope check to `lody_session_create`. The notes tools do not change.
 
 ### Implementation steps
 
 Each step merges on its own; the order is the dependency order.
 
-1. **UI shell.** Existing data only.
+1. **UI shell (implemented).** Existing data only.
    - Contents: the sidebar Boards group; the `board` side-panel kind (Threads and
      Files tabs, a thread in the panel); filter out the coordinator; remove the
-     navigation item and list page; the `/boards/$boardId` alias.
-   - Modules: `components/loro-sidebar.tsx`, `loro-app-sidebar.tsx`,
-     `components/sessions/session-detail.tsx`, `session-side-panel-tab-bar.tsx`,
-     `components/boards/*` (reusing the prototype views),
-     `routes/$workspaceName/_auth/boards*`.
-2. **Settings panel and create dialog.** Wire `BoardSettingsPanelView` to Board row
-   writes in `lib/workspace-catalog-write.ts`, and replace the create dialog with
-   `BoardCreateDialogView`.
+     navigation item and list page; the `/boards/$boardId` alias; archived Boards on
+     the Archive page. In this step the Files tab holds the shared notes and a
+     placeholder for the shared directory.
+2. **Settings dialog and create dialog (implemented).** The settings dialog writes the
+   Board row (name, goal, rules) and archives the Board; the new create dialog
+   replaces the old one. Project scope, memory and the daily digest stay hidden until
+   their steps land.
 3. **Project scope.** `BoardMeta.context`, the instruction section, `lody_board_get`
-   output, the `lody_session_create` scope check, and project filtering for new
-   threads.
+   output, the `lody_session_create` scope check, project filtering for new threads,
+   and the choice in the settings and create dialogs.
    - Modules: `packages/shared/src/board.ts`,
      `apps/cli/src/session/session-execution-helpers.ts`,
      `apps/cli/src/mcp/lody-mcp-server.ts`, `components/boards/*`.
-4. **Shared files.** The document's `files`, `file` on the notes tools,
-   `lody_board_files_list`, and real data in the Files tab.
-   - Modules: the Board document reader/writer in `packages/shared`,
-     `hooks/use-board-document.ts`, and the CLI Board tools.
+4. **Shared directory.** `BoardMeta.files`, the directory on the host, `list` / `put`
+   on the `files` connection (`lanBoardFiles`), `lody_board_files_list/read/write`,
+   the path in the instructions, and `BoardDirectoryFileProvider` for the Files tab.
+   - Modules: the data directory and capability key in `packages/shared`,
+     `apps/cli/src/lib/lan/lan-files.ts` and `lan-file-handoff.ts`,
+     `apps/cli/src/mcp/board-tools.ts`, `components/boards/*`, and a file provider
+     under `lib/`.
 5. **Board memory (stored by Lody).** The document's `memory`, injection into first
    messages, `lody_board_memory_update`, and editing in settings. Digest tidying
    comes with PR5.
@@ -743,35 +776,27 @@ Each step merges on its own; the order is the dependency order.
 PR4 (rounds, handoff) and PR5 (daily digest) are independent of these steps and keep
 their plan.
 
-### Open questions for the user
+### Decided
 
-1. **Should threads also be hidden from machine and project groups, appearing only in
-   the Board?**
-   Recommendation: no; hide only the coordinator. Threads have real directories and
-   worktrees, so finding them by project stays useful, and the Board lists them too.
-   This changes decision 6.
-2. **Where does creating a Board start?** Only from the "+" on the sidebar Boards
-   group, or also from a "Board" option beside Local / GitHub / Chat on the landing
-   page?
-   Recommendation: only the sidebar "+". The landing switch says where a
-   conversation runs; a Board is a different thing, and mixing them confuses both.
-3. **Should the `/boards` list page be removed?**
-   Recommendation: yes. The sidebar is the list, and archived Boards go to the
-   Archive page with a Board filter.
-4. **Should the project scope be enforced?**
-   Recommendation: yes. Reject `lody_session_create` outside the scope
-   (`BOARD_PROJECT_OUT_OF_SCOPE`); chat is unrestricted. If the scope only lives in
-   the instructions, the coordinator will eventually step outside it.
-5. **Which is the main Board memory?** Lody's own text (synced across machines, no
-   nmem dependency), or an nmem space directly?
-   Recommendation: Lody's text as the main memory (step 5), with an nmem space as an
-   optional mirror (step 6), after testing `NMEM_SPACE_ID`.
-6. **Is text-only acceptable for the first version of shared files?**
-   Recommendation: yes. Binary files need a cross-machine blob channel and deserve
-   their own design.
-7. **What happens when a thread is opened on a narrow screen?**
-   Recommendation: push the full session page rather than opening it in the panel; a
-   narrow screen has no room for two layers of composers.
+On 2026-10-16 the user confirmed the questions of the first round, changing two of
+the recommendations:
+
+1. Threads are not hidden from machine and project groups; only the coordinator is.
+   This changes decision 6 of "Decided".
+2. A Board is created only from the "+" on the sidebar Boards group; the landing page
+   is unchanged.
+3. The `/boards` list page is removed; the sidebar is the list, and archived Boards go
+   to the Archive page.
+4. The project scope is enforced: `lody_session_create` outside it is rejected; chat
+   is unrestricted.
+5. Board memory is mainly Lody's own text, with an nmem space as an optional mirror,
+   after testing `NMEM_SPACE_ID`.
+6. **Changed:** shared files become a real directory on disk holding any kind of
+   file, not only text. The former `files` container in the Board document is
+   dropped. See "Board context › Shared directory".
+7. Opening a thread on a narrow screen pushes the full session page.
+8. **Changed:** settings are a dialog, not part of the side panel; the side panel has
+   only the Threads and Files tabs.
 
 ## Shared notes
 
@@ -785,9 +810,8 @@ Lody does not call nmem. Board notes are visible, local-to-the-Board work record
 agents own durable-memory writes with their own tools. The existing memory Provider
 only handles identity/environment, not recall/save, and is not extended. Shared
 folders require a separate multi-machine sync design and are deferred. (The
-2026-10-16 redesign proposes Board memory, an optional nmem space mirror, and shared
-text files in the Board document with the notes as the first file; see "Board home",
-pending confirmation.)
+2026-10-16 redesign replaces this with Board memory, an optional nmem space mirror,
+and a shared directory on the host; see "Board home › Board context".)
 
 ## Daily digest
 
@@ -951,7 +975,7 @@ complete specification remains a draft.
    separate Board budget; Overview shows depth and limit.
 4. Successors are child Tabs of the thread root and share its worktree.
 5. Send the daily digest directly into the coordinator session.
-6. First release adds Board navigation/pages without sidebar regrouping. (The redesign proposes a sidebar Boards group instead of the navigation item; see "Board home", open questions 1–3.)
+6. First release adds Board navigation/pages without sidebar regrouping. (Superseded by "Board home › Decided" 1–3: the sidebar has a Boards group, the navigation item is gone, threads stay in project groups.)
 7. Default four rounds, counting agent-authored user turns, excluding follow-up.
 8. Do not require Claude; remember the last coordinator choice.
 
@@ -976,9 +1000,9 @@ The user confirmed these six choices; the complete specification remains a draft
 Board sidebar grouping/hiding members from other groups; split Overview/coordinator
 conversation; synced folders; context-usage-based handoff hints; Board wake intervals
 or budgets; Board-level stop; mobile report push through the existing notify path;
-Board templates. The redesign ("Board home") takes up sidebar grouping, with hiding
-threads left as open question 1, and makes the coordinator conversation and the
-Board panel one split view.
+Board templates. "Board home" adds the sidebar Boards group (threads stay in their
+groups, decision 1) and makes the coordinator conversation and the Board panel one
+split view.
 
 ## Evidence
 
@@ -1034,7 +1058,7 @@ Intent: this document. Inspected implementation (design basis, unchanged):
   and `session-side-panel-tab-bar.tsx`. The local `nmem` binary contains
   `NMEM_SPACE_ID` (meaning untested). Prototype:
   `components/boards/board-{home-view,thread-list,files-view,settings-panel,sidebar-section,create-dialog-view}.tsx`
-  and `stories/BoardRedesign.stories.tsx`, checked in Storybook screenshots at 1440px
+  and the prototype story of that round, checked in Storybook screenshots at 1440px
   and 390px.
 
 ## PR1 implemented
@@ -1123,3 +1147,40 @@ live titles, with waiting/notice labels. PR4/PR5 remain unimplemented and startu
 instructions do not promise round refusal, handoff or digests.
 
 Implementation and validation: [PR3 Agent Note](../../.agents/notes/implemented/feature/2026-10-16-board-inbox-reports.md).
+
+## Board home implemented
+
+Steps 1 and 2 are implemented:
+
+- **Sidebar.** The Boards section sits after Pinned and shows in both organize modes.
+  A Board row carries its members' strongest state (waiting > working), computed from
+  the presence map the sidebar already builds, with no new subscription. The "+" on
+  its header opens the create dialog.
+- **Coordinators stay out of session lists.** The sidebar, the mobile home and the
+  Archive page each drop coordinators at their own source; shared atoms are untouched.
+- **Board panel.** The session side panel gains the `board` kind, offered only on a
+  coordinator's page and persisted like the other panels. A thread opens in the panel
+  as a `SessionChatInterface` whose workspace session is the thread itself. On compact
+  desktop and phones a thread opens its own full page; on phones the full-screen Board
+  drawer opens from the session's tab sheet.
+- **Addresses.** `?board=1` opens the panel once and then leaves the URL;
+  `/boards/<id>` redirects to the coordinator; `/boards` redirects to chat. PR1's
+  navigation item, list page, read-only Overview and mobile Boards tab are removed.
+- **Settings dialog.** It writes the Board row (name, goal, rules); a rename also
+  renames the coordinator Session. Archiving a Board archives the coordinator and the
+  member roots in turn, then writes `archivedAtMs`. The Archive page lists archived
+  Boards; restoring checks the 50-Board limit in the catalog writer, then restores
+  each root.
+- **Create dialog.** Goal first, optional name, default rules.
+- **Files tab.** The shared notes, plus a note saying where the shared directory will
+  come.
+
+Deviation from the design: thread rows never read member documents, so Failed does
+not appear in the list (see "Connection to the existing foundation"). PR1–3
+foundation logic is unchanged; the only shared additions are the session route's
+`board` search parameter and the `board` value in the persisted side-panel schema.
+
+Not verified: the real desktop app (devnuc has no display; the real components were
+checked in Storybook), the phone drawer's gestures, and behavior across LAN machines.
+Implementation and checks:
+[Board home Agent Note](../../.agents/notes/implemented/feature/2026-10-16-board-home.md).

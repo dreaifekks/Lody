@@ -411,21 +411,21 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
 
 ## 看板主界面
 
-2026-10-16 重新设计，替换原来的「Overview 页面」一节，待用户确认后实现。原型在
-Storybook `Workspace/Boards/Redesign`（`packages/components/src/stories/BoardRedesign.stories.tsx`），
-用合成数据，没有接真实数据。状态推导和回报在对话里的呈现沿用原设计，见下文「沿用」。
+2026-10-16 重新设计，用户已确认（见下文「已决定」），替换原来的「Overview 页面」一节。
+第 1、2 步已实现，见文末「看板主界面已实现」。状态推导和回报在对话里的呈现沿用原设计，
+见下文「沿用」。
 
 ### 形态
 
 看板 = 一个协调者对话 + 一份聚合上下文。打开看板就是打开协调者对话。线程、文件、单个
-线程、设置轮流出现在右侧同一个面板里。
+线程轮流出现在右侧面板里；不常用的设置收在一个浮窗里。
 
 ```text
 侧边栏
 ├─ 看板 ──┬─ 看板 A ──打开──▶ 协调者对话（中间） + 看板面板（右侧）
 │         │                     ├─ 线程：成员 session，按「需要你 / 进行中 / 空闲 / 已归档」分组
-│         │                     ├─ 文件：共享文本文件（现有笔记是第一个）
-│         │                     └─ 设置（⚙）：上下文、记忆、协调者、规则、摘要、归档
+│         │                     └─ 文件：共享笔记 + 看板的共享目录
+│         │                   ⚙ 设置浮窗：名称、目标、上下文、记忆、规则、摘要、归档
 │         └─ 看板 B
 ├─ 机器 / 项目组（线程仍按所在项目出现；协调者不再出现）
 └─ 对话
@@ -437,7 +437,7 @@ Storybook `Workspace/Boards/Redesign`（`packages/components/src/stories/BoardRe
 - **协调者就是看板的对话。** 它不再单独列在会话组里：会话元数据不变，只是列表滤掉
   `boardRole === 'coordinator'`。
 - **线程仍是普通 session。** 它们有真实目录和 worktree，所以仍留在所在的机器 / 项目组里，
-  同时出现在看板面板中。要不要从项目组隐去，见待定问题 1。
+  同时出现在看板面板中。不从项目组隐去（已决定 1）。
 - **project 和看板。** project 仍指仓库或本地文件夹。看板通过「项目范围」引用若干 project，
   但不拥有它们。
 
@@ -448,7 +448,7 @@ Storybook `Workspace/Boards/Redesign`（`packages/components/src/stories/BoardRe
 - 中：协调者对话。头部有看板图标、名称、范围徽标（只在限定项目时出现）、面板开关和 ⚙。
 - 右：420px 的面板。
 
-面板有五种状态：关闭、线程、文件、某个线程、设置。
+面板有四种状态：关闭、线程、文件、某个线程。
 
 - **线程 tab。** 按组列出，空组不画，已归档默认折叠。每行依次是：
   - 状态标记：只在需要你、失败、已停止、运行中时出现；
@@ -457,8 +457,9 @@ Storybook `Workspace/Boards/Redesign`（`packages/components/src/stories/BoardRe
 
   点一行，线程就在面板里打开：面包屑「← 线程 › 标题」，下面是它自己的对话和输入框，
   另有「作为完整对话打开」和关闭两个按钮。
-- **文件 tab。** 文件列表加「新建文件」。打开文件用的是现有的笔记编辑器。
-- **设置。** 用同一个面板，标题为「看板设置」。
+- **文件 tab。** 顶部固定一行「共享笔记」，打开就是现有的笔记编辑器；下面列出看板的共享
+  目录，见「看板上下文 › 共享目录」。
+- **设置。** ⚙ 打开「看板设置」浮窗（对话框），不占用右侧面板。
 - **面板关闭时**，开关按钮变成「✋ N 个等你」。面板打开时不再重复显示这个数。
 
 窄屏（< 1024px，包括 390px）：
@@ -481,11 +482,11 @@ Storybook `Workspace/Boards/Redesign`（`packages/components/src/stories/BoardRe
 | 协调者对话和输入框             | 看板里最常做的事：问协调者、看回报           |
 | 线程列表（「需要你」排在最前） | 其次常做的事：看谁在等我，点进去插话         |
 | 面板里打开的线程和它的输入框   | 插话时不必离开协调者                         |
-| 文件 tab                       | 线程和人都频繁读写笔记                       |
+| 文件 tab                       | 线程和人都频繁读写共享笔记和共享文件         |
 | 新线程「+」                    | 和对话的「+」同级                            |
 | 范围徽标（只在限定项目时）     | 说明这个看板只看哪些项目；默认全部时不画     |
 
-| 放设置面板（低频）                       | 理由                 |
+| 放设置浮窗（低频）                       | 理由                 |
 | ---------------------------------------- | -------------------- |
 | 名称、目标                               | 建板时写一次         |
 | 项目范围                                 | 建板时选，偶尔调整   |
@@ -518,7 +519,7 @@ Storybook `Workspace/Boards/Redesign`（`packages/components/src/stories/BoardRe
 | 组成     | 落在什么上                                         | 新增                                             |
 | -------- | -------------------------------------------------- | ------------------------------------------------ |
 | 项目范围 | 看板行；不选 = 全部                                | `BoardMeta.context.projects?: BoardProjectRef[]` |
-| 共享文件 | PR2 的看板文档 `board-<id>`                        | 文档里的 `files` 容器                            |
+| 共享目录 | 宿主机（建板时协调者所在机器）的数据目录           | `BoardMeta.files: { machineId }`                 |
 | 聚合记忆 | 看板文档里的一段 LoroText，注入每个成员；可选镜像到 nmem 空间 | 文档里的 `memory` 容器；`BoardMeta.memory?`      |
 
 **项目范围**
@@ -549,14 +550,35 @@ type BoardProjectRef =
 
 范围为空（即全部）时，以上都不生效，提示里只写「可以用 `lody_project_list` 查看全部项目」。
 
-**共享文件**
+**共享目录**
 
-- 看板文档新增 `files`：`LoroMap<fileId, { name, text: LoroText, updatedAtMs, updatedBy }>`。
-- 现有的 `notes` 容器原样保留，作为固定的第一个文件「笔记.md」，不迁移数据。
-- 只做 Markdown 和纯文本。每个文件沿用 256 KiB 的本地写入上限，最多 32 个文件。
-- 二进制文件以后再做，因为需要跨机器的 blob 通道。
-- 工具：现有的 `lody_board_notes_get/append/replace` 加可选参数 `file`（默认是笔记），
-  另加 `lody_board_files_list`。替换的权限规则不变。
+- **位置。** 放在宿主机上，即看板创建时协调者所在的机器：
+  `<数据目录>/boards/<workspaceId>/<boardId>/files/`。数据目录由 `getLodyDataDir()` 决定
+  （本地版是 `~/.lody-oss`），和 `session-files/<workspaceId>/…` 一样按工作区分开。目录名用
+  看板 id 而不用名字，看板改名不用搬目录。
+- **记录。** 看板行记 `files: { machineId }`。路径由宿主机自己推导，不写进看板行。宿主机的
+  守护进程在第一次列目录或写入时创建目录。
+- **为什么放协调者的机器。** 看板里只有协调者是固定的，它的机器本来就要在线才能收回报，
+  目录跟它放在一起，可用性和看板本身一致。之后协调者换机器，宿主机也不变：看板行里存的
+  是机器，不是会话。宿主机离线时目录读不到，界面和工具如实报告不可用，不做缓存副本。
+- **同机的成员。** 启动提示直接给出绝对路径，agent 用自己的文件工具读写，不经过 Lody。
+- **其他机器上的成员。** 用新的 Board 工具：
+  - `lody_board_files_list`：列出共享目录；
+  - `lody_board_files_read({ name, saveTo })`：把文件拷到自己工作区里的某个路径；
+  - `lody_board_files_write({ path, name? })`：把自己工作区里的文件放进共享目录。
+
+  这些工具在守护进程里走 LAN 现有的 `files` 连接：读用已有的 `range`；另加 `list` 和 `put`
+  两个动词，`put` 沿用附件交接的 announce / ready / 字节 / sha256 握手。授权按 `boardId`
+  判断，调用者必须是看板成员，路径必须落在看板目录内。新动词用能力键 `lanBoardFiles`
+  声明，旧版本成员不会收到。不用 `lody-lan lan shell` 的原因：它在 Codex 沙箱里会被挡，
+  二进制要用 base64 走 PTY，也没法按看板授权。
+- **文件 tab。** 新增 `BoardDirectoryFileProvider`，建在 `LazyDirectoryFileProvider` 上，
+  仿照 `LocalProjectRpcFileProvider`，交给现有的 `ProjectFileBrowser` 和文件树来列。预览用
+  现有的 `file/preview` 和成员文件资源（音视频、大文件下载）。往 tab 里拖文件，就是在
+  宿主机上 `put`。
+- **共享笔记。** 保留 LoroText，不改成目录里的 `notes.md`。它已经跨机器同步、能离线编辑后
+  合并；已有的三个工具和容量规则都不用动，也不用迁移数据。目录放任意文件，笔记放大家都要
+  往里追加的文字，各管一样。
 
 **聚合记忆**
 
@@ -581,7 +603,7 @@ type BoardProjectRef =
 - agent 身份仍由 Role 实例决定。两个变量互不冲突，所以不用定优先级。
 - 前提是各成员机器的 nmem 连的是同一个 Mem 服务。连不上的机器在设置里标出来，但不阻止运行。
 - 这一项要改 `MemoryBindingSchema`（它是 `.strict()`）或另加字段，属于 provider 契约变更，
-  所以放在最后一步，见待定问题 5。
+  所以放在最后一步（已决定 5）。
 
 ### 和已有底层的衔接
 
@@ -614,34 +636,37 @@ type BoardProjectRef =
 要改：
 - **导航。** 删掉「看板」导航项和 `/boards` 列表页；侧边栏新增看板组；`/boards/$boardId`
   改为进入协调者会话页的别名；侧边栏会话列表滤掉协调者。
-- **Overview。** `BoardsWorkspace` 的只读页由会话侧面板的 `board` 类型取代。
-  `BoardSessionRow` 原来是展开一行才读文档；现在改为面板可见时，只给需要你、失败的行读
-  最后结论的首行，其他行显示 agent · 机器 · 项目。
-- **新建对话框。** 去掉规则字段，加上项目范围；规则移到设置面板。
-- **看板行和文档。** 看板行加 `context` 和可选的 `memory`；看板文档加 `files` 和 `memory`。
+- **Overview。** 只读的 `BoardsWorkspace` 页由会话侧面板的 `board` 类型取代。线程行只用
+  元数据和 presence，不读成员文档；第二行显示 agent · 机器 · 项目。所以「失败」不出现在
+  列表里：打开线程能看到，协调者也会收到失败回报。行里的「最新结论」以后再加。
+- **设置。** 名称、目标、规则改在 ⚙ 打开的设置浮窗里编辑，保存时写看板行。
+- **新建对话框。** 先写目标，名称可空（默认取目标第一行），去掉规则字段；项目范围随第 3 步
+  加入。
+- **看板行和文档。** 看板行加 `context`、`files` 和可选的 `memory`；看板文档加 `memory`。
 - **提示。** 协调者和线程说明各加「项目范围」「看板记忆」两段。
-- **MCP。** notes 工具加 `file` 参数；新增 `lody_board_files_list` 和
-  `lody_board_memory_update`；`lody_session_create` 加范围检查。
+- **MCP。** 新增 `lody_board_files_list/read/write` 和 `lody_board_memory_update`；
+  `lody_session_create` 加范围检查；notes 工具不变。
 
 ### 实现步骤
 
 每步可以单独合并，顺序就是依赖关系。
 
-1. **界面骨架。** 只用现有数据。
+1. **界面骨架（已实现）。** 只用现有数据。
    - 内容：侧边栏看板组；会话侧面板的 `board` 类型（线程 tab、文件 tab、在面板里看线程）；
-     会话列表滤掉协调者；删导航项和列表页；`/boards/$boardId` 别名。
-   - 模块：`components/loro-sidebar.tsx`、`loro-app-sidebar.tsx`、
-     `components/sessions/session-detail.tsx`、`session-side-panel-tab-bar.tsx`、
-     `components/boards/*`（沿用原型组件）、`routes/$workspaceName/_auth/boards*`。
-2. **设置面板与新建对话框。** `BoardSettingsPanelView` 接 `lib/workspace-catalog-write.ts`
-   的看板行写入；新建对话框换成 `BoardCreateDialogView`。
+     会话列表滤掉协调者；删导航项和列表页；`/boards/$boardId` 别名；归档页列出已归档的看板。
+     文件 tab 本步只有共享笔记和共享目录的占位。
+2. **设置浮窗与新建对话框（已实现）。** 设置浮窗写看板行（名称、目标、规则）并能归档看板；
+   新建对话框换成新版。项目范围、记忆、每日摘要在各自的步骤实现前不显示。
 3. **项目范围。** `BoardMeta.context`、提示段、`lody_board_get` 返回、`lody_session_create`
-   范围检查、新线程的项目过滤。
+   范围检查、新线程的项目过滤，以及设置浮窗和新建对话框里的选择。
    - 模块：`packages/shared/src/board.ts`、`apps/cli/src/session/session-execution-helpers.ts`、
      `apps/cli/src/mcp/lody-mcp-server.ts`、`components/boards/*`。
-4. **共享文件。** 看板文档的 `files`、notes 工具加 `file`、`lody_board_files_list`、文件 tab
-   接真实数据。
-   - 模块：`packages/shared` 的看板文档读写、`hooks/use-board-document.ts`、CLI 的看板工具。
+4. **共享目录。** `BoardMeta.files`、宿主机上的目录、`files` 连接的 `list` / `put`
+   （`lanBoardFiles`）、`lody_board_files_list/read/write`、提示里的路径、文件 tab 的
+   `BoardDirectoryFileProvider`。
+   - 模块：`packages/shared` 的数据目录和能力键、`apps/cli/src/lib/lan/lan-files.ts` 与
+     `lan-file-handoff.ts`、`apps/cli/src/mcp/board-tools.ts`、`components/boards/*`、
+     `lib/` 下的文件 provider。
 5. **看板记忆（Lody 自己存）。** 文档的 `memory`、首条消息注入、`lody_board_memory_update`、
    设置里的编辑；摘要整理随 PR5 一起做。
 6. **可选：nmem 空间镜像。** `BoardMeta.memory`、回合冻结、注入 `NMEM_SPACE_ID`，并更新
@@ -649,28 +674,20 @@ type BoardProjectRef =
 
 PR4（轮数、交接）和 PR5（每日摘要）和以上各步互不依赖，按原计划进行。
 
-### 待用户拍板
+### 已决定
 
-1. **线程要不要从机器 / 项目组里隐去，只在看板里出现？**
-   建议不隐去，只隐协调者。线程有真实目录和 worktree，按项目找它们仍然有用，看板里另有
-   一份。这条会改动已决定第 6 条。
-2. **新建看板的入口放哪？** 只在侧边栏看板组的「+」，还是落地页的「本地 / GitHub / 对话」
-   再加一个「看板」？
-   建议只放侧边栏的「+」。落地页那个切换说的是「这次对话在哪里跑」，看板是另一种东西，
-   混在一起反而难懂。
-3. **看板列表页 `/boards` 删不删？**
-   建议删。侧边栏本身就是列表；归档的看板放在归档页，按看板过滤。
-4. **项目范围要不要硬性限制？**
-   建议硬性：范围外的 `lody_session_create` 直接拒绝（`BOARD_PROJECT_OUT_OF_SCOPE`），chat
-   不受限。只写在提示里的话，协调者迟早会越界。
-5. **聚合记忆以谁为主？** Lody 自己存一段文本（各机器同步，不依赖 nmem），还是直接用 nmem
-   空间？
-   建议以 Lody 的文本为主（第 5 步），nmem 空间做可选镜像（第 6 步），并先实测
-   `NMEM_SPACE_ID`。
-6. **共享文件首版只做文本，行不行？**
-   建议行。二进制需要跨机器的 blob 通道，值得单独设计。
-7. **窄屏上点开线程怎么处理？**
-   建议推入完整会话页，而不是也在面板里打开：窄屏放不下两层输入框。
+用户在 2026-10-16 确认了第一轮提出的问题，其中两处改动了原来的建议：
+
+1. 线程不从机器 / 项目组里隐去，只隐协调者。这条改动了「已决定」第 6 条。
+2. 新建看板只从侧边栏看板组的「+」进入，落地页不变。
+3. 删掉 `/boards` 列表页；侧边栏就是列表，归档的看板放在归档页。
+4. 项目范围硬性限制：范围外的 `lody_session_create` 直接拒绝，chat 不受限。
+5. 聚合记忆以 Lody 自己存的文本为主，nmem 空间做可选镜像，先实测 `NMEM_SPACE_ID`。
+6. **改动：** 共享文件改成磁盘上的真实目录，放任意文件，不限文本。原来在看板文档里放
+   `files` 容器的方案作废。见「看板上下文 › 共享目录」。
+7. 窄屏上点开线程，推入完整会话页。
+8. **改动：** 设置做成浮窗（对话框），不放在右侧面板里；右侧面板只有「线程」「文件」两个
+   tab。
 
 ## 共享笔记
 
@@ -682,10 +699,10 @@ PR4（轮数、交接）和 PR5（每日摘要）和以上各步互不依赖，�
   末尾，可接受）。
 - 和 nmem 的边界：Lody 不读写 nmem。笔记是看板内、界面可见的工作记录；长期记忆由 agent
   用自己的 nmem 工具写（每日摘要就是这么做）。memory provider 今天只管身份和环境变量
-  （`NMEM_AGENT_ID`），没有 recall / save，不扩。（2026-10-16 重新设计提议加入看板记忆和
-  可选的 nmem 空间镜像，见「看板主界面 › 看板上下文」，待确认。）
+  （`NMEM_AGENT_ID`），没有 recall / save，不扩。（2026-10-16 起由「看板主界面 › 看板上下文」
+  的看板记忆和可选 nmem 空间镜像取代。）
 - 不做共享文件夹：线程分布在多台机器，文件夹要么单机要么要新同步机制，放到以后。
-  重新设计改为在看板文档里放共享文本文件，笔记是第一个，见「看板主界面」。
+  2026-10-16 起改为宿主机上的共享目录，见「看板主界面 › 看板上下文 › 共享目录」。
 
 ## 每日摘要
 
@@ -830,7 +847,7 @@ Agent Role / Schedule 写入的权限档位上限不变；看板工具只写 Lod
 3. 委派链上限跟上游，用 `LODY_MAX_CHAIN_DEPTH = 16`，不另做看板预算；Overview 显示深度和上限。
 4. 后继会话是线程根的子 Tab，共用 worktree。
 5. 每日摘要直接送入协调者会话。
-6. 首版侧边栏不按看板分组，只增加看板导航和页面。（重新设计提议改为侧边栏看板组、去掉导航项，见「看板主界面」待定问题 1–3。）
+6. 首版侧边栏不按看板分组，只增加看板导航和页面。（已被「看板主界面 › 已决定」1–3 取代：侧边栏有看板组，导航项去掉，线程仍留在项目组。）
 7. 轮数上限默认 4，按 agent 派发的 user turn 计，`followUp` 不计。
 8. 协调者不强制 Claude，记住上次选择。
 
@@ -851,7 +868,7 @@ review 保护和对应的状态；交叉评审用普通的 reviewer 子会话。
 
 ## 以后再做
 
-- 侧边栏按看板分组、看板里的会话从机器 / 项目组里隐去。（重新设计已提出看板组，线程是否隐去见待定问题 1。）
+- 侧边栏按看板分组、看板里的会话从机器 / 项目组里隐去。（看板组已做；线程不隐去，见「看板主界面 › 已决定」1。）
 - Overview 与协调者对话的分栏视图。（重新设计的主界面就是这种分栏。）
 - 共享文件夹（需要跨机器文件同步）。
 - 按上下文占用（`contextWindowUsage`）提示交接，而不只是轮数。
@@ -908,7 +925,7 @@ review 保护和对应的状态；交叉评审用普通的 reviewer 子会话。
   `components/loro-sidebar.tsx`、`components/sessions/desktop-session-detail-layout.tsx`、
   `session-side-panel-tab-bar.tsx`；本机 `nmem` 二进制含 `NMEM_SPACE_ID`（语义未测）。
   原型：`components/boards/board-{home-view,thread-list,files-view,settings-panel,sidebar-section,create-dialog-view}.tsx`
-  与 `stories/BoardRedesign.stories.tsx`，在 Storybook 中以 1440px / 390px 截图检查过。
+  与当时的原型 story，在 Storybook 中以 1440px / 390px 截图检查过。
 
 ## PR1 已实现
 
@@ -976,3 +993,31 @@ PR3 已接入上游 Operation Inbox：成员目录/元数据和历史订阅只�
 启动提示没有承诺轮数拒绝、交接或每日摘要。
 
 实现与验证见 [PR3 Agent Note](../../.agents/notes/implemented/feature/2026-10-16-board-inbox-reports.zh.md)。
+
+## 看板主界面已实现
+
+第 1、2 步已实现：
+
+- **侧边栏。** 「看板」组放在置顶区之后，两种整理模式下都显示。看板行的标记取成员里最强的
+  状态（等你 > 运行中），用侧边栏已有的 presence 映射计算，不新增订阅。组标题上的「+」打开
+  新建对话框。
+- **协调者不进会话列表。** 侧边栏、移动端首页和归档页各自在数据源处滤掉协调者，共享 atom
+  不动。
+- **看板面板。** 会话侧面板新增 `board` 类型，只在协调者页面出现，和其他面板一样持久化。
+  线程在面板里用 `SessionChatInterface` 打开，它的工作区会话是线程自己。紧凑桌面和手机上
+  点线程会进入线程的完整页面；手机上从会话的标签表打开全屏的看板抽屉。
+- **地址。** `?board=1` 打开一次面板后从 URL 去掉；`/boards/<id>` 跳到协调者会话；
+  `/boards` 跳回对话页。PR1 的导航项、列表页、只读 Overview 和移动端「看板」tab 已删除。
+- **设置浮窗。** 写看板行（名称、目标、规则）；改名时同步协调者会话的标题。归档看板 =
+  依次归档协调者和成员根会话，再写 `archivedAtMs`。归档页列出已归档的看板；恢复时在
+  catalog writer 里检查 50 个上限，再逐个恢复根会话。
+- **新建对话框。** 先写目标，名称可空，规则用默认值。
+- **文件 tab。** 共享笔记，加上共享目录的占位说明。
+
+与设计的出入：线程行不读成员文档，所以列表里不显示「失败」（见「和已有底层的衔接」）。
+PR1–3 的底层逻辑没有改动；共享层面只多了会话路由的 `board` 搜索参数，以及侧面板持久化
+schema 里的 `board` 值。
+
+未验证：真实桌面应用（devnuc 没有显示器，只在 Storybook 里检查了真实组件）、手机抽屉的
+手势、多机 LAN 上的表现。实现与检查记录见
+[看板主界面 Agent Note](../../.agents/notes/implemented/feature/2026-10-16-board-home.zh.md)。
