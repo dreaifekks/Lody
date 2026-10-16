@@ -109,10 +109,11 @@ creation entries (`session-submission.ts`):
 Coordinator and threads remain ordinary sessions. Archive/restore/delete/worktree
 cleanup follow `specs/session-relations.md` and `specs/session-worktree-lifecycle.md`;
 Board does not introduce another lifecycle target set. Archiving a Board archives
-its coordinator and member roots with their existing children, then sets `archivedAtMs`;
-restoring restores the coordinator and every root, then clears it. The row changes last
-both ways: a failure leaves the Board where it was, with its entry to retry; there is
-no rollback.
+its member roots with their existing children, then the coordinator, then sets
+`archivedAtMs`; restoring restores every root, then the coordinator, then clears it.
+The coordinator and the row change last both ways: a failure leaves the Board where it
+was, and every entry (the page's menu follows the coordinator) still offers the same
+action to retry; there is no rollback.
 
 ### Threads, generations and children
 
@@ -1228,7 +1229,8 @@ Steps 1 and 2 are implemented:
   navigation item, list page, read-only Overview and mobile Boards tab are removed.
 - **Settings dialog.** It writes the Board row (name, goal, rules); a rename also
   renames the coordinator Session. Archiving a Board archives the coordinator and the
-  member roots in turn, then writes `archivedAtMs`. The Archive page lists archived
+  member roots in turn, then writes `archivedAtMs` (members now come first and the
+  coordinator after them; see "Board entry actions"). The Archive page lists archived
   Boards; restoring checks the 50-Board limit in the catalog writer, restores each
   root, and clears `archivedAtMs` last. A failure shows its reason and leaves the Board
   where it was, to retry.
@@ -1396,9 +1398,14 @@ out: Boards are not pinned, and unread and branches belong to member sessions. T
 mobile sidebar has no row menus, as for chats.
 
 Archiving the Board on screen returns to the chat page; a failed archive or restore says
-why and leaves the Board where it was. Every entry uses `useBoardActions`, which reads
-the members from the metadata cache when an action runs, so an entry subscribes to no
-session list; the settings dialog and the Archive page use it too.
+why and leaves the Board where it was. The page's menu offers archive or restore by
+whether the coordinator is archived, so the coordinator comes after the members: when a
+member fails, the coordinator is untouched and the menu still offers the same action.
+Every entry uses `useBoardActions`, which reads the members from the metadata cache when
+an action runs, so an entry subscribes to no session list; the settings dialog and the
+Archive page use it too. Rename changes only the name of the row as it stands
+(`renameWorkspaceBoard`), so instructions, rules or an archive saved elsewhere while the
+dialog was open are kept.
 
 Not verified: these menus in the real desktop app (seen in Storybook and component
 tests only).

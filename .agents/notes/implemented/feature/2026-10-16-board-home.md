@@ -318,3 +318,31 @@ rename and archive work as above, with the navigation callback. The Storybook
 and its sidebar rows carry the menu; 1440 px screenshots are in
 `/tmp/board-header-actions/shots/`. Not verified: these menus in the real desktop app
 and on phones.
+
+### Review follow-up to the Board entry actions (2026-10-17)
+
+The Codex reviewer (gpt-6.1-sol high) raised two P1s and one P2, all fixed:
+
+- **P1: rename wrote back the row as it was when the dialog opened.** Instructions or
+  rules saved, or an archive done, by another window or machine while the dialog was
+  open were overwritten, and `archivedAtMs` could be cleared, leaving archived members
+  under an active Board. `renameWorkspaceBoard` now reads the current row and changes
+  only its name.
+- **P1: after a partial failure the page menu offered the opposite action.** The menu
+  shows Archive or Restore by the coordinator's `isArchived`, and the coordinator used to
+  go first: when a member failed, the coordinator was already archived and the menu
+  offered Restore Board, losing the retry; a failed restore did the reverse. Rather than
+  pass the Board's state to the menu, the coordinator now comes after the members both
+  ways, so a member failure leaves it untouched and the menu keeps the same action. The
+  remaining gap is the coordinator succeeding and the row write failing: the menu then
+  offers Restore Board, which brings every session and the row back to a consistent
+  active state, after which archive can run again.
+- **P2: the sidebar row swallowed Enter from the buttons inside it.** The row's
+  `onKeyDown` took Enter/Space bubbling up from ⋯ and Archive, prevented their default
+  and opened the Board. Like a chat row, it now handles only its own keys.
+
+Evidence: the `board-overview.test.tsx` header case saves instructions while the rename
+dialog is open and they survive the rename; the sidebar case presses Enter on ⋯
+(nothing opens) and on the row (the Board opens); the lifecycle case asserts that a
+member failure leaves the coordinator active and a failed restore leaves it archived.
+With the rename and key fixes temporarily reverted, both new assertions fail.
