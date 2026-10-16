@@ -99,3 +99,45 @@ records the user's decisions of 2026-10-16. This note covers steps 1 and 2.
   panel, settings and create dialogs with synthetic data; checked at 1440 and 390 px.
 - Not verified: the full desktop app (no display on the build machine), phone drawer
   gestures and LAN behavior. The shared directory is a placeholder until step 4.
+
+## Second round (2026-10-16)
+
+After using `dev-v0.105.0-lan.3`, the user moved the Board further toward Claude
+Projects. The [design](../../../../specs/project-coordinator/design.md) records the
+decisions (9–14) and the implementation ("Board home, second round implemented").
+
+- **Board conversations only in the Board.** This overturns "threads stay in their
+  project group". `isBoardSession` filters at each outside list's source; with the
+  experiment off threads return as ordinary sessions, so turning it off loses nothing.
+- **No first message.** A coordinator is created with `createSession`. Its first user
+  message takes the `session/create` dispatch path (no ACP session yet), so
+  `buildPrompt` still appends the Board section. The chosen run config is seeded as an
+  in-memory run-config draft; a Role comes from the session's Role provenance, which
+  the composer already reads for a conversation without turns.
+- **Directory through the local agent.** The desktop cannot hold the LAN credential,
+  and agents may run on any member, so every reader goes through its own daemon: the
+  same `files` connection that carries a message's files gains `board-list` and
+  `board-put`, and reads reuse `range` with a `boardId`, which also gives the desktop
+  previews through the existing member resource. The host authorizes against its own
+  replica; a stale or forged membership on the asking machine is refused there.
+- **Memory as files, not Loro.** Agents already read and write files well; a memory
+  file per topic plus an index matches how they keep memory elsewhere, and the user
+  sees exactly what they wrote. The LoroText memory and `lody_board_memory_update`
+  were dropped. Shared notes stay a Loro document (concurrent appends merge) and are a
+  row of the Files tab, so nothing migrates.
+- **Coordinator positioning.** Its instructions say it only coordinates and keeps the
+  whole picture; `lody_board_overview` plus `lody_session_history` already give thread
+  progress and conclusions, so no new tool was added.
+- **Families in the thread list.** Grouping row by row split a reviewer from its
+  thread when their states differed; a family now moves as one, under its strongest
+  state.
+
+Evidence: `apps/cli/src/lib/lan/lan-files.test.ts` puts, lists and reads Board files
+between two real TLS endpoints and refuses a non-member (by the host's replica) and
+paths outside the directory, also through a link. CLI tests cover the instructions,
+directory and coordinator text in first prompts and the tool advertisement.
+`board-overview.test.tsx` covers the Files tab and preview over the desktop IPC, the
+Memory page (instructions saved, `MEMORY.md` first), name-only creation without a
+first turn, settings rebuilt on a Board switch, families and the outside-list rule.
+Not verified: the real desktop app, a real multi-machine LAN, and the coordinator's
+first turn end to end.

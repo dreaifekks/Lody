@@ -285,6 +285,30 @@ Three things use it on a desktop:
   again from where it stopped, as long as each attempt brought bytes, and the
   file appears under its name only once it is complete.
 
+### Board directories
+
+A Board's shared directory is a folder on one machine: the one its row names
+(`files.machineId`), else its coordinator's
+(`<data dir>/boards/<workspace>/<board>/`, `apps/cli/src/lib/board-directory.ts`).
+It has two areas, `files/` and `memory/`. The `files` connection carries it for
+the other members with two more lines and the `range` above:
+
+- `board-list` names the Board, an area and a member session, and is answered
+  with one line listing the area (at most 500 files).
+- `board-put` announces a file as a message's file is announced, with a path
+  inside an area; the machine says `ready` before any byte travels, then answers
+  with the entry it stored. A file replaces the one of that name at once.
+- `range` with a `boardId` reads a file; its `path` is relative to the Board
+  directory (`files/…`, `memory/…`).
+
+The machine that keeps the directory checks every request against its own
+replica: the session must be a member of the Board, and the path must stay
+inside the area, through links as well. It says that it answers with the
+`lanBoardFiles` protocol capability. Everything goes through the agent service
+of the asking machine (`LanFileHandoff.listBoardFiles/readBoardFile/putBoardFile`):
+the Board file tools of an agent, the `board/files-list` request of a desktop,
+and the member resource a desktop previews a file through.
+
 ## A desktop's requests to other machines
 
 A desktop asks another machine for what it shows of that machine's sessions

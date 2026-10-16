@@ -59,7 +59,8 @@ type BoardMeta = {
   version: 1;
   id: BoardId;                       // 'bd_' + uuid
   name: string;                      // ≤ 80 code points
-  purpose: string;                   // ≤ 4000，看板目标，也是协调者的第一条消息
+  purpose: string;                   // ≤ 4000，看板目标，可为空；成员启动时读到
+  instructions: string;              // ≤ 16000，用户写的指令，注入每个成员的第一条消息
   coordinatorSessionId: SessionId;
   createdAtMs: number;
   createdByUserId: string;
@@ -68,6 +69,7 @@ type BoardMeta = {
     reportHumanTurns: boolean;       // 默认 false，见「自动回报」
     executorConstraints: string;     // ≤ 2000，注入每个线程的第一条消息
   };
+  files?: { machineId: MachineId };  // 共享目录所在机器；缺省 = 协调者所在机器
   digestScheduleId?: string;         // 每日摘要定时，见「每日摘要」
   archivedAtMs?: number;
 };
@@ -167,10 +169,12 @@ Operation 的回执一样（`coordinator-workflow.ts` 的 `reconcileItem` 读目
 
 ### 创建
 
-`/boards` 页「新建看板」：名字、目标、协调者的 agent（复用 Schedule 的 agent 选择控件
-`schedule-agent-controls.tsx`：Agent Role 或 机器 + agent 配置 + 运行配置）、规则三项。
-创建写看板行，再以目标为第一条消息创建协调者 session（工作上下文默认 chat），然后进
-Overview。协调者的 agent 默认记住上一次的选择；按用户现行规则通常是 Claude Opus。
+侧边栏看板组的「+」新建看板：名称（必填）、目标（可选）、协调者的 agent（复用 Schedule 的
+agent 选择控件 `schedule-agent-controls.tsx`：Agent Role 或 机器 + agent 配置 + 运行配置）。
+创建写看板行（`files.machineId` 记协调者所在机器），再创建一个还没有任何消息的协调者
+session（`createSession`，工作上下文默认 chat），然后进入看板。不自动发第一条消息：用户
+进看板后自己开口，所选的运行配置留在协调者的输入框里。协调者的 agent 默认记住上一次的
+选择。
 
 ### 内置提示
 
@@ -186,8 +190,10 @@ Overview。协调者的 agent 默认记住上一次的选择；按用户现行�
 
 协调者说明是产品模板，内容固定、按看板字段填空：
 
-1. 身份与目标：你是看板「{name}」的协调者；目标：{purpose}。
-2. 工作方式：拆任务、用 `lody_session_create` 开线程、派完结束回合等回报。回报和你
+1. 身份与目标：你是看板「{name}」的协调者；目标：{purpose}（为空时不写这一句）。
+2. 工作方式：协调者只协调，不做具体实现，但要掌握全局：有哪些线程、各自的结论、还剩
+   什么、哪些要用户拍板。拆任务、用 `lody_session_create` 开线程（线程出现在看板面板里，
+   线程自己开的 reviewer 等会话归在该线程下面）、派完结束回合等回报。回报和你
    自己派发的回执一样，作为「已完成的异步工作」批次送达，`operationKind` 为
    `board_report`，一条一个成员事件；看板里任何成员（含线程开的子会话）的失败、等人、
    通知都会这样送到，不要让执行 session 转发（上游会拒绝回头发消息）。用
@@ -200,8 +206,12 @@ Overview。协调者的 agent 默认记住上一次的选择；按用户现行�
    协调者不用转述。
 5. 共享笔记：`lody_board_notes_*`；结论和决定写进笔记，别只留在对话里。
 6. 只向用户汇报结论和需要用户决定的事。
+7. 共享目录与记忆：同机成员拿到看板目录的绝对路径，其他机器用 `lody_board_files_*`；
+   `files/` 放大家都要看的文件，`memory/` 放记忆，以 `MEMORY.md` 为索引，启动时先读
+   索引，要让后来者记住的事写成一个短文件。协调者负责维护 `MEMORY.md`。
+8. 用户写的看板指令（不为空时）附在最后，每个成员都要遵守。
 
-线程说明一段：本会话属于看板「{name}」（目标一句）；协调者 session 是 {id}；你的回合
+线程说明一段：本会话是看板「{name}」的线程（目标一句）；你开的子会话归在你的线程下；协调者 session 是 {id}；你的回合
 结束、等人回答或失败时 Lody 会自动通知协调者，不必也不能转发；共享笔记工具；约束：
 {executorConstraints}。你开的 reviewer 等子会话结论回来后，把结论原样写进你的回复，
 不要自己按结论动手改，改哪些由协调者决定。交接出的新一代还会在前面加上交接事实
@@ -437,8 +447,10 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
   PR1 的「看板」导航项和 `/boards` 列表页去掉；归档的看板放在归档页。
 - **协调者就是看板的对话。** 它不再单独列在会话组里：会话元数据不变，只是列表滤掉
   `boardRole === 'coordinator'`。
-- **线程仍是普通 session。** 它们有真实目录和 worktree，所以仍留在所在的机器 / 项目组里，
-  同时出现在看板面板中。不从项目组隐去（已决定 1）。
+- **看板里的对话只在看板里。** 线程仍是普通 session，有真实目录和 worktree，但协调者和
+  线程都不出现在侧边栏的对话 / 项目组、移动端首页和归档页里，只在看板面板中。绑定了
+  project 的线程在它的会话视图右上角标出「机器 · project」。这条推翻了下文「已决定」第 1
+  条（见「看板主界面第二轮」）。
 - **project 和看板。** project 仍指仓库或本地文件夹。看板通过「项目范围」引用若干 project，
   但不拥有它们。
 
@@ -525,7 +537,7 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
 | -------- | -------------------------------------------------- | ------------------------------------------------ |
 | 项目范围 | 看板行；不选 = 全部                                | `BoardMeta.context.projects?: BoardProjectRef[]` |
 | 共享目录 | 宿主机（建板时协调者所在机器）的数据目录           | `BoardMeta.files: { machineId }`                 |
-| 聚合记忆 | 看板文档里的一段 LoroText，注入每个成员；可选镜像到 nmem 空间 | 文档里的 `memory` 容器；`BoardMeta.memory?`      |
+| 聚合记忆 | 指令在看板行、注入每个成员；自动记忆在共享目录的 `memory/`；可选镜像到 nmem 空间 | `BoardMeta.instructions`；`BoardMeta.memory?` |
 
 **项目范围**
 
@@ -587,12 +599,13 @@ type BoardProjectRef =
 
 **聚合记忆**
 
-主体由 Lody 自己存：
-- 看板文档里的 `memory` LoroText，≤ 16 KiB，是一份「这个看板要记住的事」的短清单。
-- 每个成员的第一条消息附上当时的记忆，放在 `buildPrompt` 已有的看板说明段里。长线程需要时
-  用 `lody_board_get` 读最新版。
-- 协调者用 `lody_board_memory_update` 改写，每日摘要（PR5）顺手整理，人可以在设置里编辑。
-- 这和 Claude Projects 的项目记忆是同一个思路：一份自动维护、每个对话开头都会读到的摘要。
+**已改（第二轮）：** 记忆分成两部分，都不再放进看板文档的 LoroText。
+- **指令**：用户写的 `BoardMeta.instructions`（≤ 16,000 字符），在设置浮窗的「记忆」页
+  编辑，附在每个成员（含协调者）的第一条消息里，复用 `buildPrompt` 的看板说明段；改动只对
+  之后启动的会话生效。
+- **自动记忆**：共享目录下的 `memory/`，`MEMORY.md` 是索引，其余是一条条记忆文件。agent
+  通过提示得知位置，自己读写；协调者维护索引。设置「记忆」页按文件列出（文件名、更新
+  时间），可以预览。`lody_board_memory_update` 不做，读写都走共享目录的工具。
 
 可选镜像到 Nowledge Mem：
 - 现有的 memory provider 只做一件事：ACP 启动时注入 `NMEM_AGENT_ID`
@@ -666,14 +679,14 @@ type BoardProjectRef =
    范围检查、新线程的项目过滤，以及设置浮窗和新建对话框里的选择。
    - 模块：`packages/shared/src/board.ts`、`apps/cli/src/session/session-execution-helpers.ts`、
      `apps/cli/src/mcp/lody-mcp-server.ts`、`components/boards/*`。
-4. **共享目录。** `BoardMeta.files`、宿主机上的目录、`files` 连接的 `list` / `put`
+4. **共享目录（已实现）。** `BoardMeta.files`、宿主机上的目录、`files` 连接的 `list` / `put`
    （`lanBoardFiles`）、`lody_board_files_list/read/write`、提示里的路径、文件 tab 的
    `BoardDirectoryFileProvider`。
    - 模块：`packages/shared` 的数据目录和能力键、`apps/cli/src/lib/lan/lan-files.ts` 与
      `lan-file-handoff.ts`、`apps/cli/src/mcp/board-tools.ts`、`components/boards/*`、
      `lib/` 下的文件 provider。
-5. **看板记忆（Lody 自己存）。** 文档的 `memory`、首条消息注入、`lody_board_memory_update`、
-   设置里的编辑；摘要整理随 PR5 一起做。
+5. **看板记忆（已实现，方案已改）。** 指令存在看板行、注入首条消息；自动记忆放在共享目录的
+   `memory/`，见「看板上下文 › 聚合记忆」。摘要整理随 PR5 一起做。
 6. **可选：nmem 空间镜像。** `BoardMeta.memory`、回合冻结、注入 `NMEM_SPACE_ID`，并更新
    provider 契约 `specs/agent-role-memory.md`。
 
@@ -693,6 +706,20 @@ PR4（轮数、交接）和 PR5（每日摘要）和以上各步互不依赖，�
 7. 窄屏上点开线程，推入完整会话页。
 8. **改动：** 设置做成浮窗（对话框），不放在右侧面板里；右侧面板只有「线程」「文件」两个
    tab。
+
+用户实际用过 dev 包后，2026-10-16 又定了第二轮（「看板主界面第二轮」有实现记录）：
+
+9. **改动（推翻第 1 条）：** 看板里的协调者和线程都不出现在外部列表（侧边栏对话 / 项目组、
+   移动端首页、归档页），只在看板里看得到。命令面板显示为「看板名 › 线程」，打开时走看板
+   入口并在面板里打开该线程。
+10. 目标可选；新建只填名称，不自动给协调者发第一条消息。
+11. 打开看板时主对话和面板各占一半；设置按钮在主对话右上角。
+12. 设置浮窗左侧分区导航，右侧内容：「通用」（名称、目标、规则、归档）和「记忆」（指令、
+    自动记忆）。文件仍在右侧面板的「文件」tab，显示共享目录的 `files/`；共享笔记作为其中
+    一项保留。
+13. 共享目录和自动记忆这一轮做完（原第 4、5 步）。
+14. 主对话只负责协调，把具体工作委托给线程，自己掌握全局；线程开出的子会话归在它的线程
+    下面，面板里按父子缩进显示。
 
 ## 共享笔记
 
@@ -1029,3 +1056,36 @@ schema 里的 `board` 值。
 未验证：真实桌面应用（devnuc 没有显示器，只在 Storybook 里检查了真实组件）、手机抽屉的
 手势、多机 LAN 上的表现。实现与检查记录见
 [看板主界面 Agent Note](../../.agents/notes/implemented/feature/2026-10-16-board-home.zh.md)。
+
+## 看板主界面第二轮已实现
+
+对应「已决定」第 9–14 条：
+
+- **外部列表。** 侧边栏、移动端首页、归档页各自在数据源处用 `isBoardSession` 滤掉看板里的
+  会话：协调者始终滤掉，线程在看板实验打开时滤掉（关掉实验后线程恢复成普通会话）。共享
+  atom 不动。命令面板：协调者显示成看板，线程显示成「看板名 › 线程」，打开时带
+  `boardThread`，在面板里打开（窄屏进线程页面）。
+- **新建。** 名称必填、目标可选；协调者用 `createSession` 建出来，没有第一条消息。所选的
+  模型等运行配置作为运行配置草稿留在协调者输入框里（只在本机内存中）；选了 Role 时由会话
+  元数据里的 Role 来源决定。
+- **页面。** 看板页的分栏按 `board-detail-panels` 单独记忆，默认 50/50。设置按钮在主对话
+  头部右侧（手机在看板抽屉的头部），设置浮窗由页面持有，按工作区和看板 id 重建草稿。
+- **面板。** 保留「线程 / 看板文件」两个 tab。线程按家族显示：线程和它开出的会话、子 Tab
+  排在一起并缩进，整组归在成员里最强的状态下。面板里打开的线程右上角显示
+  「机器 · project」，线程的完整页面头部也显示。
+- **共享目录。** 宿主机 = `files.machineId`，旧看板没有这个字段时取协调者所在机器。目录在
+  `<数据目录>/boards/<workspaceId>/<boardId>/{files,memory}/`，由宿主机守护进程按需创建。
+  宿主机用自己的副本核对调用者是看板成员，路径只能落在某个区内，经符号链接越界同样拒绝。
+  LAN `files` 连接加 `board-list`、`board-put`（能力键 `lanBoardFiles`），读文件用带
+  `boardId` 的 `range`。本机的入口有三个：MCP 的 `lody_board_files_list/read/write`、
+  桌面的本机 RPC `board/files-list`、桌面预览用的成员文件资源（`openMemberFile` 带
+  `boardId`）。都经过本机守护进程，宿主机是自己就直接读写，否则走 LAN。
+- **提示。** 同机成员拿到目录的绝对路径，其他机器用工具；协调者说明改成只协调、掌握全局，
+  用 `lody_board_overview` 和 `lody_session_history` 读线程进展和结论（现有工具够用，没有
+  新增 Board 工具）；指令附在最后。
+- **底层改动。** `BoardMeta` 的 `purpose` 改为可空，新增 `instructions` 和 `files`；
+  `range` 请求加可选的 `boardId`；新增本机 RPC 方法和能力键。成员资格、协调者 / 线程、
+  Inbox 回报、状态推导没有改。
+
+未验证：真实桌面应用和多机 LAN 上的实际读写（LAN 读写用两个真实 TLS 守护进程端点在测试里
+验证过）；用户第一句话启动协调者的完整链路只按代码确认了 `session/create` 路径。

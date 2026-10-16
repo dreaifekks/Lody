@@ -63,7 +63,8 @@ type BoardMeta = {
   version: 1;
   id: BoardId; // 'bd_' + uuid
   name: string; // <= 80 Unicode code points
-  purpose: string; // <= 4000; also the coordinator's first message
+  purpose: string; // <= 4000, may be empty; members read it when they start
+  instructions: string; // <= 16000; the user's instructions, in every member's first message
   coordinatorSessionId: SessionId;
   createdAtMs: number;
   createdByUserId: string;
@@ -72,6 +73,7 @@ type BoardMeta = {
     reportHumanTurns: boolean; // default false
     executorConstraints: string; // <= 2000; injected into each thread's first message
   };
+  files?: { machineId: MachineId }; // keeps the shared directory; default: the coordinator's machine
   digestScheduleId?: string;
   archivedAtMs?: number;
 };
@@ -174,10 +176,13 @@ ephemeral-channel constraints.
 
 ### Creation
 
-`/boards` offers New board: name, goal, coordinator and three rules. Reuse
-`schedule-agent-controls.tsx` for Agent Role or machine + agent + run config. Write
-the Board row, create a plain chat coordinator with the goal as its first message,
-and open Overview. Remember the last coordinator choice; Claude is not mandatory.
+The "+" on the sidebar Boards group creates a Board: a name (required), a goal
+(optional) and the coordinator, chosen with `schedule-agent-controls.tsx` (Agent Role
+or machine + agent + run config). Write the Board row (`files.machineId` is the
+coordinator's machine), create a coordinator session with no message yet
+(`createSession`, plain chat), and open the Board. Nothing is sent: the user speaks
+first, and the chosen run config waits in the coordinator's composer. Remember the
+last coordinator choice.
 
 ### Built-in instructions
 
@@ -192,8 +197,11 @@ Board instructions use that same path:
 
 Coordinator instructions state:
 
-1. Its Board name and goal.
-2. Delegate with `lody_session_create`, end the turn and await reports. Reports arrive
+1. Its Board name and goal (left out when the goal is empty).
+2. It coordinates and does not implement, but keeps the whole picture: which threads
+   exist, what each concluded, what is left, what the user must decide. Delegate with
+   `lody_session_create` (threads appear in the Board panel; sessions a thread opens
+   stay under it), end the turn and await reports. Reports arrive
    like its own delegation receipts, as a "completed asynchronous work" batch whose
    members have `operationKind: 'board_report'`, one member event each; failures,
    waits and notices of any member, including sessions a thread opened, arrive this
@@ -208,8 +216,14 @@ Coordinator instructions state:
    message; the coordinator does not need to repeat them.
 5. Record conclusions/decisions with `lody_board_notes_*`.
 6. Report conclusions and decisions the user needs to make.
+7. Shared directory and memory: members on the machine that keeps it get its absolute
+   path, others use `lody_board_files_*`. `files/` holds what everyone should see;
+   `memory/` holds memory, indexed by `MEMORY.md`: read the index at the start, and
+   record what later members should remember as one short file. The coordinator
+   maintains `MEMORY.md`.
+8. The user's Board instructions, when set, come last; every member follows them.
 
-Thread instructions state the Board name, goal, coordinator id, automatic completion/
+Thread instructions state that the session is a thread of the Board (name, goal), that sessions it opens belong to it, the coordinator id, automatic completion/
 waiting/failure reports (forwarding is neither needed nor possible), notes tools and
 executor constraints. When conclusions from reviewer or other child sessions arrive,
 include them verbatim in your reply. Do not make changes based on those conclusions
@@ -488,9 +502,12 @@ Sidebar
 - **The coordinator is the Board's own conversation.** It is no longer listed in the
   session groups. Its metadata does not change; the lists only filter out
   `boardRole === 'coordinator'`.
-- **Threads remain ordinary sessions.** They have real directories and worktrees, so
-  they stay in their machine or project group and also appear in the Board panel.
-  They are not hidden from project groups (decision 1).
+- **A Board's conversations stay in the Board.** Threads remain ordinary sessions with
+  real directories and worktrees, but neither the coordinator nor the threads appear
+  in the sidebar's chat and project groups, the mobile home or the Archive page; the
+  Board panel lists them. A project-bound thread shows "machine · project" at the top
+  right of its conversation. This overturns decision 1 below (see "Board home, second
+  round").
 - **Projects and Boards.** A project is still a repository or local folder. A Board
   refers to some projects through its project scope but does not own them.
 
@@ -590,7 +607,7 @@ padding and offsets it with a negative margin (`board-view.tsx`, `boardStyles.fo
 | ------------ | ---------------------------------------------------------------- | ------------------------------------------------ |
 | Project scope | The Board row; none chosen = all                                | `BoardMeta.context.projects?: BoardProjectRef[]` |
 | Shared directory | The data directory of the host (the coordinator's machine at creation) | `BoardMeta.files: { machineId }`     |
-| Board memory | A LoroText in the Board document, given to every member; optionally mirrored to an nmem space | A `memory` container; `BoardMeta.memory?` |
+| Board memory | Instructions on the Board row, given to every member; automatic memory in the directory's `memory/`; optionally mirrored to an nmem space | `BoardMeta.instructions`; `BoardMeta.memory?` |
 
 **Project scope**
 
@@ -667,16 +684,17 @@ say that `lody_project_list` lists every project.
 
 **Board memory**
 
-Lody stores the main part itself:
-- The Board document's `memory` LoroText, ≤ 16 KiB: a short list of what this Board
-  should remember.
-- Every member's first message includes the memory as it was then, inside the Board
-  section `buildPrompt` already appends. Long threads read the current version with
-  `lody_board_get` when needed.
-- The coordinator rewrites it with `lody_board_memory_update`, the daily digest (PR5)
-  tidies it, and the user edits it in settings.
-- This is the idea behind Claude Projects' project memory: one automatically
-  maintained summary that every conversation reads at its start.
+**Changed (second round):** memory has two parts, neither in a LoroText of the
+Board document.
+- **Instructions:** the user's `BoardMeta.instructions` (≤ 16,000 characters), edited on
+  the settings dialog's Memory page, appended to every member's first message
+  (coordinator included) in `buildPrompt`'s Board section; an edit reaches sessions
+  started afterwards.
+- **Automatic memory:** `memory/` in the shared directory, `MEMORY.md` as the index and
+  one file per memory. Agents learn where it is from their instructions and read and
+  write it themselves; the coordinator maintains the index. The Memory page lists the
+  files (name, update time) and previews them. There is no `lody_board_memory_update`:
+  the directory tools serve both.
 
 Optionally, the memory is mirrored to Nowledge Mem:
 - The existing memory provider does one thing: it injects `NMEM_AGENT_ID` at ACP
@@ -767,16 +785,16 @@ Each step merges on its own; the order is the dependency order.
    - Modules: `packages/shared/src/board.ts`,
      `apps/cli/src/session/session-execution-helpers.ts`,
      `apps/cli/src/mcp/lody-mcp-server.ts`, `components/boards/*`.
-4. **Shared directory.** `BoardMeta.files`, the directory on the host, `list` / `put`
+4. **Shared directory (implemented).** `BoardMeta.files`, the directory on the host, `list` / `put`
    on the `files` connection (`lanBoardFiles`), `lody_board_files_list/read/write`,
    the path in the instructions, and `BoardDirectoryFileProvider` for the Files tab.
    - Modules: the data directory and capability key in `packages/shared`,
      `apps/cli/src/lib/lan/lan-files.ts` and `lan-file-handoff.ts`,
      `apps/cli/src/mcp/board-tools.ts`, `components/boards/*`, and a file provider
      under `lib/`.
-5. **Board memory (stored by Lody).** The document's `memory`, injection into first
-   messages, `lody_board_memory_update`, and editing in settings. Digest tidying
-   comes with PR5.
+5. **Board memory (implemented, plan changed).** Instructions on the Board row,
+   injected into first messages; automatic memory in the directory's `memory/` (see
+   "Board context › Board memory"). Digest tidying comes with PR5.
 6. **Optional: nmem space mirror.** `BoardMeta.memory`, freezing into turns,
    `NMEM_SPACE_ID` injection, and an update to the provider contract in
    `specs/agent-role-memory.md`.
@@ -805,6 +823,26 @@ the recommendations:
 7. Opening a thread on a narrow screen pushes the full session page.
 8. **Changed:** settings are a dialog, not part of the side panel; the side panel has
    only the Threads and Files tabs.
+
+After using the dev build, the user settled a second round on 2026-10-16 (implemented
+in "Board home, second round"):
+
+9. **Changed (overturns 1):** neither the coordinator nor the threads appear in
+   outside lists (sidebar chat and project groups, mobile home, Archive page); they are
+   seen only in the Board. The command palette shows "Board › thread" and opens it in
+   the panel through the Board entry.
+10. The goal is optional; a new Board needs only a name, and nothing is sent to the
+    coordinator.
+11. A Board opens with the conversation and the panel at half each; the settings
+    button sits at the top right of the conversation.
+12. The settings dialog has section navigation on the start and the content on the end:
+    General (name, goal, rules, archive) and Memory (instructions, automatic memory).
+    Files stay in the side panel's Files tab, which shows the directory's `files/`;
+    the shared notes remain one of its rows.
+13. The shared directory and automatic memory are done in this round (former steps 4
+    and 5).
+14. The conversation only coordinates, delegating concrete work to threads and keeping
+    the whole picture; sessions a thread opens stay under it, indented in the panel.
 
 ## Shared notes
 
@@ -1197,3 +1235,48 @@ Not verified: the real desktop app (devnuc has no display; the real components w
 checked in Storybook), the phone drawer's gestures, and behavior across LAN machines.
 Implementation and checks:
 [Board home Agent Note](../../.agents/notes/implemented/feature/2026-10-16-board-home.md).
+
+## Board home, second round implemented
+
+Decisions 9–14:
+
+- **Outside lists.** The sidebar, mobile home and Archive page each drop Board
+  conversations at their source with `isBoardSession`: coordinators always, threads
+  while the Boards experiment is on (off, threads are ordinary sessions again). Shared
+  atoms are untouched. The command palette shows a coordinator as its Board and a
+  thread as "Board › thread"; opening it carries `boardThread` and opens it in the
+  panel (its own page on narrow windows).
+- **Creation.** Name required, goal optional; the coordinator comes from
+  `createSession` with no first message. The chosen model and other run config wait as
+  a run-config draft in its composer (in memory on this device); a chosen Role comes
+  from the session's Role provenance.
+- **Page.** A Board page remembers its split as `board-detail-panels`, half each by
+  default. The settings button sits at the right of the conversation header (on phones,
+  in the Board drawer's header); the page owns the dialog, whose draft is rebuilt per
+  workspace and Board id.
+- **Panel.** Threads and Board files tabs. Threads show as families: a thread with the
+  sessions it opened and its Tabs, together and indented, under the family's strongest
+  state. A thread open in the panel shows "machine · project" at its top right, and so
+  does a thread's own page.
+- **Shared directory.** The host is `files.machineId`, or the coordinator's machine for
+  Boards without it. The directory is `<data dir>/boards/<workspaceId>/<boardId>/{files,memory}/`,
+  created by the host's daemon on demand. The host checks against its own replica that
+  the caller is a member, and that a path stays in one area, refusing escapes through
+  links too. The LAN `files` connection gains `board-list` and `board-put` (capability
+  `lanBoardFiles`); reads use `range` with a `boardId`. Three local entries: the MCP
+  `lody_board_files_list/read/write`, the desktop's local RPC `board/files-list`, and
+  the member file resource desktop previews use (`openMemberFile` with `boardId`). All
+  go through the local daemon, which reads its own disk or the LAN.
+- **Instructions.** Members on the host get the absolute path, others the tools. The
+  coordinator's text now says it only coordinates and keeps the whole picture, reading
+  thread progress and conclusions with `lody_board_overview` and `lody_session_history`
+  (enough as they are; no new Board tool). The user's instructions come last.
+- **Foundation changes.** `BoardMeta.purpose` may be empty; `instructions` and `files`
+  are new; `range` gains an optional `boardId`; a local RPC method and a capability key
+  are new. Membership, coordinator/thread roles, Inbox reports and status derivation
+  are unchanged.
+
+Not verified: the real desktop app and real multi-machine LAN reads and writes (LAN
+reads and writes are tested between two real TLS daemon endpoints); the full path of a
+coordinator started by the user's first message is confirmed from code only
+(`session/create`).

@@ -10,11 +10,15 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   this too. Never inherit `boardRole` or `boardGeneration` implicitly.
 - The 50-Board limit counts only unarchived rows and is checked in the catalog
   writer, on create and on restore.
-- A coordinator is its Board: the sidebar, mobile home and Archive lists drop
-  `boardRole === 'coordinator'` at their own sources, never in shared atoms; the
-  command palette shows it as its Board. Every entry (sidebar, `/boards/<id>`,
-  palette) uses `boardEntrySearch`: the coordinator's own Tab, explicitly, and
-  `?board=1`, applied once and then removed.
+- A Board's conversations live in the Board: the sidebar, mobile home and Archive
+  lists drop them with `isBoardSession` at their own sources, never in shared atoms
+  (coordinators always; threads while the experiment is on). The palette shows a
+  coordinator as its Board and a thread as "Board › thread". Every entry uses
+  `boardEntrySearch` (the coordinator's own Tab, `?board=1`); a thread adds
+  `boardThread`. Both apply once and leave the URL.
+- A new Board has a name and a coordinator created without a first turn
+  (`createSession`); the goal is optional and the user speaks first. Its row records
+  `files.machineId`, the coordinator's machine.
 - The panel's thread rows use visible metadata and one derived presence atom; they
   never acquire member documents. Live activity takes priority over waiting markers;
   without presence, only a marker newer than `lastMessageAt` means waiting.
@@ -24,8 +28,20 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   deletes the Session. Narrow windows open the thread's own page instead.
 - One conversation surface per Session: a direct child of the coordinator (Tab or
   Side Chat) is already mounted by the page, so the panel selects it there.
-- Panel state (tab, dialogs, settings draft) belongs to one Board: `BoardSidePanel`
-  keys itself by workspace and Board id.
+- Thread rows keep a thread's opened sessions and Tabs under it, grouped by the
+  family's strongest state.
+- Panel and settings state belong to one Board: `BoardSidePanel` and `BoardSettings`
+  key themselves by workspace and Board id. Settings open from the conversation
+  header's gear, never from the panel.
+- The Board directory `<data dir>/boards/<ws>/<board>/{files,memory}/` lives on
+  `boardFilesMachineId` (row, else the coordinator's machine). Only that machine
+  serves it, after checking the asking session is a member in its own replica.
+  Paths are relative to one area and never leave it, links included. Everyone else
+  reaches it through its local agent: `board/files-list`, member ranges with
+  `boardId`, `lody_board_files_*` over the LAN `files` connection (`lanBoardFiles`).
+  The renderer never reads it directly. Shared notes stay the Loro document.
+- Instructions (≤16,000 code points) and the directory join each member's start
+  prompt, coordinator included; sessions already started keep what they read.
 - Archiving a Board archives the coordinator and member roots, then writes
   `archivedAtMs`; restoring restores every root (Session restore covers only direct
   Tabs), then clears it. The row changes last, so a failure leaves the Board where it
