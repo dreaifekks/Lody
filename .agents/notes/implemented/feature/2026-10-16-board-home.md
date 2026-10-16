@@ -141,3 +141,63 @@ Memory page (instructions saved, `MEMORY.md` first), name-only creation without 
 first turn, settings rebuilt on a Board switch, families and the outside-list rule.
 Not verified: the real desktop app, a real multi-machine LAN, and the coordinator's
 first turn end to end.
+
+## Second-round review corrections (2026-10-16)
+
+After the Codex review, six fixes were made against one bar: agents must not use the
+Board tools to step past their own sandbox or workspace limits, and mistakes must not
+escape. Every machine of a LAN belongs to one user, so the same user reaching files
+across machines is not new. The implementation is recorded in the
+[design](../../../../specs/project-coordinator/design.md), "Board home, second-round
+review corrections".
+
+- **Local paths reuse the attachment workspace rule.** The daemon checks `source` /
+  `saveTo` against the session working directory it holds
+  (`resolveSessionWorkspaceRoot`; for a chat session, its actual directory) after
+  resolving links, and hands the source on by its real path, so a link pointing out
+  reads nothing. Without a known working directory the call fails; it never falls back
+  to the daemon's cwd.
+- **The root comes from the data directory, level by level with lstat.** The old code
+  trusted the realpath of `files/`, which escapes once the whole area is replaced by a
+  link. Leaves open with `O_NOFOLLOW`: local reads in `BoardDirectory.read`, LAN reads
+  only for `range` requests with a `boardId`, leaving session files and preview paths
+  as they open today. A parent replaced after the check stays a known limit in the
+  Spec; no directory handles.
+- **A coordinator never takes the empty-session delete.** The decision moved to
+  `closeSessionTab` (`session-tab-close-target.ts`), which the page's close callback
+  and the test both call.
+- **`boardThread` goes to the panel.** The panel's `openMember` serves both thread rows
+  and the URL request; the panel holds full session metadata, which is surer than the
+  page guessing from its child lists. The page clears the URL before handing over: the
+  other order lets the panel navigate to a thread's page on narrow windows and the
+  page's clearing navigation pull it back to the coordinator. The palette's search
+  became `boardMemberEntrySearch`, which the test follows into the panel.
+- **Binary downloads reuse `saveMemberFile`.** The Electron member-file schema already
+  accepts `boardId`; nothing changed there.
+- **Settings navigation focus is a ring, in the Board dialog only.** The global
+  settings window's shared `settingsSurface.listRow` also washes hover 6%, focus 6% and
+  selected 10%, so keyboard navigation there can look like two selected rows as well;
+  it is left for the global settings to decide.
+
+**Mixed-version clients: no compatibility, a uniform upgrade.** An older client's
+`normalizeBoardMeta` parses with a zod object, strips `instructions` and `files`, and
+refuses a Board without a goal; one write of the row from it (saving settings, a rename
+included; archiving; restoring) drops both fields. A compatibility layer would have to
+live in the old version, which cannot happen; Boards are still behind the experiment,
+so every client that can write Boards is required to upgrade together, with the
+consequences written in the Spec.
+
+Evidence: `apps/cli/src/mcp/board-tools.test.ts` uses a real `BoardDirectory` and
+`LanFileHandoff` on the real file system, covering reads and writes inside the working
+directory, sources outside it (directly, through a leaf link, through a directory link)
+and destinations outside it (directly, through a directory link). `lan-files.test.ts`
+adds refusals when an area root or the Board directory itself is a link, and when a
+leaf is a link, both on the keeper and from another member. `board-overview.test.tsx`:
+a coordinator created by the real dialog survives `closeSessionTab` with its Board row
+unchanged while an ordinary empty Tab is still deleted (the test fails without the
+check); palette parameters handed to the panel open a coordinator Tab, a Side Chat and
+an independent thread with one surface each; a binary file in the Files tab downloads
+through `saveMemberFile`. Screenshots: Storybook + Playwright at 1440px and 390px, the
+download entry and the settings navigation open, keyboard-focused and hovered. Not
+verified: the save dialog in the real desktop, and the `boardThread` handover on a
+compact desktop (same code path as phones; the panel must be mounted).

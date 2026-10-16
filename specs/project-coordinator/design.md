@@ -1280,3 +1280,53 @@ Not verified: the real desktop app and real multi-machine LAN reads and writes (
 reads and writes are tested between two real TLS daemon endpoints); the full path of a
 coordinator started by the user's first message is confirmed from code only
 (`session/create`).
+
+## Board home, second-round review corrections
+
+- **Local paths.** `saveTo` of `lody_board_files_read` and `source` of
+  `lody_board_files_write` follow the attachment workspace rule: after links are
+  resolved they must lie in the session working directory the daemon holds (for a chat
+  session, its actual working directory), or the call is refused; the source is handed
+  on by its resolved real path. An agent cannot use the Board tools to read from or
+  write to outside its sandbox or workspace. Where the daemon knows no working
+  directory for the session, both tools fail.
+- **Directory root.** An area's root is derived from the data directory: every level of
+  `boards/<workspaceId>/<boardId>/<area>` is checked with lstat and must be a directory,
+  never a link; every existing level of a path inside the area must not be a link
+  either, and a leaf that is a link is refused. Leaves open with `O_NOFOLLOW` (local
+  reads and LAN `range` alike). **Known limit:** a parent replaced between the check
+  and the open is not closed off with directory handles. Every machine of a LAN belongs
+  to one user and `lody-lan lan shell` already runs commands on the others; this guards
+  against agents stepping past their own limits and against mistakes, not against the
+  same user swapping directories on the host concurrently.
+- **Closing a coordinator's Tab.** A coordinator exists before anyone speaks and has no
+  `lastMessageAt`, but it never takes the empty-session delete: closing writes
+  `isTabClosed` only, and both the session and the Board entry stay.
+- **`boardThread`.** The thread named in the address goes to the Board panel, which
+  opens it with the same split as its row: a direct child Tab of the coordinator is
+  selected in the main area, a Side Chat in its existing panel tab, and only an
+  independent thread opens in the Board panel (its own page on narrow windows). The
+  page removes the parameters from the URL first and then hands over, so a thread's
+  own page is never replaced by the coordinator's.
+- **Binary files.** A file without a preview offers Download through the existing
+  `saveMemberFile`; the desktop writes it as it arrives, whatever its size.
+- **Settings navigation.** Focus draws only an inset accent ring, no fill; the selected
+  fill appears on the current page alone. This is local to the Board dialog; the row
+  style the global settings window shares is unchanged (there, focus and hover use the
+  same light fill, see the Agent Note).
+
+**Not implemented yet:** the Files tab described in "Board context" has no file tree yet
+(`BoardDirectoryFileProvider` / `ProjectFileBrowser`), only a flat list; dropping files
+onto the tab does not upload; previews cover text and pictures only, media does not
+play, and large files can only be downloaded.
+
+**Known limit: mixed-version clients drop fields on write-back.** Clients from before
+the second round (desktop or daemon) strip the `instructions` and `files` they do not
+know when they read a Board row, and do not accept a Board without a goal. Once such a
+client writes the row (saving settings, a rename included; archiving; restoring), the
+instructions are gone and later members no longer receive them; `files.machineId` is
+gone too, and the host falls back to the coordinator's machine (the same machine at
+creation, so the directory usually stays put). A Board with no goal is invisible to an
+older client, and Board tools on an older daemon answer `BOARD_NOT_FOUND`. The code
+adds no compatibility: Boards are still behind the experiment, and every client that
+can write Boards is required to run the same upgraded version.

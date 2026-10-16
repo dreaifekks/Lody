@@ -15,10 +15,12 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   (coordinators always; threads while the experiment is on). The palette shows a
   coordinator as its Board and a thread as "Board › thread". Every entry uses
   `boardEntrySearch` (the coordinator's own Tab, `?board=1`); a thread adds
-  `boardThread`. Both apply once and leave the URL.
+  `boardThread` (`boardMemberEntrySearch`). Both apply once and leave the URL; the page
+  clears it first, then hands `boardThread` to the panel, which opens it like its row.
 - A new Board has a name and a coordinator created without a first turn
   (`createSession`); the goal is optional and the user speaks first. Its row records
-  `files.machineId`, the coordinator's machine.
+  `files.machineId`, the coordinator's machine. Closing the coordinator's Tab never
+  deletes it as an empty session (`closeSessionTab`).
 - The panel's thread rows use visible metadata and one derived presence atom; they
   never acquire member documents. Live activity takes priority over waiting markers;
   without presence, only a marker newer than `lastMessageAt` means waiting.
@@ -27,7 +29,8 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   is the thread itself. Never give it a `side-session:` tab id: closing those
   deletes the Session. Narrow windows open the thread's own page instead.
 - One conversation surface per Session: a direct child of the coordinator (Tab or
-  Side Chat) is already mounted by the page, so the panel selects it there.
+  Side Chat) is already mounted by the page, so the panel selects it there
+  (`opensInCoordinatorPage`, for rows and `boardThread` alike).
 - Thread rows keep a thread's opened sessions and Tabs under it, grouped by the
   family's strongest state.
 - Panel and settings state belong to one Board: `BoardSidePanel` and `BoardSettings`
@@ -36,10 +39,15 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 - The Board directory `<data dir>/boards/<ws>/<board>/{files,memory}/` lives on
   `boardFilesMachineId` (row, else the coordinator's machine). Only that machine
   serves it, after checking the asking session is a member in its own replica.
-  Paths are relative to one area and never leave it, links included. Everyone else
+  Paths are relative to one area and never leave it: the area root comes from the
+  data dir with every level lstat-checked, no level or leaf may be a link, and leaves
+  open with `O_NOFOLLOW`. The caller's own `source`/`saveTo` stay in its session
+  working directory, links resolved, as attachments do. Everyone else
   reaches it through its local agent: `board/files-list`, member ranges with
   `boardId`, `lody_board_files_*` over the LAN `files` connection (`lanBoardFiles`).
   The renderer never reads it directly. Shared notes stay the Loro document.
+- Older clients strip `instructions`/`files` and refuse goal-less rows, so every client
+  that writes Board rows must run the same version; no compatibility layer.
 - Instructions (≤16,000 code points) and the directory join each member's start
   prompt, coordinator included; sessions already started keep what they read.
 - Archiving a Board archives the coordinator and member roots, then writes

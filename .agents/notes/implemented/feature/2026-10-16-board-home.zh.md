@@ -104,3 +104,43 @@ Translation: current
 和经桌面 IPC 的预览、「记忆」页（保存指令、`MEMORY.md` 排在最前）、只填名称且不发首条
 消息的新建、切换看板时设置重建、线程家族和外部列表规则。未验证：真实桌面应用、真实多机
 LAN、协调者第一句话的完整链路。
+
+## 第二轮复查修正（2026-10-16）
+
+Codex review 后按「防 agent 借看板工具越过自身沙箱或工作区限制、防误操作」的尺度修了六处；
+LAN 里所有机器属于同一个用户，同一用户跨机器能碰到文件不算新问题。实现记在
+[设计文档](../../../../specs/project-coordinator/design.zh.md)「看板主界面第二轮复查修正」。
+
+- **本机路径复用附件的工作区规则。** 守护进程用自己掌握的会话工作目录（`resolveSessionWorkspaceRoot`，
+  chat 会话就是它实际的目录）检查 `source` / `saveTo`，解析链接后再判断；源按真实路径交出去，
+  所以经链接指向外面的文件也读不出来。不知道工作目录时直接失败，不退回守护进程的 cwd。
+- **目录根从数据目录推出，逐级 lstat。** 原来把 `files/` 的 realpath 当可信根，整个区被换成
+  链接时会越界。叶子用 `O_NOFOLLOW` 打开：本机读在 `BoardDirectory.read`，LAN 读只对带
+  `boardId` 的 `range` 加这个标志，会话文件和预览路径的打开方式不变。检查后父目录被替换的
+  竞态按已知限制记在 Spec，没有上目录句柄。
+- **协调者永不走空会话删除。** 判断抽成 `closeSessionTab`（`session-tab-close-target.ts`），
+  页面的关闭回调和测试走同一个函数。
+- **`boardThread` 交给面板。** 面板的 `openMember` 同时服务线程行和 URL 请求，面板手里有完整
+  的会话元数据，比页面按子会话列表猜更准。页面先清 URL 再交请求：反过来的话，窄屏上面板先
+  导航到线程页，页面清参数时又会把它拉回协调者页面。命令面板的搜索参数抽成
+  `boardMemberEntrySearch`，测试从它走到面板。
+- **二进制下载复用 `saveMemberFile`。** Electron 端的成员文件 schema 早已接受 `boardId`，
+  不用改。
+- **设置导航的焦点改成轮廓，只在看板浮窗里改。** 全局设置窗口共用的 `settingsSurface.listRow`
+  也是悬停 6%、焦点 6%、选中 10% 的浅底，键盘导航时同样会像两行同时选中；没动它，留给全局
+  设置自己决定。
+
+**混版客户端：不做兼容，要求统一升级。** 旧客户端的 `normalizeBoardMeta` 用 zod 对象解析，
+会去掉 `instructions`、`files`，并拒绝目标为空的看板；它只要写一次看板行（保存设置含改名、
+归档、恢复）就把两个字段丢掉。为此加兼容层要在旧版本里改，做不到；看板还在实验开关后面，
+所以按「能写看板的客户端统一升级」处理，后果写在 Spec 里。
+
+证据：`apps/cli/src/mcp/board-tools.test.ts` 用真实 `BoardDirectory` 和 `LanFileHandoff`、
+真实文件系统，覆盖工作目录内正常读写、越界源（直接、叶子链接、目录链接）和越界目的地（直接、
+目录链接）。`lan-files.test.ts` 加了区域根和看板目录本身是链接时的拒绝、叶子是链接时本机和
+跨成员读的拒绝。`board-overview.test.tsx`：真实对话框建出的协调者经 `closeSessionTab` 关闭后
+仍在、看板行不变，普通空 Tab 仍被删除（去掉判断后该测试失败）；命令面板参数经面板请求打开
+协调者 Tab / Side Chat / 独立线程，各只有一个 surface；「文件」tab 里二进制文件经
+`saveMemberFile` 下载。截图：Storybook + Playwright，1440px 和 390px，下载入口与设置导航
+的打开、键盘焦点、悬停三态。未验证：真实桌面上的保存对话框、紧凑桌面上 `boardThread` 的
+面板交接（代码路径和手机相同，面板需已挂载）。

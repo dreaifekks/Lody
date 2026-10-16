@@ -303,7 +303,11 @@ the other members with two more lines and the `range` above:
 
 The machine that keeps the directory checks every request against its own
 replica: the session must be a member of the Board, and the path must stay
-inside the area, through links as well. It says that it answers with the
+inside the area. No link is followed: the area's root is named from the data
+directory with every level checked by `lstat`, no level of the path or its leaf
+may be a link, and a `range` with a `boardId` opens its file with `O_NOFOLLOW`.
+On the asking machine, the agent's own `source`/`saveTo` must lie in its
+session working directory once links are resolved. It says that it answers with the
 `lanBoardFiles` protocol capability. Everything goes through the agent service
 of the asking machine (`LanFileHandoff.listBoardFiles/readBoardFile/putBoardFile`):
 the Board file tools of an agent, the `board/files-list` request of a desktop,
