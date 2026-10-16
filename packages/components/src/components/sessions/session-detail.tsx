@@ -1052,6 +1052,9 @@ const SessionDetail = ({
   const chatRefsMap = useRef<
     Map<string, SessionChatInterfaceHandle | DraftSessionChatInterfaceHandle | null>
   >(new Map());
+  // The thread open in the Board panel, the target of chat commands while the
+  // user works in the side panel.
+  const boardThreadChatRef = useRef<SessionChatInterfaceHandle | null>(null);
   const commentReferenceChangeHandlersRef = useRef<
     Map<string, (references: CommentReferencePayload[]) => void>
   >(new Map());
@@ -1213,6 +1216,10 @@ const SessionDetail = ({
     boardsEnabled && activeSession?.boardRole === 'coordinator'
       ? (boards.find((board) => board.coordinatorSessionId === activeSession.id) ?? null)
       : null;
+  // The Board panel has its own Board files, so on a Board this tab names whose files it holds.
+  const filesTabLabel = activeBoard
+    ? t('boards.workspaceFiles', 'Workspace files')
+    : t('sessions.detailTabs.files', 'Files');
   const activeSessionSharing = useMemo(
     () => (showSessionSharing && activeSession ? resolveSessionSharing(activeSession) : null),
     [activeSession, resolveSessionSharing, showSessionSharing]
@@ -3349,7 +3356,23 @@ const SessionDetail = ({
     [shareImageTarget, t]
   );
 
+  // Chat commands follow the region the user is in: a Board thread open in the
+  // visible side panel, otherwise the active conversation tab.
+  const boardThreadCommandTarget = useCallback(
+    () =>
+      desktopTabFocusRegionRef.current === 'side-panel' &&
+      isSidebarVisible &&
+      activeSidebarTab === 'board'
+        ? boardThreadChatRef.current
+        : null,
+    [activeSidebarTab, isSidebarVisible]
+  );
   const handleOpenSearch = useCallback(() => {
+    const boardThread = boardThreadCommandTarget();
+    if (boardThread) {
+      boardThread.openSearch();
+      return;
+    }
     if (activeDraftTab) {
       return;
     }
@@ -3357,7 +3380,7 @@ const SessionDetail = ({
     if (activeChatRef && 'openSearch' in activeChatRef) {
       activeChatRef.openSearch();
     }
-  }, [activeDraftTab, activeTabSessionId]);
+  }, [activeDraftTab, activeTabSessionId, boardThreadCommandTarget]);
 
   // Single fork entry point for every launcher: the header/footer action forks
   // into a top tab, the side-panel launcher forks into a right-hand panel.
@@ -4570,7 +4593,7 @@ const SessionDetail = ({
         : []),
       {
         id: 'files',
-        label: t('sessions.detailTabs.files', 'Files'),
+        label: filesTabLabel,
         kind: 'files',
       },
       {
@@ -4613,6 +4636,7 @@ const SessionDetail = ({
     activeBrowserSession,
     activeIosSimulatorSession,
     activePlanReview,
+    filesTabLabel,
     latestPr,
     latestPrNumber,
     repoFullName,
@@ -4945,9 +4969,9 @@ const SessionDetail = ({
     }
 
     requestAnimationFrame(() => {
-      chatRefsMap.current.get(activeTabSessionId)?.focusInput();
+      (boardThreadCommandTarget() ?? chatRefsMap.current.get(activeTabSessionId))?.focusInput();
     });
-  }, [activeTabSessionId, isMobile]);
+  }, [activeTabSessionId, boardThreadCommandTarget, isMobile]);
 
   const handleRenameCurrentSession = useCallback(() => {
     const targetSession = activeDraftTab ? null : activeTabSession;
@@ -5037,7 +5061,8 @@ const SessionDetail = ({
     title: t('commands.session.searchCurrent', 'Find in Current Chat'),
     category: 'Session',
     keybindings: getCommandKeybindings('session.searchCurrent'),
-    when: () => Boolean(activeTabSession) && !activeDraftTab,
+    when: () =>
+      Boolean(boardThreadCommandTarget()) || (Boolean(activeTabSession) && !activeDraftTab),
     run: handleOpenSearch,
   });
 
@@ -5046,7 +5071,7 @@ const SessionDetail = ({
     title: t('commands.session.focusInput', 'Focus Current Input'),
     category: 'Editor',
     keybindings: getCommandKeybindings('session.focusInput'),
-    when: () => Boolean(chatRefsMap.current.get(activeTabSessionId)),
+    when: () => Boolean(boardThreadCommandTarget() ?? chatRefsMap.current.get(activeTabSessionId)),
     run: handleFocusActiveInput,
   });
 
@@ -5607,7 +5632,7 @@ const SessionDetail = ({
        reason to hide the entry. */
     list.push({
       id: MOBILE_FILES_VIEWER_ID,
-      label: t('sessions.detailTabs.files', 'Files'),
+      label: filesTabLabel,
       kind: 'files',
       active: false,
     });
@@ -5650,6 +5675,7 @@ const SessionDetail = ({
   }, [
     activeBoard,
     canShowGitHubActions,
+    filesTabLabel,
     latestPr,
     latestPrNumber,
     latestPrRepoFullName,
@@ -6140,10 +6166,22 @@ const SessionDetail = ({
         }
         setBoardThreadId(thread?.id ?? null);
       }}
+      onShowInPage={(thread) => {
+        // One conversation surface per Session: a coordinator Tab is selected in
+        // the main area, a Side Chat in its own side-panel tab.
+        setMobileBoardOpen(false);
+        if (!isMobile && sideSessions.some((side) => side.id === thread.id)) {
+          selectSidePanelTab(getSideSessionPanelTabId(thread.id));
+          revealRightSidebar();
+          return;
+        }
+        handleNavigateSession({ sessionId: thread.id });
+      }}
       onOpenThreadFull={(thread) => handleNavigateSession({ sessionId: thread.id })}
       renderThread={(thread) => (
         <SessionChatInterface
           key={thread.id}
+          ref={boardThreadChatRef}
           session={thread}
           // The thread owns its repository, PR and diff state, not the coordinator.
           workspaceSession={thread}
@@ -6746,7 +6784,7 @@ const SessionDetail = ({
             data-sidebar-swipe-open-disabled
           >
             <DrawerTitle className={stylex.props(detailStyles.srOnly).className}>
-              {t('sessions.detailTabs.files', 'Files')}
+              {filesTabLabel}
             </DrawerTitle>
             <VaulDrawerBody topInset={MOBILE_DRAWER_HEADER_INSET}>
               <div {...stylex.props(detailStyles.columnFill)}>
@@ -6769,9 +6807,7 @@ const SessionDetail = ({
                   >
                     <ArrowLeft {...stylex.props(detailStyles.icon16)} />
                   </Button>
-                  <span {...stylex.props(detailStyles.mobileTitle)}>
-                    {t('sessions.detailTabs.files', 'Files')}
-                  </span>
+                  <span {...stylex.props(detailStyles.mobileTitle)}>{filesTabLabel}</span>
                 </header>
                 <div {...stylex.props(detailStyles.relativeFill)}>
                   <MobileProjectFileBrowser

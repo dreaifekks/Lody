@@ -176,9 +176,22 @@ it('creates a board before its coordinator, compensates rejected acceptance, and
   expect(rows.size).toBe(51);
   expect(rows.get('1')?.value).toMatchObject({ archivedAtMs: 2 });
   const archived = rows.get('1')?.value as typeof board;
-  await expect(restoreWorkspaceBoard(deps, archived)).rejects.toThrow('BOARD_LIMIT');
+  await expect(
+    restoreWorkspaceBoard(deps, archived, async () => {
+      throw new Error('must not restore members');
+    })
+  ).rejects.toThrow('BOARD_LIMIT');
   rows.set('2', { key: ['board', 'bd_2'], value: { ...board, id: 'bd_2', archivedAtMs: 3 } });
-  await expect(restoreWorkspaceBoard(deps, archived)).resolves.not.toHaveProperty('archivedAtMs');
+  await expect(
+    restoreWorkspaceBoard(deps, archived, async () => {
+      throw new Error('member restore failed');
+    })
+  ).rejects.toThrow('member restore failed');
+  // The row keeps its archive mark until every member is back.
+  expect(rows.has(JSON.stringify(['board', 'bd_1']))).toBe(false);
+  await expect(restoreWorkspaceBoard(deps, archived, async () => {})).resolves.not.toHaveProperty(
+    'archivedAtMs'
+  );
   expect(rows.get(JSON.stringify(['board', 'bd_1']))?.value).toMatchObject({ id: 'bd_1' });
   expect(rows.get(JSON.stringify(['board', 'bd_1']))?.value).not.toHaveProperty('archivedAtMs');
 });

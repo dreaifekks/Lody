@@ -454,7 +454,7 @@ function Sidebar() {
 function CoordinatorPage({ initial }: { initial: PanelState }) {
   const sidePanelTabs = [
     { id: 'board', label: '看板', kind: 'board' as const, closeable: true },
-    { id: 'files', label: '文件', kind: 'files' as const, closeable: true },
+    { id: 'files', label: '工作区文件', kind: 'files' as const, closeable: true },
   ];
   return (
     <SettingsStoryProviders>

@@ -7,6 +7,7 @@ import { LoroRepo } from 'loro-repo';
 import {
   getSessionRoomId,
   normalizeBoardMeta,
+  readSessionOperationTargets,
   type AgentConfigMeta,
   type BoardMeta,
   type SessionHistoryInput,
@@ -16,6 +17,13 @@ import {
   type SessionToCreate,
   type WorkspaceId,
 } from '@lody/shared';
+import {
+  CLOUD_PLATFORM_CAPABILITIES,
+  createStaticStore,
+  type CloudApi,
+  type PlatformProvider,
+} from '@lody/platform';
+import { PlatformContext } from '@lody/platform/react';
 import { userAtom, currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms';
 import { agentConfigMetaCacheAtom, sessionMetaCacheAtom } from '../src/atoms/doc-meta';
 import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '../src/atoms/presence';
@@ -27,12 +35,11 @@ import { BoardSidePanel } from '../src/components/boards/board-side-panel';
 import { BoardSettingsDialog } from '../src/components/boards/board-settings-panel';
 import { useBoardLifecycle } from '../src/components/boards/board-lifecycle';
 import { boardActivity } from '../src/components/boards/board-threads';
+import { writeWorkspaceBoard } from '../src/lib/workspace-catalog-write';
 
 const creation = vi.hoisted(() => ({
   machines: new Map<string, unknown>(),
   startSession: undefined as undefined | ((...args: unknown[]) => Promise<unknown>),
-  /** Lifecycle requests that reached the session actions, in order. */
-  actions: [] as string[],
 }));
 vi.mock('@/hooks/use-visible-machine-metas', () => ({
   useVisibleMachineMetas: () => ({ machines: creation.machines }),
@@ -64,15 +71,21 @@ vi.mock('@/hooks/use-workspace-agent-roles', () => ({
   useAgentRoleAvailability: () => ({ resolveInstance: () => ({ kind: 'available' }) }),
   useComposerAgentRoleNames: () => ({ machine: () => 'Desktop', unknownAgent: 'Unknown' }),
 }));
-vi.mock('@/hooks/use-session-actions', () => ({
-  useSessionActions: () => ({
-    startSession: (...args: unknown[]) => creation.startSession?.(...args),
-    requestSessionDispatch: async () => {},
-    archiveSession: async (id: string) => void creation.actions.push(`archive:${id}`),
-    restoreSession: async (id: string) => void creation.actions.push(`restore:${id}`),
-    updateSessionTitle: async (id: string, title: string) =>
-      void creation.actions.push(`title:${id}:${title}`),
-  }),
+// Archive, restore and rename are the real Session actions over the test runtime;
+// only first-turn acceptance is held by the test.
+vi.mock('@/hooks/use-session-actions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/hooks/use-session-actions')>();
+  return {
+    ...actual,
+    useSessionActions: () => ({
+      ...actual.useSessionActions(),
+      startSession: (...args: unknown[]) => creation.startSession?.(...args),
+      requestSessionDispatch: async () => {},
+    }),
+  };
+});
+vi.mock('@/hooks/use-authenticated-convex', () => ({
+  useAuthenticatedConvex: () => ({ isAuthenticated: false, requestAuthRecovery: () => {} }),
 }));
 vi.mock('@/components/schedules/schedule-agent-controls', () => ({
   ScheduleAgentControls: () => null,
@@ -142,11 +155,79 @@ function catalogRuntime(rows = new Map<string, { key: readonly unknown[]; value:
   return { runtime, rows, board };
 }
 
+/** Session actions read the platform seam; nothing here reaches a hosted service. */
+const testPlatform: PlatformProvider = {
+  kind: 'cloud',
+  identity: {
+    session: createStaticStore({ status: 'unauthenticated' }),
+    signOut: async () => {},
+  },
+  workspaces: {
+    state: createStaticStore({ status: 'ready', workspaces: [], activeWorkspaceId: null }),
+    setActive: async () => {},
+  },
+  capabilities: CLOUD_PLATFORM_CAPABILITIES,
+  cloudApi: {
+    useQuery: () => undefined,
+    useMutation: () => async () => ({}),
+    useAction: () => async () => undefined,
+  } as unknown as CloudApi,
+  sync: { mode: 'cloud' },
+};
+
+/**
+ * A workspace runtime over real Session metadata (a `LoroRepo`) and in-memory
+ * catalog rows. A metadata write to a room in `failing` is refused, the way a
+ * full disk or a lost lease would.
+ */
+async function boardRuntime(sessions: readonly SessionMeta[]) {
+  const repo = await LoroRepo.create({});
+  for (const session of sessions) await repo.upsertDocMeta(getSessionRoomId(session.id), session);
+  const catalog = catalogRuntime();
+  const failing = new Set<string>();
+  const runtime = {
+    ...catalog.runtime,
+    repo: {
+      openFlockDoc: catalog.runtime.repo.openFlockDoc,
+      listDoc: (query: Parameters<typeof repo.listDoc>[0]) => repo.listDoc(query),
+      getDocMeta: (id: string) => repo.getDocMeta(id),
+      flush: async () => {},
+    },
+    writer: {
+      ...catalog.runtime.writer,
+      upsertDocMeta: async (id: string, patch: Partial<SessionMeta>) => {
+        if (failing.has(id)) throw new Error('disk full');
+        await repo.upsertDocMeta(id, patch);
+      },
+    },
+    readSessionOperationTargets: (id: SessionId, operation: 'archive' | 'restore') =>
+      readSessionOperationTargets(repo, id, operation),
+  } as unknown as WorkspaceRuntime;
+  return {
+    runtime,
+    board: catalog.board,
+    failing,
+    meta: async (id: string) =>
+      (await repo.getDocMeta(getSessionRoomId(id as SessionId)))?.meta as SessionMeta,
+    destroy: () => repo.destroy(),
+  };
+}
+
+function workspaceStore(runtime: WorkspaceRuntime) {
+  const store = createStore();
+  store.set(runtimeAtom, runtime);
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(currentWorkspaceSlugAtom, 'ws');
+  return store;
+}
+
 async function mount(node: React.ReactNode) {
   const host = document.createElement('div');
   document.body.append(host);
   const root = createRoot(host);
-  await act(async () => root.render(node));
+  await act(async () =>
+    root.render(<PlatformContext.Provider value={testPlatform}>{node}</PlatformContext.Provider>)
+  );
   return {
     host,
     async unmount() {
@@ -154,6 +235,21 @@ async function mount(node: React.ReactNode) {
       host.remove();
     },
   };
+}
+
+async function typeInto(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')!.set!.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+async function submitForm() {
+  await act(async () => {
+    document
+      .querySelector('form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
 }
 
 const live = (session: SessionMeta, status: SessionStatus) => ({
@@ -196,6 +292,7 @@ describe('Board side panel', () => {
             opened.push(thread?.id ?? null);
             setOpenThreadId(thread?.id ?? null);
           }}
+          onShowInPage={() => {}}
           onOpenThreadFull={() => {}}
           renderThread={(thread) => <p data-thread-surface={thread.id}>{thread.title}</p>}
           onArchived={() => {}}
@@ -232,13 +329,89 @@ describe('Board side panel', () => {
       );
       expect(view.host.querySelector('[data-thread-surface]')).toBeNull();
       const filesTab = [...view.host.querySelectorAll('[role="tab"]')].find(
-        (node) => node.textContent === 'Files'
+        (node) => node.textContent === 'Board files'
       ) as HTMLElement;
       await act(async () => filesTab.click());
       await act(async () =>
         view.host.querySelector<HTMLButtonElement>('[data-id="notes"]')?.click()
       );
       expect(view.host.querySelector('textarea')?.value).toBe('# Shared');
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('shows a coordinator Tab in the page instead of a second conversation in the panel', async () => {
+    const store = createStore();
+    const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+    // Contained Tabs inherit the Board, so the coordinator's own Tabs are threads too.
+    const coordinatorTab = makeSession('coordinator-tab', { parentSessionId: coordinator.id });
+    const sideChat = makeSession('side-chat', {
+      parentSessionId: coordinator.id,
+      childSessionPlacement: 'side-panel',
+    });
+    const thread = makeSession('thread');
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(
+        [coordinator, coordinatorTab, sideChat, thread].map((entry) => [
+          getSessionRoomId(entry.id),
+          entry,
+        ])
+      )
+    );
+    /**
+     * The coordinator's page as far as conversation surfaces go: it mounts the
+     * coordinator, its Tabs and Side Chats, and shows the one selected; the
+     * Board panel renders only what it opens itself.
+     */
+    function CoordinatorPage() {
+      const [selected, setSelected] = useState<string>(coordinator.id);
+      const [panelThreadId, setPanelThreadId] = useState<SessionId | null>(null);
+      return (
+        <>
+          {[coordinator, coordinatorTab, sideChat].map((session) => (
+            <section
+              key={session.id}
+              data-chat-surface={session.id}
+              hidden={session.id !== selected}
+            />
+          ))}
+          <BoardSidePanel
+            board={testBoard()}
+            openThreadId={panelThreadId}
+            onOpenThread={(session) => setPanelThreadId(session?.id ?? null)}
+            onShowInPage={(session) => setSelected(session.id)}
+            onOpenThreadFull={() => {}}
+            renderThread={(session) => <section data-chat-surface={session.id} />}
+            onArchived={() => {}}
+          />
+        </>
+      );
+    }
+    const view = await mount(
+      <Provider store={store}>
+        <CoordinatorPage />
+      </Provider>
+    );
+    const surfaces = (id: string) =>
+      view.host.querySelectorAll(`[data-chat-surface="${id}"]`).length;
+    const visible = () =>
+      [...view.host.querySelectorAll('[data-chat-surface]:not([hidden])')].map((node) =>
+        node.getAttribute('data-chat-surface')
+      );
+    const open = (id: string) =>
+      act(async () => view.host.querySelector<HTMLButtonElement>(`[data-id="${id}"]`)?.click());
+    try {
+      await open(coordinatorTab.id);
+      expect(surfaces(coordinatorTab.id)).toBe(1);
+      expect(visible()).toEqual([coordinatorTab.id]);
+      await open(sideChat.id);
+      expect(surfaces(sideChat.id)).toBe(1);
+      expect(visible()).toEqual([sideChat.id]);
+      await open(thread.id);
+      expect(surfaces(thread.id)).toBe(1);
+      expect(visible()).toEqual([sideChat.id, thread.id]);
     } finally {
       await view.unmount();
     }
@@ -268,11 +441,8 @@ describe('Board side panel', () => {
 });
 
 it('saves Board settings to the catalog row and renames the coordinator with the Board', async () => {
-  const store = createStore();
-  const { runtime, board } = catalogRuntime();
-  store.set(runtimeAtom, runtime);
-  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
-  creation.actions = [];
+  const env = await boardRuntime([makeSession('coordinator', { boardRole: 'coordinator' })]);
+  const store = workspaceStore(env.runtime);
   let closed = false;
   const view = await mount(
     <Provider store={store}>
@@ -280,40 +450,86 @@ it('saves Board settings to the catalog row and renames the coordinator with the
     </Provider>
   );
   try {
-    const name = document.querySelector<HTMLInputElement>('input[aria-label="Name"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
-        name,
-        ' Launch '
-      );
-      name.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await typeInto(
+      document.querySelector<HTMLInputElement>('input[aria-label="Name"]')!,
+      ' Launch '
+    );
     expect(document.body.textContent).not.toContain('Archive Board');
-    await act(async () => {
-      document
-        .querySelector('form')!
-        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
+    await submitForm();
     expect(closed).toBe(true);
-    expect(board('bd_test')).toMatchObject({ name: 'Launch', purpose: 'Ship it' });
-    expect(creation.actions).toEqual(['title:coordinator:Launch']);
+    expect(env.board('bd_test')).toMatchObject({ name: 'Launch', purpose: 'Ship it' });
+    expect((await env.meta('coordinator')).title).toBe('Launch');
   } finally {
     await view.unmount();
+    await env.destroy();
   }
 });
 
-it('archives a Board with its coordinator and member roots, then restores them all', async () => {
-  const store = createStore();
-  const { runtime, board } = catalogRuntime();
-  store.set(runtimeAtom, runtime);
-  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
-  creation.actions = [];
+it('starts the Board panel afresh on another Board, so a settings draft never saves into it', async () => {
+  const boardA = testBoard();
+  const boardB = testBoard({ id: 'bd_b' as never, name: 'Docs', coordinatorSessionId: 'coord-b' });
+  const env = await boardRuntime([
+    makeSession('coordinator', { boardRole: 'coordinator', title: 'Release' }),
+    makeSession('coord-b', { boardId: 'bd_b' as never, boardRole: 'coordinator', title: 'Docs' }),
+  ]);
+  await writeWorkspaceBoard(env.runtime, boardA);
+  await writeWorkspaceBoard(env.runtime, boardB);
+  const store = workspaceStore(env.runtime);
+  let showBoard!: (board: BoardMeta) => void;
+  function Page() {
+    const [board, setBoard] = useState(boardA);
+    showBoard = setBoard;
+    return (
+      <BoardSidePanel
+        board={board}
+        openThreadId={null}
+        onOpenThread={() => {}}
+        onShowInPage={() => {}}
+        onOpenThreadFull={() => {}}
+        renderThread={() => null}
+        onArchived={() => {}}
+      />
+    );
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <Page />
+    </Provider>
+  );
+  const nameInput = () => document.querySelector<HTMLInputElement>('input[aria-label="Name"]');
+  const openSettings = () =>
+    act(async () =>
+      view.host.querySelector<HTMLButtonElement>('button[aria-label="Board settings"]')!.click()
+    );
+  try {
+    await openSettings();
+    await typeInto(nameInput()!, 'Draft for Release');
+    // Browser history moves the page to Board B while A's dialog is open.
+    await act(async () => showBoard(boardB));
+    expect(nameInput()).toBeNull();
+    await openSettings();
+    expect(nameInput()?.value).toBe('Docs');
+    await submitForm();
+    expect(env.board('bd_b')).toMatchObject({ name: 'Docs' });
+    expect(env.board('bd_test')).toMatchObject({ name: 'Release' });
+    expect((await env.meta('coord-b')).title).toBe('Docs');
+  } finally {
+    await view.unmount();
+    await env.destroy();
+  }
+});
+
+it('archives and restores a Board with its members, and keeps it where it was when a member fails', async () => {
   const sessions = [
     makeSession('coordinator', { boardRole: 'coordinator' }),
     makeSession('root'),
     makeSession('review', { parentSessionId: 'root' as SessionId }),
+    makeSession('second'),
     makeSession('other', { boardId: 'bd_other' as never }),
   ];
+  const env = await boardRuntime(sessions);
+  await writeWorkspaceBoard(env.runtime, testBoard());
+  const store = workspaceStore(env.runtime);
   let lifecycle!: ReturnType<typeof useBoardLifecycle>;
   function Probe() {
     lifecycle = useBoardLifecycle();
@@ -324,16 +540,40 @@ it('archives a Board with its coordinator and member roots, then restores them a
       <Probe />
     </Provider>
   );
+  const archived = async () => {
+    const metas = await Promise.all(sessions.map((session) => env.meta(session.id)));
+    return metas.filter((meta) => meta.isArchived === true);
+  };
+  const archivedIds = async () => (await archived()).map((meta) => meta.id);
   try {
+    // A member refuses: the Board stays active, so its settings still offer Archive.
+    env.failing.add(getSessionRoomId('second' as SessionId));
+    await act(async () => {
+      await expect(lifecycle.archiveBoard(testBoard(), sessions)).rejects.toThrow('disk full');
+    });
+    expect(env.board('bd_test')).not.toHaveProperty('archivedAtMs');
+    env.failing.clear();
     await act(async () => lifecycle.archiveBoard(testBoard(), sessions));
-    expect(creation.actions).toEqual(['archive:coordinator', 'archive:root']);
-    expect(board('bd_test').archivedAtMs).toEqual(expect.any(Number));
-    creation.actions = [];
-    await act(async () => lifecycle.restoreBoard(board('bd_test'), sessions));
-    expect(board('bd_test')).not.toHaveProperty('archivedAtMs');
-    expect(creation.actions).toEqual(['restore:coordinator', 'restore:root']);
+    expect(env.board('bd_test').archivedAtMs).toEqual(expect.any(Number));
+    expect(await archivedIds()).toEqual(['coordinator', 'root', 'review', 'second']);
+
+    // Restore stops at the refusing member: the Board stays in Archive with its Restore.
+    env.failing.add(getSessionRoomId('second' as SessionId));
+    const toRestore = await archived();
+    await act(async () => {
+      await expect(lifecycle.restoreBoard(env.board('bd_test'), toRestore)).rejects.toThrow(
+        'disk full'
+      );
+    });
+    expect(env.board('bd_test').archivedAtMs).toEqual(expect.any(Number));
+    expect(await archivedIds()).toEqual(['second']);
+    env.failing.clear();
+    await act(async () => lifecycle.restoreBoard(env.board('bd_test'), await archived()));
+    expect(env.board('bd_test')).not.toHaveProperty('archivedAtMs');
+    expect(await archivedIds()).toEqual([]);
   } finally {
     await view.unmount();
+    await env.destroy();
   }
 });
 
@@ -533,9 +773,11 @@ it('submits a new Board thread as chat without the coordinator role', async () =
   try {
     await act(async () =>
       root.render(
-        <Provider store={store}>
-          <NewThread />
-        </Provider>
+        <PlatformContext.Provider value={testPlatform}>
+          <Provider store={store}>
+            <NewThread />
+          </Provider>
+        </PlatformContext.Provider>
       )
     );
     await act(async () => {

@@ -4,6 +4,7 @@ import * as stylex from '@stylexjs/stylex';
 import { useTranslation } from 'react-i18next';
 import { currentWorkspaceSlugAtom } from '@/atoms';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
+import { boardEntrySearch } from './board-threads';
 import { boardStyles } from './board-view';
 
 /** `/boards/<id>` is an address for the Board's coordinator conversation. */
@@ -17,7 +18,7 @@ export function BoardRedirect({ boardId }: { boardId: string }) {
       <Navigate
         to="/$workspaceName/sessions/$sessionId"
         params={{ workspaceName, sessionId: board.coordinatorSessionId }}
-        search={{ board: true }}
+        search={boardEntrySearch(board.coordinatorSessionId)}
         replace
       />
     );

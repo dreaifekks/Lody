@@ -10,8 +10,12 @@ import {
   type Command,
   type CommandCategory,
 } from '@/lib/commands';
+import { LayoutDashboard } from 'lucide-react';
 import { currentWorkspaceSlugAtom } from '@/atoms';
+import { boardEnabledAtom } from '@/atoms/settings';
 import { useVisibleSessionMetas } from '@/hooks/use-visible-session-metas';
+import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
+import { boardEntrySearch } from '@/components/boards/board-threads';
 import { useVisibleLocalProjects } from '@/hooks/use-visible-local-projects';
 import { useStableNow } from '@/hooks/use-stable-now';
 import type { SessionListEntry } from '@/lib/session-visibility';
@@ -46,6 +50,20 @@ export function CommandPalette() {
   const all = useCommands();
   const { sessions } = useVisibleSessionMetas();
   const { projects: localProjects } = useVisibleLocalProjects({ syncMachineFlock: false });
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  const { boards } = useWorkspaceCatalog();
+  // A coordinator is its Board: it is found by the Board's name and opens as the Board.
+  const boardsByCoordinator = useMemo(
+    () =>
+      new Map(
+        boardsEnabled
+          ? boards
+              .filter((board) => board.archivedAtMs === undefined)
+              .map((board) => [board.coordinatorSessionId as string, board])
+          : []
+      ),
+    [boards, boardsEnabled]
+  );
   // Stable clock for the compact last-activity labels (updates ~once a minute).
   const now = useStableNow();
 
@@ -69,12 +87,13 @@ export function CommandPalette() {
   );
 
   const openSession = useCallback(
-    (sessionId: SessionId) => {
+    (sessionId: SessionId, asBoard: boolean) => {
       if (!workspaceSlug) return;
       handleOpenChange(false);
       void router.navigate({
         to: '/$workspaceName/sessions/$sessionId',
         params: { workspaceName: workspaceSlug, sessionId },
+        search: asBoard ? boardEntrySearch(sessionId) : undefined,
       });
     },
     [handleOpenChange, router, workspaceSlug]
@@ -106,18 +125,22 @@ export function CommandPalette() {
   const toSessionResult = useCallback(
     (session: SessionListEntry): PaletteResult => {
       const lastActivityValue = session.lastMessageAt ?? session.createdAt ?? null;
+      const board = boardsByCoordinator.get(session.id);
       return {
         kind: 'session',
         key: `session:${session.id}`,
-        title: session.title?.trim() || t('sessions.untitled', 'Untitled session'),
-        subtitle: getSessionPaletteSubtitle(session, localProjects),
+        title: board?.name ?? (session.title?.trim() || t('sessions.untitled', 'Untitled session')),
+        subtitle: board
+          ? t('boards.panelTab', 'Board')
+          : getSessionPaletteSubtitle(session, localProjects),
         shortcut: null,
         trailing:
           lastActivityValue != null ? formatCompactRelativeTime(lastActivityValue, now) : null,
-        run: () => openSession(session.id),
+        icon: board ? LayoutDashboard : undefined,
+        run: () => openSession(session.id, board !== undefined),
       };
     },
-    [localProjects, now, openSession, t]
+    [boardsByCoordinator, localProjects, now, openSession, t]
   );
 
   // Only surface commands that can actually fire in the current view. Each command declares
@@ -161,7 +184,8 @@ export function CommandPalette() {
       // Match the displayed project/repo label too (covers local project names, not
       // just `repoFullName`), so a session is findable by what the row shows.
       const projectLabel = resolveSessionProjectLabel(session, localProjects) ?? '';
-      for (const text of [session.title ?? '', projectLabel, session.branchName ?? '']) {
+      const boardName = boardsByCoordinator.get(session.id)?.name ?? '';
+      for (const text of [boardName, session.title ?? '', projectLabel, session.branchName ?? '']) {
         if (!text) continue;
         const score = fuzzyMatch(trimmedQuery, text);
         if (score !== null && (best === null || score > best)) best = score;
@@ -174,6 +198,7 @@ export function CommandPalette() {
       .sort((a, b) => b.score - a.score)
       .map((entry) => entry.result);
   }, [
+    boardsByCoordinator,
     isSearching,
     localProjects,
     resolveLabel,

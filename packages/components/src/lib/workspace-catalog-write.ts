@@ -141,12 +141,18 @@ const countActiveBoards = async (deps: WorkspaceCatalogWriteDeps): Promise<numbe
   ).length;
 };
 
-/** Restoring brings a Board back under the active limit, so it is checked here too. */
+/**
+ * Restoring brings a Board back under the active limit, so it is checked here too.
+ * The row leaves the archive last: if a member fails, the Board stays archived and
+ * its Restore entry remains for a retry.
+ */
 export async function restoreWorkspaceBoard(
   deps: WorkspaceCatalogWriteDeps,
-  board: BoardMeta
+  board: BoardMeta,
+  restoreMembers: () => Promise<void>
 ): Promise<BoardMeta> {
   if ((await countActiveBoards(deps)) >= MAX_BOARDS_PER_WORKSPACE) throw new Error('BOARD_LIMIT');
+  await restoreMembers();
   const { archivedAtMs: _archivedAtMs, ...restored } = board;
   await writeWorkspaceBoard(deps, restored);
   return restored;

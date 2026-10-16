@@ -22,8 +22,10 @@ export function boardRootMemberIds(
 
 /**
  * Archiving a Board archives the coordinator and every root member, then marks
- * the row; restoring reverses it in the opposite order. Session restore covers
- * only direct Tabs, so every member root is restored explicitly.
+ * the row; restoring restores them all, then clears the mark. The row changes
+ * last both ways, so a failure stops with the Board where it was and its entry
+ * (settings or Archive) still offers the retry. Session restore covers only
+ * direct Tabs, so every member root is restored explicitly.
  */
 export function useBoardLifecycle() {
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
@@ -40,9 +42,13 @@ export function useBoardLifecycle() {
   const restoreBoard = useCallback(
     async (board: BoardMeta, archivedSessions: readonly SessionMeta[]) => {
       if (!runtime) throw new Error('Runtime not ready');
-      await restoreWorkspaceBoard(runtime, board);
-      for (const id of [board.coordinatorSessionId, ...boardRootMemberIds(board, archivedSessions)])
-        await restoreSession(id);
+      await restoreWorkspaceBoard(runtime, board, async () => {
+        for (const id of [
+          board.coordinatorSessionId,
+          ...boardRootMemberIds(board, archivedSessions),
+        ])
+          await restoreSession(id);
+      });
     },
     [restoreSession, runtime]
   );

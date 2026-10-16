@@ -1,5 +1,16 @@
-import type { BoardMeta, SessionMeta, SessionStatus } from '@lody/shared';
+import type { BoardMeta, SessionId, SessionMeta, SessionStatus } from '@lody/shared';
 import { buildOpenedBySessionTree } from '@/lib/session-opened-by-tree';
+import { formatExplicitSessionTabSearch } from '@/lib/session-tab-url';
+
+/**
+ * Search of every Board entry (sidebar, `/boards/<id>`, command palette): the
+ * coordinator's own Tab, never the last child Tab the page would restore, and
+ * the Board panel opened once.
+ */
+export const boardEntrySearch = (coordinatorSessionId: SessionId) => ({
+  board: true,
+  tab: formatExplicitSessionTabSearch(coordinatorSessionId),
+});
 
 /** Use the same opener tree as the sidebar, with contained Tabs below their root. */
 export function buildBoardRows(sessions: readonly SessionMeta[]) {

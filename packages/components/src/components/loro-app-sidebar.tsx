@@ -3,7 +3,7 @@ import { boardsSectionCollapsedAtom } from '@/atoms/sidebar-state';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { BoardSidebarSection } from './boards/board-sidebar-section';
 import { CreateBoardDialog } from './boards/create-board-dialog';
-import { boardActivity, isBoardCoordinator } from './boards/board-threads';
+import { boardActivity, boardEntrySearch, isBoardCoordinator } from './boards/board-threads';
 import { parseLanHubRole } from '@lody/shared/lan-hub-role';
 import { openSessionOnModifiedClick } from '@/lib/desktop-window';
 import { buildSessionLink } from '@lody/shared/session-link';
@@ -2100,7 +2100,7 @@ export function LoroAppSidebar({
       void router.navigate({
         to: '/$workspaceName/sessions/$sessionId',
         params: { workspaceName: workspaceSlug, sessionId: coordinatorSessionId },
-        search: { board: true },
+        search: boardEntrySearch(coordinatorSessionId),
       });
     },
     [closeMobileDrawer, router, workspaceSlug]

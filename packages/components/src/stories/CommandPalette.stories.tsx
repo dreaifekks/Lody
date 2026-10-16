@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { useState } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 
 import { COMMAND_ICONS } from '@/components/commands/command-icons';
 import {
@@ -122,6 +123,17 @@ const MIXED_RESULTS: PaletteResult[] = [
     subtitle: 'loro-dev/lody',
     shortcut: null,
     trailing: '5m',
+    run: noop,
+  },
+  {
+    // A Board's coordinator: found and opened as the Board.
+    kind: 'session',
+    key: 'board',
+    title: 'Release 0.105',
+    subtitle: 'Board',
+    shortcut: null,
+    trailing: '20m',
+    icon: LayoutDashboard,
     run: noop,
   },
   {

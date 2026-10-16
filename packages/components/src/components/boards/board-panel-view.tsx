@@ -59,7 +59,7 @@ export function BoardPanelView({
       <header {...stylex.props(styles.header)}>
         <Tabs.List size="small">
           <Tabs.Tab value="threads">{t('boards.threads', 'Threads')}</Tabs.Tab>
-          <Tabs.Tab value="files">{t('boards.files.title', 'Files')}</Tabs.Tab>
+          <Tabs.Tab value="files">{t('boards.files.title', 'Board files')}</Tabs.Tab>
         </Tabs.List>
         <span {...stylex.props(styles.spacer)} />
         {tab === 'threads' && onNewThread ? (

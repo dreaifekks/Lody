@@ -92,7 +92,11 @@ export function ArchivedBoardsSection() {
                   'boards.restoreLimit',
                   'A workspace can have up to 50 active Boards. Archive one first.'
                 )
-              : t('boards.restoreFailed', 'Could not restore the Board.')
+              : t(
+                  'boards.restoreFailed',
+                  'Could not restore the Board: {{reason}}. It stays archived; try again.',
+                  { reason: cause instanceof Error ? cause.message : String(cause) }
+                )
           )
         );
       }}

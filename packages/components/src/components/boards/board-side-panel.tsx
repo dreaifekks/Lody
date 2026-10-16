@@ -16,6 +16,7 @@ import {
 
 const localProjectsOf = (rows: MachineFlockRowMap | undefined) =>
   rows ? getMachineFlockLocalProjects(rows) : undefined;
+import { currentWorkspaceIdAtom } from '@/atoms';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { sessionLiveStatusAtomFamily } from '@/atoms/presence';
 import { getMachineMetaMapAtom } from '@/atoms/machines';
@@ -188,25 +189,40 @@ function BoardFiles({ board }: { board: BoardMeta }) {
   );
 }
 
-/**
- * The Board side panel on the coordinator's Session page. The open thread is
- * the page's state, so the panel can remount (compact layout) without losing it.
- */
-export function BoardSidePanel({
-  board,
-  openThreadId,
-  onOpenThread,
-  onOpenThreadFull,
-  renderThread,
-  onArchived,
-}: {
+type BoardSidePanelProps = {
   board: BoardMeta;
   openThreadId: SessionId | null;
   onOpenThread: (session: SessionMeta | null) => void;
+  /**
+   * A direct child of the coordinator (a Tab or a Side Chat) is already mounted
+   * by the coordinator's page; the page shows it there instead of a second copy.
+   */
+  onShowInPage: (session: SessionMeta) => void;
   onOpenThreadFull: (session: SessionMeta) => void;
   renderThread: (session: SessionMeta) => ReactNode;
   onArchived: () => void;
-}) {
+};
+
+/**
+ * The Board side panel on the coordinator's Session page. The open thread is
+ * the page's state, so the panel can remount (compact layout) without losing it.
+ * Its own state (tab, settings draft) belongs to one Board: switching Board or
+ * workspace starts it afresh, so a draft can never be saved into another Board.
+ */
+export function BoardSidePanel(props: BoardSidePanelProps) {
+  const workspaceId = useAtomValue(currentWorkspaceIdAtom);
+  return <BoardSidePanelContent key={`${workspaceId}:${props.board.id}`} {...props} />;
+}
+
+function BoardSidePanelContent({
+  board,
+  openThreadId,
+  onOpenThread,
+  onShowInPage,
+  onOpenThreadFull,
+  renderThread,
+  onArchived,
+}: BoardSidePanelProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<BoardPanelTab>('threads');
   const [dialog, setDialog] = useState<'settings' | 'thread' | null>(null);
@@ -238,7 +254,14 @@ export function BoardSidePanel({
           onOpenSettings={() => setDialog('settings')}
         >
           {tab === 'threads' ? (
-            <BoardThreads board={board} onOpen={onOpenThread} />
+            <BoardThreads
+              board={board}
+              onOpen={(session) =>
+                session.parentSessionId === board.coordinatorSessionId
+                  ? onShowInPage(session)
+                  : onOpenThread(session)
+              }
+            />
           ) : (
             <BoardFiles board={board} />
           )}
@@ -246,14 +269,21 @@ export function BoardSidePanel({
       )}
       {dialog === 'settings' ? (
         <BoardSettingsDialog
+          key={board.id}
           board={board}
           onClose={() => setDialog(null)}
           onArchive={
             active
               ? () => {
                   setDialog(null);
-                  void archiveBoard(board, allActiveSessions).then(onArchived, () =>
-                    toast.error(t('boards.archiveFailed', 'Could not archive the Board.'))
+                  void archiveBoard(board, allActiveSessions).then(onArchived, (cause: unknown) =>
+                    toast.error(
+                      t(
+                        'boards.archiveFailed',
+                        'Could not archive the Board: {{reason}}. It stays open; try again.',
+                        { reason: cause instanceof Error ? cause.message : String(cause) }
+                      )
+                    )
                   );
                 }
               : undefined
