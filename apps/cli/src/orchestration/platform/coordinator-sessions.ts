@@ -10,6 +10,10 @@ import {
 import { subscribeSessionChanges } from '@/lib/loro/doc';
 import { createSessionBackend } from '@/session/session-backend';
 import {
+  readRecordedSessionMcpSelection,
+  resolveMcpSelectionOrWorkspaceDefault,
+} from '@/lib/session-mcp-selection';
+import {
   buildMissingEmail,
   getServerNow,
   getSessionRoomId,
@@ -53,6 +57,35 @@ export const coordinatorSessionsLayer = (
         ? { meta: record.meta as SessionMeta }
         : undefined;
     });
+  /**
+   * A maintenance turn runs with the MCP selection a chat follow-up would: this
+   * conversation's latest recorded choice, else the workspace defaults. A new
+   * agent conversation in the same Session therefore keeps the previous one's.
+   */
+  const maintenanceMcpSelection = async (id: SessionId) => {
+    const record = await options.workspaceDocument.repo.getDocMeta(getSessionRoomId(id));
+    const doc = await options.workspaceDocument.getOrCreateSessionDoc(id);
+    const backend = await createSessionBackend(doc, record?.meta as SessionMeta | undefined);
+    const count = await backend.readHistoryCount();
+    const rows = (await backend.readHistoryDirectory(0, count)).flatMap((entry) =>
+      entry.scalars
+        ? [
+            {
+              id: entry.scalars.id,
+              role: entry.scalars.role,
+              get inputConfig() {
+                return entry.inputConfig;
+              },
+            },
+          ]
+        : []
+    );
+    return await resolveMcpSelectionOrWorkspaceDefault({
+      manager: options.workspaceDocument,
+      workspaceId: options.workspaceId,
+      selection: readRecordedSessionMcpSelection(rows),
+    });
+  };
   return Layer.succeed(CoordinatorPorts, {
     boardCatalog: io(async () => {
       const catalog = await options.workspaceDocument.repo.openFlockDoc(
@@ -235,8 +268,10 @@ export const coordinatorSessionsLayer = (
             const profile = await options.userResolver
               ?.resolve(request.userId)
               .catch(() => undefined);
+            const mcpServerIds = await maintenanceMcpSelection(request.sessionId);
             return options.executionService.runBoardMaintenanceTurn({
               ...request,
+              config: { ...request.config, mcpServerIds },
               userName: profile?.name ?? request.userId,
               userEmail: profile?.email ?? buildMissingEmail('lody', request.userId),
             });

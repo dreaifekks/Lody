@@ -49,6 +49,10 @@ implementation differs from the proposal.
   or history replay, and its first message carries the Board instructions and Lody's
   handoff facts. Fork and generation handoff were not used: both change the Session
   id the Board anchors on.
+- **MCP selection**: maintenance turns and the new agent conversation take it as a
+  chat follow-up does: the conversation's latest recorded choice, else the workspace
+  defaults. Reading only the driving turn would give an empty selection after an
+  Inbox turn and start the new agent without workspace MCP servers.
 - **Fallback**: coordinator processes get `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000`.
 
 ## Behavior contract

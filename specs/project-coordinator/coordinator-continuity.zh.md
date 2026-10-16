@@ -307,6 +307,8 @@ system 驱动的维护回合，再在压缩后的下一回合重新注入看板�
   assistant 条目、没有用户消息；**不经过 Inbox**，不带走排队的结果，也不改链深度；结束时不写
   `lastMessageAt`、不发完成推送，然后唤醒 Inbox 和派发检查，让等着的用户回合和结果接着跑。
 - 运行配置取协调者最新驱动回合的 `inputConfig`，所以新开的 agent 会话也保持原来的模型和模式。
+  MCP 选择和对话追问用同一套规则（`apps/cli/src/lib/session-mcp-selection.ts`）：本对话最近一次
+  记录的选择，没有就用工作区默认；新的 agent 对话因此继承旧对话的选择。
 - 用户在维护回合进行中「引导」，不会被注入维护回合，而是作为用户自己的下一回合运行。
 - 界面：一条系统回合（id `board-maintenance:<runId>`，`system_notice`
   `board_context_maintenance`）就是分隔线，记录种类、触发方式、状态和前后 tokens；各步骤的

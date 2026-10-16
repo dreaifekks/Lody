@@ -1486,6 +1486,7 @@ type MaintenanceTurnRequest = {
   sessionId: SessionId;
   stepTurnId: string;
   prompt: string;
+  config: { mcpServerIds?: readonly string[] };
   renewBoardInstructions?: boolean;
   freshAgentSession?: boolean;
 };
@@ -2389,6 +2390,46 @@ describe('Board coordinator continuity', () => {
           renewed: false,
           reason: 'renewal-unhandled-error-recorded',
         }),
+      ]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('runs every step, the new agent conversation included, with the recorded MCP selection', async () => {
+    const h = await boardHarness();
+    try {
+      h.release();
+      // The user chose a server; a later Inbox turn records no selection of its own.
+      await h.append(h.coordinatorId, {
+        ...h.input('chosen', { depth: 0, human: true }),
+        inputConfig: { cliType: 'builtin', agentType: 'codex', mcpServerIds: ['mcp-board'] },
+      });
+      await h.finish(h.coordinatorId, 'chosen');
+      await h.append(h.coordinatorId, {
+        ...h.input('inbox-batch', { role: 'system', depth: 1 }),
+        inputConfig: { cliType: 'builtin', agentType: 'codex', chainDepth: 1 },
+      });
+      await h.finish(h.coordinatorId, 'inbox-batch');
+      await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+        acpSessionId: 'previous-agent-session',
+      });
+      h.coordinator.start();
+      await h.drain();
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'fresh-mcp',
+          { boardId: h.board.id, kind: 'new_conversation', trigger: 'manual', status: 'requested' },
+          new Date(TEST_NOW_MS).toISOString()
+        )
+      );
+      await h.drain();
+      await settled(h, 'done');
+      expect(steps(h)).toEqual(['handoff', 'renew']);
+      expect(h.maintenance.runs.map((run) => run.config.mcpServerIds)).toEqual([
+        ['mcp-board'],
+        ['mcp-board'],
       ]);
     } finally {
       await h.close();
