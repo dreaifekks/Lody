@@ -689,7 +689,7 @@ say that `lody_project_list` lists every project.
 **Changed (second round):** memory has two parts, neither in a LoroText of the
 Board document.
 - **Instructions:** the user's `BoardMeta.instructions` (≤ 16,000 characters), edited on
-  the settings dialog's Memory page, appended to every member's first message
+  the settings dialog's General page, appended to every member's first message
   (coordinator included) in `buildPrompt`'s Board section; an edit reaches sessions
   started afterwards.
 - **Automatic memory:** `memory/` in the shared directory, `MEMORY.md` as the index and
@@ -838,7 +838,7 @@ in "Board home, second round"):
 11. A Board opens with the conversation and the panel at half each; the settings
     button sits at the top right of the conversation.
 12. The settings dialog has section navigation on the start and the content on the end:
-    General (name, goal, rules, archive) and Memory (instructions, automatic memory).
+    General (name, goal, instructions, rules, archive) and Memory (automatic memory).
     Files stay in the side panel's Files tab, which shows the directory's `files/`;
     the shared notes remain one of its rows.
 13. The shared directory and automatic memory are done in this round (former steps 4

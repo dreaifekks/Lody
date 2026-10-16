@@ -225,9 +225,9 @@ phones (where the panel is a full-screen drawer). The coordinator's own Tabs and
 Side Chats open where the page already shows them. Board files holds the shared
 notes and the `files/` of the Board's shared directory, kept on the coordinator's
 machine and reached from other LAN members through it. The gear at the top right of
-the conversation opens Board settings: General (name, optional goal, rules, Archive)
-and Memory (instructions every new member reads, and the agents' memory files under
-`memory/`, indexed by `MEMORY.md`). Archived Boards are listed and restored on the
+the conversation opens Board settings: General (name, optional goal, the instructions
+every new member reads beside the thread instructions, rules, Archive) and Memory (the
+agents' memory files under `memory/`, indexed by `MEMORY.md`). Archived Boards are listed and restored on the
 Archive page; a failed archive or restore names the reason and leaves the Board
 where it was, to retry. Neither the coordinator nor the threads are listed among
 sessions outside the Board.

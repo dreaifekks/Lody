@@ -700,10 +700,10 @@ export const FilesTruncated: Story = {
   args: { initial: { kind: 'tabs', tab: 'files', truncated: true } },
 };
 
-/** Settings open from the gear in the conversation's header: General. */
+/** Settings open from the gear in the conversation's header: General, with the instructions. */
 export const Settings: Story = { render: () => <SettingsDialogStory initialPage="general" /> };
 
-/** Settings › Memory: the user's instructions and the agents' memory files. */
+/** Settings › Memory: the agents' memory files. */
 export const SettingsMemory: Story = {
   render: () => <SettingsDialogStory initialPage="memory" />,
 };

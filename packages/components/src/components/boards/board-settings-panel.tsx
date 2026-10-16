@@ -166,7 +166,10 @@ function StackedRow({
   );
 }
 
-/** What a Board sets once and rarely revisits: name, goal, rules, and archiving it. */
+/**
+ * What a Board sets once and rarely revisits: name, goal, the instructions its
+ * members read, thread rules, and archiving it.
+ */
 export function BoardSettingsGeneralView({
   value,
   onChange,
@@ -177,7 +180,9 @@ export function BoardSettingsGeneralView({
   /** Absent for an archived Board. */
   onArchive?: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const instructionsLength = Array.from(value.instructions).length;
+  const number = new Intl.NumberFormat(toIntlLocaleOrEn(i18n.language));
   return (
     <>
       <CompactSection title={t('boards.settings.board', 'Board')}>
@@ -200,6 +205,43 @@ export function BoardSettingsGeneralView({
             rows={3}
             value={value.purpose}
             onChange={(event) => onChange({ purpose: event.target.value })}
+          />
+        </StackedRow>
+      </CompactSection>
+
+      <CompactSection title={t('boards.settings.rules', 'Rules')}>
+        <StackedRow
+          label={t('boards.settings.instructions', 'Instructions')}
+          helper={t(
+            'boards.settings.instructionsHelper',
+            'Like CLAUDE.md: rules you write. Every new conversation of this Board reads and follows them.'
+          )}
+        >
+          <Textarea
+            rows={7}
+            value={value.instructions}
+            onChange={(event) => onChange({ instructions: event.target.value })}
+          />
+          <span
+            {...stylex.props(
+              styles.counter,
+              instructionsLength > MAX_BOARD_INSTRUCTIONS && styles.counterOver
+            )}
+          >
+            {`${number.format(instructionsLength)} / ${number.format(MAX_BOARD_INSTRUCTIONS)}`}
+          </span>
+        </StackedRow>
+        <StackedRow
+          label={t('boards.constraints', 'Executor instructions')}
+          helper={t(
+            'boards.settings.constraintsHelper',
+            'Added to the first message of every thread.'
+          )}
+        >
+          <Textarea
+            rows={3}
+            value={value.executorConstraints}
+            onChange={(event) => onChange({ executorConstraints: event.target.value })}
           />
         </StackedRow>
       </CompactSection>
@@ -227,19 +269,6 @@ export function BoardSettingsGeneralView({
             onCheckedChange={(on) => onChange({ reportHumanTurns: on })}
           />
         </CompactRow>
-        <StackedRow
-          label={t('boards.constraints', 'Executor instructions')}
-          helper={t(
-            'boards.settings.constraintsHelper',
-            'Added to the first message of every thread.'
-          )}
-        >
-          <Textarea
-            rows={3}
-            value={value.executorConstraints}
-            onChange={(event) => onChange({ executorConstraints: event.target.value })}
-          />
-        </StackedRow>
       </CompactSection>
 
       {onArchive ? (
@@ -261,57 +290,20 @@ export function BoardSettingsGeneralView({
   );
 }
 
-/**
- * The Board's memory: the user's instructions, which every member reads when it
- * starts, and the notes agents keep in the Board directory's `memory/`.
- */
-export function BoardMemoryView({
-  instructions,
-  onInstructionsChange,
-  autoMemory,
-}: {
-  instructions: string;
-  onInstructionsChange: (value: string) => void;
-  autoMemory: ReactNode;
-}) {
-  const { t, i18n } = useTranslation();
-  const length = Array.from(instructions).length;
-  const number = new Intl.NumberFormat(toIntlLocaleOrEn(i18n.language));
+/** The notes agents keep in the Board directory's `memory/`. */
+export function BoardMemoryView({ autoMemory }: { autoMemory: ReactNode }) {
+  const { t } = useTranslation();
   return (
-    <>
-      <section {...stylex.props(styles.block)}>
-        <h3 {...stylex.props(styles.blockTitle)}>
-          {t('boards.memory.instructions', 'Instructions')}
-        </h3>
-        <p {...stylex.props(styles.blockHelper)}>
-          {t(
-            'boards.memory.instructionsHelper',
-            'Like CLAUDE.md: rules you write. Every new conversation of this Board reads and follows them.'
-          )}
-        </p>
-        <Textarea
-          aria-label={t('boards.memory.instructions', 'Instructions')}
-          rows={7}
-          value={instructions}
-          onChange={(event) => onInstructionsChange(event.target.value)}
-        />
-        <span
-          {...stylex.props(styles.counter, length > MAX_BOARD_INSTRUCTIONS && styles.counterOver)}
-        >
-          {`${number.format(length)} / ${number.format(MAX_BOARD_INSTRUCTIONS)}`}
-        </span>
-      </section>
-      <section {...stylex.props(styles.block)}>
-        <h3 {...stylex.props(styles.blockTitle)}>{t('boards.memory.auto', 'Automatic memory')}</h3>
-        <p {...stylex.props(styles.blockHelper)}>
-          {t(
-            'boards.memory.autoHelper',
-            'Notes the agents keep while they work on this Board. The coordinator keeps MEMORY.md as their index.'
-          )}
-        </p>
-        {autoMemory}
-      </section>
-    </>
+    <section {...stylex.props(styles.block)}>
+      <h3 {...stylex.props(styles.blockTitle)}>{t('boards.memory.auto', 'Automatic memory')}</h3>
+      <p {...stylex.props(styles.blockHelper)}>
+        {t(
+          'boards.memory.autoHelper',
+          'Notes the agents keep while they work on this Board. The coordinator keeps MEMORY.md as their index.'
+        )}
+      </p>
+      {autoMemory}
+    </section>
   );
 }
 
@@ -448,11 +440,7 @@ export function BoardSettingsDialogView({
                   onArchive={onArchive}
                 />
               ) : (
-                <BoardMemoryView
-                  instructions={draft.instructions}
-                  onInstructionsChange={(instructions) => onDraftChange({ instructions })}
-                  autoMemory={autoMemory}
-                />
+                <BoardMemoryView autoMemory={autoMemory} />
               )}
             </div>
             <div {...stylex.props(styles.footer)}>
