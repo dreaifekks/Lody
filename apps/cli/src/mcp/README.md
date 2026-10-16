@@ -129,6 +129,13 @@ Board-specific tools and automatic reports are later steps.
   probe mismatch cannot reject them, and missing per-model data defers to runtime. Drop
   incompatible inherited selectors; fill builtin mode only when still empty.
   ([note](../../../../.agents/notes/implemented/bug-fix/2026-09-17-chat-follow-up-inherits-target-run-config.md))
+- Session tools take no MCP selection, yet every Turn they write records one, as the
+  composer would: a new Session takes the driving Turn's explicit choice (read from the
+  stored Turn, since dispatch reports "no choice" as `[]`), else workspace
+  `enabledByDefault` servers; a chat follow-up takes the target's latest choice, else
+  those defaults, never the sender's. Acceptance freezes the result per target in
+  `targetDispatchConfigs`, so recovery never rereads the catalog or history.
+  ([note](../../../../.agents/notes/implemented/bug-fix/2026-10-17-agent-session-workspace-mcp.md))
 
 ## Local routing
 
@@ -181,7 +188,8 @@ propose, omission follows workspace `enabledByDefault` servers at every run;
 clears it so runs follow workspace defaults again. Ids the schedule already
 saved are not resolved again, so an edit still succeeds after one of those
 servers was removed (runs skip it). Existing-chat
-destinations retain that chat's MCP selection.
+destinations retain that chat's MCP selection, or workspace defaults when it never
+recorded one.
 
 The human CLI accepts the same field inside `lody schedule create/edit --file`
 JSON drafts, for example `"mcpServerIds": ["mail", "search"]` or
