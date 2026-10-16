@@ -18,6 +18,12 @@ export type DesktopSessionDetailLayoutProps = {
    * opens at `defaultSizes` (a Board page: half each, every time).
    */
   layoutStorageId?: string | null;
+  /**
+   * A new value puts the split back at `defaultSizes` without remounting the
+   * page: a Board page passes its Board and each entry, so every Board opens
+   * half and half even though Boards share one unremembered layout.
+   */
+  layoutResetKey?: string;
   /** Single merged top row: session tabs + right-side window controls. */
   topBar: ReactNode;
   chatSurfaces: ReactNode;
@@ -115,6 +121,7 @@ const styles = stylex.create({
 export function DesktopSessionDetailLayout({
   defaultSizes,
   layoutStorageId = 'session-detail-panels',
+  layoutResetKey,
   topBar,
   chatSurfaces,
   terminalDock,
@@ -127,10 +134,11 @@ export function DesktopSessionDetailLayout({
 }: DesktopSessionDetailLayoutProps) {
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null);
   const groupWrapperRef = useRef<HTMLDivElement>(null);
-  // The size the side panel reopens at: its last open size in this layout, or
-  // the layout's default. Another layout's width never carries over.
+  // The size the side panel reopens at, per layout: its last open size there,
+  // or the layout's default. One layout never takes or overwrites another's.
   const layoutKey = layoutStorageId ?? 'unsaved';
-  const lastSidebarSizeRef = useRef({ layout: layoutKey, size: defaultSizes.sidebar });
+  const sidebarSizesRef = useRef(new Map<string, number>());
+  const appliedResetKeyRef = useRef(layoutResetKey);
   const previousSidebarOpenRef = useRef(sidebarOpen);
   const lastConsumedSidebarRequestSeqRef = useRef(0);
   const [isResizing, setIsResizing] = useState(false);
@@ -152,6 +160,17 @@ export function DesktopSessionDetailLayout({
     return (minWidthPx / groupWidth) * 100;
   }, []);
 
+  // Declared before the expand effect, so a panel opening in the same commit
+  // reopens at the reset size.
+  useLayoutEffect(() => {
+    const changed = appliedResetKeyRef.current !== layoutResetKey;
+    appliedResetKeyRef.current = layoutResetKey;
+    // Leaving a reset layout resets nothing: the next layout keeps its sizes.
+    if (!changed || layoutResetKey === undefined) return;
+    sidebarSizesRef.current.delete(layoutKey);
+    if (splitSidebarOpen) sidebarPanelRef.current?.resize(defaultSizes.sidebar);
+  }, [defaultSizes.sidebar, layoutKey, layoutResetKey, splitSidebarOpen]);
+
   useLayoutEffect(() => {
     const panel = sidebarPanelRef.current;
     if (!panel) return;
@@ -161,8 +180,7 @@ export function DesktopSessionDetailLayout({
 
     if (splitSidebarOpen) {
       if (!wasOpen) {
-        const last = lastSidebarSizeRef.current;
-        let target = last.layout === layoutKey ? last.size : defaultSizes.sidebar;
+        let target = sidebarSizesRef.current.get(layoutKey) ?? defaultSizes.sidebar;
         // A pending min-width request raises the restored size — never lowers.
         if (
           sidebarMinWidthRequest &&
@@ -180,7 +198,7 @@ export function DesktopSessionDetailLayout({
     if (wasOpen) {
       const currentSize = panel.getSize();
       if (currentSize > 0) {
-        lastSidebarSizeRef.current = { layout: layoutKey, size: currentSize };
+        sidebarSizesRef.current.set(layoutKey, currentSize);
       }
     }
     panel.collapse();

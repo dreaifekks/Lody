@@ -270,6 +270,45 @@ describe('DesktopSessionDetailLayout sidebarMinWidthRequest', () => {
     );
   });
 
+  it('puts the next Board back at half and half though Boards share one layout', () => {
+    const board = (resetKey: string) => ({
+      layoutStorageId: null,
+      layoutResetKey: resetKey,
+      defaultSizes: { main: 50, sidebar: 50 },
+      sidebarOpen: true,
+    });
+    renderLayout(board('bd_a:1'));
+    expect(sidebarPanelMock.resize).not.toHaveBeenCalled();
+    // Board A dragged to 60/40, then Board B opens on the same mounted page.
+    sidebarPanelMock.getSize.mockReturnValue(40);
+    renderLayout(board('bd_b:2'));
+    expect(sidebarPanelMock.resize).toHaveBeenLastCalledWith(50);
+    // Entering B again resets it as well.
+    sidebarPanelMock.resize.mockClear();
+    renderLayout(board('bd_b:3'));
+    expect(sidebarPanelMock.resize).toHaveBeenLastCalledWith(50);
+  });
+
+  it("reopens a chat's panel at its own width after a Board used the panel", () => {
+    const chat = { layoutStorageId: 'session-detail-panels' };
+    const board = {
+      layoutStorageId: null,
+      layoutResetKey: 'bd_a:1',
+      defaultSizes: { main: 50, sidebar: 50 },
+    };
+    sidebarPanelMock.getSize.mockReturnValue(38);
+    renderLayout({ ...chat, sidebarOpen: true });
+    renderLayout({ ...chat, sidebarOpen: false });
+    renderLayout({ ...board, sidebarOpen: false });
+    renderLayout({ ...board, sidebarOpen: true });
+    expect(sidebarPanelMock.resize).toHaveBeenLastCalledWith(50);
+    sidebarPanelMock.getSize.mockReturnValue(50);
+    renderLayout({ ...board, sidebarOpen: false });
+    renderLayout({ ...chat, sidebarOpen: false });
+    renderLayout({ ...chat, sidebarOpen: true });
+    expect(sidebarPanelMock.resize).toHaveBeenLastCalledWith(38);
+  });
+
   it('consumes each request once — rerendering the same request does not resize again', () => {
     renderLayout({ sidebarOpen: false });
 

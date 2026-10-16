@@ -579,7 +579,8 @@ describe('Board side panel', () => {
           { path: 'design/plan.md', sizeBytes: 22, modifiedAtMs: 1 },
           { path: 'design/mock.sketch', sizeBytes: 4096, modifiedAtMs: 1 },
         ],
-        truncated: false,
+        // The area holds more than the listing limit.
+        truncated: true,
       },
       'file:files/design/plan.md': '# Plan\n\nShip it.',
     });
@@ -610,6 +611,7 @@ describe('Board side panel', () => {
       // its folders built from the listed paths.
       expect(view.host.querySelector('[data-id="notes"]')).not.toBeNull();
       await vi.waitFor(() => expect(treeRow('design')).toBeDefined());
+      expect(view.host.textContent).toContain('Only the first 500 files are listed.');
       await act(async () => treeRow('design')?.click());
       expect(
         [...view.host.querySelectorAll('[role="treeitem"]')].map((row) => row.textContent)

@@ -94,7 +94,8 @@ export function useBoardDirectoryUnavailable() {
 
 /**
  * The `files/` area for the session file tree: a provider per Board and agent
- * service, so reopening the tab lists it afresh.
+ * service, so reopening the tab lists it afresh, and whether the listing
+ * stopped at its 500-file limit.
  */
 export function useBoardDirectoryFileProvider(board: BoardMeta) {
   const { t } = useTranslation();
@@ -102,26 +103,34 @@ export function useBoardDirectoryFileProvider(board: BoardMeta) {
   const machineId = useAtomValue(localMachineIdAtom);
   const boardId = board.id;
   const sessionId = board.coordinatorSessionId;
-  return useMemo(
+  const [truncated, setTruncated] = useState(false);
+  const provider = useMemo(
     () =>
       workspaceId && machineId && getIpcServices()
         ? new BoardDirectoryFileProvider(() =>
             listBoardDirectory(
               { workspaceId, machineId },
               { boardId, sessionId, area: 'files' }
-            ).catch((error: unknown) => {
-              throw new Error(
-                t(
-                  'boards.files.unavailable',
-                  'The shared directory cannot be read now: {{reason}}. The machine that keeps it may be offline.',
-                  { reason: error instanceof Error ? error.message : String(error) }
-                )
-              );
-            })
+            ).then(
+              (list) => {
+                setTruncated(list.truncated);
+                return list;
+              },
+              (error: unknown) => {
+                throw new Error(
+                  t(
+                    'boards.files.unavailable',
+                    'The shared directory cannot be read now: {{reason}}. The machine that keeps it may be offline.',
+                    { reason: error instanceof Error ? error.message : String(error) }
+                  )
+                );
+              }
+            )
           )
         : null,
     [boardId, machineId, sessionId, t, workspaceId]
   );
+  return { provider, truncated };
 }
 
 /**

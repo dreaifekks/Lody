@@ -42,7 +42,7 @@ import {
   type BoardPanelTab,
 } from '@/components/boards/board-panel-view';
 import { BoardThreadListView } from '@/components/boards/board-thread-list';
-import { BoardFileEditorView, BoardFilesView } from '@/components/boards/board-files-view';
+import { BoardDirectoryTreeView, BoardFileEditorView } from '@/components/boards/board-files-view';
 import { BoardNotesEditor } from '@/components/boards/board-notes-panel';
 import {
   BoardSettingsDialogView,
@@ -55,7 +55,6 @@ import { BoardCreateDialogView } from '@/components/boards/board-create-dialog-v
 import { ArchivedBoardsView } from '@/components/boards/archived-boards-section';
 import { boardThreadItems } from '@/components/boards/board-side-panel';
 import { buildBoardRows } from '@/components/boards/board-threads';
-import { FileTreeProviderView } from '@/components/sessions/components/file-tree-view';
 import { BoardDirectoryFileProvider } from '@/lib/board-directory-file-provider';
 import { SettingsStoryProviders } from './settings-story-shell';
 
@@ -353,7 +352,14 @@ const coordinatorSession = member(COORDINATOR, board.name, 2, {
 });
 
 type PanelState =
-  | { kind: 'tabs'; tab: BoardPanelTab; notes?: boolean; file?: BoardFileEntry }
+  | {
+      kind: 'tabs';
+      tab: BoardPanelTab;
+      notes?: boolean;
+      file?: BoardFileEntry;
+      /** The listing stopped at its 500-file limit. */
+      truncated?: boolean;
+    }
   | { kind: 'thread' };
 
 const sharedFiles: BoardFileEntry[] = [
@@ -435,34 +441,20 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
           </Provider>
         </div>
       ) : (
-        <div className="flex h-full min-h-0 flex-col">
-          <div className="shrink-0 p-2 pb-0">
-            <BoardFilesView
-              files={[
-                { id: 'notes', name: t('boards.notes'), detail: t('boards.files.notesDetail') },
-              ]}
-              onOpen={() => setPanel({ kind: 'tabs', tab: 'files', notes: true })}
-            />
-          </div>
-          <div className="min-h-0 flex-1">
-            <FileTreeProviderView
-              fileProvider={sharedFilesProvider}
-              handleOpenFile={(path) => {
-                const file = sharedFilesProvider.entry(path);
-                if (file) setPanel({ kind: 'tabs', tab: 'files', file });
-              }}
-              viewStateKey="board-files:story"
-              fileMenuItems={[
-                {
-                  id: 'download',
-                  label: t('boards.files.download'),
-                  icon: Download,
-                  run: () => {},
-                },
-              ]}
-            />
-          </div>
-        </div>
+        <BoardDirectoryTreeView
+          notesName={t('boards.notes')}
+          onOpenNotes={() => setPanel({ kind: 'tabs', tab: 'files', notes: true })}
+          provider={sharedFilesProvider}
+          truncated={panel.truncated === true}
+          onOpenFile={(path) => {
+            const file = sharedFilesProvider.entry(path);
+            if (file) setPanel({ kind: 'tabs', tab: 'files', file });
+          }}
+          viewStateKey="board-files:story"
+          menuItems={[
+            { id: 'download', label: t('boards.files.download'), icon: Download, run: () => {} },
+          ]}
+        />
       )}
     </BoardPanelView>
   );
@@ -509,7 +501,7 @@ const chatRows = [
   isWaitingPermission: false,
 }));
 
-function Sidebar() {
+function Sidebar({ selectedId, onOpen }: { selectedId: string; onOpen: (id: string) => void }) {
   const [collapsed, setCollapsed] = useState(false);
   return (
     <LoroSidebar
@@ -536,10 +528,10 @@ function Sidebar() {
               activity: null,
             },
           ]}
-          selectedId={BOARD}
+          selectedId={selectedId}
           collapsed={collapsed}
           onToggleCollapsed={() => setCollapsed(!collapsed)}
-          onOpen={() => {}}
+          onOpen={(entry) => onOpen(entry.id)}
           onCreate={() => {}}
         />
       }
@@ -552,8 +544,12 @@ function Sidebar() {
   );
 }
 
-/** Mirrors the coordinator's Session page with the Board tab selected. */
+/**
+ * Mirrors the coordinator's Session page with the Board tab selected. Opening
+ * a Board from the sidebar keeps the page mounted, as a cached page does.
+ */
 function CoordinatorPage({ initial }: { initial: PanelState }) {
+  const [entry, setEntry] = useState({ board: BOARD as string, seq: 1 });
   const sidePanelTabs = [
     { id: 'board', label: '看板', kind: 'board' as const, closeable: true },
     { id: 'files', label: '工作区文件', kind: 'files' as const, closeable: true },
@@ -561,11 +557,15 @@ function CoordinatorPage({ initial }: { initial: PanelState }) {
   return (
     <SettingsStoryProviders>
       <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
-        <Sidebar />
+        <Sidebar
+          selectedId={entry.board}
+          onOpen={(id) => setEntry({ board: id, seq: entry.seq + 1 })}
+        />
         <main className="min-w-0 flex-1 overflow-hidden">
           <DesktopSessionDetailLayout
             defaultSizes={{ main: 50, sidebar: 50 }}
             layoutStorageId={null}
+            layoutResetKey={`${entry.board}:${entry.seq}`}
             topBar={
               <SessionTabBar
                 variant="session"
@@ -649,6 +649,11 @@ export const ThreadOpen: Story = { args: { initial: { kind: 'thread' } } };
 /** The shared notes and the Board directory's `files/`. */
 export const Files: Story = { args: { initial: { kind: 'tabs', tab: 'files' } } };
 
+/** A directory past the 500-file listing limit. */
+export const FilesTruncated: Story = {
+  args: { initial: { kind: 'tabs', tab: 'files', truncated: true } },
+};
+
 /** Settings open from the gear in the conversation's header: General. */
 export const Settings: Story = { render: () => <SettingsDialogStory initialPage="general" /> };
 
@@ -698,7 +703,7 @@ export const NarrowSidebar: Story = {
     <SettingsStoryProviders>
       <ForceMobileLayoutProvider force>
         <div className="h-dvh w-full bg-background text-foreground">
-          <Sidebar />
+          <Sidebar selectedId={BOARD} onOpen={() => {}} />
         </div>
       </ForceMobileLayoutProvider>
     </SettingsStoryProviders>

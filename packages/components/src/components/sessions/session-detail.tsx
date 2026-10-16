@@ -1110,6 +1110,8 @@ const SessionDetail = ({
   } | null>(null);
   // `?board=1` follows the same once-per-session state guard as `?pr`.
   const [restoredBoardPanel, setRestoredBoardPanel] = useState<SessionId | null>(null);
+  // Counts Board entries, so each one opens the split at half and half.
+  const [boardEntrySeq, setBoardEntrySeq] = useState(0);
   // The thread open inside the Board panel. Page state, because the compact
   // layout remounts the panel subtree.
   const [boardThreadId, setBoardThreadId] = useState<SessionId | null>(null);
@@ -3579,6 +3581,7 @@ const SessionDetail = ({
   if (urlBoard === true && activeBoard) {
     if (restoredBoardPanel !== sessionId) {
       setRestoredBoardPanel(sessionId);
+      setBoardEntrySeq((seq) => seq + 1);
       if (isMobile) {
         setMobileBoardOpen(true);
       } else {
@@ -7686,8 +7689,10 @@ const SessionDetail = ({
       {boardSettings}
       <DesktopSessionDetailLayout
         defaultSizes={defaultSizes}
-        // A Board opens half and half on every entry, refresh included.
+        // A Board opens half and half on every entry, refresh included: Boards
+        // remember no split, and another Board or entry resets it.
         layoutStorageId={activeBoard ? null : 'session-detail-panels'}
+        {...(activeBoard ? { layoutResetKey: `${activeBoard.id}:${boardEntrySeq}` } : {})}
         topBar={tabBar}
         chatSurfaces={desktopChatSurfaces}
         terminalDock={<TerminalDockHost />}
