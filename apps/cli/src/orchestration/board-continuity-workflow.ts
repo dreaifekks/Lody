@@ -78,6 +78,18 @@ const newConversationPrompt = (input: {
 type TailRow = SessionDirectoryScalars & { position: number };
 
 /**
+ * After a renewal attempt: renewed, still pending when it only yielded, or given
+ * up with a reason when the turn itself failed, so a failing agent is not retried
+ * on every wake.
+ */
+const renewalRecord = (record: BoardMaintenanceMeta, step: string): BoardMaintenanceMeta =>
+  step === 'completed'
+    ? { ...record, renewed: true }
+    : step === 'yielded' || step === 'inactive'
+      ? { ...record, renewed: false }
+      : { ...record, renewed: false, reason: `renewal-${step}` };
+
+/**
  * Keeps a Board coordinator one continuous conversation. When the coordinator
  * sits idle with a large context it records what matters, has the agent
  * compact its own context, then gives it the current Board instructions again;
@@ -111,7 +123,10 @@ export class BoardContinuityWorkflow {
         if (this.running.has(view.meta.id)) continue;
         const exit = yield* Effect.exit(this.reconcileCoordinator(maintenance, view));
         if (Exit.isFailure(exit)) {
-          if (Cause.hasInterrupts(exit.cause)) return yield* Effect.failCause(exit.cause);
+          if (Cause.hasInterrupts(exit.cause)) {
+            yield* Effect.failCause(exit.cause);
+            return;
+          }
           yield* this.ports.warn('[board-continuity] reconcile failed', Cause.squash(exit.cause));
           yield* this.activity.arm(this.key(view.meta.id), BUSY_RECHECK_MS, 'board-continuity');
         }
@@ -185,21 +200,25 @@ export class BoardContinuityWorkflow {
       if (request) {
         // Stop and a stopped tree hold the request until the user speaks again.
         if (held) return;
-        return yield* this.start(maintenance, board, meta, history, {
+        yield* this.start(maintenance, board, meta, history, {
           runId: request.row.id.slice('board-maintenance:'.length),
           kind: request.record.kind,
           trigger: 'manual',
           row: request.row,
         });
+        return;
       }
       if (
         last &&
         last.record.kind === 'compact' &&
         last.record.status === 'done' &&
         last.record.renewed === false &&
+        last.record.reason === undefined &&
         !held
-      )
-        return yield* this.startRenewal(maintenance, board, meta, history, last.row, last.record);
+      ) {
+        yield* this.startRenewal(maintenance, board, meta, history, last.row, last.record);
+        return;
+      }
       if (!activitySinceMaintenance || held || !activity) return;
       const decision = decideBoardIdleCompaction({
         settings: board.continuity,
@@ -210,18 +229,25 @@ export class BoardContinuityWorkflow {
             : Date.parse(activity.timestamp),
         nowMs: this.ports.now(),
       });
-      if (decision.kind === 'none') return yield* this.activity.cancel(this.key(id));
-      if (decision.kind === 'wait')
-        return yield* this.activity.arm(this.key(id), decision.delayMs, 'board-idle');
+      if (decision.kind === 'none') {
+        yield* this.activity.cancel(this.key(id));
+        return;
+      }
+      if (decision.kind === 'wait') {
+        yield* this.activity.arm(this.key(id), decision.delayMs, 'board-idle');
+        return;
+      }
       const support = yield* maintenance.compactionSupport(id, meta);
-      if (support !== true)
-        return yield* this.logOnce(
+      if (support !== true) {
+        yield* this.logOnce(
           id,
           `support:${String(support)}:${meta.acpSessionId ?? ''}`,
           support === false
             ? 'the coordinator agent does not compact its context; idle compaction skipped'
             : 'no running agent reports context compaction; idle compaction skipped'
         );
+        return;
+      }
       yield* this.start(maintenance, board, meta, history, {
         runId: randomUUID(),
         kind: 'compact',
@@ -303,8 +329,7 @@ export class BoardContinuityWorkflow {
         const step = yield* this.step(maintenance, meta, history, runId, 'renew', RENEW_PROMPT, {
           renewBoardInstructions: true,
         });
-        if (step === 'completed')
-          yield* this.writeDivider(history, row.id, { ...record, renewed: true }, row);
+        yield* this.writeDivider(history, row.id, renewalRecord(record, step), row);
       })
     );
   }
@@ -367,15 +392,21 @@ export class BoardContinuityWorkflow {
       const write = (next: BoardMaintenanceMeta) =>
         this.writeDivider(history, turnId, next, run.row);
       // An agent known not to compact is told before any turn runs.
-      if ((yield* maintenance.compactionSupport(meta.id, meta)) === false)
-        return yield* write({ ...record, status: 'unsupported' });
+      if ((yield* maintenance.compactionSupport(meta.id, meta)) === false) {
+        yield* write({ ...record, status: 'unsupported' });
+        return;
+      }
       yield* write(record);
       const tidy = yield* this.step(maintenance, meta, history, run.runId, 'memory', TIDY_PROMPT);
-      if (tidy !== 'completed')
-        return yield* write({ ...record, status: 'interrupted', reason: tidy });
+      if (tidy !== 'completed') {
+        yield* write({ ...record, status: 'interrupted', reason: tidy });
+        return;
+      }
       // The tidy turn started the agent, so its capability is now known.
-      if ((yield* maintenance.compactionSupport(meta.id, meta)) !== true)
-        return yield* write({ ...record, status: 'unsupported' });
+      if ((yield* maintenance.compactionSupport(meta.id, meta)) !== true) {
+        yield* write({ ...record, status: 'unsupported' });
+        return;
+      }
       const compacted = yield* this.step(
         maintenance,
         meta,
@@ -384,8 +415,10 @@ export class BoardContinuityWorkflow {
         'compact',
         COMPACT_PROMPT
       );
-      if (compacted !== 'completed')
-        return yield* write({ ...record, status: 'interrupted', reason: compacted });
+      if (compacted !== 'completed') {
+        yield* write({ ...record, status: 'interrupted', reason: compacted });
+        return;
+      }
       const marker = yield* this.compactionOutcome(
         history,
         `assistant:${boardMaintenanceStepId(run.runId, 'compact')}`
@@ -393,16 +426,21 @@ export class BoardContinuityWorkflow {
       const after = (yield* this.ports.metadata(meta.id))?.meta.contextWindowUsage?.used;
       const shrank =
         before !== undefined && after !== undefined && after < before * USAGE_DROP_PROOF;
-      if (marker !== 'completed' && !shrank)
-        return yield* write({
+      if (marker !== 'completed' && !shrank) {
+        yield* write({
           ...record,
           status: 'failed',
           reason: marker === 'failed' ? 'compaction-failed' : 'compaction-unconfirmed',
         });
+        return;
+      }
+      // A reading the agent has not refreshed yet would show "X → X": leave it out.
       const done: BoardMaintenanceMeta = {
         ...record,
         status: 'done',
-        ...(after !== undefined ? { usedAfter: after } : {}),
+        ...(after !== undefined && (before === undefined || after < before)
+          ? { usedAfter: after }
+          : {}),
         renewed: false,
       };
       yield* write(done);
@@ -416,7 +454,7 @@ export class BoardContinuityWorkflow {
         { renewBoardInstructions: true }
       );
       // Not renewed yet: the next reconcile retries once the coordinator is free.
-      if (renewed === 'completed') yield* write({ ...done, renewed: true });
+      yield* write(renewalRecord(done, renewed));
     });
   }
 
@@ -453,8 +491,10 @@ export class BoardContinuityWorkflow {
           'handoff',
           handoffPrompt(file)
         );
-        if (handoff !== 'completed')
-          return yield* write({ ...record, status: 'interrupted', reason: handoff });
+        if (handoff !== 'completed') {
+          yield* write({ ...record, status: 'interrupted', reason: handoff });
+          return;
+        }
         handedOver = true;
       }
       const started = yield* this.step(
@@ -471,8 +511,10 @@ export class BoardContinuityWorkflow {
         }),
         { renewBoardInstructions: true, freshAgentSession: true, yieldToInbox: false }
       );
-      if (started !== 'completed')
-        return yield* write({ ...record, status: 'interrupted', reason: started });
+      if (started !== 'completed') {
+        yield* write({ ...record, status: 'interrupted', reason: started });
+        return;
+      }
       const after = (yield* this.ports.metadata(meta.id))?.meta.contextWindowUsage?.used;
       yield* write({
         ...record,
@@ -484,17 +526,18 @@ export class BoardContinuityWorkflow {
   }
 
   /** The compaction marker the adapter left on the compact step's assistant entry. */
-  private compactionOutcome = Effect.fnUntraced(
-    function* (this: BoardContinuityWorkflow, history: CoordinatorHistory, entryId: string) {
-      const read = yield* history.readTurn(entryId);
-      if (read.state !== 'ready') return 'missing' as const;
-      const items = (read.turn as SessionHistoryInput).items ?? [];
-      for (let index = items.length - 1; index >= 0; index--) {
-        const item = items[index];
-        if (item?.type === 'tool_call' && item.activityKind === 'context_compaction')
-          return item.status === 'completed' ? ('completed' as const) : ('failed' as const);
-      }
-      return 'missing' as const;
-    }.bind(this)
-  );
+  private compactionOutcome = Effect.fnUntraced(function* (
+    history: CoordinatorHistory,
+    entryId: string
+  ) {
+    const read = yield* history.readTurn(entryId);
+    if (read.state !== 'ready') return 'missing' as const;
+    const items = (read.turn as SessionHistoryInput).items ?? [];
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item = items[index];
+      if (item?.type === 'tool_call' && item.activityKind === 'context_compaction')
+        return item.status === 'completed' ? ('completed' as const) : ('failed' as const);
+    }
+    return 'missing' as const;
+  });
 }

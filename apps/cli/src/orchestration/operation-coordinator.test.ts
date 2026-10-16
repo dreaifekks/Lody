@@ -1619,6 +1619,7 @@ const boardHarness = async () => {
     pendingUser: false,
     duringStep: async (_request: MaintenanceTurnRequest) => {},
     afterStep: (_request: MaintenanceTurnRequest) => {},
+    outcome: (_request: MaintenanceTurnRequest): string => 'completed',
     active: false,
   };
   const coordinator = new LodyOperationCoordinator({
@@ -1666,7 +1667,7 @@ const boardHarness = async () => {
               contextWindowUsage: { used: maintenance.usageAfterCompact, size: 1_000_000 },
             });
           await repo.flush();
-          return 'completed';
+          return maintenance.outcome(request);
         } finally {
           maintenance.active = false;
           maintenance.afterStep(request);
@@ -2365,6 +2366,30 @@ describe('Board coordinator continuity', () => {
       await h.drain();
       await settled(h, 'done', (record) => 'renewed' in record && record.renewed === true);
       expect(steps(h)).toEqual(['memory', 'compact', 'renew']);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('gives up renewing when the renewal turn itself fails, instead of retrying on every wake', async () => {
+    const h = await largeIdleCoordinator();
+    try {
+      h.maintenance.outcome = (request) =>
+        request.stepTurnId.endsWith(':renew') ? 'unhandled-error-recorded' : 'completed';
+      h.coordinator.start();
+      h.advance(10 * 60_000 + 1);
+      await h.drain();
+      await settled(h, 'done', (record) => 'reason' in record);
+      await h.drain();
+      await h.drain();
+      expect(steps(h)).toEqual(['memory', 'compact', 'renew']);
+      expect(records(h)).toEqual([
+        expect.objectContaining({
+          status: 'done',
+          renewed: false,
+          reason: 'renewal-unhandled-error-recorded',
+        }),
+      ]);
     } finally {
       await h.close();
     }

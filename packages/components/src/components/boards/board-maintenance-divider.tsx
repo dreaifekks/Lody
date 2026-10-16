@@ -39,31 +39,27 @@ export function BoardMaintenanceDivider({ meta }: { meta: BoardMaintenanceMeta }
       ? `${formatCompactNumber(meta.usedBefore, locale)} → ${formatCompactNumber(meta.usedAfter, locale)}`
       : undefined;
   const compact = meta.kind === 'compact';
-  const label = (() => {
-    switch (meta.status) {
-      case 'requested':
-      case 'running':
-        return compact
-          ? t('boards.maintenance.compacting', 'Tidying context…')
-          : t('boards.maintenance.starting', 'Starting a new conversation…');
-      case 'done':
-        return compact
-          ? tokens
-            ? t('boards.maintenance.compactedTokens', 'Context tidied · {{tokens}}', { tokens })
-            : t('boards.maintenance.compacted', 'Context tidied')
-          : t('boards.maintenance.started', 'New conversation');
-      case 'unsupported':
-        return t('boards.maintenance.unsupported', 'This agent cannot tidy its context');
-      case 'failed':
-        return compact
-          ? t('boards.maintenance.compactFailed', 'Context not tidied')
-          : t('boards.maintenance.startFailed', 'New conversation not started');
-      case 'interrupted':
-        return compact
-          ? t('boards.maintenance.compactInterrupted', 'Tidying stopped')
-          : t('boards.maintenance.startInterrupted', 'New conversation stopped');
-    }
-  })();
+  const labels: Record<BoardMaintenanceMeta['status'], string> = {
+    requested: compact
+      ? t('boards.maintenance.compacting', 'Tidying context…')
+      : t('boards.maintenance.starting', 'Starting a new conversation…'),
+    running: compact
+      ? t('boards.maintenance.compacting', 'Tidying context…')
+      : t('boards.maintenance.starting', 'Starting a new conversation…'),
+    done: compact
+      ? tokens
+        ? t('boards.maintenance.compactedTokens', 'Context tidied · {{tokens}}', { tokens })
+        : t('boards.maintenance.compacted', 'Context tidied')
+      : t('boards.maintenance.started', 'New conversation'),
+    unsupported: t('boards.maintenance.unsupported', 'This agent cannot tidy its context'),
+    failed: compact
+      ? t('boards.maintenance.compactFailed', 'Context not tidied')
+      : t('boards.maintenance.startFailed', 'New conversation not started'),
+    interrupted: compact
+      ? t('boards.maintenance.compactInterrupted', 'Tidying stopped')
+      : t('boards.maintenance.startInterrupted', 'New conversation stopped'),
+  };
+  const label = labels[meta.status];
   return (
     <div role="status" {...stylex.props(styles.row)}>
       <span aria-hidden {...stylex.props(styles.rule)} />

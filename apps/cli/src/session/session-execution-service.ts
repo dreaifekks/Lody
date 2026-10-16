@@ -1807,7 +1807,13 @@ export class SessionExecutionService {
       ? buildPrompt(request.prompt, undefined, undefined, undefined, { boardContext })
       : request.prompt;
     const resume = request.freshAgentSession ? undefined : resolveDispatchAcpSessionId(meta);
-    const { inputBlocks: _blocks, issuePRMentions: _mentions, ...config } = request.config;
+    // The driving turn's run configuration, without its own input or delivery marker.
+    const {
+      inputBlocks: _blocks,
+      issuePRMentions: _mentions,
+      _lodyDeliveryKind: _delivery,
+      ...config
+    } = request.config as SessionTurnInputConfig & { _lodyDeliveryKind?: unknown };
     const turn = await this.prepareContinueSessionTurn(
       {
         type: 'session/chat',
