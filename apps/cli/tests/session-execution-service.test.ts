@@ -11823,3 +11823,191 @@ describe('Provider quota refresh', () => {
     await expect(cache.run('b', 'other', async () => true)).resolves.toBe(true);
   });
 });
+
+describe('SessionExecutionService Board maintenance turns', () => {
+  const sessionId = 'session-coordinator' as SessionId;
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_maintenance',
+    name: 'Release train',
+    purpose: 'Ship the release',
+    instructions: 'Answer in Chinese.',
+    coordinatorSessionId: sessionId,
+    createdAtMs: 1,
+    createdByUserId: 'owner-user',
+  })!;
+  const meta = {
+    id: sessionId,
+    cliType: 'builtin',
+    agentType: 'claude',
+    acpSessionId: 'acp-old',
+    boardId: board.id,
+    boardRole: 'coordinator',
+    machineId: 'machine-1',
+  };
+  const request = {
+    sessionId,
+    stepTurnId: 'board-maintenance:run-1:renew',
+    prompt: 'Lody maintenance.',
+    config: { cliType: 'builtin', agentType: 'claude', modelId: 'claude-opus' },
+    userId: 'owner-user',
+    userName: 'Owner',
+    userEmail: 'owner@example.com',
+  } as const;
+
+  const createService = () => {
+    const prompts: string[] = [];
+    const lastMessageAt: number[] = [];
+    const created: Array<{ resumeSessionId?: string }> = [];
+    const retired: string[] = [];
+    const agent = (acpSessionId: string) => ({
+      agentClient: {
+        isCreated: () => true,
+        supportsContextCompaction: () => true,
+        prompt: async (_id: unknown, blocks: Array<{ type: string; text?: string }>) => {
+          prompts.push(blocks.map((block) => block.text ?? '').join('\n'));
+        },
+      },
+      acpSessionId,
+      getMemoryBinding: () => null,
+      getWorkdir: () => '/tmp',
+      getHostWorkdir: () => '/tmp',
+      getParentSessionId: () => undefined,
+      exec: async () => '',
+      updateGitIdentity: () => {},
+      applyExecutionPlaneLimits: async () => {},
+      terminate: async () => {},
+    });
+    let live: ReturnType<typeof agent> | null = agent('acp-old');
+    const sessionDoc = withHistoryPort({
+      getMetaState: async () => meta,
+      getHistory: () => [
+        { id: 'earlier', role: 'user', timestamp: '2026-10-17T00:00:00.000Z', items: [] },
+      ],
+      setStatus: async () => {},
+      setLastMessageAt: async () => {
+        lastMessageAt.push(Date.now());
+      },
+      getDocState: async () => ({}),
+      updateHistory: async () => {},
+    });
+    const deps = createBaseDeps({
+      sessionManager: {
+        getSession: () => live,
+        getPendingSession: () => null,
+        validateSessionCredentials: async () => {},
+        retireSessionForReconfiguration: async (session: { acpSessionId: string }) => {
+          retired.push(session.acpSessionId);
+          live = null;
+        },
+        createSession: async (_config: unknown, options?: { resumeSessionId?: string }) => {
+          created.push({ ...options });
+          live = agent('acp-fresh');
+          return live;
+        },
+      } as unknown as SessionManager,
+      workspaceDocument: {
+        repo: {
+          upsertDocMeta: async () => {},
+          getDocMeta: async () => ({ meta }),
+          openFlockDoc: async () => ({
+            flock: {
+              scan: () => [],
+              get: (key: unknown) =>
+                JSON.stringify(key) === JSON.stringify(workspaceFlockKeys.board(board.id))
+                  ? board
+                  : undefined,
+            },
+          }),
+        },
+        getOrCreateSessionDoc: async () => sessionDoc,
+        getOrOpenSessionCode: async () => null,
+      } as unknown as LoroDocumentManager,
+      // The agent receives exactly what the turn built, replay included.
+      buildAcpPromptBlocks: async ({ inputBlocks, replayPromptText }) =>
+        [
+          ...(replayPromptText ? [{ type: 'text', text: replayPromptText }] : []),
+          ...inputBlocks.map((block) => ({
+            type: 'text',
+            text: block.type === 'text' ? block.text : '',
+          })),
+        ] as never,
+    });
+    const service = new SessionExecutionService(deps);
+    // A paused Inbox refuses every task it admits.
+    const released: SessionId[] = [];
+    let wakes = 0;
+    service.setOperationInbox(
+      {
+        accept: async () => false,
+        inputKind: () => undefined,
+        wake: async () => {
+          wakes += 1;
+        },
+      } as never,
+      (id) => released.push(id)
+    );
+    return {
+      service,
+      deps,
+      prompts,
+      lastMessageAt,
+      created,
+      retired,
+      released,
+      wakes: () => wakes,
+    };
+  };
+
+  it('runs outside the Inbox, quietly, and then frees the Session for held work', async () => {
+    const h = createService();
+    await h.service.continueSession({
+      type: 'session/chat',
+      sessionId,
+      machineId: 'machine-1',
+      workspaceId: 'workspace-1' as WorkspaceId,
+      userTurnId: 'user-turn',
+      userId: 'owner-user',
+      userName: 'Owner',
+      userEmail: 'owner@example.com',
+      acpSessionConfig: { prompt: 'ordinary', cliType: 'builtin', agentType: 'claude' },
+    });
+    // The paused Inbox holds an ordinary turn back.
+    expect(h.prompts).toEqual([]);
+
+    const outcome = await h.service.runBoardMaintenanceTurn(request);
+
+    expect(outcome).toBe('completed');
+    expect(h.prompts).toEqual(['Lody maintenance.']);
+    expect(h.lastMessageAt).toEqual([]);
+    expect(h.deps.turnFinalization.notifySessionCompleted).not.toHaveBeenCalled();
+    expect(h.released).toEqual([sessionId]);
+    expect(h.wakes()).toBe(1);
+    expect(h.service.contextCompactionSupport(sessionId)).toBe(true);
+  });
+
+  it('renews the Board instructions from the current Board row', async () => {
+    const h = createService();
+
+    await h.service.runBoardMaintenanceTurn({ ...request, renewBoardInstructions: true });
+
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0]).toContain('Lody maintenance.');
+    expect(h.prompts[0]).toContain('You are the coordinator of Board "Release train".');
+    expect(h.prompts[0]).toContain('Answer in Chinese.');
+  });
+
+  it('starts a fresh agent conversation without resuming the old one or replaying history', async () => {
+    const h = createService();
+
+    const outcome = await h.service.runBoardMaintenanceTurn({
+      ...request,
+      freshAgentSession: true,
+    });
+
+    expect(outcome).toBe('completed');
+    expect(h.retired).toEqual(['acp-old']);
+    expect(h.created).toEqual([{ resumeSessionId: undefined }]);
+    expect(h.prompts).toEqual(['Lody maintenance.']);
+  });
+});

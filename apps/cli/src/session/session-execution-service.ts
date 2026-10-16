@@ -5,6 +5,7 @@ import { queryLocalAcpRateLimits, AcpQuotaCleanupError } from '@/agent/acp-runne
 import type { MachineProviderRateLimitsRefreshResponse } from '@lody/shared';
 import { ProviderQuotaRefreshCache } from './provider-quota-refresh-cache';
 import {
+  type BoardMeta,
   boardFilesMachineId,
   getWorkspaceFlockDocId,
   normalizeBoardMeta,
@@ -159,7 +160,7 @@ import {
   shouldTerminateOnACPError,
 } from './acp-error-classification';
 import { createSessionBackend, getSteerOperationId, type SessionBackend } from './session-backend';
-import { buildPrompt } from './session-execution-helpers';
+import { buildPrompt, withBoardCoordinatorAgentEnv } from './session-execution-helpers';
 import type { ISession, SessionManager } from './session-manager';
 import type { SessionConfig } from './types';
 import { isAllocatedSessionBranchName } from './worktree/branch-name-allocation';
@@ -171,6 +172,8 @@ import {
 type FinalizeTurnContext = {
   /** Exact input owned by the completed logical invocation, including steer. */
   inputTurnId?: string;
+  /** Board maintenance: no new-message time, no completion notification. */
+  quiet?: boolean;
   sessionId: SessionId;
   session: ISession;
   sessionDoc: SessionDocument;
@@ -309,6 +312,8 @@ type TurnRuntimeState = {
   userTurnId?: string;
   invocation?: TurnInvocation;
   goalControl?: GoalPromptControl;
+  /** A Board maintenance turn: never steered into, never announced. */
+  maintenance?: boolean;
   session?: ISession;
   project?: ProjectRef;
   baseCommitHash?: string | null;
@@ -448,7 +453,7 @@ type VisibleSessionTurnPlan = {
 };
 
 /** How the turn payload reached this machine (RPC fast path vs CRDT history vs queue promotion). */
-export type SessionDispatchSource = 'rpc' | 'crdt' | 'queue' | 'inbox' | 'goal';
+export type SessionDispatchSource = 'rpc' | 'crdt' | 'queue' | 'inbox' | 'goal' | 'maintenance';
 
 type SessionDispatchOptions = {
   inboxBatch?: InboxBatch;
@@ -465,6 +470,11 @@ type SessionDispatchOptions = {
   onTurnClaimed?: () => Promise<boolean>;
   /** Runs immediately before the request can cross into the ACP provider. */
   onTurnStarted?: () => Promise<boolean>;
+  /**
+   * Maintenance only: start a new agent conversation for this Session instead of
+   * resuming its ACP session, without replaying the Lody history into it.
+   */
+  freshAgentSession?: boolean;
 };
 
 export type PreparedSessionDispatchRequest =
@@ -1721,6 +1731,117 @@ export class SessionExecutionService {
     return claimed;
   }
 
+  /**
+   * What a Board member's start prompt says about its Board, from the current
+   * Board row. Members on the machine that keeps the Board directory get its
+   * path; the others reach it through the Board file tools.
+   */
+  private async boardPromptContext(
+    sessionId: SessionId,
+    meta: SessionMeta | null | undefined
+  ): Promise<
+    { board: BoardMeta; role: SessionMeta['boardRole']; directory: string | undefined } | undefined
+  > {
+    if (!meta?.boardId) return undefined;
+    const workspaceId = this.deps.workspaceId;
+    const board = normalizeBoardMeta(
+      (
+        await this.deps.workspaceDocument.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId))
+      ).flock.get(workspaceFlockKeys.board(meta.boardId))
+    );
+    if (!board) throw new Error('BOARD_NOT_FOUND');
+    const host = boardFilesMachineId(
+      board,
+      board.coordinatorSessionId === sessionId
+        ? meta
+        : ((
+            await this.deps.workspaceDocument.repo.getDocMeta(
+              getSessionRoomId(board.coordinatorSessionId)
+            )
+          )?.meta as SessionMeta | undefined)
+    );
+    return {
+      board,
+      role: meta.boardRole,
+      directory:
+        host === this.deps.machineId
+          ? new BoardDirectory(getLodyDataDir).boardPath(workspaceId, board.id)
+          : undefined,
+    };
+  }
+
+  /** Whether the live agent of this Session can compact its context; undefined when none runs. */
+  contextCompactionSupport(sessionId: SessionId): boolean | undefined {
+    const client = this.deps.sessionManager.getSession(sessionId)?.agentClient;
+    return client ? client.supportsContextCompaction() : undefined;
+  }
+
+  /**
+   * Run one Board maintenance step in an idle Session: a system turn with a
+   * hidden assistant entry, outside the Inbox, that never marks the Session
+   * updated. `renewBoardInstructions` appends the current Board start
+   * instructions; `freshAgentSession` starts a new agent conversation. Resolves
+   * to the visible-turn outcome, where only `completed` ran to the end.
+   */
+  async runBoardMaintenanceTurn(request: {
+    sessionId: SessionId;
+    /** `boardMaintenanceStepId`; the assistant entry is `assistant:<stepTurnId>`. */
+    stepTurnId: string;
+    prompt: string;
+    /** The driving turn's configuration, so a fresh agent keeps its model and mode. */
+    config: SessionTurnInputConfig;
+    userId: string;
+    userName: string;
+    userEmail: string;
+    renewBoardInstructions?: boolean;
+    freshAgentSession?: boolean;
+  }): Promise<string> {
+    const { sessionId } = request;
+    const sessionDoc = await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId);
+    const meta = await sessionDoc.getMetaState();
+    if (!meta || meta.isArchived || !meta.cliType || !meta.agentType) return 'unavailable';
+    const boardContext = request.renewBoardInstructions
+      ? await this.boardPromptContext(sessionId, meta)
+      : undefined;
+    const prompt = boardContext
+      ? buildPrompt(request.prompt, undefined, undefined, undefined, { boardContext })
+      : request.prompt;
+    const resume = request.freshAgentSession ? undefined : resolveDispatchAcpSessionId(meta);
+    const { inputBlocks: _blocks, issuePRMentions: _mentions, ...config } = request.config;
+    const turn = await this.prepareContinueSessionTurn(
+      {
+        type: 'session/chat',
+        sessionId,
+        machineId: this.deps.machineId,
+        workspaceId: this.deps.workspaceId,
+        ...(meta.project ? { project: meta.project } : {}),
+        userTurnId: request.stepTurnId,
+        userId: request.userId,
+        userName: request.userName,
+        userEmail: request.userEmail,
+        acpSessionConfig: {
+          ...config,
+          cliType: meta.cliType,
+          agentType: meta.agentType,
+          prompt,
+          ...(resume ? { resume } : {}),
+        },
+      },
+      {
+        dispatchSource: 'maintenance',
+        ...(request.freshAgentSession ? { freshAgentSession: true } : {}),
+      },
+      { sessionDoc }
+    );
+    try {
+      return await this.runVisibleSessionTurn(turn.options, turn.body);
+    } finally {
+      // Outside the Inbox, nothing else tells it or a held user turn that the Session is free.
+      await this.operationInbox?.wake();
+      this.onInboxReleased?.(sessionId);
+    }
+  }
+
   async steerSession(options: {
     sessionId: SessionId;
     expectedTurnId: string;
@@ -1853,6 +1974,11 @@ export class SessionExecutionService {
         applied: true,
         disposition: 'applied',
       };
+    }
+    // A maintenance turn's reply is hidden behind its divider: the user's
+    // guidance runs as their own next turn instead.
+    if (runtime.maintenance) {
+      return await rejectAndPromote('busy', 'Board maintenance is running');
     }
     const waitController = (runtime.steerWaitController ??= new AbortController());
     const wait = <T>(work: Promise<T>) => waitForSteer(work, waitController.signal);
@@ -2776,7 +2902,7 @@ export class SessionExecutionService {
   private createTurnRuntime(
     options: Pick<
       VisibleSessionTurnOptions,
-      'sessionId' | 'session' | 'userTurnId' | 'invocation' | 'goalControl'
+      'sessionId' | 'session' | 'userTurnId' | 'invocation' | 'goalControl' | 'dispatchSource'
     > & { turnId: string }
   ): TurnRuntimeState {
     return {
@@ -2785,6 +2911,7 @@ export class SessionExecutionService {
       userTurnId: options.userTurnId,
       invocation: options.invocation,
       goalControl: options.goalControl,
+      ...(options.dispatchSource === 'maintenance' ? { maintenance: true } : {}),
       session: options.session,
       promptStarted: false,
       promptInFlight: false,
@@ -3954,6 +4081,12 @@ export class SessionExecutionService {
     });
     this.deps.logger.info(`Session chat completed: ${sessionId}`);
 
+    if (ctx.quiet) {
+      // Maintenance is background work: it neither marks the conversation
+      // updated nor tells the user something finished.
+      this.deps.touchSession(sessionId);
+      return;
+    }
     try {
       await this.runTurnFinalizationStage(
         sessionId,
@@ -4053,7 +4186,9 @@ export class SessionExecutionService {
       return 'duplicate';
     }
 
-    const inbox = this.operationInbox;
+    // Board maintenance stays outside the Inbox: it neither takes queued results
+    // nor admits as a task; the Worker that runs it wakes the Inbox afterwards.
+    const inbox = options.dispatchSource === 'maintenance' ? undefined : this.operationInbox;
     const invocation = options.invocation;
     try {
       if (inbox && invocation?.requesterUserId && !options.inboxBatch) {
@@ -4082,7 +4217,7 @@ export class SessionExecutionService {
               userId: invocation.requesterUserId,
               inputId: invocation.sourceTurnId,
               kind:
-                this.operationInbox?.inputKind(
+                inbox.inputKind(
                   {
                     workspaceId: this.deps.workspaceId,
                     sessionId,
@@ -5284,9 +5419,14 @@ export class SessionExecutionService {
     const { sessionId, acpSessionConfig, userId, userName, userEmail, userTurnId } = message;
     // System-caused turns own an assistant entry, not a user dispatch pointer.
     const executionUserTurnId =
-      dispatchOptions?.dispatchSource === 'inbox' || dispatchOptions?.dispatchSource === 'goal'
+      dispatchOptions?.dispatchSource === 'inbox' ||
+      dispatchOptions?.dispatchSource === 'goal' ||
+      dispatchOptions?.dispatchSource === 'maintenance'
         ? undefined
         : userTurnId;
+    const freshAgentSession =
+      dispatchOptions?.dispatchSource === 'maintenance' &&
+      dispatchOptions.freshAgentSession === true;
     const sessionDoc =
       prepareOptions?.sessionDoc ??
       (await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId));
@@ -5391,8 +5531,10 @@ export class SessionExecutionService {
         `[${sessionId}] Resume env resolved (agentConfigId=${meta?.agentConfigId ?? 'none'} source=${storedLaunchConfig.source} keys=${agentConfigEnv ? Object.keys(agentConfigEnv).length : 0})`
       );
 
-      const requestedResumeSessionId = acpSessionConfig.resume;
-      const storedResumeSessionId = resolveResumableAcpSessionId(meta);
+      const requestedResumeSessionId = freshAgentSession ? undefined : acpSessionConfig.resume;
+      const storedResumeSessionId = freshAgentSession
+        ? undefined
+        : resolveResumableAcpSessionId(meta);
       const resumeSessionId = requestedResumeSessionId ?? storedResumeSessionId;
       const resumeSource = requestedResumeSessionId
         ? 'request'
@@ -5441,7 +5583,7 @@ export class SessionExecutionService {
         requesterUserId: userId,
         machineId: self.deps.machineId,
         assumeDocExisting: true,
-        env: agentConfigEnv,
+        env: withBoardCoordinatorAgentEnv(meta, agentConfigEnv),
         githubRepo: resolveProjectGitHubRepo(project),
         branch: restoreBranch,
         restoreBranchName: meta?.branchName?.trim() || undefined,
@@ -5497,8 +5639,10 @@ export class SessionExecutionService {
           // to resume, even though the user turn is durable in Loro history.
           // This freshly created ACP session has no knowledge of that turn,
           // so reconstruct its context before sending the current request.
-          const history = self.getSessionHistory(sessionDoc);
-          const historySnapshot = yield* self.tryPromise(() => history);
+          // A fresh agent conversation starts from its own first prompt.
+          const historySnapshot = freshAgentSession
+            ? []
+            : yield* self.tryPromise(() => self.getSessionHistory(sessionDoc));
           if (historySnapshot.length > 0) {
             replayPromptResult = buildReplayPromptFromHistory({
               history: historySnapshot,
@@ -5978,6 +6122,7 @@ export class SessionExecutionService {
               sessionDoc,
               turnId: completedTurnId,
               inputTurnId: completedInputTurnId,
+              ...(dispatchOptions?.dispatchSource === 'maintenance' ? { quiet: true } : {}),
               baseCommitHash,
               turnStartWorkingTreeDiff,
               userId: completedRequesterUserId,
@@ -6063,7 +6208,8 @@ export class SessionExecutionService {
           requesterUserId: userId,
           inputConfig: acpSessionConfig,
         },
-        ...(dispatchOptions?.dispatchSource === 'inbox'
+        ...(dispatchOptions?.dispatchSource === 'inbox' ||
+        dispatchOptions?.dispatchSource === 'maintenance'
           ? { assistantEntryParentTurnId: userTurnId }
           : {}),
         ...(dispatchOptions?.goalControl ? { goalControl: dispatchOptions.goalControl } : {}),
@@ -6110,8 +6256,9 @@ export class SessionExecutionService {
           let readySession = session;
           if (
             readySession &&
-            JSON.stringify(readySession.getMemoryBinding?.() ?? null) !==
-              JSON.stringify(acpSessionConfig.memory ?? null)
+            (freshAgentSession ||
+              JSON.stringify(readySession.getMemoryBinding?.() ?? null) !==
+                JSON.stringify(acpSessionConfig.memory ?? null))
           ) {
             yield* ctx.abortIfCancelled();
             const previousSession = readySession;
@@ -6325,7 +6472,7 @@ export class SessionExecutionService {
       requesterUserId: message.userId,
       machineId: this.deps.machineId,
       assumeDocExisting: true,
-      env,
+      env: withBoardCoordinatorAgentEnv(existingMeta, env),
       githubRepo: githubRepoFullName,
       branch,
       project,
@@ -6498,35 +6645,9 @@ export class SessionExecutionService {
                 })
             );
           }
-          const board = existingMeta?.boardId
-            ? normalizeBoardMeta(
-                (yield* self.tryPromise(() =>
-                  self.deps.workspaceDocument.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId))
-                )).flock.get(workspaceFlockKeys.board(existingMeta.boardId))
-              )
-            : null;
-          if (existingMeta?.boardId && !board) {
-            yield* Effect.fail(new Error('BOARD_NOT_FOUND'));
-            return undefined;
-          }
-          // Members on the machine that keeps the Board directory get its path;
-          // the others reach it through the Board file tools.
-          const boardFilesHost = board
-            ? boardFilesMachineId(
-                board,
-                board.coordinatorSessionId === sessionId
-                  ? existingMeta
-                  : ((yield* self.tryPromise(() =>
-                      self.deps.workspaceDocument.repo.getDocMeta(
-                        getSessionRoomId(board.coordinatorSessionId)
-                      )
-                    ))?.meta as SessionMeta | undefined)
-              )
-            : undefined;
-          const boardDirectory =
-            board && boardFilesHost === self.deps.machineId
-              ? new BoardDirectory(getLodyDataDir).boardPath(workspaceId, board.id)
-              : undefined;
+          const boardContext = yield* self.tryPromise(() =>
+            self.boardPromptContext(sessionId, existingMeta)
+          );
           const startPromptBlocksBuild = async (session: ISession) => {
             let branchToRename: string | undefined;
             if (newWorktree) {
@@ -6558,9 +6679,7 @@ export class SessionExecutionService {
                 fromFeedbackPostId,
                 {
                   branchToRename,
-                  boardContext: board
-                    ? { board, role: existingMeta?.boardRole, directory: boardDirectory }
-                    : undefined,
+                  boardContext,
                 }
               ),
             });

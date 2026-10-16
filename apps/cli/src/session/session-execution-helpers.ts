@@ -82,6 +82,22 @@ const FILE_PATH_REMINDER =
   "\n\nFile paths in your replies become links that open relative to this session's working directory: " +
   'write a file inside it by its full path from there, and a file anywhere else by its absolute path.';
 
+/**
+ * The fallback behind idle compaction: a coordinator's Claude agent compacts on
+ * its own long before a large model window fills, in case a long busy streak
+ * leaves no idle moment. The Board's own threshold (150K by default) sits below
+ * it. Other agents ignore the variable; an explicit value in the agent config wins.
+ */
+export const BOARD_COORDINATOR_AUTO_COMPACT_WINDOW = '300000';
+
+export const withBoardCoordinatorAgentEnv = (
+  meta: Pick<SessionMeta, 'boardRole'> | null | undefined,
+  env: Record<string, string> | undefined
+): Record<string, string> | undefined =>
+  meta?.boardRole !== 'coordinator' || env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== undefined
+    ? env
+    : { ...env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: BOARD_COORDINATOR_AUTO_COMPACT_WINDOW };
+
 // TODO: use system prompt
 export const buildPrompt = (
   prompt: string,

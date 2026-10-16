@@ -1760,6 +1760,11 @@ export class AgentClient implements acp.Client {
     return this.lodyExtensionCapabilities.sessionTitle?.version === 1;
   }
 
+  /** The live process advertised that it compacts its context on `/compact`. */
+  supportsContextCompaction(): boolean {
+    return this.lodyExtensionCapabilities.compaction?.version === 1;
+  }
+
   private handleAgentSessionTitleUpdate(notification: AcpSessionNotification): void {
     if (notification.update.sessionUpdate !== 'session_info_update') {
       return;
