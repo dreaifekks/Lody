@@ -56,7 +56,12 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 - Older clients strip `instructions`/`files` and refuse goal-less rows, so every client
   that writes Board rows must run the same version; no compatibility layer.
 - Instructions (≤16,000 code points) and the directory join each member's start
-  prompt, coordinator included; sessions already started keep what they read.
+  prompt, coordinator included. Threads keep what they read; the coordinator
+  rereads the current row after Lody compacts or replaces its agent conversation.
+- Coordinator maintenance (`board-continuity-workflow.ts`): quiet system turns in
+  the same Session, outside the Inbox (one divider, hidden replies, no push). It
+  yields to user turns and results, never fakes compaction or changes
+  `coordinatorSessionId`.
 - A Board's entries act on the whole Board, as a chat's do on the chat: the page's
   header menu (`SessionHeaderMenu` on a coordinator) and the sidebar row
   (`BoardSidebar`) rename, archive and restore through `useBoardActions`, which reads

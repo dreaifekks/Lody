@@ -1,10 +1,12 @@
-# 协调者的连续对话（提案）
+# 协调者的连续对话
 
 Status: draft
 Translation: pending
 
-本文是[看板与协调者](design.zh.md)的补充提案，等用户拍板后再补英文版，并把定下的部分并入
-主设计。只是调研和设计，还没有实现。
+实现状态：**已实现**（2026-10-17，分支 `board-coordinator`）。用户的决定和实现与提案不同的
+地方见[「实现」](#实现)一节；其余各节保留为提案时的调研记录。`Status` 仍是 `draft`：Spec 只用
+draft / approved / outdated 三种状态，这一版还没有人审批。英文版和并入
+[看板与协调者](design.zh.md)主设计留到以后。
 
 ## 场景
 
@@ -73,9 +75,16 @@ Translation: pending
     （[官方示例配置](https://developers.openai.com/codex/config-sample)）。
 - **共享契约（`acp-extension-core` @ `97007e7`）**：`LodyActivityMeta` 带 `usedTokensBefore` 和
   `usedTokensAfter`（`src/session.ts:12-20`）；用量通知是 `_lody/session/usage_update`（`src/methods.ts:5`）。
-- **其他 agent（Kimi、Pi、Grok、Devin、dsh）**：没有核实。运行时可以看机器 `acpCapabilities` 里
-  有没有 `compaction`，或者可用命令里有没有 `compact`
-  （`apps/cli/src/agent/acp-capability-normalization.ts:111-150`）。
+- **其他 agent**（实现时补查，按本分支固定的子模块提交）：
+  - Kimi（`743c664`）：声明 `compaction` v1（`packages/acp-server/src/lody-extension.ts:21`）；
+    `/compact` 是内置命令，但只「开始」压缩，压缩在后台跑，回合先结束
+    （`packages/acp-server/src/builtin-commands.ts:100-111`）。
+  - Pi（`64482a5`）：声明 `compaction` v1（`src/connection.ts:1603`）；`/compact <指示>` 转成
+    Pi 的 `compact` RPC，指示作为 `customInstructions`（`:545-556`）。可用命令里没有 `compact`。
+  - Devin（`d49d357`）：声明 `compaction` v1（`src/proxy.ts:25`、`:271`），手动命令名来自运行时
+    合约（`compactionManualCommand`）。
+  - dsh（`fb4b9df`）：声明 `compaction` v1（`src/adapter.ts:187`），有 `command-compact` 插件。
+  - Grok（`2fc653b`）：没有声明 `compaction`；压缩交给 Grok 本身，`/compact` 是否可用没有核实。
 
 ## Hermes Agent 的做法（参考）
 
@@ -262,7 +271,86 @@ system 驱动的维护回合，再在压缩后的下一回合重新注入看板�
 建议顺序：PR4 先把 1、2、3 做成共享件，交接走它们；B 作为 PR4.5 接在后面，主要增量是空闲
 计时、维护输入类别和分隔线。线程默认不做空闲压缩，见问题 2。
 
-## 需要用户拍板
+## 实现
+
+用户 2026-10-17 的决定：采用方案 B，方案 A 作保底；触发是「空闲 10 分钟且上下文 ≥ min(150K,
+窗口 40%)」，阈值在看板设置里可调；线程不做空闲压缩；压缩前先整理记忆；压缩后重新注入最新的
+看板说明和用户指令；界面只显示一条分隔线，首版不展开摘要；另加手动「立即整理」和手动
+「开始新对话」；不支持压缩的 agent 跳过并留日志或提示，不假装成功。
+
+### 自动整理
+
+- **谁来做**：协调者所在机器的 Host-lease Worker 里，新增的看板连续性观察器
+  （`apps/cli/src/orchestration/board-continuity-workflow.ts`）挨着看板回报观察器运行，
+  复用它对协调者历史的订阅。
+- **触发**：用 `decideBoardIdleCompaction`（`packages/shared/src/board-continuity.ts`）判断空闲
+  时长和阈值，空闲起点是最近一条非维护记录的结束时间。另外要求：没有活动回合、没有等着开始的
+  用户回合、Inbox 没有待跑的工作、没被 Stop 暂停、树没被停止协作，并且上次维护之后有过新的
+  对话。最后这条代替了提案里「至少多 20K tokens」和「失败冷却 1 小时」：维护之后什么都没发生，
+  就不再做；失败之后也要等有了新对话才再试。
+- **三个回合**：整理记忆（写笔记和 `memory/`，更新 `MEMORY.md`）→ `/compact <保留清单>` →
+  续接回合（带上当前看板行生成的协调者说明）。每一步开始前，用户回合或 Inbox 结果在等就让路，
+  下一次空闲再来。
+- **成功的判定**：压缩回合的 assistant 条目里有已完成的压缩标记，或者上下文用量降到原来的
+  80% 以下；否则记为失败（`compaction-unconfirmed`），不显示「已整理」。
+- **能力判定**：先看正在运行的 agent 是否声明 `compaction` v1；没有运行的 agent 时看机器能力
+  缓存的可用命令里有没有 `compact`；都说不清就跳过自动整理，并只记一次日志。整理记忆回合
+  启动了 agent 之后，发 `/compact` 前再查一次。
+- **方案 A 保底**：协调者的 agent 进程环境里设 `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000`
+  （agent 配置里已有这个变量时不覆盖），只对 Claude 生效；Codex 的
+  `model_auto_compact_token_limit` 没有设。
+
+### 维护回合
+
+- 执行服务新增派发来源 `maintenance`（`runBoardMaintenanceTurn`）：和 goal 回合一样只有
+  assistant 条目、没有用户消息；**不经过 Inbox**，不带走排队的结果，也不改链深度；结束时不写
+  `lastMessageAt`、不发完成推送，然后唤醒 Inbox 和派发检查，让等着的用户回合和结果接着跑。
+- 运行配置取协调者最新驱动回合的 `inputConfig`，所以新开的 agent 会话也保持原来的模型和模式。
+- 用户在维护回合进行中「引导」，不会被注入维护回合，而是作为用户自己的下一回合运行。
+- 界面：一条系统回合（id `board-maintenance:<runId>`，`system_notice`
+  `board_context_maintenance`）就是分隔线，记录种类、触发方式、状态和前后 tokens；各步骤的
+  assistant 条目按 `userTurnId` 前缀隐藏。空闲触发、但在改动任何东西之前就让路的一次运行，
+  不显示分隔线。
+
+### 手动入口
+
+- 协调者页面的 `⋯` 菜单（桌面和手机）有「立即整理上下文」和「开始新对话」。点击后界面直接写
+  一条 `requested` 状态的分隔线，协调者所在机器在协调者空闲时接手，不检查空闲时长和阈值。
+- 阈值在看板设置 › 记忆 › 上下文。
+
+### 开始新对话
+
+选择的做法：**Lody 会话 id 不变，只换底层 agent 会话**。
+
+1. 旧 agent 先写交接摘要到看板记忆 `handoff-<时间>.md`，并在 `MEMORY.md` 加一行。
+2. 退掉旧的 ACP 会话，新开一个，不续接旧会话，也不把 Lody 历史重放进去。
+3. 新会话的第一条消息 = 当前看板说明（和成员第一条消息同一个生成入口）+ Lody 生成的交接事实：
+   旧对话仍可用 `lody_session_history` 读、交接文件名、旧对话的用量、线程列表。
+
+为什么不用 fork 服务，也不用 PR4 的换代：fork 和换代都会产生新的会话 id，而看板的协调者 id 是
+Inbox、Operation、回报游标、笔记替换权限、线程归属和侧边栏的锚。id 不变，这些都不用迁移：
+没送达的批次、进行中线程以后的回报，照常送到同一个会话，Inbox 只是在新 agent 的第一回合之后
+送达；界面上同一段对话，下面接一条「已开始新对话」分隔线。
+
+### 和提案不一样的地方
+
+1. 重新注入是压缩之后紧接着的第三个维护回合，不是附在下一回合（用户发言或 Inbox 批次）前面。
+   这样不用改上游的派发路径，看板说明也在用户下一句话之前到达。续接回合被让路时记为
+   `renewed: false`，协调者下次空闲时补上。
+2. 不支持压缩的 agent 连整理记忆回合也不做：自动触发只记日志，手动触发显示「不支持」。
+3. 手动入口在协调者页面的菜单里，不在用量浮窗里。
+4. 分隔线不能展开看写了哪些记忆文件。
+5. 「开始新对话」用了上面的同 id 换 agent 会话，不是方案 C 的换代。
+
+### 给 PR4 的共享件
+
+- 用量策略：`decideBoardIdleCompaction` / `boardCompactionThreshold`，纯函数。
+- 看板说明的注入入口：执行服务的 `boardPromptContext` 加 `buildPrompt`，成员第一条消息、压缩后
+  续接和新对话都读当前看板行。
+- 维护回合：`runBoardMaintenanceTurn`（含 `freshAgentSession`），以后换代的交接回合可以复用。
+- 分隔线：`BoardMaintenanceDivider`，「第 n 代」以后加一种文案即可。
+
+## 当时需要用户拍板的问题
 
 1. **方案**：采用 B，即同一个会话，Lody 空闲触发原生压缩，A 作为保底？
    *默认：是。C 只在以后需要「换 agent 继续」时再考虑。*
@@ -291,9 +379,21 @@ system 驱动的维护回合，再在压缩后的下一回合重新注入看板�
   - Hermes Agent 源码 `848fc0a` 与[文档](https://hermes-agent.nousresearch.com/docs/)。
   - Claude Code 文档 [costs](https://code.claude.com/docs/en/costs)、[model-config](https://code.claude.com/docs/en/model-config)。
   - Codex [示例配置](https://developers.openai.com/codex/config-sample)。
+- 实现与测试（2026-10-17）：
+  - `apps/cli/src/orchestration/board-continuity-workflow.ts`、`coordinator-workflow.ts`、
+    `platform/coordinator-sessions.ts`；`apps/cli/src/session/session-execution-service.ts`
+    （`runBoardMaintenanceTurn`）、`session-execution-helpers.ts`；
+    `packages/shared/src/board-continuity.ts`；`packages/components/src/components/boards/`。
+  - 测试：`apps/cli/src/orchestration/operation-coordinator.test.ts`「Board coordinator
+    continuity」用真实的 Inbox、Loro 历史和注入时钟，覆盖触发条件、阈值、不支持时跳过、
+    压缩未确认、让路后补发说明、新对话后回报送达同一会话；
+    `apps/cli/tests/session-execution-service.test.ts`「Board maintenance turns」覆盖不经
+    Inbox、不更新消息时间和推送、重新注入、新 agent 会话不续接不重放；
+    `packages/shared/tests/board.test.ts`、`packages/components/tests/build-chat-stream-items.test.ts`。
 - 没有核实：
-  - Kimi、Pi、Grok、Devin、dsh 的压缩能力。
-  - Codex 压缩后保留哪些用户消息。
-  - 能否只给协调者注入环境变量（方案 A）。
+  - 真实的 Claude、Codex 等 agent 上跑一遍完整的空闲整理和新对话（只有单元和集成测试）。
+  - Codex 压缩后保留哪些用户消息；Codex 的 `/compact` 不接受保留清单。
+  - Kimi 的 `/compact` 在后台完成，回合结束时多半还没有完成标记，会记为未确认。
+  - Grok 能否 `/compact`。
+  - `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 大于模型窗口时 Claude Code 怎么处理。
   - Hermes 文档里「`/new` 前自动保存记忆」的说法，代码里没有找到内置的这一步。
-- 没有执行任何验证：方案都没有实现，工作量是估算。
