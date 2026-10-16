@@ -117,7 +117,12 @@ export function SettingsAccountEntry({
       onClick={onSelect}
       aria-pressed={active}
       aria-label={t('settings.account.open', 'Open account settings')}
-      {...stylex.props(surface.listRow, styles.railRow, active && surface.listRowSelected)}
+      {...stylex.props(
+        surface.listRow,
+        surface.navRow,
+        styles.railRow,
+        active && surface.listRowSelected
+      )}
     >
       <span {...stylex.props(surface.listRowAvatar)}>
         <UserAvatar user={user} size="medium" />
