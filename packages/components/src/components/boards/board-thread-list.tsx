@@ -40,6 +40,34 @@ export function boardThreadGroup(item: Pick<BoardThreadItem, 'status' | 'archive
   return item.archived === true ? 'archived' : GROUP_BY_STATUS[item.status];
 }
 
+const GROUP_ORDER = ['attention', 'active', 'idle', 'archived'] as const;
+
+/**
+ * Threads with the sessions they opened, in list order (a root, then its rows
+ * one or more steps in). A family stays together under the strongest state of
+ * its members, so a reviewer waiting for the user lifts its thread into
+ * "Needs you" instead of standing apart from it.
+ */
+export function boardThreadFamilies(
+  threads: readonly BoardThreadItem[]
+): { group: GroupKey; items: BoardThreadItem[] }[] {
+  const families: BoardThreadItem[][] = [];
+  for (const item of threads) {
+    const last = families.at(-1);
+    if ((item.depth ?? 0) > 0 && last) last.push(item);
+    else families.push([item]);
+  }
+  return families.map((items) => ({
+    items,
+    group:
+      items[0]?.archived === true
+        ? 'archived'
+        : GROUP_ORDER[
+            Math.min(...items.map((item) => GROUP_ORDER.indexOf(boardThreadGroup(item))))
+          ]!,
+  }));
+}
+
 const styles = stylex.create({
   list: { display: 'flex', flexDirection: 'column', gap: space[3], padding: space[2] },
   group: { display: 'flex', flexDirection: 'column', gap: '1px' },
@@ -76,7 +104,7 @@ const styles = stylex.create({
     cursor: 'pointer',
   },
   selected: { backgroundColor: colors.selectedFill },
-  nested: { paddingInlineStart: space[6] },
+  indent: (depth: number) => ({ paddingInlineStart: `calc(${space[2]} + ${depth * 18}px)` }),
   mark: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '16px' },
   title: {
     minWidth: 0,
@@ -161,6 +189,7 @@ export function BoardThreadListView({
     idle: t('boards.groups.idle', 'Idle'),
     archived: t('boards.groups.archived', 'Archived'),
   };
+  const families = boardThreadFamilies(threads);
   if (threads.length === 0)
     return (
       <p {...stylex.props(styles.empty)}>
@@ -169,8 +198,10 @@ export function BoardThreadListView({
     );
   return (
     <div {...stylex.props(styles.list)}>
-      {(['attention', 'active', 'idle', 'archived'] as const).map((key) => {
-        const items = threads.filter((item) => boardThreadGroup(item) === key);
+      {GROUP_ORDER.map((key) => {
+        const items = families
+          .filter((family) => family.group === key)
+          .flatMap((family) => family.items);
         if (items.length === 0) return null;
         const isFolded = folded[key] === true;
         return (
@@ -198,7 +229,7 @@ export function BoardThreadListView({
                     {...stylex.props(
                       styles.row,
                       item.id === selectedId && styles.selected,
-                      (item.depth ?? 0) > 0 && styles.nested
+                      (item.depth ?? 0) > 0 && styles.indent(item.depth ?? 0)
                     )}
                   >
                     <span {...stylex.props(styles.mark)}>

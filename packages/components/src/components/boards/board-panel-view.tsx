@@ -3,11 +3,11 @@ import { colors } from '@lody/ui/tokens/colors.stylex';
 import { space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
 import { Tabs } from '@lody/ui/tabs';
-import { ArrowLeft, Maximize2, Plus, Settings2 } from 'lucide-react';
+import { ArrowLeft, Maximize2, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
 
-/** The Board side panel: threads and files. A thread opens inside it. */
+/** The Board side panel: threads and the shared directory. A thread opens inside it. */
 export type BoardPanelTab = 'threads' | 'files';
 
 const styles = stylex.create({
@@ -30,6 +30,16 @@ const styles = stylex.create({
   },
   crumb: { color: colors.secondaryLabel, flexShrink: 0 },
   spacer: { flex: '1 1 0' },
+  location: {
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: '45%',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontSize: text.footnoteSize,
+    color: colors.secondaryLabel,
+  },
   body: { position: 'relative', flex: '1 1 0', minHeight: 0, overflow: 'auto' },
   fill: { position: 'relative', flex: '1 1 0', minHeight: 0 },
 });
@@ -39,14 +49,12 @@ export function BoardPanelView({
   tab,
   onTabChange,
   onNewThread,
-  onOpenSettings,
   children,
 }: {
   tab: BoardPanelTab;
   onTabChange: (tab: BoardPanelTab) => void;
   /** Absent for an archived Board. */
   onNewThread?: () => void;
-  onOpenSettings: () => void;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -73,15 +81,6 @@ export function BoardPanelView({
             <Plus size={16} />
           </Button>
         ) : null}
-        <Button
-          variant="ghost"
-          size="small"
-          icon
-          aria-label={t('boards.settings.title', 'Board settings')}
-          onClick={onOpenSettings}
-        >
-          <Settings2 size={16} />
-        </Button>
       </header>
       <div {...stylex.props(styles.body)}>{children}</div>
     </Tabs.Root>
@@ -95,11 +94,14 @@ export function BoardPanelView({
  */
 export function BoardThreadPaneView({
   title,
+  location,
   onBack,
   onOpenFull,
   children,
 }: {
   title: string;
+  /** "devnuc · Lody": where a project-bound thread runs. */
+  location?: string;
   onBack: () => void;
   onOpenFull: () => void;
   children: ReactNode;
@@ -119,6 +121,11 @@ export function BoardThreadPaneView({
         </Button>
         <span {...stylex.props(styles.title)}>{title}</span>
         <span {...stylex.props(styles.spacer)} />
+        {location ? (
+          <span title={location} {...stylex.props(styles.location)}>
+            {location}
+          </span>
+        ) : null}
         <Button
           variant="ghost"
           size="small"

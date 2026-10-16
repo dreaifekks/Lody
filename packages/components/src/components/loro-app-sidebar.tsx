@@ -3,7 +3,7 @@ import { boardsSectionCollapsedAtom } from '@/atoms/sidebar-state';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { BoardSidebarSection } from './boards/board-sidebar-section';
 import { CreateBoardDialog } from './boards/create-board-dialog';
-import { boardActivity, boardEntrySearch, isBoardCoordinator } from './boards/board-threads';
+import { boardActivity, boardEntrySearch, isBoardSession } from './boards/board-threads';
 import { parseLanHubRole } from '@lody/shared/lan-hub-role';
 import { openSessionOnModifiedClick } from '@/lib/desktop-window';
 import { buildSessionLink } from '@lody/shared/session-link';
@@ -1778,10 +1778,11 @@ export function LoroAppSidebar({
     workspaceId: scopedWorkspaceId,
     enabled: workspaceDataReady,
   });
-  // A coordinator is its Board: the Boards section lists it, no session list does.
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  // A Board's conversations live in the Board; the Boards section lists the Board.
   const listSessions = useMemo(
-    () => sessions.filter((session) => !isBoardCoordinator(session)),
-    [sessions]
+    () => sessions.filter((session) => !isBoardSession(session, boardsEnabled)),
+    [boardsEnabled, sessions]
   );
   const sessionsListLoading = Boolean(workspaceSlug) && !workspaceDataReady;
   const {
@@ -1829,7 +1830,6 @@ export function LoroAppSidebar({
     return null;
   }, [location.pathname, location.search, selectedSessionId, workspaceSlug]);
 
-  const boardsEnabled = useAtomValue(boardEnabledAtom);
   const activeNav = useMemo(() => {
     if (isArchiveRoute(location.pathname, workspaceSlug)) return 'archive';
     if (workspaceSlug && location.pathname.startsWith(`/${workspaceSlug}/schedules`))

@@ -7,10 +7,11 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowUp, Bot, ChevronDown, Monitor } from 'lucide-react';
+import { ArrowUp, Bot, ChevronDown, Monitor, Settings2 } from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import {
   normalizeBoardMeta,
+  type BoardFileEntry,
   type BoardId,
   type BoardReportEvent,
   type MachineId,
@@ -38,7 +39,12 @@ import {
 import { BoardThreadListView } from '@/components/boards/board-thread-list';
 import { BoardFileEditorView, BoardFilesView } from '@/components/boards/board-files-view';
 import { BoardNotesEditor } from '@/components/boards/board-notes-panel';
-import { BoardSettingsDialog } from '@/components/boards/board-settings-panel';
+import {
+  BoardSettingsDialogView,
+  boardSettingsDraft,
+  type BoardSettingsPage,
+} from '@/components/boards/board-settings-panel';
+import { BoardFileRowsView } from '@/components/boards/board-directory';
 import { BoardSidebarSection } from '@/components/boards/board-sidebar-section';
 import { BoardCreateDialogView } from '@/components/boards/board-create-dialog-view';
 import { ArchivedBoardsView } from '@/components/boards/archived-boards-section';
@@ -90,8 +96,15 @@ const member = (
 const members: SessionMeta[] = [
   member(THREAD, '侧边栏里的看板入口', 3, {
     lastModel: { name: 'Opus 5.5' },
-    awaitingUserSince: NOW - 60_000,
     lastMessageAt: NOW - 3 * 60_000,
+    project: { kind: 'local', localProjectId: 'lp-lody' } as SessionMeta['project'],
+  }),
+  // Opened by the thread above: it stays under it, and its question lifts the thread.
+  member('thread-entry-review', '评审：两种入口方案', 2, {
+    lastModel: { name: 'Gemini' },
+    openedBySessionId: THREAD,
+    awaitingUserSince: NOW - 60_000,
+    lastMessageAt: NOW - 2 * 60_000,
   }),
   member('thread-rounds', 'PR4 轮数与交接', 1, {
     lastModel: { name: 'Codex Sol' },
@@ -130,7 +143,13 @@ const threads = boardThreadItems(
   {
     lookup: (id) => members.find((session) => session.id === id),
     detail: (session) =>
-      [session.lastModel?.name, MACHINES[session.machineId], '对话'].filter(Boolean).join(' · '),
+      [
+        session.lastModel?.name,
+        MACHINES[session.machineId],
+        session.project?.kind === 'local' ? 'Lody' : '对话',
+      ]
+        .filter(Boolean)
+        .join(' · '),
     now: new Date(NOW),
     untitled: '未命名会话',
   }
@@ -328,64 +347,89 @@ const coordinatorSession = member(COORDINATOR, board.name, 2, {
 
 type PanelState = { kind: 'tabs'; tab: BoardPanelTab; notes?: boolean } | { kind: 'thread' };
 
+const sharedFiles: BoardFileEntry[] = [
+  { path: 'design/board-home.md', sizeBytes: 8_200, modifiedAtMs: NOW - 2 * 3_600_000 },
+  { path: 'screens/sidebar-entry-a.png', sizeBytes: 182_000, modifiedAtMs: NOW - 20 * 60_000 },
+  { path: 'release-checklist.md', sizeBytes: 1_400, modifiedAtMs: NOW - 26 * 3_600_000 },
+];
+const memoryFiles: BoardFileEntry[] = [
+  { path: 'MEMORY.md', sizeBytes: 640, modifiedAtMs: NOW - 24 * 3_600_000 },
+  { path: 'decisions-board-home.md', sizeBytes: 2_100, modifiedAtMs: NOW - 48 * 3_600_000 },
+  { path: 'devnuc-test-environment.md', sizeBytes: 1_700, modifiedAtMs: NOW - 48 * 3_600_000 },
+  { path: 'user-prefers-chinese-replies.md', sizeBytes: 300, modifiedAtMs: NOW - 48 * 3_600_000 },
+];
+
 function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?: boolean }) {
   const [panel, setPanel] = useState<PanelState>(initial);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [notes, setNotes] = useState(
     '# 2026-10-16\n\n- PR4：轮数检查放在 lody_session_chat，followUp 不计轮。\n- 侧边栏入口待用户选择。'
   );
   const { t } = useTranslation();
   const thread = members.find((session) => session.id === THREAD)!;
-  return (
-    <>
-      {panel.kind === 'thread' ? (
-        <BoardThreadPaneView
-          title={thread.title ?? ''}
-          onBack={() => setPanel({ kind: 'tabs', tab: 'threads' })}
-          onOpenFull={() => {}}
-        >
-          <ChatSurface sessionId={THREAD} messages={threadMessages} placeholder="回复这个线程…" />
-        </BoardThreadPaneView>
-      ) : (
-        <BoardPanelView
-          tab={panel.tab}
-          onTabChange={(tab) => setPanel({ kind: 'tabs', tab })}
-          onNewThread={() => {}}
-          onOpenSettings={() => setSettingsOpen(true)}
-        >
-          {panel.tab === 'threads' ? (
-            <BoardThreadListView
-              threads={threads}
-              onOpen={() => {
-                if (!narrow) setPanel({ kind: 'thread' });
-              }}
-            />
-          ) : panel.notes === true ? (
-            <BoardFileEditorView
-              name={t('boards.notes')}
-              onBack={() => setPanel({ kind: 'tabs', tab: 'files' })}
-            >
-              <BoardNotesEditor notes={notes} onSave={async (text) => setNotes(text)} />
-            </BoardFileEditorView>
-          ) : (
-            <BoardFilesView
-              files={[
-                { id: 'notes', name: t('boards.notes'), detail: t('boards.files.notesDetail') },
-              ]}
-              onOpen={() => setPanel({ kind: 'tabs', tab: 'files', notes: true })}
-              note={t('boards.files.directoryLater')}
-            />
-          )}
-        </BoardPanelView>
-      )}
-      {settingsOpen ? (
-        <BoardSettingsDialog
-          board={board}
-          onClose={() => setSettingsOpen(false)}
-          onArchive={() => {}}
+  return panel.kind === 'thread' ? (
+    <BoardThreadPaneView
+      title={thread.title ?? ''}
+      location="devnuc · Lody"
+      onBack={() => setPanel({ kind: 'tabs', tab: 'threads' })}
+      onOpenFull={() => {}}
+    >
+      <ChatSurface sessionId={THREAD} messages={threadMessages} placeholder="回复这个线程…" />
+    </BoardThreadPaneView>
+  ) : (
+    <BoardPanelView
+      tab={panel.tab}
+      onTabChange={(tab) => setPanel({ kind: 'tabs', tab })}
+      onNewThread={() => {}}
+    >
+      {panel.tab === 'threads' ? (
+        <BoardThreadListView
+          threads={threads}
+          onOpen={() => {
+            if (!narrow) setPanel({ kind: 'thread' });
+          }}
         />
-      ) : null}
-    </>
+      ) : panel.notes === true ? (
+        <BoardFileEditorView
+          name={t('boards.notes')}
+          onBack={() => setPanel({ kind: 'tabs', tab: 'files' })}
+        >
+          <BoardNotesEditor notes={notes} onSave={async (text) => setNotes(text)} />
+        </BoardFileEditorView>
+      ) : (
+        <div className="flex flex-col gap-1 p-2">
+          <BoardFilesView
+            files={[
+              { id: 'notes', name: t('boards.notes'), detail: t('boards.files.notesDetail') },
+            ]}
+            onOpen={() => setPanel({ kind: 'tabs', tab: 'files', notes: true })}
+          />
+          <BoardFileRowsView entries={sharedFiles} onOpen={() => {}} />
+        </div>
+      )}
+    </BoardPanelView>
+  );
+}
+
+/** The settings dialog over synthetic data: the real view, memory rows included. */
+function SettingsDialogStory({ initialPage }: { initialPage: BoardSettingsPage }) {
+  const [page, setPage] = useState(initialPage);
+  const [draft, setDraft] = useState(() => ({
+    ...boardSettingsDraft(board),
+    instructions: '开始先查 nmem。\n改代码用 worktree，不要 push。',
+  }));
+  return (
+    <SettingsStoryProviders>
+      <BoardSettingsDialogView
+        page={page}
+        onPageChange={setPage}
+        draft={draft}
+        onDraftChange={(patch) => setDraft({ ...draft, ...patch })}
+        onArchive={() => {}}
+        autoMemory={<BoardFileRowsView entries={memoryFiles} onOpen={() => {}} />}
+        onSave={() => {}}
+        onClose={() => {}}
+      />
+    </SettingsStoryProviders>
   );
 }
 
@@ -462,7 +506,8 @@ function CoordinatorPage({ initial }: { initial: PanelState }) {
         <Sidebar />
         <main className="min-w-0 flex-1 overflow-hidden">
           <DesktopSessionDetailLayout
-            defaultSizes={{ main: 64, sidebar: 36 }}
+            defaultSizes={{ main: 50, sidebar: 50 }}
+            layoutStorageId="board-detail-panels"
             topBar={
               <SessionTabBar
                 variant="session"
@@ -473,6 +518,11 @@ function CoordinatorPage({ initial }: { initial: PanelState }) {
                 activeTabSessionId={COORDINATOR}
                 onTabSelect={() => {}}
                 onNewTab={() => {}}
+                rightSlot={
+                  <Button variant="ghost" size="small" icon aria-label="看板设置">
+                    <Settings2 size={16} />
+                  </Button>
+                }
               />
             }
             chatSurfaces={
@@ -530,7 +580,7 @@ const meta = {
   args: { initial: { kind: 'tabs', tab: 'threads' } },
   loaders: [
     async () => {
-      window.localStorage.removeItem('react-resizable-panels:session-detail-panels');
+      window.localStorage.removeItem('react-resizable-panels:board-detail-panels');
     },
   ],
 } satisfies Meta<typeof CoordinatorPage>;
@@ -543,19 +593,18 @@ export const Home: Story = {};
 /** A thread open inside the panel. */
 export const ThreadOpen: Story = { args: { initial: { kind: 'thread' } } };
 
-/** Shared notes now, the shared folder later. */
+/** The shared notes and the Board directory's `files/`. */
 export const Files: Story = { args: { initial: { kind: 'tabs', tab: 'files' } } };
 
-/** Settings open from the gear as a dialog. */
-export const Settings: Story = {
-  render: () => (
-    <SettingsStoryProviders>
-      <BoardSettingsDialog board={board} onClose={() => {}} onArchive={() => {}} />
-    </SettingsStoryProviders>
-  ),
+/** Settings open from the gear in the conversation's header: General. */
+export const Settings: Story = { render: () => <SettingsDialogStory initialPage="general" /> };
+
+/** Settings › Memory: the user's instructions and the agents' memory files. */
+export const SettingsMemory: Story = {
+  render: () => <SettingsDialogStory initialPage="memory" />,
 };
 
-/** Goal first, coordinator second; the name follows the goal. */
+/** A name and a coordinator; the goal is optional and nothing is sent. */
 export const CreateBoard: Story = {
   render: function CreateBoardStory() {
     const [goal, setGoal] = useState('');

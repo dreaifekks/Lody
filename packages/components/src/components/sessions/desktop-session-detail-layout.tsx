@@ -13,6 +13,11 @@ export type DesktopSessionDetailLayoutProps = {
     main: number;
     sidebar: number;
   };
+  /**
+   * Where the split is remembered. A Board page keeps its own, so its even
+   * split and a chat's narrow panel do not overwrite each other.
+   */
+  layoutStorageId?: string;
   /** Single merged top row: session tabs + right-side window controls. */
   topBar: ReactNode;
   chatSurfaces: ReactNode;
@@ -109,6 +114,7 @@ const styles = stylex.create({
 
 export function DesktopSessionDetailLayout({
   defaultSizes,
+  layoutStorageId = 'session-detail-panels',
   topBar,
   chatSurfaces,
   terminalDock,
@@ -207,9 +213,11 @@ export function DesktopSessionDetailLayout({
   return (
     <div ref={groupWrapperRef} {...stylex.props(styles.root)}>
       <ResizablePanelGroup
+        // A stored split is read once, when the group mounts.
+        key={layoutStorageId}
         direction="horizontal"
         className={stylex.props(styles.group).className}
-        autoSaveId="session-detail-panels"
+        autoSaveId={layoutStorageId}
       >
         <ResizablePanel
           id="chat"

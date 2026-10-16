@@ -1,3 +1,5 @@
+import * as stylex from '@stylexjs/stylex';
+import { space } from '@lody/ui/tokens/scales.stylex';
 import { atom, useAtomValue } from 'jotai';
 import { useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -6,6 +8,7 @@ import {
   getMachineFlockLocalProjects,
   getSessionRoomId,
   isBoardSessionStopped,
+  type BoardFileEntry,
   type BoardMeta,
   type LocalProjectMeta,
   type MachineFlockRowMap,
@@ -29,15 +32,22 @@ import {
 } from '@/hooks/use-visible-session-metas';
 import { useBoardDocument } from '@/hooks/use-board-document';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
-import { toast } from '@/lib/toast';
 import { BoardPanelView, BoardThreadPaneView, type BoardPanelTab } from './board-panel-view';
 import { BoardThreadListView, type BoardThreadItem } from './board-thread-list';
 import { BoardFileEditorView, BoardFilesView } from './board-files-view';
+import {
+  BoardDirectoryNote,
+  BoardFilePreview,
+  BoardFileRowsView,
+  useBoardDirectory,
+} from './board-directory';
 import { BoardNotesEditor } from './board-notes-panel';
-import { BoardSettingsDialog } from './board-settings-panel';
 import { CreateBoardDialog } from './create-board-dialog';
 import { buildBoardRows } from './board-threads';
-import { useBoardLifecycle } from './board-lifecycle';
+
+const panelStyles = stylex.create({
+  padded: { display: 'flex', flexDirection: 'column', gap: space[1], padding: space[2] },
+});
 
 /** Where a member runs, said once: agent · machine · project. */
 function useSessionDetail() {
@@ -154,12 +164,14 @@ function BoardThreads({
 
 function BoardFiles({ board }: { board: BoardMeta }) {
   const { t } = useTranslation();
-  const [notesOpen, setNotesOpen] = useState(false);
+  const [open, setOpen] = useState<'notes' | BoardFileEntry | null>(null);
   const { document, save, error } = useBoardDocument(board.id);
+  const directory = useBoardDirectory(board, 'files');
   const notesName = t('boards.notes', 'Shared notes');
-  if (notesOpen)
+  const back = t('boards.files.back', 'Back to files');
+  if (open === 'notes')
     return (
-      <BoardFileEditorView name={notesName} onBack={() => setNotesOpen(false)}>
+      <BoardFileEditorView name={notesName} onBack={() => setOpen(null)}>
         {document && save ? (
           <BoardNotesEditor notes={document.notes} onSave={save} />
         ) : (
@@ -171,22 +183,62 @@ function BoardFiles({ board }: { board: BoardMeta }) {
         )}
       </BoardFileEditorView>
     );
+  if (open)
+    return (
+      <div {...stylex.props(panelStyles.padded)}>
+        <BoardFilePreview
+          board={board}
+          area="files"
+          entry={open}
+          backLabel={back}
+          onBack={() => setOpen(null)}
+        />
+      </div>
+    );
   return (
-    <BoardFilesView
-      files={[
-        {
-          id: 'notes',
-          name: notesName,
-          detail: t('boards.files.notesDetail', 'Every member reads and appends to it.'),
-        },
-      ]}
-      onOpen={() => setNotesOpen(true)}
-      note={t(
-        'boards.files.directoryLater',
-        'A shared folder for any kind of file comes in a later step. It will live on the coordinator’s machine.'
-      )}
-    />
+    <div {...stylex.props(panelStyles.padded)}>
+      {/* The shared notes stay one Loro document, merged across machines; the
+          directory holds every other file. */}
+      <BoardFilesView
+        files={[
+          {
+            id: 'notes',
+            name: notesName,
+            detail: t('boards.files.notesDetail', 'Every member reads and appends to it.'),
+          },
+        ]}
+        onOpen={() => setOpen('notes')}
+      />
+      {directory.state.status === 'ready' ? (
+        <BoardFileRowsView entries={directory.state.list.entries} onOpen={setOpen} />
+      ) : null}
+      <BoardDirectoryNote
+        state={directory.state}
+        empty={t(
+          'boards.files.empty',
+          'No shared files yet. Members put the files everyone should see here.'
+        )}
+      />
+    </div>
   );
+}
+
+/** "devnuc · Lody": where a thread bound to a project runs. Chats have no such place. */
+export function useThreadLocation(session: SessionMeta | null): string | undefined {
+  const machines = useAtomValue(getMachineMetaMapAtom);
+  const rows = useMachineFlockRowsByMachineIds(session ? [session.machineId] : [], {
+    families: ['localProject'],
+  });
+  const project = session?.project;
+  if (!session || !project) return undefined;
+  const machine = machines.get(session.machineId);
+  const name =
+    project.kind === 'local'
+      ? ({ ...machine?.localProjects, ...localProjectsOf(rows.get(session.machineId)) }[
+          project.localProjectId
+        ]?.name ?? undefined)
+      : project.repoFullName.split('/').pop();
+  return [machine?.name ?? session.machineId, name].filter(Boolean).join(' · ');
 }
 
 type BoardSidePanelProps = {
@@ -200,14 +252,13 @@ type BoardSidePanelProps = {
   onShowInPage: (session: SessionMeta) => void;
   onOpenThreadFull: (session: SessionMeta) => void;
   renderThread: (session: SessionMeta) => ReactNode;
-  onArchived: () => void;
 };
 
 /**
  * The Board side panel on the coordinator's Session page. The open thread is
  * the page's state, so the panel can remount (compact layout) without losing it.
- * Its own state (tab, settings draft) belongs to one Board: switching Board or
- * workspace starts it afresh, so a draft can never be saved into another Board.
+ * Its own state (tab, open file, new-thread draft) belongs to one Board:
+ * switching Board or workspace starts it afresh.
  */
 export function BoardSidePanel(props: BoardSidePanelProps) {
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
@@ -221,14 +272,12 @@ function BoardSidePanelContent({
   onShowInPage,
   onOpenThreadFull,
   renderThread,
-  onArchived,
 }: BoardSidePanelProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<BoardPanelTab>('threads');
-  const [dialog, setDialog] = useState<'settings' | 'thread' | null>(null);
+  const [creatingThread, setCreatingThread] = useState(false);
   const { allActiveSessions } = useVisibleSessionMetas();
   const { archivedSessions } = useVisibleArchivedSessionMetas();
-  const { archiveBoard } = useBoardLifecycle();
   const openThread =
     openThreadId === null
       ? null
@@ -236,11 +285,13 @@ function BoardSidePanelContent({
         archivedSessions.find((session) => session.id === openThreadId) ??
         null);
   const active = board.archivedAtMs === undefined;
+  const location = useThreadLocation(openThread);
   return (
     <>
       {openThread ? (
         <BoardThreadPaneView
           title={openThread.title || t('boards.untitled', 'Untitled session')}
+          location={location}
           onBack={() => onOpenThread(null)}
           onOpenFull={() => onOpenThreadFull(openThread)}
         >
@@ -250,8 +301,7 @@ function BoardSidePanelContent({
         <BoardPanelView
           tab={tab}
           onTabChange={setTab}
-          onNewThread={active ? () => setDialog('thread') : undefined}
-          onOpenSettings={() => setDialog('settings')}
+          onNewThread={active ? () => setCreatingThread(true) : undefined}
         >
           {tab === 'threads' ? (
             <BoardThreads
@@ -267,34 +317,11 @@ function BoardSidePanelContent({
           )}
         </BoardPanelView>
       )}
-      {dialog === 'settings' ? (
-        <BoardSettingsDialog
-          key={board.id}
-          board={board}
-          onClose={() => setDialog(null)}
-          onArchive={
-            active
-              ? () => {
-                  setDialog(null);
-                  void archiveBoard(board, allActiveSessions).then(onArchived, (cause: unknown) =>
-                    toast.error(
-                      t(
-                        'boards.archiveFailed',
-                        'Could not archive the Board: {{reason}}. It stays open; try again.',
-                        { reason: cause instanceof Error ? cause.message : String(cause) }
-                      )
-                    )
-                  );
-                }
-              : undefined
-          }
-        />
-      ) : null}
-      {dialog === 'thread' ? (
+      {creatingThread ? (
         <CreateBoardDialog
           existingBoard={board}
-          onClose={() => setDialog(null)}
-          onCreated={() => setDialog(null)}
+          onClose={() => setCreatingThread(false)}
+          onCreated={() => setCreatingThread(false)}
         />
       ) : null}
     </>

@@ -32,14 +32,18 @@ import { CreateBoardDialog } from '../src/components/boards/create-board-dialog'
 import { changeBoardMembership } from '../src/components/boards/board-membership-dialog';
 import { BoardNotesEditor } from '../src/components/boards/board-notes-panel';
 import { BoardSidePanel } from '../src/components/boards/board-side-panel';
-import { BoardSettingsDialog } from '../src/components/boards/board-settings-panel';
+import { BoardSettings, BoardSettingsDialog } from '../src/components/boards/board-settings-panel';
+import { BoardThreadListView } from '../src/components/boards/board-thread-list';
+import { localProbeResultAtom } from '../src/atoms/local-probe';
 import { useBoardLifecycle } from '../src/components/boards/board-lifecycle';
-import { boardActivity } from '../src/components/boards/board-threads';
+import { boardActivity, isBoardSession } from '../src/components/boards/board-threads';
 import { writeWorkspaceBoard } from '../src/lib/workspace-catalog-write';
 
 const creation = vi.hoisted(() => ({
   machines: new Map<string, unknown>(),
   startSession: undefined as undefined | ((...args: unknown[]) => Promise<unknown>),
+  /** The product language, as i18next names it. */
+  language: 'en',
 }));
 vi.mock('@/hooks/use-visible-machine-metas', () => ({
   useVisibleMachineMetas: () => ({ machines: creation.machines }),
@@ -96,7 +100,7 @@ vi.mock('@/components/sessions/desktop-run-config-menu', async (importOriginal) 
 }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    i18n: { language: 'en' },
+    i18n: { language: creation.language },
     t: (_key: string, fallback: string, values?: Record<string, unknown>) =>
       typeof fallback === 'string'
         ? fallback.replace(/{{(\w+)}}/g, (_match, key) => String(values?.[key] ?? ''))
@@ -202,6 +206,7 @@ async function boardRuntime(sessions: readonly SessionMeta[]) {
     },
     readSessionOperationTargets: (id: SessionId, operation: 'archive' | 'restore') =>
       readSessionOperationTargets(repo, id, operation),
+    ensureDocStream: async () => {},
   } as unknown as WorkspaceRuntime;
   return {
     runtime,
@@ -218,6 +223,7 @@ function workspaceStore(runtime: WorkspaceRuntime) {
   store.set(runtimeAtom, runtime);
   store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
   store.set(currentWorkspaceSlugAtom, 'ws');
+  store.set(localProbeResultAtom, { ok: true, machineId: 'machine' });
   return store;
 }
 
@@ -233,6 +239,42 @@ async function mount(node: React.ReactNode) {
     async unmount() {
       await act(async () => root.unmount());
       host.remove();
+    },
+  };
+}
+
+/**
+ * The desktop's IPC as this machine's agent service would answer it: Board
+ * directory listings by area, and member files as `data:` URLs.
+ */
+function installIpc(answers: Record<string, unknown>) {
+  const requests: { method?: string; params?: unknown }[] = [];
+  const target = window as unknown as Record<string, unknown>;
+  target.__LODY_ELECTRON__ = true;
+  target.ipc = {
+    invoke: async (channel: string, message: Record<string, unknown>) => {
+      if (channel === 'machineRpc.send') {
+        requests.push(message);
+        const params = message.params as { area: string };
+        return { ok: true, result: answers[`${String(message.method)}:${params.area}`] };
+      }
+      if (channel === 'machineRpc.openMemberFile') {
+        requests.push({ method: 'openMemberFile', params: message });
+        const body = answers[`file:${String(message.path)}`];
+        return typeof body === 'string'
+          ? { ok: true, url: `data:text/plain,${encodeURIComponent(body)}`, sizeBytes: body.length }
+          : { ok: false, error: 'file_not_found' };
+      }
+      throw new Error(`unexpected IPC ${channel}`);
+    },
+    on: () => () => {},
+    send: () => {},
+  };
+  return {
+    requests,
+    remove() {
+      delete target.__LODY_ELECTRON__;
+      delete target.ipc;
     },
   };
 }
@@ -314,9 +356,10 @@ describe('Board side panel', () => {
           (button) => button.textContent
         );
       // The coordinator is the Board itself; a stopped opener stops its member;
-      // stale durable status never reads as work.
+      // stale durable status never reads as work. A thread and its Tab stay
+      // together under the thread's strongest state.
       expect(ids()).toEqual(['stopped-child', 'waiting', 'root', 'review', 'answered']);
-      expect(groups()).toEqual(['Needs you2', 'Working1', 'Idle2']);
+      expect(groups()).toEqual(['Needs you2', 'Working2', 'Idle1']);
       await act(async () => store.set(lodyPresenceStatesAtom, {}));
       expect(groups()).toEqual(['Needs you2', 'Idle3']);
       await act(async () =>
@@ -417,6 +460,112 @@ describe('Board side panel', () => {
     }
   });
 
+  it('lists the Board directory in the Files tab and previews a file through the local agent', async () => {
+    const store = createStore();
+    store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+    store.set(localProbeResultAtom, { ok: true, machineId: 'laptop' });
+    // No `files` row yet: the coordinator's machine keeps the directory.
+    const coordinator = makeSession('coordinator', {
+      boardRole: 'coordinator',
+      machineId: 'devnuc',
+    });
+    store.set(sessionMetaCacheAtom, { [getSessionRoomId(coordinator.id)]: coordinator });
+    const ipc = installIpc({
+      'board/files-list:files': {
+        entries: [{ path: 'design/plan.md', sizeBytes: 22, modifiedAtMs: 1 }],
+        truncated: false,
+      },
+      'file:files/design/plan.md': '# Plan\n\nShip it.',
+    });
+    const view = await mount(
+      <Provider store={store}>
+        <BoardSidePanel
+          board={testBoard()}
+          openThreadId={null}
+          onOpenThread={() => {}}
+          onShowInPage={() => {}}
+          onOpenThreadFull={() => {}}
+          renderThread={() => null}
+        />
+      </Provider>
+    );
+    try {
+      const filesTab = [...view.host.querySelectorAll('[role="tab"]')].find(
+        (node) => node.textContent === 'Board files'
+      ) as HTMLElement;
+      await act(async () => filesTab.click());
+      // The shared notes lead; the directory's files follow.
+      expect(
+        [...view.host.querySelectorAll('[data-scope-item="row"]')].map((row) =>
+          row.getAttribute('data-id')
+        )
+      ).toEqual(['notes', 'design/plan.md']);
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('[data-id="design/plan.md"]')?.click()
+      );
+      await vi.waitFor(() => expect(view.host.querySelector('h1')?.textContent).toBe('Plan'));
+      expect(ipc.requests).toContainEqual({
+        method: 'openMemberFile',
+        params: {
+          workspaceId: 'ws',
+          machineId: 'devnuc',
+          sessionId: 'coordinator',
+          boardId: 'bd_test',
+          path: 'files/design/plan.md',
+        },
+      });
+    } finally {
+      await view.unmount();
+      ipc.remove();
+    }
+  });
+
+  it('keeps the sessions a thread opened under it, lifted by the strongest state', async () => {
+    const view = await mount(
+      <BoardThreadListView
+        threads={[
+          { id: 'idle', title: 'Idle thread', status: 'idle', detail: '', updatedLabel: '' },
+          { id: 'parent', title: 'Thread', status: 'idle', detail: '', updatedLabel: '' },
+          {
+            id: 'reviewer',
+            title: 'Reviewer',
+            status: 'waiting_user',
+            detail: '',
+            updatedLabel: '',
+            depth: 1,
+          },
+        ]}
+        onOpen={() => {}}
+      />
+    );
+    try {
+      const sections = [...view.host.querySelectorAll('section')].map((section) => [
+        section.querySelector('button[aria-expanded]')?.textContent,
+        [...section.querySelectorAll('[data-scope-item="row"]')].map((row) =>
+          row.getAttribute('data-id')
+        ),
+      ]);
+      expect(sections).toEqual([
+        ['Needs you2', ['parent', 'reviewer']],
+        ['Idle1', ['idle']],
+      ]);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('keeps Board conversations out of outside lists while Boards are on', () => {
+    const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+    const thread = makeSession('thread');
+    const chat = makeSession('chat', { boardId: undefined });
+    expect([coordinator, thread, chat].filter((s) => !isBoardSession(s, true))).toEqual([chat]);
+    // With the experiment off threads are ordinary sessions again; the coordinator stays the Board's.
+    expect([coordinator, thread, chat].filter((s) => !isBoardSession(s, false))).toEqual([
+      thread,
+      chat,
+    ]);
+  });
+
   it('marks a Board by its strongest member state', () => {
     const board = testBoard();
     const working = makeSession('working');
@@ -465,7 +614,7 @@ it('saves Board settings to the catalog row and renames the coordinator with the
   }
 });
 
-it('starts the Board panel afresh on another Board, so a settings draft never saves into it', async () => {
+it('starts Board settings afresh on another Board, so a draft never saves into it', async () => {
   const boardA = testBoard();
   const boardB = testBoard({ id: 'bd_b' as never, name: 'Docs', coordinatorSessionId: 'coord-b' });
   const env = await boardRuntime([
@@ -479,17 +628,7 @@ it('starts the Board panel afresh on another Board, so a settings draft never sa
   function Page() {
     const [board, setBoard] = useState(boardA);
     showBoard = setBoard;
-    return (
-      <BoardSidePanel
-        board={board}
-        openThreadId={null}
-        onOpenThread={() => {}}
-        onShowInPage={() => {}}
-        onOpenThreadFull={() => {}}
-        renderThread={() => null}
-        onArchived={() => {}}
-      />
-    );
+    return <BoardSettings board={board} onClose={() => {}} onArchived={() => {}} />;
   }
   const view = await mount(
     <Provider store={store}>
@@ -497,17 +636,10 @@ it('starts the Board panel afresh on another Board, so a settings draft never sa
     </Provider>
   );
   const nameInput = () => document.querySelector<HTMLInputElement>('input[aria-label="Name"]');
-  const openSettings = () =>
-    act(async () =>
-      view.host.querySelector<HTMLButtonElement>('button[aria-label="Board settings"]')!.click()
-    );
   try {
-    await openSettings();
     await typeInto(nameInput()!, 'Draft for Release');
-    // Browser history moves the page to Board B while A's dialog is open.
+    // Browser history moves the page to Board B while A's settings are open.
     await act(async () => showBoard(boardB));
-    expect(nameInput()).toBeNull();
-    await openSettings();
     expect(nameInput()?.value).toBe('Docs');
     await submitForm();
     expect(env.board('bd_b')).toMatchObject({ name: 'Docs' });
@@ -515,6 +647,58 @@ it('starts the Board panel afresh on another Board, so a settings draft never sa
     expect((await env.meta('coord-b')).title).toBe('Docs');
   } finally {
     await view.unmount();
+    await env.destroy();
+  }
+});
+
+it('saves the Board instructions from the Memory page and lists the agents memory', async () => {
+  const env = await boardRuntime([makeSession('coordinator', { boardRole: 'coordinator' })]);
+  await writeWorkspaceBoard(env.runtime, testBoard());
+  const store = workspaceStore(env.runtime);
+  const ipc = installIpc({
+    'board/files-list:memory': {
+      entries: [
+        { path: 'decisions.md', sizeBytes: 10, modifiedAtMs: 1 },
+        { path: 'MEMORY.md', sizeBytes: 20, modifiedAtMs: 2 },
+      ],
+      truncated: false,
+    },
+  });
+  // i18next names Chinese `zh_CN`, which Intl does not take as a tag.
+  creation.language = 'zh_CN';
+  const view = await mount(
+    <Provider store={store}>
+      <BoardSettings board={env.board('bd_test')} onClose={() => {}} onArchived={() => {}} />
+    </Provider>
+  );
+  try {
+    const memoryPage = [...document.querySelectorAll('nav button')].find(
+      (button) => button.textContent === 'Memory'
+    ) as HTMLElement;
+    await act(async () => memoryPage.click());
+    await typeInto(
+      document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Instructions"]')!,
+      'Check nmem first.'
+    );
+    expect(document.body.textContent).toContain('17 / 16,000');
+    // MEMORY.md, the index, leads the memory files.
+    expect(
+      [...document.querySelectorAll('[data-scope-item="row"]')].map((row) =>
+        row.getAttribute('data-id')
+      )
+    ).toEqual(['MEMORY.md', 'decisions.md']);
+    expect(ipc.requests).toContainEqual(
+      expect.objectContaining({
+        method: 'board/files-list',
+        params: { boardId: 'bd_test', sessionId: 'coordinator', area: 'memory' },
+      })
+    );
+    await submitForm();
+    expect(env.board('bd_test')).toMatchObject({ instructions: 'Check nmem first.' });
+  } finally {
+    creation.language = 'en';
+    await view.unmount();
+    ipc.remove();
     await env.destroy();
   }
 });
@@ -577,13 +761,10 @@ it('archives and restores a Board with its members, and keeps it where it was wh
   }
 });
 
-it('creates a Board from its goal, naming it after the first line with default rules', async () => {
-  const store = createStore();
-  const { runtime, board } = catalogRuntime();
+it('creates a Board from a name alone, with a coordinator that has not been sent anything', async () => {
+  const env = await boardRuntime([]);
+  const store = workspaceStore(env.runtime);
   store.set(userAtom, { id: 'user', name: 'User', email: 'user@example.com' });
-  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
-  store.set(currentWorkspaceSlugAtom, 'ws');
-  store.set(runtimeAtom, runtime);
   store.set(agentConfigMetaCacheAtom, {
     config: {
       id: 'config',
@@ -597,12 +778,6 @@ it('creates a Board from its goal, naming it after the first line with default r
   creation.machines = new Map([
     ['machine', { id: 'machine', name: 'Desktop', ownerUserId: 'user' }],
   ]);
-  const accepted: SessionToCreate[] = [];
-  creation.startSession = async (...args: unknown[]) => {
-    const [payload, history] = args as [SessionToCreate, Omit<SessionHistoryInput, 'id'>];
-    accepted.push(payload);
-    return { sessionId: payload.sessionId, historyEntry: { ...history, id: 'first-turn' } };
-  };
   const created: BoardMeta[] = [];
   const view = await mount(
     <Provider store={store}>
@@ -611,34 +786,30 @@ it('creates a Board from its goal, naming it after the first line with default r
   );
   try {
     expect(document.querySelectorAll('input[type="number"]')).toHaveLength(0);
-    const goal = document.querySelector('textarea')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
-        goal,
-        'Ship the Board home\nKeep it small.'
-      );
-      goal.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await act(async () => {
-      document
-        .querySelector('form')!
-        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
+    await typeInto(document.querySelector('input')!, 'Ship the Board home');
+    await submitForm();
     expect(created).toHaveLength(1);
-    expect(board(created[0]!.id)).toMatchObject({
+    const board = env.board(created[0]!.id);
+    expect(board).toMatchObject({
       name: 'Ship the Board home',
-      purpose: 'Ship the Board home\nKeep it small.',
+      purpose: '',
       rules: { maxRoundsPerThread: 4, reportHumanTurns: false, executorConstraints: '' },
+      files: { machineId: 'machine' },
     });
-    expect(accepted[0]).toMatchObject({
-      boardId: created[0]!.id,
+    // The coordinator exists, belongs to the Board, and has no first message:
+    // the user speaks first.
+    const coordinator = await env.meta(board.coordinatorSessionId);
+    expect(coordinator).toMatchObject({
+      boardId: board.id,
       boardRole: 'coordinator',
       title: 'Ship the Board home',
+      machineId: 'machine',
     });
+    expect(coordinator).not.toHaveProperty('lastMessageAt');
   } finally {
     await view.unmount();
-    creation.startSession = undefined;
     creation.machines.clear();
+    await env.destroy();
   }
 });
 

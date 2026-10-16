@@ -35,6 +35,18 @@ export function isBoardCoordinator(session: Pick<SessionMeta, 'boardRole'>): boo
   return session.boardRole === 'coordinator';
 }
 
+/**
+ * A Board's conversations live in the Board: lists outside it (sidebar, mobile
+ * home, Archive) show none of them while Boards are on. With the experiment off
+ * the threads are ordinary sessions again; the coordinator stays the Board's.
+ */
+export function isBoardSession(
+  session: Pick<SessionMeta, 'boardRole' | 'boardId'>,
+  boardsEnabled: boolean
+): boolean {
+  return isBoardCoordinator(session) || (boardsEnabled && session.boardId !== undefined);
+}
+
 /** True when nothing live says otherwise and the waiting marker is newer than the last message. */
 function awaitsUser(session: SessionMeta, live: SessionStatus | null | undefined): boolean {
   if (live) return live.type === 'requestPermission';

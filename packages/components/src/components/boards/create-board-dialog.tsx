@@ -4,7 +4,7 @@ import { filterAcpSessionConfigOptionValues } from '@/lib/acp-session-config-sel
 import { useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { atomWithStorage } from 'jotai/utils';
-import { useAtom } from 'jotai';
+import { useAtom, useStore } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import * as stylex from '@stylexjs/stylex';
 import { v4 as uuid } from 'uuid';
@@ -25,6 +25,12 @@ import {
 } from '@lody/shared';
 import { userAtom } from '@/atoms';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
+import {
+  getSessionRunConfigDraftKey,
+  getSessionRunConfigDraftTargetKey,
+  sessionRunConfigDraftAccountAtom,
+  sessionRunConfigDraftsAtom,
+} from '@/atoms/session-run-config-drafts';
 import { getAllAgentConfigAtom } from '@/atoms/agents';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useMachineFlockAgentConfigs } from '@/hooks/use-machine-flock-agent-configs';
@@ -47,7 +53,7 @@ import { pickScheduleAgent, seedScheduleAgentRunRef } from '../schedules/schedul
 import { DesktopMachineMenu } from '../sessions/desktop-run-config-menu';
 import type { AgentRunRef } from '../shared/agent-run-ref';
 import { boardStyles } from './board-view';
-import { BoardCreateDialogView, boardNameFromGoal } from './board-create-dialog-view';
+import { BoardCreateDialogView } from './board-create-dialog-view';
 
 const lastBoardAgentAtom = atomWithStorage<{
   machineId: MachineId;
@@ -74,7 +80,8 @@ export function CreateBoardDialog({
   const { roles } = useWorkspaceAgentRoles();
   const availability = useAgentRoleAvailability(roles);
   const names = useComposerAgentRoleNames();
-  const { startSession, requestSessionDispatch } = useSessionActions();
+  const { createSession, startSession, requestSessionDispatch } = useSessionActions();
+  const store = useStore();
   const [lastAgent, setLastAgent] = useAtom(lastBoardAgentAtom);
   const ownedMachines = useMemo(
     () => new Map([...machines].filter(([, machine]) => machine.ownerUserId === user?.id)),
@@ -129,20 +136,74 @@ export function CreateBoardDialog({
         instanceId: null,
       });
   };
-  const create = async () => {
+  const sessionPayload = (
+    ready: { userId: string; machineId: MachineId; config: NonNullable<typeof config> },
+    board: BoardMeta,
+    sessionId: SessionId,
+    title: string
+  ) => ({
+    sessionId,
+    userId: ready.userId,
+    machineId: ready.machineId,
+    cliType: ready.config.cliType,
+    agentType: ready.config.agentType,
+    agentConfigId: ready.config.id,
+    customAcp: ready.config.customAcp,
+    runtimeOverrides: ready.config.runtimeOverrides,
+    env: ready.config.env,
+    title,
+    boardId: board.id,
+    ...(role
+      ? {
+          agentRoleId: role.role.id,
+          agentRoleRevision: role.role.revision,
+          agentRoleInstanceId: role.instance.id,
+        }
+      : {}),
+  });
+  const seedRunConfig = (sessionId: SessionId) => {
+    const accountId = store.get(sessionRunConfigDraftAccountAtom).accountId;
+    if (!accountId || !runtime || !config || !shownAgent) return;
+    const scope = {
+      accountId,
+      workspaceId: runtime.workspaceId,
+      sessionId,
+      targetKey: getSessionRunConfigDraftTargetKey({
+        cliType: config.cliType,
+        agentType: config.agentType,
+        agentConfigId: config.id,
+      }),
+    };
+    store.set(sessionRunConfigDraftsAtom, (drafts) =>
+      new Map(drafts).set(getSessionRunConfigDraftKey(scope), {
+        scope,
+        ...(shownAgent.modeId !== undefined ? { mode: { value: shownAgent.modeId } } : {}),
+        ...(shownAgent.modelId !== undefined ? { model: { value: shownAgent.modelId } } : {}),
+        configOptions: Object.fromEntries(
+          Object.entries(shownAgent.configOptionValues ?? {}).map(([id, value]) => [id, { value }])
+        ),
+      })
+    );
+  };
+  /**
+   * A new Board: its row, and a coordinator that has said nothing yet. The user
+   * speaks first; the run config chosen here waits in the composer, the way a
+   * draft of a new chat does.
+   */
+  const createBoard = async () => {
     if (!runtime || !user || !machine || !config || !shownAgent || saving) return;
-    const board =
-      existingBoard ??
-      normalizeBoardMeta({
-        version: 1,
-        id: ids.board,
-        name: name.trim() || boardNameFromGoal(purpose),
-        purpose: purpose.trim(),
-        rules: DEFAULT_BOARD_RULES,
-        coordinatorSessionId: ids.session,
-        createdAtMs: Date.now(),
-        createdByUserId: user.id,
-      });
+    const board = normalizeBoardMeta({
+      version: 1,
+      id: ids.board,
+      name: name.trim(),
+      purpose: purpose.trim(),
+      rules: DEFAULT_BOARD_RULES,
+      coordinatorSessionId: ids.session,
+      createdAtMs: Date.now(),
+      createdByUserId: user.id,
+      // The coordinator's machine keeps the Board directory.
+      files: { machineId: machine.id },
+    });
     if (!board) {
       setError(
         t(
@@ -158,7 +219,52 @@ export function CreateBoardDialog({
     }
     setSaving(true);
     setError('');
-    const task = existingBoard ? purpose.trim() : board.purpose;
+    try {
+      await createWorkspaceBoard(runtime, board, () =>
+        createSession({
+          ...sessionPayload(
+            { userId: user.id, machineId: machine.id, config },
+            board,
+            board.coordinatorSessionId,
+            board.name
+          ),
+          boardRole: 'coordinator',
+        })
+      );
+      if (!role) seedRunConfig(board.coordinatorSessionId);
+      setLastAgent({
+        machineId: machine.id,
+        agent: shownAgent,
+        instanceId: role?.instance.id ?? null,
+      });
+      onCreated(board);
+    } catch (cause) {
+      setError(
+        cause instanceof Error && cause.message === 'BOARD_LIMIT'
+          ? t(
+              'boards.invalid',
+              'Enter a name and goal within the limits. A workspace can have up to 50 active boards.'
+            )
+          : cause instanceof Error
+            ? cause.message
+            : String(cause)
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+  /** A new thread of an existing Board: it starts with its task, like a new chat. */
+  const create = async () => {
+    if (!existingBoard) return await createBoard();
+    if (!runtime || !user || !machine || !config || !shownAgent || saving) return;
+    const board = existingBoard;
+    if (role && role.availability.kind !== 'available') {
+      setError(t('boards.agentUnavailable', 'Choose an available agent.'));
+      return;
+    }
+    setSaving(true);
+    setError('');
+    const task = purpose.trim();
     const inputBlocks = [{ type: 'text' as const, text: task }];
     const prompt = buildAgentPrompt(
       task,
@@ -199,43 +305,20 @@ export function CreateBoardDialog({
       return;
     }
     try {
-      const start = () =>
-        startSession(
-          {
-            sessionId: existingBoard ? ids.session : board.coordinatorSessionId,
-            userId: user.id,
-            machineId: machine.id,
-            cliType: config.cliType,
-            agentType: config.agentType,
-            agentConfigId: config.id,
-            customAcp: config.customAcp,
-            runtimeOverrides: config.runtimeOverrides,
-            env: config.env,
-            title: existingBoard ? name.trim() : board.name,
-            boardId: board.id,
-            ...(existingBoard ? {} : { boardRole: 'coordinator' as const }),
-            ...(role
-              ? {
-                  agentRoleId: role.role.id,
-                  agentRoleRevision: role.role.revision,
-                  agentRoleInstanceId: role.instance.id,
-                }
-              : {}),
-          },
-          history
-        );
-      const created = await (existingBoard ? start() : createWorkspaceBoard(runtime, board, start));
+      const created = await startSession(
+        sessionPayload(
+          { userId: user.id, machineId: machine.id, config },
+          board,
+          ids.session,
+          name.trim()
+        ),
+        history
+      );
       // The accepted turn already owns dispatch. RPC only accelerates it.
       void requestSessionDispatch(created.sessionId, created.historyEntry.id, {
         inputConfig,
         machineId: machine.id,
-      }).catch((cause: unknown) => console.warn('Board coordinator dispatch deferred', cause));
-      if (!existingBoard)
-        setLastAgent({
-          machineId: machine.id,
-          agent: shownAgent,
-          instanceId: role?.instance.id ?? null,
-        });
+      }).catch((cause: unknown) => console.warn('Board thread dispatch deferred', cause));
       onCreated(board);
     } catch (cause) {
       setError(

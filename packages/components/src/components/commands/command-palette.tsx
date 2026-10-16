@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from '@tanstack/react-router';
 import { useAtomValue } from 'jotai';
-import type { SessionId } from '@lody/shared';
 import {
   commands,
   useCommandPaletteState,
@@ -52,14 +51,15 @@ export function CommandPalette() {
   const { projects: localProjects } = useVisibleLocalProjects({ syncMachineFlock: false });
   const boardsEnabled = useAtomValue(boardEnabledAtom);
   const { boards } = useWorkspaceCatalog();
-  // A coordinator is its Board: it is found by the Board's name and opens as the Board.
-  const boardsByCoordinator = useMemo(
+  // A Board's conversations open in the Board: a coordinator is the Board, a thread
+  // opens in its panel. Both are found by the Board's name.
+  const activeBoards = useMemo(
     () =>
       new Map(
         boardsEnabled
           ? boards
               .filter((board) => board.archivedAtMs === undefined)
-              .map((board) => [board.coordinatorSessionId as string, board])
+              .map((board) => [board.id as string, board])
           : []
       ),
     [boards, boardsEnabled]
@@ -87,16 +87,26 @@ export function CommandPalette() {
   );
 
   const openSession = useCallback(
-    (sessionId: SessionId, asBoard: boolean) => {
+    (session: SessionListEntry) => {
       if (!workspaceSlug) return;
       handleOpenChange(false);
+      const board = session.boardId ? activeBoards.get(session.boardId) : undefined;
+      if (!board) {
+        void router.navigate({
+          to: '/$workspaceName/sessions/$sessionId',
+          params: { workspaceName: workspaceSlug, sessionId: session.id },
+        });
+        return;
+      }
+      const entry = boardEntrySearch(board.coordinatorSessionId);
       void router.navigate({
         to: '/$workspaceName/sessions/$sessionId',
-        params: { workspaceName: workspaceSlug, sessionId },
-        search: asBoard ? boardEntrySearch(sessionId) : undefined,
+        params: { workspaceName: workspaceSlug, sessionId: board.coordinatorSessionId },
+        search:
+          session.id === board.coordinatorSessionId ? entry : { ...entry, boardThread: session.id },
       });
     },
-    [handleOpenChange, router, workspaceSlug]
+    [activeBoards, handleOpenChange, router, workspaceSlug]
   );
 
   const resolveLabel = useCallback(
@@ -125,22 +135,24 @@ export function CommandPalette() {
   const toSessionResult = useCallback(
     (session: SessionListEntry): PaletteResult => {
       const lastActivityValue = session.lastMessageAt ?? session.createdAt ?? null;
-      const board = boardsByCoordinator.get(session.id);
+      const board = session.boardId ? activeBoards.get(session.boardId) : undefined;
+      const coordinator = board?.coordinatorSessionId === session.id;
+      const title = session.title?.trim() || t('sessions.untitled', 'Untitled session');
       return {
         kind: 'session',
         key: `session:${session.id}`,
-        title: board?.name ?? (session.title?.trim() || t('sessions.untitled', 'Untitled session')),
-        subtitle: board
+        title: board ? (coordinator ? board.name : `${board.name} › ${title}`) : title,
+        subtitle: coordinator
           ? t('boards.panelTab', 'Board')
           : getSessionPaletteSubtitle(session, localProjects),
         shortcut: null,
         trailing:
           lastActivityValue != null ? formatCompactRelativeTime(lastActivityValue, now) : null,
-        icon: board ? LayoutDashboard : undefined,
-        run: () => openSession(session.id, board !== undefined),
+        icon: coordinator ? LayoutDashboard : undefined,
+        run: () => openSession(session),
       };
     },
-    [boardsByCoordinator, localProjects, now, openSession, t]
+    [activeBoards, localProjects, now, openSession, t]
   );
 
   // Only surface commands that can actually fire in the current view. Each command declares
@@ -184,7 +196,7 @@ export function CommandPalette() {
       // Match the displayed project/repo label too (covers local project names, not
       // just `repoFullName`), so a session is findable by what the row shows.
       const projectLabel = resolveSessionProjectLabel(session, localProjects) ?? '';
-      const boardName = boardsByCoordinator.get(session.id)?.name ?? '';
+      const boardName = (session.boardId && activeBoards.get(session.boardId)?.name) || '';
       for (const text of [boardName, session.title ?? '', projectLabel, session.branchName ?? '']) {
         if (!text) continue;
         const score = fuzzyMatch(trimmedQuery, text);
@@ -198,7 +210,7 @@ export function CommandPalette() {
       .sort((a, b) => b.score - a.score)
       .map((entry) => entry.result);
   }, [
-    boardsByCoordinator,
+    activeBoards,
     isSearching,
     localProjects,
     resolveLabel,

@@ -1,5 +1,6 @@
 import { ArchivedBoardsSection } from '../boards/archived-boards-section';
-import { isBoardCoordinator } from '../boards/board-threads';
+import { isBoardSession } from '../boards/board-threads';
+import { boardEnabledAtom } from '@/atoms/settings';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
@@ -1770,10 +1771,11 @@ export function ArchiveView() {
   const user = useAtomValue(userAtom);
   const workspaceSlug = useAtomValue(currentWorkspaceSlugAtom);
   const { archivedSessions: visibleArchivedSessions } = useVisibleArchivedSessionMetas();
-  // A coordinator is archived and restored with its Board, listed above.
+  // A Board's conversations are archived and restored with it, or found in its panel.
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
   const archivedSessions = useMemo(
-    () => visibleArchivedSessions.filter((session) => !isBoardCoordinator(session)),
-    [visibleArchivedSessions]
+    () => visibleArchivedSessions.filter((session) => !isBoardSession(session, boardsEnabled)),
+    [boardsEnabled, visibleArchivedSessions]
   );
   const { restoreSession, deleteArchivedSession } = useSessionActions();
   const openMobileDrawer = useSetAtom(setMobileDrawerOpenAtom);

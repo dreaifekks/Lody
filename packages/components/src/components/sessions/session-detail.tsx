@@ -7,6 +7,7 @@ import {
   Archive,
   ArchiveRestore,
   ArrowLeft,
+  Settings2,
   ChevronLeft,
   Copy,
   Ellipsis,
@@ -111,7 +112,8 @@ import {
 } from '@/atoms/layout-state';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
-import { space } from '@lody/ui/tokens/scales.stylex';
+import { space, text as textScale } from '@lody/ui/tokens/scales.stylex';
+import { colors } from '@lody/ui/tokens/colors.stylex';
 import { useDocumentTitle } from '@/hooks/use-document-title';
 import { useTabStatus, type TabStatus } from '@/hooks/use-tab-status';
 import {
@@ -195,7 +197,8 @@ import { useSemanticActionRouter } from '@/lib/commands/use-semantic-action-rout
 import type { SemanticActionRouter } from '@/lib/commands/semantic-action-router';
 import { boardEnabledAtom, semanticShortcutsFeatureEnabledAtom } from '@/atoms/settings';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
-import { BoardSidePanel } from '../boards/board-side-panel';
+import { BoardSidePanel, useThreadLocation } from '../boards/board-side-panel';
+import { BoardSettings } from '../boards/board-settings-panel';
 import { cn, getBasename } from '@/lib';
 
 import {
@@ -528,6 +531,17 @@ const MOBILE_FILES_VIEWER_ID = 'mobile-viewer:files';
 const PR_SIDEBAR_MIN_WIDTH_PX = 500;
 
 const detailStyles = stylex.create({
+  boardThreadLocation: {
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: '240px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    paddingInline: space[1],
+    fontSize: textScale.footnoteSize,
+    color: colors.secondaryLabel,
+  },
   projectInfo: {
     display: 'flex',
     minWidth: 0,
@@ -1015,6 +1029,7 @@ const SessionDetail = ({
   urlBrowser,
   urlSimulator,
   urlBoard,
+  urlBoardThread,
   onMobileBack,
 }: {
   sessionId: SessionId;
@@ -1024,6 +1039,8 @@ const SessionDetail = ({
   urlSimulator?: boolean;
   /** `?board=1`: open the Board panel of a coordinator's page once. */
   urlBoard?: boolean;
+  /** With `?board=1`: a thread to open in the Board panel (its own page on narrow windows). */
+  urlBoardThread?: string;
   onMobileBack?: () => void;
 }) => {
   const { t } = useTranslation();
@@ -1094,6 +1111,7 @@ const SessionDetail = ({
   // layout remounts the panel subtree.
   const [boardThreadId, setBoardThreadId] = useState<SessionId | null>(null);
   const [mobileBoardOpen, setMobileBoardOpen] = useState(false);
+  const [boardSettingsOpen, setBoardSettingsOpen] = useState(false);
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab | null>(
     () => initialTabState.sidePanel.tab
   );
@@ -1216,6 +1234,10 @@ const SessionDetail = ({
     boardsEnabled && activeSession?.boardRole === 'coordinator'
       ? (boards.find((board) => board.coordinatorSessionId === activeSession.id) ?? null)
       : null;
+  // A Board thread on its own page says where it runs, as it does in the Board panel.
+  const boardThreadLocation = useThreadLocation(
+    boardsEnabled && activeSession?.boardId && !activeBoard ? activeSession : null
+  );
   // The Board panel has its own Board files, so on a Board this tab names whose files it holds.
   const filesTabLabel = activeBoard
     ? t('boards.workspaceFiles', 'Workspace files')
@@ -1420,6 +1442,7 @@ const SessionDetail = ({
     setFileProviderRequestedByInteraction(false);
     setBoardThreadId(null);
     setMobileBoardOpen(false);
+    setBoardSettingsOpen(false);
   }
 
   const setDraftTabs = useCallback(
@@ -3560,6 +3583,7 @@ const SessionDetail = ({
         setSidebarRestoreSeq((seq) => seq + 1);
         setIsSidebarOpen(true);
         activateSidebarTab('board');
+        if (urlBoardThread && !isCompactDesktop) setBoardThreadId(urlBoardThread as SessionId);
       }
     }
   } else if (urlBoard !== true && restoredBoardPanel !== null) {
@@ -3577,17 +3601,37 @@ const SessionDetail = ({
   useEffect(() => {
     if (urlBoard !== true || restoredBoardPanel !== sessionId || !workspaceSlug) return;
     setZenLayoutMode(false);
+    // A narrow window has no room for a thread beside the coordinator: go to its page.
+    if (urlBoardThread && (isMobile || isCompactDesktop)) {
+      void router.navigate({
+        to: '/$workspaceName/sessions/$sessionId',
+        params: { workspaceName: workspaceSlug, sessionId: urlBoardThread },
+        replace: true,
+      });
+      return;
+    }
     void router.navigate({
       to: '/$workspaceName/sessions/$sessionId',
       params: { workspaceName: workspaceSlug, sessionId },
       search: (prev) => {
         const next = { ...prev };
         delete next.board;
+        delete next.boardThread;
         return next;
       },
       replace: true,
     });
-  }, [restoredBoardPanel, router, sessionId, setZenLayoutMode, urlBoard, workspaceSlug]);
+  }, [
+    isCompactDesktop,
+    isMobile,
+    restoredBoardPanel,
+    router,
+    sessionId,
+    setZenLayoutMode,
+    urlBoard,
+    urlBoardThread,
+    workspaceSlug,
+  ]);
 
   // Once restored, a user switching away from the PR tab (or closing the
   // sidebar) clears `?pr` so the URL stays consistent. The URL write must be
@@ -6192,8 +6236,27 @@ const SessionDetail = ({
           onNavigateSession={handleNavigateSession}
         />
       )}
-      onArchived={navigateToChat}
     />
+  ) : null;
+  const boardSettings =
+    activeBoard && boardSettingsOpen ? (
+      <BoardSettings
+        board={activeBoard}
+        onClose={() => setBoardSettingsOpen(false)}
+        onArchived={navigateToChat}
+      />
+    ) : null;
+  const boardSettingsButton = activeBoard ? (
+    <Button
+      type="button"
+      variant="ghost"
+      size="small"
+      icon
+      aria-label={t('boards.settings.title', 'Board settings')}
+      onClick={() => setBoardSettingsOpen(true)}
+    >
+      <Settings2 {...stylex.props(detailStyles.icon16)} />
+    </Button>
   ) : null;
 
   if (isMobile) {
@@ -6828,6 +6891,7 @@ const SessionDetail = ({
             </VaulDrawerBody>
           </DrawerContent>
         </Drawer>
+        {boardSettings}
         {/* Mobile Board drawer: the Board panel full screen. Opening a thread
            leaves for that thread's page. */}
         {activeBoard ? (
@@ -6858,6 +6922,7 @@ const SessionDetail = ({
                       <ArrowLeft {...stylex.props(detailStyles.icon16)} />
                     </Button>
                     <span {...stylex.props(detailStyles.mobileTitle)}>{activeBoard.name}</span>
+                    {boardSettingsButton}
                   </header>
                   <div {...stylex.props(detailStyles.relativeFill)}>{boardPanel}</div>
                 </div>
@@ -7191,9 +7256,12 @@ const SessionDetail = ({
     effectiveActiveViewerTabId === null &&
     effectiveActiveSideSessionId === null &&
     openingActiveSideSessionId === null;
-  const defaultSizes = showFixedSidePanelBody
-    ? { main: 75, sidebar: 25 }
-    : { main: 60, sidebar: 40 };
+  // A Board opens with its conversation and its panel side by side, half each.
+  const defaultSizes = activeBoard
+    ? { main: 50, sidebar: 50 }
+    : showFixedSidePanelBody
+      ? { main: 75, sidebar: 25 }
+      : { main: 60, sidebar: 40 };
 
   const sidebarToggleButton = (
     <Button
@@ -7242,6 +7310,12 @@ const SessionDetail = ({
       headerVariant="toolbar"
       headerEndSlot={
         <>
+          {boardThreadLocation ? (
+            <span title={boardThreadLocation} {...stylex.props(detailStyles.boardThreadLocation)}>
+              {boardThreadLocation}
+            </span>
+          ) : null}
+          {boardSettingsButton}
           <TerminalDockToggleButton />
           {!isSidebarVisible ? sidebarToggleButton : null}
         </>
@@ -7614,8 +7688,10 @@ const SessionDetail = ({
         handleDesktopTabRegionInteraction(event.target, event.currentTarget)
       }
     >
+      {boardSettings}
       <DesktopSessionDetailLayout
         defaultSizes={defaultSizes}
+        layoutStorageId={activeBoard ? 'board-detail-panels' : 'session-detail-panels'}
         topBar={tabBar}
         chatSurfaces={desktopChatSurfaces}
         terminalDock={<TerminalDockHost />}

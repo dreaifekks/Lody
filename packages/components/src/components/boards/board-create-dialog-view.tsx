@@ -16,18 +16,10 @@ const styles = stylex.create({
   note: { margin: 0, fontSize: text.footnoteSize, color: colors.secondaryLabel },
 });
 
-/** The name a Board takes when none is typed: the goal's first line, cut to the row limit. */
-export function boardNameFromGoal(goal: string): string {
-  return Array.from(goal.trim().split('\n')[0] ?? '')
-    .slice(0, 80)
-    .join('')
-    .trim();
-}
-
 /**
- * Creating a Board asks only what the first message needs: the goal, and who
- * coordinates. The name defaults to the goal's first line; rules start from
- * defaults and change later in Board settings.
+ * Creating a Board asks for a name and who coordinates; the goal is optional.
+ * Nothing is sent: the Board opens on an empty coordinator conversation and the
+ * user speaks first. Rules start from defaults and change in Board settings.
  */
 export function BoardCreateDialogView({
   goal,
@@ -55,7 +47,6 @@ export function BoardCreateDialogView({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const firstLine = boardNameFromGoal(goal);
   return (
     <Dialog.Root
       open
@@ -75,28 +66,26 @@ export function BoardCreateDialogView({
           }}
         >
           <label {...stylex.props(boardStyles.field)}>
-            <span {...stylex.props(styles.label)}>{t('boards.purpose', 'Goal')}</span>
-            <Textarea
+            <span {...stylex.props(styles.label)}>{t('boards.name', 'Name')}</span>
+            <Input
               autoFocus
               required
-              rows={4}
-              value={goal}
-              placeholder={t(
-                'boards.createForm.goalPlaceholder',
-                'What should this Board get done? It becomes the coordinator’s first message.'
-              )}
-              onChange={(event) => onGoalChange(event.target.value)}
+              value={name}
+              onChange={(event) => onNameChange(event.target.value)}
             />
           </label>
           <label {...stylex.props(boardStyles.field)}>
-            <span {...stylex.props(styles.label)}>{t('boards.name', 'Name')}</span>
-            <Input
-              value={name}
-              placeholder={
-                firstLine ||
-                t('boards.createForm.namePlaceholder', 'Defaults to the goal’s first line')
-              }
-              onChange={(event) => onNameChange(event.target.value)}
+            <span {...stylex.props(styles.label)}>
+              {t('boards.purposeOptional', 'Goal (optional)')}
+            </span>
+            <Textarea
+              rows={3}
+              value={goal}
+              placeholder={t(
+                'boards.createForm.goalPlaceholder',
+                'What this Board is for. Members read it when they start.'
+              )}
+              onChange={(event) => onGoalChange(event.target.value)}
             />
           </label>
           <div {...stylex.props(styles.row)}>
@@ -106,7 +95,7 @@ export function BoardCreateDialogView({
           <p {...stylex.props(styles.note)}>
             {t(
               'boards.createForm.later',
-              'Rules start from defaults. Change them in Board settings.'
+              'Nothing is sent yet: the Board opens on the coordinator, and you speak first. Rules start from defaults.'
             )}
           </p>
           {error !== '' ? (
@@ -118,7 +107,7 @@ export function BoardCreateDialogView({
             <Button variant="ghost" onClick={onClose} disabled={saving}>
               {t('common.cancel', 'Cancel')}
             </Button>
-            <Button type="submit" disabled={saving || goal.trim().length === 0}>
+            <Button type="submit" disabled={saving || name.trim().length === 0}>
               {saving ? t('boards.creating', 'Creating…') : t('boards.createForm.submit', 'Create')}
             </Button>
           </div>
