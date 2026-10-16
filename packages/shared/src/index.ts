@@ -513,4 +513,5 @@ export * from './message-author';
 
 export * from './magpie-import';
 export * from './board';
+export * from './board-continuity';
 export * from './board-files';

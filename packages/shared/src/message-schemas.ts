@@ -25,6 +25,7 @@ import {
   LanShareSourceSchema,
 } from './lan-share';
 import { AgentRoleSnapshotSchema } from './message-author';
+import { BoardMaintenanceMetaSchema } from './board-continuity';
 import { z } from 'zod';
 import { SubagentTaskPayloadSchema } from './acp/claude-subagent-task';
 import {
@@ -3818,6 +3819,7 @@ export const PermissionRequestInfoSchema = z.object({
 // System notice name schema
 export const SystemNoticeNameSchema = z.enum([
   'board_chain_limit',
+  'board_context_maintenance',
   'resume_from_external_chat_history',
   'chat_failed',
   'agent_warning',
@@ -4117,6 +4119,11 @@ export const SystemNoticeSchema = z.discriminatedUnion('name', [
     type: z.literal('system_notice'),
     name: z.literal('board_chain_limit'),
     meta: z.object({ boardId: z.string(), drivingTurnId: z.string() }).optional(),
+  }),
+  z.object({
+    type: z.literal('system_notice'),
+    name: z.literal('board_context_maintenance'),
+    meta: BoardMaintenanceMetaSchema.optional(),
   }),
   z.object({
     type: z.literal('system_notice'),

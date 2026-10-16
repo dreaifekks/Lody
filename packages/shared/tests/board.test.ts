@@ -12,6 +12,15 @@ import { readBoardDocument, writeBoardNotes, BOARD_NOTES_MAX_BYTES } from '../sr
 import { describe, expect, it } from 'vitest';
 import { normalizeBoardMeta, deriveBoardSessionStatus } from '../src/board';
 import {
+  DEFAULT_BOARD_CONTINUITY,
+  boardCompactionThreshold,
+  boardMaintenanceTurn,
+  decideBoardIdleCompaction,
+  isBoardMaintenanceEntry,
+  readBoardMaintenance,
+} from '../src/board-continuity';
+import { MessageContentSchema } from '../src/message-schemas';
+import {
   applyWorkspaceFlockRowEvents,
   listWorkspaceBoards,
   parseWorkspaceFlockRow,
@@ -34,6 +43,7 @@ describe('boards in the workspace catalog', () => {
       name: '看'.repeat(80),
       instructions: '',
       rules: { maxRoundsPerThread: 4, reportHumanTurns: false, executorConstraints: '' },
+      continuity: { idleCompaction: true, idleMinutes: 10, maxTokens: 150_000, windowPercent: 40 },
     });
     // A Board may start from its name alone.
     const { purpose: _purpose, ...named } = board;
@@ -197,4 +207,52 @@ it('shows an inherited collaboration stop even when the ancestor is outside the 
   const member = { id: 'member', openedBySessionId: 'root' } as SessionMeta;
   expect(isBoardSessionStopped(member, (id) => (id === root.id ? root : undefined))).toBe(true);
   expect(deriveBoardSessionStatus({ collaborationStopped: true })).toBe('stopped');
+});
+
+describe('coordinator continuity', () => {
+  const idle = (overrides: Partial<Parameters<typeof decideBoardIdleCompaction>[0]> = {}) =>
+    decideBoardIdleCompaction({
+      settings: DEFAULT_BOARD_CONTINUITY,
+      usage: { used: 160_000, size: 1_000_000 },
+      idleSinceMs: 0,
+      nowMs: 10 * 60_000,
+      ...overrides,
+    });
+
+  it('compacts at the smaller of the token cap and the window share', () => {
+    expect(boardCompactionThreshold(1_000_000, DEFAULT_BOARD_CONTINUITY)).toBe(150_000);
+    expect(boardCompactionThreshold(200_000, DEFAULT_BOARD_CONTINUITY)).toBe(80_000);
+    expect(boardCompactionThreshold(undefined, DEFAULT_BOARD_CONTINUITY)).toBe(150_000);
+  });
+
+  it('waits for the idle period, needs the threshold and honors the switch', () => {
+    expect(idle()).toEqual({ kind: 'compact' });
+    expect(idle({ nowMs: 4 * 60_000 })).toEqual({ kind: 'wait', delayMs: 6 * 60_000 });
+    expect(idle({ usage: { used: 149_999, size: 1_000_000 } })).toEqual({
+      kind: 'none',
+      reason: 'below-threshold',
+    });
+    expect(idle({ usage: { used: 81_000, size: 200_000 } })).toEqual({ kind: 'compact' });
+    expect(idle({ usage: undefined })).toEqual({ kind: 'none', reason: 'no-usage' });
+    expect(
+      idle({ settings: { ...DEFAULT_BOARD_CONTINUITY, idleCompaction: false } })
+    ).toEqual({ kind: 'none', reason: 'disabled' });
+    expect(normalizeBoardMeta({ ...board, continuity: { idleMinutes: 0 } })).toBeNull();
+  });
+
+  it('stores a divider that history accepts and hides only maintenance replies', () => {
+    const turn = boardMaintenanceTurn(
+      'run-1',
+      { boardId: 'bd_1', kind: 'compact', trigger: 'idle', status: 'done', usedBefore: 1 },
+      '2026-10-17T00:00:00.000Z'
+    );
+    // The history writer parses each item with the shared content schema.
+    expect(turn.items?.every((item) => MessageContentSchema.safeParse(item).success)).toBe(true);
+    expect(readBoardMaintenance(turn)).toMatchObject({ kind: 'compact', status: 'done' });
+    expect(readBoardMaintenance({ ...turn, id: 'other' })).toBeUndefined();
+    expect(
+      isBoardMaintenanceEntry({ role: 'assistant', userTurnId: 'board-maintenance:run-1:memory' })
+    ).toBe(true);
+    expect(isBoardMaintenanceEntry({ role: 'assistant', userTurnId: 'user-1' })).toBe(false);
+  });
 });

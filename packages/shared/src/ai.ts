@@ -11,6 +11,7 @@ import {
 import type { ToolCallContent as AcpToolCallContent, SessionMode } from '@agentclientprotocol/sdk';
 import type { PermissionOutcome } from './message';
 import type { SessionGoalAction } from './goal';
+import type { BoardMaintenanceMeta } from './board-continuity';
 import { createPlanModeConfigOption } from 'acp-extension-core';
 import type { LodySubagentSnapshot, LodySubagentProgress } from 'acp-extension-core';
 import type { AgentConfigId, AgentRoleId, McpServerId, SessionId } from './ids';
@@ -1343,7 +1344,8 @@ export type SystemNoticeName =
   | 'task_proposal'
   | 'schedule_proposal'
   | 'session_fork_origin'
-  | 'board_chain_limit';
+  | 'board_chain_limit'
+  | 'board_context_maintenance';
 
 /**
  * Metadata for the resume_from_external_chat_history system notice
@@ -1523,6 +1525,7 @@ export type SystemNoticeMeta = {
   schedule_proposal: ScheduleProposalMeta;
   session_fork_origin: SessionForkOriginMeta;
   board_chain_limit: { boardId: string; drivingTurnId: string };
+  board_context_maintenance: BoardMaintenanceMeta;
 };
 
 export const SESSION_IMAGE_MAX_SIZE_BYTES = 5 * 1024 * 1024;

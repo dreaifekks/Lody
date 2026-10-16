@@ -4,6 +4,7 @@ export type { BoardId } from './ids';
 import type { SessionHistoryInput, SessionStatus, SessionMeta } from './schema';
 import type { BoardReportEvent, LodyOperationOutputPreview } from './session-orchestration';
 import { sha256Hex } from './sha256';
+import { BoardContinuitySettingsSchema, DEFAULT_BOARD_CONTINUITY } from './board-continuity';
 
 export const MAX_BOARDS_PER_WORKSPACE = 50;
 /** The user's standing instructions for every member of a Board, in code points. */
@@ -36,6 +37,8 @@ const BoardMetaSchema = z.object({
     .object({ machineId: z.string().min(1) })
     .strict()
     .optional(),
+  /** When Lody tidies the coordinator's context; see `board-continuity.ts`. */
+  continuity: BoardContinuitySettingsSchema.default(DEFAULT_BOARD_CONTINUITY),
   digestScheduleId: z.string().min(1).optional(),
   archivedAtMs: z.number().finite().nonnegative().optional(),
 });
