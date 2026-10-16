@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { BoardId, SessionId } from './ids';
+import type { BoardId, MachineId, SessionId } from './ids';
 export type { BoardId } from './ids';
 import type { SessionHistoryInput, SessionStatus, SessionMeta } from './schema';
 import type { BoardReportEvent, LodyOperationOutputPreview } from './session-orchestration';
@@ -31,16 +31,36 @@ const BoardMetaSchema = z.object({
       executorConstraints: boundedText(2000).default(''),
     })
     .default(DEFAULT_BOARD_RULES),
+  /** The machine that keeps the Board's shared directory: the coordinator's at creation. */
+  files: z
+    .object({ machineId: z.string().min(1) })
+    .strict()
+    .optional(),
   digestScheduleId: z.string().min(1).optional(),
   archivedAtMs: z.number().finite().nonnegative().optional(),
 });
-export type BoardMeta = Omit<z.infer<typeof BoardMetaSchema>, 'id' | 'coordinatorSessionId'> & {
+export type BoardMeta = Omit<
+  z.infer<typeof BoardMetaSchema>,
+  'id' | 'coordinatorSessionId' | 'files'
+> & {
   id: BoardId;
   coordinatorSessionId: SessionId;
+  files?: { machineId: MachineId };
 };
 export function normalizeBoardMeta(value: unknown): BoardMeta | null {
   const parsed = BoardMetaSchema.safeParse(value);
   return parsed.success ? (parsed.data as BoardMeta) : null;
+}
+
+/**
+ * The machine of a Board's shared directory. Boards created before the
+ * directory existed have no `files`: their coordinator's machine keeps it.
+ */
+export function boardFilesMachineId(
+  board: Pick<BoardMeta, 'files'>,
+  coordinator: Pick<SessionMeta, 'machineId'> | undefined
+): MachineId | undefined {
+  return board.files?.machineId ?? (coordinator?.machineId as MachineId | undefined);
 }
 
 export type BoardSessionStatus =

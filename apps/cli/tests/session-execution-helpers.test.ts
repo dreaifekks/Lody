@@ -128,6 +128,17 @@ it('adds role-specific Board instructions while retaining the task and existing 
   expect(thread).toContain('the coordinator decides which changes to make');
   expect(thread).toContain('Commit only. Run tests.');
   expect(thread).not.toContain('You are the coordinator');
+  // The coordinator coordinates; the Board directory is reached by tools from another machine.
+  expect(coordinator).toContain('You coordinate; you do not implement.');
+  expect(coordinator).toContain('You maintain MEMORY.md');
+  expect(thread).toContain('lody_board_files_list');
+  expect(thread).toContain('The coordinator maintains MEMORY.md.');
+  const local = buildPrompt('Implement', undefined, undefined, undefined, {
+    boardContext: { board, directory: '/data/boards/ws/bd_prompt' },
+  });
+  expect(local).toContain('Put files every member should see in /data/boards/ws/bd_prompt/files');
+  expect(local).toContain('/data/boards/ws/bd_prompt/memory');
+  expect(local).not.toContain('lody_board_files_list');
 });
 
 it('omits an empty Board goal and adds the user instructions for every member', () => {

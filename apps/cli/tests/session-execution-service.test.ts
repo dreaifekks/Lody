@@ -4412,7 +4412,7 @@ describe('SessionExecutionService', () => {
           expect(text).toContain(
             boardRole === 'coordinator'
               ? 'You are the coordinator of Board "Shipping"'
-              : 'This session belongs to Board "Shipping"'
+              : 'This session is a thread of Board "Shipping"'
           );
         }
         for (const instruction of ['CONFIG_INSTRUCTION', 'ROLE_INSTRUCTION', 'TASK_TEXT']) {

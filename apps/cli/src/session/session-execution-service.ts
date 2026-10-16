@@ -4,7 +4,14 @@ import type { LodyRateLimitsCapability } from 'acp-extension-core';
 import { queryLocalAcpRateLimits, AcpQuotaCleanupError } from '@/agent/acp-runner';
 import type { MachineProviderRateLimitsRefreshResponse } from '@lody/shared';
 import { ProviderQuotaRefreshCache } from './provider-quota-refresh-cache';
-import { getWorkspaceFlockDocId, normalizeBoardMeta, workspaceFlockKeys } from '@lody/shared';
+import {
+  boardFilesMachineId,
+  getWorkspaceFlockDocId,
+  normalizeBoardMeta,
+  workspaceFlockKeys,
+} from '@lody/shared';
+import { getLodyDataDir } from '@lody/shared/node/installation-profile';
+import { BoardDirectory } from '@/lib/board-directory';
 import {
   type AcpModelControls,
   type AcpSessionNotification,
@@ -6502,6 +6509,24 @@ export class SessionExecutionService {
             yield* Effect.fail(new Error('BOARD_NOT_FOUND'));
             return undefined;
           }
+          // Members on the machine that keeps the Board directory get its path;
+          // the others reach it through the Board file tools.
+          const boardFilesHost = board
+            ? boardFilesMachineId(
+                board,
+                board.coordinatorSessionId === sessionId
+                  ? existingMeta
+                  : ((yield* self.tryPromise(() =>
+                      self.deps.workspaceDocument.repo.getDocMeta(
+                        getSessionRoomId(board.coordinatorSessionId)
+                      )
+                    ))?.meta as SessionMeta | undefined)
+              )
+            : undefined;
+          const boardDirectory =
+            board && boardFilesHost === self.deps.machineId
+              ? new BoardDirectory(getLodyDataDir).boardPath(workspaceId, board.id)
+              : undefined;
           const startPromptBlocksBuild = async (session: ISession) => {
             let branchToRename: string | undefined;
             if (newWorktree) {
@@ -6533,7 +6558,9 @@ export class SessionExecutionService {
                 fromFeedbackPostId,
                 {
                   branchToRename,
-                  boardContext: board ? { board, role: existingMeta?.boardRole } : undefined,
+                  boardContext: board
+                    ? { board, role: existingMeta?.boardRole, directory: boardDirectory }
+                    : undefined,
                 }
               ),
             });

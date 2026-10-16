@@ -1,7 +1,10 @@
+import path from 'node:path';
 import { z } from 'zod';
 import type { LoroDoc } from 'loro-crdt';
 import {
   BOARD_NOTES_MAX_BYTES,
+  BoardFileAreaSchema,
+  BoardFilePathSchema,
   deriveBoardSessionStatus,
   isBoardSessionStopped,
   findFreshSessionPresenceState,
@@ -48,6 +51,33 @@ export function registerBoardTools(
       'Replace shared notes; only the Board coordinator may call this. Limit: 256 KiB UTF-8.',
       z.object({ text }).strict(),
     ],
+    [
+      'lody_board_files_list',
+      'List the Board shared directory: area "files" (shared files, the default) or "memory" (agent memory, indexed by MEMORY.md). Works from any machine of the Board.',
+      z.object({ area: BoardFileAreaSchema.optional() }).strict(),
+    ],
+    [
+      'lody_board_files_read',
+      'Copy a file of the Board shared directory to saveTo, an absolute path on your machine that does not exist yet.',
+      z
+        .object({
+          path: BoardFilePathSchema,
+          area: BoardFileAreaSchema.optional(),
+          saveTo: z.string().min(1).max(4096),
+        })
+        .strict(),
+    ],
+    [
+      'lody_board_files_write',
+      'Put a file of your machine (source, an absolute path) into the Board shared directory at path (default: its file name). Replaces a file of that name.',
+      z
+        .object({
+          source: z.string().min(1).max(4096),
+          path: BoardFilePathSchema.optional(),
+          area: BoardFileAreaSchema.optional(),
+        })
+        .strict(),
+    ],
   ] as const;
   for (const [name, description, inputSchema] of tools) {
     register(name, { description, inputSchema }, async (input) => {
@@ -80,6 +110,33 @@ export function registerBoardTools(
         let result: unknown;
         if (name === 'lody_board_get') {
           result = { ...board, role: session.boardRole ?? 'thread' };
+        } else if (
+          name === 'lody_board_files_list' ||
+          name === 'lody_board_files_read' ||
+          name === 'lody_board_files_write'
+        ) {
+          const files = environment.host.boardFiles;
+          if (!files) throw new Error('BOARD_FILES_UNAVAILABLE');
+          const scope = {
+            boardId: board.id,
+            sessionId,
+            area: ('area' in input && input.area) || ('files' as const),
+          };
+          if (name === 'lody_board_files_list') result = await files.list(scope);
+          else if (name === 'lody_board_files_read' && 'saveTo' in input) {
+            if (!path.isAbsolute(input.saveTo)) throw new Error('saveTo must be an absolute path');
+            result = {
+              ...(await files.read(scope, input.path, input.saveTo)),
+              savedTo: input.saveTo,
+            };
+          } else if ('source' in input) {
+            if (!path.isAbsolute(input.source)) throw new Error('source must be an absolute path');
+            result = await files.put(
+              scope,
+              input.path ?? path.basename(input.source),
+              input.source
+            );
+          }
         } else if (name === 'lody_board_overview') {
           const sessions = new Map(
             (await listAliveSessionMetas(manager)).map(({ meta }) => [meta.id, meta])

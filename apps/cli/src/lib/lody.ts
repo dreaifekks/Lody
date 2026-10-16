@@ -61,6 +61,7 @@ interface LodyOptions {
   lanWorkspace?: boolean;
   /** Carries a machine RPC request straight to another member; see `MessageHandlerConfig`. */
   askLanMemberDirect?: MessageHandlerConfig['askLanMemberDirect'];
+  boardFiles?: MessageHandlerConfig['boardFiles'];
   cloudPort: CloudPort;
 }
 export class Lody {
@@ -149,6 +150,7 @@ export class Lody {
         acceptsLanMemberFiles: options.acceptsLanMemberFiles,
         lanWorkspace: options.lanWorkspace,
         askLanMemberDirect: options.askLanMemberDirect,
+        boardFiles: options.boardFiles,
         cloudPort: options.cloudPort,
       },
       logger: this.logger,

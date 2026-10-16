@@ -5,9 +5,15 @@ import path from 'node:path';
 import type { Duplex, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
+  BoardFileEntrySchema,
+  BoardFileListSchema,
+  BoardFileScopeSchema,
   SESSION_FILE_MAX_COUNT,
   SESSION_FILE_MAX_SIZE_BYTES,
   SessionFileBlockSchema,
+  type BoardFileEntry,
+  type BoardFileList,
+  type BoardFileScope,
   type SessionFilePayload,
 } from '@lody/shared';
 import {
@@ -65,6 +71,18 @@ const ReadRequestSchema = z
   })
   .strict();
 
+// A Board's shared directory, on the machine that keeps it.
+const BoardListRequestSchema = BoardFileScopeSchema.extend({
+  type: z.literal('board-list'),
+}).strict();
+const BoardPutHeaderSchema = BoardFileScopeSchema.extend({
+  type: z.literal('board-put'),
+  // Checked against the directory by `admit`, so a name outside it is refused as such.
+  path: z.string().min(1).max(1024),
+  sizeBytes: z.number().int().nonnegative().max(SESSION_FILE_MAX_SIZE_BYTES),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+
 const RefusalSchema = z.object({
   type: z.literal('error'),
   code: z.string().min(1),
@@ -78,10 +96,26 @@ const ContentAnswerSchema = z.union([
   }),
   RefusalSchema,
 ]);
+const BoardListAnswerSchema = z.union([
+  BoardFileListSchema.extend({ type: z.literal('board-list') }).strict(),
+  RefusalSchema,
+]);
+const BoardStoredAnswerSchema = z.union([
+  z.object({ type: z.literal('board-stored'), entry: BoardFileEntrySchema }),
+  RefusalSchema,
+]);
 const StoredAnswerSchema = z.union([
   z.object({ type: z.literal('stored'), file: SessionFileBlockSchema }),
   RefusalSchema,
 ]);
+
+/** What the machine that keeps a Board directory does for the other members. */
+export type LanBoardFileService = {
+  list: (scope: BoardFileScope) => Promise<BoardFileList>;
+  /** Throws the reason before any byte travels. */
+  admit: (file: BoardFileScope & { path: string }) => Promise<void>;
+  put: (file: BoardFileScope & { path: string }, receivedPath: string) => Promise<BoardFileEntry>;
+};
 
 /** A file as it arrived, before the machine took it into a session. */
 export type ReceivedLanFile = {
@@ -294,6 +328,8 @@ export async function serveLanFileConnection(
     read?: (file: { sessionId: string; fileId: string }) => Promise<LanFileToRead>;
     /** Where the file of a `range` request is; throws the reason when it may not be read. */
     locate?: (file: LanFileRangeRequest) => Promise<string>;
+    /** The Board directories this machine keeps; each throws the reason it refuses. */
+    board?: LanBoardFileService;
     logger: Logger;
     idleTimeoutMs?: number;
   }
@@ -312,6 +348,44 @@ export async function serveLanFileConnection(
         if (!options.locate)
           throw new Error('invalid_request:this machine gives no part of a file');
         await serveFileRange(stream, range, await options.locate(range));
+        continue;
+      }
+      const boardList = parseRequest(BoardListRequestSchema, line);
+      if (boardList) {
+        if (!options.board) throw new Error('invalid_request:this machine keeps no Board files');
+        const { type: _type, ...scope } = boardList;
+        writeLine(stream, { type: 'board-list', ...(await options.board.list(scope)) });
+        continue;
+      }
+      const boardPut = parseRequest(BoardPutHeaderSchema, line);
+      if (boardPut) {
+        if (!options.board) throw new Error('invalid_request:this machine keeps no Board files');
+        const { type: _type, path: filePath, sizeBytes, sha256, ...scope } = boardPut;
+        await options.board.admit({ ...scope, path: filePath });
+        writeLine(stream, { type: 'ready' });
+        const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lody-lan-board-'));
+        try {
+          const receivedPath = path.join(directory, 'file');
+          const handle = await fs.promises.open(receivedPath, 'wx', 0o600);
+          const hash = crypto.createHash('sha256');
+          try {
+            await reader.readBytes(sizeBytes, async (chunk) => {
+              hash.update(chunk);
+              await handle.write(chunk);
+            });
+          } finally {
+            await handle.close();
+          }
+          if (hash.digest('hex') !== sha256) {
+            throw new Error('invalid_file:the file arrived damaged');
+          }
+          writeLine(stream, {
+            type: 'board-stored',
+            entry: await options.board.put({ ...scope, path: filePath }, receivedPath),
+          });
+        } finally {
+          await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => undefined);
+        }
         continue;
       }
       const read = parseRequest(ReadRequestSchema, line);
@@ -603,3 +677,138 @@ export async function relayFileRangeFromLanMember(
     socket.destroy();
   }
 }
+
+/** Lists an area of a Board directory on the member that keeps it. */
+export async function listLanBoardFiles(
+  stream: Duplex,
+  options: { initial: Buffer; scope: BoardFileScope; idleTimeoutMs?: number }
+): Promise<BoardFileList> {
+  const { readAnswer } = answersOf(stream, options);
+  try {
+    writeLine(stream, { type: 'board-list', ...options.scope });
+    const answer = await readAnswer(BoardListAnswerSchema);
+    if (answer.type === 'error') throw toRefusal(answer);
+    return { entries: answer.entries, truncated: answer.truncated };
+  } finally {
+    stream.end();
+  }
+}
+
+/** Puts a file of this machine into a Board directory on the member that keeps it. */
+export async function putLanBoardFile(
+  stream: Duplex,
+  options: {
+    initial: Buffer;
+    scope: BoardFileScope;
+    path: string;
+    sourcePath: string;
+    idleTimeoutMs?: number;
+  }
+): Promise<BoardFileEntry> {
+  const { readAnswer } = answersOf(stream, options);
+  try {
+    const stat = await fs.promises.stat(options.sourcePath);
+    if (!stat.isFile()) throw new Error('invalid_file:that is not a file');
+    if (stat.size > SESSION_FILE_MAX_SIZE_BYTES)
+      throw new Error('invalid_file:the file is larger than the LAN carries');
+    const hash = crypto.createHash('sha256');
+    for await (const chunk of fs.createReadStream(options.sourcePath)) hash.update(chunk as Buffer);
+    writeLine(stream, {
+      type: 'board-put',
+      ...options.scope,
+      path: options.path,
+      sizeBytes: stat.size,
+      sha256: hash.digest('hex'),
+    });
+    const ready = await readAnswer(ReadyAnswerSchema);
+    if (ready.type === 'error') throw toRefusal(ready);
+    await pipeline(fs.createReadStream(options.sourcePath), stream, { end: false });
+    const answer = await readAnswer(BoardStoredAnswerSchema);
+    if (answer.type === 'error') throw toRefusal(answer);
+    return answer.entry;
+  } finally {
+    stream.end();
+  }
+}
+
+/**
+ * Copies a whole file of a Board directory from the member that keeps it to
+ * `destinationPath`, which must not exist yet, through one `range` request.
+ */
+export async function readLanBoardFile(
+  stream: Duplex,
+  options: {
+    initial: Buffer;
+    scope: BoardFileScope;
+    path: string;
+    destinationPath: string;
+    idleTimeoutMs?: number;
+  }
+): Promise<{ sizeBytes: number }> {
+  const { reader, readAnswer, unreachable } = answersOf(stream, options);
+  try {
+    writeLine(stream, {
+      type: 'range',
+      sessionId: options.scope.sessionId,
+      boardId: options.scope.boardId,
+      path: `${options.scope.area}/${options.path}`,
+      offset: 0,
+    });
+    const answer = await readAnswer(LanFileRangeAnswerSchema);
+    if (answer.type === 'error') throw toRefusal(answer);
+    const handle = await fs.promises.open(options.destinationPath, 'wx', 0o600);
+    let complete = false;
+    try {
+      try {
+        await reader.readBytes(answer.length, async (chunk) => {
+          await handle.write(chunk);
+        });
+      } catch (error) {
+        throw unreachable(error);
+      }
+      complete = true;
+    } finally {
+      await handle.close();
+      if (!complete) await fs.promises.rm(options.destinationPath, { force: true });
+    }
+    return { sizeBytes: answer.length };
+  } finally {
+    stream.end();
+  }
+}
+
+/** The Board directory verbs, each on its own connection to the member that keeps it. */
+export const lanBoardFileClient = {
+  async list(options: LanMemberConnectOptions & { scope: BoardFileScope }) {
+    const { socket, rest } = await connectLanMember({ ...options, service: 'files' });
+    try {
+      return await listLanBoardFiles(socket, { initial: rest, scope: options.scope });
+    } finally {
+      socket.destroy();
+    }
+  },
+  async put(
+    options: LanMemberConnectOptions & { scope: BoardFileScope; path: string; sourcePath: string }
+  ) {
+    const { socket, rest } = await connectLanMember({ ...options, service: 'files' });
+    try {
+      return await putLanBoardFile(socket, { ...options, initial: rest });
+    } finally {
+      socket.destroy();
+    }
+  },
+  async read(
+    options: LanMemberConnectOptions & {
+      scope: BoardFileScope;
+      path: string;
+      destinationPath: string;
+    }
+  ) {
+    const { socket, rest } = await connectLanMember({ ...options, service: 'files' });
+    try {
+      return await readLanBoardFile(socket, { ...options, initial: rest });
+    } finally {
+      socket.destroy();
+    }
+  },
+};

@@ -9,6 +9,9 @@ import {
   type SessionActiveInvocationContextResult,
   type LodyNotifyUserInput,
   type LodyNotifyUserResult,
+  type BoardFileEntry,
+  type BoardFileList,
+  type BoardFileScope,
 } from '@lody/shared';
 import type { LoroStreamsMachineRpcClient } from '@lody/loro-streams-rpc';
 import type { AuthContext } from './command-runtime';
@@ -53,6 +56,24 @@ export interface SessionCommandHost {
    * Absent where the workspace has no machine but this one.
    */
   remote?: SessionCommandRemote;
+  /** Board shared directories; absent where this daemon reaches none. */
+  boardFiles?: BoardFilesPort;
+}
+
+/**
+ * A Board's shared directory as this machine reaches it: from its own disk, or
+ * over the LAN from the machine that keeps it. Every call names a member
+ * session, which the machine that keeps the directory checks.
+ */
+export interface BoardFilesPort {
+  list(scope: BoardFileScope): Promise<BoardFileList>;
+  /** Copies a file to `destinationPath`, which must not exist yet. */
+  read(
+    scope: BoardFileScope,
+    path: string,
+    destinationPath: string
+  ): Promise<{ sizeBytes: number }>;
+  put(scope: BoardFileScope, path: string, sourcePath: string): Promise<BoardFileEntry>;
 }
 
 export interface SessionCommandRemote {

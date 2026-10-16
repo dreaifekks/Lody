@@ -23,7 +23,12 @@ import {
   type LanHubLocation,
   type LanHubPeerHandler,
 } from './lan-hub-peers';
-import { serveLanFileConnection, type LanFileToRead, type ReceivedLanFile } from './lan-files';
+import {
+  serveLanFileConnection,
+  type LanBoardFileService,
+  type LanFileToRead,
+  type ReceivedLanFile,
+} from './lan-files';
 import { serveTunnelRequest } from './lan-tunnel';
 import {
   createLanTerminalServer,
@@ -74,6 +79,8 @@ export type LanFileReceiver = {
   read: (file: { sessionId: string; fileId: string }) => Promise<LanFileToRead>;
   /** Where the file is that a member asks part of. */
   locate: (file: LanFileRangeRequest) => Promise<string>;
+  /** The Board directories this machine keeps for the members. */
+  board?: LanBoardFileService;
 };
 
 /**

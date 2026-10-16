@@ -36,6 +36,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   lanControl: 'lanControl',
   lanFiles: 'lanFiles',
   lanFileRanges: 'lanFileRanges',
+  lanBoardFiles: 'lanBoardFiles',
   lanShell: 'lanShell',
   lanTunnel: 'lanTunnel',
   realtimeVoice: 'realtimeVoice',
@@ -73,6 +74,7 @@ export const ACP_CAPABILITY_REFRESH_CACHE_PROTOCOL_VERSION = 1;
 export const LAN_CONTROL_PROTOCOL_VERSION = 1;
 export const LAN_FILES_PROTOCOL_VERSION = 1;
 export const LAN_FILE_RANGES_PROTOCOL_VERSION = 1;
+export const LAN_BOARD_FILES_PROTOCOL_VERSION = 1;
 export const LAN_SHELL_PROTOCOL_VERSION = 1;
 export const LAN_TUNNEL_PROTOCOL_VERSION = 1;
 export const SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION = 1;
@@ -501,6 +503,24 @@ export function machineSupportsLanFileRanges(
     machine,
     MACHINE_PROTOCOL_CAPABILITIES.lanFileRanges,
     LAN_FILE_RANGES_PROTOCOL_VERSION
+  );
+}
+
+/**
+ * Whether the target daemon keeps Board shared directories for the other
+ * members of a LAN: `board-list` and `board-put` on the connection that
+ * carries files, and `range` with a `boardId`. A daemon without it refuses
+ * them as a file header it cannot read.
+ *
+ * Like `lanControl` it is said only by a daemon that was assembled to accept.
+ */
+export function machineSupportsLanBoardFiles(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.lanBoardFiles,
+    LAN_BOARD_FILES_PROTOCOL_VERSION
   );
 }
 

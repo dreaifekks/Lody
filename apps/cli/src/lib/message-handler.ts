@@ -190,6 +190,7 @@ import {
   isLanMemberControlType,
   LAN_CONTROL_PROTOCOL_VERSION,
   LAN_FILE_RANGES_PROTOCOL_VERSION,
+  LAN_BOARD_FILES_PROTOCOL_VERSION,
   LAN_FILES_PROTOCOL_VERSION,
   LAN_SHELL_PROTOCOL_VERSION,
   LAN_TUNNEL_PROTOCOL_VERSION,
@@ -345,6 +346,7 @@ import {
   createLocalSessionCommandEnvironment,
   getSessionCommandEnvironment,
   runWithSessionCommandEnvironment,
+  type BoardFilesPort,
 } from './session-command-environment';
 import { getLodyOperationStorePath, LodyOperationStore } from '@/orchestration/operation-store';
 import {
@@ -681,6 +683,8 @@ export interface MessageHandlerConfig {
     machineId: MachineId,
     request: LoroStreamsRpcRequest
   ) => Promise<readonly unknown[] | null>;
+  /** Board shared directories of this workspace, as this machine reaches them. */
+  boardFiles?: BoardFilesPort;
   cloudPort: CloudPort;
 }
 
@@ -774,6 +778,7 @@ export class MessageHandler {
   private readonly answerLanMemberControl?: MessageHandlerConfig['answerLanMemberControl'];
   private readonly acceptsLanMemberFiles: boolean;
   private readonly lanWorkspace: boolean;
+  private readonly boardFiles: BoardFilesPort | undefined;
   private readonly askLanMemberDirect?: MessageHandlerConfig['askLanMemberDirect'];
   private readonly machineLifecycleCapability: MachineLifecycleCapability;
   /** Per session, the user turn whose prompt the provider last answered. */
@@ -2948,6 +2953,7 @@ export class MessageHandler {
     this.answerLanMemberControl = config.answerLanMemberControl;
     this.acceptsLanMemberFiles = config.acceptsLanMemberFiles === true;
     this.lanWorkspace = config.lanWorkspace === true;
+    this.boardFiles = config.boardFiles;
     this.askLanMemberDirect = config.askLanMemberDirect;
     this.machineLifecycleCapability = config.machineLifecycleCapability ?? {
       launchMode: 'foreground',
@@ -6137,6 +6143,7 @@ export class MessageHandler {
     if (this.acceptsLanMemberFiles) {
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanFiles] = LAN_FILES_PROTOCOL_VERSION;
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanFileRanges] = LAN_FILE_RANGES_PROTOCOL_VERSION;
+      capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanBoardFiles] = LAN_BOARD_FILES_PROTOCOL_VERSION;
       // The same listener opens the shells and ports of this machine to the members.
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanShell] = LAN_SHELL_PROTOCOL_VERSION;
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanTunnel] = LAN_TUNNEL_PROTOCOL_VERSION;
@@ -6811,6 +6818,7 @@ export class MessageHandler {
           notifyUser: async (sessionId, input) => await this.notifyUserFromAgent(sessionId, input),
           notifyConfigChange: async (sessionId, notice) =>
             await this.notifyConfigChange(sessionId, notice),
+          ...(this.boardFiles ? { boardFiles: this.boardFiles } : {}),
           ...(this.lanWorkspace
             ? {
                 remote: {
@@ -7205,6 +7213,10 @@ export class MessageHandler {
           ...request.params,
           inputConfig,
         });
+      }
+      case 'board/files-list': {
+        if (!this.boardFiles) throw new Error('This machine reaches no Board files.');
+        return await this.boardFiles.list(request.params);
       }
       default: {
         const exhaustive: never = request;
