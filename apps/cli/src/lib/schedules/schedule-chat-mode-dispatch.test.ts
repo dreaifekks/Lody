@@ -27,11 +27,11 @@ import { findNextDispatchableUserTurn } from '@/session/session-dispatch-logic';
 import { ScheduleEngine, type ScheduleEnginePorts } from './schedule-engine';
 import { ScheduleStore, type ScheduleRun } from './schedule-store';
 import {
-  applyScheduleMcpSelection,
   buildScheduleRunTarget,
   buildScheduleSessionCreateOptions,
   scheduleDestinationSessionId,
   scheduleRequiredLocalProjectId,
+  resolveScheduleMcpSelection,
 } from './schedule-run-preparation';
 
 /** Selectors that would put a scheduled run inside a working directory. */
@@ -213,16 +213,18 @@ describe('Chat-only schedule handoff', () => {
             read: true,
             timestamp: new Date(60_000).toISOString(),
             items: [{ type: 'text', text: scheduled.prompt }],
+            inputConfig: {
+              mcpServerIds: await resolveScheduleMcpSelection({
+                manager,
+                workspaceId: 'workspace' as never,
+                localOnly: true,
+                definition: scheduled.definition,
+                sessionId: scheduled.sessionId as PreparedSessionInput['sessionId'],
+              }),
+            },
             fileDiff: [],
           },
         } satisfies PreparedSessionInput;
-        await applyScheduleMcpSelection({
-          manager,
-          workspaceId: 'workspace' as never,
-          localOnly: true,
-          definition: scheduled.definition,
-          prepared,
-        });
         return prepared;
       },
       materialize: (prepared) => materializePreparedSessionInput(manager, prepared),
