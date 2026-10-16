@@ -49,7 +49,31 @@ records the user's decisions of 2026-10-16. This note covers steps 1 and 2.
 - **Archive and restore.** Session archive already includes Sessions the
   coordinator opened; restore covers only direct Tabs. Archive walks the coordinator
   and every member root, then marks the row; restore re-checks the 50-Board limit in
-  the catalog writer, as creation does, and restores each root.
+  the catalog writer, as creation does, restores each root, and clears the mark last.
+  The first version cleared the mark first, so a failing member left a Board outside
+  the Archive page with nothing to restore it from. With the row changed last in both
+  directions, a failure stops with the Board where it was and its entry (Archive
+  page or settings) offers the retry; the toast names the reason. No transaction or
+  rollback: a retry skips what already succeeded. Two concurrent restores may both
+  read 49 active Boards; the limit was never a distributed transaction, as accepted
+  in the design.
+- **One surface per Session.** Contained Tabs inherit the Board, so the coordinator's
+  own Tabs and Side Chats are threads too, and the page already mounts them. Opening
+  one in the panel made a second `SessionChatInterface` with its own composer draft.
+  A direct child of the coordinator now opens where the page has it: a Tab is
+  selected in the main area, a Side Chat in its side-panel tab. Chat commands (focus
+  input, find) follow the region the user is in, so a thread open in the visible
+  Board panel takes them while the panel has focus.
+- **Panel identity.** The Session page is not remounted between Sessions, so a panel
+  opened on one Board kept its tab and settings draft on the next, and saving wrote
+  Board A's draft into Board B and renamed B's coordinator. `BoardSidePanel` keys its
+  content by workspace and Board id; the settings dialog is keyed by Board id too.
+- **Entries.** Every Board entry (sidebar, `/boards/<id>`, command palette) writes
+  the coordinator's own Tab explicitly with `boardEntrySearch`; an absent `?tab` let
+  the route restore the last child Tab, such as a reviewer. The palette keeps
+  coordinators in its shared source and shows them by Board name and glyph.
+- **Names.** On a Board page the session panel's Files becomes Workspace files and
+  the Board panel's tab Board files; the side-panel framework is unchanged.
 - **Settings scope.** The dialog edits only fields that act today: name, goal and
   rules. Project scope, Board memory and the digest stay hidden until their steps.
   The coordinator's model stays in its composer. A rename also renames the
@@ -60,9 +84,16 @@ records the user's decisions of 2026-10-16. This note covers steps 1 and 2.
 - Tests: `packages/components/tests/board-overview.test.tsx` mounts the real side
   panel over metadata and presence atoms, checks grouping, coordinator exclusion,
   stopped-ancestor inheritance, presence over stale status, opening a thread and the
-  notes editor; it also covers the sidebar mark, the settings write and rename,
-  archive/restore order and row state, and the create dialog's default name and
-  rules. `workspace-catalog-write.test.ts` covers the restore limit;
+  notes editor; it also covers the sidebar mark and the create dialog's default name
+  and rules. Settings, archive and restore run the real Session actions over Session
+  metadata in a `LoroRepo`: the settings write and coordinator rename, a Board switch
+  under an open settings draft, and archive/restore with a refusing member (the
+  Board stays where it was; the retry completes). A coordinator page stand-in counts
+  conversation surfaces per Session while the real panel opens a coordinator Tab, a
+  Side Chat and an independent thread. `SessionChatInterface` itself cannot be
+  mounted in jsdom without the full runtime, so both sides render one marker per
+  surface. Each of the three new cases fails with its fix reverted.
+  `workspace-catalog-write.test.ts` covers the restore limit and a member failure;
   `session-draft-tabs.test.ts` the persisted `board` panel.
 - Storybook `Workspace/Boards` renders the real sidebar, Session layout, tab bars,
   panel, settings and create dialogs with synthetic data; checked at 1440 and 390 px.

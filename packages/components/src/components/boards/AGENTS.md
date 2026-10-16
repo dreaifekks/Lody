@@ -11,9 +11,10 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 - The 50-Board limit counts only unarchived rows and is checked in the catalog
   writer, on create and on restore.
 - A coordinator is its Board: the sidebar, mobile home and Archive lists drop
-  `boardRole === 'coordinator'` at their own sources, never in shared atoms. A Board
-  opens as the coordinator's Session page with the `board` side panel;
-  `/boards/<id>` redirects there with `?board=1`, applied once and then removed.
+  `boardRole === 'coordinator'` at their own sources, never in shared atoms; the
+  command palette shows it as its Board. Every entry (sidebar, `/boards/<id>`,
+  palette) uses `boardEntrySearch`: the coordinator's own Tab, explicitly, and
+  `?board=1`, applied once and then removed.
 - The panel's thread rows use visible metadata and one derived presence atom; they
   never acquire member documents. Live activity takes priority over waiting markers;
   without presence, only a marker newer than `lastMessageAt` means waiting.
@@ -21,9 +22,14 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 - A thread opened in the panel is a `SessionChatInterface` whose workspace session
   is the thread itself. Never give it a `side-session:` tab id: closing those
   deletes the Session. Narrow windows open the thread's own page instead.
+- One conversation surface per Session: a direct child of the coordinator (Tab or
+  Side Chat) is already mounted by the page, so the panel selects it there.
+- Panel state (tab, dialogs, settings draft) belongs to one Board: `BoardSidePanel`
+  keys itself by workspace and Board id.
 - Archiving a Board archives the coordinator and member roots, then writes
-  `archivedAtMs`; restoring restores every root, since Session restore covers
-  only direct Tabs.
+  `archivedAtMs`; restoring restores every root (Session restore covers only direct
+  Tabs), then clears it. The row changes last, so a failure leaves the Board where it
+  was, with its entry to retry; no rollback.
 - The experiment gates the sidebar section, the Board panel and archived Boards.
   Turning it off retains data and does not stop ordinary sessions or their
   membership inheritance.

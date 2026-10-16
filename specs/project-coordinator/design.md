@@ -107,7 +107,10 @@ creation entries (`session-submission.ts`):
 Coordinator and threads remain ordinary sessions. Archive/restore/delete/worktree
 cleanup follow `specs/session-relations.md` and `specs/session-worktree-lifecycle.md`;
 Board does not introduce another lifecycle target set. Archiving a Board archives
-its coordinator and member roots with their existing children, then sets `archivedAtMs`.
+its coordinator and member roots with their existing children, then sets `archivedAtMs`;
+restoring restores the coordinator and every root, then clears it. The row changes last
+both ways: a failure leaves the Board where it was, with its entry to retry; there is
+no rollback.
 
 ### Threads, generations and children
 
@@ -511,9 +514,12 @@ The panel has four states: closed, threads, files, one thread.
 
   Clicking a row opens the thread in the panel. It shows a breadcrumb "← Threads ›
   title", the thread's own conversation and composer, Open as a full conversation,
-  and Close.
-- **Files tab.** A fixed Shared notes row on top opens the existing notes editor;
+  and Close. The coordinator's own Tabs and Side Chats are already mounted by the
+  session page, so their rows switch to that Tab instead: one composer per session.
+- **Board files tab.** A fixed Shared notes row on top opens the existing notes editor;
   below it is the Board's shared directory (see "Board context › Shared directory").
+  On a Board page the session side panel's own Files is named Workspace files, so the
+  two no longer share a name.
 - **Settings.** ⚙ opens the Board settings dialog; it does not use the side panel.
 - **While the panel is closed**, its toggle reads "✋ N waiting for you". While the
   panel is open, the count is not repeated.
@@ -532,7 +538,9 @@ The implementation reuses existing pages:
 - Viewing a thread in the panel follows how Side Chat renders `SessionChatInterface`
   in the side panel.
 - `/boards/$boardId` becomes an alias: it resolves the coordinator id and opens that
-  session page with the `board` panel.
+  session page with the `board` panel. Like the sidebar and the command palette, it
+  selects the coordinator's own Tab explicitly instead of restoring the last child
+  Tab. The command palette shows a coordinator as its Board.
 
 ### What stays out, what goes into settings
 
@@ -1160,20 +1168,25 @@ Steps 1 and 2 are implemented:
   Archive page each drop coordinators at their own source; shared atoms are untouched.
 - **Board panel.** The session side panel gains the `board` kind, offered only on a
   coordinator's page and persisted like the other panels. A thread opens in the panel
-  as a `SessionChatInterface` whose workspace session is the thread itself. On compact
+  as a `SessionChatInterface` whose workspace session is the thread itself; the
+  coordinator's Tabs and Side Chats switch in the page instead. Panel state is rebuilt
+  per workspace and Board id, so switching Boards never carries a settings draft
+  over. On compact
   desktop and phones a thread opens its own full page; on phones the full-screen Board
   drawer opens from the session's tab sheet.
 - **Addresses.** `?board=1` opens the panel once and then leaves the URL;
-  `/boards/<id>` redirects to the coordinator; `/boards` redirects to chat. PR1's
+  `/boards/<id>` redirects to the coordinator; `/boards` redirects to chat. The sidebar,
+  `/boards/<id>` and the command palette all select the coordinator's own Tab. PR1's
   navigation item, list page, read-only Overview and mobile Boards tab are removed.
 - **Settings dialog.** It writes the Board row (name, goal, rules); a rename also
   renames the coordinator Session. Archiving a Board archives the coordinator and the
   member roots in turn, then writes `archivedAtMs`. The Archive page lists archived
-  Boards; restoring checks the 50-Board limit in the catalog writer, then restores
-  each root.
+  Boards; restoring checks the 50-Board limit in the catalog writer, restores each
+  root, and clears `archivedAtMs` last. A failure shows its reason and leaves the Board
+  where it was, to retry.
 - **Create dialog.** Goal first, optional name, default rules.
-- **Files tab.** The shared notes, plus a note saying where the shared directory will
-  come.
+- **Board files tab.** The shared notes, plus a note saying where the shared directory
+  will come. The page's session Files panel is named Workspace files.
 
 Deviation from the design: thread rows never read member documents, so Failed does
 not appear in the list (see "Connection to the existing foundation"). PR1–3

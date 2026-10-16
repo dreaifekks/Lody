@@ -212,14 +212,18 @@ first line otherwise) and the coordinator, chosen through the Schedule agent
 controls; the goal is the coordinator's first message, rules start from defaults,
 and the choice of agent, Role instance and run config is remembered on the device.
 
-Opening a Board opens the coordinator's Session page with the Board side panel
-(`?board=1`; `/boards/<id>` redirects there). The panel has Threads and Files
-tabs. Thread rows group members into Needs you, Working, Idle and Archived from
-metadata and live presence; a thread opens inside the panel, or as its own page on
-narrow windows and phones (where the panel is a full-screen drawer). Files holds
-the shared notes; the shared directory comes later. The gear opens Board settings
-(name, goal, rules, Archive). Archived Boards are listed and restored on the
-Archive page. The coordinator itself is never listed among sessions.
+Opening a Board, from the sidebar, `/boards/<id>` or the command palette (which
+shows a coordinator as its Board), opens the coordinator's Session page on its own
+Tab with the Board side panel (`?board=1`). The panel has Threads and Board files
+tabs; on a Board page the session panel's Files is named Workspace files. Thread
+rows group members into Needs you, Working, Idle and Archived from metadata and live
+presence; a thread opens inside the panel, or as its own page on narrow windows and
+phones (where the panel is a full-screen drawer). The coordinator's own Tabs and
+Side Chats open where the page already shows them. Board files holds the shared
+notes; the shared directory comes later. The gear opens Board settings (name, goal,
+rules, Archive). Archived Boards are listed and restored on the Archive page; a
+failed archive or restore names the reason and leaves the Board where it was, to
+retry. The coordinator itself is never listed among sessions.
 
 PR2 adds shared notes, Board MCP tools, New thread and Join/Remove actions; PR3
 delivers member reports to the coordinator through the Operation Inbox. Round
