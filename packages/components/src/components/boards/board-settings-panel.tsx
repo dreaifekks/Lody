@@ -3,6 +3,7 @@ import { colors } from '@lody/ui/tokens/colors.stylex';
 import { space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
 import { Input } from '@lody/ui/input';
+import { NumberField } from '@lody/ui/number-field';
 import { Switch } from '@lody/ui/switch';
 import { Textarea } from '@lody/ui/textarea';
 import { Brain, Settings2, X } from 'lucide-react';
@@ -139,6 +140,8 @@ const styles = stylex.create({
     boxShadow: `inset 0 1px 0 ${colors.separator}`,
   },
   error: { flexGrow: 1, margin: 0, color: colors.destructive, fontSize: text.footnoteSize },
+  /** A narrow stepper leaves its row's label the room to stay on one line. */
+  stepper: { width: '112px' },
 });
 
 const PANEL_STYLE = {
@@ -335,13 +338,31 @@ export function BoardContinuityView({
   onChange: (value: BoardContinuitySettings) => void;
 }) {
   const { t } = useTranslation();
-  const number = (patch: keyof BoardContinuitySettings, scale = 1) => ({
-    type: 'number' as const,
-    min: 1,
-    value: Number(value[patch]) / scale,
-    onChange: (event: { target: { value: string } }) =>
-      onChange({ ...value, [patch]: Math.round(Number(event.target.value) * scale) }),
-  });
+  const stepper = (
+    key: 'idleMinutes' | 'maxTokens' | 'windowPercent',
+    label: string,
+    bounds: { min: number; max: number; step: number; scale?: number }
+  ) => {
+    const scale = bounds.scale ?? 1;
+    return (
+      <NumberField.Root
+        {...stylex.props(styles.stepper)}
+        value={value[key] / scale}
+        min={bounds.min}
+        max={bounds.max}
+        step={bounds.step}
+        onValueChange={(next) => {
+          if (next != null) onChange({ ...value, [key]: Math.round(next * scale) });
+        }}
+      >
+        <NumberField.Group>
+          <NumberField.Input aria-label={label} />
+          <NumberField.Decrement aria-label={t('boards.continuity.decrease', 'Decrease')} />
+          <NumberField.Increment aria-label={t('boards.continuity.increase', 'Increase')} />
+        </NumberField.Group>
+      </NumberField.Root>
+    );
+  };
   return (
     <CompactSection title={t('boards.continuity.title', 'Context')}>
       <CompactRow
@@ -360,10 +381,11 @@ export function BoardContinuityView({
       {value.idleCompaction ? (
         <>
           <CompactRow label={t('boards.continuity.idleMinutes', 'Idle for (minutes)')}>
-            <Input
-              aria-label={t('boards.continuity.idleMinutes', 'Idle for (minutes)')}
-              {...number('idleMinutes')}
-            />
+            {stepper('idleMinutes', t('boards.continuity.idleMinutes', 'Idle for (minutes)'), {
+              min: 1,
+              max: 1440,
+              step: 1,
+            })}
           </CompactRow>
           <CompactRow
             label={t('boards.continuity.maxTokens', 'Context over (thousand tokens)')}
@@ -372,16 +394,18 @@ export function BoardContinuityView({
               'Or over this share of the model window, whichever is smaller.'
             )}
           >
-            <Input
-              aria-label={t('boards.continuity.maxTokens', 'Context over (thousand tokens)')}
-              {...number('maxTokens', 1000)}
-            />
+            {stepper(
+              'maxTokens',
+              t('boards.continuity.maxTokens', 'Context over (thousand tokens)'),
+              { min: 10, max: 10_000, step: 10, scale: 1000 }
+            )}
           </CompactRow>
           <CompactRow label={t('boards.continuity.windowPercent', 'Share of the window (%)')}>
-            <Input
-              aria-label={t('boards.continuity.windowPercent', 'Share of the window (%)')}
-              {...number('windowPercent')}
-            />
+            {stepper(
+              'windowPercent',
+              t('boards.continuity.windowPercent', 'Share of the window (%)'),
+              { min: 5, max: 95, step: 5 }
+            )}
           </CompactRow>
         </>
       ) : null}

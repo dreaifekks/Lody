@@ -5406,6 +5406,8 @@
   "boards.continuity.maxTokens": "上下文超过（千 tokens）",
   "boards.continuity.windowHelper": "或超过模型窗口的这个比例，取两者中较小的。",
   "boards.continuity.windowPercent": "窗口比例（%）",
+  "boards.continuity.decrease": "减少",
+  "boards.continuity.increase": "增加",
   "boards.story.reportsTask": "实现自动回报",
   "boards.story.buildTask": "构建验证",
   "boards.story.reviewTask": "评审需要决策",

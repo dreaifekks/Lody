@@ -5406,6 +5406,8 @@
   "boards.continuity.maxTokens": "Context over (thousand tokens)",
   "boards.continuity.windowHelper": "Or over this share of the model window, whichever is smaller.",
   "boards.continuity.windowPercent": "Share of the window (%)",
+  "boards.continuity.decrease": "Decrease",
+  "boards.continuity.increase": "Increase",
   "boards.story.reportsTask": "Implement Inbox reports",
   "boards.story.buildTask": "Build verification",
   "boards.story.reviewTask": "Reviewer needs a decision",
