@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import {
   BOARD_FILES_LIST_MAX,
   BoardFilePathSchema,
@@ -12,10 +13,12 @@ import {
 /** Ids become one path segment each; anything else is not an id. */
 const SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
 
+const outside = () => new Error('BOARD_PATH_OUTSIDE:the path leaves the Board directory');
+
 /**
  * The shared directories of the Boards this machine keeps:
  * `<data dir>/boards/<workspaceId>/<boardId>/{files,memory}/`. Only names inside
- * one area resolve; a symbolic link is neither listed nor followed out.
+ * one area resolve; a symbolic link is neither listed nor followed.
  */
 export class BoardDirectory {
   constructor(private readonly dataDir: () => string) {}
@@ -27,10 +30,20 @@ export class BoardDirectory {
     return path.join(this.dataDir(), 'boards', workspaceId, boardId);
   }
 
+  /**
+   * The root of an area, named from the data directory. Each directory on the
+   * way down must be a directory, never a link, so no link moves the root.
+   */
   private async area(workspaceId: string, boardId: string, area: BoardFileArea) {
-    const directory = path.join(this.boardPath(workspaceId, boardId), area);
+    this.boardPath(workspaceId, boardId);
+    let directory = this.dataDir();
     await fs.promises.mkdir(directory, { recursive: true });
-    return await fs.promises.realpath(directory);
+    for (const segment of ['boards', workspaceId, boardId, area]) {
+      directory = path.join(directory, segment);
+      await fs.promises.mkdir(directory, { recursive: true });
+      if (!(await fs.promises.lstat(directory)).isDirectory()) throw outside();
+    }
+    return directory;
   }
 
   /** Where a file of the area is; throws `BOARD_PATH_OUTSIDE` for any other name. */
@@ -40,25 +53,20 @@ export class BoardDirectory {
     area: BoardFileArea,
     relativePath: string
   ): Promise<string> {
-    if (!BoardFilePathSchema.safeParse(relativePath).success)
-      throw new Error('BOARD_PATH_OUTSIDE:the path leaves the Board directory');
+    if (!BoardFilePathSchema.safeParse(relativePath).success) throw outside();
     const root = await this.area(workspaceId, boardId, area);
-    // A link inside the area could still point out of it: resolve the part that
-    // exists and keep the names that do not yet.
+    // No name on the way may be a link; the names after the first missing one
+    // do not exist yet.
     const parts = relativePath.split('/');
-    let real = root;
-    for (let index = parts.length; index >= 0; index--) {
-      const existing = await fs.promises
-        .realpath(path.join(root, ...parts.slice(0, index)))
-        .catch(() => null);
-      if (existing !== null) {
-        real = path.join(existing, ...parts.slice(index));
-        break;
-      }
+    let current = root;
+    for (const [index, part] of parts.entries()) {
+      current = path.join(current, part);
+      const stat = await fs.promises.lstat(current).catch(() => null);
+      if (!stat) break;
+      if (stat.isSymbolicLink() || (index < parts.length - 1 && !stat.isDirectory()))
+        throw outside();
     }
-    if (real !== root && !real.startsWith(`${root}${path.sep}`))
-      throw new Error('BOARD_PATH_OUTSIDE:the path leaves the Board directory');
-    return real;
+    return path.join(root, ...parts);
   }
 
   async list(workspaceId: string, boardId: string, area: BoardFileArea): Promise<BoardFileList> {
@@ -85,6 +93,25 @@ export class BoardDirectory {
     };
     await walk(root, '');
     return { entries, truncated };
+  }
+
+  /** Copies a file of the area to `destinationPath`, which must not exist yet. */
+  async read(
+    workspaceId: string,
+    boardId: string,
+    area: BoardFileArea,
+    relativePath: string,
+    destinationPath: string
+  ): Promise<{ sizeBytes: number }> {
+    const source = await fs.promises.open(
+      await this.resolve(workspaceId, boardId, area, relativePath),
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW
+    );
+    await pipeline(
+      source.createReadStream(),
+      fs.createWriteStream(destinationPath, { flags: 'wx' })
+    );
+    return { sizeBytes: (await fs.promises.stat(destinationPath)).size };
   }
 
   /** Puts a copy of `sourcePath` at a name of the area, replacing what was there at once. */

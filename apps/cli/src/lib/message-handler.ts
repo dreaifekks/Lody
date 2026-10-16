@@ -6957,7 +6957,13 @@ export class MessageHandler {
           throw new Error('Session tool scope mismatch');
         const { executeDaemonSessionTool } = await import('@/mcp/daemon-session-tools');
         const sourceWorkdir = this.resolveSessionWorkspaceRoot(sessionId);
-        if (!sourceWorkdir && args && typeof args === 'object' && 'attachments' in args)
+        // Tools that take paths of this machine resolve them in the Session's own workspace.
+        if (
+          !sourceWorkdir &&
+          args &&
+          typeof args === 'object' &&
+          ('attachments' in args || 'source' in args || 'saveTo' in args)
+        )
           throw new Error('Requester Session workspace is unavailable');
 
         return this.withSessionCommandEnvironment(() =>

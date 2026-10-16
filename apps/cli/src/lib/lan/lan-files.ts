@@ -266,10 +266,14 @@ function writeChunk(stream: Duplex, chunk: Buffer): Promise<void> {
  */
 export async function serveFileRange(
   stream: Duplex,
-  request: Pick<LanFileRangeRequest, 'offset' | 'length' | 'revision'>,
+  request: Pick<LanFileRangeRequest, 'offset' | 'length' | 'revision' | 'boardId'>,
   filePath: string
 ): Promise<void> {
-  const handle = await fs.promises.open(filePath, 'r');
+  // A file of a Board directory is never reached through a link.
+  const handle = await fs.promises.open(
+    filePath,
+    request.boardId === undefined ? 'r' : fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW
+  );
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) throw new Error('not_a_file:that is not a file');

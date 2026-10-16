@@ -225,14 +225,13 @@ export class LanFileHandoff {
   ): Promise<{ sizeBytes: number }> {
     const { host } = await this.boardOf(workspaceId, scope);
     if (host === this.options.machineId) {
-      const source = await this.boardsOrThrow().directory.resolve(
+      return await this.boardsOrThrow().directory.read(
         workspaceId,
         scope.boardId,
         scope.area,
-        filePath
+        filePath,
+        destinationPath
       );
-      await fs.promises.copyFile(source, destinationPath, fs.constants.COPYFILE_EXCL);
-      return { sizeBytes: (await fs.promises.stat(destinationPath)).size };
     }
     const remote = await this.boardRemote(workspaceId, host);
     return await remote.client.read({ ...remote, scope, path: filePath, destinationPath });

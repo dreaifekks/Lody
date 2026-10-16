@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import type { LoroDoc } from 'loro-crdt';
@@ -20,6 +21,7 @@ import {
 } from '@lody/shared';
 import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
 import { listAliveSessionMetas } from '@/lib/command-runtime';
+import { resolveContainedUploadPath } from '@/lib/session-file-attachments';
 import type { createSessionToolRegistrar } from './session-tool-router';
 import type { McpSessionContext } from './lody-mcp-server';
 
@@ -58,7 +60,7 @@ export function registerBoardTools(
     ],
     [
       'lody_board_files_read',
-      'Copy a file of the Board shared directory to saveTo, an absolute path on your machine that does not exist yet.',
+      'Copy a file of the Board shared directory to saveTo, an absolute path in your working directory that does not exist yet.',
       z
         .object({
           path: BoardFilePathSchema,
@@ -69,7 +71,7 @@ export function registerBoardTools(
     ],
     [
       'lody_board_files_write',
-      'Put a file of your machine (source, an absolute path) into the Board shared directory at path (default: its file name). Replaces a file of that name.',
+      'Put a file of your working directory (source, an absolute path) into the Board shared directory at path (default: its file name). Replaces a file of that name.',
       z
         .object({
           source: z.string().min(1).max(4096),
@@ -122,20 +124,21 @@ export function registerBoardTools(
             sessionId,
             area: ('area' in input && input.area) || ('files' as const),
           };
+          // Like attachments, the caller's own paths stay inside its working
+          // directory, links resolved, so the tools reach no more than the Agent may.
+          const { workdir } = context();
           if (name === 'lody_board_files_list') result = await files.list(scope);
           else if (name === 'lody_board_files_read' && 'saveTo' in input) {
             if (!path.isAbsolute(input.saveTo)) throw new Error('saveTo must be an absolute path');
-            result = {
-              ...(await files.read(scope, input.path, input.saveTo)),
-              savedTo: input.saveTo,
-            };
+            const saveTo = await resolveContainedUploadPath(input.saveTo, workdir);
+            result = { ...(await files.read(scope, input.path, saveTo)), savedTo: saveTo };
           } else if ('source' in input) {
             if (!path.isAbsolute(input.source)) throw new Error('source must be an absolute path');
-            result = await files.put(
-              scope,
-              input.path ?? path.basename(input.source),
-              input.source
+            const source = await resolveContainedUploadPath(
+              await fs.promises.realpath(input.source),
+              workdir
             );
+            result = await files.put(scope, input.path ?? path.basename(input.source), source);
           }
         } else if (name === 'lody_board_overview') {
           const sessions = new Map(

@@ -1039,6 +1039,55 @@ describe('Board shared directories between LAN members', () => {
     // A link is never listed either.
     expect((await member.listBoardFiles(HOME, scope('thread'))).entries).toEqual([]);
   });
+
+  it('refuses a file that is a link, on the keeper and from another member', async () => {
+    const { endpoint, root } = await startKeeper(members);
+    const member = startMember(endpoint, members);
+    const secret = path.join(scratch, 'secret.txt');
+    fs.writeFileSync(secret, 'secret');
+    fs.mkdirSync(path.join(root, 'files'), { recursive: true });
+    fs.symlinkSync(secret, path.join(root, 'files', 'leaf.txt'));
+    const directory = new BoardDirectory(() => path.join(scratch, 'keeper-data'));
+
+    await expect(
+      directory.read(HOME, board.id, 'files', 'leaf.txt', path.join(scratch, 'a'))
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    await expect(
+      member.readBoardFile(HOME, scope('thread'), 'leaf.txt', path.join(scratch, 'b'))
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    expect(fs.existsSync(path.join(scratch, 'a'))).toBe(false);
+    expect(fs.existsSync(path.join(scratch, 'b'))).toBe(false);
+  });
+
+  it('refuses an area whose root, or a directory above it, is a link', async () => {
+    const { endpoint, root } = await startKeeper(members);
+    const member = startMember(endpoint, members);
+    const outside = path.join(scratch, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
+    const source = path.join(scratch, 'planted.md');
+    fs.writeFileSync(source, 'planted');
+
+    fs.mkdirSync(root, { recursive: true });
+    fs.symlinkSync(outside, path.join(root, 'files'));
+    await expect(member.listBoardFiles(HOME, scope('thread'))).rejects.toThrow(
+      'BOARD_PATH_OUTSIDE'
+    );
+    await expect(
+      member.readBoardFile(HOME, scope('thread'), 'secret.txt', path.join(scratch, 'copy'))
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    await expect(member.putBoardFile(HOME, scope('thread'), 'planted.md', source)).rejects.toThrow(
+      'BOARD_PATH_OUTSIDE'
+    );
+
+    // The same when the Board directory itself is the link.
+    fs.rmSync(root, { recursive: true });
+    fs.symlinkSync(outside, root);
+    await expect(
+      member.putBoardFile(HOME, scope('thread', 'memory'), 'planted.md', source)
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    expect(fs.readdirSync(outside)).toEqual(['secret.txt']);
+  });
 });
 
 describe('toStoredFileName', () => {
