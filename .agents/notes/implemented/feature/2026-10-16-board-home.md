@@ -346,3 +346,19 @@ dialog is open and they survive the rename; the sidebar case presses Enter on â‹
 (nothing opens) and on the row (the Board opens); the lifecycle case asserts that a
 member failure leaves the coordinator active and a failed restore leaves it archived.
 With the rename and key fixes temporarily reverted, both new assertions fail.
+
+## Settings: instructions on General, one nav focus (2026-10-17)
+
+- **Instructions moved to General.** The instructions every member reads sat on the
+  Memory page while the executor instructions sat on General, so the two texts that
+  shape a member's first message were a page apart. They now form one Rules group on
+  General, instructions first; Memory holds the automatic memory only. The draft, its
+  limit and Save are unchanged.
+- **The global settings nav takes the Board nav's focus.** Its rows washed keyboard
+  focus like hover, which read as a second selection. The Board nav's answer (an inset
+  accent ring, never a fill; a focused current row keeps its fill and adds the ring)
+  moved into `settingsSurface.navRow`, and both navs, the account entry and Report a
+  bug use it.
+
+Evidence: Storybook screenshots of both navs (selected, focused, both, dark) and of the
+General and Memory pages, taken on devNuc.
