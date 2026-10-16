@@ -9,6 +9,7 @@ import {
   type MachineId,
 } from '@lody/shared';
 import { Cause, Effect, Exit, Scope } from 'effect';
+import type { BoardCoordinatorView } from './board-continuity-workflow';
 import type { CoordinatorActivity } from './coordinator-activity';
 import type {
   CoordinatorPorts,
@@ -46,6 +47,33 @@ export class BoardReportWorkflow {
 
   recoverSubscriptions = () =>
     Effect.forEach([...this.subscriptions], (detach) => detach, { discard: true });
+
+  /** This machine's active coordinators with their observed histories. */
+  localCoordinators(): BoardCoordinatorView[] {
+    const views: BoardCoordinatorView[] = [];
+    for (const board of this.boards.values()) {
+      const meta = this.members.get(board.coordinatorSessionId);
+      const watched = this.watched.get(board.coordinatorSessionId);
+      if (
+        !meta ||
+        !watched ||
+        meta.machineId !== this.options.machineId ||
+        meta.isArchived ||
+        meta.boardId !== board.id ||
+        meta.boardRole !== 'coordinator'
+      )
+        continue;
+      views.push({ board, meta, history: watched.history });
+    }
+    return views;
+  }
+
+  /** A Board's members other than its coordinator, as last observed. */
+  threads(board: BoardMeta): SessionMeta[] {
+    return [...this.members.values()]
+      .filter((meta) => meta.boardId === board.id && meta.id !== board.coordinatorSessionId)
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
 
   private signal = Effect.fnUntraced(
     function* (this: BoardReportWorkflow) {

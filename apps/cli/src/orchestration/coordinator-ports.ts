@@ -4,9 +4,14 @@ import type {
   SessionHistoryInput,
   SessionId,
   SessionMeta,
+  SessionTurnInputConfig,
   StoredLodyOperation,
 } from '@lody/shared';
-import type { HistoryAction, SessionTurnRead } from '@lody/shared/session-data';
+import type {
+  HistoryAction,
+  SessionDirectoryScalars,
+  SessionTurnRead,
+} from '@lody/shared/session-data';
 import { Context, Effect } from 'effect';
 import type { InboxBatch } from './inbox/model';
 
@@ -19,9 +24,34 @@ export type CoordinatorHistory = {
   meta: SessionMeta;
   readTurn(id: string): Effect.Effect<SessionTurnRead, unknown>;
   readTurnOutput(id: string): Effect.Effect<SessionHistoryInput[], unknown>;
+  /** The last `limit` rows' scalars, oldest first, with their positions. */
+  readTail(
+    limit: number
+  ): Effect.Effect<Array<SessionDirectoryScalars & { position: number }>, unknown>;
   applyHistoryAction(action: HistoryAction): Effect.Effect<unknown, unknown>;
   flushLocalWrites: Effect.Effect<void, unknown>;
   observe(wake: Effect.Effect<void>): Effect.Effect<Effect.Effect<void>, unknown>;
+};
+/** What Board maintenance needs from the Session runtime on the coordinator's machine. */
+export type CoordinatorBoardMaintenance = {
+  /** A running turn or a user turn waiting to start: maintenance yields to both. */
+  busy(id: SessionId): boolean;
+  /** `runnable`: the Inbox holds work to run; `paused`: the user pressed Stop. */
+  inbox(id: SessionId): { runnable: boolean; paused: boolean };
+  /**
+   * Whether the coordinator's agent compacts on `/compact`: the running agent's
+   * capability, else its cached commands; undefined when neither says.
+   */
+  compactionSupport(id: SessionId, meta: SessionMeta): Effect.Effect<boolean | undefined, unknown>;
+  runTurn(request: {
+    sessionId: SessionId;
+    stepTurnId: string;
+    prompt: string;
+    config: SessionTurnInputConfig;
+    userId: string;
+    renewBoardInstructions?: boolean;
+    freshAgentSession?: boolean;
+  }): Effect.Effect<string, unknown>;
 };
 export class CoordinatorPorts extends Context.Service<
   CoordinatorPorts,
@@ -48,5 +78,7 @@ export class CoordinatorPorts extends Context.Service<
       index: number
     ): Effect.Effect<void, unknown>;
     warn(message: string, cause?: unknown): Effect.Effect<void>;
+    /** Absent where no Session runtime executes turns. */
+    boardMaintenance?: CoordinatorBoardMaintenance;
   }
 >()('lody/orchestration/CoordinatorPorts') {}

@@ -10,9 +10,12 @@ import {
 import { subscribeSessionChanges } from '@/lib/loro/doc';
 import { createSessionBackend } from '@/session/session-backend';
 import {
+  buildMissingEmail,
   getServerNow,
   getSessionRoomId,
   isLoroRepoDocDeleted,
+  type AgentConfigId,
+  type MachineId,
   type SessionId,
   type SessionMeta,
 } from '@lody/shared';
@@ -161,6 +164,14 @@ export const coordinatorSessionsLayer = (
               ),
             };
           }),
+          readTail: (limit) =>
+            io(async () => {
+              const count = await backend.readHistoryCount();
+              const rows = await backend.readHistoryDirectory(Math.max(0, count - limit), count);
+              return rows.flatMap((entry) =>
+                entry.scalars ? [{ ...entry.scalars, position: entry.position }] : []
+              );
+            }),
           readTurn: (turn) => io(() => backend.readTurn(turn)),
           readTurnOutput: (turn) => io(() => backend.readTurnOutput(turn)),
           applyHistoryAction: (action) => io(() => backend.applyHistoryAction(action)),
@@ -196,5 +207,42 @@ export const coordinatorSessionsLayer = (
       Effect.sync(() =>
         options.logger.warn(`${message}${cause === undefined ? '' : `: ${String(cause)}`}`)
       ),
+    boardMaintenance: {
+      busy: (id) =>
+        options.executionService.getExecutionSnapshot(id).hasActiveTurn ||
+        options.dispatchWatcher.hasPendingDispatch(id),
+      inbox: (id) => ({
+        runnable: store.inbox.hasRunnableWork(options.workspaceId, id),
+        paused: store.inbox.paused(options.workspaceId, id),
+      }),
+      compactionSupport: (id, meta) =>
+        io(async () => {
+          const live = options.executionService.contextCompactionSupport(id);
+          if (live !== undefined || !meta.agentConfigId) return live;
+          // No agent runs yet: the commands it listed when it last started.
+          const cached = await options.workspaceDocument.getAcpCapabilities(
+            options.machineId as MachineId,
+            meta.agentConfigId as AgentConfigId
+          );
+          return cached?.availableCommands?.some((command) => command.name === 'compact')
+            ? true
+            : undefined;
+        }),
+      // A maintenance turn outlives a Worker stop like any turn: never track it as raw work.
+      runTurn: (request) =>
+        Effect.tryPromise({
+          try: async () => {
+            const profile = await options.userResolver
+              ?.resolve(request.userId)
+              .catch(() => undefined);
+            return options.executionService.runBoardMaintenanceTurn({
+              ...request,
+              userName: profile?.name ?? request.userId,
+              userEmail: profile?.email ?? buildMissingEmail('lody', request.userId),
+            });
+          },
+          catch: (cause) => cause,
+        }),
+    },
   });
 };

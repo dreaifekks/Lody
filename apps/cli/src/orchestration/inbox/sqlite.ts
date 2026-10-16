@@ -267,6 +267,12 @@ export class InboxSqlite {
         SELECT 1 FROM inbox_intents i WHERE i.workspace_id=s.workspace_id AND i.session_id=s.session_id AND i.user_id=s.user_id AND i.state IN ('pending','prepared')))) LIMIT 1`)
       .get(workspaceId, sessionId);
   }
+  /** The user's Stop paused this Session's Inbox until their next message. */
+  paused(workspaceId: string, sessionId: string): boolean {
+    return !!this.db
+      .prepare('SELECT 1 FROM inbox_sessions WHERE workspace_id=? AND session_id=? AND paused=1')
+      .get(workspaceId, sessionId);
+  }
   closeConnection(): void {
     if (this.db.open) this.db.close();
   }

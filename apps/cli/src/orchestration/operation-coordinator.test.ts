@@ -14,8 +14,10 @@ import { LoroDoc } from 'loro-crdt';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  boardMaintenanceTurn,
   getAgentConfigRoomId,
   getSessionRoomId,
+  readBoardMaintenance,
   machineFlockKeys,
   type AgentConfigMeta,
   type MachineId,
@@ -1480,6 +1482,14 @@ it('keeps long completion reports and preserves their conclusion when the Inbox 
   }
 });
 
+type MaintenanceTurnRequest = {
+  sessionId: SessionId;
+  stepTurnId: string;
+  prompt: string;
+  renewBoardInstructions?: boolean;
+  freshAgentSession?: boolean;
+};
+
 const boardHarness = async () => {
   const { LoroRepo } = await import('loro-repo');
   const { createSessionMirror, normalizeBoardMeta, getWorkspaceFlockDocId, workspaceFlockKeys } =
@@ -1600,6 +1610,17 @@ const boardHarness = async () => {
   const launches: import('./inbox/model').InboxBatch[] = [];
   const warnings: unknown[] = [];
   let hold = true;
+  // Board maintenance: an agent that compacts, a step that holds the Session while it runs.
+  const maintenance = {
+    runs: [] as MaintenanceTurnRequest[],
+    support: true as boolean | undefined,
+    compactStatus: 'completed' as 'completed' | 'failed' | 'none',
+    usageAfterCompact: 24_000,
+    pendingUser: false,
+    duringStep: async (_request: MaintenanceTurnRequest) => {},
+    afterStep: (_request: MaintenanceTurnRequest) => {},
+    active: false,
+  };
   const coordinator = new LodyOperationCoordinator({
     workspaceId,
     machineId,
@@ -1611,7 +1632,46 @@ const boardHarness = async () => {
       getOrCreateSessionDoc: async (id: SessionId) => docs.get(id),
     } as never,
     executionService: {
-      getExecutionSnapshot: () => ({ hasActiveTurn: hold }),
+      getExecutionSnapshot: () => ({ hasActiveTurn: hold || maintenance.active }),
+      contextCompactionSupport: () => maintenance.support,
+      runBoardMaintenanceTurn: async (request: MaintenanceTurnRequest) => {
+        maintenance.runs.push(request);
+        maintenance.active = true;
+        try {
+          await maintenance.duringStep(request);
+          const compact = request.prompt.startsWith('/compact');
+          await docs.get(request.sessionId)!.sessionData.commands.appendTurn({
+            id: `assistant:${request.stepTurnId}`,
+            role: 'assistant',
+            userTurnId: request.stepTurnId,
+            timestamp: new Date(now).toISOString(),
+            endedAt: now,
+            finished: true,
+            items:
+              compact && maintenance.compactStatus !== 'none'
+                ? [
+                    {
+                      type: 'tool_call',
+                      toolCallId: `${request.stepTurnId}:marker`,
+                      title: 'Compact context',
+                      status: maintenance.compactStatus,
+                      activityKind: 'context_compaction',
+                    },
+                  ]
+                : [{ type: 'text', text: 'Recorded.' }],
+            fileDiff: [],
+          });
+          if (compact && maintenance.compactStatus === 'completed')
+            await repo.upsertDocMeta(getSessionRoomId(request.sessionId), {
+              contextWindowUsage: { used: maintenance.usageAfterCompact, size: 1_000_000 },
+            });
+          await repo.flush();
+          return 'completed';
+        } finally {
+          maintenance.active = false;
+          maintenance.afterStep(request);
+        }
+      },
       continueSession: async (
         _message: unknown,
         options: { inboxBatch: import('./inbox/model').InboxBatch }
@@ -1625,7 +1685,7 @@ const boardHarness = async () => {
         store.inbox.release({ ...batch, executionId, outcome: 'normal' });
       },
     } as never,
-    dispatchWatcher: { hasPendingDispatch: () => false } as never,
+    dispatchWatcher: { hasPendingDispatch: () => maintenance.pendingUser } as never,
     storeFactory: () => store,
     storePath: '/unused/board.sqlite3',
     operationStoreWatchFactory: () => ({ close: () => {} }),
@@ -1663,6 +1723,7 @@ const boardHarness = async () => {
     reports,
     launches,
     warnings,
+    maintenance,
     advance: (ms: number) => {
       now += ms;
     },
@@ -2154,4 +2215,206 @@ it('retries a rolled-back Board report on the owned backoff without another meta
     await h.close();
     vi.useRealTimers();
   }
+});
+
+describe('Board coordinator continuity', () => {
+  type Harness = Awaited<ReturnType<typeof boardHarness>>;
+  const records = (h: Harness) =>
+    (h.docs.get(h.coordinatorId)!.readHistorySnapshot() as SessionHistoryInput[]).flatMap(
+      (turn) => {
+        const record = readBoardMaintenance(turn);
+        return record ? [{ id: turn.id, ...record }] : [];
+      }
+    );
+  /** Resolves on the history change that satisfies `check`: an explicit signal, not a poll. */
+  const until = (h: Harness, check: () => boolean) =>
+    new Promise<void>((resolve) => {
+      if (check()) return resolve();
+      const off = h.docs.get(h.coordinatorId)!.subscribeAll(() => {
+        if (!check()) return;
+        off();
+        resolve();
+      });
+    });
+  const settled = (h: Harness, status: string, field?: (record: object) => boolean) =>
+    until(h, () =>
+      records(h).some((record) => record.status === status && (!field || field(record)))
+    );
+  /** A coordinator that finished a human turn with a large context, idle from now on. */
+  const largeIdleCoordinator = async (used = 160_000) => {
+    const h = await boardHarness();
+    h.release();
+    await h.finish(h.coordinatorId, 'coordinator-input');
+    await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+      contextWindowUsage: { used, size: 1_000_000 },
+    });
+    return h;
+  };
+  const steps = (h: Harness) => h.maintenance.runs.map((run) => run.stepTurnId.split(':').at(-1));
+
+  it('waits out the idle period, then records, compacts and renews the Board instructions', async () => {
+    const h = await largeIdleCoordinator();
+    try {
+      h.coordinator.start();
+      await h.drain();
+      h.advance(9 * 60_000);
+      await h.drain();
+      expect(h.maintenance.runs).toEqual([]);
+      h.advance(60_000 + 1);
+      await h.drain();
+      await settled(h, 'done', (record) => 'renewed' in record && record.renewed === true);
+      await h.drain();
+      expect(steps(h)).toEqual(['memory', 'compact', 'renew']);
+      expect(h.maintenance.runs[1]!.prompt.startsWith('/compact ')).toBe(true);
+      expect(h.maintenance.runs[2]).toMatchObject({ renewBoardInstructions: true });
+      expect(h.maintenance.runs[2]!.freshAgentSession).toBeUndefined();
+      expect(records(h)).toEqual([
+        expect.objectContaining({
+          kind: 'compact',
+          trigger: 'idle',
+          status: 'done',
+          usedBefore: 160_000,
+          usedAfter: 24_000,
+          renewed: true,
+        }),
+      ]);
+      // Nothing happened since: another idle period does not compact again.
+      h.advance(60 * 60_000);
+      await h.drain();
+      expect(h.maintenance.runs).toHaveLength(3);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('leaves a context below the threshold alone', async () => {
+    const h = await largeIdleCoordinator(100_000);
+    try {
+      h.coordinator.start();
+      h.advance(60 * 60_000);
+      await h.drain();
+      expect(h.maintenance.runs).toEqual([]);
+      expect(records(h)).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('skips an agent that cannot compact with a log, and never claims success', async () => {
+    const h = await largeIdleCoordinator();
+    try {
+      h.maintenance.support = false;
+      h.coordinator.start();
+      h.advance(10 * 60_000 + 1);
+      await h.drain();
+      await h.drain();
+      expect(h.maintenance.runs).toEqual([]);
+      expect(records(h)).toEqual([]);
+      expect(h.warnings).toEqual([
+        expect.stringContaining('does not compact its context; idle compaction skipped'),
+      ]);
+      // Asked for by hand, the same agent gets an honest divider instead.
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'manual-1',
+          { boardId: h.board.id, kind: 'compact', trigger: 'manual', status: 'requested' },
+          new Date(TEST_NOW_MS).toISOString()
+        )
+      );
+      await h.drain();
+      await settled(h, 'unsupported');
+      expect(h.maintenance.runs).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('reports a compaction the agent did not confirm as failed', async () => {
+    const h = await largeIdleCoordinator();
+    try {
+      h.maintenance.compactStatus = 'none';
+      h.coordinator.start();
+      h.advance(10 * 60_000 + 1);
+      await h.drain();
+      await settled(h, 'failed');
+      expect(steps(h)).toEqual(['memory', 'compact']);
+      expect(records(h)).toEqual([
+        expect.objectContaining({ status: 'failed', reason: 'compaction-unconfirmed' }),
+      ]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('yields to the user, then renews once the coordinator is free again', async () => {
+    const h = await largeIdleCoordinator();
+    try {
+      // The user speaks while the agent compacts: the renewal waits for their turn.
+      h.maintenance.afterStep = (request) => {
+        if (request.stepTurnId.endsWith(':compact')) h.maintenance.pendingUser = true;
+      };
+      h.coordinator.start();
+      h.advance(10 * 60_000 + 1);
+      await h.drain();
+      await settled(h, 'done');
+      await h.drain();
+      expect(steps(h)).toEqual(['memory', 'compact']);
+      expect(records(h)).toEqual([expect.objectContaining({ status: 'done', renewed: false })]);
+      h.maintenance.pendingUser = false;
+      await h.drain();
+      await settled(h, 'done', (record) => 'renewed' in record && record.renewed === true);
+      expect(steps(h)).toEqual(['memory', 'compact', 'renew']);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('starts a new agent conversation in the same Session; results reach it through the Inbox', async () => {
+    const h = await largeIdleCoordinator(40_000);
+    try {
+      await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+        acpSessionId: 'previous-agent-session',
+      });
+      await h.add('member');
+      await h.append('member', h.input('work'));
+      // A member finishes while the old agent writes its handoff.
+      h.maintenance.duringStep = async (request) => {
+        if (!request.stepTurnId.endsWith(':handoff')) return;
+        await h.finish('member', 'work', 'Member conclusion');
+        await h.drain();
+      };
+      h.coordinator.start();
+      await h.drain();
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'fresh-1',
+          { boardId: h.board.id, kind: 'new_conversation', trigger: 'manual', status: 'requested' },
+          new Date(TEST_NOW_MS).toISOString()
+        )
+      );
+      await h.drain();
+      await settled(h, 'done');
+      await h.drain();
+      expect(steps(h)).toEqual(['handoff', 'renew']);
+      expect(h.maintenance.runs[0]!.prompt).toContain('handoff-');
+      expect(h.maintenance.runs[1]).toMatchObject({
+        sessionId: h.coordinatorId,
+        renewBoardInstructions: true,
+        freshAgentSession: true,
+      });
+      expect(h.maintenance.runs[1]!.prompt).toContain('member');
+      expect(records(h)).toEqual([
+        expect.objectContaining({ kind: 'new_conversation', status: 'done', renewed: true }),
+      ]);
+      // The Board still names the same coordinator; its report went to that Session.
+      expect(h.reports()).toHaveLength(1);
+      expect(h.launches).toEqual([
+        expect.objectContaining({ sessionId: h.coordinatorId, kind: 'automatic', memberCount: 1 }),
+      ]);
+    } finally {
+      await h.close();
+    }
+  });
 });
