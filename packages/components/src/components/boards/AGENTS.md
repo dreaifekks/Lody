@@ -33,7 +33,8 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   (`opensInCoordinatorPage`, for rows and `boardThread` alike).
 - Thread rows keep a thread's opened sessions and Tabs under it, grouped by the
   family's strongest state.
-- A Board page remembers no split: it opens half and half on every entry.
+- A Board page remembers no split: it opens half and half on every entry, and
+  `layoutResetKey` (Board id + entry) resets it without remounting the page.
 - The Files tab is the session file tree (`FileTreeProviderView`) over
   `BoardDirectoryFileProvider`, with the shared notes one row above it; files open in
   the Board preview, never a session viewer tab.

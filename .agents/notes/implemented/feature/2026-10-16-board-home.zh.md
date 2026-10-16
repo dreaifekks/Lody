@@ -176,3 +176,20 @@ LAN 里所有机器属于同一个用户，同一用户跨机器能碰到文件�
 目录、点开预览、返回后目录仍展开、二进制下载。截图 `/tmp/board-lan4fix-files-*.png`。
 未验证：修复版本还没部署，真实 LAN 上的修复后读写要等下一个 dev 包；mba 的副本已经因为调查时那次
 同步变新，修复前状态只能在其他没同步过的成员上再现；Windows 上的复现因 shell 转义没做成。
+
+### lan.4 修正的 review 跟进（2026-10-17）
+
+Codex reviewer（gpt-6.1-sol high）提了 1 个 P1、2 个 P2，都已修：
+
+- **P1：看板之间共用一个不记忆的布局。** 页面不重挂载时，看板 A 拖成 60/40 后进 B 仍是 60/40。
+  `DesktopSessionDetailLayout` 新增 `layoutResetKey`，和存储 ID 分开：键变了就清掉这个布局的
+  重开宽度，侧栏开着时直接 `resize` 回默认值，不重挂载页面。看板页传「看板 id + 第几次进入」，
+  每次进入（`?board=1` 生效时）计数加一。离开看板时键变回空，不触发重置。
+- **P2：重开宽度只有一个 ref。** 普通会话 38% 被看板的宽度覆盖。改成按布局键记的 Map。
+- **P2：截断标记丢了。** 列表结果的 `truncated` 由 `useBoardDirectoryFileProvider` 带出，
+  `BoardDirectoryTreeView`（文件 tab 的视图，故事也用它）在树上方显示「只列出前 500 个文件」。
+
+证据：`desktop-session-detail-layout.test.tsx` 的两条切换用例（A→B、再次进入；普通会话→看板→普通
+会话）在未修复时都失败；`board-overview.test.tsx` 的文件 tab 用例断言截断提示。截图：
+`/tmp/board-lan4fix-r3-split-5050.png`、`-split-board-a-dragged.png`（60/40）、
+`-split-board-b.png`（切到 B 后测得 50.0/50.0）、`-truncated.png`。

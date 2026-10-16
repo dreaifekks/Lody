@@ -1343,10 +1343,12 @@ Used on a real five-machine LAN, `dev-v0.105.0-lan.4` needed three fixes:
 - **Side panel not at half.** The panel reopened at the width another layout left (a
   chat dragged to 38%), which `board-detail-panels` then remembered. A Board page now
   remembers no split and opens half and half on every entry (sidebar, command palette,
-  refresh); a reopening panel reuses a width only within the same layout.
+  refresh): another Board or another entry resets the split without remounting the
+  page, and reopening widths are kept per layout, so a Board never overwrites the width
+  a chat was dragged to.
 - **Board files tab.** It is the session Files tree (`FileTreeProviderView`) over
   `BoardDirectoryFileProvider`: the agent service lists the whole area at once (500
   files at most) and the tree builds folders from the paths. Opening a file still uses
   the Board preview (text, pictures, everything else downloads), and the row menu offers
-  Download. The shared notes stay the Loro document, one row above the tree, not moved
+  Download. Past 500 files, a line above the tree says only the first 500 are listed. The shared notes stay the Loro document, one row above the tree, not moved
   to `notes.md`.

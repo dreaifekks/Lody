@@ -244,3 +244,25 @@ folder, preview, the folder still open on return, binary download. Screenshots:
 reads and writes on the real LAN wait for the next dev build; mba's replica is current
 since the investigation's sync, so the failure reproduces only on members that have not
 synced; the Windows reproduction was not completed because of shell quoting.
+
+### Review follow-up to the lan.4 corrections (2026-10-17)
+
+The Codex reviewer (gpt-6.1-sol high) raised one P1 and two P2s, all fixed:
+
+- **P1: Boards share one unremembered layout.** Without a page remount, Board A dragged
+  to 60/40 left Board B at 60/40. `DesktopSessionDetailLayout` gains `layoutResetKey`,
+  separate from the storage id: a new key forgets this layout's reopen width and, with
+  the panel open, resizes it back to the default without remounting the page. A Board
+  page passes the Board id plus its entry count, bumped whenever `?board=1` applies.
+  Leaving a Board turns the key back to undefined, which resets nothing.
+- **P2: one ref held the reopen width.** A chat's 38% was overwritten by the Board's.
+  Reopen widths are now a Map keyed by layout.
+- **P2: the truncation flag was lost.** `useBoardDirectoryFileProvider` carries the
+  listing's `truncated`, and `BoardDirectoryTreeView` (the Files tab view, which the
+  story renders too) says only the first 500 files are listed, above the tree.
+
+Evidence: the two switch cases in `desktop-session-detail-layout.test.tsx` (A→B and
+re-entry; chat→Board→chat) both fail without the fix; the `board-overview.test.tsx`
+Files case asserts the truncation line. Screenshots:
+`/tmp/board-lan4fix-r3-split-5050.png`, `-split-board-a-dragged.png` (60/40),
+`-split-board-b.png` (measured 50.0/50.0 after switching to B), `-truncated.png`.
