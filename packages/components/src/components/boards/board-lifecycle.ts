@@ -140,12 +140,19 @@ export function useBoardActions() {
     },
     [runtime, t, updateSessionTitle]
   );
-  /**
-   * Ask the coordinator's machine to tidy the coordinator's context now, or to
-   * start it a new agent conversation. The request is the divider itself: the
-   * machine picks it up once the coordinator is free and keeps it current.
-   */
-  const requestMaintenance = useCallback(
+  return { archive, restore, rename };
+}
+
+/**
+ * Ask the coordinator's machine to tidy the coordinator's context now, or to
+ * start it a new agent conversation. The request is the divider itself: the
+ * machine picks it up once the coordinator is free and keeps it current. Needs
+ * only the workspace runtime, so the conversation header can hold it.
+ */
+export function useBoardMaintenanceRequest() {
+  const { t } = useTranslation();
+  const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
+  return useCallback(
     async (coordinator: Pick<SessionMeta, 'id' | 'boardId'>, kind: BoardMaintenanceKind) => {
       if (!runtime || !coordinator.boardId) return;
       const turn = boardMaintenanceTurn(
@@ -165,5 +172,4 @@ export function useBoardActions() {
     },
     [runtime, t]
   );
-  return { archive, restore, rename, requestMaintenance };
 }

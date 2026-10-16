@@ -205,7 +205,7 @@ import { boardEnabledAtom, semanticShortcutsFeatureEnabledAtom } from '@/atoms/s
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { BoardSidePanel, useThreadLocation } from '../boards/board-side-panel';
 import { BoardSettings } from '../boards/board-settings-panel';
-import { useBoardActions } from '../boards/board-lifecycle';
+import { useBoardActions, useBoardMaintenanceRequest } from '../boards/board-lifecycle';
 import { BoardRenameDialog } from '../boards/board-rename-dialog';
 import { cn, getBasename } from '@/lib';
 
@@ -2391,11 +2391,8 @@ const SessionDetail = ({
     setSessionPinned,
     transferSessionOwner,
   } = useSessionActions();
-  const {
-    archive: archiveBoard,
-    restore: restoreBoard,
-    requestMaintenance: requestBoardMaintenance,
-  } = useBoardActions();
+  const { archive: archiveBoard, restore: restoreBoard } = useBoardActions();
+  const requestBoardMaintenance = useBoardMaintenanceRequest();
   const { members: workspaceMembers, isMultiMember: isMultiMemberWorkspace } =
     useWorkspaceMembers();
   const handleTransferSessionOwner = useCallback(

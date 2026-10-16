@@ -1,4 +1,4 @@
-import { useBoardActions } from '../boards/board-lifecycle';
+import { useBoardMaintenanceRequest } from '../boards/board-lifecycle';
 import { BoardMembershipDialog } from '../boards/board-membership-dialog';
 import { boardEnabledAtom } from '@/atoms/settings';
 import { useIosSimulatorPreviewRequest } from './ios-simulator/use-ios-simulator-preview-request';
@@ -1431,7 +1431,7 @@ export function SessionHeaderMenu({
   const boardsEnabled = useAtomValue(boardEnabledAtom);
   // A coordinator's page is its Board: rename, archive and restore act on the Board.
   const isBoard = boardsEnabled && session.boardRole === 'coordinator';
-  const { requestMaintenance } = useBoardActions();
+  const requestMaintenance = useBoardMaintenanceRequest();
   const [boardMembershipOpen, setBoardMembershipOpen] = useState(false);
   const conversationWide = useAtomValue(conversationWideModeAtom);
   const setConversationWide = useSetAtom(conversationWideModeAtom);
