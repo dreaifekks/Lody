@@ -877,12 +877,14 @@ it('archives and restores a Board with its members, and keeps it where it was wh
   };
   const archivedIds = async () => (await archived()).map((meta) => meta.id);
   try {
-    // A member refuses: the Board stays active, so its settings still offer Archive.
+    // A member refuses: the Board and its coordinator stay active, so every entry
+    // (the page's menu follows the coordinator) still offers Archive.
     env.failing.add(getSessionRoomId('second' as SessionId));
     await act(async () => {
       await expect(lifecycle.archiveBoard(testBoard(), sessions)).rejects.toThrow('disk full');
     });
     expect(env.board('bd_test')).not.toHaveProperty('archivedAtMs');
+    expect(await archivedIds()).not.toContain('coordinator');
     env.failing.clear();
     await act(async () => lifecycle.archiveBoard(testBoard(), sessions));
     expect(env.board('bd_test').archivedAtMs).toEqual(expect.any(Number));
@@ -897,7 +899,7 @@ it('archives and restores a Board with its members, and keeps it where it was wh
       );
     });
     expect(env.board('bd_test').archivedAtMs).toEqual(expect.any(Number));
-    expect(await archivedIds()).toEqual(['second']);
+    expect(await archivedIds()).toEqual(['coordinator', 'second']);
     env.failing.clear();
     await act(async () => lifecycle.restoreBoard(env.board('bd_test'), await archived()));
     expect(env.board('bd_test')).not.toHaveProperty('archivedAtMs');
@@ -1254,8 +1256,14 @@ it('renames and archives the whole Board from its page header menu', async () =>
     expect(menuItem('Change owner')).toBeUndefined();
     expect(menuItem('Rename Chat')).toBeUndefined();
     await act(async () => menuItem('Rename Board')!.click());
+    // Another window saves instructions while the rename is open; the rename keeps them.
+    await writeWorkspaceBoard(env.runtime, { ...env.board('bd_test'), instructions: 'Use nmem.' });
     await renameTo('Launch');
-    expect(env.board('bd_test')).toMatchObject({ name: 'Launch', purpose: 'Ship it' });
+    expect(env.board('bd_test')).toMatchObject({
+      name: 'Launch',
+      purpose: 'Ship it',
+      instructions: 'Use nmem.',
+    });
     expect((await env.meta('coordinator')).title).toBe('Launch');
 
     await openMenu();
@@ -1275,6 +1283,7 @@ it('shares, renames and archives a Board from its sidebar row menu', async () =>
   creation.boards = [env.board('bd_test')];
   const copied: string[] = [];
   const archived: string[] = [];
+  const opened: string[] = [];
   const view = await mount(
     <Provider store={store}>
       <BoardSidebar
@@ -1288,7 +1297,7 @@ it('shares, renames and archives a Board from its sidebar row menu', async () =>
         ]}
         collapsed={false}
         onToggleCollapsed={() => {}}
-        onOpen={() => {}}
+        onOpen={(board) => opened.push(board.id)}
         onCreate={() => {}}
         onCopyUrl={(board) => copied.push(board.coordinatorSessionId)}
         onArchived={(board) => archived.push(board.id)}
@@ -1304,7 +1313,20 @@ it('shares, renames and archives a Board from its sidebar row menu', async () =>
         );
     });
   };
+  const press = async (element: Element) => {
+    await act(async () => {
+      element.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+      );
+    });
+  };
   try {
+    // Enter on the row opens the Board; on ⋯ inside it, it stays with the button.
+    await press(document.querySelector('[data-id="bd_test"] button[aria-label="More actions"]')!);
+    expect(opened).toEqual([]);
+    await press(document.querySelector('[data-id="bd_test"]')!);
+    expect(opened).toEqual(['bd_test']);
+
     await openRowMenu();
     await act(async () => menuItem('Copy Board URL')!.click());
     expect(copied).toEqual(['coordinator']);

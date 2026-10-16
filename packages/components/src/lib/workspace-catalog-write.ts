@@ -4,6 +4,7 @@ import {
   type BoardMeta,
   MAX_BOARDS_PER_WORKSPACE,
   listWorkspaceBoards,
+  normalizeBoardMeta,
   readWorkspaceFlockRowsFromFlock,
   type AgentRoleId,
   type CatalogAgentRole,
@@ -156,6 +157,26 @@ export async function restoreWorkspaceBoard(
   const { archivedAtMs: _archivedAtMs, ...restored } = board;
   await writeWorkspaceBoard(deps, restored);
   return restored;
+}
+
+/**
+ * Renames the Board as its row stands now, so a rename typed against an older copy
+ * keeps every other field another window or machine changed meanwhile.
+ */
+export async function renameWorkspaceBoard(
+  deps: WorkspaceCatalogWriteDeps,
+  id: BoardMeta['id'],
+  name: string
+): Promise<BoardMeta> {
+  const handle = await deps.repo.openFlockDoc(getWorkspaceFlockDocId(deps.workspaceId));
+  const current = listWorkspaceBoards(readWorkspaceFlockRowsFromFlock(handle.flock)).find(
+    (entry) => entry.id === id
+  );
+  if (!current) throw new Error('BOARD_NOT_FOUND');
+  const next = normalizeBoardMeta({ ...current, name });
+  if (!next) throw new Error('BOARD_INVALID');
+  await writeWorkspaceBoard(deps, next);
+  return next;
 }
 
 /** Board creation compensates only a rejected first-turn acceptance, never upload. */

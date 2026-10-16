@@ -1,12 +1,16 @@
 import { useAtomValue, useStore } from 'jotai';
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { normalizeBoardMeta, type BoardMeta, type SessionId, type SessionMeta } from '@lody/shared';
+import type { BoardMeta, SessionId, SessionMeta } from '@lody/shared';
 import { allActiveSessionsAtom, archivedSessionListAtom } from '@/atoms/doc-meta';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { useSessionActions } from '@/hooks/use-session-actions';
 import { toast } from '@/lib/toast';
-import { restoreWorkspaceBoard, writeWorkspaceBoard } from '@/lib/workspace-catalog-write';
+import {
+  renameWorkspaceBoard,
+  restoreWorkspaceBoard,
+  writeWorkspaceBoard,
+} from '@/lib/workspace-catalog-write';
 
 /** Root Sessions of a Board: archive and restore carry their contained Tabs along. */
 export function boardRootMemberIds(
@@ -24,11 +28,13 @@ export function boardRootMemberIds(
 }
 
 /**
- * Archiving a Board archives the coordinator and every root member, then marks
- * the row; restoring restores them all, then clears the mark. The row changes
- * last both ways, so a failure stops with the Board where it was and its entry
- * (settings or Archive) still offers the retry. Session restore covers only
- * direct Tabs, so every member root is restored explicitly.
+ * Archiving a Board archives every root member, then the coordinator, then marks
+ * the row; restoring restores the members, then the coordinator, then clears the
+ * mark. The coordinator and the row change last both ways, so a failure stops
+ * with the Board where it was and every entry (its page's menu, which follows the
+ * coordinator, the sidebar row, settings, Archive) still offers the retry.
+ * Session restore covers only direct Tabs, so every member root is restored
+ * explicitly.
  */
 export function useBoardLifecycle() {
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
@@ -36,7 +42,7 @@ export function useBoardLifecycle() {
   const archiveBoard = useCallback(
     async (board: BoardMeta, activeSessions: readonly SessionMeta[]) => {
       if (!runtime) throw new Error('Runtime not ready');
-      for (const id of [board.coordinatorSessionId, ...boardRootMemberIds(board, activeSessions)])
+      for (const id of [...boardRootMemberIds(board, activeSessions), board.coordinatorSessionId])
         await archiveSession(id);
       await writeWorkspaceBoard(runtime, { ...board, archivedAtMs: Date.now() });
     },
@@ -47,8 +53,8 @@ export function useBoardLifecycle() {
       if (!runtime) throw new Error('Runtime not ready');
       await restoreWorkspaceBoard(runtime, board, async () => {
         for (const id of [
-          board.coordinatorSessionId,
           ...boardRootMemberIds(board, archivedSessions),
+          board.coordinatorSessionId,
         ])
           await restoreSession(id);
       });
@@ -114,13 +120,14 @@ export function useBoardActions() {
   // The coordinator carries the Board's name as its title, as settings keep it.
   const rename = useCallback(
     async (board: BoardMeta, name: string) => {
-      const next = normalizeBoardMeta({ ...board, name });
-      if (!next)
-        throw new Error(
-          t('boards.settings.invalid', 'Enter a name, and keep every field within its limit.')
-        );
       if (!runtime) throw new Error('Runtime not ready');
-      await writeWorkspaceBoard(runtime, next);
+      const next = await renameWorkspaceBoard(runtime, board.id, name).catch((cause: unknown) => {
+        throw cause instanceof Error && cause.message === 'BOARD_INVALID'
+          ? new Error(
+              t('boards.settings.invalid', 'Enter a name, and keep every field within its limit.')
+            )
+          : cause;
+      });
       await updateSessionTitle(board.coordinatorSessionId, next.name);
     },
     [runtime, t, updateSessionTitle]

@@ -62,10 +62,11 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   (`BoardSidebar`) rename, archive and restore through `useBoardActions`, which reads
   members when it runs; share opens the coordinator conversation's share editor. A
   coordinator offers no permanent delete or owner change.
-- Archiving a Board archives the coordinator and member roots, then writes
+- Archiving a Board archives member roots, then the coordinator, then writes
   `archivedAtMs`; restoring restores every root (Session restore covers only direct
-  Tabs), then clears it. The row changes last, so a failure leaves the Board where it
-  was, with its entry to retry; no rollback.
+  Tabs), then the coordinator, then clears it. The coordinator (whose state the page
+  menu follows) and the row change last, so a failure leaves the Board where it was,
+  with its entries to retry; no rollback. Rename patches the current row's name.
 - The experiment gates the sidebar section, the Board panel and archived Boards.
   Turning it off retains data and does not stop ordinary sessions or their
   membership inheritance.

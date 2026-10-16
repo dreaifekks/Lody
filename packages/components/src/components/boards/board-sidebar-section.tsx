@@ -163,6 +163,8 @@ function BoardSidebarRow({
       aria-current={selected ? 'page' : undefined}
       onClick={() => onOpen(board)}
       onKeyDown={(event: KeyboardEvent) => {
+        // ⋯ and Archive inside the row keep their own keys.
+        if (event.target !== event.currentTarget) return;
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
         onOpen(board);
