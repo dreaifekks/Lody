@@ -143,7 +143,10 @@ export class LodyOperationCoordinator {
         this.started &&
         !this.options.executionService.getExecutionSnapshot(batch.sessionId as SessionId)
           .hasActiveTurn &&
-        !this.options.dispatchWatcher.hasPendingDispatch(batch.sessionId as SessionId),
+        !this.options.dispatchWatcher.hasPendingDispatch(batch.sessionId as SessionId) &&
+        !this.options.executionService.isInboxHeldForBoardMaintenance?.(
+          batch.sessionId as SessionId
+        ),
       admit: (batch) =>
         this.started &&
         (batch.kind !== 'automatic' ||

@@ -43,6 +43,8 @@ export type CoordinatorBoardMaintenance = {
    * capability, else its cached commands; undefined when neither says.
    */
   compactionSupport(id: SessionId, meta: SessionMeta): Effect.Effect<boolean | undefined, unknown>;
+  /** Keep Inbox batches away while the coordinator switches to a new agent. */
+  holdInbox(id: SessionId, held: boolean): void;
   runTurn(request: {
     sessionId: SessionId;
     stepTurnId: string;

@@ -103,6 +103,12 @@ export const BoardMaintenanceMetaSchema = z
     usedAfter: z.number().nonnegative().optional(),
     /** The current Board instructions reached the agent after the context changed. */
     renewed: z.boolean().optional(),
+    /**
+     * New conversation: the handoff file the old agent wrote, or `none` when it
+     * had no agent conversation. While the run is still `running`, the switch to
+     * the new agent waits for a free moment.
+     */
+    handoff: z.string().min(1).max(200).optional(),
     /** A short reason code, never agent output. */
     reason: z.string().max(200).optional(),
   })

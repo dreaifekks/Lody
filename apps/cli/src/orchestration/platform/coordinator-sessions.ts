@@ -261,6 +261,7 @@ export const coordinatorSessionsLayer = (
             ? true
             : undefined;
         }),
+      holdInbox: (id, held) => options.executionService.holdInboxForBoardMaintenance?.(id, held),
       // A maintenance turn outlives a Worker stop like any turn: never track it as raw work.
       runTurn: (request) =>
         Effect.tryPromise({

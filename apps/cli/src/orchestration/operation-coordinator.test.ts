@@ -1622,6 +1622,9 @@ const boardHarness = async () => {
     afterStep: (_request: MaintenanceTurnRequest) => {},
     outcome: (_request: MaintenanceTurnRequest): string => 'completed',
     active: false,
+    held: new Set<SessionId>(),
+    /** Maintenance steps and Inbox launches in the order they reached the Session. */
+    timeline: [] as string[],
   };
   const coordinator = new LodyOperationCoordinator({
     workspaceId,
@@ -1636,8 +1639,14 @@ const boardHarness = async () => {
     executionService: {
       getExecutionSnapshot: () => ({ hasActiveTurn: hold || maintenance.active }),
       contextCompactionSupport: () => maintenance.support,
+      holdInboxForBoardMaintenance: (id: SessionId, held: boolean) => {
+        if (held) maintenance.held.add(id);
+        else maintenance.held.delete(id);
+      },
+      isInboxHeldForBoardMaintenance: (id: SessionId) => maintenance.held.has(id),
       runBoardMaintenanceTurn: async (request: MaintenanceTurnRequest) => {
         maintenance.runs.push(request);
+        maintenance.timeline.push(`step:${request.stepTurnId.split(':').at(-1)}`);
         maintenance.active = true;
         try {
           await maintenance.duringStep(request);
@@ -1680,6 +1689,7 @@ const boardHarness = async () => {
       ) => {
         const batch = options.inboxBatch;
         launches.push(batch);
+        maintenance.timeline.push('inbox');
         const executionId = `execution:${batch.batchId}`;
         expect(store.inbox.begin(batch, executionId, batch.owner)).toBe(true);
         expect(store.inbox.fence(batch, executionId)).toBe(true);
@@ -2391,6 +2401,70 @@ describe('Board coordinator continuity', () => {
           reason: 'renewal-unhandled-error-recorded',
         }),
       ]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('keeps a renewal pending when another turn takes the Session first', async () => {
+    const h = await largeIdleCoordinator();
+    try {
+      let contended = true;
+      h.maintenance.outcome = (request) => {
+        if (!request.stepTurnId.endsWith(':renew') || !contended) return 'completed';
+        contended = false;
+        return 'duplicate';
+      };
+      h.coordinator.start();
+      h.advance(10 * 60_000 + 1);
+      await h.drain();
+      await settled(h, 'done', (record) => 'renewed' in record && record.renewed === true);
+      expect(steps(h)).toEqual(['memory', 'compact', 'renew', 'renew']);
+      expect(records(h)).toEqual([expect.not.objectContaining({ reason: expect.anything() })]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('keeps results from the old agent between the handoff and the new agent', async () => {
+    const h = await largeIdleCoordinator(40_000);
+    try {
+      await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+        acpSessionId: 'previous-agent-session',
+      });
+      await h.add('member');
+      await h.append('member', h.input('work'));
+      // A member finishes during the handoff, and the user speaks right after it.
+      h.maintenance.duringStep = async (request) => {
+        if (!request.stepTurnId.endsWith(':handoff')) return;
+        await h.finish('member', 'work', 'Member conclusion');
+        await h.drain();
+      };
+      h.maintenance.afterStep = (request) => {
+        if (request.stepTurnId.endsWith(':handoff')) h.maintenance.pendingUser = true;
+      };
+      h.coordinator.start();
+      await h.drain();
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'switch-1',
+          { boardId: h.board.id, kind: 'new_conversation', trigger: 'manual', status: 'requested' },
+          new Date(TEST_NOW_MS).toISOString()
+        )
+      );
+      await h.drain();
+      await settled(h, 'running', (record) => 'handoff' in record);
+      await h.drain();
+      // The switch waits for the user; the queued result waits for the switch.
+      expect(steps(h)).toEqual(['handoff']);
+      expect(h.launches).toEqual([]);
+      h.maintenance.pendingUser = false;
+      await h.drain();
+      await settled(h, 'done');
+      await h.drain();
+      expect(h.maintenance.timeline).toEqual(['step:handoff', 'step:renew', 'inbox']);
+      expect(h.maintenance.runs[1]).toMatchObject({ freshAgentSession: true });
     } finally {
       await h.close();
     }

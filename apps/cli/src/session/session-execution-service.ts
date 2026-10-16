@@ -1770,6 +1770,21 @@ export class SessionExecutionService {
     };
   }
 
+  private readonly boardMaintenanceHolds = new Set<SessionId>();
+
+  /**
+   * Keep Inbox batches off this Session between maintenance turns that must run
+   * back to back: after the old agent handed over, results belong to the new one.
+   */
+  holdInboxForBoardMaintenance(sessionId: SessionId, held: boolean): void {
+    if (held) this.boardMaintenanceHolds.add(sessionId);
+    else if (this.boardMaintenanceHolds.delete(sessionId)) void this.operationInbox?.wake();
+  }
+
+  isInboxHeldForBoardMaintenance(sessionId: SessionId): boolean {
+    return this.boardMaintenanceHolds.has(sessionId);
+  }
+
   /** Whether the live agent of this Session can compact its context; undefined when none runs. */
   contextCompactionSupport(sessionId: SessionId): boolean | undefined {
     const client = this.deps.sessionManager.getSession(sessionId)?.agentClient;
@@ -7114,7 +7129,13 @@ export class SessionExecutionService {
     }
 
     const stoppedRuntime = this.turnRuntimeBySession.get(sessionId);
-    if (this.operationInbox && stoppedRuntime?.invocation?.requesterUserId && pauseInbox) {
+    // A maintenance turn owns no Inbox execution to pause: Stop cancels just the turn.
+    if (
+      this.operationInbox &&
+      stoppedRuntime?.invocation?.requesterUserId &&
+      pauseInbox &&
+      !stoppedRuntime.maintenance
+    ) {
       const scope = {
         workspaceId: this.deps.workspaceId,
         sessionId,

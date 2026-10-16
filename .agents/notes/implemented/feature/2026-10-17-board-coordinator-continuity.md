@@ -61,9 +61,9 @@ implementation differs from the proposal.
 | --- | --- |
 | Trigger | Coordinator history changes, the `board-idle` timer or a 30-second busy recheck wake the reconcile. At most one run per coordinator, held in the Worker's `running` set; a newer manual request supersedes older unhandled ones. |
 | Owner | A run is a fiber forked into the Worker Scope; the turn itself belongs to the execution service like any visible turn. The maintenance turn's Promise is not `rawWork`, so stopping the Worker does not wait for it. |
-| Cancellation | Stopping the Worker interrupts the wait, never the running turn. The user's Stop cancels the current step and the run ends `interrupted`; a paused Inbox suspends automatic runs. |
-| Handoff | Before every step, a running turn, a waiting user turn or Inbox work makes the run yield. Once the old agent has handed over, a new conversation no longer yields to queued results: they go to the new agent. |
-| Failure recovery | A reconcile failure is logged and rechecked after 30 seconds without affecting reports or the Inbox; run outcomes are written to the divider; an unconfirmed compaction is `failed`, never "tidied"; an unfinished renewal stays `renewed: false` and is retried when idle. |
+| Cancellation | Stopping the Worker interrupts the wait, never the running turn. The user's Stop cancels only the current step (a maintenance turn owns no Inbox execution, so the Inbox is not paused) and the run ends `interrupted`; a paused Inbox suspends automatic runs. |
+| Handoff | Before every step, a running turn, a waiting user turn or Inbox work makes the run yield. From the handoff until the new agent's first turn ends, the execution service keeps Inbox batches away; when a user turn takes the Session first, the switch stays pending (`running` with `handoff`) and resumes once the coordinator is free. |
+| Failure recovery | A reconcile failure is logged and rechecked after 30 seconds without affecting reports or the Inbox; run outcomes are written to the divider; an unconfirmed compaction is `failed`, never "tidied"; a renewal that never started (`duplicate` and the like) stays `renewed: false` and is retried when idle, and only a failed turn records a reason and stops retrying. |
 
 ## Verification and limits
 

@@ -11855,8 +11855,10 @@ describe('SessionExecutionService Board maintenance turns', () => {
     userEmail: 'owner@example.com',
   } as const;
 
-  const createService = () => {
+  const createService = ({ holdPrompt = false }: { holdPrompt?: boolean } = {}) => {
     const prompts: string[] = [];
+    const promptStarted = createDeferred<void>();
+    const promptReleased = createDeferred<void>();
     const lastMessageAt: number[] = [];
     const created: Array<{ resumeSessionId?: string }> = [];
     const retired: string[] = [];
@@ -11866,6 +11868,11 @@ describe('SessionExecutionService Board maintenance turns', () => {
         supportsContextCompaction: () => true,
         prompt: async (_id: unknown, blocks: Array<{ type: string; text?: string }>) => {
           prompts.push(blocks.map((block) => block.text ?? '').join('\n'));
+          promptStarted.resolve();
+          if (holdPrompt) await promptReleased.promise;
+        },
+        cancel: async () => {
+          promptReleased.resolve();
         },
       },
       acpSessionId,
@@ -11941,6 +11948,9 @@ describe('SessionExecutionService Board maintenance turns', () => {
       {
         accept: async () => false,
         inputKind: () => undefined,
+        // No Inbox execution exists for a maintenance turn.
+        pauseTarget: () => undefined,
+        pause: async () => false,
         wake: async () => {
           wakes += 1;
         },
@@ -11951,6 +11961,7 @@ describe('SessionExecutionService Board maintenance turns', () => {
       service,
       deps,
       prompts,
+      promptStarted,
       lastMessageAt,
       created,
       retired,
@@ -11984,6 +11995,26 @@ describe('SessionExecutionService Board maintenance turns', () => {
     expect(h.released).toEqual([sessionId]);
     expect(h.wakes()).toBe(1);
     expect(h.service.contextCompactionSupport(sessionId)).toBe(true);
+  });
+
+  it('stops on Stop although it has no Inbox execution to pause', async () => {
+    const h = createService({ holdPrompt: true });
+    const run = h.service.runBoardMaintenanceTurn(request);
+    await h.promptStarted.promise;
+
+    const stopped = await h.service.cancelSession({
+      type: 'session/cancel',
+      sessionId,
+      machineId: 'machine-1',
+      workspaceId: 'workspace-1' as WorkspaceId,
+      turnId: 'turn-1',
+      // An Inbox-aware client's Stop asks to pause the Inbox too.
+      cancelId: '00000000-0000-4000-8000-000000000001',
+      pauseInbox: true,
+    });
+
+    expect(stopped).toEqual({ success: true });
+    expect(await run).toBe('cancelled');
   });
 
   it('renews the Board instructions from the current Board row', async () => {

@@ -78,16 +78,32 @@ const newConversationPrompt = (input: {
 type TailRow = SessionDirectoryScalars & { position: number };
 
 /**
- * After a renewal attempt: renewed, still pending when it only yielded, or given
+ * Step outcomes that prove the turn never started: another turn or a rewrite
+ * held the Session, or this Worker is stopping. Retrying later is safe.
+ */
+const CONTENDED = new Set([
+  'yielded',
+  'inactive',
+  'duplicate',
+  'rewrite-barrier',
+  'claim-contended',
+]);
+
+/**
+ * After a renewal attempt: renewed, still pending when it never started, or given
  * up with a reason when the turn itself failed, so a failing agent is not retried
  * on every wake.
  */
 const renewalRecord = (record: BoardMaintenanceMeta, step: string): BoardMaintenanceMeta =>
   step === 'completed'
     ? { ...record, renewed: true }
-    : step === 'yielded' || step === 'inactive'
+    : CONTENDED.has(step)
       ? { ...record, renewed: false }
       : { ...record, renewed: false, reason: `renewal-${step}` };
+
+/** A new conversation whose old agent handed over and whose new agent has not started. */
+const isPendingSwitch = (record: BoardMaintenanceMeta): boolean =>
+  record.kind === 'new_conversation' && record.status === 'running' && record.handoff !== undefined;
 
 /**
  * Keeps a Board coordinator one continuous conversation. When the coordinator
@@ -177,18 +193,31 @@ export class BoardContinuityWorkflow {
           activity = row;
       }
       const activitySinceMaintenance = !last || (activity?.position ?? -1) > last.row.position;
+      // Once the old agent handed over, queued results wait for the new one.
+      const switching = dividers.findLast(({ record }) => isPendingSwitch(record));
 
-      if (maintenance.busy(id) || maintenance.inbox(id).runnable) {
+      if (maintenance.busy(id) || (!switching && maintenance.inbox(id).runnable)) {
         // Releasing a turn need not change history: look again shortly.
         if (request || activitySinceMaintenance || last?.record.status === 'running')
           yield* this.activity.arm(this.key(id), BUSY_RECHECK_MS, 'board-continuity');
         return;
       }
       // The coordinator is free and this Worker runs nothing for it: a run left
-      // `running` was cut short by a restart.
+      // `running` was cut short by a restart, unless it only waits to switch.
       for (const { row, record } of dividers)
-        if (record.status === 'running')
+        if (record.status === 'running' && record !== switching?.record)
           yield* this.writeDivider(history, row.id, { ...record, status: 'interrupted' }, row);
+      if (switching) {
+        if (meta.collaborationStopped === true) return;
+        yield* this.start(maintenance, board, meta, history, {
+          runId: switching.row.id.slice('board-maintenance:'.length),
+          kind: 'new_conversation',
+          trigger: switching.record.trigger,
+          row: switching.row,
+          record: switching.record,
+        });
+        return;
+      }
       for (const stale of requests.slice(0, -1))
         yield* this.writeDivider(
           history,
@@ -304,6 +333,8 @@ export class BoardContinuityWorkflow {
       kind: BoardMaintenanceKind;
       trigger: 'idle' | 'manual';
       row?: Pick<TailRow, 'timestamp'>;
+      /** A pending switch resumes from its stored record. */
+      record?: BoardMaintenanceMeta;
     }
   ) {
     return this.fork(
@@ -463,39 +494,49 @@ export class BoardContinuityWorkflow {
     board: BoardMeta,
     meta: SessionMeta,
     history: CoordinatorHistory,
-    run: { runId: string; trigger: 'idle' | 'manual'; row?: Pick<TailRow, 'timestamp'> }
+    run: {
+      runId: string;
+      trigger: 'idle' | 'manual';
+      row?: Pick<TailRow, 'timestamp'>;
+      record?: BoardMaintenanceMeta;
+    }
   ) {
+    const turnId = `board-maintenance:${run.runId}`;
+    const usage = meta.contextWindowUsage;
+    // From the handoff until the new agent's first turn, results wait for the new agent.
+    let pending = false;
     return Effect.gen({ self: this }, function* () {
-      const turnId = `board-maintenance:${run.runId}`;
-      const usage = meta.contextWindowUsage;
-      const record: BoardMaintenanceMeta = {
+      const write = (next: BoardMaintenanceMeta) =>
+        this.writeDivider(history, turnId, next, run.row);
+      let record: BoardMaintenanceMeta = run.record ?? {
         boardId: board.id,
         kind: 'new_conversation',
         trigger: run.trigger,
         status: 'running',
         ...(usage ? { usedBefore: usage.used } : {}),
       };
-      const write = (next: BoardMaintenanceMeta) =>
-        this.writeDivider(history, turnId, next, run.row);
-      yield* write(record);
-      const stamp = new Date(this.ports.now()).toISOString().slice(0, 16).replace(/[:T]/g, '-');
-      const file = `handoff-${stamp}.md`;
-      // Only an agent that has a conversation can hand it over.
-      let handedOver = false;
-      if (meta.acpSessionId) {
-        const handoff = yield* this.step(
-          maintenance,
-          meta,
-          history,
-          run.runId,
-          'handoff',
-          handoffPrompt(file)
-        );
-        if (handoff !== 'completed') {
-          yield* write({ ...record, status: 'interrupted', reason: handoff });
-          return;
-        }
-        handedOver = true;
+      maintenance.holdInbox(meta.id, true);
+      if (record.handoff === undefined) {
+        yield* write(record);
+        // Only an agent that has a conversation can hand it over.
+        if (meta.acpSessionId) {
+          const stamp = new Date(this.ports.now()).toISOString().slice(0, 16).replace(/[:T]/g, '-');
+          const file = `handoff-${stamp}.md`;
+          const handoff = yield* this.step(
+            maintenance,
+            meta,
+            history,
+            run.runId,
+            'handoff',
+            handoffPrompt(file)
+          );
+          if (handoff !== 'completed') {
+            yield* write({ ...record, status: 'interrupted', reason: handoff });
+            return;
+          }
+          record = { ...record, handoff: file };
+        } else record = { ...record, handoff: 'none' };
+        yield* write(record);
       }
       const started = yield* this.step(
         maintenance,
@@ -505,14 +546,19 @@ export class BoardContinuityWorkflow {
         'renew',
         newConversationPrompt({
           sessionId: meta.id,
-          file: handedOver ? file : undefined,
+          file: record.handoff === 'none' ? undefined : record.handoff,
           threads: this.threads(board),
           usage,
         }),
         { renewBoardInstructions: true, freshAgentSession: true, yieldToInbox: false }
       );
+      if (CONTENDED.has(started)) {
+        // The user's turn went first; the switch resumes when the coordinator is free.
+        pending = true;
+        return;
+      }
       if (started !== 'completed') {
-        yield* write({ ...record, status: 'interrupted', reason: started });
+        yield* write({ ...record, status: 'failed', reason: started });
         return;
       }
       const after = (yield* this.ports.metadata(meta.id))?.meta.contextWindowUsage?.used;
@@ -522,7 +568,13 @@ export class BoardContinuityWorkflow {
         renewed: true,
         ...(after !== undefined ? { usedAfter: after } : {}),
       });
-    });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (!pending) maintenance.holdInbox(meta.id, false);
+        })
+      )
+    );
   }
 
   /** The compaction marker the adapter left on the compact step's assistant entry. */
