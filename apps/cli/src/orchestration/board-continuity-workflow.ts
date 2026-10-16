@@ -194,7 +194,8 @@ export class BoardContinuityWorkflow {
       }
       const activitySinceMaintenance = !last || (activity?.position ?? -1) > last.row.position;
       // Once the old agent handed over, queued results wait for the new one.
-      const switching = dividers.findLast(({ record }) => isPendingSwitch(record));
+      let switching: (typeof dividers)[number] | undefined;
+      for (const divider of dividers) if (isPendingSwitch(divider.record)) switching = divider;
 
       if (maintenance.busy(id) || (!switching && maintenance.inbox(id).runnable)) {
         // Releasing a turn need not change history: look again shortly.
@@ -558,7 +559,11 @@ export class BoardContinuityWorkflow {
         return;
       }
       if (started !== 'completed') {
-        yield* write({ ...record, status: 'failed', reason: started });
+        yield* write({
+          ...record,
+          status: started === 'cancelled' ? 'interrupted' : 'failed',
+          reason: started,
+        });
         return;
       }
       const after = (yield* this.ports.metadata(meta.id))?.meta.contextWindowUsage?.used;
