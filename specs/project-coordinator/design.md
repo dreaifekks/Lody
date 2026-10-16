@@ -453,28 +453,225 @@ Coordinator-only `lody_board_thread_handoff({ threadId, prompt })`:
 When the thread root is stopped (`isSessionCollaborationStopped(root)`), handoff is
 refused with `COLLABORATION_STOPPED`, like upstream delegation: only the user restores it.
 
-## Overview
+## Board home
 
-### Navigation
+Redesigned on 2026-10-16. This section replaces the former Overview section; it waits
+for user confirmation before implementation. The prototype is the Storybook entry
+`Workspace/Boards/Redesign` (`packages/components/src/stories/BoardRedesign.stories.tsx`).
+It uses synthetic data and no real data. Status derivation and how reports render in
+the conversation carry over from the earlier design; see "Carried over" below.
 
-Add `boards` to `LoroSidebarNavKey` beside Schedules, `/boards` for the list/create
-page and `/boards/$boardId` for Overview; register it in
-`WORKSPACE_ROUTE_CHILD_SEGMENTS`. Keep existing sidebar machine/project grouping.
-Mobile renders the same page, following Schedules.
+### Shape
 
-### Contents and status
+A Board is one coordinator conversation plus one aggregated context. Opening a Board
+opens the coordinator conversation. Threads, files, a single thread and the settings
+take turns in one panel on the right.
 
-The header contains name/goal, coordinator agent/machine/status, autonomous chain
-`n/16`, digest time and Open. Threads show title, agent/model, machine/work context,
-state, rounds/limit, generation when present, recent activity and existing PR/diff
-hints. Archived threads are collapsed separately. Child Tabs indent below their root;
-independent sessions use the existing opened-by tree.
+```text
+Sidebar
+├─ Boards ─┬─ Board A ──opens──▶ coordinator conversation (centre) + Board panel (right)
+│          │                       ├─ Threads: member sessions, grouped Needs you / Working / Idle / Archived
+│          │                       ├─ Files: shared text files (the existing notes are the first)
+│          │                       └─ Settings (⚙): context, memory, coordinator, rules, digest, archive
+│          └─ Board B
+├─ Machine / project groups (threads stay under their project; the coordinator is no longer listed)
+└─ Chats
+```
 
-Only an expanded row opens its session document. Its preview shows the last
-assistant text's tail (conclusion) and the latest driving turn's first line (current
-task), following archive preview behavior. Keep idle rows free of invented resource status.
+- **A Board sits at the same level as a chat.** The sidebar's Boards group sits beside
+  the machine and chat groups. Board rows have the same height, selected state and
+  status mark as session rows. The group's "+" creates a Board, the same action as a
+  project group's "+" starting a chat. PR1's Boards navigation item and the `/boards`
+  list page are removed; archived Boards go to the Archive page.
+- **The coordinator is the Board's own conversation.** It is no longer listed in the
+  session groups. Its metadata does not change; the lists only filter out
+  `boardRole === 'coordinator'`.
+- **Threads remain ordinary sessions.** They have real directories and worktrees, so
+  they stay in their machine or project group and also appear in the Board panel.
+  Whether to hide them from project groups is open question 1.
+- **Projects and Boards.** A project is still a repository or local folder. A Board
+  refers to some projects through its project scope but does not own them.
 
-A shared status helper serves rendering and `lody_board_overview`:
+### Layout
+
+Desktop (≥ 1024px) has three columns:
+- Left: the sidebar.
+- Centre: the coordinator conversation. Its header shows the Board icon, the name, a
+  scope badge (only when the Board is narrowed to chosen projects), the panel toggle
+  and ⚙.
+- Right: a 420px panel.
+
+The panel has five states: closed, threads, files, one thread, settings.
+
+- **Threads tab.** Threads are grouped. Empty groups are not drawn, and Archived is
+  folded by default. Each row shows:
+  - a status mark, only for needs-you, failed, stopped and running;
+  - the title and a time;
+  - a second line with the latest conclusion already read, or agent · machine ·
+    project when none has been read.
+
+  Clicking a row opens the thread in the panel. It shows a breadcrumb "← Threads ›
+  title", the thread's own conversation and composer, Open as a full conversation,
+  and Close.
+- **Files tab.** A list of files and New file. Opening a file uses the existing notes
+  editor.
+- **Settings.** The same panel, titled Board settings.
+- **While the panel is closed**, its toggle reads "✋ N waiting for you". While the
+  panel is open, the count is not repeated.
+
+Narrow windows (< 1024px, including 390px):
+- The coordinator conversation fills the screen.
+- The panel covers the conversation; closing it returns there.
+- Opening a thread pushes the full session page through the existing mobile
+  navigation. The panel does not hold a second composer.
+
+The implementation reuses existing pages:
+- The centre is the existing session page (`session-detail.tsx`) of the coordinator.
+- The right panel is a new session side-panel kind, `board`. It keeps
+  `DesktopSessionDetailLayout`'s behavior: a resizable panel on desktop, an overlay on
+  compact desktop, and a Drawer on mobile.
+- Viewing a thread in the panel follows how Side Chat renders `SessionChatInterface`
+  in the side panel.
+- `/boards/$boardId` becomes an alias: it resolves the coordinator id and opens that
+  session page with the `board` panel.
+
+### What stays out, what goes into settings
+
+| Out (frequent)                         | Why                                                       |
+| -------------------------------------- | --------------------------------------------------------- |
+| Sidebar Board rows and status marks    | A Board opens like a chat; state is visible at a glance   |
+| Coordinator conversation and composer  | The most common action: ask the coordinator, read reports |
+| Thread list (Needs you first)          | Next most common: who waits for me; go in and steer       |
+| A thread open in the panel, with its composer | Steer without leaving the coordinator              |
+| Files tab                              | Threads and the user read and write notes often           |
+| New thread "+"                         | The same level as a chat's "+"                           |
+| Scope badge (only when narrowed)       | Says which projects the Board uses; nothing for "all"     |
+
+| Settings panel (rare)                                         | Why                              |
+| ------------------------------------------------------------- | -------------------------------- |
+| Name, goal                                                    | Written once at creation         |
+| Project scope                                                 | Chosen at creation, rarely changed |
+| Board memory (switch, preview, edit, nmem space)              | Maintained automatically; checked occasionally |
+| Coordinator agent                                             | Rarely changed                   |
+| Rounds per thread, reporting human turns, executor instructions | Rules, set once                |
+| Daily digest switch and time                                  | Set once                         |
+| Archive Board                                                 | Destructive                      |
+
+These are not shown anywhere persistently:
+- Chain n/16: it appears in the conversation only at the limit, through the existing
+  `board_chain_limit` notice.
+- Rounds n/limit: PR4's rejection explains it.
+- Agent and machine: shown on a thread's second line while no conclusion is known.
+
+### Creating a Board
+
+The dialog asks only what the first message needs:
+- Goal: required and focused.
+- Name: optional; defaults to the goal's first line.
+- Coordinator: the existing machine + agent or Agent Role controls.
+- Project scope: all projects by default.
+
+Rules, memory and the digest start from defaults and change later in settings.
+
+The clipped focus ring the user reported is fixed. The form is a scroll container,
+which clipped the ring drawn outside each field. The fix gives the scroller an inset
+padding and offsets it with a negative margin (`board-view.tsx`, `boardStyles.form`).
+
+### Board context
+
+| Part         | Built on                                                         | New                                              |
+| ------------ | ---------------------------------------------------------------- | ------------------------------------------------ |
+| Project scope | The Board row; none chosen = all                                | `BoardMeta.context.projects?: BoardProjectRef[]` |
+| Shared files | PR2's Board document `board-<id>`                                | A `files` container in the document              |
+| Board memory | A LoroText in the Board document, given to every member; optionally mirrored to an nmem space | A `memory` container; `BoardMeta.memory?` |
+
+**Project scope**
+
+```ts
+type BoardProjectRef =
+  | {
+      kind: 'local';
+      machineId: MachineId;
+      localProjectId: LocalProjectId;
+      name: string;
+      githubRepoFullName?: string;
+    }
+  | { kind: 'github'; repoFullName: string };
+// BoardMeta.context?: { projects?: BoardProjectRef[] }; absent = all
+```
+
+A local project id is a hash of its path on one machine, so the same repository has a
+different id on each machine. The scope therefore stores `machineId + localProjectId`
+pairs, matching `getLocalProjectVisibilityKey`. A name and an optional GitHub
+repository name are stored for display and as a cross-machine hint.
+
+The scope is used in four places:
+1. Coordinator and thread startup instructions list the projects in scope (name,
+   machine, path).
+2. `lody_board_get` returns the scope.
+3. When a Board member calls `lody_session_create`, a work context outside the scope
+   is rejected with `BOARD_PROJECT_OUT_OF_SCOPE`. Chat is unrestricted.
+4. The project picker under "+ New thread" lists only projects in scope.
+
+When the scope is empty (all projects), none of this applies; the instructions only
+say that `lody_project_list` lists every project.
+
+**Shared files**
+
+- The Board document gains `files`:
+  `LoroMap<fileId, { name, text: LoroText, updatedAtMs, updatedBy }>`.
+- The existing `notes` container stays as it is, as the fixed first file "Notes.md".
+  No data moves.
+- Only Markdown and plain text. Each file keeps the 256 KiB local-write limit; a Board
+  holds at most 32 files.
+- Binary files come later, because they need a cross-machine blob channel.
+- Tools: the existing `lody_board_notes_get/append/replace` gain an optional `file`
+  (default: the notes), and `lody_board_files_list` is added. Replacement permissions
+  do not change.
+
+**Board memory**
+
+Lody stores the main part itself:
+- The Board document's `memory` LoroText, ≤ 16 KiB: a short list of what this Board
+  should remember.
+- Every member's first message includes the memory as it was then, inside the Board
+  section `buildPrompt` already appends. Long threads read the current version with
+  `lody_board_get` when needed.
+- The coordinator rewrites it with `lody_board_memory_update`, the daily digest (PR5)
+  tidies it, and the user edits it in settings.
+- This is the idea behind Claude Projects' project memory: one automatically
+  maintained summary that every conversation reads at its start.
+
+Optionally, the memory is mirrored to Nowledge Mem:
+- The existing memory provider does one thing: it injects `NMEM_AGENT_ID` at ACP
+  start (`apps/cli/src/lib/memory-providers.ts`). A `memoryId` is an agent identity on
+  one machine, not a shared store, so it cannot serve as Board memory by itself.
+- nmem shares memory through spaces. The local `nmem` binary contains the variable
+  name `NMEM_SPACE_ID`; its meaning still needs testing.
+- The plan:
+  - The Board row gains `BoardMeta.memory?: { providerId: 'nowledge-mem'; spaceId: string }`.
+  - Each Board member turn freezes it into `inputConfig`, like Role memory, so it is
+    part of the preparation compatibility key; forks and restores read the frozen
+    value.
+  - The daemon then injects `NMEM_SPACE_ID` at ACP start.
+- The agent identity still comes from the Role instance. The two variables do not
+  conflict, so no precedence rule is needed.
+- This requires every member machine's nmem to talk to the same Mem server. Settings
+  mark machines that cannot reach it; they still run.
+- It changes `MemoryBindingSchema` (which is `.strict()`) or adds a field, which is a
+  provider contract change. That is why it is the last step; see open question 5.
+
+### Connection to the existing foundation
+
+Carried over, unchanged:
+- membership fields and their inheritance;
+- the body of the coordinator and thread instructions;
+- PR3 reports and Inbox batching and waking;
+- status derivation by `deriveBoardSessionStatus` (table below);
+- the compact report rows in the conversation;
+- the notes LoroText and its capacity rules;
+- how MCP tools are authorized;
+- PR4 rounds and handoff, and the PR5 daily digest.
 
 | State | Source |
 | --- | --- |
@@ -486,30 +683,95 @@ A shared status helper serves rendering and `lody_board_overview`:
 | Idle · waiting for coordinator | Idle and latest driving turn not authored by a human |
 | Idle | Otherwise |
 
-The coordinator row additionally shows `chain n/16` and Stopped. Inbox pause has no
-synced evidence in documents, so Overview does not show it, consistent with upstream.
+Grouping (`boardThreadGroup`): waiting for you, failed and stopped go to Needs you;
+running, starting and finalizing go to Working; everything else goes to Idle;
+archived threads form their own group.
 
-### Reports in the conversation
+In the coordinator conversation, reports remain upstream's
+`operation_completion_batch` system turn. `board_report` members render as compact
+task rows, one event per row, with no second kind of card.
 
-A batch in the coordinator history is upstream's `operation_completion_batch` system
-turn: a "N completed task results" title with each member rendered by
-`OperationCompletionView`; creation receipts already render as the compact task panel
-(`CreatedSessionList` / `operation_progress`, one row per session, five rows with
-scrolling). Board reports get no second card: a member with
-`operationKind === 'board_report'` renders as the same compact rows, one event per row:
-member title (subscribed like existing rows) · event label · first line of the summary,
-click to open the session. The only additions are two status labels, Waiting for you and
-Notice, because the existing row vocabulary covers only created/running/succeeded/
-failed/cancelled. No expandable conclusion preview: a person opens the session, the
-coordinator reads the batch body; one fact is drawn once. The old PR3
-`board-report-card.tsx` is not carried over.
+Changed:
+- **Navigation.** Remove the Boards navigation item and the `/boards` list page; add
+  the sidebar Boards group; make `/boards/$boardId` an alias for the coordinator's
+  session page; filter the coordinator out of the sidebar session lists.
+- **Overview.** The read-only `BoardsWorkspace` page is replaced by the `board` side
+  panel. `BoardSessionRow` used to read a document only when a row was expanded. Now,
+  while the panel is visible, it reads the latest conclusion's first line only for
+  Needs-you and failed rows; other rows show agent · machine · project.
+- **Create dialog.** Drop the rule fields and add the project scope. Rules move to
+  settings.
+- **Board row and document.** The row gains `context` and an optional `memory`. The
+  document gains `files` and `memory`.
+- **Instructions.** Coordinator and thread instructions each gain a project-scope
+  section and a Board-memory section.
+- **MCP.** Notes tools gain `file`. Add `lody_board_files_list` and
+  `lody_board_memory_update`. Add the scope check to `lody_session_create`.
 
-### Actions
+### Implementation steps
 
-A row opens the ordinary session route, using `?tab=` for the current generation.
-The normal composer supports direct user input. Row menus offer Open, Remove from
-board and Archive. Settings edits name, goal, rules, coordinator agent and digest;
-Notes opens the shared-note panel. Idle rows draw no resource status.
+Each step merges on its own; the order is the dependency order.
+
+1. **UI shell.** Existing data only.
+   - Contents: the sidebar Boards group; the `board` side-panel kind (Threads and
+     Files tabs, a thread in the panel); filter out the coordinator; remove the
+     navigation item and list page; the `/boards/$boardId` alias.
+   - Modules: `components/loro-sidebar.tsx`, `loro-app-sidebar.tsx`,
+     `components/sessions/session-detail.tsx`, `session-side-panel-tab-bar.tsx`,
+     `components/boards/*` (reusing the prototype views),
+     `routes/$workspaceName/_auth/boards*`.
+2. **Settings panel and create dialog.** Wire `BoardSettingsPanelView` to Board row
+   writes in `lib/workspace-catalog-write.ts`, and replace the create dialog with
+   `BoardCreateDialogView`.
+3. **Project scope.** `BoardMeta.context`, the instruction section, `lody_board_get`
+   output, the `lody_session_create` scope check, and project filtering for new
+   threads.
+   - Modules: `packages/shared/src/board.ts`,
+     `apps/cli/src/session/session-execution-helpers.ts`,
+     `apps/cli/src/mcp/lody-mcp-server.ts`, `components/boards/*`.
+4. **Shared files.** The document's `files`, `file` on the notes tools,
+   `lody_board_files_list`, and real data in the Files tab.
+   - Modules: the Board document reader/writer in `packages/shared`,
+     `hooks/use-board-document.ts`, and the CLI Board tools.
+5. **Board memory (stored by Lody).** The document's `memory`, injection into first
+   messages, `lody_board_memory_update`, and editing in settings. Digest tidying
+   comes with PR5.
+6. **Optional: nmem space mirror.** `BoardMeta.memory`, freezing into turns,
+   `NMEM_SPACE_ID` injection, and an update to the provider contract in
+   `specs/agent-role-memory.md`.
+
+PR4 (rounds, handoff) and PR5 (daily digest) are independent of these steps and keep
+their plan.
+
+### Open questions for the user
+
+1. **Should threads also be hidden from machine and project groups, appearing only in
+   the Board?**
+   Recommendation: no; hide only the coordinator. Threads have real directories and
+   worktrees, so finding them by project stays useful, and the Board lists them too.
+   This changes decision 6.
+2. **Where does creating a Board start?** Only from the "+" on the sidebar Boards
+   group, or also from a "Board" option beside Local / GitHub / Chat on the landing
+   page?
+   Recommendation: only the sidebar "+". The landing switch says where a
+   conversation runs; a Board is a different thing, and mixing them confuses both.
+3. **Should the `/boards` list page be removed?**
+   Recommendation: yes. The sidebar is the list, and archived Boards go to the
+   Archive page with a Board filter.
+4. **Should the project scope be enforced?**
+   Recommendation: yes. Reject `lody_session_create` outside the scope
+   (`BOARD_PROJECT_OUT_OF_SCOPE`); chat is unrestricted. If the scope only lives in
+   the instructions, the coordinator will eventually step outside it.
+5. **Which is the main Board memory?** Lody's own text (synced across machines, no
+   nmem dependency), or an nmem space directly?
+   Recommendation: Lody's text as the main memory (step 5), with an nmem space as an
+   optional mirror (step 6), after testing `NMEM_SPACE_ID`.
+6. **Is text-only acceptable for the first version of shared files?**
+   Recommendation: yes. Binary files need a cross-machine blob channel and deserve
+   their own design.
+7. **What happens when a thread is opened on a narrow screen?**
+   Recommendation: push the full session page rather than opening it in the panel; a
+   narrow screen has no room for two layers of composers.
 
 ## Shared notes
 
@@ -522,7 +784,10 @@ acceptable; no content is intentionally discarded.
 Lody does not call nmem. Board notes are visible, local-to-the-Board work records;
 agents own durable-memory writes with their own tools. The existing memory Provider
 only handles identity/environment, not recall/save, and is not extended. Shared
-folders require a separate multi-machine sync design and are deferred.
+folders require a separate multi-machine sync design and are deferred. (The
+2026-10-16 redesign proposes Board memory, an optional nmem space mirror, and shared
+text files in the Board document with the notes as the first file; see "Board home",
+pending confirmation.)
 
 ## Daily digest
 
@@ -686,7 +951,7 @@ complete specification remains a draft.
    separate Board budget; Overview shows depth and limit.
 4. Successors are child Tabs of the thread root and share its worktree.
 5. Send the daily digest directly into the coordinator session.
-6. First release adds Board navigation/pages without sidebar regrouping.
+6. First release adds Board navigation/pages without sidebar regrouping. (The redesign proposes a sidebar Boards group instead of the navigation item; see "Board home", open questions 1–3.)
 7. Default four rounds, counting agent-authored user turns, excluding follow-up.
 8. Do not require Claude; remember the last coordinator choice.
 
@@ -711,7 +976,9 @@ The user confirmed these six choices; the complete specification remains a draft
 Board sidebar grouping/hiding members from other groups; split Overview/coordinator
 conversation; synced folders; context-usage-based handoff hints; Board wake intervals
 or budgets; Board-level stop; mobile report push through the existing notify path;
-Board templates.
+Board templates. The redesign ("Board home") takes up sidebar grouping, with hiding
+threads left as open question 1, and makes the coordinator conversation and the
+Board panel one split view.
 
 ## Evidence
 
@@ -755,6 +1022,20 @@ Intent: this document. Inspected implementation (design basis, unchanged):
   `specs/session-worktree-lifecycle.md`, `specs/agent-role-memory.md`.
 - The old PR3 implementation `08c5c26e0` (built on the removed Delivery; reference only)
   and its review findings.
+- Redesign (2026-10-16; read-only inspection, foundation unchanged):
+  `apps/cli/src/lib/memory-providers.ts` (`environment` injects only `NMEM_AGENT_ID`),
+  `packages/shared/src/memory-provider.ts` (strict `MemoryBindingSchema`),
+  `apps/cli/src/session/session.ts` (injection at ACP start),
+  `session-execution-service.ts` (a changed binding restarts the process),
+  `packages/shared/src/project.ts` (`ProjectRef`),
+  `packages/shared/src/node/local-project.ts` (a local project id hashes its path),
+  `components/chat/unified-project-selector.tsx`, `lib/visible-local-project-index.ts`,
+  `components/loro-sidebar.tsx`, `components/sessions/desktop-session-detail-layout.tsx`
+  and `session-side-panel-tab-bar.tsx`. The local `nmem` binary contains
+  `NMEM_SPACE_ID` (meaning untested). Prototype:
+  `components/boards/board-{home-view,thread-list,files-view,settings-panel,sidebar-section,create-dialog-view}.tsx`
+  and `stories/BoardRedesign.stories.tsx`, checked in Storybook screenshots at 1440px
+  and 390px.
 
 ## PR1 implemented
 

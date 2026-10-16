@@ -409,40 +409,191 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
 线程根被用户停止协作时（`isSessionCollaborationStopped(root)`）交接拒绝
 `COLLABORATION_STOPPED`，和上游对派发的处理一致：只有用户能恢复。
 
-## Overview 页面
+## 看板主界面
 
-### 入口与路由
+2026-10-16 重新设计，替换原来的「Overview 页面」一节，待用户确认后实现。原型在
+Storybook `Workspace/Boards/Redesign`（`packages/components/src/stories/BoardRedesign.stories.tsx`），
+用合成数据，没有接真实数据。状态推导和回报在对话里的呈现沿用原设计，见下文「沿用」。
 
-侧边栏导航加「看板」（`LoroSidebarNavKey` 增 `'boards'`，与 Schedules 并列），路由
-`/boards`（看板列表，含新建）和 `/boards/$boardId`（Overview），`WORKSPACE_ROUTE_CHILD_SEGMENTS`
-加 `boards`。首版不改侧边栏的会话分组：线程仍在各自机器 / 项目组里，看板页是全局视图。
-移动端按 Schedules 的做法渲染同一页面。
+### 形态
 
-### 信息结构
+看板 = 一个协调者对话 + 一份聚合上下文。打开看板就是打开协调者对话。线程、文件、单个
+线程、设置轮流出现在右侧同一个面板里。
 
 ```text
-┌ 看板 · Lody 协调者模式                                       [笔记] [设置] [归档看板] ┐
-│ 目标：把 Claude Projects 的协调者模式搬进 Lody，首版四项……                             │
-│ 协调者  Claude Opus 5.5 · devnuc        空闲 · 自主链 7/16 · 每日摘要 04:00   [打开]  │
-├────────────────────────────────────────────────────────────────────────────────────┤
-│ 线程 4                                                                  [+ 新线程]  │
-│   ◌  PR1 数据模型            astra · mba · Lody/worktree      运行中        2/4  3 分钟前 │
-│      └ 评审 (sol)                                              完成          —   10 分钟前 │
-│   ●  PR2 回报机制            sol · devnuc · Lody/worktree     等你回答      4/4  1 小时前 │
-│   ○  调研 Loro 同步 · 第 2 代 opus · n100 · chat                空闲 · 等协调者 1/4  昨天 │
-│   ✗  UI 草图                 gemini · mba · chat               失败          2/4  2 小时前 │
-│      最新结论：Flash 画不出可用的草图，建议换 Codex astra 直接写 Storybook……（展开）     │
-│ 已归档 2 ▸                                                                           │
-└────────────────────────────────────────────────────────────────────────────────────┘
+侧边栏
+├─ 看板 ──┬─ 看板 A ──打开──▶ 协调者对话（中间） + 看板面板（右侧）
+│         │                     ├─ 线程：成员 session，按「需要你 / 进行中 / 空闲 / 已归档」分组
+│         │                     ├─ 文件：共享文本文件（现有笔记是第一个）
+│         │                     └─ 设置（⚙）：上下文、记忆、协调者、规则、摘要、归档
+│         └─ 看板 B
+├─ 机器 / 项目组（线程仍按所在项目出现；协调者不再出现）
+└─ 对话
 ```
 
-每行：状态标记、标题、agent（`lastModel` / agent 配置）· 机器 · 工作上下文、状态文字、
-轮数 n/上限（有代时标「第 k 代」）、最近活动；行尾沿用侧边栏的 PR / diff 图标。展开一行
-才打开它的 session 文档，显示最后一条 assistant 文本的尾部（最新结论）和最新驱动回合
-的首行（在做什么）；不展开不读文档，和归档页的预览一个思路。子 Tab 缩进在线程
-下面；线程开的独立会话用现有的 opened-by 树缩进。
+- **看板和对话同一级。** 侧边栏的「看板」组和机器组、对话组并列。看板行和会话行的行高、
+  选中态、状态标记都一样。组标题上的「+」新建看板，和项目组上「+」开新对话是同一种动作。
+  PR1 的「看板」导航项和 `/boards` 列表页去掉；归档的看板放在归档页。
+- **协调者就是看板的对话。** 它不再单独列在会话组里：会话元数据不变，只是列表滤掉
+  `boardRole === 'coordinator'`。
+- **线程仍是普通 session。** 它们有真实目录和 worktree，所以仍留在所在的机器 / 项目组里，
+  同时出现在看板面板中。要不要从项目组隐去，见待定问题 1。
+- **project 和看板。** project 仍指仓库或本地文件夹。看板通过「项目范围」引用若干 project，
+  但不拥有它们。
 
-状态推导（共享 helper，渲染端和 `lody_board_overview` 同一份）：
+### 界面
+
+桌面（≥ 1024px）分三栏：
+- 左：侧边栏。
+- 中：协调者对话。头部有看板图标、名称、范围徽标（只在限定项目时出现）、面板开关和 ⚙。
+- 右：420px 的面板。
+
+面板有五种状态：关闭、线程、文件、某个线程、设置。
+
+- **线程 tab。** 按组列出，空组不画，已归档默认折叠。每行依次是：
+  - 状态标记：只在需要你、失败、已停止、运行中时出现；
+  - 标题和时间；
+  - 第二行：已读到的最新结论；没读到时显示 agent · 机器 · 项目。
+
+  点一行，线程就在面板里打开：面包屑「← 线程 › 标题」，下面是它自己的对话和输入框，
+  另有「作为完整对话打开」和关闭两个按钮。
+- **文件 tab。** 文件列表加「新建文件」。打开文件用的是现有的笔记编辑器。
+- **设置。** 用同一个面板，标题为「看板设置」。
+- **面板关闭时**，开关按钮变成「✋ N 个等你」。面板打开时不再重复显示这个数。
+
+窄屏（< 1024px，包括 390px）：
+- 协调者对话铺满整屏。
+- 面板全屏盖住对话，关掉就回到对话。
+- 点开线程时推入完整会话页，用移动端已有的导航，不在面板里再塞一个输入框。
+
+实现时尽量复用现有页面：
+- 中间区直接用现有的会话页，也就是协调者会话的 `session-detail.tsx`。
+- 右侧面板作为会话侧面板的新类型 `board`。它沿用 `DesktopSessionDetailLayout`：桌面可拖宽度，
+  紧凑桌面是覆盖层，移动端是 Drawer。
+- 在面板里看线程，沿用 Side Chat 在侧面板渲染 `SessionChatInterface` 的做法。
+- `/boards/$boardId` 只是别名：解析出协调者 id，进入它的会话页并打开 `board` 面板。
+
+### 外面放什么、设置里放什么
+
+| 放外面（高频）                 | 理由                                         |
+| ------------------------------ | -------------------------------------------- |
+| 侧边栏看板行和状态标记         | 打开看板和打开对话一样，状态一眼可见         |
+| 协调者对话和输入框             | 看板里最常做的事：问协调者、看回报           |
+| 线程列表（「需要你」排在最前） | 其次常做的事：看谁在等我，点进去插话         |
+| 面板里打开的线程和它的输入框   | 插话时不必离开协调者                         |
+| 文件 tab                       | 线程和人都频繁读写笔记                       |
+| 新线程「+」                    | 和对话的「+」同级                            |
+| 范围徽标（只在限定项目时）     | 说明这个看板只看哪些项目；默认全部时不画     |
+
+| 放设置面板（低频）                       | 理由                 |
+| ---------------------------------------- | -------------------- |
+| 名称、目标                               | 建板时写一次         |
+| 项目范围                                 | 建板时选，偶尔调整   |
+| 看板记忆（开关、内容预览、编辑、nmem 空间） | 自动维护，人偶尔校对 |
+| 协调者 agent                             | 很少换               |
+| 每线程轮数、是否回报人工回合、执行线程约束 | 规则，设一次         |
+| 每日摘要开关和时间                       | 设一次               |
+| 归档看板                                 | 危险操作             |
+
+以下内容哪里都不常驻：
+- 自主链 n/16：只在到上限时，由现有的 `board_chain_limit` 系统通知出现在对话里。
+- 轮数 n/上限：PR4 拒绝时由错误说明。
+- agent / 机器：没有结论时，显示在线程行的第二行。
+
+### 新建看板
+
+对话框只问第一条消息需要的东西：
+- 目标：必填，自动聚焦；
+- 名称：可空，默认取目标的第一行；
+- 协调者：沿用现有的「机器 + agent」或 Agent Role 控件；
+- 项目范围：默认全部。
+
+规则、记忆、摘要先用默认值，之后在设置里改。
+
+用户报的焦点圈问题已修。原因是表单是滚动容器，会裁掉输入框外面那圈阴影。修法是给滚动
+容器加内边距，再用负外边距抵消（`board-view.tsx` 的 `boardStyles.form`）。
+
+### 看板上下文
+
+| 组成     | 落在什么上                                         | 新增                                             |
+| -------- | -------------------------------------------------- | ------------------------------------------------ |
+| 项目范围 | 看板行；不选 = 全部                                | `BoardMeta.context.projects?: BoardProjectRef[]` |
+| 共享文件 | PR2 的看板文档 `board-<id>`                        | 文档里的 `files` 容器                            |
+| 聚合记忆 | 看板文档里的一段 LoroText，注入每个成员；可选镜像到 nmem 空间 | 文档里的 `memory` 容器；`BoardMeta.memory?`      |
+
+**项目范围**
+
+```ts
+type BoardProjectRef =
+  | {
+      kind: 'local';
+      machineId: MachineId;
+      localProjectId: LocalProjectId;
+      name: string;
+      githubRepoFullName?: string;
+    }
+  | { kind: 'github'; repoFullName: string };
+// BoardMeta.context?: { projects?: BoardProjectRef[] }，缺省 = 全部
+```
+
+本地项目的 id 是机器内路径的散列，同一个仓库在两台机器上是两个 id。所以这里存
+`machineId + localProjectId` 这一对，和 `getLocalProjectVisibilityKey` 一致；另附名称和
+可选的 GitHub 仓库名，用来显示和做跨机提示。
+
+范围用在四处：
+1. 协调者和线程的启动提示列出范围内的项目（名称、机器、路径）。
+2. `lody_board_get` 返回范围。
+3. 看板成员调用 `lody_session_create` 时，workContext 必须在范围内，否则以
+   `BOARD_PROJECT_OUT_OF_SCOPE` 拒绝。chat 不受限。
+4. 「+ 新线程」的项目选择只列范围内的项目。
+
+范围为空（即全部）时，以上都不生效，提示里只写「可以用 `lody_project_list` 查看全部项目」。
+
+**共享文件**
+
+- 看板文档新增 `files`：`LoroMap<fileId, { name, text: LoroText, updatedAtMs, updatedBy }>`。
+- 现有的 `notes` 容器原样保留，作为固定的第一个文件「笔记.md」，不迁移数据。
+- 只做 Markdown 和纯文本。每个文件沿用 256 KiB 的本地写入上限，最多 32 个文件。
+- 二进制文件以后再做，因为需要跨机器的 blob 通道。
+- 工具：现有的 `lody_board_notes_get/append/replace` 加可选参数 `file`（默认是笔记），
+  另加 `lody_board_files_list`。替换的权限规则不变。
+
+**聚合记忆**
+
+主体由 Lody 自己存：
+- 看板文档里的 `memory` LoroText，≤ 16 KiB，是一份「这个看板要记住的事」的短清单。
+- 每个成员的第一条消息附上当时的记忆，放在 `buildPrompt` 已有的看板说明段里。长线程需要时
+  用 `lody_board_get` 读最新版。
+- 协调者用 `lody_board_memory_update` 改写，每日摘要（PR5）顺手整理，人可以在设置里编辑。
+- 这和 Claude Projects 的项目记忆是同一个思路：一份自动维护、每个对话开头都会读到的摘要。
+
+可选镜像到 Nowledge Mem：
+- 现有的 memory provider 只做一件事：ACP 启动时注入 `NMEM_AGENT_ID`
+  （`apps/cli/src/lib/memory-providers.ts`）。`memoryId` 是某台机器上的 agent 身份，不是
+  共享存储，所以不能直接拿来当看板记忆。
+- nmem 的共享单位是空间（space）。本机的 `nmem` 二进制里有 `NMEM_SPACE_ID` 这个变量名，
+  语义还要实测。
+- 方案：
+  - 看板行加 `BoardMeta.memory?: { providerId: 'nowledge-mem'; spaceId: string }`。
+  - 看板成员的每个回合把它冻结进 `inputConfig`，和 Role memory 一样参与准备兼容键；
+    fork 和恢复读冻结值。
+  - 守护进程启动 ACP 时再注入 `NMEM_SPACE_ID`。
+- agent 身份仍由 Role 实例决定。两个变量互不冲突，所以不用定优先级。
+- 前提是各成员机器的 nmem 连的是同一个 Mem 服务。连不上的机器在设置里标出来，但不阻止运行。
+- 这一项要改 `MemoryBindingSchema`（它是 `.strict()`）或另加字段，属于 provider 契约变更，
+  所以放在最后一步，见待定问题 5。
+
+### 和已有底层的衔接
+
+沿用、不动：
+- 成员资格字段及其继承；
+- 协调者和线程提示的主体；
+- PR3 的回报和 Inbox 合批唤醒；
+- `deriveBoardSessionStatus` 的状态推导（见下面的状态表）；
+- 回报在对话里的紧凑行；
+- 笔记的 LoroText 和容量规则；
+- MCP 工具的授权方式；
+- PR4 的轮数与交接、PR5 的每日摘要。
 
 | 显示                     | 来源                                                                                        |
 | ------------------------ | ------------------------------------------------------------------------------------------- |
@@ -454,26 +605,72 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
 | 空闲 · 等协调者          | 空闲且最新驱动回合不是人输入的                                                              |
 | 空闲                     | 其余                                                                                        |
 
-协调者行多显示「自主链 n/16」和「已停止」。Inbox 暂停没有同步到文档的证据，Overview
-不显示，和上游一致。
+分组（`boardThreadGroup`）：等你回答、失败、已停止归「需要你」；运行中、启动中、收尾中归
+「进行中」；其余归「空闲」；已归档单独一组。
 
-### 回报在对话里的呈现
+回报在协调者对话里仍是上游的 `operation_completion_batch` 系统回合。`board_report` 成员
+渲染成紧凑任务行，每个事件一行，不做第二套卡片。
 
-协调者历史里一个批次就是上游的 `operation_completion_batch` 系统回合：标题「N 条已完成
-的任务结果」，成员逐条用 `OperationCompletionView` 渲染；创建类回执已经是紧凑任务面板
-（`CreatedSessionList` / `operation_progress`，一行一个会话，五行可滚动）。看板回报不做
-第二套卡片：`operationKind === 'board_report'` 的成员渲染成同一套紧凑行，一事件一行：
-成员标题（订阅现有标题）· 事件标签 · 摘要首行，点击进会话。需要新增的只有两个状态
-标签「等你回答」「通知」，因为现有行的状态词表只有创建/运行/成功/失败/取消。不做可展开
-的结论预览：人看结论点进会话，协调者从批次正文读；一处事实只画一次。旧 PR3 的
-`board-report-card.tsx` 不沿用。
+要改：
+- **导航。** 删掉「看板」导航项和 `/boards` 列表页；侧边栏新增看板组；`/boards/$boardId`
+  改为进入协调者会话页的别名；侧边栏会话列表滤掉协调者。
+- **Overview。** `BoardsWorkspace` 的只读页由会话侧面板的 `board` 类型取代。
+  `BoardSessionRow` 原来是展开一行才读文档；现在改为面板可见时，只给需要你、失败的行读
+  最后结论的首行，其他行显示 agent · 机器 · 项目。
+- **新建对话框。** 去掉规则字段，加上项目范围；规则移到设置面板。
+- **看板行和文档。** 看板行加 `context` 和可选的 `memory`；看板文档加 `files` 和 `memory`。
+- **提示。** 协调者和线程说明各加「项目范围」「看板记忆」两段。
+- **MCP。** notes 工具加 `file` 参数；新增 `lody_board_files_list` 和
+  `lody_board_memory_update`；`lody_session_create` 加范围检查。
 
-### 动作
+### 实现步骤
 
-点行进入 session（现有导航，带 `?tab=` 定位当前代）；输入框就在那里，这就是插话。
-行的 ⋯ 菜单：打开、移出看板、归档。页面头：笔记（右侧面板）、设置（名字、目标、规则、
-协调者的 agent、每日摘要）、归档看板。协调者行的「打开」进协调者会话。
-资源状态不画任何东西：没有事件的行只有标题和时间。
+每步可以单独合并，顺序就是依赖关系。
+
+1. **界面骨架。** 只用现有数据。
+   - 内容：侧边栏看板组；会话侧面板的 `board` 类型（线程 tab、文件 tab、在面板里看线程）；
+     会话列表滤掉协调者；删导航项和列表页；`/boards/$boardId` 别名。
+   - 模块：`components/loro-sidebar.tsx`、`loro-app-sidebar.tsx`、
+     `components/sessions/session-detail.tsx`、`session-side-panel-tab-bar.tsx`、
+     `components/boards/*`（沿用原型组件）、`routes/$workspaceName/_auth/boards*`。
+2. **设置面板与新建对话框。** `BoardSettingsPanelView` 接 `lib/workspace-catalog-write.ts`
+   的看板行写入；新建对话框换成 `BoardCreateDialogView`。
+3. **项目范围。** `BoardMeta.context`、提示段、`lody_board_get` 返回、`lody_session_create`
+   范围检查、新线程的项目过滤。
+   - 模块：`packages/shared/src/board.ts`、`apps/cli/src/session/session-execution-helpers.ts`、
+     `apps/cli/src/mcp/lody-mcp-server.ts`、`components/boards/*`。
+4. **共享文件。** 看板文档的 `files`、notes 工具加 `file`、`lody_board_files_list`、文件 tab
+   接真实数据。
+   - 模块：`packages/shared` 的看板文档读写、`hooks/use-board-document.ts`、CLI 的看板工具。
+5. **看板记忆（Lody 自己存）。** 文档的 `memory`、首条消息注入、`lody_board_memory_update`、
+   设置里的编辑；摘要整理随 PR5 一起做。
+6. **可选：nmem 空间镜像。** `BoardMeta.memory`、回合冻结、注入 `NMEM_SPACE_ID`，并更新
+   provider 契约 `specs/agent-role-memory.md`。
+
+PR4（轮数、交接）和 PR5（每日摘要）和以上各步互不依赖，按原计划进行。
+
+### 待用户拍板
+
+1. **线程要不要从机器 / 项目组里隐去，只在看板里出现？**
+   建议不隐去，只隐协调者。线程有真实目录和 worktree，按项目找它们仍然有用，看板里另有
+   一份。这条会改动已决定第 6 条。
+2. **新建看板的入口放哪？** 只在侧边栏看板组的「+」，还是落地页的「本地 / GitHub / 对话」
+   再加一个「看板」？
+   建议只放侧边栏的「+」。落地页那个切换说的是「这次对话在哪里跑」，看板是另一种东西，
+   混在一起反而难懂。
+3. **看板列表页 `/boards` 删不删？**
+   建议删。侧边栏本身就是列表；归档的看板放在归档页，按看板过滤。
+4. **项目范围要不要硬性限制？**
+   建议硬性：范围外的 `lody_session_create` 直接拒绝（`BOARD_PROJECT_OUT_OF_SCOPE`），chat
+   不受限。只写在提示里的话，协调者迟早会越界。
+5. **聚合记忆以谁为主？** Lody 自己存一段文本（各机器同步，不依赖 nmem），还是直接用 nmem
+   空间？
+   建议以 Lody 的文本为主（第 5 步），nmem 空间做可选镜像（第 6 步），并先实测
+   `NMEM_SPACE_ID`。
+6. **共享文件首版只做文本，行不行？**
+   建议行。二进制需要跨机器的 blob 通道，值得单独设计。
+7. **窄屏上点开线程怎么处理？**
+   建议推入完整会话页，而不是也在面板里打开：窄屏放不下两层输入框。
 
 ## 共享笔记
 
@@ -485,8 +682,10 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
   末尾，可接受）。
 - 和 nmem 的边界：Lody 不读写 nmem。笔记是看板内、界面可见的工作记录；长期记忆由 agent
   用自己的 nmem 工具写（每日摘要就是这么做）。memory provider 今天只管身份和环境变量
-  （`NMEM_AGENT_ID`），没有 recall / save，不扩。
+  （`NMEM_AGENT_ID`），没有 recall / save，不扩。（2026-10-16 重新设计提议加入看板记忆和
+  可选的 nmem 空间镜像，见「看板主界面 › 看板上下文」，待确认。）
 - 不做共享文件夹：线程分布在多台机器，文件夹要么单机要么要新同步机制，放到以后。
+  重新设计改为在看板文档里放共享文本文件，笔记是第一个，见「看板主界面」。
 
 ## 每日摘要
 
@@ -631,7 +830,7 @@ Agent Role / Schedule 写入的权限档位上限不变；看板工具只写 Lod
 3. 委派链上限跟上游，用 `LODY_MAX_CHAIN_DEPTH = 16`，不另做看板预算；Overview 显示深度和上限。
 4. 后继会话是线程根的子 Tab，共用 worktree。
 5. 每日摘要直接送入协调者会话。
-6. 首版侧边栏不按看板分组，只增加看板导航和页面。
+6. 首版侧边栏不按看板分组，只增加看板导航和页面。（重新设计提议改为侧边栏看板组、去掉导航项，见「看板主界面」待定问题 1–3。）
 7. 轮数上限默认 4，按 agent 派发的 user turn 计，`followUp` 不计。
 8. 协调者不强制 Claude，记住上次选择。
 
@@ -652,8 +851,8 @@ review 保护和对应的状态；交叉评审用普通的 reviewer 子会话。
 
 ## 以后再做
 
-- 侧边栏按看板分组、看板里的会话从机器 / 项目组里隐去。
-- Overview 与协调者对话的分栏视图。
+- 侧边栏按看板分组、看板里的会话从机器 / 项目组里隐去。（重新设计已提出看板组，线程是否隐去见待定问题 1。）
+- Overview 与协调者对话的分栏视图。（重新设计的主界面就是这种分栏。）
 - 共享文件夹（需要跨机器文件同步）。
 - 按上下文占用（`contextWindowUsage`）提示交接，而不只是轮数。
 - 看板级的最小唤醒间隔或自主预算；看板级停止。
@@ -700,6 +899,16 @@ review 保护和对应的状态；交叉评审用普通的 reviewer 子会话。
 - 关系与生命周期：`specs/session-relations.md`、`specs/session-worktree-lifecycle.md`、
   `specs/agent-role-memory.md`。
 - 旧 PR3 实现 `08c5c26e0`（建在已删除的 Delivery 上，只作参考）及其 review 结论。
+- 重新设计（2026-10-16，只读检查，未改底层）：`apps/cli/src/lib/memory-providers.ts`
+  （`environment` 只注入 `NMEM_AGENT_ID`）、`packages/shared/src/memory-provider.ts`
+  （`MemoryBindingSchema` 为 strict）、`apps/cli/src/session/session.ts`（ACP 启动注入）、
+  `session-execution-service.ts`（绑定变化时重启进程）、`packages/shared/src/project.ts`
+  （`ProjectRef`）、`packages/shared/src/node/local-project.ts`（本地项目 id 是路径散列）、
+  `components/chat/unified-project-selector.tsx`、`lib/visible-local-project-index.ts`、
+  `components/loro-sidebar.tsx`、`components/sessions/desktop-session-detail-layout.tsx`、
+  `session-side-panel-tab-bar.tsx`；本机 `nmem` 二进制含 `NMEM_SPACE_ID`（语义未测）。
+  原型：`components/boards/board-{home-view,thread-list,files-view,settings-panel,sidebar-section,create-dialog-view}.tsx`
+  与 `stories/BoardRedesign.stories.tsx`，在 Storybook 中以 1440px / 390px 截图检查过。
 
 ## PR1 已实现
 
