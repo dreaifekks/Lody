@@ -1,7 +1,15 @@
 import { useAtomValue, useStore } from 'jotai';
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { BoardMeta, SessionId, SessionMeta } from '@lody/shared';
+import {
+  boardMaintenanceTurn,
+  getServerNow,
+  type BoardMaintenanceKind,
+  type BoardMeta,
+  type SessionHistory,
+  type SessionId,
+  type SessionMeta,
+} from '@lody/shared';
 import { allActiveSessionsAtom, archivedSessionListAtom } from '@/atoms/doc-meta';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { useSessionActions } from '@/hooks/use-session-actions';
@@ -132,5 +140,30 @@ export function useBoardActions() {
     },
     [runtime, t, updateSessionTitle]
   );
-  return { archive, restore, rename };
+  /**
+   * Ask the coordinator's machine to tidy the coordinator's context now, or to
+   * start it a new agent conversation. The request is the divider itself: the
+   * machine picks it up once the coordinator is free and keeps it current.
+   */
+  const requestMaintenance = useCallback(
+    async (coordinator: Pick<SessionMeta, 'id' | 'boardId'>, kind: BoardMaintenanceKind) => {
+      if (!runtime || !coordinator.boardId) return;
+      const turn = boardMaintenanceTurn(
+        crypto.randomUUID(),
+        { boardId: coordinator.boardId, kind, trigger: 'manual', status: 'requested' },
+        new Date(getServerNow()).toISOString()
+      );
+      try {
+        await runtime.writer.appendSessionHistory(coordinator.id, turn as SessionHistory);
+      } catch (cause) {
+        toast.error(
+          t('boards.maintenance.requestFailed', 'Could not ask the coordinator: {{reason}}', {
+            reason: cause instanceof Error ? cause.message : String(cause),
+          })
+        );
+      }
+    },
+    [runtime, t]
+  );
+  return { archive, restore, rename, requestMaintenance };
 }

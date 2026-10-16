@@ -13,6 +13,7 @@ import {
   BOARD_MEMORY_INDEX,
   MAX_BOARD_INSTRUCTIONS,
   normalizeBoardMeta,
+  type BoardContinuitySettings,
   type BoardFileEntry,
   type BoardMeta,
 } from '@lody/shared';
@@ -40,6 +41,7 @@ export interface BoardSettingsDraft {
   maxRoundsPerThread: number;
   reportHumanTurns: boolean;
   executorConstraints: string;
+  continuity: BoardContinuitySettings;
 }
 
 export function boardSettingsDraft(board: BoardMeta): BoardSettingsDraft {
@@ -48,6 +50,7 @@ export function boardSettingsDraft(board: BoardMeta): BoardSettingsDraft {
     purpose: board.purpose,
     instructions: board.instructions,
     ...board.rules,
+    continuity: board.continuity,
   };
 }
 
@@ -291,20 +294,98 @@ export function BoardSettingsGeneralView({
   );
 }
 
-/** The notes agents keep in the Board directory's `memory/`. */
-export function BoardMemoryView({ autoMemory }: { autoMemory: ReactNode }) {
+/**
+ * The notes agents keep in the Board directory's `memory/`, with the
+ * coordinator's context settings below them.
+ */
+export function BoardMemoryView({
+  autoMemory,
+  continuity,
+}: {
+  autoMemory: ReactNode;
+  continuity?: ReactNode;
+}) {
   const { t } = useTranslation();
   return (
-    <section {...stylex.props(styles.block)}>
-      <h3 {...stylex.props(styles.blockTitle)}>{t('boards.memory.auto', 'Automatic memory')}</h3>
-      <p {...stylex.props(styles.blockHelper)}>
-        {t(
-          'boards.memory.autoHelper',
-          'Notes the agents keep while they work on this Board. The coordinator keeps MEMORY.md as their index.'
+    <>
+      <section {...stylex.props(styles.block)}>
+        <h3 {...stylex.props(styles.blockTitle)}>{t('boards.memory.auto', 'Automatic memory')}</h3>
+        <p {...stylex.props(styles.blockHelper)}>
+          {t(
+            'boards.memory.autoHelper',
+            'Notes the agents keep while they work on this Board. The coordinator keeps MEMORY.md as their index.'
+          )}
+        </p>
+        {autoMemory}
+      </section>
+      {continuity}
+    </>
+  );
+}
+
+/**
+ * When Lody tidies the coordinator's context on its own: after it has been idle
+ * this long, once its context passes the smaller of the two limits.
+ */
+export function BoardContinuityView({
+  value,
+  onChange,
+}: {
+  value: BoardContinuitySettings;
+  onChange: (value: BoardContinuitySettings) => void;
+}) {
+  const { t } = useTranslation();
+  const number = (patch: keyof BoardContinuitySettings, scale = 1) => ({
+    type: 'number' as const,
+    min: 1,
+    value: Number(value[patch]) / scale,
+    onChange: (event: { target: { value: string } }) =>
+      onChange({ ...value, [patch]: Math.round(Number(event.target.value) * scale) }),
+  });
+  return (
+    <CompactSection title={t('boards.continuity.title', 'Context')}>
+      <CompactRow
+        label={t('boards.continuity.idle', 'Tidy context when idle')}
+        helper={t(
+          'boards.continuity.idleHelper',
+          'The coordinator records what matters, then the agent condenses its own context. The conversation stays whole.'
         )}
-      </p>
-      {autoMemory}
-    </section>
+      >
+        <Switch
+          checked={value.idleCompaction}
+          aria-label={t('boards.continuity.idle', 'Tidy context when idle')}
+          onCheckedChange={(on) => onChange({ ...value, idleCompaction: on })}
+        />
+      </CompactRow>
+      {value.idleCompaction ? (
+        <>
+          <CompactRow label={t('boards.continuity.idleMinutes', 'Idle for (minutes)')}>
+            <Input
+              aria-label={t('boards.continuity.idleMinutes', 'Idle for (minutes)')}
+              {...number('idleMinutes')}
+            />
+          </CompactRow>
+          <CompactRow
+            label={t('boards.continuity.maxTokens', 'Context over (thousand tokens)')}
+            helper={t(
+              'boards.continuity.windowHelper',
+              'Or over this share of the model window, whichever is smaller.'
+            )}
+          >
+            <Input
+              aria-label={t('boards.continuity.maxTokens', 'Context over (thousand tokens)')}
+              {...number('maxTokens', 1000)}
+            />
+          </CompactRow>
+          <CompactRow label={t('boards.continuity.windowPercent', 'Share of the window (%)')}>
+            <Input
+              aria-label={t('boards.continuity.windowPercent', 'Share of the window (%)')}
+              {...number('windowPercent')}
+            />
+          </CompactRow>
+        </>
+      ) : null}
+    </CompactSection>
   );
 }
 
@@ -441,7 +522,15 @@ export function BoardSettingsDialogView({
                   onArchive={onArchive}
                 />
               ) : (
-                <BoardMemoryView autoMemory={autoMemory} />
+                <BoardMemoryView
+                  autoMemory={autoMemory}
+                  continuity={
+                    <BoardContinuityView
+                      value={draft.continuity}
+                      onChange={(continuity) => onDraftChange({ continuity })}
+                    />
+                  }
+                />
               )}
             </div>
             <div {...stylex.props(styles.footer)}>
@@ -487,13 +576,14 @@ export function BoardSettingsDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const save = async () => {
-    const { name, purpose, instructions, ...rules } = draft;
+    const { name, purpose, instructions, continuity, ...rules } = draft;
     const next = normalizeBoardMeta({
       ...board,
       name: name.trim(),
       purpose: purpose.trim(),
       instructions,
       rules,
+      continuity,
     });
     if (!next) {
       setError(

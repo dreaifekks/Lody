@@ -1,6 +1,14 @@
-import type { MessageContent, SessionHistory, SessionHistoryParsed, SessionId } from '@lody/shared';
 import {
-  isEmptyAssistantIndexRow,
+  BoardMaintenanceMetaSchema,
+  isBoardMaintenanceEntry,
+  isSilentBoardMaintenance,
+  type MessageContent,
+  type SessionHistory,
+  type SessionHistoryParsed,
+  type SessionId,
+} from '@lody/shared';
+import {
+  isHiddenAssistantIndexRow,
   resolveLastAssistantTurnIds,
   isUnloadedTurnId,
   type ConversationView,
@@ -139,6 +147,16 @@ const placeholderItemFor = (row: TurnIndexRow, turnIndex: number): PlaceholderSe
  * context-window usage / quick actions attach to the last rendered assistant
  * message whether or not it is hydrated.
  */
+/** A divider that would draw nothing must not become an unmeasurable row. */
+const isSilentMaintenanceDivider = (message: SessionHistoryParsed): boolean =>
+  message.role === 'system' &&
+  message.items.length > 0 &&
+  message.items.every((item) => {
+    if (item.type !== 'system_notice' || item.name !== 'board_context_maintenance') return false;
+    const meta = BoardMaintenanceMetaSchema.safeParse(item.meta);
+    return meta.success && isSilentBoardMaintenance(meta.data);
+  });
+
 /** Notices the emitting agent turn owns; anything else keeps its own row. */
 const MERGEABLE_NOTICE_NAMES = new Set(['agent_warning', 'chat_failed']);
 
@@ -206,7 +224,7 @@ export function buildChatStreamItems(
     if (row.role === 'user') lastUserInputConfig = entry?.inputConfig;
 
     if (!entry || !shouldRenderTurn(turnIndex)) {
-      if (isEmptyAssistantIndexRow(row)) continue;
+      if (isHiddenAssistantIndexRow(row)) continue;
       if (seenIds.has(row.id)) continue;
       seenIds.add(row.id);
       items.push(placeholderItemFor(row, turnIndex));
@@ -253,7 +271,13 @@ export function buildChatStreamItems(
       inputConfig: expectedInputConfig,
     };
 
-    if (isEmptyAssistantMessage(message)) continue;
+    // A Board maintenance reply is represented by its divider row.
+    if (
+      isEmptyAssistantMessage(message) ||
+      isBoardMaintenanceEntry(message) ||
+      isSilentMaintenanceDivider(message)
+    )
+      continue;
     if (seenIds.has(message.id)) continue;
 
     // An agent warning / failure is durably its OWN system turn — the CLI keeps

@@ -19,12 +19,14 @@ import {
   Image,
   Link,
   LockKeyhole,
+  MessageSquarePlus,
   Monitor,
   PanelBottom,
   PanelLeft,
   PanelRight,
   Pencil,
   Search,
+  Shrink,
   Trash2,
   Users,
 } from 'lucide-react';
@@ -2389,7 +2391,11 @@ const SessionDetail = ({
     setSessionPinned,
     transferSessionOwner,
   } = useSessionActions();
-  const { archive: archiveBoard, restore: restoreBoard } = useBoardActions();
+  const {
+    archive: archiveBoard,
+    restore: restoreBoard,
+    requestMaintenance: requestBoardMaintenance,
+  } = useBoardActions();
   const { members: workspaceMembers, isMultiMember: isMultiMemberWorkspace } =
     useWorkspaceMembers();
   const handleTransferSessionOwner = useCallback(
@@ -6414,6 +6420,22 @@ const SessionDetail = ({
                 initialTitle: activeSession.title ?? '',
               }),
       });
+      if (activeBoard) {
+        mobileMenuActions.push(
+          {
+            id: 'board-compact',
+            icon: <Shrink {...stylex.props(detailStyles.icon14)} />,
+            label: t('boards.maintenance.compactNow', 'Tidy context now'),
+            onClick: () => void requestBoardMaintenance(activeSession, 'compact'),
+          },
+          {
+            id: 'board-new-conversation',
+            icon: <MessageSquarePlus {...stylex.props(detailStyles.icon14)} />,
+            label: t('boards.maintenance.newConversation', 'Start a new conversation'),
+            onClick: () => void requestBoardMaintenance(activeSession, 'new_conversation'),
+          }
+        );
+      }
     }
     mobileMenuActions.push(
       {

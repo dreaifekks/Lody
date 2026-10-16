@@ -1,3 +1,4 @@
+import { useBoardActions } from '../boards/board-lifecycle';
 import { BoardMembershipDialog } from '../boards/board-membership-dialog';
 import { boardEnabledAtom } from '@/atoms/settings';
 import { useIosSimulatorPreviewRequest } from './ios-simulator/use-ios-simulator-preview-request';
@@ -54,6 +55,7 @@ import {
   Image,
   LockKeyhole,
   MessageCircle,
+  MessageSquarePlus,
   Monitor,
   MoveHorizontal,
   Pencil,
@@ -61,6 +63,7 @@ import {
   Plus,
   Search,
   Share2,
+  Shrink,
   Trash2,
   UserRoundCog,
   Users,
@@ -1428,6 +1431,7 @@ export function SessionHeaderMenu({
   const boardsEnabled = useAtomValue(boardEnabledAtom);
   // A coordinator's page is its Board: rename, archive and restore act on the Board.
   const isBoard = boardsEnabled && session.boardRole === 'coordinator';
+  const { requestMaintenance } = useBoardActions();
   const [boardMembershipOpen, setBoardMembershipOpen] = useState(false);
   const conversationWide = useAtomValue(conversationWideModeAtom);
   const setConversationWide = useSetAtom(conversationWideModeAtom);
@@ -1842,6 +1846,28 @@ export function SessionHeaderMenu({
                 : t('sidebar.renameChat.title', 'Rename Chat')}
             </Menu.Item>
           )}
+
+          {/* The coordinator's conversation continues; only the agent's context changes. */}
+          {isBoard && !isArchived ? (
+            <>
+              <Menu.Item
+                icon={Shrink}
+                onClick={() => {
+                  void requestMaintenance(session, 'compact');
+                }}
+              >
+                {t('boards.maintenance.compactNow', 'Tidy context now')}
+              </Menu.Item>
+              <Menu.Item
+                icon={MessageSquarePlus}
+                onClick={() => {
+                  void requestMaintenance(session, 'new_conversation');
+                }}
+              >
+                {t('boards.maintenance.newConversation', 'Start a new conversation')}
+              </Menu.Item>
+            </>
+          ) : null}
 
           {/* A Board has no owner of its own to hand over. */}
           {owner && !isArchived && !isBoard ? (

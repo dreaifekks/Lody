@@ -96,6 +96,8 @@ import { getAgentMetaByIdAtomFamily } from '@/atoms/agents';
 import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
 import { authTokenAtom, runtimeAtom } from '@/atoms/runtime';
 import { machineSupportsSubagentCancellation, machineSupportsSubagentEvents } from '@lody/shared';
+import { BoardMaintenanceMetaSchema } from '@lody/shared';
+import { BoardMaintenanceDivider } from '../boards/board-maintenance-divider';
 import { scrollDebug } from '@/hooks/scroll-debug-log';
 import { readSessionTurnTokenUsage, type SessionTurnTokenUsage } from '@lody/shared/session-data';
 import { formatCompactNumber } from '@/lib/format-compact-number';
@@ -3228,6 +3230,10 @@ const SystemNoticeView = ({
   const { t } = useTranslation();
 
   switch (notice.name) {
+    case 'board_context_maintenance': {
+      const meta = BoardMaintenanceMetaSchema.safeParse(notice.meta);
+      return meta.success ? <BoardMaintenanceDivider meta={meta.data} /> : null;
+    }
     case 'board_chain_limit':
       return (
         <div role="status" {...stylex.props(activityTypography.footnote)}>
