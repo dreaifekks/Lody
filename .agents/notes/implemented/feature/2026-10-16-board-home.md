@@ -266,3 +266,55 @@ re-entry; chat→Board→chat) both fail without the fix; the `board-overview.te
 Files case asserts the truncation line. Screenshots:
 `/tmp/board-lan4fix-r3-split-5050.png`, `-split-board-a-dragged.png` (60/40),
 `-split-board-b.png` (measured 50.0/50.0 after switching to B), `-truncated.png`.
+
+## Board entry actions (2026-10-17)
+
+The user reported that a Board offered "nothing to act on" and asked for its top right to
+match a chat's, at least archive and share. The decision is the
+[design](../../../../specs/project-coordinator/design.md)'s decision 15; "Board entry
+actions" there lists how each action is handled.
+
+- **What was there.** The desktop Board page's header already was the chat header (the
+  `SessionChatInterface` toolbar) with its "…" menu and share control, but rename and
+  archive acted on the coordinator session only: archiving left the Board row and its
+  members open, and the sidebar kept a Board that no longer opened. At 1440 px with the
+  50/50 split, the share control folds into the "…" menu because the container is under
+  800 px, as for any chat. The sidebar Board row was a plain button with no menu, and the
+  Boards story drew only the settings button in the header, so its screenshots showed
+  none of this either.
+- **Header: the chat menu, named for the Board.** `SessionHeaderMenu` already hid "Join /
+  leave Board" by `boardRole`; it now also names rename, archive and restore as Board
+  actions on a coordinator and hides Change owner. The page supplies the actions
+  (`session-detail.tsx` swaps in the Board's while `activeBoard` is set) and passes no
+  permanent delete. No second Board menu was written, and no prop was threaded through
+  `SessionChatInterface`.
+- **One entry path: `useBoardActions`.** The failure toasts for archive, restore and
+  rename were spread over settings and the Archive page; the header, the sidebar, settings
+  and Archive now all use this hook. It reads members from `allActiveSessionsAtom` /
+  `archivedSessionListAtom` when an action runs, so the session page and the sidebar do
+  not subscribe to every session for it (the rule against page-level subscriptions to
+  high-frequency atoms). Settings and Archive used lists filtered by machine/project
+  visibility before; the atoms are the visible cache already, so the only difference is
+  that filter, which changes nothing on a single user's LAN. `useBoardLifecycle` keeps its
+  interface.
+- **Rename reuses the chat dialog.** `RenameSessionDialogView` takes an optional title and
+  description; `BoardRenameDialog` writes the Board row and the coordinator's title, as
+  saving settings does.
+- **The sidebar row reuses a chat row's parts.** `SessionRowLeadingSlot` gains `restIcon`,
+  so the Board glyph gives way to ⋯ on hover; the end is `SidebarRowEndSlot` with
+  `SidebarRowArchiveButton`; right click is a `ContextMenu`. The row's outer element is a
+  `div` with `role="button"` instead of a `<button>`, since it now holds buttons. The
+  wiring lives in the Board's own `BoardSidebar` container (with the rename and share
+  dialogs); `loro-app-sidebar.tsx` passes only copy-link and the navigation after
+  archive, so a test renders the real container.
+
+Evidence: two new `board-overview.test.tsx` cases over real metadata (`LoroRepo`) and an
+in-memory catalog. The header menu has no Change owner or Rename Chat; Rename Board
+writes the row and the coordinator's title; Archive Board archives the coordinator and
+member roots and writes `archivedAtMs`. The sidebar row menu's Copy Board URL hands over
+the coordinator, Share opens the share editor on the coordinator's conversation, and
+rename and archive work as above, with the navigation callback. The Storybook
+`Workspace/Boards › Home` header is now the real `SessionHeaderMenu` and share control,
+and its sidebar rows carry the menu; 1440 px screenshots are in
+`/tmp/board-header-actions/shots/`. Not verified: these menus in the real desktop app
+and on phones.

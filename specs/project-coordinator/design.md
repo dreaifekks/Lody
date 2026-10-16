@@ -569,6 +569,7 @@ The implementation reuses existing pages:
 | A thread open in the panel, with its composer | Steer without leaving the coordinator              |
 | Files tab                              | Threads and the user read and write notes and files often |
 | New thread "+"                         | The same level as a chat's "+"                           |
+| Rename, share and archive the Board    | Where a chat has them: the header "…" menu and its sidebar row |
 | Scope badge (only when narrowed)       | Says which projects the Board uses; nothing for "all"     |
 
 | Settings dialog (rare)                                        | Why                              |
@@ -843,6 +844,15 @@ in "Board home, second round"):
     and 5).
 14. The conversation only coordinates, delegating concrete work to threads and keeping
     the whole picture; sessions a thread opens stay under it, indented in the panel.
+
+On 2026-10-17 the user reported that a Board offered "nothing to act on" and asked for
+the same top-right actions a chat has, at least archive and share (implemented in
+"Board entry actions"):
+
+15. The Board page's header keeps the chat header's "…" menu and share control beside the
+    settings gear; the sidebar Board row is a chat row's twin, with ⋯ and Archive on
+    hover and the same menu on right click. Rename, archive and restore act on the whole
+    Board; share shares the coordinator's conversation.
 
 ## Shared notes
 
@@ -1352,3 +1362,43 @@ Used on a real five-machine LAN, `dev-v0.105.0-lan.4` needed three fixes:
   the Board preview (text, pictures, everything else downloads), and the row menu offers
   Download. Past 500 files, a line above the tree says only the first 500 are listed. The shared notes stay the Loro document, one row above the tree, not moved
   to `notes.md`.
+
+## Board entry actions
+
+This implements decision 15. The Board page's header is the chat header
+(`SessionHeaderMenu` and the share control), whose menu names Board actions on a
+coordinator; the sidebar Board row uses a chat row's leading slot, end-slot Archive
+button and right-click menu.
+
+| Chat header action                     | On a Board                                                                                  |
+| -------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Open in new window                     | Kept; it opens the Board page                                                               |
+| Machine, repository, branch, path      | Kept; the coordinator's                                                                     |
+| Full width, find, copy, share as image | Kept; on the coordinator's conversation                                                     |
+| Share (static, LAN, with team)         | Kept; shares the coordinator's conversation through the existing editor                     |
+| Fork session                           | Kept; forks an ordinary session from the coordinator's conversation                         |
+| Open in IDE                            | Kept; opens the coordinator's working directory                                             |
+| Rename                                 | "Rename Board": writes the row's name and the coordinator's title, as settings do           |
+| Archive / restore                      | "Archive Board / Restore Board": the Board's archive and restore, not the coordinator alone |
+| Delete permanently (when archived)     | Hidden: deleting the coordinator would strand the Board row                                 |
+| Change owner                           | Hidden: a Board has no owner of its own                                                     |
+| Join / leave Board                     | Already hidden on a coordinator                                                             |
+
+The mobile session menu does the same: with the coordinator's Tab current, rename and
+archive act on the Board, and an archived Board offers only restore. The "Rename current
+chat" and "Archive current chat" shortcuts act on the Board on the coordinator's Tab.
+
+The sidebar Board row (desktop): on hover the Board glyph becomes ⋯ and the status mark
+becomes the two-step Archive button; right click and ⋯ open a menu with Rename Board,
+Copy Board URL (the coordinator's link), Share (where publishing is available), Open in
+new window (desktop app) and Archive Board. Pin, mark unread and copy branch are left
+out: Boards are not pinned, and unread and branches belong to member sessions. The
+mobile sidebar has no row menus, as for chats.
+
+Archiving the Board on screen returns to the chat page; a failed archive or restore says
+why and leaves the Board where it was. Every entry uses `useBoardActions`, which reads
+the members from the metadata cache when an action runs, so an entry subscribes to no
+session list; the settings dialog and the Archive page use it too.
+
+Not verified: these menus in the real desktop app (seen in Storybook and component
+tests only).

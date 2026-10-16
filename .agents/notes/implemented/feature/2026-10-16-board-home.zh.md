@@ -193,3 +193,38 @@ Codex reviewer（gpt-6.1-sol high）提了 1 个 P1、2 个 P2，都已修：
 会话）在未修复时都失败；`board-overview.test.tsx` 的文件 tab 用例断言截断提示。截图：
 `/tmp/board-lan4fix-r3-split-5050.png`、`-split-board-a-dragged.png`（60/40）、
 `-split-board-b.png`（切到 B 后测得 50.0/50.0）、`-truncated.png`。
+
+## 看板入口的操作（2026-10-17）
+
+用户反馈看板上「没有任何可以操作的地方」，希望看板的右上和对话的右上一致，至少能归档、分享。
+决定记在[设计文档](../../../../specs/project-coordinator/design.zh.md)「已决定」第 15 条，逐项
+处理见「看板入口的操作」。
+
+- **调研结果。** 桌面看板页的头部其实已经是对话头部（`SessionChatInterface` 的 toolbar），
+  「…」菜单和分享控件都在，但重命名、归档只作用于协调者会话：归档后看板行还在、成员还开着，
+  侧边栏留下一个打不开的看板。分享控件在 1440 宽、50/50 分栏下因容器不到 800px 而收进「…」
+  菜单（和普通会话一样）。侧边栏看板行是一个普通按钮，没有任何菜单。Storybook 的看板 story
+  头部只画了设置按钮，所以截图里也看不到这些操作。
+- **头部：沿用对话菜单，按看板改名。** `SessionHeaderMenu` 已经按 `boardRole` 隐藏「加入 /
+  移出看板」，这次同样按协调者把重命名、归档、恢复改名为看板的动作，隐藏更换所有者；动作本身
+  由页面传入（`session-detail.tsx` 在 `activeBoard` 时换成看板的处理），永久删除不传。没有另写
+  一套看板菜单，也没有在 `SessionChatInterface` 里再穿一个属性。
+- **一处入口逻辑：`useBoardActions`。** 归档、恢复、重命名的失败提示原来分散在设置和归档页；
+  现在头部、侧边栏、设置、归档页都用它。它在动作发生时从 `allActiveSessionsAtom` /
+  `archivedSessionListAtom` 读成员，所以会话页和侧边栏不必为此订阅全部会话（页面级组件不订阅
+  高频 atom 的规则）。原来设置和归档页用的是按机器 / 项目可见性过滤过的列表；atom 本身已是可见
+  缓存，这里差别只在可见性过滤，对同一用户的 LAN 没有影响。`useBoardLifecycle` 的接口不变。
+- **重命名对话框复用对话的。** `RenameSessionDialogView` 加了可选的标题和说明；
+  `BoardRenameDialog` 写看板行并同步协调者标题，和设置保存一致。
+- **侧边栏行复用对话行的部件。** `SessionRowLeadingSlot` 加 `restIcon`，看板图标在悬停时换成
+  「⋯」；尾部用 `SidebarRowEndSlot` + `SidebarRowArchiveButton`；右键菜单用 `ContextMenu`。行的
+  外层从 `<button>` 改为 `role="button"` 的 `div`，因为里面要放按钮。接线放在看板自己的
+  `BoardSidebar` 容器里（重命名、分享对话框都在里面），`loro-app-sidebar.tsx` 只传复制链接和
+  归档后的跳转，这样测试能直接渲染真实容器。
+
+证据：`board-overview.test.tsx` 新增两条，跑在真实元数据（`LoroRepo`）和内存 catalog 上：头部菜单
+里没有「更换所有者」「重命名对话」，「重命名看板」写看板行和协调者标题，「归档看板」归档协调者和
+成员根会话并写 `archivedAtMs`；侧边栏右键菜单的「复制看板链接」给出协调者，「分享」打开协调者
+对话的分享编辑器，重命名和归档同上并回调跳转。Storybook `Workspace/Boards › Home` 的头部换成真实
+的 `SessionHeaderMenu` 和分享控件，侧边栏行带上菜单；1440 宽截图在 `/tmp/board-header-actions/shots/`。
+未验证：真实桌面应用和手机上的这些菜单。
