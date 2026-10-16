@@ -91,17 +91,18 @@ draft / approved / outdated 三种状态，这一版还没有人审批。英文�
 「hermes」指 Nous Research 的 [Hermes Agent](https://github.com/NousResearch/hermes-agent)。
 它的网关会话（Telegram 等）就是这里想要的形态：「A gateway chat is designed to be **one continuous
 session** — compacted repeatedly as it grows」，并且「Gateway conversations do not reset after inactivity
-or at a daily boundary」（[sessions.md:1026、:1074](https://github.com/NousResearch/hermes-agent/blob/848fc0ad8be766b9dc10fe42bd80b5fc2d45d95c/website/docs/user-guide/sessions.md#L1026)）。
+or at a daily boundary」（[Sessions](https://hermes-agent.nousresearch.com/docs/user-guide/sessions)；`848fc0a` 文档源 `user-guide/sessions.md` 第 1026、1074 行）。
 Hermes 也是一个模型系列的名字，但那是模型，不是 agent。没找到别的同名产品有这种行为。
-下面引用的都是 main `848fc0a`（2026-10-16，正式版 v0.22.2）。链接前缀是
-`https://github.com/NousResearch/hermes-agent/blob/848fc0ad8be766b9dc10fe42bd80b5fc2d45d95c/`。
+下面引用的都是 main `848fc0a`（2026-10-16，正式版 v0.22.2）。代码路径的前缀是
+`https://github.com/NousResearch/hermes-agent/blob/848fc0ad8be766b9dc10fe42bd80b5fc2d45d95c/`；
+文档页链接到公开文档站，并注明同一提交里文档源的文件和行号。
 
 1. **什么时候压缩：按用量，回合边界上做；空闲是可选的另一个触发。**
    - 主压缩器在回合开始和每次 API 调用前检查。阈值 `(context_length − max_tokens) × threshold`，
      默认 0.5；窗口小于 512K 时最低抬到 0.75（`agent/context_compressor.py#L2777-L2810`、`#L1151-L1152`）。
    - `idle_compact_after_seconds`（默认 0，即关）：会话闲置这么久后再回来，在第一次回复前先压缩。
      已经低于压缩目标时不做，并且和其他自动压缩一样有失败冷却、防抖和会话锁
-     （[configuration.md:999、:1049](https://github.com/NousResearch/hermes-agent/blob/848fc0ad8be766b9dc10fe42bd80b5fc2d45d95c/website/docs/user-guide/configuration.md#L1049)）。
+     （[Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)；文档源 `user-guide/configuration.md` 第 999、1049 行）。
    - 网关另有一层 85% 的保底（`gateway/run_turn_hygiene.py#L97-L103`）。
    - 手动命令：`/compress [here [N] | focus topic]`。
 2. **压缩什么、保留什么。**
@@ -122,14 +123,14 @@ Hermes 也是一个模型系列的名字，但那是模型，不是 agent。没�
      旧行为是每次压缩换一个新 id，用 `parent_session_id` 串起来，现在已经不是默认了。
    - `progress_notices: false` 是默认值：聊天平台上看不到常规的压缩进度，只能看到失败提示和
      手动 `/compress` 的反馈；CLI 会打印 `⟳ compacting context…`。
-   - 出处：[configuration.md:991、:998、:1023、:1045](https://github.com/NousResearch/hermes-agent/blob/848fc0ad8be766b9dc10fe42bd80b5fc2d45d95c/website/docs/user-guide/configuration.md#L1045)。
+   - 出处：[Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)，文档源 `user-guide/configuration.md` 第 991、998、1023、1045 行。
 5. **和长期记忆、检索配合。**
    - 所有会话存在 SQLite FTS5 里，`session_search` 直接返回原文。摘要里附带找回指引和机械抽取的
      「Anchor Index」（PR 号、SHA、路径，原样不改写）。
    - 回合结束后，后台 fork 一个 agent，判断要不要写记忆，默认每 10 轮一次。
    - 记忆插件可以在 `on_pre_compress` 从即将压掉的消息里提取要点。
    - 旧的压缩前 `flush_memories` 已经删了。现在靠摘要提示词，加上压缩后重读记忆。
-   - 出处：[memory.md](https://github.com/NousResearch/hermes-agent/blob/848fc0ad8be766b9dc10fe42bd80b5fc2d45d95c/website/docs/user-guide/features/memory.md)、
+   - 出处：[Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)（文档源 `user-guide/features/memory.md`）、
      `agent/background_review.py#L1-L6`、`agent/memory_provider.py#L176-L178`。
 
 对 Lody 的启发：
