@@ -1,7 +1,7 @@
 import * as stylex from '@stylexjs/stylex';
 import { space } from '@lody/ui/tokens/scales.stylex';
 import { atom, useAtomValue } from 'jotai';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   deriveBoardSessionStatus,
@@ -43,7 +43,7 @@ import {
 } from './board-directory';
 import { BoardNotesEditor } from './board-notes-panel';
 import { CreateBoardDialog } from './create-board-dialog';
-import { buildBoardRows } from './board-threads';
+import { buildBoardRows, opensInCoordinatorPage } from './board-threads';
 
 const panelStyles = stylex.create({
   padded: { display: 'flex', flexDirection: 'column', gap: space[1], padding: space[2] },
@@ -252,6 +252,9 @@ type BoardSidePanelProps = {
   onShowInPage: (session: SessionMeta) => void;
   onOpenThreadFull: (session: SessionMeta) => void;
   renderThread: (session: SessionMeta) => ReactNode;
+  /** A member to open once (`?boardThread`), the way its row opens it; then `onThreadRequestDone`. */
+  requestedThreadId: SessionId | null;
+  onThreadRequestDone: () => void;
 };
 
 /**
@@ -272,6 +275,8 @@ function BoardSidePanelContent({
   onShowInPage,
   onOpenThreadFull,
   renderThread,
+  requestedThreadId,
+  onThreadRequestDone,
 }: BoardSidePanelProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<BoardPanelTab>('threads');
@@ -286,6 +291,22 @@ function BoardSidePanelContent({
         null);
   const active = board.archivedAtMs === undefined;
   const location = useThreadLocation(openThread);
+  const openMember = useCallback(
+    (session: SessionMeta) =>
+      opensInCoordinatorPage(board, session) ? onShowInPage(session) : onOpenThread(session),
+    [board, onOpenThread, onShowInPage]
+  );
+  // A requested member opens as soon as its metadata is here.
+  const requested =
+    requestedThreadId === null
+      ? undefined
+      : (allActiveSessions.find((session) => session.id === requestedThreadId) ??
+        archivedSessions.find((session) => session.id === requestedThreadId));
+  useEffect(() => {
+    if (!requested) return;
+    onThreadRequestDone();
+    openMember(requested);
+  }, [onThreadRequestDone, openMember, requested]);
   return (
     <>
       {openThread ? (
@@ -304,14 +325,7 @@ function BoardSidePanelContent({
           onNewThread={active ? () => setCreatingThread(true) : undefined}
         >
           {tab === 'threads' ? (
-            <BoardThreads
-              board={board}
-              onOpen={(session) =>
-                session.parentSessionId === board.coordinatorSessionId
-                  ? onShowInPage(session)
-                  : onOpenThread(session)
-              }
-            />
+            <BoardThreads board={board} onOpen={openMember} />
           ) : (
             <BoardFiles board={board} />
           )}

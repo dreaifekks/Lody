@@ -14,7 +14,7 @@ import { currentWorkspaceSlugAtom } from '@/atoms';
 import { boardEnabledAtom } from '@/atoms/settings';
 import { useVisibleSessionMetas } from '@/hooks/use-visible-session-metas';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
-import { boardEntrySearch } from '@/components/boards/board-threads';
+import { boardMemberEntrySearch } from '@/components/boards/board-threads';
 import { useVisibleLocalProjects } from '@/hooks/use-visible-local-projects';
 import { useStableNow } from '@/hooks/use-stable-now';
 import type { SessionListEntry } from '@/lib/session-visibility';
@@ -98,12 +98,10 @@ export function CommandPalette() {
         });
         return;
       }
-      const entry = boardEntrySearch(board.coordinatorSessionId);
       void router.navigate({
         to: '/$workspaceName/sessions/$sessionId',
         params: { workspaceName: workspaceSlug, sessionId: board.coordinatorSessionId },
-        search:
-          session.id === board.coordinatorSessionId ? entry : { ...entry, boardThread: session.id },
+        search: boardMemberEntrySearch(board, session.id),
       });
     },
     [activeBoards, handleOpenChange, router, workspaceSlug]

@@ -1,6 +1,6 @@
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
-import { space, text } from '@lody/ui/tokens/scales.stylex';
+import { focus, space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
 import { Input } from '@lody/ui/input';
 import { Switch } from '@lody/ui/switch';
@@ -71,6 +71,22 @@ const styles = stylex.create({
     flexShrink: 0,
     width: { default: '200px', [NARROW]: 'auto' },
     padding: space[3],
+  },
+  /**
+   * Focus is a ring, never a fill: the shared rows wash focus like hover, which
+   * beside the selected page reads as a second selection when the dialog hands
+   * focus to its first page.
+   */
+  navRow: {
+    backgroundColor: {
+      default: 'transparent',
+      ':hover': `color-mix(in oklab, transparent, ${colors.label} 6%)`,
+      ':focus-visible': 'transparent',
+    },
+    boxShadow: {
+      default: 'none',
+      ':focus-visible': `inset 0 0 0 ${focus.ringWidth} ${colors.accent}`,
+    },
   },
   navHeading: {
     margin: 0,
@@ -411,7 +427,11 @@ export function BoardSettingsDialogView({
                 type="button"
                 aria-current={page === id ? 'page' : undefined}
                 onClick={() => onPageChange(id)}
-                {...stylex.props(surface.listRow, page === id && surface.listRowSelected)}
+                {...stylex.props(
+                  surface.listRow,
+                  styles.navRow,
+                  page === id && surface.listRowSelected
+                )}
               >
                 <Icon
                   {...stylex.props(surface.listRowIcon, page === id && surface.listRowIconSelected)}

@@ -2,7 +2,7 @@ import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Download } from 'lucide-react';
 import { useAtomValue } from 'jotai';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -22,6 +22,7 @@ import { MarkdownRenderer } from '@/components/ai-gui/markdown-renderer';
 import { useStableNow } from '@/hooks/use-stable-now';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
+import { toast } from '@/lib/toast';
 
 export type BoardDirectoryState =
   | { status: 'loading' }
@@ -108,6 +109,13 @@ const styles = stylex.create({
     color: colors.secondaryLabel,
   },
   preview: { display: 'flex', flexDirection: 'column', gap: space[2], minWidth: 0 },
+  noPreview: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: space[1],
+    paddingInline: space[2],
+  },
   previewHeader: { display: 'flex', alignItems: 'center', gap: space[1], minWidth: 0 },
   previewName: {
     minWidth: 0,
@@ -201,8 +209,8 @@ type Preview =
 
 /**
  * One file of the directory, read through this machine's agent service like
- * any file of another LAN member. Text and pictures show; anything else names
- * itself only.
+ * any file of another LAN member. Text and pictures show; anything else is
+ * saved to disk, whatever its size.
  */
 export function BoardFilePreview({
   board,
@@ -271,6 +279,30 @@ export function BoardFilePreview({
     workspaceId,
   ]);
 
+  const name = entry.path.split('/').pop() ?? entry.path;
+  const ipc = getIpcServices();
+  const download =
+    ipc && workspaceId && host
+      ? () =>
+          void ipc.machineRpc
+            .saveMemberFile({
+              workspaceId,
+              machineId: host,
+              sessionId: board.coordinatorSessionId,
+              boardId: board.id,
+              path: `${area}/${entry.path}`,
+              fileName: name,
+            })
+            .then((result) => {
+              if (!result.ok)
+                toast.error(t('boards.files.downloadFailed', 'Could not download that file.'), {
+                  description: result.error,
+                });
+              else if (result.saved)
+                toast.success(t('boards.files.downloaded', 'Saved {{name}}', { name }));
+            })
+      : null;
+
   let body: ReactNode;
   if (preview.status === 'loading')
     body = <p {...stylex.props(styles.note)}>{t('boards.loading', 'Loading…')}</p>;
@@ -291,15 +323,27 @@ export function BoardFilePreview({
         ) : null}
       </>
     );
-  else
+  else if (preview.reason)
     body = (
       <p {...stylex.props(styles.note)}>
-        {preview.reason
-          ? t('boards.files.previewFailed', 'Could not read this file: {{reason}}', {
-              reason: preview.reason,
-            })
-          : t('boards.files.noPreview', 'No preview for this kind of file.')}
+        {t('boards.files.previewFailed', 'Could not read this file: {{reason}}', {
+          reason: preview.reason,
+        })}
       </p>
+    );
+  else
+    body = (
+      <div {...stylex.props(styles.noPreview)}>
+        <p {...stylex.props(styles.note)}>
+          {t('boards.files.noPreview', 'No preview for this kind of file.')}
+        </p>
+        {download ? (
+          <Button variant="secondary" size="small" onClick={download}>
+            <Download size={14} />
+            {t('boards.files.download', 'Download')}
+          </Button>
+        ) : null}
+      </div>
     );
   return (
     <div {...stylex.props(styles.preview)}>

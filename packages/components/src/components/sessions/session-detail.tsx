@@ -42,7 +42,6 @@ import {
   getSessionPullRequestLegacyFields,
   getSessionRoomId,
   getAcpCapabilityCacheEntryAuthority,
-  isLoroRepoDocDeleted,
   resolveProjectGitHubRepo,
   SessionForkOperationSchema,
   type CommentReferencePayload,
@@ -149,7 +148,11 @@ import {
   type SessionSidePanelOption,
   type SessionSidePanelTabItem,
 } from './session-side-panel-tab-bar';
-import { getSessionTabCloseTarget, type SessionTabFocusRegion } from './session-tab-close-target';
+import {
+  closeSessionTab,
+  getSessionTabCloseTarget,
+  type SessionTabFocusRegion,
+} from './session-tab-close-target';
 import {
   MobileSessionTabButton,
   MobileSessionTabSheet,
@@ -1110,6 +1113,9 @@ const SessionDetail = ({
   // The thread open inside the Board panel. Page state, because the compact
   // layout remounts the panel subtree.
   const [boardThreadId, setBoardThreadId] = useState<SessionId | null>(null);
+  // `?boardThread`, handed to the Board panel once the URL no longer carries it.
+  const [boardThreadRequest, setBoardThreadRequest] = useState<SessionId | null>(null);
+  const finishBoardThreadRequest = useCallback(() => setBoardThreadRequest(null), []);
   const [mobileBoardOpen, setMobileBoardOpen] = useState(false);
   const [boardSettingsOpen, setBoardSettingsOpen] = useState(false);
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab | null>(
@@ -1441,6 +1447,7 @@ const SessionDetail = ({
     setMobileFilesBrowserOpen(false);
     setFileProviderRequestedByInteraction(false);
     setBoardThreadId(null);
+    setBoardThreadRequest(null);
     setMobileBoardOpen(false);
     setBoardSettingsOpen(false);
   }
@@ -2919,17 +2926,13 @@ const SessionDetail = ({
         is_active_tab: tabSessionId === activeTabSessionId,
       });
       try {
-        // A tab that never had a message is exact-deleted instead of marked
-        // closed — isTabClosed would leave an invisible durable doc. Judge
-        // emptiness from getDocMeta directly: the meta scan cache can still
-        // be cold here, and exact deletion must bypass discovery.
-        const tabEntry = runtime
-          ? await runtime.repo.getDocMeta(getSessionRoomId(tabSessionId))
-          : undefined;
-        if (isLoroRepoDocDeleted(tabEntry)) throw new Error('Session was deleted');
-        const tabMeta = tabEntry?.meta as SessionMeta | undefined;
-        if (tabMeta && !tabMeta.lastMessageAt) {
-          await deleteSessions([tabSessionId]);
+        if (
+          (await closeSessionTab(tabSessionId, {
+            runtime,
+            deleteSessions,
+            setSessionTabClosed,
+          })) === 'deleted'
+        ) {
           captureSessionDetailEvent('session/tab_deleted_empty', {
             tab_session_id: tabSessionId,
           });
@@ -2941,7 +2944,6 @@ const SessionDetail = ({
             navigateToSessionTab(sessionId);
           }
         } else {
-          await setSessionTabClosed(tabSessionId, true);
           // The shared-close effect chooses the neighbour once hydration
           // finishes. Do not commit a fallback from this handler's partial
           // metadata snapshot.
@@ -3583,7 +3585,6 @@ const SessionDetail = ({
         setSidebarRestoreSeq((seq) => seq + 1);
         setIsSidebarOpen(true);
         activateSidebarTab('board');
-        if (urlBoardThread && !isCompactDesktop) setBoardThreadId(urlBoardThread as SessionId);
       }
     }
   } else if (urlBoard !== true && restoredBoardPanel !== null) {
@@ -3601,15 +3602,6 @@ const SessionDetail = ({
   useEffect(() => {
     if (urlBoard !== true || restoredBoardPanel !== sessionId || !workspaceSlug) return;
     setZenLayoutMode(false);
-    // A narrow window has no room for a thread beside the coordinator: go to its page.
-    if (urlBoardThread && (isMobile || isCompactDesktop)) {
-      void router.navigate({
-        to: '/$workspaceName/sessions/$sessionId',
-        params: { workspaceName: workspaceSlug, sessionId: urlBoardThread },
-        replace: true,
-      });
-      return;
-    }
     void router.navigate({
       to: '/$workspaceName/sessions/$sessionId',
       params: { workspaceName: workspaceSlug, sessionId },
@@ -3621,9 +3613,10 @@ const SessionDetail = ({
       },
       replace: true,
     });
+    // The panel opens the member the way its row does, after the URL has
+    // left, so a thread's own page is not replaced by this one.
+    if (urlBoardThread) setBoardThreadRequest(urlBoardThread as SessionId);
   }, [
-    isCompactDesktop,
-    isMobile,
     restoredBoardPanel,
     router,
     sessionId,
@@ -6222,6 +6215,8 @@ const SessionDetail = ({
         handleNavigateSession({ sessionId: thread.id });
       }}
       onOpenThreadFull={(thread) => handleNavigateSession({ sessionId: thread.id })}
+      requestedThreadId={boardThreadRequest}
+      onThreadRequestDone={finishBoardThreadRequest}
       renderThread={(thread) => (
         <SessionChatInterface
           key={thread.id}

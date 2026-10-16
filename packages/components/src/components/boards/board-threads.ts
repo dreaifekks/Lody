@@ -12,6 +12,22 @@ export const boardEntrySearch = (coordinatorSessionId: SessionId) => ({
   tab: formatExplicitSessionTabSearch(coordinatorSessionId),
 });
 
+/** Search of a Board member's entry: the Board, with the member opened the way its row opens it. */
+export const boardMemberEntrySearch = (board: BoardMeta, sessionId: SessionId) =>
+  sessionId === board.coordinatorSessionId
+    ? boardEntrySearch(board.coordinatorSessionId)
+    : { ...boardEntrySearch(board.coordinatorSessionId), boardThread: sessionId };
+
+/**
+ * A direct child of the coordinator (a Tab or a Side Chat) is already mounted
+ * by the coordinator's page, so it opens there; any other thread opens in the
+ * Board panel. One conversation surface per Session.
+ */
+export const opensInCoordinatorPage = (
+  board: BoardMeta,
+  session: Pick<SessionMeta, 'parentSessionId'>
+) => session.parentSessionId === board.coordinatorSessionId;
+
 /** Use the same opener tree as the sidebar, with contained Tabs below their root. */
 export function buildBoardRows(sessions: readonly SessionMeta[]) {
   const byId = new Map(sessions.map((session) => [session.id, session]));

@@ -6,6 +6,7 @@
  */
 import type { Meta, StoryObj } from '@storybook/react';
 import { useState } from 'react';
+import { createStore, Provider } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { ArrowUp, Bot, ChevronDown, Monitor, Settings2 } from 'lucide-react';
 import { Button } from '@lody/ui/button';
@@ -19,7 +20,11 @@ import {
   type SessionId,
   type SessionMeta,
   type SessionStatus,
+  type WorkspaceId,
+  getSessionRoomId,
 } from '@lody/shared';
+import { currentWorkspaceIdAtom } from '@/atoms';
+import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { ChatComposer } from '@/components/chat/chat-composer';
 import {
   MessageRowView,
@@ -44,7 +49,7 @@ import {
   boardSettingsDraft,
   type BoardSettingsPage,
 } from '@/components/boards/board-settings-panel';
-import { BoardFileRowsView } from '@/components/boards/board-directory';
+import { BoardFilePreview, BoardFileRowsView } from '@/components/boards/board-directory';
 import { BoardSidebarSection } from '@/components/boards/board-sidebar-section';
 import { BoardCreateDialogView } from '@/components/boards/board-create-dialog-view';
 import { ArchivedBoardsView } from '@/components/boards/archived-boards-section';
@@ -345,13 +350,27 @@ const coordinatorSession = member(COORDINATOR, board.name, 2, {
   openedBySessionId: undefined,
 });
 
-type PanelState = { kind: 'tabs'; tab: BoardPanelTab; notes?: boolean } | { kind: 'thread' };
+type PanelState =
+  | { kind: 'tabs'; tab: BoardPanelTab; notes?: boolean; file?: BoardFileEntry }
+  | { kind: 'thread' };
 
 const sharedFiles: BoardFileEntry[] = [
   { path: 'design/board-home.md', sizeBytes: 8_200, modifiedAtMs: NOW - 2 * 3_600_000 },
   { path: 'screens/sidebar-entry-a.png', sizeBytes: 182_000, modifiedAtMs: NOW - 20 * 60_000 },
   { path: 'release-checklist.md', sizeBytes: 1_400, modifiedAtMs: NOW - 26 * 3_600_000 },
+  { path: 'screens/board-home.sketch', sizeBytes: 2_400_000, modifiedAtMs: NOW - 3 * 3_600_000 },
 ];
+
+/**
+ * The workspace the file preview asks through. The desktop's IPC is the
+ * stand-in a screenshot script installs; without it the preview names the
+ * file only.
+ */
+const previewStore = createStore();
+previewStore.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+previewStore.set(sessionMetaCacheAtom, {
+  [getSessionRoomId(COORDINATOR)]: { ...coordinatorSession, machineId: 'devnuc' as MachineId },
+});
 const memoryFiles: BoardFileEntry[] = [
   { path: 'MEMORY.md', sizeBytes: 640, modifiedAtMs: NOW - 24 * 3_600_000 },
   { path: 'decisions-board-home.md', sizeBytes: 2_100, modifiedAtMs: NOW - 48 * 3_600_000 },
@@ -395,6 +414,18 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
         >
           <BoardNotesEditor notes={notes} onSave={async (text) => setNotes(text)} />
         </BoardFileEditorView>
+      ) : panel.file ? (
+        <div className="p-2">
+          <Provider store={previewStore}>
+            <BoardFilePreview
+              board={board}
+              area="files"
+              entry={panel.file}
+              backLabel={t('boards.files.back')}
+              onBack={() => setPanel({ kind: 'tabs', tab: 'files' })}
+            />
+          </Provider>
+        </div>
       ) : (
         <div className="flex flex-col gap-1 p-2">
           <BoardFilesView
@@ -403,7 +434,10 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
             ]}
             onOpen={() => setPanel({ kind: 'tabs', tab: 'files', notes: true })}
           />
-          <BoardFileRowsView entries={sharedFiles} onOpen={() => {}} />
+          <BoardFileRowsView
+            entries={sharedFiles}
+            onOpen={(file) => setPanel({ kind: 'tabs', tab: 'files', file })}
+          />
         </div>
       )}
     </BoardPanelView>
@@ -558,14 +592,14 @@ function CoordinatorPage({ initial }: { initial: PanelState }) {
 }
 
 /** The mobile Board drawer: the same panel, full screen; a thread opens its page. */
-function PhoneBoard() {
+function PhoneBoard({ initial = { kind: 'tabs', tab: 'threads' } }: { initial?: PanelState }) {
   return (
     <SettingsStoryProviders>
       <ForceMobileLayoutProvider force>
         <div className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
           <div className="flex h-12 shrink-0 items-center px-4 font-semibold">{board.name}</div>
           <div className="min-h-0 flex-1">
-            <BoardPanel initial={{ kind: 'tabs', tab: 'threads' }} narrow />
+            <BoardPanel initial={initial} narrow />
           </div>
         </div>
       </ForceMobileLayoutProvider>
@@ -633,6 +667,11 @@ export const CreateBoard: Story = {
 
 /** 390 px: the Board drawer. */
 export const Narrow: Story = { render: () => <PhoneBoard /> };
+
+/** The Board directory in the mobile drawer. */
+export const NarrowFiles: Story = {
+  render: () => <PhoneBoard initial={{ kind: 'tabs', tab: 'files' }} />,
+};
 
 /** 390 px: the mobile sidebar with its Boards section. */
 export const NarrowSidebar: Story = {

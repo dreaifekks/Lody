@@ -6,6 +6,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { LoroRepo } from 'loro-repo';
 import {
   getSessionRoomId,
+  isLoroRepoDocDeleted,
   normalizeBoardMeta,
   readSessionOperationTargets,
   type AgentConfigMeta,
@@ -36,7 +37,13 @@ import { BoardSettings, BoardSettingsDialog } from '../src/components/boards/boa
 import { BoardThreadListView } from '../src/components/boards/board-thread-list';
 import { localProbeResultAtom } from '../src/atoms/local-probe';
 import { useBoardLifecycle } from '../src/components/boards/board-lifecycle';
-import { boardActivity, isBoardSession } from '../src/components/boards/board-threads';
+import {
+  boardActivity,
+  boardMemberEntrySearch,
+  isBoardSession,
+} from '../src/components/boards/board-threads';
+import { closeSessionTab } from '../src/components/sessions/session-tab-close-target';
+import { useSessionActions } from '../src/hooks/use-session-actions';
 import { writeWorkspaceBoard } from '../src/lib/workspace-catalog-write';
 
 const creation = vi.hoisted(() => ({
@@ -203,10 +210,12 @@ async function boardRuntime(sessions: readonly SessionMeta[]) {
         if (failing.has(id)) throw new Error('disk full');
         await repo.upsertDocMeta(id, patch);
       },
+      deleteDoc: (id: string) => repo.deleteDoc(id),
     },
     readSessionOperationTargets: (id: SessionId, operation: 'archive' | 'restore') =>
       readSessionOperationTargets(repo, id, operation),
     ensureDocStream: async () => {},
+    releaseSessionStore: async () => {},
   } as unknown as WorkspaceRuntime;
   return {
     runtime,
@@ -264,6 +273,10 @@ function installIpc(answers: Record<string, unknown>) {
         return typeof body === 'string'
           ? { ok: true, url: `data:text/plain,${encodeURIComponent(body)}`, sizeBytes: body.length }
           : { ok: false, error: 'file_not_found' };
+      }
+      if (channel === 'machineRpc.saveMemberFile') {
+        requests.push({ method: 'saveMemberFile', params: message });
+        return { ok: true, saved: true, path: `/downloads/${String(message.fileName)}` };
       }
       throw new Error(`unexpected IPC ${channel}`);
     },
@@ -427,6 +440,8 @@ describe('Board side panel', () => {
             onShowInPage={(session) => setSelected(session.id)}
             onOpenThreadFull={() => {}}
             renderThread={(session) => <section data-chat-surface={session.id} />}
+            requestedThreadId={null}
+            onThreadRequestDone={() => {}}
             onArchived={() => {}}
           />
         </>
@@ -460,6 +475,77 @@ describe('Board side panel', () => {
     }
   });
 
+  it('opens a palette entry where its row opens it, so a coordinator Tab is mounted once', async () => {
+    const store = createStore();
+    const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+    const coordinatorTab = makeSession('coordinator-tab', { parentSessionId: coordinator.id });
+    const sideChat = makeSession('side-chat', {
+      parentSessionId: coordinator.id,
+      childSessionPlacement: 'side-panel',
+    });
+    const thread = makeSession('thread');
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(
+        [coordinator, coordinatorTab, sideChat, thread].map((entry) => [
+          getSessionRoomId(entry.id),
+          entry,
+        ])
+      )
+    );
+    const board = testBoard();
+    /** The coordinator's page after the palette's `?board=1&boardThread=…` left the URL. */
+    function CoordinatorPage({ boardThread }: { boardThread: string }) {
+      const [selected, setSelected] = useState<string>(coordinator.id);
+      const [panelThreadId, setPanelThreadId] = useState<SessionId | null>(null);
+      const [request, setRequest] = useState<SessionId | null>(boardThread as SessionId);
+      return (
+        <>
+          {[coordinator, coordinatorTab, sideChat].map((session) => (
+            <section
+              key={session.id}
+              data-chat-surface={session.id}
+              hidden={session.id !== selected}
+            />
+          ))}
+          <BoardSidePanel
+            board={board}
+            openThreadId={panelThreadId}
+            onOpenThread={(session) => setPanelThreadId(session?.id ?? null)}
+            onShowInPage={(session) => setSelected(session.id)}
+            onOpenThreadFull={() => {}}
+            renderThread={(session) => <section data-chat-surface={session.id} />}
+            requestedThreadId={request}
+            onThreadRequestDone={() => setRequest(null)}
+          />
+        </>
+      );
+    }
+    for (const [member, shown] of [
+      [coordinatorTab, [coordinatorTab.id]],
+      [sideChat, [sideChat.id]],
+      [thread, [coordinator.id, thread.id]],
+    ] as const) {
+      const search = boardMemberEntrySearch(board, member.id);
+      expect(search).toMatchObject({ board: true, boardThread: member.id });
+      const view = await mount(
+        <Provider store={store}>
+          <CoordinatorPage boardThread={search.boardThread!} />
+        </Provider>
+      );
+      try {
+        expect(view.host.querySelectorAll(`[data-chat-surface="${member.id}"]`)).toHaveLength(1);
+        expect(
+          [...view.host.querySelectorAll('[data-chat-surface]:not([hidden])')].map((node) =>
+            node.getAttribute('data-chat-surface')
+          )
+        ).toEqual(shown);
+      } finally {
+        await view.unmount();
+      }
+    }
+  });
+
   it('lists the Board directory in the Files tab and previews a file through the local agent', async () => {
     const store = createStore();
     store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
@@ -472,7 +558,10 @@ describe('Board side panel', () => {
     store.set(sessionMetaCacheAtom, { [getSessionRoomId(coordinator.id)]: coordinator });
     const ipc = installIpc({
       'board/files-list:files': {
-        entries: [{ path: 'design/plan.md', sizeBytes: 22, modifiedAtMs: 1 }],
+        entries: [
+          { path: 'design/plan.md', sizeBytes: 22, modifiedAtMs: 1 },
+          { path: 'design/mock.sketch', sizeBytes: 4096, modifiedAtMs: 1 },
+        ],
         truncated: false,
       },
       'file:files/design/plan.md': '# Plan\n\nShip it.',
@@ -486,6 +575,8 @@ describe('Board side panel', () => {
           onShowInPage={() => {}}
           onOpenThreadFull={() => {}}
           renderThread={() => null}
+          requestedThreadId={null}
+          onThreadRequestDone={() => {}}
         />
       </Provider>
     );
@@ -499,7 +590,7 @@ describe('Board side panel', () => {
         [...view.host.querySelectorAll('[data-scope-item="row"]')].map((row) =>
           row.getAttribute('data-id')
         )
-      ).toEqual(['notes', 'design/plan.md']);
+      ).toEqual(['notes', 'design/plan.md', 'design/mock.sketch']);
       await act(async () =>
         view.host.querySelector<HTMLButtonElement>('[data-id="design/plan.md"]')?.click()
       );
@@ -512,6 +603,30 @@ describe('Board side panel', () => {
           sessionId: 'coordinator',
           boardId: 'bd_test',
           path: 'files/design/plan.md',
+        },
+      });
+
+      // A file with no preview is saved to disk from the keeping machine instead.
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('button[aria-label="Back to files"]')?.click()
+      );
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('[data-id="design/mock.sketch"]')?.click()
+      );
+      expect(view.host.textContent).toContain('No preview for this kind of file.');
+      const download = [...view.host.querySelectorAll('button')].find(
+        (button) => button.textContent === 'Download'
+      ) as HTMLElement;
+      await act(async () => download.click());
+      expect(ipc.requests).toContainEqual({
+        method: 'saveMemberFile',
+        params: {
+          workspaceId: 'ws',
+          machineId: 'devnuc',
+          sessionId: 'coordinator',
+          boardId: 'bd_test',
+          path: 'files/design/mock.sketch',
+          fileName: 'mock.sketch',
         },
       });
     } finally {
@@ -779,8 +894,17 @@ it('creates a Board from a name alone, with a coordinator that has not been sent
     ['machine', { id: 'machine', name: 'Desktop', ownerUserId: 'user' }],
   ]);
   const created: BoardMeta[] = [];
+  let actions!: Pick<
+    ReturnType<typeof useSessionActions>,
+    'deleteSessions' | 'setSessionTabClosed'
+  >;
+  function Probe() {
+    actions = useSessionActions();
+    return null;
+  }
   const view = await mount(
     <Provider store={store}>
+      <Probe />
       <CreateBoardDialog onClose={() => {}} onCreated={(entry) => created.push(entry)} />
     </Provider>
   );
@@ -806,6 +930,31 @@ it('creates a Board from a name alone, with a coordinator that has not been sent
       machineId: 'machine',
     });
     expect(coordinator).not.toHaveProperty('lastMessageAt');
+
+    // Closing its tab keeps it, and the Board with it: a coordinator is never an
+    // empty tab to delete, while an ordinary empty tab still is.
+    const close = (id: SessionId) =>
+      closeSessionTab(id, {
+        runtime: env.runtime,
+        deleteSessions: actions.deleteSessions,
+        setSessionTabClosed: actions.setSessionTabClosed,
+      });
+    expect(await close(board.coordinatorSessionId)).toBe('closed');
+    expect(await env.meta(board.coordinatorSessionId)).toMatchObject({
+      boardRole: 'coordinator',
+      isTabClosed: true,
+    });
+    expect(env.board(board.id)).toMatchObject({ coordinatorSessionId: board.coordinatorSessionId });
+    await env.runtime.writer.upsertDocMeta(
+      getSessionRoomId('empty-tab' as SessionId),
+      makeSession('empty-tab', { parentSessionId: board.coordinatorSessionId })
+    );
+    expect(await close('empty-tab' as SessionId)).toBe('deleted');
+    expect(
+      isLoroRepoDocDeleted(
+        await env.runtime.repo.getDocMeta(getSessionRoomId('empty-tab' as SessionId))
+      )
+    ).toBe(true);
   } finally {
     await view.unmount();
     creation.machines.clear();
