@@ -30,6 +30,8 @@ export type StatsSettingsViewProps = {
   totals: { tokens: number; costUSD: number } | null;
   byModelBuckets: StackedAreaBucket[];
   byMemberBuckets: StackedAreaBucket[];
+  /** The split by agent, where the deployment counts it. */
+  byAgentBuckets?: StackedAreaBucket[];
   usageCalendar?: SettingsUsageCalendarData;
   /** Timeline for the selected range; drives the range-aware skyline and composition rings. */
   usageTimeline?: SettingsUsageTimelineData;
@@ -317,6 +319,7 @@ export function StatsSettingsView({
   totals,
   byModelBuckets,
   byMemberBuckets,
+  byAgentBuckets,
   usageCalendar,
   usageTimeline,
   usageDay,
@@ -462,6 +465,17 @@ export function StatsSettingsView({
         loading={loading}
         loadingText={t('workspace.usage.loading', 'Loading usage data...')}
       />
+      {byAgentBuckets ? (
+        <UsageStackedAreaChart
+          title={t('workspace.usage.byAgent')}
+          buckets={byAgentBuckets}
+          emptyText={t('workspace.usage.empty', 'No usage data in this range')}
+          valueFormatter={tokensCompact}
+          tooltipValueFormatter={tokensCompact}
+          loading={loading}
+          loadingText={t('workspace.usage.loading', 'Loading usage data...')}
+        />
+      ) : null}
 
       {!workspaceId && (
         <div {...stylex.props(styles.workspaceRequired)}>

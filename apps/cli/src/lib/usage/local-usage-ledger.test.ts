@@ -74,11 +74,12 @@ describe('LocalUsageLedger', () => {
     ledger.recordSessionUsageUpdate(update({ 'claude-opus': counters(170, 30, 0.8) }));
 
     const hour = Math.floor(START / LAN_USAGE_HOUR_MS) * LAN_USAGE_HOUR_MS;
-    expect(ledger.report(WORKSPACE)).toEqual([
+    expect(ledger.reportByAgent(WORKSPACE)).toEqual([
       expect.objectContaining({
         startMs: hour,
         spanMs: LAN_USAGE_HOUR_MS,
         modelId: 'claude-opus',
+        agent: 'claude',
         inputTokens: 150,
         outputTokens: 30,
         costUSD: 0.75,
@@ -132,6 +133,73 @@ describe('LocalUsageLedger', () => {
         inputTokens: 300,
         outputTokens: 10,
       }),
+    ]);
+  });
+
+  it('keeps the agents of one model apart, and folds their hours into days apart', async () => {
+    const clock = { now: START };
+    const { make } = open(clock);
+    const ledger = make();
+    ledger.recordSessionUsageUpdate(
+      update({ 'shared-model': counters(100, 10) }, { cliType: 'codex', acpSessionId: 'turn-a' })
+    );
+    ledger.recordSessionUsageUpdate(
+      update({ 'shared-model': counters(40, 4) }, { cliType: 'kimi', acpSessionId: 'turn-b' })
+    );
+
+    const hour = Math.floor(START / LAN_USAGE_HOUR_MS) * LAN_USAGE_HOUR_MS;
+    expect(ledger.reportByAgent(WORKSPACE)).toEqual([
+      expect.objectContaining({ startMs: hour, agent: 'codex', inputTokens: 100 }),
+      expect.objectContaining({ startMs: hour, agent: 'kimi', inputTokens: 40 }),
+    ]);
+    // A build that reads rows by model alone gets one row per hour and model.
+    const [byModel, ...rest] = ledger.report(WORKSPACE);
+    expect(rest).toEqual([]);
+    expect(byModel).toMatchObject({ startMs: hour, modelId: 'shared-model', inputTokens: 140 });
+    expect(byModel).not.toHaveProperty('agent');
+
+    clock.now += 10 * LAN_USAGE_DAY_MS;
+    await ledger.flushSessionUsage();
+    const day = Math.floor(START / LAN_USAGE_DAY_MS) * LAN_USAGE_DAY_MS;
+    expect(make().reportByAgent(WORKSPACE)).toEqual([
+      expect.objectContaining({ startMs: day, spanMs: LAN_USAGE_DAY_MS, agent: 'codex' }),
+      expect.objectContaining({ startMs: day, spanMs: LAN_USAGE_DAY_MS, agent: 'kimi' }),
+    ]);
+  });
+
+  it('reads a ledger written before the agent was kept with every agent unknown', async () => {
+    const clock = { now: START };
+    const { file, make } = open(clock);
+    const hour = Math.floor(START / LAN_USAGE_HOUR_MS) * LAN_USAGE_HOUR_MS;
+    const legacy = {
+      startMs: hour,
+      spanMs: LAN_USAGE_HOUR_MS,
+      modelId: 'claude-opus',
+      inputTokens: 70,
+      outputTokens: 7,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+      costUSD: 0.3,
+    };
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ version: 1, scopes: {}, workspaces: { [WORKSPACE]: [legacy] } })
+    );
+
+    const ledger = make();
+    expect(ledger.reportByAgent(WORKSPACE)).toEqual([{ ...legacy, agent: null }]);
+    // What is counted from now on is filed beside it, not into it.
+    ledger.recordSessionUsageUpdate(update({ 'claude-opus': counters(10, 1, 0.1) }));
+    await ledger.flushSessionUsage();
+
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).version).toBe(2);
+    expect(make().reportByAgent(WORKSPACE)).toEqual([
+      { ...legacy, agent: null },
+      expect.objectContaining({ startMs: hour, agent: 'claude', inputTokens: 10 }),
+    ]);
+    expect(make().report(WORKSPACE)).toEqual([
+      expect.objectContaining({ startMs: hour, modelId: 'claude-opus', inputTokens: 80 }),
     ]);
   });
 

@@ -11,6 +11,7 @@ import type {
   LanMachineRestartResult,
   LanMachineUpdateResult,
   LanMachines,
+  LanUsageAgentReport,
   LanUsageReport,
 } from './lan-control';
 import type {
@@ -1143,6 +1144,13 @@ export type LanMemberControlRequest =
       sinceMs?: number;
     }
   | {
+      /** The same, with the agent that used each model; a build before it refuses the type. */
+      type: 'lan/usage-by-agent';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      sinceMs?: number;
+    }
+  | {
       type: 'lan/restart-machine';
       machineId: MachineId;
       workspaceId: WorkspaceId;
@@ -1436,6 +1444,7 @@ type LanMemberControlOkResponse =
   | LocalProjectControlOkResponse<'lan/update-machine', LanMachineUpdateResult>
   | LocalProjectControlOkResponse<'lan/install-agent', LanAgentInstallResult>
   | LocalProjectControlOkResponse<'lan/usage', LanUsageReport>
+  | LocalProjectControlOkResponse<'lan/usage-by-agent', LanUsageAgentReport>
   | LocalProjectControlOkResponse<'lan/restart-machine', LanMachineRestartResult>
   | LocalProjectControlOkResponse<'lan/github', LanGitHubState>;
 

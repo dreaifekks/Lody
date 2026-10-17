@@ -20,6 +20,7 @@ import {
 } from './usage-timeline-bucket-label';
 import { toIntlLocaleOrEn } from '@/lib/intl-locale';
 import { UsageMemberLabelContext } from './usage-member-label';
+import { usageAgentBuckets } from './usage-agent-label';
 import { useAtomValue } from 'jotai';
 import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
 import { useLanUsage } from '@/hooks/use-lan-usage';
@@ -67,6 +68,17 @@ function LocalStatsSettings() {
     usageTimeline,
     dayTimeFormatter
   );
+  const byAgentBuckets = useMemo<StackedAreaBucket[]>(
+    () =>
+      usageTimeline
+        ? usageAgentBuckets(
+            usageTimeline,
+            (bucket) => formatUsageTimelineBucketLabel(usageTimeline, bucket, dayTimeFormatter),
+            t
+          )
+        : [],
+    [dayTimeFormatter, t, usageTimeline]
+  );
 
   const notice =
     missing.length > 0
@@ -85,6 +97,7 @@ function LocalStatsSettings() {
           totals={usageTimeline?.totals ?? null}
           byModelBuckets={byModelBuckets}
           byMemberBuckets={byMemberBuckets}
+          byAgentBuckets={byAgentBuckets}
           usageCalendar={views?.calendar}
           usageTimeline={usageTimeline}
           usageDay={usageDay}

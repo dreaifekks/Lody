@@ -1,6 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { StatsSettingsView } from '@/components/settings/stats-setting-pure';
+import { usageAgentLabel } from '@/components/settings/usage-agent-label';
 import {
   createUsageTimelineFormatter,
   formatUsageTimelineBucketLabel,
@@ -8,6 +10,7 @@ import {
 import type { StackedAreaBucket } from '@/components/settings/usage-stacked-area-chart';
 import type {
   SettingsUsageCalendarData,
+  SettingsUsageDayData,
   SettingsUsageRange,
   SettingsUsageTimelineData,
 } from '@/components/settings/settings-data-cache';
@@ -28,6 +31,14 @@ const MEMBERS = [
   { id: 'u3', name: 'Carol Singh', email: 'carol@acme.dev', weight: 3 },
   { id: 'u4', name: 'Dave Kim', email: 'dave@acme.dev', weight: 2 },
   { id: 'u5', name: 'Eve Larsson', email: 'eve@acme.dev', weight: 1 },
+];
+
+/* A LAN's machines also say which agent used each model; the page names them. */
+const AGENTS = [
+  { id: 'claude', weight: 7 },
+  { id: 'codex', weight: 5 },
+  { id: 'codex-auto-review', weight: 2 },
+  { id: 'unknown', weight: 1 },
 ];
 
 const RANGE_BUCKETS: Record<SettingsUsageRange, number> = {
@@ -54,10 +65,11 @@ function labelFor(range: SettingsUsageRange, i: number, n: number): string {
   return `-${daysAgo}d`;
 }
 
-function buildTimeline(range: SettingsUsageRange) {
+function buildTimeline(range: SettingsUsageRange, agentLabel: (id: string) => string) {
   const n = RANGE_BUCKETS[range];
   const byModelBuckets: StackedAreaBucket[] = [];
   const byMemberBuckets: StackedAreaBucket[] = [];
+  const byAgentBuckets: StackedAreaBucket[] = [];
   let totalTokens = 0;
 
   for (let i = 0; i < n; i += 1) {
@@ -80,11 +92,20 @@ function buildTimeline(range: SettingsUsageRange) {
         return { id: u.id, label: u.name, value };
       }),
     });
+
+    byAgentBuckets.push({
+      label,
+      values: AGENTS.map((a, ai) => {
+        const value = Math.round(scale * a.weight * wave(i, n, ai * 2.1 + 0.8) * 0.05);
+        return { id: a.id, label: agentLabel(a.id), value };
+      }),
+    });
   }
 
   return {
     byModelBuckets,
     byMemberBuckets,
+    byAgentBuckets,
     totals: { tokens: totalTokens, costUSD: totalTokens * 0.000012 },
   };
 }
@@ -120,7 +141,8 @@ function buildCalendar(empty: boolean): SettingsUsageCalendarData {
 function buildTimelineData(
   calendar: SettingsUsageCalendarData,
   range: SettingsUsageRange,
-  empty: boolean
+  empty: boolean,
+  byAgent = false
 ): SettingsUsageTimelineData {
   const hourly = range === 'day' || range === 'week';
   const activeDays = calendar.days.filter((day) => !day.isFuture);
@@ -146,6 +168,15 @@ function buildTimelineData(
           tokens: Math.round((tokens * member.weight) / 16),
           costUSD: 0,
         })),
+        ...(byAgent
+          ? {
+              byAgent: AGENTS.map((agent) => ({
+                agentId: agent.id,
+                tokens: Math.round((tokens * agent.weight) / 15),
+                costUSD: 0,
+              })),
+            }
+          : {}),
       };
     })
   );
@@ -178,12 +209,58 @@ function buildTimelineData(
   };
 }
 
+/** The breakdown of one clicked day, from the same weights as the timeline. */
+function buildDay(
+  calendar: SettingsUsageCalendarData,
+  dayStartMs: number,
+  byAgent: boolean
+): SettingsUsageDayData {
+  const tokens = calendar.days.find((day) => day.dayStartMs === dayStartMs)?.tokens ?? 0;
+  const share = (weight: number, total: number) => Math.round((tokens * weight) / total);
+  return {
+    workspaceId: calendar.workspaceId,
+    dayStartMs,
+    date: new Date(dayStartMs).toISOString().slice(0, 10),
+    totals: {
+      tokens,
+      costUSD: tokens * 0.000012,
+      inputTokens: Math.round(tokens * 0.16),
+      outputTokens: Math.round(tokens * 0.15),
+      cacheReadInputTokens: Math.round(tokens * 0.52),
+      cacheCreationInputTokens: Math.round(tokens * 0.11),
+      reasoningOutputTokens: Math.round(tokens * 0.06),
+      webSearchRequests: 0,
+    },
+    byModel: MODELS.map((model) => ({
+      modelId: model.id,
+      tokens: share(model.weight, 22),
+      costUSD: 0,
+    })),
+    ...(byAgent
+      ? {
+          byAgent: AGENTS.map((agent) => ({
+            agentId: agent.id,
+            tokens: share(agent.weight, 15),
+            costUSD: 0,
+          })),
+        }
+      : {}),
+    byUser: MEMBERS.map((member) => ({
+      userId: member.id,
+      tokens: share(member.weight, 16),
+      costUSD: 0,
+    })),
+    users: Object.fromEntries(MEMBERS.map((member) => [member.id, { name: member.name }])),
+  };
+}
+
 function Harness({
   empty = false,
   loading = false,
   noWorkspace = false,
   initialRange = 'day',
   latencyMs = 0,
+  byAgent = false,
 }: {
   empty?: boolean;
   loading?: boolean;
@@ -191,8 +268,12 @@ function Harness({
   initialRange?: SettingsUsageRange;
   /** Simulates a slow query: data stays absent for this long, then arrives. */
   latencyMs?: number;
+  /** The split a LAN's machines add: which agent used each model. */
+  byAgent?: boolean;
 }) {
+  const { t } = useTranslation();
   const [range, setRange] = useState<SettingsUsageRange>(initialRange);
+  const [selectedDayMs, setSelectedDayMs] = useState<number | null>(null);
   const [settled, setSettled] = useState(latencyMs === 0);
   useEffect(() => {
     if (latencyMs === 0) return undefined;
@@ -200,11 +281,16 @@ function Harness({
     return () => clearTimeout(timer);
   }, [latencyMs]);
 
-  const data = useMemo(() => buildTimeline(range), [range]);
+  const data = useMemo(() => buildTimeline(range, (id) => usageAgentLabel(id, t)), [range, t]);
   const calendar = useMemo(() => buildCalendar(empty), [empty]);
   const timeline = useMemo(
-    () => buildTimelineData(calendar, range, empty),
-    [calendar, empty, range]
+    () => buildTimelineData(calendar, range, empty, byAgent),
+    [byAgent, calendar, empty, range]
+  );
+
+  const usageDay = useMemo(
+    () => (selectedDayMs === null ? undefined : buildDay(calendar, selectedDayMs, byAgent)),
+    [byAgent, calendar, selectedDayMs]
   );
 
   const loadingNow = loading || !settled;
@@ -220,8 +306,11 @@ function Harness({
         totals={resolved ? (empty ? { tokens: 0, costUSD: 0 } : data.totals) : null}
         byModelBuckets={resolved && !empty ? data.byModelBuckets : []}
         byMemberBuckets={resolved && !empty ? data.byMemberBuckets : []}
+        byAgentBuckets={byAgent ? (resolved && !empty ? data.byAgentBuckets : []) : undefined}
         usageCalendar={resolved ? calendar : undefined}
         usageTimeline={resolved ? timeline : undefined}
+        usageDay={usageDay}
+        onSelectedUsageDayChange={setSelectedDayMs}
         workspaceId={noWorkspace ? null : 'ws_1'}
         loading={loadingNow}
       />
@@ -244,6 +333,8 @@ export const Loading: Story = { args: { loading: true } };
 /** Loading placeholders resolve into the loaded view, like the real query. */
 export const LoadingTransition: Story = { args: { latencyMs: 1600 } };
 export const Empty: Story = { args: { empty: true } };
+/** A LAN workspace: its machines also count which agent used each model. */
+export const ByAgent: Story = { args: { byAgent: true } };
 export const NoWorkspace: Story = { args: { noWorkspace: true } };
 
 /** One synthetic peak shared by all three charts in a window crossing UTC midnight. */
