@@ -1,6 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { StatsSettingsView } from '@/components/settings/stats-setting-pure';
+import { usageAgentLabel } from '@/components/settings/usage-agent-label';
 import {
   createUsageTimelineFormatter,
   formatUsageTimelineBucketLabel,
@@ -31,12 +33,12 @@ const MEMBERS = [
   { id: 'u5', name: 'Eve Larsson', email: 'eve@acme.dev', weight: 1 },
 ];
 
-/* A LAN's machines also say which agent used each model. */
+/* A LAN's machines also say which agent used each model; the page names them. */
 const AGENTS = [
-  { id: 'claude', label: 'Claude Code', weight: 7 },
-  { id: 'codex', label: 'Codex', weight: 5 },
-  { id: 'codex-auto-review', label: 'Codex auto review', weight: 2 },
-  { id: 'unknown', label: 'Unknown', weight: 1 },
+  { id: 'claude', weight: 7 },
+  { id: 'codex', weight: 5 },
+  { id: 'codex-auto-review', weight: 2 },
+  { id: 'unknown', weight: 1 },
 ];
 
 const RANGE_BUCKETS: Record<SettingsUsageRange, number> = {
@@ -63,7 +65,7 @@ function labelFor(range: SettingsUsageRange, i: number, n: number): string {
   return `-${daysAgo}d`;
 }
 
-function buildTimeline(range: SettingsUsageRange) {
+function buildTimeline(range: SettingsUsageRange, agentLabel: (id: string) => string) {
   const n = RANGE_BUCKETS[range];
   const byModelBuckets: StackedAreaBucket[] = [];
   const byMemberBuckets: StackedAreaBucket[] = [];
@@ -95,7 +97,7 @@ function buildTimeline(range: SettingsUsageRange) {
       label,
       values: AGENTS.map((a, ai) => {
         const value = Math.round(scale * a.weight * wave(i, n, ai * 2.1 + 0.8) * 0.05);
-        return { id: a.id, label: a.label, value };
+        return { id: a.id, label: agentLabel(a.id), value };
       }),
     });
   }
@@ -269,6 +271,7 @@ function Harness({
   /** The split a LAN's machines add: which agent used each model. */
   byAgent?: boolean;
 }) {
+  const { t } = useTranslation();
   const [range, setRange] = useState<SettingsUsageRange>(initialRange);
   const [selectedDayMs, setSelectedDayMs] = useState<number | null>(null);
   const [settled, setSettled] = useState(latencyMs === 0);
@@ -278,7 +281,7 @@ function Harness({
     return () => clearTimeout(timer);
   }, [latencyMs]);
 
-  const data = useMemo(() => buildTimeline(range), [range]);
+  const data = useMemo(() => buildTimeline(range, (id) => usageAgentLabel(id, t)), [range, t]);
   const calendar = useMemo(() => buildCalendar(empty), [empty]);
   const timeline = useMemo(
     () => buildTimelineData(calendar, range, empty, byAgent),

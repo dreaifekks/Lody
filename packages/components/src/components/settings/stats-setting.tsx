@@ -20,7 +20,7 @@ import {
 } from './usage-timeline-bucket-label';
 import { toIntlLocaleOrEn } from '@/lib/intl-locale';
 import { UsageMemberLabelContext } from './usage-member-label';
-import { usageAgentLabel } from './usage-agent-label';
+import { usageAgentBuckets } from './usage-agent-label';
 import { useAtomValue } from 'jotai';
 import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
 import { useLanUsage } from '@/hooks/use-lan-usage';
@@ -70,14 +70,13 @@ function LocalStatsSettings() {
   );
   const byAgentBuckets = useMemo<StackedAreaBucket[]>(
     () =>
-      usageTimeline?.buckets.map((bucket) => ({
-        label: formatUsageTimelineBucketLabel(usageTimeline, bucket, dayTimeFormatter),
-        values: (bucket.byAgent ?? []).map((item) => ({
-          id: item.agentId,
-          label: usageAgentLabel(item.agentId, t),
-          value: item.tokens,
-        })),
-      })) ?? [],
+      usageTimeline
+        ? usageAgentBuckets(
+            usageTimeline,
+            (bucket) => formatUsageTimelineBucketLabel(usageTimeline, bucket, dayTimeFormatter),
+            t
+          )
+        : [],
     [dayTimeFormatter, t, usageTimeline]
   );
 

@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import i18next from 'i18next';
+import { initI18n } from '../src/i18n';
+import { usageAgentBuckets, usageAgentLabel } from '../src/components/settings/usage-agent-label';
 import type {
   LanMemberControlRequest,
   LanMemberControlResponse,
@@ -139,6 +142,38 @@ describe('LAN usage views', () => {
       'unknown',
       'codex-auto-review',
     ]);
+  });
+});
+
+describe('naming the agents of the split', () => {
+  it('names them in the product language on the chart legend as on the rest of the page', async () => {
+    const timeline = buildLanUsageTimeline(
+      'lw_home',
+      'day',
+      [
+        {
+          machineId: 'devnuc',
+          name: 'devnuc',
+          rows: [
+            row(THIS_HOUR, 'claude-opus', 100, 0, HOUR, 'claude'),
+            row(THIS_HOUR, 'codex-auto-review', 20, 0, HOUR, 'codex'),
+            row(THIS_HOUR, 'gpt-5.5', 5, 0, HOUR, null),
+          ],
+        },
+      ],
+      NOW
+    );
+    const legend = () =>
+      usageAgentBuckets(timeline, (bucket) => bucket.bucketLabel, i18next.t)
+        .at(-1)
+        ?.values.map((value) => value.label);
+
+    await initI18n('zh_CN');
+    expect(legend()).toEqual(['Claude Code', 'Codex 自动评审', '未知']);
+    expect(usageAgentLabel('codex-auto-review', i18next.t)).toBe('Codex 自动评审');
+
+    await i18next.changeLanguage('en');
+    expect(legend()).toEqual(['Claude Code', 'Codex auto review', 'Unknown']);
   });
 });
 
