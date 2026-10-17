@@ -129,6 +129,16 @@ describe('resolveSessionFileOpenTarget', () => {
       }
     );
 
+    it('sends a home-relative href to the machine unchanged', () => {
+      expect(
+        resolveSessionFileOpenTarget({
+          rawPath: '~/self/done/2026-10-14.md:12',
+          pathKind: 'markdown-href',
+          workspacePath: WORKSPACE,
+        })
+      ).toMatchObject({ filePath: '~/self/done/2026-10-14.md', startLine: 12 });
+    });
+
     it('keeps portable worktree mapping for nonlocal opens', () => {
       expect(
         resolveSessionFileOpenTarget({

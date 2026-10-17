@@ -23,4 +23,7 @@
   derive them from cumulative totals; an adapter without `delta` shows none.
 - The queue is process-local; it is not a restart-safe ledger. Local composition still
   has no cloud usage service: its usage port is `LocalUsageLedger`, a disk ledger that
-  counts each scope's growth past its highest reading and answers members' `lan/usage`. See [delivery Spec](../../../../../specs/usage-delivery.md).
+  counts each scope's growth past its highest reading, per model and builtin agent, and
+  answers members' `lan/usage-by-agent`; `lan/usage` keeps the rows without an agent
+  that older builds read strictly. See [delivery Spec](../../../../../specs/usage-delivery.md).
+  Interoperation: [LAN usage](../../../../../.agents/docs/lan-usage-and-shortcuts.md#usage).

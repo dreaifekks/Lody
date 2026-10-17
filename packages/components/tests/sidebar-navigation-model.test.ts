@@ -224,6 +224,58 @@ describe('sidebar navigation model', () => {
   });
 });
 
+describe('sidebar navigation model pinned projects', () => {
+  const pinnedProject = {
+    machineId: 'machine-b',
+    localProjectId: 'docs',
+    collapsed: false,
+    showFull: false,
+    sessions: [{ id: 'docs-session', rootRankMs: 1 }],
+  };
+  const groupProject = {
+    machineId: 'machine-a',
+    localProjectId: 'lody',
+    collapsed: false,
+    showFull: false,
+    sessions: [{ id: 'lody-session', rootRankMs: 1 }],
+  };
+
+  it('visits pinned projects before pinned conversations, ahead of every group', () => {
+    const items = buildSidebarNavigationItems({
+      ...baseOptions,
+      pinnedItems: [updatedItem('pinned', '2026-07-16T12:00:00Z')],
+      pinnedProjects: [pinnedProject],
+      workspace: {
+        ...baseOptions.workspace,
+        localSections: [{ collapsed: false, projects: [groupProject] }],
+      },
+    });
+    expect(items.slice(0, 2)).toEqual([
+      { kind: 'local-project', machineId: 'machine-b', localProjectId: 'docs', collapsed: false },
+      { kind: 'session', sessionId: 'docs-session', groupKey: 'local-project:machine-b:docs' },
+    ]);
+    expect(sessionIds(items)).toEqual(['docs-session', 'pinned', 'lody-session']);
+  });
+
+  it('keeps pinned projects in Updated mode and skips them with the folded section', () => {
+    const updated = buildSidebarNavigationItems({
+      ...baseOptions,
+      organizeMode: 'updated',
+      pinnedProjects: [pinnedProject],
+      updated: { ...baseOptions.updated, items: [updatedItem('recent', '2026-07-16T09:00:00Z')] },
+    });
+    expect(sessionIds(updated)).toEqual(['docs-session', 'recent']);
+
+    const folded = buildSidebarNavigationItems({
+      ...baseOptions,
+      pinnedSectionCollapsed: true,
+      pinnedItems: [updatedItem('pinned', '2026-07-16T12:00:00Z')],
+      pinnedProjects: [pinnedProject],
+    });
+    expect(folded).toEqual([]);
+  });
+});
+
 describe('sidebar navigation model opened-by tree', () => {
   it('visits opened sessions right after their opener in Updated mode', () => {
     const items = buildSidebarNavigationItems({

@@ -205,9 +205,29 @@ export function SessionFilePdfPreview({ bytes, url, fileActions }: SessionFilePd
     };
     const handleRotationChanging = (event: RotationChangingEvent) =>
       setRotation(event.pagesRotation);
+    // pdf.js sizes fit modes from the container and never re-measures it. The
+    // side panel's container is 0 wide while the panel is collapsed or still
+    // sliding open, so a fit computed then is nothing; wait for a real size,
+    // and fit again whenever the size changes.
+    const fitToContainer = () => {
+      if (!pdfViewer.pdfDocument || container.clientWidth === 0 || container.clientHeight === 0) {
+        return;
+      }
+      const scaleValue = pdfViewer.currentScaleValue;
+      if (scaleValue === null) {
+        pdfViewer.currentScaleValue = 'page-width';
+      } else if (isFitMode(scaleValue)) {
+        pdfViewer.currentScaleValue = scaleValue;
+      } else {
+        pdfViewer.update();
+      }
+    };
+    const resizeObserver = new ResizeObserver(fitToContainer);
+    resizeObserver.observe(container);
+
     const handlePagesInit = () => {
-      pdfViewer.currentScaleValue = 'page-width';
       setPageCount(pdfViewer.pagesCount);
+      fitToContainer();
     };
     const handleFindMatchesCount = (event: FindMatchesCountEvent) =>
       setMatchesCount(event.matchesCount);
@@ -277,6 +297,7 @@ export function SessionFilePdfPreview({ bytes, url, fileActions }: SessionFilePd
       disposed = true;
       abortController.abort();
       rangeTransport?.abort();
+      resizeObserver.disconnect();
       eventBus.off('pagechanging', handlePageChanging);
       eventBus.off('scalechanging', handleScaleChanging);
       eventBus.off('rotationchanging', handleRotationChanging);

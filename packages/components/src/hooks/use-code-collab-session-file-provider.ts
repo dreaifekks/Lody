@@ -171,13 +171,30 @@ const isCodeCollabFileIndexSnapshot = (
   result: LocalCodeCollabFileIndexSnapshot
 ): result is CodeCollabV2FileIndexSnapshot => result?.status === 'ok';
 
+/**
+ * Delays between snapshot attempts while the machine is still preparing the
+ * session: the worktree is being created or the session metadata has not
+ * reached that machine yet. Bounded, so a session that never becomes ready
+ * still ends in an error instead of asking forever.
+ */
+export const CODE_COLLAB_FILE_INDEX_RETRY_DELAYS_MS: readonly number[] = [
+  1_000, 2_000, 4_000, 8_000,
+];
+
+/** An answer a later ask may turn into a snapshot, as opposed to a final refusal. */
+const isPreparingFileIndexError = (result: LocalCodeCollabFileIndexSnapshot): boolean =>
+  result?.status === 'error' &&
+  (result.retryable === true ||
+    result.code === 'workspace_root_unavailable' ||
+    result.code === 'session_not_found');
+
 function codeCollabFileIndexErrorMessage(error: unknown): string {
   const codeCollabError = error as { readonly message?: unknown };
   return error instanceof Error
     ? error.message
     : typeof codeCollabError.message === 'string'
-    ? codeCollabError.message
-    : CODE_COLLAB_UNSUPPORTED_SESSION_MESSAGE;
+      ? codeCollabError.message
+      : CODE_COLLAB_UNSUPPORTED_SESSION_MESSAGE;
 }
 
 function useCodeCollabFileIndexLoadState(args: {
@@ -211,8 +228,26 @@ function useCodeCollabFileIndexLoadState(args: {
 
     let cancelled = false;
     let release: (() => Promise<void>) | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let targetPlane: FileIndexTargetPlane = 'cloud';
     let localSnapshotPublished = false;
+    // Asks again while the machine says the session is still being prepared;
+    // an unmount or a changed request in between ends the wait.
+    const loadLocalSnapshotWithRetry = async (): Promise<LocalCodeCollabFileIndexSnapshot> => {
+      let result = (await loadLocalSnapshot?.()) ?? null;
+      for (const delayMs of CODE_COLLAB_FILE_INDEX_RETRY_DELAYS_MS) {
+        if (cancelled || !isPreparingFileIndexError(result)) break;
+        await new Promise<void>((resolve) => {
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            resolve();
+          }, delayMs);
+        });
+        if (cancelled) break;
+        result = (await loadLocalSnapshot?.()) ?? null;
+      }
+      return result;
+    };
     const releaseSafely = async (releaseLease: () => Promise<void>): Promise<void> => {
       try {
         await releaseLease();
@@ -231,7 +266,7 @@ function useCodeCollabFileIndexLoadState(args: {
 
       let localSnapshot: CodeCollabV2FileIndexSnapshot | null = null;
       if (targetPlane === 'local') {
-        const result = await loadLocalSnapshot?.();
+        const result = await loadLocalSnapshotWithRetry();
         if (cancelled) return;
         if (result == null) {
           throw new Error('Local Code Collab file-index snapshot is unavailable.');
@@ -291,6 +326,7 @@ function useCodeCollabFileIndexLoadState(args: {
 
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
       if (release) void releaseSafely(release);
     };
   }, [

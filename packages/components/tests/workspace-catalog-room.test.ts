@@ -110,6 +110,18 @@ function createRuntime(
         });
       }
     },
+    emitPinnedProjects: (keys: readonly string[] | null) => {
+      for (const listener of listeners) {
+        listener({
+          events: [
+            {
+              key: workspaceFlockKeys.pinnedProjectsSetting(),
+              value: keys ? { version: 1, keys: [...keys] } : undefined,
+            },
+          ],
+        });
+      }
+    },
     completeFirstSync: () => completeFirstSync(),
   };
 }
@@ -199,6 +211,31 @@ describe('workspace MCP catalog room', () => {
     expect(seen.at(-1)?.promptSuggestions).toBe(true);
     harness.emitPromptSuggestions(false);
     expect(seen.at(-1)?.promptSuggestions).toBe(false);
+
+    lease.release();
+  });
+
+  it('publishes the pinned projects and keeps their identity while unchanged', async () => {
+    const harness = createRuntime('workspace-pinned-projects', []);
+    const seen: WorkspaceCatalogSnapshot[] = [];
+    const lease = acquireWorkspaceCatalog(harness.runtime, (snapshot) => seen.push(snapshot));
+    await settle();
+    expect(lease.snapshot.pinnedProjects).toEqual([]);
+
+    harness.emitPinnedProjects(['machine-1:project-a']);
+    expect(seen.at(-1)?.pinnedProjects).toEqual(['machine-1:project-a']);
+    const first = seen.at(-1)?.pinnedProjects;
+    const publishedBefore = seen.length;
+
+    // A same-content rewrite from another device must not re-render consumers.
+    harness.emitPinnedProjects(['machine-1:project-a']);
+    expect(seen.length).toBe(publishedBefore);
+    expect(seen.at(-1)?.pinnedProjects).toBe(first);
+
+    harness.emitPinnedProjects(['machine-1:project-a', 'machine-2:project-b']);
+    expect(seen.at(-1)?.pinnedProjects).toEqual(['machine-1:project-a', 'machine-2:project-b']);
+    harness.emitPinnedProjects(null);
+    expect(seen.at(-1)?.pinnedProjects).toEqual([]);
 
     lease.release();
   });

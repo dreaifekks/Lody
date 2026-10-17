@@ -17,7 +17,7 @@ import {
   type SidebarUpdatedItem,
 } from '@/components/sidebar-updated-session-list';
 
-type SidebarNavigationLocalProject = {
+export type SidebarNavigationLocalProject = {
   machineId: string;
   localProjectId: string;
   collapsed: boolean;
@@ -50,6 +50,8 @@ export type SidebarNavigationModelOptions = {
   collapsedOpenedBySessions?: Record<string, boolean>;
   pinnedItems: SidebarUpdatedItem[];
   pinnedSectionCollapsed: boolean;
+  /** Pinned local projects, listed in the Pinned section before its Sessions. */
+  pinnedProjects?: SidebarNavigationLocalProject[];
   workspace: {
     localSections: SidebarNavigationLocalSection[];
     githubSectionCollapsed: boolean;
@@ -91,35 +93,43 @@ function emitLocalSections(
 ): void {
   for (const section of sections) {
     if (section.collapsed) continue;
-    for (const project of section.projects) {
-      const projectKey = getLocalProjectSessionGroupKey(project.machineId, project.localProjectId);
-      items.push({
-        kind: 'local-project',
-        machineId: project.machineId,
-        localProjectId: project.localProjectId,
-        collapsed: project.collapsed,
-      });
-      if (project.collapsed) continue;
-      // Same opened-by tree the local project section renders, so arrow keys
-      // never land on a row hidden behind a collapsed opener.
-      const nodes = buildOpenedBySessionTree(project.sessions, {
+    emitLocalProjects(items, section.projects, collapsedOpenedBySessions);
+  }
+}
+
+function emitLocalProjects(
+  items: SidebarNavItem[],
+  projects: SidebarNavigationLocalProject[],
+  collapsedOpenedBySessions: Record<string, boolean>
+): void {
+  for (const project of projects) {
+    const projectKey = getLocalProjectSessionGroupKey(project.machineId, project.localProjectId);
+    items.push({
+      kind: 'local-project',
+      machineId: project.machineId,
+      localProjectId: project.localProjectId,
+      collapsed: project.collapsed,
+    });
+    if (project.collapsed) continue;
+    // Same opened-by tree the local project section renders, so arrow keys
+    // never land on a row hidden behind a collapsed opener.
+    const nodes = buildOpenedBySessionTree(project.sessions, {
+      getId: (session) => session.id,
+      getOpenedBySessionId: (session) => session.openedByRowSessionId ?? null,
+      isCollapsed: (openerId) => collapsedOpenedBySessions[openerId] === true,
+      rootRank: (session) => session.rootRankMs ?? 0,
+      ...(project.showFull ? {} : { maxRoots: MAX_VISIBLE_SESSIONS }),
+    });
+    for (const node of nodes) {
+      items.push({ kind: 'session', sessionId: node.item.id, groupKey: projectKey });
+    }
+    if (
+      countOpenedByTreeRoots(project.sessions, {
         getId: (session) => session.id,
         getOpenedBySessionId: (session) => session.openedByRowSessionId ?? null,
-        isCollapsed: (openerId) => collapsedOpenedBySessions[openerId] === true,
-        rootRank: (session) => session.rootRankMs ?? 0,
-        ...(project.showFull ? {} : { maxRoots: MAX_VISIBLE_SESSIONS }),
-      });
-      for (const node of nodes) {
-        items.push({ kind: 'session', sessionId: node.item.id, groupKey: projectKey });
-      }
-      if (
-        countOpenedByTreeRoots(project.sessions, {
-          getId: (session) => session.id,
-          getOpenedBySessionId: (session) => session.openedByRowSessionId ?? null,
-        }) > MAX_VISIBLE_SESSIONS
-      ) {
-        items.push({ kind: 'show-more', groupKey: projectKey, expanded: project.showFull });
-      }
+      }) > MAX_VISIBLE_SESSIONS
+    ) {
+      items.push({ kind: 'show-more', groupKey: projectKey, expanded: project.showFull });
     }
   }
 }
@@ -130,12 +140,15 @@ export function buildSidebarNavigationItems({
   collapsedOpenedBySessions = {},
   pinnedItems,
   pinnedSectionCollapsed,
+  pinnedProjects = [],
   workspace,
   updated,
 }: SidebarNavigationModelOptions): SidebarNavItem[] {
   const items: SidebarNavItem[] = [];
 
   if (!pinnedSectionCollapsed) {
+    // Pinned projects render before the pinned Sessions, in pin order.
+    emitLocalProjects(items, pinnedProjects, collapsedOpenedBySessions);
     // The Pinned section renders through the same list component, so it gets the
     // same opened-by tree — resolved inside the pinned items ONLY, which is what
     // keeps a pinned opener from swallowing an unpinned row (and vice versa).

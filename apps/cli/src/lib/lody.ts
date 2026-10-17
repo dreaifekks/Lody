@@ -62,6 +62,8 @@ interface LodyOptions {
   /** Carries a machine RPC request straight to another member; see `MessageHandlerConfig`. */
   askLanMemberDirect?: MessageHandlerConfig['askLanMemberDirect'];
   boardFiles?: MessageHandlerConfig['boardFiles'];
+  /** The environment variables the LAN keeps for the MCP servers of this workspace. */
+  lanEnv?: () => Readonly<Record<string, string>>;
   cloudPort: CloudPort;
 }
 export class Lody {
@@ -122,7 +124,7 @@ export class Lody {
           this.machineId,
           this.workspaceId,
           documentManager,
-          { cloudPort: options.cloudPort }
+          { cloudPort: options.cloudPort, ...(options.lanEnv ? { lanEnv: options.lanEnv } : {}) }
         ),
       workspaceDocument: documentManager,
       memoryPressure: options.memoryPressure,

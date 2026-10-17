@@ -1,6 +1,7 @@
 import {
   applyWorkspaceFlockRowEvents,
   getWorkspaceFlockDocId,
+  getWorkspacePinnedProjectKeys,
   getWorkspaceVoiceSetting,
   isWorkspacePromptSuggestionsEnabled,
   listWorkspaceAgentRoles,
@@ -32,6 +33,8 @@ export type WorkspaceCatalogSnapshot = {
   voice: WorkspaceVoiceSetting | null;
   /** Experimental next-message suggestions for Claude sessions, on for every device. */
   promptSuggestions: boolean;
+  /** Machine-qualified keys of the local projects pinned atop their sidebar group. */
+  pinnedProjects: readonly string[];
   /** True once the first remote sync landed, which makes an empty catalog authoritative. */
   synced: boolean;
 };
@@ -46,6 +49,7 @@ export const EMPTY_WORKSPACE_CATALOG: WorkspaceCatalogSnapshot = Object.freeze({
   boards: Object.freeze([]) as unknown as BoardMeta[],
   voice: null,
   promptSuggestions: false,
+  pinnedProjects: Object.freeze([]) as readonly string[],
   synced: false,
 });
 
@@ -97,17 +101,24 @@ function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: bo
       ? room.snapshot.voice
       : nextVoice;
   const promptSuggestions = isWorkspacePromptSuggestionsEnabled(rows);
+  const nextPinnedProjects = getWorkspacePinnedProjectKeys(rows);
+  const pinnedProjects =
+    nextPinnedProjects.length === room.snapshot.pinnedProjects.length &&
+    nextPinnedProjects.every((key, index) => key === room.snapshot.pinnedProjects[index])
+      ? room.snapshot.pinnedProjects
+      : nextPinnedProjects;
   if (
     boards === room.snapshot.boards &&
     servers === room.snapshot.servers &&
     roles === room.snapshot.roles &&
     voice === room.snapshot.voice &&
     promptSuggestions === room.snapshot.promptSuggestions &&
+    pinnedProjects === room.snapshot.pinnedProjects &&
     room.snapshot.synced === synced
   ) {
     return;
   }
-  room.snapshot = { boards, servers, roles, voice, promptSuggestions, synced };
+  room.snapshot = { boards, servers, roles, voice, promptSuggestions, pinnedProjects, synced };
   for (const listener of room.listeners) {
     listener(room.snapshot);
   }

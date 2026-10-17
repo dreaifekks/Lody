@@ -15,7 +15,11 @@ export function formatUnknownError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export function normalizeExternalHttpUrl(value: unknown): string | null {
+// tg: is the Telegram client's deep-link scheme, used by message links in
+// Markdown reports.
+const EXTERNAL_URL_PROTOCOLS = new Set(['http:', 'https:', 'tg:'])
+
+export function normalizeExternalUrl(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null
   }
@@ -27,7 +31,7 @@ export function normalizeExternalHttpUrl(value: unknown): string | null {
 
   try {
     const url = new URL(trimmed)
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    if (!EXTERNAL_URL_PROTOCOLS.has(url.protocol)) {
       return null
     }
     return url.toString()

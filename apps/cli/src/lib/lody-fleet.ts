@@ -46,6 +46,7 @@ import { startLocalTerminalServer, stopLocalTerminalServer } from '@/lib/local-t
 import { LocalTunnelServer } from '@/lib/local-tunnel-server';
 import { LocalFileServer } from '@/lib/local-file-server';
 import type { LocalUsageLedger } from '@/lib/usage/local-usage-ledger';
+import { readLanCredentialsEnv } from '@lody/shared/node/lan-credentials';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { connectPort, openLanTunnel } from '@/lib/lan/lan-tunnel';
 import {
@@ -1132,6 +1133,13 @@ export class LodyFleet {
           lanWorkspace: this.isLanWorkspace(workspace.id),
           ...(this.isLanWorkspace(workspace.id)
             ? {
+                // This machine's copy of the LAN's table, which follows the hub.
+                lanEnv: () => {
+                  const hub = this.lan?.hubs.find(
+                    (candidate) => getLanHubWorkspaceId(candidate.id) === workspace.id
+                  );
+                  return hub ? readLanCredentialsEnv(hub.id) : {};
+                },
                 askLanMemberDirect: async (machineId, request) => {
                   const forwarded = await this.forwardLanRpc({
                     workspaceId: workspace.id,

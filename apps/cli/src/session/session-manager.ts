@@ -509,6 +509,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   private readonly preparationUserResolver: SessionUserResolver;
   private readonly preparationService: SessionPreparationService<PreparedSessionRuntime>;
   private readonly cloudPort: CloudPort;
+  private readonly lanEnv: (() => Readonly<Record<string, string>>) | undefined;
   private detachPreparationRecovery: (() => void) | null = null;
   private preparationRecoveryChain: Promise<void> = Promise.resolve();
   /** Coalescing latch for {@link enqueueSpeculativeWorktreeRecovery}. */
@@ -534,6 +535,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     options: {
       sessionSandboxFactory?: SessionSandboxFactory;
       cloudPort: CloudPort;
+      /** The environment variables the workspace's LAN keeps for MCP servers; see `loadSessionMcpCatalog`. */
+      lanEnv?: () => Readonly<Record<string, string>>;
     }
   ) {
     super();
@@ -545,6 +548,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       throw new Error('SessionManager requires an assembled CloudPort');
     }
     this.cloudPort = options.cloudPort;
+    this.lanEnv = options.lanEnv;
     this.sessionSandboxFactory =
       options.sessionSandboxFactory ?? createSessionSandboxFactory({ logger: this.logger });
     this.preparationUserResolver = new SessionUserResolver(
@@ -1522,6 +1526,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
           sessionId,
           selectedIds: config.mcpServerIds,
           logger: this.logger,
+          ...(this.lanEnv ? { lanEnv: this.lanEnv } : {}),
         }),
       loadBoardId: async () =>
         (await this.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId)))?.meta

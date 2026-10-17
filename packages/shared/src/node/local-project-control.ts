@@ -8,6 +8,7 @@ import {
   LAN_GITHUB_TOKEN_MAX,
   LanGitHubStateSchema,
   LanGitHubTokenResultSchema,
+  LanUsageAgentReportSchema,
   LanUsageReportSchema,
   LanMachineUpdateResultSchema,
   LanMachineRestartResultSchema,
@@ -587,7 +588,7 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     return typeof value.workspaceId === 'string' && typeof value.agentType === 'string';
   }
 
-  if (value.type === 'lan/usage') {
+  if (value.type === 'lan/usage' || value.type === 'lan/usage-by-agent') {
     return (
       typeof value.workspaceId === 'string' &&
       (value.sinceMs === undefined ||
@@ -778,6 +779,10 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'lan/usage') {
     return LanUsageReportSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/usage-by-agent') {
+    return LanUsageAgentReportSchema.safeParse(value.result).success;
   }
 
   if (value.type === 'lan/github') {

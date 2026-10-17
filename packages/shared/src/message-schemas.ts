@@ -9,6 +9,7 @@ import {
   LanAgentInstallResultSchema,
   LanMachineUpdateResultSchema,
   LanMachinesSchema,
+  LanUsageAgentReportSchema,
   LanUsageReportSchema,
   LanMachineRestartResultSchema,
   LAN_GITHUB_TOKEN_MAX,
@@ -2667,6 +2668,11 @@ export const LanUsageRequestSchema = z
   })
   .strict();
 
+/** The same report, with the agent of every row; a build before it refuses the type. */
+export const LanUsageByAgentRequestSchema = LanUsageRequestSchema.extend({
+  type: z.literal('lan/usage-by-agent'),
+}).strict();
+
 export const LanRestartMachineRequestSchema = z
   .object({
     type: z.literal('lan/restart-machine'),
@@ -2691,6 +2697,7 @@ export const LanMemberControlRequestSchema = z.discriminatedUnion('type', [
   HostedConfigPreviewRequestSchema,
   HostedConfigImportRequestSchema,
   LanUsageRequestSchema,
+  LanUsageByAgentRequestSchema,
   LanRestartMachineRequestSchema,
   LanGitHubRequestSchema,
 ]);
@@ -2837,6 +2844,7 @@ export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LanUpdateMachineRequestSchema,
   LanInstallAgentRequestSchema,
   LanUsageRequestSchema,
+  LanUsageByAgentRequestSchema,
   LanRestartMachineRequestSchema,
   LanGitHubRequestSchema,
   LanMachinesRequestSchema,
@@ -3168,6 +3176,14 @@ const LanUsageResponseSchema = z
   })
   .strict();
 
+const LanUsageByAgentResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    type: z.literal('lan/usage-by-agent'),
+    result: LanUsageAgentReportSchema,
+  })
+  .strict();
+
 const LanRestartMachineResponseSchema = z
   .object({
     ok: z.literal(true),
@@ -3191,6 +3207,7 @@ export const LanMemberControlResponseSchema = z.union([
   LanUpdateMachineResponseSchema,
   LanInstallAgentResponseSchema,
   LanUsageResponseSchema,
+  LanUsageByAgentResponseSchema,
   LanRestartMachineResponseSchema,
   LanGitHubResponseSchema,
   LocalProjectControlErrorResponseSchema,
@@ -3411,6 +3428,7 @@ export const LocalProjectControlResponseSchema = z.union([
   LanUpdateMachineResponseSchema,
   LanInstallAgentResponseSchema,
   LanUsageResponseSchema,
+  LanUsageByAgentResponseSchema,
   LanRestartMachineResponseSchema,
   LanGitHubResponseSchema,
   z

@@ -3125,6 +3125,15 @@ export class MessageHandler {
         ),
       syncSessionBranchName: (sessionId, session) =>
         workspaceGitService.syncSession(sessionId, session),
+      publishCodeCollabSharedStateOnSessionStart: async (sessionId) => {
+        const meta = await this.resolveCodeCollabOwnerSessionMeta(sessionId);
+        // Only a project workspace has a tree worth publishing unasked: a chat
+        // directory is scanned on request, and a child Tab shares its parent's.
+        if (!meta || meta.parentSessionId || (!meta.project && !meta.repoFullName?.trim())) {
+          return;
+        }
+        await this.codeCollabV2Service.publishSharedStateOnSessionStart({ sessionId });
+      },
       turnFinalization: {
         finalizeACPState: async (sessionId, turnId) =>
           await this.finalizeACPState(sessionId, turnId),

@@ -26,7 +26,9 @@ import { Button } from '@lody/ui/button';
 import { Tooltip } from '@lody/ui/tooltip';
 import { formatCompactNumber, formatUsdAmount } from '@/lib/format-compact-number';
 import { toIntlLocaleOrEn } from '@/lib/intl-locale';
+import { AgentIcon } from '@/components/icons/agent-icon';
 import { ModelBrandIcon } from '@/components/icons/model-brand-icon';
+import { usageAgentIconType, usageAgentLabel } from './usage-agent-label';
 import { stripRecommended } from '@/components/shared/acp-selector-options';
 import type {
   SettingsUsageCalendarData,
@@ -577,6 +579,9 @@ const styles = stylex.create({
     columnGap: space[6],
     rowGap: space[4],
     '@media (min-width: 640px)': { gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' },
+  },
+  threeColumns: {
+    '@media (min-width: 640px)': { gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' },
   },
   detailDate: {
     margin: 0,
@@ -1325,6 +1330,7 @@ function UsageWeekMatrix({
 const COMPOSITION_SEGMENT_LIMIT = 5;
 const MODEL_SERIES_COLORS = ['#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe'] as const;
 const MEMBER_SERIES_COLORS = ['#7c3aed', '#9333ea', '#a855f7', '#c084fc', '#e9d5ff'] as const;
+const AGENT_SERIES_COLORS = ['#0f766e', '#0d9488', '#2dd4bf', '#5eead4', '#99f6e4'] as const;
 
 type UsageCompositionSegment = {
   id: string;
@@ -1453,6 +1459,24 @@ function UsageCompositionSummary({
       ),
     [t, timeline.buckets, timeline.users]
   );
+  // Only a LAN's machines count the agent; the hosted timeline has no split.
+  const countsAgents = timeline.buckets.some((bucket) => bucket.byAgent !== undefined);
+  const agentSegments = useMemo(
+    () =>
+      countsAgents
+        ? createUsageCompositionSegments(
+            timeline.buckets.flatMap((bucket) =>
+              (bucket.byAgent ?? []).map((row) => ({
+                id: row.agentId,
+                label: usageAgentLabel(row.agentId, t),
+                tokens: row.tokens,
+              }))
+            ),
+            t('workspace.usage.skyline.other')
+          )
+        : null,
+    [countsAgents, t, timeline.buckets]
+  );
 
   return (
     <div {...stylex.props(styles.compositionSummary, styles.summaryComposition)}>
@@ -1468,6 +1492,14 @@ function UsageCompositionSummary({
         colors={MEMBER_SERIES_COLORS}
         reduced={reduced}
       />
+      {agentSegments ? (
+        <UsageCompositionBar
+          label={t('workspace.usage.byAgent')}
+          segments={agentSegments}
+          colors={AGENT_SERIES_COLORS}
+          reduced={reduced}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2403,7 +2435,7 @@ function UsageDayDetailPanel({
           </div>
 
           {hasUsage && day ? (
-            <div {...stylex.props(styles.twoColumns)}>
+            <div {...stylex.props(styles.twoColumns, day.byAgent && styles.threeColumns)}>
               <div {...stylex.props(styles.minWidthZero)}>
                 <p {...stylex.props(styles.detailSectionLabel)}>{t('workspace.usage.byModel')}</p>
                 <RankedBars
@@ -2440,6 +2472,28 @@ function UsageDayDetailPanel({
                   })}
                 />
               </div>
+              {day.byAgent ? (
+                <div {...stylex.props(styles.minWidthZero)}>
+                  <p {...stylex.props(styles.detailSectionLabel)}>{t('workspace.usage.byAgent')}</p>
+                  <RankedBars
+                    rows={day.byAgent.map((row) => {
+                      const agentType = usageAgentIconType(row.agentId);
+                      return {
+                        id: row.agentId,
+                        label: usageAgentLabel(row.agentId, t),
+                        tokens: row.tokens,
+                        icon: agentType ? (
+                          <AgentIcon
+                            cliType="builtin"
+                            agentType={agentType}
+                            className={stylex.props(styles.iconMuted).className}
+                          />
+                        ) : undefined,
+                      };
+                    })}
+                  />
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>

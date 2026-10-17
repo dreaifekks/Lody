@@ -159,6 +159,7 @@ export const LAN_MEMBER_CONTROL_TYPES = [
   'hosted-config/preview',
   'hosted-config/import',
   'lan/usage',
+  'lan/usage-by-agent',
   'lan/restart-machine',
   'lan/github',
 ] as const;
@@ -222,6 +223,22 @@ export const LanUsageReportSchema = z
   .object({ rows: z.array(LanUsageRowSchema).max(200_000) })
   .strict();
 export type LanUsageReport = z.infer<typeof LanUsageReportSchema>;
+
+/**
+ * A usage row with the agent that used the model: its builtin agent type, or
+ * `null` for what a build counted before it kept the agent. Only
+ * `lan/usage-by-agent` carries it; `lan/usage` keeps the row above, which
+ * builds before it read strictly.
+ */
+export const LanUsageAgentRowSchema = LanUsageRowSchema.extend({
+  agent: z.string().min(1).max(64).nullable(),
+}).strict();
+export type LanUsageAgentRow = z.infer<typeof LanUsageAgentRowSchema>;
+
+export const LanUsageAgentReportSchema = z
+  .object({ rows: z.array(LanUsageAgentRowSchema).max(200_000) })
+  .strict();
+export type LanUsageAgentReport = z.infer<typeof LanUsageAgentReportSchema>;
 
 /** The GitHub account a credential acts as; `login` is `null` where it could not be told. */
 const LanGitHubAccountSchema = z.object({ login: z.string().max(100).nullable() }).strict();
