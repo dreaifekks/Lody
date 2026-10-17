@@ -1,3 +1,4 @@
+import { normalizeBoardMeta } from '@lody/shared';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalProjectId } from '@lody/shared';
 
@@ -87,4 +88,81 @@ describe('session execution prompt helpers', () => {
         '`lody-lan lan forward <machine> <port>` reaches a port there; see `lody-lan lan --help`.'
     );
   });
+});
+
+it('adds role-specific Board instructions while retaining the task and existing reminders', () => {
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_prompt',
+    name: 'Ship',
+    purpose: 'A working release',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+    rules: { executorConstraints: 'Commit only. Run tests.', maxRoundsPerThread: 4 },
+  });
+  if (!board) throw new Error('Invalid fixture');
+  const coordinator = buildPrompt('My task', undefined, undefined, undefined, {
+    boardContext: { board, role: 'coordinator' },
+    branchToRename: 'lody/test',
+  });
+  expect(coordinator).toMatch(/^My task/);
+  expect(coordinator).toContain(SESSION_REMINDERS);
+  expect(coordinator).toContain('git branch -m lody/test <name>');
+  expect(coordinator).toContain(
+    'You are the coordinator of Board "Ship". Goal: A working release.'
+  );
+  expect(coordinator).toContain('lody_board_overview');
+  expect(coordinator).toContain('end your turn');
+  expect(coordinator).toContain(
+    'Round enforcement, handoff and daily digests are not available yet'
+  );
+  expect(coordinator).toContain('Commit only. Run tests.');
+  expect(coordinator).toContain('lody_board_notes_replace');
+  const thread = buildPrompt('Implement', undefined, undefined, undefined, {
+    boardContext: { board },
+  });
+  expect(thread).toContain('Coordinator session: coordinator');
+  expect(thread).toContain('lody_board_notes_append');
+  expect(thread).toContain('include them verbatim in your reply');
+  expect(thread).toContain('the coordinator decides which changes to make');
+  expect(thread).toContain('Commit only. Run tests.');
+  expect(thread).not.toContain('You are the coordinator');
+  // The coordinator coordinates; the Board directory is reached by tools from another machine.
+  expect(coordinator).toContain('You coordinate; you do not implement.');
+  expect(coordinator).toContain('You maintain MEMORY.md');
+  expect(thread).toContain('lody_board_files_list');
+  expect(thread).toContain('The coordinator maintains MEMORY.md.');
+  const local = buildPrompt('Implement', undefined, undefined, undefined, {
+    boardContext: { board, directory: '/data/boards/ws/bd_prompt' },
+  });
+  expect(local).toContain('Put files every member should see in /data/boards/ws/bd_prompt/files');
+  expect(local).toContain('/data/boards/ws/bd_prompt/memory');
+  expect(local).not.toContain('lody_board_files_list');
+});
+
+it('omits an empty Board goal and adds the user instructions for every member', () => {
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_named',
+    name: 'Named only',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+    instructions: 'Check nmem first.',
+  });
+  if (!board) throw new Error('Invalid fixture');
+  for (const role of ['coordinator', undefined] as const) {
+    const prompt = buildPrompt('Hello', undefined, undefined, undefined, {
+      boardContext: { board, role },
+    });
+    expect(prompt).not.toContain('Goal:');
+    expect(prompt).toContain('Board instructions, written by the user');
+    expect(prompt.split('Check nmem first.')).toHaveLength(2);
+  }
+  const plain = normalizeBoardMeta({ ...board, instructions: '' });
+  if (!plain) throw new Error('Invalid fixture');
+  expect(
+    buildPrompt('Hello', undefined, undefined, undefined, { boardContext: { board: plain } })
+  ).not.toContain('Board instructions');
 });

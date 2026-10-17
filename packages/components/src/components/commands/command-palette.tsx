@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from '@tanstack/react-router';
 import { useAtomValue } from 'jotai';
-import type { SessionId } from '@lody/shared';
 import {
   commands,
   useCommandPaletteState,
@@ -10,8 +9,12 @@ import {
   type Command,
   type CommandCategory,
 } from '@/lib/commands';
+import { LayoutDashboard } from 'lucide-react';
 import { currentWorkspaceSlugAtom } from '@/atoms';
+import { boardEnabledAtom } from '@/atoms/settings';
 import { useVisibleSessionMetas } from '@/hooks/use-visible-session-metas';
+import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
+import { boardMemberEntrySearch } from '@/components/boards/board-threads';
 import { useVisibleLocalProjects } from '@/hooks/use-visible-local-projects';
 import { useStableNow } from '@/hooks/use-stable-now';
 import type { SessionListEntry } from '@/lib/session-visibility';
@@ -46,6 +49,21 @@ export function CommandPalette() {
   const all = useCommands();
   const { sessions } = useVisibleSessionMetas();
   const { projects: localProjects } = useVisibleLocalProjects({ syncMachineFlock: false });
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  const { boards } = useWorkspaceCatalog();
+  // A Board's conversations open in the Board: a coordinator is the Board, a thread
+  // opens in its panel. Both are found by the Board's name.
+  const activeBoards = useMemo(
+    () =>
+      new Map(
+        boardsEnabled
+          ? boards
+              .filter((board) => board.archivedAtMs === undefined)
+              .map((board) => [board.id as string, board])
+          : []
+      ),
+    [boards, boardsEnabled]
+  );
   // Stable clock for the compact last-activity labels (updates ~once a minute).
   const now = useStableNow();
 
@@ -69,15 +87,24 @@ export function CommandPalette() {
   );
 
   const openSession = useCallback(
-    (sessionId: SessionId) => {
+    (session: SessionListEntry) => {
       if (!workspaceSlug) return;
       handleOpenChange(false);
+      const board = session.boardId ? activeBoards.get(session.boardId) : undefined;
+      if (!board) {
+        void router.navigate({
+          to: '/$workspaceName/sessions/$sessionId',
+          params: { workspaceName: workspaceSlug, sessionId: session.id },
+        });
+        return;
+      }
       void router.navigate({
         to: '/$workspaceName/sessions/$sessionId',
-        params: { workspaceName: workspaceSlug, sessionId },
+        params: { workspaceName: workspaceSlug, sessionId: board.coordinatorSessionId },
+        search: boardMemberEntrySearch(board, session.id),
       });
     },
-    [handleOpenChange, router, workspaceSlug]
+    [activeBoards, handleOpenChange, router, workspaceSlug]
   );
 
   const resolveLabel = useCallback(
@@ -106,18 +133,24 @@ export function CommandPalette() {
   const toSessionResult = useCallback(
     (session: SessionListEntry): PaletteResult => {
       const lastActivityValue = session.lastMessageAt ?? session.createdAt ?? null;
+      const board = session.boardId ? activeBoards.get(session.boardId) : undefined;
+      const coordinator = board?.coordinatorSessionId === session.id;
+      const title = session.title?.trim() || t('sessions.untitled', 'Untitled session');
       return {
         kind: 'session',
         key: `session:${session.id}`,
-        title: session.title?.trim() || t('sessions.untitled', 'Untitled session'),
-        subtitle: getSessionPaletteSubtitle(session, localProjects),
+        title: board ? (coordinator ? board.name : `${board.name} › ${title}`) : title,
+        subtitle: coordinator
+          ? t('boards.panelTab', 'Board')
+          : getSessionPaletteSubtitle(session, localProjects),
         shortcut: null,
         trailing:
           lastActivityValue != null ? formatCompactRelativeTime(lastActivityValue, now) : null,
-        run: () => openSession(session.id),
+        icon: coordinator ? LayoutDashboard : undefined,
+        run: () => openSession(session),
       };
     },
-    [localProjects, now, openSession, t]
+    [activeBoards, localProjects, now, openSession, t]
   );
 
   // Only surface commands that can actually fire in the current view. Each command declares
@@ -161,7 +194,8 @@ export function CommandPalette() {
       // Match the displayed project/repo label too (covers local project names, not
       // just `repoFullName`), so a session is findable by what the row shows.
       const projectLabel = resolveSessionProjectLabel(session, localProjects) ?? '';
-      for (const text of [session.title ?? '', projectLabel, session.branchName ?? '']) {
+      const boardName = (session.boardId && activeBoards.get(session.boardId)?.name) || '';
+      for (const text of [boardName, session.title ?? '', projectLabel, session.branchName ?? '']) {
         if (!text) continue;
         const score = fuzzyMatch(trimmedQuery, text);
         if (score !== null && (best === null || score > best)) best = score;
@@ -174,6 +208,7 @@ export function CommandPalette() {
       .sort((a, b) => b.score - a.score)
       .map((entry) => entry.result);
   }, [
+    activeBoards,
     isSearching,
     localProjects,
     resolveLabel,

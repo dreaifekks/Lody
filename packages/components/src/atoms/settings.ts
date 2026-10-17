@@ -405,3 +405,11 @@ export const enabledAgentToolsAtom = atom((get): LodyAgentToolId[] => [
   ...(get(planReviewFeatureEnabledAtom) ? (['review'] as const) : []),
   ...(get(inlineWidgetFeatureEnabledAtom) ? (['widget'] as const) : []),
 ]);
+
+export const boardExperimentEnabledAtom = atomWithStorage<boolean>(
+  'lody-board-experiment-enabled',
+  false
+);
+export const boardEnabledAtom = atom(
+  (get) => get(experimentalFeaturesEnabledAtom) && get(boardExperimentEnabledAtom)
+);

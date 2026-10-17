@@ -253,6 +253,23 @@ export const settingsSurface = stylex.create({
       ':focus-visible': `color-mix(in oklab, transparent, ${colors.label} 10%)`,
     },
   },
+  /**
+   * A navigation row's keyboard focus is a ring, never a fill: beside the
+   * current page a focus wash reads as a second selection. Spread after
+   * `listRow` and before `listRowSelected`, so a focused current row keeps its
+   * fill and adds the ring.
+   */
+  navRow: {
+    backgroundColor: {
+      default: 'transparent',
+      ':hover': `color-mix(in oklab, transparent, ${colors.label} 6%)`,
+      ':focus-visible': 'transparent',
+    },
+    boxShadow: {
+      default: 'none',
+      ':focus-visible': `inset 0 0 0 ${focus.ringWidth} ${colors.accent}`,
+    },
+  },
   /** A list row's glyph: icons at rest are a hint. */
   listRowIcon: {
     display: 'inline-flex',

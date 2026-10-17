@@ -403,6 +403,7 @@ function SettingsModalBody() {
                                     data-settings-tab-id={tab.id}
                                     {...stylex.props(
                                       surface.listRow,
+                                      surface.navRow,
                                       styles.navRowRail,
                                       active && surface.listRowSelected
                                     )}
@@ -448,7 +449,7 @@ function SettingsModalBody() {
                           aria-label={t('bugReport.title', 'Report a bug')}
                           data-id="settings:report-bug"
                           data-scope-item="row"
-                          {...stylex.props(surface.listRow, styles.navRowRail)}
+                          {...stylex.props(surface.listRow, surface.navRow, styles.navRowRail)}
                           onClick={handleReportBug}
                         >
                           <Bug {...stylex.props(surface.listRowIcon)} strokeWidth={1.75} />

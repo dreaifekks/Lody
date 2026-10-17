@@ -161,6 +161,54 @@ describe('buildChatStreamItems', () => {
     expect(renderedIds(items)).toEqual(['u1']);
   });
 
+  it('stands one divider in for a Board maintenance run, hydrated or not', () => {
+    const divider = (status: string, trigger: string) =>
+      ({
+        id: `board-maintenance:${status}`,
+        role: 'system',
+        timestamp: '2026-06-18T00:00:00.000Z',
+        fileDiff: [],
+        items: [
+          {
+            type: 'system_notice',
+            name: 'board_context_maintenance',
+            meta: { boardId: 'bd_1', kind: 'compact', trigger, status },
+          },
+        ],
+      }) as unknown as SessionHistory;
+    const reply = (step: string) => ({
+      ...entry({ id: `assistant:${step}`, role: 'assistant', items: [text('Recorded.')] }),
+      userTurnId: step,
+    });
+    const history = [
+      entry({ id: 'u1', role: 'user', items: [text('plan the release')] }),
+      entry({ id: 'a1', role: 'assistant', items: [text('Opened two threads.')] }),
+      divider('done', 'idle'),
+      reply('board-maintenance:done:memory'),
+      reply('board-maintenance:done:compact'),
+      // An idle run that yielded before changing anything draws nothing.
+      divider('interrupted', 'idle'),
+      reply('board-maintenance:interrupted:memory'),
+    ] as SessionHistory[];
+    const hydrated = buildChatStreamItems(history, sessionId);
+    expect(renderedIds(hydrated.items)).toEqual(['u1', 'a1', 'board-maintenance:done']);
+    // Maintenance replies never become the turn the usage chip and quick actions attach to.
+    expect(hydrated.lastAssistantMessageId).toBe('a1');
+    const view = createConversationViewFromHistory({
+      sessionId,
+      getHistory: () => history,
+      subscribe: () => () => {},
+    });
+    const offscreen = buildChatStreamItemsFromView(view, sessionId, undefined, () => false);
+    expect(offscreen.items.map((item) => item.type === 'placeholder' && item.row.id)).toEqual([
+      'u1',
+      'a1',
+      'board-maintenance:done',
+      'board-maintenance:interrupted',
+    ]);
+    view.dispose();
+  });
+
   it('keeps an assistant entry that has a plan even when it has no items', () => {
     const { items, lastAssistantMessageId } = buildChatStreamItems(
       [entry({ id: 'a-plan', role: 'assistant', items: [], plan: [{ step: 'one' }] })],

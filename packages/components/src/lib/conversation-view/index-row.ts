@@ -1,4 +1,9 @@
-import { normalizeSessionTurnInputConfig, type Role, type SessionHistory } from '@lody/shared';
+import {
+  isBoardMaintenanceEntry,
+  normalizeSessionTurnInputConfig,
+  type Role,
+  type SessionHistory,
+} from '@lody/shared';
 import { summarizeTurn } from './turn-summary';
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -72,3 +77,10 @@ export function indexRowFromEntry(entry: SessionHistory): TurnIndexRow {
  */
 export const isEmptyAssistantIndexRow = (row: TurnIndexRow): boolean =>
   row.role === 'assistant' && row.itemCount === 0 && (row.planCount ?? 0) === 0;
+
+/**
+ * Assistant rows the conversation never draws: empty entries, and Board
+ * maintenance replies, which their divider stands in for.
+ */
+export const isHiddenAssistantIndexRow = (row: TurnIndexRow): boolean =>
+  isEmptyAssistantIndexRow(row) || isBoardMaintenanceEntry(row);

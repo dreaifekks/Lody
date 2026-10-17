@@ -8,7 +8,7 @@
 - Directory reads contain identities, scalars and input configuration, never
   bodies. Model summary reads use the narrow scalar/count reader, including legacy
   rows; never serialize items, plans, or provider extension metadata. Input configuration projects on first read and memoizes: the
-  projection is a schema parse per user turn, and a directory read covers the
+  projection is a schema parse per driving turn, and a directory read covers the
   whole conversation to answer a question about its tail. Targeted reads materialize only the selected turn. Status queries use
   the directory; explicit export/replay uses one consistent `readAll` observation.
   `readTurnOutput` reads the selected assistant and relevant failure notices in

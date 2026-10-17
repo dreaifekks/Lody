@@ -427,6 +427,7 @@ export interface CreateAgentConfig {
   onSessionTitleUpdate: (title: string) => void;
   onAgentWarning: (warning: AgentSessionWarning) => void;
   loadExternalMcpServers: NonNullable<AgentClientOptions['loadExternalMcpServers']>;
+  loadBoardId?: AgentClientOptions['loadBoardId'];
   loadLodyAgentTools: NonNullable<AgentClientOptions['loadLodyAgentTools']>;
   loadPromptSuggestionsEnabled?: AgentClientOptions['loadPromptSuggestionsEnabled'];
   onPromptSuggestion?: (suggestion: string) => void;
@@ -1527,6 +1528,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
           logger: this.logger,
           ...(this.lanEnv ? { lanEnv: this.lanEnv } : {}),
         }),
+      loadBoardId: async () =>
+        (await this.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId)))?.meta
+          ?.boardId as string | undefined,
       loadLodyAgentTools: async () => (await loadWorkspaceSettings()).agentTools,
       onImageGenerationBegin: (event) =>
         dispatchEvent(() => this.emit('onImageGenerationBegin', sessionId, event)),

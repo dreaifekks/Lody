@@ -52,7 +52,11 @@ import {
 } from '@lody/shared';
 import { getLocalControlSocketPath } from '@lody/shared/node/local-ipc';
 import { getLodyMcpHttpEndpoint } from '@/mcp/lody-mcp-http-server';
-import { LODY_MCP_AGENT_TOOLS_ENV, buildLodyMcpHttpHeaders } from '@/mcp/lody-mcp-http-protocol';
+import {
+  LODY_MCP_BOARD_ID_ENV,
+  LODY_MCP_AGENT_TOOLS_ENV,
+  buildLodyMcpHttpHeaders,
+} from '@/mcp/lody-mcp-http-protocol';
 import { TerminalManager, TerminalSpawnError } from '@/session/terminal-manager';
 import { reportError } from 'src/utils/telemetry';
 import { formatErrorMessage } from '@/utils/format-error';
@@ -612,6 +616,8 @@ export interface AgentClientOptions {
    * selector is applied once the agent has advertised its MCP capabilities.
    */
   loadExternalMcpServers?(): Promise<SessionMcpCatalogSelector>;
+  /** Current membership, read whenever ACP establishes a Session. */
+  loadBoardId?(): Promise<string | undefined>;
   /** The experimental Lody tools the workspace offers, read when the agent starts. */
   loadLodyAgentTools?(): Promise<readonly LodyAgentToolId[]>;
   /**
@@ -708,7 +714,8 @@ export class AgentClient implements acp.Client {
 
   private buildBuiltinMcpServers(
     workdir: string,
-    agentTools: readonly LodyAgentToolId[] = []
+    agentTools: readonly LodyAgentToolId[] = [],
+    boardId?: string
   ): acp.McpServer[] {
     if (!this.options.workspaceId || !this.options.machineId) {
       return [];
@@ -733,6 +740,7 @@ export class AgentClient implements acp.Client {
               machineId: this.options.machineId,
               workdir,
               agentTools,
+              boardId,
             }),
           },
         ];
@@ -744,6 +752,7 @@ export class AgentClient implements acp.Client {
       return [];
     }
     const env = [
+      ...(boardId ? [{ name: LODY_MCP_BOARD_ID_ENV, value: boardId }] : []),
       { name: 'LODY_MCP_SESSION_ID', value: this.options.sessionId },
       { name: 'LODY_MCP_WORKSPACE_ID', value: this.options.workspaceId },
       { name: 'LODY_MCP_MACHINE_ID', value: this.options.machineId },
@@ -789,7 +798,11 @@ export class AgentClient implements acp.Client {
     workdir: string,
     externalLoad: Promise<SessionMcpCatalogSelector> | undefined
   ): Promise<acp.McpServer[]> {
-    const builtin = this.buildBuiltinMcpServers(workdir, await this.readLodyAgentTools());
+    const builtin = this.buildBuiltinMcpServers(
+      workdir,
+      await this.readLodyAgentTools(),
+      await this.options.loadBoardId?.()
+    );
     if (!externalLoad) {
       return builtin;
     }
@@ -1745,6 +1758,11 @@ export class AgentClient implements acp.Client {
   /** The live process, rather than its provider identity, advertised title ownership. */
   supportsSessionTitleGeneration(): boolean {
     return this.lodyExtensionCapabilities.sessionTitle?.version === 1;
+  }
+
+  /** The live process advertised that it compacts its context on `/compact`. */
+  supportsContextCompaction(): boolean {
+    return this.lodyExtensionCapabilities.compaction?.version === 1;
   }
 
   private handleAgentSessionTitleUpdate(notification: AcpSessionNotification): void {

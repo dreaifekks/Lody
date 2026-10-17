@@ -48,7 +48,7 @@
   behaviour, so keep it in step with what the card can resolve.
 - `mcpServerIds` is optional: new/owned chats use workspace `enabledByDefault` ids
   when absent, and `[]` means none. Freeze the choice on the prepared turn; retries
-  keep it. Existing-chat destinations inherit the chat's choice. CLI/MCP writes
+  keep it. Existing-chat destinations inherit the chat's choice, else defaults. CLI/MCP writes
   resolve names to catalog ids, except ids the edited Schedule already stores (a
   removed server must not block unrelated edits); MCP update `null` clears the
   field. UI edits and proposal confirmation preserve the field.

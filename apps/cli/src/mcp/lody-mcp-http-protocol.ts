@@ -18,6 +18,9 @@ export const MCP_HTTP_WORKSPACE_ID_HEADER = 'x-lody-mcp-workspace-id';
 export const MCP_HTTP_MACHINE_ID_HEADER = 'x-lody-mcp-machine-id';
 // Base64url-encoded: workdir paths are arbitrary UTF-8, HTTP headers are not.
 export const MCP_HTTP_WORKDIR_B64_HEADER = 'x-lody-mcp-workdir-b64';
+/** Startup discovery only; the daemon rechecks current membership on every call. */
+export const MCP_HTTP_BOARD_ID_HEADER = 'x-lody-mcp-board-id';
+export const LODY_MCP_BOARD_ID_ENV = 'LODY_MCP_BOARD_ID';
 /** Comma-separated experimental tools to list for this session; absent lists none. */
 export const MCP_HTTP_AGENT_TOOLS_HEADER = 'x-lody-mcp-agent-tools';
 /** The stdio server's counterpart of the header above. */
@@ -44,11 +47,13 @@ export const buildLodyMcpHttpHeaders = (
     machineId: string;
     workdir: string;
     agentTools?: readonly string[];
+    boardId?: string;
   }
 ): Array<{ name: string; value: string }> => [
   { name: 'Authorization', value: `Bearer ${endpoint.token}` },
   { name: MCP_HTTP_SESSION_ID_HEADER, value: context.sessionId },
   { name: MCP_HTTP_WORKSPACE_ID_HEADER, value: context.workspaceId },
+  ...(context.boardId ? [{ name: MCP_HTTP_BOARD_ID_HEADER, value: context.boardId }] : []),
   { name: MCP_HTTP_MACHINE_ID_HEADER, value: context.machineId },
   {
     name: MCP_HTTP_WORKDIR_B64_HEADER,

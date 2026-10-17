@@ -1,3 +1,8 @@
+import { boardEnabledAtom } from '@/atoms/settings';
+import { boardsSectionCollapsedAtom } from '@/atoms/sidebar-state';
+import { BoardSidebar } from './boards/board-sidebar-section';
+import { CreateBoardDialog } from './boards/create-board-dialog';
+import { boardActivity, boardEntrySearch, isBoardSession } from './boards/board-threads';
 import { parseLanHubRole } from '@lody/shared/lan-hub-role';
 import { openSessionOnModifiedClick } from '@/lib/desktop-window';
 import { buildSessionLink } from '@lody/shared/session-link';
@@ -1829,6 +1834,12 @@ export function LoroAppSidebar({
     workspaceId: scopedWorkspaceId,
     enabled: workspaceDataReady,
   });
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  // A Board's conversations live in the Board; the Boards section lists the Board.
+  const listSessions = useMemo(
+    () => sessions.filter((session) => !isBoardSession(session, boardsEnabled)),
+    [boardsEnabled, sessions]
+  );
   const sessionsListLoading = Boolean(workspaceSlug) && !workspaceDataReady;
   const {
     machines: machineMetaMap,
@@ -2120,6 +2131,55 @@ export function LoroAppSidebar({
     return next;
   }, [allActiveSessions, presenceNowMs, presenceStates, sessions]);
   liveSessionStatusesRef.current = liveSessionStatuses;
+  const { boards } = useWorkspaceCatalog();
+  const [boardsCollapsed, setBoardsCollapsed] = useAtom(boardsSectionCollapsedAtom);
+  const [creatingBoard, setCreatingBoard] = useState(false);
+  const boardItems = useMemo(
+    () =>
+      boardsEnabled
+        ? boards
+            .filter((board) => board.archivedAtMs === undefined)
+            .toSorted((a, b) => b.createdAtMs - a.createdAtMs)
+            .map((board) => ({
+              id: board.id,
+              name: board.name,
+              coordinatorSessionId: board.coordinatorSessionId,
+              activity: boardActivity(board, allActiveSessions, liveSessionStatuses),
+            }))
+        : [],
+    [allActiveSessions, boards, boardsEnabled, liveSessionStatuses]
+  );
+  const openBoard = useCallback(
+    (coordinatorSessionId: SessionId) => {
+      if (!workspaceSlug) return;
+      closeMobileDrawer();
+      void router.navigate({
+        to: '/$workspaceName/sessions/$sessionId',
+        params: { workspaceName: workspaceSlug, sessionId: coordinatorSessionId },
+        search: boardEntrySearch(coordinatorSessionId),
+      });
+    },
+    [closeMobileDrawer, router, workspaceSlug]
+  );
+  const sidebarBoardsContent = boardsEnabled ? (
+    <BoardSidebar
+      boards={boardItems}
+      selectedId={boardItems.find((item) => item.coordinatorSessionId === selectedSessionId)?.id}
+      collapsed={boardsCollapsed}
+      isMobile={isMobile}
+      onToggleCollapsed={() => setBoardsCollapsed(!boardsCollapsed)}
+      onOpen={(item) => openBoard(item.coordinatorSessionId)}
+      onCreate={() => setCreatingBoard(true)}
+      onCopyUrl={(item) => handleCopySessionUrl(item.coordinatorSessionId)}
+      onArchived={(board) => {
+        if (!workspaceSlug || selectedSessionIdRef.current !== board.coordinatorSessionId) return;
+        void router.navigate({
+          to: '/$workspaceName/chat',
+          params: { workspaceName: workspaceSlug },
+        });
+      }}
+    />
+  ) : null;
   // `allActiveSessions` is the only view that still contains child Tabs, so it
   // is the only place an opener→sidebar-row mapping can be resolved. Shared by
   // every list plus the keyboard nav model so they agree on where a Session
@@ -2130,7 +2190,7 @@ export function LoroAppSidebar({
   );
 
   const tasks = useMemo(() => {
-    const sourceSessions = sessionsListLoading ? [] : sessions;
+    const sourceSessions = sessionsListLoading ? [] : listSessions;
     const filteredSessions = sourceSessions.filter((session) => session.project?.kind !== 'local');
     return buildSessionListRows(
       filteredSessions,
@@ -2158,7 +2218,7 @@ export function LoroAppSidebar({
     machineMetaMap,
     resolveOpenerRowId,
     scope,
-    sessions,
+    listSessions,
     sessionsListLoading,
     sessionSidebarCodeChangesOnly,
     sessionSharingById,
@@ -2394,7 +2454,7 @@ export function LoroAppSidebar({
   );
   const localProjectSessionsByKey = useMemo(() => {
     const map = new Map<string, SessionMeta[]>();
-    const sourceSessions = sessionsListLoading ? [] : sessions;
+    const sourceSessions = sessionsListLoading ? [] : listSessions;
 
     for (const session of sourceSessions) {
       const project = session.project;
@@ -2422,7 +2482,7 @@ export function LoroAppSidebar({
     }
 
     return map;
-  }, [childSessionsByParent, scope, sessions, sessionsListLoading, userId]);
+  }, [childSessionsByParent, scope, listSessions, sessionsListLoading, userId]);
   const workspaceLocalProjectSessionsByKey = useMemo(() => {
     const map = new Map<string, SessionMeta[]>();
     for (const [projectKey, sessionsForProject] of localProjectSessionsByKey) {
@@ -3874,6 +3934,7 @@ export function LoroAppSidebar({
         isElectronMacOS={isElectronMacOS && !isElectronFullscreen}
         activeNav={activeNav}
         topContent={sidebarTopContent ?? undefined}
+        boardsContent={sidebarBoardsContent ?? undefined}
         desktopFilterAction={sidebarFilterPopover ?? undefined}
         afterSessionListContent={sidebarChatsContent ?? undefined}
         bottomFloatingContent={sidebarBottomFloatingContent ?? undefined}
@@ -3933,6 +3994,15 @@ export function LoroAppSidebar({
         overlay={overlay}
       />
 
+      {creatingBoard ? (
+        <CreateBoardDialog
+          onClose={() => setCreatingBoard(false)}
+          onCreated={(board) => {
+            setCreatingBoard(false);
+            openBoard(board.coordinatorSessionId);
+          }}
+        />
+      ) : null}
       <SessionShareDialog
         open={showSessionSharing && pendingSessionShare != null}
         sessionTitle={pendingSessionShare?.title ?? defaultSessionTitle}

@@ -1,5 +1,5 @@
 import { resolveActiveAssistantTurnId, type SessionHistory } from '@lody/shared';
-import { isEmptyAssistantIndexRow } from './index-row';
+import { isHiddenAssistantIndexRow } from './index-row';
 import {
   conversationTailStart,
   DEFAULT_TAIL_KEEP,
@@ -57,7 +57,7 @@ export function resolveLastAssistantTurnIds(
       !row ||
       isUnloadedTurnId(row.id) ||
       row.role !== 'assistant' ||
-      isEmptyAssistantIndexRow(row)
+      isHiddenAssistantIndexRow(row)
     )
       continue;
     // A duplicate id renders once, at its first position; later copies are skipped.

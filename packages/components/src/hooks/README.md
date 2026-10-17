@@ -249,3 +249,10 @@ redirects, private repositories and failed probes retain the recoverable error.
 Public details do not hydrate or write authenticated caches; review caches and
 in-flight detail reads use a separate public key. Public CI polling runs every
 five minutes without the fast mergeability loop; manual refresh remains available.
+
+## Board notes
+
+`use-board-document.ts` opens the Board's persisted Loro document while its notes panel is
+mounted, subscribes to local/remote edits, joins its existing room and releases subscriptions
+on close. It calls the shared text writer and awaits local persistence. Board discovery stays
+in the workspace catalog; see [Board contracts](../components/boards/AGENTS.md).

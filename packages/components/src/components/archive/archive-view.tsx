@@ -1,3 +1,6 @@
+import { ArchivedBoardsSection } from '../boards/archived-boards-section';
+import { isBoardSession } from '../boards/board-threads';
+import { boardEnabledAtom } from '@/atoms/settings';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
@@ -1767,7 +1770,13 @@ export function ArchiveView() {
   const isMobile = useIsMobile();
   const user = useAtomValue(userAtom);
   const workspaceSlug = useAtomValue(currentWorkspaceSlugAtom);
-  const { archivedSessions } = useVisibleArchivedSessionMetas();
+  const { archivedSessions: visibleArchivedSessions } = useVisibleArchivedSessionMetas();
+  // A Board's conversations are archived and restored with it, or found in its panel.
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  const archivedSessions = useMemo(
+    () => visibleArchivedSessions.filter((session) => !isBoardSession(session, boardsEnabled)),
+    [boardsEnabled, visibleArchivedSessions]
+  );
   const { restoreSession, deleteArchivedSession } = useSessionActions();
   const openMobileDrawer = useSetAtom(setMobileDrawerOpenAtom);
   const [deleteConfirmSession, setDeleteConfirmSession] = useState<SessionMeta | null>(null);
@@ -2335,7 +2344,10 @@ export function ArchiveView() {
 
   const archiveContent = (
     <div {...stylex.props(styles.content)}>
-      <div {...stylex.props(styles.toolbarBand)}>{archiveToolbar}</div>
+      <div {...stylex.props(styles.toolbarBand)}>
+        {archiveToolbar}
+        <ArchivedBoardsSection />
+      </div>
       {groupedSessions.length === 0 || filteredArchivedSessions.length === 0 ? (
         <div {...stylex.props(styles.empty)}>
           <Archive {...stylex.props(styles.emptyGlyph)} />

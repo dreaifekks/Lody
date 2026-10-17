@@ -1,8 +1,6 @@
 import {
   composeAgentRolePrompt,
-  getDefaultSelectedMcpServerIds,
   getSessionRoomId,
-  resolveSessionMcpSelection,
   getWorkspaceFlockDocId,
   listAccessibleAgentRoles,
   listWorkspaceAgentRoles,
@@ -26,9 +24,11 @@ import {
   type SessionMeta,
 } from '@lody/shared';
 
-import type { PreparedSessionInput } from '../prepared-session-input';
 import { createSessionBackend } from '@/session/session-backend';
-import { listWorkspaceMcpCatalog, syncMcpCatalog } from '../workspace-mcp-store';
+import {
+  readRecordedSessionMcpSelection,
+  resolveMcpSelectionOrWorkspaceDefault,
+} from '../session-mcp-selection';
 import { ScheduleConfigurationError } from './schedule-engine';
 import { buildProjectOptions } from './schedule-project-options';
 
@@ -244,29 +244,26 @@ export async function resolveScheduleAgentRunConfig(
   return normalizeLegacyScheduleAgent(agent, capability?.configOptions);
 }
 
-/** Freeze the run's MCP choice before the engine persists the prepared turn. */
-export async function applyScheduleMcpSelection(args: {
+/** The run's MCP choice, frozen on the prepared turn before the engine persists it. */
+export async function resolveScheduleMcpSelection(args: {
   manager: import('../loro/doc').LoroDocumentManager;
   workspaceId: WorkspaceId;
   localOnly: boolean;
   definition: Pick<ScheduleDefinition, 'destination' | 'mcpServerIds'>;
-  prepared: PreparedSessionInput;
-}): Promise<void> {
-  const { manager, workspaceId, definition, prepared } = args;
-  let mcpServerIds = definition.mcpServerIds;
+  sessionId: SessionId;
+}): Promise<McpServerId[]> {
+  const { manager, definition, sessionId } = args;
+  let selection = definition.mcpServerIds as McpServerId[] | undefined;
   if (definition.destination.kind === 'existing_session') {
-    const session = await manager.getOrCreateSessionDoc(prepared.sessionId);
-    const record = await manager.repo.getDocMeta(getSessionRoomId(prepared.sessionId));
+    const session = await manager.getOrCreateSessionDoc(sessionId);
+    const record = await manager.repo.getDocMeta(getSessionRoomId(sessionId));
     const backend = await createSessionBackend(session, record?.meta as SessionMeta);
-    mcpServerIds = resolveSessionMcpSelection(await backend.readHistory());
-  } else if (mcpServerIds === undefined) {
-    if (!args.localOnly) await syncMcpCatalog(manager, workspaceId);
-    mcpServerIds = getDefaultSelectedMcpServerIds(
-      await listWorkspaceMcpCatalog(manager.repo, workspaceId)
-    );
+    selection = readRecordedSessionMcpSelection(await backend.readHistory());
   }
-  prepared.userTurn.inputConfig = {
-    ...prepared.userTurn.inputConfig,
-    mcpServerIds: [...mcpServerIds] as McpServerId[],
-  };
+  return await resolveMcpSelectionOrWorkspaceDefault({
+    manager,
+    workspaceId: args.workspaceId,
+    localOnly: args.localOnly,
+    selection,
+  });
 }

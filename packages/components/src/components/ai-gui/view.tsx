@@ -1,3 +1,4 @@
+import { CreatedSessionOperationCard } from './created-session-operation-card';
 import { MessageAuthorIdentity } from './message-author-identity';
 import * as stylex from '@stylexjs/stylex';
 import { space, text as textScale } from '@lody/ui/tokens/scales.stylex';
@@ -95,6 +96,8 @@ import { getAgentMetaByIdAtomFamily } from '@/atoms/agents';
 import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
 import { authTokenAtom, runtimeAtom } from '@/atoms/runtime';
 import { machineSupportsSubagentCancellation, machineSupportsSubagentEvents } from '@lody/shared';
+import { BoardMaintenanceMetaSchema } from '@lody/shared';
+import { BoardMaintenanceDivider } from '../boards/board-maintenance-divider';
 import { scrollDebug } from '@/hooks/scroll-debug-log';
 import { readSessionTurnTokenUsage, type SessionTurnTokenUsage } from '@lody/shared/session-data';
 import { formatCompactNumber } from '@/lib/format-compact-number';
@@ -2892,6 +2895,18 @@ const OperationCompletionView = ({
   onNavigateSession?: (target: SessionNavigationTarget) => void;
 }) => {
   const { t } = useTranslation();
+  if (completion.operationKind === 'board_report' && completion.completion.type === 'result') {
+    return completion.completion.value.boardReport?.events.map((event) => (
+      <CreatedSessionOperationCard
+        key={`${event.sessionId}:${event.turnId}:${event.kind}`}
+        sessionId={event.sessionId}
+        fallbackTitle={event.title}
+        status={event.kind === 'finished' ? 'succeeded' : event.kind}
+        detail={summarizeOperationOutput(event.output?.text)}
+        onNavigateSession={onNavigateSession}
+      />
+    ));
+  }
   const resultItems =
     completion.completion.type === 'result'
       ? completion.completion.value.items
@@ -3215,6 +3230,19 @@ const SystemNoticeView = ({
   const { t } = useTranslation();
 
   switch (notice.name) {
+    case 'board_context_maintenance': {
+      const meta = BoardMaintenanceMetaSchema.safeParse(notice.meta);
+      return meta.success ? <BoardMaintenanceDivider meta={meta.data} /> : null;
+    }
+    case 'board_chain_limit':
+      return (
+        <div role="status" {...stylex.props(activityTypography.footnote)}>
+          {t(
+            'boards.chainLimit',
+            'Autonomous chain reached its limit. Send a message to continue.'
+          )}
+        </div>
+      );
     case 'chat_failed':
       return (
         <ChatFailedNoticeView

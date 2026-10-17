@@ -1,4 +1,13 @@
 import { bindTestPresenceApplication } from './presence-application-fixture';
+
+import {
+  BOARD_NOTES_MAX_BYTES,
+  getBoardRoomId,
+  readBoardDocument,
+  normalizeBoardMeta,
+  workspaceFlockKeys,
+} from '@lody/shared';
+import type { LoroDoc } from 'loro-crdt';
 import { resolveSessionMessageAuthor } from '../src/session/message-author';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -109,6 +118,179 @@ describe('local platform zero-cloud integration', () => {
     });
     await fs.rm(tempDir, { recursive: true, force: true });
   });
+
+  it.each([false, true])(
+    'routes Board tools with failed sync=%s, checking membership, replacement rights and capacity',
+    async (syncFails) => {
+      applyLocalPlatformEnv();
+      const workspaceId = 'lw_board_tools' as WorkspaceId;
+      const machineId = 'board-machine' as MachineId;
+      const userId = 'local:board-tools';
+      const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
+      try {
+        await manager.registerMachine(machineId, {
+          id: machineId,
+          name: 'Desk',
+          ownerUserId: userId,
+        });
+        const sessionId = await manager.createSession(machineId, 'custom', 'claude');
+        const board = normalizeBoardMeta({
+          version: 1,
+          id: 'bd_tools',
+          name: 'Board',
+          purpose: 'Ship',
+          coordinatorSessionId: sessionId,
+          createdAtMs: 1,
+          createdByUserId: userId,
+        });
+        if (!board) throw new Error('Invalid fixture');
+        const catalog = await manager.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
+        catalog.flock.set(workspaceFlockKeys.board(board.id), board);
+        await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
+          boardId: board.id,
+          title: 'Worker',
+        });
+        const environment = createLocalSessionCommandEnvironment({
+          manager,
+          workspaceId,
+          machineId,
+          machineName: 'Desk',
+          userId,
+          host: {
+            readInvocation: (id) => ({
+              type: 'session/active-invocation-context',
+              active: true,
+              sessionId: id,
+              requesterUserId: userId,
+              sourceTurnId: 'turn',
+              inputConfig: {},
+            }),
+            readLiveStatus: async (id) => ({
+              sessionId: id,
+              machineOnline: true,
+              fresh: true,
+              state: 'idle',
+            }),
+            cancelSession: async () => ({ success: true }),
+            dispatchSession: async () => {},
+          },
+        });
+        const call = (name: string, args: unknown = {}) =>
+          runWithSessionCommandEnvironment(environment, () =>
+            executeDaemonSessionTool(
+              {
+                machineId,
+                workspaceId,
+                sessionId,
+                boardId: 'bd_untrusted',
+                localControlSocketPath: undefined,
+                workdir: tempDir,
+              },
+              name,
+              args
+            )
+          );
+        if (syncFails) {
+          vi.spyOn(manager, 'syncFlockDocOrThrow').mockRejectedValue(new Error('hub unavailable'));
+          vi.spyOn(manager, 'syncDocOrThrow').mockRejectedValue(new Error('hub unavailable'));
+        }
+        const get = await call('lody_board_get');
+        expect(JSON.parse(get.content[0]!.text!)).toMatchObject({ id: board.id, role: 'thread' });
+        expect((await call('lody_board_notes_replace', { text: 'forbidden' })).isError).toBe(true);
+        expect(
+          (await call('lody_board_notes_append', { text: 'A', heading: 'Decision' })).isError
+        ).not.toBe(true);
+        expect((await call('lody_board_notes_get')).content[0]?.text).toContain('Decision');
+        // Metadata may be sparse: the authenticated invocation still identifies this coordinator.
+        await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
+          boardRole: 'coordinator',
+          id: undefined,
+          title: undefined,
+        });
+        expect(
+          (await call('lody_board_notes_append', { text: 'Default heading' })).isError
+        ).not.toBe(true);
+        const notes = JSON.parse((await call('lody_board_notes_get')).content[0]?.text ?? '{}');
+        expect(notes.notes).toContain(` · ${sessionId}\n\nDefault heading`);
+        expect(
+          (await call('lody_board_notes_replace', { text: 'x'.repeat(BOARD_NOTES_MAX_BYTES) }))
+            .isError
+        ).not.toBe(true);
+        expect((await call('lody_board_notes_append', { text: '看' })).content[0]?.text).toContain(
+          'BOARD_NOTES_CAPACITY'
+        );
+        const doc = (await manager.repo.openPersistedDoc(getBoardRoomId(board.id))).doc as LoroDoc;
+        expect(readBoardDocument(doc).notes).toBe('x'.repeat(BOARD_NOTES_MAX_BYTES));
+        expect((await call('lody_board_notes_replace', { text: 'short' })).isError).not.toBe(true);
+        const overview = JSON.parse((await call('lody_board_overview')).content[0]!.text!);
+        expect(overview.rows).toEqual([
+          expect.objectContaining({ sessionId, role: 'coordinator' }),
+        ]);
+        const rootId = 'stopped-root' as SessionId;
+        const childId = 'stopped-child' as SessionId;
+        await manager.repo.upsertDocMeta(getSessionRoomId(rootId), {
+          id: rootId,
+          machineId,
+          userId,
+          collaborationStopped: true,
+        });
+        await manager.repo.upsertDocMeta(getSessionRoomId(childId), {
+          id: childId,
+          machineId,
+          userId,
+          boardId: board.id,
+          parentSessionId: rootId,
+        });
+        const stopped = JSON.parse((await call('lody_board_overview')).content[0]!.text!);
+        expect(stopped.rows).toContainEqual(
+          expect.objectContaining({
+            sessionId: childId,
+            status: 'stopped',
+          })
+        );
+        await manager.repo.upsertDocMeta(getSessionRoomId(rootId), { collaborationStopped: false });
+        const resumed = JSON.parse((await call('lody_board_overview')).content[0]!.text!);
+        expect(resumed.rows).toContainEqual(
+          expect.objectContaining({
+            sessionId: childId,
+            status: 'idle',
+          })
+        );
+        for (let i = 0; i < 101; i++) {
+          const id = `member-${i}` as SessionId;
+          await manager.repo.upsertDocMeta(getSessionRoomId(id), {
+            id,
+            machineId,
+            userId,
+            createdAt: '2026-10-15T00:00:00Z',
+            boardId: board.id,
+            title: '看'.repeat(1000),
+          });
+        }
+        const bounded = await call('lody_board_overview');
+        const boundedText = bounded.content[0]?.text ?? '';
+        expect(Buffer.byteLength(boundedText)).toBeLessThanOrEqual(64 * 1024);
+        expect(JSON.parse(boundedText)).toMatchObject({ truncated: true });
+        expect(JSON.parse(boundedText).rows.length).toBeLessThanOrEqual(100);
+        await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
+          boardId: undefined,
+          boardRole: undefined,
+        });
+        for (const name of ['get', 'overview', 'notes_get', 'notes_append', 'notes_replace']) {
+          const result = await call(
+            `lody_board_${name}`,
+            name === 'notes_append' || name === 'notes_replace' ? { text: 'denied' } : {}
+          );
+          expect(result.isError).toBe(true);
+          expect(result.content[0]?.text).toContain('BOARD_NOT_MEMBER');
+        }
+        expect(readBoardDocument(doc).notes).toBe('short');
+        expect(cloudConnectionAttempts).toBe(0);
+      } finally {
+        await manager.cleanUp({ fast: true, preserveSessionStatus: true });
+      }
+    }
+  );
 
   it('creates a Role Session with the daemon repo, freezes its prompt and dispatches without cloud login', async () => {
     applyLocalPlatformEnv();
@@ -675,7 +857,13 @@ describe('local platform zero-cloud integration', () => {
       } as Parameters<typeof manager.repo.upsertDocMeta>[1]);
       const sessionId = await manager.createSession(machineId, 'custom', 'claude');
       const sourceDoc = await manager.getOrCreateSessionDoc(sessionId);
-      await sourceDoc.appendUserTurn({ id: 'source-turn', role: 'user', userId, timestamp: new Date(0).toISOString(), items: [{ type: 'text', text: 'Continue the peer work.' }] });
+      await sourceDoc.appendUserTurn({
+        id: 'source-turn',
+        role: 'user',
+        userId,
+        timestamp: new Date(0).toISOString(),
+        items: [{ type: 'text', text: 'Continue the peer work.' }],
+      });
       // A session on the other machine, in a project this replica has not received yet.
       const peerSessionId = await manager.createSession(peerId, 'custom', 'claude');
       await manager.repo.upsertDocMeta(getSessionRoomId(peerSessionId), {
@@ -1098,21 +1286,41 @@ describe('local platform zero-cloud integration', () => {
       await expect(run({ command: 'export', outputDir: 'relative' })).rejects.toThrow('absolute');
       const catalog = await manager.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
       writeWorkspaceAgentRoleToFlock(catalog.flock, {
-        v: AGENT_ROLE_VERSION, id: 'terminal-role' as AgentRoleId, name: 'Terminal reviewer',
-        ownerUserId: userId, visibility: 'private', machineId, agentConfigId: configId,
-        runConfig: {}, promptPrefix: 'Review carefully.', revision: 1, createdAt: 1, updatedAt: 1,
+        v: AGENT_ROLE_VERSION,
+        id: 'terminal-role' as AgentRoleId,
+        name: 'Terminal reviewer',
+        ownerUserId: userId,
+        visibility: 'private',
+        machineId,
+        agentConfigId: configId,
+        runConfig: {},
+        promptPrefix: 'Review carefully.',
+        revision: 1,
+        createdAt: 1,
+        updatedAt: 1,
       });
       await manager.repo.flush();
       const attachmentPath = path.join(tempDir, 'terminal-attachment.txt');
       await fs.writeFile(attachmentPath, 'synthetic attachment');
-      const roleSession = (await run({ command: 'create', prompt: 'Inspect this.',
-        agentRole: 'Terminal reviewer', attach: [attachmentPath] })).sessionId as SessionId;
-      expect(await meta(roleSession)).toMatchObject({ agentRoleId: 'terminal-role', agentConfigId: configId });
+      const roleSession = (
+        await run({
+          command: 'create',
+          prompt: 'Inspect this.',
+          agentRole: 'Terminal reviewer',
+          attach: [attachmentPath],
+        })
+      ).sessionId as SessionId;
+      expect(await meta(roleSession)).toMatchObject({
+        agentRoleId: 'terminal-role',
+        agentConfigId: configId,
+      });
       const roleItems = await userPrompts(roleSession);
-      expect(roleItems[0]).toEqual(expect.arrayContaining([
-        expect.objectContaining({ type: 'text', text: 'Review carefully.\n\nInspect this.' }),
-        expect.objectContaining({ type: 'file', transport: 'local', machineId }),
-      ]));
+      expect(roleItems[0]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'text', text: 'Review carefully.\n\nInspect this.' }),
+          expect.objectContaining({ type: 'file', transport: 'local', machineId }),
+        ])
+      );
       await run({ command: 'chat', sessionId: roleSession, prompt: '', attach: [attachmentPath] });
       expect((await userPrompts(roleSession))[1]).toEqual([
         expect.objectContaining({ type: 'file', transport: 'local', machineId }),
@@ -1121,6 +1329,88 @@ describe('local platform zero-cloud integration', () => {
       expect(cloudConnectionAttempts).toBe(0);
     } finally {
       vi.unstubAllGlobals();
+      await manager.cleanUp({ fast: true, preserveSessionStatus: true });
+    }
+  });
+
+  it('resolves Board membership from the parent exclusively, or from the current Session for independent creates', async () => {
+    applyLocalPlatformEnv();
+    const workspaceId = 'lw_board_inheritance' as WorkspaceId;
+    const machineId = 'board-machine' as MachineId;
+    const userId = 'local:board-test';
+    const manager = await LoroDocumentManager.create(workspaceId, userId, createSilentLogger());
+    try {
+      await manager.registerMachine(machineId, {
+        id: machineId,
+        name: 'Desk',
+        ownerUserId: userId,
+      });
+      const configId = await manager.createAgentConfig('custom', 'claude', machineId, 'Synthetic');
+      const current = await manager.createSession(machineId, 'custom', 'claude');
+      const memberParent = await manager.createSession(machineId, 'custom', 'claude');
+      const plainParent = await manager.createSession(machineId, 'custom', 'claude');
+      await manager.repo.upsertDocMeta(getSessionRoomId(current), {
+        boardId: 'bd_current',
+        boardRole: 'coordinator',
+        boardGeneration: 2,
+      } as Partial<SessionMeta>);
+      await manager.repo.upsertDocMeta(getSessionRoomId(memberParent), {
+        boardId: 'bd_parent',
+      } as Partial<SessionMeta>);
+      const environment = createLocalSessionCommandEnvironment({
+        manager,
+        workspaceId,
+        machineId,
+        machineName: 'Desk',
+        userId,
+        host: {
+          readInvocation: (id) => ({
+            type: 'session/active-invocation-context',
+            sessionId: id,
+            active: false,
+          }),
+          readLiveStatus: async (id) => ({ sessionId: id, machineOnline: true, fresh: true }),
+          cancelSession: async () => ({ success: true }),
+          dispatchSession: async () => {},
+        },
+      });
+      const { createSessionResult, resolveTurnDispatchConfig } =
+        await import('../src/commands/session');
+      for (const scenario of [
+        { parent: memberParent, expectedBoard: 'bd_parent' },
+        { parent: plainParent, expectedBoard: undefined },
+        { expectedBoard: 'bd_current' },
+        { useCurrentSessionAsParent: true, expectedBoard: 'bd_current' },
+      ]) {
+        // No ownerTarget: createSessionResult -> prepareSessionInput -> resolveCreateContext.
+        const created = await runWithSessionCommandEnvironment(environment, () =>
+          createSessionResult(
+            environment.auth,
+            environment.workspace,
+            manager,
+            'Inspect this task.',
+            {
+              agentConfig: configId,
+              currentSessionId: current,
+              parent: scenario.parent,
+              useCurrentSessionAsParent: scenario.useCurrentSessionAsParent,
+              boardId: 'bd_current' as never,
+            },
+            { ...resolveTurnDispatchConfig({}), inheritSessionDefaults: false }
+          )
+        );
+        const meta = (await manager.repo.getDocMeta(getSessionRoomId(created.sessionId)))
+          ?.meta as SessionMeta;
+        expect(meta.boardId).toBe(scenario.expectedBoard);
+        expect(meta.parentSessionId).toBe(
+          scenario.parent ?? (scenario.useCurrentSessionAsParent ? current : undefined)
+        );
+        expect(meta.openedBySessionId).toBe(current);
+        expect(meta.boardRole).toBeUndefined();
+        expect(meta.boardGeneration).toBeUndefined();
+      }
+      expect(cloudConnectionAttempts).toBe(0);
+    } finally {
       await manager.cleanUp({ fast: true, preserveSessionStatus: true });
     }
   });

@@ -209,7 +209,9 @@ export const createRoostDirectoryRow = (
     state: 'ready',
     turnId: turn.id,
     scalars,
-    ...(turn.role === 'user' ? { inputConfig: pickDirectoryInputConfig(turn.inputConfig) } : {}),
+    ...(turn.role === 'user' || turn.role === 'system'
+      ? { inputConfig: pickDirectoryInputConfig(turn.inputConfig) }
+      : {}),
     ...(turn.items ? { itemCount: turn.items.length } : {}),
     ...(turn.plan ? { planCount: turn.plan.length } : {}),
   };

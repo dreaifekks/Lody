@@ -5,6 +5,15 @@ import { queryLocalAcpRateLimits, AcpQuotaCleanupError } from '@/agent/acp-runne
 import type { MachineProviderRateLimitsRefreshResponse } from '@lody/shared';
 import { ProviderQuotaRefreshCache } from './provider-quota-refresh-cache';
 import {
+  type BoardMeta,
+  boardFilesMachineId,
+  getWorkspaceFlockDocId,
+  normalizeBoardMeta,
+  workspaceFlockKeys,
+} from '@lody/shared';
+import { getLodyDataDir } from '@lody/shared/node/installation-profile';
+import { BoardDirectory } from '@/lib/board-directory';
+import {
   type AcpModelControls,
   type AcpSessionNotification,
   type ACPSessionId,
@@ -151,7 +160,7 @@ import {
   shouldTerminateOnACPError,
 } from './acp-error-classification';
 import { createSessionBackend, getSteerOperationId, type SessionBackend } from './session-backend';
-import { buildPrompt } from './session-execution-helpers';
+import { buildPrompt, withBoardCoordinatorAgentEnv } from './session-execution-helpers';
 import type { ISession, SessionManager } from './session-manager';
 import type { SessionConfig } from './types';
 import { isAllocatedSessionBranchName } from './worktree/branch-name-allocation';
@@ -163,6 +172,8 @@ import {
 type FinalizeTurnContext = {
   /** Exact input owned by the completed logical invocation, including steer. */
   inputTurnId?: string;
+  /** Board maintenance: no new-message time, no completion notification. */
+  quiet?: boolean;
   sessionId: SessionId;
   session: ISession;
   sessionDoc: SessionDocument;
@@ -301,6 +312,8 @@ type TurnRuntimeState = {
   userTurnId?: string;
   invocation?: TurnInvocation;
   goalControl?: GoalPromptControl;
+  /** A Board maintenance turn: never steered into, never announced. */
+  maintenance?: boolean;
   session?: ISession;
   project?: ProjectRef;
   baseCommitHash?: string | null;
@@ -440,7 +453,7 @@ type VisibleSessionTurnPlan = {
 };
 
 /** How the turn payload reached this machine (RPC fast path vs CRDT history vs queue promotion). */
-export type SessionDispatchSource = 'rpc' | 'crdt' | 'queue' | 'inbox' | 'goal';
+export type SessionDispatchSource = 'rpc' | 'crdt' | 'queue' | 'inbox' | 'goal' | 'maintenance';
 
 type SessionDispatchOptions = {
   inboxBatch?: InboxBatch;
@@ -457,6 +470,11 @@ type SessionDispatchOptions = {
   onTurnClaimed?: () => Promise<boolean>;
   /** Runs immediately before the request can cross into the ACP provider. */
   onTurnStarted?: () => Promise<boolean>;
+  /**
+   * Maintenance only: start a new agent conversation for this Session instead of
+   * resuming its ACP session, without replaying the Lody history into it.
+   */
+  freshAgentSession?: boolean;
 };
 
 export type PreparedSessionDispatchRequest =
@@ -634,7 +652,9 @@ export type SessionExecutionServiceDeps = {
     sessionDoc: SessionDocument,
     reason: ChatFailedReason,
     message?: string,
-    code?: ChatFailedCode
+    code?: ChatFailedCode,
+    /** `quiet`: record the notice without a failure alert. */
+    options?: { quiet?: boolean }
   ) => Promise<void>;
   /**
    * True once the daemon has begun shutting down. Shutdown stops every agent on
@@ -1641,7 +1661,8 @@ export class SessionExecutionService {
           if (this.pendingGoalTurnBySession.get(sessionId) !== pending) continue;
           this.pendingGoalTurnBySession.delete(sessionId);
           const sessionDoc = await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId);
-          await this.deps.recordChatFailure(
+          await this.recordChatFailure(
+            false,
             sessionDoc,
             'turn_pre_prompt_failed',
             `Goal ${pending.control.action} failed: ${formatErrorMessage(error)}`
@@ -1717,6 +1738,138 @@ export class SessionExecutionService {
       }
     );
     return claimed;
+  }
+
+  /**
+   * What a Board member's start prompt says about its Board, from the current
+   * Board row. Members on the machine that keeps the Board directory get its
+   * path; the others reach it through the Board file tools.
+   */
+  private async boardPromptContext(
+    sessionId: SessionId,
+    meta: SessionMeta | null | undefined
+  ): Promise<
+    { board: BoardMeta; role: SessionMeta['boardRole']; directory: string | undefined } | undefined
+  > {
+    if (!meta?.boardId) return undefined;
+    const workspaceId = this.deps.workspaceId;
+    const board = normalizeBoardMeta(
+      (
+        await this.deps.workspaceDocument.repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId))
+      ).flock.get(workspaceFlockKeys.board(meta.boardId))
+    );
+    if (!board) throw new Error('BOARD_NOT_FOUND');
+    const host = boardFilesMachineId(
+      board,
+      board.coordinatorSessionId === sessionId
+        ? meta
+        : ((
+            await this.deps.workspaceDocument.repo.getDocMeta(
+              getSessionRoomId(board.coordinatorSessionId)
+            )
+          )?.meta as SessionMeta | undefined)
+    );
+    return {
+      board,
+      role: meta.boardRole,
+      directory:
+        host === this.deps.machineId
+          ? new BoardDirectory(getLodyDataDir).boardPath(workspaceId, board.id)
+          : undefined,
+    };
+  }
+
+  private readonly boardMaintenanceHolds = new Set<SessionId>();
+
+  /**
+   * Keep Inbox batches off this Session between maintenance turns that must run
+   * back to back: after the old agent handed over, results belong to the new one.
+   */
+  holdInboxForBoardMaintenance(sessionId: SessionId, held: boolean): void {
+    if (held) this.boardMaintenanceHolds.add(sessionId);
+    else if (this.boardMaintenanceHolds.delete(sessionId)) void this.operationInbox?.wake();
+  }
+
+  isInboxHeldForBoardMaintenance(sessionId: SessionId): boolean {
+    return this.boardMaintenanceHolds.has(sessionId);
+  }
+
+  /** Whether the live agent of this Session can compact its context; undefined when none runs. */
+  contextCompactionSupport(sessionId: SessionId): boolean | undefined {
+    const client = this.deps.sessionManager.getSession(sessionId)?.agentClient;
+    return client ? client.supportsContextCompaction() : undefined;
+  }
+
+  /**
+   * Run one Board maintenance step in an idle Session: a system turn with a
+   * hidden assistant entry, outside the Inbox, that never marks the Session
+   * updated. `renewBoardInstructions` appends the current Board start
+   * instructions; `freshAgentSession` starts a new agent conversation. Resolves
+   * to the visible-turn outcome, where only `completed` ran to the end.
+   */
+  async runBoardMaintenanceTurn(request: {
+    sessionId: SessionId;
+    /** `boardMaintenanceStepId`; the assistant entry is `assistant:<stepTurnId>`. */
+    stepTurnId: string;
+    prompt: string;
+    /** The driving turn's configuration, so a fresh agent keeps its model and mode. */
+    config: SessionTurnInputConfig;
+    userId: string;
+    userName: string;
+    userEmail: string;
+    renewBoardInstructions?: boolean;
+    freshAgentSession?: boolean;
+  }): Promise<string> {
+    const { sessionId } = request;
+    const sessionDoc = await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId);
+    const meta = await sessionDoc.getMetaState();
+    if (!meta || meta.isArchived || !meta.cliType || !meta.agentType) return 'unavailable';
+    const boardContext = request.renewBoardInstructions
+      ? await this.boardPromptContext(sessionId, meta)
+      : undefined;
+    const prompt = boardContext
+      ? buildPrompt(request.prompt, undefined, undefined, undefined, { boardContext })
+      : request.prompt;
+    const resume = request.freshAgentSession ? undefined : resolveDispatchAcpSessionId(meta);
+    // The driving turn's run configuration, without its own input or delivery marker.
+    const {
+      inputBlocks: _blocks,
+      issuePRMentions: _mentions,
+      _lodyDeliveryKind: _delivery,
+      ...config
+    } = request.config as SessionTurnInputConfig & { _lodyDeliveryKind?: unknown };
+    const turn = await this.prepareContinueSessionTurn(
+      {
+        type: 'session/chat',
+        sessionId,
+        machineId: this.deps.machineId,
+        workspaceId: this.deps.workspaceId,
+        ...(meta.project ? { project: meta.project } : {}),
+        userTurnId: request.stepTurnId,
+        userId: request.userId,
+        userName: request.userName,
+        userEmail: request.userEmail,
+        acpSessionConfig: {
+          ...config,
+          cliType: meta.cliType,
+          agentType: meta.agentType,
+          prompt,
+          ...(resume ? { resume } : {}),
+        },
+      },
+      {
+        dispatchSource: 'maintenance',
+        ...(request.freshAgentSession ? { freshAgentSession: true } : {}),
+      },
+      { sessionDoc }
+    );
+    try {
+      return await this.runVisibleSessionTurn(turn.options, turn.body);
+    } finally {
+      // Outside the Inbox, nothing else tells it or a held user turn that the Session is free.
+      await this.operationInbox?.wake();
+      this.onInboxReleased?.(sessionId);
+    }
   }
 
   async steerSession(options: {
@@ -1851,6 +2004,11 @@ export class SessionExecutionService {
         applied: true,
         disposition: 'applied',
       };
+    }
+    // A maintenance turn's reply is hidden behind its divider: the user's
+    // guidance runs as their own next turn instead.
+    if (runtime.maintenance) {
+      return await rejectAndPromote('busy', 'Board maintenance is running');
     }
     const waitController = (runtime.steerWaitController ??= new AbortController());
     const wait = <T>(work: Promise<T>) => waitForSteer(work, waitController.signal);
@@ -2774,7 +2932,7 @@ export class SessionExecutionService {
   private createTurnRuntime(
     options: Pick<
       VisibleSessionTurnOptions,
-      'sessionId' | 'session' | 'userTurnId' | 'invocation' | 'goalControl'
+      'sessionId' | 'session' | 'userTurnId' | 'invocation' | 'goalControl' | 'dispatchSource'
     > & { turnId: string }
   ): TurnRuntimeState {
     return {
@@ -2783,6 +2941,7 @@ export class SessionExecutionService {
       userTurnId: options.userTurnId,
       invocation: options.invocation,
       goalControl: options.goalControl,
+      ...(options.dispatchSource === 'maintenance' ? { maintenance: true } : {}),
       session: options.session,
       promptStarted: false,
       promptInFlight: false,
@@ -3135,6 +3294,7 @@ export class SessionExecutionService {
           userTurnId: runtime.userTurnId,
           reason: 'session_init_failed',
           message: formatInitializationStallMessage(stall),
+          ...(runtime.maintenance ? { quiet: true } : {}),
         })
       )
     );
@@ -3272,6 +3432,22 @@ export class SessionExecutionService {
     );
   }
 
+  /**
+   * Records a failed turn's notice. `quiet` is the failing turn's own Board
+   * maintenance flag: its failure stays on its divider, without a failure alert.
+   */
+  private async recordChatFailure(
+    quiet: boolean,
+    ...args: Parameters<SessionExecutionServiceDeps['recordChatFailure']>
+  ): Promise<void> {
+    if (!quiet) {
+      await this.deps.recordChatFailure(...args);
+      return;
+    }
+    const [sessionDoc, reason, message, code] = args;
+    await this.deps.recordChatFailure(sessionDoc, reason, message, code, { quiet: true });
+  }
+
   private async recordPrePromptFailure(
     sessionId: SessionId,
     sessionDoc: SessionDocument,
@@ -3296,14 +3472,20 @@ export class SessionExecutionService {
     runtime.prePromptFailureRecorded = true;
     const message = formatErrorMessage(error);
     if (isGitExecutableNotFoundError(error)) {
-      await this.deps.recordChatFailure(
+      await this.recordChatFailure(
+        runtime.maintenance === true,
         sessionDoc,
         'turn_pre_prompt_failed',
         message,
         GIT_EXECUTABLE_NOT_FOUND_CODE
       );
     } else {
-      await this.deps.recordChatFailure(sessionDoc, 'turn_pre_prompt_failed', message);
+      await this.recordChatFailure(
+        runtime.maintenance === true,
+        sessionDoc,
+        'turn_pre_prompt_failed',
+        message
+      );
     }
     this.deps.logger.debug(
       `[${sessionId}] Recorded pre-prompt failure notice for turn ${runtime.turnId}`
@@ -3317,6 +3499,8 @@ export class SessionExecutionService {
     reason: ChatFailedReason;
     code?: string;
     message: string;
+    /** The failing turn is Board maintenance. */
+    quiet?: boolean;
   }): Promise<void> {
     // turn_failed (spec §5b, P0). These are known, pre-prompt halts — not ACP
     // protocol errors — so is_acp_error=false.
@@ -3348,7 +3532,12 @@ export class SessionExecutionService {
         { tier: 'A' }
       );
     }
-    await this.deps.recordChatFailure(options.sessionDoc, options.reason, options.message);
+    await this.recordChatFailure(
+      options.quiet === true,
+      options.sessionDoc,
+      options.reason,
+      options.message
+    );
     if (options.userTurnId) {
       await this.markTurnFailed(options.sessionId, options.sessionDoc, options.userTurnId);
     }
@@ -3424,6 +3613,8 @@ export class SessionExecutionService {
     reason: ChatFailedReason;
     code?: string;
     message: string;
+    /** The failing turn is Board maintenance. */
+    quiet?: boolean;
   }): Effect.Effect<never, unknown, never> {
     return this.tryPromise(() => this.recordKnownChatFailure(options)).pipe(
       Effect.flatMap(() =>
@@ -3477,7 +3668,12 @@ export class SessionExecutionService {
     if (options.userTurnId) {
       await this.markTurnFailed(options.sessionId, options.sessionDoc, options.userTurnId);
     }
-    await this.handleTurnError(options.sessionId, options.sessionDoc, options.error);
+    await this.handleTurnError(
+      options.sessionId,
+      options.sessionDoc,
+      options.error,
+      options.runtime.maintenance === true
+    );
     await options.onUnhandledError?.(options.error);
   }
 
@@ -3584,7 +3780,9 @@ export class SessionExecutionService {
   private async handleTurnError(
     sessionId: SessionId,
     sessionDoc: SessionDocument,
-    error?: unknown
+    error?: unknown,
+    /** The failing turn is Board maintenance: record its failure without an alert. */
+    quiet = false
   ): Promise<void> {
     const acpError = error ? parseACPError(error) : null;
     const providerDisconnected = error ? isAgentDisconnectedError(error) : false;
@@ -3614,7 +3812,8 @@ export class SessionExecutionService {
           'daemon_restart',
           false
         );
-        await this.deps.recordChatFailure(
+        await this.recordChatFailure(
+          quiet,
           sessionDoc,
           'daemon_restart',
           'Lody restarted while the agent was working.'
@@ -3637,7 +3836,7 @@ export class SessionExecutionService {
           failureReason,
           true
         );
-        await this.deps.recordChatFailure(sessionDoc, failureReason, recordedMessage);
+        await this.recordChatFailure(quiet, sessionDoc, failureReason, recordedMessage);
 
         if (shouldTerminateOnACPError(acpError, failureReason)) {
           // Expired credentials leave a healthy agent process behind, so close
@@ -3670,7 +3869,8 @@ export class SessionExecutionService {
           'agent_disconnected',
           true
         );
-        await this.deps.recordChatFailure(
+        await this.recordChatFailure(
+          quiet,
           sessionDoc,
           'agent_disconnected',
           'The agent process disconnected unexpectedly. Please try again.'
@@ -3965,6 +4165,12 @@ export class SessionExecutionService {
     });
     this.deps.logger.info(`Session chat completed: ${sessionId}`);
 
+    if (ctx.quiet) {
+      // Maintenance is background work: it neither marks the conversation
+      // updated nor tells the user something finished.
+      this.deps.touchSession(sessionId);
+      return;
+    }
     try {
       await this.runTurnFinalizationStage(
         sessionId,
@@ -4064,7 +4270,9 @@ export class SessionExecutionService {
       return 'duplicate';
     }
 
-    const inbox = this.operationInbox;
+    // Board maintenance stays outside the Inbox: it neither takes queued results
+    // nor admits as a task; the Worker that runs it wakes the Inbox afterwards.
+    const inbox = options.dispatchSource === 'maintenance' ? undefined : this.operationInbox;
     const invocation = options.invocation;
     try {
       if (inbox && invocation?.requesterUserId && !options.inboxBatch) {
@@ -4093,7 +4301,7 @@ export class SessionExecutionService {
               userId: invocation.requesterUserId,
               inputId: invocation.sourceTurnId,
               kind:
-                this.operationInbox?.inputKind(
+                inbox.inputKind(
                   {
                     workspaceId: this.deps.workspaceId,
                     sessionId,
@@ -4458,6 +4666,7 @@ export class SessionExecutionService {
                 yield* self.tryPromise(() =>
                   backend.applyHistoryAction({
                     kind: 'upsert-turn',
+                    beforeTurnId: runtime.turnId,
                     turn: {
                       id:
                         inboxBatch!.kind === 'automatic'
@@ -4466,6 +4675,9 @@ export class SessionExecutionService {
                       role: 'system',
                       author: { v: 1, kind: 'system' },
                       userId: inboxBatch!.userId,
+                      ...(inboxBatch!.kind === 'automatic'
+                        ? { inputConfig: invocation?.inputConfig }
+                        : {}),
                       timestamp: new Date(getServerNow()).toISOString(),
                       finished: true,
                       fileDiff: [],
@@ -5140,13 +5352,16 @@ export class SessionExecutionService {
     sessionDoc: SessionDocument;
     turnId: string;
     userTurnId?: string;
+    /** The failing turn is Board maintenance. */
+    quiet?: boolean;
   }): Promise<void> {
     this.deps.logger.warn(
       `[${options.sessionId}] Turn ${options.turnId} completed without any agent output; ` +
         'recording it as a failed turn instead of a silent completion'
     );
     this.captureTurnFailed(options.sessionId, options.turnId, 'agent_no_output', false);
-    await this.deps.recordChatFailure(
+    await this.recordChatFailure(
+      options.quiet === true,
       options.sessionDoc,
       'agent_no_output',
       SILENT_TURN_FAILURE_MESSAGE
@@ -5291,9 +5506,16 @@ export class SessionExecutionService {
     const { sessionId, acpSessionConfig, userId, userName, userEmail, userTurnId } = message;
     // System-caused turns own an assistant entry, not a user dispatch pointer.
     const executionUserTurnId =
-      dispatchOptions?.dispatchSource === 'inbox' || dispatchOptions?.dispatchSource === 'goal'
+      dispatchOptions?.dispatchSource === 'inbox' ||
+      dispatchOptions?.dispatchSource === 'goal' ||
+      dispatchOptions?.dispatchSource === 'maintenance'
         ? undefined
         : userTurnId;
+    const freshAgentSession =
+      dispatchOptions?.dispatchSource === 'maintenance' &&
+      dispatchOptions.freshAgentSession === true;
+    // A Board maintenance turn's failure stays on its divider, without a failure alert.
+    const quietFailure = dispatchOptions?.dispatchSource === 'maintenance' ? { quiet: true } : {};
     const sessionDoc =
       prepareOptions?.sessionDoc ??
       (await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId));
@@ -5343,6 +5565,7 @@ export class SessionExecutionService {
         const missingMessage = `Local project not found in workspace: ${project.localProjectId}`;
         self.deps.logger.warn(`[${sessionId}] ${missingMessage}`);
         return yield* self.recordKnownChatFailureAndHaltEffect({
+          ...quietFailure,
           sessionId,
           sessionDoc,
           userTurnId: executionUserTurnId,
@@ -5353,6 +5576,7 @@ export class SessionExecutionService {
       if (meta?.isArchived) {
         self.deps.logger.warn(`[${sessionId}] Session is archived; refusing to resume chat`);
         return yield* self.recordKnownChatFailureAndHaltEffect({
+          ...quietFailure,
           sessionId,
           sessionDoc,
           userTurnId: executionUserTurnId,
@@ -5369,6 +5593,7 @@ export class SessionExecutionService {
         const mismatchMsg = `Session was created with ${meta.cliType}/${meta.agentType} but resume requested with ${acpSessionConfig.cliType}/${acpSessionConfig.agentType}`;
         self.deps.logger.warn(`[${sessionId}] Agent type mismatch: ${mismatchMsg}`);
         return yield* self.recordKnownChatFailureAndHaltEffect({
+          ...quietFailure,
           sessionId,
           sessionDoc,
           userTurnId: executionUserTurnId,
@@ -5398,8 +5623,10 @@ export class SessionExecutionService {
         `[${sessionId}] Resume env resolved (agentConfigId=${meta?.agentConfigId ?? 'none'} source=${storedLaunchConfig.source} keys=${agentConfigEnv ? Object.keys(agentConfigEnv).length : 0})`
       );
 
-      const requestedResumeSessionId = acpSessionConfig.resume;
-      const storedResumeSessionId = resolveResumableAcpSessionId(meta);
+      const requestedResumeSessionId = freshAgentSession ? undefined : acpSessionConfig.resume;
+      const storedResumeSessionId = freshAgentSession
+        ? undefined
+        : resolveResumableAcpSessionId(meta);
       const resumeSessionId = requestedResumeSessionId ?? storedResumeSessionId;
       const resumeSource = requestedResumeSessionId
         ? 'request'
@@ -5448,7 +5675,7 @@ export class SessionExecutionService {
         requesterUserId: userId,
         machineId: self.deps.machineId,
         assumeDocExisting: true,
-        env: agentConfigEnv,
+        env: withBoardCoordinatorAgentEnv(meta, agentConfigEnv),
         githubRepo: resolveProjectGitHubRepo(project),
         branch: restoreBranch,
         restoreBranchName: meta?.branchName?.trim() || undefined,
@@ -5504,8 +5731,10 @@ export class SessionExecutionService {
           // to resume, even though the user turn is durable in Loro history.
           // This freshly created ACP session has no knowledge of that turn,
           // so reconstruct its context before sending the current request.
-          const history = self.getSessionHistory(sessionDoc);
-          const historySnapshot = yield* self.tryPromise(() => history);
+          // A fresh agent conversation starts from its own first prompt.
+          const historySnapshot = freshAgentSession
+            ? []
+            : yield* self.tryPromise(() => self.getSessionHistory(sessionDoc));
           if (historySnapshot.length > 0) {
             replayPromptResult = buildReplayPromptFromHistory({
               history: historySnapshot,
@@ -5580,6 +5809,7 @@ export class SessionExecutionService {
                   `[${sessionId}] Refusing context-free fallback restore (resumeSessionId=${resumeSessionId} historyEntries=${replayHistory.length})`
                 );
                 return yield* self.recordKnownChatFailureAndHaltEffect({
+                  ...quietFailure,
                   sessionId,
                   sessionDoc,
                   userTurnId: executionUserTurnId,
@@ -5621,6 +5851,7 @@ export class SessionExecutionService {
                       `[${sessionId}] Fallback restore also failed: ${fallbackErrMessage}`
                     );
                     return yield* self.recordKnownChatFailureAndHaltEffect({
+                      ...quietFailure,
                       sessionId,
                       sessionDoc,
                       userTurnId: executionUserTurnId,
@@ -5640,6 +5871,7 @@ export class SessionExecutionService {
               `[${sessionId}] Failed to restore session for chat: ${errMessage}`
             );
             return yield* self.recordKnownChatFailureAndHaltEffect({
+              ...quietFailure,
               sessionId,
               sessionDoc,
               userTurnId: executionUserTurnId,
@@ -5985,6 +6217,7 @@ export class SessionExecutionService {
               sessionDoc,
               turnId: completedTurnId,
               inputTurnId: completedInputTurnId,
+              ...(dispatchOptions?.dispatchSource === 'maintenance' ? { quiet: true } : {}),
               baseCommitHash,
               turnStartWorkingTreeDiff,
               userId: completedRequesterUserId,
@@ -6012,6 +6245,7 @@ export class SessionExecutionService {
             },
             async () =>
               await self.recordSilentTurnFailure({
+                ...quietFailure,
                 sessionId,
                 sessionDoc,
                 turnId: completedTurnId,
@@ -6070,7 +6304,8 @@ export class SessionExecutionService {
           requesterUserId: userId,
           inputConfig: acpSessionConfig,
         },
-        ...(dispatchOptions?.dispatchSource === 'inbox'
+        ...(dispatchOptions?.dispatchSource === 'inbox' ||
+        dispatchOptions?.dispatchSource === 'maintenance'
           ? { assistantEntryParentTurnId: userTurnId }
           : {}),
         ...(dispatchOptions?.goalControl ? { goalControl: dispatchOptions.goalControl } : {}),
@@ -6091,6 +6326,7 @@ export class SessionExecutionService {
             const failureMessage = self.formatMemoryPressureFailureMessage(memoryPressureResult);
             self.deps.logger.warn(`[${sessionId}] ${failureMessage}`);
             yield* self.recordKnownChatFailureAndHaltEffect({
+              ...quietFailure,
               sessionId,
               sessionDoc,
               userTurnId: executionUserTurnId,
@@ -6117,8 +6353,9 @@ export class SessionExecutionService {
           let readySession = session;
           if (
             readySession &&
-            JSON.stringify(readySession.getMemoryBinding?.() ?? null) !==
-              JSON.stringify(acpSessionConfig.memory ?? null)
+            (freshAgentSession ||
+              JSON.stringify(readySession.getMemoryBinding?.() ?? null) !==
+                JSON.stringify(acpSessionConfig.memory ?? null))
           ) {
             yield* ctx.abortIfCancelled();
             const previousSession = readySession;
@@ -6157,6 +6394,7 @@ export class SessionExecutionService {
                       `[${sessionId}] Session initialization failed while handling chat: ${errMessage}`
                     );
                     return yield* self.recordKnownChatFailureAndHaltEffect({
+                      ...quietFailure,
                       sessionId,
                       sessionDoc,
                       userTurnId: executionUserTurnId,
@@ -6200,6 +6438,7 @@ export class SessionExecutionService {
               self.tryPromise(() => resolvedSession.terminate(true))
             );
             yield* self.recordKnownChatFailureAndHaltEffect({
+              ...quietFailure,
               sessionId,
               sessionDoc,
               userTurnId: executionUserTurnId,
@@ -6333,7 +6572,7 @@ export class SessionExecutionService {
       requesterUserId: message.userId,
       machineId: this.deps.machineId,
       assumeDocExisting: true,
-      env,
+      env: withBoardCoordinatorAgentEnv(existingMeta, env),
       githubRepo: githubRepoFullName,
       branch,
       project,
@@ -6493,6 +6732,22 @@ export class SessionExecutionService {
             self.captureStatusChanged(sessionId, 'initializing', 'git-clone', 'session_create');
           }
 
+          if (existingMeta?.boardId) {
+            yield* self.tryPromise(() =>
+              self.deps.workspaceDocument
+                .syncFlockDocOrThrow(getWorkspaceFlockDocId(workspaceId), {
+                  reason: 'board-prompt',
+                })
+                .catch((error) => {
+                  self.deps.logger.warn(
+                    `Board catalog refresh failed; using local rows: ${formatErrorMessage(error)}`
+                  );
+                })
+            );
+          }
+          const boardContext = yield* self.tryPromise(() =>
+            self.boardPromptContext(sessionId, existingMeta)
+          );
           const startPromptBlocksBuild = async (session: ISession) => {
             let branchToRename: string | undefined;
             if (newWorktree) {
@@ -6522,7 +6777,10 @@ export class SessionExecutionService {
                 project,
                 agentConfig.issuePRMentions,
                 fromFeedbackPostId,
-                { branchToRename }
+                {
+                  branchToRename,
+                  boardContext,
+                }
               ),
             });
             return traceAsync(
@@ -6951,7 +7209,13 @@ export class SessionExecutionService {
     }
 
     const stoppedRuntime = this.turnRuntimeBySession.get(sessionId);
-    if (this.operationInbox && stoppedRuntime?.invocation?.requesterUserId && pauseInbox) {
+    // A maintenance turn owns no Inbox execution to pause: Stop cancels just the turn.
+    if (
+      this.operationInbox &&
+      stoppedRuntime?.invocation?.requesterUserId &&
+      pauseInbox &&
+      !stoppedRuntime.maintenance
+    ) {
       const scope = {
         workspaceId: this.deps.workspaceId,
         sessionId,

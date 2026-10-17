@@ -23,6 +23,7 @@ export type PaletteResult = {
   /**
    * What the command does, drawn as a glyph. A command without one gets an
    * empty column rather than a stand-in: a glyph every row shares says nothing.
+   * A session row defaults to the chat glyph; a Board's coordinator has its own.
    */
   icon?: PaletteIcon;
   /** The heading this row sits under. Consecutive rows with one heading form a group. */
@@ -295,7 +296,7 @@ export function CommandPaletteView({
 }
 
 function ResultRow({ result, active }: { result: PaletteResult; active: boolean }) {
-  const Icon = result.kind === 'session' ? MessageSquare : result.icon;
+  const Icon = result.icon ?? (result.kind === 'session' ? MessageSquare : undefined);
   return (
     <Cmdk.Item
       value={result.key}

@@ -3,7 +3,7 @@ export {
   type ConversationSessionDataFactory,
 } from './create-conversation-session';
 export * from './types';
-export { isEmptyAssistantIndexRow } from './index-row';
+export { isEmptyAssistantIndexRow, isHiddenAssistantIndexRow } from './index-row';
 export {
   createConversationViewFromReader,
   type CreateConversationViewFromReaderOptions,

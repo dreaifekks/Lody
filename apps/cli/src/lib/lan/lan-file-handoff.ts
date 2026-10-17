@@ -3,8 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Duplex } from 'node:stream';
 import {
+  BoardFileAreaSchema,
+  boardFilesMachineId,
+  machineSupportsLanBoardFiles,
   machineSupportsLanFileRanges,
   machineSupportsLanFiles,
+  type BoardFileEntry,
+  type BoardFileList,
+  type BoardFileScope,
+  type BoardMeta,
   type LocalSessionControlResponse,
   type MachineId,
   type MachineMeta,
@@ -24,8 +31,10 @@ import type { LanHub } from '@lody/shared/node/lan-hub';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import { getSessionFileBlobPath } from '@/lib/session-file-blob-store';
+import type { BoardDirectory } from '@/lib/board-directory';
 import {
   fetchFileFromLanMember,
+  lanBoardFileClient,
   LanFileRangeAborted,
   relayFileRangeFromLanMember,
   sendFilesToLanMember,
@@ -50,6 +59,7 @@ export type LanFileWorkspace = {
 type SendFiles = typeof sendFilesToLanMember;
 type FetchFile = typeof fetchFileFromLanMember;
 type RelayRange = typeof relayFileRangeFromLanMember;
+type BoardClient = typeof lanBoardFileClient;
 type SessionLookup = LanFileWorkspace['lookupSession'];
 
 /**
@@ -80,6 +90,15 @@ export class LanFileHandoff {
       sendFiles?: SendFiles;
       fetchFile?: FetchFile;
       relayRange?: RelayRange;
+      /**
+       * Board shared directories: the ones this machine keeps, and the Board
+       * rows of a workspace this machine runs.
+       */
+      boards?: {
+        directory: BoardDirectory;
+        readBoard: (workspaceId: string, boardId: string) => Promise<BoardMeta | null>;
+        client?: BoardClient;
+      };
       /** Where this machine keeps the file of a block; the blob store by default. */
       keptPath?: typeof getSessionFileBlobPath;
     }
@@ -94,11 +113,158 @@ export class LanFileHandoff {
       store: async (file) => await this.store(workspaceId, file),
       read: async ({ sessionId, fileId }) => await this.kept(workspaceId, sessionId, fileId),
       locate: async (file) => await this.locate(workspaceId, file),
+      ...(this.options.boards
+        ? {
+            board: {
+              list: async (scope) => await this.listKeptBoardFiles(workspaceId, scope),
+              admit: async (file) => {
+                const directory = await this.keptBoard(workspaceId, file);
+                await directory.resolve(workspaceId, file.boardId, file.area, file.path);
+              },
+              put: async (file, receivedPath) =>
+                await this.putKeptBoardFile(workspaceId, file, receivedPath),
+            },
+          }
+        : {}),
     };
+  }
+
+  private boardsOrThrow() {
+    if (!this.options.boards) throw new Error('invalid_request:this machine keeps no Board files');
+    return this.options.boards;
+  }
+
+  /**
+   * The Board a member asks about and the machine that keeps its directory.
+   * Only a member of the Board may ask: the session must be one this machine
+   * has heard of, and carry the Board.
+   */
+  private async boardOf(
+    workspaceId: string,
+    scope: Pick<BoardFileScope, 'boardId' | 'sessionId'>
+  ): Promise<{ board: BoardMeta; host: MachineId | undefined }> {
+    const boards = this.boardsOrThrow();
+    const lookup = this.options.localSessions(workspaceId);
+    if (!lookup) throw new Error('remote_unreachable:this machine does not run that workspace');
+    const session = await lookup(scope.sessionId as SessionId);
+    if (session.type !== 'found' || session.meta.boardId !== scope.boardId)
+      throw new Error('BOARD_NOT_MEMBER:that session is not a member of the Board');
+    const board = await boards.readBoard(workspaceId, scope.boardId);
+    if (!board) throw new Error('BOARD_NOT_FOUND:this machine knows no such Board');
+    const coordinator = await lookup(board.coordinatorSessionId);
+    return {
+      board,
+      host: boardFilesMachineId(board, coordinator.type === 'found' ? coordinator.meta : undefined),
+    };
+  }
+
+  /** A Board directory this machine keeps, as a member may use it. */
+  private async keptBoard(
+    workspaceId: string,
+    scope: Pick<BoardFileScope, 'boardId' | 'sessionId'>
+  ) {
+    const { host } = await this.boardOf(workspaceId, scope);
+    if (host !== this.options.machineId)
+      throw new Error('BOARD_FILES_ELSEWHERE:another machine keeps this Board directory');
+    return this.boardsOrThrow().directory;
+  }
+
+  private async listKeptBoardFiles(workspaceId: string, scope: BoardFileScope) {
+    const directory = await this.keptBoard(workspaceId, scope);
+    return await directory.list(workspaceId, scope.boardId, scope.area);
+  }
+
+  private async putKeptBoardFile(
+    workspaceId: string,
+    file: BoardFileScope & { path: string },
+    sourcePath: string
+  ): Promise<BoardFileEntry> {
+    const directory = await this.keptBoard(workspaceId, file);
+    return await directory.put(workspaceId, file.boardId, file.area, file.path, sourcePath);
+  }
+
+  /** The member that keeps a Board directory, when it is another machine of a LAN. */
+  private async boardRemote(workspaceId: string, host: MachineId | undefined) {
+    const hub = this.options
+      .hubs()
+      .find((candidate) => getLanHubWorkspaceId(candidate.id) === workspaceId);
+    const workspace = this.options.workspace(workspaceId);
+    if (!host || !hub || !workspace)
+      throw new Error(
+        'remote_unreachable:another machine keeps the Board directory, and no LAN of this machine reaches it'
+      );
+    const machine = await workspace.readMachine(host);
+    const endpoint = parseLanTerminalEndpoint(machine?.lanTerminal);
+    if (!endpoint || !machineSupportsLanBoardFiles(machine))
+      throw new Error(
+        `unsupported:${machine?.name?.trim() || host} keeps no Board files for the other machines of ${hub.name}`
+      );
+    return {
+      endpoint,
+      lanId: hub.id,
+      key: deriveLanTerminalKey(hub.token),
+      machineId: host,
+      client: this.boardsOrThrow().client ?? lanBoardFileClient,
+    };
+  }
+
+  /** Lists an area of a Board directory, wherever it is kept. */
+  async listBoardFiles(workspaceId: string, scope: BoardFileScope): Promise<BoardFileList> {
+    const { host } = await this.boardOf(workspaceId, scope);
+    if (host === this.options.machineId) return await this.listKeptBoardFiles(workspaceId, scope);
+    const remote = await this.boardRemote(workspaceId, host);
+    return await remote.client.list({ ...remote, scope });
+  }
+
+  /** Copies a file of a Board directory to `destinationPath`, which must not exist yet. */
+  async readBoardFile(
+    workspaceId: string,
+    scope: BoardFileScope,
+    filePath: string,
+    destinationPath: string
+  ): Promise<{ sizeBytes: number }> {
+    const { host } = await this.boardOf(workspaceId, scope);
+    if (host === this.options.machineId) {
+      return await this.boardsOrThrow().directory.read(
+        workspaceId,
+        scope.boardId,
+        scope.area,
+        filePath,
+        destinationPath
+      );
+    }
+    const remote = await this.boardRemote(workspaceId, host);
+    return await remote.client.read({ ...remote, scope, path: filePath, destinationPath });
+  }
+
+  /** Puts a file of this machine into a Board directory, wherever it is kept. */
+  async putBoardFile(
+    workspaceId: string,
+    scope: BoardFileScope,
+    filePath: string,
+    sourcePath: string
+  ): Promise<BoardFileEntry> {
+    const { host } = await this.boardOf(workspaceId, scope);
+    if (host === this.options.machineId)
+      return await this.putKeptBoardFile(workspaceId, { ...scope, path: filePath }, sourcePath);
+    const remote = await this.boardRemote(workspaceId, host);
+    return await remote.client.put({ ...remote, scope, path: filePath, sourcePath });
   }
 
   /** Where the file of a `range` request is on this machine. */
   private async locate(workspaceId: string, file: LanFileRangeRequest): Promise<string> {
+    if (file.boardId !== undefined) {
+      // `files/…` or `memory/…`, relative to the Board directory.
+      const [area, ...rest] = (file.path ?? '').split('/');
+      const parsedArea = BoardFileAreaSchema.safeParse(area);
+      if (!parsedArea.success)
+        throw new Error('BOARD_PATH_OUTSIDE:the path leaves the Board directory');
+      const directory = await this.keptBoard(workspaceId, {
+        boardId: file.boardId,
+        sessionId: file.sessionId,
+      });
+      return await directory.resolve(workspaceId, file.boardId, parsedArea.data, rest.join('/'));
+    }
     if (file.fileId !== undefined) {
       return (await this.kept(workspaceId, file.sessionId, file.fileId)).path;
     }
@@ -130,7 +296,11 @@ export class LanFileHandoff {
         }
         const machine = await workspace.readMachine(machineId as MachineId);
         const endpoint = parseLanTerminalEndpoint(machine?.lanTerminal);
-        if (!endpoint || !machineSupportsLanFileRanges(machine)) {
+        const supported =
+          request.boardId !== undefined
+            ? machineSupportsLanBoardFiles(machine)
+            : machineSupportsLanFileRanges(machine);
+        if (!endpoint || !supported) {
           throw new Error(
             `unsupported:${machine?.name?.trim() || machineId} gives no part of a file to the other machines of ${hub.name}`
           );

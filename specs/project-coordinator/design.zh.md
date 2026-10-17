@@ -1,0 +1,1185 @@
+# 看板与协调者（Board coordinator mode）
+
+Status: draft
+Translation: current
+
+[English](design.md)
+
+把 Claude Projects 的「一个范围里多条并行线程，由内置协调者拆任务、派线程，人随时
+可以点进任意线程插话」搬进 Lody。本文描述意图、数据归属和投递保证；实现细节以各模块
+的 `AGENTS.md` 为准。文末记录用户已经确认的决定（含上游 0.105.0 修订后的六项决定），
+以及 PR1、PR2 的实现记录。
+
+本版按上游 0.105.0 修订：Delivery 已删除（#1523），结果一律走 Operation Inbox 合批
+唤醒；委派链上限改为 16 并新增「停止协作」（#1428）；自动 review 已删除（#1393）；
+子会话有紧凑任务面板与 `REVERSE_CHAT_FORBIDDEN`（#1481）；用户手动 Stop 的结果不再
+自动唤醒（#1553）。
+
+## 场景
+
+用户建一个看板「Lody 协调者模式」，写下目标，选 Claude Opus 当协调者。协调者读目标后
+用 `lody_session_create` 开三个执行线程（两个在 devnuc 的 worktree 里改代码，一个在
+n100 调研），然后结束回合。
+
+每个线程回合结束、等人回答、失败，或者线程开的 reviewer 卡在等人，Lody 都把这件事
+写成协调者的一条持久结果，由协调者的 Operation Inbox 在它空闲时合成一批送达；协调者
+不必在提示里让执行 session「用 `lody_session_chat` 把结论转发回来」（上游对回头发
+消息本来就拒绝：`REVERSE_CHAT_FORBIDDEN`）。用户打开看板的 Overview，看到三个线程各自
+在做什么、等谁、第几轮、最新结论，点进任意一个直接在它的输入框里插话。线程里的
+agent 直接面对用户，协调者不是传话中间人。用户在任一会话按 Stop，上游的规则生效：
+被停的那条结果不会再自动唤醒谁。
+
+执行线程接到第 5 轮任务时 Lody 拒绝这条消息，协调者改用交接工具开新一代，新一代共用
+原来的 worktree。所有线程都能读写看板的共享笔记；每天凌晨一条定时任务把当天进展写进
+笔记和 nmem。
+
+## 概念与命名
+
+| 概念       | 含义                                                                                   | 标识符            |
+| ---------- | -------------------------------------------------------------------------------------- | ----------------- |
+| 看板 Board | 一组属于同一件事的 session，带一个协调者、一份共享笔记和几条规则                        | `board`, `bd_*`   |
+| 协调者     | 看板固定的一个 session，由 Lody 注入协调者提示，接收自动回报                           | `boardRole`       |
+| 线程       | 看板里不是协调者的根 session（没有 `parentSessionId`）                                 | 线程 id = 根 id   |
+| 代         | 线程到轮数上限后交接出的后继会话，是根 session 的子 Tab，共用目录                       | `boardGeneration` |
+| 回报       | 一个成员事件，记成协调者机器上一条已完成的 `board_report` Operation，由 Inbox 合批送达 | `board_report`    |
+
+Lody 已有的 "project" 指仓库或本地文件夹（`ProjectRef`、`['localProject', id]`、
+`lody_project_list`、侧边栏「本地项目」），所以这个容器不能叫 project。本文用
+「看板 / Board」，见已决定第 1 条。
+
+## 数据模型
+
+### 看板行
+
+存在工作区 Flock 文档（`packages/shared/src/workspace-flock.ts`）里，新增一个行族
+`['board', boardId]`，和 Agent Role 同一份文档、同一套本地落盘后再上传的写法：
+
+```ts
+type BoardMeta = {
+  version: 1;
+  id: BoardId;                       // 'bd_' + uuid
+  name: string;                      // ≤ 80 code points
+  purpose: string;                   // ≤ 4000，看板目标，可为空；成员启动时读到
+  instructions: string;              // ≤ 16000，用户写的指令，注入每个成员的第一条消息
+  coordinatorSessionId: SessionId;
+  createdAtMs: number;
+  createdByUserId: string;
+  rules: {
+    maxRoundsPerThread: number;      // 默认 4
+    reportHumanTurns: boolean;       // 默认 false，见「自动回报」
+    executorConstraints: string;     // ≤ 2000，注入每个线程的第一条消息
+  };
+  files?: { machineId: MachineId };  // 共享目录所在机器；缺省 = 协调者所在机器
+  digestScheduleId?: string;         // 每日摘要定时，见「每日摘要」
+  archivedAtMs?: number;
+};
+```
+
+每个工作区至多 50 个未归档看板；已归档（`archivedAtMs` 有值）的看板不计入上限。看板行
+不保存成员列表：成员资格写在 session 自己的元数据上，Overview 和工具都按 `boardId`
+过滤，没有第二份需要维护一致的名单。
+
+### 成员资格
+
+`SessionMeta`（`packages/shared/src/schema.ts`）的看板字段：
+
+```ts
+boardId?: BoardId;             // 成员资格（PR1）
+boardRole?: 'coordinator';     // 协调者；线程不写（PR1）
+boardGeneration?: number;      // 交接出的后继会话：2、3、…；评审类子 Tab 不写（PR1）
+boardJoinedAtMs?: number;      // 手动加入看板的时刻；创建时入板的会话不写（PR3）
+```
+
+写入时机，全部在创建路径（`prepareSessionInput`，`apps/cli/src/commands/session.ts`）
+或界面的两个创建入口（`session-submission.ts`）：
+
+- 看板创建时建的协调者 session：`boardId` + `boardRole`。
+- 看板成员通过 `lody_session_create` / `create_many` 开的会话：继承请求者的 `boardId`，
+  不论 `useCurrentSessionAsParent` 还是独立 `workContext`，chat 类也一样。执行线程开的
+  reviewer 因此自动入板，这是回报能覆盖孙会话的原因。
+- 子 Tab（`parentSessionId`）：继承根的 `boardId`。
+- 用户在 Overview 上「新线程」：写 `boardId`；session 的 ⋯ 菜单「加入看板 / 移出看板」
+  改写 `boardId`。加入已有会话时同时写 `boardJoinedAtMs`，回报只看加入之后的状态；
+  移出只改字段，不动会话。
+
+协调者和线程都是普通 session，归档、恢复、删除、worktree 清理沿用
+`specs/session-relations.md` 和 `specs/session-worktree-lifecycle.md`，看板不新增目标集。
+归档看板 = 先归档所有 `boardId` 相同的根 session（各自带自己的子 Tab），再归档协调者，最后写
+`archivedAtMs`；恢复看板 = 先恢复每个根 session，再恢复协调者，全部成功后清掉 `archivedAtMs`。
+协调者和看板行两个方向都最后改：中途失败时看板留在原处，各个入口（看板页菜单跟着协调者的
+状态走）都还给出同一个动作，可以重试；不做回滚。
+
+### 线程、代、子会话
+
+```text
+看板 bd_1
+├─ 协调者 S0                         boardRole=coordinator
+├─ 线程 A（根）                      boardId=bd_1
+│   ├─ Tab A' 评审                   parentSessionId=A（执行者自己开的 reviewer）
+│   └─ Tab A2 第 2 代                parentSessionId=A, boardGeneration=2
+├─ 线程 B（根）                      openedBySessionId=S0
+└─ 线程 C（根）                      openedBySessionId=A（线程开的独立会话，仍是线程）
+```
+
+线程的「当前代」= 根本身，或 `boardGeneration` 最大的子 Tab。轮数、回报里的
+「线程状态」、`lody_session_chat` 的轮数检查都按当前代算。代是子 Tab 而不是新根，是因为
+worktree 由根 session 拥有且随根归档清理（`session-worktree-lifecycle.md`），后继必须
+共用这个目录；CLI 创建路径本来就接受 `--parent <sessionId>`（`resolveCreateContext`），
+只是 MCP 面只开放了 `useCurrentSessionAsParent`。
+
+### 共享笔记
+
+每个看板一份 Loro 文档 `board-<id>`（流 `<ws>:bd:<id>`），容器：
+
+- `notes`: LoroText，Markdown 正文，≤ 256 KiB；
+- `meta`: `{ updatedAtMs, updatedBy }`，`updatedBy` 是 session id 或 `'user'`。
+
+用 LoroText 而不是把正文塞进看板行，是因为 Flock 行是整值覆盖、后写赢：两个线程同时
+追加会丢一条；LoroText 并发追加能合并。文档的打开/订阅仿照每条 Schedule 一份文档的
+做法（`packages/shared/src/schedule-repository.ts`、`packages/components/src/hooks/use-schedules.ts`
+的 `useScheduleDocument`），发现靠看板行，不另设注册表。
+
+### 机器本地状态
+
+回报只存在协调者所在机器的 Operation 存储里（`operations.sqlite3`，
+`apps/cli/src/orchestration/operation-store.ts`），和今天的 Operation 一样不同步：
+
+- `operations` 表里 kind = `board_report` 的一条 Operation：请求者是协调者 session，
+  创建即为 `finished`，完成体装一个成员事件（见「自动回报」）；
+- 它在 `inbox_results` 里的那一行，由现有的 `InboxSqlite.indexCompletion()` 在同一事务
+  里写入，和普通 Operation 回执完全同构；
+- `board_report_cursors(board_id, session_id, last_turn_id, last_awaiting_since,
+  last_awaiting_turn_id, last_notice_id)`：每个成员上次处理到哪里。
+
+三者在一个 `BEGIN IMMEDIATE` 事务里提交。没有 Delivery 表，也没有第二套投递状态：
+领取、合批、结算、过期全部是 Inbox 的现成语义。
+
+### 多机 / LAN 同步
+
+| 数据                             | 位置                        | 同步方式                                        |
+| -------------------------------- | --------------------------- | ----------------------------------------------- |
+| 看板行、成员资格、笔记           | 工作区 / session / 看板文档 | 持久流，经 hub 同步到每个成员，离线编辑后合并   |
+| 回报 Operation、Inbox 结果、游标 | 协调者机器的 SQLite         | 不同步；和今天的 Operation 一样                 |
+| 线程状态                         | session 元数据 + presence   | 元数据持久同步；presence 走已有的瞬态通道，只读 |
+
+线程可以在任何成员机器上。协调者机器观察线程靠的是同步过来的 session 文档，和今天
+Operation 的回执一样（`coordinator-workflow.ts` 的 `reconcileItem` 读目标文档），不需要
+新的机器间 RPC。本设计不向瞬态通道发布任何新内容，遵守 `lody-loro-sync-stack` 的限制。
+
+## 协调者会话
+
+### 创建
+
+侧边栏看板组的「+」新建看板：名称（必填）、目标（可选）、协调者的 agent（复用 Schedule 的
+agent 选择控件 `schedule-agent-controls.tsx`：Agent Role 或 机器 + agent 配置 + 运行配置）。
+创建写看板行（`files.machineId` 记协调者所在机器），再创建一个还没有任何消息的协调者
+session（`createSession`，工作上下文默认 chat），然后进入看板。不自动发第一条消息：用户
+进看板后自己开口，所选的运行配置留在协调者的输入框里。协调者的 agent 默认记住上一次的
+选择。
+
+### 内置提示
+
+今天一个回合送给 agent 的文本只有 ACP prompt 一条路：生产者冻结 `inputConfig.prompt`
+（Agent Config 的 prompt + Role 前缀 + 任务），守护进程只在创建路径的 `buildPrompt`
+（`apps/cli/src/session/session-execution-helpers.ts`）后面追加 MCP 工具、文件路径和
+`lody-lan` 三段提醒，续接回合不追加。看板提示沿用这条路：
+
+- 协调者第一条消息：`buildPrompt` 追加「协调者说明」；
+- 线程第一条消息：`buildPrompt` 追加「线程说明」；
+- 回报回合：就是上游的 Inbox 批次回合，正文是 `batchPreview` 生成的固定说明加成员
+  JSON（`inbox/model.ts`），不另外注入看板文本。
+
+协调者说明是产品模板，内容固定、按看板字段填空：
+
+1. 身份与目标：你是看板「{name}」的协调者；目标：{purpose}（为空时不写这一句）。
+2. 工作方式：协调者只协调，不做具体实现，但要掌握全局：有哪些线程、各自的结论、还剩
+   什么、哪些要用户拍板。拆任务、用 `lody_session_create` 开线程（线程出现在看板面板里，
+   线程自己开的 reviewer 等会话归在该线程下面）、派完结束回合等回报。回报和你
+   自己派发的回执一样，作为「已完成的异步工作」批次送达，`operationKind` 为
+   `board_report`，一条一个成员事件；看板里任何成员（含线程开的子会话）的失败、等人、
+   通知都会这样送到，不要让执行 session 转发（上游会拒绝回头发消息）。用
+   `lody_board_overview` 看全局，用 `lody_session_history` 读细节。
+3. Lody 代你执行的规则：每个线程最多 {maxRoundsPerThread} 轮，到上限后
+   `lody_session_chat` 会被拒绝，改用 `lody_board_thread_handoff` 交接；对当前这轮的
+   补充用 `followUp: true`，不计轮数。委派链上限 16 跳，收到 `CHAIN_DEPTH_EXCEEDED`
+   就停下向用户汇报；用户按过 Stop 之后，积累的回报会随用户的下一句话一起送来。
+4. 执行线程的固定约束：{executorConstraints}。Lody 会自动附在每个线程的第一条消息里，
+   协调者不用转述。
+5. 共享笔记：`lody_board_notes_*`；结论和决定写进笔记，别只留在对话里。
+6. 只向用户汇报结论和需要用户决定的事。
+7. 共享目录与记忆：同机成员拿到看板目录的绝对路径，其他机器用 `lody_board_files_*`；
+   `files/` 放大家都要看的文件，`memory/` 放记忆，以 `MEMORY.md` 为索引，启动时先读
+   索引，要让后来者记住的事写成一个短文件。协调者负责维护 `MEMORY.md`。
+8. 用户写的看板指令（不为空时）附在最后，每个成员都要遵守。
+
+线程说明一段：本会话是看板「{name}」的线程（目标一句）；你开的子会话归在你的线程下；协调者 session 是 {id}；你的回合
+结束、等人回答或失败时 Lody 会自动通知协调者，不必也不能转发；共享笔记工具；约束：
+{executorConstraints}。你开的 reviewer 等子会话结论回来后，把结论原样写进你的回复，
+不要自己按结论动手改，改哪些由协调者决定。交接出的新一代还会在前面加上交接事实
+（见「交接」）。
+
+### 产品逻辑 vs 提示
+
+| 做成产品逻辑                                                     | 留在提示里                                        |
+| ---------------------------------------------------------------- | ------------------------------------------------- |
+| 成员资格继承、回报的事件来源、持久结果、Inbox 合批与唤醒         | 怎么拆任务、派给谁、交叉评审的组合                |
+| 轮数统计、轮数上限拒绝、`followUp`                               | 什么算「补充」而不是新一轮（由协调者打 `followUp`） |
+| 交接：子 Tab、共用目录、交接事实前缀                             | 交接说明的正文（做了什么、没解决什么）            |
+| 停止协作、Inbox 暂停、用户 Stop 不唤醒、16 跳上限（全部是上游的） | 收到评审结论后筛选（例如去掉 Codex 的防御性建议） |
+| 笔记文档、容量、追加/替换                                        | 笔记写什么、何时写                                |
+| 每日摘要的定时与目的地                                           | 摘要的写法，写入 nmem 的命令                      |
+
+交叉评审没有产品逻辑：执行线程自己开 reviewer 子会话（普通的 `lody_session_create`，
+`useCurrentSessionAsParent: true`），reviewer 的结果通过它自己的回执唤醒执行线程。
+Agent Role 偏好（哪类任务用哪个模型）和「只 commit 不 push」这类约束不进代码：前者继续
+放在 nmem 的 agent 规则里，后者放在看板的 `executorConstraints` 文本里，用户可改。
+
+## 自动回报
+
+一句话：观察者把成员的新状态写成协调者的一条已完成 Operation，Inbox 决定什么时候、
+以什么深度、合成多大一批送给协调者；看板不再有自己的投递管道。
+
+### 事件来源
+
+全部来自同步到协调者机器的 session 文档，对看板里除协调者以外的每个成员（含子 Tab
+和线程开的独立会话）。先找成员的「最新驱动回合」：最新的 user turn，或者带
+`inputConfig.chainDepth` 的 system 回合（续接、Inbox 批次、定时都是 system 驱动），再取
+它之后的第一条 assistant 行。只看 user turn 会漏掉系统驱动的回合，于是「执行者按
+review 改完」永远不会回报。
+
+| 事件           | 证据（`SessionMeta` / 历史）                                                     | 起因过滤                                   |
+| -------------- | -------------------------------------------------------------------------------- | ------------------------------------------ |
+| `finished`     | 驱动回合之后的第一条 assistant 行已到终态（`isTerminalAssistantEntry`），且比游标新 | 驱动回合 `author.kind === 'human'` 时默认不报 |
+| `failed`       | 驱动回合 `status === 'failed'`，或同回合的 `chat_failed` 系统行                  | 不分起因都报                               |
+| `waiting_user` | `awaitingUserSince` 新设置且晚于驱动回合：权限请求、提问                         | 不分起因都报；同一驱动回合只报一次         |
+| `notice`       | `agentNotice.id` 变化（成员调用了 `lody_notify_user`）                           | 不分起因都报                               |
+
+人工过滤用 `author.kind !== 'human'`，不用 `=== 'agent'`：system 起因的回合不是人，
+不能被误静音。`reportHumanTurns` 打开时人工驱动的 `finished` 也报。`cancelled` 不作为
+自动回报事件（见「已决定：Inbox 修订」第 3 条）：用户在成员上按 Stop 的结果按 #1553 不能自动唤醒，而
+跨机器只能从同步文档看到「取消了」，分不清是谁取消的；协调者自己的
+`lody_operation_cancel` 它已经知道。取消只进 Overview。
+
+每条事件带：成员 session id、标题、机器、当前代、`contextWindowUsage`、起因
+（`author.kind`）、assistant 文本的 32 KiB 尾重预览（同 Operation item 的 `output`：
+25% 头 / 75% 尾）、`waiting_user` 时的请求摘要、`notice` 的正文。成员从加入看板
+（`boardJoinedAtMs`）之前留下的状态不报：手动加入已有会话时游标初始化为加入时刻之后。
+
+### 观察者
+
+观察者是 `LodyOperationCoordinator` / `coordinator-workflow.ts` 里新增的看板分支，只在
+协调者 session 所在机器的 Host-lease Worker 里跑，以 `meta.machineId === this.machineId`
+为界；线程在哪台机器无关，所以跨机不会两边各报一次。协调者自己不在观察范围内，不会
+自己触发自己。
+
+- 成员集合靠事件维护，不靠全量扫描：订阅工作区目录的 `board` 行族，以及 session 文档的
+  `doc-metadata` 事件（字段 `boardId`、`isArchived`、`awaitingUserSince`、`agentNotice`、
+  `lastMessageAt`、`collaborationStopped`，和 `message-handler.ts` 订阅
+  `collaborationStopped` 同一个 `repo.watch` 入口）；成员的历史变化由各自文档的订阅
+  标脏。
+- 唤醒合并：同一时刻最多一个 reconcile 在跑、一个在排队；一次 reconcile 只重读标脏
+  的成员，已归档的成员跳过。否则流式输出每导入一次就触发一次全工作区扫描。
+- 观察者在协调者 Operation 的 reconcile 之后、同一轮里跑，所以协调者自己派发的回合，
+  其回执一定先于去重检查可见。
+- 它不判断协调者是否空闲：事件一经确认就写成结果，空闲、忙、暂停、停止都交给 Inbox。
+  旧设计里「空闲边界前后各判一次」的逻辑不再需要。
+
+### 持久结果与交给 Inbox 的接口
+
+一个事件 = 一条 Operation，走 `operation-store.ts` 新增的 `acceptBoardReport()`，一个
+`BEGIN IMMEDIATE` 事务里做三件事：
+
+1. 插入 `operations` 行：`kind = 'board_report'`，`requesterSessionId` = 协调者，
+   `ownerMachineId` = 本机，`state = 'finished'`，`items: []`，完成体
+   `{ type: 'result', value: { items: [], boardReport: { boardId, events: [event] } } }`
+   （`OperationResultSchema` 新增可选 `boardReport`，`LodyOperationKind` 新增
+   `board_report`）；`initiatorChainDepth` 和 `frozenContinuationConfig.inputConfig` 取
+   协调者最新驱动回合的 `inputConfig`（含 `chainDepth`），和上游续接回合用的配置同源。
+2. 调现有的 `inbox.indexCompletion()`：写 `inbox_results`，协调者空闲、未暂停、没有已
+   接受的输入时顺手登记一个 pending intent。这一步没有看板特例。
+3. 前移该成员的游标。
+
+Operation id 是确定性的：对成员 id、驱动回合 id、事件，以及 `waiting_user` / `notice`
+的 `awaitingUserSince` / `agentNotice.id` 组成的 JSON 元组散列，取 `board-` + SHA-256
+前 58 个十六进制字符，满足现有 64 字符的 id 契约。`operations` 主键
+`(requester_session_id, operation_id)` 和 `operation_retired_ids` 触发器因此天然实现
+「接收的协调者 + 源事件」去重，重启、重复扫描、七天过期后都不会二次接受。完成体受
+现有 64 KiB 上限约束（`assertCompletionBound`），截断的让协调者用 `lody_session_history`
+读全文。
+
+### 合批与链深度
+
+批次全部是上游的：
+
+- 协调者空闲时，第一条可唤醒的结果就登记 intent；忙时结果只是排队，回合正常释放
+  （`release()`）时登记一个 intent。`prepare()` 领取时快照水位、冻结当时所有未消费
+  未领取的结果为一批，领取之后到的结果等下一批。不做定时器、不做计数阈值。
+- 用户给协调者的消息永远先走：人工输入到达时已准备好的自动批次被取代，排队的结果随
+  人工输入一起送达（human-plus-batch）。
+- 批次正文 `batchPreview` 内联最多 50 条、64 KiB，其余让协调者用
+  `lody_operation_batch_get` 分页读（128 KiB 一页）。
+- 批次深度 `batchDepth`（`inbox/model.ts`）：自动批次 = max(配置的 `chainDepth`，各
+  成员的 `chain_depth`) + 1；人工或定时（`task`）批次 = 该输入自己的深度（通常 0）。
+  自动批次深度 ≥ 16（`LODY_MAX_CHAIN_DEPTH`，`inbox/sqlite.ts` 的领取检查）时 intent 记
+  为 `depth_limited`，不领取；结果留在队列里，等用户下一句话以深度 0 带走。
+
+回报行的 `chain_depth` 取协调者当时最新驱动回合的深度（已决定：Inbox 修订第 1 条）。这样每次自主
+唤醒恰好加一跳，用户或定时回合之后回到 0 再数，孙会话的事件不额外消耗跳数，而且和
+协调者自己派发的回执（`initiatorChainDepth` = 派发时的深度）在常见情形下一致。从用户
+的一句话起算，协调者最多自主唤醒 15 次（深度 1–15），第 16 次被 Inbox 拦下。协调者在
+深度 15 仍可派发（上游只拒绝 ≥ 16 的发起者），被派发的成员在 16 不能再派。
+
+Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动回合的 `chainDepth`。到上限
+时观察者在协调者历史写一张幂等的 `board_chain_limit` 系统通知：
+「自主链已到上限，说一句话继续」，一次链一张；Overview 据此显示「已停止」。
+
+### 去重
+
+三层，都不依赖内存状态：
+
+1. 游标：每个成员只报比 `board_report_cursors` 新的驱动回合 / 等待时刻 / 通知 id；被
+   过滤掉的（人工驱动、已被回执覆盖）也前移游标，所以以后打开 `reportHumanTurns` 不会
+   回放旧事件。
+2. Operation id：同一成员、同一驱动回合、同一事件只能被接受一次（主键 + 退役 id）。
+3. 回执覆盖：`finished` / `failed` 的 `(sessionId, userTurnId)` 若是协调者自己任何一条
+   `session_create` / `session_chat`（含 `_many`）Operation 的目标，不论该 Operation 仍
+   active 还是已完成仍保留，都不再报：那条回执本身会送达。只查 active 会在它完成后的
+   下一次扫描重报。`waiting_user` 和 `notice` 没有对应的回执，照常报。已超时或被取消
+   的根下尚未完成的目标不会被永久遮蔽：它们的终态回合比游标新，照常报。
+
+回报是成员状态向上的唯一通道。提示里不要求、也不能依赖成员转发：被协调者的 chat 唤醒
+的那个回合里，成员对协调者的 `lody_session_chat` 会被 `REVERSE_CHAT_FORBIDDEN` 拒绝；
+孙会话（reviewer）的结果先唤醒它的父成员，父成员随后的完成由观察者补上。孙会话自己
+的 `finished` 不单独回报，避免每轮评审唤醒协调者两次；`failed` / `waiting_user` /
+`notice` 仍回报。父成员收到子会话结论后原样写进回复，不自行修改，由协调者筛选要改的项。
+
+### 停止与暂停
+
+全部复用上游，看板不加规则，只写明范围：
+
+- 停止协作（`collaborationStopped`）：用户在会话的「相关会话」里停止整棵树时，界面给根
+  和所有后代写 `collaborationStopped`（`readSessionOperationTargets(…, 'collaboration')`
+  先沿 `parentSessionId` / `openedBySessionId` 爬到根，再收集后代），守护进程取消正在跑
+  的回合并保留待处理输入（`reconcileCollaborationStops`）。对看板的影响：协调者所在的树
+  被停时，Inbox 不会为它启动任何批次（`launchInboxBatch` 检查
+  `isSessionCollaborationStopped`），它的 MCP 派发被 `COLLABORATION_STOPPED` 拒绝；观察者
+  照常把成员事件写成结果，恢复协作后由上游的停止语义决定是否以及何时送达
+  （`specs/session-orchestration.md`「User-controlled conversation-tree stop」）。
+- 上游的停止范围是会话树：协调者开的线程及其后代。看板允许手动加入不相关的根会话，
+  它们不在协调者的停止范围内，仍会继续跑，事件照常进队列。首版只做会话树停止，看板级
+  的「停止全部成员」不做（已决定：Inbox 修订第 6 条）。
+- Inbox 暂停：用户在协调者上按 Stop（Inbox v2 客户端带 `cancelId` / `pauseInbox`）时
+  `pause()` 把会话标为 paused，取消排队的输入，释放已准备批次的领取；结果仍在队列
+  里。暂停期间不登记 intent；只有新的、受信任的人工输入（`humanInputReceipts`）能清除
+  暂停，并把积累的结果一起带走。agent 的 chat、定时回合、回报都清不掉暂停。
+- 成员上的用户 Stop（#1553）：被手动停掉的目标在协调者的 Operation 回执里是
+  `cancelled` + `cancellationReason: 'user_stop'`，`operationInboxCompletion` 把它从自动
+  受理里滤掉，全部目标都被停时连结果都不可唤醒。观察者不报 `cancelled`，所以不会从另一
+  条路把它变成唤醒。
+
+### 失败与离线
+
+- 协调者机器离线时事件留在文档里，机器回来后观察者按「最新状态」补报，不重建中间的
+  事件流：一个成员离线期间变了三次，只报最后一次。线程机器离线时它的文档不更新，自然
+  没有事件。
+- 回报写入失败（SQLite 忙、事务失败）时三件事一起回滚，游标不前移，下一次唤醒重试，
+  重试走 `coordinator-activity` 已有的有界退避，不加新的定时器。
+- 结果不会因为守护进程停机太久被静默丢弃：`inbox_results` 里未消费的行不过期，pending
+  intent 持久化并在启动扫描时恢复（`repo.pending`）；回报 Operation 创建即完成，不进入
+  deadline 调度；已消费的载荷七天后清理，但历史里的批次卡片留下。
+- 批次提交后模型是否收到不确定（`unknown` 结算）时，上游不重新合批，历史卡片标「模型
+  投递不确定」。看板不补发：Overview 和 `lody_board_overview` 始终是当前状态的真相，
+  协调者下一次被唤醒时可以自己看。
+- 协调者被归档、移出看板或看板归档：观察者停下，游标和已有结果保留；永久删除会话时
+  `deleteSession` 连同 Inbox 行一起删。
+
+## 轮数、交接
+
+### 轮数
+
+轮数不是计数器，从当前代的历史推导：`role: 'user'` 且 `author.kind === 'agent'` 的回合数，
+减去标了 `followUp` 的。人输入的回合和 system 驱动的回合（Inbox 批次、定时、续接）不计。
+`lody_session_chat` 新增 `followUp?: true`，写进该 user turn 的 `inputConfig.boardFollowUp`。
+
+`lody_session_chat` / `chat_many` 的目标是看板线程、轮数 ≥ `maxRoundsPerThread` 且没有
+`followUp` 时，在接受 Operation 之前拒绝：`THREAD_ROUND_LIMIT`，消息里给出线程当前代
+的 id、轮数和交接工具名。目标是已有后继代的旧代时拒绝 `THREAD_SUPERSEDED`，消息里给
+当前代 id。两条检查排在上游的 `COLLABORATION_STOPPED`、`CHAIN_DEPTH_EXCEEDED`、
+`REVERSE_CHAT_FORBIDDEN` 之后。人从界面发消息不受限制。
+
+### 交接
+
+`lody_board_thread_handoff({ threadId, prompt })`，协调者可用：
+
+1. 在线程根下建一个子 Tab（走 CLI 的 `--parent` 路径），同一台机器、同一目录，运行配置
+   继承上一代最后一回合（`resolveSessionTurnDispatchDefaults` 的冻结输入），
+   `boardGeneration = 上一代 + 1`，`boardId` 继承；
+2. 第一条消息 = 交接事实（Lody 生成：目录、分支、HEAD、上一代 session id、第几代、
+   上一代的 `contextWindowUsage`）+ 协调者写的 `prompt`；
+3. 返回新 session id。轮数从 0 起算。
+
+线程根被用户停止协作时（`isSessionCollaborationStopped(root)`）交接拒绝
+`COLLABORATION_STOPPED`，和上游对派发的处理一致：只有用户能恢复。
+
+## 看板主界面
+
+2026-10-16 重新设计，用户已确认（见下文「已决定」），替换原来的「Overview 页面」一节。
+第 1、2 步已实现，见文末「看板主界面已实现」。状态推导和回报在对话里的呈现沿用原设计，
+见下文「沿用」。
+
+### 形态
+
+看板 = 一个协调者对话 + 一份聚合上下文。打开看板就是打开协调者对话。线程、文件、单个
+线程轮流出现在右侧面板里；不常用的设置收在一个浮窗里。
+
+```text
+侧边栏
+├─ 看板 ──┬─ 看板 A ──打开──▶ 协调者对话（中间） + 看板面板（右侧）
+│         │                     ├─ 线程：成员 session，按「需要你 / 进行中 / 空闲 / 已归档」分组
+│         │                     └─ 文件：共享笔记 + 看板的共享目录
+│         │                   ⚙ 设置浮窗：名称、目标、上下文、记忆、规则、摘要、归档
+│         └─ 看板 B
+├─ 机器 / 项目组（线程仍按所在项目出现；协调者不再出现）
+└─ 对话
+```
+
+- **看板和对话同一级。** 侧边栏的「看板」组和机器组、对话组并列。看板行和会话行的行高、
+  选中态、状态标记都一样。组标题上的「+」新建看板，和项目组上「+」开新对话是同一种动作。
+  PR1 的「看板」导航项和 `/boards` 列表页去掉；归档的看板放在归档页。
+- **协调者就是看板的对话。** 它不再单独列在会话组里：会话元数据不变，只是列表滤掉
+  `boardRole === 'coordinator'`。
+- **看板里的对话只在看板里。** 线程仍是普通 session，有真实目录和 worktree，但协调者和
+  线程都不出现在侧边栏的对话 / 项目组、移动端首页和归档页里，只在看板面板中。绑定了
+  project 的线程在它的会话视图右上角标出「机器 · project」。这条推翻了下文「已决定」第 1
+  条（见「看板主界面第二轮」）。
+- **project 和看板。** project 仍指仓库或本地文件夹。看板通过「项目范围」引用若干 project，
+  但不拥有它们。
+
+### 界面
+
+桌面（≥ 1024px）分三栏：
+- 左：侧边栏。
+- 中：协调者对话。头部有看板图标、名称、范围徽标（只在限定项目时出现）、面板开关和 ⚙。
+- 右：420px 的面板。
+
+面板有四种状态：关闭、线程、文件、某个线程。
+
+- **线程 tab。** 按组列出，空组不画，已归档默认折叠。每行依次是：
+  - 状态标记：只在需要你、失败、已停止、运行中时出现；
+  - 标题和时间；
+  - 第二行：已读到的最新结论；没读到时显示 agent · 机器 · 项目。
+
+  点一行，线程就在面板里打开：面包屑「← 线程 › 标题」，下面是它自己的对话和输入框，
+  另有「作为完整对话打开」和关闭两个按钮。协调者自己的子 Tab 和 Side Chat 已经挂在会话页上，
+  点它们就切到那个 Tab，不在面板里再开一份：同一个 session 只有一个输入框。
+- **看板文件 tab。** 顶部固定一行「共享笔记」，打开就是现有的笔记编辑器；下面列出看板的共享
+  目录，见「看板上下文 › 共享目录」。会话侧面板原有的「文件」在看板页上改叫「工作区文件」，
+  两者不再同名。
+- **设置。** ⚙ 打开「看板设置」浮窗（对话框），不占用右侧面板。
+- **面板关闭时**，开关按钮变成「✋ N 个等你」。面板打开时不再重复显示这个数。
+
+窄屏（< 1024px，包括 390px）：
+- 协调者对话铺满整屏。
+- 面板全屏盖住对话，关掉就回到对话。
+- 点开线程时推入完整会话页，用移动端已有的导航，不在面板里再塞一个输入框。
+
+实现时尽量复用现有页面：
+- 中间区直接用现有的会话页，也就是协调者会话的 `session-detail.tsx`。
+- 右侧面板作为会话侧面板的新类型 `board`。它沿用 `DesktopSessionDetailLayout`：桌面可拖宽度，
+  紧凑桌面是覆盖层，移动端是 Drawer。
+- 在面板里看线程，沿用 Side Chat 在侧面板渲染 `SessionChatInterface` 的做法。
+- `/boards/$boardId` 只是别名：解析出协调者 id，进入它的会话页并打开 `board` 面板。它和
+  侧边栏、命令面板一样，明确选中协调者自己的 Tab，不恢复上次选中的子 Tab。命令面板搜到
+  协调者时显示成看板。
+
+### 外面放什么、设置里放什么
+
+| 放外面（高频）                 | 理由                                         |
+| ------------------------------ | -------------------------------------------- |
+| 侧边栏看板行和状态标记         | 打开看板和打开对话一样，状态一眼可见         |
+| 协调者对话和输入框             | 看板里最常做的事：问协调者、看回报           |
+| 线程列表（「需要你」排在最前） | 其次常做的事：看谁在等我，点进去插话         |
+| 面板里打开的线程和它的输入框   | 插话时不必离开协调者                         |
+| 文件 tab                       | 线程和人都频繁读写共享笔记和共享文件         |
+| 新线程「+」                    | 和对话的「+」同级                            |
+| 看板的重命名、分享、归档       | 和对话一样，在头部「…」菜单和侧边栏行上       |
+| 范围徽标（只在限定项目时）     | 说明这个看板只看哪些项目；默认全部时不画     |
+
+| 放设置浮窗（低频）                       | 理由                 |
+| ---------------------------------------- | -------------------- |
+| 名称、目标                               | 建板时写一次         |
+| 项目范围                                 | 建板时选，偶尔调整   |
+| 看板记忆（开关、内容预览、编辑、nmem 空间） | 自动维护，人偶尔校对 |
+| 协调者 agent                             | 很少换               |
+| 每线程轮数、是否回报人工回合、执行线程约束 | 规则，设一次         |
+| 每日摘要开关和时间                       | 设一次               |
+| 归档看板                                 | 危险操作             |
+
+以下内容哪里都不常驻：
+- 自主链 n/16：只在到上限时，由现有的 `board_chain_limit` 系统通知出现在对话里。
+- 轮数 n/上限：PR4 拒绝时由错误说明。
+- agent / 机器：没有结论时，显示在线程行的第二行。
+
+### 新建看板
+
+对话框只问第一条消息需要的东西：
+- 目标：必填，自动聚焦；
+- 名称：可空，默认取目标的第一行；
+- 协调者：沿用现有的「机器 + agent」或 Agent Role 控件；
+- 项目范围：默认全部。
+
+规则、记忆、摘要先用默认值，之后在设置里改。
+
+用户报的焦点圈问题已修。原因是表单是滚动容器，会裁掉输入框外面那圈阴影。修法是给滚动
+容器加内边距，再用负外边距抵消（`board-view.tsx` 的 `boardStyles.form`）。
+
+### 看板上下文
+
+| 组成     | 落在什么上                                         | 新增                                             |
+| -------- | -------------------------------------------------- | ------------------------------------------------ |
+| 项目范围 | 看板行；不选 = 全部                                | `BoardMeta.context.projects?: BoardProjectRef[]` |
+| 共享目录 | 宿主机（建板时协调者所在机器）的数据目录           | `BoardMeta.files: { machineId }`                 |
+| 聚合记忆 | 指令在看板行、注入每个成员；自动记忆在共享目录的 `memory/`；可选镜像到 nmem 空间 | `BoardMeta.instructions`；`BoardMeta.memory?` |
+
+**项目范围**
+
+```ts
+type BoardProjectRef =
+  | {
+      kind: 'local';
+      machineId: MachineId;
+      localProjectId: LocalProjectId;
+      name: string;
+      githubRepoFullName?: string;
+    }
+  | { kind: 'github'; repoFullName: string };
+// BoardMeta.context?: { projects?: BoardProjectRef[] }，缺省 = 全部
+```
+
+本地项目的 id 是机器内路径的散列，同一个仓库在两台机器上是两个 id。所以这里存
+`machineId + localProjectId` 这一对，和 `getLocalProjectVisibilityKey` 一致；另附名称和
+可选的 GitHub 仓库名，用来显示和做跨机提示。
+
+范围用在四处：
+1. 协调者和线程的启动提示列出范围内的项目（名称、机器、路径）。
+2. `lody_board_get` 返回范围。
+3. 看板成员调用 `lody_session_create` 时，workContext 必须在范围内，否则以
+   `BOARD_PROJECT_OUT_OF_SCOPE` 拒绝。chat 不受限。
+4. 「+ 新线程」的项目选择只列范围内的项目。
+
+范围为空（即全部）时，以上都不生效，提示里只写「可以用 `lody_project_list` 查看全部项目」。
+
+**共享目录**
+
+- **位置。** 放在宿主机上，即看板创建时协调者所在的机器：
+  `<数据目录>/boards/<workspaceId>/<boardId>/files/`。数据目录由 `getLodyDataDir()` 决定
+  （本地版是 `~/.lody-oss`），和 `session-files/<workspaceId>/…` 一样按工作区分开。目录名用
+  看板 id 而不用名字，看板改名不用搬目录。
+- **记录。** 看板行记 `files: { machineId }`。路径由宿主机自己推导，不写进看板行。宿主机的
+  守护进程在第一次列目录或写入时创建目录。
+- **为什么放协调者的机器。** 看板里只有协调者是固定的，它的机器本来就要在线才能收回报，
+  目录跟它放在一起，可用性和看板本身一致。之后协调者换机器，宿主机也不变：看板行里存的
+  是机器，不是会话。宿主机离线时目录读不到，界面和工具如实报告不可用，不做缓存副本。
+- **同机的成员。** 启动提示直接给出绝对路径，agent 用自己的文件工具读写，不经过 Lody。
+- **其他机器上的成员。** 用新的 Board 工具：
+  - `lody_board_files_list`：列出共享目录；
+  - `lody_board_files_read({ name, saveTo })`：把文件拷到自己工作区里的某个路径；
+  - `lody_board_files_write({ path, name? })`：把自己工作区里的文件放进共享目录。
+
+  这些工具在守护进程里走 LAN 现有的 `files` 连接：读用已有的 `range`；另加 `list` 和 `put`
+  两个动词，`put` 沿用附件交接的 announce / ready / 字节 / sha256 握手。授权按 `boardId`
+  判断，调用者必须是看板成员，路径必须落在看板目录内。新动词用能力键 `lanBoardFiles`
+  声明，旧版本成员不会收到。不用 `lody-lan lan shell` 的原因：它在 Codex 沙箱里会被挡，
+  二进制要用 base64 走 PTY，也没法按看板授权。
+- **文件 tab。** 新增 `BoardDirectoryFileProvider`，建在 `LazyDirectoryFileProvider` 上，
+  仿照 `LocalProjectRpcFileProvider`，交给现有的 `ProjectFileBrowser` 和文件树来列。预览用
+  现有的 `file/preview` 和成员文件资源（音视频、大文件下载）。往 tab 里拖文件，就是在
+  宿主机上 `put`。
+- **共享笔记。** 保留 LoroText，不改成目录里的 `notes.md`。它已经跨机器同步、能离线编辑后
+  合并；已有的三个工具和容量规则都不用动，也不用迁移数据。目录放任意文件，笔记放大家都要
+  往里追加的文字，各管一样。
+
+**聚合记忆**
+
+**已改（第二轮）：** 记忆分成两部分，都不再放进看板文档的 LoroText。
+- **指令**：用户写的 `BoardMeta.instructions`（≤ 16,000 字符），在设置浮窗的「通用」页
+  编辑，附在每个成员（含协调者）的第一条消息里，复用 `buildPrompt` 的看板说明段；改动只对
+  之后启动的会话生效。
+- **自动记忆**：共享目录下的 `memory/`，`MEMORY.md` 是索引，其余是一条条记忆文件。agent
+  通过提示得知位置，自己读写；协调者维护索引。设置「记忆」页按文件列出（文件名、更新
+  时间），可以预览。`lody_board_memory_update` 不做，读写都走共享目录的工具。
+
+可选镜像到 Nowledge Mem：
+- 现有的 memory provider 只做一件事：ACP 启动时注入 `NMEM_AGENT_ID`
+  （`apps/cli/src/lib/memory-providers.ts`）。`memoryId` 是某台机器上的 agent 身份，不是
+  共享存储，所以不能直接拿来当看板记忆。
+- nmem 的共享单位是空间（space）。本机的 `nmem` 二进制里有 `NMEM_SPACE_ID` 这个变量名，
+  语义还要实测。
+- 方案：
+  - 看板行加 `BoardMeta.memory?: { providerId: 'nowledge-mem'; spaceId: string }`。
+  - 看板成员的每个回合把它冻结进 `inputConfig`，和 Role memory 一样参与准备兼容键；
+    fork 和恢复读冻结值。
+  - 守护进程启动 ACP 时再注入 `NMEM_SPACE_ID`。
+- agent 身份仍由 Role 实例决定。两个变量互不冲突，所以不用定优先级。
+- 前提是各成员机器的 nmem 连的是同一个 Mem 服务。连不上的机器在设置里标出来，但不阻止运行。
+- 这一项要改 `MemoryBindingSchema`（它是 `.strict()`）或另加字段，属于 provider 契约变更，
+  所以放在最后一步（已决定 5）。
+
+### 和已有底层的衔接
+
+沿用、不动：
+- 成员资格字段及其继承；
+- 协调者和线程提示的主体；
+- PR3 的回报和 Inbox 合批唤醒；
+- `deriveBoardSessionStatus` 的状态推导（见下面的状态表）；
+- 回报在对话里的紧凑行；
+- 笔记的 LoroText 和容量规则；
+- MCP 工具的授权方式；
+- PR4 的轮数与交接、PR5 的每日摘要。
+
+| 显示                     | 来源                                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------------------- |
+| 运行中 / 启动中 / 收尾中 | presence（`sessionLiveStatusAtomFamily`），不用 `SessionMeta.status`                        |
+| 等你回答                 | presence 为 `requestPermission`，或无 live 状态且 `awaitingUserSince` 晚于 `lastMessageAt` |
+| 已停止                   | `collaborationStopped`（本会话或祖先）                                                      |
+| 失败                     | 当前代最新驱动回合 `failed`，或 `chat_failed`                                               |
+| 已取消                   | 当前代最新驱动回合 `canceled`                                                               |
+| 空闲 · 等协调者          | 空闲且最新驱动回合不是人输入的                                                              |
+| 空闲                     | 其余                                                                                        |
+
+分组（`boardThreadGroup`）：等你回答、失败、已停止归「需要你」；运行中、启动中、收尾中归
+「进行中」；其余归「空闲」；已归档单独一组。
+
+回报在协调者对话里仍是上游的 `operation_completion_batch` 系统回合。`board_report` 成员
+渲染成紧凑任务行，每个事件一行，不做第二套卡片。
+
+要改：
+- **导航。** 删掉「看板」导航项和 `/boards` 列表页；侧边栏新增看板组；`/boards/$boardId`
+  改为进入协调者会话页的别名；侧边栏会话列表滤掉协调者。
+- **Overview。** 只读的 `BoardsWorkspace` 页由会话侧面板的 `board` 类型取代。线程行只用
+  元数据和 presence，不读成员文档；第二行显示 agent · 机器 · 项目。所以「失败」不出现在
+  列表里：打开线程能看到，协调者也会收到失败回报。行里的「最新结论」以后再加。
+- **设置。** 名称、目标、规则改在 ⚙ 打开的设置浮窗里编辑，保存时写看板行。
+- **新建对话框。** 先写目标，名称可空（默认取目标第一行），去掉规则字段；项目范围随第 3 步
+  加入。
+- **看板行和文档。** 看板行加 `context`、`files` 和可选的 `memory`；看板文档加 `memory`。
+- **提示。** 协调者和线程说明各加「项目范围」「看板记忆」两段。
+- **MCP。** 新增 `lody_board_files_list/read/write` 和 `lody_board_memory_update`；
+  `lody_session_create` 加范围检查；notes 工具不变。
+
+### 实现步骤
+
+每步可以单独合并，顺序就是依赖关系。
+
+1. **界面骨架（已实现）。** 只用现有数据。
+   - 内容：侧边栏看板组；会话侧面板的 `board` 类型（线程 tab、文件 tab、在面板里看线程）；
+     会话列表滤掉协调者；删导航项和列表页；`/boards/$boardId` 别名；归档页列出已归档的看板。
+     文件 tab 本步只有共享笔记和共享目录的占位。
+2. **设置浮窗与新建对话框（已实现）。** 设置浮窗写看板行（名称、目标、规则）并能归档看板；
+   新建对话框换成新版。项目范围、记忆、每日摘要在各自的步骤实现前不显示。
+3. **项目范围。** `BoardMeta.context`、提示段、`lody_board_get` 返回、`lody_session_create`
+   范围检查、新线程的项目过滤，以及设置浮窗和新建对话框里的选择。
+   - 模块：`packages/shared/src/board.ts`、`apps/cli/src/session/session-execution-helpers.ts`、
+     `apps/cli/src/mcp/lody-mcp-server.ts`、`components/boards/*`。
+4. **共享目录（已实现）。** `BoardMeta.files`、宿主机上的目录、`files` 连接的 `list` / `put`
+   （`lanBoardFiles`）、`lody_board_files_list/read/write`、提示里的路径、文件 tab 的
+   `BoardDirectoryFileProvider`。
+   - 模块：`packages/shared` 的数据目录和能力键、`apps/cli/src/lib/lan/lan-files.ts` 与
+     `lan-file-handoff.ts`、`apps/cli/src/mcp/board-tools.ts`、`components/boards/*`、
+     `lib/` 下的文件 provider。
+5. **看板记忆（已实现，方案已改）。** 指令存在看板行、注入首条消息；自动记忆放在共享目录的
+   `memory/`，见「看板上下文 › 聚合记忆」。摘要整理随 PR5 一起做。
+6. **可选：nmem 空间镜像。** `BoardMeta.memory`、回合冻结、注入 `NMEM_SPACE_ID`，并更新
+   provider 契约 `specs/agent-role-memory.md`。
+
+PR4（轮数、交接）和 PR5（每日摘要）和以上各步互不依赖，按原计划进行。
+
+### 已决定
+
+用户在 2026-10-16 确认了第一轮提出的问题，其中两处改动了原来的建议：
+
+1. 线程不从机器 / 项目组里隐去，只隐协调者。这条改动了「已决定」第 6 条。
+2. 新建看板只从侧边栏看板组的「+」进入，落地页不变。
+3. 删掉 `/boards` 列表页；侧边栏就是列表，归档的看板放在归档页。
+4. 项目范围硬性限制：范围外的 `lody_session_create` 直接拒绝，chat 不受限。
+5. 聚合记忆以 Lody 自己存的文本为主，nmem 空间做可选镜像，先实测 `NMEM_SPACE_ID`。
+6. **改动：** 共享文件改成磁盘上的真实目录，放任意文件，不限文本。原来在看板文档里放
+   `files` 容器的方案作废。见「看板上下文 › 共享目录」。
+7. 窄屏上点开线程，推入完整会话页。
+8. **改动：** 设置做成浮窗（对话框），不放在右侧面板里；右侧面板只有「线程」「文件」两个
+   tab。
+
+用户实际用过 dev 包后，2026-10-16 又定了第二轮（「看板主界面第二轮」有实现记录）：
+
+9. **改动（推翻第 1 条）：** 看板里的协调者和线程都不出现在外部列表（侧边栏对话 / 项目组、
+   移动端首页、归档页），只在看板里看得到。命令面板显示为「看板名 › 线程」，打开时走看板
+   入口并在面板里打开该线程。
+10. 目标可选；新建只填名称，不自动给协调者发第一条消息。
+11. 打开看板时主对话和面板各占一半；设置按钮在主对话右上角。
+12. 设置浮窗左侧分区导航，右侧内容：「通用」（名称、目标、指令、规则、归档）和「记忆」（自动
+    记忆）。文件仍在右侧面板的「文件」tab，显示共享目录的 `files/`；共享笔记作为其中
+    一项保留。
+13. 共享目录和自动记忆这一轮做完（原第 4、5 步）。
+14. 主对话只负责协调，把具体工作委托给线程，自己掌握全局；线程开出的子会话归在它的线程
+    下面，面板里按父子缩进显示。
+
+2026-10-17 用户反馈看板上「没有任何可以操作的地方」，希望和对话的右上一致，至少能归档、
+分享（实现见「看板入口的操作」）：
+
+15. 看板页头部沿用对话头部的「…」菜单和分享控件，设置按钮保留；侧边栏看板行和对话行一样，
+    悬停出现「⋯」和归档，右键打开同一份菜单。重命名、归档、恢复作用于整个看板；分享的是
+    协调者的对话。
+
+## 共享笔记
+
+- Overview 的「笔记」面板：Markdown 编辑（textarea）+ 预览切换，预览复用 plan review
+  面板的渲染；保存写 LoroText。
+- 工具：`lody_board_notes_get`；`lody_board_notes_append({ text, heading? })` 追加一节，
+  标题默认「{日期} · {session 标题}」；`lody_board_notes_replace({ text })` 整体替换。
+  线程默认只追加；替换给协调者和人用（替换是删后插，和并发追加合并后追加的内容会落在
+  末尾，可接受）。
+- 和 nmem 的边界：Lody 不读写 nmem。笔记是看板内、界面可见的工作记录；长期记忆由 agent
+  用自己的 nmem 工具写（每日摘要就是这么做）。memory provider 今天只管身份和环境变量
+  （`NMEM_AGENT_ID`），没有 recall / save，不扩。（2026-10-16 起由「看板主界面 › 看板上下文」
+  的看板记忆和可选 nmem 空间镜像取代。）
+- 不做共享文件夹：线程分布在多台机器，文件夹要么单机要么要新同步机制，放到以后。
+  2026-10-16 起改为宿主机上的共享目录，见「看板主界面 › 看板上下文 › 共享目录」。
+
+## 每日摘要
+
+看板设置里的开关。打开时通过现有的 Schedule 命令服务建一条 Schedule：cron 每天一次
+（时间可选，默认 04:00 Asia/Tokyo，和用户的一天切分一致），目的地 `existing_session` =
+协调者 session，prompt 固定模板：读 `lody_board_overview` 和笔记，把当天的进展、结论、
+未决问题写成一节追加到笔记，并存入 nmem。看板行记 `digestScheduleId`；关掉开关或归档
+看板时暂停它。
+
+用协调者会话做目的地，是因为它已经有看板工具、不需要给 Schedule 定义加字段。定时回合
+的深度为 0，进入 Inbox 时是 `task` 类输入：它会把当时排队的结果以深度 0 一起带走，
+于是每天顺便把自主链数一次。代价是协调者上下文每天多一回合。
+
+摘要必须遵守停止和暂停：
+
+- 定时回合没有人工收据（`humanInputReceipts`），Inbox 按 `task` 受理；协调者处于暂停时
+  `inputAcceptance('task', paused)` 直接拒绝（`session-execution-service.ts` 的
+  `inbox-paused`），暂停不会被清除。PR5 不得给摘要回合伪造人工收据。
+- 协调者的树被停止时，派发把回合标为取消并保留输入，上游已有。
+- PR5 在 handoff 前检查目的地是否已暂停或已停止，并把跳过的运行记为 skipped，
+  避免被拒绝的回合悬在历史里「待处理」。PR3 仅记录此决定，不实现摘要。
+
+## MCP 工具
+
+看板工具只列给 `boardId` 有值的 session：agent 启动时把 `boardId` 随 `x-lody-mcp-board-id`
+头 / `LODY_MCP_BOARD_ID` 环境变量交给 lody MCP 服务器决定是否注册；守护进程端每次调用
+再按 session 当前元数据校验成员资格（`BOARD_NOT_MEMBER`）。全部是 Session 工具，经
+`session/call-tool` 进守护进程，不开第二个写者。
+
+### 新增
+
+| 工具                        | 谁用   | 作用                                                |
+| --------------------------- | ------ | --------------------------------------------------- |
+| `lody_board_get`            | 成员   | 看板名、目标、规则、协调者 id、自己的角色           |
+| `lody_board_overview`       | 成员   | 所有线程的状态行（同 Overview），≤ 100 条，≤ 64 KiB |
+| `lody_board_notes_get`      | 成员   | 笔记全文                                            |
+| `lody_board_notes_append`   | 成员   | 追加一节                                            |
+| `lody_board_notes_replace`  | 协调者 | 整体替换                                            |
+| `lody_board_thread_handoff` | 协调者 | 开下一代，见「交接」                                |
+
+### 修改
+
+- `lody_session_create` / `create_many`：无新参数；目标继承 `boardId`。回复里带
+  `boardId`。
+- `lody_session_chat` / `chat_many`：新增 `followUp?: true`；新增拒绝
+  `THREAD_ROUND_LIMIT`、`THREAD_SUPERSEDED`。上游的 `COLLABORATION_STOPPED`、
+  `CHAIN_DEPTH_EXCEEDED`、`REVERSE_CHAT_FORBIDDEN` 原样适用，排在前面。
+- `lody_session_list`：新增过滤 `boardId`（接受 `'current'`）。
+- `lody_operation_get/list`：kind 多一种 `board_report`；`lody_operation_batch_get` 不改，
+  批次里的看板成员和普通成员一样分页。
+
+Agent Role / Schedule 写入的权限档位上限不变；看板工具只写 Lody 自己的数据。
+
+## 分步实现计划
+
+每步独立可合并、可验证，顺序即依赖。PR1、PR2 已实现（见文末记录），这里只列和新机制
+有出入的地方。
+
+### PR1 看板、成员资格、Overview（只读）—— 已实现
+
+- 实现内容见「PR1 已实现」。和本版的出入：Overview 的链深度显示上限按 16（代码里的
+  `/32` 文案随 PR3 改）；状态推导的「最新 user turn」改成「最新驱动回合」随 PR3 一起改。
+
+### PR2 协调者提示、看板工具、笔记 —— 已实现
+
+- 实现内容见「PR2 已实现」。和本版的出入：提示文本里「回报尚未实现、请显式汇报」的
+  占位随 PR3 换成上面的协调者/线程说明；没有自动 review 相关文案。
+
+### PR3 基于 Inbox 的自动回报
+
+- `packages/shared`：`session-orchestration.ts` 的 `LodyOperationKind` 加 `board_report`，
+  `OperationResultSchema` 加可选 `boardReport`（`BoardReportEventSchema`，一条一事件）；
+  `schema.ts` 加 `boardJoinedAtMs`；`board.ts` 加纯函数：`readLatestDrivingTurn`、事件
+  推导、`boardReportOperationId`。
+- `apps/cli/src/orchestration/operation-store.ts`：`board_report_cursors` 表；
+  `acceptBoardReport()`（插入已完成 Operation + `inbox.indexCompletion()` + 游标，一个
+  `BEGIN IMMEDIATE`）；`boardCoveredTargets()`（查 `operations` 任何状态的目标）；
+  `inbox/sqlite.ts` 的 `MemberRow.operation_kind` 枚举加 `board_report`。
+- `apps/cli/src/orchestration/coordinator-workflow.ts` / `operation-coordinator.ts`：
+  看板分支（目录与 `doc-metadata` 订阅、脏成员集合、单飞 reconcile、事件推导、去重、
+  接受）；在这里查 `depth_limited` intent 并写幂等系统通知。
+  `operation-model.ts` 不改调度语义就不动；改了就补轨迹。
+- `apps/cli/src/mcp/lody-mcp-server.ts`：`lody_operation_get/list` 接受新 kind。
+- `session-execution-helpers.ts` `buildPrompt`：协调者/线程说明换成本版文本。
+- `packages/components`：`OperationCompletionView` 的 `board_report` 分支（紧凑行 + 两个
+  标签）；Overview 协调者行「自主链 n/16」「已停止」；`boards/AGENTS.md`；locale。
+- 测试（注入时钟、真实 Mirror / `repo.watch` 订阅、显式 reconcile 屏障，
+  `operation-coordinator.test.ts` + `operation-store.test.ts`）：忙时积累、释放后一批；
+  人工输入以深度 0 带走排队结果；暂停中不登记 intent、下一句人工输入带走；停止的树不
+  启动批次；成员被用户 Stop 不产生事件；孙会话 `waiting_user` 到达；回执覆盖去重（含
+  已完成仍保留的 Operation）；`reportHumanTurns` 开关且关着时游标仍前移；system 驱动
+  （续接）的完成被报；同一驱动回合多次权限请求只报一次；深度 15 → 16 时
+  `depth_limited`；重启后结果与 intent 都在；游标写入注入失败时整笔回滚；已归档成员跳过；
+  `boardJoinedAtMs` 之前的状态不报；流式导入不触发全量扫描（订阅计数）；孙会话
+  `finished` 不产生回报，父成员续接完成后会回报。
+
+### PR4 轮数、交接
+
+- shared：轮数推导 helper（agent 作者的 user turn，减 `followUp`；人工与 system 驱动不
+  计）；`inputConfig.boardFollowUp`。
+- MCP：`lody_session_chat` 的两个拒绝，排在上游三个之后；`lody_board_thread_handoff`
+  （走 `--parent` 路径，交接事实前缀，`boardGeneration`，根被停止时拒绝）。
+- Overview：轮数、代。
+- 测试：历史 → 轮数（含 followUp、人输入、Inbox 批次回合）；拒绝顺序；交接创建的 Tab
+  共用目录并继承运行配置；根 `collaborationStopped` 时交接拒绝；旧代 `THREAD_SUPERSEDED`。
+
+### PR5 每日摘要与收尾
+
+- 看板设置开关 → Schedule 创建 / 暂停（`schedule-command-service.ts`）；`existing_session`
+  目的地指向协调者；固定 prompt；归档看板暂停定时。
+- 暂停与停止：不给摘要回合加人工收据；handoff 前检查目的地，在
+  `schedule-run-preparation.ts` 的目的地检查旁加「协调者已暂停 / 已停止 → skipped」。
+- 文档：`.agents/docs/experimental.md` 加「看板」一节；本 Spec 更新证据；Agent Note；
+  `apps/cli/src/orchestration/README.md` 加看板回报一节。
+- 测试：命令服务建出的定义（cron、目的地、prompt）；关掉开关后暂停；摘要回合进入已暂停
+  的协调者不清除暂停且不执行；进入已停止的树被取消并保留输入。
+- 真实 LAN 上跑一遍：协调者在 devnuc、线程在 mba 和 n100，看回报、交接、笔记、Stop。
+
+## 风险
+
+- 唤醒成本：每个空闲边界一次唤醒，线程多时协调者几乎不闲。缓解靠 Inbox 合批、不报人
+  输入的回合、不单独报孙会话的完成；如果仍然太吵，下一步是按看板的最小唤醒间隔。
+- 链深度：15 次自主唤醒后停住，夜里无人时可能停在半路，而且上游在上限处不写历史。先
+  用 Overview 和幂等系统通知把它显示出来，再决定要不要单独预算。
+- 批次结算 `unknown` 时上游不重发，协调者可能漏看一批；Overview 是真相，摘要和下次
+  唤醒能补。
+- Inbox 暂停没有同步证据，Overview 看不出协调者被按过 Stop。
+- Overview 展开行要打开 session 文档；线程上限 100，一次只展开少数几行。
+- 笔记整体替换和并发追加的合并结果可能把追加的内容放到末尾，不丢但位置不直观。
+- 旧版本成员：不认识 `board` 行族的构建会丢弃该行（`parseWorkspaceFlockRow` 丢弃未知键），
+  不认识 `boardId` / `boardJoinedAtMs` 的构建照常显示 session；回报只在协调者机器上，
+  要求那台机器运行带 Inbox v2 和 `board_report` 的构建。
+- 协调者的 agent 若是 Codex：按用户现行规则它不适合当协调者（派完不停）；创建时不拦，
+  提示里不特殊处理。
+
+## 已决定
+
+以下八项由用户确认（第 3 条已按上游 0.105.0 改）；完整 Spec 仍为 draft。
+
+1. 名字用「看板 / Board」，不用 Project。
+2. 用户直接在线程里插话，那一轮完成后默认不唤醒协调者，只进 Overview 和每日摘要；单个看板可开启 `reportHumanTurns`。
+3. 委派链上限跟上游，用 `LODY_MAX_CHAIN_DEPTH = 16`，不另做看板预算；Overview 显示深度和上限。
+4. 后继会话是线程根的子 Tab，共用 worktree。
+5. 每日摘要直接送入协调者会话。
+6. 首版侧边栏不按看板分组，只增加看板导航和页面。（已被「看板主界面 › 已决定」1–3 取代：侧边栏有看板组，导航项去掉，线程仍留在项目组。）
+7. 轮数上限默认 4，按 agent 派发的 user turn 计，`followUp` 不计。
+8. 协调者不强制 Claude，记住上次选择。
+
+另外已定：自动 review 已随上游删除，设计里不再有 `THREAD_UNDER_AUTO_REVIEW`、自动
+review 保护和对应的状态；交叉评审用普通的 reviewer 子会话。不合入上游的全局委派提示
+（`adff308b`），协调者的做法只放在看板提示里。
+
+## 已决定：Inbox 修订
+
+用户已确认以下六项；完整 Spec 仍为 draft。
+
+1. 回报行深度取协调者当时驱动回合的深度（方案 B）。每次自主唤醒加一跳，人工输入后归零，孙会话事件不额外消耗跳数。
+2. 孙会话（reviewer 等）的 `finished` 不单独回报，由父成员被唤醒后的回复带回结论；`failed` / `waiting_user` / `notice` 仍回报。线程提示明确要求原样写入子会话结论，不自行按结论修改，改哪些由协调者决定。
+3. `cancelled` 不回报，只进 Overview；避免绕过用户 Stop 不唤醒的规则。
+4. 自主链到 16 时写幂等的 `board_chain_limit` 系统通知，一次链一张，提示用户说一句话继续；Overview 显示「已停止」。
+5. 每日摘要在 handoff 前检查目的地暂停/停止，跳过的运行记为 skipped（方案 A）。PR5 实现，PR3 仅更新文档。
+6. 首版不做看板级停止（方案 A）；沿用会话树停止，手动加入的独立根不在范围内。「停止全部看板成员」列入以后再做。
+
+## 以后再做
+
+- 侧边栏按看板分组、看板里的会话从机器 / 项目组里隐去。（看板组已做；线程不隐去，见「看板主界面 › 已决定」1。）
+- Overview 与协调者对话的分栏视图。（重新设计的主界面就是这种分栏。）
+- 共享文件夹（需要跨机器文件同步）。
+- 按上下文占用（`contextWindowUsage`）提示交接，而不只是轮数。
+- 看板级的最小唤醒间隔或自主预算；看板级停止。
+- 回报事件推送到手机（复用 `lody_notify_user` 的推送路径）。
+- 看板模板（预设协调者 agent、规则、线程 Role 组合）。
+
+## 证据
+
+意图：本文。已检查的实现（设计依据，未改动）：
+
+- Inbox 与回执：`apps/cli/src/orchestration/inbox/model.ts`（`batchDepth`、`batchPreview`）、
+  `inbox/sqlite.ts`（`indexCompletion`、`requestAutomatic`、`prepare` 的 16 跳检查、`accept`、
+  `pause`、`release`、`cleanupExpired`）、`inbox/rules.ts`（`operationInboxCompletion`、
+  `user_stop`）、`inbox/service.ts`、`operation-store.ts`（`finish`、退役 id）、
+  `coordinator-workflow.ts`（`reconcileItem`、`writeOperationProgress`）、
+  `operation-coordinator.ts`（`launchInboxBatch`）、`apps/cli/src/orchestration/AGENTS.md`
+  与 `README.md`、`specs/session-orchestration.md`。
+- 停止与暂停：`packages/shared/src/session-operation-targets.ts`
+  （`readSessionOperationTargets`、`isSessionCollaborationStopped`）、
+  `apps/cli/src/session/session-execution-service.ts`（`cancelSession`、
+  `reconcileCollaborationStops`、`acceptInboxHumanInput`、`inbox-paused`）、
+  `apps/cli/src/lib/message-handler.ts`（`collaborationStopped` 订阅）、
+  `packages/components/src/hooks/use-session-actions.ts`（`setTreeCollaborationStopped`）。
+- 链与回头消息：`packages/shared/src/session-orchestration.ts`（`LODY_MAX_CHAIN_DEPTH`）、
+  `apps/cli/src/mcp/lody-mcp-server.ts`（`resolveInvokingTurnContext`、`reverseChatError`、
+  `readInvokingChatSender`）。
+- 提示组装：`apps/cli/src/session/session-execution-helpers.ts`（`buildPrompt`）、
+  `apps/cli/src/commands/session.ts`（`prepareSessionInput`、`resolveCreateContext`、
+  `assertSupportedParentDepth`）、`apps/cli/src/lib/lan/lan-session-command.ts`、
+  `apps/cli/src/mcp/lody-mcp-http-protocol.ts`、`agent-surface-tools.ts`。
+- 状态信号：`apps/cli/src/lib/message-handler.ts`（`finalizeACPState`、权限请求写
+  `awaitingUserSince`）、`apps/cli/src/lib/agent-notice.ts`、`packages/shared/src/schema.ts`
+  （`SessionMeta`、`cancelRequest`、`getPendingUserTurnActivationId`）、`packages/shared/src/presence.ts`。
+- 定时：`apps/cli/src/lib/schedules/schedule-run-preparation.ts`（`existing_session`）、
+  `schedule-command-service.ts`、`apps/cli/src/lib/schedules/AGENTS.md`。
+- 工作区文档与同步：`packages/shared/src/workspace-flock.ts`、`schedule-repository.ts`、
+  `schedule-registry.ts`、`.agents/docs/lan.md`、`.agents/docs/workspace-catalog-durability.md`、
+  `.claude/skills/lody-loro-sync-stack/SKILL.md`。
+- 界面：`packages/components/src/routes/$workspaceName/_auth/`、`loro-app-sidebar.tsx`、
+  `atoms/doc-meta.ts`、`atoms/presence.ts`、`components/archive/`、`components/schedules/`、
+  `components/boards/`、`components/ai-gui/view.tsx`（`OperationCompletionBatchView`）、
+  `components/ai-gui/created-session-list.tsx`、`.agents/docs/sessions-live-status.md`、
+  `.agents/docs/experimental.md`。
+- 关系与生命周期：`specs/session-relations.md`、`specs/session-worktree-lifecycle.md`、
+  `specs/agent-role-memory.md`。
+- 旧 PR3 实现 `08c5c26e0`（建在已删除的 Delivery 上，只作参考）及其 review 结论。
+- 重新设计（2026-10-16，只读检查，未改底层）：`apps/cli/src/lib/memory-providers.ts`
+  （`environment` 只注入 `NMEM_AGENT_ID`）、`packages/shared/src/memory-provider.ts`
+  （`MemoryBindingSchema` 为 strict）、`apps/cli/src/session/session.ts`（ACP 启动注入）、
+  `session-execution-service.ts`（绑定变化时重启进程）、`packages/shared/src/project.ts`
+  （`ProjectRef`）、`packages/shared/src/node/local-project.ts`（本地项目 id 是路径散列）、
+  `components/chat/unified-project-selector.tsx`、`lib/visible-local-project-index.ts`、
+  `components/loro-sidebar.tsx`、`components/sessions/desktop-session-detail-layout.tsx`、
+  `session-side-panel-tab-bar.tsx`；本机 `nmem` 二进制含 `NMEM_SPACE_ID`（语义未测）。
+  原型：`components/boards/board-{home-view,thread-list,files-view,settings-panel,sidebar-section,create-dialog-view}.tsx`
+  与当时的原型 story，在 Storybook 中以 1440px / 390px 截图检查过。
+
+## PR1 已实现
+
+PR1 已实现：看板 Flock 行、三项成员元数据、CLI/MCP 与界面子 Tab 继承、
+`session_list` 看板筛选、实验开关、创建对话框、桌面/移动入口和只读 Overview。
+实现细节和检查记录见 [PR1 Agent Note](../../.agents/notes/implemented/feature/2026-10-15-board-overview.zh.md)。
+PR1 完成时 PR2–PR5 尚未实现。Overview 的「+ 新线程」以及会话 ⋯ 菜单中的
+「加入看板 / 移出看板」不在 PR1 内，安排到 PR2 实现。
+
+PR1 与最初文件分工的调整：界面创建并不经过 CLI `prepareSessionInput`，因此还必须在
+`packages/components/src/lib/session-submission.ts` 的两个创建入口继承成员资格。
+看板沿用共享 catalog room，不新建订阅。未展开的线程只显示 presence 和元数据能证明的状态；
+失败、等待协调者和最新消息随展开读取，协调者默认展开以显示自主链。
+轮数、代际切换按 PR4 计划保留。跨设备上限和创建同现有目录一样不是分布式事务。
+
+## PR2 已实现
+
+PR2 增加 Overview 的新线程、桌面和移动端会话菜单的加入/移出操作、角色提示、五个
+看板 MCP 工具和共享笔记面板。新线程复用创建看板的 Agent/Role 选择与正常会话接受
+流程，以 chat 为工作上下文；不会改写记住的协调者选择。手动成员操作只改选中的会话，
+不级联修改已有子 Tab；Tab 创建时的继承保持 PR1 行为。固定协调者不提供移出操作。
+
+提示在 `buildPrompt` 的创建路径追加，续接回合不重复追加。此阶段明确告知 agent：
+Board 自动回报、轮数拒绝和交接尚未实现；已有 Operation 回执照常工作，其余事件需
+约定显式汇报。完整「内置提示」中依赖 PR3/PR4 的承诺留待对应实现，避免让协调者等待
+尚不存在的通知。已有会话加入看板后，工具列表在下次 ACP 建立时更新；移出后的工具
+调用立即按当前元数据拒绝。
+
+`lody_board_overview` 使用和折叠 UI 行相同的元数据/presence 状态，不批量打开会话
+文档；失败和最新结论通过 `session_history` 按需读取。回复至多 100 行、64 KiB，
+超出时返回 `truncated`。代际和轮数仍留给 PR4。
+
+笔记采用 `board-<id>` 的原生 LoroText，shared 共用读写与 UTF-8 容量检查，CLI
+在守护进程的现有 repo 打开/同步，渲染端仅在面板打开时订阅并支持 textarea/Markdown
+预览。容量 256 KiB 是每次本地写入的上限，不是跨机器全局锁；两个合规追加合并后
+可能超限，保留全部内容并拒绝继续增长，协调者或用户可通过替换缩减。文档发现仍靠
+看板行，不新增注册表。长期记忆、自动回报、交接、轮数限制、每日摘要未纳入本 PR。
+
+实现与验证：[PR2 Agent Note](../../.agents/notes/implemented/feature/2026-10-15-board-tools-notes.zh.md)。
+
+PR2 评审修正：目录和笔记同步失败仅记录警告，创建和工具调用继续使用本地副本；
+本地持久化成功即完成写入，上传仍在后台进行。协调者身份与默认笔记标题使用调用上下文的
+session id，不要求稀疏元数据包含 id。线程约束由 Lody 在首条消息注入一次，协调者不重复转述。
+
+## PR3 已实现
+
+PR3 已接入上游 Operation Inbox：成员目录/元数据和历史订阅只标脏相关成员，原生
+协调器先完成普通 Operation reconcile，再推导看板事件并接受持久结果。每条事件一个
+已完成 `board_report` Operation，和 Inbox 索引、成员游标同事务提交；忙时积累、人工
+优先、暂停、停止和合批全部保留上游语义。孙会话的完成由父成员续接后的回复带回，
+等待用户、失败和通知仍回报；线程启动提示明确要求原样回复子会话结论，由协调者决定修改。
+
+上游执行写入路径仅为自动 `inbox:completion:*` 回合保存 `invocation.inputConfig`，并将批次行放在对应 assistant 行前；人工附带的 `operation-batch:*` 不保存配置，确保最新驱动回合、续接完成回报和链深度读取正确。历史消息 schema 同时接受 `board_report`，避免真实批次在写入时被拒绝。
+
+与设计记法的最小调整：事件源标识散列为 `board-` + SHA-256 前 58 个十六进制字符，
+满足既有 Operation ID 的字符/长度契约。已完成行仍填入类型必需的 `deadlineAt`（创建
+时刻），但不参与 deadline 调度。游标增加 `last_awaiting_turn_id`，以回合身份保证一次
+等待回报，而非依赖时钟精度。共享浅历史目录补充 system 配置和 `chainDepth`，避免漏掉
+续接且不读取整个正文。观察逻辑放在同一原生协调器调用的独立模块，未新增调度循环。
+
+链上限通知读取真正的 `depth_limited` intent；领取检查同时保留当时水位供观察，不改变
+领取/深度算法。通知只写历史，一次驱动回合一条；人工输入后旧通知不再让 Overview
+显示停止。协调者 Overview 使用最新驱动回合的深度，也显示本会话/祖先的停止标记。
+批次回报复用紧凑任务行、现有导航和实时标题，新增等待/通知标签。PR4/PR5 未实现，
+启动提示没有承诺轮数拒绝、交接或每日摘要。
+
+实现与验证见 [PR3 Agent Note](../../.agents/notes/implemented/feature/2026-10-16-board-inbox-reports.zh.md)。
+
+## 看板主界面已实现
+
+第 1、2 步已实现：
+
+- **侧边栏。** 「看板」组放在置顶区之后，两种整理模式下都显示。看板行的标记取成员里最强的
+  状态（等你 > 运行中），用侧边栏已有的 presence 映射计算，不新增订阅。组标题上的「+」打开
+  新建对话框。
+- **协调者不进会话列表。** 侧边栏、移动端首页和归档页各自在数据源处滤掉协调者，共享 atom
+  不动。
+- **看板面板。** 会话侧面板新增 `board` 类型，只在协调者页面出现，和其他面板一样持久化。
+  线程在面板里用 `SessionChatInterface` 打开，它的工作区会话是线程自己；协调者的子 Tab
+  和 Side Chat 在会话页里切换，不在面板里再开。面板状态按工作区和看板 id 重建，切换看板
+  不会带走上一个看板的设置草稿。紧凑桌面和手机上
+  点线程会进入线程的完整页面；手机上从会话的标签表打开全屏的看板抽屉。
+- **地址。** `?board=1` 打开一次面板后从 URL 去掉；`/boards/<id>` 跳到协调者会话；
+  `/boards` 跳回对话页。侧边栏、`/boards/<id>` 和命令面板都明确选中协调者自己的 Tab。PR1 的导航项、列表页、只读 Overview 和移动端「看板」tab 已删除。
+- **设置浮窗。** 写看板行（名称、目标、规则）；改名时同步协调者会话的标题。归档看板 =
+  依次归档协调者和成员根会话，再写 `archivedAtMs`（顺序后来改成成员在前、协调者在后，见「看板入口的操作」）。归档页列出已归档的看板；恢复时在
+  catalog writer 里检查 50 个上限，逐个恢复根会话，最后清掉 `archivedAtMs`。失败时提示
+  原因，看板留在原处可以重试。
+- **新建对话框。** 先写目标，名称可空，规则用默认值。
+- **看板文件 tab。** 共享笔记，加上共享目录的占位说明。同页的会话「文件」面板叫「工作区文件」。
+
+与设计的出入：线程行不读成员文档，所以列表里不显示「失败」（见「和已有底层的衔接」）。
+PR1–3 的底层逻辑没有改动；共享层面只多了会话路由的 `board` 搜索参数，以及侧面板持久化
+schema 里的 `board` 值。
+
+未验证：真实桌面应用（devnuc 没有显示器，只在 Storybook 里检查了真实组件）、手机抽屉的
+手势、多机 LAN 上的表现。实现与检查记录见
+[看板主界面 Agent Note](../../.agents/notes/implemented/feature/2026-10-16-board-home.zh.md)。
+
+## 看板主界面第二轮已实现
+
+对应「已决定」第 9–14 条：
+
+- **外部列表。** 侧边栏、移动端首页、归档页各自在数据源处用 `isBoardSession` 滤掉看板里的
+  会话：协调者始终滤掉，线程在看板实验打开时滤掉（关掉实验后线程恢复成普通会话）。共享
+  atom 不动。命令面板：协调者显示成看板，线程显示成「看板名 › 线程」，打开时带
+  `boardThread`，在面板里打开（窄屏进线程页面）。
+- **新建。** 名称必填、目标可选；协调者用 `createSession` 建出来，没有第一条消息。所选的
+  模型等运行配置作为运行配置草稿留在协调者输入框里（只在本机内存中）；选了 Role 时由会话
+  元数据里的 Role 来源决定。
+- **页面。** 看板页每次打开都是 50/50，不记忆分栏（见「lan.4 实测修正」）。设置按钮在主对话
+  头部右侧（手机在看板抽屉的头部），设置浮窗由页面持有，按工作区和看板 id 重建草稿。
+- **面板。** 保留「线程 / 看板文件」两个 tab。线程按家族显示：线程和它开出的会话、子 Tab
+  排在一起并缩进，整组归在成员里最强的状态下。面板里打开的线程右上角显示
+  「机器 · project」，线程的完整页面头部也显示。
+- **共享目录。** 宿主机 = `files.machineId`，旧看板没有这个字段时取协调者所在机器。目录在
+  `<数据目录>/boards/<workspaceId>/<boardId>/{files,memory}/`，由宿主机守护进程按需创建。
+  宿主机用自己的副本核对调用者是看板成员，路径只能落在某个区内，经符号链接越界同样拒绝。
+  LAN `files` 连接加 `board-list`、`board-put`（能力键 `lanBoardFiles`），读文件用带
+  `boardId` 的 `range`。本机的入口有三个：MCP 的 `lody_board_files_list/read/write`、
+  桌面的本机 RPC `board/files-list`、桌面预览用的成员文件资源（`openMemberFile` 带
+  `boardId`）。都经过本机守护进程，宿主机是自己就直接读写，否则走 LAN。
+- **提示。** 同机成员拿到目录的绝对路径，其他机器用工具；协调者说明改成只协调、掌握全局，
+  用 `lody_board_overview` 和 `lody_session_history` 读线程进展和结论（现有工具够用，没有
+  新增 Board 工具）；指令附在最后。
+- **底层改动。** `BoardMeta` 的 `purpose` 改为可空，新增 `instructions` 和 `files`；
+  `range` 请求加可选的 `boardId`；新增本机 RPC 方法和能力键。成员资格、协调者 / 线程、
+  Inbox 回报、状态推导没有改。
+
+未验证：真实桌面应用和多机 LAN 上的实际读写（LAN 读写用两个真实 TLS 守护进程端点在测试里
+验证过）；用户第一句话启动协调者的完整链路只按代码确认了 `session/create` 路径。
+
+## 看板主界面第二轮复查修正
+
+- **本机路径。** `lody_board_files_read` 的 `saveTo` 和 `lody_board_files_write` 的 `source`
+  按附件的工作区规则检查：解析符号链接后必须落在守护进程掌握的该会话工作目录里（chat 会话
+  按它实际的工作目录），否则拒绝；源文件按解析后的真实路径交出去。这样 agent 不能借看板工具
+  读出或写到自己的沙箱、工作区之外。守护进程不知道会话工作目录时，这两个工具直接失败。
+- **目录根。** 区域根从数据目录推出：`boards/<workspaceId>/<boardId>/<区>` 每一级都用 lstat
+  检查，必须是目录、不能是符号链接；区内路径上已存在的每一级同样不能是符号链接，叶子是
+  符号链接也拒绝。叶子用 `O_NOFOLLOW` 打开（本机读和 LAN `range` 都是）。
+  **已知限制：** 检查和打开之间父目录被换掉这类竞态没有用目录句柄解决。LAN 里所有机器属于
+  同一个用户，`lody-lan lan shell` 本来就能在别的机器上执行命令，这里防的是 agent 越过自身
+  限制和误操作，不是同一用户在宿主机上的并发替换。
+- **关闭协调者的 Tab。** 协调者在任何人说话之前就建好了，没有 `lastMessageAt`，但它永远不走
+  空会话删除：关闭只写 `isTabClosed`，会话和看板入口都保留。
+- **`boardThread`。** 地址里的线程交给看板面板，用和线程行同一个分流打开：协调者的直接子
+  Tab 切到主区，Side Chat 切到已有的面板 tab，只有独立线程才在看板面板里打开（窄屏进线程
+  页面）。页面先把参数从 URL 去掉，再交给面板，所以线程页面不会被协调者页面盖掉。
+- **二进制文件。** 没有预览的文件显示「下载」，走现有的 `saveMemberFile`，由桌面边收边写，
+  不受大小限制。
+- **设置导航。** 焦点只画内嵌的 accent 轮廓，不再铺底色；选中的底色只在当前页上。这是看板
+  浮窗里的局部样式，全局设置窗口共用的行样式没改（那里焦点和悬停同样用浅底，见 Agent Note）。
+
+**尚未实现：** 没有往 tab 里拖文件上传；预览只有文本和图片，音视频不能播放，大文件只能下载。
+（文件树已在「lan.4 实测修正」里实现。）
+
+**已知限制：混版客户端写回会丢字段。** 第二轮之前的客户端（桌面或守护进程）读看板行时会
+去掉不认识的 `instructions` 和 `files`，也不认可目标为空的看板。只要这样的客户端写一次看板行
+（在设置里保存，含改名；归档；恢复），行里的指令就没了，此后新成员不再收到；`files.machineId`
+也没了，宿主机退回协调者所在的机器（建看板时两者相同，所以目录通常不搬家）。目标为空的看板
+在旧客户端上直接看不到，旧守护进程上的看板工具报 `BOARD_NOT_FOUND`。代码不做兼容：看板还在
+实验开关后面，要求能写看板的客户端统一升级到同一版本。
+
+## 看板 lan.4 实测修正
+
+`dev-v0.105.0-lan.4` 在五台机器的真实 LAN 上用下来，修了三处：
+
+- **共享目录读不到（`BOARD_NOT_FOUND`）。** 守护进程读看板行用的是自己那份 workspace catalog
+  副本，而守护进程只在有人要用时才同步这份 catalog。看板在别的机器上建好之后，没同步过的
+  成员（实测是 mba）就查不到这一行，在请求还没发到宿主机之前就报错。现在读看板行之前先同步
+  一次 catalog，同步失败就告警并沿用本地副本，和看板工具、成员启动提示的读法一致。
+- **右侧面板不是一半。** 侧栏重新打开时用的宽度是上一个布局留下的（普通会话拖到 38%），又被
+  `board-detail-panels` 记了下来。现在看板页不记忆分栏，每次进入（侧边栏、命令面板、刷新）
+  都是 50/50：换一个看板或再次进入都会把分栏重置回一半，页面不用重挂载；侧栏重开的宽度按
+  布局分别记，普通会话拖过的宽度不会被看板覆盖。
+- **看板文件 tab。** 改用会话「工作区文件」的同一棵文件树（`FileTreeProviderView`），数据源是
+  `BoardDirectoryFileProvider`：代理服务一次列出整个区（最多 500 个文件），树按路径建出目录。
+  点开文件仍用看板自己的预览（文本、图片，其余下载），右键菜单有「下载」。超过 500 个文件时
+  树上方提示「只列出前 500 个文件」。共享笔记仍是 Loro 文档，放在树上方的一行，不迁移成
+  `notes.md`。
+
+## 看板入口的操作
+
+对应「已决定」第 15 条。看板页头部用的就是对话头部（`SessionHeaderMenu` 和分享控件），菜单
+在协调者上按看板改名；侧边栏看板行改用对话行的前导槽、尾部归档按钮和右键菜单。
+
+| 对话头部的操作                           | 在看板上                                                           |
+| ---------------------------------------- | ------------------------------------------------------------------ |
+| 在新窗口打开                             | 保留，打开的就是看板页                                             |
+| 机器、仓库、分支、路径                   | 保留，是协调者的                                                   |
+| 全宽显示、在会话中查找、复制、分享为图片 | 保留，作用于协调者的对话                                           |
+| 分享（静态分享、LAN 分享、与团队分享）   | 保留，分享协调者的对话，走原来的分享编辑器                         |
+| 分叉会话                                 | 保留，从协调者的对话分叉出一个普通会话                             |
+| 在 IDE 中打开                            | 保留，打开协调者的工作目录                                         |
+| 重命名                                   | 改为「重命名看板」：写看板行的名称，同时改协调者标题（和设置一致） |
+| 归档 / 恢复                              | 改为「归档看板 / 恢复看板」：走看板的归档与恢复，不只归档协调者    |
+| 永久删除（已归档时）                     | 不显示：删掉协调者会让看板行失去入口                               |
+| 更换所有者                               | 不显示：看板没有自己的所有者                                       |
+| 加入 / 移出看板                          | 原本就对协调者隐藏                                                 |
+
+手机上的会话菜单同样处理：协调者是当前 Tab 时，重命名和归档作用于看板；已归档时只有恢复。
+快捷键「重命名当前对话」「归档当前对话」在协调者 Tab 上也作用于看板。
+
+侧边栏看板行（桌面）：悬停时看板图标换成「⋯」，状态标记换成归档按钮（两步确认）；右键和
+「⋯」打开的菜单有「重命名看板」「复制看板链接」（协调者会话的链接）、「分享」（可发布时）、
+「在新窗口打开」（桌面应用）、「归档看板」。置顶、标为未读、复制分支不显示：看板不进置顶，
+未读和分支属于成员会话。手机侧边栏和对话行一样没有这些菜单。
+
+归档看板后如果正停在这个看板上，回到对话页；归档或恢复失败时提示原因，看板留在原处。看板页
+菜单显示「归档」还是「恢复」取决于协调者是否已归档，所以协调者排在成员之后：成员失败时协调者
+没动，菜单仍是原来的动作。这些入口都用 `useBoardActions`，成员在动作发生时从元数据缓存读取，
+入口本身不订阅会话列表；设置浮窗和归档页也改用它。重命名按看板行当前的内容只改名称
+（`renameWorkspaceBoard`），对话框打开期间别处改的指令、规则或归档状态不会被覆盖。
+
+未验证：真实桌面应用里的这些菜单（只在 Storybook 和组件测试里看过）。

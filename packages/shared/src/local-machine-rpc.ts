@@ -1,3 +1,4 @@
+import { BoardFileListSchema, BoardFileScopeSchema } from './board-files';
 import { SESSION_FILE_MAX_COUNT } from './ai';
 import { MemoryProviderRequestSchema, MemoryProviderResponseSchema } from './memory-provider';
 import {
@@ -245,14 +246,16 @@ export const TerminalCommandSchema = z.discriminatedUnion('command', [
       worktree: z.boolean().optional(),
       branch: z.string().trim().min(1).optional(),
     })
-    .strict().refine(hasTerminalInput, 'A message needs text or at least one attachment'),
+    .strict()
+    .refine(hasTerminalInput, 'A message needs text or at least one attachment'),
   z
     .object({
       command: z.literal('chat'),
       sessionId: TerminalSessionIdSchema,
       ...TerminalPromptShape,
     })
-    .strict().refine(hasTerminalInput, 'A message needs text or at least one attachment'),
+    .strict()
+    .refine(hasTerminalInput, 'A message needs text or at least one attachment'),
   z
     .object({
       command: z.literal('wait'),
@@ -425,6 +428,12 @@ export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
     method: z.literal('file/resolve-local'),
     params: FilePreviewV3RequestSchema,
   }).strict(),
+  // A Board's shared directory, listed by this machine's agent service: from
+  // its own disk, or over the LAN from the machine that keeps it.
+  BaseLocalMachineRpcRequestSchema.extend({
+    method: z.literal('board/files-list'),
+    params: BoardFileScopeSchema,
+  }).strict(),
   BaseLocalMachineRpcRequestSchema.extend({
     method: z.literal('session/cancel'),
     params: z
@@ -576,7 +585,8 @@ export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
         configId: AgentConfigIdSchema.optional(),
       })
       .strict(),
-  }).strict(),  BaseLocalMachineRpcRequestSchema.extend({
+  }).strict(),
+  BaseLocalMachineRpcRequestSchema.extend({
     method: z.literal('machine/voice'),
     params: MachineVoiceRequestSchema,
   }).strict(),
@@ -602,6 +612,7 @@ export type LanRpcForwardResult = z.infer<typeof LanRpcForwardResultSchema>;
 
 export const LocalMachineRpcResultSchema = z.union([
   LanRpcForwardResultSchema,
+  BoardFileListSchema,
   // Before the looser session responses, which would strip its fields.
   MachineVoiceResponseSchema,
   MemoryProviderResponseSchema,

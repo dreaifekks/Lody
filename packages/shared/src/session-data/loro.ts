@@ -177,10 +177,10 @@ export function createLoroSessionData(options: LoroSessionDataOptions) {
       const scalars = pickDirectoryScalars(map.getShallowValue());
       if (!scalars) return { position, state: 'invalid' };
       const row: SessionDirectoryRow = { position, state: 'ready', turnId: scalars.id, scalars };
-      // Send config is present for user turns but projected on first read;
+      // Send config covers user and system driving turns, projected on first read;
       // counts are deliberately omitted here (one container crossing each) and
       // arrive with a summary or a hydration read.
-      return scalars.role === 'user'
+      return scalars.role === 'user' || scalars.role === 'system'
         ? withDeferredInputConfig(row, shallowInputConfigSource(map))
         : row;
     }
@@ -198,7 +198,9 @@ export function createLoroSessionData(options: LoroSessionDataOptions) {
         ...(itemCount !== undefined ? { itemCount } : {}),
         ...(planCount !== undefined ? { planCount } : {}),
       };
-      return scalars.role === 'user' ? withDeferredInputConfig(row, record.inputConfig) : row;
+      return scalars.role === 'user' || scalars.role === 'system'
+        ? withDeferredInputConfig(row, record.inputConfig)
+        : row;
     }
     return { position, state: 'invalid' };
   };

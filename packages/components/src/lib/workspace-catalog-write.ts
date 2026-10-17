@@ -1,6 +1,11 @@
 import {
   getWorkspaceFlockDocId,
   workspaceFlockKeys,
+  type BoardMeta,
+  MAX_BOARDS_PER_WORKSPACE,
+  listWorkspaceBoards,
+  normalizeBoardMeta,
+  readWorkspaceFlockRowsFromFlock,
   type AgentRoleId,
   type CatalogAgentRole,
   type McpServerId,
@@ -129,3 +134,72 @@ export const writeWorkspaceAgentTools = (
   tools: readonly LodyAgentToolId[]
 ): Promise<void> =>
   putRow(deps, workspaceFlockKeys.agentToolsSetting(), { version: 1, tools: [...tools] });
+
+export const writeWorkspaceBoard = (
+  deps: WorkspaceCatalogWriteDeps,
+  board: BoardMeta
+): Promise<void> => putRow(deps, workspaceFlockKeys.board(board.id), board);
+export const deleteWorkspaceBoard = (
+  deps: WorkspaceCatalogWriteDeps,
+  id: BoardMeta['id']
+): Promise<void> => deleteRow(deps, workspaceFlockKeys.board(id));
+
+const countActiveBoards = async (deps: WorkspaceCatalogWriteDeps): Promise<number> => {
+  const handle = await deps.repo.openFlockDoc(getWorkspaceFlockDocId(deps.workspaceId));
+  return listWorkspaceBoards(readWorkspaceFlockRowsFromFlock(handle.flock)).filter(
+    (entry) => entry.archivedAtMs === undefined
+  ).length;
+};
+
+/**
+ * Restoring brings a Board back under the active limit, so it is checked here too.
+ * The row leaves the archive last: if a member fails, the Board stays archived and
+ * its Restore entry remains for a retry.
+ */
+export async function restoreWorkspaceBoard(
+  deps: WorkspaceCatalogWriteDeps,
+  board: BoardMeta,
+  restoreMembers: () => Promise<void>
+): Promise<BoardMeta> {
+  if ((await countActiveBoards(deps)) >= MAX_BOARDS_PER_WORKSPACE) throw new Error('BOARD_LIMIT');
+  await restoreMembers();
+  const { archivedAtMs: _archivedAtMs, ...restored } = board;
+  await writeWorkspaceBoard(deps, restored);
+  return restored;
+}
+
+/**
+ * Renames the Board as its row stands now, so a rename typed against an older copy
+ * keeps every other field another window or machine changed meanwhile.
+ */
+export async function renameWorkspaceBoard(
+  deps: WorkspaceCatalogWriteDeps,
+  id: BoardMeta['id'],
+  name: string
+): Promise<BoardMeta> {
+  const handle = await deps.repo.openFlockDoc(getWorkspaceFlockDocId(deps.workspaceId));
+  const current = listWorkspaceBoards(readWorkspaceFlockRowsFromFlock(handle.flock)).find(
+    (entry) => entry.id === id
+  );
+  if (!current) throw new Error('BOARD_NOT_FOUND');
+  const next = normalizeBoardMeta({ ...current, name });
+  if (!next) throw new Error('BOARD_INVALID');
+  await writeWorkspaceBoard(deps, next);
+  return next;
+}
+
+/** Board creation compensates only a rejected first-turn acceptance, never upload. */
+export async function createWorkspaceBoard<T>(
+  deps: WorkspaceCatalogWriteDeps,
+  board: BoardMeta,
+  startCoordinator: () => Promise<T>
+): Promise<T> {
+  if ((await countActiveBoards(deps)) >= MAX_BOARDS_PER_WORKSPACE) throw new Error('BOARD_LIMIT');
+  await writeWorkspaceBoard(deps, board);
+  try {
+    return await startCoordinator();
+  } catch (error) {
+    await deleteWorkspaceBoard(deps, board.id);
+    throw error;
+  }
+}

@@ -18,7 +18,7 @@ import {
 import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
 import type { SessionNavigationTarget } from '@/lib/session-navigation';
 
-type CreatedSessionStatus = OperationProgressStatus;
+type CreatedSessionStatus = OperationProgressStatus | 'waiting_user' | 'notice';
 
 const statusLabels = {
   created: 'sessions.openedBy.status.created',
@@ -26,6 +26,8 @@ const statusLabels = {
   succeeded: 'sessions.openedBy.status.succeeded',
   failed: 'sessions.openedBy.status.failed',
   cancelled: 'sessions.openedBy.status.cancelled',
+  waiting_user: 'sessions.openedBy.status.waitingUser',
+  notice: 'sessions.openedBy.status.notice',
 } as const;
 const selectSessionTitle = (session: SessionMeta | null | undefined): string | null =>
   session?.title?.trim() || null;
@@ -42,7 +44,7 @@ export function useOperationTargetTitle(sessionId: SessionId, fallbackTitle?: st
 }
 
 const styles = stylex.create({
-  root: { display: 'grid', minWidth: 0 },
+  root: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', minWidth: 0 },
   title: {
     flexGrow: 1,
     minWidth: 0,

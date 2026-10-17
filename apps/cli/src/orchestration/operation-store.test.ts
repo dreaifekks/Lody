@@ -20,6 +20,7 @@ import {
   LODY_OPERATION_COMPLETION_MAX_BYTES,
   type AcpCapabilityCacheEntry,
   type MachineId,
+  type McpServerId,
   type SessionId,
   type WorkspaceId,
 } from '@lody/shared';
@@ -554,7 +555,7 @@ describe('LodyOperationStore', () => {
     }
   });
 
-  it('round-trips a frozen create dispatch config', async () => {
+  it('round-trips frozen per-target dispatch configs', async () => {
     const store = await makeStore();
     try {
       const accepted = store.accept({
@@ -572,7 +573,10 @@ describe('LodyOperationStore', () => {
               inheritedDispatchConfig: { modelId: 'gpt-5', configOptionValues: { fast: true } },
               memory: { providerId: 'nowledge-mem', memoryId: 'reviewer' },
               inheritSessionDefaults: false as const,
+              mcpServerIds: ['search' as McpServerId],
             },
+            // Chat targets freeze only their MCP choice; an explicit none survives.
+            { mcpServerIds: [] },
           ],
         },
       });
@@ -587,7 +591,9 @@ describe('LodyOperationStore', () => {
           inheritedDispatchConfig: { modelId: 'gpt-5', configOptionValues: { fast: true } },
           memory: { providerId: 'nowledge-mem', memoryId: 'reviewer' },
           inheritSessionDefaults: false,
+          mcpServerIds: ['search'],
         },
+        { mcpServerIds: [] },
       ]);
     } finally {
       store.close();
@@ -1238,5 +1244,273 @@ describe('runWithOperationStoreBusyRetry', () => {
     expect(isOperationStoreBusyError(busyError('SQLITE_CONSTRAINT'))).toBe(false);
     expect(isOperationStoreBusyError(new Error('database is locked'))).toBe(false);
     expect(isOperationStoreBusyError('database is locked')).toBe(false);
+  });
+});
+
+const boardReportInput = () => ({
+  boardId: 'bd_reports' as import('@lody/shared').BoardId,
+  sessionId: 'member' as SessionId,
+  workspaceId: 'workspace-1' as WorkspaceId,
+  ownerMachineId: 'machine-1' as MachineId,
+  requesterSessionId: 'requester-1' as SessionId,
+  requesterUserId: 'user-1',
+  frozenContinuationConfig: {
+    inputConfig: { chainDepth: 2, mcpServerIds: [] },
+    sourceTurnId: 'coordinator-turn',
+  },
+  events: [
+    {
+      kind: 'finished' as const,
+      sessionId: 'member' as SessionId,
+      machineId: 'remote' as MachineId,
+      turnId: 'work',
+      at: 100,
+      origin: 'agent' as const,
+      output: { text: 'Done' },
+    },
+  ],
+  cursor: { lastTurnId: 'work' },
+});
+const storeDb = (store: LodyOperationStore) => (store as unknown as { db: Database.Database }).db;
+
+describe('Board report transactions', () => {
+  it('removes only the deleted member cursors and retains unrelated report state', async () => {
+    const store = await makeStore();
+    const input = boardReportInput();
+    try {
+      store.acceptBoardReport(input);
+      const other = { ...input, sessionId: 'other' as SessionId, events: [] };
+      store.acceptBoardReport(other);
+      store.deleteRequesterSession(input.sessionId);
+      expect(store.readBoardReportCursor(input.boardId, input.sessionId)).toEqual({});
+      expect(store.readBoardReportCursor(input.boardId, other.sessionId)).toEqual(other.cursor);
+      expect(queuedResults(store, input.workspaceId)).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rolls back Operation, Inbox result and intent when the cursor fails, then accepts once', async () => {
+    const store = await makeStore();
+    const input = boardReportInput();
+    try {
+      storeDb(store).exec(
+        `CREATE TRIGGER reject_cursor BEFORE INSERT ON board_report_cursors BEGIN SELECT RAISE(ABORT,'cursor failure'); END;`
+      );
+      expect(() => store.acceptBoardReport(input)).toThrow('cursor failure');
+      expect(queuedResults(store, input.workspaceId)).toEqual([]);
+      expect(store.listForRequester({ ...input }, {}).items).toEqual([]);
+      expect(store.inbox.pending(input.workspaceId)).toEqual([]);
+      expect(store.readBoardReportCursor(input.boardId, input.sessionId)).toEqual({});
+      storeDb(store).exec('DROP TRIGGER reject_cursor');
+      store.acceptBoardReport(input);
+      store.acceptBoardReport(input);
+      expect(queuedResults(store, input.workspaceId)).toHaveLength(1);
+      expect(store.inbox.pending(input.workspaceId)).toHaveLength(1);
+      expect(store.readBoardReportCursor(input.boardId, input.sessionId)).toEqual({
+        lastTurnId: 'work',
+      });
+      const id = store.listForRequester({ ...input }, {}).items[0]!.operationId;
+      expect(store.get(input.requesterSessionId, id)).toMatchObject({
+        state: 'finished',
+        kind: 'board_report',
+        items: [],
+        initiatorChainDepth: 2,
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('queues while busy, then freezes one batch at normal release; human input rebases its depth to zero', async () => {
+    const store = await makeStore();
+    const report = boardReportInput();
+    const scope = {
+      workspaceId: report.workspaceId,
+      sessionId: report.requesterSessionId,
+      userId: report.requesterUserId,
+    };
+    const input = { ...scope, inputId: 'human', kind: 'human' as const, config: { chainDepth: 0 } };
+    try {
+      store.inbox.activate(scope.workspaceId, 'owner');
+      expect(store.inbox.accept(input)).toBe(true);
+      expect(store.inbox.begin(input, 'execution', 'owner')).toBe(true);
+      store.acceptBoardReport(report);
+      store.acceptBoardReport({
+        ...report,
+        events: [{ ...report.events[0]!, turnId: 'next' }],
+        cursor: { lastTurnId: 'next' },
+      });
+      expect(store.inbox.pending(scope.workspaceId)).toEqual([]);
+      store.inbox.release({ ...input, executionId: 'execution', outcome: 'normal' });
+      const pending = store.inbox.pending(scope.workspaceId);
+      expect(pending).toHaveLength(1);
+      const batch = store.inbox.prepare(pending[0]!.input, 'owner', pending[0]!.intentId)!;
+      expect(batch).toMatchObject({ memberCount: 2, chainDepth: 3 });
+      const fresh = { ...input, inputId: 'fresh-human' };
+      expect(store.inbox.accept(fresh)).toBe(true);
+      const humanBatch = store.inbox.prepare(fresh, 'owner')!;
+      expect(humanBatch).toMatchObject({ memberCount: 2, chainDepth: 0, kind: 'human' });
+      expect(store.inbox.members(humanBatch)).toHaveLength(2);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('keeps reports passive while paused; a task cannot clear pause but fresh human input carries them', async () => {
+    const store = await makeStore();
+    const report = boardReportInput();
+    const scope = {
+      workspaceId: report.workspaceId,
+      sessionId: report.requesterSessionId,
+      userId: report.requesterUserId,
+    };
+    const input = { ...scope, inputId: 'human', kind: 'human' as const, config: {} };
+    try {
+      store.inbox.activate(scope.workspaceId, 'owner');
+      store.inbox.accept(input);
+      store.inbox.begin(input, 'execution', 'owner');
+      expect(store.inbox.pause(scope, 'execution', [], 'stop')).toBe(true);
+      store.inbox.release({ ...input, executionId: 'execution', outcome: 'user_stop' });
+      store.acceptBoardReport(report);
+      expect(store.inbox.pending(scope.workspaceId)).toEqual([]);
+      expect(store.inbox.accept({ ...input, inputId: 'scheduled', kind: 'task' })).toBe(false);
+      expect(store.inbox.accept({ ...input, inputId: 'new-human' })).toBe(true);
+      const batch = store.inbox.prepare({ ...input, inputId: 'new-human' }, 'owner')!;
+      expect(batch).toMatchObject({ memberCount: 1, chainDepth: 0 });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('retains results, intents and cursors across restart, including downtime longer than retention', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'board-restart-'));
+    roots.add(root);
+    const dbPath = path.join(root, 'operations.sqlite3');
+    let now = Date.parse('2026-07-20T00:00:00Z');
+    let store = new LodyOperationStore(dbPath, () => now);
+    const input = boardReportInput();
+    try {
+      store.acceptBoardReport(input);
+      store.close();
+      now += 10 * 24 * 60 * 60 * 1000;
+      store = new LodyOperationStore(dbPath, () => now);
+      expect(queuedResults(store, input.workspaceId)).toHaveLength(1);
+      expect(store.inbox.pending(input.workspaceId)).toHaveLength(1);
+      expect(store.readBoardReportCursor(input.boardId, input.sessionId)).toMatchObject(
+        input.cursor
+      );
+      store.acceptBoardReport(input);
+      expect(queuedResults(store, input.workspaceId)).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('retired event ids never enter the Inbox twice and a rejected event still advances its cursor', async () => {
+    const store = await makeStore();
+    const input = boardReportInput();
+    try {
+      store.acceptBoardReport(input);
+      storeDb(store).exec(
+        'DELETE FROM inbox_results; DELETE FROM operations; DELETE FROM board_report_cursors;'
+      );
+      store.acceptBoardReport(input);
+      expect(queuedResults(store, input.workspaceId)).toEqual([]);
+      expect(store.readBoardReportCursor(input.boardId, input.sessionId)).toMatchObject(
+        input.cursor
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it('caps oversized report completion without dropping the event or its truncation evidence', async () => {
+    const store = await makeStore();
+    const input = boardReportInput();
+    try {
+      store.acceptBoardReport({
+        ...input,
+        events: [
+          {
+            ...input.events[0]!,
+            title: '标题'.repeat(30000),
+            output: { text: '正文'.repeat(30000) },
+          },
+        ],
+      });
+      const id = store.listForRequester({ ...input }, {}).items[0]!.operationId;
+      const completion = store.get(input.requesterSessionId, id).completion!;
+      expect(Buffer.byteLength(JSON.stringify(completion))).toBeLessThanOrEqual(
+        LODY_OPERATION_COMPLETION_MAX_BYTES
+      );
+      expect(completion).toMatchObject({
+        type: 'result',
+        value: { boardReport: { events: [{ kind: 'finished', output: { truncated: true } }] } },
+        truncation: { truncated: true },
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('covers retained receipts but does not hide late targets of cancelled or timed-out roots', async () => {
+    const store = await makeStore();
+    const input = baseInput();
+    try {
+      store.accept(input);
+      expect(store.boardCoveredTargets(input.requesterSessionId)).toContain(
+        JSON.stringify(['target-1', 'turn-1'])
+      );
+      store.updateItems(input.requesterSessionId, input.operationId, [
+        {
+          status: 'succeeded',
+          target: { sessionId: 'target-1' as SessionId, userTurnId: 'turn-1' },
+          assistantTurnId: 'answer',
+        },
+      ]);
+      store.finish(input.requesterSessionId, input.operationId, {
+        type: 'result',
+        value: { items: store.get(input.requesterSessionId, input.operationId).items },
+      });
+      expect(store.boardCoveredTargets(input.requesterSessionId)).toContain(
+        JSON.stringify(['target-1', 'turn-1'])
+      );
+      store.accept({
+        ...input,
+        operationId: 'cancelled-root',
+        items: [
+          {
+            status: 'active',
+            inputDurable: true,
+            target: { sessionId: 'late' as SessionId, userTurnId: 'late-input' },
+          },
+        ],
+      });
+      store.cancel(input.requesterSessionId, 'cancelled-root');
+      expect(store.boardCoveredTargets(input.requesterSessionId)).not.toContain(
+        JSON.stringify(['late', 'late-input'])
+      );
+      store.accept({
+        ...input,
+        operationId: 'timeout-root',
+        items: [
+          {
+            status: 'failed',
+            target: { sessionId: 'late-timeout' as SessionId, userTurnId: 'late-input' },
+            error: { code: 'TARGET_TIMEOUT', message: 'Timed out', retryable: false },
+          },
+        ],
+      });
+      store.finish(input.requesterSessionId, 'timeout-root', {
+        type: 'result',
+        value: { items: [] },
+      });
+      expect(store.boardCoveredTargets(input.requesterSessionId)).not.toContain(
+        JSON.stringify(['late-timeout', 'late-input'])
+      );
+    } finally {
+      store.close();
+    }
   });
 });

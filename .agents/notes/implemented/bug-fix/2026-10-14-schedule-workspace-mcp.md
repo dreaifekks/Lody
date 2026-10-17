@@ -30,7 +30,8 @@ to Schedule definitions.
 The ordinary `lody_session_create` path has the same omission: its dispatch
 config and history builder do not carry MCP ids. It was inspected and left
 unchanged as requested. Fixing Schedule preparation locally avoids changing
-all agent-created conversations implicitly.
+all agent-created conversations implicitly. That gap was fixed later; see
+[agent-written Turn selection](2026-10-17-agent-session-workspace-mcp.md).
 
 ### Review follow-up
 

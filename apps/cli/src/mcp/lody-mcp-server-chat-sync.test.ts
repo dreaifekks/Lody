@@ -28,6 +28,8 @@ const mocks = vi.hoisted(() => ({
   markItemInputDurable: vi.fn(),
   validateSessionChatTarget: vi.fn(),
   validateSessionCreateOptions: vi.fn(),
+  resolveSessionChatMcpSelection: vi.fn(),
+  catalogScan: vi.fn(),
   readTurn: vi.fn(),
 }));
 
@@ -46,7 +48,11 @@ vi.mock('@/lib/command-runtime', async (importOriginal) => {
         fn: (manager: unknown) => Promise<unknown>
       ) =>
         await fn({
-          repo: { getDocMeta: mocks.getDocMeta },
+          repo: {
+            getDocMeta: mocks.getDocMeta,
+            openFlockDoc: vi.fn(async () => ({ flock: { scan: () => mocks.catalogScan() ?? [] } })),
+          },
+          syncFlockDocOrThrow: vi.fn(async () => undefined),
           getOnlineMachineIds: vi.fn(async () => new Set(['machine-id'])),
           getOrCreateSessionDoc: vi.fn(async () => ({})),
         })
@@ -62,6 +68,7 @@ vi.mock('@/commands/session', async (importOriginal) => {
     sendSessionChatResult: mocks.sendSessionChatResult,
     validateSessionChatTarget: mocks.validateSessionChatTarget,
     validateSessionCreateOptions: mocks.validateSessionCreateOptions,
+    resolveSessionChatMcpSelection: mocks.resolveSessionChatMcpSelection,
   };
 });
 
@@ -195,6 +202,7 @@ beforeEach(() => {
     inputConfig: {},
   });
   mocks.findMatchingRetry.mockReturnValue(undefined);
+  mocks.resolveSessionChatMcpSelection.mockResolvedValue([]);
   mocks.readTurn.mockImplementation(async (id: string) => ({
     state: 'ready',
     turn: {
@@ -450,7 +458,7 @@ describe('turn-scoped reverse chat rejection', () => {
             userTurnId: 'recovered-input',
             delegatedRequester,
           },
-          { inheritSessionDefaults: false },
+          { inheritSessionDefaults: false, mcpServerIds: [] },
           {
             targetMachine: { id: 'machine-id', ownerUserId: recovered.requesterUserId },
             agentConfig: {
@@ -1046,5 +1054,92 @@ describe('scoped completed work batch reader', () => {
       store.close();
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('workspace MCP selection frozen at acceptance', () => {
+  const sourceTurn = (mcpServerIds?: string[]) => {
+    const base = mocks.readTurn.getMockImplementation()!;
+    mocks.readTurn.mockImplementation(async (id: string) => {
+      const read = await base(id);
+      return id === 'requester-turn-id'
+        ? { ...read, turn: { ...read.turn, inputConfig: mcpServerIds ? { mcpServerIds } : {} } }
+        : read;
+    });
+  };
+  const acceptedConfigs = () => {
+    const input = mocks.accept.mock.calls[0]?.[0] as
+      | { frozenContinuationConfig: { targetDispatchConfigs?: unknown[] } }
+      | undefined;
+    return input?.frozenContinuationConfig.targetDispatchConfigs;
+  };
+
+  beforeEach(() => {
+    mocks.catalogScan.mockReturnValue([
+      {
+        key: ['mcpServer', 'default-mcp'],
+        value: {
+          id: 'default-mcp',
+          name: 'Default',
+          transport: 'stdio',
+          enabledByDefault: true,
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      },
+    ]);
+    mocks.validateSessionCreateOptions.mockImplementation(
+      async ({ dispatchConfig }: { dispatchConfig: unknown }) => dispatchConfig
+    );
+    mocks.accept.mockImplementation((input: { items: LodyOperationItemResult[] }) => ({
+      operation: { state: 'finished', items: input.items },
+      claimedItemIndexes: [],
+    }));
+  });
+
+  it.each([
+    { parent: ['parent-mcp'], expected: ['parent-mcp'] },
+    { parent: [], expected: [] },
+    { parent: undefined, expected: ['default-mcp'] },
+  ])(
+    'freezes the driving Turn choice $parent for a new Session, else workspace defaults',
+    async ({ parent, expected }) => {
+      sourceTurn(parent);
+      // Dispatch reports an absent choice as []; the stored Turn keeps it apart.
+      mocks.activeInvocation.mockReturnValue({
+        ...mocks.activeInvocation(),
+        inputConfig: { mcpServerIds: parent ?? [] },
+      });
+      await startSessionCreateOperation({
+        operationId: 'mcp-create',
+        prompt: 'start',
+        agentConfigId: 'agent-config-id',
+      });
+      expect(acceptedConfigs()).toEqual([expect.objectContaining({ mcpServerIds: expected })]);
+
+      mocks.accept.mockClear();
+      await startSessionCreateManyOperation({
+        operationId: 'mcp-create-many',
+        items: [
+          { prompt: 'first', agentConfigId: 'agent-config-id' },
+          { prompt: 'second', agentConfigId: 'agent-config-id' },
+        ],
+      });
+      expect(acceptedConfigs()).toEqual([
+        expect.objectContaining({ mcpServerIds: expected }),
+        expect.objectContaining({ mcpServerIds: expected }),
+      ]);
+    }
+  );
+
+  it("freezes each chat target's own selection, never the sender's", async () => {
+    sourceTurn(['sender-mcp']);
+    mocks.resolveSessionChatMcpSelection.mockResolvedValue(['target-mcp']);
+    await startSessionChatOperation({
+      operationId: 'mcp-chat',
+      sessionId: targetSession.id,
+      prompt: 'continue',
+    });
+    expect(acceptedConfigs()).toEqual([{ mcpServerIds: ['target-mcp'] }]);
   });
 });

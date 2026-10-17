@@ -12,6 +12,7 @@ import {
   type AgentRole,
   type MachineId,
   type MachineMeta,
+  type McpServerId,
   type SessionHistoryInput,
   type SessionId,
   type SessionMeta,
@@ -101,6 +102,7 @@ function createFixture(agentType: 'codex' | 'claude', capability?: AcpCapability
   let freshnessConfirmed = false;
   let failDispatchPointer = false;
   let invocationInputConfig: SessionHistoryInput['inputConfig'];
+  let mcpDefaults: string[] = [];
   const machine: MachineMeta = {
     id: machineId,
     name: 'Synthetic machine',
@@ -142,6 +144,7 @@ function createFixture(agentType: 'codex' | 'claude', capability?: AcpCapability
       },
       openFlockDoc: async () => ({
         flock: {
+          subscribe: () => () => {},
           // Provider discovery works even when its ACP capability row has not arrived.
           scan: ({ prefix }: { prefix?: readonly unknown[] } = {}) =>
             [
@@ -149,6 +152,17 @@ function createFixture(agentType: 'codex' | 'claude', capability?: AcpCapability
               ...(capability
                 ? [{ key: ['acpCapability', agentConfig.id], value: capability }]
                 : []),
+              ...mcpDefaults.map((id) => ({
+                key: ['mcpServer', id],
+                value: {
+                  id,
+                  name: id,
+                  transport: 'stdio',
+                  enabledByDefault: true,
+                  createdAt: 0,
+                  updatedAt: 0,
+                },
+              })),
             ].filter((row) => !prefix || prefix.every((part, index) => row.key[index] === part)),
         },
       }),
@@ -292,6 +306,9 @@ function createFixture(agentType: 'codex' | 'claude', capability?: AcpCapability
     seedChat,
     run,
     validateCreate,
+    setMcpDefaults: (ids: string[]) => {
+      mcpDefaults = ids;
+    },
     runMcp: async <T>(requesterSessionId: SessionId, invoke: () => Promise<T>): Promise<T> => {
       // The MCP server owns a process-long SQLite connection. Capture that real
       // store only for cleanup so Windows can remove the temporary database too.
@@ -1363,6 +1380,100 @@ describe('agent-originated MCP inherited fallback', () => {
       }
     }
   );
+});
+
+describe('agent-originated workspace MCP selection', () => {
+  const useStore = async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lody-mcp-selection-'));
+    roots.add(root);
+    vi.stubEnv('LODY_DATA_DIR', root);
+  };
+  const readOperation = (requesterSessionId: SessionId, operationId: string) => {
+    const store = new LodyOperationStore(getLodyOperationStorePath(machineId));
+    try {
+      return store.get(requesterSessionId, operationId);
+    } finally {
+      store.close();
+    }
+  };
+  const turnConfig = (mcpServerIds?: string[]) => ({
+    prompt: 'Earlier prompt',
+    cliType: 'builtin' as const,
+    agentType: 'codex',
+    ...(mcpServerIds ? { mcpServerIds: mcpServerIds as McpServerId[] } : {}),
+  });
+
+  it.each([
+    { parent: ['parent-mcp'], expected: ['parent-mcp'] },
+    { parent: [], expected: [] },
+    { parent: undefined, expected: ['default-mcp'] },
+  ])(
+    'creates with the opener choice $parent and replays it after the catalog changes',
+    async ({ parent, expected }) => {
+      await useStore();
+      const fixture = createFixture('codex', createModelCapability());
+      fixture.setMcpDefaults(['default-mcp']);
+      const requesterSessionId = 'mcp-selection-requester' as SessionId;
+      await fixture.seedChat(turnConfig(parent), requesterSessionId);
+
+      await fixture.runMcp(requesterSessionId, () =>
+        __lodyMcpServerInternals.startSessionCreateOperation({
+          operationId: 'mcp-selection-create',
+          prompt: 'Start',
+        })
+      );
+
+      const operation = readOperation(requesterSessionId, 'mcp-selection-create');
+      const item = operation.items[0];
+      if (item?.status !== 'active') throw new Error('Expected an accepted create');
+      expect((await fixture.history(item.target.sessionId))[0]?.inputConfig?.mcpServerIds).toEqual(
+        expected
+      );
+      const frozen = operation.frozenContinuationConfig.targetDispatchConfigs?.[0];
+      if (!frozen) throw new Error('Expected a frozen create configuration');
+      expect(frozen.mcpServerIds).toEqual(expected);
+
+      // Recovery uses the frozen choice, not the catalog as it is now.
+      fixture.setMcpDefaults(['later-default']);
+      await fixture.run('create', frozen);
+      expect((await fixture.history())[0]?.inputConfig?.mcpServerIds).toEqual(expected);
+    }
+  );
+
+  it.each([
+    { target: ['target-mcp'], expected: ['target-mcp'] },
+    { target: undefined, expected: ['default-mcp'] },
+  ])("chats with the target's choice $target, never the sender's", async ({ target, expected }) => {
+    await useStore();
+    const fixture = createFixture('codex', createModelCapability());
+    fixture.setMcpDefaults(['default-mcp']);
+    await fixture.seedChat(turnConfig(target));
+    const requesterSessionId = 'mcp-selection-sender' as SessionId;
+    await fixture.seedChat(turnConfig(['sender-mcp']), requesterSessionId);
+
+    await fixture.runMcp(requesterSessionId, () =>
+      __lodyMcpServerInternals.startSessionChatOperation({
+        operationId: 'mcp-selection-chat',
+        sessionId,
+        prompt: 'Continue',
+      })
+    );
+
+    const operation = readOperation(requesterSessionId, 'mcp-selection-chat');
+    const item = operation.items[0];
+    if (item?.status !== 'active') throw new Error('Expected an accepted chat');
+    const sent = (await fixture.history()).find((turn) => turn.id === item.target.userTurnId);
+    expect(sent?.inputConfig?.mcpServerIds).toEqual(expected);
+    expect(operation.frozenContinuationConfig.targetDispatchConfigs).toEqual([
+      { mcpServerIds: expected },
+    ]);
+
+    // A replayed chat keeps the frozen choice after the target and catalog move on.
+    fixture.setMcpDefaults(['later-default']);
+    await fixture.run('chat', { mcpServerIds: expected as McpServerId[] }, 'replayed-turn');
+    const replayed = (await fixture.history()).find((turn) => turn.id === 'replayed-turn');
+    expect(replayed?.inputConfig?.mcpServerIds).toEqual(expected);
+  });
 });
 
 describe.each([

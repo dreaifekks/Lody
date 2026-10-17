@@ -98,7 +98,12 @@ describe('General settings sections', () => {
     const titles = sections().map((entry) => entry.title);
     expect(titles.slice(-2)).toEqual(['Experimental features', 'Advanced']);
     expect(section('Experimental features')?.switches).toEqual([
-      'Enable experimental features', 'Voice', 'Notifications from agents', 'Plan review', 'Interactive widgets',
+      'Enable experimental features',
+      'Boards',
+      'Voice',
+      'Notifications from agents',
+      'Plan review',
+      'Interactive widgets',
     ]);
     const advanced = section('Advanced');
     expect(advanced?.switches).toEqual([]);

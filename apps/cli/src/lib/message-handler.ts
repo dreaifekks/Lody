@@ -190,6 +190,7 @@ import {
   isLanMemberControlType,
   LAN_CONTROL_PROTOCOL_VERSION,
   LAN_FILE_RANGES_PROTOCOL_VERSION,
+  LAN_BOARD_FILES_PROTOCOL_VERSION,
   LAN_FILES_PROTOCOL_VERSION,
   LAN_SHELL_PROTOCOL_VERSION,
   LAN_TUNNEL_PROTOCOL_VERSION,
@@ -199,6 +200,7 @@ import {
   type LanMemberControlResponse,
   type MachineProtocolCapabilities,
   ANTIGRAVITY_AGENT_TYPE,
+  BOARD_MAINTENANCE_TURN_PREFIX,
 } from '@lody/shared';
 import { getHostMachineProtocolCapabilities } from '../agent/managed-agent-runtime';
 import { ISession, SessionManager } from '../session/session-manager';
@@ -345,6 +347,7 @@ import {
   createLocalSessionCommandEnvironment,
   getSessionCommandEnvironment,
   runWithSessionCommandEnvironment,
+  type BoardFilesPort,
 } from './session-command-environment';
 import { getLodyOperationStorePath, LodyOperationStore } from '@/orchestration/operation-store';
 import {
@@ -681,6 +684,8 @@ export interface MessageHandlerConfig {
     machineId: MachineId,
     request: LoroStreamsRpcRequest
   ) => Promise<readonly unknown[] | null>;
+  /** Board shared directories of this workspace, as this machine reaches them. */
+  boardFiles?: BoardFilesPort;
   cloudPort: CloudPort;
 }
 
@@ -774,6 +779,7 @@ export class MessageHandler {
   private readonly answerLanMemberControl?: MessageHandlerConfig['answerLanMemberControl'];
   private readonly acceptsLanMemberFiles: boolean;
   private readonly lanWorkspace: boolean;
+  private readonly boardFiles: BoardFilesPort | undefined;
   private readonly askLanMemberDirect?: MessageHandlerConfig['askLanMemberDirect'];
   private readonly machineLifecycleCapability: MachineLifecycleCapability;
   /** Per session, the user turn whose prompt the provider last answered. */
@@ -1490,7 +1496,9 @@ export class MessageHandler {
       throw new Error(`Session is ${initialTarget.statusType}; image upload is unavailable`);
     }
 
-    await sessionDoc.setLastMessageAt(Date.now());
+    if (!this.isBoardMaintenanceEntry(historyEntryId)) {
+      await sessionDoc.setLastMessageAt(Date.now());
+    }
     this.logger.debug(
       `[${args.sessionId}] Codex inline image uploaded (callId=${args.callId} historyEntryId=${historyEntryId})`
     );
@@ -1689,7 +1697,8 @@ export class MessageHandler {
     sessionDoc: SessionDocument,
     reason: ChatFailedReason,
     message?: string,
-    code?: ChatFailedCode
+    code?: ChatFailedCode,
+    options?: { quiet?: boolean }
   ): Promise<void> {
     // Failure notices append to the history list; order them after the user
     // turn entry for RPC fast-path turns (no-op when no gate is pending).
@@ -1716,7 +1725,7 @@ export class MessageHandler {
     };
     const backend = await this.getSessionBackend(sessionDoc);
     await backend.appendHistoryTurn(systemNotice);
-    void this.notifySessionFailed(sessionDoc, reason, message);
+    if (!options?.quiet) void this.notifySessionFailed(sessionDoc, reason, message);
   }
 
   private async notifySessionFailed(
@@ -2900,7 +2909,11 @@ export class MessageHandler {
       this.workspaceDocument,
       item.target.sessionId,
       prompt,
-      resolveTurnDispatchConfig({}),
+      {
+        ...resolveTurnDispatchConfig({}),
+        mcpServerIds:
+          operation.frozenContinuationConfig.targetDispatchConfigs?.[index]?.mcpServerIds,
+      },
       undefined,
       delegatedRequester ? undefined : operation.requesterUserId,
       {
@@ -2948,6 +2961,7 @@ export class MessageHandler {
     this.answerLanMemberControl = config.answerLanMemberControl;
     this.acceptsLanMemberFiles = config.acceptsLanMemberFiles === true;
     this.lanWorkspace = config.lanWorkspace === true;
+    this.boardFiles = config.boardFiles;
     this.askLanMemberDirect = config.askLanMemberDirect;
     this.machineLifecycleCapability = config.machineLifecycleCapability ?? {
       launchMode: 'foreground',
@@ -3137,8 +3151,8 @@ export class MessageHandler {
         notifySessionCompleted: async (sessionId, userId, occurrenceId) =>
           await this.notifySessionCompleted(sessionId, userId, occurrenceId),
       },
-      recordChatFailure: async (sessionDoc, reason, message, code) =>
-        await this.recordChatFailure(sessionDoc, reason, message, code),
+      recordChatFailure: async (sessionDoc, reason, message, code, options) =>
+        await this.recordChatFailure(sessionDoc, reason, message, code, options),
       isShuttingDown: () => this.cleanedUp,
       maybeGenerateAndStoreSessionTitle: async (
         sessionId,
@@ -5124,7 +5138,12 @@ export class MessageHandler {
       if (args.progress) {
         args.progress.persistedNotifications += notifications.length;
       }
-      await this.markACPNotificationsUnread(args.sessionId, args.sessionDoc, notifications);
+      await this.markACPNotificationsUnread(
+        args.sessionId,
+        args.sessionDoc,
+        args.assistantEntryId,
+        notifications
+      );
       if (args.targetSource === 'finalized_turn') {
         await this.persistLateCodeCollabTurnDiffs(args.sessionId, args.turnId);
       }
@@ -5209,7 +5228,12 @@ export class MessageHandler {
       if (args.progress) {
         args.progress.persistedNotifications += 1;
       }
-      await this.markACPNotificationsUnread(args.sessionId, args.sessionDoc, [notification]);
+      await this.markACPNotificationsUnread(
+        args.sessionId,
+        args.sessionDoc,
+        args.assistantEntryId,
+        [notification]
+      );
     }
 
     await flushNotifications(pendingNotifications);
@@ -5345,9 +5369,13 @@ export class MessageHandler {
   private async markACPNotificationsUnread(
     sessionId: SessionId,
     sessionDoc: SessionDocument,
+    assistantEntryId: string,
     notifications: readonly AcpSessionNotification[]
   ): Promise<void> {
-    if (!this.shouldMarkSessionUnread(notifications)) {
+    if (
+      this.isBoardMaintenanceEntry(assistantEntryId) ||
+      !this.shouldMarkSessionUnread(notifications)
+    ) {
       return;
     }
     const state = this.store.get(sessionId);
@@ -5965,6 +5993,15 @@ export class MessageHandler {
     return `assistant:${userTurnId}`;
   }
 
+  /**
+   * A Board maintenance step's reply, including output that arrives after the
+   * step ended. It stays hidden behind its divider, so nothing written to it
+   * marks the Session updated or unread.
+   */
+  private isBoardMaintenanceEntry(entryId: string): boolean {
+    return entryId.startsWith(this.getAssistantEntryIdForUserTurn(BOARD_MAINTENANCE_TURN_PREFIX));
+  }
+
   private beginConversationTurn(
     sessionId: SessionId,
     userTurnId?: string,
@@ -6146,6 +6183,7 @@ export class MessageHandler {
     if (this.acceptsLanMemberFiles) {
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanFiles] = LAN_FILES_PROTOCOL_VERSION;
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanFileRanges] = LAN_FILE_RANGES_PROTOCOL_VERSION;
+      capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanBoardFiles] = LAN_BOARD_FILES_PROTOCOL_VERSION;
       // The same listener opens the shells and ports of this machine to the members.
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanShell] = LAN_SHELL_PROTOCOL_VERSION;
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanTunnel] = LAN_TUNNEL_PROTOCOL_VERSION;
@@ -6820,6 +6858,7 @@ export class MessageHandler {
           notifyUser: async (sessionId, input) => await this.notifyUserFromAgent(sessionId, input),
           notifyConfigChange: async (sessionId, notice) =>
             await this.notifyConfigChange(sessionId, notice),
+          ...(this.boardFiles ? { boardFiles: this.boardFiles } : {}),
           ...(this.lanWorkspace
             ? {
                 remote: {
@@ -6958,7 +6997,13 @@ export class MessageHandler {
           throw new Error('Session tool scope mismatch');
         const { executeDaemonSessionTool } = await import('@/mcp/daemon-session-tools');
         const sourceWorkdir = this.resolveSessionWorkspaceRoot(sessionId);
-        if (!sourceWorkdir && args && typeof args === 'object' && 'attachments' in args)
+        // Tools that take paths of this machine resolve them in the Session's own workspace.
+        if (
+          !sourceWorkdir &&
+          args &&
+          typeof args === 'object' &&
+          ('attachments' in args || 'source' in args || 'saveTo' in args)
+        )
           throw new Error('Requester Session workspace is unavailable');
 
         return this.withSessionCommandEnvironment(() =>
@@ -7214,6 +7259,10 @@ export class MessageHandler {
           ...request.params,
           inputConfig,
         });
+      }
+      case 'board/files-list': {
+        if (!this.boardFiles) throw new Error('This machine reaches no Board files.');
+        return await this.boardFiles.list(request.params);
       }
       default: {
         const exhaustive: never = request;
@@ -7940,7 +7989,9 @@ export class MessageHandler {
       attachedTo = 'new_entry';
     }
 
-    await sessionDoc.setLastMessageAt();
+    if (!this.isBoardMaintenanceEntry(historyEntryId)) {
+      await sessionDoc.setLastMessageAt();
+    }
 
     const remainingUploads = files.length - publishedCount;
     const partialUploadMessage =
@@ -8255,7 +8306,9 @@ export class MessageHandler {
       attachedTo = 'new_entry';
     }
 
-    await sessionDoc.setLastMessageAt();
+    if (!this.isBoardMaintenanceEntry(historyEntryId)) {
+      await sessionDoc.setLastMessageAt();
+    }
 
     const partialMessage =
       failures.length > 0
@@ -10640,6 +10693,14 @@ export class MessageHandler {
     sessionId: SessionId,
     input: LodyNotifyUserInput
   ): Promise<AgentNoticeResult> {
+    const target = this.store.getCurrentACPUpdateTarget(sessionId);
+    if (target && this.isBoardMaintenanceEntry(target.assistantEntryId)) {
+      return {
+        ok: false,
+        code: 'AGENT_NOTICE_DISABLED',
+        message: 'Lody maintenance turns do not notify the user.',
+      };
+    }
     const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
     // Re-read here, not trusted from the agent's tool list: the user may have
     // switched the experiment off since the agent started.

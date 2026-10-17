@@ -14,6 +14,10 @@ export type SessionDetailSearch = {
   browser?: boolean;
   /** When true, opens the full-screen iOS Simulator view on mobile. */
   simulator?: boolean;
+  /** When true, opens the Board panel of a coordinator once, then leaves the URL. */
+  board?: boolean;
+  /** With `board`: the thread to open in the Board panel, once. */
+  boardThread?: string;
 };
 
 const SessionDetailRoute = () => {
@@ -49,6 +53,8 @@ const SessionDetailRoute = () => {
         urlPrNumber={search.pr}
         urlBrowser={search.browser}
         urlSimulator={search.simulator}
+        urlBoard={search.board}
+        urlBoardThread={search.boardThread}
       />
     </AppThemeShell>
   );
@@ -80,6 +86,8 @@ export const Route = createFileRoute('/$workspaceName/_auth/sessions/$sessionId'
     pr: parsePrNumber(search.pr),
     browser: parseBrowserFlag(search.browser),
     simulator: parseBrowserFlag(search.simulator),
+    board: parseBrowserFlag(search.board),
+    boardThread: typeof search.boardThread === 'string' ? search.boardThread : undefined,
   }),
   /* Entry-scoped last-active-tab restoration. An ABSENT `?tab` means "no
      explicit choice" (external entries: sidebar rows, notifications, pasted

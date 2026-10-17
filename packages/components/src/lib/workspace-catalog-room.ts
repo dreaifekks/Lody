@@ -5,6 +5,8 @@ import {
   getWorkspaceVoiceSetting,
   isWorkspacePromptSuggestionsEnabled,
   listWorkspaceAgentRoles,
+  listWorkspaceBoards,
+  type BoardMeta,
   listWorkspaceMcpServers,
   readWorkspaceFlockRowsFromFlock,
   type CatalogAgentRole,
@@ -24,6 +26,7 @@ import type { WorkspaceRuntime } from '@/atoms/runtime';
  * second copy of the same row map for a list of a few dozen entries.
  */
 export type WorkspaceCatalogSnapshot = {
+  boards: BoardMeta[];
   servers: WorkspaceMcpServerMeta[];
   roles: CatalogAgentRole[];
   /** The Codex agent every device uses for experimental voice, when shared. */
@@ -43,6 +46,7 @@ const EMPTY_ROWS = Object.freeze({}) as WorkspaceFlockRowMap;
 export const EMPTY_WORKSPACE_CATALOG: WorkspaceCatalogSnapshot = Object.freeze({
   servers: Object.freeze([]) as unknown as WorkspaceMcpServerMeta[],
   roles: Object.freeze([]) as unknown as CatalogAgentRole[],
+  boards: Object.freeze([]) as unknown as BoardMeta[],
   voice: null,
   promptSuggestions: false,
   pinnedProjects: Object.freeze([]) as readonly string[],
@@ -84,6 +88,7 @@ function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: bo
   if (room.rows === rows && room.snapshot.synced === synced) return;
   room.rows = rows;
   const servers = reuseUnchanged(room.snapshot.servers, listWorkspaceMcpServers(rows));
+  const boards = reuseUnchanged(room.snapshot.boards, listWorkspaceBoards(rows));
   const roles = reuseUnchanged(room.snapshot.roles, listWorkspaceAgentRoles(rows));
   const nextVoice = getWorkspaceVoiceSetting(rows);
   // Every field counts: a row that only changes `voice` must reach Settings and calls.
@@ -103,6 +108,7 @@ function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: bo
       ? room.snapshot.pinnedProjects
       : nextPinnedProjects;
   if (
+    boards === room.snapshot.boards &&
     servers === room.snapshot.servers &&
     roles === room.snapshot.roles &&
     voice === room.snapshot.voice &&
@@ -112,7 +118,7 @@ function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: bo
   ) {
     return;
   }
-  room.snapshot = { servers, roles, voice, promptSuggestions, pinnedProjects, synced };
+  room.snapshot = { boards, servers, roles, voice, promptSuggestions, pinnedProjects, synced };
   for (const listener of room.listeners) {
     listener(room.snapshot);
   }

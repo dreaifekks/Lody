@@ -160,6 +160,12 @@ export const toggleChatsCollapsedAtom = atom(null, (get, set) => {
 /**
  * Pinned section collapsed state - persisted to localStorage
  */
+/** The sidebar Boards section, folded like Pinned. */
+export const boardsSectionCollapsedAtom = atomWithStorage<boolean>(
+  'lody:sidebar:boards-collapsed',
+  false
+);
+
 export const pinnedSectionCollapsedAtom = atomWithStorage<boolean>(
   'lody-sidebar-pinned-section-collapsed',
   false

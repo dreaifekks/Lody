@@ -36,7 +36,7 @@ import {
   type WorkspaceId,
 } from '@lody/shared';
 import Database from 'better-sqlite3';
-import { Effect, Fiber } from 'effect';
+import { Effect, Exit, Fiber, Layer, ManagedRuntime, Scope } from 'effect';
 import type { LoroRepo } from 'loro-repo';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -65,6 +65,12 @@ import {
   SessionExecutionService,
   type SessionExecutionServiceDeps,
 } from '../src/session/session-execution-service';
+import { normalizeBoardMeta, getWorkspaceFlockDocId, workspaceFlockKeys } from '@lody/shared';
+import { BoardReportWorkflow } from '../src/orchestration/board-report-workflow';
+import { CoordinatorPorts } from '../src/orchestration/coordinator-ports';
+import { OperationRepository } from '../src/orchestration/operation-repository';
+import { coordinatorSessionsLayer } from '../src/orchestration/platform/coordinator-sessions';
+import { operationRepositoryLayer } from '../src/orchestration/platform/operations';
 import type { SessionManager } from '../src/session/session-manager';
 import { GitExecutableNotFoundError } from '../src/session/worktree/git-process-error';
 import type { Logger } from '../src/utils/logger';
@@ -4220,9 +4226,15 @@ describe('SessionExecutionService', () => {
     }
   });
 
-  it.each(['create', 'continue', 'restore'] as const)(
-    'retains frozen execution input after a failed start retried through %s',
-    async (retryPath) => {
+  it.each([
+    { retryPath: 'create', boardRole: undefined, member: false },
+    { retryPath: 'continue', boardRole: undefined, member: false },
+    { retryPath: 'restore', boardRole: undefined, member: false },
+    { retryPath: 'create', boardRole: 'coordinator', member: true },
+    { retryPath: 'continue', boardRole: undefined, member: true },
+  ] as const)(
+    'retains frozen execution input through $retryPath (Board member=$member, role=$boardRole), even with hub sync unavailable',
+    async ({ retryPath, member, boardRole }) => {
       const sessionId = 'session-frozen-retry' as SessionId;
       const userTurnId = 'turn-frozen';
       const fileBlock: SessionInputBlock = {
@@ -4245,8 +4257,30 @@ describe('SessionExecutionService', () => {
         agentRoleRevision: 7,
         agentRoleSnapshot: { id: 'role-frozen', revision: 7, name: 'Reviewer', emoji: '' },
       });
-      let meta: Partial<SessionMeta> = { id: sessionId, isArchived: false };
+      const board = normalizeBoardMeta({
+        version: 1,
+        id: 'bd_prompt',
+        name: 'Shipping',
+        purpose: 'Ship a release',
+        coordinatorSessionId: sessionId,
+        createdAtMs: 1,
+        createdByUserId: 'user-1',
+        rules: { executorConstraints: 'EXECUTOR_CONSTRAINT' },
+        instructions: 'BOARD_INSTRUCTION',
+      });
+      if (!board) throw new Error('Invalid fixture');
+      let meta: Partial<SessionMeta> = {
+        id: sessionId,
+        isArchived: false,
+        ...(member ? { boardId: board.id, boardRole } : {}),
+      };
       const repo = {
+        openFlockDoc: async () => ({
+          flock: {
+            scan: () => [],
+            get: (key: string[]) => (key[0] === 'board' && key[1] === board.id ? board : undefined),
+          },
+        }),
         getDocMeta: async () => ({ meta }),
         upsertDocMeta: async (_room: string, patch: Partial<SessionMeta>) => {
           meta = { ...meta, ...patch };
@@ -4312,6 +4346,9 @@ describe('SessionExecutionService', () => {
         } as unknown as SessionManager,
         workspaceDocument: {
           repo,
+          syncFlockDocOrThrow: async () => {
+            throw new Error('hub unavailable');
+          },
           getOrCreateSessionDoc: async () => sessionDoc,
           updateAcpCapabilities: async () => {},
         } as unknown as LoroDocumentManager,
@@ -4356,11 +4393,28 @@ describe('SessionExecutionService', () => {
       }
       await readRequest(); // Frozen config remains intact after both attempts.
       expect(requests).toHaveLength(2);
-      for (const request of requests) {
+      for (const [index, request] of requests.entries()) {
         const text = request
           .filter((block) => block.type === 'text')
           .map((block) => block.text)
           .join('\n');
+        const boardPromptExpected = member && (index === 0 || retryPath === 'create');
+        expect(text.includes('EXECUTOR_CONSTRAINT')).toBe(boardPromptExpected);
+        // The user's Board instructions ride on the same start prompt, coordinator included.
+        expect(text.includes('BOARD_INSTRUCTION')).toBe(boardPromptExpected);
+        if (boardPromptExpected) {
+          expect(text.split('EXECUTOR_CONSTRAINT')).toHaveLength(2);
+          expect(text.split('BOARD_INSTRUCTION')).toHaveLength(2);
+          if (boardRole !== 'coordinator') {
+            expect(text).toContain('include them verbatim in your reply');
+            expect(text).toContain('Do not make changes based on those conclusions yourself');
+          }
+          expect(text).toContain(
+            boardRole === 'coordinator'
+              ? 'You are the coordinator of Board "Shipping"'
+              : 'This session is a thread of Board "Shipping"'
+          );
+        }
         for (const instruction of ['CONFIG_INSTRUCTION', 'ROLE_INSTRUCTION', 'TASK_TEXT']) {
           expect(text.split(instruction)).toHaveLength(2);
         }
@@ -10701,13 +10755,13 @@ describe('Operation Inbox execution boundary', () => {
   function inboxExecutionFixture(
     prompt: (blocks: ContentBlock[]) => Promise<unknown>,
     build?: (blocks: SessionInputBlock[]) => Promise<ContentBlock[]>,
-    automaticFinished?: () => void
+    automaticFinished?: () => void,
+    sessionId = 'inbox-session' as SessionId
   ) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-inbox-execution-'));
     const store = new LodyOperationStore(path.join(root, 'operations.sqlite3'), () =>
       Date.parse('2026-10-12T00:00:00Z')
     );
-    const sessionId = 'inbox-session' as SessionId;
     let meta: Partial<SessionMeta> = {
       id: sessionId,
       machineId: 'machine-1',
@@ -10718,6 +10772,7 @@ describe('Operation Inbox execution boundary', () => {
       isArchived: false,
     };
     const repo = {
+      flush: async () => {},
       getDocMeta: async () => ({ meta }),
       upsertDocMeta: async (_id: string, patch: Partial<SessionMeta>) => {
         meta = { ...meta, ...patch };
@@ -10804,6 +10859,15 @@ describe('Operation Inbox execution boundary', () => {
         });
       },
     });
+    deps.turnFinalization.finalizeACPState = async (_id, turnId) => {
+      const backend = await createSessionBackend(doc);
+      const entry = await backend.readTurn(turnId);
+      if (entry.state === 'ready')
+        await backend.applyHistoryAction({
+          kind: 'upsert-turn',
+          turn: { ...entry.turn, finished: true, endedAt: Date.parse('2026-10-12T00:00:01Z') },
+        });
+    };
     const service = new SessionExecutionService(deps);
     store.inbox.activate('workspace-1', 'owner');
     const bridge = operationInboxLegacy({
@@ -10884,10 +10948,282 @@ describe('Operation Inbox execution boundary', () => {
       add,
       accept,
       close,
+      bridge,
       wake: () => bridge.wake(),
       storePath: path.join(root, 'operations.sqlite3'),
     };
   }
+
+  async function boardExecutionFixture() {
+    const { LoroRepo } = await import('loro-repo');
+    const repo = await LoroRepo.create({});
+    let completed = createDeferred<void>();
+    const coordinator = inboxExecutionFixture(
+      async () => ({ stopReason: 'end_turn' }),
+      undefined,
+      () => completed.resolve()
+    );
+    const memberDone = createDeferred<void>();
+    const member = inboxExecutionFixture(
+      async () => ({ stopReason: 'end_turn' }),
+      undefined,
+      () => memberDone.resolve(),
+      'member' as SessionId
+    );
+    const workspaceId = coordinator.message.workspaceId;
+    const machineId = 'machine-1' as MachineId;
+    const board = normalizeBoardMeta({
+      version: 1,
+      id: 'bd_execution',
+      name: 'Execution',
+      purpose: 'Test reports',
+      coordinatorSessionId: coordinator.message.sessionId,
+      createdAtMs: 1,
+      createdByUserId: 'user-1',
+    })!;
+    const catalog = await repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
+    catalog.flock.set(workspaceFlockKeys.board(board.id), board);
+    const docs = new Map([coordinator, member].map((f) => [f.message.sessionId, f.doc]));
+    for (const f of [coordinator, member]) {
+      await repo.openPersistedDoc(getSessionRoomId(f.message.sessionId));
+      await repo.upsertDocMeta(getSessionRoomId(f.message.sessionId), {
+        ...(await f.doc.getMetaState()),
+        workspaceId,
+        boardId: board.id,
+        ...(f === coordinator ? { boardRole: 'coordinator' } : {}),
+      });
+    }
+    const runtime = ManagedRuntime.make(
+      Layer.mergeAll(
+        operationRepositoryLayer(coordinator.store),
+        coordinatorSessionsLayer(
+          {
+            workspaceId,
+            machineId,
+            workspaceDocument: {
+              repo,
+              getOrCreateSessionDoc: async (id: SessionId) => docs.get(id),
+            },
+            now: () => Date.parse('2026-10-12T00:00:02Z'),
+          } as never,
+          coordinator.store,
+          coordinator.bridge,
+          () => true,
+          (effect) => Effect.runSync(effect),
+          new Map(),
+          new Set(),
+          'board-test'
+        )
+      )
+    );
+    const ports = await runtime.runPromise(CoordinatorPorts);
+    const operations = await runtime.runPromise(OperationRepository);
+    const scope = await Effect.runPromise(Scope.make());
+    const wakes: string[] = [];
+    const workflow = new BoardReportWorkflow(
+      { workspaceId, machineId },
+      ports,
+      operations,
+      {
+        signal: (reason) =>
+          Effect.sync(() => {
+            wakes.push(reason);
+          }),
+        wake: () => Effect.void,
+        arm: () => Effect.void,
+        cancel: () => Effect.void,
+        cancelWhere: () => Effect.void,
+        has: () => false,
+        drain: Effect.void,
+      },
+      scope
+    );
+    const reconcile = async () => {
+      await repo.flush();
+      await Effect.runPromise(workflow.reconcile());
+    };
+    return {
+      coordinator,
+      member,
+      board,
+      repo,
+      catalog,
+      reconcile,
+      takeWakes: () => wakes.splice(0),
+      readDrivingState: async (id: SessionId) =>
+        Effect.runPromise((await Effect.runPromise(ports.session(id))).readDrivingState),
+      receiveReview: async () => {
+        member.add('reviewer-result', 3);
+        await member.wake();
+        await memberDone.promise;
+      },
+      wakeCoordinator: async () => {
+        await coordinator.wake();
+        await completed.promise;
+        completed = createDeferred<void>();
+      },
+      close: async () => {
+        await Effect.runPromise(Scope.close(scope, Exit.void));
+        await runtime.dispose();
+        await member.close();
+        await coordinator.close();
+        await repo.destroy();
+      },
+    };
+  }
+
+  it('does not enqueue Board reconciliation for metadata in workspaces without active Boards', async () => {
+    const h = await boardExecutionFixture();
+    try {
+      h.catalog.flock.delete(workspaceFlockKeys.board(h.board.id));
+      await h.reconcile();
+      h.takeWakes();
+      await h.repo.upsertDocMeta(getSessionRoomId(h.member.message.sessionId), {
+        agentNotice: { id: 'before-board', body: 'Update', at: 1 },
+      });
+      await h.repo.flush();
+      expect(h.takeWakes()).toEqual([]);
+      h.catalog.flock.set(workspaceFlockKeys.board(h.board.id), h.board);
+      await h.repo.flush();
+      expect(h.takeWakes()).toEqual(['board-state']);
+      await h.reconcile();
+      await h.repo.upsertDocMeta(getSessionRoomId(h.member.message.sessionId), {
+        agentNotice: { id: 'with-board', body: 'Update', at: 2 },
+      });
+      await h.repo.flush();
+      expect(h.takeWakes()).toEqual(['board-state']);
+      await h.reconcile();
+      expect(
+        h.coordinator.store.listForRequester(
+          {
+            workspaceId: h.coordinator.message.workspaceId,
+            requesterSessionId: h.coordinator.message.sessionId,
+            requesterUserId: 'user-1',
+          },
+          {}
+        ).items
+      ).toHaveLength(2);
+      h.catalog.flock.set(workspaceFlockKeys.board(h.board.id), { ...h.board, archivedAtMs: 3 });
+      await h.reconcile();
+      h.takeWakes();
+      await h.repo.upsertDocMeta(getSessionRoomId(h.member.message.sessionId), {
+        agentNotice: { id: 'after-archive', body: 'Update', at: 4 },
+      });
+      await h.repo.flush();
+      expect(h.takeWakes()).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('reports a member after its real automatic reviewer continuation and reads its driving depth', async () => {
+    const h = await boardExecutionFixture();
+    try {
+      await h.reconcile();
+      await h.receiveReview();
+      const state = await h.readDrivingState(h.member.message.sessionId);
+      expect(state?.turn.id).toMatch(/^inbox:completion:/);
+      expect(state?.turn.inputConfig?.chainDepth).toBe(4);
+      const item = state?.turn.items.find((i) => i.type === 'operation_completion_batch');
+      if (item?.type !== 'operation_completion_batch') throw new Error('Missing batch');
+      const batch = h.member.store.inbox.getBatch(item.batchId, {
+        workspaceId: h.member.message.workspaceId,
+        sessionId: h.member.message.sessionId,
+        userId: 'user-1',
+      });
+      expect(state?.turn.inputConfig?.chainDepth).toBe(batch?.chainDepth);
+      await h.reconcile();
+      const reports = h.coordinator.store.listForRequester(
+        {
+          workspaceId: h.coordinator.message.workspaceId,
+          requesterSessionId: h.coordinator.message.sessionId,
+          requesterUserId: 'user-1',
+        },
+        {}
+      ).items;
+      expect(reports).toHaveLength(1);
+      expect(
+        h.coordinator.store.get(h.coordinator.message.sessionId, reports[0]!.operationId)
+      ).toMatchObject({
+        completion: {
+          value: {
+            boardReport: {
+              events: [
+                {
+                  kind: 'finished',
+                  sessionId: h.member.message.sessionId,
+                  turnId: state?.turn.id,
+                  origin: 'system',
+                  output: { text: 'response' },
+                },
+              ],
+            },
+          },
+        },
+      });
+      await h.wakeCoordinator();
+      const received = await h.readDrivingState(h.coordinator.message.sessionId);
+      const delivered = received?.turn.items.find((i) => i.type === 'operation_completion_batch');
+      expect(delivered).toMatchObject({
+        deliveryStatus: 'settled',
+        members: [
+          {
+            operationKind: 'board_report',
+            completion: {
+              value: { boardReport: { events: [{ kind: 'finished', turnId: state?.turn.id }] } },
+            },
+          },
+        ],
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('accumulates real report-only wake depths to 16 and attaches the limit to that driving turn', async () => {
+    const h = await boardExecutionFixture();
+    try {
+      await h.reconcile();
+      const limited = createDeferred<void>();
+      const prepare = h.coordinator.store.inbox.prepare.bind(h.coordinator.store.inbox);
+      vi.spyOn(h.coordinator.store.inbox, 'prepare').mockImplementation((...args) => {
+        const batch = prepare(...args);
+        if (
+          h.coordinator.store.inbox.depthLimitedSessions(h.coordinator.message.workspaceId).length
+        )
+          limited.resolve();
+        return batch;
+      });
+      for (let depth = 1; depth <= 16; depth++) {
+        await h.repo.upsertDocMeta(getSessionRoomId(h.member.message.sessionId), {
+          agentNotice: { id: `notice-${depth}`, body: 'Synthetic update', at: depth },
+        });
+        await h.reconcile();
+        if (depth < 16) {
+          await h.wakeCoordinator();
+          const state = await h.readDrivingState(h.coordinator.message.sessionId);
+          expect(state?.turn.id).toMatch(/^inbox:completion:/);
+          expect(state?.turn.inputConfig?.chainDepth).toBe(depth);
+        } else {
+          await h.coordinator.wake();
+          await limited.promise;
+        }
+      }
+      expect(
+        h.coordinator.store.inbox.depthLimitedSessions(h.coordinator.message.workspaceId)
+      ).toEqual([h.coordinator.message.sessionId]);
+      await h.reconcile();
+      const state = await h.readDrivingState(h.coordinator.message.sessionId);
+      expect(state?.turn.inputConfig?.chainDepth).toBe(15);
+      expect(state?.following.flatMap((t) => t.items)).toContainEqual({
+        type: 'system_notice',
+        name: 'board_chain_limit',
+        meta: { boardId: h.board.id, drivingTurnId: state?.turn.id },
+      });
+    } finally {
+      await h.close();
+    }
+  });
 
   it('journals later resources through the active Session adapter before releasing execution', async () => {
     const started = createDeferred<void>();
@@ -11081,6 +11417,7 @@ describe('Operation Inbox execution boundary', () => {
       const history = await (await createSessionBackend(f.doc)).readHistory();
       const input = history.find((e) => e.id === 'human-input')!;
       expect(input.inputConfig?.chainDepth).toBe(0);
+      expect(history.find((e) => e.id.startsWith('operation-batch:'))?.inputConfig).toBeUndefined();
       expect(input.items).toEqual([{ type: 'text', text: 'CURRENT_REQUEST' }]);
       const item = history
         .flatMap((e) => e.items ?? [])
@@ -11491,5 +11828,288 @@ describe('Provider quota refresh', () => {
     ).resolves.toBe(false);
     await expect(cache.run('a', 'new', async () => true)).resolves.toBe(false);
     await expect(cache.run('b', 'other', async () => true)).resolves.toBe(true);
+  });
+});
+
+describe('SessionExecutionService Board maintenance turns', () => {
+  const sessionId = 'session-coordinator' as SessionId;
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_maintenance',
+    name: 'Release train',
+    purpose: 'Ship the release',
+    instructions: 'Answer in Chinese.',
+    coordinatorSessionId: sessionId,
+    createdAtMs: 1,
+    createdByUserId: 'owner-user',
+  })!;
+  const meta = {
+    id: sessionId,
+    cliType: 'builtin',
+    agentType: 'claude',
+    acpSessionId: 'acp-old',
+    boardId: board.id,
+    boardRole: 'coordinator',
+    machineId: 'machine-1',
+  };
+  const request = {
+    sessionId,
+    stepTurnId: 'board-maintenance:run-1:renew',
+    prompt: 'Lody maintenance.',
+    config: { cliType: 'builtin', agentType: 'claude', modelId: 'claude-opus' },
+    userId: 'owner-user',
+    userName: 'Owner',
+    userEmail: 'owner@example.com',
+  } as const;
+
+  const createService = ({
+    holdPrompt = false,
+    promptError,
+    inbox = true,
+  }: { holdPrompt?: boolean; promptError?: Error; inbox?: boolean } = {}) => {
+    const prompts: string[] = [];
+    const promptStarted = createDeferred<void>();
+    const promptReleased = createDeferred<void>();
+    const lastMessageAt: number[] = [];
+    const created: Array<{ resumeSessionId?: string }> = [];
+    const retired: string[] = [];
+    const agent = (acpSessionId: string) => ({
+      agentClient: {
+        isCreated: () => true,
+        supportsContextCompaction: () => true,
+        prompt: async (_id: unknown, blocks: Array<{ type: string; text?: string }>) => {
+          prompts.push(blocks.map((block) => block.text ?? '').join('\n'));
+          promptStarted.resolve();
+          if (holdPrompt) await promptReleased.promise;
+          if (promptError) throw promptError;
+        },
+        cancel: async () => {
+          promptReleased.resolve();
+        },
+      },
+      acpSessionId,
+      getMemoryBinding: () => null,
+      getWorkdir: () => '/tmp',
+      getHostWorkdir: () => '/tmp',
+      getParentSessionId: () => undefined,
+      exec: async () => '',
+      updateGitIdentity: () => {},
+      applyExecutionPlaneLimits: async () => {},
+      terminate: async () => {},
+    });
+    let live: ReturnType<typeof agent> | null = agent('acp-old');
+    const sessionDoc = withHistoryPort({
+      sessionId,
+      getMetaState: async () => meta,
+      getHistory: () => [
+        { id: 'earlier', role: 'user', timestamp: '2026-10-17T00:00:00.000Z', items: [] },
+      ],
+      setStatus: async () => {},
+      setLastMessageAt: async () => {
+        lastMessageAt.push(Date.now());
+      },
+      getDocState: async () => ({}),
+      updateHistory: async () => {},
+    });
+    const deps = createBaseDeps({
+      sessionManager: {
+        getSession: () => live,
+        getPendingSession: () => null,
+        validateSessionCredentials: async () => {},
+        retireSessionForReconfiguration: async (session: { acpSessionId: string }) => {
+          retired.push(session.acpSessionId);
+          live = null;
+        },
+        createSession: async (_config: unknown, options?: { resumeSessionId?: string }) => {
+          created.push({ ...options });
+          live = agent('acp-fresh');
+          return live;
+        },
+      } as unknown as SessionManager,
+      workspaceDocument: {
+        repo: {
+          upsertDocMeta: async () => {},
+          getDocMeta: async () => ({ meta }),
+          openFlockDoc: async () => ({
+            flock: {
+              scan: () => [],
+              get: (key: unknown) =>
+                JSON.stringify(key) === JSON.stringify(workspaceFlockKeys.board(board.id))
+                  ? board
+                  : undefined,
+            },
+          }),
+        },
+        getOrCreateSessionDoc: async () => sessionDoc,
+        getOrOpenSessionCode: async () => null,
+      } as unknown as LoroDocumentManager,
+      // The agent receives exactly what the turn built, replay included.
+      buildAcpPromptBlocks: async ({ inputBlocks, replayPromptText }) =>
+        [
+          ...(replayPromptText ? [{ type: 'text', text: replayPromptText }] : []),
+          ...inputBlocks.map((block) => ({
+            type: 'text',
+            text: block.type === 'text' ? block.text : '',
+          })),
+        ] as never,
+    });
+    const service = new SessionExecutionService(deps);
+    // A paused Inbox refuses every task it admits.
+    const released: SessionId[] = [];
+    let wakes = 0;
+    if (inbox)
+      service.setOperationInbox(
+      {
+        accept: async () => false,
+        inputKind: () => undefined,
+        // No Inbox execution exists for a maintenance turn.
+        pauseTarget: () => undefined,
+        pause: async () => false,
+        wake: async () => {
+          wakes += 1;
+        },
+      } as never,
+      (id) => released.push(id)
+    );
+    return {
+      service,
+      deps,
+      prompts,
+      promptStarted,
+      lastMessageAt,
+      created,
+      retired,
+      released,
+      wakes: () => wakes,
+    };
+  };
+
+  it('runs outside the Inbox, quietly, and then frees the Session for held work', async () => {
+    const h = createService();
+    await h.service.continueSession({
+      type: 'session/chat',
+      sessionId,
+      machineId: 'machine-1',
+      workspaceId: 'workspace-1' as WorkspaceId,
+      userTurnId: 'user-turn',
+      userId: 'owner-user',
+      userName: 'Owner',
+      userEmail: 'owner@example.com',
+      acpSessionConfig: { prompt: 'ordinary', cliType: 'builtin', agentType: 'claude' },
+    });
+    // The paused Inbox holds an ordinary turn back.
+    expect(h.prompts).toEqual([]);
+
+    const outcome = await h.service.runBoardMaintenanceTurn(request);
+
+    expect(outcome).toBe('completed');
+    expect(h.prompts).toEqual(['Lody maintenance.']);
+    expect(h.lastMessageAt).toEqual([]);
+    expect(h.deps.turnFinalization.notifySessionCompleted).not.toHaveBeenCalled();
+    expect(h.released).toEqual([sessionId]);
+    expect(h.wakes()).toBe(1);
+    expect(h.service.contextCompactionSupport(sessionId)).toBe(true);
+  });
+
+  it('records its own failure without a failure alert', async () => {
+    const h = createService({ promptError: new Error('ACP connection closed') });
+
+    const outcome = await h.service.runBoardMaintenanceTurn(request);
+
+    expect(outcome).not.toBe('completed');
+    const failures = vi
+      .mocked(h.deps.recordChatFailure)
+      .mock.calls.map(([, reason, , , options]) => ({ reason, options }));
+    expect(failures).toEqual([{ reason: 'agent_disconnected', options: { quiet: true } }]);
+    expect(h.lastMessageAt).toEqual([]);
+  });
+
+  it('still alerts for an ordinary turn that fails while a maintenance failure is being recorded', async () => {
+    // Without the paused Inbox, the user's turn runs as soon as the Session is free.
+    const h = createService({ promptError: new Error('ACP connection closed'), inbox: false });
+    const failures: Array<{ reason: string; alerted: boolean }> = [];
+    const maintenanceRecording = createDeferred<void>();
+    const releaseMaintenanceRecording = createDeferred<void>();
+    const userFailureRecorded = createDeferred<void>();
+    vi.mocked(h.deps.recordChatFailure).mockImplementation(
+      async (_doc, reason, _message, _code, options) => {
+        failures.push({ reason, alerted: options?.quiet !== true });
+        if (failures.length === 1) {
+          maintenanceRecording.resolve();
+          await releaseMaintenanceRecording.promise;
+        } else {
+          userFailureRecorded.resolve();
+        }
+      }
+    );
+
+    const maintenance = h.service.runBoardMaintenanceTurn(request);
+    await maintenanceRecording.promise;
+    // The maintenance turn has let go of the Session; the user's turn fails as well.
+    await h.service.continueSession({
+      type: 'session/chat',
+      sessionId,
+      machineId: 'machine-1',
+      workspaceId: 'workspace-1' as WorkspaceId,
+      userTurnId: 'user-turn',
+      userId: 'owner-user',
+      userName: 'Owner',
+      userEmail: 'owner@example.com',
+      acpSessionConfig: { prompt: 'ordinary', cliType: 'builtin', agentType: 'claude' },
+    });
+    await userFailureRecorded.promise;
+    releaseMaintenanceRecording.resolve();
+    await maintenance;
+
+    expect(h.prompts).toContain('ordinary');
+    expect(failures).toEqual([
+      { reason: 'agent_disconnected', alerted: false },
+      { reason: 'agent_disconnected', alerted: true },
+    ]);
+  });
+
+  it('stops on Stop although it has no Inbox execution to pause', async () => {
+    const h = createService({ holdPrompt: true });
+    const run = h.service.runBoardMaintenanceTurn(request);
+    await h.promptStarted.promise;
+
+    const stopped = await h.service.cancelSession({
+      type: 'session/cancel',
+      sessionId,
+      machineId: 'machine-1',
+      workspaceId: 'workspace-1' as WorkspaceId,
+      turnId: 'turn-1',
+      // An Inbox-aware client's Stop asks to pause the Inbox too.
+      cancelId: '00000000-0000-4000-8000-000000000001',
+      pauseInbox: true,
+    });
+
+    expect(stopped).toEqual({ success: true });
+    expect(await run).toBe('cancelled');
+  });
+
+  it('renews the Board instructions from the current Board row', async () => {
+    const h = createService();
+
+    await h.service.runBoardMaintenanceTurn({ ...request, renewBoardInstructions: true });
+
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0]).toContain('Lody maintenance.');
+    expect(h.prompts[0]).toContain('You are the coordinator of Board "Release train".');
+    expect(h.prompts[0]).toContain('Answer in Chinese.');
+  });
+
+  it('starts a fresh agent conversation without resuming the old one or replaying history', async () => {
+    const h = createService();
+
+    const outcome = await h.service.runBoardMaintenanceTurn({
+      ...request,
+      freshAgentSession: true,
+    });
+
+    expect(outcome).toBe('completed');
+    expect(h.retired).toEqual(['acp-old']);
+    expect(h.created).toEqual([{ resumeSessionId: undefined }]);
+    expect(h.prompts).toEqual(['Lody maintenance.']);
   });
 });

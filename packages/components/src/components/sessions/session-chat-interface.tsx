@@ -1,3 +1,6 @@
+import { useBoardMaintenanceRequest } from '../boards/board-lifecycle';
+import { BoardMembershipDialog } from '../boards/board-membership-dialog';
+import { boardEnabledAtom } from '@/atoms/settings';
 import { useIosSimulatorPreviewRequest } from './ios-simulator/use-ios-simulator-preview-request';
 import { createLoroSyncErrorTools } from '@lody/shared/loro-sync-errors';
 import { RepoSyncError, RepoTransportError } from 'loro-repo';
@@ -52,6 +55,7 @@ import {
   Image,
   LockKeyhole,
   MessageCircle,
+  MessageSquarePlus,
   Monitor,
   MoveHorizontal,
   Pencil,
@@ -59,6 +63,7 @@ import {
   Plus,
   Search,
   Share2,
+  Shrink,
   Trash2,
   UserRoundCog,
   Users,
@@ -1423,6 +1428,11 @@ export function SessionHeaderMenu({
     sharing?.visibility === 'unknown' ||
     (sharing?.visibility === 'private' &&
       (sharing.privateReason === 'machine-not-registered' || !sharing.canManage));
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  // A coordinator's page is its Board: rename, archive and restore act on the Board.
+  const isBoard = boardsEnabled && session.boardRole === 'coordinator';
+  const requestMaintenance = useBoardMaintenanceRequest();
+  const [boardMembershipOpen, setBoardMembershipOpen] = useState(false);
   const conversationWide = useAtomValue(conversationWideModeAtom);
   const setConversationWide = useSetAtom(conversationWideModeAtom);
 
@@ -1564,6 +1574,13 @@ export function SessionHeaderMenu({
         </Menu.Trigger>
         <Menu.Content align="end" className={SESSION_HEADER_MENU_CONTENT_CLASS}>
           <SessionWindowMenuItem sessionId={session.id} dropdown />
+          {boardsEnabled && session.boardRole !== 'coordinator' && !isArchived ? (
+            <Menu.Item onClick={() => setBoardMembershipOpen(true)}>
+              {session.boardId
+                ? t('boards.remove', 'Remove from board')
+                : t('boards.join', 'Join board')}
+            </Menu.Item>
+          ) : null}
           {/* Identity stays inline: a group label wastes a row, and a submenu hides
               repo/branch/machine behind another step. */}
           {!compact && showSessionContext ? (
@@ -1824,11 +1841,36 @@ export function SessionHeaderMenu({
                 void onRename();
               }}
             >
-              {t('sidebar.renameChat.title', 'Rename Chat')}
+              {isBoard
+                ? t('boards.rename', 'Rename Board')
+                : t('sidebar.renameChat.title', 'Rename Chat')}
             </Menu.Item>
           )}
 
-          {owner && !isArchived ? (
+          {/* The coordinator's conversation continues; only the agent's context changes. */}
+          {isBoard && !isArchived ? (
+            <>
+              <Menu.Item
+                icon={Shrink}
+                onClick={() => {
+                  void requestMaintenance(session, 'compact');
+                }}
+              >
+                {t('boards.maintenance.compactNow', 'Tidy context now')}
+              </Menu.Item>
+              <Menu.Item
+                icon={MessageSquarePlus}
+                onClick={() => {
+                  void requestMaintenance(session, 'new_conversation');
+                }}
+              >
+                {t('boards.maintenance.newConversation', 'Start a new conversation')}
+              </Menu.Item>
+            </>
+          ) : null}
+
+          {/* A Board has no owner of its own to hand over. */}
+          {owner && !isArchived && !isBoard ? (
             <Menu.Submenu>
               <Menu.SubmenuTrigger icon={UserRoundCog}>
                 {t('sessions.owner.change', 'Change owner')}
@@ -1991,7 +2033,9 @@ export function SessionHeaderMenu({
                       }}
                       icon={ArchiveRestore}
                     >
-                      {t('archive.restore', 'Restore session')}
+                      {isBoard
+                        ? t('boards.restoreBoard', 'Restore Board')
+                        : t('archive.restore', 'Restore session')}
                     </Menu.Item>
                   )}
                   {onDelete && (
@@ -2016,12 +2060,17 @@ export function SessionHeaderMenu({
                     }}
                     icon={Archive}
                   >
-                    {t('sessions.archive', 'Archive session')}
+                    {isBoard
+                      ? t('boards.settings.archive', 'Archive Board')
+                      : t('sessions.archive', 'Archive session')}
                   </Menu.Item>
                 </>
               )}
         </Menu.Content>
       </Menu.Root>
+      {boardMembershipOpen ? (
+        <BoardMembershipDialog session={session} onClose={() => setBoardMembershipOpen(false)} />
+      ) : null}
     </>
   );
 }

@@ -1,0 +1,1361 @@
+// @vitest-environment jsdom
+import { act, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { createStore, Provider } from 'jotai';
+import { describe, it, expect, vi } from 'vitest';
+import { LoroRepo } from 'loro-repo';
+import {
+  getSessionRoomId,
+  isLoroRepoDocDeleted,
+  normalizeBoardMeta,
+  readSessionOperationTargets,
+  type AgentConfigMeta,
+  type BoardMeta,
+  type SessionHistoryInput,
+  type SessionId,
+  type SessionMeta,
+  type SessionStatus,
+  type SessionToCreate,
+  type WorkspaceId,
+} from '@lody/shared';
+import {
+  CLOUD_PLATFORM_CAPABILITIES,
+  createStaticStore,
+  type CloudApi,
+  type PlatformProvider,
+} from '@lody/platform';
+import { PlatformContext } from '@lody/platform/react';
+import { userAtom, currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms';
+import { agentConfigMetaCacheAtom, sessionMetaCacheAtom } from '../src/atoms/doc-meta';
+import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '../src/atoms/presence';
+import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
+import { CreateBoardDialog } from '../src/components/boards/create-board-dialog';
+import { changeBoardMembership } from '../src/components/boards/board-membership-dialog';
+import { BoardNotesEditor } from '../src/components/boards/board-notes-panel';
+import { BoardSidePanel } from '../src/components/boards/board-side-panel';
+import { BoardSettings, BoardSettingsDialog } from '../src/components/boards/board-settings-panel';
+import { BoardThreadListView } from '../src/components/boards/board-thread-list';
+import { localProbeResultAtom } from '../src/atoms/local-probe';
+import { useBoardActions, useBoardLifecycle } from '../src/components/boards/board-lifecycle';
+import { BoardRenameDialog } from '../src/components/boards/board-rename-dialog';
+import { BoardSidebar } from '../src/components/boards/board-sidebar-section';
+import { SessionHeaderMenu } from '../src/components/sessions/session-chat-interface';
+import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';
+import {
+  boardActivity,
+  boardMemberEntrySearch,
+  isBoardSession,
+} from '../src/components/boards/board-threads';
+import { closeSessionTab } from '../src/components/sessions/session-tab-close-target';
+import { useSessionActions } from '../src/hooks/use-session-actions';
+import { writeWorkspaceBoard } from '../src/lib/workspace-catalog-write';
+
+const creation = vi.hoisted(() => ({
+  machines: new Map<string, unknown>(),
+  startSession: undefined as undefined | ((...args: unknown[]) => Promise<unknown>),
+  /** The product language, as i18next names it. */
+  language: 'en',
+  /** The workspace catalog's Board rows. */
+  boards: [] as BoardMeta[],
+}));
+vi.mock('@/hooks/use-visible-machine-metas', () => ({
+  useVisibleMachineMetas: () => ({ machines: creation.machines }),
+}));
+// Visibility is its own concern; the panel reads every member from the real atoms.
+vi.mock('@/hooks/use-visible-session-metas', async () => {
+  const { useAtomValue: read } = await import('jotai');
+  const { allActiveSessionsAtom: active, archivedSessionListAtom: archived } =
+    await import('../src/atoms/doc-meta');
+  return {
+    useVisibleSessionMetas: () => ({ allActiveSessions: read(active) }),
+    useVisibleArchivedSessionMetas: () => ({ archivedSessions: read(archived) }),
+  };
+});
+vi.mock('@/hooks/use-machine-flock-rows', () => ({
+  useMachineFlockRowsByMachineIds: () => new Map(),
+}));
+vi.mock('@/hooks/use-board-document', () => ({
+  useBoardDocument: () => ({ document: { notes: '# Shared' }, save: async () => {} }),
+}));
+vi.mock('@/hooks/use-machine-flock-agent-configs', () => ({
+  useMachineFlockAgentConfigs: () => {},
+}));
+vi.mock('@/hooks/use-workspace-catalog', () => ({
+  useWorkspaceCatalog: () => ({ servers: [], boards: creation.boards }),
+}));
+vi.mock('@/hooks/use-workspace-agent-roles', () => ({
+  useWorkspaceAgentRoles: () => ({ roles: [] }),
+  useAgentRoleAvailability: () => ({ resolveInstance: () => ({ kind: 'available' }) }),
+  useComposerAgentRoleNames: () => ({ machine: () => 'Desktop', unknownAgent: 'Unknown' }),
+}));
+// Archive, restore and rename are the real Session actions over the test runtime;
+// only first-turn acceptance is held by the test.
+vi.mock('@/hooks/use-session-actions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/hooks/use-session-actions')>();
+  return {
+    ...actual,
+    useSessionActions: () => ({
+      ...actual.useSessionActions(),
+      startSession: (...args: unknown[]) => creation.startSession?.(...args),
+      requestSessionDispatch: async () => {},
+    }),
+  };
+});
+vi.mock('@/hooks/use-authenticated-convex', () => ({
+  useAuthenticatedConvex: () => ({ isAuthenticated: false, requestAuthRecovery: () => {} }),
+}));
+vi.mock('@/components/schedules/schedule-agent-controls', () => ({
+  ScheduleAgentControls: () => null,
+}));
+vi.mock('@/components/sessions/desktop-run-config-menu', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  DesktopMachineMenu: () => null,
+}));
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    i18n: { language: creation.language },
+    t: (_key: string, fallback: string, values?: Record<string, unknown>) =>
+      typeof fallback === 'string'
+        ? fallback.replace(/{{(\w+)}}/g, (_match, key) => String(values?.[key] ?? ''))
+        : _key,
+  }),
+}));
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+const makeSession = (id: string, extra: Partial<SessionMeta> = {}) =>
+  ({
+    id: id as SessionId,
+    machineId: 'machine',
+    userId: 'user',
+    title: id,
+    boardId: 'bd_test',
+    createdAt: '2026-10-15T00:00:00Z',
+    status: { type: 'running' },
+    ...extra,
+  }) as SessionMeta;
+
+const testBoard = (extra: Partial<BoardMeta> = {}) => {
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_test',
+    name: 'Release',
+    purpose: 'Ship it',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+    ...extra,
+  });
+  if (!board) throw new Error('Invalid fixture');
+  return board;
+};
+
+/** A catalog writer over an in-memory row map, the shape `WorkspaceCatalogWriteDeps` needs. */
+function catalogRuntime(rows = new Map<string, { key: readonly unknown[]; value: unknown }>()) {
+  const runtime = {
+    workspaceId: 'ws',
+    workspaceSlug: 'ws',
+    repo: {
+      openFlockDoc: async () => ({
+        flock: { scan: () => rows.values() },
+        syncOnce: async () => {},
+      }),
+    },
+    writer: {
+      flockRowPut: async (_doc: string, key: readonly unknown[], value: unknown) => {
+        rows.set(JSON.stringify(key), { key, value });
+      },
+      flockRowDelete: async (_doc: string, key: readonly unknown[]) => {
+        rows.delete(JSON.stringify(key));
+      },
+    },
+  } as unknown as WorkspaceRuntime;
+  const board = (id: string) => rows.get(JSON.stringify(['board', id]))?.value as BoardMeta;
+  return { runtime, rows, board };
+}
+
+/** Session actions read the platform seam; nothing here reaches a hosted service. */
+const testPlatform: PlatformProvider = {
+  kind: 'cloud',
+  identity: {
+    session: createStaticStore({ status: 'unauthenticated' }),
+    signOut: async () => {},
+  },
+  workspaces: {
+    state: createStaticStore({ status: 'ready', workspaces: [], activeWorkspaceId: null }),
+    setActive: async () => {},
+  },
+  capabilities: CLOUD_PLATFORM_CAPABILITIES,
+  cloudApi: {
+    useQuery: () => undefined,
+    useMutation: () => async () => ({}),
+    useAction: () => async () => undefined,
+  } as unknown as CloudApi,
+  sync: { mode: 'cloud' },
+};
+
+/**
+ * A workspace runtime over real Session metadata (a `LoroRepo`) and in-memory
+ * catalog rows. A metadata write to a room in `failing` is refused, the way a
+ * full disk or a lost lease would.
+ */
+async function boardRuntime(sessions: readonly SessionMeta[]) {
+  const repo = await LoroRepo.create({});
+  for (const session of sessions) await repo.upsertDocMeta(getSessionRoomId(session.id), session);
+  const catalog = catalogRuntime();
+  const failing = new Set<string>();
+  const runtime = {
+    ...catalog.runtime,
+    repo: {
+      openFlockDoc: catalog.runtime.repo.openFlockDoc,
+      listDoc: (query: Parameters<typeof repo.listDoc>[0]) => repo.listDoc(query),
+      getDocMeta: (id: string) => repo.getDocMeta(id),
+      flush: async () => {},
+    },
+    writer: {
+      ...catalog.runtime.writer,
+      upsertDocMeta: async (id: string, patch: Partial<SessionMeta>) => {
+        if (failing.has(id)) throw new Error('disk full');
+        await repo.upsertDocMeta(id, patch);
+      },
+      deleteDoc: (id: string) => repo.deleteDoc(id),
+    },
+    readSessionOperationTargets: (id: SessionId, operation: 'archive' | 'restore') =>
+      readSessionOperationTargets(repo, id, operation),
+    ensureDocStream: async () => {},
+    releaseSessionStore: async () => {},
+  } as unknown as WorkspaceRuntime;
+  return {
+    runtime,
+    board: catalog.board,
+    failing,
+    meta: async (id: string) =>
+      (await repo.getDocMeta(getSessionRoomId(id as SessionId)))?.meta as SessionMeta,
+    destroy: () => repo.destroy(),
+  };
+}
+
+function workspaceStore(runtime: WorkspaceRuntime) {
+  const store = createStore();
+  store.set(runtimeAtom, runtime);
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(currentWorkspaceSlugAtom, 'ws');
+  store.set(localProbeResultAtom, { ok: true, machineId: 'machine' });
+  return store;
+}
+
+async function mount(node: React.ReactNode) {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  await act(async () =>
+    root.render(<PlatformContext.Provider value={testPlatform}>{node}</PlatformContext.Provider>)
+  );
+  return {
+    host,
+    async unmount() {
+      await act(async () => root.unmount());
+      host.remove();
+    },
+  };
+}
+
+/**
+ * The desktop's IPC as this machine's agent service would answer it: Board
+ * directory listings by area, and member files as `data:` URLs.
+ */
+function installIpc(answers: Record<string, unknown>) {
+  const requests: { method?: string; params?: unknown }[] = [];
+  const target = window as unknown as Record<string, unknown>;
+  target.__LODY_ELECTRON__ = true;
+  target.ipc = {
+    invoke: async (channel: string, message: Record<string, unknown>) => {
+      if (channel === 'machineRpc.send') {
+        requests.push(message);
+        const params = message.params as { area: string };
+        return { ok: true, result: answers[`${String(message.method)}:${params.area}`] };
+      }
+      if (channel === 'machineRpc.openMemberFile') {
+        requests.push({ method: 'openMemberFile', params: message });
+        const body = answers[`file:${String(message.path)}`];
+        return typeof body === 'string'
+          ? { ok: true, url: `data:text/plain,${encodeURIComponent(body)}`, sizeBytes: body.length }
+          : { ok: false, error: 'file_not_found' };
+      }
+      if (channel === 'machineRpc.saveMemberFile') {
+        requests.push({ method: 'saveMemberFile', params: message });
+        return { ok: true, saved: true, path: `/downloads/${String(message.fileName)}` };
+      }
+      throw new Error(`unexpected IPC ${channel}`);
+    },
+    on: () => () => {},
+    send: () => {},
+  };
+  return {
+    requests,
+    remove() {
+      delete target.__LODY_ELECTRON__;
+      delete target.ipc;
+    },
+  };
+}
+
+async function typeInto(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')!.set!.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+async function submitForm() {
+  await act(async () => {
+    document
+      .querySelector('form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+}
+
+const live = (session: SessionMeta, status: SessionStatus) => ({
+  [session.id]: {
+    kind: 'session' as const,
+    sessionId: session.id,
+    machineId: session.machineId,
+    instanceId: 'instance' as never,
+    updatedAt: 1000,
+    status,
+  },
+});
+
+describe('Board side panel', () => {
+  it('lists members from metadata and presence, groups them, and opens one in the panel', async () => {
+    const store = createStore();
+    const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+    const root = makeSession('root', { lastMessageAt: 50 });
+    const tab = makeSession('review', { parentSessionId: root.id });
+    const waiting = makeSession('waiting', { awaitingUserSince: 20, lastMessageAt: 10 });
+    const answered = makeSession('answered', { awaitingUserSince: 10, lastMessageAt: 20 });
+    const stopped = makeSession('stopped-child', { openedBySessionId: 'halted' as SessionId });
+    const halted = makeSession('halted', { boardId: undefined, collaborationStopped: true });
+    const other = makeSession('other', { boardId: 'bd_other' as never });
+    const sessions = [coordinator, root, tab, waiting, answered, stopped, halted, other];
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(sessions.map((entry) => [getSessionRoomId(entry.id), entry]))
+    );
+    store.set(lodyPresenceNowMsAtom, 1000);
+    store.set(lodyPresenceStatesAtom, live(root, { type: 'running' } as SessionStatus));
+    const opened: (string | null)[] = [];
+    function Panel() {
+      const [openThreadId, setOpenThreadId] = useState<SessionId | null>(null);
+      return (
+        <BoardSidePanel
+          board={testBoard()}
+          openThreadId={openThreadId}
+          onOpenThread={(thread) => {
+            opened.push(thread?.id ?? null);
+            setOpenThreadId(thread?.id ?? null);
+          }}
+          onShowInPage={() => {}}
+          onOpenThreadFull={() => {}}
+          renderThread={(thread) => <p data-thread-surface={thread.id}>{thread.title}</p>}
+          onArchived={() => {}}
+        />
+      );
+    }
+    const view = await mount(
+      <Provider store={store}>
+        <Panel />
+      </Provider>
+    );
+    try {
+      const ids = () =>
+        [...view.host.querySelectorAll('[data-scope-item="row"]')].map((row) =>
+          row.getAttribute('data-id')
+        );
+      const groups = () =>
+        [...view.host.querySelectorAll('button[aria-expanded]')].map(
+          (button) => button.textContent
+        );
+      // The coordinator is the Board itself; a stopped opener stops its member;
+      // stale durable status never reads as work. A thread and its Tab stay
+      // together under the thread's strongest state.
+      expect(ids()).toEqual(['stopped-child', 'waiting', 'root', 'review', 'answered']);
+      expect(groups()).toEqual(['Needs you2', 'Working2', 'Idle1']);
+      await act(async () => store.set(lodyPresenceStatesAtom, {}));
+      expect(groups()).toEqual(['Needs you2', 'Idle3']);
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('[data-id="review"]')?.click()
+      );
+      expect(opened).toEqual(['review']);
+      expect(view.host.querySelector('[data-thread-surface="review"]')).not.toBeNull();
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('button[aria-label="Back to threads"]')?.click()
+      );
+      expect(view.host.querySelector('[data-thread-surface]')).toBeNull();
+      const filesTab = [...view.host.querySelectorAll('[role="tab"]')].find(
+        (node) => node.textContent === 'Board files'
+      ) as HTMLElement;
+      await act(async () => filesTab.click());
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('[data-id="notes"]')?.click()
+      );
+      expect(view.host.querySelector('textarea')?.value).toBe('# Shared');
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('shows a coordinator Tab in the page instead of a second conversation in the panel', async () => {
+    const store = createStore();
+    const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+    // Contained Tabs inherit the Board, so the coordinator's own Tabs are threads too.
+    const coordinatorTab = makeSession('coordinator-tab', { parentSessionId: coordinator.id });
+    const sideChat = makeSession('side-chat', {
+      parentSessionId: coordinator.id,
+      childSessionPlacement: 'side-panel',
+    });
+    const thread = makeSession('thread');
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(
+        [coordinator, coordinatorTab, sideChat, thread].map((entry) => [
+          getSessionRoomId(entry.id),
+          entry,
+        ])
+      )
+    );
+    /**
+     * The coordinator's page as far as conversation surfaces go: it mounts the
+     * coordinator, its Tabs and Side Chats, and shows the one selected; the
+     * Board panel renders only what it opens itself.
+     */
+    function CoordinatorPage() {
+      const [selected, setSelected] = useState<string>(coordinator.id);
+      const [panelThreadId, setPanelThreadId] = useState<SessionId | null>(null);
+      return (
+        <>
+          {[coordinator, coordinatorTab, sideChat].map((session) => (
+            <section
+              key={session.id}
+              data-chat-surface={session.id}
+              hidden={session.id !== selected}
+            />
+          ))}
+          <BoardSidePanel
+            board={testBoard()}
+            openThreadId={panelThreadId}
+            onOpenThread={(session) => setPanelThreadId(session?.id ?? null)}
+            onShowInPage={(session) => setSelected(session.id)}
+            onOpenThreadFull={() => {}}
+            renderThread={(session) => <section data-chat-surface={session.id} />}
+            requestedThreadId={null}
+            onThreadRequestDone={() => {}}
+            onArchived={() => {}}
+          />
+        </>
+      );
+    }
+    const view = await mount(
+      <Provider store={store}>
+        <CoordinatorPage />
+      </Provider>
+    );
+    const surfaces = (id: string) =>
+      view.host.querySelectorAll(`[data-chat-surface="${id}"]`).length;
+    const visible = () =>
+      [...view.host.querySelectorAll('[data-chat-surface]:not([hidden])')].map((node) =>
+        node.getAttribute('data-chat-surface')
+      );
+    const open = (id: string) =>
+      act(async () => view.host.querySelector<HTMLButtonElement>(`[data-id="${id}"]`)?.click());
+    try {
+      await open(coordinatorTab.id);
+      expect(surfaces(coordinatorTab.id)).toBe(1);
+      expect(visible()).toEqual([coordinatorTab.id]);
+      await open(sideChat.id);
+      expect(surfaces(sideChat.id)).toBe(1);
+      expect(visible()).toEqual([sideChat.id]);
+      await open(thread.id);
+      expect(surfaces(thread.id)).toBe(1);
+      expect(visible()).toEqual([sideChat.id, thread.id]);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('opens a palette entry where its row opens it, so a coordinator Tab is mounted once', async () => {
+    const store = createStore();
+    const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+    const coordinatorTab = makeSession('coordinator-tab', { parentSessionId: coordinator.id });
+    const sideChat = makeSession('side-chat', {
+      parentSessionId: coordinator.id,
+      childSessionPlacement: 'side-panel',
+    });
+    const thread = makeSession('thread');
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(
+        [coordinator, coordinatorTab, sideChat, thread].map((entry) => [
+          getSessionRoomId(entry.id),
+          entry,
+        ])
+      )
+    );
+    const board = testBoard();
+    /** The coordinator's page after the palette's `?board=1&boardThread=…` left the URL. */
+    function CoordinatorPage({ boardThread }: { boardThread: string }) {
+      const [selected, setSelected] = useState<string>(coordinator.id);
+      const [panelThreadId, setPanelThreadId] = useState<SessionId | null>(null);
+      const [request, setRequest] = useState<SessionId | null>(boardThread as SessionId);
+      return (
+        <>
+          {[coordinator, coordinatorTab, sideChat].map((session) => (
+            <section
+              key={session.id}
+              data-chat-surface={session.id}
+              hidden={session.id !== selected}
+            />
+          ))}
+          <BoardSidePanel
+            board={board}
+            openThreadId={panelThreadId}
+            onOpenThread={(session) => setPanelThreadId(session?.id ?? null)}
+            onShowInPage={(session) => setSelected(session.id)}
+            onOpenThreadFull={() => {}}
+            renderThread={(session) => <section data-chat-surface={session.id} />}
+            requestedThreadId={request}
+            onThreadRequestDone={() => setRequest(null)}
+          />
+        </>
+      );
+    }
+    for (const [member, shown] of [
+      [coordinatorTab, [coordinatorTab.id]],
+      [sideChat, [sideChat.id]],
+      [thread, [coordinator.id, thread.id]],
+    ] as const) {
+      const search = boardMemberEntrySearch(board, member.id);
+      expect(search).toMatchObject({ board: true, boardThread: member.id });
+      const view = await mount(
+        <Provider store={store}>
+          <CoordinatorPage boardThread={search.boardThread!} />
+        </Provider>
+      );
+      try {
+        expect(view.host.querySelectorAll(`[data-chat-surface="${member.id}"]`)).toHaveLength(1);
+        expect(
+          [...view.host.querySelectorAll('[data-chat-surface]:not([hidden])')].map((node) =>
+            node.getAttribute('data-chat-surface')
+          )
+        ).toEqual(shown);
+      } finally {
+        await view.unmount();
+      }
+    }
+  });
+
+  it('shows the Board directory in the session file tree and previews a file through the local agent', async () => {
+    // jsdom lays nothing out; give the tree's scroll viewport a height, as the
+    // file tree's own suite does, so its virtual rows mount.
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.hasAttribute('data-radix-scroll-area-viewport') ? 400 : 0;
+      },
+    });
+    const store = createStore();
+    store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+    store.set(localProbeResultAtom, { ok: true, machineId: 'laptop' });
+    // No `files` row yet: the coordinator's machine keeps the directory.
+    const coordinator = makeSession('coordinator', {
+      boardRole: 'coordinator',
+      machineId: 'devnuc',
+    });
+    store.set(sessionMetaCacheAtom, { [getSessionRoomId(coordinator.id)]: coordinator });
+    const ipc = installIpc({
+      'board/files-list:files': {
+        entries: [
+          { path: 'design/plan.md', sizeBytes: 22, modifiedAtMs: 1 },
+          { path: 'design/mock.sketch', sizeBytes: 4096, modifiedAtMs: 1 },
+        ],
+        // The area holds more than the listing limit.
+        truncated: true,
+      },
+      'file:files/design/plan.md': '# Plan\n\nShip it.',
+    });
+    const view = await mount(
+      <Provider store={store}>
+        <BoardSidePanel
+          board={testBoard()}
+          openThreadId={null}
+          onOpenThread={() => {}}
+          onShowInPage={() => {}}
+          onOpenThreadFull={() => {}}
+          renderThread={() => null}
+          requestedThreadId={null}
+          onThreadRequestDone={() => {}}
+        />
+      </Provider>
+    );
+    try {
+      const filesTab = [...view.host.querySelectorAll('[role="tab"]')].find(
+        (node) => node.textContent === 'Board files'
+      ) as HTMLElement;
+      await act(async () => filesTab.click());
+      const treeRow = (name: string) =>
+        [...view.host.querySelectorAll<HTMLButtonElement>('[role="treeitem"]')].find(
+          (row) => row.textContent === name
+        );
+      // The shared notes lead; the directory follows as the session file tree,
+      // its folders built from the listed paths.
+      expect(view.host.querySelector('[data-id="notes"]')).not.toBeNull();
+      await vi.waitFor(() => expect(treeRow('design')).toBeDefined());
+      expect(view.host.textContent).toContain('Only the first 500 files are listed.');
+      await act(async () => treeRow('design')?.click());
+      expect(
+        [...view.host.querySelectorAll('[role="treeitem"]')].map((row) => row.textContent)
+      ).toEqual(['design', 'mock.sketch', 'plan.md']);
+      await act(async () => treeRow('plan.md')?.click());
+      await vi.waitFor(() => expect(view.host.querySelector('h1')?.textContent).toBe('Plan'));
+      expect(ipc.requests).toContainEqual({
+        method: 'openMemberFile',
+        params: {
+          workspaceId: 'ws',
+          machineId: 'devnuc',
+          sessionId: 'coordinator',
+          boardId: 'bd_test',
+          path: 'files/design/plan.md',
+        },
+      });
+
+      // A file with no preview is saved to disk from the keeping machine instead.
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('button[aria-label="Back to files"]')?.click()
+      );
+      // The folder stays open on the way back.
+      await vi.waitFor(() => expect(treeRow('mock.sketch')).toBeDefined());
+      await act(async () => treeRow('mock.sketch')?.click());
+      expect(view.host.textContent).toContain('No preview for this kind of file.');
+      const download = [...view.host.querySelectorAll('button')].find(
+        (button) => button.textContent === 'Download'
+      ) as HTMLElement;
+      await act(async () => download.click());
+      expect(ipc.requests).toContainEqual({
+        method: 'saveMemberFile',
+        params: {
+          workspaceId: 'ws',
+          machineId: 'devnuc',
+          sessionId: 'coordinator',
+          boardId: 'bd_test',
+          path: 'files/design/mock.sketch',
+          fileName: 'mock.sketch',
+        },
+      });
+    } finally {
+      await view.unmount();
+      ipc.remove();
+      vi.unstubAllGlobals();
+      if (offsetHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight);
+      else delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
+    }
+  });
+
+  it('keeps the sessions a thread opened under it, lifted by the strongest state', async () => {
+    const view = await mount(
+      <BoardThreadListView
+        threads={[
+          { id: 'idle', title: 'Idle thread', status: 'idle', detail: '', updatedLabel: '' },
+          { id: 'parent', title: 'Thread', status: 'idle', detail: '', updatedLabel: '' },
+          {
+            id: 'reviewer',
+            title: 'Reviewer',
+            status: 'waiting_user',
+            detail: '',
+            updatedLabel: '',
+            depth: 1,
+          },
+        ]}
+        onOpen={() => {}}
+      />
+    );
+    try {
+      const sections = [...view.host.querySelectorAll('section')].map((section) => [
+        section.querySelector('button[aria-expanded]')?.textContent,
+        [...section.querySelectorAll('[data-scope-item="row"]')].map((row) =>
+          row.getAttribute('data-id')
+        ),
+      ]);
+      expect(sections).toEqual([
+        ['Needs you2', ['parent', 'reviewer']],
+        ['Idle1', ['idle']],
+      ]);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('keeps Board conversations out of outside lists while Boards are on', () => {
+    const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+    const thread = makeSession('thread');
+    const chat = makeSession('chat', { boardId: undefined });
+    expect([coordinator, thread, chat].filter((s) => !isBoardSession(s, true))).toEqual([chat]);
+    // With the experiment off threads are ordinary sessions again; the coordinator stays the Board's.
+    expect([coordinator, thread, chat].filter((s) => !isBoardSession(s, false))).toEqual([
+      thread,
+      chat,
+    ]);
+  });
+
+  it('marks a Board by its strongest member state', () => {
+    const board = testBoard();
+    const working = makeSession('working');
+    const waiting = makeSession('waiting', { awaitingUserSince: 20, lastMessageAt: 10 });
+    const answered = makeSession('answered', { awaitingUserSince: 10, lastMessageAt: 20 });
+    const elsewhere = makeSession('elsewhere', { boardId: 'bd_other' as never });
+    const running = new Map<string, SessionStatus>([
+      [working.id, { type: 'running' } as SessionStatus],
+      [elsewhere.id, { type: 'requestPermission' } as SessionStatus],
+    ]);
+    expect(boardActivity(board, [answered], new Map())).toBeNull();
+    expect(boardActivity(board, [answered, working, elsewhere], running)).toBe('working');
+    expect(boardActivity(board, [working, waiting], running)).toBe('waiting');
+    expect(
+      boardActivity(
+        board,
+        [working],
+        new Map([[working.id, { type: 'requestPermission' } as SessionStatus]])
+      )
+    ).toBe('waiting');
+  });
+});
+
+it('saves Board settings to the catalog row and renames the coordinator with the Board', async () => {
+  const env = await boardRuntime([makeSession('coordinator', { boardRole: 'coordinator' })]);
+  const store = workspaceStore(env.runtime);
+  let closed = false;
+  const view = await mount(
+    <Provider store={store}>
+      <BoardSettingsDialog board={testBoard()} onClose={() => (closed = true)} />
+    </Provider>
+  );
+  try {
+    await typeInto(
+      document.querySelector<HTMLInputElement>('input[aria-label="Name"]')!,
+      ' Launch '
+    );
+    expect(document.body.textContent).not.toContain('Archive Board');
+    await submitForm();
+    expect(closed).toBe(true);
+    expect(env.board('bd_test')).toMatchObject({ name: 'Launch', purpose: 'Ship it' });
+    expect((await env.meta('coordinator')).title).toBe('Launch');
+  } finally {
+    await view.unmount();
+    await env.destroy();
+  }
+});
+
+it('starts Board settings afresh on another Board, so a draft never saves into it', async () => {
+  const boardA = testBoard();
+  const boardB = testBoard({ id: 'bd_b' as never, name: 'Docs', coordinatorSessionId: 'coord-b' });
+  const env = await boardRuntime([
+    makeSession('coordinator', { boardRole: 'coordinator', title: 'Release' }),
+    makeSession('coord-b', { boardId: 'bd_b' as never, boardRole: 'coordinator', title: 'Docs' }),
+  ]);
+  await writeWorkspaceBoard(env.runtime, boardA);
+  await writeWorkspaceBoard(env.runtime, boardB);
+  const store = workspaceStore(env.runtime);
+  let showBoard!: (board: BoardMeta) => void;
+  function Page() {
+    const [board, setBoard] = useState(boardA);
+    showBoard = setBoard;
+    return <BoardSettings board={board} onClose={() => {}} onArchived={() => {}} />;
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <Page />
+    </Provider>
+  );
+  const nameInput = () => document.querySelector<HTMLInputElement>('input[aria-label="Name"]');
+  try {
+    await typeInto(nameInput()!, 'Draft for Release');
+    // Browser history moves the page to Board B while A's settings are open.
+    await act(async () => showBoard(boardB));
+    expect(nameInput()?.value).toBe('Docs');
+    await submitForm();
+    expect(env.board('bd_b')).toMatchObject({ name: 'Docs' });
+    expect(env.board('bd_test')).toMatchObject({ name: 'Release' });
+    expect((await env.meta('coord-b')).title).toBe('Docs');
+  } finally {
+    await view.unmount();
+    await env.destroy();
+  }
+});
+
+it('saves the Board instructions from the General page and lists the agents memory', async () => {
+  const env = await boardRuntime([makeSession('coordinator', { boardRole: 'coordinator' })]);
+  await writeWorkspaceBoard(env.runtime, testBoard());
+  const store = workspaceStore(env.runtime);
+  const ipc = installIpc({
+    'board/files-list:memory': {
+      entries: [
+        { path: 'decisions.md', sizeBytes: 10, modifiedAtMs: 1 },
+        { path: 'MEMORY.md', sizeBytes: 20, modifiedAtMs: 2 },
+      ],
+      truncated: false,
+    },
+  });
+  // i18next names Chinese `zh_CN`, which Intl does not take as a tag.
+  creation.language = 'zh_CN';
+  const view = await mount(
+    <Provider store={store}>
+      <BoardSettings board={env.board('bd_test')} onClose={() => {}} onArchived={() => {}} />
+    </Provider>
+  );
+  try {
+    // The instructions sit on General, the page the dialog opens on.
+    await typeInto(
+      document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Instructions"]')!,
+      'Check nmem first.'
+    );
+    expect(document.body.textContent).toContain('17 / 16,000');
+    const memoryPage = [...document.querySelectorAll('nav button')].find(
+      (button) => button.textContent === 'Memory'
+    ) as HTMLElement;
+    await act(async () => memoryPage.click());
+    expect(document.querySelector('textarea[aria-label="Instructions"]')).toBeNull();
+    // MEMORY.md, the index, leads the memory files.
+    expect(
+      [...document.querySelectorAll('[data-scope-item="row"]')].map((row) =>
+        row.getAttribute('data-id')
+      )
+    ).toEqual(['MEMORY.md', 'decisions.md']);
+    expect(ipc.requests).toContainEqual(
+      expect.objectContaining({
+        method: 'board/files-list',
+        params: { boardId: 'bd_test', sessionId: 'coordinator', area: 'memory' },
+      })
+    );
+    await submitForm();
+    expect(env.board('bd_test')).toMatchObject({ instructions: 'Check nmem first.' });
+  } finally {
+    creation.language = 'en';
+    await view.unmount();
+    ipc.remove();
+    await env.destroy();
+  }
+});
+
+it('archives and restores a Board with its members, and keeps it where it was when a member fails', async () => {
+  const sessions = [
+    makeSession('coordinator', { boardRole: 'coordinator' }),
+    makeSession('root'),
+    makeSession('review', { parentSessionId: 'root' as SessionId }),
+    makeSession('second'),
+    makeSession('other', { boardId: 'bd_other' as never }),
+  ];
+  const env = await boardRuntime(sessions);
+  await writeWorkspaceBoard(env.runtime, testBoard());
+  const store = workspaceStore(env.runtime);
+  let lifecycle!: ReturnType<typeof useBoardLifecycle>;
+  function Probe() {
+    lifecycle = useBoardLifecycle();
+    return null;
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <Probe />
+    </Provider>
+  );
+  const archived = async () => {
+    const metas = await Promise.all(sessions.map((session) => env.meta(session.id)));
+    return metas.filter((meta) => meta.isArchived === true);
+  };
+  const archivedIds = async () => (await archived()).map((meta) => meta.id);
+  try {
+    // A member refuses: the Board and its coordinator stay active, so every entry
+    // (the page's menu follows the coordinator) still offers Archive.
+    env.failing.add(getSessionRoomId('second' as SessionId));
+    await act(async () => {
+      await expect(lifecycle.archiveBoard(testBoard(), sessions)).rejects.toThrow('disk full');
+    });
+    expect(env.board('bd_test')).not.toHaveProperty('archivedAtMs');
+    expect(await archivedIds()).not.toContain('coordinator');
+    env.failing.clear();
+    await act(async () => lifecycle.archiveBoard(testBoard(), sessions));
+    expect(env.board('bd_test').archivedAtMs).toEqual(expect.any(Number));
+    expect(await archivedIds()).toEqual(['coordinator', 'root', 'review', 'second']);
+
+    // Restore stops at the refusing member: the Board stays in Archive with its Restore.
+    env.failing.add(getSessionRoomId('second' as SessionId));
+    const toRestore = await archived();
+    await act(async () => {
+      await expect(lifecycle.restoreBoard(env.board('bd_test'), toRestore)).rejects.toThrow(
+        'disk full'
+      );
+    });
+    expect(env.board('bd_test').archivedAtMs).toEqual(expect.any(Number));
+    expect(await archivedIds()).toEqual(['coordinator', 'second']);
+    env.failing.clear();
+    await act(async () => lifecycle.restoreBoard(env.board('bd_test'), await archived()));
+    expect(env.board('bd_test')).not.toHaveProperty('archivedAtMs');
+    expect(await archivedIds()).toEqual([]);
+  } finally {
+    await view.unmount();
+    await env.destroy();
+  }
+});
+
+it('creates a Board from a name alone, with a coordinator that has not been sent anything', async () => {
+  const env = await boardRuntime([]);
+  const store = workspaceStore(env.runtime);
+  store.set(userAtom, { id: 'user', name: 'User', email: 'user@example.com' });
+  store.set(agentConfigMetaCacheAtom, {
+    config: {
+      id: 'config',
+      machineId: 'machine',
+      cliType: 'builtin',
+      agentType: 'claude',
+      name: 'Agent',
+      prompt: '',
+    } as AgentConfigMeta,
+  });
+  creation.machines = new Map([
+    ['machine', { id: 'machine', name: 'Desktop', ownerUserId: 'user' }],
+  ]);
+  const created: BoardMeta[] = [];
+  let actions!: Pick<
+    ReturnType<typeof useSessionActions>,
+    'deleteSessions' | 'setSessionTabClosed'
+  >;
+  function Probe() {
+    actions = useSessionActions();
+    return null;
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <Probe />
+      <CreateBoardDialog onClose={() => {}} onCreated={(entry) => created.push(entry)} />
+    </Provider>
+  );
+  try {
+    expect(document.querySelectorAll('input[type="number"]')).toHaveLength(0);
+    await typeInto(document.querySelector('input')!, 'Ship the Board home');
+    await submitForm();
+    expect(created).toHaveLength(1);
+    const board = env.board(created[0]!.id);
+    expect(board).toMatchObject({
+      name: 'Ship the Board home',
+      purpose: '',
+      rules: { maxRoundsPerThread: 4, reportHumanTurns: false, executorConstraints: '' },
+      files: { machineId: 'machine' },
+    });
+    // The coordinator exists, belongs to the Board, and has no first message:
+    // the user speaks first.
+    const coordinator = await env.meta(board.coordinatorSessionId);
+    expect(coordinator).toMatchObject({
+      boardId: board.id,
+      boardRole: 'coordinator',
+      title: 'Ship the Board home',
+      machineId: 'machine',
+    });
+    expect(coordinator).not.toHaveProperty('lastMessageAt');
+
+    // Closing its tab keeps it, and the Board with it: a coordinator is never an
+    // empty tab to delete, while an ordinary empty tab still is.
+    const close = (id: SessionId) =>
+      closeSessionTab(id, {
+        runtime: env.runtime,
+        deleteSessions: actions.deleteSessions,
+        setSessionTabClosed: actions.setSessionTabClosed,
+      });
+    expect(await close(board.coordinatorSessionId)).toBe('closed');
+    expect(await env.meta(board.coordinatorSessionId)).toMatchObject({
+      boardRole: 'coordinator',
+      isTabClosed: true,
+    });
+    expect(env.board(board.id)).toMatchObject({ coordinatorSessionId: board.coordinatorSessionId });
+    await env.runtime.writer.upsertDocMeta(
+      getSessionRoomId('empty-tab' as SessionId),
+      makeSession('empty-tab', { parentSessionId: board.coordinatorSessionId })
+    );
+    expect(await close('empty-tab' as SessionId)).toBe('deleted');
+    expect(
+      isLoroRepoDocDeleted(
+        await env.runtime.repo.getDocMeta(getSessionRoomId('empty-tab' as SessionId))
+      )
+    ).toBe(true);
+  } finally {
+    await view.unmount();
+    creation.machines.clear();
+    await env.destroy();
+  }
+});
+
+it('joins and removes a session through real metadata without altering its ordinary fields', async () => {
+  const repo = await LoroRepo.create({});
+  const session = makeSession('membership', { boardId: undefined });
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_join',
+    name: 'Join',
+    purpose: 'Ship',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+  });
+  if (!board) throw new Error('Invalid fixture');
+  const runtime = {
+    repo,
+    writer: {
+      upsertDocMeta: (id: string, patch: Record<string, unknown>) => repo.upsertDocMeta(id, patch),
+    },
+  } as Parameters<typeof changeBoardMembership>[0];
+  try {
+    await repo.upsertDocMeta(getSessionRoomId(session.id), session);
+    await changeBoardMembership(runtime, session, board, 100);
+    expect((await repo.getDocMeta(getSessionRoomId(session.id)))?.meta).toMatchObject({
+      title: session.title,
+      boardId: board.id,
+      boardJoinedAtMs: 100,
+    });
+    await changeBoardMembership(runtime, session);
+    const meta = (await repo.getDocMeta(getSessionRoomId(session.id)))?.meta;
+    expect(meta?.title).toBe(session.title);
+    expect(meta).not.toHaveProperty('boardId');
+    expect(meta).not.toHaveProperty('boardJoinedAtMs');
+    await repo.upsertDocMeta(getSessionRoomId(session.id), {
+      boardId: board.id,
+      boardRole: 'coordinator',
+    });
+    await expect(changeBoardMembership(runtime, session)).rejects.toThrow(
+      'BOARD_COORDINATOR_FIXED'
+    );
+    expect((await repo.getDocMeta(getSessionRoomId(session.id)))?.meta?.boardId).toBe(board.id);
+  } finally {
+    await repo.destroy();
+  }
+});
+
+it('edits and previews shared notes and retains an unsaved draft on write failure', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  let saved = '';
+  const onSave = async (text: string) => {
+    saved = text;
+    throw new Error('disk full');
+  };
+  try {
+    await act(async () => root.render(<BoardNotesEditor notes="# Original" onSave={onSave} />));
+    const input = container.querySelector('textarea')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        input,
+        '# Updated'
+      );
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const button = (label: string) =>
+      [...container.querySelectorAll('button')].find((b) => b.textContent === label)!;
+    await act(async () => button('Preview').click());
+    expect(container.querySelector('h1')?.textContent).toBe('Updated');
+    await act(async () => button('Save notes').click());
+    expect(saved).toBe('# Updated');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('draft is retained');
+    await act(async () => button('Edit').click());
+    expect(container.querySelector('textarea')?.value).toBe('# Updated');
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+it('submits a new Board thread as chat without the coordinator role', async () => {
+  const store = createStore();
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_new_thread',
+    name: 'Release',
+    purpose: 'Ship',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+  });
+  if (!board) throw new Error('Invalid fixture');
+  store.set(userAtom, { id: 'user', name: 'User', email: 'user@example.com' });
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(currentWorkspaceSlugAtom, 'ws');
+  store.set(runtimeAtom, { workspaceId: 'ws', workspaceSlug: 'ws' } as WorkspaceRuntime);
+  const config = {
+    id: 'config',
+    machineId: 'machine',
+    cliType: 'builtin',
+    agentType: 'claude',
+    name: 'Agent',
+    prompt: 'Agent instructions',
+  } as AgentConfigMeta;
+  store.set(agentConfigMetaCacheAtom, { config });
+  creation.machines = new Map([
+    ['machine', { id: 'machine', name: 'Desktop', ownerUserId: 'user' }],
+  ]);
+  const accepted: { payload: SessionToCreate; history: Omit<SessionHistoryInput, 'id'> }[] = [];
+  creation.startSession = async (...args: unknown[]) => {
+    const [payload, history] = args as [SessionToCreate, Omit<SessionHistoryInput, 'id'>];
+    accepted.push({ payload, history });
+    return { sessionId: payload.sessionId, historyEntry: { ...history, id: 'first-turn' } };
+  };
+  function NewThread() {
+    const [created, setCreated] = useState(false);
+    return created ? (
+      <p>Thread accepted</p>
+    ) : (
+      <CreateBoardDialog
+        existingBoard={board!}
+        onClose={() => {}}
+        onCreated={() => setCreated(true)}
+      />
+    );
+  }
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        <PlatformContext.Provider value={testPlatform}>
+          <Provider store={store}>
+            <NewThread />
+          </Provider>
+        </PlatformContext.Provider>
+      )
+    );
+    await act(async () => {
+      const name = document.querySelector('input')!;
+      const task = document.querySelector('textarea')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        name,
+        'Implement notes'
+      );
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        task,
+        'Build shared notes'
+      );
+      task.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      document
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    expect(container.textContent).toBe('Thread accepted');
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0]?.payload).toMatchObject({
+      boardId: board.id,
+      title: 'Implement notes',
+      machineId: 'machine',
+    });
+    expect(accepted[0]?.payload).not.toHaveProperty('boardRole');
+    expect(accepted[0]?.payload).not.toHaveProperty('project');
+    expect(accepted[0]?.payload.sessionId).not.toBe(board.coordinatorSessionId);
+    expect(accepted[0]?.history.inputConfig?.prompt).toContain('Build shared notes');
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    creation.startSession = undefined;
+    creation.machines.clear();
+  }
+});
+
+/** A Board of three members, its row in the catalog and its Sessions in the metadata cache. */
+async function boardWithMembers() {
+  const sessions = [
+    makeSession('coordinator', { boardRole: 'coordinator', title: 'Release' }),
+    makeSession('root'),
+    makeSession('review', { parentSessionId: 'root' as SessionId }),
+  ];
+  const env = await boardRuntime(sessions);
+  await writeWorkspaceBoard(env.runtime, testBoard());
+  const store = workspaceStore(env.runtime);
+  store.set(experimentalFeaturesEnabledAtom, true);
+  store.set(boardExperimentEnabledAtom, true);
+  store.set(
+    sessionMetaCacheAtom,
+    Object.fromEntries(sessions.map((session) => [getSessionRoomId(session.id), session]))
+  );
+  const archivedIds = async () =>
+    (await Promise.all(sessions.map((session) => env.meta(session.id))))
+      .filter((meta) => meta.isArchived === true)
+      .map((meta) => meta.id);
+  return { env, store, archivedIds };
+}
+
+function menuItem(label: string) {
+  return [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+    (item) => item.textContent === label
+  );
+}
+
+async function renameTo(name: string) {
+  await typeInto(document.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!, name);
+  const save = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+    (button) => button.textContent === 'Save'
+  )!;
+  await act(async () => save.click());
+}
+
+it('renames and archives the whole Board from its page header menu', async () => {
+  const { env, store, archivedIds } = await boardWithMembers();
+  let left = false;
+  // The coordinator page's wiring: the menu's rename and archive act on its Board.
+  function Header() {
+    const { archive } = useBoardActions();
+    const [renaming, setRenaming] = useState<BoardMeta | null>(null);
+    return (
+      <>
+        <SessionHeaderMenu
+          session={makeSession('coordinator', { boardRole: 'coordinator' })}
+          owner={{ members: [], ownerUserId: 'user', onChangeOwner: () => {} }}
+          onCopyUrl={() => {}}
+          onRename={() => setRenaming(env.board('bd_test'))}
+          onArchive={async () => {
+            left = await archive(env.board('bd_test'));
+          }}
+          t={(_key: string, fallback: string) => fallback}
+        />
+        <BoardRenameDialog board={renaming} onClose={() => setRenaming(null)} />
+      </>
+    );
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <Header />
+    </Provider>
+  );
+  const openMenu = async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'requestAnimationFrame'] });
+    try {
+      await act(async () => {
+        document
+          .querySelector('button[aria-label="More actions"]')!
+          .dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+        await vi.advanceTimersByTimeAsync(40);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+  try {
+    await openMenu();
+    // A Board has no owner of its own, and the menu names the Board.
+    expect(menuItem('Change owner')).toBeUndefined();
+    expect(menuItem('Rename Chat')).toBeUndefined();
+    await act(async () => menuItem('Rename Board')!.click());
+    // Another window saves instructions while the rename is open; the rename keeps them.
+    await writeWorkspaceBoard(env.runtime, { ...env.board('bd_test'), instructions: 'Use nmem.' });
+    await renameTo('Launch');
+    expect(env.board('bd_test')).toMatchObject({
+      name: 'Launch',
+      purpose: 'Ship it',
+      instructions: 'Use nmem.',
+    });
+    expect((await env.meta('coordinator')).title).toBe('Launch');
+
+    await openMenu();
+    expect(menuItem('Archive session')).toBeUndefined();
+    await act(async () => menuItem('Archive Board')!.click());
+    expect(left).toBe(true);
+    expect(env.board('bd_test').archivedAtMs).toEqual(expect.any(Number));
+    expect(await archivedIds()).toEqual(['coordinator', 'root', 'review']);
+  } finally {
+    await view.unmount();
+    await env.destroy();
+  }
+});
+
+it('shares, renames and archives a Board from its sidebar row menu', async () => {
+  const { env, store, archivedIds } = await boardWithMembers();
+  creation.boards = [env.board('bd_test')];
+  const copied: string[] = [];
+  const archived: string[] = [];
+  const opened: string[] = [];
+  const view = await mount(
+    <Provider store={store}>
+      <BoardSidebar
+        boards={[
+          {
+            id: 'bd_test',
+            name: 'Release',
+            coordinatorSessionId: 'coordinator' as SessionId,
+            activity: null,
+          },
+        ]}
+        collapsed={false}
+        onToggleCollapsed={() => {}}
+        onOpen={(board) => opened.push(board.id)}
+        onCreate={() => {}}
+        onCopyUrl={(board) => copied.push(board.coordinatorSessionId)}
+        onArchived={(board) => archived.push(board.id)}
+      />
+    </Provider>
+  );
+  const openRowMenu = async () => {
+    await act(async () => {
+      document
+        .querySelector('[data-id="bd_test"]')!
+        .dispatchEvent(
+          new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 8, clientY: 8 })
+        );
+    });
+  };
+  const press = async (element: Element) => {
+    await act(async () => {
+      element.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+      );
+    });
+  };
+  try {
+    // Enter on the row opens the Board; on ⋯ inside it, it stays with the button.
+    await press(document.querySelector('[data-id="bd_test"] button[aria-label="More actions"]')!);
+    expect(opened).toEqual([]);
+    await press(document.querySelector('[data-id="bd_test"]')!);
+    expect(opened).toEqual(['bd_test']);
+
+    await openRowMenu();
+    await act(async () => menuItem('Copy Board URL')!.click());
+    expect(copied).toEqual(['coordinator']);
+
+    // Sharing a Board opens the share editor on its coordinator's conversation.
+    await openRowMenu();
+    await act(async () => menuItem('Share')!.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Release');
+    await act(async () => {
+      document
+        .querySelector('[role="dialog"]')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    await openRowMenu();
+    await act(async () => menuItem('Rename Board')!.click());
+    await renameTo('Launch');
+    expect(env.board('bd_test').name).toBe('Launch');
+
+    await openRowMenu();
+    await act(async () => menuItem('Archive Board')!.click());
+    expect(archived).toEqual(['bd_test']);
+    expect(await archivedIds()).toEqual(['coordinator', 'root', 'review']);
+  } finally {
+    creation.boards = [];
+    await view.unmount();
+    await env.destroy();
+  }
+});

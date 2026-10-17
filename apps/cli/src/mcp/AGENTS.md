@@ -80,6 +80,8 @@
   Validate effort/Fast against the final model, never reject on probe mismatch; missing
   per-model data defers to runtime. Drop incompatible inherited selectors even after
   unconfirmed freshness; only explicit misses block. Fill builtin mode only if empty. [Inheritance rationale](README.md#chat-configuration).
+- Create/chat Turns record `mcpServerIds`: the opener's stored or target's latest choice, else
+  workspace defaults; freeze per target at acceptance.
 - `lody_session_create_options` publishes modes and option ids/types/choices per agent config,
   never current values. Stay sparse by default (online Machines, one agent config, the current
   local project, no GitHub fetch), expanding only through explicit query inputs.

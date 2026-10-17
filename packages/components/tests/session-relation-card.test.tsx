@@ -76,6 +76,87 @@ describe('Session relation cards', () => {
     container.remove();
   });
 
+  it('renders a mixed Inbox batch with compact Board events, live titles and navigation', async () => {
+    const store = createStore();
+    store.set(setDocMetaByRoomIdAtom, getSessionRoomId(createdSessionId), {
+      id: createdSessionId,
+      machineId: 'machine-1',
+      userId: 'user-1',
+      createdAt: '2026-10-16T00:00:00Z',
+      title: 'Review findings',
+    });
+    const events = ['finished', 'failed', 'waiting_user', 'notice'] as const;
+    const message: SessionHistoryParsed = {
+      ...completionMessage,
+      items: [
+        {
+          type: 'operation_completion_batch',
+          batchId: 'board-batch',
+          memberCount: 5,
+          members: [
+            completionMessage.items[0] as Extract<
+              import('@lody/shared').MessageContent,
+              { type: 'operation_completion' }
+            >,
+            ...events.map((kind) => ({
+              type: 'operation_completion' as const,
+              deliveryId: `board-${kind}`,
+              operationId: `board-${kind}`,
+              operationKind: 'board_report' as const,
+              completion: {
+                type: 'result' as const,
+                value: {
+                  items: [],
+                  boardReport: {
+                    boardId: 'bd_test' as import('@lody/shared').BoardId,
+                    events: [
+                      {
+                        kind,
+                        sessionId: createdSessionId,
+                        machineId: 'remote' as import('@lody/shared').MachineId,
+                        turnId: 'review',
+                        at: 1,
+                        origin: 'system' as const,
+                        title: 'Old title',
+                        output: { text: 'Original review conclusion\nDetails in the session.' },
+                      },
+                    ],
+                  },
+                },
+              },
+            })),
+          ],
+        },
+      ],
+    };
+    let opened: unknown;
+    await act(async () =>
+      root.render(
+        <Provider store={store}>
+          <MessageRowView
+            message={message}
+            sessionId={openerSessionId}
+            onNavigateSession={(target) => {
+              opened = target;
+            }}
+          />
+        </Provider>
+      )
+    );
+    expect(container.querySelectorAll('[data-session-relation-card="opened"]')).toHaveLength(5);
+    expect(container.textContent).toContain('sessions.openedBy.status.waitingUser');
+    expect(container.textContent).toContain('sessions.openedBy.status.notice');
+    expect(container.textContent).not.toContain('Old title');
+    expect(container.querySelectorAll('[data-session-creation-status="notice"]')).toHaveLength(1);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[data-session-creation-status="notice"]')
+        ?.closest('button')
+        ?.click()
+    );
+    expect(opened).toEqual({ sessionId: createdSessionId });
+    expect(container.querySelectorAll('details')).toHaveLength(0);
+  });
   it('navigates back to the precise opener from the provenance card', async () => {
     const onOpen = vi.fn();
     await act(async () => {

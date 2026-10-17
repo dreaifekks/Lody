@@ -67,6 +67,7 @@ const persistedSidePanelTabSchema = z.enum([
   'browser',
   'ios-simulator',
   'plan-review',
+  'board',
 ]);
 const persistedSidePanelStateSchema = z
   .object({

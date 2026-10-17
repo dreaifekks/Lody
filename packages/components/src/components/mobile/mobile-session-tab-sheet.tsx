@@ -5,6 +5,7 @@ import {
   File as FileIcon,
   FileDiff,
   FolderOpen,
+  LayoutDashboard,
   GitPullRequest,
   Hand,
   MonitorPlay,
@@ -73,7 +74,7 @@ export type ArchivedConversationEntry = {
 export type ViewerTabEntry = {
   id: string;
   label: string;
-  kind: 'file' | 'diff' | 'pr' | 'browser' | 'ios-simulator' | 'files';
+  kind: 'file' | 'diff' | 'pr' | 'browser' | 'ios-simulator' | 'files' | 'board';
   active: boolean;
 };
 
@@ -126,6 +127,7 @@ const VIEWER_ICON: Record<ViewerTabEntry['kind'], typeof FileIcon> = {
   browser: MonitorPlay,
   'ios-simulator': Smartphone,
   files: FolderOpen,
+  board: LayoutDashboard,
 };
 
 export function MobileSessionTabSheet({

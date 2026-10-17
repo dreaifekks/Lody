@@ -1,3 +1,5 @@
+import { normalizeBoardMeta, type BoardMeta } from './board';
+import type { BoardId } from './ids';
 import { normalizeAgentRole, type CatalogAgentRole } from './agent-role';
 import type { AgentConfigId, AgentRoleId, MachineId, McpServerId, WorkspaceId } from './ids';
 import { isWorkspaceMcpServerMeta, type WorkspaceMcpServerMeta } from './workspace-mcp';
@@ -9,6 +11,7 @@ const WORKSPACE_FLOCK_DOC_NAME = 'workspace';
 export const getWorkspaceFlockDocId = (workspaceId: WorkspaceId): string =>
   `${workspaceId}:${WORKSPACE_FLOCK_DOC_STREAM_SEGMENT}:${WORKSPACE_FLOCK_DOC_NAME}`;
 
+export type WorkspaceFlockBoardKey = ['board', BoardId];
 export type WorkspaceFlockMcpServerKey = ['mcpServer', McpServerId];
 export type WorkspaceFlockAgentRoleKey = ['agentRole', AgentRoleId];
 /** One row per workspace-wide setting. */
@@ -22,6 +25,7 @@ export type WorkspaceFlockSettingKey =
   | WorkspaceFlockAgentToolsSettingKey
   | WorkspaceFlockPinnedProjectsSettingKey;
 export type WorkspaceFlockKey =
+  | WorkspaceFlockBoardKey
   | WorkspaceFlockMcpServerKey
   | WorkspaceFlockAgentRoleKey
   | WorkspaceFlockSettingKey;
@@ -113,9 +117,10 @@ export const isWorkspaceVoiceSetting = (value: unknown): value is WorkspaceVoice
  * data moved between documents and no window where a Role exists in both or
  * neither.
  */
-export const WORKSPACE_FLOCK_ROW_FAMILIES = ['mcpServer', 'agentRole', 'setting'] as const;
+export const WORKSPACE_FLOCK_ROW_FAMILIES = ['mcpServer', 'agentRole', 'board', 'setting'] as const;
 
 export const workspaceFlockKeys = {
+  board: (id: BoardId): WorkspaceFlockBoardKey => ['board', id],
   mcpServer: (id: McpServerId): WorkspaceFlockMcpServerKey => ['mcpServer', id],
   agentRole: (id: AgentRoleId): WorkspaceFlockAgentRoleKey => ['agentRole', id],
   voiceSetting: (): WorkspaceFlockVoiceSettingKey => ['setting', 'voice'],
@@ -131,6 +136,7 @@ export const workspaceFlockKeys = {
 } as const;
 
 export type ParsedWorkspaceFlockKey =
+  | { kind: 'board'; key: WorkspaceFlockBoardKey; boardId: BoardId }
   | {
       kind: 'mcpServer';
       key: WorkspaceFlockMcpServerKey;
@@ -167,6 +173,10 @@ export const parseWorkspaceFlockKey = (
   const id = key[1].trim();
   if (!id) {
     return undefined;
+  }
+  if (key[0] === 'board') {
+    const boardId = id as BoardId;
+    return { kind: 'board', key: workspaceFlockKeys.board(boardId), boardId };
   }
   if (key[0] === 'mcpServer') {
     const mcpServerId = id as McpServerId;
@@ -214,11 +224,13 @@ export type WorkspaceFlockAgentToolsSettingRow = {
   key: WorkspaceFlockAgentToolsSettingKey;
   value: WorkspaceAgentToolsSetting;
 };
+export type WorkspaceFlockBoardRow = { key: WorkspaceFlockBoardKey; value: BoardMeta };
 export type WorkspaceFlockPinnedProjectsSettingRow = {
   key: WorkspaceFlockPinnedProjectsSettingKey;
   value: WorkspacePinnedProjectsSetting;
 };
 export type WorkspaceFlockRow =
+  | WorkspaceFlockBoardRow
   | WorkspaceFlockMcpServerRow
   | WorkspaceFlockAgentRoleRow
   | WorkspaceFlockVoiceSettingRow
@@ -253,6 +265,12 @@ export const parseWorkspaceFlockRow = (
   const parsedKey = parseWorkspaceFlockKey(key);
   if (!parsedKey) {
     return undefined;
+  }
+  if (parsedKey.kind === 'board') {
+    const board = normalizeBoardMeta(value);
+    return board && board.id === parsedKey.boardId
+      ? { key: parsedKey.key, value: board }
+      : undefined;
   }
   if (parsedKey.kind === 'mcpServer') {
     if (!isWorkspaceMcpServerMeta(value) || value.id !== parsedKey.mcpServerId) {
@@ -472,3 +490,9 @@ const readSingleRow = (
   }
   return rows;
 };
+
+export const listWorkspaceBoards = (rows: WorkspaceFlockRowMap): BoardMeta[] =>
+  Object.values(rows)
+    .filter((row): row is WorkspaceFlockBoardRow => row.key[0] === 'board')
+    .map((row) => row.value)
+    .sort((a, b) => b.createdAtMs - a.createdAtMs || a.id.localeCompare(b.id));

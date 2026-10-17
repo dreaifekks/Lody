@@ -30,6 +30,8 @@ const MemberFileSchema = z
     sessionId: text,
     fileId: text.optional(),
     path: z.string().min(1).max(4096).optional(),
+    /** A file of this Board's shared directory; `path` is then relative to it. */
+    boardId: z.string().startsWith('bd_').max(256).optional(),
     /** Only what a player needs is taken from it. */
     mimeType: z.string().max(128).optional()
   })

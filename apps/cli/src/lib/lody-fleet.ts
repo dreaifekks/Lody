@@ -73,6 +73,7 @@ import { connectLanTerminal, deriveLanTerminalKey } from '@/lib/lan/lan-terminal
 import { askLanMemberRpc, LanRpcNotSentError } from '@/lib/lan/lan-rpc-channel';
 import { LanFileHandoff } from '@/lib/lan/lan-file-handoff';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
+import { BoardDirectory, readSyncedBoard } from './board-directory';
 import { LanFleetControl, isLanControlRequest } from '@/lib/lan/lan-fleet-control';
 import { createLanGitHubSource } from '@/lib/lan/lan-github-credential';
 import {
@@ -420,6 +421,19 @@ export class LodyFleet {
         if (!runtime)
           throw new Error('remote_unreachable:this machine does not run that workspace');
         return await runtime.lody.resolveFilePreviewPath(sessionId, filePath);
+      },
+      boards: {
+        directory: new BoardDirectory(getLodyDataDir),
+        readBoard: async (workspaceId, boardId) => {
+          const runtime = this.runtimes.get(workspaceId);
+          if (!runtime) return null;
+          return await readSyncedBoard(
+            runtime.lody.documentManager,
+            workspaceId,
+            boardId,
+            this.logger
+          );
+        },
       },
     });
     this.localFileServer = new LocalFileServer({
@@ -1104,6 +1118,18 @@ export class LodyFleet {
               }
             : {}),
           acceptsLanMemberFiles: this.lanTerminalHost !== null && this.isLanWorkspace(workspace.id),
+          boardFiles: {
+            list: async (scope) => await this.lanFileHandoff.listBoardFiles(workspace.id, scope),
+            read: async (scope, filePath, destinationPath) =>
+              await this.lanFileHandoff.readBoardFile(
+                workspace.id,
+                scope,
+                filePath,
+                destinationPath
+              ),
+            put: async (scope, filePath, sourcePath) =>
+              await this.lanFileHandoff.putBoardFile(workspace.id, scope, filePath, sourcePath),
+          },
           lanWorkspace: this.isLanWorkspace(workspace.id),
           ...(this.isLanWorkspace(workspace.id)
             ? {

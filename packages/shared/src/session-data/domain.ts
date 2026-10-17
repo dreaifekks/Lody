@@ -140,6 +140,7 @@ export type SessionDirectoryScalars = {
  * an adapter and any consumer pick the same subset in one place.
  */
 export const SESSION_DIRECTORY_INPUT_CONFIG_KEYS = [
+  'chainDepth',
   'agentRoleId',
   'agentRoleRevision',
   'agentRoleSnapshot',

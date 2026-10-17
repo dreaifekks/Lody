@@ -111,6 +111,16 @@ See the [decision and verification](../../../../.agents/notes/implemented/bug-fi
   (owned, or shared plus shared project); never decide it from synced `MachineMeta.ownerUserId`
   ([note](../../../../.agents/notes/implemented/bug-fix/2026-09-28-mcp-cross-machine-agent-role.md)).
 
+## Board membership
+
+Creating a Session from a Board member inherits its `boardId`, for child Tabs,
+independent work contexts and batches alike. Coordinator role and generation are
+not inherited. `lody_session_list({ boardId: "current" })` lists the invoking
+Session's Board; an explicit id filters another Board, and a non-member's
+`current` query is empty. The Board filter is part of cursor identity.
+This is PR1 of the [Board design](../../../../specs/project-coordinator/design.md);
+Board-specific tools and automatic reports are later steps.
+
 ## Chat configuration
 
 - Chat follow-ups inherit omitted mode/model/options from the target's last model turn
@@ -119,6 +129,13 @@ See the [decision and verification](../../../../.agents/notes/implemented/bug-fi
   probe mismatch cannot reject them, and missing per-model data defers to runtime. Drop
   incompatible inherited selectors; fill builtin mode only when still empty.
   ([note](../../../../.agents/notes/implemented/bug-fix/2026-09-17-chat-follow-up-inherits-target-run-config.md))
+- Session tools take no MCP selection, yet every Turn they write records one, as the
+  composer would: a new Session takes the driving Turn's explicit choice (read from the
+  stored Turn, since dispatch reports "no choice" as `[]`), else workspace
+  `enabledByDefault` servers; a chat follow-up takes the target's latest choice, else
+  those defaults, never the sender's. Acceptance freezes the result per target in
+  `targetDispatchConfigs`, so recovery never rereads the catalog or history.
+  ([note](../../../../.agents/notes/implemented/bug-fix/2026-10-17-agent-session-workspace-mcp.md))
 
 ## Local routing
 
@@ -171,7 +188,8 @@ propose, omission follows workspace `enabledByDefault` servers at every run;
 clears it so runs follow workspace defaults again. Ids the schedule already
 saved are not resolved again, so an edit still succeeds after one of those
 servers was removed (runs skip it). Existing-chat
-destinations retain that chat's MCP selection.
+destinations retain that chat's MCP selection, or workspace defaults when it never
+recorded one.
 
 The human CLI accepts the same field inside `lody schedule create/edit --file`
 JSON drafts, for example `"mcpServerIds": ["mail", "search"]` or
@@ -213,3 +231,13 @@ a fixed, Session/user-bound batch without new work. Pages are bounded to 128 KiB
 individual members return ordered `member-json` fragments. This reader does not grant
 submission permission. Human recovery provenance comes from fixed UI/CLI producers,
 never model tool fields, role or userId.
+
+## Board tools
+
+`board-tools.ts` registers Board get/overview and notes get/append/replace through
+`createSessionToolRegistrar`, so local calls use `session/call-tool` and the daemon repo.
+`x-lody-mcp-board-id` / `LODY_MCP_BOARD_ID` advertises tools at ACP establishment; every
+call reads current Session membership. Replacement also requires the coordinator role
+and matching Board coordinator id. Overview reads bounded metadata/presence rows; inspect
+individual histories for conclusions. Notes use the shared LoroText writer and the daemon's
+existing persistence/sync path. See the [Board design](../../../../specs/project-coordinator/design.md#pr2-implemented).

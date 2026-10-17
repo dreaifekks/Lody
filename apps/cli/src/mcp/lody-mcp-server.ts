@@ -1,10 +1,16 @@
 import { loadWorkspaceAgentRoleCatalog } from '@/lib/agent-role-create';
+
+import { registerBoardTools } from './board-tools';
+import { LODY_MCP_BOARD_ID_ENV } from './lody-mcp-http-protocol';
 import {
   composeAgentRolePrompt,
   snapshotAgentRole,
   readMessageAuthor,
+  normalizeMcpServerIdSelection,
   type AgentMessageAuthor,
+  type McpServerId,
 } from '@lody/shared';
+import { resolveMcpSelectionOrWorkspaceDefault } from '@/lib/session-mcp-selection';
 import { batchPage } from '@/orchestration/inbox/batch-page';
 import { isSessionCollaborationStopped } from '@lody/shared';
 import { MACHINE_CATALOG_RETRY_GUIDANCE } from '@/commands/session-catalog-read';
@@ -107,6 +113,7 @@ import { readMachineLocalProjects } from '@/lib/local-project-meta';
 import { listWorkspaceGitHubRepositoriesForCliToken } from '@/lib/workspace';
 import { listLocalGitHubRepositories } from '@/lib/lan/lan-github-repos';
 import {
+  resolveSessionMetaOrThrow,
   createSessionResult,
   runSessionOperationWithSyncedMetadata,
   MachineFlockReadUnavailableError,
@@ -115,6 +122,7 @@ import {
   readSessionMachineAccess,
   selectDefaultAgentConfigForCreate,
   resolveTurnDispatchConfig,
+  resolveSessionChatMcpSelection,
   sendSessionChatResult,
   validateSessionChatTarget,
   validateSessionCreateOptions,
@@ -885,6 +893,12 @@ const SessionListToolInputSchema = z
     ...SessionDiscoveryFilterShape,
     archive: z.enum(['active', 'archived', 'any']).default('active'),
     createdBy: z.literal('me').optional(),
+    boardId: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Board id, or current for the invoking session’s board.'),
     openedBy: z.string().trim().min(1).optional(),
     parent: z.string().trim().min(1).optional(),
     executionState: z.enum(['idle', 'busy']).optional(),
@@ -997,6 +1011,8 @@ export interface McpSessionContext {
   workdir: string;
   /** A terminal command: `sessionId` is a placeholder and no Turn is active. */
   terminal?: true;
+  /** Board membership advertised at startup, never used for authorization. */
+  boardId?: string;
   /** Experimental tools the daemon offered this agent when it started. */
   agentTools?: readonly LodyAgentToolId[];
 }
@@ -1874,6 +1890,7 @@ const sessionSummaryForMcp = (
   }
 ) => ({
   id: session.id,
+  ...(session.boardId ? { boardId: session.boardId } : {}),
   ...(session.title ? { title: session.title } : {}),
   createdAt: isoTimestamp(session.createdAt),
   lastActivityAt: isoTimestamp(session.lastMessageAt ?? session.createdAt),
@@ -1917,6 +1934,7 @@ const sessionListFingerprint = (
       JSON.stringify({
         archive: input.archive,
         createdBy: input.createdBy,
+        boardId: input.boardId,
         openedBy: input.openedBy === 'current' ? requireCurrentSessionId(ctx) : input.openedBy,
         parent: input.parent === 'current' ? requireCurrentSessionId(ctx) : input.parent,
         executionState: input.executionState,
@@ -1970,6 +1988,7 @@ const matchesSessionListFilters = (
   userId: string
 ): boolean => {
   if (!matchesSessionDiscovery(session, input)) return false;
+  if (input.boardId && session.boardId !== input.boardId) return false;
   if (input.archive === 'active' && session.isArchived === true) return false;
   if (input.archive === 'archived' && session.isArchived !== true) return false;
   if (input.createdBy === 'me' && session.userId !== userId) return false;
@@ -2027,6 +2046,11 @@ const buildSessionList = async (input: SessionListToolInput): Promise<unknown> =
   const workspace = await resolveWorkspaceOrThrow(auth, getMcpWorkspaceId(ctx));
   return await withWorkspaceManager(auth, workspace, 'mcp', async (manager) => {
     await syncWorkspaceMetaForRead(manager, `mcp.session_list:${ctx.sessionId}`);
+    if (input.boardId === 'current') {
+      const current = await resolveSessionMetaOrThrow(manager, requireCurrentSessionId(ctx));
+      if (!current.boardId) return { items: [] };
+      input = { ...input, boardId: current.boardId };
+    }
     const fingerprint = sessionListFingerprint(input, ctx);
     const cursor = parseSessionListCursor(input.cursor, fingerprint);
     const presence = manager.getPresenceStates() ?? {};
@@ -2351,10 +2375,11 @@ const readCurrentSessionMeta = async (
 const bindMcpCreateContext = (
   options: CreateOptions,
   identity: InvocationIdentity,
-  requester: Pick<SessionMeta, 'machineId'>
+  requester: Pick<SessionMeta, 'machineId' | 'boardId'>
 ): void => {
   options.delegatedRequester = toDelegatedSessionRequester(identity);
   options.defaultMachineId = requester.machineId;
+  options.boardId = requester.boardId;
 };
 
 type InvocationIdentity = {
@@ -2424,6 +2449,30 @@ const resolveInvokingTurnSource = async (): Promise<InvokingTurnSource> => {
     userId: active.requesterUserId,
     inputConfig,
   };
+};
+
+/**
+ * New Sessions inherit the driving Turn's explicit MCP choice, else start with
+ * workspace defaults. Dispatch reports an absent choice as `[]`, so read the
+ * stored Turn to keep "no choice" apart from an explicit empty selection.
+ */
+const resolveCreateMcpSelection = async (
+  manager: LoroDocumentManager,
+  session: SessionMeta,
+  invoking: InvokingTurnContext
+): Promise<McpServerId[]> => {
+  const doc = await manager.getOrCreateSessionDoc(session.id);
+  const backend = await createSessionBackend(doc);
+  const turn = await backend.history.readTurn(invoking.identity.sourceTurnId);
+  const inputConfig =
+    turn.state === 'ready'
+      ? normalizeSessionTurnInputConfig(turn.turn.inputConfig)
+      : invoking.frozenInputConfig;
+  return await resolveMcpSelectionOrWorkspaceDefault({
+    manager,
+    workspaceId: getMcpWorkspaceId(getSessionContext()) as WorkspaceId,
+    selection: normalizeMcpServerIdSelection(inputConfig?.mcpServerIds),
+  });
 };
 
 const freezeInvokingAuthor = async (
@@ -2918,6 +2967,7 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
       return {
         ...(await withOperationStore((store) => store.snapshot(retry))),
         ...describeAgentRoleTarget(roleTarget),
+        ...(currentSession.boardId ? { boardId: currentSession.boardId } : {}),
       };
     }
     const targetMachineId = (resolved.input.machineId ?? currentSession.machineId) as MachineId;
@@ -2933,7 +2983,10 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
         workspace,
         manager,
         options: createOptions,
-        dispatchConfig: resolved.dispatchConfig,
+        dispatchConfig: {
+          ...resolved.dispatchConfig,
+          mcpServerIds: await resolveCreateMcpSelection(manager, currentSession, invoking),
+        },
         skipMachineAvailabilityCheck: true,
       });
     } catch (error) {
@@ -3021,6 +3074,7 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
       return {
         ...(await withOperationStore((store) => store.snapshot(accepted.operation))),
         ...describeAgentRoleTarget(roleTarget),
+        ...(currentSession.boardId ? { boardId: currentSession.boardId } : {}),
       };
     }
     const pendingItem = accepted.operation.items[0];
@@ -3050,6 +3104,7 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
         return {
           ...(await snapshotOperation(ctx.sessionId as SessionId, args.operationId)),
           ...describeAgentRoleTarget(roleTarget),
+          ...(currentSession.boardId ? { boardId: currentSession.boardId } : {}),
         };
       }
       if (
@@ -3081,6 +3136,7 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
     return {
       ...(await snapshotOperation(ctx.sessionId as SessionId, args.operationId!)),
       ...describeAgentRoleTarget(roleTarget),
+      ...(currentSession.boardId ? { boardId: currentSession.boardId } : {}),
     };
   });
 };
@@ -3156,6 +3212,11 @@ const startSessionChatOperation = async (args: SessionChatToolInput): Promise<un
       }
       throw new LodyOperationStoreError('COMMAND_REJECTED', formatMcpErrorMessage(error), false);
     }
+    const mcpServerIds = await resolveSessionChatMcpSelection({
+      manager,
+      workspaceId: workspace.id as WorkspaceId,
+      sessionId: targetSession.id,
+    });
     const preallocatedUserTurnId = randomUUID();
     if (args.attachments?.length) {
       const sourceMachine = await manager.repo.getDocMeta(
@@ -3208,6 +3269,7 @@ const startSessionChatOperation = async (args: SessionChatToolInput): Promise<un
               : {}),
             inputConfig: invoking.frozenInputConfig,
             sourceTurnId: invoking.identity.sourceTurnId,
+            targetDispatchConfigs: [{ mcpServerIds }],
           },
           initiatorChainDepth: invoking.chainDepth,
           ...timing,
@@ -3230,7 +3292,7 @@ const startSessionChatOperation = async (args: SessionChatToolInput): Promise<un
         manager,
         pendingItem.target.sessionId,
         args.prompt,
-        resolveTurnDispatchConfig({}),
+        { ...resolveTurnDispatchConfig({}), mcpServerIds },
         undefined,
         undefined,
         {
@@ -3493,9 +3555,12 @@ const startSessionCreateManyOperation = async (
       return {
         ...(await withOperationStore((store) => store.snapshot(retry))),
         ...roleTargetSummary,
+        ...(requester.boardId ? { boardId: requester.boardId } : {}),
       };
     }
     const machineLiveness = makeMachineLivenessLookupForMcp(manager, ctx);
+    // One selection for every item: they share the driving Turn and catalog.
+    let mcpSelection: Promise<McpServerId[]> | undefined;
     const validatedItems = await mapWithConcurrency(
       expanded,
       5,
@@ -3568,12 +3633,13 @@ const startSessionCreateManyOperation = async (
         bindMcpCreateContext(options, invoking.identity, requester);
         bindAgentRoleCreateOptions(options, resolved);
         try {
+          mcpSelection ??= resolveCreateMcpSelection(manager, requester, invoking);
           const effectiveDispatchConfig = await validateSessionCreateOptions({
             auth,
             workspace,
             manager,
             options,
-            dispatchConfig: resolved.dispatchConfig,
+            dispatchConfig: { ...resolved.dispatchConfig, mcpServerIds: await mcpSelection },
             skipMachineAvailabilityCheck: true,
           });
           return {
@@ -3657,6 +3723,7 @@ const startSessionCreateManyOperation = async (
       return {
         ...(await withOperationStore((store) => store.snapshot(accepted.operation))),
         ...roleTargetSummary,
+        ...(requester.boardId ? { boardId: requester.boardId } : {}),
       };
     }
     const nextItems = await mapWithConcurrency(
@@ -3735,6 +3802,7 @@ const startSessionCreateManyOperation = async (
     return {
       ...(await snapshotOperation(ctx.sessionId as SessionId, args.operationId)),
       ...roleTargetSummary,
+      ...(requester.boardId ? { boardId: requester.boardId } : {}),
     };
   });
 };
@@ -3778,10 +3846,13 @@ const startSessionChatManyOperation = async (args: SessionChatManyToolInput): Pr
       throw reverseChatError();
     }
     const machineLiveness = makeMachineLivenessLookupForMcp(manager, ctx);
+    const targetDispatchConfigs: ({ mcpServerIds: McpServerId[] } | null)[] = expanded.map(
+      () => null
+    );
     const initialItems = await mapWithConcurrency(
       expanded,
       5,
-      async (item): Promise<LodyOperationItemResult> => {
+      async (item, index): Promise<LodyOperationItemResult> => {
         if (!item.sessionId || !item.prompt) {
           return batchFailure(
             'INVALID_ITEM',
@@ -3827,6 +3898,13 @@ const startSessionChatManyOperation = async (args: SessionChatManyToolInput): Pr
             sessionId: target.id,
             delegatedRequester: toDelegatedSessionRequester(invoking.identity),
           });
+          targetDispatchConfigs[index] = {
+            mcpServerIds: await resolveSessionChatMcpSelection({
+              manager,
+              workspaceId: workspace.id as WorkspaceId,
+              sessionId: target.id,
+            }),
+          };
         } catch (error) {
           if (error instanceof WorkspaceSyncUnavailableError) {
             throw error;
@@ -3863,6 +3941,7 @@ const startSessionChatManyOperation = async (args: SessionChatManyToolInput): Pr
             ...(requester.agentConfigId ? { agentConfigId: requester.agentConfigId } : {}),
             inputConfig: invoking.frozenInputConfig,
             sourceTurnId: invoking.identity.sourceTurnId,
+            targetDispatchConfigs,
           },
           initiatorChainDepth: invoking.chainDepth,
           ...timing,
@@ -3902,7 +3981,10 @@ const startSessionChatManyOperation = async (args: SessionChatManyToolInput): Pr
             manager,
             storedItem.target.sessionId,
             expandedItem.prompt,
-            resolveTurnDispatchConfig({}),
+            {
+              ...resolveTurnDispatchConfig({}),
+              mcpServerIds: targetDispatchConfigs[index]?.mcpServerIds,
+            },
             undefined,
             undefined,
             {
@@ -3949,6 +4031,8 @@ export const __lodyMcpServerInternals = {
   SessionChatManyToolInputSchema,
   SessionHistoryToolInputSchema,
   SessionListToolInputSchema,
+  matchesSessionListFilters,
+  sessionListFingerprint,
   SessionRenameToolInputSchema,
   SessionRenameManyToolInputSchema,
   SessionStatusManyToolInputSchema,
@@ -4005,6 +4089,7 @@ const SESSION_COLLABORATION_GUIDANCE = [
  * from its environment; the HTTP host passes the requesting session's.
  */
 export function buildLodyMcpServer(options?: {
+  boardId?: string;
   agentTools?: readonly LodyAgentToolId[];
 }): McpServer {
   return buildSessionToolServer(undefined, options);
@@ -4012,7 +4097,7 @@ export function buildLodyMcpServer(options?: {
 
 export function buildSessionToolServer(
   handlers?: SessionToolHandlers,
-  surface?: { agentTools?: readonly LodyAgentToolId[] }
+  surface?: { agentTools?: readonly LodyAgentToolId[]; boardId?: string }
 ): McpServer {
   // The HTTP host is long-lived and the stdio server normally lives for the
   // Agent session. Initialization is idempotent and local-platform telemetry
@@ -4089,6 +4174,8 @@ export function buildSessionToolServer(
     notifyConfigChange: (sessionId, notice) =>
       getSessionCommandEnvironment()?.host.notifyConfigChange?.(sessionId, notice),
   });
+  if (handlers || surface?.boardId || readOptionalEnv(LODY_MCP_BOARD_ID_ENV))
+    registerBoardTools(registerSessionTool, getSessionContext);
   registerScheduleTools(server, registerSessionTool, {
     execute: async (command) => {
       const ctx = getSessionContext();
@@ -4501,7 +4588,10 @@ export function buildSessionToolServer(
             manager,
             resolved.prompt,
             options,
-            resolved.dispatchConfig,
+            {
+              ...resolved.dispatchConfig,
+              mcpServerIds: await resolveCreateMcpSelection(manager, currentSession, invoking),
+            },
             buildStructuredOutputOptions(args)
           );
           captureSessionCommandEvent(
@@ -4521,6 +4611,7 @@ export function buildSessionToolServer(
             workspaceId: result.workspaceId,
             machineId: result.machineId,
             agentConfigId: result.agentConfigId,
+            ...(result.boardId ? { boardId: result.boardId } : {}),
             workContext: summarizeProjectRefForMcp(result.project),
             userTurnId: result.userTurnId,
             ...(result.parentSessionId ? { parentSessionId: result.parentSessionId } : {}),
@@ -4711,7 +4802,7 @@ export function buildSessionToolServer(
     'lody_operation_list',
     {
       description:
-        'List durable Operation summaries owned by the current Session and invoking user. Optional state filter and keyset pagination. Completion is saved immediately and delivered at the next permitted input boundary; do not poll.',
+        'List durable Operation summaries, including board_report events, owned by the current Session and invoking user. Optional state filter and keyset pagination. Completion is saved immediately and delivered at the next permitted input boundary; do not poll.',
       inputSchema: OperationListQuerySchema,
       annotations: { readOnlyHint: true },
     },
@@ -4803,7 +4894,7 @@ export function buildSessionToolServer(
     {
       title: 'Get a Lody Operation snapshot',
       description:
-        'Return one durable Operation owned by the current Session. Completion is saved immediately and delivered at the next permitted input boundary; use this for an occasional snapshot, not polling loops.',
+        'Return one durable Operation, including board_report events, owned by the current Session. Completion is saved immediately and delivered at the next permitted input boundary; use this for an occasional snapshot, not polling loops.',
       inputSchema: OperationGetToolInputSchema,
     },
     async (args: OperationGetToolInput) => {

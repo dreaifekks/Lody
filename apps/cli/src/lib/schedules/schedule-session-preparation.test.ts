@@ -7,6 +7,7 @@ import {
   type AgentRole,
   type AgentRoleInstance,
   type MachineMeta,
+  type McpServerId,
   type ProjectRef,
   type SessionId,
   type WorkspaceId,
@@ -17,10 +18,10 @@ import type { AuthContext } from '../command-runtime';
 import type { LoroDocumentManager } from '../loro/doc';
 import type { WorkspaceSummary } from '../workspace';
 import {
-  applyScheduleMcpSelection,
   buildScheduleRunPrompt,
   buildScheduleRunTarget,
   resolveScheduleAgentRunConfig,
+  resolveScheduleMcpSelection,
   buildScheduleSessionCreateOptions,
 } from './schedule-run-preparation';
 
@@ -58,7 +59,11 @@ const manager = {
 
 const prepare = (
   project?: ProjectRef,
-  { prompt = 'Say good morning.', title = 'Morning check-in' } = {}
+  {
+    prompt = 'Say good morning.',
+    title = 'Morning check-in',
+    mcpServerIds = [] as McpServerId[],
+  } = {}
 ) =>
   prepareSessionInput(
     auth,
@@ -75,6 +80,7 @@ const prepare = (
     {
       ...resolveTurnDispatchConfig({}),
       inheritSessionDefaults: false,
+      mcpServerIds,
     },
     buildScheduleRunTarget({ targetMachine, agentConfig, project })
   );
@@ -83,9 +89,8 @@ describe('Session preparation for a scheduled run', () => {
   it.each([{ selection: ['chat-mcp'] }, { selection: [] }])(
     'retains an existing chat MCP choice $selection instead of Schedule defaults',
     async ({ selection }) => {
-      const prepared = await prepare();
       const existingManager = {
-        repo: { getDocMeta: async () => ({ meta: prepared.meta }) },
+        repo: { getDocMeta: async () => ({ meta: (await prepare()).meta }) },
         getOrCreateSessionDoc: async () =>
           withHistoryPort({
             getHistory: () => [
@@ -93,16 +98,17 @@ describe('Session preparation for a scheduled run', () => {
             ],
           }),
       } as unknown as LoroDocumentManager;
-      await applyScheduleMcpSelection({
+      const mcpServerIds = await resolveScheduleMcpSelection({
         manager: existingManager,
         workspaceId: 'workspace' as WorkspaceId,
         localOnly: true,
         definition: {
-          destination: { kind: 'existing_session', sessionId: prepared.sessionId },
+          destination: { kind: 'existing_session', sessionId: 'session-1' as SessionId },
           mcpServerIds: ['schedule-mcp'],
         },
-        prepared,
+        sessionId: 'session-1' as SessionId,
       });
+      const prepared = await prepare(undefined, { mcpServerIds });
       expect(prepared.userTurn.inputConfig?.mcpServerIds).toEqual(selection);
     }
   );

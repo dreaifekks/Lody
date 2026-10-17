@@ -7,6 +7,7 @@ import {
   Archive,
   ArchiveRestore,
   ArrowLeft,
+  Settings2,
   ChevronLeft,
   Copy,
   Ellipsis,
@@ -18,12 +19,14 @@ import {
   Image,
   Link,
   LockKeyhole,
+  MessageSquarePlus,
   Monitor,
   PanelBottom,
   PanelLeft,
   PanelRight,
   Pencil,
   Search,
+  Shrink,
   Trash2,
   Users,
 } from 'lucide-react';
@@ -41,7 +44,6 @@ import {
   getSessionPullRequestLegacyFields,
   getSessionRoomId,
   getAcpCapabilityCacheEntryAuthority,
-  isLoroRepoDocDeleted,
   resolveProjectGitHubRepo,
   SessionForkOperationSchema,
   type CommentReferencePayload,
@@ -53,6 +55,7 @@ import {
   type SessionId,
   type SessionMeta,
   type SessionStatus,
+  type BoardMeta,
   type ConversationMessage,
   type VisualAnnotationReferencePayload,
   type WorkspaceId,
@@ -83,7 +86,7 @@ import {
 } from '@/components/sessions/draft-session-chat-interface';
 import { SessionMentionDropLayer } from '@/components/sessions/session-mention-drop-layer';
 import { BaseHeader } from '@/components/page-headers/base-header';
-import { useIsMobile } from '@/hooks/use-mobile';
+import { useIsCompactDesktop, useIsMobile } from '@/hooks/use-mobile';
 import { usePublishSessionViewing } from '@/hooks/use-publish-session-viewing';
 import { useFireOncePerKey } from '@/hooks/use-fire-once';
 import { useMachineOnlineStatus } from '@/hooks/use-machine-online-status';
@@ -111,7 +114,8 @@ import {
 } from '@/atoms/layout-state';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
-import { space } from '@lody/ui/tokens/scales.stylex';
+import { space, text as textScale } from '@lody/ui/tokens/scales.stylex';
+import { colors } from '@lody/ui/tokens/colors.stylex';
 import { useDocumentTitle } from '@/hooks/use-document-title';
 import { useTabStatus, type TabStatus } from '@/hooks/use-tab-status';
 import {
@@ -147,7 +151,11 @@ import {
   type SessionSidePanelOption,
   type SessionSidePanelTabItem,
 } from './session-side-panel-tab-bar';
-import { getSessionTabCloseTarget, type SessionTabFocusRegion } from './session-tab-close-target';
+import {
+  closeSessionTab,
+  getSessionTabCloseTarget,
+  type SessionTabFocusRegion,
+} from './session-tab-close-target';
 import {
   MobileSessionTabButton,
   MobileSessionTabSheet,
@@ -193,7 +201,12 @@ import { getCommandKeybindings, useCommand } from '@/lib/commands';
 import { useDesktopTabCloser } from '@/lib/desktop-tab-or-window-close';
 import { useSemanticActionRouter } from '@/lib/commands/use-semantic-action-router';
 import type { SemanticActionRouter } from '@/lib/commands/semantic-action-router';
-import { semanticShortcutsFeatureEnabledAtom } from '@/atoms/settings';
+import { boardEnabledAtom, semanticShortcutsFeatureEnabledAtom } from '@/atoms/settings';
+import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
+import { BoardSidePanel, useThreadLocation } from '../boards/board-side-panel';
+import { BoardSettings } from '../boards/board-settings-panel';
+import { useBoardActions, useBoardMaintenanceRequest } from '../boards/board-lifecycle';
+import { BoardRenameDialog } from '../boards/board-rename-dialog';
 import { cn, getBasename } from '@/lib';
 
 import {
@@ -514,6 +527,7 @@ const MOBILE_DRAWER_HEADER_INSET = 'calc(3.5rem + var(--safe-area-top))';
    Namespaced so they never collide with a real file/diff `ViewerTabItem.id`. */
 const EMPTY_LOCAL_PROJECTS: Record<LocalProjectId, LocalProjectMeta> = {};
 const MOBILE_PR_VIEWER_ID = 'mobile-viewer:pr';
+const MOBILE_BOARD_VIEWER_ID = 'mobile-viewer:board';
 const MOBILE_BROWSER_VIEWER_ID = 'mobile-viewer:browser';
 const MOBILE_IOS_SIMULATOR_VIEWER_ID = 'mobile-viewer:ios-simulator';
 const MOBILE_FILES_VIEWER_ID = 'mobile-viewer:files';
@@ -525,6 +539,17 @@ const MOBILE_FILES_VIEWER_ID = 'mobile-viewer:files';
 const PR_SIDEBAR_MIN_WIDTH_PX = 500;
 
 const detailStyles = stylex.create({
+  boardThreadLocation: {
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: '240px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    paddingInline: space[1],
+    fontSize: textScale.footnoteSize,
+    color: colors.secondaryLabel,
+  },
   projectInfo: {
     display: 'flex',
     minWidth: 0,
@@ -1011,6 +1036,8 @@ const SessionDetail = ({
   urlPrNumber,
   urlBrowser,
   urlSimulator,
+  urlBoard,
+  urlBoardThread,
   onMobileBack,
 }: {
   sessionId: SessionId;
@@ -1018,6 +1045,10 @@ const SessionDetail = ({
   urlPrNumber?: number;
   urlBrowser?: boolean;
   urlSimulator?: boolean;
+  /** `?board=1`: open the Board panel of a coordinator's page once. */
+  urlBoard?: boolean;
+  /** With `?board=1`: a thread to open in the Board panel (its own page on narrow windows). */
+  urlBoardThread?: string;
   onMobileBack?: () => void;
 }) => {
   const { t } = useTranslation();
@@ -1046,6 +1077,9 @@ const SessionDetail = ({
   const chatRefsMap = useRef<
     Map<string, SessionChatInterfaceHandle | DraftSessionChatInterfaceHandle | null>
   >(new Map());
+  // The thread open in the Board panel, the target of chat commands while the
+  // user works in the side panel.
+  const boardThreadChatRef = useRef<SessionChatInterfaceHandle | null>(null);
   const commentReferenceChangeHandlersRef = useRef<
     Map<string, (references: CommentReferencePayload[]) => void>
   >(new Map());
@@ -1079,6 +1113,18 @@ const SessionDetail = ({
     sessionId: SessionId;
     prNumber: number;
   } | null>(null);
+  // `?board=1` follows the same once-per-session state guard as `?pr`.
+  const [restoredBoardPanel, setRestoredBoardPanel] = useState<SessionId | null>(null);
+  // Counts Board entries, so each one opens the split at half and half.
+  const [boardEntrySeq, setBoardEntrySeq] = useState(0);
+  // The thread open inside the Board panel. Page state, because the compact
+  // layout remounts the panel subtree.
+  const [boardThreadId, setBoardThreadId] = useState<SessionId | null>(null);
+  // `?boardThread`, handed to the Board panel once the URL no longer carries it.
+  const [boardThreadRequest, setBoardThreadRequest] = useState<SessionId | null>(null);
+  const finishBoardThreadRequest = useCallback(() => setBoardThreadRequest(null), []);
+  const [mobileBoardOpen, setMobileBoardOpen] = useState(false);
+  const [boardSettingsOpen, setBoardSettingsOpen] = useState(false);
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab | null>(
     () => initialTabState.sidePanel.tab
   );
@@ -1193,6 +1239,22 @@ const SessionDetail = ({
   const docMetaCacheReady = useAtomValue(docMetaCacheReadyAtom);
   const docMetaCacheSettled = useAtomValue(sessionMetaCacheSettledAtomFamily(sessionId));
   const activeSession = session ?? null;
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  const { boards } = useWorkspaceCatalog();
+  const isCompactDesktop = useIsCompactDesktop();
+  // A coordinator's page is its Board: only it carries the Board panel.
+  const activeBoard =
+    boardsEnabled && activeSession?.boardRole === 'coordinator'
+      ? (boards.find((board) => board.coordinatorSessionId === activeSession.id) ?? null)
+      : null;
+  // A Board thread on its own page says where it runs, as it does in the Board panel.
+  const boardThreadLocation = useThreadLocation(
+    boardsEnabled && activeSession?.boardId && !activeBoard ? activeSession : null
+  );
+  // The Board panel has its own Board files, so on a Board this tab names whose files it holds.
+  const filesTabLabel = activeBoard
+    ? t('boards.workspaceFiles', 'Workspace files')
+    : t('sessions.detailTabs.files', 'Files');
   const activeSessionSharing = useMemo(
     () => (showSessionSharing && activeSession ? resolveSessionSharing(activeSession) : null),
     [activeSession, resolveSessionSharing, showSessionSharing]
@@ -1391,6 +1453,10 @@ const SessionDetail = ({
     setMobileDiffState(null);
     setMobileFilesBrowserOpen(false);
     setFileProviderRequestedByInteraction(false);
+    setBoardThreadId(null);
+    setBoardThreadRequest(null);
+    setMobileBoardOpen(false);
+    setBoardSettingsOpen(false);
   }
 
   const setDraftTabs = useCallback(
@@ -2325,6 +2391,8 @@ const SessionDetail = ({
     setSessionPinned,
     transferSessionOwner,
   } = useSessionActions();
+  const { archive: archiveBoard, restore: restoreBoard } = useBoardActions();
+  const requestBoardMaintenance = useBoardMaintenanceRequest();
   const { members: workspaceMembers, isMultiMember: isMultiMemberWorkspace } =
     useWorkspaceMembers();
   const handleTransferSessionOwner = useCallback(
@@ -2867,17 +2935,13 @@ const SessionDetail = ({
         is_active_tab: tabSessionId === activeTabSessionId,
       });
       try {
-        // A tab that never had a message is exact-deleted instead of marked
-        // closed — isTabClosed would leave an invisible durable doc. Judge
-        // emptiness from getDocMeta directly: the meta scan cache can still
-        // be cold here, and exact deletion must bypass discovery.
-        const tabEntry = runtime
-          ? await runtime.repo.getDocMeta(getSessionRoomId(tabSessionId))
-          : undefined;
-        if (isLoroRepoDocDeleted(tabEntry)) throw new Error('Session was deleted');
-        const tabMeta = tabEntry?.meta as SessionMeta | undefined;
-        if (tabMeta && !tabMeta.lastMessageAt) {
-          await deleteSessions([tabSessionId]);
+        if (
+          (await closeSessionTab(tabSessionId, {
+            runtime,
+            deleteSessions,
+            setSessionTabClosed,
+          })) === 'deleted'
+        ) {
           captureSessionDetailEvent('session/tab_deleted_empty', {
             tab_session_id: tabSessionId,
           });
@@ -2889,7 +2953,6 @@ const SessionDetail = ({
             navigateToSessionTab(sessionId);
           }
         } else {
-          await setSessionTabClosed(tabSessionId, true);
           // The shared-close effect chooses the neighbour once hydration
           // finishes. Do not commit a fallback from this handler's partial
           // metadata snapshot.
@@ -3046,12 +3109,17 @@ const SessionDetail = ({
     [router, workspaceSlug]
   );
 
-  // Archive the parent session from the header menu (desktop)
+  // Archive the parent session from the header menu (desktop). On a Board's
+  // page that is the whole Board.
   const handleArchiveCurrentSession = useCallback(async () => {
     if (!activeSession) return;
+    if (activeBoard) {
+      if (await archiveBoard(activeBoard)) handleBackToList();
+      return;
+    }
     await archiveSession(activeSession.id);
     handleBackToList();
-  }, [activeSession, archiveSession, handleBackToList]);
+  }, [activeBoard, activeSession, archiveBoard, archiveSession, handleBackToList]);
 
   // Archive the active tab (mobile more menu) — archives child if child is active, parent otherwise
   const handleArchiveActiveTab = useCallback(async () => {
@@ -3063,9 +3131,7 @@ const SessionDetail = ({
     if (activeTabSessionId && activeTabSessionId !== sessionId) {
       await archiveSession(activeTabSessionId as SessionId);
     } else {
-      // Archiving the parent
-      await archiveSession(activeSession.id);
-      handleBackToList();
+      await handleArchiveCurrentSession();
     }
   }, [
     activeDraftTab,
@@ -3073,7 +3139,7 @@ const SessionDetail = ({
     activeTabSessionId,
     archiveSession,
     closeDraftTab,
-    handleBackToList,
+    handleArchiveCurrentSession,
     isEmptyConversation,
     sessionId,
   ]);
@@ -3082,6 +3148,10 @@ const SessionDetail = ({
   // lifecycle action only; every tab keeps its close state.
   const handleRestoreCurrentSession = useCallback(async () => {
     if (!activeSession) return;
+    if (activeBoard) {
+      await restoreBoard(activeBoard);
+      return;
+    }
     try {
       await restoreSession(activeSession.id);
     } catch (error) {
@@ -3097,7 +3167,7 @@ const SessionDetail = ({
       console.error('Failed to restore archived conversation', error);
       toast.error(t('archive.restoreFailed', 'Failed to restore conversation.'));
     }
-  }, [activeSession, restoreSession, t]);
+  }, [activeBoard, activeSession, restoreBoard, restoreSession, t]);
 
   // Confirmation state for permanently deleting the current archived session
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -3112,6 +3182,8 @@ const SessionDetail = ({
   const [renameDialogTarget, setRenameDialogTarget] = useState<RenameSessionDialogTarget | null>(
     null
   );
+  // The Board being renamed, as its row was when the dialog opened.
+  const [renamingBoard, setRenamingBoard] = useState<BoardMeta | null>(null);
 
   // Share-as-image preview target: the selected tab's session plus the plain-text
   // conversation snapshot pulled from its chat surface when the menu item fires.
@@ -3327,7 +3399,23 @@ const SessionDetail = ({
     [shareImageTarget, t]
   );
 
+  // Chat commands follow the region the user is in: a Board thread open in the
+  // visible side panel, otherwise the active conversation tab.
+  const boardThreadCommandTarget = useCallback(
+    () =>
+      desktopTabFocusRegionRef.current === 'side-panel' &&
+      isSidebarVisible &&
+      activeSidebarTab === 'board'
+        ? boardThreadChatRef.current
+        : null,
+    [activeSidebarTab, isSidebarVisible]
+  );
   const handleOpenSearch = useCallback(() => {
+    const boardThread = boardThreadCommandTarget();
+    if (boardThread) {
+      boardThread.openSearch();
+      return;
+    }
     if (activeDraftTab) {
       return;
     }
@@ -3335,7 +3423,7 @@ const SessionDetail = ({
     if (activeChatRef && 'openSearch' in activeChatRef) {
       activeChatRef.openSearch();
     }
-  }, [activeDraftTab, activeTabSessionId]);
+  }, [activeDraftTab, activeTabSessionId, boardThreadCommandTarget]);
 
   // Single fork entry point for every launcher: the header/footer action forks
   // into a top tab, the side-panel launcher forks into a right-hand panel.
@@ -3506,11 +3594,56 @@ const SessionDetail = ({
     setRestoredPrSidebar(null);
   }
 
+  if (urlBoard === true && activeBoard) {
+    if (restoredBoardPanel !== sessionId) {
+      setRestoredBoardPanel(sessionId);
+      setBoardEntrySeq((seq) => seq + 1);
+      if (isMobile) {
+        setMobileBoardOpen(true);
+      } else {
+        setSidebarRestoreSeq((seq) => seq + 1);
+        setIsSidebarOpen(true);
+        activateSidebarTab('board');
+      }
+    }
+  } else if (urlBoard !== true && restoredBoardPanel !== null) {
+    setRestoredBoardPanel(null);
+  }
+
   // The PR restore token is committed with the open panel and restore sequence.
   // Clear the transient Zen override before paint without writing Jotai during render.
   useLayoutEffect(() => {
     if (restoredPrSidebar !== null) setZenLayoutMode(false);
   }, [restoredPrSidebar, setZenLayoutMode]);
+
+  // `?board=1` is an opening request, not a state: once applied it leaves the
+  // URL, so opening the Board again from the sidebar applies it again.
+  useEffect(() => {
+    if (urlBoard !== true || restoredBoardPanel !== sessionId || !workspaceSlug) return;
+    setZenLayoutMode(false);
+    void router.navigate({
+      to: '/$workspaceName/sessions/$sessionId',
+      params: { workspaceName: workspaceSlug, sessionId },
+      search: (prev) => {
+        const next = { ...prev };
+        delete next.board;
+        delete next.boardThread;
+        return next;
+      },
+      replace: true,
+    });
+    // The panel opens the member the way its row does, after the URL has
+    // left, so a thread's own page is not replaced by this one.
+    if (urlBoardThread) setBoardThreadRequest(urlBoardThread as SessionId);
+  }, [
+    restoredBoardPanel,
+    router,
+    sessionId,
+    setZenLayoutMode,
+    urlBoard,
+    urlBoardThread,
+    workspaceSlug,
+  ]);
 
   // Once restored, a user switching away from the PR tab (or closing the
   // sidebar) clears `?pr` so the URL stays consistent. The URL write must be
@@ -4511,9 +4644,12 @@ const SessionDetail = ({
   // only merge for display.
   const sidePanelFixedOptions = useMemo<(SessionSidePanelOption & { id: SidebarTab })[]>(() => {
     const options: (SessionSidePanelOption & { id: SidebarTab })[] = [
+      ...(activeBoard
+        ? [{ id: 'board' as const, label: t('boards.panelTab', 'Board'), kind: 'board' as const }]
+        : []),
       {
         id: 'files',
-        label: t('sessions.detailTabs.files', 'Files'),
+        label: filesTabLabel,
         kind: 'files',
       },
       {
@@ -4552,9 +4688,11 @@ const SessionDetail = ({
     }
     return options;
   }, [
+    activeBoard,
     activeBrowserSession,
     activeIosSimulatorSession,
     activePlanReview,
+    filesTabLabel,
     latestPr,
     latestPrNumber,
     repoFullName,
@@ -4887,20 +5025,25 @@ const SessionDetail = ({
     }
 
     requestAnimationFrame(() => {
-      chatRefsMap.current.get(activeTabSessionId)?.focusInput();
+      (boardThreadCommandTarget() ?? chatRefsMap.current.get(activeTabSessionId))?.focusInput();
     });
-  }, [activeTabSessionId, isMobile]);
+  }, [activeTabSessionId, boardThreadCommandTarget, isMobile]);
 
   const handleRenameCurrentSession = useCallback(() => {
     const targetSession = activeDraftTab ? null : activeTabSession;
     if (!targetSession || targetSession.isArchived) {
       return;
     }
+    // A coordinator is named after its Board, so renaming it renames the Board.
+    if (activeBoard?.coordinatorSessionId === targetSession.id) {
+      setRenamingBoard(activeBoard);
+      return;
+    }
     setRenameDialogTarget({
       sessionId: targetSession.id,
       initialTitle: targetSession.title ?? '',
     });
-  }, [activeDraftTab, activeTabSession]);
+  }, [activeBoard, activeDraftTab, activeTabSession]);
 
   const handleToggleCurrentSessionPinned = useCallback(() => {
     const targetSession = activeDraftTab ? null : activeTabSession;
@@ -4979,7 +5122,8 @@ const SessionDetail = ({
     title: t('commands.session.searchCurrent', 'Find in Current Chat'),
     category: 'Session',
     keybindings: getCommandKeybindings('session.searchCurrent'),
-    when: () => Boolean(activeTabSession) && !activeDraftTab,
+    when: () =>
+      Boolean(boardThreadCommandTarget()) || (Boolean(activeTabSession) && !activeDraftTab),
     run: handleOpenSearch,
   });
 
@@ -4988,7 +5132,7 @@ const SessionDetail = ({
     title: t('commands.session.focusInput', 'Focus Current Input'),
     category: 'Editor',
     keybindings: getCommandKeybindings('session.focusInput'),
-    when: () => Boolean(chatRefsMap.current.get(activeTabSessionId)),
+    when: () => Boolean(boardThreadCommandTarget() ?? chatRefsMap.current.get(activeTabSessionId)),
     run: handleFocusActiveInput,
   });
 
@@ -5534,6 +5678,14 @@ const SessionDetail = ({
 
   const mobileViewers = useMemo<ViewerTabEntry[]>(() => {
     const list: ViewerTabEntry[] = [];
+    if (activeBoard) {
+      list.push({
+        id: MOBILE_BOARD_VIEWER_ID,
+        label: t('boards.panelTab', 'Board'),
+        kind: 'board',
+        active: false,
+      });
+    }
     /* Files leads the group and is unconditional: it is the mobile
        counterpart of the desktop Files side panel, and it is the only way
        to reach a file the conversation never mentioned. Availability is
@@ -5541,7 +5693,7 @@ const SessionDetail = ({
        reason to hide the entry. */
     list.push({
       id: MOBILE_FILES_VIEWER_ID,
-      label: t('sessions.detailTabs.files', 'Files'),
+      label: filesTabLabel,
       kind: 'files',
       active: false,
     });
@@ -5582,7 +5734,9 @@ const SessionDetail = ({
     }
     return list;
   }, [
+    activeBoard,
     canShowGitHubActions,
+    filesTabLabel,
     latestPr,
     latestPrNumber,
     latestPrRepoFullName,
@@ -5651,6 +5805,10 @@ const SessionDetail = ({
       }
       if (id === MOBILE_FILES_VIEWER_ID) {
         setMobileFilesBrowserOpen(true);
+        return;
+      }
+      if (id === MOBILE_BOARD_VIEWER_ID) {
+        setMobileBoardOpen(true);
         return;
       }
       const viewerTab = viewerTabs.find((tab) => tab.id === id);
@@ -6049,6 +6207,77 @@ const SessionDetail = ({
     );
 
   // Mobile layout
+  const navigateToChat = () => {
+    if (workspaceSlug)
+      void router.navigate({
+        to: '/$workspaceName/chat',
+        params: { workspaceName: workspaceSlug },
+      });
+  };
+  const boardPanel = activeBoard ? (
+    <BoardSidePanel
+      board={activeBoard}
+      openThreadId={isMobile ? null : boardThreadId}
+      onOpenThread={(thread) => {
+        // A narrow window has no room for a second conversation: open the page.
+        if (thread && (isMobile || isCompactDesktop)) {
+          setMobileBoardOpen(false);
+          handleNavigateSession({ sessionId: thread.id });
+          return;
+        }
+        setBoardThreadId(thread?.id ?? null);
+      }}
+      onShowInPage={(thread) => {
+        // One conversation surface per Session: a coordinator Tab is selected in
+        // the main area, a Side Chat in its own side-panel tab.
+        setMobileBoardOpen(false);
+        if (!isMobile && sideSessions.some((side) => side.id === thread.id)) {
+          selectSidePanelTab(getSideSessionPanelTabId(thread.id));
+          revealRightSidebar();
+          return;
+        }
+        handleNavigateSession({ sessionId: thread.id });
+      }}
+      onOpenThreadFull={(thread) => handleNavigateSession({ sessionId: thread.id })}
+      requestedThreadId={boardThreadRequest}
+      onThreadRequestDone={finishBoardThreadRequest}
+      renderThread={(thread) => (
+        <SessionChatInterface
+          key={thread.id}
+          ref={boardThreadChatRef}
+          session={thread}
+          // The thread owns its repository, PR and diff state, not the coordinator.
+          workspaceSession={thread}
+          className={stylex.props(detailStyles.rootFill).className}
+          hideHeader
+          syncEnabled
+          isVisible={isSidebarVisible}
+          onNavigateSession={handleNavigateSession}
+        />
+      )}
+    />
+  ) : null;
+  const boardSettings =
+    activeBoard && boardSettingsOpen ? (
+      <BoardSettings
+        board={activeBoard}
+        onClose={() => setBoardSettingsOpen(false)}
+        onArchived={navigateToChat}
+      />
+    ) : null;
+  const boardSettingsButton = activeBoard ? (
+    <Button
+      type="button"
+      variant="ghost"
+      size="small"
+      icon
+      aria-label={t('boards.settings.title', 'Board settings')}
+      onClick={() => setBoardSettingsOpen(true)}
+    >
+      <Settings2 {...stylex.props(detailStyles.icon16)} />
+    </Button>
+  ) : null;
+
   if (isMobile) {
     const handleMobileSessionBack = () => {
       if (onMobileBack) {
@@ -6177,13 +6406,33 @@ const SessionDetail = ({
       mobileMenuActions.push({
         id: 'rename',
         icon: <Pencil {...stylex.props(detailStyles.icon14)} />,
-        label: t('sidebar.renameChat.title', 'Rename Chat'),
+        label: activeBoard
+          ? t('boards.rename', 'Rename Board')
+          : t('sidebar.renameChat.title', 'Rename Chat'),
         onClick: () =>
-          setRenameDialogTarget({
-            sessionId: activeSession.id,
-            initialTitle: activeSession.title ?? '',
-          }),
+          activeBoard
+            ? setRenamingBoard(activeBoard)
+            : setRenameDialogTarget({
+                sessionId: activeSession.id,
+                initialTitle: activeSession.title ?? '',
+              }),
       });
+      if (activeBoard) {
+        mobileMenuActions.push(
+          {
+            id: 'board-compact',
+            icon: <Shrink {...stylex.props(detailStyles.icon14)} />,
+            label: t('boards.maintenance.compactNow', 'Tidy context now'),
+            onClick: () => void requestBoardMaintenance(activeSession, 'compact'),
+          },
+          {
+            id: 'board-new-conversation',
+            icon: <MessageSquarePlus {...stylex.props(detailStyles.icon14)} />,
+            label: t('boards.maintenance.newConversation', 'Start a new conversation'),
+            onClick: () => void requestBoardMaintenance(activeSession, 'new_conversation'),
+          }
+        );
+      }
     }
     mobileMenuActions.push(
       {
@@ -6264,29 +6513,35 @@ const SessionDetail = ({
       });
     }
     if (activeSession?.isArchived) {
-      mobileMenuActions.push(
-        {
-          id: 'restore',
-          icon: <ArchiveRestore {...stylex.props(detailStyles.icon14)} />,
-          label: t('archive.restore', 'Restore session'),
-          onClick: () => {
-            void handleRestoreCurrentSession();
-          },
-          separatorBefore: true,
+      mobileMenuActions.push({
+        id: 'restore',
+        icon: <ArchiveRestore {...stylex.props(detailStyles.icon14)} />,
+        label: activeBoard
+          ? t('boards.restoreBoard', 'Restore Board')
+          : t('archive.restore', 'Restore session'),
+        onClick: () => {
+          void handleRestoreCurrentSession();
         },
-        {
+        separatorBefore: true,
+      });
+      // A Board has no permanent delete: removing its coordinator would strand its row.
+      if (!activeBoard) {
+        mobileMenuActions.push({
           id: 'delete',
           icon: <Trash2 {...stylex.props(detailStyles.icon14)} />,
           label: t('archive.delete', 'Delete permanently'),
           onClick: () => handleRequestDeleteCurrentSession(),
           destructive: true,
-        }
-      );
+        });
+      }
     } else {
       mobileMenuActions.push({
         id: 'archive',
         icon: <Archive {...stylex.props(detailStyles.icon14)} />,
-        label: t('sessions.archive', 'Archive session'),
+        label:
+          activeBoard && activeTabSessionId === activeBoard.coordinatorSessionId
+            ? t('boards.settings.archive', 'Archive Board')
+            : t('sessions.archive', 'Archive session'),
         onClick: () => {
           void handleArchiveActiveTab();
         },
@@ -6637,7 +6892,7 @@ const SessionDetail = ({
             data-sidebar-swipe-open-disabled
           >
             <DrawerTitle className={stylex.props(detailStyles.srOnly).className}>
-              {t('sessions.detailTabs.files', 'Files')}
+              {filesTabLabel}
             </DrawerTitle>
             <VaulDrawerBody topInset={MOBILE_DRAWER_HEADER_INSET}>
               <div {...stylex.props(detailStyles.columnFill)}>
@@ -6660,9 +6915,7 @@ const SessionDetail = ({
                   >
                     <ArrowLeft {...stylex.props(detailStyles.icon16)} />
                   </Button>
-                  <span {...stylex.props(detailStyles.mobileTitle)}>
-                    {t('sessions.detailTabs.files', 'Files')}
-                  </span>
+                  <span {...stylex.props(detailStyles.mobileTitle)}>{filesTabLabel}</span>
                 </header>
                 <div {...stylex.props(detailStyles.relativeFill)}>
                   <MobileProjectFileBrowser
@@ -6683,6 +6936,45 @@ const SessionDetail = ({
             </VaulDrawerBody>
           </DrawerContent>
         </Drawer>
+        {boardSettings}
+        {/* Mobile Board drawer: the Board panel full screen. Opening a thread
+           leaves for that thread's page. */}
+        {activeBoard ? (
+          <Drawer
+            direction="right"
+            repositionInputs={isNativeAppShell()}
+            open={mobileBoardOpen}
+            onOpenChange={setMobileBoardOpen}
+          >
+            <DrawerContent
+              className="w-full! max-w-none! inset-0 border-0 border-l-0! rounded-none"
+              data-sidebar-swipe-open-disabled
+            >
+              <DrawerTitle className={stylex.props(detailStyles.srOnly).className}>
+                {activeBoard.name}
+              </DrawerTitle>
+              <VaulDrawerBody topInset={MOBILE_DRAWER_HEADER_INSET}>
+                <div {...stylex.props(detailStyles.columnFill)}>
+                  <header {...stylex.props(detailStyles.mobileDrawerHeader)}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      icon
+                      className={getSessionDetailTouchIconButtonClassName('-ml-1')}
+                      onClick={() => setMobileBoardOpen(false)}
+                      aria-label={t('common.back', 'Back')}
+                    >
+                      <ArrowLeft {...stylex.props(detailStyles.icon16)} />
+                    </Button>
+                    <span {...stylex.props(detailStyles.mobileTitle)}>{activeBoard.name}</span>
+                    {boardSettingsButton}
+                  </header>
+                  <div {...stylex.props(detailStyles.relativeFill)}>{boardPanel}</div>
+                </div>
+              </VaulDrawerBody>
+            </DrawerContent>
+          </Drawer>
+        ) : null}
         {/* Mobile PR full-screen drawer. Edge-only interactive back: Vaul drives
            the drag but only from the left-edge zone (the body is wrapped in
            `data-vaul-no-drag`), so PR diffs scroll horizontally without dragging
@@ -6881,6 +7173,7 @@ const SessionDetail = ({
           target={renameDialogTarget}
           onClose={() => setRenameDialogTarget(null)}
         />
+        <BoardRenameDialog board={renamingBoard} onClose={() => setRenamingBoard(null)} />
         <ChatShareImageDialog
           open={shareImageTarget != null}
           onOpenChange={(open) => {
@@ -6900,7 +7193,9 @@ const SessionDetail = ({
     !isNativeAppShell() && isMacOSElectronRenderer() && !isElectronFullscreen;
 
   const nonBrowserSidebarContent =
-    activeSidebarTab === 'files' ? (
+    activeSidebarTab === 'board' ? (
+      boardPanel
+    ) : activeSidebarTab === 'files' ? (
       <FileTreeView
         session={activeSession}
         handleOpenFile={handleOpenIndexedFile}
@@ -7007,9 +7302,12 @@ const SessionDetail = ({
     effectiveActiveViewerTabId === null &&
     effectiveActiveSideSessionId === null &&
     openingActiveSideSessionId === null;
-  const defaultSizes = showFixedSidePanelBody
-    ? { main: 75, sidebar: 25 }
-    : { main: 60, sidebar: 40 };
+  // A Board opens with its conversation and its panel side by side, half each.
+  const defaultSizes = activeBoard
+    ? { main: 50, sidebar: 50 }
+    : showFixedSidePanelBody
+      ? { main: 75, sidebar: 25 }
+      : { main: 60, sidebar: 40 };
 
   const sidebarToggleButton = (
     <Button
@@ -7058,6 +7356,12 @@ const SessionDetail = ({
       headerVariant="toolbar"
       headerEndSlot={
         <>
+          {boardThreadLocation ? (
+            <span title={boardThreadLocation} {...stylex.props(detailStyles.boardThreadLocation)}>
+              {boardThreadLocation}
+            </span>
+          ) : null}
+          {boardSettingsButton}
           <TerminalDockToggleButton />
           {!isSidebarVisible ? sidebarToggleButton : null}
         </>
@@ -7066,10 +7370,16 @@ const SessionDetail = ({
       hideMessageArea
       onArchiveSession={handleArchiveCurrentSession}
       onRestoreSession={handleRestoreCurrentSession}
-      onDeleteSession={handleRequestDeleteCurrentSession}
+      onDeleteSession={activeBoard ? undefined : handleRequestDeleteCurrentSession}
       onOpenSearch={handleOpenSearch}
       onCopyConversationHistory={handleCopyConversationHistory}
-      onRequestRename={!activeDraftTab ? handleRenameCurrentSession : undefined}
+      onRequestRename={
+        activeBoard
+          ? () => setRenamingBoard(activeBoard)
+          : !activeDraftTab
+            ? handleRenameCurrentSession
+            : undefined
+      }
       onForkSession={
         !activeDraftTab && activeTabSession && canForkSession(activeTabSession)
           ? handleForkCurrentSession
@@ -7430,8 +7740,13 @@ const SessionDetail = ({
         handleDesktopTabRegionInteraction(event.target, event.currentTarget)
       }
     >
+      {boardSettings}
       <DesktopSessionDetailLayout
         defaultSizes={defaultSizes}
+        // A Board opens half and half on every entry, refresh included: Boards
+        // remember no split, and another Board or entry resets it.
+        layoutStorageId={activeBoard ? null : 'session-detail-panels'}
+        {...(activeBoard ? { layoutResetKey: `${activeBoard.id}:${boardEntrySeq}` } : {})}
         topBar={tabBar}
         chatSurfaces={desktopChatSurfaces}
         terminalDock={<TerminalDockHost />}
@@ -7467,6 +7782,7 @@ const SessionDetail = ({
         target={renameDialogTarget}
         onClose={() => setRenameDialogTarget(null)}
       />
+      <BoardRenameDialog board={renamingBoard} onClose={() => setRenamingBoard(null)} />
       <ChatShareImageDialog
         open={shareImageTarget != null}
         onOpenChange={(open) => {

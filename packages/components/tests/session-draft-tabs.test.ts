@@ -478,6 +478,23 @@ describe('session draft tabs', () => {
     });
   });
 
+  it('persists the Board side panel of a coordinator page', () => {
+    installWindowStorage();
+    const sidePanel = {
+      open: true,
+      tab: 'board' as const,
+      tabs: ['board' as const, 'files' as const],
+      sideSessionId: null,
+    };
+    writeStoredLastActiveTabState('session-1', {
+      sessionTabId: 'session-1',
+      viewerTab: null,
+      sidePanel,
+    });
+
+    expect(readStoredLastActiveTabState('session-1')?.sidePanel).toEqual(sidePanel);
+  });
+
   it('migrates the old always-visible side panel tabs to the new empty state', () => {
     installWindowStorage();
     localStorage.setItem(

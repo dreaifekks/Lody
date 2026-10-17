@@ -198,6 +198,11 @@ export interface LoroSidebarProps {
   activeNav?: LoroSidebarNavKey | null;
 
   topContent?: ReactNode;
+  /**
+   * The Boards section, first in the scroll viewport after Pinned and in both
+   * organize modes: a Board is opened the way a conversation is.
+   */
+  boardsContent?: ReactNode;
   /** The filter trigger element rendered in-flow on the first visible section
       header. Caller-owned so its open state survives remounting between slots. */
   desktopFilterAction?: ReactNode;
@@ -814,6 +819,7 @@ export const LoroSidebar = memo(function LoroSidebar({
   maxWidth = MAX_DESKTOP_SIDEBAR_WIDTH,
   activeNav = null,
   topContent,
+  boardsContent,
   desktopFilterAction,
   afterSessionListContent,
   bottomFloatingContent,
@@ -1016,6 +1022,7 @@ export const LoroSidebar = memo(function LoroSidebar({
   const isWorkspaceEmpty =
     organizeMode === 'workspace' &&
     !topContent &&
+    !boardsContent &&
     !hasPinnedItems &&
     !afterSessionListContent &&
     !sessionListProps?.isLoading;
@@ -1548,6 +1555,7 @@ export const LoroSidebar = memo(function LoroSidebar({
                 />
               </div>
             ) : null}
+            {boardsContent}
             {organizeMode === 'updated' ? (
               // Design intent: 'updated' mode is a flat firehose of recent
               // sessions. It deliberately drops Workspace-mode structure

@@ -103,6 +103,7 @@ export function MobileWorkspaceStack({ workspaceName }: { workspaceName: string 
     pr?: number;
     browser?: boolean;
     simulator?: boolean;
+    board?: boolean;
   } | null>(null);
   if (sessionId) {
     lastSessionRef.current = {
@@ -111,6 +112,7 @@ export function MobileWorkspaceStack({ workspaceName }: { workspaceName: string 
       pr: sessionSearch?.pr,
       browser: sessionSearch?.browser,
       simulator: sessionSearch?.simulator,
+      board: sessionSearch?.board,
     };
   }
   const rendered = lastSessionRef.current;
@@ -183,6 +185,7 @@ export function MobileWorkspaceStack({ workspaceName }: { workspaceName: string 
                   urlPrNumber={open ? rendered.pr : undefined}
                   urlBrowser={open ? rendered.browser : false}
                   urlSimulator={open ? rendered.simulator : false}
+                  urlBoard={open ? rendered.board : false}
                   onMobileBack={handleClose}
                 />
               </AppThemeShell>

@@ -1,4 +1,10 @@
 import type {
+  BoardId,
+  BoardReportCursor,
+  BoardReportEvent,
+  FrozenOperationContinuationConfig,
+} from '@lody/shared';
+import type {
   LodyOperationCompletion,
   LodyOperationItemResult,
   MachineId,
@@ -8,6 +14,18 @@ import type {
 } from '@lody/shared';
 import { Context, Effect } from 'effect';
 
+export type AcceptBoardReportInput = {
+  boardId: BoardId;
+  sessionId: SessionId;
+  workspaceId: WorkspaceId;
+  ownerMachineId: MachineId;
+  requesterSessionId: SessionId;
+  requesterUserId: string;
+  frozenContinuationConfig: FrozenOperationContinuationConfig;
+  events: BoardReportEvent[];
+  cursor: BoardReportCursor;
+};
+
 export type AcceptOperationInput = Omit<
   StoredLodyOperation,
   'fingerprint' | 'state' | 'completion' | 'finishedAt'
@@ -16,6 +34,14 @@ export type AcceptOperationOptions = { materializationClaimToken?: string };
 export class OperationRepository extends Context.Service<
   OperationRepository,
   {
+    retainBoardReportCursors(sessionId: SessionId, boardId?: BoardId): Effect.Effect<void, unknown>;
+    acceptBoardReport(input: AcceptBoardReportInput): Effect.Effect<void, unknown>;
+    readBoardReportCursor(
+      boardId: BoardId,
+      sessionId: SessionId
+    ): Effect.Effect<BoardReportCursor, unknown>;
+    boardCoveredTargets(sessionId: SessionId): Effect.Effect<Set<string>, unknown>;
+    boardDepthLimitedSessions(workspaceId: WorkspaceId): Effect.Effect<SessionId[], unknown>;
     accept(
       input: AcceptOperationInput,
       options?: AcceptOperationOptions

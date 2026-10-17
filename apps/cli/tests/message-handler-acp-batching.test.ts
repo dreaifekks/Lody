@@ -2,16 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import crypto from 'crypto';
 import { LoroRepo } from 'loro-repo';
 
-import type {
-  AcpSessionNotification,
-  MessageContent,
-  SessionHistoryInput,
-  SessionFilePayload,
-  SessionId,
-  WorkspaceId,
+import {
+  boardMaintenanceStepId,
+  getSessionRoomId,
+  type AcpSessionNotification,
+  type MessageContent,
+  type SessionHistoryInput,
+  type SessionFilePayload,
+  type SessionId,
+  type WorkspaceId,
 } from '@lody/shared';
 
 import type { SessionUsageUpdate } from 'acp-extension-core';
+import { isSessionReadThrough } from '../src/lib/agent-notice';
 import { MessageHandler } from '../src/lib/message-handler';
 import { SessionDocument } from '../src/lib/loro/doc';
 import type { LoroDocumentManager } from '../src/lib/loro/doc';
@@ -976,6 +979,67 @@ describe('MessageHandler ACP batching', () => {
       await destroyRepoOnRealTimers(repo);
     }
   }, 120_000);
+
+  it('keeps Board maintenance replies, late ones included, from making the conversation unread', async () => {
+    vi.useRealTimers();
+    const sessionId = 'board-coordinator' as SessionId;
+    const { repo, docs, handler } = await createHandlerHarness([sessionId]);
+    const doc = docs.get(sessionId);
+    if (!doc) throw new Error(`Missing session doc for ${sessionId}`);
+    const host = handler as unknown as {
+      beginConversationTurn(sessionId: SessionId, userTurnId?: string): string;
+      enqueueACPUpdate(sessionId: SessionId, update: AcpSessionNotification): void;
+      flushACPUpdatesNow(sessionId: SessionId): Promise<void>;
+      finalizeACPState(sessionId: SessionId, turnId?: string): Promise<void>;
+    };
+    const reply = (text: string): AcpSessionNotification => ({
+      sessionId,
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+    });
+    const replyTexts = async () =>
+      (await doc.sessionData.history.readAll()).flatMap((entry) =>
+        readItems(entry).flatMap((item) => (item.type === 'text' ? [item.text] : []))
+      );
+
+    try {
+      // Read through the user's last message.
+      await repo.upsertDocMeta(getSessionRoomId(sessionId), {
+        lastMessageAt: 1_000,
+        lastReadAt: 1_000,
+      });
+      // Idle tidy-up and a new agent conversation: every step, each ending its turn.
+      for (const step of ['memory', 'compact', 'renew', 'handoff'] as const) {
+        const turnId = host.beginConversationTurn(sessionId, boardMaintenanceStepId('run-1', step));
+        host.enqueueACPUpdate(sessionId, reply(`${step} done`));
+        await host.flushACPUpdatesNow(sessionId);
+        await host.finalizeACPState(sessionId, turnId);
+      }
+      // Output after the step ended, such as a compaction finishing in the background.
+      host.enqueueACPUpdate(sessionId, reply(' later'));
+      await host.flushACPUpdatesNow(sessionId);
+
+      expect(await replyTexts()).toEqual([
+        'memory done',
+        'compact done',
+        'renew done',
+        'handoff done later',
+      ]);
+      const meta = await doc.getMetaState();
+      expect(meta?.lastMessageAt).toBe(1_000);
+      expect(isSessionReadThrough(meta)).toBe(true);
+
+      // The next ordinary reply is new to the user.
+      const turnId = host.beginConversationTurn(sessionId, 'user-turn-1');
+      host.enqueueACPUpdate(sessionId, reply('answer'));
+      await host.flushACPUpdatesNow(sessionId);
+      await host.finalizeACPState(sessionId, turnId);
+      const after = await doc.getMetaState();
+      expect(after?.lastMessageAt).toBeGreaterThan(1_000);
+      expect(isSessionReadThrough(after)).toBe(false);
+    } finally {
+      await destroyRepoOnRealTimers(repo);
+    }
+  });
 
   it('persists late diff evidence against its finalized enqueue-time turn', async () => {
     vi.useRealTimers();

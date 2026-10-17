@@ -1,4 +1,5 @@
 import type { TFunction } from 'i18next';
+import type { ReactNode } from 'react';
 import { ChevronDown, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -80,6 +81,7 @@ export function SessionRowLeadingSlot({
   showMenuButton,
   menuLabel,
   openedByTree,
+  restIcon,
   /** Fade the rest state while hovering (e.g. 'group-hover/row:opacity-0' for named groups). */
   fadeClassName = 'group-hover:opacity-0 group-data-[menu-open]:opacity-0',
   /** Disable an opener disclosure while its ⋯ replacement is active. */
@@ -90,6 +92,8 @@ export function SessionRowLeadingSlot({
   showMenuButton?: boolean;
   menuLabel: string;
   openedByTree?: SessionRowOpenedByTreeSlot;
+  /** A glyph resting in the slot of a row without a tree (a Board); ⋯ replaces it on hover. */
+  restIcon?: ReactNode;
   fadeClassName?: string;
   restPointerClassName?: string;
   revealClassName?: string;
@@ -161,6 +165,8 @@ export function SessionRowLeadingSlot({
             )}
           />
         </div>
+      ) : restIcon ? (
+        <span className={cn('flex', restClassName)}>{restIcon}</span>
       ) : null}
       {showMenuButton ? (
         <button

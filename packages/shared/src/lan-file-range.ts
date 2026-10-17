@@ -6,8 +6,9 @@ import { z } from 'zod';
  * over the connection that carries files; the desktop asks the agent service
  * of its own machine over the local file socket, naming the machine as well.
  *
- * The file is a block a session keeps (`fileId`) or a file at a path the
- * session's previews may read (`path`). `revision` names the content the
+ * The file is a block a session keeps (`fileId`), a file at a path the
+ * session's previews may read (`path`), or a file of a Board's shared
+ * directory (`path` with `boardId`). `revision` names the content the
  * answer was read from: a later request that carries it is refused once the
  * file is another one, so the parts of two files are never joined.
  */
@@ -20,6 +21,11 @@ const rangeFields = {
   /** To the end of the file when absent; `0` asks for the size and revision alone. */
   length: z.number().int().nonnegative().optional(),
   revision: z.string().min(1).max(128).optional(),
+  /**
+   * A file of this Board's shared directory: `path` is then relative to the
+   * directory (`files/…` or `memory/…`) and `sessionId` a member of the Board.
+   */
+  boardId: z.string().startsWith('bd_').max(256).optional(),
 };
 
 const namesOneFile = (value: { fileId?: string; path?: string }) =>

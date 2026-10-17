@@ -9,6 +9,11 @@ export const operationRepositoryLayer = (store: LodyOperationStore) => {
   const io = <A>(f: () => A) =>
     Effect.try({ try: f, catch: (cause) => new OrchestrationStorageFailure(cause) });
   return Layer.succeed(OperationRepository, {
+    retainBoardReportCursors: (id, board) => io(() => store.retainBoardReportCursors(id, board)),
+    acceptBoardReport: (input) => io(() => store.acceptBoardReport(input)),
+    readBoardReportCursor: (board, id) => io(() => store.readBoardReportCursor(board, id)),
+    boardCoveredTargets: (id) => io(() => store.boardCoveredTargets(id)),
+    boardDepthLimitedSessions: (w) => io(() => store.inbox.depthLimitedSessions(w)),
     accept: (i, o) => io(() => store.accept(i, o)),
     get: (s, id) => io(() => store.get(s, id)),
     inputCancellationReason: (w, s, id) => io(() => store.inbox.inputCancellationReason(w, s, id)),

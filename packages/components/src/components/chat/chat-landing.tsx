@@ -1,3 +1,5 @@
+import { isBoardSession } from '../boards/board-threads';
+import { boardEnabledAtom } from '@/atoms/settings';
 import { buildAgentRoleFormValueFromRunConfig, type AgentRoleInstanceId } from '@lody/shared';
 import { useProviderQuotaRefresh } from '@/hooks/use-provider-quota-refresh';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
@@ -4761,6 +4763,7 @@ function WorkspaceChatLanding({
      session level (before mapping), kind / running / PR at the item
      level (so the predicate reads from the same field accessors the
      grouping logic uses). Cap at 200. */
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
   const mobileHomeChats = useMemo<MobileConversationItem[]>(() => {
     const myUserId = userId ?? null;
     /* `sessionListAtom` and `archivedSessionListAtom` live in
@@ -4786,6 +4789,8 @@ function WorkspaceChatLanding({
     };
     return sourceSessions
       .filter((session) => {
+        // A Board's conversations live in the Board; the drawer's Boards section lists it.
+        if (isBoardSession(session, boardsEnabled)) return false;
         if (chatScope === 'my' && myUserId && session.userId !== myUserId) return false;
         if (chatExcludedMachines.has(session.machineId)) return false;
         return true;
@@ -4916,6 +4921,7 @@ function WorkspaceChatLanding({
       });
   }, [
     accessByMachineId,
+    boardsEnabled,
     chatExcludedMachines,
     chatExcludedPr,
     chatExcludedProjects,

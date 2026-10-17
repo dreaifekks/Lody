@@ -201,3 +201,39 @@ per-device switch.
   switch off hides guesses at once.
 - Code: `apps/cli/src/agent/agent-client.ts`, `apps/cli/src/lib/message-handler.ts`,
   `packages/components/src/components/sessions/use-session-prompt-suggestion.ts`.
+
+
+## Boards
+
+Settings > Experimental features > Boards enables this device's Board surfaces.
+The sidebar lists Boards in their own section (also in the mobile drawer); its
+"+" creates one. Creating a Board asks for a name, an optional goal and the
+coordinator, chosen through the Schedule agent controls. Nothing is sent: the Board
+opens on an empty coordinator conversation and the user speaks first; rules start
+from defaults, and the choice of agent, Role instance and run config is remembered
+on the device.
+
+Opening a Board, from the sidebar, `/boards/<id>` or the command palette (which
+shows a coordinator as its Board and a thread as "Board › thread"), opens the
+coordinator's Session page on its own Tab with the Board side panel (`?board=1`),
+half the width each. The panel has Threads and Board files tabs; on a Board page the
+session panel's Files is named Workspace files. Thread rows group thread families
+(a thread with the sessions it opened, indented) into Needs you, Working, Idle and
+Archived from metadata and live presence; a thread opens inside the panel with its
+machine and project at the top right, or as its own page on narrow windows and
+phones (where the panel is a full-screen drawer). The coordinator's own Tabs and
+Side Chats open where the page already shows them. Board files holds the shared
+notes and the `files/` of the Board's shared directory, kept on the coordinator's
+machine and reached from other LAN members through it. The gear at the top right of
+the conversation opens Board settings: General (name, optional goal, the instructions
+every new member reads beside the thread instructions, rules, Archive) and Memory (the
+agents' memory files under `memory/`, indexed by `MEMORY.md`). Archived Boards are listed and restored on the
+Archive page; a failed archive or restore names the reason and leaves the Board
+where it was, to retry. Neither the coordinator nor the threads are listed among
+sessions outside the Board.
+
+PR2 adds shared notes, Board MCP tools, New thread and Join/Remove actions; PR3
+delivers member reports to the coordinator through the Operation Inbox. Round
+limits, handoff and daily digests remain later steps in the
+[Board design](../../specs/project-coordinator/design.md). Disabling the experiment
+hides its surfaces and keeps sessions and Board data intact.

@@ -25,7 +25,8 @@ daemon 复用新会话 UI 使用的 `getDefaultSelectedMcpServerIds`。
 
 只读检查发现普通 `lody_session_create` 同样缺失：dispatch config 和历史构造
 均不携带 MCP id。本次按要求保持其行为不变；仅在 Schedule 准备阶段补齐，
-避免隐式改变所有 Agent 创建的会话。
+避免隐式改变所有 Agent 创建的会话。这一缺口后来已修复，见
+[Agent 写入回合的选择](2026-10-17-agent-session-workspace-mcp.zh.md)。
 
 ### Review 跟进
 

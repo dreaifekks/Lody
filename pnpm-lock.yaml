@@ -64,8 +64,8 @@ catalogs:
       specifier: 0.6.0
       version: 0.6.0
     '@loro-dev/streams-client':
-      specifier: 0.9.0
-      version: 0.9.0
+      specifier: 0.10.0
+      version: 0.10.0
     '@loro-dev/streams-crdt':
       specifier: 0.17.0
       version: 0.17.0
@@ -318,7 +318,7 @@ importers:
         version: 0.1.3
       '@loro-dev/streams-client':
         specifier: 'catalog:'
-        version: 0.9.0
+        version: 0.10.0
       '@loro-dev/streams-crdt':
         specifier: 'catalog:'
         version: 0.17.0(@loro-dev/flock-wasm@0.4.4)(effect@4.0.2)(loro-crdt@1.16.3)
@@ -1652,7 +1652,7 @@ importers:
         version: link:../shared
       '@loro-dev/streams-client':
         specifier: 'catalog:'
-        version: 0.9.0
+        version: 0.10.0
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -3882,10 +3882,6 @@ packages:
 
   '@loro-dev/streams-client@0.8.0':
     resolution: {integrity: sha512-ILqMGzgIOp8xpfi5oAVdNEm+ldbM5xjdDotkfkc/MI8dziby9yPL29qGWcjeNCwnDTAyseJadgATzWI7M0Thlw==}
-    engines: {node: '>=18'}
-
-  '@loro-dev/streams-client@0.9.0':
-    resolution: {integrity: sha512-Dlj78XQwugQS0IgKig6DL03U3QhSW10alBdopsFXPbVuKfDrGgL27TY02LnE2+1ptrX2BU7euWH5q4E/tFmR/Q==}
     engines: {node: '>=18'}
 
   '@loro-dev/streams-crdt@0.17.0':
@@ -16897,8 +16893,6 @@ snapshots:
   '@loro-dev/streams-client@0.7.0': {}
 
   '@loro-dev/streams-client@0.8.0': {}
-
-  '@loro-dev/streams-client@0.9.0': {}
 
   '@loro-dev/streams-crdt@0.17.0(@loro-dev/flock-wasm@0.4.4)(effect@4.0.2)(loro-crdt@1.16.3)':
     dependencies:

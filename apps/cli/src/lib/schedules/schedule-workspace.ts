@@ -31,7 +31,7 @@ import { createSessionBackend } from '@/session/session-backend';
 import { lanAlertProjectId } from '../lan/lan-push-protocol';
 import { streamsRoomBinding } from '../loro/streams-room-binding';
 import {
-  applyScheduleMcpSelection,
+  resolveScheduleMcpSelection,
   buildScheduleRunPrompt,
   buildScheduleRunTarget,
   resolveScheduleAgentRunConfig,
@@ -215,18 +215,18 @@ export async function createScheduleWorkspace(args: {
           ...resolveTurnDispatchConfig({}),
           ...agent,
           inheritSessionDefaults: false,
+          mcpServerIds: await resolveScheduleMcpSelection({
+            manager,
+            workspaceId,
+            localOnly: args.localOnly,
+            definition: run.definition,
+            sessionId: run.sessionId as SessionId,
+          }),
         },
         target
       );
       if (prepared.meta.machineId !== run.machineId || prepared.meta.userId !== auth.userId)
         throw new Error('Schedule target ownership changed');
-      await applyScheduleMcpSelection({
-        manager,
-        workspaceId,
-        localOnly: args.localOnly,
-        definition: run.definition,
-        prepared,
-      });
       prepared.meta.scheduleId = run.scheduleId;
       prepared.source = {
         id: run.sourceEntryId,

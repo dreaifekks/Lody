@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { Switch } from '@lody/ui/switch';
 import {
+  boardExperimentEnabledAtom,
   agentNotifyExperimentEnabledAtom,
   enabledAgentToolsAtom,
   experimentalFeaturesEnabledAtom,
@@ -18,7 +19,11 @@ import { VoiceAgentRows } from './voice-agent-select';
 
 export function ExperimentalFeaturesSection() {
   const { t } = useTranslation();
-  return <CompactSection title={t('settings.experimental.title', 'Experimental features')}><ExperimentalFeatureRows /></CompactSection>;
+  return (
+    <CompactSection title={t('settings.experimental.title', 'Experimental features')}>
+      <ExperimentalFeatureRows />
+    </CompactSection>
+  );
 }
 
 /**
@@ -37,60 +42,73 @@ export function ExperimentalFeatureRows() {
     setExperimentalEnabledAtom(value);
     syncAgentTools();
   };
+  const [boardEnabled, setBoardEnabled] = useAtom(boardExperimentEnabledAtom);
   const [voiceEnabled, setVoiceEnabled] = useAtom(voiceExperimentEnabledAtom);
 
   return (
     <>
-        <CompactRow label={t('settings.experimental.enable', 'Enable experimental features')}>
-          <Switch
-            checked={experimentalEnabled}
-            onCheckedChange={setExperimentalEnabled}
-            aria-label={t('settings.experimental.enable', 'Enable experimental features')}
-          />
-        </CompactRow>
+      <CompactRow label={t('settings.experimental.enable', 'Enable experimental features')}>
+        <Switch
+          checked={experimentalEnabled}
+          onCheckedChange={setExperimentalEnabled}
+          aria-label={t('settings.experimental.enable', 'Enable experimental features')}
+        />
+      </CompactRow>
 
       {experimentalEnabled ? (
         <>
+          <CompactRow
+            label={t('boards.title', 'Boards')}
+            helper={t(
+              'boards.experimentHelper',
+              'Group sessions around a coordinator and view their progress.'
+            )}
+          >
+            <Switch
+              checked={boardEnabled}
+              onCheckedChange={setBoardEnabled}
+              aria-label={t('boards.title', 'Boards')}
+            />
+          </CompactRow>
+          <CompactRow
+            label={t('settings.experimental.voice', 'Voice')}
+            helper={t(
+              'settings.experimental.voiceHelper',
+              'Dictate into the composer, or talk with a session out loud. Runs on the Codex agent you choose and uses its account.'
+            )}
+          >
+            <Switch
+              checked={voiceEnabled}
+              onCheckedChange={setVoiceEnabled}
+              aria-label={t('settings.experimental.voice', 'Voice')}
+            />
+          </CompactRow>
+          {voiceEnabled ? <VoiceAgentRows /> : null}
 
-            <CompactRow
-              label={t('settings.experimental.voice', 'Voice')}
-              helper={t(
-                'settings.experimental.voiceHelper',
-                'Dictate into the composer, or talk with a session out loud. Runs on the Codex agent you choose and uses its account.'
-              )}
-            >
-              <Switch
-                checked={voiceEnabled}
-                onCheckedChange={setVoiceEnabled}
-                aria-label={t('settings.experimental.voice', 'Voice')}
-              />
-            </CompactRow>
-            {voiceEnabled ? <VoiceAgentRows /> : null}
-
-            <AgentToolRow
-              atom={agentNotifyExperimentEnabledAtom}
-              label={t('settings.experimental.agentNotify', 'Notifications from agents')}
-              helper={t(
-                'settings.experimental.agentNotifyHelper',
-                'Agents can alert you when they need a decision or finish while you are away.'
-              )}
-            />
-            <AgentToolRow
-              atom={planReviewExperimentEnabledAtom}
-              label={t('settings.experimental.planReview', 'Plan review')}
-              helper={t(
-                'settings.experimental.planReviewHelper',
-                'Agents can send a plan to a side panel, where you comment on it and approve it or ask for changes.'
-              )}
-            />
-            <AgentToolRow
-              atom={inlineWidgetExperimentEnabledAtom}
-              label={t('settings.experimental.inlineWidget', 'Interactive widgets')}
-              helper={t(
-                'settings.experimental.inlineWidgetHelper',
-                'Agents can draw clickable diagrams and charts in the conversation. Clicking one asks about it in a side chat.'
-              )}
-            />
+          <AgentToolRow
+            atom={agentNotifyExperimentEnabledAtom}
+            label={t('settings.experimental.agentNotify', 'Notifications from agents')}
+            helper={t(
+              'settings.experimental.agentNotifyHelper',
+              'Agents can alert you when they need a decision or finish while you are away.'
+            )}
+          />
+          <AgentToolRow
+            atom={planReviewExperimentEnabledAtom}
+            label={t('settings.experimental.planReview', 'Plan review')}
+            helper={t(
+              'settings.experimental.planReviewHelper',
+              'Agents can send a plan to a side panel, where you comment on it and approve it or ask for changes.'
+            )}
+          />
+          <AgentToolRow
+            atom={inlineWidgetExperimentEnabledAtom}
+            label={t('settings.experimental.inlineWidget', 'Interactive widgets')}
+            helper={t(
+              'settings.experimental.inlineWidgetHelper',
+              'Agents can draw clickable diagrams and charts in the conversation. Clicking one asks about it in a side chat.'
+            )}
+          />
         </>
       ) : null}
     </>

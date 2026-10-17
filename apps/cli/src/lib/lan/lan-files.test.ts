@@ -17,6 +17,8 @@ import type {
   SessionMeta,
   WorkspaceId,
 } from '@lody/shared';
+import { getWorkspaceFlockDocId, normalizeBoardMeta, workspaceFlockKeys } from '@lody/shared';
+import { LoroRepo } from 'loro-repo';
 import {
   LanFileRangeAnswerSchema,
   type LanFileRangeAnswer,
@@ -25,6 +27,7 @@ import {
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import type { LanTerminalEndpoint } from '@lody/shared/lan-terminal';
 import { addLanHub, type LanHub } from '@lody/shared/node/lan-hub';
+import { BoardDirectory, readSyncedBoard } from '@/lib/board-directory';
 import { LocalFileServer } from '@/lib/local-file-server';
 import { getSessionFileBlobPath } from '@/lib/session-file-blob-store';
 import type { Logger } from '@/utils/logger';
@@ -858,6 +861,278 @@ describe('files between LAN members', () => {
       expect(await member.answer()).toMatchObject({ type: 'error', code: 'too_many_files' });
       expect(stored).toHaveLength(8);
     });
+  });
+});
+
+describe('Board shared directories between LAN members', () => {
+  const cleanups: Array<() => Promise<void> | void> = [];
+  let scratch: string;
+
+  beforeEach(() => {
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'lan-board-files-test-'));
+  });
+
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_shared',
+    name: 'Shared',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+    files: { machineId: SERVER },
+  })!;
+  const readBoard = async (_workspaceId: string, boardId: string) =>
+    boardId === board.id ? board : null;
+  const lookupIn =
+    (sessions: Record<string, Partial<SessionMeta>>): LanFileWorkspace['lookupSession'] =>
+    async (sessionId) =>
+      sessions[sessionId]
+        ? { type: 'found', meta: { id: sessionId, ...sessions[sessionId] } as SessionMeta }
+        : { type: 'missing' };
+
+  /** The machine that keeps the Board directory, with its own replica of the sessions. */
+  async function startKeeper(sessions: Record<string, Partial<SessionMeta>>) {
+    const directory = new BoardDirectory(() => path.join(scratch, 'keeper-data'));
+    const workspace: LanFileWorkspace = {
+      lookupSession: lookupIn(sessions),
+      readMachine: async () => undefined,
+      storeLocally: async () => [],
+    };
+    const handoff = new LanFileHandoff({
+      machineId: SERVER,
+      logger: silentLogger(),
+      hubs: () => [home],
+      workspace: (workspaceId) => (workspaceId === HOME ? workspace : null),
+      localSessions: (workspaceId) => (workspaceId === HOME ? workspace.lookupSession : null),
+      boards: { directory, readBoard },
+    });
+    const published = new Map<string, LanTerminalEndpoint | undefined>();
+    const host = new LanTerminalHost({
+      machineId: SERVER,
+      logger: silentLogger(),
+      lans: { hubs: [home], workspaces: createStore<readonly WorkspaceSummary[]>([]) },
+      port: 0,
+      probeAddress: async () => '127.0.0.1',
+      serviceFor: () => null,
+      filesFor: (workspaceId: string) => handoff.receiverFor(workspaceId),
+      publish: async (workspaceId, endpoint) => {
+        published.set(workspaceId, endpoint);
+      },
+    });
+    cleanups.push(() => host.close());
+    await host.refresh();
+    const endpoint = published.get(HOME);
+    if (!endpoint) throw new Error('the keeper published no endpoint');
+    return { endpoint, root: directory.boardPath(HOME, board.id) };
+  }
+
+  /** A member on another machine; its replica may claim more than the keeper's. */
+  function startMember(
+    endpoint: LanTerminalEndpoint,
+    sessions: Record<string, Partial<SessionMeta>>,
+    readMemberBoard = readBoard
+  ) {
+    const workspace: LanFileWorkspace = {
+      lookupSession: lookupIn(sessions),
+      readMachine: async () =>
+        ({
+          id: SERVER,
+          name: 'keeper',
+          protocolCapabilities: { lanFiles: 1, lanBoardFiles: 1 },
+          lanTerminal: endpoint,
+        }) as MachineMeta,
+      storeLocally: async () => [],
+    };
+    return new LanFileHandoff({
+      machineId: CLIENT,
+      logger: silentLogger(),
+      hubs: () => [home],
+      workspace: (workspaceId) => (workspaceId === HOME ? workspace : null),
+      localSessions: (workspaceId) => (workspaceId === HOME ? workspace.lookupSession : null),
+      boards: {
+        directory: new BoardDirectory(() => path.join(scratch, 'member-data')),
+        readBoard: readMemberBoard,
+      },
+    });
+  }
+
+  const members = {
+    coordinator: { boardId: 'bd_shared', machineId: SERVER },
+    thread: { boardId: 'bd_shared', machineId: CLIENT },
+  } as Record<string, Partial<SessionMeta>>;
+  const scope = (sessionId: string, area: 'files' | 'memory' = 'files') =>
+    ({ boardId: 'bd_shared', sessionId, area }) as const;
+
+  it('puts, lists and reads Board files from another machine of the LAN', async () => {
+    const { endpoint, root } = await startKeeper(members);
+    const member = startMember(endpoint, members);
+    const source = path.join(scratch, 'plan.md');
+    fs.writeFileSync(source, '# Plan\n第一步\n');
+
+    const entry = await member.putBoardFile(HOME, scope('thread'), 'design/plan.md', source);
+    expect(entry).toMatchObject({ path: 'design/plan.md', sizeBytes: fs.statSync(source).size });
+    expect(fs.readFileSync(path.join(root, 'files', 'design', 'plan.md'), 'utf8')).toBe(
+      '# Plan\n第一步\n'
+    );
+    await member.putBoardFile(HOME, scope('thread', 'memory'), 'MEMORY.md', source);
+
+    expect((await member.listBoardFiles(HOME, scope('thread'))).entries.map((e) => e.path)).toEqual(
+      ['design/plan.md']
+    );
+    expect(
+      (await member.listBoardFiles(HOME, scope('thread', 'memory'))).entries.map((e) => e.path)
+    ).toEqual(['MEMORY.md']);
+    const copy = path.join(scratch, 'copy.md');
+    await member.readBoardFile(HOME, scope('thread'), 'design/plan.md', copy);
+    expect(fs.readFileSync(copy, 'utf8')).toBe('# Plan\n第一步\n');
+  });
+
+  it('reaches a Board made elsewhere once the asking daemon syncs its catalog', async () => {
+    const { endpoint } = await startKeeper(members);
+    // The member daemon's replica of the catalog predates the Board: the row
+    // arrives only with a sync, as the hub delivers it.
+    const repo = await LoroRepo.create({});
+    cleanups.push(() => repo.destroy());
+    const catalogId = getWorkspaceFlockDocId(HOME as WorkspaceId);
+    let reachable = true;
+    const manager = {
+      repo,
+      syncFlockDocOrThrow: async (docId: string) => {
+        if (!reachable) throw new Error('hub unreachable');
+        (await repo.openFlockDoc(docId)).flock.put(workspaceFlockKeys.board(board.id), board);
+      },
+    } as unknown as Parameters<typeof readSyncedBoard>[0];
+    const member = startMember(endpoint, members, (workspaceId, boardId) =>
+      readSyncedBoard(manager, workspaceId, boardId, silentLogger())
+    );
+
+    // Without the hub the local rows are all there is.
+    reachable = false;
+    await expect(member.listBoardFiles(HOME, scope('thread'))).rejects.toThrow('BOARD_NOT_FOUND');
+    expect((await repo.openFlockDoc(catalogId)).flock.get(workspaceFlockKeys.board(board.id))).toBe(
+      undefined
+    );
+    reachable = true;
+    expect(await member.listBoardFiles(HOME, scope('thread'))).toEqual({
+      entries: [],
+      truncated: false,
+    });
+    const source = path.join(scratch, 'brief.md');
+    fs.writeFileSync(source, '# Brief\n');
+    await member.putBoardFile(HOME, scope('thread'), 'notes/brief.md', source);
+    expect((await member.listBoardFiles(HOME, scope('thread'))).entries.map((e) => e.path)).toEqual(
+      ['notes/brief.md']
+    );
+    const copy = path.join(scratch, 'brief-copy.md');
+    await member.readBoardFile(HOME, scope('thread'), 'notes/brief.md', copy);
+    expect(fs.readFileSync(copy, 'utf8')).toBe('# Brief\n');
+  });
+
+  it('refuses a session the keeper does not know as a member, whatever the asker claims', async () => {
+    const { endpoint, root } = await startKeeper({ ...members, stranger: { machineId: CLIENT } });
+    // The asking machine's replica says the stranger joined; the keeper's says it did not.
+    const member = startMember(endpoint, {
+      ...members,
+      stranger: { boardId: 'bd_shared', machineId: CLIENT },
+    });
+    const source = path.join(scratch, 'note.md');
+    fs.writeFileSync(source, 'note');
+
+    await expect(member.listBoardFiles(HOME, scope('stranger'))).rejects.toThrow(
+      'BOARD_NOT_MEMBER'
+    );
+    await expect(member.putBoardFile(HOME, scope('stranger'), 'note.md', source)).rejects.toThrow(
+      'BOARD_NOT_MEMBER'
+    );
+    expect(fs.existsSync(path.join(root, 'files', 'note.md'))).toBe(false);
+  });
+
+  it('refuses names outside the Board directory, including through a link', async () => {
+    const { endpoint, root } = await startKeeper(members);
+    const member = startMember(endpoint, members);
+    const source = path.join(scratch, 'escape.md');
+    fs.writeFileSync(source, 'escape');
+    const outside = path.join(scratch, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
+
+    await expect(
+      member.putBoardFile(HOME, scope('thread'), '../escape.md', source)
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    await expect(
+      member.readBoardFile(
+        HOME,
+        scope('thread'),
+        '../../../outside/secret.txt',
+        path.join(scratch, 'a')
+      )
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    fs.mkdirSync(path.join(root, 'files'), { recursive: true });
+    fs.symlinkSync(outside, path.join(root, 'files', 'link'));
+    await expect(
+      member.readBoardFile(HOME, scope('thread'), 'link/secret.txt', path.join(scratch, 'b'))
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    await expect(
+      member.putBoardFile(HOME, scope('thread'), 'link/planted.md', source)
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    expect(fs.existsSync(path.join(outside, 'planted.md'))).toBe(false);
+    expect(fs.existsSync(path.join(scratch, 'escape.md'))).toBe(true);
+    // A link is never listed either.
+    expect((await member.listBoardFiles(HOME, scope('thread'))).entries).toEqual([]);
+  });
+
+  it('refuses a file that is a link, on the keeper and from another member', async () => {
+    const { endpoint, root } = await startKeeper(members);
+    const member = startMember(endpoint, members);
+    const secret = path.join(scratch, 'secret.txt');
+    fs.writeFileSync(secret, 'secret');
+    fs.mkdirSync(path.join(root, 'files'), { recursive: true });
+    fs.symlinkSync(secret, path.join(root, 'files', 'leaf.txt'));
+    const directory = new BoardDirectory(() => path.join(scratch, 'keeper-data'));
+
+    await expect(
+      directory.read(HOME, board.id, 'files', 'leaf.txt', path.join(scratch, 'a'))
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    await expect(
+      member.readBoardFile(HOME, scope('thread'), 'leaf.txt', path.join(scratch, 'b'))
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    expect(fs.existsSync(path.join(scratch, 'a'))).toBe(false);
+    expect(fs.existsSync(path.join(scratch, 'b'))).toBe(false);
+  });
+
+  it('refuses an area whose root, or a directory above it, is a link', async () => {
+    const { endpoint, root } = await startKeeper(members);
+    const member = startMember(endpoint, members);
+    const outside = path.join(scratch, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
+    const source = path.join(scratch, 'planted.md');
+    fs.writeFileSync(source, 'planted');
+
+    fs.mkdirSync(root, { recursive: true });
+    fs.symlinkSync(outside, path.join(root, 'files'));
+    await expect(member.listBoardFiles(HOME, scope('thread'))).rejects.toThrow(
+      'BOARD_PATH_OUTSIDE'
+    );
+    await expect(
+      member.readBoardFile(HOME, scope('thread'), 'secret.txt', path.join(scratch, 'copy'))
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    await expect(member.putBoardFile(HOME, scope('thread'), 'planted.md', source)).rejects.toThrow(
+      'BOARD_PATH_OUTSIDE'
+    );
+
+    // The same when the Board directory itself is the link.
+    fs.rmSync(root, { recursive: true });
+    fs.symlinkSync(outside, root);
+    await expect(
+      member.putBoardFile(HOME, scope('thread', 'memory'), 'planted.md', source)
+    ).rejects.toThrow('BOARD_PATH_OUTSIDE');
+    expect(fs.readdirSync(outside)).toEqual(['secret.txt']);
   });
 });
 

@@ -45,6 +45,8 @@ import {
   LodyOperationStoreError,
 } from '@/orchestration/operation-store';
 import {
+  prepareSessionInput,
+  resolveTurnDispatchConfig,
   applyAgentRunConfigSelection,
   resolveEffectiveSessionCreateDispatchConfig,
   validateTurnConfigOptionValues,
@@ -204,8 +206,8 @@ describe('shared Operation store path', () => {
   });
 });
 
-const listPublishedToolNames = async (): Promise<string[]> => {
-  const server = buildLodyMcpServer();
+const listPublishedToolNames = async (boardId?: string): Promise<string[]> => {
+  const server = buildLodyMcpServer({ boardId });
   const client = new Client({ name: 'mcp-catalog-test-client', version: '1.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -242,6 +244,28 @@ describe('Lody MCP tool catalog', () => {
     }
   });
 
+  it('advertises Board tools only for member startups on HTTP and stdio', async () => {
+    expect(
+      (await listPublishedToolNames()).filter((name) => name.startsWith('lody_board_'))
+    ).toEqual([]);
+    const expected = [
+      'lody_board_get',
+      'lody_board_overview',
+      'lody_board_notes_get',
+      'lody_board_notes_append',
+      'lody_board_notes_replace',
+      'lody_board_files_list',
+      'lody_board_files_read',
+      'lody_board_files_write',
+    ];
+    expect(await listPublishedToolNames('bd_member')).toEqual(expect.arrayContaining(expected));
+    vi.stubEnv('LODY_MCP_BOARD_ID', 'bd_member');
+    try {
+      expect(await listPublishedToolNames()).toEqual(expect.arrayContaining(expected));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it('publishes session tools and never advertises a Task family', async () => {
     const names = await listPublishedToolNames();
     expect(names).toContain('lody_feedback');
@@ -2077,4 +2101,83 @@ describe('session MCP input schemas', () => {
         Buffer.byteLength(result.text.replace('\n…\n', ''), 'utf8')
     );
   });
+});
+
+describe('board membership in MCP creation', () => {
+  it.each([
+    { useCurrentSessionAsParent: true },
+    { workContext: { kind: 'chat' as const } },
+    { workContext: { kind: 'local' as const, projectId: 'project', worktree: true as const } },
+  ])('inherits membership through create options into persisted metadata: %j', async (context) => {
+    const input: Parameters<typeof buildMcpCreateOptions>[0] = {
+      operationId: 'board-create',
+      prompt: 'Implement one task',
+      ...context,
+    };
+    expect(SessionCreateToolInputSchema.safeParse(input).success).toBe(true);
+    const options = buildMcpCreateOptions(input, {
+      sessionId: 'requester',
+      workspaceId: 'workspace',
+      machineId: 'machine',
+    } as ReturnType<typeof getSessionContext>);
+    bindMcpCreateContext(
+      options,
+      {
+        userId: 'owner',
+        sourceTurnId: 'turn',
+        author: {
+          v: 1,
+          kind: 'agent',
+          sessionId: 'requester' as SessionId,
+          turnId: 'turn',
+          name: 'Coordinator',
+        },
+      },
+      { machineId: 'machine' as MachineId, boardId: 'bd_test' as never }
+    );
+    options.workspaceMetaPrewriteSatisfied = true;
+    options.bypassSessionQuota = true;
+    const prepared = await prepareSessionInput(
+      { userId: 'owner', machineId: 'machine' } as never,
+      { id: 'workspace' } as never,
+      { repo: { getDocMeta: async () => undefined } } as unknown as LoroDocumentManager,
+      input.prompt,
+      options,
+      // MCP creates freeze their selection before preparation.
+      { ...resolveTurnDispatchConfig({}), inheritSessionDefaults: false, mcpServerIds: [] },
+      {
+        targetMachine: { id: 'machine', ownerUserId: 'owner' } as MachineMeta,
+        agentConfig: {
+          id: 'agent',
+          machineId: 'machine',
+          cliType: 'claude',
+          agentType: 'claude',
+        } as AgentConfigMeta,
+      }
+    );
+    expect(prepared.meta.boardId).toBe('bd_test');
+    expect(prepared.meta.boardRole).toBeUndefined();
+    expect(prepared.meta.boardGeneration).toBeUndefined();
+    expect(prepared.userTurn.items).toEqual([{ type: 'text', text: input.prompt }]);
+    expect(options.useCurrentSessionAsParent).toBe(context.useCurrentSessionAsParent);
+    if (context.workContext?.kind === 'local') expect(options.localProject).toBe('project');
+  });
+});
+
+it('filters Board members and binds list cursors to the selected board', () => {
+  const { matchesSessionListFilters, sessionListFingerprint } = __lodyMcpServerInternals;
+  const input = SessionListToolInputSchema.parse({ boardId: 'bd_test' });
+  const ctx = createMcpContext();
+  const member = { id: 'member', boardId: 'bd_test' } as import('@lody/shared').SessionMeta;
+  expect(matchesSessionListFilters(member, input, ctx, 'owner')).toBe(true);
+  expect(
+    matchesSessionListFilters({ ...member, boardId: 'bd_other' as never }, input, ctx, 'owner')
+  ).toBe(false);
+  expect(matchesSessionListFilters({ ...member, boardId: undefined }, input, ctx, 'owner')).toBe(
+    false
+  );
+  expect(sessionListFingerprint(input, ctx)).not.toBe(
+    sessionListFingerprint({ ...input, boardId: 'bd_other' }, ctx)
+  );
+  expect(SessionListToolInputSchema.parse({ boardId: 'current' }).boardId).toBe('current');
 });
