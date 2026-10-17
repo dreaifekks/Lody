@@ -9,6 +9,7 @@ import {
   getLanCredentialsRoot,
   isLanCredentialsDirectoryName,
   LAN_CREDENTIALS_REVISION_FILE_NAME,
+  LAN_ENV_FILE_NAME,
   LAN_HUB_CREDENTIALS_PATH,
 } from '@lody/shared/node/lan-credentials';
 import type { LanHub } from '@lody/shared/node/lan-hub';
@@ -63,6 +64,11 @@ export function writeLanCredentialsCopy(directory: string, credentials: LanHubCr
     LAN_PUSH_DEVICES_FILE_NAME,
     JSON.stringify({ devices: credentials.devices })
   );
+  if (Object.keys(credentials.env).length > 0) {
+    writePrivate(directory, LAN_ENV_FILE_NAME, `${JSON.stringify(credentials.env, null, 2)}\n`);
+  } else {
+    removeIfPresent(directory, LAN_ENV_FILE_NAME);
+  }
   writePrivate(directory, LAN_CREDENTIALS_REVISION_FILE_NAME, credentials.revision);
 }
 
@@ -76,6 +82,7 @@ export function fillMissingLanHubCredentials(hubDataDir: string, copyDirectory: 
     [LAN_GITHUB_CONFIG_FILE_NAME],
     [APNS_CONFIG_FILE_NAME, APNS_KEY_FILE_NAME],
     [LAN_PUSH_DEVICES_FILE_NAME],
+    [LAN_ENV_FILE_NAME],
   ];
   const added: string[] = [];
   for (const names of groups) {

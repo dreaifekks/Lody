@@ -43,6 +43,7 @@ import {
   writeLanHubGitHubConfig,
 } from '@/lib/lan/hub-github';
 import { callLanHubCredentials } from '@/lib/lan/lan-github-credential';
+import { listLanEnvNames, readLanEnvValue, setLanEnv, unsetLanEnv } from '@/lib/lan/lan-env';
 import { LAN_PUSH_STATUS_PATH, LAN_PUSH_TEST_PATH } from '@/lib/lan/lan-push-protocol';
 import { listLanShares, setLanSharePublicUrl } from '@/lib/lan/lan-shares';
 import {
@@ -906,6 +907,89 @@ const githubCommand = new Command('github')
   .addCommand(githubStatusCommand)
   .addCommand(githubRemoveCommand);
 
+type EnvTargetOptions = OutputOptions & { dataDir?: string };
+
+const envTarget = (selector: string | undefined, options: EnvTargetOptions) =>
+  options.dataDir
+    ? { dataDir: path.resolve(options.dataDir) }
+    : { hub: requireLan(readLanHubSettings(), selector) };
+
+const envSetCommand = new Command('set')
+  .description(
+    'Give the LAN host an environment variable its members fill into MCP servers (${NAME} or ' +
+      'passthrough); the value is read from standard input'
+  )
+  .argument('<name>', 'Name of the variable')
+  .argument('[lan]', 'Name or id of the LAN')
+  .option(
+    '--data-dir <path>',
+    'Write into this LAN host data directory instead of sending to the hub'
+  )
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(async (name: string, selector: string | undefined, options: EnvTargetOptions) => {
+    await runOneShotCommand('lan', options, async () => {
+      if (process.stdin.isTTY) {
+        throw new Error(
+          `Pipe the value in (\`lody lan env set ${name} < value.txt\`); ` +
+            'a value typed as an argument stays in the shell history'
+        );
+      }
+      const target = envTarget(selector, options);
+      await setLanEnv(target, name, await readLanEnvValue(process.stdin));
+      if (options.json) {
+        printJson({ ok: true, name });
+        return;
+      }
+      console.log(`${name} set. Members get it within ten minutes, or when they start.`);
+    });
+  });
+
+const envListCommand = new Command('list')
+  .description('List the names of the environment variables the LAN host keeps; never their values')
+  .argument('[lan]', 'Name or id of the LAN')
+  .option('--data-dir <path>', 'Read this LAN host data directory instead of asking the hub')
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(async (selector: string | undefined, options: EnvTargetOptions) => {
+    await runOneShotCommand('lan', options, async () => {
+      const names = await listLanEnvNames(envTarget(selector, options));
+      if (options.json) {
+        printJson({ ok: true, names });
+        return;
+      }
+      if (names.length === 0) {
+        console.log('The LAN host keeps no environment variables (run `lody lan env set`).');
+        return;
+      }
+      for (const name of names) console.log(name);
+    });
+  });
+
+const envUnsetCommand = new Command('unset')
+  .description('Take an environment variable back from the LAN host')
+  .argument('<name>', 'Name of the variable')
+  .argument('[lan]', 'Name or id of the LAN')
+  .option('--data-dir <path>', 'Remove it from this LAN host data directory instead of the hub')
+  .option('--json', 'Print JSON output')
+  .option('--debug', 'Enable debug output')
+  .action(async (name: string, selector: string | undefined, options: EnvTargetOptions) => {
+    await runOneShotCommand('lan', options, async () => {
+      const removed = await unsetLanEnv(envTarget(selector, options), name);
+      if (options.json) {
+        printJson({ ok: true, name, removed });
+        return;
+      }
+      console.log(removed ? `${name} removed.` : `The LAN host kept no ${name}.`);
+    });
+  });
+
+const envCommand = new Command('env')
+  .description('Environment variables the LAN host keeps for the MCP servers of its members')
+  .addCommand(envSetCommand)
+  .addCommand(envListCommand)
+  .addCommand(envUnsetCommand);
+
 const shareUrlCommand = new Command('share-url')
   .description(
     'Show or set the address readers open the conversations a LAN shared at, ' +
@@ -960,4 +1044,5 @@ export const lanCommand = new Command('lan')
   .addCommand(forwardCommand)
   .addCommand(pushCommand)
   .addCommand(githubCommand)
+  .addCommand(envCommand)
   .addCommand(shareUrlCommand);

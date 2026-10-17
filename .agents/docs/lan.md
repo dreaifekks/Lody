@@ -31,7 +31,8 @@ each topic; the invariants stay in the scoped `AGENTS.md` files they link to.
 | Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts`                         | An agent service that replaces itself with the newest build                                                                   |
 | Desktop update | `apps/electron/src/main/services/lan-updater-*.ts`                                          | A desktop application that replaces itself with the newest build                                                              |
 | GitHub         | `apps/cli/src/lib/lan/hub-github.ts`, `lan-github-tokens.ts`, `lan-agent-github.ts`         | One GitHub token on the host for members that have no `gh` login                                                              |
-| Credentials    | `apps/cli/src/lib/lan/hub-credentials.ts`, `lan-credential-sync.ts`, `lan-push-fallback.ts` | Every member keeps a copy of the GitHub token, the APNs key and the phones, and uses it while the hub is away                 |
+| Credentials    | `apps/cli/src/lib/lan/hub-credentials.ts`, `lan-credential-sync.ts`, `lan-push-fallback.ts` | Every member keeps a copy of the GitHub token, the APNs key, the phones and the environment table, and uses it while the hub is away |
+| Environment    | `apps/cli/src/lib/lan/hub-env.ts`, `lan-env.ts`                                             | One table of environment variables on the host, filled into the `${VAR}` of MCP servers by every member's daemon            |
 | Ports          | `apps/cli/src/lib/lan/lan-tunnel.ts`, `apps/cli/src/lib/local-tunnel-server.ts`             | A program of one member reaches a port another member reaches                                                                 |
 | Command        | `apps/cli/src/lib/lan/lan-session-command.ts`                                               | `lody-lan` on the PATH of every session, and the sentence each turn tells the agent about it                                  |
 | Usage          | `apps/cli/src/lib/usage/local-usage-ledger.ts`, `packages/components/src/lib/lan-usage.ts`  | Each machine counts what its agents used; the usage page gathers it from every member                                         |
@@ -98,7 +99,7 @@ that workspace back instead of creating an empty one.
 | [Machines](lan-machines.md)                                       | Machine metadata, the machine list, requests between members, following a change   |
 | [Updates, hosting and releases](lan-releases.md)                  | Self-update of services and desktops, `lody lan up`, fork builds, tags and signing |
 | [Moving the hub, standby and failover](lan-host.md)               | Take-over, the pointer a former host leaves, the standby copy and its epochs       |
-| [GitHub and credentials](lan-credentials.md)                      | The host's GitHub token, Settings > GitHub, credential copies and push fallback    |
+| [GitHub and credentials](lan-credentials.md)                      | The host's GitHub token, the MCP environment table, Settings > GitHub, copies, push fallback |
 | [Shared conversations](lan-sharing.md)                            | Publishing, storage, the reader listener, and shares following the hub             |
 | [Usage and Prompt Shortcuts](lan-usage-and-shortcuts.md)          | The per-machine usage ledger and the usage page; shortcuts synced through the hub  |
 
