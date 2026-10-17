@@ -609,16 +609,21 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
                 onToggleCollapsed={canToggleBucket ? handleToggle : undefined}
               />
               {!collapsed && bucketIndex === 0 ? leadingContent : null}
+              {/* Pinned Sessions start where an expanded project's Sessions do,
+                  so a rule parts them from the projects when both are listed. */}
+              {!collapsed &&
+              bucketIndex === 0 &&
+              hasLeadingContent &&
+              (visibleNodes.length > 0 || showToggleFullList) ? (
+                <div
+                  role="separator"
+                  aria-orientation="horizontal"
+                  className="mx-2 my-1 border-t border-dashed border-sidebar-border/70"
+                />
+              ) : null}
               {/* No empty row list: it would still take the column gap. */}
               {!collapsed && (visibleNodes.length > 0 || showToggleFullList) ? (
-                <div
-                  className={cn(
-                    SIDEBAR_ROW_LIST_CLASS,
-                    // Pinned Sessions start where an expanded project's Sessions
-                    // do, so a little air keeps them from reading as its children.
-                    hasLeadingContent && bucketIndex === 0 && 'mt-1.5'
-                  )}
-                >
+                <div className={SIDEBAR_ROW_LIST_CLASS}>
                   {visibleNodes.map((node, nodeIndex) => {
                     const openedByTree = buildSessionRowOpenedByTreeSlot(node, t, () =>
                       handleToggleOpenedBySessions(node.item.id)
