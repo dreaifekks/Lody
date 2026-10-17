@@ -2885,7 +2885,8 @@ const OperationCompletionBatchView = ({
     return (
       <div
         data-board-updates-attached=""
-        className={cn(stylex.props(activityTypography.body).className, 'text-muted-foreground')}
+        // A quiet system line, as "Continued" is: the cards above carry the state.
+        className={cn(stylex.props(activityTypography.footnote).className, 'text-muted-foreground')}
       >
         {t(
           batch.deliveryStatus === 'unknown'
