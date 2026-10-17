@@ -53,7 +53,9 @@ the reasoning behind those rules.
   `session-link-context.tsx`'s explicit-target deep-link dispatch for both same-
   and cross-workspace links. Ordinary related-session navigation remains separate
   so its last-active-tab restoration cannot override a resource destination.
-  Without live navigation, or on a read-only share, the chip is inert.
+  Without live navigation, or on a read-only share, the chip is inert. The same
+  URI written bare in prose (not in code) becomes that chip too, labelled by its
+  short id; `parseSessionLink` decides what counts.
   Message/plan copy and UI/CLI Markdown exports normalize prose references using
   shared `session-link-export`, preserving code examples and stored history.
   Only a known source workspace supplies a missing ID; anonymous readers do not

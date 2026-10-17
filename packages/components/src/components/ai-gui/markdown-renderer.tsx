@@ -56,7 +56,11 @@ import {
 import { cn } from '@/lib/utils';
 import { usePrLinkInterceptor } from './pr-link-context';
 import { parseSessionLinkHref, useSessionLinkNavigator } from './session-link-context';
-import { parseSessionLink, type SessionLink } from '@lody/shared/session-link';
+import {
+  parseSessionLink,
+  SESSION_LINK_SCHEMES,
+  type SessionLink,
+} from '@lody/shared/session-link';
 import {
   SEARCH_HIGHLIGHT_ACTIVE_MARK_CLASS_NAME,
   SEARCH_HIGHLIGHT_MARK_CLASS_NAME,
@@ -430,7 +434,10 @@ function MarkdownSessionLink({
   const navigate = useSessionLinkNavigator();
   const sessionId = target.sessionId;
   // Composer mentions label the link `@Title`; the glyph already says "session".
-  const title = markdownLinkText(children).trim().replace(/^@/u, '') || sessionId;
+  // A bare URI in prose has only itself for a label, which is a line of noise
+  // in a chip; the short id is how a session is named elsewhere in the UI.
+  const label = markdownLinkText(children).trim().replace(/^@/u, '');
+  const title = (parseSessionLink(label) ? sessionId.slice(0, 8) : label) || sessionId;
   const body = (
     <>
       <MessagesSquare className="h-[0.95em] w-[0.95em] shrink-0 self-center" aria-hidden="true" />
@@ -464,6 +471,20 @@ function MarkdownSessionLink({
 }
 
 const AUTOLINK_PATTERN = /(https?:\/\/[^\s<]+|www\.[^\s<]+)/giu;
+
+// Bare session resource links in prose (`session://<id>`,
+// `lody://session/<id>?workspace=…`) become the same chip as the Markdown link
+// form. The scan only finds the scheme; `parseSessionLink` alone decides what
+// is a session link, and a candidate it rejects stays text. Inline code keeps
+// the URL-only pattern: a URI quoted as code is being shown, not referenced.
+const SESSION_URI_SCHEME = [...SESSION_LINK_SCHEMES, 'session']
+  .map((scheme) => scheme.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+  .join('|');
+const SESSION_URI_PATTERN = new RegExp(`^(?:${SESSION_URI_SCHEME}):\\/\\/`, 'iu');
+const TEXT_AUTOLINK_PATTERN = new RegExp(
+  `(https?:\\/\\/[^\\s<]+|www\\.[^\\s<]+|(?:${SESSION_URI_SCHEME}):\\/\\/[^\\s<]+)`,
+  'giu'
+);
 
 // Both autolinkers end a bare URL at whitespace, but CJK prose is written
 // without one, so `见 https://example.com/a。然后` swallows the rest of the
@@ -505,12 +526,12 @@ const createTextLinkNode = (url: string, text: string, title: string | null = nu
   children: [{ type: 'text', value: text }],
 });
 
-const linkifyTextValue = (value: string): MdastNode[] => {
+const linkifyTextValue = (value: string, pattern: RegExp = AUTOLINK_PATTERN): MdastNode[] => {
   const result: MdastNode[] = [];
-  AUTOLINK_PATTERN.lastIndex = 0;
+  pattern.lastIndex = 0;
 
   let cursor = 0;
-  let match = AUTOLINK_PATTERN.exec(value);
+  let match = pattern.exec(value);
   if (!match) {
     return [{ type: 'text', value }];
   }
@@ -525,7 +546,7 @@ const linkifyTextValue = (value: string): MdastNode[] => {
     }
 
     const { url, trailing } = splitAutolinkTrailing(rawUrl);
-    if (url.length === 0) {
+    if (url.length === 0 || (SESSION_URI_PATTERN.test(url) && !parseSessionLink(url))) {
       result.push({ type: 'text', value: rawUrl });
     } else {
       const href = url.startsWith('www.') ? `https://${url}` : url;
@@ -537,7 +558,7 @@ const linkifyTextValue = (value: string): MdastNode[] => {
     }
 
     cursor = matchEnd;
-    match = AUTOLINK_PATTERN.exec(value);
+    match = pattern.exec(value);
   }
 
   if (cursor < value.length) {
@@ -780,7 +801,7 @@ const remarkLinkifyPlainUrls = () => {
   return (tree: unknown) => {
     transformMdastChildren(tree, (child) => {
       if (child.type === 'text' && typeof child.value === 'string') {
-        return { nodes: linkifyTextValue(child.value) };
+        return { nodes: linkifyTextValue(child.value, TEXT_AUTOLINK_PATTERN) };
       }
 
       if (child.type === 'inlineCode' && typeof child.value === 'string') {
