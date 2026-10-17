@@ -269,3 +269,46 @@ describe('resolveFilePreviewPath tolerant resolution against a real filesystem',
     expect(result.ok ? 'ok' : result.rejection.code).toBe('file_not_found');
   });
 });
+
+describe('resolveFilePreviewPath home-relative requests', () => {
+  const created: string[] = [];
+  afterEach(async () => {
+    await Promise.all(created.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+  const makeDir = async (prefix: string) => {
+    const dir = await mkdtemp(path.join(tmpdir(), prefix));
+    created.push(dir);
+    return dir;
+  };
+
+  it('expands `~/` against the machine home, not the workspace, under the same boundary', async () => {
+    const workspaceRoot = await makeDir('policy-ws-');
+    const homeDir = await makeDir('policy-home-');
+    // A same-named file inside the workspace must not answer for the home one.
+    await mkdir(path.join(workspaceRoot, '~', 'self', 'done'), { recursive: true });
+    await writeFile(path.join(workspaceRoot, '~', 'self', 'done', '2026-10-14.md'), 'workspace\n');
+    await mkdir(path.join(homeDir, 'self', 'done'), { recursive: true });
+    const homeFile = path.join(homeDir, 'self', 'done', '2026-10-14.md');
+    await writeFile(homeFile, 'home\n');
+
+    const local = resolveFilePreviewPath({
+      workspaceRoot,
+      requestedPath: '~/self/done/2026-10-14.md',
+      extraRoots: [],
+      options: { homeDir, allowArbitraryPaths: true },
+    });
+    expect(local.ok && local.resolved).toMatchObject({
+      absolutePath: fs.realpathSync(homeFile),
+      external: true,
+    });
+
+    // The hosted boundary stays: home is no more allowed spelled `~/` than absolute.
+    const hosted = resolveFilePreviewPath({
+      workspaceRoot,
+      requestedPath: '~/self/done/2026-10-14.md',
+      extraRoots: [],
+      options: { homeDir },
+    });
+    expect(hosted.ok ? 'ok' : hosted.rejection.code).toBe('path_not_allowed');
+  });
+});

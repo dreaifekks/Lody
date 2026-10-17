@@ -11,21 +11,33 @@ local platform the agent service's usage port is a ledger on its own disk
 (`apps/cli/src/lib/usage/local-usage-ledger.ts`, `<data dir>/usage-ledger.json`).
 It receives the cumulative per-model counters an agent reports, adds what a
 reading grew by since the highest one of its accounting scope, which is how the
-hosted service counts too, and files the growth under the hour it arrived and
-the workspace of the session. Hours older than a week are kept as days.
+hosted service counts too, and files the growth under the hour it arrived, the
+workspace of the session and the builtin agent that reported it. Hours older
+than a week are kept as days. A ledger written before the agent was kept
+(version 1) is read with every row's agent unknown.
 
 ```text
  Settings > AI Usage ─ lan/machines ─▶ agent service ─ lan/usage ─▶ every member of the LAN
                       lan/usage (self)  of this machine   (direct, else the hub)  answers from its ledger
 ```
 
-The page asks every machine of the workspace's LAN with `lan/usage`, a request
-members put to each other like `lan/update-machine`, and builds the hosted
-page's timeline, calendar and day views from the answers
+The page asks every machine of the workspace's LAN with `lan/usage-by-agent`,
+a request members put to each other like `lan/update-machine`, and builds the
+hosted page's timeline, calendar and day views from the answers
 (`packages/components/src/lib/lan-usage.ts`). Every member of a LAN is one user,
-so the second chart splits by machine where the hosted page splits by member.
-A machine that is offline or runs a build without `lan/usage` is named under
-the header and left out; its usage is on its own disk until it answers again.
+so the second chart splits by machine where the hosted page splits by member,
+and a third splits by agent. Codex reports its background review as the model
+`codex-auto-review`; the agent split lists it as an agent of its own, the
+model split as reported.
+
+Both request types are strict on both sides, so a build before the agent was
+kept refuses `lan/usage-by-agent` as unreadable, and would refuse `lan/usage`
+rows that carried an agent. The page therefore asks `lan/usage-by-agent`
+first and, where a machine refuses it, `lan/usage`, whose rows it reads with
+the agent unknown; a machine of this build answers `lan/usage` with the
+rows an older page expects, one per hour and model. A machine that is offline
+or runs a build without either request is named under the header and left
+out; its usage is on its own disk until it answers again.
 The `localUsage` platform capability shows the page where `usageAnalytics`
 does not.
 

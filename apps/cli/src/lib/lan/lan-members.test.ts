@@ -597,10 +597,31 @@ describe('the machines of the LANs of a machine', () => {
       type: 'lan/usage',
       result: { rows: [{ startMs: hour, modelId: 'claude-opus', inputTokens: 500 }] },
     });
+    // A build before the agent was kept reads these rows strictly.
+    expect(answer.ok && answer.type === 'lan/usage' && answer.result.rows[0]).not.toHaveProperty(
+      'agent'
+    );
     expect(await ask(hour + 3_600_000)).toEqual({
       ok: true,
       type: 'lan/usage',
       result: { rows: [] },
+    });
+
+    const byAgent = LanMemberControlResponseSchema.parse(
+      await answerLanMemberControl({
+        request: { type: 'lan/usage-by-agent', machineId: THIS, workspaceId: HOME },
+        workspace: home,
+        machineId: THIS,
+        control: createControl(),
+        usage: ledger,
+      })
+    );
+    expect(byAgent).toMatchObject({
+      ok: true,
+      type: 'lan/usage-by-agent',
+      result: {
+        rows: [{ startMs: hour, modelId: 'claude-opus', agent: 'claude', inputTokens: 500 }],
+      },
     });
     ledger.close();
   });

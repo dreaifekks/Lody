@@ -60,6 +60,8 @@ export type SettingsUsageTimelineBucket = {
   tokens: number;
   costUSD: number;
   byModel: Array<{ modelId: string; tokens: number; costUSD: number }>;
+  /** By the agent that used the model; only a LAN's machines count it. */
+  byAgent?: Array<{ agentId: string; tokens: number; costUSD: number }>;
   byUser: Array<{ userId: string; tokens: number; costUSD: number }>;
 };
 
@@ -93,6 +95,8 @@ export type SettingsUsageDayData = {
     webSearchRequests: number;
   };
   byModel: Array<{ modelId: string; tokens: number; costUSD: number }>;
+  /** By the agent that used the model; only a LAN's machines count it. */
+  byAgent?: Array<{ agentId: string; tokens: number; costUSD: number }>;
   byUser: Array<{ userId: string; tokens: number; costUSD: number }>;
   users: Record<string, { name?: string; email?: string; image?: string | null }>;
 };

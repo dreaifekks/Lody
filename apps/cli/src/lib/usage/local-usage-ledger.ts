@@ -7,7 +7,9 @@ import {
   isBuiltinAgentType,
   LAN_USAGE_DAY_MS,
   LAN_USAGE_HOUR_MS,
+  LanUsageAgentRowSchema,
   LanUsageRowSchema,
+  type LanUsageAgentRow,
   type LanUsageRow,
 } from '@lody/shared';
 import type { SessionUsageUpdate } from 'acp-extension-core';
@@ -40,15 +42,27 @@ const UsageUpdateSchema = z.object({
   modelUsage: z.record(z.string().min(1), CountersSchema.passthrough()).optional(),
 });
 
-const LedgerFileSchema = z.object({
-  version: z.literal(1),
-  /** The highest cumulative counters each accounting scope reported, per model. */
-  scopes: z.record(
-    z.string(),
-    z.object({ seenAt: z.number(), models: z.record(z.string(), CountersSchema) })
-  ),
-  workspaces: z.record(z.string(), z.array(z.unknown())),
-});
+/** The highest cumulative counters each accounting scope reported, per model. */
+const ScopesSchema = z.record(
+  z.string(),
+  z.object({ seenAt: z.number(), models: z.record(z.string(), CountersSchema) })
+);
+/**
+ * Version 1 filed rows by hour and model; version 2 adds the agent that used
+ * the model, which rows from before it do not have.
+ */
+const LedgerFileSchema = z.discriminatedUnion('version', [
+  z.object({
+    version: z.literal(1),
+    scopes: ScopesSchema,
+    workspaces: z.record(z.string(), z.array(z.unknown())),
+  }),
+  z.object({
+    version: z.literal(2),
+    scopes: ScopesSchema,
+    workspaces: z.record(z.string(), z.array(z.unknown())),
+  }),
+]);
 type LedgerFile = z.infer<typeof LedgerFileSchema>;
 
 const COUNTER_KEYS = [
@@ -59,13 +73,20 @@ const COUNTER_KEYS = [
   'reasoningOutputTokens',
 ] as const;
 
-const rowKey = (row: Pick<LanUsageRow, 'startMs' | 'modelId'>) => `${row.startMs}|${row.modelId}`;
+const rowKey = (row: Pick<LanUsageAgentRow, 'startMs' | 'modelId' | 'agent'>) =>
+  `${row.startMs}|${row.modelId}|${row.agent ?? ''}`;
 
-function emptyRow(startMs: number, spanMs: LanUsageRow['spanMs'], modelId: string): LanUsageRow {
+function emptyRow(
+  startMs: number,
+  spanMs: LanUsageRow['spanMs'],
+  modelId: string,
+  agent: string | null
+): LanUsageAgentRow {
   return {
     startMs,
     spanMs,
     modelId,
+    agent,
     inputTokens: 0,
     outputTokens: 0,
     cacheReadInputTokens: 0,
@@ -80,6 +101,11 @@ function addRow(target: LanUsageRow, source: LanUsageRow): void {
   target.costUSD += source.costUSD;
 }
 
+/** The row as builds before the agent was kept read it. */
+function withoutAgent({ agent: _agent, ...row }: LanUsageAgentRow): LanUsageRow {
+  return row;
+}
+
 /**
  * Counts what each accounting scope reported since it last did. Scopes report
  * cumulative counters; a smaller reading, such as an agent that started its
@@ -88,7 +114,7 @@ function addRow(target: LanUsageRow, source: LanUsageRow): void {
  */
 export class LocalUsageLedger implements CloudUsagePort {
   private readonly scopes = new Map<string, { seenAt: number; models: Record<string, Counters> }>();
-  private readonly workspaces = new Map<string, Map<string, LanUsageRow>>();
+  private readonly workspaces = new Map<string, Map<string, LanUsageAgentRow>>();
   private saveTimer: NodeJS.Timeout | null = null;
   private dirty = false;
   private closed = false;
@@ -121,7 +147,7 @@ export class LocalUsageLedger implements CloudUsagePort {
       const current = CountersSchema.safeParse(reported);
       if (!current.success) continue;
       const before = scope.models[modelId];
-      const added = emptyRow(startMs, LAN_USAGE_HOUR_MS, modelId);
+      const added = emptyRow(startMs, LAN_USAGE_HOUR_MS, modelId, input.cliType);
       const highest: Counters = { ...current.data };
       let grew = false;
       for (const counter of COUNTER_KEYS) {
@@ -158,14 +184,32 @@ export class LocalUsageLedger implements CloudUsagePort {
     this.save();
   }
 
-  /** What this machine counted for a workspace, in buckets that end after `sinceMs`. */
-  report(workspaceId: string, sinceMs = 0): LanUsageRow[] {
+  /**
+   * What this machine counted for a workspace, in buckets that end after
+   * `sinceMs`, with the agent that used each model.
+   */
+  reportByAgent(workspaceId: string, sinceMs = 0): LanUsageAgentRow[] {
     const rows = this.workspaces.get(workspaceId);
     if (!rows) return [];
     return [...rows.values()]
       .filter((row) => row.startMs + row.spanMs > sinceMs)
       .sort((left, right) => left.startMs - right.startMs)
       .map((row) => ({ ...row }));
+  }
+
+  /**
+   * The same by model alone, one row per bucket and model as builds before
+   * the agent was kept expect it.
+   */
+  report(workspaceId: string, sinceMs = 0): LanUsageRow[] {
+    const merged = new Map<string, LanUsageRow>();
+    for (const row of this.reportByAgent(workspaceId, sinceMs)) {
+      const key = `${row.startMs}|${row.modelId}`;
+      const existing = merged.get(key);
+      if (existing) addRow(existing, row);
+      else merged.set(key, withoutAgent(row));
+    }
+    return [...merged.values()];
   }
 
   /**
@@ -179,7 +223,7 @@ export class LocalUsageLedger implements CloudUsagePort {
     if (this.dirty) this.save();
   }
 
-  private rowsOf(workspaceId: string): Map<string, LanUsageRow> {
+  private rowsOf(workspaceId: string): Map<string, LanUsageAgentRow> {
     let rows = this.workspaces.get(workspaceId);
     if (!rows) {
       rows = new Map();
@@ -218,7 +262,8 @@ export class LocalUsageLedger implements CloudUsagePort {
         const day = emptyRow(
           Math.floor(row.startMs / LAN_USAGE_DAY_MS) * LAN_USAGE_DAY_MS,
           LAN_USAGE_DAY_MS,
-          row.modelId
+          row.modelId,
+          row.agent
         );
         const existing = rows.get(rowKey(day));
         if (existing) addRow(existing, row);
@@ -236,7 +281,7 @@ export class LocalUsageLedger implements CloudUsagePort {
   private save(): void {
     this.compact();
     const file: LedgerFile = {
-      version: 1,
+      version: 2,
       scopes: Object.fromEntries(this.scopes),
       workspaces: Object.fromEntries(
         [...this.workspaces].map(([workspaceId, rows]) => [workspaceId, [...rows.values()]])
@@ -284,7 +329,13 @@ export class LocalUsageLedger implements CloudUsagePort {
     for (const [workspaceId, rows] of Object.entries(parsed.data.workspaces)) {
       const map = this.rowsOf(workspaceId);
       for (const candidate of rows) {
-        const row = LanUsageRowSchema.safeParse(candidate);
+        // A version-1 row was counted before the agent was kept: it stays unknown.
+        const row =
+          parsed.data.version === 1
+            ? LanUsageRowSchema.transform((legacy) => ({ ...legacy, agent: null })).safeParse(
+                candidate
+              )
+            : LanUsageAgentRowSchema.safeParse(candidate);
         if (row.success) map.set(rowKey(row.data), row.data);
       }
     }

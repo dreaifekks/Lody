@@ -773,6 +773,22 @@ export function summarizeSidebarGroupActivity(
   return { failed, waiting, working, sending, unread };
 }
 
+/** The activity of two folded groups shown by one header. */
+export function addSidebarGroupActivity(
+  left: SidebarGroupActivity | null | undefined,
+  right: SidebarGroupActivity | null | undefined
+): SidebarGroupActivity | null {
+  if (!hasSidebarGroupActivity(right)) return left ?? null;
+  if (!hasSidebarGroupActivity(left)) return right ?? null;
+  return {
+    failed: left!.failed + right!.failed,
+    waiting: left!.waiting + right!.waiting,
+    working: left!.working + right!.working,
+    sending: left!.sending + right!.sending,
+    unread: left!.unread + right!.unread,
+  };
+}
+
 export function hasSidebarGroupActivity(activity: SidebarGroupActivity | null | undefined) {
   return Boolean(
     activity &&

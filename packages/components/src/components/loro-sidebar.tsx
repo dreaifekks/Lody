@@ -82,6 +82,7 @@ import {
   SIDEBAR_CAPTION_TEXT_CLASS,
   SIDEBAR_HELPER_TEXT_CLASS,
   SIDEBAR_CONTROL_TEXT_CLASS,
+  type SidebarGroupActivity,
 } from './sidebar-row-shared';
 
 export type LoroSidebarNavKey = 'home' | 'archive' | 'schedules';
@@ -229,6 +230,13 @@ export interface LoroSidebarProps {
   pinnedItems?: SidebarUpdatedItem[];
   /** Whether the dedicated pinned section is collapsed. */
   pinnedSectionCollapsed?: boolean;
+  /**
+   * Pinned local projects, listed in the Pinned section before its Sessions.
+   * The section shows for them alone, in both organize modes.
+   */
+  pinnedProjectsContent?: ReactNode;
+  /** What the pinned projects hide while the section is folded. */
+  pinnedProjectsActivity?: SidebarGroupActivity | null;
   /** Selected item id used to highlight a row in 'updated' mode. */
   updatedSelectedItemId?: string | null;
   /** Per-bucket collapse state for the 'updated' organize mode. */
@@ -817,6 +825,8 @@ export const LoroSidebar = memo(function LoroSidebar({
   updatedItems,
   pinnedItems,
   pinnedSectionCollapsed = false,
+  pinnedProjectsContent,
+  pinnedProjectsActivity,
   updatedSelectedItemId,
   updatedBucketsCollapsed,
   updatedShowFullBuckets,
@@ -1002,7 +1012,7 @@ export const LoroSidebar = memo(function LoroSidebar({
         />
       ))
     : null;
-  const hasPinnedItems = Boolean(pinnedItems?.length);
+  const hasPinnedItems = Boolean(pinnedItems?.length) || Boolean(pinnedProjectsContent);
   const isWorkspaceEmpty =
     organizeMode === 'workspace' &&
     !topContent &&
@@ -1516,6 +1526,8 @@ export const LoroSidebar = memo(function LoroSidebar({
                   showProjectContext={organizeMode === 'updated' && showUpdatedProjectNames}
                   selectedItemId={updatedSelectedItemId ?? null}
                   collapsedBuckets={pinnedSectionCollapsed ? PINNED_BUCKETS_COLLAPSED : undefined}
+                  leadingContent={pinnedProjectsContent}
+                  leadingActivity={pinnedProjectsActivity}
                   labels={{
                     heading: mergedLabels.pinned,
                     emptyTitle: mergedLabels.updated.emptyTitle,

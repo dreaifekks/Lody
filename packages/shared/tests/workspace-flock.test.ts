@@ -10,6 +10,7 @@ import {
   writeWorkspaceAgentRoleToFlock,
   getWorkspaceFlockDocId,
   getWorkspaceAgentTools,
+  getWorkspacePinnedProjectKeys,
   getWorkspaceVoiceSetting,
   isWorkspacePromptSuggestionsEnabled,
   listWorkspaceMcpServers,
@@ -174,6 +175,30 @@ describe('workspace Flock helpers', () => {
 
     const off = applyWorkspaceFlockRowEvents(rows, [{ key, value: undefined }]);
     expect(isWorkspacePromptSuggestionsEnabled(off)).toBe(false);
+  });
+
+  it('keeps the pinned projects as trimmed, de-duplicated machine-qualified keys', () => {
+    const key = workspaceFlockKeys.pinnedProjectsSetting();
+    expect(
+      parseWorkspaceFlockRow(key, {
+        version: 1,
+        keys: ['machine-a:project-1', ' machine-b:project-2 ', 'machine-a:project-1', 7, ''],
+      })
+    ).toEqual({ key, value: { version: 1, keys: ['machine-a:project-1', 'machine-b:project-2'] } });
+    expect(parseWorkspaceFlockRow(key, { version: 2, keys: [] })).toBeUndefined();
+    expect(parseWorkspaceFlockRow(key, { version: 1 })).toBeUndefined();
+
+    const flock = new FakeWorkspaceFlock();
+    expect(getWorkspacePinnedProjectKeys(readWorkspaceFlockRowsFromFlock(flock))).toEqual([]);
+    flock.set(key, { version: 1, keys: ['machine-a:project-1'] });
+    const rows = readWorkspaceFlockRowsFromFlock(flock);
+    expect(getWorkspacePinnedProjectKeys(rows)).toEqual(['machine-a:project-1']);
+    // Sibling settings in the same family neither read as pins nor hide them.
+    expect(isWorkspacePromptSuggestionsEnabled(rows)).toBe(false);
+    expect(getWorkspaceAgentTools(rows)).toEqual([]);
+
+    const cleared = applyWorkspaceFlockRowEvents(rows, [{ key, value: undefined }]);
+    expect(getWorkspacePinnedProjectKeys(cleared)).toEqual([]);
   });
 
   it('does not commit unchanged writes and deletes only once', () => {

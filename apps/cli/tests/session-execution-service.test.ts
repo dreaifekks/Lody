@@ -7,7 +7,34 @@ import {
   type PromptRequest,
   type PromptResponse,
 } from '@agentclientprotocol/sdk';
-import { ACP_CAPABILITY_CACHE_VERSION, ACP_CAPABILITY_REFRESH_CACHE_TTL_MS, type AcpCapabilityCacheEntry, getCurrentPromptSuggestion, getMachineRoomId, getSessionRoomId, parseSessionNotification, SESSION_CANCEL_NO_ACTIVE_TURN_ERROR, buildSessionTurnInputConfig, inputBlocksToHistoryItems, SessionStatusFactory, type ACPSessionId, type AgentConfigId, type AgentConfigMeta, type AgentRoleId, type ChatFailedReason, type LocalProjectId, type MachineFlockKey, type MachineId, type SessionGoalMessage, type SessionHistoryInput, type SessionId, type SessionInputBlock, type SessionMeta, type SessionStatus, type WorkspaceId } from '@lody/shared';
+import {
+  ACP_CAPABILITY_CACHE_VERSION,
+  ACP_CAPABILITY_REFRESH_CACHE_TTL_MS,
+  type AcpCapabilityCacheEntry,
+  getCurrentPromptSuggestion,
+  getMachineRoomId,
+  getSessionRoomId,
+  parseSessionNotification,
+  SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
+  buildSessionTurnInputConfig,
+  inputBlocksToHistoryItems,
+  SessionStatusFactory,
+  type ACPSessionId,
+  type AgentConfigId,
+  type AgentConfigMeta,
+  type AgentRoleId,
+  type ChatFailedReason,
+  type LocalProjectId,
+  type MachineFlockKey,
+  type MachineId,
+  type SessionGoalMessage,
+  type SessionHistoryInput,
+  type SessionId,
+  type SessionInputBlock,
+  type SessionMeta,
+  type SessionStatus,
+  type WorkspaceId,
+} from '@lody/shared';
 import Database from 'better-sqlite3';
 import { Effect, Fiber } from 'effect';
 import type { LoroRepo } from 'loro-repo';
@@ -5260,6 +5287,12 @@ describe('SessionExecutionService', () => {
         updateAcpCapabilities: vi.fn(async () => {}),
       } as unknown as LoroDocumentManager,
       buildAcpPromptBlocks: vi.fn(async () => [{ type: 'text', text: 'built prompt' }] as any),
+      // The start publication is detached: it runs after the session exists and a
+      // failure must not reach the turn.
+      publishCodeCollabSharedStateOnSessionStart: vi.fn(async () => {
+        expect(sessionManager.createSession).toHaveBeenCalledTimes(1);
+        throw new Error('scan failed');
+      }),
     });
 
     const service = new SessionExecutionService(deps);
@@ -5284,6 +5317,7 @@ describe('SessionExecutionService', () => {
         requesterUserId: 'user-2',
       })
     );
+    expect(deps.publishCodeCollabSharedStateOnSessionStart).toHaveBeenCalledWith('session-2');
     expect(sessionDoc.setStatus.mock.calls.map(([status]) => status).slice(0, 3)).toEqual([
       SessionStatusFactory.initializing(),
       SessionStatusFactory.initializing('git-clone'),
@@ -11225,7 +11259,11 @@ describe('Operation Inbox execution boundary', () => {
       });
       release.resolve();
       await running;
-      expect((await (await createSessionBackend(f.doc)).readHistory()).find((turn) => turn.id === 'human-input')).toMatchObject({ status: 'canceled', cancellationReason: 'user_stop' });
+      expect(
+        (await (await createSessionBackend(f.doc)).readHistory()).find(
+          (turn) => turn.id === 'human-input'
+        )
+      ).toMatchObject({ status: 'canceled', cancellationReason: 'user_stop' });
       expect(received).toEqual([]);
       expect(
         (f.store as unknown as { db: Database.Database }).db

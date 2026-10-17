@@ -1,7 +1,8 @@
-# LAN credentials: GitHub and push
+# LAN credentials: GitHub, push and environment variables
 
 The credentials a [LAN](lan.md) holds in place of hosted Lody's services: one
-GitHub token on the host, and copies of every credential on each member.
+GitHub token on the host, the environment variables its MCP servers read, and
+copies of every credential on each member.
 
 ## GitHub
 
@@ -61,10 +62,41 @@ repository" (Settings > Projects, the mobile home) and the GitHub step of
 onboarding stay hidden: a LAN has no registry to add to, and onboarding runs
 before a LAN is joined.
 
+## Environment variables for MCP servers
+
+A workspace MCP server names its secrets as `${VAR}` or `envPassthrough`, which
+the daemon that starts the session fills from its own environment
+(`packages/shared/src/workspace-mcp.ts`); the plaintext `env` of the catalog is
+a workspace document every renderer reads, so a token does not belong there. On
+a LAN the daemons of every member would each need the variable. The host keeps
+one table instead, `env.json` of its data directory, one object of name to
+value:
+
+```text
+ lody lan env set NAME < value ─ PUT /lan/credentials/env ─▶ hub: env.json
+ lody lan env list              ─ GET /lan/credentials/env ◀─ the names alone
+ lody lan env unset NAME        ─ DELETE /lan/credentials/env
+```
+
+- `set` reads the value from standard input and refuses a terminal, so a value
+  never stands in a shell history or an argument list; `--data-dir` writes the
+  host's file on this machine instead of asking the hub. `list` and the route
+  behind it carry names only. The hub logs the name of a variable, never its
+  value.
+- Members get the table with the rest of the credentials (below) and a session
+  start reads this machine's copy (`readLanCredentialsEnv`) into the MCP
+  resolution of `loadSessionMcpCatalog`, behind the daemon's own environment: a
+  variable the machine sets itself keeps its value, the LAN fills what it
+  lacks. Nothing of the table enters an agent process; only an MCP server that
+  names a variable gets it. A copy nobody can read is an empty table.
+- A hub of an earlier build answers the document without `env`, which a newer
+  member takes as an empty table; a member of an earlier build keeps the rest
+  of the copy and ignores the new file.
+
 ## Credentials on every member
 
-The hub holds three credentials: the GitHub token, the APNs key, and the
-phones registered for push. A standby copies them with the rest of the hub, so
+The hub holds four credentials: the GitHub token, the APNs key, the phones
+registered for push, and the environment table. A standby copies them with the rest of the hub, so
 a hub started from its copy pushes and hands out the token as before. Every
 agent service also keeps a copy of them, so they outlast the hub being away
 and a hub that has none of them yet:
@@ -93,8 +125,8 @@ and a hub that has none of them yet:
 - A hub started from a standby copy takes what that copy lacks from the
   machine's own copy of the credentials.
 
-`lody lan github setup` and `lody lan push setup` send the credential to the hub
-of the LAN from any member; `--data-dir` writes into a hub's data directory on
+`lody lan github setup`, `lody lan push setup` and `lody lan env set` send the
+credential to the hub of the LAN from any member; `--data-dir` writes into a hub's data directory on
 the machine instead. The renderer never reaches these routes: the bridge
 forwards `/ds/` alone, as the standby copy and the credentials route carry
 what only a member may hold.

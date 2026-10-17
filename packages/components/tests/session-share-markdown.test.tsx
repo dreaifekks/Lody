@@ -329,6 +329,57 @@ describe('Markdown session links', () => {
     expect(opened).toEqual([url]);
   });
 
+  it.each([
+    [
+      'session://1ed6ba53-93bc-46d5-91e3-bb693cb0e729',
+      'lody://session/1ed6ba53-93bc-46d5-91e3-bb693cb0e729',
+    ],
+    [
+      'lody://session/1ed6ba53-93bc-46d5-91e3-bb693cb0e729?workspace=ws_1',
+      'lody://session/1ed6ba53-93bc-46d5-91e3-bb693cb0e729?workspace=ws_1',
+    ],
+  ])(
+    'turns a bare %s in prose into the same chip, keeping the punctuation around it',
+    async (uri, url) => {
+      await act(async () =>
+        root.render(
+          <SessionLinkProvider enabled>
+            <MarkdownRenderer text={`详见${uri}，以及 ${uri}. 完`} />
+          </SessionLinkProvider>
+        )
+      );
+      const chips = [...container.querySelectorAll<HTMLButtonElement>('button[data-session-link]')];
+      expect(chips.map((chip) => chip.textContent)).toEqual(['1ed6ba53', '1ed6ba53']);
+      expect(container.querySelector('a')).toBeNull();
+      expect(container.textContent).toBe('详见1ed6ba53，以及 1ed6ba53. 完');
+      await act(async () => chips[0]!.click());
+      expect(opened).toEqual([url]);
+    }
+  );
+
+  it.each([
+    '`session://1ed6ba53-93bc-46d5-91e3-bb693cb0e729`',
+    '```\nlody://session/1ed6ba53-93bc-46d5-91e3-bb693cb0e729\n```',
+    'lody://session/1ed6ba53-93bc-46d5-91e3-bb693cb0e729?next=1',
+    'lody://session/../1ed6ba53-93bc-46d5-91e3-bb693cb0e729',
+    'session://bad.id',
+  ])(
+    'leaves %s as it is: code is shown, and only parseSessionLink says what a link is',
+    async (text) => {
+      await act(async () =>
+        root.render(
+          <SessionLinkProvider enabled>
+            <MarkdownRenderer text={text} />
+          </SessionLinkProvider>
+        )
+      );
+      expect(container.querySelector('[data-session-link]')).toBeNull();
+      expect(container.querySelector('a')).toBeNull();
+      const uri = text.replace(/^```\n|\n```$|`/gu, '');
+      expect((container.querySelector('code') ?? container).textContent).toContain(uri);
+    }
+  );
+
   it('stays inert without live navigation capability', async () => {
     await act(async () =>
       root.render(

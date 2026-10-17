@@ -717,6 +717,7 @@ describe('what the members of a LAN ask of each other', () => {
     categories: ['agentConfigs', 'localProjects'],
   };
   const usage = { type: 'lan/usage', ...member, sinceMs: 1_700_000_000_000 };
+  const usageByAgent = { type: 'lan/usage-by-agent', ...member, sinceMs: 1_700_000_000_000 };
   const restart = { type: 'lan/restart-machine', ...member };
   const github = { type: 'lan/github', ...member };
 
@@ -728,6 +729,8 @@ describe('what the members of a LAN ask of each other', () => {
       importing,
       usage,
       { ...usage, sinceMs: undefined },
+      usageByAgent,
+      { ...usageByAgent, sinceMs: undefined },
       restart,
       github,
     ]) {
@@ -894,6 +897,12 @@ describe('what the members of a LAN ask of each other', () => {
       { ok: true, type: 'lan/forward', result: { response: started } },
       { ok: true, type: 'lan/forward', result: { response: refused } },
       { ok: true, type: 'lan/usage', result: { rows: [usageRow] } },
+      {
+        ok: true,
+        type: 'lan/usage-by-agent',
+        result: { rows: [{ ...usageRow, agent: 'claude' }] },
+      },
+      { ok: true, type: 'lan/usage-by-agent', result: { rows: [{ ...usageRow, agent: null }] } },
       { ok: true, type: 'lan/restart-machine', result: { outcome: 'started' } },
       { ok: true, type: 'lan/github', result: { own: { login: 'me' }, lan: null } },
       { ok: true, type: 'lan/github', result: { own: null, lan: { login: null } } },
@@ -913,6 +922,11 @@ describe('what the members of a LAN ask of each other', () => {
         ok: true,
         type: 'lan/forward',
         result: { response: { ok: true, type: 'lan/usage', result: { rows: [] } } },
+      },
+      {
+        ok: true,
+        type: 'lan/forward',
+        result: { response: { ok: true, type: 'lan/usage-by-agent', result: { rows: [] } } },
       },
     ]) {
       expect(answers(response)).toEqual(all(true));
@@ -945,5 +959,13 @@ describe('what the members of a LAN ask of each other', () => {
         result: { rows: [{ ...usageRow, costUSD: undefined }] },
       })
     ).toEqual(all(false));
+    // The agent travels only with its own request: a build before it reads
+    // `lan/usage` rows strictly, and a row of the new one says which agent it had.
+    expect(
+      answers({ ok: true, type: 'lan/usage', result: { rows: [{ ...usageRow, agent: 'claude' }] } })
+    ).toEqual(all(false));
+    expect(answers({ ok: true, type: 'lan/usage-by-agent', result: { rows: [usageRow] } })).toEqual(
+      all(false)
+    );
   });
 });

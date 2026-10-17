@@ -1,8 +1,9 @@
 // What every member of a LAN keeps of the credentials its hub holds: the GitHub
-// token, the APNs key and the phones registered for push. A member copies them
-// from the hub, so it still has them while the hub is away, and a machine that
-// takes the hub over finds them in place. The copy sits in the member's data
-// directory in the hub's own file layout and never leaves the machine.
+// token, the APNs key, the phones registered for push and the environment
+// variables MCP servers read. A member copies them from the hub, so it still
+// has them while the hub is away, and a machine that takes the hub over finds
+// them in place. The copy sits in the member's data directory in the hub's own
+// file layout and never leaves the machine.
 import fs from 'node:fs';
 import path from 'node:path';
 import { getLodyDataDir } from './installation-profile';
@@ -12,9 +13,13 @@ import type { LanGitHubCredential } from './lan-github';
 export const LAN_HUB_CREDENTIALS_PATH = '/lan/credentials';
 export const LAN_HUB_CREDENTIALS_GITHUB_PATH = '/lan/credentials/github';
 export const LAN_HUB_CREDENTIALS_APNS_PATH = '/lan/credentials/apns';
+/** The names: `GET`; one variable: `PUT` `{ name, value }` or `DELETE` `{ name }`. */
+export const LAN_HUB_CREDENTIALS_ENV_PATH = '/lan/credentials/env';
 
 const DIRECTORY_NAME = 'lan-credentials';
 const GITHUB_FILE_NAME = 'github.json';
+/** The environment variables of the LAN, one JSON object of name to value. */
+export const LAN_ENV_FILE_NAME = 'env.json';
 /** Names the copy held, so an unchanged one is not written again. */
 export const LAN_CREDENTIALS_REVISION_FILE_NAME = 'revision';
 const HUB_ID_PATTERN = /^[a-f0-9]{32}$/;
@@ -58,4 +63,37 @@ export function readLanCredentialsGitHub(
   } catch {
     return null;
   }
+}
+
+/**
+ * The environment variables of a LAN as this machine's copy holds them; empty
+ * when it holds none or cannot be read. They fill in `${VAR}` and
+ * `envPassthrough` of the workspace's MCP servers behind the machine's own
+ * daemon environment, which wins where both name a variable.
+ */
+export function readLanCredentialsEnv(hubId: string, dataDir?: string): Record<string, string> {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(
+      path.join(getLanCredentialsDirectory(hubId, dataDir), LAN_ENV_FILE_NAME),
+      'utf8'
+    );
+  } catch {
+    return {};
+  }
+  try {
+    return parseLanEnv(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+}
+
+/** Keeps the string values of an object; anything else is left out. */
+export function parseLanEnv(value: unknown): Record<string, string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const env: Record<string, string> = {};
+  for (const [name, entry] of Object.entries(value)) {
+    if (typeof entry === 'string') env[name] = entry;
+  }
+  return env;
 }

@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  matchWholeFilePath,
-  splitTextIntoFilePathSegments,
-} from '../src/lib/linkify-file-paths';
+import { matchWholeFilePath, splitTextIntoFilePathSegments } from '../src/lib/linkify-file-paths';
 
 const paths = (value: string): string[] =>
   splitTextIntoFilePathSegments(value)
@@ -91,6 +88,19 @@ describe('splitTextIntoFilePathSegments (prose)', () => {
     expect(paths('src/工具/a.b/说明')).toEqual([]);
   });
 
+  it('keeps a home-relative path whole instead of linking its tail', () => {
+    // `~` is not a path character, so the scan used to fail on it and link
+    // `/self/done/2026-10-14.md` instead, a file that exists nowhere.
+    expect(splitTextIntoFilePathSegments('written to ~/self/done/2026-10-14.md today')).toEqual([
+      { type: 'text', value: 'written to ' },
+      { type: 'path', value: '~/self/done/2026-10-14.md' },
+      { type: 'text', value: ' today' },
+    ]);
+    expect(paths('见~/notes/准备.md:12。')).toEqual(['~/notes/准备.md:12']);
+    // A lone `~` or `~user/…` is not a home-relative path.
+    expect(paths('a ~ b/c.ts and ~me/d.ts')).toEqual(['b/c.ts']);
+  });
+
   it('requires a slash or line suffix in prose', () => {
     expect(paths('we run Node.js in production')).toEqual([]);
     expect(paths('bump to version 2.0 today')).toEqual([]);
@@ -123,6 +133,7 @@ describe('matchWholeFilePath (inline code)', () => {
     expect(matchWholeFilePath('src/foo.ts:32')).toBe('src/foo.ts:32');
     expect(matchWholeFilePath('tsconfig.json')).toBe('tsconfig.json');
     expect(matchWholeFilePath('README.md')).toBe('README.md');
+    expect(matchWholeFilePath('~/self/done/2026-10-14.md')).toBe('~/self/done/2026-10-14.md');
   });
 
   it('rejects commands, identifiers, and unrecognized bare names', () => {

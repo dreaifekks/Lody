@@ -15,9 +15,7 @@ import { parseMarkdownAgentFileHref } from './markdown-agent-file-link';
 // Wrongly-linkified paths fail open: the file viewer's open handler already
 // degrades gracefully when a path cannot be resolved.
 
-export type FilePathTextSegment =
-  | { type: 'text'; value: string }
-  | { type: 'path'; value: string };
+export type FilePathTextSegment = { type: 'text'; value: string } | { type: 'path'; value: string };
 
 // One greedy run of path-ish characters, plus an optional GitHub/VSCode/colon
 // line suffix. The first segment is ASCII only, so a candidate does not swallow
@@ -32,12 +30,18 @@ export type FilePathTextSegment =
 // scan carries on after it. A dot with digits only is part of a name (`v1.2版`).
 // Each run is matched whole and nothing after it is required, so a failed
 // attempt re-reads only the run it is on and the scan stays linear.
+//
+// A candidate may start with `./`, `../`, `/` or `~/`. The home prefix has to be
+// part of the match: left in the text, the scan would resume at `/self/...` and
+// link a path that exists nowhere. Only the session's machine knows its home
+// directory, so `~/` travels verbatim and is expanded there; `~user/` is not a
+// form we read.
 const ASCII_SEGMENT = String.raw`[A-Za-z0-9._-]+`;
 const NON_ASCII_RUN = String.raw`(?:(?!\p{ASCII})[\p{L}\p{M}\p{N}])+`;
 const ASCII_EXTENSION = String.raw`\.[0-9]*[A-Za-z][A-Za-z0-9]*(?![A-Za-z0-9])`;
 const OTHER_DOT = String.raw`\.[0-9]*(?![A-Za-z0-9])`;
 const SEGMENT = String.raw`(?=[\p{L}\p{M}\p{N}._-])(?:${NON_ASCII_RUN}|[A-Za-z0-9_-]+|${OTHER_DOT}|${ASCII_EXTENSION}(?!\P{ASCII}))*(?:${ASCII_EXTENSION})?`;
-const PATH_PREFIX = String.raw`(?:\.{0,2}[\\/])?`;
+const PATH_PREFIX = String.raw`(?:(?:~|\.{0,2})[\\/])?`;
 const LINE_SUFFIX = String.raw`(?:#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?|:L?\d+(?:C\d+)?(?::\d+)?)`;
 const CANDIDATE_PATTERN = new RegExp(
   `${PATH_PREFIX}${ASCII_SEGMENT}(?:[\\\\/]${SEGMENT})*(?:${LINE_SUFFIX})?`,
@@ -144,8 +148,9 @@ export const splitTextIntoFilePathSegments = (value: string): FilePathTextSegmen
     const matchStart = match.index;
     const prevChar = matchStart > 0 ? value[matchStart - 1] : '';
 
-    // Skip the host/path part of an email like `user@example.com/x`.
-    const isEmailTail = prevChar === '@';
+    // Skip the host/path part of an email like `user@example.com/x`, and the
+    // tail of a `~user/x` home we do not read.
+    const isEmailTail = prevChar === '@' || prevChar === '~';
     // Cheap pre-filter: a real path has a separator, a line/anchor suffix, or
     // a `.ext`. Lone words fall through and stay as text.
     const couldBePath =
