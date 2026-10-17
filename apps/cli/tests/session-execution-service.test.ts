@@ -7,7 +7,34 @@ import {
   type PromptRequest,
   type PromptResponse,
 } from '@agentclientprotocol/sdk';
-import { ACP_CAPABILITY_CACHE_VERSION, ACP_CAPABILITY_REFRESH_CACHE_TTL_MS, type AcpCapabilityCacheEntry, getCurrentPromptSuggestion, getMachineRoomId, getSessionRoomId, parseSessionNotification, SESSION_CANCEL_NO_ACTIVE_TURN_ERROR, buildSessionTurnInputConfig, inputBlocksToHistoryItems, SessionStatusFactory, type ACPSessionId, type AgentConfigId, type AgentConfigMeta, type AgentRoleId, type ChatFailedReason, type LocalProjectId, type MachineFlockKey, type MachineId, type SessionGoalMessage, type SessionHistoryInput, type SessionId, type SessionInputBlock, type SessionMeta, type SessionStatus, type WorkspaceId } from '@lody/shared';
+import {
+  ACP_CAPABILITY_CACHE_VERSION,
+  ACP_CAPABILITY_REFRESH_CACHE_TTL_MS,
+  type AcpCapabilityCacheEntry,
+  getCurrentPromptSuggestion,
+  getMachineRoomId,
+  getSessionRoomId,
+  parseSessionNotification,
+  SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
+  buildSessionTurnInputConfig,
+  inputBlocksToHistoryItems,
+  SessionStatusFactory,
+  type ACPSessionId,
+  type AgentConfigId,
+  type AgentConfigMeta,
+  type AgentRoleId,
+  type ChatFailedReason,
+  type LocalProjectId,
+  type MachineFlockKey,
+  type MachineId,
+  type SessionGoalMessage,
+  type SessionHistoryInput,
+  type SessionId,
+  type SessionInputBlock,
+  type SessionMeta,
+  type SessionStatus,
+  type WorkspaceId,
+} from '@lody/shared';
 import Database from 'better-sqlite3';
 import { Effect, Fiber } from 'effect';
 import type { LoroRepo } from 'loro-repo';
@@ -11232,7 +11259,11 @@ describe('Operation Inbox execution boundary', () => {
       });
       release.resolve();
       await running;
-      expect((await (await createSessionBackend(f.doc)).readHistory()).find((turn) => turn.id === 'human-input')).toMatchObject({ status: 'canceled', cancellationReason: 'user_stop' });
+      expect(
+        (await (await createSessionBackend(f.doc)).readHistory()).find(
+          (turn) => turn.id === 'human-input'
+        )
+      ).toMatchObject({ status: 'canceled', cancellationReason: 'user_stop' });
       expect(received).toEqual([]);
       expect(
         (f.store as unknown as { db: Database.Database }).db

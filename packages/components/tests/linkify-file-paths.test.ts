@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  matchWholeFilePath,
-  splitTextIntoFilePathSegments,
-} from '../src/lib/linkify-file-paths';
+import { matchWholeFilePath, splitTextIntoFilePathSegments } from '../src/lib/linkify-file-paths';
 
 const paths = (value: string): string[] =>
   splitTextIntoFilePathSegments(value)

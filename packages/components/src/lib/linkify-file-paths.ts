@@ -15,9 +15,7 @@ import { parseMarkdownAgentFileHref } from './markdown-agent-file-link';
 // Wrongly-linkified paths fail open: the file viewer's open handler already
 // degrades gracefully when a path cannot be resolved.
 
-export type FilePathTextSegment =
-  | { type: 'text'; value: string }
-  | { type: 'path'; value: string };
+export type FilePathTextSegment = { type: 'text'; value: string } | { type: 'path'; value: string };
 
 // One greedy run of path-ish characters, plus an optional GitHub/VSCode/colon
 // line suffix. The first segment is ASCII only, so a candidate does not swallow

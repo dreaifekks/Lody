@@ -9,34 +9,34 @@ each topic; the invariants stay in the scoped `AGENTS.md` files they link to.
 
 ## The pieces
 
-| Piece          | Where                                                                                       | What it does                                                                                                                  |
-| -------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Hub            | `apps/cli/src/lib/lan/hub-server.ts`                                                        | The single-node Streams server of `@loro-dev/loro-cli` on loopback, behind a bearer-token gate that is the only network entry |
-| Handover       | `apps/cli/src/lib/lan/hub-handover.ts`, `lan-host.ts`                                       | Moves a hub onto another machine and points the members there                                                                 |
-| Settings       | `packages/shared/src/node/lan-hub.ts`                                                       | `lan-hub.json` in the data directory: the LANs of this installation and the name of this machine                              |
-| Contract       | `packages/shared/src/lan-hub.ts`                                                            | What a renderer may know: ids, slugs, invites, users. Never a credential                                                      |
-| Membership     | `apps/cli/src/lib/lan/lan-membership.ts`                                                    | One workspace and one gateway per LAN for the running agent service                                                           |
-| Store          | `packages/shared/src/node/lan-hub-store.ts`                                                 | The settings as the desktop shell holds and edits them                                                                        |
-| Bridge         | `apps/electron/src/main/services/lan-hub-forward.ts`                                        | Forwards the document routes (`/ds/`) of `lody-hub://<lan id>` to the hub of that LAN and adds its credential                 |
-| Follower       | `packages/components/src/providers/local-platform-follower.ts`                              | Keeps the renderer's workspaces equal to the CLI catalog                                                                      |
-| Services       | `apps/cli/src/lib/lan/service.ts`                                                           | systemd user units that keep a hub and an agent service running on a server                                                   |
-| Terminals      | `apps/cli/src/lib/lan/lan-terminal*.ts`, `apps/cli/src/lib/terminal-services.ts`            | Members open terminals on each other's machines, directly and not through the hub                                             |
-| Files          | `apps/cli/src/lib/lan/lan-files.ts`, `lan-file-handoff.ts`                                  | A message's files reach the machine that runs its session, and a desktop reads a member's files in parts, both directly       |
-| Folders        | `apps/cli/src/lib/lan/lan-ssh.ts`, `packages/shared/src/lan-ssh.ts`                         | Where the SSH server of a machine answers, so an editor on another member opens a folder of it                                |
-| Machines       | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts`                               | What a machine says about itself, the list of machines, and requests between members                                          |
-| Standby        | `apps/cli/src/lib/lan/lan-hub-standby.ts`, `hub-snapshot.ts`, `hub-failover.ts`             | Keeps a copy of the hub on another server and starts a hub from it when the hub stays away                                    |
-| Moves told     | `apps/cli/src/lib/lan/lan-hub-moved.ts`                                                     | Each member's hook after its hub moved, and the alert the new host sends to the phones                                        |
-| Requests       | `apps/cli/src/lib/lan/lan-control-channel.ts`                                               | A request of one member to another and its answer, over the connection terminals use                                          |
-| Releases       | `packages/shared/src/lan-release.ts`, `packages/shared/src/node/lan-release.ts`             | What a build follows, how builds are ordered, and the checked download of a release file                                      |
-| Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts`                         | An agent service that replaces itself with the newest build                                                                   |
-| Desktop update | `apps/electron/src/main/services/lan-updater-*.ts`                                          | A desktop application that replaces itself with the newest build                                                              |
-| GitHub         | `apps/cli/src/lib/lan/hub-github.ts`, `lan-github-tokens.ts`, `lan-agent-github.ts`         | One GitHub token on the host for members that have no `gh` login                                                              |
+| Piece          | Where                                                                                       | What it does                                                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Hub            | `apps/cli/src/lib/lan/hub-server.ts`                                                        | The single-node Streams server of `@loro-dev/loro-cli` on loopback, behind a bearer-token gate that is the only network entry        |
+| Handover       | `apps/cli/src/lib/lan/hub-handover.ts`, `lan-host.ts`                                       | Moves a hub onto another machine and points the members there                                                                        |
+| Settings       | `packages/shared/src/node/lan-hub.ts`                                                       | `lan-hub.json` in the data directory: the LANs of this installation and the name of this machine                                     |
+| Contract       | `packages/shared/src/lan-hub.ts`                                                            | What a renderer may know: ids, slugs, invites, users. Never a credential                                                             |
+| Membership     | `apps/cli/src/lib/lan/lan-membership.ts`                                                    | One workspace and one gateway per LAN for the running agent service                                                                  |
+| Store          | `packages/shared/src/node/lan-hub-store.ts`                                                 | The settings as the desktop shell holds and edits them                                                                               |
+| Bridge         | `apps/electron/src/main/services/lan-hub-forward.ts`                                        | Forwards the document routes (`/ds/`) of `lody-hub://<lan id>` to the hub of that LAN and adds its credential                        |
+| Follower       | `packages/components/src/providers/local-platform-follower.ts`                              | Keeps the renderer's workspaces equal to the CLI catalog                                                                             |
+| Services       | `apps/cli/src/lib/lan/service.ts`                                                           | systemd user units that keep a hub and an agent service running on a server                                                          |
+| Terminals      | `apps/cli/src/lib/lan/lan-terminal*.ts`, `apps/cli/src/lib/terminal-services.ts`            | Members open terminals on each other's machines, directly and not through the hub                                                    |
+| Files          | `apps/cli/src/lib/lan/lan-files.ts`, `lan-file-handoff.ts`                                  | A message's files reach the machine that runs its session, and a desktop reads a member's files in parts, both directly              |
+| Folders        | `apps/cli/src/lib/lan/lan-ssh.ts`, `packages/shared/src/lan-ssh.ts`                         | Where the SSH server of a machine answers, so an editor on another member opens a folder of it                                       |
+| Machines       | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts`                               | What a machine says about itself, the list of machines, and requests between members                                                 |
+| Standby        | `apps/cli/src/lib/lan/lan-hub-standby.ts`, `hub-snapshot.ts`, `hub-failover.ts`             | Keeps a copy of the hub on another server and starts a hub from it when the hub stays away                                           |
+| Moves told     | `apps/cli/src/lib/lan/lan-hub-moved.ts`                                                     | Each member's hook after its hub moved, and the alert the new host sends to the phones                                               |
+| Requests       | `apps/cli/src/lib/lan/lan-control-channel.ts`                                               | A request of one member to another and its answer, over the connection terminals use                                                 |
+| Releases       | `packages/shared/src/lan-release.ts`, `packages/shared/src/node/lan-release.ts`             | What a build follows, how builds are ordered, and the checked download of a release file                                             |
+| Service update | `apps/cli/src/lib/lan/lan-self-update.ts`, `lan-machine-control.ts`                         | An agent service that replaces itself with the newest build                                                                          |
+| Desktop update | `apps/electron/src/main/services/lan-updater-*.ts`                                          | A desktop application that replaces itself with the newest build                                                                     |
+| GitHub         | `apps/cli/src/lib/lan/hub-github.ts`, `lan-github-tokens.ts`, `lan-agent-github.ts`         | One GitHub token on the host for members that have no `gh` login                                                                     |
 | Credentials    | `apps/cli/src/lib/lan/hub-credentials.ts`, `lan-credential-sync.ts`, `lan-push-fallback.ts` | Every member keeps a copy of the GitHub token, the APNs key, the phones and the environment table, and uses it while the hub is away |
-| Environment    | `apps/cli/src/lib/lan/hub-env.ts`, `lan-env.ts`                                             | One table of environment variables on the host, filled into the `${VAR}` of MCP servers by every member's daemon            |
-| Ports          | `apps/cli/src/lib/lan/lan-tunnel.ts`, `apps/cli/src/lib/local-tunnel-server.ts`             | A program of one member reaches a port another member reaches                                                                 |
-| Command        | `apps/cli/src/lib/lan/lan-session-command.ts`                                               | `lody-lan` on the PATH of every session, and the sentence each turn tells the agent about it                                  |
-| Usage          | `apps/cli/src/lib/usage/local-usage-ledger.ts`, `packages/components/src/lib/lan-usage.ts`  | Each machine counts what its agents used; the usage page gathers it from every member                                         |
-| Shares         | `apps/cli/src/lib/lan/hub-shares.ts`, `lan-shares.ts`, `packages/lan-share-reader`          | The hub keeps published conversations and serves them to readers on a port of their own                                       |
+| Environment    | `apps/cli/src/lib/lan/hub-env.ts`, `lan-env.ts`                                             | One table of environment variables on the host, filled into the `${VAR}` of MCP servers by every member's daemon                     |
+| Ports          | `apps/cli/src/lib/lan/lan-tunnel.ts`, `apps/cli/src/lib/local-tunnel-server.ts`             | A program of one member reaches a port another member reaches                                                                        |
+| Command        | `apps/cli/src/lib/lan/lan-session-command.ts`                                               | `lody-lan` on the PATH of every session, and the sentence each turn tells the agent about it                                         |
+| Usage          | `apps/cli/src/lib/usage/local-usage-ledger.ts`, `packages/components/src/lib/lan-usage.ts`  | Each machine counts what its agents used; the usage page gathers it from every member                                                |
+| Shares         | `apps/cli/src/lib/lan/hub-shares.ts`, `lan-shares.ts`, `packages/lan-share-reader`          | The hub keeps published conversations and serves them to readers on a port of their own                                              |
 
 ```text
  server                                   desktop
@@ -92,15 +92,15 @@ that workspace back instead of creating an empty one.
 
 ## Pages
 
-| Page                                                              | What it covers                                                                     |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| [Terminals, ports, files and requests](lan-member-connections.md) | Direct connections between members, `lody-lan` in a session, requests to a machine |
-| [Folders in an editor](lan-folders.md)                            | Opening another member's folder in an editor over SSH                              |
-| [Machines](lan-machines.md)                                       | Machine metadata, the machine list, requests between members, following a change   |
-| [Updates, hosting and releases](lan-releases.md)                  | Self-update of services and desktops, `lody lan up`, fork builds, tags and signing |
-| [Moving the hub, standby and failover](lan-host.md)               | Take-over, the pointer a former host leaves, the standby copy and its epochs       |
+| Page                                                              | What it covers                                                                               |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| [Terminals, ports, files and requests](lan-member-connections.md) | Direct connections between members, `lody-lan` in a session, requests to a machine           |
+| [Folders in an editor](lan-folders.md)                            | Opening another member's folder in an editor over SSH                                        |
+| [Machines](lan-machines.md)                                       | Machine metadata, the machine list, requests between members, following a change             |
+| [Updates, hosting and releases](lan-releases.md)                  | Self-update of services and desktops, `lody lan up`, fork builds, tags and signing           |
+| [Moving the hub, standby and failover](lan-host.md)               | Take-over, the pointer a former host leaves, the standby copy and its epochs                 |
 | [GitHub and credentials](lan-credentials.md)                      | The host's GitHub token, the MCP environment table, Settings > GitHub, copies, push fallback |
-| [Shared conversations](lan-sharing.md)                            | Publishing, storage, the reader listener, and shares following the hub             |
-| [Usage and Prompt Shortcuts](lan-usage-and-shortcuts.md)          | The per-machine usage ledger and the usage page; shortcuts synced through the hub  |
+| [Shared conversations](lan-sharing.md)                            | Publishing, storage, the reader listener, and shares following the hub                       |
+| [Usage and Prompt Shortcuts](lan-usage-and-shortcuts.md)          | The per-machine usage ledger and the usage page; shortcuts synced through the hub            |
 
 The limits of a topic close its page.

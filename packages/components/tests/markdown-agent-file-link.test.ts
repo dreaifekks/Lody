@@ -172,9 +172,9 @@ describe('normalizeMarkdownAgentFilePath', () => {
   it('passes a home-relative href through for the machine to expand', () => {
     // Only the session's machine knows its home directory; the renderer must
     // neither drop the `~` nor read the path as workspace-relative.
-    expect(normalizeMarkdownAgentFilePath('~/self/done/2026-10-14.md:12', '/home/agent/project')).toBe(
-      '~/self/done/2026-10-14.md:12'
-    );
+    expect(
+      normalizeMarkdownAgentFilePath('~/self/done/2026-10-14.md:12', '/home/agent/project')
+    ).toBe('~/self/done/2026-10-14.md:12');
   });
 
   it('preserves GitHub-style line suffixes while stripping the local project root', () => {

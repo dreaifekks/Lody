@@ -82,23 +82,23 @@ Both desktop apps can run side by side.
 
 ### Added
 
-| Feature                     | In Lody LAN                                                                                                                                                                                      |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| LANs                        | A self-hosted hub and its invite replace the account; a machine can belong to several LANs                                                                                                       |
-| Terminals of other machines | Open directly between members, encrypted with the LAN's credential, never through the hub                                                                                                        |
-| Files of a message          | Sent straight to the machine that runs the session                                                                                                                                               |
-| Folders of other machines   | A session's folder on another member opens in a local editor over SSH                                                                                                                            |
-| Machines and updates        | Settings > LAN lists every machine with its build; any member can update a server, the desktop updates itself                                                                                    |
-| Phone alerts                | The hub pushes alerts and Live Activities through your own APNs key (`lody-lan lan push setup`) to an iOS client that registers with it; a permission can be answered from the Live Activity     |
-| Pull requests               | The PR panel, merge, comments, PR-driven auto-archive work locally, with one GitHub token the hub keeps (`lody-lan lan github setup`) or the `gh` login of the machine |
-| MCP secrets                 | The hub keeps one table of environment variables (`lody-lan lan env set NAME`); every member's daemon fills the `${VAR}` of a workspace MCP server from it, its own environment first |
-| Native sessions             | A Lody session catches up with turns written to its Claude or Codex session outside Lody                                                                                                         |
-| Hosted import               | Reads a machine's configuration from the hosted Lody                                                                                                                                             |
-| Moving and standby hub      | `lody-lan lan take-over` moves the hub to another server; a standby server keeps a copy and takes over when the hub stays away; Settings > LAN marks both                                        |
-| Agents on other machines    | Lody's tools inside a session start and drive sessions on the other machines of its LAN                                                                                                          |
-| Usage                       | Each machine keeps what its agents used; Settings > AI Usage gathers it from every member, by model and by machine                                                                               |
-| Shells and ports            | `lody-lan lan shell <machine>` opens a shell on a member, `lody-lan lan forward <machine> <port>` reaches one of its ports, both over the members' direct connections                            |
-| Shared conversations        | The hub keeps a read-only copy of a conversation at a link of its own, on a port that serves nothing else                                                                                        |
+| Feature                     | In Lody LAN                                                                                                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LANs                        | A self-hosted hub and its invite replace the account; a machine can belong to several LANs                                                                                                   |
+| Terminals of other machines | Open directly between members, encrypted with the LAN's credential, never through the hub                                                                                                    |
+| Files of a message          | Sent straight to the machine that runs the session                                                                                                                                           |
+| Folders of other machines   | A session's folder on another member opens in a local editor over SSH                                                                                                                        |
+| Machines and updates        | Settings > LAN lists every machine with its build; any member can update a server, the desktop updates itself                                                                                |
+| Phone alerts                | The hub pushes alerts and Live Activities through your own APNs key (`lody-lan lan push setup`) to an iOS client that registers with it; a permission can be answered from the Live Activity |
+| Pull requests               | The PR panel, merge, comments, PR-driven auto-archive work locally, with one GitHub token the hub keeps (`lody-lan lan github setup`) or the `gh` login of the machine                       |
+| MCP secrets                 | The hub keeps one table of environment variables (`lody-lan lan env set NAME`); every member's daemon fills the `${VAR}` of a workspace MCP server from it, its own environment first        |
+| Native sessions             | A Lody session catches up with turns written to its Claude or Codex session outside Lody                                                                                                     |
+| Hosted import               | Reads a machine's configuration from the hosted Lody                                                                                                                                         |
+| Moving and standby hub      | `lody-lan lan take-over` moves the hub to another server; a standby server keeps a copy and takes over when the hub stays away; Settings > LAN marks both                                    |
+| Agents on other machines    | Lody's tools inside a session start and drive sessions on the other machines of its LAN                                                                                                      |
+| Usage                       | Each machine keeps what its agents used; Settings > AI Usage gathers it from every member, by model and by machine                                                                           |
+| Shells and ports            | `lody-lan lan shell <machine>` opens a shell on a member, `lody-lan lan forward <machine> <port>` reaches one of its ports, both over the members' direct connections                        |
+| Shared conversations        | The hub keeps a read-only copy of a conversation at a link of its own, on a port that serves nothing else                                                                                    |
 
 ### Works differently
 
