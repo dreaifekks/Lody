@@ -293,6 +293,17 @@ function DemoPinnedProjects({ isMobile }: { isMobile: boolean }) {
       project: demoProjects[0]!,
     },
     { machineId: demoMachineId, machineName: 'Mac Studio', project: demoProjects[1]! },
+    // A long name on another machine: the project name gives way, the machine stays.
+    {
+      machineId: 'machine-mini' as MachineId,
+      machineName: 'Mac mini',
+      project: {
+        id: 'proj-release' as LocalProjectId,
+        name: 'lody-desktop-release-automation-pipeline',
+        rootPath: '/Users/developer/Code/lody-desktop-release-automation-pipeline',
+        createdAtMs: NOW - 10 * 24 * 60 * 60 * 1000,
+      },
+    },
   ];
   return (
     <div className="space-y-0.5" data-sidebar-pinned-projects="">
@@ -308,7 +319,7 @@ function DemoPinnedProjects({ isMobile }: { isMobile: boolean }) {
             collapsed={collapsed[key] ?? true}
             whetherShowFullList={false}
             isSelected={false}
-            sessionsForProject={machineId === demoMachineId ? [] : demoLocalSessions}
+            sessionsForProject={machineId === 'machine-remote' ? demoLocalSessions : []}
             childSessionsByParent={new Map()}
             liveSessionStatuses={EMPTY_LIVE_SESSION_STATUSES}
             formattedPath={project.rootPath}

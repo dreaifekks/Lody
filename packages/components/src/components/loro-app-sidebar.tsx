@@ -1084,19 +1084,22 @@ export type LocalProjectItemProps = {
   dragHandle?: ReactNode;
 };
 
+// Named group ('project') so the hover reveal scopes to the hovered project row
+// only: the Pinned bucket that lists pinned projects wraps them in an unnamed
+// `group`, which an unnamed group-hover would answer for every row at once.
 const hoverActionClassName = cn(
   'inline-flex h-5 w-5 items-center justify-center rounded-sm',
   'text-muted-foreground/70 transition-[opacity,background-color,color] duration-100',
   'opacity-0 pointer-events-none',
-  'group-hover:opacity-100 group-hover:pointer-events-auto',
-  'group-data-[menu-open]:opacity-100 group-data-[menu-open]:pointer-events-auto',
+  'group-hover/project:opacity-100 group-hover/project:pointer-events-auto',
+  'group-data-[menu-open]/project:opacity-100 group-data-[menu-open]/project:pointer-events-auto',
   'hover:text-foreground hover:bg-muted/30 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/60'
 );
 
 // The trigger itself stays pressed-looking while its menu is open, not just the
 // row around it. Only the ⋯ opens a menu — the compose button beside it does not.
 const menuTriggerOpenClassName =
-  'group-data-[menu-open]:bg-muted/30 group-data-[menu-open]:text-foreground';
+  'group-data-[menu-open]/project:bg-muted/30 group-data-[menu-open]/project:text-foreground';
 
 /**
  * Folded-group status for local-project Sessions: each one counted by the mark
@@ -1312,7 +1315,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
       // `asChild`, so their `data-state` values collide here.
       data-menu-open={projectMenuOpen ? '' : undefined}
       className={cn(
-        'group relative w-full rounded-md px-2 py-1 text-left',
+        'group/project relative w-full rounded-md px-2 py-1 text-left',
         'border border-transparent bg-transparent',
         !showSelectedState &&
           !isMobile &&
@@ -1356,31 +1359,37 @@ export const LocalProjectItem = memo(function LocalProjectItem({
             'absolute left-0 top-1/2 h-4 w-4 -translate-y-1/2 text-current transition-opacity duration-100',
             // Mobile: chevron is always visible so the folder icon must hide
             // permanently to avoid stacking. Desktop keeps the hover swap.
-            isMobile ? 'opacity-0' : 'group-hover:opacity-0'
+            isMobile ? 'opacity-0' : 'group-hover/project:opacity-0'
           )}
         />
         <ChevronDown
           className={cn(
             'absolute left-0 top-1/2 h-4 w-4 -translate-y-1/2 text-current',
             'transition-[opacity,translate,scale,rotate] duration-100',
-            isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+            isMobile ? 'opacity-100' : 'opacity-0 group-hover/project:opacity-100',
             collapsed ? '-rotate-90' : 'rotate-0'
           )}
         />
       </button>
-      <span className="min-w-0 flex-1 truncate text-left">{project.name}</span>
-      {showMachineName && trimmedMachineName ? (
-        <span
-          data-sidebar-project-machine=""
-          className={cn(
-            SIDEBAR_CAPTION_TEXT_CLASS,
-            'max-w-[40%] shrink-0 truncate text-sidebar-foreground-muted'
-          )}
-          style={lanMachineNameStyle(machineNameColor)}
-        >
-          {trimmedMachineName}
-        </span>
-      ) : null}
+      {/* The machine name follows the project name at a fixed gap rather than
+          sitting at the row's end, where the status mark would move it. A long
+          project name gives way first; a machine name wider than the row is
+          itself cut, so neither ever overflows. */}
+      <span className="flex min-w-0 flex-1 items-baseline gap-1.5 text-left">
+        <span className="min-w-0 truncate">{project.name}</span>
+        {showMachineName && trimmedMachineName ? (
+          <span
+            data-sidebar-project-machine=""
+            className={cn(
+              SIDEBAR_CAPTION_TEXT_CLASS,
+              'max-w-full shrink-0 truncate text-sidebar-foreground-muted'
+            )}
+            style={lanMachineNameStyle(machineNameColor)}
+          >
+            {trimmedMachineName}
+          </span>
+        ) : null}
+      </span>
 
       {removalStateLabel ? (
         <Tooltip.Root>
@@ -1456,7 +1465,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
 
   return (
     <div className="space-y-0.5">
-      <div className="group flex items-center">
+      <div className="group/project flex items-center">
         <ContextMenu.Root onOpenChange={setProjectMenuOpen}>
           <Tooltip.Root>
             <Tooltip.Trigger

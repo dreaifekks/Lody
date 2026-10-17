@@ -209,6 +209,8 @@ describe('sidebar local project row', () => {
     });
     const suffix = named?.querySelector<HTMLElement>('[data-sidebar-project-machine]');
     expect(suffix?.textContent).toBe("Teammate's Mac");
+    // Right after the name, not at the row's end beside the status mark.
+    expect(suffix?.previousElementSibling?.textContent).toBe('Lody');
     expect(suffix?.style.color).toContain('--lan-machine-blue');
     // Pinned rows carry no pin glyph: the Pinned section already says so.
     expect(named?.querySelector('.lucide-pin')).toBeNull();
