@@ -59,8 +59,9 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   prompt, coordinator included. Threads keep what they read; the coordinator
   rereads the current row after Lody compacts or replaces its agent conversation.
 - Coordinator maintenance (`board-continuity-workflow.ts`): quiet system turns in
-  the same Session, outside the Inbox (one divider, hidden replies, no push). It
-  yields to user turns and results, never fakes compaction or changes
+  the same Session, outside the Inbox (one divider, hidden replies, no push; neither
+  they nor their late output move `lastMessageAt`). It yields to user turns and
+  results, never fakes compaction (skips agents it cannot confirm) or changes
   `coordinatorSessionId`.
 - A Board's entries act on the whole Board, as a chat's do on the chat: the page's
   header menu (`SessionHeaderMenu` on a coordinator) and the sidebar row

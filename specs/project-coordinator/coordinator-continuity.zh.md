@@ -297,6 +297,12 @@ system 驱动的维护回合，再在压缩后的下一回合重新注入看板�
 - **能力判定**：先看正在运行的 agent 是否声明 `compaction` v1；没有运行的 agent 时看机器能力
   缓存的可用命令里有没有 `compact`；都说不清就跳过自动整理，并只记一次日志。整理记忆回合
   启动了 agent 之后，发 `/compact` 前再查一次。
+- **Kimi 不做**（用户 2026-10-17 的决定）：Kimi 声明了 `compaction`，但它的 `/compact` 只是
+  在后台开始压缩，回合先结束，Lody 永远确认不了，结果多半是「没有整理成功（未确认）」。所以
+  Kimi 按不支持处理：自动触发跳过并只记一次日志，手动「立即整理」显示和不支持的 agent 同样的
+  「这个 agent 无法整理上下文」。`compaction` 能力（`acp-extension-core`）不说明压缩什么时候
+  完成，所以这里按 agent 类型（`kimi`、`kimi-code`）判断：`compactsInBackground`
+  （`packages/shared/src/board-continuity.ts`）。「开始新对话」不受影响。
 - **方案 A 保底**：协调者的 agent 进程环境里设 `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000`
   （agent 配置里已有这个变量时不覆盖），只对 Claude 生效；Codex 的
   `model_auto_compact_token_limit` 没有设。
@@ -304,8 +310,20 @@ system 驱动的维护回合，再在压缩后的下一回合重新注入看板�
 ### 维护回合
 
 - 执行服务新增派发来源 `maintenance`（`runBoardMaintenanceTurn`）：和 goal 回合一样只有
-  assistant 条目、没有用户消息；**不经过 Inbox**，不带走排队的结果，也不改链深度；结束时不写
-  `lastMessageAt`、不发完成推送，然后唤醒 Inbox 和派发检查，让等着的用户回合和结果接着跑。
+  assistant 条目、没有用户消息；**不经过 Inbox**，不带走排队的结果，也不改链深度；结束后
+  唤醒 Inbox 和派发检查，让等着的用户回合和结果接着跑。
+- **静默**：消息时间（`lastMessageAt`，未读和侧边栏排序都看它）只反映用户能看到的新对话。
+  维护回合的每一步（整理记忆、`/compact`、续接、交接、新对话首回合），无论自动还是手动，都不
+  移动它：
+  - 回合结束时不写 `lastMessageAt`、不发完成推送（`finalizeTurn` 的 `quiet`）；
+  - ACP 的未读标记不算维护步骤的回复，包括步骤结束后才到的输出（比如后台完成的压缩），按
+    assistant 条目 id 的 `assistant:board-maintenance:` 前缀判断（`message-handler.ts`
+    `isBoardMaintenanceEntry`）。T4 在 Mac 上看到的消息时间跳动就是这条路径：每个回复片段都把
+    会话标成未读，回合结束时写一次 `lastMessageAt`；
+  - agent 在维护步骤里上传的图片、文件不移动消息时间；`lody_notify_user` 直接拒绝；
+  - 维护步骤失败只在会话里记一条失败说明，不发失败推送，结果看分隔线。
+  - 例外：维护步骤里的权限请求照常提醒，因为不处理它回合就停着。
+  - 「开始新对话」之后，用户下一次说话、新 agent 回答，是普通回合，照常更新消息时间。
 - 运行配置取协调者最新驱动回合的 `inputConfig`，所以新开的 agent 会话也保持原来的模型和模式。
   MCP 选择和对话追问用同一套规则（`apps/cli/src/lib/session-mcp-selection.ts`）：本对话最近一次
   记录的选择，没有就用工作区默认；新的 agent 对话因此继承旧对话的选择。
@@ -346,6 +364,7 @@ Inbox、Operation、回报游标、笔记替换权限、线程归属和侧边栏
    这样不用改上游的派发路径，看板说明也在用户下一句话之前到达。续接回合被让路时记为
    `renewed: false`，协调者下次空闲时补上。
 2. 不支持压缩的 agent 连整理记忆回合也不做：自动触发只记日志，手动触发显示「不支持」。
+   压缩确认不了的 Kimi 也这样处理。
 3. 手动入口在协调者页面的菜单里，不在用量浮窗里。
 4. 分隔线不能展开看写了哪些记忆文件。
 5. 「开始新对话」用了上面的同 id 换 agent 会话，不是方案 C 的换代。
@@ -394,14 +413,18 @@ Inbox、Operation、回报游标、笔记替换权限、线程归属和侧边栏
     `packages/shared/src/board-continuity.ts`；`packages/components/src/components/boards/`。
   - 测试：`apps/cli/src/orchestration/operation-coordinator.test.ts`「Board coordinator
     continuity」用真实的 Inbox、Loro 历史和注入时钟，覆盖触发条件、阈值、不支持时跳过、
-    压缩未确认、让路后补发说明、新对话后回报送达同一会话；
+    压缩未确认、Kimi 跳过、让路后补发说明、新对话后回报送达同一会话；
     `apps/cli/tests/session-execution-service.test.ts`「Board maintenance turns」覆盖不经
-    Inbox、不更新消息时间和推送、重新注入、新 agent 会话不续接不重放；
+    Inbox、不更新消息时间和推送、失败不发提醒、重新注入、新 agent 会话不续接不重放；
+    `apps/cli/tests/message-handler-acp-batching.test.ts` 用真实的会话文档覆盖四种维护步骤
+    及步骤结束后的迟到输出都不移动 `lastMessageAt`、不变成未读，普通回合照常移动。
+- 真机验证：T4 在 Mac 上用真实 Electron 和 Claude Code 验证了 `d49a75927`，只有「自动整理后
+  `lastMessageAt` 不变」不通过；修复之后还没有在真机上复测。
     `packages/shared/tests/board.test.ts`、`packages/components/tests/build-chat-stream-items.test.ts`。
 - 没有核实：
-  - 真实的 Claude、Codex 等 agent 上跑一遍完整的空闲整理和新对话（只有单元和集成测试）。
+  - 真实的 Codex 等其他 agent 上跑一遍完整的空闲整理和新对话（Claude 见上面的真机验证）。
   - Codex 压缩后保留哪些用户消息；Codex 的 `/compact` 不接受保留清单。
-  - Kimi 的 `/compact` 在后台完成，回合结束时多半还没有完成标记，会记为未确认。
+  - Kimi 的 `/compact` 在后台完成，回合结束时多半还没有完成标记（所以现在跳过 Kimi）。
   - Grok 能否 `/compact`。
   - `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 大于模型窗口时 Claude Code 怎么处理。
   - Hermes 文档里「`/new` 前自动保存记忆」的说法，代码里没有找到内置的这一步。
