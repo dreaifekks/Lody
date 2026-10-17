@@ -302,6 +302,152 @@ describe('useCodeCollabSessionFileProvider', () => {
     });
   });
 
+  it('asks the local machine again while it is still preparing the session', async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    // Only the retry delays are faked; React's scheduler keeps its own timers.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const store = createStore();
+      const sessionId = 'session-preparing' as SessionId;
+      const machineId = 'machine-local' as MachineId;
+      const fileIndexFlock = { scan: vi.fn(() => []), subscribe: vi.fn(() => vi.fn()) };
+      const joinFileIndexRoom = vi.fn(async () =>
+        makeSyncedFlockRoom(new Promise<void>(() => undefined))
+      );
+      const requestLocalCodeCollabFileIndex = vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 'error',
+          code: 'workspace_root_unavailable',
+          message: 'Session workspace is still being prepared.',
+          retryable: false,
+        })
+        .mockResolvedValueOnce({
+          status: 'error',
+          code: 'session_not_found',
+          message: 'Session metadata is not available.',
+          retryable: false,
+        })
+        .mockResolvedValue({
+          status: 'ok',
+          ownerSessionId: sessionId,
+          fileIndex: { 'src/ready.ts': { kind: 'file' } },
+          updatedAtMs: 1,
+        });
+      store.set(
+        runtimeAtom,
+        createRuntime({
+          prepareSessionTarget: vi.fn(async () => 'local' as const),
+          repo: {
+            openFlockDoc: vi.fn(async () => ({
+              flock: fileIndexFlock,
+              joinRoom: joinFileIndexRoom,
+            })),
+          },
+          requestLocalCodeCollabFileIndex,
+        })
+      );
+      store.set(sessionMetaCacheAtom, {
+        [getSessionRoomId(sessionId)]: {
+          id: sessionId,
+          machineId,
+          userId: 'user-1',
+        } as SessionMeta,
+      });
+
+      const updates: UseCodeCollabSessionFileProviderResult[] = [];
+      render(
+        createElement(
+          Provider,
+          { store },
+          createElement(ProviderHarness, {
+            sessionId,
+            machineId,
+            onUpdate: (result) => updates.push(result),
+          })
+        )
+      );
+      await flushMicrotasks(8);
+
+      // "Still being prepared" is a wait, not a verdict.
+      expect(requestLocalCodeCollabFileIndex).toHaveBeenCalledTimes(1);
+      expect(updates.at(-1)?.status).toBe('loading');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      await flushMicrotasks(8);
+      expect(requestLocalCodeCollabFileIndex).toHaveBeenCalledTimes(2);
+      expect(updates.at(-1)?.status).toBe('loading');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      await flushMicrotasks(8);
+      expect(requestLocalCodeCollabFileIndex).toHaveBeenCalledTimes(3);
+      await expect(updates.at(-1)?.provider?.listFiles()).resolves.toEqual([
+        expect.objectContaining({ path: 'src/ready.ts' }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a final refusal from the local machine without asking again', async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const store = createStore();
+      const sessionId = 'session-refused' as SessionId;
+      const machineId = 'machine-local' as MachineId;
+      const requestLocalCodeCollabFileIndex = vi.fn(async () => ({
+        status: 'error' as const,
+        code: 'permission_denied' as const,
+        message: 'Code Collab read access is denied for this user.',
+        retryable: false,
+      }));
+      store.set(
+        runtimeAtom,
+        createRuntime({
+          prepareSessionTarget: vi.fn(async () => 'local' as const),
+          repo: { openFlockDoc: vi.fn(async () => ({})) },
+          requestLocalCodeCollabFileIndex,
+        })
+      );
+      store.set(sessionMetaCacheAtom, {
+        [getSessionRoomId(sessionId)]: {
+          id: sessionId,
+          machineId,
+          userId: 'user-1',
+        } as SessionMeta,
+      });
+
+      const updates: UseCodeCollabSessionFileProviderResult[] = [];
+      render(
+        createElement(
+          Provider,
+          { store },
+          createElement(ProviderHarness, {
+            sessionId,
+            machineId,
+            onUpdate: (result) => updates.push(result),
+          })
+        )
+      );
+      await flushMicrotasks(8);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+      await flushMicrotasks(8);
+
+      expect(requestLocalCodeCollabFileIndex).toHaveBeenCalledTimes(1);
+      expect(updates.at(-1)?.status).toBe('error');
+      expect(updates.at(-1)?.message).toBe('Code Collab read access is denied for this user.');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('publishes the remote file index after a read-only Flock catchup', async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     const store = createStore();
