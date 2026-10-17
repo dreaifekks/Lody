@@ -20,6 +20,11 @@ describe('isMarkdownAgentFileHref', () => {
     expect(isMarkdownAgentFileHref('./docs/README.md:100')).toBe(true);
   });
 
+  it('treats home-relative hrefs as agent file links', () => {
+    expect(isMarkdownAgentFileHref('~/self/done/2026-10-14.md')).toBe(true);
+    expect(isMarkdownAgentFileHref('~/self/done/2026-10-14.md:12')).toBe(true);
+  });
+
   it('leaves web and fragment hrefs as ordinary links', () => {
     expect(isMarkdownAgentFileHref('https://example.com/docs')).toBe(false);
     expect(isMarkdownAgentFileHref('mailto:test@example.com')).toBe(false);
@@ -161,6 +166,14 @@ describe('normalizeMarkdownAgentFilePath', () => {
   it('preserves a slash-prefixed path when there is no matching local root or worktree', () => {
     expect(normalizeMarkdownAgentFilePath('/var/tmp/output.txt', '/home/agent/project')).toBe(
       '/var/tmp/output.txt'
+    );
+  });
+
+  it('passes a home-relative href through for the machine to expand', () => {
+    // Only the session's machine knows its home directory; the renderer must
+    // neither drop the `~` nor read the path as workspace-relative.
+    expect(normalizeMarkdownAgentFilePath('~/self/done/2026-10-14.md:12', '/home/agent/project')).toBe(
+      '~/self/done/2026-10-14.md:12'
     );
   });
 
