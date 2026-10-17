@@ -112,6 +112,7 @@ import {
   sidebarUpdatedShowProjectNamesAtom,
   sidebarUpdatedBucketCollapseStateAtom,
   sidebarUpdatedBucketShowFullStateAtom,
+  partitionPinnedLocalProjects,
   sortLocalProjectsForSidebar,
   type SidebarOrganizeMode,
 } from '@/atoms/sidebar-state';
@@ -231,6 +232,7 @@ import { useSessionSharing } from '@/hooks/use-session-sharing';
 import {
   buildSidebarNavigationItems,
   getLocalProjectSessionGroupKey,
+  type SidebarNavigationLocalProject,
   type SidebarNavigationLocalSection,
 } from '@/components/sidebar-navigation-model';
 import {
@@ -1047,9 +1049,16 @@ export type LocalProjectItemProps = {
   onOpenProjectSettings?: (machineId: MachineId, localProjectId: string) => void;
   onRevealProject?: (rootPath: string) => void;
   onArchiveProjectChats?: (sessionIds: string[]) => void;
-  /** Whether this project sits atop its machine group, on every device. */
+  /** Whether this project is listed in the Pinned section, on every device. */
   isPinned?: boolean;
   onTogglePinned?: (machineId: MachineId, localProjectId: string, nextPinned: boolean) => void;
+  /**
+   * Name the machine after the project: a pinned project from another machine
+   * sits away from its machine group, so the row says where it is. Coloured
+   * like that machine's group header.
+   */
+  showMachineName?: boolean;
+  machineNameColor?: unknown;
   onNavigateSession: (sessionId: string, tabSessionId?: string) => void;
   onArchive: (sessionId: string) => void;
   onMarkSessionUnread?: (sessionId: string) => void;
@@ -1111,6 +1120,9 @@ function summarizeLocalSessionsActivity(
 
 const LOCAL_PROJECT_SELECTION_PROP_KEYS: ReadonlySet<string> = new Set(['selectedSessionId']);
 
+const EMPTY_LOCAL_PROJECT_LAYOUT: ReturnType<typeof partitionPinnedLocalProjects<never>> =
+  Object.freeze({ sections: [], pinned: [] });
+
 /**
  * `memo` equality for local-project sections: a `selectedSessionId` change only
  * re-renders the project(s) containing the previously or newly selected row,
@@ -1155,6 +1167,8 @@ export const LocalProjectItem = memo(function LocalProjectItem({
   onArchiveProjectChats,
   isPinned = false,
   onTogglePinned,
+  showMachineName = false,
+  machineNameColor,
   onNavigateSession,
   onArchive,
   onMarkSessionUnread,
@@ -1354,10 +1368,19 @@ export const LocalProjectItem = memo(function LocalProjectItem({
           )}
         />
       </button>
-      {isPinned ? (
-        <Pin aria-hidden="true" className="h-3 w-3 shrink-0 text-sidebar-foreground-muted/80" />
-      ) : null}
       <span className="min-w-0 flex-1 truncate text-left">{project.name}</span>
+      {showMachineName && trimmedMachineName ? (
+        <span
+          data-sidebar-project-machine=""
+          className={cn(
+            SIDEBAR_CAPTION_TEXT_CLASS,
+            'max-w-[40%] shrink-0 truncate text-sidebar-foreground-muted'
+          )}
+          style={lanMachineNameStyle(machineNameColor)}
+        >
+          {trimmedMachineName}
+        </span>
+      ) : null}
 
       {removalStateLabel ? (
         <Tooltip.Root>
@@ -2162,10 +2185,9 @@ export function LoroAppSidebar({
   const localProjectOrderRef = useRef(localProjectOrder);
   localProjectOrderRef.current = localProjectOrder;
   // Pinned projects are a workspace setting, like a pinned Session's meta:
-  // every device shows the same projects on top. The drag order stays per
-  // device, so pinning never rewrites it.
+  // every device lists the same projects in the Pinned section. The drag
+  // order of the machine groups stays per device and is never rewritten.
   const { pinnedProjects } = useWorkspaceCatalog();
-  const pinnedProjectKeys = useMemo(() => new Set(pinnedProjects), [pinnedProjects]);
   const pinnedProjectsRef = useRef(pinnedProjects);
   pinnedProjectsRef.current = pinnedProjects;
   const handleToggleProjectPinned = useCallback(
@@ -2453,8 +2475,8 @@ export function LoroAppSidebar({
     [getRemoveLocalProjectImpact]
   );
 
-  const localProjectSections = useMemo(() => {
-    if (sessionsListLoading) return [];
+  const localProjectLayout = useMemo(() => {
+    if (sessionsListLoading) return EMPTY_LOCAL_PROJECT_LAYOUT;
 
     const localMachineMeta = localMachineId ? machineMetaMap.get(localMachineId) : undefined;
     const projectEntries = Array.from(visibleLocalProjectMap.values());
@@ -2548,26 +2570,32 @@ export function LoroAppSidebar({
     // should not appear in the sidebar.
     const showLocalSection = localSection && localSection.projects.length > 0;
 
-    return [...(showLocalSection ? [localSection] : []), ...remoteSections].map((section) => ({
-      ...section,
-      projects: sortLocalProjectsForSidebar(
-        section.projects,
-        section.machineId,
-        localProjectOrder,
-        pinnedProjectKeys
-      ),
-    }));
+    // Pinned projects leave their machine group for the Pinned section; a
+    // group emptied that way disappears like any other empty group.
+    return partitionPinnedLocalProjects(
+      [...(showLocalSection ? [localSection] : []), ...remoteSections].map((section) => ({
+        ...section,
+        projects: sortLocalProjectsForSidebar(
+          section.projects,
+          section.machineId,
+          localProjectOrder
+        ),
+      })),
+      pinnedProjects
+    );
   }, [
     localMachineId,
     localProjectOrder,
     machineMetaMap,
     pendingLocalProjectRemovals,
-    pinnedProjectKeys,
+    pinnedProjects,
     sessionsListLoading,
     t,
     userId,
     visibleLocalProjectMap,
   ]);
+  const localProjectSections = localProjectLayout.sections;
+  const pinnedProjectRows = localProjectLayout.pinned;
 
   // Register newly visible projects without deleting saved entries. A project
   // may disappear briefly while its machine reconnects; retaining the key
@@ -2841,6 +2869,71 @@ export function LoroAppSidebar({
     />
   ) : null;
   const firstSectionFilterAction = pinnedItems.length === 0 ? sidebarFilterPopover : null;
+  type LocalProjectRowSection = (typeof localProjectSections)[number];
+  // One props set for a project row wherever it renders: its machine group or
+  // the Pinned section.
+  const buildLocalProjectRowProps = (
+    machineId: MachineId,
+    project: LocalProjectMeta,
+    section: Pick<LocalProjectRowSection, 'canRemoveProject' | 'machineDisplayName'>,
+    isPinned: boolean
+  ): LocalProjectItemProps => {
+    const projectKey = `${machineId}:${project.id}`;
+    const sessionGroupKey = getLocalProjectSessionGroupKey(machineId, project.id);
+    const rootPath = typeof project.rootPath === 'string' ? project.rootPath.trim() : '';
+    return {
+      machineId,
+      machineName: section.machineDisplayName,
+      project,
+      canRemoveProject: section.canRemoveProject,
+      removalState: pendingLocalProjectRemovals.has(projectKey)
+        ? onlineMachineIds.has(machineId)
+          ? 'removing'
+          : 'waiting_for_device'
+        : null,
+      collapsed: localProjectCollapseState[projectKey] ?? false,
+      whetherShowFullList: showFullSessionGroups[sessionGroupKey] ?? false,
+      isSelected: projectKey === selectedLocalProjectKey,
+      sessionsForProject: workspaceLocalProjectSessionsByKey.get(projectKey) ?? [],
+      childSessionsByParent,
+      liveSessionStatuses,
+      resolveSessionAuthor,
+      formattedPath: rootPath ? rootPath : null,
+      defaultSessionTitle,
+      selectedSessionId,
+      removeProjectLabel,
+      newChatLabel,
+      archiveTooltipLabel,
+      archiveActionLabel,
+      archiveConfirmLabel,
+      isMobile,
+      toggleLabel,
+      onNavigateProject: handleNavigateToProject,
+      // New Chat selects a target; it must not fork or clear the
+      // workspace-owned Chat Landing draft.
+      onNewChatInProject: handleNavigateToProject,
+      onOpenProjectSettings: handleOpenProjectSettings,
+      onRevealProject: isElectron && machineId === localMachineId ? handleRevealProject : undefined,
+      onArchiveProjectChats: handleArchiveProjectChats,
+      isPinned,
+      onTogglePinned: handleToggleProjectPinned,
+      onNavigateSession: handleNavigateToSession,
+      onArchive: handleArchiveSession,
+      onMarkSessionUnread: handleMarkSessionUnread,
+      onRenameSession: handleRenameSession,
+      onToggleSessionPinned: handleTogglePinSession,
+      onCopySessionUrl: handleCopySessionUrl,
+      onShareSessionWithTeam: handleRequestShareSession,
+      sessionSharingById,
+      collapsedOpenedBySessionIds,
+      onToggleOpenedBySessions: handleToggleOpenedBySessions,
+      resolveOpenerRowId,
+      onToggleCollapsed: toggleLocalProjectCollapsed,
+      onToggleFullList: handleToggleLocalProjectFullList,
+      onRequestRemoval: handleRequestRemoval,
+    };
+  };
+
   const localProjectsTopContent =
     localProjectSections.length === 0 ? null : (
       // Sections carry their own bottom margin (see sidebarTopContent): 12px
@@ -2988,79 +3081,12 @@ export function LoroAppSidebar({
                       {section.projects.map((project) => {
                         const machineId = section.machineId;
                         if (!machineId) return null;
-                        const projectKey = `${machineId}:${project.id}`;
-                        const collapsed = localProjectCollapseState[projectKey] ?? false;
-                        const sessionGroupKey = getLocalProjectSessionGroupKey(
-                          machineId,
-                          project.id
-                        );
-                        const sessionsForProject =
-                          workspaceLocalProjectSessionsByKey.get(projectKey) ?? [];
-                        const isSelected = projectKey === selectedLocalProjectKey;
-                        const rootPath =
-                          typeof project.rootPath === 'string' ? project.rootPath.trim() : '';
-                        const formattedPath = rootPath ? rootPath : null;
-
                         return (
                           <SortableLocalProjectItem
                             key={project.id}
-                            sortableId={projectKey}
+                            sortableId={`${machineId}:${project.id}`}
                             canReorder={canReorderProjects}
-                            machineId={machineId}
-                            machineName={section.machineDisplayName}
-                            project={project}
-                            canRemoveProject={section.canRemoveProject}
-                            removalState={
-                              pendingLocalProjectRemovals.has(projectKey)
-                                ? onlineMachineIds.has(machineId)
-                                  ? 'removing'
-                                  : 'waiting_for_device'
-                                : null
-                            }
-                            collapsed={collapsed}
-                            whetherShowFullList={showFullSessionGroups[sessionGroupKey] ?? false}
-                            isSelected={isSelected}
-                            sessionsForProject={sessionsForProject}
-                            childSessionsByParent={childSessionsByParent}
-                            liveSessionStatuses={liveSessionStatuses}
-                            resolveSessionAuthor={resolveSessionAuthor}
-                            formattedPath={formattedPath}
-                            defaultSessionTitle={defaultSessionTitle}
-                            selectedSessionId={selectedSessionId}
-                            removeProjectLabel={removeProjectLabel}
-                            newChatLabel={newChatLabel}
-                            archiveTooltipLabel={archiveTooltipLabel}
-                            archiveActionLabel={archiveActionLabel}
-                            archiveConfirmLabel={archiveConfirmLabel}
-                            isMobile={isMobile}
-                            toggleLabel={toggleLabel}
-                            onNavigateProject={handleNavigateToProject}
-                            // New Chat selects a target; it must not fork or clear
-                            // the workspace-owned Chat Landing draft.
-                            onNewChatInProject={handleNavigateToProject}
-                            onOpenProjectSettings={handleOpenProjectSettings}
-                            onRevealProject={
-                              isElectron && machineId === localMachineId
-                                ? handleRevealProject
-                                : undefined
-                            }
-                            onArchiveProjectChats={handleArchiveProjectChats}
-                            isPinned={pinnedProjectKeys.has(projectKey)}
-                            onTogglePinned={handleToggleProjectPinned}
-                            onNavigateSession={handleNavigateToSession}
-                            onArchive={handleArchiveSession}
-                            onMarkSessionUnread={handleMarkSessionUnread}
-                            onRenameSession={handleRenameSession}
-                            onToggleSessionPinned={handleTogglePinSession}
-                            onCopySessionUrl={handleCopySessionUrl}
-                            onShareSessionWithTeam={handleRequestShareSession}
-                            sessionSharingById={sessionSharingById}
-                            collapsedOpenedBySessionIds={collapsedOpenedBySessionIds}
-                            onToggleOpenedBySessions={handleToggleOpenedBySessions}
-                            resolveOpenerRowId={resolveOpenerRowId}
-                            onToggleCollapsed={toggleLocalProjectCollapsed}
-                            onToggleFullList={handleToggleLocalProjectFullList}
-                            onRequestRemoval={handleRequestRemoval}
+                            {...buildLocalProjectRowProps(machineId, project, section, false)}
                           />
                         );
                       })}
@@ -3381,6 +3407,48 @@ export function LoroAppSidebar({
         : null,
     [githubWorktreesSectionCollapsed, sendStates, workspaceRepoSessions]
   );
+  // Pinned projects open the Pinned section, before its pinned Sessions, in
+  // pin order. A project from another machine names it; this machine's do not.
+  const pinnedProjectsContent =
+    pinnedProjectRows.length === 0 ? null : (
+      <div className="space-y-0.5" data-sidebar-pinned-projects="">
+        {pinnedProjectRows.map(({ section, project }) => {
+          const machineId = section.machineId;
+          if (!machineId) return null;
+          return (
+            <LocalProjectItem
+              key={`${machineId}:${project.id}`}
+              {...buildLocalProjectRowProps(machineId, project, section, true)}
+              showMachineName={machineId !== localMachineId}
+              machineNameColor={machineMetaMap.get(machineId)?.lanColor}
+            />
+          );
+        })}
+      </div>
+    );
+  const pinnedProjectsActivity = useMemo(
+    () =>
+      pinnedSectionCollapsed && pinnedProjectRows.length > 0
+        ? summarizeLocalSessionsActivity(
+            pinnedProjectRows.flatMap(
+              ({ section, project }) =>
+                workspaceLocalProjectSessionsByKey.get(`${section.machineId}:${project.id}`) ?? []
+            ),
+            childSessionsByParent,
+            liveSessionStatuses,
+            sendStates
+          )
+        : null,
+    [
+      childSessionsByParent,
+      liveSessionStatuses,
+      pinnedProjectRows,
+      pinnedSectionCollapsed,
+      sendStates,
+      workspaceLocalProjectSessionsByKey,
+    ]
+  );
+
   const sidebarTopContent = hasWorkspaceSidebarTopContent(
     localProjectSections.length,
     showGithubWorktrees
@@ -3557,48 +3625,53 @@ export function LoroAppSidebar({
   }, [closeMobileDrawer, openSettings, workspaceSlug]);
 
   // --- Keyboard navigation integration ---
+  const toKeyboardNavProject = useCallback(
+    (machineId: MachineId, project: LocalProjectMeta): SidebarNavigationLocalProject => {
+      const projectKey = `${machineId}:${project.id}`;
+      const sessionsForProject = workspaceLocalProjectSessionsByKey.get(projectKey) ?? [];
+      return {
+        machineId,
+        localProjectId: project.id,
+        collapsed: localProjectCollapseState[projectKey] ?? false,
+        showFull:
+          showFullSessionGroups[getLocalProjectSessionGroupKey(machineId, project.id)] ?? false,
+        // Mirror exactly what LocalProjectItem renders: same nesting target and
+        // the same group ranking, or arrow keys drift from the visible order.
+        sessions: sessionsForProject.map((s) => ({
+          id: s.id,
+          openedByRowSessionId: s.openedByRootSessionId ?? resolveOpenerRowId(s.openedBySessionId),
+          rootRankMs: getEffectiveLatestMessageAt(s, childSessionsByParent),
+        })),
+      };
+    },
+    [
+      childSessionsByParent,
+      localProjectCollapseState,
+      resolveOpenerRowId,
+      showFullSessionGroups,
+      workspaceLocalProjectSessionsByKey,
+    ]
+  );
   const keyboardNavLocalSections = useMemo<SidebarNavigationLocalSection[]>(() => {
     const result: SidebarNavigationLocalSection[] = [];
     for (const section of localProjectSections) {
       const machineId = section.machineId;
       if (!machineId) continue;
-      const projects: SidebarNavigationLocalSection['projects'] = [];
-      for (const project of section.projects) {
-        const projectKey = `${machineId}:${project.id}`;
-        const collapsed = localProjectCollapseState[projectKey] ?? false;
-        const sessionsForProject = workspaceLocalProjectSessionsByKey.get(projectKey) ?? [];
-        projects.push({
-          machineId,
-          localProjectId: project.id,
-          collapsed,
-          showFull:
-            showFullSessionGroups[getLocalProjectSessionGroupKey(machineId, project.id)] ?? false,
-          // Mirror exactly what LocalProjectItem renders: same nesting target and
-          // the same group ranking, or arrow keys drift from the visible order.
-          sessions: sessionsForProject.map((s) => ({
-            id: s.id,
-            openedByRowSessionId:
-              s.openedByRootSessionId ?? resolveOpenerRowId(s.openedBySessionId),
-            rootRankMs: getEffectiveLatestMessageAt(s, childSessionsByParent),
-          })),
-        });
-      }
       result.push({
         collapsed:
           localProjectsSectionCollapseState[section.sectionKey] ?? section.defaultCollapsed,
-        projects,
+        projects: section.projects.map((project) => toKeyboardNavProject(machineId, project)),
       });
     }
     return result;
-  }, [
-    childSessionsByParent,
-    localProjectSections,
-    localProjectCollapseState,
-    localProjectsSectionCollapseState,
-    resolveOpenerRowId,
-    showFullSessionGroups,
-    workspaceLocalProjectSessionsByKey,
-  ]);
+  }, [localProjectSections, localProjectsSectionCollapseState, toKeyboardNavProject]);
+  const keyboardNavPinnedProjects = useMemo<SidebarNavigationLocalProject[]>(
+    () =>
+      pinnedProjectRows.flatMap(({ section, project }) =>
+        section.machineId ? [toKeyboardNavProject(section.machineId, project)] : []
+      ),
+    [pinnedProjectRows, toKeyboardNavProject]
+  );
 
   const activeNavRef = useRef(activeNav);
   activeNavRef.current = activeNav;
@@ -3610,6 +3683,8 @@ export function LoroAppSidebar({
   pinnedItemsRef.current = pinnedItems;
   const localSectionsRef = useRef(keyboardNavLocalSections);
   localSectionsRef.current = keyboardNavLocalSections;
+  const pinnedProjectsNavRef = useRef(keyboardNavPinnedProjects);
+  pinnedProjectsNavRef.current = keyboardNavPinnedProjects;
 
   const keyboardNavCallbacks = useMemo<import('@/atoms/focus-layer').SidebarNavCallbacks>(
     () => ({
@@ -3630,9 +3705,13 @@ export function LoroAppSidebar({
           const repo = task.repoFullName?.trim();
           return repo || ONLY_CHATS_KEY;
         }
-        // Check local project sessions
-        for (const section of localSectionsRef.current) {
-          for (const project of section.projects) {
+        // Check local project sessions, pinned projects included
+        const projectLists = [
+          pinnedProjectsNavRef.current,
+          ...localSectionsRef.current.map((section) => section.projects),
+        ];
+        for (const projects of projectLists) {
+          for (const project of projects) {
             for (const session of project.sessions) {
               if (session.id === sessionId) {
                 return getLocalProjectSessionGroupKey(project.machineId, project.localProjectId);
@@ -3666,6 +3745,7 @@ export function LoroAppSidebar({
         collapsedOpenedBySessions: collapsedOpenedBySessionIds,
         pinnedItems,
         pinnedSectionCollapsed,
+        pinnedProjects: keyboardNavPinnedProjects,
         workspace: {
           localSections: keyboardNavLocalSections,
           githubSectionCollapsed: githubWorktreesSectionCollapsed,
@@ -3685,6 +3765,7 @@ export function LoroAppSidebar({
       collapsedOpenedBySessionIds,
       githubWorktreesSectionCollapsed,
       keyboardNavLocalSections,
+      keyboardNavPinnedProjects,
       organizeMode,
       pinnedItems,
       pinnedSectionCollapsed,
@@ -3780,6 +3861,8 @@ export function LoroAppSidebar({
         organizeMode={organizeMode}
         chatScope={chatScope}
         pinnedItems={pinnedItems}
+        pinnedProjectsContent={pinnedProjectsContent ?? undefined}
+        pinnedProjectsActivity={pinnedProjectsActivity}
         pinnedSectionCollapsed={pinnedSectionCollapsed}
         updatedItems={updatedItems}
         updatedSelectedItemId={updatedSelectedItemId}

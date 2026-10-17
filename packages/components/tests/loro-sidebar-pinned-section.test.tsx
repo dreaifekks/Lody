@@ -448,6 +448,74 @@ describe('LoroSidebar pinned section', () => {
     expect(container?.querySelector('[data-sidebar-updated-project]')).toBeNull();
   });
 
+  it('lists pinned projects in the Pinned section before its conversations', () => {
+    renderSidebar({
+      organizeMode: 'workspace',
+      onTogglePinnedSection: () => undefined,
+      pinnedProjectsContent: <div data-test-pinned-project="docs">docs</div>,
+    });
+
+    const header = container?.querySelector('[role="button"][aria-label="Pinned"]');
+    expect(header?.getAttribute('aria-expanded')).toBe('true');
+    const projectRow = container?.querySelector('[data-test-pinned-project="docs"]');
+    const pinnedRow = container?.querySelector('[data-sidebar-updated-id="pinned-session"]');
+    expect(projectRow).not.toBeNull();
+    expect(pinnedRow).not.toBeNull();
+    expect(
+      header?.compareDocumentPosition(projectRow as Node) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      projectRow?.compareDocumentPosition(pinnedRow as Node) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+  });
+
+  it('opens the Pinned section for pinned projects alone, in both organize modes', () => {
+    for (const organizeMode of ['workspace', 'updated'] as const) {
+      renderSidebar({
+        organizeMode,
+        pinnedItems: [],
+        onTogglePinnedSection: () => undefined,
+        pinnedProjectsContent: <div data-test-pinned-project="docs">docs</div>,
+        updatedItems: [
+          {
+            id: 'updated-session',
+            kind: 'chat',
+            title: 'Recently updated conversation',
+            sectionLabel: 'Chats',
+            latestMessageAt: new Date('2026-07-14T09:00:00.000Z'),
+          },
+        ],
+      });
+      const header = container?.querySelector('[role="button"][aria-label="Pinned"]');
+      expect(header, organizeMode).not.toBeNull();
+      const projectRow = container?.querySelector('[data-test-pinned-project="docs"]');
+      expect(projectRow, organizeMode).not.toBeNull();
+      // No empty-state card and no "pinned" session rows: the projects are the section.
+      expect(container?.textContent, organizeMode).not.toContain('No recent');
+      expect(container?.querySelector('[data-sidebar-updated-id]'), organizeMode).toBe(
+        organizeMode === 'updated'
+          ? container?.querySelector('[data-sidebar-updated-id="updated-session"]')
+          : null
+      );
+      flushSync(() => root?.unmount());
+      container?.remove();
+    }
+  });
+
+  it('folds pinned projects away with the section', () => {
+    renderSidebar({
+      pinnedSectionCollapsed: true,
+      onTogglePinnedSection: () => undefined,
+      pinnedProjectsContent: <div data-test-pinned-project="docs">docs</div>,
+      pinnedProjectsActivity: { failed: 0, waiting: 1, working: 0, sending: 0, unread: 0 },
+    });
+    expect(container?.querySelector('[data-test-pinned-project="docs"]')).toBeNull();
+    const header = container?.querySelector('[role="button"][aria-label="Pinned"]');
+    expect(header?.getAttribute('aria-expanded')).toBe('false');
+    // The folded header still reports what the hidden projects hold.
+    expect(header?.querySelector('[data-sidebar-group-activity]')).not.toBeNull();
+  });
+
   it('collapses pinned conversations and keeps the folded chevron visible', () => {
     const onTogglePinnedSection = vi.fn();
     renderSidebar({

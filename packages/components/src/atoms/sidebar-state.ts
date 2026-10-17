@@ -214,26 +214,21 @@ export const localProjectOrderAtom = atom<readonly string[], [readonly string[]]
 );
 
 /**
- * Order one machine section's projects for the sidebar: pinned projects first,
- * then the saved drag order, then creation time and name. Pinning does not
- * rewrite the saved order, so unpinning returns a project to its old place.
+ * Order one machine section's projects for the sidebar: the saved drag order,
+ * then creation time and name.
  */
 export function sortLocalProjectsForSidebar<
   T extends { id: string; name: string; createdAtMs?: number },
 >(
   projects: readonly T[],
   machineId: string | null | undefined,
-  savedOrder: readonly string[],
-  pinnedKeys: ReadonlySet<string>
+  savedOrder: readonly string[]
 ): T[] {
   const savedRank = new Map(savedOrder.map((key, index) => [key, index]));
   const keyOf = (project: T) => (machineId ? `${machineId}:${project.id}` : null);
   return [...projects].sort((a, b) => {
     const aKey = keyOf(a);
     const bKey = keyOf(b);
-    const aPinned = aKey !== null && pinnedKeys.has(aKey);
-    const bPinned = bKey !== null && pinnedKeys.has(bKey);
-    if (aPinned !== bPinned) return aPinned ? -1 : 1;
     const aRank = aKey !== null ? savedRank.get(aKey) : undefined;
     const bRank = bKey !== null ? savedRank.get(bKey) : undefined;
     if (aRank !== undefined || bRank !== undefined) {
@@ -246,6 +241,55 @@ export function sortLocalProjectsForSidebar<
     if (aTime !== bTime) return aTime - bTime;
     return a.name.localeCompare(b.name);
   });
+}
+
+/**
+ * Lift the pinned projects out of their machine sections into one list in pin
+ * order (the workspace's `pinnedProjects` keys). A project appears once: in
+ * the Pinned section or in its machine group, never both. A section left with
+ * no project is dropped, like any empty group. Unknown keys (a project that
+ * was removed or whose machine is away) are skipped, not shown as gaps.
+ */
+export function partitionPinnedLocalProjects<
+  Section extends { machineId: string | null | undefined; projects: readonly { id: string }[] },
+>(
+  sections: readonly Section[],
+  pinnedKeys: readonly string[]
+): {
+  sections: Section[];
+  pinned: Array<{ section: Section; project: Section['projects'][number] }>;
+} {
+  type Project = Section['projects'][number];
+  if (pinnedKeys.length === 0) return { sections: [...sections], pinned: [] };
+  const wanted = new Set(pinnedKeys);
+  const found = new Map<string, { section: Section; project: Project }>();
+  const remaining: Section[] = [];
+  for (const section of sections) {
+    if (!section.machineId) {
+      remaining.push(section);
+      continue;
+    }
+    const kept: Project[] = [];
+    for (const project of section.projects) {
+      const key = `${section.machineId}:${project.id}`;
+      if (wanted.has(key) && !found.has(key)) {
+        found.set(key, { section, project });
+      } else {
+        kept.push(project);
+      }
+    }
+    if (kept.length === section.projects.length) {
+      remaining.push(section);
+    } else if (kept.length > 0) {
+      remaining.push({ ...section, projects: kept } as Section);
+    }
+  }
+  const pinned: Array<{ section: Section; project: Project }> = [];
+  for (const key of pinnedKeys) {
+    const entry = found.get(key);
+    if (entry) pinned.push(entry);
+  }
+  return { sections: remaining, pinned };
 }
 
 /**

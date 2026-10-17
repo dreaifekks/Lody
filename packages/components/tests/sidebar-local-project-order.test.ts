@@ -5,6 +5,7 @@ import type { WorkspaceId } from '@lody/shared';
 import {
   localProjectOrderAtom,
   moveLocalProjectOrder,
+  partitionPinnedLocalProjects,
   sortLocalProjectsForSidebar,
 } from '../src/atoms/sidebar-state';
 import { currentWorkspaceIdAtom } from '../src/atoms/workspace-context';
@@ -48,7 +49,7 @@ describe('sidebar local project order', () => {
     expect(store.get(localProjectOrderAtom)).toEqual(['machine-b:project-1']);
   });
 
-  it('lists pinned projects first and keeps the saved order inside each half', () => {
+  it('orders a machine group by the saved drag order, then creation time and name', () => {
     const projects = [
       { id: 'older', name: 'Older', createdAtMs: 1 },
       { id: 'newer', name: 'Newer', createdAtMs: 2 },
@@ -56,29 +57,13 @@ describe('sidebar local project order', () => {
       { id: 'unranked', name: 'Unranked', createdAtMs: 0 },
     ];
     const savedOrder = ['machine-a:dragged-first', 'machine-a:older', 'machine-a:newer'];
-
-    const unpinned = sortLocalProjectsForSidebar(projects, 'machine-a', savedOrder, new Set());
-    expect(unpinned.map((project) => project.id)).toEqual([
-      'dragged-first',
-      'older',
-      'newer',
-      'unranked',
-    ]);
-
-    const pinned = sortLocalProjectsForSidebar(
-      projects,
-      'machine-a',
-      savedOrder,
-      new Set(['machine-a:newer', 'machine-a:unranked', 'machine-b:older'])
-    );
-    expect(pinned.map((project) => project.id)).toEqual([
-      'newer',
-      'unranked',
-      'dragged-first',
-      'older',
-    ]);
-    // Pinning is not a drag: the saved order is untouched and the input is not mutated.
-    expect(savedOrder).toEqual(['machine-a:dragged-first', 'machine-a:older', 'machine-a:newer']);
+    expect(
+      sortLocalProjectsForSidebar(projects, 'machine-a', savedOrder).map((project) => project.id)
+    ).toEqual(['dragged-first', 'older', 'newer', 'unranked']);
+    // Another machine's saved order says nothing about this group.
+    expect(
+      sortLocalProjectsForSidebar(projects, 'machine-b', savedOrder).map((project) => project.id)
+    ).toEqual(['unranked', 'older', 'newer', 'dragged-first']);
     expect(projects.map((project) => project.id)).toEqual([
       'older',
       'newer',
@@ -87,16 +72,44 @@ describe('sidebar local project order', () => {
     ]);
   });
 
-  it('ignores pins for a section without a machine id', () => {
-    const projects = [
-      { id: 'b', name: 'B', createdAtMs: 2 },
-      { id: 'a', name: 'A', createdAtMs: 1 },
+  it('lifts pinned projects out of their machine groups in pin order', () => {
+    const sections = [
+      {
+        machineId: 'machine-a',
+        label: 'This Mac',
+        projects: [{ id: 'lody' }, { id: 'loro' }, { id: 'docs' }],
+      },
+      { machineId: 'machine-b', label: 'MacBook', projects: [{ id: 'lody' }] },
+      { machineId: null, label: 'No machine', projects: [{ id: 'lody' }] },
     ];
-    expect(
-      sortLocalProjectsForSidebar(projects, null, [], new Set(['null:b', 'b'])).map(
-        (project) => project.id
-      )
-    ).toEqual(['a', 'b']);
+    const { sections: remaining, pinned } = partitionPinnedLocalProjects(sections, [
+      'machine-b:lody',
+      'machine-a:gone',
+      'machine-a:docs',
+      'nope',
+    ]);
+
+    // Pin order wins over group order; unknown keys leave no gap.
+    expect(pinned.map(({ section, project }) => `${section.label}/${project.id}`)).toEqual([
+      'MacBook/lody',
+      'This Mac/docs',
+    ]);
+    expect(pinned[0]?.section.machineId).toBe('machine-b');
+    // A pinned project appears once; a group emptied by pinning is gone, a
+    // section without a machine id cannot hold pins and stays as it is.
+    expect(remaining.map((section) => [section.label, section.projects.map((p) => p.id)])).toEqual([
+      ['This Mac', ['lody', 'loro']],
+      ['No machine', ['lody']],
+    ]);
+    expect(remaining[1]).toBe(sections[2]);
+    expect(sections[0]?.projects).toHaveLength(3);
+  });
+
+  it('returns the groups untouched when nothing is pinned', () => {
+    const sections = [{ machineId: 'machine-a', projects: [{ id: 'lody' }] }];
+    const result = partitionPinnedLocalProjects(sections, []);
+    expect(result.pinned).toEqual([]);
+    expect(result.sections[0]).toBe(sections[0]);
   });
 
   it('does not persist an order before a workspace is resolved', () => {

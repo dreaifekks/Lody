@@ -45,8 +45,10 @@ import {
   SidebarRowEndSlot,
   SidebarListSkeleton,
   SidebarSectionHeader,
+  addSidebarGroupActivity,
   summarizeSidebarGroupActivity,
   withSessionSendStates,
+  type SidebarGroupActivity,
   SidebarSessionTitleText,
   SessionRowOpenedByMenuItems,
   buildSessionRowOpenedByTreeSlot,
@@ -373,6 +375,14 @@ export type SidebarUpdatedSessionListProps = {
    */
   headerAction?: ReactNode;
   /**
+   * Rows the first bucket lists before its sessions (the Pinned section's
+   * pinned projects). The bucket renders for them even with no session, and
+   * folds them away with the rest.
+   */
+  leadingContent?: ReactNode;
+  /** What {@link leadingContent} hides while folded, added to the header's mark. */
+  leadingActivity?: SidebarGroupActivity | null;
+  /**
    * Updated organize mode mixes sessions from every project into one recency
    * list, so top-level rows show a second line: folder / GitHub owner mark +
    * project name. Nested opened Sessions skip it — they already sit under a
@@ -412,6 +422,8 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
   showFullBuckets,
   onToggleFullBucket,
   headerAction,
+  leadingContent,
+  leadingActivity,
   showProjectContext = false,
 }: SidebarUpdatedSessionListProps) {
   const { t } = useTranslation();
@@ -472,10 +484,11 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
   const canToggleBucket = typeof onToggleBucket === 'function';
   const canToggleFullBucket = typeof onToggleFullBucket === 'function';
 
+  const hasLeadingContent = Boolean(leadingContent);
   const buckets = useMemo<SidebarUpdatedBucket[]>(() => {
-    if (!items.length) return [];
+    if (!items.length && !hasLeadingContent) return [];
     return [{ key: 'all', label: merged.heading, items: sortUpdatedItems(items) }];
-  }, [items, merged.heading]);
+  }, [hasLeadingContent, items, merged.heading]);
 
   const sendStates = useAtomValue(sessionSendStatesAtom);
   // Updated mode is a flat firehose, so a bucket can hold the whole workspace
@@ -489,8 +502,11 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
             overflows: updatedBucketOverflowsPreview(bucket.items),
             nodes: EMPTY_TREE_NODES,
             // A folded bucket still says whether anything inside needs the user.
-            collapsedActivity: summarizeSidebarGroupActivity(
-              withSessionSendStates(bucket.items, (item) => item.id, sendStates)
+            collapsedActivity: addSidebarGroupActivity(
+              summarizeSidebarGroupActivity(
+                withSessionSendStates(bucket.items, (item) => item.id, sendStates)
+              ),
+              leadingActivity
             ),
           };
         }
@@ -510,6 +526,7 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
       canToggleFullBucket,
       collapsedBuckets,
       collapsedOpenedBySessionIds,
+      leadingActivity,
       sendStates,
       showFullBuckets,
     ]
@@ -528,7 +545,7 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
     );
   }
 
-  if (!items.length) {
+  if (!items.length && !hasLeadingContent) {
     return (
       <div className="flex flex-col">
         {headerAction ? <HeaderActionRow action={headerAction} /> : null}
@@ -591,7 +608,9 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
                 toggleLabel={toggleBucketLabel}
                 onToggleCollapsed={canToggleBucket ? handleToggle : undefined}
               />
-              {!collapsed ? (
+              {!collapsed && bucketIndex === 0 ? leadingContent : null}
+              {/* No empty row list: it would still take the column gap. */}
+              {!collapsed && (visibleNodes.length > 0 || showToggleFullList) ? (
                 <div className={SIDEBAR_ROW_LIST_CLASS}>
                   {visibleNodes.map((node, nodeIndex) => {
                     const openedByTree = buildSessionRowOpenedByTreeSlot(node, t, () =>

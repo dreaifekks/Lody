@@ -88,6 +88,7 @@ describe('sidebar local project row', () => {
     liveSessionStatuses?: ReadonlyMap<string, SessionStatus>;
     isPinned?: boolean;
     onTogglePinned?: (machineId: MachineId, localProjectId: string, nextPinned: boolean) => void;
+    showMachineName?: boolean;
   }) {
     flushSync(() => {
       root?.render(
@@ -119,6 +120,8 @@ describe('sidebar local project row', () => {
             onNewChatInProject={options.onNewChatInProject}
             isPinned={options.isPinned}
             onTogglePinned={options.onTogglePinned}
+            showMachineName={options.showMachineName}
+            machineNameColor="blue"
             onNavigateSession={() => undefined}
             onArchive={() => undefined}
             collapsedOpenedBySessionIds={{}}
@@ -189,6 +192,26 @@ describe('sidebar local project row', () => {
     expect(pinnedItems.map(({ label }) => label)).not.toContain('Pin project');
     flushSync(() => pinnedItems.find(({ label }) => label === 'Unpin project')?.item.click());
     expect(onTogglePinned).toHaveBeenLastCalledWith(machineId, project.id, false);
+  });
+
+  it('names its machine only when asked to, as a pinned row away from its group', () => {
+    const bare = render({ onNavigateProject: vi.fn(), onNewChatInProject: vi.fn() });
+    expect(bare?.querySelector('[data-sidebar-project-machine]')).toBeNull();
+    expect(bare?.textContent).toContain('Lody');
+    expect(bare?.textContent).not.toContain("Teammate's Mac");
+
+    const named = render({
+      onNavigateProject: vi.fn(),
+      onNewChatInProject: vi.fn(),
+      isPinned: true,
+      onTogglePinned: vi.fn(),
+      showMachineName: true,
+    });
+    const suffix = named?.querySelector<HTMLElement>('[data-sidebar-project-machine]');
+    expect(suffix?.textContent).toBe("Teammate's Mac");
+    expect(suffix?.style.color).toContain('--lan-machine-blue');
+    // Pinned rows carry no pin glyph: the Pinned section already says so.
+    expect(named?.querySelector('.lucide-pin')).toBeNull();
   });
 
   it('goes inert while the project is being removed', () => {
