@@ -51,7 +51,7 @@ const panelStyles = stylex.create({
 });
 
 /** Where a member runs, said once: agent · machine · project. */
-function useSessionDetail() {
+export function useSessionDetail() {
   const { t } = useTranslation();
   const machines = useAtomValue(getMachineMetaMapAtom);
   const agents = useAtomValue(getAllAgentConfigAtom);

@@ -2788,9 +2788,25 @@ const SystemMessageRowView = ({
   onNavigateSession?: (target: SessionNavigationTarget) => void;
   capacityRetry?: CapacityRetryControl;
 }) => {
+  const boardMainSession = useAtomValue(
+    useMemo(
+      () =>
+        selectAtom(
+          sessionMetaAtomFamily(getSessionRoomId(sessionId)),
+          (meta) => meta?.boardRole === 'coordinator'
+        ),
+      [sessionId]
+    )
+  );
   const creationCards = getCreatedSessionCards(message);
   if (creationCards) {
-    return <CreatedSessionList cards={creationCards} onNavigateSession={onNavigateSession} />;
+    return (
+      <CreatedSessionList
+        cards={creationCards}
+        liveBoardThreads={boardMainSession}
+        onNavigateSession={onNavigateSession}
+      />
+    );
   }
   const systemItems = message.items.flatMap((item, itemIndex) =>
     shouldRenderSystemRowItem(item) ? [{ item, itemIndex }] : []
@@ -2828,11 +2844,13 @@ const SystemMessageRowView = ({
           <OperationCompletionBatchView
             key={item.batchId}
             batch={item}
+            boardMainSession={boardMainSession}
             onNavigateSession={onNavigateSession}
           />
         ) : item.type === 'operation_progress' ? (
           <CreatedSessionList
             key={item.operationId}
+            liveBoardThreads={boardMainSession}
             cards={item.items.map((target) => ({
               sessionId: target.target.sessionId,
               fallbackTitle: target.label,
@@ -2854,12 +2872,35 @@ const SystemMessageRowView = ({
 
 const OperationCompletionBatchView = ({
   batch,
+  boardMainSession,
   onNavigateSession,
 }: {
   batch: Extract<MessageContent, { type: 'operation_completion_batch' }>;
+  /** A Board's main session shows each thread's live card where it was assigned. */
+  boardMainSession?: boolean;
   onNavigateSession?: (target: SessionNavigationTarget) => void;
 }) => {
   const { t } = useTranslation();
+  if (boardMainSession)
+    return (
+      <div
+        data-board-updates-attached=""
+        className={cn(stylex.props(activityTypography.body).className, 'text-muted-foreground')}
+      >
+        {t(
+          batch.deliveryStatus === 'unknown'
+            ? 'boards.updatesAttachedUnknown'
+            : 'boards.updatesAttached',
+          {
+            defaultValue:
+              batch.deliveryStatus === 'unknown'
+                ? '{{count}} thread updates saved; delivery to the main session is uncertain'
+                : '{{count}} thread updates went to the main session with this message',
+            count: batch.memberCount,
+          }
+        )}
+      </div>
+    );
   return (
     <div className="flex flex-col gap-1.5">
       <div>

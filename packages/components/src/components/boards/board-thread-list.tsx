@@ -144,7 +144,13 @@ const styles = stylex.create({
  * unread dot it settles into. Only Board states with no sidebar mark (failed,
  * stopped) draw their own glyph, and only when none of those apply.
  */
-function StatusMark({ status, unread }: { status: BoardSessionStatus; unread: boolean }) {
+export function BoardThreadStatusMark({
+  status,
+  unread,
+}: {
+  status: BoardSessionStatus;
+  unread: boolean;
+}) {
   const { t } = useTranslation();
   const working = useWorkingHandOver(GROUP_BY_STATUS[status] === 'active', unread);
   if (status === 'waiting_user' || working || unread)
@@ -243,7 +249,7 @@ export function BoardThreadListView({
                   )}
                 >
                   <span {...stylex.props(styles.mark)}>
-                    <StatusMark status={item.status} unread={item.unread === true} />
+                    <BoardThreadStatusMark status={item.status} unread={item.unread === true} />
                   </span>
                   <span {...stylex.props(styles.title)}>{item.title}</span>
                   <span {...stylex.props(styles.time)}>{item.updatedLabel}</span>

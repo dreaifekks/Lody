@@ -285,6 +285,12 @@ from the creating Operation's target Turn, not later Session activity. Completio
 rows linked by `progressMessageId` show a summary without creating a second set of
 cards. Older histories without progress rows retain successful-target cards.
 
+A Board's main session is the exception: its creation cards are
+`BoardThreadStatusCard`s that follow each thread's current state (the Board panel
+row's ✋ / working / unread mark, then agent · machine · project · worktree), and a
+result batch that went along with one of its messages renders as one line instead
+of reply cards ([dispatcher model](../../../../../specs/project-coordinator/board-dispatcher-model.zh.md)).
+
 `created-session-list.tsx` uses the Subagent Task panel surface and ruled rows,
 with leading status marks and no repeated “Session created” labels. The header
 reports the total and expands/collapses lists longer than five rows; the default

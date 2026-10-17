@@ -24,8 +24,8 @@ Ownership: [README.md](README.md).
   zero-height caches can hide the first user row. Preserve live activity labels/tones.
   Apply the header inset once to the whole scroller.
 - Creation cards: [contract](README.md#creation-progress). Bind status to the
-  target Turn and subscribe only to its title; `progressMessageId` prevents
-  duplicates. Consecutive creation records share a five-card scroller with
+  target Turn (a Board main session's follow the thread) and subscribe only to its
+  title; `progressMessageId` prevents duplicates. Consecutive creation records share a five-card scroller with
   disclosure; retain their full hydration range. Legacy successes keep cards.
 
 ## Turn Folding And Layout

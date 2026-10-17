@@ -5361,6 +5361,8 @@
   "boards.purpose": "目标",
   "boards.maxRounds": "每个线程的轮数上限",
   "boards.reportHumanTurns": "记录用户插话的完成结果",
+  "boards.updatesAttached": "这条消息附上了 {{count}} 条线程更新",
+  "boards.updatesAttachedUnknown": "{{count}} 条线程更新已保存，主会话是否收到尚不确定",
   "boards.constraints": "线程说明",
   "boards.creating": "创建中…",
   "boards.threads": "线程",

@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import type { ComponentProps } from 'react';
 import type { SessionHistoryParsed } from '@lody/shared';
 import { withClassName } from '@/lib/stylex';
+import { BoardThreadStatusCard } from '../boards/board-thread-status-card';
 import { CreatedSessionOperationCard } from './created-session-operation-card';
 
 type Card = Omit<ComponentProps<typeof CreatedSessionOperationCard>, 'onNavigateSession'>;
@@ -58,9 +59,12 @@ const styles = stylex.create({
 
 export function CreatedSessionList({
   cards,
+  liveBoardThreads,
   onNavigateSession,
 }: {
   cards: readonly Card[];
+  /** In a Board's main session: each card shows its thread's current state instead. */
+  liveBoardThreads?: boolean;
   onNavigateSession?: ComponentProps<typeof CreatedSessionOperationCard>['onNavigateSession'];
 }) {
   const { t } = useTranslation();
@@ -117,7 +121,15 @@ export function CreatedSessionList({
             key={`${card.sessionId}-${index}`}
             {...stylex.props(index > 0 && taskStyles.rowRuled)}
           >
-            <CreatedSessionOperationCard {...card} onNavigateSession={onNavigateSession} />
+            {liveBoardThreads ? (
+              <BoardThreadStatusCard
+                sessionId={card.sessionId}
+                fallbackTitle={card.fallbackTitle}
+                onNavigateSession={onNavigateSession}
+              />
+            ) : (
+              <CreatedSessionOperationCard {...card} onNavigateSession={onNavigateSession} />
+            )}
           </div>
         ))}
       </div>

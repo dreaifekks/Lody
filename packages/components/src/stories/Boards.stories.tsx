@@ -7,6 +7,7 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { useState } from 'react';
 import { createStore, Provider } from 'jotai';
+import { parseLodyPresenceStates } from '@lody/shared';
 import { useTranslation } from 'react-i18next';
 import { ArrowUp, Bot, ChevronDown, Download, Monitor, Settings2 } from 'lucide-react';
 import { Button } from '@lody/ui/button';
@@ -26,6 +27,7 @@ import {
 import { currentWorkspaceIdAtom } from '@/atoms';
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '@/atoms/settings';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
+import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '@/atoms/presence';
 import { ChatComposer } from '@/components/chat/chat-composer';
 import {
   MessageRowView,
@@ -861,4 +863,78 @@ export const InboxReports: Story = {
       </>
     );
   },
+};
+
+/**
+ * The main session's own conversation: each assigned thread is one live card
+ * (the Board panel row's mark, then where it runs), and results that went along
+ * with a message are one line.
+ */
+const assignedStore = createStore();
+assignedStore.set(sessionMetaCacheAtom, {
+  [getSessionRoomId(COORDINATOR)]: coordinatorSession,
+  ...Object.fromEntries(members.map((session) => [getSessionRoomId(session.id), session])),
+});
+assignedStore.set(lodyPresenceNowMsAtom, NOW);
+assignedStore.set(
+  lodyPresenceStatesAtom,
+  parseLodyPresenceStates(
+    Object.fromEntries(
+      Object.entries(live).map(([id, status]) => [
+        id,
+        {
+          kind: 'session' as const,
+          sessionId: id as SessionId,
+          machineId: 'devnuc' as MachineId,
+          instanceId: 'story' as never,
+          updatedAt: NOW,
+          status,
+        },
+      ])
+    )
+  )
+);
+const assigned = [THREAD, 'thread-rounds', 'thread-memory', 'thread-ios', 'thread-entry-review'];
+export const AssignedThreads: Story = {
+  render: () => (
+    <Provider store={assignedStore}>
+      <MessageRowView
+        sessionId={COORDINATOR}
+        message={{
+          id: 'assigned',
+          role: 'system',
+          timestamp: new Date(NOW).toISOString(),
+          items: [
+            {
+              type: 'operation_progress',
+              operationId: 'assign',
+              operationKind: 'session_create_many',
+              items: assigned.map((id) => ({
+                status: 'succeeded' as const,
+                target: { sessionId: id as SessionId, userTurnId: `${id}-turn` },
+              })),
+            },
+          ],
+        }}
+        onNavigateSession={() => {}}
+      />
+      <MessageRowView
+        sessionId={COORDINATOR}
+        message={{
+          id: 'attached',
+          role: 'system',
+          timestamp: new Date(NOW).toISOString(),
+          items: [
+            {
+              type: 'operation_completion_batch',
+              batchId: 'attached-batch',
+              memberCount: 3,
+              members: [],
+            },
+          ],
+        }}
+        onNavigateSession={() => {}}
+      />
+    </Provider>
+  ),
 };
