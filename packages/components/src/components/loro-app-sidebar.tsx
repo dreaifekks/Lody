@@ -1,6 +1,5 @@
 import { boardEnabledAtom } from '@/atoms/settings';
 import { boardsSectionCollapsedAtom } from '@/atoms/sidebar-state';
-import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { BoardSidebar } from './boards/board-sidebar-section';
 import { CreateBoardDialog } from './boards/create-board-dialog';
 import { boardActivity, boardEntrySearch, isBoardSession } from './boards/board-threads';
