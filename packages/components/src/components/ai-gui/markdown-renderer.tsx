@@ -931,8 +931,13 @@ const StreamingMarkdown = lazy<ComponentType<StreamdownProps>>(() =>
 /** Matches a fenced ```mermaid block, so blocks without one skip the observer. */
 const MERMAID_FENCE_PATTERN = /^[ \t]{0,3}(?:`{3,}|~{3,})[ \t]*mermaid\b/mu;
 
+/** Telegram deep links (`tg://privatepost?...`) open the Telegram client. */
+const TELEGRAM_DEEP_LINK_PATTERN = /^tg:\/\//iu;
+
 const markdownUrlTransform: UrlTransform = (value) =>
-  isMarkdownAgentFileHref(value) || parseSessionLinkHref(value)
+  isMarkdownAgentFileHref(value) ||
+  parseSessionLinkHref(value) ||
+  TELEGRAM_DEEP_LINK_PATTERN.test(value)
     ? value
     : defaultUrlTransform(value);
 
