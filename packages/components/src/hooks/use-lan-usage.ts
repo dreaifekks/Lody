@@ -9,7 +9,7 @@ import type {
 } from '@lody/shared';
 import { isElectronRenderer } from '@/lib/electron';
 import { getIpcServices } from '@/lib/electron-ipc-client';
-import type { LanUsageMachineReport } from '@/lib/lan-usage';
+import { askLanMachineUsage, type LanUsageMachineReport } from '@/lib/lan-usage';
 
 // Usage changes as agents work; the page reads it again while it is open.
 const REFRESH_MS = 60_000;
@@ -66,22 +66,24 @@ export function useLanUsage(workspaceId: string | null): LanUsageState {
         if (!machine.self && machine.online === false) {
           return { machine, rows: null, reason: 'offline' as const };
         }
-        const request: LanMemberControlRequest = {
-          type: 'lan/usage',
-          machineId: machine.self ? THIS_MACHINE : (machine.machineId as MachineId),
-          workspaceId: workspaceId as WorkspaceId,
-        };
-        const response: LocalProjectControlResponse | null = await control
-          .control(
-            machine.self ? request : { type: 'lan/forward', machineId: THIS_MACHINE, request }
-          )
-          .catch(() => null);
-        const answer: LanMemberControlResponse | null =
-          response?.ok && response.type === 'lan/forward'
+        const send = async (
+          request: LanMemberControlRequest
+        ): Promise<LanMemberControlResponse | null> => {
+          const response: LocalProjectControlResponse | null = await control
+            .control(
+              machine.self ? request : { type: 'lan/forward', machineId: THIS_MACHINE, request }
+            )
+            .catch(() => null);
+          return response?.ok && response.type === 'lan/forward'
             ? response.result.response
             : ((response as LanMemberControlResponse | null) ?? null);
-        return answer?.ok && answer.type === 'lan/usage'
-          ? { machine, rows: answer.result.rows, reason: null }
+        };
+        const rows = await askLanMachineUsage(send, {
+          machineId: machine.self ? THIS_MACHINE : (machine.machineId as MachineId),
+          workspaceId: workspaceId as WorkspaceId,
+        });
+        return rows
+          ? { machine, rows, reason: null }
           : { machine, rows: null, reason: 'unanswered' as const };
       })
     );

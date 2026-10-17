@@ -18,6 +18,7 @@ const LAN_MEMBER_CONTROL_TYPES = new Set([
   'hosted-config/preview',
   'hosted-config/import',
   'lan/usage',
+  'lan/usage-by-agent',
   'lan/restart-machine',
   'lan/github',
 ]);
@@ -625,7 +626,7 @@ function isLocalProjectControlRequest(value) {
     return typeof value.workspaceId === 'string' && typeof value.agentType === 'string';
   }
 
-  if (value.type === 'lan/usage') {
+  if (value.type === 'lan/usage' || value.type === 'lan/usage-by-agent') {
     return (
       typeof value.workspaceId === 'string' &&
       (value.sinceMs === undefined || (Number.isInteger(value.sinceMs) && value.sinceMs >= 0))
@@ -855,7 +856,8 @@ function isLocalProjectControlResponse(value) {
     );
   }
 
-  if (value.type === 'lan/usage') {
+  if (value.type === 'lan/usage' || value.type === 'lan/usage-by-agent') {
+    const withAgent = value.type === 'lan/usage-by-agent';
     return (
       isObjectRecord(value.result) &&
       Array.isArray(value.result.rows) &&
@@ -870,7 +872,8 @@ function isLocalProjectControlResponse(value) {
           typeof row.cacheReadInputTokens === 'number' &&
           typeof row.cacheCreationInputTokens === 'number' &&
           typeof row.reasoningOutputTokens === 'number' &&
-          typeof row.costUSD === 'number'
+          typeof row.costUSD === 'number' &&
+          (withAgent ? row.agent === null || typeof row.agent === 'string' : !('agent' in row))
       )
     );
   }

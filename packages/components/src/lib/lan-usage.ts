@@ -2,7 +2,13 @@
 // of the LAN reports what its own agents used, and the page puts the reports
 // together. The hosted page splits usage by member; every member of a LAN is
 // one user, so here it is split by machine.
-import type { LanUsageRow } from '@lody/shared';
+import type {
+  LanMemberControlRequest,
+  LanMemberControlResponse,
+  LanUsageAgentRow,
+  MachineId,
+  WorkspaceId,
+} from '@lody/shared';
 import type {
   SettingsUsageCalendarData,
   SettingsUsageDayData,
@@ -17,10 +23,44 @@ const CALENDAR_DAYS = 371;
 export type LanUsageMachineReport = {
   machineId: string;
   name: string;
-  rows: readonly LanUsageRow[];
+  rows: readonly LanUsageAgentRow[];
 };
 
-const tokensOf = (row: LanUsageRow) =>
+/** The agent of a row a build counted before it kept the agent. */
+export const USAGE_AGENT_UNKNOWN = 'unknown';
+/**
+ * Codex reports its background review under this model name, so the name
+ * says which agent worked rather than which model: the agent split keeps it
+ * apart from Codex's own turns, while the model split lists it as reported.
+ */
+export const USAGE_AGENT_CODEX_AUTO_REVIEW = 'codex-auto-review';
+
+export function usageAgentOf(row: Pick<LanUsageAgentRow, 'modelId' | 'agent'>): string {
+  if (row.modelId === USAGE_AGENT_CODEX_AUTO_REVIEW) return USAGE_AGENT_CODEX_AUTO_REVIEW;
+  return row.agent ?? USAGE_AGENT_UNKNOWN;
+}
+
+/**
+ * What one machine counted, with the agent of every row where its build
+ * keeps it. A build before that refuses the request, and is then asked the
+ * way it knows; its rows carry no agent. `null` where the machine did not
+ * answer at all.
+ */
+export async function askLanMachineUsage(
+  send: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse | null>,
+  target: { machineId: MachineId; workspaceId: WorkspaceId }
+): Promise<LanUsageAgentRow[] | null> {
+  const byAgent = await send({ type: 'lan/usage-by-agent', ...target });
+  if (!byAgent) return null;
+  if (byAgent.ok && byAgent.type === 'lan/usage-by-agent') return byAgent.result.rows;
+  const byModel = await send({ type: 'lan/usage', ...target });
+  if (byModel?.ok && byModel.type === 'lan/usage') {
+    return byModel.result.rows.map((row) => ({ ...row, agent: null }));
+  }
+  return null;
+}
+
+const tokensOf = (row: LanUsageAgentRow) =>
   row.inputTokens +
   row.outputTokens +
   row.cacheReadInputTokens +
@@ -82,6 +122,7 @@ export function buildLanUsageTimeline(
   const buckets = Array.from({ length: count }, (_, index) => ({
     startMs: startMs + index * size,
     byModel: new Map<string, Sum>(),
+    byAgent: new Map<string, Sum>(),
     byMachine: new Map<string, Sum>(),
   }));
   const breakdown = {
@@ -101,6 +142,7 @@ export function buildLanUsageTimeline(
       if (!bucket) continue;
       const rowTokens = tokensOf(row);
       addTo(bucket.byModel, row.modelId, rowTokens, row.costUSD);
+      addTo(bucket.byAgent, usageAgentOf(row), rowTokens, row.costUSD);
       addTo(bucket.byMachine, report.machineId, rowTokens, row.costUSD);
       tokens += rowTokens;
       costUSD += row.costUSD;
@@ -126,6 +168,7 @@ export function buildLanUsageTimeline(
         tokens: models.reduce((sum, item) => sum + item.tokens, 0),
         costUSD: models.reduce((sum, item) => sum + item.costUSD, 0),
         byModel: models,
+        byAgent: listOf(bucket.byAgent, 'agentId'),
         byUser: machines,
       };
     }),
@@ -176,6 +219,7 @@ export function buildLanUsageDay(
   reports: readonly LanUsageMachineReport[]
 ): SettingsUsageDayData {
   const byModel = new Map<string, Sum>();
+  const byAgent = new Map<string, Sum>();
   const byMachine = new Map<string, Sum>();
   const totals = {
     tokens: 0,
@@ -192,6 +236,7 @@ export function buildLanUsageDay(
       if (floorTo(row.startMs, DAY_MS) !== dayStartMs) continue;
       const rowTokens = tokensOf(row);
       addTo(byModel, row.modelId, rowTokens, row.costUSD);
+      addTo(byAgent, usageAgentOf(row), rowTokens, row.costUSD);
       addTo(byMachine, report.machineId, rowTokens, row.costUSD);
       totals.tokens += rowTokens;
       totals.costUSD += row.costUSD;
@@ -208,6 +253,7 @@ export function buildLanUsageDay(
     date: isoDate(dayStartMs),
     totals,
     byModel: listOf(byModel, 'modelId'),
+    byAgent: listOf(byAgent, 'agentId'),
     byUser: listOf(byMachine, 'userId'),
     users: usersOf(reports),
   };
