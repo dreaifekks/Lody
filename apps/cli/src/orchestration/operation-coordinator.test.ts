@@ -2342,6 +2342,37 @@ describe('Board coordinator continuity', () => {
     }
   });
 
+  it('skips an agent that compacts in the background, where Lody cannot confirm it', async () => {
+    const h = await largeIdleCoordinator();
+    try {
+      // Kimi advertises compaction, but its `/compact` ends the turn before compacting.
+      await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), { agentType: 'kimi' });
+      h.coordinator.start();
+      h.advance(10 * 60_000 + 1);
+      await h.drain();
+      await h.drain();
+      expect(h.maintenance.runs).toEqual([]);
+      expect(records(h)).toEqual([]);
+      expect(h.warnings).toEqual([
+        expect.stringContaining('compacts in the background, where Lody cannot confirm it'),
+      ]);
+      // Asked for by hand, it gets the same divider as an agent that cannot compact.
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'manual-1',
+          { boardId: h.board.id, kind: 'compact', trigger: 'manual', status: 'requested' },
+          new Date(TEST_NOW_MS).toISOString()
+        )
+      );
+      await h.drain();
+      await settled(h, 'unsupported');
+      expect(h.maintenance.runs).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('reports a compaction the agent did not confirm as failed', async () => {
     const h = await largeIdleCoordinator();
     try {

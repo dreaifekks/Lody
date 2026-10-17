@@ -1,6 +1,7 @@
 import {
   boardMaintenanceStepId,
   boardMaintenanceTurn,
+  compactsInBackground,
   decideBoardIdleCompaction,
   isBoardMaintenanceTurnId,
   readBoardMaintenance,
@@ -267,6 +268,14 @@ export class BoardContinuityWorkflow {
         yield* this.activity.arm(this.key(id), decision.delayMs, 'board-idle');
         return;
       }
+      if (compactsInBackground(meta.agentType)) {
+        yield* this.logOnce(
+          id,
+          `background:${meta.agentType}`,
+          'the coordinator agent compacts in the background, where Lody cannot confirm it; idle compaction skipped'
+        );
+        return;
+      }
       const support = yield* maintenance.compactionSupport(id, meta);
       if (support !== true) {
         yield* this.logOnce(
@@ -423,8 +432,12 @@ export class BoardContinuityWorkflow {
       };
       const write = (next: BoardMaintenanceMeta) =>
         this.writeDivider(history, turnId, next, run.row);
-      // An agent known not to compact is told before any turn runs.
-      if ((yield* maintenance.compactionSupport(meta.id, meta)) === false) {
+      // An agent known not to compact, or whose compaction Lody cannot confirm,
+      // is told before any turn runs.
+      if (
+        compactsInBackground(meta.agentType) ||
+        (yield* maintenance.compactionSupport(meta.id, meta)) === false
+      ) {
         yield* write({ ...record, status: 'unsupported' });
         return;
       }

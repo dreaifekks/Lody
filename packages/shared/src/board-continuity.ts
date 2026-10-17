@@ -29,6 +29,16 @@ export const isBoardMaintenanceEntry = (
   entry: Pick<SessionHistoryInput, 'role' | 'userTurnId'>
 ): boolean => entry.role === 'assistant' && isBoardMaintenanceTurnId(entry.userTurnId);
 
+/**
+ * Agents whose `/compact` only starts a compaction in the background: the turn
+ * ends first, so Lody can never confirm it and Board maintenance skips them like
+ * an agent that cannot compact. Named by agent type because the `compaction`
+ * capability (acp-extension-core) does not say when the compaction finishes.
+ */
+const BACKGROUND_COMPACTION_AGENT_TYPES: ReadonlySet<string> = new Set(['kimi', 'kimi-code']);
+export const compactsInBackground = (agentType: string | undefined): boolean =>
+  agentType !== undefined && BACKGROUND_COMPACTION_AGENT_TYPES.has(agentType);
+
 export const BoardContinuitySettingsSchema = z.object({
   /** Compact the coordinator's context once it sits idle with a large context. */
   idleCompaction: z.boolean().default(true),
