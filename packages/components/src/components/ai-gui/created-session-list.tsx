@@ -50,10 +50,20 @@ export function getCreatedSessionCards(message: SessionHistoryParsed): Card[] | 
 const styles = stylex.create({
   header: { display: 'grid', minWidth: 0 },
   headerLabel: { flexGrow: 1, textAlign: 'start' },
-  list: { minWidth: 0, scrollbarGutter: 'stable', overscrollBehaviorY: 'contain' },
+  list: {
+    minWidth: 0,
+    scrollbarGutter: 'stable',
+    overscrollBehaviorY: 'contain',
+    // The scroller clips what overflows it, a row's 2px focus ring included: pad
+    // it by the ring and pull the box back out by as much, so rows stay put.
+    marginTop: 0,
+    marginInline: '-2px',
+    marginBottom: '-2px',
+    padding: '2px',
+  },
   bounded: {
-    // Five compact control rows, with four separators.
-    maxHeight: `calc(5 * ${control.small} + 4px)`,
+    // Five compact control rows, four separators and the focus-ring padding.
+    maxHeight: `calc(5 * ${control.small} + 8px)`,
   },
 });
 
