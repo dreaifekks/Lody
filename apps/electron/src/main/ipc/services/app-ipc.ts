@@ -54,7 +54,7 @@ import {
   resolveNativeWindowTheme
 } from '../../window-theme'
 import { writeStartupThemeSource } from '../../theme-settings'
-import { formatUnknownError, normalizeExternalHttpUrl } from '../../utils'
+import { formatUnknownError, normalizeExternalUrl } from '../../utils'
 import {
   applyAutoLaunchSettings,
   getAutoLaunchEnabled,
@@ -506,7 +506,7 @@ export class AppIpc extends IpcService {
       event.sender.send('app.deepLink', urlRaw)
       return { opened: true, url: urlRaw }
     }
-    const externalUrl = normalizeExternalHttpUrl(urlRaw)
+    const externalUrl = normalizeExternalUrl(urlRaw)
     if (!externalUrl) {
       return { opened: false, error: 'invalid_url' }
     }

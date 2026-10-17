@@ -56,6 +56,17 @@ describe('anonymous Markdown resource boundary', () => {
     expect(container.textContent).toContain('Attachment');
     expect(links.some((link) => link.href === 'https://example.org/article')).toBe(true);
   });
+
+  it('keeps Telegram deep links clickable and still drops script URLs', async () => {
+    await render(
+      '[Message](tg://privatepost?channel=1001&post=42)\n\n[Script](javascript:alert(1))'
+    );
+    const links = [...container.querySelectorAll('a')];
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      'tg://privatepost?channel=1001&post=42',
+    ]);
+    expect(container.textContent).toContain('Script');
+  });
 });
 
 describe('conversation Markdown images across row remounts', () => {

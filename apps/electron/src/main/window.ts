@@ -27,7 +27,7 @@ import {
   getMainWindowTitleBarOverlay
 } from './window-theme'
 import { readStartupThemeSource } from './theme-settings'
-import { formatUnknownError, normalizeExternalHttpUrl } from './utils'
+import { formatUnknownError, normalizeExternalUrl } from './utils'
 import { describeDeepLinkForAuthDebug } from './auth-debug'
 import { captureElectronMainException } from './posthog-error-reporting'
 import { createRendererProcessGoneHandling } from './renderer-process-gone'
@@ -240,7 +240,7 @@ function installNavigationGuard(window: BrowserWindow, targets: readonly ReloadT
       window.webContents.send('app.deepLink', event.url)
       return
     }
-    const externalUrl = normalizeExternalHttpUrl(event.url)
+    const externalUrl = normalizeExternalUrl(event.url)
     if (externalUrl) {
       void shell.openExternal(externalUrl)
     }
@@ -472,7 +472,7 @@ export function createMainWindow(options: CreateMainWindowOptions): BrowserWindo
       window.webContents.send('app.deepLink', details.url)
       return { action: 'deny' }
     }
-    const externalUrl = normalizeExternalHttpUrl(details.url)
+    const externalUrl = normalizeExternalUrl(details.url)
     if (externalUrl) {
       void shell.openExternal(externalUrl)
     }
