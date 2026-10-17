@@ -5,7 +5,7 @@ import { convexClient, crossDomainClient } from '@convex-dev/better-auth/client/
 import { app, net, safeStorage } from 'electron'
 import Conf from 'conf'
 import { Buffer } from 'node:buffer'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import {
   backupAuthStorageFile,
   createRecoveringAuthStorage,
@@ -15,31 +15,7 @@ import { isLocalPlatform, desktopInstallationProfile } from './platform'
 import { createDesktopAuthFetch } from './auth-fetch'
 
 const DEV_PLAINTEXT_AUTH_STORAGE_ENV = 'LODY_ELECTRON_PLAINTEXT_AUTH_STORAGE'
-const DEV_USER_DATA_DIR_ENV = 'LODY_ELECTRON_USER_DATA_DIR'
 const DEV_PLAINTEXT_AUTH_STORAGE_PREFIX = 'lody-dev-plaintext-safe-storage-v1:'
-
-function readNonEmptyEnv(name: string): string | null {
-  const value = process.env[name]?.trim()
-  return value && value.length > 0 ? value : null
-}
-
-function applyDevUserDataDirIfRequested(): void {
-  const userDataDir = readNonEmptyEnv(DEV_USER_DATA_DIR_ENV)
-  if (!userDataDir) {
-    return
-  }
-
-  if (app.isPackaged) {
-    console.warn(
-      `[Auth] Ignoring ${DEV_USER_DATA_DIR_ENV} because custom userData is only allowed in dev builds.`
-    )
-    return
-  }
-
-  const resolvedUserDataDir = resolve(userDataDir)
-  app.setPath('userData', resolvedUserDataDir)
-  console.warn(`[Auth] ${DEV_USER_DATA_DIR_ENV}: using ${resolvedUserDataDir}`)
-}
 
 function enableDevPlaintextAuthStorageIfRequested(): void {
   if (process.env[DEV_PLAINTEXT_AUTH_STORAGE_ENV] !== '1') {
@@ -82,7 +58,6 @@ function enableDevPlaintextAuthStorageIfRequested(): void {
   }
 }
 
-applyDevUserDataDirIfRequested()
 enableDevPlaintextAuthStorageIfRequested()
 
 function normalizeConvexSiteUrl(url: string): string {

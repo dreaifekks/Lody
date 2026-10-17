@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { desktopInstallationProfile } from './platform'
 import { installDesktopLog } from './desktop-log'
@@ -15,6 +15,21 @@ if (desktopInstallationProfile.desktopUserDataName) {
   mkdirSync(userData, { recursive: true })
   app.setPath('userData', userData)
   app.setPath('sessionData', userData)
+}
+
+// Dev builds may move userData beside an installed Lody. Apply it here, before
+// index.ts takes the single-instance lock, which Electron keys on userData.
+const devUserDataDir = process.env.LODY_ELECTRON_USER_DATA_DIR?.trim()
+if (devUserDataDir && app.isPackaged) {
+  console.warn(
+    '[Desktop] Ignoring LODY_ELECTRON_USER_DATA_DIR because custom userData is only allowed in dev builds.'
+  )
+} else if (devUserDataDir) {
+  const userData = resolve(devUserDataDir)
+  mkdirSync(userData, { recursive: true })
+  app.setPath('userData', userData)
+  app.setPath('sessionData', userData)
+  console.warn(`[Desktop] LODY_ELECTRON_USER_DATA_DIR: using ${userData}`)
 }
 
 // After userData is final and before anything else can fail, so startup

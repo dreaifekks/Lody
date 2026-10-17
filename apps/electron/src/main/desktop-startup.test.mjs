@@ -98,7 +98,7 @@ after(async () => {
 
 function launch(
   t,
-  { port = 0, hostPort, sameAppPrimary = true, packaged = true, e2e = false } = {}
+  { port = 0, hostPort, sameAppPrimary = true, packaged = true, e2e = false, env = {} } = {}
 ) {
   const ready = Promise.withResolvers()
   const completed = Promise.withResolvers()
@@ -117,6 +117,7 @@ function launch(
     setName: (name) => events.push(['name', name]),
     setDesktopName() {},
     requestSingleInstanceLock() {
+      events.push(['lock', paths.get('userData'), paths.get('sessionData')])
       // macOS may deliver the callback before ready and while acquiring a lease.
       const event = { preventDefault() {} }
       app.emit('open-url', event, 'ai.lody.nightly://auth/callback#synthetic-attempt')
@@ -193,7 +194,7 @@ function launch(
     process: {
       ...process,
       // The desktop log writes under the data dir; keep it inside the fixture root.
-      env: { LODY_E2E: e2e ? '1' : '0', LODY_DATA_DIR: root },
+      env: { LODY_E2E: e2e ? '1' : '0', LODY_DATA_DIR: root, ...env },
       argv: ['electron'],
       on() {}
     },
@@ -240,7 +241,7 @@ void test('bundled entry refuses another channel before loading credential/appli
   const run = launch(t, { port: owner.port, e2e: true })
   await run.done
   assert.deepEqual(
-    run.events.filter(([name]) => !['scheme', 'name'].includes(name)).map(([name]) => name),
+    run.events.filter(([name]) => !['scheme', 'name', 'lock'].includes(name)).map(([name]) => name),
     ['conflict', 'quit']
   )
   assert.equal(run.paths.get('userData'), join(root, 'Lody Nightly'))
@@ -254,6 +255,26 @@ void test('bundled entry imports application after ownership and replays the ear
   assert.deepEqual(
     run.events.filter(([name]) => name === 'application' || name === 'launch'),
     [['application'], ['launch', { url: 'ai.lody.nightly://auth/callback#synthetic-attempt' }]]
+  )
+})
+
+void test('a dev build takes the single-instance lock in its own userData', async (t) => {
+  const userData = join(root, 'dev-user-data')
+  const run = launch(t, { packaged: false, env: { LODY_ELECTRON_USER_DATA_DIR: userData } })
+  await run.done
+  assert.deepEqual(
+    run.events.find(([name]) => name === 'lock'),
+    ['lock', userData, userData]
+  )
+})
+
+void test('a packaged build ignores the dev userData override', async (t) => {
+  const run = launch(t, { env: { LODY_ELECTRON_USER_DATA_DIR: join(root, 'dev-user-data') } })
+  await run.done
+  const profileData = join(root, 'Lody Nightly')
+  assert.deepEqual(
+    run.events.find(([name]) => name === 'lock'),
+    ['lock', profileData, profileData]
   )
 })
 

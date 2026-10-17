@@ -82,6 +82,13 @@ pnpm start:local
 
 This variable is optional. Never commit the generated data or credentials.
 
+To run a development desktop beside an installed Lody, also set
+`LODY_ELECTRON_USER_DATA_DIR` to its own directory. Development builds move Electron's
+user and session data there, and the single-instance lock follows them; packaged builds
+ignore it. The embedded CLI host still uses a fixed local port, so a running Lody agent
+keeps the development desktop from starting its own. Keep `LODY_DATA_DIR` short on
+macOS: its sockets must fit in 103 bytes.
+
 ## Submitting Changes
 
 For changes to important behavior or architecture, follow the
