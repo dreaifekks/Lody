@@ -200,6 +200,7 @@ import {
   type LanMemberControlResponse,
   type MachineProtocolCapabilities,
   ANTIGRAVITY_AGENT_TYPE,
+  BOARD_MAINTENANCE_TURN_PREFIX,
 } from '@lody/shared';
 import { getHostMachineProtocolCapabilities } from '../agent/managed-agent-runtime';
 import { ISession, SessionManager } from '../session/session-manager';
@@ -1495,7 +1496,9 @@ export class MessageHandler {
       throw new Error(`Session is ${initialTarget.statusType}; image upload is unavailable`);
     }
 
-    await sessionDoc.setLastMessageAt(Date.now());
+    if (!this.isBoardMaintenanceEntry(historyEntryId)) {
+      await sessionDoc.setLastMessageAt(Date.now());
+    }
     this.logger.debug(
       `[${args.sessionId}] Codex inline image uploaded (callId=${args.callId} historyEntryId=${historyEntryId})`
     );
@@ -1694,7 +1697,8 @@ export class MessageHandler {
     sessionDoc: SessionDocument,
     reason: ChatFailedReason,
     message?: string,
-    code?: ChatFailedCode
+    code?: ChatFailedCode,
+    options?: { quiet?: boolean }
   ): Promise<void> {
     // Failure notices append to the history list; order them after the user
     // turn entry for RPC fast-path turns (no-op when no gate is pending).
@@ -1721,7 +1725,7 @@ export class MessageHandler {
     };
     const backend = await this.getSessionBackend(sessionDoc);
     await backend.appendHistoryTurn(systemNotice);
-    void this.notifySessionFailed(sessionDoc, reason, message);
+    if (!options?.quiet) void this.notifySessionFailed(sessionDoc, reason, message);
   }
 
   private async notifySessionFailed(
@@ -3138,8 +3142,8 @@ export class MessageHandler {
         notifySessionCompleted: async (sessionId, userId, occurrenceId) =>
           await this.notifySessionCompleted(sessionId, userId, occurrenceId),
       },
-      recordChatFailure: async (sessionDoc, reason, message, code) =>
-        await this.recordChatFailure(sessionDoc, reason, message, code),
+      recordChatFailure: async (sessionDoc, reason, message, code, options) =>
+        await this.recordChatFailure(sessionDoc, reason, message, code, options),
       isShuttingDown: () => this.cleanedUp,
       maybeGenerateAndStoreSessionTitle: async (
         sessionId,
@@ -5125,7 +5129,12 @@ export class MessageHandler {
       if (args.progress) {
         args.progress.persistedNotifications += notifications.length;
       }
-      await this.markACPNotificationsUnread(args.sessionId, args.sessionDoc, notifications);
+      await this.markACPNotificationsUnread(
+        args.sessionId,
+        args.sessionDoc,
+        args.assistantEntryId,
+        notifications
+      );
       if (args.targetSource === 'finalized_turn') {
         await this.persistLateCodeCollabTurnDiffs(args.sessionId, args.turnId);
       }
@@ -5210,7 +5219,12 @@ export class MessageHandler {
       if (args.progress) {
         args.progress.persistedNotifications += 1;
       }
-      await this.markACPNotificationsUnread(args.sessionId, args.sessionDoc, [notification]);
+      await this.markACPNotificationsUnread(
+        args.sessionId,
+        args.sessionDoc,
+        args.assistantEntryId,
+        [notification]
+      );
     }
 
     await flushNotifications(pendingNotifications);
@@ -5346,9 +5360,13 @@ export class MessageHandler {
   private async markACPNotificationsUnread(
     sessionId: SessionId,
     sessionDoc: SessionDocument,
+    assistantEntryId: string,
     notifications: readonly AcpSessionNotification[]
   ): Promise<void> {
-    if (!this.shouldMarkSessionUnread(notifications)) {
+    if (
+      this.isBoardMaintenanceEntry(assistantEntryId) ||
+      !this.shouldMarkSessionUnread(notifications)
+    ) {
       return;
     }
     const state = this.store.get(sessionId);
@@ -5964,6 +5982,15 @@ export class MessageHandler {
 
   private getAssistantEntryIdForUserTurn(userTurnId: string): string {
     return `assistant:${userTurnId}`;
+  }
+
+  /**
+   * A Board maintenance step's reply, including output that arrives after the
+   * step ended. It stays hidden behind its divider, so nothing written to it
+   * marks the Session updated or unread.
+   */
+  private isBoardMaintenanceEntry(entryId: string): boolean {
+    return entryId.startsWith(this.getAssistantEntryIdForUserTurn(BOARD_MAINTENANCE_TURN_PREFIX));
   }
 
   private beginConversationTurn(
@@ -7953,7 +7980,9 @@ export class MessageHandler {
       attachedTo = 'new_entry';
     }
 
-    await sessionDoc.setLastMessageAt();
+    if (!this.isBoardMaintenanceEntry(historyEntryId)) {
+      await sessionDoc.setLastMessageAt();
+    }
 
     const remainingUploads = files.length - publishedCount;
     const partialUploadMessage =
@@ -8268,7 +8297,9 @@ export class MessageHandler {
       attachedTo = 'new_entry';
     }
 
-    await sessionDoc.setLastMessageAt();
+    if (!this.isBoardMaintenanceEntry(historyEntryId)) {
+      await sessionDoc.setLastMessageAt();
+    }
 
     const partialMessage =
       failures.length > 0
@@ -10653,6 +10684,14 @@ export class MessageHandler {
     sessionId: SessionId,
     input: LodyNotifyUserInput
   ): Promise<AgentNoticeResult> {
+    const target = this.store.getCurrentACPUpdateTarget(sessionId);
+    if (target && this.isBoardMaintenanceEntry(target.assistantEntryId)) {
+      return {
+        ok: false,
+        code: 'AGENT_NOTICE_DISABLED',
+        message: 'Lody maintenance turns do not notify the user.',
+      };
+    }
     const sessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(sessionId);
     // Re-read here, not trusted from the agent's tool list: the user may have
     // switched the experiment off since the agent started.

@@ -646,7 +646,9 @@ export type SessionExecutionServiceDeps = {
     sessionDoc: SessionDocument,
     reason: ChatFailedReason,
     message?: string,
-    code?: ChatFailedCode
+    code?: ChatFailedCode,
+    /** `quiet`: record the notice without a failure alert. */
+    options?: { quiet?: boolean }
   ) => Promise<void>;
   /**
    * True once the daemon has begun shutting down. Shutdown stops every agent on
@@ -968,6 +970,8 @@ export class SessionExecutionService {
   private readonly canceledTurnBySession = new Map<SessionId, string>();
   private readonly currentTurnBySession = new Map<SessionId, string>();
   private readonly turnRuntimeBySession = new Map<SessionId, TurnRuntimeState>();
+  /** Sessions running a Board maintenance turn: its failure is recorded without an alert. */
+  private readonly boardMaintenanceSessions = new Set<SessionId>();
   private readonly rewriteBarrierSessions = new Set<SessionId>();
   private readonly rewriteConflictLeaseSessions = new Set<SessionId>();
   private readonly turnReleaseWaiters = new Map<SessionId, Map<string, Set<() => void>>>();
@@ -1653,7 +1657,7 @@ export class SessionExecutionService {
           if (this.pendingGoalTurnBySession.get(sessionId) !== pending) continue;
           this.pendingGoalTurnBySession.delete(sessionId);
           const sessionDoc = await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId);
-          await this.deps.recordChatFailure(
+          await this.recordChatFailure(
             sessionDoc,
             'turn_pre_prompt_failed',
             `Goal ${pending.control.action} failed: ${formatErrorMessage(error)}`
@@ -1854,9 +1858,12 @@ export class SessionExecutionService {
       },
       { sessionDoc }
     );
+    // Held until the turn's failure handling is done, which outlives its runtime.
+    this.boardMaintenanceSessions.add(sessionId);
     try {
       return await this.runVisibleSessionTurn(turn.options, turn.body);
     } finally {
+      this.boardMaintenanceSessions.delete(sessionId);
       // Outside the Inbox, nothing else tells it or a held user turn that the Session is free.
       await this.operationInbox?.wake();
       this.onInboxReleased?.(sessionId);
@@ -3422,6 +3429,21 @@ export class SessionExecutionService {
     );
   }
 
+  /**
+   * A Board maintenance turn's failure stays on its divider: the notice is
+   * recorded, but no failure alert goes out for background work.
+   */
+  private async recordChatFailure(
+    ...args: Parameters<SessionExecutionServiceDeps['recordChatFailure']>
+  ): Promise<void> {
+    const [sessionDoc, reason, message, code] = args;
+    if (this.boardMaintenanceSessions.has(sessionDoc.sessionId)) {
+      await this.deps.recordChatFailure(sessionDoc, reason, message, code, { quiet: true });
+      return;
+    }
+    await this.deps.recordChatFailure(...args);
+  }
+
   private async recordPrePromptFailure(
     sessionId: SessionId,
     sessionDoc: SessionDocument,
@@ -3446,14 +3468,14 @@ export class SessionExecutionService {
     runtime.prePromptFailureRecorded = true;
     const message = formatErrorMessage(error);
     if (isGitExecutableNotFoundError(error)) {
-      await this.deps.recordChatFailure(
+      await this.recordChatFailure(
         sessionDoc,
         'turn_pre_prompt_failed',
         message,
         GIT_EXECUTABLE_NOT_FOUND_CODE
       );
     } else {
-      await this.deps.recordChatFailure(sessionDoc, 'turn_pre_prompt_failed', message);
+      await this.recordChatFailure(sessionDoc, 'turn_pre_prompt_failed', message);
     }
     this.deps.logger.debug(
       `[${sessionId}] Recorded pre-prompt failure notice for turn ${runtime.turnId}`
@@ -3498,7 +3520,7 @@ export class SessionExecutionService {
         { tier: 'A' }
       );
     }
-    await this.deps.recordChatFailure(options.sessionDoc, options.reason, options.message);
+    await this.recordChatFailure(options.sessionDoc, options.reason, options.message);
     if (options.userTurnId) {
       await this.markTurnFailed(options.sessionId, options.sessionDoc, options.userTurnId);
     }
@@ -3764,7 +3786,7 @@ export class SessionExecutionService {
           'daemon_restart',
           false
         );
-        await this.deps.recordChatFailure(
+        await this.recordChatFailure(
           sessionDoc,
           'daemon_restart',
           'Lody restarted while the agent was working.'
@@ -3787,7 +3809,7 @@ export class SessionExecutionService {
           failureReason,
           true
         );
-        await this.deps.recordChatFailure(sessionDoc, failureReason, recordedMessage);
+        await this.recordChatFailure(sessionDoc, failureReason, recordedMessage);
 
         if (shouldTerminateOnACPError(acpError, failureReason)) {
           // Expired credentials leave a healthy agent process behind, so close
@@ -3820,7 +3842,7 @@ export class SessionExecutionService {
           'agent_disconnected',
           true
         );
-        await this.deps.recordChatFailure(
+        await this.recordChatFailure(
           sessionDoc,
           'agent_disconnected',
           'The agent process disconnected unexpectedly. Please try again.'
@@ -5295,7 +5317,7 @@ export class SessionExecutionService {
         'recording it as a failed turn instead of a silent completion'
     );
     this.captureTurnFailed(options.sessionId, options.turnId, 'agent_no_output', false);
-    await this.deps.recordChatFailure(
+    await this.recordChatFailure(
       options.sessionDoc,
       'agent_no_output',
       SILENT_TURN_FAILURE_MESSAGE

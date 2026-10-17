@@ -11855,7 +11855,10 @@ describe('SessionExecutionService Board maintenance turns', () => {
     userEmail: 'owner@example.com',
   } as const;
 
-  const createService = ({ holdPrompt = false }: { holdPrompt?: boolean } = {}) => {
+  const createService = ({
+    holdPrompt = false,
+    promptError,
+  }: { holdPrompt?: boolean; promptError?: Error } = {}) => {
     const prompts: string[] = [];
     const promptStarted = createDeferred<void>();
     const promptReleased = createDeferred<void>();
@@ -11870,6 +11873,7 @@ describe('SessionExecutionService Board maintenance turns', () => {
           prompts.push(blocks.map((block) => block.text ?? '').join('\n'));
           promptStarted.resolve();
           if (holdPrompt) await promptReleased.promise;
+          if (promptError) throw promptError;
         },
         cancel: async () => {
           promptReleased.resolve();
@@ -11887,6 +11891,7 @@ describe('SessionExecutionService Board maintenance turns', () => {
     });
     let live: ReturnType<typeof agent> | null = agent('acp-old');
     const sessionDoc = withHistoryPort({
+      sessionId,
       getMetaState: async () => meta,
       getHistory: () => [
         { id: 'earlier', role: 'user', timestamp: '2026-10-17T00:00:00.000Z', items: [] },
@@ -11995,6 +12000,19 @@ describe('SessionExecutionService Board maintenance turns', () => {
     expect(h.released).toEqual([sessionId]);
     expect(h.wakes()).toBe(1);
     expect(h.service.contextCompactionSupport(sessionId)).toBe(true);
+  });
+
+  it('records its own failure without a failure alert', async () => {
+    const h = createService({ promptError: new Error('ACP connection closed') });
+
+    const outcome = await h.service.runBoardMaintenanceTurn(request);
+
+    expect(outcome).not.toBe('completed');
+    const failures = vi
+      .mocked(h.deps.recordChatFailure)
+      .mock.calls.map(([, reason, , , options]) => ({ reason, options }));
+    expect(failures).toEqual([{ reason: 'agent_disconnected', options: { quiet: true } }]);
+    expect(h.lastMessageAt).toEqual([]);
   });
 
   it('stops on Stop although it has no Inbox execution to pause', async () => {
