@@ -101,6 +101,8 @@ const member = (
     openedBySessionId: COORDINATOR,
     createdAt: new Date(NOW - 86_400_000).toISOString(),
     lastMessageAt: NOW - minutesAgo * 60_000,
+    // Seen unless a member says otherwise.
+    lastReadAt: extra.lastMessageAt ?? NOW - minutesAgo * 60_000,
     ...extra,
   }) as SessionMeta;
 
@@ -125,9 +127,11 @@ const members: SessionMeta[] = [
     lastModel: { name: 'Gemini' },
     parentSessionId: 'thread-rounds' as SessionId,
   }),
+  // Finished an hour ago and not opened since: the unread dot.
   member('thread-memory', '调研 Claude Projects 的记忆', 60, {
     lastModel: { name: 'Opus 5.5' },
     machineId: 'n100' as MachineId,
+    lastReadAt: NOW - 90 * 60_000,
   }),
   member('thread-ios', 'iOS 推送分组回归', 40, {
     lastModel: { name: 'Codex Sol' },
