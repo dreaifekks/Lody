@@ -33,6 +33,12 @@ export type LoadSessionMcpCatalogInput = {
   selectedIds: readonly McpServerId[];
   logger: { debug(message: string): void };
   env?: Readonly<Record<string, string | undefined>>;
+  /**
+   * The environment variables the workspace's LAN keeps for MCP servers, read
+   * at the start so a variable set meanwhile counts. They stand behind `env`:
+   * a variable the machine's own daemon environment names keeps its value.
+   */
+  lanEnv?: () => Readonly<Record<string, string>>;
 };
 
 const CATALOG_SYNC_TIMEOUT_MS = 5_000;
@@ -72,7 +78,7 @@ export const loadSessionMcpCatalog = async (
   try {
     const handle = await input.repo.openFlockDoc(docId);
     const catalog = getWorkspaceMcpCatalog(readWorkspaceFlockRowsFromFlock(handle.flock));
-    const env = input.env ?? process.env;
+    const env = { ...input.lanEnv?.(), ...(input.env ?? process.env) };
     return (agentCapabilities) =>
       resolveSessionMcpServers({ catalog, selectedIds, agentCapabilities, env });
   } catch (error) {
@@ -97,7 +103,7 @@ export type SessionWorkspaceSettings = {
  * local copy, and a failed read reports everything off.
  */
 export const loadSessionWorkspaceSettings = async (
-  input: Omit<LoadSessionMcpCatalogInput, 'selectedIds' | 'env'>
+  input: Omit<LoadSessionMcpCatalogInput, 'selectedIds' | 'env' | 'lanEnv'>
 ): Promise<SessionWorkspaceSettings> => {
   const docId = getWorkspaceFlockDocId(input.workspaceId);
   if (input.syncFlockDoc) {

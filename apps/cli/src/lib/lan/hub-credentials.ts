@@ -1,16 +1,19 @@
 // The credentials a LAN hub holds, handed to its members as one document and
 // set from any of them. Members keep a copy (see `lan-credential-sync.ts`), so
-// the GitHub token and push keep working while the hub is away and wherever
-// the hub moves. Nothing here reaches a log.
+// the GitHub token, push and the environment variables of MCP servers keep
+// working while the hub is away and wherever the hub moves. Nothing here
+// reaches a log but the name of a variable.
 import crypto from 'node:crypto';
 import type http from 'node:http';
 import {
   LAN_HUB_CREDENTIALS_APNS_PATH,
+  LAN_HUB_CREDENTIALS_ENV_PATH,
   LAN_HUB_CREDENTIALS_GITHUB_PATH,
   LAN_HUB_CREDENTIALS_PATH,
 } from '@lody/shared/node/lan-credentials';
 import { z } from 'zod';
 import { readApnsConfig, removeApnsConfig, validateApnsConfig, writeApnsConfig } from './apns';
+import { isLanEnvName, readLanHubEnv, setLanHubEnv, unsetLanHubEnv } from './hub-env';
 import {
   readLanHubGitHubConfig,
   removeLanHubGitHubConfig,
@@ -35,6 +38,8 @@ export const LanHubCredentialsSchema = z.object({
     .nullable(),
   /** Read back by `createLanHubPush`, which drops a record it cannot read. */
   devices: z.array(z.unknown()),
+  /** The environment variables of MCP servers; a hub of an earlier build has none. */
+  env: z.record(z.string(), z.string()).default({}),
 });
 export type LanHubCredentials = z.infer<typeof LanHubCredentialsSchema>;
 
@@ -44,6 +49,17 @@ const GitHubBodySchema = z
 const ApnsBodySchema = z
   .object({ keyId: z.string(), teamId: z.string(), privateKey: z.string() })
   .strict();
+const EnvNameSchema = z.string().min(1).max(256).refine(isLanEnvName);
+const EnvSetBodySchema = z
+  .object({
+    name: EnvNameSchema,
+    value: z
+      .string()
+      .min(1)
+      .max(32 * 1024),
+  })
+  .strict();
+const EnvUnsetBodySchema = z.object({ name: EnvNameSchema }).strict();
 
 export function readLanHubCredentials(
   dataDir: string,
@@ -53,6 +69,7 @@ export function readLanHubCredentials(
     github: readLanHubGitHubConfig(dataDir),
     apns: readApnsConfig(dataDir),
     devices: [...devices],
+    env: readLanHubEnv(dataDir),
   };
   const revision = crypto.createHash('sha256').update(JSON.stringify(content)).digest('hex');
   return { revision, ...content };
@@ -82,9 +99,10 @@ async function readJson(request: http.IncomingMessage): Promise<unknown> {
 
 /**
  * Answers members behind the gate: the whole document, or setting and
- * removing the GitHub token or the APNs key. Who sets a credential checked it
- * first (`lody lan github setup` asks GitHub who the token is); the hub only
- * refuses an APNs key that is not one.
+ * removing the GitHub token, the APNs key or one environment variable. Who sets
+ * a credential checked it first (`lody lan github setup` asks GitHub who the
+ * token is); the hub only refuses an APNs key that is not one and a variable
+ * whose name is not one. The names of the variables can be asked for alone.
  */
 export function createLanHubCredentialRoutes(options: {
   dataDir: string;
@@ -99,6 +117,7 @@ export function createLanHubCredentialRoutes(options: {
     LAN_HUB_CREDENTIALS_PATH,
     LAN_HUB_CREDENTIALS_GITHUB_PATH,
     LAN_HUB_CREDENTIALS_APNS_PATH,
+    LAN_HUB_CREDENTIALS_ENV_PATH,
   ]);
   return {
     handles: (url) => routes.has(url?.split('?')[0] ?? ''),
@@ -131,6 +150,21 @@ export function createLanHubCredentialRoutes(options: {
           answer(response, 200, { ok: true });
         } else if (route === LAN_HUB_CREDENTIALS_APNS_PATH && request.method === 'DELETE') {
           answer(response, 200, { removed: removeApnsConfig(options.dataDir) });
+        } else if (route === LAN_HUB_CREDENTIALS_ENV_PATH && request.method === 'GET') {
+          answer(response, 200, { names: Object.keys(readLanHubEnv(options.dataDir)).sort() });
+        } else if (route === LAN_HUB_CREDENTIALS_ENV_PATH && request.method === 'PUT') {
+          const parsed = EnvSetBodySchema.safeParse(await readJson(request));
+          if (!parsed.success) throw new BadRequest('a variable name and a value required');
+          setLanHubEnv(options.dataDir, parsed.data.name, parsed.data.value);
+          options.log?.(`[credentials] environment variable ${parsed.data.name} set`);
+          answer(response, 200, { ok: true });
+        } else if (route === LAN_HUB_CREDENTIALS_ENV_PATH && request.method === 'DELETE') {
+          const parsed = EnvUnsetBodySchema.safeParse(await readJson(request));
+          if (!parsed.success) throw new BadRequest('a variable name required');
+          const removed = unsetLanHubEnv(options.dataDir, parsed.data.name);
+          if (removed)
+            options.log?.(`[credentials] environment variable ${parsed.data.name} removed`);
+          answer(response, 200, { removed });
         } else {
           answer(response, 405, { error: 'method_not_allowed' });
         }

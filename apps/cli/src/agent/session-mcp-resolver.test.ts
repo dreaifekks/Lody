@@ -68,6 +68,26 @@ describe('loadSessionMcpCatalog', () => {
     });
   });
 
+  it("fills variables from the LAN's table behind the machine's own environment", async () => {
+    const lanEnv = vi.fn(() => ({ NODE_BIN: 'lan-node', ENTRYPOINT: 'lan-server.js' }));
+    const select = await loadSessionMcpCatalog({
+      repo: { openFlockDoc: vi.fn(async () => ({ flock: catalogFlock })) },
+      workspaceId,
+      sessionId,
+      selectedIds: [selectedId],
+      logger: { debug: vi.fn() },
+      env: { NODE_BIN: 'node' },
+      lanEnv,
+    });
+    // The machine keeps NODE_BIN; the LAN supplies what the machine lacks.
+    expect(select(undefined)).toEqual({
+      servers: [{ name: 'filesystem', command: 'node', args: ['lan-server.js'], env: [] }],
+      problems: [],
+    });
+    // Read at the start, so a variable set since the daemon started counts.
+    expect(lanEnv).toHaveBeenCalledTimes(1);
+  });
+
   it('finishes every read before the agent capabilities are known', async () => {
     const openFlockDoc = vi.fn(async () => ({ flock: catalogFlock }));
     const select = await loadSessionMcpCatalog({
