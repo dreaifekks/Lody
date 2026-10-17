@@ -157,6 +157,109 @@ describe('Session relation cards', () => {
     expect(opened).toEqual({ sessionId: createdSessionId });
     expect(container.querySelectorAll('details')).toHaveLength(0);
   });
+  it('shows a Board main session each assigned thread as it is now, and no long receipt', async () => {
+    const store = createStore();
+    store.set(setDocMetaByRoomIdAtom, getSessionRoomId(openerSessionId), {
+      id: openerSessionId,
+      machineId: 'machine-1',
+      userId: 'user-1',
+      createdAt: '2026-10-16T00:00:00Z',
+      boardId: 'bd_test',
+      boardRole: 'coordinator',
+    });
+    const thread = {
+      id: createdSessionId,
+      machineId: 'devnuc',
+      userId: 'user-1',
+      createdAt: '2026-10-16T00:00:00Z',
+      title: 'Implement the dispatcher',
+      agentType: 'codex',
+      boardId: 'bd_test',
+      isWorktree: true,
+      lastMessageAt: 20,
+      lastReadAt: 10,
+    };
+    store.set(setDocMetaByRoomIdAtom, getSessionRoomId(createdSessionId), thread);
+    const progress: SessionHistoryParsed = {
+      id: 'create-progress',
+      role: 'system',
+      read: true,
+      timestamp: '2026-08-14T12:00:00.000Z',
+      items: [
+        {
+          type: 'operation_progress',
+          operationId: 'create-child',
+          operationKind: 'session_create',
+          items: [
+            {
+              // The creating Operation finished long ago; the card follows the thread.
+              status: 'succeeded',
+              label: 'Created child',
+              target: { sessionId: createdSessionId, userTurnId: 'user-turn' },
+            },
+          ],
+        },
+      ],
+    };
+    const onNavigateSession = vi.fn();
+    const render = (message: SessionHistoryParsed) =>
+      act(async () =>
+        root.render(
+          <Provider store={store}>
+            <MessageRowView
+              message={message}
+              sessionId={openerSessionId}
+              onNavigateSession={onNavigateSession}
+            />
+          </Provider>
+        )
+      );
+    await render(progress);
+    const card = container.querySelector(`[data-board-thread-card="${createdSessionId}"]`);
+    expect(container.querySelector('[data-session-relation-card]')).toBeNull();
+    expect(card?.textContent).toContain('Implement the dispatcher');
+    expect(card?.textContent).toContain('devnuc');
+    expect(card?.textContent).toContain('Worktree');
+    expect(card?.querySelector('[data-session-unread-dot]')).not.toBeNull();
+    await act(async () => card?.querySelector('button')?.click());
+    expect(onNavigateSession).toHaveBeenLastCalledWith({ sessionId: createdSessionId });
+    // The thread asks the user something: the same card turns to ✋.
+    await act(async () =>
+      store.set(setDocMetaByRoomIdAtom, getSessionRoomId(createdSessionId), {
+        ...thread,
+        lastReadAt: 20,
+        awaitingUserSince: 30,
+      })
+    );
+    expect(card?.querySelector('[data-session-unread-dot]')).toBeNull();
+    expect(card?.querySelector('[data-session-row-indicator] svg')).not.toBeNull();
+    // Results that went along with a message are one line, not replies.
+    await render({
+      id: 'batch',
+      role: 'system',
+      read: true,
+      timestamp: '2026-08-14T12:00:00.000Z',
+      items: [
+        {
+          type: 'operation_completion_batch',
+          batchId: 'board-batch',
+          memberCount: 2,
+          members: [
+            completionMessage.items[0] as Extract<
+              import('@lody/shared').MessageContent,
+              { type: 'operation_completion' }
+            >,
+          ],
+        },
+      ],
+    });
+    expect(container.querySelector('[data-board-updates-attached]')?.textContent).toContain(
+      'thread updates went to the main session'
+    );
+    expect(container.querySelector('[data-session-relation-card]')).toBeNull();
+    expect(container.querySelector('[data-board-thread-card]')).toBeNull();
+  });
+
   it('navigates back to the precise opener from the provenance card', async () => {
     const onOpen = vi.fn();
     await act(async () => {

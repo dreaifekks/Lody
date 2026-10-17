@@ -331,7 +331,11 @@ describe('Board side panel', () => {
     const root = makeSession('root', { lastMessageAt: 50 });
     const tab = makeSession('review', { parentSessionId: root.id });
     const waiting = makeSession('waiting', { awaitingUserSince: 20, lastMessageAt: 10 });
-    const answered = makeSession('answered', { awaitingUserSince: 10, lastMessageAt: 20 });
+    const answered = makeSession('answered', {
+      awaitingUserSince: 10,
+      lastMessageAt: 20,
+      lastReadAt: 10,
+    });
     const stopped = makeSession('stopped-child', { openedBySessionId: 'halted' as SessionId });
     const halted = makeSession('halted', { boardId: undefined, collaborationStopped: true });
     const other = makeSession('other', { boardId: 'bd_other' as never });
@@ -379,8 +383,35 @@ describe('Board side panel', () => {
       // together under the thread's strongest state.
       expect(ids()).toEqual(['stopped-child', 'waiting', 'root', 'review', 'answered']);
       expect(groups()).toEqual(['Needs you2', 'Working2', 'Idle1']);
+      // Rows carry sidebar marks: ✋ waiting, the working grid, the unread dot.
+      const mark = (id: string) => {
+        const row = view.host.querySelector(`[data-id="${id}"]`);
+        if (row?.querySelector('[data-session-working-indicator]')) return 'working';
+        if (row?.querySelector('[data-session-unread-dot]')) return 'unread';
+        if (row?.querySelector('[data-session-row-indicator] svg')) return 'waiting';
+        return null;
+      };
+      expect(['waiting', 'root', 'answered', 'review'].map(mark)).toEqual([
+        'waiting',
+        'working',
+        'unread',
+        null,
+      ]);
+      const rootRow = view.host.querySelector('[data-id="root"]');
       await act(async () => store.set(lodyPresenceStatesAtom, {}));
       expect(groups()).toEqual(['Needs you2', 'Idle3']);
+      // Finishing moves the row from Working to Idle without remounting it, so its
+      // mark sees working end and collapses into the unread dot as a sidebar row does.
+      expect(view.host.querySelector('[data-id="root"]')).toBe(rootRow);
+      expect(mark('root')).toBe('unread');
+      // Read: the dot goes, as a sidebar row's does.
+      await act(async () =>
+        store.set(sessionMetaCacheAtom, (cache) => ({
+          ...cache,
+          [getSessionRoomId(answered.id)]: { ...answered, lastReadAt: 20 },
+        }))
+      );
+      expect(mark('answered')).toBeNull();
       await act(async () =>
         view.host.querySelector<HTMLButtonElement>('[data-id="review"]')?.click()
       );
@@ -686,12 +717,13 @@ describe('Board side panel', () => {
       />
     );
     try {
-      const sections = [...view.host.querySelectorAll('section')].map((section) => [
-        section.querySelector('button[aria-expanded]')?.textContent,
-        [...section.querySelectorAll('[data-scope-item="row"]')].map((row) =>
-          row.getAttribute('data-id')
-        ),
-      ]);
+      const sections: [string | null, string[]][] = [];
+      for (const node of view.host.querySelectorAll(
+        'button[aria-expanded], [data-scope-item="row"]'
+      )) {
+        if (node.hasAttribute('aria-expanded')) sections.push([node.textContent, []]);
+        else sections.at(-1)?.[1].push(node.getAttribute('data-id') ?? '');
+      }
       expect(sections).toEqual([
         ['Needs you2', ['parent', 'reviewer']],
         ['Idle1', ['idle']],
@@ -716,23 +748,59 @@ describe('Board side panel', () => {
   it('marks a Board by its strongest member state', () => {
     const board = testBoard();
     const working = makeSession('working');
-    const waiting = makeSession('waiting', { awaitingUserSince: 20, lastMessageAt: 10 });
-    const answered = makeSession('answered', { awaitingUserSince: 10, lastMessageAt: 20 });
+    const waiting = makeSession('waiting', {
+      awaitingUserSince: 20,
+      lastMessageAt: 10,
+      lastReadAt: 10,
+    });
+    const answered = makeSession('answered', {
+      awaitingUserSince: 10,
+      lastMessageAt: 20,
+      lastReadAt: 20,
+    });
     const elsewhere = makeSession('elsewhere', { boardId: 'bd_other' as never });
     const running = new Map<string, SessionStatus>([
       [working.id, { type: 'running' } as SessionStatus],
       [elsewhere.id, { type: 'requestPermission' } as SessionStatus],
     ]);
-    expect(boardActivity(board, [answered], new Map())).toBeNull();
-    expect(boardActivity(board, [answered, working, elsewhere], running)).toBe('working');
-    expect(boardActivity(board, [working, waiting], running)).toBe('waiting');
+    const idle = { isWaitingPermission: false, isWorking: false, hasUnreadMessages: false };
+    expect(boardActivity(board, [answered], new Map())).toEqual(idle);
+    expect(boardActivity(board, [answered, working, elsewhere], running)).toEqual({
+      ...idle,
+      isWorking: true,
+    });
+    expect(boardActivity(board, [working, waiting], running)).toEqual({
+      ...idle,
+      isWaitingPermission: true,
+      isWorking: true,
+    });
     expect(
       boardActivity(
         board,
         [working],
         new Map([[working.id, { type: 'requestPermission' } as SessionStatus]])
       )
-    ).toBe('waiting');
+    ).toEqual({ ...idle, isWaitingPermission: true, isWorking: true });
+    // Any member's unseen output lights the row, the coordinator's too; seen,
+    // closed and other Boards' output does not.
+    const unseen = makeSession('unseen', { lastMessageAt: 30, lastReadAt: 20 });
+    const seen = makeSession('seen', { lastMessageAt: 30, lastReadAt: 30 });
+    const closed = makeSession('closed', { lastMessageAt: 30, isTabClosed: true });
+    const coordinator = makeSession('coordinator', {
+      boardRole: 'coordinator',
+      lastMessageAt: 40,
+      lastReadAt: 10,
+    });
+    const foreign = makeSession('foreign', { boardId: 'bd_other' as never, lastMessageAt: 30 });
+    expect(boardActivity(board, [seen, closed, foreign], new Map())).toEqual(idle);
+    expect(boardActivity(board, [seen, unseen], new Map())).toEqual({
+      ...idle,
+      hasUnreadMessages: true,
+    });
+    expect(boardActivity(board, [seen, coordinator], new Map())).toEqual({
+      ...idle,
+      hasUnreadMessages: true,
+    });
   });
 });
 
@@ -1294,7 +1362,7 @@ it('shares, renames and archives a Board from its sidebar row menu', async () =>
             id: 'bd_test',
             name: 'Release',
             coordinatorSessionId: 'coordinator' as SessionId,
-            activity: null,
+            activity: { isWaitingPermission: false, isWorking: false, hasUnreadMessages: false },
           },
         ]}
         collapsed={false}

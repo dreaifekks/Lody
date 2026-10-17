@@ -23,7 +23,9 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   deletes it as an empty session (`closeSessionTab`).
 - The panel's thread rows use visible metadata and one derived presence atom; they
   never acquire member documents. Live activity takes priority over waiting markers;
-  without presence, only a marker newer than `lastMessageAt` means waiting.
+  without presence, only a marker newer than `lastMessageAt` means waiting. Thread
+  and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
+  a Board row aggregates every member, coordinator included. No extra "done" state.
   localProject catalogs are acquired at list level, once per machine.
 - A thread opened in the panel is a `SessionChatInterface` whose workspace session
   is the thread itself. Never give it a `side-session:` tab id: closing those
@@ -89,9 +91,11 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   Durable local writes do not fail because upload failed.
 - Manual joins stamp `boardJoinedAtMs`; old states never become new reports.
 - The coordinator host observes current member documents. Reports, Inbox indexing
-  and cursors commit together; only the existing Inbox may batch or wake.
+  and cursors commit together. The coordinator only assigns work: reports and its
+  own receipts freeze `deliverWithNextInput` and ride with its next human or
+  scheduled input; nothing wakes it ([dispatcher model](../../../../../specs/project-coordinator/board-dispatcher-model.zh.md)).
 - Reviewer/other grandchild completions return through their parent; blockers still
-  report. Thread prompts require verbatim child conclusions and coordinator decisions
-  before changes. Cancellation never creates a Board wake.
+  report. A thread coordinates its own task: it opens sessions, decides changes and
+  quotes reviewer conclusions verbatim. Cancellation never creates a report.
 - Startup prompts describe implemented reports. Round enforcement, handoff and digest
   scheduling remain later steps.

@@ -7,6 +7,7 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { useState } from 'react';
 import { createStore, Provider } from 'jotai';
+import { parseLodyPresenceStates } from '@lody/shared';
 import { useTranslation } from 'react-i18next';
 import { ArrowUp, Bot, ChevronDown, Download, Monitor, Settings2 } from 'lucide-react';
 import { Button } from '@lody/ui/button';
@@ -26,6 +27,7 @@ import {
 import { currentWorkspaceIdAtom } from '@/atoms';
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '@/atoms/settings';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
+import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '@/atoms/presence';
 import { ChatComposer } from '@/components/chat/chat-composer';
 import {
   MessageRowView,
@@ -101,6 +103,8 @@ const member = (
     openedBySessionId: COORDINATOR,
     createdAt: new Date(NOW - 86_400_000).toISOString(),
     lastMessageAt: NOW - minutesAgo * 60_000,
+    // Seen unless a member says otherwise.
+    lastReadAt: extra.lastMessageAt ?? NOW - minutesAgo * 60_000,
     ...extra,
   }) as SessionMeta;
 
@@ -125,9 +129,11 @@ const members: SessionMeta[] = [
     lastModel: { name: 'Gemini' },
     parentSessionId: 'thread-rounds' as SessionId,
   }),
+  // Finished an hour ago and not opened since: the unread dot.
   member('thread-memory', '调研 Claude Projects 的记忆', 60, {
     lastModel: { name: 'Opus 5.5' },
     machineId: 'n100' as MachineId,
+    lastReadAt: NOW - 90 * 60_000,
   }),
   member('thread-ios', 'iOS 推送分组回归', 40, {
     lastModel: { name: 'Codex Sol' },
@@ -507,6 +513,7 @@ const chatRows = [
 }));
 
 const noop = () => {};
+const IDLE = { isWaitingPermission: false, isWorking: false, hasUnreadMessages: false };
 
 /** A Board's row offers what a conversation row offers, on hover and right click. */
 const boardRowActions = { onRename: noop, onCopyUrl: noop, onShare: noop, onArchive: noop };
@@ -524,18 +531,29 @@ function Sidebar({ selectedId, onOpen }: { selectedId: string; onOpen: (id: stri
       boardsContent={
         <BoardSidebarSection
           boards={[
-            { id: BOARD, name: board.name, coordinatorSessionId: COORDINATOR, activity: 'waiting' },
+            {
+              id: BOARD,
+              name: board.name,
+              coordinatorSessionId: COORDINATOR,
+              activity: { ...IDLE, isWaitingPermission: true, hasUnreadMessages: true },
+            },
             {
               id: 'bd_release',
               name: '0.106 同步与发布',
               coordinatorSessionId: 'c2' as SessionId,
-              activity: 'working',
+              activity: { ...IDLE, isWorking: true },
             },
             {
               id: 'bd_hebi',
               name: 'hebi8XC 会话网络',
               coordinatorSessionId: 'c3' as SessionId,
-              activity: null,
+              activity: { ...IDLE, hasUnreadMessages: true },
+            },
+            {
+              id: 'bd_quiet',
+              name: 'Mizuki 周报',
+              coordinatorSessionId: 'c4' as SessionId,
+              activity: IDLE,
             },
           ]}
           selectedId={selectedId}
@@ -845,4 +863,78 @@ export const InboxReports: Story = {
       </>
     );
   },
+};
+
+/**
+ * The main session's own conversation: each assigned thread is one live card
+ * (the Board panel row's mark, then where it runs), and results that went along
+ * with a message are one line.
+ */
+const assignedStore = createStore();
+assignedStore.set(sessionMetaCacheAtom, {
+  [getSessionRoomId(COORDINATOR)]: coordinatorSession,
+  ...Object.fromEntries(members.map((session) => [getSessionRoomId(session.id), session])),
+});
+assignedStore.set(lodyPresenceNowMsAtom, NOW);
+assignedStore.set(
+  lodyPresenceStatesAtom,
+  parseLodyPresenceStates(
+    Object.fromEntries(
+      Object.entries(live).map(([id, status]) => [
+        id,
+        {
+          kind: 'session' as const,
+          sessionId: id as SessionId,
+          machineId: 'devnuc' as MachineId,
+          instanceId: 'story' as never,
+          updatedAt: NOW,
+          status,
+        },
+      ])
+    )
+  )
+);
+const assigned = [THREAD, 'thread-rounds', 'thread-memory', 'thread-ios', 'thread-entry-review'];
+export const AssignedThreads: Story = {
+  render: () => (
+    <Provider store={assignedStore}>
+      <MessageRowView
+        sessionId={COORDINATOR}
+        message={{
+          id: 'assigned',
+          role: 'system',
+          timestamp: new Date(NOW).toISOString(),
+          items: [
+            {
+              type: 'operation_progress',
+              operationId: 'assign',
+              operationKind: 'session_create_many',
+              items: assigned.map((id) => ({
+                status: 'succeeded' as const,
+                target: { sessionId: id as SessionId, userTurnId: `${id}-turn` },
+              })),
+            },
+          ],
+        }}
+        onNavigateSession={() => {}}
+      />
+      <MessageRowView
+        sessionId={COORDINATOR}
+        message={{
+          id: 'attached',
+          role: 'system',
+          timestamp: new Date(NOW).toISOString(),
+          items: [
+            {
+              type: 'operation_completion_batch',
+              batchId: 'attached-batch',
+              memberCount: 3,
+              members: [],
+            },
+          ],
+        }}
+        onNavigateSession={() => {}}
+      />
+    </Provider>
+  ),
 };

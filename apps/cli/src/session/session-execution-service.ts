@@ -1988,6 +1988,11 @@ export class SessionExecutionService {
     if (runtime.turnId !== options.expectedTurnId) {
       return await rejectAndPromote('stale-turn');
     }
+    // A steer carries only the user's words. Results waiting for this Session's
+    // next input (a Board coordinator's) go with an ordinary turn, so queue it.
+    if (this.operationInbox?.hasPassiveResults(this.deps.workspaceId, options.sessionId)) {
+      return await rejectAndPromote('busy', 'Waiting results go with the next turn');
+    }
     if (runtime.cancelRequested) {
       return runtime.pendingInputOnCancel === 'promote'
         ? await rejectAndPromote('no-active-turn')

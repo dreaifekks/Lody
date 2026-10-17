@@ -33,6 +33,7 @@ import {
 } from '@/hooks/use-visible-session-metas';
 import { useBoardDocument } from '@/hooks/use-board-document';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
+import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import { BoardPanelView, BoardThreadPaneView, type BoardPanelTab } from './board-panel-view';
 import { BoardThreadListView, type BoardThreadItem } from './board-thread-list';
 import { BoardDirectoryTreeView, BoardFileEditorView } from './board-files-view';
@@ -50,7 +51,7 @@ const panelStyles = stylex.create({
 });
 
 /** Where a member runs, said once: agent · machine · project. */
-function useSessionDetail() {
+export function useSessionDetail() {
   const { t } = useTranslation();
   const machines = useAtomValue(getMachineMetaMapAtom);
   const agents = useAtomValue(getAllAgentConfigAtom);
@@ -98,6 +99,7 @@ export function boardThreadItems(
     title: session.title || context.untitled,
     depth,
     archived: session.isArchived === true,
+    unread: sessionHasUnreadMessages(session),
     status: deriveBoardSessionStatus({
       liveStatus: live[index],
       awaitingUserSince: session.awaitingUserSince,

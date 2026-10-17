@@ -1,5 +1,6 @@
 import type { BoardMeta, SessionId, SessionMeta, SessionStatus } from '@lody/shared';
 import { buildOpenedBySessionTree } from '@/lib/session-opened-by-tree';
+import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import { formatExplicitSessionTabSearch } from '@/lib/session-tab-url';
 
 /**
@@ -69,23 +70,31 @@ function awaitsUser(session: SessionMeta, live: SessionStatus | null | undefined
   return (session.awaitingUserSince ?? 0) > (session.lastMessageAt ?? 0);
 }
 
-export type BoardActivity = 'waiting' | 'working' | null;
+/** A Board row's marks, the ones a conversation row carries for its own Tabs. */
+export type BoardActivity = {
+  isWaitingPermission: boolean;
+  isWorking: boolean;
+  hasUnreadMessages: boolean;
+};
 
 /**
- * The one mark a Board row carries: some member waits for the user, else some
- * member works, else nothing. Members include the coordinator.
+ * A Board row reads as one conversation row over all its members, the
+ * coordinator included: someone waits for the user, someone works, someone has
+ * output the user has not seen. The row draws the strongest, as a session row
+ * with Tabs does.
  */
 export function boardActivity(
   board: Pick<BoardMeta, 'id'>,
   sessions: readonly SessionMeta[],
   liveStatuses: ReadonlyMap<string, SessionStatus>
 ): BoardActivity {
-  let working = false;
+  const activity = { isWaitingPermission: false, isWorking: false, hasUnreadMessages: false };
   for (const session of sessions) {
     if (session.boardId !== board.id) continue;
     const live = liveStatuses.get(session.id);
-    if (awaitsUser(session, live)) return 'waiting';
-    if (live) working = true;
+    if (awaitsUser(session, live)) activity.isWaitingPermission = true;
+    if (live) activity.isWorking = true;
+    if (sessionHasUnreadMessages(session)) activity.hasUnreadMessages = true;
   }
-  return working ? 'working' : null;
+  return activity;
 }

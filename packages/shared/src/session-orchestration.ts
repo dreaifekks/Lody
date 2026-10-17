@@ -251,6 +251,11 @@ export type FrozenOperationContinuationConfig = {
   /** Frozen causal Turn for delegated Operations; recovery must not re-resolve it. */
   sourceTurnId?: string;
   /**
+   * The result never wakes the requester: it waits in the Inbox for the next
+   * human or scheduled input. Frozen for a Board coordinator, which only assigns work.
+   */
+  deliverWithNextInput?: true;
+  /**
    * Effective per-target config captured at acceptance. Null entries
    * correspond to batch items rejected before a target was accepted.
    */

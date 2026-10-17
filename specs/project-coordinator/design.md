@@ -250,6 +250,8 @@ hard-coded product policy.
 
 ## Automatic reports
 
+> Since 2026-10-18 results no longer wake the coordinator and threads coordinate themselves: see [the dispatcher model](board-dispatcher-model.zh.md) (Chinese). This section records the original design.
+
 In one sentence: an observer writes each new member state as one finished Operation of
 the coordinator; the Inbox decides when, at what depth and in how large a batch the
 coordinator sees it. The Board has no delivery pipeline of its own.

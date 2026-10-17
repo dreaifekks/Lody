@@ -2026,7 +2026,7 @@ describe('Board subscription and filtering boundaries', () => {
 });
 
 describe('Board coordinator admission', () => {
-  it('keeps stopped-tree results queued, then launches the existing Inbox when the tree resumes', async () => {
+  it('queues Board reports without waking the coordinator, also after a stopped tree resumes', async () => {
     const h = await boardHarness();
     try {
       await h.add('member');
@@ -2042,18 +2042,28 @@ describe('Board coordinator admission', () => {
         collaborationStopped: false,
       });
       await h.drain();
-      expect(h.launches).toHaveLength(1);
-      expect(h.launches[0]).toMatchObject({
+      // The coordinator only assigns work: the report waits for the user's next message.
+      expect(h.launches).toEqual([]);
+      expect(h.store.inbox.hasRunnableWork(h.workspaceId, h.coordinatorId)).toBe(false);
+      const human = {
+        workspaceId: h.workspaceId,
         sessionId: h.coordinatorId,
+        userId: 'user-1',
+        kind: 'human' as const,
+        inputId: 'next-human',
+        config: { chainDepth: 0 },
+      };
+      h.store.inbox.accept(human);
+      expect(h.store.inbox.prepare(human, 'board-worker')).toMatchObject({
+        chainDepth: 0,
         memberCount: 1,
-        chainDepth: 1,
       });
     } finally {
       await h.close();
     }
   });
 
-  it('writes one durable limit notice at 15 -> 16 and leaves the report for a human batch', async () => {
+  it('never reaches the chain limit on reports: they wait at depth 15 for a human batch', async () => {
     const h = await boardHarness();
     try {
       await h.append(h.coordinatorId, h.input('last-autonomous', { role: 'system', depth: 15 }));
@@ -2063,16 +2073,14 @@ describe('Board coordinator admission', () => {
       h.coordinator.start();
       await h.drain();
       await h.drain();
-      expect(h.store.inbox.depthLimitedSessions(h.workspaceId)).toEqual([h.coordinatorId]);
-      const notices = () =>
-        h.docs
-          .get(h.coordinatorId)!
-          .mirror.getState()
-          .history.flatMap((turn) => turn.items ?? [])
-          .filter((item) => item.type === 'system_notice' && item.name === 'board_chain_limit');
-      expect(notices()).toHaveLength(1);
-      await h.drain();
-      expect(notices()).toHaveLength(1);
+      expect(h.reports()).toHaveLength(1);
+      expect(h.store.inbox.depthLimitedSessions(h.workspaceId)).toEqual([]);
+      const notices = h.docs
+        .get(h.coordinatorId)!
+        .mirror.getState()
+        .history.flatMap((turn) => turn.items ?? [])
+        .filter((item) => item.type === 'system_notice' && item.name === 'board_chain_limit');
+      expect(notices).toEqual([]);
       expect(h.launches).toEqual([]);
       const human = {
         workspaceId: h.workspaceId,
@@ -2463,12 +2471,25 @@ describe('Board coordinator continuity', () => {
       await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
         acpSessionId: 'previous-agent-session',
       });
-      await h.add('member');
-      await h.append('member', h.input('work'));
-      // A member finishes during the handoff, and the user speaks right after it.
+      // A wakeable result (one accepted before coordinators stopped waking) lands
+      // during the handoff, and the user speaks right after it.
       h.maintenance.duringStep = async (request) => {
         if (!request.stepTurnId.endsWith(':handoff')) return;
-        await h.finish('member', 'work', 'Member conclusion');
+        h.store.accept({
+          workspaceId: h.workspaceId,
+          ownerMachineId: h.machineId,
+          requesterSessionId: h.coordinatorId,
+          requesterUserId: 'user-1',
+          operationId: 'legacy-chat',
+          kind: 'session_chat',
+          canonicalCommand: {},
+          frozenContinuationConfig: { inputConfig: { chainDepth: 0 } },
+          initiatorChainDepth: 0,
+          createdAt: new Date(TEST_NOW_MS).toISOString(),
+          deadlineAt: new Date(TEST_NOW_MS + 60000).toISOString(),
+          items: [],
+        });
+        h.store.finish(h.coordinatorId, 'legacy-chat', { type: 'result', value: { items: [] } });
         await h.drain();
       };
       h.maintenance.afterStep = (request) => {
@@ -2541,7 +2562,7 @@ describe('Board coordinator continuity', () => {
     }
   });
 
-  it('starts a new agent conversation in the same Session; results reach it through the Inbox', async () => {
+  it('starts a new agent conversation in the same Session; reports wait for the user there', async () => {
     const h = await largeIdleCoordinator(40_000);
     try {
       await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
@@ -2579,11 +2600,13 @@ describe('Board coordinator continuity', () => {
       expect(records(h)).toEqual([
         expect.objectContaining({ kind: 'new_conversation', status: 'done', renewed: true }),
       ]);
-      // The Board still names the same coordinator; its report went to that Session.
+      // The Board still names the same coordinator; its report went to that Session
+      // and waits for the user's next message instead of waking the new agent.
       expect(h.reports()).toHaveLength(1);
-      expect(h.launches).toEqual([
-        expect.objectContaining({ sessionId: h.coordinatorId, kind: 'automatic', memberCount: 1 }),
-      ]);
+      expect(
+        h.store.get(h.coordinatorId, h.reports()[0]!.operationId).frozenContinuationConfig
+      ).toMatchObject({ deliverWithNextInput: true });
+      expect(h.launches).toEqual([]);
     } finally {
       await h.close();
     }

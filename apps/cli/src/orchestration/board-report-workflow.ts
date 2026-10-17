@@ -278,6 +278,8 @@ export class BoardReportWorkflow {
           agentConfigId: coordinatorMeta.agentConfigId,
           inputConfig: driving.turn.inputConfig ?? {},
           sourceTurnId: driving.turn.id,
+          // The coordinator assigns work; Board events wait for its next input.
+          deliverWithNextInput: true,
         },
         events: derived.events,
         cursor: derived.cursor,

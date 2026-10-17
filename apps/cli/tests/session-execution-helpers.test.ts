@@ -110,29 +110,37 @@ it('adds role-specific Board instructions while retaining the task and existing 
   expect(coordinator).toContain(SESSION_REMINDERS);
   expect(coordinator).toContain('git branch -m lody/test <name>');
   expect(coordinator).toContain(
-    'You are the coordinator of Board "Ship". Goal: A working release.'
+    'You are the main session of Board "Ship": you assign its work. Goal: A working release.'
   );
+  // The main session assigns work and is not woken by thread events.
+  expect(coordinator).toContain('you do not implement it and you do not summarize results');
+  expect(coordinator).toContain('You are not woken when a thread finishes, fails or waits');
+  expect(coordinator).toContain('arrive with the user\'s next message');
   expect(coordinator).toContain('lody_board_overview');
   expect(coordinator).toContain('end your turn');
   expect(coordinator).toContain(
     'Round enforcement, handoff and daily digests are not available yet'
   );
-  expect(coordinator).toContain('Commit only. Run tests.');
+  expect(coordinator).toContain('Thread rules from the Board settings:\nCommit only. Run tests.');
   expect(coordinator).toContain('lody_board_notes_replace');
+  expect(coordinator).toContain('You maintain MEMORY.md');
   const thread = buildPrompt('Implement', undefined, undefined, undefined, {
     boardContext: { board },
   });
-  expect(thread).toContain('Coordinator session: coordinator');
+  // A thread coordinates its own task and reports to the user.
+  expect(thread).toContain('You own this task end to end and report to the user directly');
+  expect(thread).toContain('open sessions under your thread with lody_session_create');
+  expect(thread).toContain('include reviewer conclusions verbatim in your reply');
+  expect(thread).toContain("The Board's main session coordinator assigned this task.");
+  expect(thread).toContain('CHAIN_DEPTH_EXCEEDED');
+  expect(thread).not.toContain('the coordinator decides');
+  expect(thread).not.toContain('Executor constraints');
   expect(thread).toContain('lody_board_notes_append');
-  expect(thread).toContain('include them verbatim in your reply');
-  expect(thread).toContain('the coordinator decides which changes to make');
-  expect(thread).toContain('Commit only. Run tests.');
-  expect(thread).not.toContain('You are the coordinator');
-  // The coordinator coordinates; the Board directory is reached by tools from another machine.
-  expect(coordinator).toContain('You coordinate; you do not implement.');
-  expect(coordinator).toContain('You maintain MEMORY.md');
+  expect(thread).toContain('Thread rules from the Board settings:\nCommit only. Run tests.');
+  expect(thread).not.toContain('You are the main session');
+  // The Board directory is reached by tools from another machine.
   expect(thread).toContain('lody_board_files_list');
-  expect(thread).toContain('The coordinator maintains MEMORY.md.');
+  expect(thread).toContain('The main session maintains MEMORY.md.');
   const local = buildPrompt('Implement', undefined, undefined, undefined, {
     boardContext: { board, directory: '/data/boards/ws/bd_prompt' },
   });
@@ -162,7 +170,10 @@ it('omits an empty Board goal and adds the user instructions for every member', 
   }
   const plain = normalizeBoardMeta({ ...board, instructions: '' });
   if (!plain) throw new Error('Invalid fixture');
-  expect(
-    buildPrompt('Hello', undefined, undefined, undefined, { boardContext: { board: plain } })
-  ).not.toContain('Board instructions');
+  const plainThread = buildPrompt('Hello', undefined, undefined, undefined, {
+    boardContext: { board: plain },
+  });
+  expect(plainThread).not.toContain('Board instructions');
+  // No thread rules: no empty heading for them either.
+  expect(plainThread).not.toContain('Thread rules');
 });
