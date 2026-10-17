@@ -77,3 +77,28 @@ test('PDF viewer controls remain usable in a narrow file panel', async ({ page }
     )
   ).toBeLessThanOrEqual(1);
 });
+
+test('a PDF that loads while its panel is still collapsed draws once the panel opens', async ({
+  page,
+}) => {
+  // The side panel's content is 0 wide while the panel is collapsed or sliding
+  // open; the document is usually ready before that ends.
+  await page.addInitScript(() => {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync('#storybook-root { width: 0 !important; overflow: hidden !important; }');
+    document.adoptedStyleSheets = [sheet];
+  });
+  await page.goto('/iframe.html?id=sessions-sessionfilebinarypreview--pdf-document&viewMode=story');
+  await expect(page.locator('.pdfViewer .page')).toHaveCount(4);
+
+  await page.evaluate(() => {
+    document.adoptedStyleSheets = [];
+  });
+
+  // Nothing else is touched: no thumbnail toggle, no zoom change.
+  const firstPage = page.locator('.page[data-page-number="1"]');
+  await expect.poll(async () => (await firstPage.boundingBox())?.width ?? 0).toBeGreaterThan(400);
+  await expect(firstPage.locator('canvas')).toHaveCount(1);
+  await expect(firstPage.locator('.textLayer')).toContainText('Overview');
+  await expect(page.getByRole('combobox', { name: 'Zoom level' })).toContainText('Fit width');
+});
