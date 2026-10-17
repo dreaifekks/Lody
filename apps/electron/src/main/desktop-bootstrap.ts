@@ -20,21 +20,22 @@ if (desktopInstallationProfile.desktopUserDataName) {
 // Dev builds may move userData beside an installed Lody. Apply it here, before
 // index.ts takes the single-instance lock, which Electron keys on userData.
 const devUserDataDir = process.env.LODY_ELECTRON_USER_DATA_DIR?.trim()
+let devUserDataNotice: string | undefined
 if (devUserDataDir && app.isPackaged) {
-  console.warn(
+  devUserDataNotice =
     '[Desktop] Ignoring LODY_ELECTRON_USER_DATA_DIR because custom userData is only allowed in dev builds.'
-  )
 } else if (devUserDataDir) {
   const userData = resolve(devUserDataDir)
   mkdirSync(userData, { recursive: true })
   app.setPath('userData', userData)
   app.setPath('sessionData', userData)
-  console.warn(`[Desktop] LODY_ELECTRON_USER_DATA_DIR: using ${userData}`)
+  devUserDataNotice = `[Desktop] LODY_ELECTRON_USER_DATA_DIR: using ${userData}`
 }
 
 // After userData is final and before anything else can fail, so startup
 // failures and the rest of this process's life reach the daily log.
 installDesktopLog()
+if (devUserDataNotice) console.warn(devUserDataNotice)
 
 // On Linux, Electron/Chromium auto-detects the keyring backend for GNOME and KDE
 // desktops, but falls back to basic-text (unencrypted) on other desktops like

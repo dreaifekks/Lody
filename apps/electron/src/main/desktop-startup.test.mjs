@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { before, after, test } from 'node:test'
 import { EventEmitter } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -266,6 +266,9 @@ void test('a dev build takes the single-instance lock in its own userData', asyn
     run.events.find(([name]) => name === 'lock'),
     ['lock', userData, userData]
   )
+  const logs = await readdir(join(root, 'logs'))
+  const logged = await Promise.all(logs.map((name) => readFile(join(root, 'logs', name), 'utf8')))
+  assert.ok(logged.some((text) => text.includes(`LODY_ELECTRON_USER_DATA_DIR: using ${userData}`)))
 })
 
 void test('a packaged build ignores the dev userData override', async (t) => {
