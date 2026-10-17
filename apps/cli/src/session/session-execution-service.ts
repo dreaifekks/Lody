@@ -970,8 +970,6 @@ export class SessionExecutionService {
   private readonly canceledTurnBySession = new Map<SessionId, string>();
   private readonly currentTurnBySession = new Map<SessionId, string>();
   private readonly turnRuntimeBySession = new Map<SessionId, TurnRuntimeState>();
-  /** Sessions running a Board maintenance turn: its failure is recorded without an alert. */
-  private readonly boardMaintenanceSessions = new Set<SessionId>();
   private readonly rewriteBarrierSessions = new Set<SessionId>();
   private readonly rewriteConflictLeaseSessions = new Set<SessionId>();
   private readonly turnReleaseWaiters = new Map<SessionId, Map<string, Set<() => void>>>();
@@ -1658,6 +1656,7 @@ export class SessionExecutionService {
           this.pendingGoalTurnBySession.delete(sessionId);
           const sessionDoc = await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId);
           await this.recordChatFailure(
+            false,
             sessionDoc,
             'turn_pre_prompt_failed',
             `Goal ${pending.control.action} failed: ${formatErrorMessage(error)}`
@@ -1858,12 +1857,9 @@ export class SessionExecutionService {
       },
       { sessionDoc }
     );
-    // Held until the turn's failure handling is done, which outlives its runtime.
-    this.boardMaintenanceSessions.add(sessionId);
     try {
       return await this.runVisibleSessionTurn(turn.options, turn.body);
     } finally {
-      this.boardMaintenanceSessions.delete(sessionId);
       // Outside the Inbox, nothing else tells it or a held user turn that the Session is free.
       await this.operationInbox?.wake();
       this.onInboxReleased?.(sessionId);
@@ -3292,6 +3288,7 @@ export class SessionExecutionService {
           userTurnId: runtime.userTurnId,
           reason: 'session_init_failed',
           message: formatInitializationStallMessage(stall),
+          ...(runtime.maintenance ? { quiet: true } : {}),
         })
       )
     );
@@ -3430,18 +3427,19 @@ export class SessionExecutionService {
   }
 
   /**
-   * A Board maintenance turn's failure stays on its divider: the notice is
-   * recorded, but no failure alert goes out for background work.
+   * Records a failed turn's notice. `quiet` is the failing turn's own Board
+   * maintenance flag: its failure stays on its divider, without a failure alert.
    */
   private async recordChatFailure(
+    quiet: boolean,
     ...args: Parameters<SessionExecutionServiceDeps['recordChatFailure']>
   ): Promise<void> {
-    const [sessionDoc, reason, message, code] = args;
-    if (this.boardMaintenanceSessions.has(sessionDoc.sessionId)) {
-      await this.deps.recordChatFailure(sessionDoc, reason, message, code, { quiet: true });
+    if (!quiet) {
+      await this.deps.recordChatFailure(...args);
       return;
     }
-    await this.deps.recordChatFailure(...args);
+    const [sessionDoc, reason, message, code] = args;
+    await this.deps.recordChatFailure(sessionDoc, reason, message, code, { quiet: true });
   }
 
   private async recordPrePromptFailure(
@@ -3469,13 +3467,19 @@ export class SessionExecutionService {
     const message = formatErrorMessage(error);
     if (isGitExecutableNotFoundError(error)) {
       await this.recordChatFailure(
+        runtime.maintenance === true,
         sessionDoc,
         'turn_pre_prompt_failed',
         message,
         GIT_EXECUTABLE_NOT_FOUND_CODE
       );
     } else {
-      await this.recordChatFailure(sessionDoc, 'turn_pre_prompt_failed', message);
+      await this.recordChatFailure(
+        runtime.maintenance === true,
+        sessionDoc,
+        'turn_pre_prompt_failed',
+        message
+      );
     }
     this.deps.logger.debug(
       `[${sessionId}] Recorded pre-prompt failure notice for turn ${runtime.turnId}`
@@ -3489,6 +3493,8 @@ export class SessionExecutionService {
     reason: ChatFailedReason;
     code?: string;
     message: string;
+    /** The failing turn is Board maintenance. */
+    quiet?: boolean;
   }): Promise<void> {
     // turn_failed (spec §5b, P0). These are known, pre-prompt halts — not ACP
     // protocol errors — so is_acp_error=false.
@@ -3520,7 +3526,12 @@ export class SessionExecutionService {
         { tier: 'A' }
       );
     }
-    await this.recordChatFailure(options.sessionDoc, options.reason, options.message);
+    await this.recordChatFailure(
+      options.quiet === true,
+      options.sessionDoc,
+      options.reason,
+      options.message
+    );
     if (options.userTurnId) {
       await this.markTurnFailed(options.sessionId, options.sessionDoc, options.userTurnId);
     }
@@ -3596,6 +3607,8 @@ export class SessionExecutionService {
     reason: ChatFailedReason;
     code?: string;
     message: string;
+    /** The failing turn is Board maintenance. */
+    quiet?: boolean;
   }): Effect.Effect<never, unknown, never> {
     return this.tryPromise(() => this.recordKnownChatFailure(options)).pipe(
       Effect.flatMap(() =>
@@ -3649,7 +3662,12 @@ export class SessionExecutionService {
     if (options.userTurnId) {
       await this.markTurnFailed(options.sessionId, options.sessionDoc, options.userTurnId);
     }
-    await this.handleTurnError(options.sessionId, options.sessionDoc, options.error);
+    await this.handleTurnError(
+      options.sessionId,
+      options.sessionDoc,
+      options.error,
+      options.runtime.maintenance === true
+    );
     await options.onUnhandledError?.(options.error);
   }
 
@@ -3756,7 +3774,9 @@ export class SessionExecutionService {
   private async handleTurnError(
     sessionId: SessionId,
     sessionDoc: SessionDocument,
-    error?: unknown
+    error?: unknown,
+    /** The failing turn is Board maintenance: record its failure without an alert. */
+    quiet = false
   ): Promise<void> {
     const acpError = error ? parseACPError(error) : null;
     const providerDisconnected = error ? isAgentDisconnectedError(error) : false;
@@ -3787,6 +3807,7 @@ export class SessionExecutionService {
           false
         );
         await this.recordChatFailure(
+          quiet,
           sessionDoc,
           'daemon_restart',
           'Lody restarted while the agent was working.'
@@ -3809,7 +3830,7 @@ export class SessionExecutionService {
           failureReason,
           true
         );
-        await this.recordChatFailure(sessionDoc, failureReason, recordedMessage);
+        await this.recordChatFailure(quiet, sessionDoc, failureReason, recordedMessage);
 
         if (shouldTerminateOnACPError(acpError, failureReason)) {
           // Expired credentials leave a healthy agent process behind, so close
@@ -3843,6 +3864,7 @@ export class SessionExecutionService {
           true
         );
         await this.recordChatFailure(
+          quiet,
           sessionDoc,
           'agent_disconnected',
           'The agent process disconnected unexpectedly. Please try again.'
@@ -5311,6 +5333,8 @@ export class SessionExecutionService {
     sessionDoc: SessionDocument;
     turnId: string;
     userTurnId?: string;
+    /** The failing turn is Board maintenance. */
+    quiet?: boolean;
   }): Promise<void> {
     this.deps.logger.warn(
       `[${options.sessionId}] Turn ${options.turnId} completed without any agent output; ` +
@@ -5318,6 +5342,7 @@ export class SessionExecutionService {
     );
     this.captureTurnFailed(options.sessionId, options.turnId, 'agent_no_output', false);
     await this.recordChatFailure(
+      options.quiet === true,
       options.sessionDoc,
       'agent_no_output',
       SILENT_TURN_FAILURE_MESSAGE
@@ -5470,6 +5495,8 @@ export class SessionExecutionService {
     const freshAgentSession =
       dispatchOptions?.dispatchSource === 'maintenance' &&
       dispatchOptions.freshAgentSession === true;
+    // A Board maintenance turn's failure stays on its divider, without a failure alert.
+    const quietFailure = dispatchOptions?.dispatchSource === 'maintenance' ? { quiet: true } : {};
     const sessionDoc =
       prepareOptions?.sessionDoc ??
       (await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId));
@@ -5519,6 +5546,7 @@ export class SessionExecutionService {
         const missingMessage = `Local project not found in workspace: ${project.localProjectId}`;
         self.deps.logger.warn(`[${sessionId}] ${missingMessage}`);
         return yield* self.recordKnownChatFailureAndHaltEffect({
+          ...quietFailure,
           sessionId,
           sessionDoc,
           userTurnId: executionUserTurnId,
@@ -5529,6 +5557,7 @@ export class SessionExecutionService {
       if (meta?.isArchived) {
         self.deps.logger.warn(`[${sessionId}] Session is archived; refusing to resume chat`);
         return yield* self.recordKnownChatFailureAndHaltEffect({
+          ...quietFailure,
           sessionId,
           sessionDoc,
           userTurnId: executionUserTurnId,
@@ -5545,6 +5574,7 @@ export class SessionExecutionService {
         const mismatchMsg = `Session was created with ${meta.cliType}/${meta.agentType} but resume requested with ${acpSessionConfig.cliType}/${acpSessionConfig.agentType}`;
         self.deps.logger.warn(`[${sessionId}] Agent type mismatch: ${mismatchMsg}`);
         return yield* self.recordKnownChatFailureAndHaltEffect({
+          ...quietFailure,
           sessionId,
           sessionDoc,
           userTurnId: executionUserTurnId,
@@ -5760,6 +5790,7 @@ export class SessionExecutionService {
                   `[${sessionId}] Refusing context-free fallback restore (resumeSessionId=${resumeSessionId} historyEntries=${replayHistory.length})`
                 );
                 return yield* self.recordKnownChatFailureAndHaltEffect({
+                  ...quietFailure,
                   sessionId,
                   sessionDoc,
                   userTurnId: executionUserTurnId,
@@ -5801,6 +5832,7 @@ export class SessionExecutionService {
                       `[${sessionId}] Fallback restore also failed: ${fallbackErrMessage}`
                     );
                     return yield* self.recordKnownChatFailureAndHaltEffect({
+                      ...quietFailure,
                       sessionId,
                       sessionDoc,
                       userTurnId: executionUserTurnId,
@@ -5820,6 +5852,7 @@ export class SessionExecutionService {
               `[${sessionId}] Failed to restore session for chat: ${errMessage}`
             );
             return yield* self.recordKnownChatFailureAndHaltEffect({
+              ...quietFailure,
               sessionId,
               sessionDoc,
               userTurnId: executionUserTurnId,
@@ -6193,6 +6226,7 @@ export class SessionExecutionService {
             },
             async () =>
               await self.recordSilentTurnFailure({
+                ...quietFailure,
                 sessionId,
                 sessionDoc,
                 turnId: completedTurnId,
@@ -6273,6 +6307,7 @@ export class SessionExecutionService {
             const failureMessage = self.formatMemoryPressureFailureMessage(memoryPressureResult);
             self.deps.logger.warn(`[${sessionId}] ${failureMessage}`);
             yield* self.recordKnownChatFailureAndHaltEffect({
+              ...quietFailure,
               sessionId,
               sessionDoc,
               userTurnId: executionUserTurnId,
@@ -6340,6 +6375,7 @@ export class SessionExecutionService {
                       `[${sessionId}] Session initialization failed while handling chat: ${errMessage}`
                     );
                     return yield* self.recordKnownChatFailureAndHaltEffect({
+                      ...quietFailure,
                       sessionId,
                       sessionDoc,
                       userTurnId: executionUserTurnId,
@@ -6382,6 +6418,7 @@ export class SessionExecutionService {
               self.tryPromise(() => resolvedSession.terminate(true))
             );
             yield* self.recordKnownChatFailureAndHaltEffect({
+              ...quietFailure,
               sessionId,
               sessionDoc,
               userTurnId: executionUserTurnId,

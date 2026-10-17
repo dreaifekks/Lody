@@ -321,7 +321,8 @@ system 驱动的维护回合，再在压缩后的下一回合重新注入看板�
     `isBoardMaintenanceEntry`）。T4 在 Mac 上看到的消息时间跳动就是这条路径：每个回复片段都把
     会话标成未读，回合结束时写一次 `lastMessageAt`；
   - agent 在维护步骤里上传的图片、文件不移动消息时间；`lody_notify_user` 直接拒绝；
-  - 维护步骤失败只在会话里记一条失败说明，不发失败推送，结果看分隔线。
+  - 维护步骤失败只在会话里记一条失败说明，不发失败推送，结果看分隔线。是否静默看出错回合
+    自己的标记，不看会话：紧接着失败的用户回合照常提醒。
   - 例外：维护步骤里的权限请求照常提醒，因为不处理它回合就停着。
   - 「开始新对话」之后，用户下一次说话、新 agent 回答，是普通回合，照常更新消息时间。
 - 运行配置取协调者最新驱动回合的 `inputConfig`，所以新开的 agent 会话也保持原来的模型和模式。
@@ -415,7 +416,8 @@ Inbox、Operation、回报游标、笔记替换权限、线程归属和侧边栏
     continuity」用真实的 Inbox、Loro 历史和注入时钟，覆盖触发条件、阈值、不支持时跳过、
     压缩未确认、Kimi 跳过、让路后补发说明、新对话后回报送达同一会话；
     `apps/cli/tests/session-execution-service.test.ts`「Board maintenance turns」覆盖不经
-    Inbox、不更新消息时间和推送、失败不发提醒、重新注入、新 agent 会话不续接不重放；
+    Inbox、不更新消息时间和推送、失败不发提醒（紧接着失败的用户回合照常提醒）、重新注入、
+    新 agent 会话不续接不重放；
     `apps/cli/tests/message-handler-acp-batching.test.ts` 用真实的会话文档覆盖四种维护步骤
     及步骤结束后的迟到输出都不移动 `lastMessageAt`、不变成未读，普通回合照常移动。
 - 真机验证：T4 在 Mac 上用真实 Electron 和 Claude Code 验证了 `d49a75927`，只有「自动整理后

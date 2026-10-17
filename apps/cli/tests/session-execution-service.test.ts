@@ -11858,7 +11858,8 @@ describe('SessionExecutionService Board maintenance turns', () => {
   const createService = ({
     holdPrompt = false,
     promptError,
-  }: { holdPrompt?: boolean; promptError?: Error } = {}) => {
+    inbox = true,
+  }: { holdPrompt?: boolean; promptError?: Error; inbox?: boolean } = {}) => {
     const prompts: string[] = [];
     const promptStarted = createDeferred<void>();
     const promptReleased = createDeferred<void>();
@@ -11949,7 +11950,8 @@ describe('SessionExecutionService Board maintenance turns', () => {
     // A paused Inbox refuses every task it admits.
     const released: SessionId[] = [];
     let wakes = 0;
-    service.setOperationInbox(
+    if (inbox)
+      service.setOperationInbox(
       {
         accept: async () => false,
         inputKind: () => undefined,
@@ -12013,6 +12015,50 @@ describe('SessionExecutionService Board maintenance turns', () => {
       .mock.calls.map(([, reason, , , options]) => ({ reason, options }));
     expect(failures).toEqual([{ reason: 'agent_disconnected', options: { quiet: true } }]);
     expect(h.lastMessageAt).toEqual([]);
+  });
+
+  it('still alerts for an ordinary turn that fails while a maintenance failure is being recorded', async () => {
+    // Without the paused Inbox, the user's turn runs as soon as the Session is free.
+    const h = createService({ promptError: new Error('ACP connection closed'), inbox: false });
+    const failures: Array<{ reason: string; alerted: boolean }> = [];
+    const maintenanceRecording = createDeferred<void>();
+    const releaseMaintenanceRecording = createDeferred<void>();
+    const userFailureRecorded = createDeferred<void>();
+    vi.mocked(h.deps.recordChatFailure).mockImplementation(
+      async (_doc, reason, _message, _code, options) => {
+        failures.push({ reason, alerted: options?.quiet !== true });
+        if (failures.length === 1) {
+          maintenanceRecording.resolve();
+          await releaseMaintenanceRecording.promise;
+        } else {
+          userFailureRecorded.resolve();
+        }
+      }
+    );
+
+    const maintenance = h.service.runBoardMaintenanceTurn(request);
+    await maintenanceRecording.promise;
+    // The maintenance turn has let go of the Session; the user's turn fails as well.
+    await h.service.continueSession({
+      type: 'session/chat',
+      sessionId,
+      machineId: 'machine-1',
+      workspaceId: 'workspace-1' as WorkspaceId,
+      userTurnId: 'user-turn',
+      userId: 'owner-user',
+      userName: 'Owner',
+      userEmail: 'owner@example.com',
+      acpSessionConfig: { prompt: 'ordinary', cliType: 'builtin', agentType: 'claude' },
+    });
+    await userFailureRecorded.promise;
+    releaseMaintenanceRecording.resolve();
+    await maintenance;
+
+    expect(h.prompts).toContain('ordinary');
+    expect(failures).toEqual([
+      { reason: 'agent_disconnected', alerted: false },
+      { reason: 'agent_disconnected', alerted: true },
+    ]);
   });
 
   it('stops on Stop although it has no Inbox execution to pause', async () => {
