@@ -13,7 +13,12 @@ import {
   type InboxScope,
 } from './model';
 import type { BlockedInboxExecution, InboxResourceIdentity } from './recovery';
-import { canFenceBatch, inputAcceptance, operationInboxCompletion } from './rules';
+import {
+  canFenceBatch,
+  digestCompletion,
+  inputAcceptance,
+  operationInboxCompletion,
+} from './rules';
 
 const StateRow = z.object({
   revision: z.number(),
@@ -174,6 +179,7 @@ export class InboxSqlite {
     )
       return;
     const receipt = operationInboxCompletion(operation.completion);
+    const passive = operation.frozenContinuationConfig.deliverWithNextInput === true;
     const { value } = this.db
       .prepare(
         "UPDATE orchestration_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='inbox_sequence' RETURNING CAST(value AS INTEGER) AS value"
@@ -181,7 +187,7 @@ export class InboxSqlite {
       .get() as { value: number };
     this.db
       .prepare(`INSERT INTO inbox_results(sequence,workspace_id,session_id,user_id,operation_id,operation_kind,source_turn_id,created_at,completed_at,chain_depth,completion_json,automatic_eligible,consumed,consumed_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?)`)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(
         value,
         operation.workspaceId,
@@ -193,11 +199,15 @@ export class InboxSqlite {
         operation.createdAt,
         operation.finishedAt,
         operation.initiatorChainDepth,
-        JSON.stringify(receipt ?? operation.completion),
+        JSON.stringify(
+          receipt ? (passive ? digestCompletion(receipt) : receipt) : operation.completion
+        ),
+        passive ? 0 : 1,
         receipt ? 0 : 1,
         receipt ? null : this.now()
       );
-    if (!receipt) return;
+    // A passive result waits for the next human or scheduled input; it never wakes.
+    if (!receipt || passive) return;
     this.requestAutomatic(
       {
         workspaceId: operation.workspaceId,

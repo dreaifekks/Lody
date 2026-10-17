@@ -507,6 +507,7 @@ const chatRows = [
 }));
 
 const noop = () => {};
+const IDLE = { isWaitingPermission: false, isWorking: false, hasUnreadMessages: false };
 
 /** A Board's row offers what a conversation row offers, on hover and right click. */
 const boardRowActions = { onRename: noop, onCopyUrl: noop, onShare: noop, onArchive: noop };
@@ -524,18 +525,29 @@ function Sidebar({ selectedId, onOpen }: { selectedId: string; onOpen: (id: stri
       boardsContent={
         <BoardSidebarSection
           boards={[
-            { id: BOARD, name: board.name, coordinatorSessionId: COORDINATOR, activity: 'waiting' },
+            {
+              id: BOARD,
+              name: board.name,
+              coordinatorSessionId: COORDINATOR,
+              activity: { ...IDLE, isWaitingPermission: true, hasUnreadMessages: true },
+            },
             {
               id: 'bd_release',
               name: '0.106 同步与发布',
               coordinatorSessionId: 'c2' as SessionId,
-              activity: 'working',
+              activity: { ...IDLE, isWorking: true },
             },
             {
               id: 'bd_hebi',
               name: 'hebi8XC 会话网络',
               coordinatorSessionId: 'c3' as SessionId,
-              activity: null,
+              activity: { ...IDLE, hasUnreadMessages: true },
+            },
+            {
+              id: 'bd_quiet',
+              name: 'Mizuki 周报',
+              coordinatorSessionId: 'c4' as SessionId,
+              activity: IDLE,
             },
           ]}
           selectedId={selectedId}

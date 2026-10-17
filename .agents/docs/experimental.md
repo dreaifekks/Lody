@@ -233,7 +233,11 @@ where it was, to retry. Neither the coordinator nor the threads are listed among
 sessions outside the Board.
 
 PR2 adds shared notes, Board MCP tools, New thread and Join/Remove actions; PR3
-delivers member reports to the coordinator through the Operation Inbox. Round
+records member reports for the coordinator in its Operation Inbox. Since the
+[dispatcher model](../../specs/project-coordinator/board-dispatcher-model.zh.md) the
+coordinator only assigns work: reports and its own receipts wait for the user's next
+message instead of waking it, threads coordinate their own sessions and report to the
+user, and thread and Board rows carry the sidebar's ✋, working and unread marks. Round
 limits, handoff and daily digests remain later steps in the
 [Board design](../../specs/project-coordinator/design.md). Disabling the experiment
 hides its surfaces and keeps sessions and Board data intact.

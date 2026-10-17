@@ -1,4 +1,8 @@
-import type { LodyOperationCompletion, LodyOperationItemTarget } from '@lody/shared';
+import type {
+  LodyOperationCompletion,
+  LodyOperationItemTarget,
+  LodyOperationOutputPreview,
+} from '@lody/shared';
 import type { InboxBatch, InboxInput } from './model';
 
 export type SessionFenceState = {
@@ -77,4 +81,55 @@ export const cancelManuallyStoppedTargets = (
       ),
     },
   };
+};
+
+/** Characters an output keeps in a result that waits for the next input. */
+export const INBOX_DIGEST_OUTPUT_CHARS = 1000;
+
+const digestOutput = (output: LodyOperationOutputPreview): LodyOperationOutputPreview => {
+  const characters = Array.from(output.text);
+  if (characters.length <= INBOX_DIGEST_OUTPUT_CHARS) return output;
+  const head = characters.slice(0, Math.ceil(INBOX_DIGEST_OUTPUT_CHARS * 0.25)).join('');
+  const tail = characters.slice(characters.length - Math.floor(INBOX_DIGEST_OUTPUT_CHARS * 0.75));
+  const kept = `${head}${tail.join('')}`;
+  return {
+    text: `${head}\n…\n${tail.join('')}`,
+    truncated: true,
+    omittedBytes:
+      (output.omittedBytes ?? 0) +
+      Buffer.byteLength(output.text, 'utf8') -
+      Buffer.byteLength(kept, 'utf8'),
+  };
+};
+
+/**
+ * A passive result is a digest: it rides along with the requester's next input,
+ * possibly with many others, so each output keeps its head and tail only. The
+ * Operation itself keeps the complete preview.
+ */
+export const digestCompletion = (completion: LodyOperationCompletion): LodyOperationCompletion => {
+  const digest = (
+    value: Extract<LodyOperationCompletion, { type: 'result' }>['value']
+  ): Extract<LodyOperationCompletion, { type: 'result' }>['value'] => ({
+    ...value,
+    items: value.items.map((item) =>
+      item.status === 'succeeded' && item.output
+        ? { ...item, output: digestOutput(item.output) }
+        : item
+    ),
+    ...(value.boardReport
+      ? {
+          boardReport: {
+            ...value.boardReport,
+            events: value.boardReport.events.map((event) =>
+              event.output ? { ...event, output: digestOutput(event.output) } : event
+            ),
+          },
+        }
+      : {}),
+  });
+  if (completion.type === 'result') return { ...completion, value: digest(completion.value) };
+  if (completion.type === 'cancelled' && completion.partial)
+    return { ...completion, partial: digest(completion.partial) };
+  return completion;
 };

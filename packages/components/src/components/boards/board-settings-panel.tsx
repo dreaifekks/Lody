@@ -239,7 +239,7 @@ export function BoardSettingsGeneralView({
           </span>
         </StackedRow>
         <StackedRow
-          label={t('boards.constraints', 'Executor instructions')}
+          label={t('boards.constraints', 'Thread instructions')}
           helper={t(
             'boards.settings.constraintsHelper',
             'Added to the first message of every thread.'
@@ -264,15 +264,15 @@ export function BoardSettingsGeneralView({
           />
         </CompactRow>
         <CompactRow
-          label={t('boards.reportHumanTurns', 'Report completed human turns')}
+          label={t('boards.reportHumanTurns', 'Record completed human turns')}
           helper={t(
             'boards.settings.reportHumanTurnsHelper',
-            'Off: a reply you steer yourself does not wake the coordinator.'
+            'Off: a reply you steer yourself is not recorded for the coordinator.'
           )}
         >
           <Switch
             checked={value.reportHumanTurns}
-            aria-label={t('boards.reportHumanTurns', 'Report completed human turns')}
+            aria-label={t('boards.reportHumanTurns', 'Record completed human turns')}
             onCheckedChange={(on) => onChange({ reportHumanTurns: on })}
           />
         </CompactRow>

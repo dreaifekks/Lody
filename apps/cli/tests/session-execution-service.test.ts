@@ -4406,12 +4406,12 @@ describe('SessionExecutionService', () => {
           expect(text.split('EXECUTOR_CONSTRAINT')).toHaveLength(2);
           expect(text.split('BOARD_INSTRUCTION')).toHaveLength(2);
           if (boardRole !== 'coordinator') {
-            expect(text).toContain('include them verbatim in your reply');
-            expect(text).toContain('Do not make changes based on those conclusions yourself');
+            expect(text).toContain('include reviewer conclusions verbatim in your reply');
+            expect(text).toContain('You own this task end to end');
           }
           expect(text).toContain(
             boardRole === 'coordinator'
-              ? 'You are the coordinator of Board "Shipping"'
+              ? 'You are the main session of Board "Shipping"'
               : 'This session is a thread of Board "Shipping"'
           );
         }
@@ -11161,65 +11161,49 @@ describe('Operation Inbox execution boundary', () => {
           },
         },
       });
-      await h.wakeCoordinator();
-      const received = await h.readDrivingState(h.coordinator.message.sessionId);
-      const delivered = received?.turn.items.find((i) => i.type === 'operation_completion_batch');
-      expect(delivered).toMatchObject({
-        deliveryStatus: 'settled',
-        members: [
-          {
-            operationKind: 'board_report',
-            completion: {
-              value: { boardReport: { events: [{ kind: 'finished', turnId: state?.turn.id }] } },
-            },
-          },
-        ],
-      });
+      // The coordinator only assigns work: the report waits for its next human input.
+      expect(
+        h.coordinator.store.get(h.coordinator.message.sessionId, reports[0]!.operationId)
+          .frozenContinuationConfig
+      ).toMatchObject({ deliverWithNextInput: true });
+      expect(h.coordinator.store.inbox.pending(h.coordinator.message.workspaceId)).toEqual([]);
+      expect(
+        h.coordinator.store.inbox.hasRunnableWork(
+          h.coordinator.message.workspaceId,
+          h.coordinator.message.sessionId
+        )
+      ).toBe(false);
     } finally {
       await h.close();
     }
   });
 
-  it('accumulates real report-only wake depths to 16 and attaches the limit to that driving turn', async () => {
+  it('never wakes the coordinator for report-only events, so no chain depth accumulates', async () => {
     const h = await boardExecutionFixture();
     try {
       await h.reconcile();
-      const limited = createDeferred<void>();
-      const prepare = h.coordinator.store.inbox.prepare.bind(h.coordinator.store.inbox);
-      vi.spyOn(h.coordinator.store.inbox, 'prepare').mockImplementation((...args) => {
-        const batch = prepare(...args);
-        if (
-          h.coordinator.store.inbox.depthLimitedSessions(h.coordinator.message.workspaceId).length
-        )
-          limited.resolve();
-        return batch;
-      });
-      for (let depth = 1; depth <= 16; depth++) {
+      for (let depth = 1; depth <= 3; depth++) {
         await h.repo.upsertDocMeta(getSessionRoomId(h.member.message.sessionId), {
           agentNotice: { id: `notice-${depth}`, body: 'Synthetic update', at: depth },
         });
         await h.reconcile();
-        if (depth < 16) {
-          await h.wakeCoordinator();
-          const state = await h.readDrivingState(h.coordinator.message.sessionId);
-          expect(state?.turn.id).toMatch(/^inbox:completion:/);
-          expect(state?.turn.inputConfig?.chainDepth).toBe(depth);
-        } else {
-          await h.coordinator.wake();
-          await limited.promise;
-        }
       }
       expect(
+        h.coordinator.store.listForRequester(
+          {
+            workspaceId: h.coordinator.message.workspaceId,
+            requesterSessionId: h.coordinator.message.sessionId,
+            requesterUserId: 'user-1',
+          },
+          {}
+        ).items
+      ).toHaveLength(3);
+      expect(h.coordinator.store.inbox.pending(h.coordinator.message.workspaceId)).toEqual([]);
+      expect(
         h.coordinator.store.inbox.depthLimitedSessions(h.coordinator.message.workspaceId)
-      ).toEqual([h.coordinator.message.sessionId]);
-      await h.reconcile();
+      ).toEqual([]);
       const state = await h.readDrivingState(h.coordinator.message.sessionId);
-      expect(state?.turn.inputConfig?.chainDepth).toBe(15);
-      expect(state?.following.flatMap((t) => t.items)).toContainEqual({
-        type: 'system_notice',
-        name: 'board_chain_limit',
-        meta: { boardId: h.board.id, drivingTurnId: state?.turn.id },
-      });
+      expect(state?.turn.id).not.toMatch(/^inbox:completion:/);
     } finally {
       await h.close();
     }
@@ -12095,7 +12079,7 @@ describe('SessionExecutionService Board maintenance turns', () => {
 
     expect(h.prompts).toHaveLength(1);
     expect(h.prompts[0]).toContain('Lody maintenance.');
-    expect(h.prompts[0]).toContain('You are the coordinator of Board "Release train".');
+    expect(h.prompts[0]).toContain('You are the main session of Board "Release train"');
     expect(h.prompts[0]).toContain('Answer in Chinese.');
   });
 

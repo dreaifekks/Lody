@@ -68,6 +68,7 @@ const FrozenConfigSchema = z
     agentConfigId: z.string().optional(),
     inputConfig: z.record(z.string(), z.unknown()),
     sourceTurnId: z.string().trim().min(1).optional(),
+    deliverWithNextInput: z.literal(true).optional(),
     targetDispatchConfigs: z
       .array(
         z

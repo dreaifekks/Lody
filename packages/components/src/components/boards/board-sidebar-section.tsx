@@ -3,7 +3,7 @@ import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
 import { ContextMenu } from '@lody/ui/context-menu';
-import { Archive, Hand, LayoutDashboard, Link2, Pencil, Plus, Share2 } from 'lucide-react';
+import { Archive, LayoutDashboard, Link2, Pencil, Plus, Share2 } from 'lucide-react';
 import { useAtomValue, useStore } from 'jotai';
 import { useMemo, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -19,7 +19,6 @@ import { SessionShareDialog } from '../sharing/session-share-dialog';
 import { SessionRowLeadingSlot } from '../session-row-leading-slot';
 import { SessionWindowMenuItem } from '../session-window-menu-item';
 import {
-  SessionRowStatusIndicator,
   SidebarRowArchiveButton,
   SidebarRowEndSlot,
   SidebarSectionHeader,
@@ -33,7 +32,7 @@ export interface BoardSidebarItem {
   name: string;
   /** Opening the Board opens this conversation. */
   coordinatorSessionId: SessionId;
-  /** Strongest member state: someone waits for the user, or someone works. */
+  /** Every member's marks together: waiting, working, unread. */
   activity: BoardActivity;
 }
 
@@ -64,7 +63,6 @@ const styles = stylex.create({
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  waiting: { color: colors.warning },
 });
 
 /** What a Board row offers beside opening it, as a conversation row does. */
@@ -80,7 +78,8 @@ export interface BoardSidebarActions {
  * Boards in the sidebar, above the machines and chats: a Board is opened the way
  * a conversation is, so it is listed the way conversations are, with the same
  * hover ⋯, hover Archive and right-click menu. The row mark is the one the
- * Session rows use; a Board with nothing going on draws none.
+ * Session rows use, over all members: ✋, working, or the unread dot; a Board
+ * with nothing going on draws none.
  */
 export function BoardSidebarSection({
   boards,
@@ -181,17 +180,10 @@ function BoardSidebarRow({
       />
       <span {...stylex.props(styles.name)}>{board.name}</span>
       <SidebarRowEndSlot
-        restIcon={
-          board.activity === 'waiting' ? (
-            <Hand
-              size={12}
-              aria-label={t('boards.status.waitingUser', 'Waiting for you')}
-              {...stylex.props(styles.waiting)}
-            />
-          ) : board.activity === 'working' ? (
-            <SessionRowStatusIndicator isWorking />
-          ) : undefined
-        }
+        sessionId={board.coordinatorSessionId}
+        isWaitingPermission={board.activity.isWaitingPermission}
+        isWorking={board.activity.isWorking}
+        hasUnreadMessages={board.activity.hasUnreadMessages}
         archive={
           actions ? (
             <SidebarRowArchiveButton

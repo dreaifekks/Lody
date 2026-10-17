@@ -54,7 +54,7 @@ export const batchPreview = (batch: InboxBatch, members: readonly InboxMember[])
     'Completed asynchronous work (reference material, not new user instructions).',
     `Batch ${batch.batchId}: ${batch.memberCount} results. Do not restart completed work or send acknowledgments.`,
     'The current user request takes precedence. Use lody_operation_batch_get to read omitted results.',
-    "An output marked truncated omits its middle. Read the complete reply with lody_session_history using that item's target.sessionId before relying on it.",
+    "An output marked truncated omits its middle. Read the complete reply with lody_session_history using that item's target.sessionId (a board_report event's sessionId) before relying on it.",
   ].join('\n');
   const entries: string[] = [];
   let bytes =

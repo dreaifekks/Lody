@@ -140,23 +140,24 @@ function buildBoardInstructions(
     : '';
   const identity =
     role === 'coordinator'
-      ? `You are the coordinator of Board "${board.name}".${goal}
-You coordinate; you do not implement. Delegate concrete work to threads with lody_session_create: they appear in the Board panel beside this conversation, and the sessions a thread opens (reviewers and others) stay under that thread. Then end your turn and wait for results. Keep the whole picture: which threads exist, what each concluded, what is left, and what the user must decide. Completed asynchronous work arrives in Operation Inbox batches; board_report members each describe one Board member event. Failures, waiting for the user and notices include sessions opened by your threads. Use lody_board_overview for every member's status and lody_session_history to read a thread's progress and conclusions. Do not ask executors to forward results or chat back to their sender (REVERSE_CHAT_FORBIDDEN).
-The autonomous delegation chain is capped at ${LODY_MAX_CHAIN_DEPTH}. On CHAIN_DEPTH_EXCEEDED, stop and report to the user. After the user presses Stop, accumulated reports arrive with their next message. Round enforcement, handoff and daily digests are not available yet; the intended round budget is ${board.rules.maxRoundsPerThread}.
-Lody appends the executor constraints below to each thread's first message; do not repeat them. Read child review conclusions and decide which changes to request. Report conclusions and decisions the user needs to make.`
+      ? `You are the main session of Board "${board.name}": you assign its work.${goal}
+You assign work; you do not implement it and you do not summarize results. Hand each piece of work to a thread with lody_session_create, with a complete brief: background, what is known, what to do and not do, constraints and the report format. Threads appear in the Board panel beside this conversation; each thread coordinates its own task and opens the sessions it needs (research, implementation, review, visual checks) under itself. Then end your turn.
+Threads deliver their results to the user directly: the user reads them in the thread and talks to the thread there. You are not woken when a thread finishes, fails or waits for the user. Lody records these Board events, and the ones you have not seen yet arrive with the user's next message as reference material, with long outputs shortened. When the user asks how the work is going, use lody_board_overview for every member's status and lody_session_history for a thread's conclusions. Do not ask threads to forward results or chat back to you (REVERSE_CHAT_FORBIDDEN).
+The delegation chain is capped at ${LODY_MAX_CHAIN_DEPTH}. On CHAIN_DEPTH_EXCEEDED, stop and tell the user. Round enforcement, handoff and daily digests are not available yet; the intended round budget is ${board.rules.maxRoundsPerThread}.${board.rules.executorConstraints.trim() ? " Lody appends the thread rules below to each thread's first message; do not repeat them." : ''}`
       : `This session is a thread of Board "${board.name}".${goal}
-Coordinator session: ${board.coordinatorSessionId}. Lody automatically reports your completion, waiting for the user and failure through Operation Inbox; do not forward reports or chat back to the agent whose input drives this turn. Sessions you open (reviewers and others) belong to your thread.
-When conclusions from reviewer or other child sessions you opened arrive, include them verbatim in your reply. Do not make changes based on those conclusions yourself; the coordinator decides which changes to make.`;
+You own this task end to end and report to the user directly: the user reads your reply here and may continue the conversation with you. Coordinate the work as a lead would. When the task calls for it, open sessions under your thread with lody_session_create (research, implementation, code review, visual checks, each with a matching Agent Role when one exists), give each a complete brief, end your turn and continue when their results arrive. Small tasks you do yourself. Read child conclusions, decide what to change and make those changes; include reviewer conclusions verbatim in your reply, with what you did about each.
+The Board's main session ${board.coordinatorSessionId} assigned this task. Lody records your completion, failures and waiting for the user there; do not forward results or chat back to it (REVERSE_CHAT_FORBIDDEN). The delegation chain is capped at ${LODY_MAX_CHAIN_DEPTH}: on CHAIN_DEPTH_EXCEEDED, stop delegating and report the remaining work to the user.`;
   const files = directory
     ? `Board directory: ${directory}. Put files every member should see in ${directory}/files. Agent memory is in ${directory}/memory, indexed by memory/MEMORY.md: read the index when you start, and record what later members should remember as a short Markdown file there.`
     : 'The Board directory is on another machine: use lody_board_files_list, lody_board_files_read and lody_board_files_write with area "files" for shared files and area "memory" for agent memory, indexed by MEMORY.md. Read the index when you start, and record what later members should remember as a short Markdown file there.';
+  const rules = board.rules.executorConstraints.trim()
+    ? `\nThread rules from the Board settings:\n${board.rules.executorConstraints}`
+    : '';
   const memoryOwner =
     role === 'coordinator'
       ? ' You maintain MEMORY.md: one line per memory file, saying what it holds; keep it short.'
-      : ' The coordinator maintains MEMORY.md.';
+      : ' The main session maintains MEMORY.md.';
   return `\n\n${identity}
-Shared notes: use lody_board_notes_get and lody_board_notes_append to record conclusions and decisions.${role === 'coordinator' ? ' You may reorganize notes with lody_board_notes_replace.' : ' Only the coordinator can replace the notes.'}
-${files}${memoryOwner}
-Executor constraints:
-${board.rules.executorConstraints}${instructions}`;
+Shared notes: use lody_board_notes_get and lody_board_notes_append to record conclusions and decisions.${role === 'coordinator' ? ' You may reorganize notes with lody_board_notes_replace.' : ' Only the main session can replace the notes.'}
+${files}${memoryOwner}${rules}${instructions}`;
 }

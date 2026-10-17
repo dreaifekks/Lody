@@ -1,4 +1,10 @@
-import type { LodyOperationItemResult, MachineId, SessionId, WorkspaceId } from '@lody/shared';
+import type {
+  LodyOperationCompletion,
+  LodyOperationItemResult,
+  MachineId,
+  SessionId,
+  WorkspaceId,
+} from '@lody/shared';
 import Database from 'better-sqlite3';
 import { Context, Deferred, Effect, Fiber, Layer, Scheduler } from 'effect';
 import { execFile } from 'node:child_process';
@@ -18,6 +24,7 @@ import {
   type InboxInput,
   type InboxRelease,
 } from './model';
+import { INBOX_DIGEST_OUTPUT_CHARS } from './rules';
 import { InboxExecution, InboxRepository, OperationInbox } from './service';
 
 const roots: string[] = [];
@@ -127,6 +134,102 @@ describe('durable Operation inbox', () => {
     f.add('wake');
     expect(f.sql.pending('workspace')).toEqual([]);
     db.close();
+  });
+  it('a Board coordinator result never wakes it and rides with the next human input as a digest', () => {
+    const f = fixture();
+    const conclusion = `${'h'.repeat(300)}${'m'.repeat(5000)}${'t'.repeat(800)}`;
+    const items: LodyOperationItemResult[] = [
+      {
+        status: 'succeeded',
+        target: { sessionId: 'thread', userTurnId: 'thread-turn' },
+        assistantTurnId: 'thread-reply',
+        output: { text: conclusion },
+      },
+    ];
+    const frozenContinuationConfig = {
+      sourceTurnId: 'source',
+      inputConfig: { prompt: 'dispatch', chainDepth: 0 },
+      deliverWithNextInput: true as const,
+    };
+    f.start();
+    // Results arrive while the coordinator works; its normal release wakes nothing.
+    f.store.accept({
+      workspaceId: f.input.workspaceId as WorkspaceId,
+      ownerMachineId: 'machine' as MachineId,
+      requesterSessionId: f.input.sessionId as SessionId,
+      requesterUserId: f.input.userId,
+      operationId: 'dispatch',
+      kind: 'session_create',
+      canonicalCommand: { operationId: 'dispatch' },
+      frozenContinuationConfig,
+      initiatorChainDepth: 0,
+      createdAt: '2026-10-12T00:00:00.000Z',
+      deadlineAt: '2026-10-13T00:00:00.000Z',
+      items: [],
+    });
+    f.store.finish(f.input.sessionId as SessionId, 'dispatch', {
+      type: 'result',
+      value: { items },
+    });
+    f.release();
+    expect(f.sql.pending('workspace')).toEqual([]);
+    // A Board event while idle does not wake it either.
+    f.store.acceptBoardReport({
+      boardId: 'bd_test' as never,
+      sessionId: 'thread' as SessionId,
+      workspaceId: f.input.workspaceId as WorkspaceId,
+      ownerMachineId: 'machine' as MachineId,
+      requesterSessionId: f.input.sessionId as SessionId,
+      requesterUserId: f.input.userId,
+      frozenContinuationConfig,
+      events: [
+        {
+          kind: 'waiting_user',
+          sessionId: 'thread' as SessionId,
+          turnId: 'thread-turn-2',
+          at: 2,
+          machineId: 'machine' as MachineId,
+          origin: 'human',
+          awaitingUserSince: 2,
+          output: { text: 'Approve the migration?' },
+        },
+      ],
+      cursor: { lastAwaitingTurnId: 'thread-turn-2', lastAwaitingSince: 2 },
+    });
+    expect(f.sql.pending('workspace')).toEqual([]);
+    expect(f.store.inbox.hasRunnableWork('workspace', 'A')).toBe(false);
+
+    const next = { ...f.input, inputId: 'user-2' };
+    expect(f.sql.accept(next)).toBe(true);
+    const batch = f.sql.prepare(next, 'owner')!;
+    const members = f.sql.members(batch);
+    expect(members.map((member) => member.operationKind)).toEqual([
+      'session_create',
+      'board_report',
+    ]);
+    const [dispatched, event] = members.map(
+      (member) => member.completion as Extract<LodyOperationCompletion, { type: 'result' }>
+    );
+    const digest = dispatched!.value.items[0];
+    expect(digest?.status === 'succeeded' && digest.output).toMatchObject({ truncated: true });
+    const text = digest?.status === 'succeeded' ? digest.output!.text : '';
+    expect(Array.from(text.replace('\n…\n', ''))).toHaveLength(INBOX_DIGEST_OUTPUT_CHARS);
+    expect(text.startsWith('h'.repeat(250))).toBe(true);
+    expect(text.endsWith('t'.repeat(750))).toBe(true);
+    expect(event!.value.boardReport?.events[0]?.output).toEqual({ text: 'Approve the migration?' });
+    // The Operation keeps the complete preview for lody_operation_get.
+    const stored = f.store.get(f.input.sessionId as SessionId, 'dispatch').completion;
+    expect(stored?.type === 'result' && stored.value.items[0]).toMatchObject({
+      output: { text: conclusion },
+    });
+    // Delivered once: the batch claimed both, so nothing waits for the input after it.
+    expect(f.sql.begin(batch, 'execution-2')).toBe(true);
+    expect(f.sql.fence(batch, 'execution-2')).toBe(true);
+    f.sql.settle(batch, 'settled');
+    f.sql.release({ ...next, executionId: 'execution-2', outcome: 'normal' });
+    const third = { ...f.input, inputId: 'user-3' };
+    expect(f.sql.accept(third)).toBe(true);
+    expect(f.sql.prepare(third, 'owner')).toBeUndefined();
   });
   it('one wakeable receipt carries passive results and claim fixes membership across workers', () => {
     const f = fixture();

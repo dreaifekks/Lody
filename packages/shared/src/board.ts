@@ -188,6 +188,16 @@ export function boardReportOperationId(
   ).slice(0, 58)}`;
 }
 
+/**
+ * A Board's coordinator only assigns work: results of what it dispatched, and
+ * Board reports, wait for its next human or scheduled input instead of waking it.
+ */
+export function boardDeliveryConfig(
+  requester: Pick<SessionMeta, 'boardRole'>
+): { deliverWithNextInput?: true } {
+  return requester.boardRole === 'coordinator' ? { deliverWithNextInput: true } : {};
+}
+
 /** A child reports its own blockers; its parent carries its successful conclusion upward. */
 export function isBoardGrandchild(
   meta: SessionMeta,

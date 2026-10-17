@@ -1,16 +1,19 @@
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
-import { Spinner } from '@lody/ui/spinner';
-import { ChevronDown, ChevronRight, CircleAlert, CircleSlash, Hand } from 'lucide-react';
+import { ChevronDown, ChevronRight, CircleAlert, CircleSlash } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BoardSessionStatus } from '@lody/shared';
+import { useWorkingHandOver } from '@/ui/working-status-mark';
+import { SessionRowStatusIndicator } from '../sidebar-row-shared';
 
 export interface BoardThreadItem {
   id: string;
   title: string;
   status: BoardSessionStatus;
+  /** Output the user has not seen, as a sidebar row's blue dot. */
+  unread?: boolean;
   /** The latest conclusion's first line, only once it has been read. */
   summary?: string;
   /** "Agent · machine · project", the facts that say where it runs. */
@@ -123,7 +126,6 @@ const styles = stylex.create({
     fontSize: text.footnoteSize,
     color: colors.secondaryLabel,
   },
-  warning: { color: colors.warning },
   danger: { color: colors.destructive },
   quiet: { color: colors.tertiaryLabel },
   empty: {
@@ -136,14 +138,20 @@ const styles = stylex.create({
   },
 });
 
-function StatusMark({ status }: { status: BoardSessionStatus }) {
+/**
+ * A thread row's mark is a sidebar row's: ✋ waiting, the working grid, then the
+ * unread dot it settles into. Only Board states with no sidebar mark (failed,
+ * stopped) draw their own glyph, and only when none of those apply.
+ */
+function StatusMark({ status, unread }: { status: BoardSessionStatus; unread: boolean }) {
   const { t } = useTranslation();
-  if (status === 'waiting_user')
+  const working = useWorkingHandOver(GROUP_BY_STATUS[status] === 'active', unread);
+  if (status === 'waiting_user' || working || unread)
     return (
-      <Hand
-        size={14}
-        aria-label={t('boards.status.waitingUser', 'Waiting for you')}
-        {...stylex.props(styles.warning)}
+      <SessionRowStatusIndicator
+        isWaitingPermission={status === 'waiting_user'}
+        isWorking={working}
+        hasUnreadMessages={unread}
       />
     );
   if (status === 'failed')
@@ -162,8 +170,6 @@ function StatusMark({ status }: { status: BoardSessionStatus }) {
         {...stylex.props(styles.quiet)}
       />
     );
-  if (GROUP_BY_STATUS[status] === 'active')
-    return <Spinner size="small" label={t('boards.status.running', 'Running')} />;
   return null;
 }
 
@@ -233,7 +239,7 @@ export function BoardThreadListView({
                     )}
                   >
                     <span {...stylex.props(styles.mark)}>
-                      <StatusMark status={item.status} />
+                      <StatusMark status={item.status} unread={item.unread === true} />
                     </span>
                     <span {...stylex.props(styles.title)}>{item.title}</span>
                     <span {...stylex.props(styles.time)}>{item.updatedLabel}</span>

@@ -3,6 +3,7 @@ import { loadWorkspaceAgentRoleCatalog } from '@/lib/agent-role-create';
 import { registerBoardTools } from './board-tools';
 import { LODY_MCP_BOARD_ID_ENV } from './lody-mcp-http-protocol';
 import {
+  boardDeliveryConfig,
   composeAgentRolePrompt,
   snapshotAgentRole,
   readMessageAuthor,
@@ -3061,6 +3062,7 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
               : {}),
             inputConfig: invoking.frozenInputConfig,
             sourceTurnId: invoking.identity.sourceTurnId,
+            ...boardDeliveryConfig(currentSession),
             targetDispatchConfigs: [effectiveDispatchConfig],
           },
           initiatorChainDepth: invoking.chainDepth,
@@ -3269,6 +3271,7 @@ const startSessionChatOperation = async (args: SessionChatToolInput): Promise<un
               : {}),
             inputConfig: invoking.frozenInputConfig,
             sourceTurnId: invoking.identity.sourceTurnId,
+            ...boardDeliveryConfig(currentSession),
             targetDispatchConfigs: [{ mcpServerIds }],
           },
           initiatorChainDepth: invoking.chainDepth,
@@ -3710,6 +3713,7 @@ const startSessionCreateManyOperation = async (
             ...(requester.agentConfigId ? { agentConfigId: requester.agentConfigId } : {}),
             inputConfig: invoking.frozenInputConfig,
             sourceTurnId: invoking.identity.sourceTurnId,
+            ...boardDeliveryConfig(requester),
             targetDispatchConfigs,
           },
           initiatorChainDepth: invoking.chainDepth,
@@ -3941,6 +3945,7 @@ const startSessionChatManyOperation = async (args: SessionChatManyToolInput): Pr
             ...(requester.agentConfigId ? { agentConfigId: requester.agentConfigId } : {}),
             inputConfig: invoking.frozenInputConfig,
             sourceTurnId: invoking.identity.sourceTurnId,
+            ...boardDeliveryConfig(requester),
             targetDispatchConfigs,
           },
           initiatorChainDepth: invoking.chainDepth,
