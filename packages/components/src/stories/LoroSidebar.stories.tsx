@@ -278,6 +278,80 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+/**
+ * Pinned projects as production lists them in the Pinned section, before the
+ * pinned Sessions: `lody` from the MacBook Pro (named, since it is away from
+ * its machine group) and this machine's `loro` (bare). Neither appears in a
+ * machine group below.
+ */
+function DemoPinnedProjects({ isMobile }: { isMobile: boolean }) {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const rows: Array<{ machineId: MachineId; machineName: string; project: LocalProjectMeta }> = [
+    {
+      machineId: 'machine-remote' as MachineId,
+      machineName: 'MacBook Pro',
+      project: demoProjects[0]!,
+    },
+    { machineId: demoMachineId, machineName: 'Mac Studio', project: demoProjects[1]! },
+    // A long name on another machine: the project name gives way, the machine stays.
+    {
+      machineId: 'machine-mini' as MachineId,
+      machineName: 'Mac mini',
+      project: {
+        id: 'proj-release' as LocalProjectId,
+        name: 'lody-desktop-release-automation-pipeline',
+        rootPath: '/Users/developer/Code/lody-desktop-release-automation-pipeline',
+        createdAtMs: NOW - 10 * 24 * 60 * 60 * 1000,
+      },
+    },
+  ];
+  return (
+    <div className="space-y-0.5" data-sidebar-pinned-projects="">
+      {rows.map(({ machineId, machineName, project }) => {
+        const key = `${machineId}:${project.id}`;
+        return (
+          <LocalProjectItem
+            key={key}
+            machineId={machineId}
+            machineName={machineName}
+            project={project}
+            canRemoveProject
+            collapsed={collapsed[key] ?? true}
+            whetherShowFullList={false}
+            isSelected={false}
+            sessionsForProject={machineId === 'machine-remote' ? demoLocalSessions : []}
+            childSessionsByParent={new Map()}
+            liveSessionStatuses={EMPTY_LIVE_SESSION_STATUSES}
+            formattedPath={project.rootPath}
+            defaultSessionTitle="Untitled"
+            selectedSessionId={null}
+            removeProjectLabel="Remove folder"
+            archiveTooltipLabel="Archive"
+            archiveActionLabel="Archive"
+            archiveConfirmLabel="Confirm"
+            isMobile={isMobile}
+            toggleLabel="Toggle"
+            isPinned
+            onTogglePinned={() => {}}
+            showMachineName={machineId !== demoMachineId}
+            machineNameColor="blue"
+            onNavigateProject={() => {}}
+            onNavigateSession={() => {}}
+            onArchive={() => {}}
+            collapsedOpenedBySessionIds={{}}
+            onToggleOpenedBySessions={() => {}}
+            onToggleCollapsed={() =>
+              setCollapsed((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }))
+            }
+            onToggleFullList={() => {}}
+            onRequestRemoval={() => {}}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 type StoryLayoutProps = Parameters<typeof LoroSidebar>[0] & {
   storyContent?: ReactNode;
   fullApp?: boolean;
@@ -394,6 +468,7 @@ function StoryLayout({ storyContent, fullApp = false, ...args }: StoryLayoutProp
       chatScope={chatScope}
       pinnedItems={pinnedItems}
       pinnedSectionCollapsed={pinnedSectionCollapsed}
+      pinnedProjectsContent={<DemoPinnedProjects isMobile={isMobile} />}
       updatedItems={updatedItems}
       updatedSelectedItemId={selectedSessionId}
       updatedBucketsCollapsed={updatedBucketsCollapsed}
@@ -1161,7 +1236,8 @@ function ProductionLikeTopContent({
           />
           {localProjectsCollapsed ? null : (
             <div className="space-y-1">
-              {demoProjects.map((project) => {
+              {/* `loro` is pinned, so it lists in the Pinned section, not here. */}
+              {demoProjects.slice(0, 1).map((project) => {
                 const key = `${demoMachineId}:${project.id}`;
                 const collapsed = collapsedProjects[key] ?? false;
                 return (
@@ -1189,6 +1265,7 @@ function ProductionLikeTopContent({
                     isMobile={isMobile}
                     toggleLabel="Toggle"
                     onNavigateProject={() => {}}
+                    onTogglePinned={() => {}}
                     onNavigateSession={() => {}}
                     onArchive={() => {}}
                     collapsedOpenedBySessionIds={collapsedOpenedBySessionIds}
@@ -1204,59 +1281,6 @@ function ProductionLikeTopContent({
               })}
             </div>
           )}
-        </div>
-
-        <div className="mb-3 space-y-0.5">
-          <SidebarSectionHeader
-            label="MacBook Pro projects"
-            collapsed={false}
-            count={1}
-            isMobile={isMobile}
-            toggleLabel="Toggle"
-            onToggleCollapsed={() => {}}
-          />
-          <div className="space-y-1">
-            {demoProjects.slice(0, 1).map((project) => {
-              const remoteMachineId = 'machine-remote' as MachineId;
-              const key = `${remoteMachineId}:${project.id}`;
-              const collapsed = collapsedProjects[key] ?? false;
-              return (
-                <LocalProjectItem
-                  key={`remote-${project.id}`}
-                  machineId={remoteMachineId}
-                  machineName="MacBook Pro"
-                  project={project}
-                  canRemoveProject
-                  collapsed={collapsed}
-                  whetherShowFullList={false}
-                  isSelected={false}
-                  sessionsForProject={[] as SessionMeta[]}
-                  childSessionsByParent={new Map()}
-                  liveSessionStatuses={EMPTY_LIVE_SESSION_STATUSES}
-                  formattedPath={project.rootPath}
-                  defaultSessionTitle="Untitled"
-                  selectedSessionId={null}
-                  removeProjectLabel="Remove folder"
-                  archiveTooltipLabel="Archive"
-                  archiveActionLabel="Archive"
-                  archiveConfirmLabel="Confirm"
-                  isMobile={isMobile}
-                  toggleLabel="Toggle"
-                  onNavigateProject={() => {}}
-                  onNavigateSession={() => {}}
-                  onArchive={() => {}}
-                  collapsedOpenedBySessionIds={collapsedOpenedBySessionIds}
-                  onToggleOpenedBySessions={toggleOpenedBySessions}
-                  resolveOpenerRowId={demoResolveOpenerRowId}
-                  onToggleCollapsed={() =>
-                    setCollapsedProjects((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }))
-                  }
-                  onToggleFullList={() => {}}
-                  onRequestRemoval={() => {}}
-                />
-              );
-            })}
-          </div>
         </div>
       </div>
 
@@ -1291,8 +1315,20 @@ function WithProjectsLayout(args: Parameters<typeof LoroSidebar>[0]) {
   const [repos, setRepos] = useState<SessionListRepoState[]>(baseSessionListProps.repos);
   const nextSessionIdRef = useRef(1);
 
-  const chatSessions = useMemo(() => sessions.filter((t) => !t.repoFullName), [sessions]);
-  const repoSessions = useMemo(() => sessions.filter((t) => Boolean(t.repoFullName)), [sessions]);
+  // Pinned Sessions go to the Pinned section like production; the groups below
+  // list the rest.
+  const pinnedItems = useMemo(
+    () => buildDemoUpdatedItems(sessions, 'my').filter((item) => item.isPinned),
+    [sessions]
+  );
+  const chatSessions = useMemo(
+    () => sessions.filter((t) => !t.repoFullName && !t.isPinned),
+    [sessions]
+  );
+  const repoSessions = useMemo(
+    () => sessions.filter((t) => Boolean(t.repoFullName) && !t.isPinned),
+    [sessions]
+  );
 
   const archiveTask = (sessionId: string) => {
     setTasks((prev) => prev.filter((task) => task.sessionId !== sessionId));
@@ -1333,10 +1369,11 @@ function WithProjectsLayout(args: Parameters<typeof LoroSidebar>[0]) {
 
   const isMobile = useIsMobile();
 
+  const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false);
   // Mirrors LoroAppSidebar: one filter element shared between the first
-  // topContent header and LoroSidebar's own slots — gated on the same
-  // pinnedItems prop the sidebar sees, not the raw session flags.
-  const hasPinnedItems = Boolean(args.pinnedItems?.length);
+  // topContent header and LoroSidebar's own slots — gated on what the Pinned
+  // section shows (pinned projects always, here), not the raw session flags.
+  const hasPinnedItems = true;
   const sidebarFilterAction = (
     <SidebarFilterPopover
       organize="workspace"
@@ -1353,6 +1390,12 @@ function WithProjectsLayout(args: Parameters<typeof LoroSidebar>[0]) {
       activeNav={activeNav}
       currentWorkspaceId={workspaceId}
       desktopFilterAction={sidebarFilterAction}
+      pinnedItems={pinnedItems}
+      updatedSelectedItemId={selectedSessionId}
+      onSelectUpdatedItem={setSelectedSessionId}
+      pinnedSectionCollapsed={pinnedSectionCollapsed}
+      onTogglePinnedSection={() => setPinnedSectionCollapsed((prev) => !prev)}
+      pinnedProjectsContent={<DemoPinnedProjects isMobile={isMobile} />}
       topContent={
         <ProductionLikeTopContent
           chatSessions={chatSessions}

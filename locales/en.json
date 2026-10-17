@@ -3626,6 +3626,8 @@
   "sidebar.localProjects.reorder": "Reorder project",
   "sidebar.localProjects.settings": "Project settings",
   "sidebar.localProjects.archiveChats": "Archive chats",
+  "sidebar.localProjects.pin": "Pin project",
+  "sidebar.localProjects.unpin": "Unpin project",
   "sidebar.localProjects.reveal": "Reveal in file manager",
   "sidebar.localProjects.revealFailed": "Could not open that folder.",
   "sidebar.localProjects.revealMissing": "That folder no longer exists.",

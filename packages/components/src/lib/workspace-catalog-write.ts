@@ -114,6 +114,15 @@ export const writeWorkspaceVoiceSetting = (
     ? putRow(deps, workspaceFlockKeys.voiceSetting(), setting)
     : deleteRow(deps, workspaceFlockKeys.voiceSetting());
 
+/** Pin these local projects (machine-qualified keys) on every device; none clears the row. */
+export const writeWorkspacePinnedProjects = (
+  deps: WorkspaceCatalogWriteDeps,
+  keys: readonly string[]
+): Promise<void> =>
+  keys.length > 0
+    ? putRow(deps, workspaceFlockKeys.pinnedProjectsSetting(), { version: 1, keys: [...keys] })
+    : deleteRow(deps, workspaceFlockKeys.pinnedProjectsSetting());
+
 /** The experimental Lody tools every machine of the workspace offers its agents. */
 export const writeWorkspaceAgentTools = (
   deps: WorkspaceCatalogWriteDeps,

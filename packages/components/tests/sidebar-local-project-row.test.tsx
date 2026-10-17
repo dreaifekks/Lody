@@ -86,6 +86,9 @@ describe('sidebar local project row', () => {
     onToggleFullList?: (groupKey: string) => void;
     collapsed?: boolean;
     liveSessionStatuses?: ReadonlyMap<string, SessionStatus>;
+    isPinned?: boolean;
+    onTogglePinned?: (machineId: MachineId, localProjectId: string, nextPinned: boolean) => void;
+    showMachineName?: boolean;
   }) {
     flushSync(() => {
       root?.render(
@@ -115,6 +118,10 @@ describe('sidebar local project row', () => {
             toggleLabel="Toggle"
             onNavigateProject={options.onNavigateProject}
             onNewChatInProject={options.onNewChatInProject}
+            isPinned={options.isPinned}
+            onTogglePinned={options.onTogglePinned}
+            showMachineName={options.showMachineName}
+            machineNameColor="blue"
             onNavigateSession={() => undefined}
             onArchive={() => undefined}
             collapsedOpenedBySessionIds={{}}
@@ -146,6 +153,67 @@ describe('sidebar local project row', () => {
     expect(onNewChatInProject).toHaveBeenCalledWith(machineId, project.id);
     // Starting a fresh chat must not double as a plain row activation.
     expect(onNavigateProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('pins and unpins the project from its More menu', () => {
+    const openMenu = (row: HTMLElement | null | undefined) => {
+      const moreButton = row?.querySelector<HTMLButtonElement>('button[aria-label="More actions"]');
+      expect(moreButton).toBeInstanceOf(HTMLButtonElement);
+      flushSync(() => moreButton?.click());
+      return Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).map(
+        (item) => ({ item, label: item.textContent?.trim() ?? '' })
+      );
+    };
+
+    // Without a pin handler the row offers no pin item and no More menu of its own.
+    const bare = render({ onNavigateProject: vi.fn(), onNewChatInProject: vi.fn() });
+    expect(bare?.querySelector('button[aria-label="More actions"]')).toBeNull();
+
+    const onTogglePinned = vi.fn();
+    const unpinnedRow = render({
+      onNavigateProject: vi.fn(),
+      onNewChatInProject: vi.fn(),
+      onTogglePinned,
+    });
+    const unpinnedItems = openMenu(unpinnedRow);
+    expect(unpinnedItems.map(({ label }) => label)).toContain('Pin project');
+    expect(unpinnedItems.map(({ label }) => label)).not.toContain('Unpin project');
+    flushSync(() => unpinnedItems.find(({ label }) => label === 'Pin project')?.item.click());
+    expect(onTogglePinned).toHaveBeenCalledWith(machineId, project.id, true);
+
+    const pinnedRow = render({
+      onNavigateProject: vi.fn(),
+      onNewChatInProject: vi.fn(),
+      isPinned: true,
+      onTogglePinned,
+    });
+    const pinnedItems = openMenu(pinnedRow);
+    expect(pinnedItems.map(({ label }) => label)).toContain('Unpin project');
+    expect(pinnedItems.map(({ label }) => label)).not.toContain('Pin project');
+    flushSync(() => pinnedItems.find(({ label }) => label === 'Unpin project')?.item.click());
+    expect(onTogglePinned).toHaveBeenLastCalledWith(machineId, project.id, false);
+  });
+
+  it('names its machine only when asked to, as a pinned row away from its group', () => {
+    const bare = render({ onNavigateProject: vi.fn(), onNewChatInProject: vi.fn() });
+    expect(bare?.querySelector('[data-sidebar-project-machine]')).toBeNull();
+    expect(bare?.textContent).toContain('Lody');
+    expect(bare?.textContent).not.toContain("Teammate's Mac");
+
+    const named = render({
+      onNavigateProject: vi.fn(),
+      onNewChatInProject: vi.fn(),
+      isPinned: true,
+      onTogglePinned: vi.fn(),
+      showMachineName: true,
+    });
+    const suffix = named?.querySelector<HTMLElement>('[data-sidebar-project-machine]');
+    expect(suffix?.textContent).toBe("Teammate's Mac");
+    // Right after the name, not at the row's end beside the status mark.
+    expect(suffix?.previousElementSibling?.textContent).toBe('Lody');
+    expect(suffix?.style.color).toContain('--lan-machine-blue');
+    // Pinned rows carry no pin glyph: the Pinned section already says so.
+    expect(named?.querySelector('.lucide-pin')).toBeNull();
   });
 
   it('goes inert while the project is being removed', () => {

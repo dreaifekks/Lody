@@ -3626,6 +3626,8 @@
   "sidebar.localProjects.reorder": "调整项目顺序",
   "sidebar.localProjects.settings": "项目设置",
   "sidebar.localProjects.archiveChats": "归档所有对话",
+  "sidebar.localProjects.pin": "置顶项目",
+  "sidebar.localProjects.unpin": "取消置顶项目",
   "sidebar.localProjects.reveal": "在文件管理器中显示",
   "sidebar.localProjects.revealFailed": "无法打开该文件夹。",
   "sidebar.localProjects.revealMissing": "该文件夹已不存在。",
