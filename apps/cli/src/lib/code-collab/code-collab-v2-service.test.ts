@@ -217,6 +217,40 @@ describe('CodeCollabV2Service text RPC boundary', () => {
     }
   });
 
+  it('publishes the file index at session start and shares its watch with the turn-end refresh', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      await writeFile(path.join(workspaceRoot, 'first.ts'), 'export const first = 1;\n');
+      const watch = makeWorkspaceWatchCoordinator();
+      const collected = collectPublishedSharedStates();
+      const service = new CodeCollabV2Service({
+        resolveWorkspace: makeResolver(workspaceRoot),
+        workspaceWatchCoordinator: watch.coordinator,
+        publishFileIndex: collected.publishFileIndex,
+        publishFileIndexSignal: collected.publishFileIndexSignal,
+      });
+      try {
+        await service.publishSharedStateOnSessionStart({ sessionId: SESSION_ID });
+
+        // A remote renderer reads only this publication, so the first turn's
+        // tree must already be in it, without the turn-end diff-stat mirror.
+        expect(collected.published).toHaveLength(1);
+        expect(collected.published[0]?.fileIndex).toHaveProperty('first.ts');
+        expect(collected.published[0]?.persistAllChangesDiffStats).toBe(false);
+        expect(activeWorkspaceWatchCount(service)).toBe(1);
+
+        await service.refreshSharedStateAfterTurn({ sessionId: SESSION_ID });
+        expect(activeWorkspaceWatchCount(service)).toBe(1);
+        expect(watch.releaseCount()).toBe(0);
+        // The turn-end pass adds only its diff-stat mirror to the same rows.
+        expect(collected.published).toHaveLength(2);
+        expect(collected.published[1]?.fileIndex).toEqual(collected.published[0]?.fileIndex);
+        expect(collected.published[1]?.persistAllChangesDiffStats).toBe(true);
+      } finally {
+        service.dispose();
+      }
+    });
+  });
+
   it('opens text files with a sha256 digest and plain payload', async () => {
     await withWorkspace(async (workspaceRoot) => {
       await writeFile(path.join(workspaceRoot, 'hello.ts'), 'const value = 1;\n');

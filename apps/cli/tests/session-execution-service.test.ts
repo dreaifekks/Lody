@@ -5260,6 +5260,12 @@ describe('SessionExecutionService', () => {
         updateAcpCapabilities: vi.fn(async () => {}),
       } as unknown as LoroDocumentManager,
       buildAcpPromptBlocks: vi.fn(async () => [{ type: 'text', text: 'built prompt' }] as any),
+      // The start publication is detached: it runs after the session exists and a
+      // failure must not reach the turn.
+      publishCodeCollabSharedStateOnSessionStart: vi.fn(async () => {
+        expect(sessionManager.createSession).toHaveBeenCalledTimes(1);
+        throw new Error('scan failed');
+      }),
     });
 
     const service = new SessionExecutionService(deps);
@@ -5284,6 +5290,7 @@ describe('SessionExecutionService', () => {
         requesterUserId: 'user-2',
       })
     );
+    expect(deps.publishCodeCollabSharedStateOnSessionStart).toHaveBeenCalledWith('session-2');
     expect(sessionDoc.setStatus.mock.calls.map(([status]) => status).slice(0, 3)).toEqual([
       SessionStatusFactory.initializing(),
       SessionStatusFactory.initializing('git-clone'),

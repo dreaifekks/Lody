@@ -623,6 +623,12 @@ export type SessionExecutionServiceDeps = {
     userTurnId?: string
   ) => Promise<void>;
   syncSessionBranchName: (sessionId: SessionId, session: ISession) => Promise<string | null>;
+  /**
+   * Publishes the Code Collab file index once a freshly created session has its
+   * workspace, so a remote renderer sees the tree during the first turn. Runs
+   * detached: it must never delay the first prompt, and a failure only logs.
+   */
+  publishCodeCollabSharedStateOnSessionStart?: (sessionId: SessionId) => Promise<void>;
   turnFinalization: TurnFinalizationEffects;
   recordChatFailure: (
     sessionDoc: SessionDocument,
@@ -3703,6 +3709,19 @@ export class SessionExecutionService {
     }
   }
 
+  /** Detached on purpose: the index of a fresh workspace never delays the first prompt. */
+  private publishCodeCollabSharedStateOnSessionStart(sessionId: SessionId): void {
+    const publish = this.deps.publishCodeCollabSharedStateOnSessionStart;
+    if (!publish) {
+      return;
+    }
+    void publish(sessionId).catch((error: unknown) => {
+      this.deps.logger.debug(
+        `[${sessionId}] Failed to publish Code Collab v2 shared state at session start: ${formatErrorMessage(error)}`
+      );
+    });
+  }
+
   private async persistCodeCollabTurnDiffsAfterACPFinalization(
     sessionId: SessionId,
     turnId: string | undefined
@@ -6151,6 +6170,7 @@ export class SessionExecutionService {
                 )
               );
               session = readySession;
+              self.publishCodeCollabSharedStateOnSessionStart(sessionId);
               yield* ctx.abortIfCancelled();
             }
           }
@@ -6534,6 +6554,7 @@ export class SessionExecutionService {
             { terminateOnCancel: true }
           );
           bindSession(session);
+          self.publishCodeCollabSharedStateOnSessionStart(sessionId);
           self.scheduleCreatedSessionCapabilityUpdate(session, sessionConfig);
           yield* abortIfCancelled({ terminateSession: true });
           // Use the live initialize result, including on the first uncached launch.

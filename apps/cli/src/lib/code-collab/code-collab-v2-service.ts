@@ -624,6 +624,30 @@ export class CodeCollabV2Service {
     });
   }
 
+  /**
+   * Publishes the file index as soon as a session's workspace exists. A renderer
+   * on another machine only reads the Flock replica (it has no snapshot RPC), so
+   * without this it sees an empty tree until the first turn ends. Same per-owner
+   * queue as the turn-end refresh — a concurrent refresh coalesces — and the
+   * watch is keyed by owner session and root, so this never adds a second one.
+   */
+  async publishSharedStateOnSessionStart(request: {
+    readonly sessionId: SessionId;
+  }): Promise<void> {
+    const resolved = await this.resolveRequestDirectoryPath(
+      request.sessionId,
+      ROOT_DIRECTORY_REQUEST_PATH
+    );
+    void this.ensureWorkspaceWatch(resolved).catch(() => undefined);
+    await this.enqueueSharedStateRefresh(resolved.ownerSessionId, {
+      kind: 'full',
+      resolved,
+      forcePublish: false,
+      persistAllChangesDiffStats: false,
+      publish: true,
+    });
+  }
+
   private async refreshSharedStateNow(
     resolved: ResolvedPath,
     options: SharedStatePublishOptions = {}
