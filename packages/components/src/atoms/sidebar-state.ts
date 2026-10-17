@@ -214,6 +214,41 @@ export const localProjectOrderAtom = atom<readonly string[], [readonly string[]]
 );
 
 /**
+ * Order one machine section's projects for the sidebar: pinned projects first,
+ * then the saved drag order, then creation time and name. Pinning does not
+ * rewrite the saved order, so unpinning returns a project to its old place.
+ */
+export function sortLocalProjectsForSidebar<
+  T extends { id: string; name: string; createdAtMs?: number },
+>(
+  projects: readonly T[],
+  machineId: string | null | undefined,
+  savedOrder: readonly string[],
+  pinnedKeys: ReadonlySet<string>
+): T[] {
+  const savedRank = new Map(savedOrder.map((key, index) => [key, index]));
+  const keyOf = (project: T) => (machineId ? `${machineId}:${project.id}` : null);
+  return [...projects].sort((a, b) => {
+    const aKey = keyOf(a);
+    const bKey = keyOf(b);
+    const aPinned = aKey !== null && pinnedKeys.has(aKey);
+    const bPinned = bKey !== null && pinnedKeys.has(bKey);
+    if (aPinned !== bPinned) return aPinned ? -1 : 1;
+    const aRank = aKey !== null ? savedRank.get(aKey) : undefined;
+    const bRank = bKey !== null ? savedRank.get(bKey) : undefined;
+    if (aRank !== undefined || bRank !== undefined) {
+      if (aRank === undefined) return 1;
+      if (bRank === undefined) return -1;
+      if (aRank !== bRank) return aRank - bRank;
+    }
+    const aTime = typeof a.createdAtMs === 'number' ? a.createdAtMs : 0;
+    const bTime = typeof b.createdAtMs === 'number' ? b.createdAtMs : 0;
+    if (aTime !== bTime) return aTime - bTime;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/**
  * Reorder the visible projects in one machine section while retaining saved
  * entries that are currently absent or belong to another machine.
  */

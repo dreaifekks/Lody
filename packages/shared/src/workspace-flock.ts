@@ -15,10 +15,12 @@ export type WorkspaceFlockAgentRoleKey = ['agentRole', AgentRoleId];
 export type WorkspaceFlockVoiceSettingKey = ['setting', 'voice'];
 export type WorkspaceFlockPromptSuggestionsSettingKey = ['setting', 'promptSuggestions'];
 export type WorkspaceFlockAgentToolsSettingKey = ['setting', 'agentTools'];
+export type WorkspaceFlockPinnedProjectsSettingKey = ['setting', 'pinnedProjects'];
 export type WorkspaceFlockSettingKey =
   | WorkspaceFlockVoiceSettingKey
   | WorkspaceFlockPromptSuggestionsSettingKey
-  | WorkspaceFlockAgentToolsSettingKey;
+  | WorkspaceFlockAgentToolsSettingKey
+  | WorkspaceFlockPinnedProjectsSettingKey;
 export type WorkspaceFlockKey =
   | WorkspaceFlockMcpServerKey
   | WorkspaceFlockAgentRoleKey
@@ -50,6 +52,31 @@ export type WorkspacePromptSuggestionsSetting = { version: 1 };
 export type WorkspaceAgentToolsSetting = {
   version: 1;
   tools: LodyAgentToolId[];
+};
+
+/**
+ * The local projects pinned to the top of their machine group in the sidebar,
+ * on every device. Keys are machine-qualified (`${machineId}:${localProjectId}`)
+ * like the sidebar's own project order, because project ids are only unique
+ * within their machine. The row exists only while something is pinned.
+ */
+export type WorkspacePinnedProjectsSetting = {
+  version: 1;
+  keys: string[];
+};
+
+const normalizePinnedProjects = (value: unknown): WorkspacePinnedProjectsSetting | null => {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  if (record['version'] !== 1 || !Array.isArray(record['keys'])) return null;
+  const keys: string[] = [];
+  for (const key of record['keys'] as unknown[]) {
+    if (typeof key !== 'string') continue;
+    const trimmed = key.trim();
+    if (!trimmed || keys.includes(trimmed)) continue;
+    keys.push(trimmed);
+  }
+  return { version: 1, keys };
 };
 
 const normalizeAgentTools = (value: unknown): WorkspaceAgentToolsSetting | null => {
@@ -97,6 +124,10 @@ export const workspaceFlockKeys = {
     'promptSuggestions',
   ],
   agentToolsSetting: (): WorkspaceFlockAgentToolsSettingKey => ['setting', 'agentTools'],
+  pinnedProjectsSetting: (): WorkspaceFlockPinnedProjectsSettingKey => [
+    'setting',
+    'pinnedProjects',
+  ],
 } as const;
 
 export type ParsedWorkspaceFlockKey =
@@ -121,6 +152,10 @@ export type ParsedWorkspaceFlockKey =
   | {
       kind: 'agentToolsSetting';
       key: WorkspaceFlockAgentToolsSettingKey;
+    }
+  | {
+      kind: 'pinnedProjectsSetting';
+      key: WorkspaceFlockPinnedProjectsSettingKey;
     };
 
 export const parseWorkspaceFlockKey = (
@@ -146,6 +181,9 @@ export const parseWorkspaceFlockKey = (
   }
   if (key[0] === 'setting' && id === 'agentTools') {
     return { kind: 'agentToolsSetting', key: workspaceFlockKeys.agentToolsSetting() };
+  }
+  if (key[0] === 'setting' && id === 'pinnedProjects') {
+    return { kind: 'pinnedProjectsSetting', key: workspaceFlockKeys.pinnedProjectsSetting() };
   }
   if (key[0] === 'setting' && id === 'promptSuggestions') {
     return {
@@ -176,12 +214,17 @@ export type WorkspaceFlockAgentToolsSettingRow = {
   key: WorkspaceFlockAgentToolsSettingKey;
   value: WorkspaceAgentToolsSetting;
 };
+export type WorkspaceFlockPinnedProjectsSettingRow = {
+  key: WorkspaceFlockPinnedProjectsSettingKey;
+  value: WorkspacePinnedProjectsSetting;
+};
 export type WorkspaceFlockRow =
   | WorkspaceFlockMcpServerRow
   | WorkspaceFlockAgentRoleRow
   | WorkspaceFlockVoiceSettingRow
   | WorkspaceFlockPromptSuggestionsSettingRow
-  | WorkspaceFlockAgentToolsSettingRow;
+  | WorkspaceFlockAgentToolsSettingRow
+  | WorkspaceFlockPinnedProjectsSettingRow;
 export type WorkspaceFlockRowId = string & { __brand: 'WorkspaceFlockRowId' };
 export type WorkspaceFlockRowMap = Record<WorkspaceFlockRowId, WorkspaceFlockRow>;
 
@@ -219,6 +262,10 @@ export const parseWorkspaceFlockRow = (
   }
   if (parsedKey.kind === 'agentToolsSetting') {
     const setting = normalizeAgentTools(value);
+    return setting ? { key: parsedKey.key, value: setting } : undefined;
+  }
+  if (parsedKey.kind === 'pinnedProjectsSetting') {
+    const setting = normalizePinnedProjects(value);
     return setting ? { key: parsedKey.key, value: setting } : undefined;
   }
   if (parsedKey.kind === 'voiceSetting') {
@@ -296,6 +343,14 @@ export const isWorkspacePromptSuggestionsEnabled = (rows: WorkspaceFlockRowMap):
 export const getWorkspaceAgentTools = (rows: WorkspaceFlockRowMap): LodyAgentToolId[] => {
   const row = rows[serializeWorkspaceFlockKey(workspaceFlockKeys.agentToolsSetting())];
   return row && row.key[1] === 'agentTools' ? (row.value as WorkspaceAgentToolsSetting).tools : [];
+};
+
+/** Machine-qualified keys of the pinned local projects; none when the row is absent. */
+export const getWorkspacePinnedProjectKeys = (rows: WorkspaceFlockRowMap): string[] => {
+  const row = rows[serializeWorkspaceFlockKey(workspaceFlockKeys.pinnedProjectsSetting())];
+  return row && row.key[1] === 'pinnedProjects'
+    ? (row.value as WorkspacePinnedProjectsSetting).keys
+    : [];
 };
 
 export const listWorkspaceMcpServers = (rows: WorkspaceFlockRowMap): WorkspaceMcpServerMeta[] =>

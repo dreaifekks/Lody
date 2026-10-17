@@ -112,6 +112,7 @@ import {
   sidebarUpdatedShowProjectNamesAtom,
   sidebarUpdatedBucketCollapseStateAtom,
   sidebarUpdatedBucketShowFullStateAtom,
+  sortLocalProjectsForSidebar,
   type SidebarOrganizeMode,
 } from '@/atoms/sidebar-state';
 import {
@@ -162,6 +163,8 @@ import {
 } from './sessions/session-list-rows';
 import { getSelectedLocalProjectKey } from './chat/chat-landing-derived';
 import { useSessionActions } from '@/hooks/use-session-actions';
+import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
+import { writeWorkspacePinnedProjects } from '@/lib/workspace-catalog-write';
 import {
   useLocalProjectRemovalResultNotifications,
   usePendingLocalProjectRemovals,
@@ -1044,6 +1047,9 @@ export type LocalProjectItemProps = {
   onOpenProjectSettings?: (machineId: MachineId, localProjectId: string) => void;
   onRevealProject?: (rootPath: string) => void;
   onArchiveProjectChats?: (sessionIds: string[]) => void;
+  /** Whether this project sits atop its machine group, on every device. */
+  isPinned?: boolean;
+  onTogglePinned?: (machineId: MachineId, localProjectId: string, nextPinned: boolean) => void;
   onNavigateSession: (sessionId: string, tabSessionId?: string) => void;
   onArchive: (sessionId: string) => void;
   onMarkSessionUnread?: (sessionId: string) => void;
@@ -1147,6 +1153,8 @@ export const LocalProjectItem = memo(function LocalProjectItem({
   onOpenProjectSettings,
   onRevealProject,
   onArchiveProjectChats,
+  isPinned = false,
+  onTogglePinned,
   onNavigateSession,
   onArchive,
   onMarkSessionUnread,
@@ -1257,6 +1265,9 @@ export const LocalProjectItem = memo(function LocalProjectItem({
   const projectSettingsLabel = t('sidebar.localProjects.settings', 'Project settings');
   const revealProjectLabel = t('sidebar.localProjects.reveal', 'Reveal in file manager');
   const archiveProjectChatsLabel = t('sidebar.localProjects.archiveChats', 'Archive chats');
+  const pinProjectLabel = isPinned
+    ? t('sidebar.localProjects.unpin', 'Unpin project')
+    : t('sidebar.localProjects.pin', 'Pin project');
   const archivableSessionIds = useMemo(
     () => sessionsForProject.map((session) => session.id),
     [sessionsForProject]
@@ -1265,6 +1276,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
   const showProjectMenu =
     !isMobile &&
     (canRemoveProject ||
+      Boolean(onTogglePinned) ||
       Boolean(onOpenProjectSettings) ||
       Boolean(revealPath) ||
       Boolean(onArchiveProjectChats));
@@ -1342,6 +1354,9 @@ export const LocalProjectItem = memo(function LocalProjectItem({
           )}
         />
       </button>
+      {isPinned ? (
+        <Pin aria-hidden="true" className="h-3 w-3 shrink-0 text-sidebar-foreground-muted/80" />
+      ) : null}
       <span className="min-w-0 flex-1 truncate text-left">{project.name}</span>
 
       {removalStateLabel ? (
@@ -1447,6 +1462,16 @@ export const LocalProjectItem = memo(function LocalProjectItem({
           </Tooltip.Root>
           {showProjectMenu ? (
             <ContextMenu.Content className="min-w-[180px]">
+              {onTogglePinned ? (
+                <ContextMenu.Item
+                  icon={isPinned ? PinOff : Pin}
+                  onClick={() => {
+                    onTogglePinned(machineId, project.id, !isPinned);
+                  }}
+                >
+                  {pinProjectLabel}
+                </ContextMenu.Item>
+              ) : null}
               {onOpenProjectSettings ? (
                 <ContextMenu.Item
                   icon={Settings2}
@@ -1479,7 +1504,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
                 </ContextMenu.Item>
               ) : null}
               {canRemoveProject &&
-              (onOpenProjectSettings || revealPath || onArchiveProjectChats) ? (
+              (onTogglePinned || onOpenProjectSettings || revealPath || onArchiveProjectChats) ? (
                 <ContextMenu.Separator />
               ) : null}
               {canRemoveProject ? (
@@ -2136,6 +2161,30 @@ export function LoroAppSidebar({
   const [localProjectOrder, setLocalProjectOrder] = useAtom(localProjectOrderAtom);
   const localProjectOrderRef = useRef(localProjectOrder);
   localProjectOrderRef.current = localProjectOrder;
+  // Pinned projects are a workspace setting, like a pinned Session's meta:
+  // every device shows the same projects on top. The drag order stays per
+  // device, so pinning never rewrites it.
+  const { pinnedProjects } = useWorkspaceCatalog();
+  const pinnedProjectKeys = useMemo(() => new Set(pinnedProjects), [pinnedProjects]);
+  const pinnedProjectsRef = useRef(pinnedProjects);
+  pinnedProjectsRef.current = pinnedProjects;
+  const handleToggleProjectPinned = useCallback(
+    (machineId: MachineId, localProjectId: string, nextPinned: boolean) => {
+      if (!runtime) return;
+      const key = `${machineId}:${localProjectId}`;
+      const current = pinnedProjectsRef.current;
+      const next = nextPinned
+        ? current.includes(key)
+          ? current
+          : [...current, key]
+        : current.filter((candidate) => candidate !== key);
+      if (next === current) return;
+      void writeWorkspacePinnedProjects(runtime, next).catch((error: unknown) => {
+        console.error('[sidebar] failed to save pinned projects', error);
+      });
+    },
+    [runtime]
+  );
   const localProjectSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
@@ -2499,29 +2548,21 @@ export function LoroAppSidebar({
     // should not appear in the sidebar.
     const showLocalSection = localSection && localSection.projects.length > 0;
 
-    const savedRank = new Map(localProjectOrder.map((key, index) => [key, index]));
     return [...(showLocalSection ? [localSection] : []), ...remoteSections].map((section) => ({
       ...section,
-      projects: [...section.projects].sort((a, b) => {
-        const machineId = section.machineId;
-        const aRank = machineId ? savedRank.get(`${machineId}:${a.id}`) : undefined;
-        const bRank = machineId ? savedRank.get(`${machineId}:${b.id}`) : undefined;
-        if (aRank !== undefined || bRank !== undefined) {
-          if (aRank === undefined) return 1;
-          if (bRank === undefined) return -1;
-          if (aRank !== bRank) return aRank - bRank;
-        }
-        const aTime = typeof a.createdAtMs === 'number' ? a.createdAtMs : 0;
-        const bTime = typeof b.createdAtMs === 'number' ? b.createdAtMs : 0;
-        if (aTime !== bTime) return aTime - bTime;
-        return a.name.localeCompare(b.name);
-      }),
+      projects: sortLocalProjectsForSidebar(
+        section.projects,
+        section.machineId,
+        localProjectOrder,
+        pinnedProjectKeys
+      ),
     }));
   }, [
     localMachineId,
     localProjectOrder,
     machineMetaMap,
     pendingLocalProjectRemovals,
+    pinnedProjectKeys,
     sessionsListLoading,
     t,
     userId,
@@ -3004,6 +3045,8 @@ export function LoroAppSidebar({
                                 : undefined
                             }
                             onArchiveProjectChats={handleArchiveProjectChats}
+                            isPinned={pinnedProjectKeys.has(projectKey)}
+                            onTogglePinned={handleToggleProjectPinned}
                             onNavigateSession={handleNavigateToSession}
                             onArchive={handleArchiveSession}
                             onMarkSessionUnread={handleMarkSessionUnread}

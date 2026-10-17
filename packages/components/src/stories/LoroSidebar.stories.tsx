@@ -1108,6 +1108,10 @@ function ProductionLikeTopContent({
   );
   const [collapsedProjects, setCollapsedProjects] =
     useState<Record<string, boolean>>(projectCollapseStates);
+  // The second demo project starts pinned: the glyph and the Unpin menu item.
+  const [pinnedProjects, setPinnedProjects] = useState<Record<string, boolean>>({
+    [`${demoMachineId}:${demoProjects[1]?.id ?? ''}`]: true,
+  });
   const [collapsedOpenedBySessionIds, setCollapsedOpenedBySessionIds] = useState<
     Record<string, boolean>
   >({});
@@ -1189,6 +1193,13 @@ function ProductionLikeTopContent({
                     isMobile={isMobile}
                     toggleLabel="Toggle"
                     onNavigateProject={() => {}}
+                    isPinned={pinnedProjects[key] ?? false}
+                    onTogglePinned={(_machineId, projectId, nextPinned) =>
+                      setPinnedProjects((prev) => ({
+                        ...prev,
+                        [`${demoMachineId}:${projectId}`]: nextPinned,
+                      }))
+                    }
                     onNavigateSession={() => {}}
                     onArchive={() => {}}
                     collapsedOpenedBySessionIds={collapsedOpenedBySessionIds}
