@@ -37,6 +37,8 @@ Translation: pending
   不唤醒。
 - 这些排队的结果就是看板事件日志：用户（或定时任务）下一次给主会话发消息时，上游的
   human-plus-batch 把还没送达过的全部带上，送达一次就消费掉。
+- 主会话正在回答时用户插话（steer）：插话只带用户的话，带不上排队的结果，所以有排队结果时
+  这句话不 steer，改成排在当前回合之后的普通回合，结果随它一起送达。
 - 防撑爆：排队副本里每条输出最多 1,000 个字符（25% 头 / 75% 尾，标 `truncated`），完整
   Operation 仍可用 `lody_operation_get` 读，全文在线程历史里。批次本身沿用上游上限：
   内联最多 50 条、64 KiB，其余用 `lody_operation_batch_get` 分页。
@@ -68,6 +70,8 @@ Translation: pending
 4. **定时任务（每日摘要）的回合也会带走排队的事件。** 这是上游 human/task 批次的行为，
    默认保留。
 5. 升级前已经排队、还没送达的回报仍按旧规则唤醒一次，不做迁移。
+6. **有排队结果时，对主会话的插话变成排队的下一回合**，而不是插进正在跑的回合。代价是这句
+   话要等当前回合结束才被处理；好处是结果一定随它送达。没有排队结果时插话照旧。
 
 ## 证据
 
@@ -75,6 +79,8 @@ Translation: pending
   `apps/cli/src/orchestration/board-report-workflow.ts`、`apps/cli/src/mcp/lody-mcp-server.ts`
   （四处 Operation 接受）、`apps/cli/src/session/session-execution-helpers.ts`
   （`buildBoardInstructions`）、`packages/components/src/components/boards/`
-  （`board-threads.ts`、`board-thread-list.tsx`、`board-sidebar-section.tsx`）。
+  （`board-threads.ts`、`board-thread-list.tsx`、`board-sidebar-section.tsx`）、
+  `apps/cli/src/session/session-execution-service.ts`（插话改排队）。线程列表是一个扁平的
+  带 key 列表，线程换组时行不重新挂载，运行→蓝点的收拢动画才放得出来。
 - 测试：`apps/cli/src/orchestration/inbox/inbox.test.ts`、
   `apps/cli/tests/session-execution-helpers.test.ts`、`packages/components/tests/board-overview.test.tsx`。

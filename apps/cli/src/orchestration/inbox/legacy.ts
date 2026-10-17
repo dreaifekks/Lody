@@ -90,6 +90,7 @@ export const operationInboxLegacy = (options: {
       if (Exit.isFailure(exit)) throw new Error(message, { cause: exit.cause });
     });
   return {
+    hasPassiveResults: (w: string, s: string) => Effect.runSync(queries.hasPassiveResults(w, s)),
     preferredHumanInput: (w: string, s: string) =>
       Effect.runSync(queries.preferredHumanInput(w, s)),
     inputCancellationReason: (w: string, s: string, id: string) =>

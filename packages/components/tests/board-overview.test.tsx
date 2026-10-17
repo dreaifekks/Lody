@@ -397,8 +397,13 @@ describe('Board side panel', () => {
         'unread',
         null,
       ]);
+      const rootRow = view.host.querySelector('[data-id="root"]');
       await act(async () => store.set(lodyPresenceStatesAtom, {}));
       expect(groups()).toEqual(['Needs you2', 'Idle3']);
+      // Finishing moves the row from Working to Idle without remounting it, so its
+      // mark sees working end and collapses into the unread dot as a sidebar row does.
+      expect(view.host.querySelector('[data-id="root"]')).toBe(rootRow);
+      expect(mark('root')).toBe('unread');
       // Read: the dot goes, as a sidebar row's does.
       await act(async () =>
         store.set(sessionMetaCacheAtom, (cache) => ({
@@ -712,12 +717,13 @@ describe('Board side panel', () => {
       />
     );
     try {
-      const sections = [...view.host.querySelectorAll('section')].map((section) => [
-        section.querySelector('button[aria-expanded]')?.textContent,
-        [...section.querySelectorAll('[data-scope-item="row"]')].map((row) =>
-          row.getAttribute('data-id')
-        ),
-      ]);
+      const sections: [string | null, string[]][] = [];
+      for (const node of view.host.querySelectorAll(
+        'button[aria-expanded], [data-scope-item="row"]'
+      )) {
+        if (node.hasAttribute('aria-expanded')) sections.push([node.textContent, []]);
+        else sections.at(-1)?.[1].push(node.getAttribute('data-id') ?? '');
+      }
       expect(sections).toEqual([
         ['Needs you2', ['parent', 'reviewer']],
         ['Idle1', ['idle']],

@@ -2,6 +2,7 @@ import type { Effect } from 'effect';
 import type { InboxScope } from './model';
 
 export interface InboxQueries {
+  hasPassiveResults(workspaceId: string, sessionId: string): Effect.Effect<boolean, unknown>;
   preferredHumanInput(
     workspaceId: string,
     sessionId: string

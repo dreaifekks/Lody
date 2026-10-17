@@ -72,9 +72,10 @@ export function boardThreadFamilies(
 }
 
 const styles = stylex.create({
-  list: { display: 'flex', flexDirection: 'column', gap: space[3], padding: space[2] },
-  group: { display: 'flex', flexDirection: 'column', gap: '1px' },
+  // One flat column: a row that changes group moves, keeping its mark's state.
+  list: { display: 'flex', flexDirection: 'column', gap: '1px', padding: space[2] },
   groupHeader: {
+    marginTop: { default: space[3], ':first-child': 0 },
     display: 'flex',
     alignItems: 'center',
     gap: space[1],
@@ -202,52 +203,54 @@ export function BoardThreadListView({
         {t('boards.noThreads', 'Sessions created by the coordinator will appear here.')}
       </p>
     );
+  // Headers and rows are siblings under one parent, keyed by id: a thread that
+  // finishes moves from Working to Idle without remounting, so the working →
+  // unread transition still plays.
   return (
     <div {...stylex.props(styles.list)}>
-      {GROUP_ORDER.map((key) => {
+      {GROUP_ORDER.flatMap((key) => {
         const items = families
           .filter((family) => family.group === key)
           .flatMap((family) => family.items);
-        if (items.length === 0) return null;
+        if (items.length === 0) return [];
         const isFolded = folded[key] === true;
-        return (
-          <section key={key} {...stylex.props(styles.group)}>
-            <button
-              type="button"
-              aria-expanded={!isFolded}
-              onClick={() => setFolded({ ...folded, [key]: !isFolded })}
-              {...stylex.props(styles.groupHeader)}
-            >
-              {isFolded ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-              {labels[key]}
-              <span {...stylex.props(styles.count)}>{items.length}</span>
-            </button>
-            {isFolded
-              ? null
-              : items.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    data-scope-item="row"
-                    data-id={item.id}
-                    aria-current={item.id === selectedId ? 'true' : undefined}
-                    onClick={() => onOpen(item.id)}
-                    {...stylex.props(
-                      styles.row,
-                      item.id === selectedId && styles.selected,
-                      (item.depth ?? 0) > 0 && styles.indent(item.depth ?? 0)
-                    )}
-                  >
-                    <span {...stylex.props(styles.mark)}>
-                      <StatusMark status={item.status} unread={item.unread === true} />
-                    </span>
-                    <span {...stylex.props(styles.title)}>{item.title}</span>
-                    <span {...stylex.props(styles.time)}>{item.updatedLabel}</span>
-                    <span {...stylex.props(styles.secondLine)}>{item.summary ?? item.detail}</span>
-                  </button>
-                ))}
-          </section>
-        );
+        return [
+          <button
+            key={`group:${key}`}
+            type="button"
+            aria-expanded={!isFolded}
+            onClick={() => setFolded({ ...folded, [key]: !isFolded })}
+            {...stylex.props(styles.groupHeader)}
+          >
+            {isFolded ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+            {labels[key]}
+            <span {...stylex.props(styles.count)}>{items.length}</span>
+          </button>,
+          ...(isFolded
+            ? []
+            : items.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  data-scope-item="row"
+                  data-id={item.id}
+                  aria-current={item.id === selectedId ? 'true' : undefined}
+                  onClick={() => onOpen(item.id)}
+                  {...stylex.props(
+                    styles.row,
+                    item.id === selectedId && styles.selected,
+                    (item.depth ?? 0) > 0 && styles.indent(item.depth ?? 0)
+                  )}
+                >
+                  <span {...stylex.props(styles.mark)}>
+                    <StatusMark status={item.status} unread={item.unread === true} />
+                  </span>
+                  <span {...stylex.props(styles.title)}>{item.title}</span>
+                  <span {...stylex.props(styles.time)}>{item.updatedLabel}</span>
+                  <span {...stylex.props(styles.secondLine)}>{item.summary ?? item.detail}</span>
+                </button>
+              ))),
+        ];
       })}
     </div>
   );

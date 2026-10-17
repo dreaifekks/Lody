@@ -561,6 +561,86 @@ describe('SessionExecutionService', () => {
     expect([...runningChildren]).toEqual(['child-2']);
     expect(deps.getActiveTurnId(request.sessionId)).toBe('parent-1');
   });
+  it('queues a steer as an ordinary turn while results wait for the next input', async () => {
+    const steerPrompt = vi.fn(() => ({
+      completion: new Promise(() => {}),
+      outcome: Promise.resolve({
+        outcome: 'applied' as const,
+        application: { steerId: 'steer-application', release: vi.fn() },
+      }),
+    }));
+    const agentClient = {
+      isCreated: vi.fn(() => true),
+      getAcknowledgedSteerCapability: vi.fn(() => ({
+        provider: 'claudeCode',
+        appliedNotificationMethod: 'claude/steerApplied',
+        upstreamTurn: 'handoff',
+        configPolicy: 'apply',
+      })),
+      cancel: vi.fn(async () => {}),
+      steerPrompt,
+      currentModel: undefined,
+    };
+    const updateHistory = vi.fn(async () => {});
+    const sessionDoc = withHistoryPort({ updateHistory });
+    const deps = createBaseDeps({
+      workspaceDocument: {
+        repo: { upsertDocMeta: vi.fn(async () => {}), getDocMeta: vi.fn(async () => undefined) },
+        getOrCreateSessionDoc: vi.fn(async () => sessionDoc),
+      } as unknown as LoroDocumentManager,
+      buildAcpPromptBlocks: async ({ inputBlocks }) =>
+        inputBlocks.filter((block) => block.type === 'text'),
+      beginConversationTurn: vi.fn((_sessionId, userTurnId) => `assistant:${userTurnId}`),
+    });
+    const service = new SessionExecutionService(deps);
+    const sessionId = 'coordinator-steer' as SessionId;
+    const createPromptHandoffRun = (
+      service as unknown as {
+        createPromptHandoffRun: (options: { turnId: string; promptPromise: Promise<unknown> }) => {
+          turnId: string;
+        };
+      }
+    ).createPromptHandoffRun.bind(service);
+    (
+      service as unknown as { turnRuntimeBySession: Map<SessionId, unknown> }
+    ).turnRuntimeBySession.set(sessionId, {
+      sessionId,
+      turnId: 'assistant:user-1',
+      userTurnId: 'user-1',
+      session: { agentClient, acpSessionId: 'acp-steer' as ACPSessionId },
+      promptInFlight: true,
+      invocation: {
+        sourceTurnId: 'user-1',
+        requesterUserId: 'user-1',
+        inputConfig: { prompt: 'initial prompt' },
+      },
+      activePromptRun: createPromptHandoffRun({
+        turnId: 'assistant:user-1',
+        promptPromise: new Promise(() => {}),
+      }),
+      yieldedFinalization: Promise.resolve(),
+    });
+    // A Board coordinator's queued reports ride only with an ordinary turn.
+    let waiting = true;
+    service.setOperationInbox({
+      hasPassiveResults: (_workspaceId: string, id: string) => waiting && id === sessionId,
+    } as never);
+    const steer = (userTurnId: string) =>
+      service.steerSession({
+        sessionId,
+        expectedTurnId: 'assistant:user-1',
+        userTurnId,
+        userId: 'user-1',
+        timestamp: '2026-07-11T00:00:00.000Z',
+        inputConfig: { prompt: 'how are the threads doing?' },
+      });
+    await expect(steer('user-2')).resolves.toMatchObject({ applied: false, disposition: 'busy' });
+    expect(steerPrompt).not.toHaveBeenCalled();
+    waiting = false;
+    await expect(steer('user-3')).resolves.toMatchObject({ applied: true });
+    expect(steerPrompt).toHaveBeenCalledOnce();
+  });
+
   it('advances one session owner through consecutive prompt handoffs', async () => {
     const frozenInput = {
       prompt: 'ROLE_INSTRUCTION\n\nchange direction',
@@ -11943,18 +12023,18 @@ describe('SessionExecutionService Board maintenance turns', () => {
     let wakes = 0;
     if (inbox)
       service.setOperationInbox(
-      {
-        accept: async () => false,
-        inputKind: () => undefined,
-        // No Inbox execution exists for a maintenance turn.
-        pauseTarget: () => undefined,
-        pause: async () => false,
-        wake: async () => {
-          wakes += 1;
-        },
-      } as never,
-      (id) => released.push(id)
-    );
+        {
+          accept: async () => false,
+          inputKind: () => undefined,
+          // No Inbox execution exists for a maintenance turn.
+          pauseTarget: () => undefined,
+          pause: async () => false,
+          wake: async () => {
+            wakes += 1;
+          },
+        } as never,
+        (id) => released.push(id)
+      );
     return {
       service,
       deps,

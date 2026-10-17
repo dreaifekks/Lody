@@ -198,6 +198,7 @@ describe('durable Operation inbox', () => {
     });
     expect(f.sql.pending('workspace')).toEqual([]);
     expect(f.store.inbox.hasRunnableWork('workspace', 'A')).toBe(false);
+    expect(f.sql.hasPassiveResults('workspace', 'A')).toBe(true);
 
     const next = { ...f.input, inputId: 'user-2' };
     expect(f.sql.accept(next)).toBe(true);
@@ -227,6 +228,7 @@ describe('durable Operation inbox', () => {
     expect(f.sql.fence(batch, 'execution-2')).toBe(true);
     f.sql.settle(batch, 'settled');
     f.sql.release({ ...next, executionId: 'execution-2', outcome: 'normal' });
+    expect(f.sql.hasPassiveResults('workspace', 'A')).toBe(false);
     const third = { ...f.input, inputId: 'user-3' };
     expect(f.sql.accept(third)).toBe(true);
     expect(f.sql.prepare(third, 'owner')).toBeUndefined();

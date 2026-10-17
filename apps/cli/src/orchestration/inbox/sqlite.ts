@@ -486,6 +486,14 @@ export class InboxSqlite {
       | undefined;
     return row?.kind;
   }
+  /** Results that wait for this Session's next ordinary input instead of waking it. */
+  hasPassiveResults(workspaceId: string, sessionId: string): boolean {
+    return !!this.db
+      .prepare(
+        'SELECT 1 FROM inbox_results WHERE workspace_id=? AND session_id=? AND consumed=0 AND claim IS NULL AND automatic_eligible=0 LIMIT 1'
+      )
+      .get(workspaceId, sessionId);
+  }
   preferredHumanInput(workspaceId: string, sessionId: string): string | undefined {
     const row = this.db
       .prepare(
