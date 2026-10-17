@@ -52,7 +52,9 @@ git submodule update --init --recursive
 ## Local Development
 
 You need Node.js 22.14-22.x or 23.6+ (Node-API 10+) and the pnpm
-version specified by this project.
+version specified by this project. Use an official Node.js build: some distribution
+packages (such as Ubuntu's `nodejs`) omit TypeScript type stripping, which the
+script and test suites rely on.
 
 ```bash
 pnpm install
