@@ -18,7 +18,7 @@ import { Toast } from '@lody/ui';
 import { toastManager } from '../src/lib/toast';
 import { BoardThreadMark } from '../src/components/boards/board-thread-mark';
 import { BoardThreadPaneView } from '../src/components/boards/board-panel-view';
-import { act, useState } from 'react';
+import { act, Profiler, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createStore, Provider } from 'jotai';
 import { describe, it, expect, vi } from 'vitest';
@@ -103,7 +103,11 @@ vi.mock('@/hooks/use-visible-session-metas', async () => {
   const { useAtomValue: read } = await import('jotai');
   const { allActiveSessionsAtom: active, archivedSessionListAtom: archived } =
     await import('../src/atoms/doc-meta');
+  const visibleMachineIds = new Set(['machine', 'remote', 'devnuc', 'machine-1']);
+  const visibleLocalProjectKeys = new Set<string>();
   return {
+    useVisibleMachineIdSet: () => ({ visibleMachineIds, isLoading: false }),
+    useVisibleLocalProjectKeySet: () => ({ visibleLocalProjectKeys, isLoading: false }),
     useVisibleSessionMetas: () => ({ allActiveSessions: read(active) }),
     useVisibleArchivedSessionMetas: () => ({ archivedSessions: read(archived) }),
   };
@@ -362,6 +366,151 @@ const live = (session: SessionMeta, status: SessionStatus) => ({
 });
 
 describe('Board side panel', () => {
+  it('leaves the card unmarked until its metadata belongs to a Board', async () => {
+    const store = createStore();
+    const thread = makeSession('thread', { boardId: undefined, lastMessageAt: 20, lastReadAt: 20 });
+    const child = makeSession('child', {
+      boardId: undefined,
+      openedBySessionId: thread.id,
+      awaitingUserSince: 30,
+    });
+    const view = await mount(
+      <Provider store={store}>
+        <BoardThreadStatusCard sessionId={thread.id} />
+      </Provider>
+    );
+    const marks = () =>
+      view.host.querySelector(
+        '[data-session-row-indicator], svg.lucide-check, svg.lucide-circle-slash'
+      );
+    try {
+      expect(marks()).toBeNull();
+      await act(async () => {
+        store.set(sessionMetaCacheAtom, {
+          [getSessionRoomId(thread.id)]: thread,
+          [getSessionRoomId(child.id)]: child,
+        });
+        store.set(lodyPresenceNowMsAtom, 1000);
+        store.set(lodyPresenceSyncStateAtom, 'synced');
+        store.set(lodyPresenceStatesAtom, {
+          machine: {
+            kind: 'machine',
+            machineId: thread.machineId,
+            instanceId: 'test' as never,
+            updatedAt: 1000,
+          },
+        });
+      });
+      expect(marks()).toBeNull();
+      await act(async () =>
+        store.set(sessionMetaCacheAtom, {
+          [getSessionRoomId(thread.id)]: { ...thread, boardId: 'bd_test' as never },
+          [getSessionRoomId(child.id)]: child,
+        })
+      );
+      expect(view.host.querySelector('svg.lucide-check')).not.toBeNull();
+      await act(async () =>
+        store.set(sessionMetaCacheAtom, {
+          [getSessionRoomId(thread.id)]: thread,
+          [getSessionRoomId(child.id)]: child,
+        })
+      );
+      expect(marks()).toBeNull();
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('does not commit card renders for unrelated activity or unchanged family status', async () => {
+    const store = createStore();
+    const thread = makeSession('thread', { lastMessageAt: 20, lastReadAt: 20 });
+    const child = makeSession('child', { openedBySessionId: thread.id });
+    const unrelated = makeSession('unrelated');
+    const outside = makeSession('outside', { boardId: undefined });
+    const sessions = [thread, child, unrelated, outside];
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(sessions.map((entry) => [getSessionRoomId(entry.id), entry]))
+    );
+    const online = {
+      machine: {
+        kind: 'machine' as const,
+        machineId: thread.machineId,
+        instanceId: 'test' as never,
+        updatedAt: 1000,
+      },
+    };
+    store.set(lodyPresenceNowMsAtom, 1000);
+    store.set(lodyPresenceSyncStateAtom, 'synced');
+    store.set(lodyPresenceStatesAtom, online);
+    let commits = 0;
+    const view = await mount(
+      <Provider store={store}>
+        <Profiler
+          id="thread-card"
+          onRender={() => {
+            commits++;
+          }}
+        >
+          <BoardThreadStatusCard sessionId={thread.id} />
+        </Profiler>
+      </Provider>
+    );
+    try {
+      expect(view.host.querySelector('svg.lucide-check')).not.toBeNull();
+      const initialCommits = commits;
+      await act(async () =>
+        store.set(lodyPresenceStatesAtom, {
+          ...online,
+          ...live(unrelated, { type: 'requestPermission' } as SessionStatus),
+        })
+      );
+      expect(commits).toBe(initialCommits);
+      for (const target of [outside, unrelated]) {
+        await act(async () =>
+          store.set(
+            sessionMetaCacheAtom,
+            Object.fromEntries(
+              sessions.map((entry) => [
+                getSessionRoomId(entry.id),
+                entry.id === target.id ? { ...entry, title: 'New title' } : entry,
+              ])
+            )
+          )
+        );
+        expect(commits).toBe(initialCommits);
+      }
+      expect(view.host.querySelector('svg.lucide-check')).not.toBeNull();
+      await act(async () =>
+        store.set(lodyPresenceStatesAtom, {
+          ...online,
+          ...live(child, { type: 'running' } as SessionStatus),
+        })
+      );
+      expect(view.host.querySelector('[data-session-working-indicator]')).not.toBeNull();
+      expect(view.host.querySelector('svg.lucide-check')).toBeNull();
+      const workingCommits = commits;
+      // A fresh presence object with the same rendered status must not commit again.
+      await act(async () =>
+        store.set(lodyPresenceStatesAtom, {
+          ...online,
+          ...live(child, { type: 'running' } as SessionStatus),
+        })
+      );
+      expect(commits).toBe(workingCommits);
+      await act(async () =>
+        store.set(lodyPresenceStatesAtom, {
+          ...online,
+          ...live(child, { type: 'requestPermission' } as SessionStatus),
+        })
+      );
+      expect(view.host.querySelector('[data-session-working-indicator]')).toBeNull();
+      expect(view.host.querySelector('[data-session-row-indicator] svg')).not.toBeNull();
+    } finally {
+      await view.unmount();
+    }
+  });
+
   it('shows a card as complete only after its entire visible family settles', async () => {
     const store = createStore();
     const thread = makeSession('thread', { lastMessageAt: 20, lastReadAt: 20 });
@@ -487,7 +636,17 @@ describe('Board side panel', () => {
       await act(async () =>
         setSessions(
           sessions.map((member) =>
-            member.id === child.id ? { ...member, lastMessageAt: 50, lastReadAt: 40 } : member
+            member.id === child.id ? { ...member, lastMessageAt: 50 } : member
+          )
+        )
+      );
+      // Unopened child results do not hold the parent card's completion mark hostage.
+      expect(check()).not.toBeNull();
+      expect(view.host.querySelector('[data-session-unread-dot]')).toBeNull();
+      await act(async () =>
+        setSessions(
+          sessions.map((member) =>
+            member.id === thread.id ? { ...member, lastMessageAt: 50 } : member
           )
         )
       );

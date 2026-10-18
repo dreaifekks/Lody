@@ -347,12 +347,16 @@ hover 归档和行菜单仍保留，归档遵循共享确认流程。
 14px ✓，现在表示整棵线程树已跑完：`buildBoardRows` 与 `boardThreadFamilies` 复用
 列表的 openedBy 会话、Tab 家族范围和最强状态；`boardThreadStatus` 共用元数据状态
 推导，包括继承的停止状态。全体成员须空闲、presence 已同步且机器在线，线程本身有
-`lastMessageAt` 且已读；家族等待、工作、未读通过 `SessionRowStatusIndicator` 优先显示。
+`lastMessageAt` 且已读；家族等待、家族工作、线程自身未读通过 `SessionRowStatusIndicator`
+依次优先显示。子会话未读不会挡住 ✓。
 可推导的停止、失败、取消不亮。创建 Operation 状态和回合 ID 不再参与判断，因此
 追问、子会话回执和定时回合结束后也能亮 ✓。不获取成员文档或新增同步结果字段。
 元数据无法识别 agent 报错的失败轮次，这类轮次结束后也可能亮 ✓：表示跑完而非证明
 成功。列表仍不增加完成态。现有 overview 和 relation-card 测试覆盖家族活动、等待用户、
-未知 presence、成员机器离线和后续回合结束。
+未知 presence、成员机器离线和后续回合结束。没有已加载的看板归属时，卡片不显示标记。
+通过 `selectAtom` 保持看板成员和家族行的引用稳定，再建树和推导状态；presence 只读
+选中家族，状态与完成判断未变时保持汇总引用。overview 用例还覆盖从未读过的子会话
+结果，以及无关元数据／活动和等价 presence 更新时的真实 React 提交次数。
 
 `useBoardSessionNavigation` 统一卡片、关系菜单、会话链接、父级面包屑、线程行
 （含 Go to Opener）和看板页内命令面板。侧边模式只在面板打开本看板成员；其他看板和

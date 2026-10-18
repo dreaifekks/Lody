@@ -24,8 +24,8 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
   Board rows aggregate all members. Rows have no "done" mark.
   Cards alone add a 14px Check for idle `boardThreadFamilies`, synced presence,
-  online machines and a read thread with `lastMessageAt`. Family wait/work/unread
-  wins; known stop/failure/cancel blocks it. It means settled, not Operation success.
+  online machines and a read thread with `lastMessageAt`. Family wait/work, then
+  thread-only unread wins; known stop/failure/cancel blocks it. Settled is not success.
   localProject catalogs are acquired at list level, once per machine.
 - `BoardSidebar` selects by Session/Tab `boardId`; scalar reads, memoized rows.
 - Thread rows reuse sidebar actions (no pin) and `SessionHeaderMenu`. Board glyph:

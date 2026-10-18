@@ -483,8 +483,9 @@ whole thread family has settled: `buildBoardRows` and `boardThreadFamilies` supp
 exactly the list's opened-session and Tab membership and strongest status;
 `boardThreadStatus` shares metadata-only status derivation, including inherited stops.
 Every member must be idle with synced presence and an online machine; the card's
-thread must have `lastMessageAt` and be read. Family waiting, working and unread
-marks take precedence through `SessionRowStatusIndicator`. Known stops, failures
+thread must have `lastMessageAt` and be read. Family waiting and working, then
+the thread's own unread mark take precedence through `SessionRowStatusIndicator`.
+Unread child results never block the Check. Known stops, failures
 and cancellations prevent the Check. Creation Operation status and turn IDs no
 longer matter, so follow-ups, child receipts and scheduled turns can finish with a
 Check too. No member documents or synchronized outcome fields are added. Metadata
@@ -492,6 +493,11 @@ cannot identify agent-error turns, so those may also show a Check once settled;
 this is completion, not proof of success. List rows retain no done state.
 The existing overview and relation-card suites cover family activity, permission
 waiting, unknown presence, offline member machines and later settled turns.
+Cards without loaded Board membership show no mark. `selectAtom` preserves Board
+member and family-row identity before tree/status work; presence reads cover only
+the selected family, and equal status/completion summaries keep their reference.
+The overview suite also verifies unopened child results and actual React commits
+for unrelated metadata/activity and repeated equivalent presence.
 
 `useBoardSessionNavigation` gives cards, relationship menus, resource links, parent
 breadcrumbs, rows (including Go to Opener) and the in-Board command palette one policy.

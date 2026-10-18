@@ -2,10 +2,16 @@ import * as stylex from '@stylexjs/stylex';
 import { Button } from '@lody/ui/button';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { atom, useAtomValue } from 'jotai';
+import { selectAtom } from 'jotai/utils';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getMachineFlockLocalProjects, getSessionRoomId, type SessionId } from '@lody/shared';
-import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
+import { userAtom } from '@/atoms';
+import {
+  allActiveSessionsAtom,
+  archivedSessionListAtom,
+  sessionMetaAtomFamily,
+} from '@/atoms/doc-meta';
 import {
   sessionLiveStatusAtomFamily,
   machineOnlineStatusAtomFamily,
@@ -13,9 +19,11 @@ import {
 } from '@/atoms/presence';
 import { useMachineFlockRowsByMachineIds } from '@/hooks/use-machine-flock-rows';
 import {
-  useVisibleSessionMetas,
-  useVisibleArchivedSessionMetas,
+  useVisibleMachineIdSet,
+  useVisibleLocalProjectKeySet,
 } from '@/hooks/use-visible-session-metas';
+import { useResolvedWorkspaceScope } from '@/hooks/use-resolved-workspace-scope';
+import { filterSessionsByVisibility } from '@/lib/session-visibility';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import type { SessionNavigationTarget } from '@/lib/session-navigation';
 import { styles as taskStyles } from '../ai-gui/subagent-task-panel.stylex';
@@ -62,47 +70,87 @@ export function BoardThreadStatusCard({
 }) {
   const { t } = useTranslation();
   const session = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(sessionId)));
-  const { allActiveSessions } = useVisibleSessionMetas();
-  const { archivedSessions } = useVisibleArchivedSessionMetas();
-  const rows = useMemo(
+  const scope = useResolvedWorkspaceScope();
+  const currentUserId = useAtomValue(userAtom)?.id ?? null;
+  const { visibleMachineIds, isLoading: machineLoading } = useVisibleMachineIdSet(scope);
+  const { visibleLocalProjectKeys } = useVisibleLocalProjectKeySet(scope);
+  const boardId = session?.boardId;
+  const archived = session?.isArchived === true;
+  const membersAtom = useMemo(
     () =>
-      buildBoardRows(
-        (session?.isArchived ? archivedSessions : allActiveSessions).filter(
-          (member) => member.boardId === session?.boardId && member.boardRole !== 'coordinator'
-        )
+      selectAtom(
+        archived ? archivedSessionListAtom : allActiveSessionsAtom,
+        (sessions) =>
+          boardId && scope.enabled
+            ? filterSessionsByVisibility(
+                sessions.filter(
+                  (member) => member.boardId === boardId && member.boardRole !== 'coordinator'
+                ),
+                visibleMachineIds,
+                visibleLocalProjectKeys,
+                machineLoading,
+                currentUserId
+              )
+            : [],
+        (a, b) => a.length === b.length && a.every((member, index) => member === b[index])
       ),
-    [allActiveSessions, archivedSessions, session?.boardId, session?.isArchived]
+    [
+      archived,
+      boardId,
+      scope.enabled,
+      visibleMachineIds,
+      visibleLocalProjectKeys,
+      machineLoading,
+      currentUserId,
+    ]
+  );
+  // Pick the list's family from metadata before subscribing to any live status.
+  const familyRowsAtom = useMemo(
+    () =>
+      selectAtom(
+        membersAtom,
+        (members) =>
+          boardThreadFamilies(
+            buildBoardRows(members).map((row) => ({ ...row, status: 'idle' as const }))
+          ).find(({ items }) => items.some(({ session: member }) => member.id === sessionId))
+            ?.items ?? [],
+        (a, b) =>
+          a.length === b.length &&
+          a.every(
+            (row, index) => row.session === b[index]?.session && row.depth === b[index]?.depth
+          )
+      ),
+    [membersAtom, sessionId]
   );
   const familyAtom = useMemo(
     () =>
-      atom((get) => {
-        const families = boardThreadFamilies(
-          rows.map(({ session: member, depth }) => ({
-            session: member,
-            depth,
-            archived: member.isArchived,
-            status: boardThreadStatus(member, get(sessionLiveStatusAtomFamily(member.id)), (id) =>
-              get(sessionMetaAtomFamily(getSessionRoomId(id)))
-            ),
-          }))
-        );
-        const family = families.find(({ items }) =>
-          items.some(({ session: member }) => member.id === sessionId)
-        );
-        if (!family) return null;
-        return {
-          status: family.status,
-          unread: family.items.some(({ session: member }) => sessionHasUnreadMessages(member)),
-          completed:
-            get(lodyPresenceSyncStateAtom) === 'synced' &&
-            family.items.every(
-              ({ session: member, status }) =>
-                status === 'idle' &&
-                get(machineOnlineStatusAtomFamily(member.machineId)) === 'online'
-            ),
-        };
-      }),
-    [rows, sessionId]
+      selectAtom(
+        atom((get) => {
+          const family = boardThreadFamilies(
+            get(familyRowsAtom).map(({ session: member, depth }) => ({
+              session: member,
+              depth,
+              status: boardThreadStatus(member, get(sessionLiveStatusAtomFamily(member.id)), (id) =>
+                get(sessionMetaAtomFamily(getSessionRoomId(id)))
+              ),
+            }))
+          )[0];
+          if (!family) return null;
+          return {
+            status: family.status,
+            completed:
+              get(lodyPresenceSyncStateAtom) === 'synced' &&
+              family.items.every(
+                ({ session: member, status }) =>
+                  status === 'idle' &&
+                  get(machineOnlineStatusAtomFamily(member.machineId)) === 'online'
+              ),
+          };
+        }),
+        (value) => value,
+        (a, b) => a?.status === b?.status && a?.completed === b?.completed
+      ),
+    [familyRowsAtom]
   );
   const family = useAtomValue(familyAtom);
   const machineRows = useMachineFlockRowsByMachineIds(session ? [session.machineId] : [], {
@@ -132,7 +180,7 @@ export function BoardThreadStatusCard({
             {session && family ? (
               <BoardThreadStatusMark
                 status={family.status}
-                unread={family.unread}
+                unread={sessionHasUnreadMessages(session)}
                 completed={
                   family.completed &&
                   session.lastMessageAt !== undefined &&

@@ -26,7 +26,11 @@ import { CurrentSessionRelationsChip } from '../src/components/sessions/session-
 vi.mock('../src/hooks/use-visible-session-metas', async () => {
   const { useAtomValue } = await import('jotai');
   const { allActiveSessionsAtom, archivedSessionListAtom } = await import('../src/atoms/doc-meta');
+  const visibleMachineIds = new Set(['machine', 'remote', 'devnuc', 'machine-1']);
+  const visibleLocalProjectKeys = new Set<string>();
   return {
+    useVisibleMachineIdSet: () => ({ visibleMachineIds, isLoading: false }),
+    useVisibleLocalProjectKeySet: () => ({ visibleLocalProjectKeys, isLoading: false }),
     useVisibleSessionMetas: () => ({ allActiveSessions: useAtomValue(allActiveSessionsAtom) }),
     useVisibleArchivedSessionMetas: () => ({
       archivedSessions: useAtomValue(archivedSessionListAtom),

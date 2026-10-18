@@ -286,7 +286,7 @@ rows linked by `progressMessageId` show a summary without creating a second set 
 cards. Older histories without progress rows retain successful-target cards.
 
 A Board's main session is the exception: its creation cards are
-`BoardThreadStatusCard`s that follow each thread family's current state (✋ / working /
+`BoardThreadStatusCard`s that follow each thread family's current state (family ✋ / working, thread-only
 unread, or a Check once the whole family settles with synced presence and online
 machines and the thread has been active and read, then agent · machine · project · worktree), and a
 result batch that went along with one of its messages renders as one line instead
