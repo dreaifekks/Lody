@@ -13,6 +13,7 @@ import type {
 } from '@lody/shared';
 
 import { LocalProjectItem } from '../src/components/loro-app-sidebar';
+import { LoroSidebar } from '../src/components/loro-sidebar';
 import { initI18n } from '../src/i18n';
 import { Tooltip } from '@lody/ui/tooltip';
 
@@ -27,6 +28,27 @@ const project = {
 } as LocalProjectMeta;
 
 const NO_LIVE_STATUSES: ReadonlyMap<string, SessionStatus> = new Map();
+
+/**
+ * The elements whose hover drives `element`'s group-hover variants, by
+ * Tailwind's rule: `group-hover:` answers any ancestor `.group`,
+ * `group-hover/row:` any ancestor `.group/row`. jsdom cannot hover, so a test
+ * asks this instead of what a hover would paint.
+ */
+function groupHoverOwners(element: Element): Element[] {
+  const names = new Set<string>();
+  for (const token of Array.from(element.classList)) {
+    const match = /^group-hover(?:\/([\w-]+))?:/.exec(token);
+    if (match) names.add(match[1] ? `group/${match[1]}` : 'group');
+  }
+  const owners: Element[] = [];
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    if (Array.from(names).some((name) => node.classList.contains(name))) owners.push(node);
+  }
+  return owners;
+}
+
+const SIDEBAR_ROW = '[data-scope-item="row"]';
 
 function localSession(id: string, fields: Partial<SessionMeta> = {}): SessionMeta {
   return {
@@ -89,47 +111,75 @@ describe('sidebar local project row', () => {
     isPinned?: boolean;
     onTogglePinned?: (machineId: MachineId, localProjectId: string, nextPinned: boolean) => void;
     showMachineName?: boolean;
+    inPinnedSection?: boolean;
   }) {
+    const item = (
+      <LocalProjectItem
+        machineId={machineId}
+        machineName="Teammate's Mac"
+        project={project}
+        // Removal stays owner-only; navigation does not depend on it.
+        canRemoveProject={false}
+        removalState={options.removalState ?? null}
+        collapsed={options.collapsed ?? false}
+        whetherShowFullList={options.whetherShowFullList ?? false}
+        isSelected={false}
+        sessionsForProject={options.sessions ?? []}
+        childSessionsByParent={new Map()}
+        liveSessionStatuses={options.liveSessionStatuses ?? NO_LIVE_STATUSES}
+        formattedPath={project.rootPath}
+        defaultSessionTitle="New session"
+        selectedSessionId={null}
+        removeProjectLabel="Remove folder"
+        newChatLabel="New chat"
+        archiveTooltipLabel="Archive session"
+        archiveActionLabel="Archive"
+        archiveConfirmLabel="Confirm"
+        isMobile={false}
+        toggleLabel="Toggle"
+        onNavigateProject={options.onNavigateProject}
+        onNewChatInProject={options.onNewChatInProject}
+        isPinned={options.isPinned}
+        onTogglePinned={options.onTogglePinned}
+        showMachineName={options.showMachineName}
+        machineNameColor="blue"
+        onNavigateSession={() => undefined}
+        onArchive={() => undefined}
+        collapsedOpenedBySessionIds={{}}
+        onToggleOpenedBySessions={() => undefined}
+        onToggleCollapsed={() => undefined}
+        onToggleFullList={options.onToggleFullList ?? (() => undefined)}
+        onRequestRemoval={() => undefined}
+      />
+    );
     flushSync(() => {
       root?.render(
         <Tooltip.Provider>
-          <LocalProjectItem
-            machineId={machineId}
-            machineName="Teammate's Mac"
-            project={project}
-            // Removal stays owner-only; navigation does not depend on it.
-            canRemoveProject={false}
-            removalState={options.removalState ?? null}
-            collapsed={options.collapsed ?? false}
-            whetherShowFullList={options.whetherShowFullList ?? false}
-            isSelected={false}
-            sessionsForProject={options.sessions ?? []}
-            childSessionsByParent={new Map()}
-            liveSessionStatuses={options.liveSessionStatuses ?? NO_LIVE_STATUSES}
-            formattedPath={project.rootPath}
-            defaultSessionTitle="New session"
-            selectedSessionId={null}
-            removeProjectLabel="Remove folder"
-            newChatLabel="New chat"
-            archiveTooltipLabel="Archive session"
-            archiveActionLabel="Archive"
-            archiveConfirmLabel="Confirm"
-            isMobile={false}
-            toggleLabel="Toggle"
-            onNavigateProject={options.onNavigateProject}
-            onNewChatInProject={options.onNewChatInProject}
-            isPinned={options.isPinned}
-            onTogglePinned={options.onTogglePinned}
-            showMachineName={options.showMachineName}
-            machineNameColor="blue"
-            onNavigateSession={() => undefined}
-            onArchive={() => undefined}
-            collapsedOpenedBySessionIds={{}}
-            onToggleOpenedBySessions={() => undefined}
-            onToggleCollapsed={() => undefined}
-            onToggleFullList={options.onToggleFullList ?? (() => undefined)}
-            onRequestRemoval={() => undefined}
-          />
+          {options.inPinnedSection ? (
+            <LoroSidebar
+              workspaceName="Lody"
+              workspaces={[{ id: 'workspace', name: 'Lody' }]}
+              currentWorkspaceId="workspace"
+              repoSections={[]}
+              chats={[]}
+              organizeMode="workspace"
+              pinnedItems={[
+                {
+                  id: 'pinned-session',
+                  kind: 'chat',
+                  title: 'Pinned conversation',
+                  sectionLabel: 'Chats',
+                  latestMessageAt: new Date('2026-09-17T00:00:00.000Z'),
+                  isPinned: true,
+                },
+              ]}
+              updatedSelectedItemId={null}
+              onTogglePinnedSection={() => undefined}
+              pinnedProjectsContent={item}
+            />
+          ) : (
+            item
+          )}
         </Tooltip.Provider>
       );
     });
@@ -214,6 +264,42 @@ describe('sidebar local project row', () => {
     expect(suffix?.style.color).toContain('--lan-machine-blue');
     // Pinned rows carry no pin glyph: the Pinned section already says so.
     expect(named?.querySelector('.lucide-pin')).toBeNull();
+  });
+
+  it('lets a hover light only the row under the pointer, pinned or not', () => {
+    for (const inPinnedSection of [false, true]) {
+      render({
+        onNavigateProject: vi.fn(),
+        onNewChatInProject: vi.fn(),
+        onTogglePinned: vi.fn(),
+        isPinned: inPinnedSection,
+        showMachineName: inPinnedSection,
+        inPinnedSection,
+        sessions: [localSession('first'), localSession('second')],
+      });
+      const rows = Array.from(container?.querySelectorAll(SIDEBAR_ROW) ?? []);
+      // The project row, its two Sessions and, when pinned, a pinned Session.
+      expect(rows, `pinned=${inPinnedSection}`).toHaveLength(inPinnedSection ? 4 : 3);
+      for (const row of rows) {
+        const reveals = Array.from(row.querySelectorAll('*')).filter(
+          (element) => groupHoverOwners(element).length > 0
+        );
+        // The project's own rows do reveal on hover (the pinned conversation
+        // may have nothing to reveal), so the check below is not vacuous.
+        if (!row.hasAttribute('data-sidebar-updated-id')) {
+          expect(reveals.length, row.getAttribute('data-id') ?? '').toBeGreaterThan(0);
+        }
+        for (const element of reveals) {
+          for (const owner of groupHoverOwners(element)) {
+            // Hovering anywhere in the owner restyles `element`; an owner that
+            // spans another row would light this one from there.
+            const rowsInOwner =
+              owner.querySelectorAll(SIDEBAR_ROW).length + (owner.matches(SIDEBAR_ROW) ? 1 : 0);
+            expect(rowsInOwner, `${row.getAttribute('data-id')} pinned=${inPinnedSection}`).toBe(1);
+          }
+        }
+      }
+    }
   });
 
   it('goes inert while the project is being removed', () => {
