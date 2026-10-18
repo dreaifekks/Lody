@@ -106,9 +106,7 @@ record: [process tree layer](../../../../.agents/notes/implemented/architecture/
 
 ## Supervised Inbox compatibility
 
-`LODY_LOCAL_CLI_HOST_PORT` selects a TCP host endpoint without enabling E2E behavior;
-keep its parsing and precedence identical in the TS and CJS host-lease helpers.
-An isolated desktop and its embedded CLI must inherit the same endpoint override.
+`LODY_LOCAL_CLI_HOST_PORT` overrides TCP without E2E mode. Keep TS/CJS parsing and precedence identical.
 
 Supervisor launch contract v3 requires Inbox protocol v2. TS and CJS constants agree.
 A mismatched supervised worker exits 45 before host ownership/storage; do not downgrade
