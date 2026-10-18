@@ -23,7 +23,7 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   without presence, only a marker newer than `lastMessageAt` means waiting. Thread
   and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
   Board rows aggregate all members. Rows have no "done" mark.
-  Cards alone add a 14px Check for idle `boardThreadFamilies`, synced presence,
+  Cards alone add a 14px Check for idle `boardThreadFamilies` on
   online machines and a read thread with `lastMessageAt`. Family wait/work, then
   thread-only unread wins; known stop/failure/cancel blocks it. Settled is not success.
   localProject catalogs are acquired at list level, once per machine.

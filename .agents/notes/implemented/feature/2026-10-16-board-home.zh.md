@@ -346,7 +346,7 @@ hover 归档和行菜单仍保留，归档遵循共享确认流程。
 本来就是垂直居中的 flex 行。列表和侧边栏仍不画看板标记。仅主会话卡片保留次要色
 14px ✓，现在表示整棵线程树已跑完：`buildBoardRows` 与 `boardThreadFamilies` 复用
 列表的 openedBy 会话、Tab 家族范围和最强状态；`boardThreadStatus` 共用元数据状态
-推导，包括继承的停止状态。全体成员须空闲、presence 已同步且机器在线，线程本身有
+推导，包括继承的停止状态。全体成员须空闲且机器在线（在线即有新心跳；Mac 测试版上发现本地工作区的 presence 同步状态一直是 idle，所以不再要求同步状态），线程本身有
 `lastMessageAt` 且已读；家族等待、家族工作、线程自身未读通过 `SessionRowStatusIndicator`
 依次优先显示。子会话未读不会挡住 ✓。
 可推导的停止、失败、取消不亮。创建 Operation 状态和回合 ID 不再参与判断，因此

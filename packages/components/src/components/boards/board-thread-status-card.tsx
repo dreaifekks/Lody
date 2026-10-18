@@ -15,7 +15,6 @@ import {
 import {
   sessionLiveStatusAtomFamily,
   machineOnlineStatusAtomFamily,
-  lodyPresenceSyncStateAtom,
 } from '@/atoms/presence';
 import { useMachineFlockRowsByMachineIds } from '@/hooks/use-machine-flock-rows';
 import {
@@ -138,9 +137,9 @@ export function BoardThreadStatusCard({
           if (!family) return null;
           return {
             status: family.status,
-            completed:
-              get(lodyPresenceSyncStateAtom) === 'synced' &&
-              family.items.every(
+            // An online machine already means a fresh heartbeat; the transport's sync
+            // state stays idle on a local-only workspace.
+            completed: family.items.every(
                 ({ session: member, status }) =>
                   status === 'idle' &&
                   get(machineOnlineStatusAtomFamily(member.machineId)) === 'online'

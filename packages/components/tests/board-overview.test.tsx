@@ -606,9 +606,11 @@ describe('Board side panel', () => {
       expect(view.host.querySelector('svg.lucide-circle-slash')).not.toBeNull();
       await act(async () => setSessions());
       expect(check()).not.toBeNull();
-      for (const state of ['connecting', 'disconnected'] as const) {
+      // Fresh heartbeats keep members online while the transport is not synced
+      // (a local-only workspace stays idle).
+      for (const state of ['idle', 'connecting', 'disconnected'] as const) {
         await act(async () => store.set(lodyPresenceSyncStateAtom, state));
-        expect(check()).toBeNull();
+        expect(check()).not.toBeNull();
       }
       await act(async () => {
         store.set(lodyPresenceSyncStateAtom, 'synced');

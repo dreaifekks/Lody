@@ -482,7 +482,9 @@ Only coordinator conversation cards retain a quiet 14px Check. It now means the
 whole thread family has settled: `buildBoardRows` and `boardThreadFamilies` supply
 exactly the list's opened-session and Tab membership and strongest status;
 `boardThreadStatus` shares metadata-only status derivation, including inherited stops.
-Every member must be idle with synced presence and an online machine; the card's
+Every member must be idle on an online machine (an online machine already means a
+fresh heartbeat; the transport's sync state is not required because it stays idle
+on a local-only workspace, found on the Mac test build); the card's
 thread must have `lastMessageAt` and be read. Family waiting and working, then
 the thread's own unread mark take precedence through `SessionRowStatusIndicator`.
 Unread child results never block the Check. Known stops, failures
@@ -492,7 +494,7 @@ Check too. No member documents or synchronized outcome fields are added. Metadat
 cannot identify agent-error turns, so those may also show a Check once settled;
 this is completion, not proof of success. List rows retain no done state.
 The existing overview and relation-card suites cover family activity, permission
-waiting, unknown presence, offline member machines and later settled turns.
+waiting, an unsynced transport with online machines, offline member machines and later settled turns.
 Cards without loaded Board membership show no mark. `selectAtom` preserves Board
 member and family-row identity before tree/status work; presence reads cover only
 the selected family, and equal status/completion summaries keep their reference.

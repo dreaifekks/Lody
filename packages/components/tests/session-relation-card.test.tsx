@@ -301,9 +301,11 @@ describe('Session relation cards', () => {
     await setThread({ collaborationStopped: true });
     expect(card?.querySelector('svg.lucide-check')).toBeNull();
     await setThread({});
-    for (const state of ['connecting', 'disconnected'] as const) {
+    // Fresh heartbeats keep members online while the transport is not synced
+    // (a local-only workspace stays idle).
+    for (const state of ['idle', 'connecting', 'disconnected'] as const) {
       await act(async () => store.set(lodyPresenceSyncStateAtom, state));
-      expect(card?.querySelector('svg.lucide-check')).toBeNull();
+      expect(card?.querySelector('svg.lucide-check')).not.toBeNull();
     }
     await act(async () => {
       store.set(lodyPresenceSyncStateAtom, 'synced');

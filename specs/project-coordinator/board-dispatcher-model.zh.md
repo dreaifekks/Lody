@@ -54,7 +54,7 @@ Translation: pending
   不显示回复内容，结果由线程自己交给用户；点卡片打开线程。
 - 卡片的次要色 14px ✓ 表示线程所在的整棵树已跑完：家族范围与线程列表的
   `boardThreadFamilies` 一致，包括线程、openedBy 会话及 Tab。所有成员都不在
-  running／initializing／finalizing 或等待用户，presence 已同步且相关机器全部在线；
+  running／initializing／finalizing 或等待用户，相关机器全部在线（在线即收到了新心跳；本地工作区的 presence 同步状态一直是 idle，所以不另看同步状态）；
   线程本身有 `lastMessageAt` 且已读。家族等待 > 家族工作 > 线程自身未读 > ✓；
   子会话未读不影响线程的 ✓，家族成员只参与活动、等待和停止等状态判断。可由元数据
   推导的停止、失败、取消仍不亮。线程元数据未加载或没有看板归属时，不显示标记。
