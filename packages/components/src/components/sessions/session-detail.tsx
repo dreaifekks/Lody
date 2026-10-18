@@ -1,7 +1,6 @@
 import { BoardThreadParentBreadcrumb } from '../boards/board-thread-breadcrumb';
 import { BoardThreadBackButton, BoardThreadOpenButton } from '../boards/board-panel-view';
-import { isBoardThread } from '../boards/board-thread-mark';
-import { boardEntrySearch, boardMemberEntrySearch } from '../boards/board-threads';
+import { resolveBoardThreadPageNavigation } from '../boards/board-threads';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
 import { pendingSessionLinkAtom } from '@/lib/session-deep-link';
 import { windowPreparationAtom } from '@/lib/window-preparation';
@@ -7445,17 +7444,20 @@ const SessionDetail = ({
     activeSession.isTabClosed === true && !closedConversationIds.has(activeSession.id)
       ? { ...activeSession, isTabClosed: false }
       : activeSession;
-  const threadBoard =
-    boardsEnabled && isBoardThread(activeTabSession)
-      ? boards.find((board) => board.id === activeTabSession?.boardId)
-      : undefined;
-  const backToBoard = threadBoard ? (
+  const boardPageNavigation = resolveBoardThreadPageNavigation({
+    enabled: boardsEnabled,
+    boards,
+    pageSession: activeSession,
+    selectedSession: activeTabSession,
+  });
+  const boardParentTarget = boardPageNavigation?.parent;
+  const backToBoard = boardPageNavigation ? (
     <BoardThreadBackButton
       onBack={() => {
         void router.navigate({
           to: '/$workspaceName/sessions/$sessionId',
-          params: { workspaceName: workspaceSlug!, sessionId: threadBoard.coordinatorSessionId },
-          search: boardEntrySearch(threadBoard.coordinatorSessionId),
+          params: { workspaceName: workspaceSlug!, sessionId: boardPageNavigation.back.sessionId },
+          search: boardPageNavigation.back.search,
         });
       }}
     />
@@ -7479,17 +7481,17 @@ const SessionDetail = ({
       leftSlot={
         <>
           {backToBoard}
-          {threadBoard && activeTabSession ? (
+          {boardParentTarget && activeTabSession ? (
             <BoardThreadParentBreadcrumb
               session={activeTabSession}
-              onOpenParent={(id) => {
+              onOpenParent={() => {
                 void router.navigate({
                   to: '/$workspaceName/sessions/$sessionId',
                   params: {
                     workspaceName: workspaceSlug!,
-                    sessionId: threadBoard.coordinatorSessionId,
+                    sessionId: boardParentTarget.sessionId,
                   },
-                  search: boardMemberEntrySearch(threadBoard, id),
+                  search: boardParentTarget.search,
                 });
               }}
             />

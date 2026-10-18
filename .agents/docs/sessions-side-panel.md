@@ -144,8 +144,8 @@ menu and hover archive confirmation; actions go through `useSessionActions`.
 Full-page return lives in `SessionTabBar.leftSlot`, before the sidebar toggle,
 and navigates through `boardEntrySearch`. Re-entry clears the old panel thread.
 Resizing the split has no separate full-screen thread state. Zen is cleared by
-Board entry. A small membership mark is shared by sidebar titles and session tabs,
-and follows the Board experiment gate.
+Board entry. The experiment-gated membership mark appears only in panel conversation headers
+and full-page session tabs; sidebar and thread-list rows have no mark subscription.
 
 The sidebar's Board row stays selected on a member's full page as well as in the
 coordinator panel. `BoardSidebar` selects only the route and active Tab's `boardId`
@@ -162,3 +162,9 @@ On the full page, the parent link and separator sit immediately after Back; the
 real child tab supplies the title. It uses `boardMemberEntrySearch` to enter the
 parent as its Board row would. The page breadcrumb selects only parent identity,
 title and membership from metadata; it does not load its document.
+
+`resolveBoardThreadPageNavigation` owns the page's Back and parent-entry targets.
+Coordinator pages (including their selected child Tabs) have neither control.
+A thread's own contained Tab keeps Back but adds no duplicate parent breadcrumb.
+Archive/Restore row failures use the sidebar's error toast; the row Open callback
+reads the latest visible metadata through a ref, retaining its identity on updates.

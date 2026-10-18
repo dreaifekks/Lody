@@ -152,8 +152,8 @@ LAN 里所有机器属于同一个用户，同一用户跨机器能碰到文件�
 
 - **`BOARD_NOT_FOUND` 是成员机器的 catalog 副本没同步。** 现场证据：在每台机器上直接向本机
   守护进程的 control socket 发桌面用的 `board/files-list`（看板 `bd_ce75…`，协调者在 devNuc）。
-  devNuc（宿主）和 homeN100 返回空列表；mba 返回 `BOARD_NOT_FOUND:this machine knows no such
-Board`，这条报错来自发起方自己读看板行的 `LanFileHandoff.boardOf`，请求根本没发到宿主机。
+  devNuc（宿主）和 homeN100 返回空列表；mba 返回
+  `BOARD_NOT_FOUND:this machine knows no such Board`，这条报错来自发起方自己读看板行的 `LanFileHandoff.boardOf`，请求根本没发到宿主机。
   在 mba 上跑一次会让守护进程同步 workspace catalog 的 `lody-lan mcp list` 之后，同一请求立即
   返回列表。代码上，读 catalog 的其他地方（看板工具、成员启动提示、Role / MCP 读取）都先
   `syncFlockDocOrThrow`，只有 `lody-fleet.ts` 的 `readBoard` 直接读本地副本。修法是抽出
@@ -276,8 +276,8 @@ Codex reviewer（gpt-6.1-sol high）提了 2 个 P1、1 个 P2，都已修：
 
 返回按钮位于线程面板头部与完整页 `SessionTabBar` 的最前面。完整页通过
 `boardEntrySearch` 回协调者，清除旧面板线程选择并退出 Zen。分栏调整宽度没有另一个
-线程放大状态。`LayoutDashboard` 标记用于面板标题、完整页 Tab 和共享侧边栏标题叶子
-（随实验开关显示）；协调者不显示。侧边栏叶子只订阅成员资格布尔值。
+线程放大状态。`LayoutDashboard` 只用于面板会话头部和完整页 Tab（随实验开关显示），协调者不显示。
+侧边栏和线程列表行没有看板图标，也不再增加逐行成员资格订阅。
 
 行为测试覆盖菜单重命名与不提供置顶、递归归档/仅直接 Tab 恢复、键盘事件归属、返回入口和
 成员标记。故事 `ThreadRowActions`、`ThreadControls`、`ThreadFullPage` 使用真实 UI
@@ -307,3 +307,13 @@ Codex reviewer（gpt-6.1-sol high）提了 2 个 P1、1 个 P2，都已修：
 `ChildThreadOpen`、`ChildThreadRows`、`ChildThreadFullPage` 使用合成数据渲染真实
 组件。行为测试覆盖两种关系、协调者/跨看板排除、行与头部的父级导航、事件归属以及
 完整页的看板成员入口。视觉和真实应用验收由用户另行安排，实现侧不声称已经通过。
+
+## 线程控件审查修正（2026-10-18）
+
+归档/恢复失败现在与侧边栏会话操作一样弹出错误提示，包括本地项目已移除而不能恢复。
+行 Open 保持一个回调，在调用时读取最新可见元数据。完整页的导航规则集中到
+`resolveBoardThreadPageNavigation`：协调者页不出现看板返回按钮；线程自己的子 Tab
+不再添加重复父级面包屑。删除两个重写页面接线的测试，改测生产纯函数，覆盖普通线程、
+实验关闭、协调者 Tab、自身 Tab 和独立打开的子会话。真实行操作测试同时验证错误提示
+和归档状态未改变。图标只留在会话头部/完整页 Tab，删除侧边栏和列表的冗余订阅。
+先做定向验证；待用户安排的视觉核对反馈合并后，再进行一次全量检查。

@@ -1,8 +1,9 @@
+import { toast } from '@/lib/toast';
 import * as stylex from '@stylexjs/stylex';
 import { space } from '@lody/ui/tokens/scales.stylex';
 import { Download } from 'lucide-react';
 import { atom, useAtomValue } from 'jotai';
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   deriveBoardSessionStatus,
@@ -143,10 +144,14 @@ function BoardThreads({
   const actions = useMemo(
     () => ({
       onArchive: (id: string) => {
-        void archiveSession(id as SessionId);
+        void archiveSession(id as SessionId).catch((error: unknown) => {
+          toast.error(error instanceof Error ? error.message : String(error));
+        });
       },
       onRestore: (id: string) => {
-        void restoreSession(id as SessionId);
+        void restoreSession(id as SessionId).catch((error: unknown) => {
+          toast.error(error instanceof Error ? error.message : String(error));
+        });
       },
       onMarkUnread: (id: string) => {
         void markSessionUnread(id as SessionId);
@@ -198,12 +203,14 @@ function BoardThreads({
       new Map([...allActiveSessions, ...archivedSessions].map((session) => [session.id, session])),
     [allActiveSessions, archivedSessions]
   );
+  const byIdRef = useRef(byId);
+  byIdRef.current = byId;
   const open = useCallback(
     (id: string, tabSessionId?: string) => {
-      const session = byId.get((tabSessionId ?? id) as SessionId);
+      const session = byIdRef.current.get((tabSessionId ?? id) as SessionId);
       if (session) onOpen(session);
     },
-    [byId, onOpen]
+    [onOpen]
   );
   return (
     <>

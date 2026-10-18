@@ -385,9 +385,9 @@ presence atom, without acquiring thread documents.
 Back is the first control in both the thread panel header and the full page's
 `SessionTabBar`. The latter enters the coordinator through `boardEntrySearch`,
 which resets the selected panel thread and exits Zen. Split resizing introduces
-no other maximize state. `LayoutDashboard` marks thread titles in the panel,
-full-page tabs and shared sidebar title leaf (only while the experiment is on); coordinators are excluded. The sidebar leaf selects only the
-membership boolean.
+no other maximize state. `LayoutDashboard` marks only panel conversation headers and full-page tabs while
+the experiment is on; coordinators are excluded. Sidebar and thread-list rows
+have no Board glyph or per-row membership subscription.
 
 Behavior tests cover menu rename and pin omission, recursive archive/direct-Tab restore,
 keyboard event ownership, return entry and membership marks. Stories
@@ -429,3 +429,17 @@ components with synthetic data. Behavioral tests cover both relation types,
 coordinator/cross-Board exclusion, row/header parent navigation, event ownership,
 and the full-page Board-member entry. Visual and real-app acceptance are delegated
 to the user; implementation work does not claim those have passed.
+
+## Thread-controls review corrections (2026-10-18)
+
+Archive/Restore failures now show the same error toast as sidebar session actions,
+including a removed local project's restoration refusal. Row Open retains one
+callback and reads the latest visible metadata at invocation. The page navigation
+rules live in `resolveBoardThreadPageNavigation`: coordinator pages expose no Board
+return control; a thread's own contained Tab exposes no duplicate parent breadcrumb.
+The two tests that recreated page wiring were removed in favor of production-function
+cases for ordinary threads, experiment off, coordinator Tabs, own Tabs and independent
+opened children. Real row-action tests assert the error toast and unchanged archive
+state. Board glyphs are restricted to conversation headers/page tabs; the redundant
+sidebar/list subscription was deleted. Targeted verification precedes the user-owned
+visual review; the combined full check is deferred until its feedback is incorporated.

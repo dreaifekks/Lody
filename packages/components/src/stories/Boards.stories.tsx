@@ -75,6 +75,7 @@ import {
   buildBoardRows,
   isBoardSession,
   resolveSidebarBoardSelection,
+  resolveBoardThreadPageNavigation,
   resolveBoardThreadParent,
 } from '@/components/boards/board-threads';
 import { BoardDirectoryFileProvider } from '@/lib/board-directory-file-provider';
@@ -1072,6 +1073,12 @@ export const ThreadFullPage: Story = {
     const thread = members.find(
       (session) => session.id === (initial.kind === 'thread' ? (initial.id ?? THREAD) : THREAD)
     )!;
+    const navigation = resolveBoardThreadPageNavigation({
+      enabled: true,
+      boards: [board],
+      pageSession: thread,
+      selectedSession: thread,
+    });
     return back ? (
       <CoordinatorPage initial={back} />
     ) : (
@@ -1091,13 +1098,17 @@ export const ThreadFullPage: Story = {
                 onNewTab={noop}
                 leftSlot={
                   <>
-                    <BoardThreadBackButton
-                      onBack={() => setBack({ kind: 'tabs', tab: 'threads' })}
-                    />
-                    <BoardThreadParentBreadcrumb
-                      session={thread}
-                      onOpenParent={(id) => setBack({ kind: 'thread', id })}
-                    />
+                    {navigation ? (
+                      <BoardThreadBackButton
+                        onBack={() => setBack({ kind: 'tabs', tab: 'threads' })}
+                      />
+                    ) : null}
+                    {navigation?.parent ? (
+                      <BoardThreadParentBreadcrumb
+                        session={thread}
+                        onOpenParent={(id) => setBack({ kind: 'thread', id })}
+                      />
+                    ) : null}
                   </>
                 }
               />
@@ -1123,7 +1134,7 @@ export const ThreadFullPage: Story = {
 export const ThreadControls: Story = { args: { initial: { kind: 'thread', running: true } } };
 export const ThreadRowActions: Story = {};
 
-/** With the experiment off, Updated/Pinned keeps threads but hides their Board marks. */
+/** Sidebar rows have no Board glyph or per-row membership subscription. */
 export const ThreadSidebar: Story = {
   render: () => (
     <SettingsStoryProviders>

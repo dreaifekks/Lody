@@ -139,3 +139,40 @@ export function resolveBoardThreadParent(
     ? parent
     : undefined;
 }
+
+/** Page-only navigation: contained Tabs already have their owning page's tab strip. */
+export function resolveBoardThreadPageNavigation({
+  enabled,
+  boards,
+  pageSession,
+  selectedSession,
+}: {
+  enabled: boolean;
+  boards: readonly BoardMeta[];
+  pageSession: Pick<SessionMeta, 'id' | 'boardRole'>;
+  selectedSession:
+    | Pick<SessionMeta, 'id' | 'boardId' | 'boardRole' | 'parentSessionId' | 'openedBySessionId'>
+    | null
+    | undefined;
+}) {
+  if (
+    !enabled ||
+    !selectedSession?.boardId ||
+    isBoardCoordinator(selectedSession) ||
+    isBoardCoordinator(pageSession)
+  )
+    return null;
+  const board = boards.find((entry) => entry.id === selectedSession.boardId);
+  if (!board || pageSession.id === board.coordinatorSessionId) return null;
+  const parentId = selectedSession.parentSessionId ?? selectedSession.openedBySessionId;
+  return {
+    back: {
+      sessionId: board.coordinatorSessionId,
+      search: boardEntrySearch(board.coordinatorSessionId),
+    },
+    parent:
+      parentId && parentId !== pageSession.id && parentId !== board.coordinatorSessionId
+        ? { sessionId: board.coordinatorSessionId, search: boardMemberEntrySearch(board, parentId) }
+        : null,
+  };
+}
