@@ -493,6 +493,13 @@ Side mode opens only same-Board members in the panel; coordinator children selec
 existing Tab/Side Chat. Other Boards and ordinary sessions retain page navigation, including
 the command palette's Board entry searches. Narrow windows and expanded thread pages retain page routing. The maximize
 button explicitly opens the page. No thread is assigned a `side-session:` tab identity.
+Resource links inspect `destination(target)` and only use the Board opener for panel or
+coordinator destinations. Page destinations retain `openSessionDeepLink`: its explicit
+`session:<id>` search must win over a previously selected child tab, and its pending
+request retains metadata hydration and timeout handling. Other entry points are unchanged.
+The regression test mounts the real deep-link router and session-route `beforeLoad` with
+memory history, demonstrates ordinary entry restoring an old child, then clicks a rendered
+Board-page link and verifies the exact root tab, with and without target metadata.
 
 The panel thread lacked a file-open callback, so Markdown copied every file path.
 It now receives a scoped Board file opener. Recognized Board links create ordinary

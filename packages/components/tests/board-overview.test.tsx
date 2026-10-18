@@ -9,6 +9,7 @@ import {
   MarkdownRenderer,
   AgentFileLinkOpenContext,
 } from '../src/components/ai-gui/markdown-renderer';
+import { SESSION_DEEP_LINK_EVENT } from '../src/lib/session-deep-link';
 import { SessionLinkProvider } from '../src/components/ai-gui/session-link-context';
 import { BoardThreadStatusCard } from '../src/components/boards/board-thread-status-card';
 import { SessionRelationCard } from '../src/components/shared/session-relation-card';
@@ -1899,6 +1900,10 @@ describe('Board conversation navigation', () => {
   ])(
     'opens cards and nested links in the $mode destination',
     async ({ narrow, boardPage, destination }) => {
+      const deepLinks: string[] = [];
+      const recordDeepLink = (event: Event) =>
+        deepLinks.push((event as CustomEvent<string>).detail);
+      window.addEventListener(SESSION_DEEP_LINK_EVENT, recordDeepLink);
       const store = createStore();
       store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
       const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
@@ -1980,7 +1985,8 @@ describe('Board conversation navigation', () => {
           await act(async () =>
             view.host.querySelector<HTMLButtonElement>('button[data-session-link]')!.click()
           );
-          expect(view.host.querySelector('output')!.textContent).toBe(`${destination}:child`);
+          if (narrow) expect(deepLinks.at(-1)).toBe('lody://session/child?workspace=ws');
+          else expect(view.host.querySelector('output')!.textContent).toBe('panel:child');
           // The palette uses exactly the mounted page's navigation, including nested targets.
           await act(async () =>
             store.get(boardSessionNavigationAtom)!.open({ sessionId: thread.id })
@@ -1991,6 +1997,10 @@ describe('Board conversation navigation', () => {
               view.host
                 .querySelector<HTMLButtonElement>(`button[data-session-link="${session.id}"]`)!
                 .click()
+            );
+            expect(deepLinks.at(-1)).toBe(`lody://session/${session.id}?workspace=ws`);
+            await act(async () =>
+              store.get(boardSessionNavigationAtom)!.open({ sessionId: session.id })
             );
             expect(view.host.querySelector('output')!.textContent).toBe(`page:${session.id}`);
           }
@@ -2009,6 +2019,7 @@ describe('Board conversation navigation', () => {
           );
         }
       } finally {
+        window.removeEventListener(SESSION_DEEP_LINK_EVENT, recordDeepLink);
         await view.unmount();
       }
       expect(store.get(boardSessionNavigationAtom)).toBeNull();

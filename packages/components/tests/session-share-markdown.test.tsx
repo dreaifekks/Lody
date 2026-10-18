@@ -1,5 +1,35 @@
 // @vitest-environment jsdom
 import { act } from 'react';
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+  Outlet,
+} from '@tanstack/react-router';
+import { createStore, Provider } from 'jotai';
+import {
+  getSessionRoomId,
+  normalizeBoardMeta,
+  type SessionId,
+  type SessionMeta,
+  type WorkspaceId,
+} from '@lody/shared';
+import { PlatformContext } from '@lody/platform/react';
+import {
+  createStaticStore,
+  CLOUD_PLATFORM_CAPABILITIES,
+  type PlatformProvider,
+} from '@lody/platform';
+import { SessionDeepLinkRouter } from '../src/routes/__root';
+import { Route as SessionRoute } from '../src/routes/$workspaceName/_auth/sessions/$sessionId';
+import { useBoardSessionNavigation } from '../src/components/boards/board-session-navigation';
+import { currentWorkspaceIdAtom } from '../src/atoms';
+import { sessionMetaCacheAtom } from '../src/atoms/doc-meta';
+import { writeStoredLastActiveTabState } from '../src/lib/session-draft-tabs';
+import { getSessionNavigationLocation } from '../src/lib/session-navigation';
+import { pendingSessionLinkAtom } from '../src/lib/session-deep-link';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MarkdownRenderer } from '../src/components/ai-gui/markdown-renderer';
@@ -12,7 +42,12 @@ import {
   type FileWorkspaceOpenResult,
 } from '../src/lib/file-workspace-provider';
 
-vi.mock('react-i18next', () => ({
+// The route host and its real beforeLoad run; unrelated application/editor surfaces stay unmounted.
+vi.mock('@/components/AppInitializer', () => ({ default: () => null }));
+vi.mock('@/components/sessions/session-detail', () => ({ default: () => null }));
+
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   useTranslation: () => ({ t: (_key: string, fallback: string) => fallback }),
 }));
 (
@@ -286,6 +321,7 @@ describe('Markdown session links', () => {
   let root: Root, container: HTMLDivElement;
   let opened: string[], events: AbortController;
   beforeEach(() => {
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
     opened = [];
     events = new AbortController();
     window.addEventListener(
@@ -298,11 +334,160 @@ describe('Markdown session links', () => {
     root = createRoot(container);
   });
   afterEach(async () => {
+    vi.restoreAllMocks();
     events.abort();
     await act(async () => root.unmount());
     container.remove();
   });
   const legacyText = 'See [@Independent review](session://1ed6ba53-93bc-46d5-91e3-bb693cb0e729).';
+
+  it.each([true, false])(
+    'keeps a non-member resource link exact despite a remembered child tab (metadata: %s)',
+    async (known) => {
+      const store = createStore();
+      store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+      store.set(
+        sessionMetaCacheAtom,
+        known
+          ? {
+              [getSessionRoomId('outside' as SessionId)]: {
+                id: 'outside',
+                machineId: 'machine',
+                userId: 'user',
+                createdAt: '2026-10-18T00:00:00Z',
+              } as SessionMeta,
+            }
+          : {}
+      );
+      const board = normalizeBoardMeta({
+        version: 1,
+        id: 'bd_test',
+        name: 'Board',
+        coordinatorSessionId: 'coordinator',
+        createdAtMs: 1,
+        createdByUserId: 'user',
+      })!;
+      writeStoredLastActiveTabState('outside' as SessionId, {
+        sessionTabId: 'old-child',
+        viewerTab: null,
+      });
+      const platform: PlatformProvider = {
+        kind: 'cloud',
+        identity: {
+          session: createStaticStore({ status: 'unauthenticated' }),
+          signOut: async () => {},
+        },
+        workspaces: {
+          state: createStaticStore({
+            status: 'ready',
+            activeWorkspaceId: 'ws',
+            workspaces: [{ id: 'ws', slug: 'ws', name: 'Workspace', role: 'owner' }],
+          }),
+          setActive: async () => {},
+        },
+        capabilities: CLOUD_PLATFORM_CAPABILITIES,
+        sync: { mode: 'cloud' },
+      };
+      function BoardPage() {
+        useBoardSessionNavigation({
+          board,
+          narrow: false,
+          openPanel: () => {},
+          showInCoordinatorPage: () => {},
+          openPage: (target) => {
+            const location = getSessionNavigationLocation(target);
+            void router.navigate({
+              to: '/$workspaceName/sessions/$sessionId',
+              params: { workspaceName: 'ws', sessionId: location.sessionId },
+              search: { tab: location.tab },
+            });
+          },
+        });
+        return (
+          <SessionLinkProvider enabled>
+            <MarkdownRenderer text="[@Outside](lody://session/outside?workspace=ws)" />
+          </SessionLinkProvider>
+        );
+      }
+      const rootRoute = createRootRoute({
+        component: () => (
+          <>
+            <SessionDeepLinkRouter />
+            <Outlet />
+          </>
+        ),
+      });
+      const sessionRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/$workspaceName/sessions/$sessionId',
+        validateSearch: SessionRoute.options.validateSearch,
+        beforeLoad: SessionRoute.options.beforeLoad as never,
+        component: () => {
+          const { sessionId } = sessionRoute.useParams();
+          const { tab } = sessionRoute.useSearch();
+          return sessionId === 'coordinator' ? <BoardPage /> : <output>{tab}</output>;
+        },
+      });
+      const router = createRouter({
+        routeTree: rootRoute.addChildren([sessionRoute]),
+        history: createMemoryHistory({ initialEntries: ['/ws/sessions/coordinator'] }),
+        defaultPendingMs: Infinity,
+        defaultPendingMinMs: 0,
+      });
+      await router.load();
+      await act(async () =>
+        root.render(
+          <PlatformContext.Provider value={platform}>
+            <Provider store={store}>
+              <RouterProvider router={router} />
+            </Provider>
+          </PlatformContext.Provider>
+        )
+      );
+      // Use the actual route restoration first to demonstrate the remembered child.
+      await act(async () => {
+        await router.navigate({
+          to: '/$workspaceName/sessions/$sessionId',
+          params: { workspaceName: 'ws', sessionId: 'outside' },
+          search: {},
+        });
+      });
+      expect(container.querySelector('output')?.textContent).toBe('session:old-child');
+      await act(async () => {
+        await router.navigate({
+          to: '/$workspaceName/sessions/$sessionId',
+          params: { workspaceName: 'ws', sessionId: 'coordinator' },
+          search: {},
+        });
+      });
+      let arrived!: () => void;
+      const navigationDone = new Promise<void>((resolve) => {
+        arrived = resolve;
+      });
+      const unsubscribe = router.subscribe('onResolved', ({ toLocation }) => {
+        if (toLocation.pathname === '/ws/sessions/outside') arrived();
+      });
+      try {
+        await act(async () => {
+          container.querySelector<HTMLButtonElement>('button[data-session-link]')!.click();
+        });
+        await navigationDone;
+        expect(router.state.location.search.tab).toBe('session:outside');
+        expect(container.querySelector('output')?.textContent).toBe('session:outside');
+        // Until the destination hydrates its conversation, the real deep-link host retains the request.
+        expect(store.get(pendingSessionLinkAtom)).toMatchObject({
+          sessionId: 'outside',
+          workspaceId: 'ws',
+        });
+      } finally {
+        unsubscribe();
+        writeStoredLastActiveTabState('outside' as SessionId, {
+          sessionTabId: 'outside',
+          viewerTab: null,
+        });
+      }
+    }
+  );
 
   it.each([
     [legacyText, 'lody://session/1ed6ba53-93bc-46d5-91e3-bb693cb0e729'],

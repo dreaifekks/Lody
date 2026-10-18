@@ -186,7 +186,10 @@ Only members of the current Board open in its panel; other Boards and ordinary s
 retain page navigation (the palette keeps Board entry searches). Direct coordinator Tabs/Side Chats select
 the already mounted surface, and narrow windows or expanded thread pages navigate normally.
 The explicit maximize control bypasses panel navigation. Global entries outside a Board
-retain their existing routing, as do cross-workspace resource links.
+retain their existing routing, as do cross-workspace resource links. Resource links check
+`destination(target)` first: only panel/coordinator destinations use the Board opener;
+page destinations use `openSessionDeepLink`, preserving an explicit target tab and the
+existing metadata wait/timeout. Cards, breadcrumbs and palette navigation are unchanged.
 
 Conversation links into `boards/<current-workspace>/<board>/{files,memory}` open closeable file
 viewer tabs. These tabs render `BoardFilePreview` and read/download with the requesting

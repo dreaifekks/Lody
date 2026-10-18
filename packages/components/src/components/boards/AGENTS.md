@@ -33,10 +33,10 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   full-page parent links use the palette format and `boardMemberEntrySearch`.
 - A thread opened in the panel is a `SessionChatInterface` whose workspace session
   is the thread itself. Never use a `side-session:` tab id: closing it deletes the Session.
-- `useBoardSessionNavigation` owns every in-Board session entry: cards, links,
-  relations, breadcrumbs, rows and the palette. Only same-Board members open in the panel;
-  other targets, narrow windows and expanded pages navigate normally. Direct children
-  (Tab/Side Chat) use `opensInCoordinatorPage`, never a second surface.
+- `useBoardSessionNavigation` scopes cards, relations, breadcrumbs, rows and palette:
+  only members open in-panel; outside, narrow and expanded targets use pages.
+  Page-bound resource links retain the original exact-tab deep-link path.
+  Coordinator children use `opensInCoordinatorPage`, never a second surface.
 - Thread rows group opened sessions and Tabs by the family's strongest state.
 - Board entries reset to half and half with `layoutResetKey` (Board id + entry),
   without remounting or persisting the split.

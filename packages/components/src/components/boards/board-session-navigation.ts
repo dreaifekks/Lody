@@ -10,6 +10,7 @@ import { opensInCoordinatorPage } from './board-threads';
 /** The mounted Board page also owns navigation from the global command palette. */
 export const boardSessionNavigationAtom = atom<{
   boardId: BoardMeta['id'];
+  destination: (target: SessionNavigationTarget) => ReturnType<typeof boardSessionDestination>;
   open: (target: SessionNavigationTarget) => void;
 } | null>(null);
 
@@ -40,10 +41,14 @@ export function useBoardSessionNavigation({
   openPage: (target: SessionNavigationTarget) => void;
 }) {
   const store = useStore();
-  const open = useStableCallback((target: SessionNavigationTarget) => {
+  const destination = useStableCallback((target: SessionNavigationTarget) => {
     const exactId = target.tabSessionId ?? target.sessionId;
     const session = store.get(sessionMetaAtomFamily(getSessionRoomId(exactId)));
-    switch (boardSessionDestination(board, session, narrow)) {
+    return boardSessionDestination(board, session, narrow);
+  });
+  const open = useStableCallback((target: SessionNavigationTarget) => {
+    const exactId = target.tabSessionId ?? target.sessionId;
+    switch (destination(target)) {
       case 'panel':
         openPanel(exactId);
         return;
@@ -57,12 +62,12 @@ export function useBoardSessionNavigation({
   });
   useEffect(() => {
     if (!board) return undefined;
-    const navigation = { boardId: board.id, open };
+    const navigation = { boardId: board.id, destination, open };
     store.set(boardSessionNavigationAtom, navigation);
     return () => {
       if (store.get(boardSessionNavigationAtom) === navigation)
         store.set(boardSessionNavigationAtom, null);
     };
-  }, [board, open, store]);
+  }, [board, destination, open, store]);
   return open;
 }

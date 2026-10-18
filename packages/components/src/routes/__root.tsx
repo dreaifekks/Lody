@@ -416,7 +416,7 @@ function navigateToResolvedPath(navigate: ReturnType<typeof useNavigate>, path: 
   void navigate({ to, search, replace: true });
 }
 
-function SessionDeepLinkRouter() {
+export function SessionDeepLinkRouter() {
   const store = useStore();
   const navigationTarget = useAtomValue(pendingSessionLinkAtom);
   const location = useLocation();

@@ -355,6 +355,11 @@ hover 归档和行菜单仍保留，归档遵循共享确认流程。
 普通会话按原页面路径跳转，命令面板保留 Board entry search。主会话的直接
 Tab／Side Chat 选中原有挂载位置。窄窗口和展开后的线程完整页仍按页面跳转；放大按钮
 明确打开完整页。不为线程生成 `side-session:` tab 身份。
+会话链接先读取 `destination(target)`，仅 panel／coordinator 目标交给看板打开；page 目标
+保留 `openSessionDeepLink` 的显式 `session:<id>`，避免恢复目标页上次的子 Tab，并保留
+元数据等待与超时处理。其他入口不变。回归测试挂载真实深链路由器、会话路由的 beforeLoad
+及内存 history，先证明普通入口恢复旧子 Tab，再点击看板内链接验证精确根 Tab；同时覆盖
+目标元数据已到与未到两种情况。
 
 面板线程原来缺少文件打开回调，Markdown 因而复制路径。现在提供只识别看板目录的
 文件打开入口：链接建立可关闭的右侧查看 tab，但内容复用看板预览，以成员身份和

@@ -32,13 +32,17 @@ export function SessionLinkProvider({
   enabled: boolean;
   children: ReactNode;
 }) {
+  // Resource links always select their exact target, including in this workspace.
+  // Ordinary related-session navigation may instead restore the last active tab.
+  // Only panel/coordinator destinations are handled inside the mounted Board page.
   const store = useStore();
   const navigate = useStableCallback(
     (target: SessionNavigationTarget & Pick<SessionLink, 'workspaceId'>) => {
       const boardNavigation = store.get(boardSessionNavigationAtom);
       if (
         boardNavigation &&
-        (!target.workspaceId || target.workspaceId === store.get(currentWorkspaceIdAtom))
+        (!target.workspaceId || target.workspaceId === store.get(currentWorkspaceIdAtom)) &&
+        boardNavigation.destination(target) !== 'page'
       ) {
         boardNavigation.open(target);
       } else openSessionDeepLink(target);
