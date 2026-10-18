@@ -73,7 +73,10 @@ export default defineConfig(({ mode }) => {
     throw new Error(`The public Electron workspace only supports --mode ${OSS_BUILD_MODE}`)
   }
 
-  const buildEnv = { ...OSS_BUILD_ENV }
+  const buildEnv = {
+    ...OSS_BUILD_ENV,
+    VITE_LODY_MAC_LOCAL_TEST: process.env.LODY_MAC_LOCAL_TEST === '1' ? '1' : '0'
+  }
   const viteEnvDefine = {
     ...buildViteEnvDefine(buildEnv)
   }

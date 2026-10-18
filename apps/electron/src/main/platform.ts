@@ -16,7 +16,8 @@ export const mainPlatformKind: PlatformKind = resolvePlatformKind(
 )
 export const desktopInstallationProfile = resolveDesktopProfile(
   getInstallationProfile(mainPlatformKind),
-  import.meta.env.VITE_LODY_RELEASE_CHANNEL
+  import.meta.env.VITE_LODY_RELEASE_CHANNEL,
+  import.meta.env.VITE_LODY_MAC_LOCAL_TEST === '1'
 )
 
 export function isLocalPlatform(): boolean {

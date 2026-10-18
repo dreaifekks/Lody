@@ -3,6 +3,10 @@
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
 Parent [module rules](../AGENTS.md) apply.
 
+The opt-in Mac test build must select its own desktop identity and set its CLI
+data root/host port in bootstrap, before stores or logs open. Finder launches
+must stay isolated without shell overrides. See [local test builds](../../../../DEV.md#local-macos-test-application).
+
 Main authentication uses `auth-fetch.ts` with Electron Chromium networking after
 app readiness. Preserve Better Auth cookie hooks and cancellation; never bypass
 certificate verification. Behavior: [login Spec](../../../../specs/desktop-browser-login.md).

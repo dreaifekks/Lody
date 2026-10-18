@@ -59,3 +59,29 @@ void test('the local desktop shares no desktop state with the hosted one', () =>
   assert.notEqual(oss.desktopStoreName, hosted.desktopStoreName)
   assert.equal(hosted.desktopStoreName, 'lody-desktop')
 })
+
+void test('the Mac test build isolates desktop stores, locks and protocol registration', () => {
+  const local = {
+    ...cloud,
+    platform: 'local',
+    namespace: 'lody-oss',
+    desktopProtocol: 'lody-oss',
+    desktopProductName: 'Lody OSS',
+    desktopAppId: 'dev.loro.lody.oss'
+  }
+  const installed = resolveDesktopProfile(local)
+  const testing = resolveDesktopProfile(local, undefined, true)
+  for (const field of [
+    'desktopProtocol',
+    'desktopAppId',
+    'desktopUserDataName',
+    'desktopStoreName',
+    'desktopIpcNamespace'
+  ]) {
+    assert.notEqual(testing[field], installed[field], field)
+  }
+  assert.equal(testing.desktopProductName, 'Lody Test')
+  assert.equal(getDesktopCallbackProtocol(testing), 'lody-test')
+  assert.equal(testing.releaseChannel, 'local')
+  assert.equal(resolveDesktopProfile(local).desktopUserDataName, 'Lody OSS')
+})

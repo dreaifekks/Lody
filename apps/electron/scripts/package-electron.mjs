@@ -130,6 +130,7 @@ const localSparkleFeed = Boolean(configuredSparkleFeedUrl?.trim())
 // let the application load its own frameworks, so the application is signed
 // with the entitlements it has plus that one exception.
 const selfSigned = process.env.LODY_MAC_SELF_SIGNED === '1'
+const macLocalTest = process.env.LODY_MAC_LOCAL_TEST === '1'
 const selfSignedEntitlementsPath = path.join(generatedConfigDirectory, 'entitlements.mac.plist')
 if (selfSigned) {
   writeFileSync(
@@ -140,8 +141,19 @@ if (selfSigned) {
 }
 const generatedConfig = {
   extends: baseConfigPath,
+  ...(macLocalTest
+    ? {
+        appId: 'dev.loro.lody.test',
+        productName: 'Lody Test',
+        // An object replaces the base array; two arrays would concatenate and
+        // advertise the installed app's lody/lody-oss handlers as well.
+        protocols: { name: 'Lody Test', schemes: ['lody-test'] },
+        directories: { output: 'dist/local-test' }
+      }
+    : {}),
   extraMetadata: { version },
   mac: {
+    ...(macLocalTest ? { identity: null, notarize: false } : {}),
     ...(selfSigned ? { entitlements: selfSignedEntitlementsPath } : {}),
     extendInfo: {
       SUFeedURL: sparkleFeedUrl,

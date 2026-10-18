@@ -27,7 +27,8 @@ export function getDesktopCallbackProtocol(
 /** Desktop identity is separate from the CLI's shared installation namespace. */
 export function resolveDesktopProfile(
   installation: InstallationProfile,
-  configuredChannel?: string
+  configuredChannel?: string,
+  macLocalTest = false
 ): DesktopProfile {
   if (installation.platform === 'local' && configuredChannel) {
     throw new Error('Local desktop cannot select a cloud release channel')
@@ -59,6 +60,16 @@ export function resolveDesktopProfile(
         : null,
     desktopStoreName: installation.platform === 'local' ? 'lody-oss-desktop' : 'lody-desktop',
     desktopIpcNamespace: nightly ? 'lody-nightly' : installation.namespace,
-    releaseChannel: channel as DesktopProfile['releaseChannel']
+    releaseChannel: channel as DesktopProfile['releaseChannel'],
+    ...(macLocalTest
+      ? {
+          desktopProtocol: 'lody-test',
+          desktopProductName: 'Lody Test',
+          desktopAppId: 'dev.loro.lody.test',
+          desktopUserDataName: 'Lody Test',
+          desktopStoreName: 'lody-test-desktop',
+          desktopIpcNamespace: 'lody-test'
+        }
+      : {})
   }
 }

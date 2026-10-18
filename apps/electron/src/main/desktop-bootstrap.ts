@@ -7,6 +7,14 @@ import { enableRendererHangStacks } from './renderer-hang-diagnostics'
 import { registerLocalFileResourceScheme } from './services/local-file-resource-protocol'
 import { initialDevbarControl } from './services/devbar/control'
 
+// Baked into local test bundles, so Finder/open launches need no shell env.
+// Set this before logging, auth stores or the embedded CLI read their paths.
+if (import.meta.env.VITE_LODY_MAC_LOCAL_TEST === '1') {
+  process.env.LODY_DATA_DIR = join(app.getPath('home'), '.lody-test')
+  process.env.LODY_E2E = '1'
+  process.env.LODY_E2E_LOCAL_CLI_HOST_PORT = '27789'
+}
+
 // This module must be the first main entry import: auth/onboarding modules open
 // stores during module evaluation, before index.ts's own statements execute.
 if (desktopInstallationProfile.desktopUserDataName) {

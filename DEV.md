@@ -1,5 +1,38 @@
 # Development conventions
 
+## Local macOS test application
+
+On an Apple Silicon Mac with Xcode command-line tools, the supported Node version
+and Corepack, use a dedicated clone whose `origin` is your fork:
+
+```sh
+bash scripts/mac-local-test-build.sh
+```
+
+Quit **Lody Test** before rerunning. The script fetches and merges `origin/lan-hub`
+into the current branch, updates submodules, installs the frozen dependencies,
+prepares ACP adapters, builds and packages arm64 only, then opens
+`apps/electron/dist/local-test/mac-arm64/Lody Test.app`. Resolve merge conflicts
+in that clone normally. Dependencies and build caches are retained; the renderer
+still rebuilds. Nothing is installed into `/Applications`, tagged or published.
+No signing identity, notarization or DMG is used. The existing packaging hook
+retains ad-hoc signing for local execution; it uses no certificate or Apple account.
+
+The build-time test profile isolates the app ID (`dev.loro.lody.test`), protocol
+(`lody-test`), userData/single-instance lock (`~/Library/Application Support/Lody Test`),
+adjacent desktop stores (`lody-test-desktop`), CLI data (`~/.lody-test`) and CLI host
+port (`27789`). These defaults are baked in, so opening the app from Finder needs
+no environment variables. The CLI port uses the existing `LODY_E2E` override;
+the packaged desktop still follows its normal startup and single-instance path.
+The build has no LAN release stamp and therefore follows no release updater.
+
+The test installation starts empty and does not copy credentials or join a LAN.
+An independent data root gives it a new machine identity. Joining a real LAN in
+Settings shares its live writable catalog; it is not a read-only preview and may
+run catalog reconciliation. Prefer an isolated LAN/snapshot for migration tests.
+Join the real LAN only when that shared-data effect is intended, using a distinct
+machine name. Never point this app at the installed application's data directory.
+
 ## Platform boundary
 
 The OSS desktop composition is local by construction. Platform selection is
