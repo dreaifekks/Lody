@@ -91,6 +91,11 @@ import { rehypeHeadingAnchors } from './markdown-heading-anchors';
 
 export { createMarkdownMermaidConfig } from './markdown-mermaid';
 
+/** A containing surface may open its own file scope without claiming workspace paths. */
+export const AgentFileLinkOpenContext = createContext<
+  ((href: string) => (() => void) | undefined) | undefined
+>(undefined);
+
 /**
  * Conversation surfaces provide this capability at their boundary. Rendering
  * Markdown elsewhere (shared pages, file previews) deliberately has no native
@@ -1011,11 +1016,16 @@ const AgentFileLink = ({
   getContextMenuItems?: (href: string) => readonly MarkdownAgentFileLinkMenuItem[];
 }) => {
   const [didCopy, setDidCopy] = useState(false);
-  const hasOpenAction = Boolean(onFilePathClick);
+  const scopedOpen = useContext(AgentFileLinkOpenContext)?.(href);
+  const hasOpenAction = Boolean(scopedOpen || onFilePathClick);
   const iconPath = parseMarkdownAgentFileHref(href)?.filePath ?? href;
   const contextMenuItems = getContextMenuItems?.(href) ?? [];
 
   const handleClick = useCallback(async () => {
+    if (scopedOpen) {
+      scopedOpen();
+      return;
+    }
     if (onFilePathClick) {
       onFilePathClick(href);
       return;
@@ -1026,7 +1036,7 @@ const AgentFileLink = ({
 
     setDidCopy(true);
     window.setTimeout(() => setDidCopy(false), 1200);
-  }, [href, onFilePathClick]);
+  }, [href, onFilePathClick, scopedOpen]);
 
   const link = (
     <button

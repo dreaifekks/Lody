@@ -4507,6 +4507,7 @@
   "mention.session.scope.label": "会话项目范围",
   "mention.session.scope.viewAll": "查看全部项目",
   "mention.session.scope.showAllAria": "显示全部项目的会话",
+  "mention.session.empty.board": "此看板中没有其他会话。",
   "mention.session.empty.current": "当前项目没有其他会话。",
   "mention.session.empty.none": "没有其他无项目会话。",
   "errorBoundary.title": "Lody 没能显示这个页面",

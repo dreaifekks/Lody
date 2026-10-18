@@ -473,3 +473,34 @@ header was also checked. These are synthetic Storybook checks, not daemon E2E.
 The hover archive and row menus remain available with shared archive confirmation.
 
 The final combined `pnpm check` passed after incorporating the visual corrections.
+
+## Thread controls: second UI pass (2026-10-18)
+
+The Board glyph is a flex sibling of the tab status/agent slot, not inline title text.
+The panel header already has a centered flex row. Lists and sidebar rows remain glyph-free.
+Only coordinator conversation cards retain a quiet 14px Check: the existing status
+projection is `idle`, `lastMessageAt` exists, and unread is false. Waiting, activity and
+unread use `SessionRowStatusIndicator` first; rows never acquire a done state or documents.
+
+`useBoardSessionNavigation` gives cards, relationship menus, resource links, parent
+breadcrumbs, rows (including Go to Opener) and the in-Board command palette one policy.
+Side mode opens the exact target in the panel; coordinator children select their existing
+Tab/Side Chat. Narrow windows and expanded thread pages retain page routing. The maximize
+button explicitly opens the page. No thread is assigned a `side-session:` tab identity.
+
+The panel thread lacked a file-open callback, so Markdown copied every file path.
+It now receives a scoped Board file opener. Recognized Board links create ordinary
+closeable viewer tabs, but render the existing Board preview and read/download member
+resources with `boardId`. They bypass the session file provider and tree listing limit;
+Files-tree opens keep the inline Board preview. Missing or cross-workspace catalog rows stay
+in Board preview scope and show unavailable. No filesystem access is added to the renderer.
+
+Session mentions use Board identity ahead of project identity, including members on other
+projects. The current scope displays the Board name. Other Boards also get distinct keys;
+all-project scope stays flat and hydration/expansion retain the complete candidate list.
+
+Behavioral coverage extends the Board, relation-card, tab-bar and mention suites for
+navigation destinations, existing child surfaces, member file reads/errors and status
+transitions. `CompletedThreadCard` and `AssignedThreadsSidePanel` render real components
+with synthetic metadata; the latter uses the product navigation hook. Real desktop visual
+review and daemon end-to-end validation remain outside this implementation pass.

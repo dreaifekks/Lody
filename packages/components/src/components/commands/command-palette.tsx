@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from '@tanstack/react-router';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useStore } from 'jotai';
+import { boardSessionNavigationAtom } from '../boards/board-session-navigation';
 import {
   commands,
   useCommandPaletteState,
@@ -43,6 +44,7 @@ const MAX_SESSION_RESULTS = 8;
 export function CommandPalette() {
   const { t } = useTranslation();
   const router = useRouter();
+  const store = useStore();
   const workspaceSlug = useAtomValue(currentWorkspaceSlugAtom);
   const [open, setOpen] = useCommandPaletteState();
   const [query, setQuery] = useState('');
@@ -90,6 +92,11 @@ export function CommandPalette() {
     (session: SessionListEntry) => {
       if (!workspaceSlug) return;
       handleOpenChange(false);
+      const boardNavigation = store.get(boardSessionNavigationAtom);
+      if (boardNavigation) {
+        boardNavigation.open({ sessionId: session.id });
+        return;
+      }
       const board = session.boardId ? activeBoards.get(session.boardId) : undefined;
       if (!board) {
         void router.navigate({
@@ -104,7 +111,7 @@ export function CommandPalette() {
         search: boardMemberEntrySearch(board, session.id),
       });
     },
-    [activeBoards, handleOpenChange, router, workspaceSlug]
+    [activeBoards, handleOpenChange, router, store, workspaceSlug]
   );
 
   const resolveLabel = useCallback(

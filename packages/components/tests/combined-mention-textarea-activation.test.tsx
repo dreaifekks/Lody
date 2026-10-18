@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 
 import React, { act } from 'react';
+import { Provider, createStore } from 'jotai';
+import { sessionMetaCacheAtom } from '../src/atoms/doc-meta';
+import { getSessionRoomId, type SessionMeta, type SessionId } from '@lody/shared';
+const boardCatalog = vi.hoisted(() => ({ boards: [] as { id: string; name: string }[] }));
+vi.mock('../src/hooks/use-workspace-catalog', () => ({ useWorkspaceCatalog: () => boardCatalog }));
 import {
   buildMentionFileIndex,
   getSuggestions,
@@ -25,7 +30,7 @@ const sessionItems: Array<{
   title: string;
   slug: string;
   activityAt?: number;
-  projectKey: 'chat' | `github:${string}` | `local:${string}:${string}`;
+  projectKey: `board:${string}` | 'chat' | `github:${string}` | `local:${string}:${string}`;
 }> = [];
 
 vi.mock('../src/components/mentions/mention-project-file-source', async (importOriginal) => ({
@@ -82,6 +87,7 @@ describe('CombinedMentionTextarea mention enablement and activation', () => {
     skillScanEnabled.length = 0;
     skillItems.length = 0;
     sessionItems.length = 0;
+    boardCatalog.boards = [];
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -104,6 +110,8 @@ describe('CombinedMentionTextarea mention enablement and activation', () => {
     value: string;
     skillAgent?: { machineId?: string; cliType?: string };
     mentionSource?: unknown;
+    currentSessionId?: string;
+    store?: ReturnType<typeof createStore>;
     commandsEnabled?: boolean;
     availableCommands?: Array<{ name: string; description: string }>;
   }) {
@@ -118,12 +126,17 @@ describe('CombinedMentionTextarea mention enablement and activation', () => {
           commandsEnabled={props.commandsEnabled}
           availableCommands={props.availableCommands}
           resetOnEmpty={false}
+          currentSessionId={props.currentSessionId}
         />
       );
     }
 
     await act(async () => {
-      root.render(<ControlledComposer />);
+      root.render(
+        <Provider store={props.store ?? createStore()}>
+          <ControlledComposer />
+        </Provider>
+      );
     });
   }
 
@@ -348,6 +361,31 @@ describe('CombinedMentionTextarea mention enablement and activation', () => {
       );
     });
     expect(highlightedRowText()).toContain('Second session');
+  });
+
+  it('labels the current Board scope with its name and keeps other chats outside it', async () => {
+    const store = createStore();
+    boardCatalog.boards = [{ id: 'bd_one', name: 'Release Board' }];
+    store.set(sessionMetaCacheAtom, {
+      [getSessionRoomId('self' as SessionId)]: { id: 'self', boardId: 'bd_one' } as SessionMeta,
+    });
+    sessionItems.push(
+      { sessionId: 'main', title: 'Board coordinator', slug: 'main', projectKey: 'board:bd_one' },
+      { sessionId: 'thread', title: 'Board worker', slug: 'thread', projectKey: 'board:bd_one' },
+      { sessionId: 'chat', title: 'Ungrouped chat', slug: 'chat', projectKey: 'chat' }
+    );
+    await render({ value: '', currentSessionId: 'self', store });
+    await typeInto('@session:');
+    expect(document.body.textContent).toContain('Release Board');
+    expect(document.body.textContent).toContain('Board coordinator');
+    expect(document.body.textContent).toContain('Board worker');
+    expect(document.body.textContent).not.toContain('No project');
+    expect(document.body.textContent).not.toContain('Ungrouped chat');
+    const all = [...document.querySelectorAll<HTMLButtonElement>('[role="group"] button')].find(
+      (button) => button.textContent === 'All projects'
+    )!;
+    await act(async () => all.click());
+    expect(document.body.textContent).toContain('Ungrouped chat');
   });
 
   it('starts in the current project and toggles without losing query or focus', async () => {

@@ -20,7 +20,10 @@ import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { localMachineIdAtom } from '@/atoms/local-probe';
 import { MarkdownRenderer } from '@/components/ai-gui/markdown-renderer';
 import { useStableNow } from '@/hooks/use-stable-now';
-import { BoardDirectoryFileProvider } from '@/lib/board-directory-file-provider';
+import {
+  BoardDirectoryFileProvider,
+  type BoardFileLinkTarget,
+} from '@/lib/board-directory-file-provider';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { toast } from '@/lib/toast';
@@ -137,13 +140,16 @@ export function useBoardDirectoryFileProvider(board: BoardMeta) {
  * Saves a file of the directory where the user chooses, whatever its size,
  * from the machine that keeps it. `null` where no agent service is reachable.
  */
-export function useBoardFileDownload(board: BoardMeta, area: BoardFileArea) {
+export function useBoardFileDownload(
+  board: BoardMeta,
+  area: BoardFileArea,
+  sessionId = board.coordinatorSessionId
+) {
   const { t } = useTranslation();
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
   const metas = useAtomValue(sessionMetaCacheAtom);
   const host = boardFilesMachineId(board, metas[getSessionRoomId(board.coordinatorSessionId)]);
   const boardId = board.id;
-  const sessionId = board.coordinatorSessionId;
   return useMemo(() => {
     const ipc = getIpcServices();
     if (!ipc || !workspaceId || !host) return null;
@@ -301,6 +307,31 @@ type Preview =
   | { status: 'image'; url: string }
   | { status: 'none'; reason?: string };
 
+/** A link keeps Board scope even before its catalog row is available. */
+export function BoardFileLinkPreview({
+  target,
+  memberSessionId,
+  onClose,
+}: {
+  target: BoardFileLinkTarget;
+  memberSessionId: import('@lody/shared').SessionId;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  return target.board ? (
+    <BoardFilePreview
+      board={target.board}
+      area={target.area}
+      entry={{ path: target.path }}
+      memberSessionId={memberSessionId}
+      onBack={onClose}
+      backLabel={t('sessions.tabs.closeTab', 'Close tab')}
+    />
+  ) : (
+    <p {...stylex.props(styles.note)}>{t('boards.notFound', 'Board not found.')}</p>
+  );
+}
+
 /**
  * One file of the directory, read through this machine's agent service like
  * any file of another LAN member. Text and pictures show; anything else is
@@ -312,10 +343,12 @@ export function BoardFilePreview({
   entry,
   onBack,
   backLabel,
+  memberSessionId = board.coordinatorSessionId,
 }: {
   board: BoardMeta;
   area: BoardFileArea;
-  entry: BoardFileEntry;
+  entry: Pick<BoardFileEntry, 'path'> & Partial<Pick<BoardFileEntry, 'modifiedAtMs'>>;
+  memberSessionId?: import('@lody/shared').SessionId;
   onBack: () => void;
   backLabel: string;
 }) {
@@ -337,7 +370,7 @@ export function BoardFilePreview({
       const resource = await ipc.machineRpc.openMemberFile({
         workspaceId,
         machineId: host,
-        sessionId: board.coordinatorSessionId,
+        sessionId: memberSessionId,
         boardId: board.id,
         path: `${area}/${entry.path}`,
       });
@@ -363,17 +396,9 @@ export function BoardFilePreview({
     return () => {
       cancelled = true;
     };
-  }, [
-    area,
-    board.coordinatorSessionId,
-    board.id,
-    entry.modifiedAtMs,
-    entry.path,
-    host,
-    workspaceId,
-  ]);
+  }, [area, memberSessionId, board.id, entry.modifiedAtMs, entry.path, host, workspaceId]);
 
-  const download = useBoardFileDownload(board, area);
+  const download = useBoardFileDownload(board, area, memberSessionId);
 
   let body: ReactNode;
   if (preview.status === 'loading')

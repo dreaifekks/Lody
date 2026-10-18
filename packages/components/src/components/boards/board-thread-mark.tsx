@@ -14,9 +14,7 @@ const styles = stylex.create({
   mark: {
     width: '12px',
     height: '12px',
-    display: 'inline-block',
-    verticalAlign: 'middle',
-    marginInlineEnd: '4px',
+    display: 'block',
     flexShrink: 0,
     color: colors.secondaryLabel,
   },

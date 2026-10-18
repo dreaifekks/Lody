@@ -79,6 +79,8 @@ export function BoardThreadStatusCard({
         onClick={onNavigateSession ? () => onNavigateSession({ sessionId }) : undefined}
       >
         <span {...stylex.props(taskStyles.line)}>
+          <span {...stylex.props(styles.title)}>{title}</span>
+          {where ? <span {...stylex.props(styles.detail)}>· {where}</span> : null}
           <span aria-hidden="true" {...stylex.props(taskStyles.mark)}>
             {session ? (
               <BoardThreadStatusMark
@@ -89,11 +91,10 @@ export function BoardThreadStatusCard({
                   collaborationStopped: session.collaborationStopped === true,
                 })}
                 unread={sessionHasUnreadMessages(session)}
+                completed={session.lastMessageAt !== undefined}
               />
             ) : null}
           </span>
-          <span {...stylex.props(styles.title)}>{title}</span>
-          {where ? <span {...stylex.props(styles.detail)}>· {where}</span> : null}
         </span>
       </Button>
     </div>

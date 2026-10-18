@@ -1,3 +1,4 @@
+import { isBoardThread } from '../boards/board-thread-mark';
 import { BoardThreadHeader } from '../boards/board-panel-view';
 import { useBoardMaintenanceRequest } from '../boards/board-lifecycle';
 import { BoardMembershipDialog } from '../boards/board-membership-dialog';
@@ -6986,6 +6987,7 @@ export const SessionChatInterface = memo(
                   </ErrorBoundary>
                 ) : headerVariant === 'board-thread' ? (
                   <BoardThreadHeader
+                    showBoardMark={isBoardThread(session)}
                     title={session.title || t('boards.untitled', 'Untitled session')}
                     parentThread={headerParentThread}
                     location={headerLocation}

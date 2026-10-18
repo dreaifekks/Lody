@@ -1,3 +1,7 @@
+import { BoardThreadStatusCard } from '@/components/boards/board-thread-status-card';
+import { useBoardSessionNavigation } from '@/components/boards/board-session-navigation';
+import type { SessionNavigationTarget } from '@/lib/session-navigation';
+import * as stylex from '@stylexjs/stylex';
 import { BoardThreadParentBreadcrumb } from '@/components/boards/board-thread-breadcrumb';
 /**
  * Boards: the coordinator page with its Board side panel, the sidebar Boards
@@ -998,6 +1002,8 @@ export const InboxReports: Story = {
  * with a message are one line.
  */
 const assignedStore = createStore();
+assignedStore.set(experimentalFeaturesEnabledAtom, true);
+assignedStore.set(boardExperimentEnabledAtom, true);
 assignedStore.set(sessionMetaCacheAtom, {
   [getSessionRoomId(COORDINATOR)]: coordinatorSession,
   ...Object.fromEntries(members.map((session) => [getSessionRoomId(session.id), session])),
@@ -1022,9 +1028,13 @@ assignedStore.set(
   )
 );
 const assigned = [THREAD, 'thread-rounds', 'thread-memory', 'thread-ios', 'thread-entry-review'];
-export const AssignedThreads: Story = {
-  render: () => (
-    <Provider store={assignedStore}>
+function AssignedThreadCards({
+  onNavigateSession,
+}: {
+  onNavigateSession: (target: SessionNavigationTarget) => void;
+}) {
+  return (
+    <>
       <MessageRowView
         sessionId={COORDINATOR}
         message={{
@@ -1043,7 +1053,7 @@ export const AssignedThreads: Story = {
             },
           ],
         }}
-        onNavigateSession={() => {}}
+        onNavigateSession={onNavigateSession}
       />
       <MessageRowView
         sessionId={COORDINATOR}
@@ -1060,8 +1070,74 @@ export const AssignedThreads: Story = {
             },
           ],
         }}
-        onNavigateSession={() => {}}
+        onNavigateSession={onNavigateSession}
       />
+    </>
+  );
+}
+export const AssignedThreads: Story = {
+  render: () => (
+    <Provider store={assignedStore}>
+      <AssignedThreadCards onNavigateSession={() => {}} />
+    </Provider>
+  ),
+};
+export const CompletedThreadCard: Story = {
+  render: () => (
+    <Provider store={assignedStore}>
+      <BoardThreadStatusCard sessionId={THREAD} onNavigateSession={() => {}} />
+    </Provider>
+  ),
+};
+const navigationStoryStyles = stylex.create({
+  split: { display: 'grid', gridTemplateColumns: '1fr 1fr', height: '600px' },
+  column: { minWidth: 0, overflow: 'auto' },
+});
+function AssignedThreadsNavigation() {
+  const [openId, setOpenId] = useState<SessionId | null>(null);
+  const open = useBoardSessionNavigation({
+    board,
+    narrow: false,
+    openPanel: setOpenId,
+    showInCoordinatorPage: () => setOpenId(null),
+    openPage: (target) => setOpenId(target.tabSessionId ?? target.sessionId),
+  });
+  const thread = members.find((item) => item.id === openId);
+  return (
+    <div {...stylex.props(navigationStoryStyles.split)}>
+      <div {...stylex.props(navigationStoryStyles.column)}>
+        <AssignedThreadCards onNavigateSession={open} />
+      </div>
+      <div {...stylex.props(navigationStoryStyles.column)}>
+        {thread ? (
+          <BoardThreadPaneView
+            title={thread.title!}
+            location="devnuc · Lody"
+            onBack={() => setOpenId(null)}
+            onOpenFull={() => {}}
+          >
+            <ChatSurface
+              sessionId={thread.id}
+              messages={threadMessages}
+              placeholder="回复这个线程…"
+            />
+          </BoardThreadPaneView>
+        ) : (
+          <BoardThreadListView
+            threads={threads}
+            now={new Date(NOW)}
+            onOpen={(id) => open({ sessionId: id as SessionId })}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+/** Cards and rows use the product navigation hook; only session data is synthetic. */
+export const AssignedThreadsSidePanel: Story = {
+  render: () => (
+    <Provider store={assignedStore}>
+      <AssignedThreadsNavigation />
     </Provider>
   ),
 };

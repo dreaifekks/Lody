@@ -3,50 +3,50 @@
 Parent instructions apply. `CLAUDE.md` symlinks here; edit `AGENTS.md` only.
 Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 
-- Board rows share the workspace Flock catalog and its durability/upload split.
-  Membership is `SessionMeta.boardId`, never a second member list.
-- CLI/MCP independent creates inherit the invoking session's board; contained Tabs
-  inherit only their parent, including when that parent has no Board. The renderer's `createSession` and `startSession` must do
-  this too. Never inherit `boardRole` or `boardGeneration` implicitly.
-- The 50-Board limit counts only unarchived rows and is checked in the catalog
-  writer, on create and on restore.
+- Boards use the workspace Flock catalog and its durability/upload split.
+  `SessionMeta.boardId` alone owns membership.
+- Independent creates inherit the invoking Board; contained Tabs inherit only
+  their parent, including no Board. Renderer `createSession`/`startSession` do too. Never inherit `boardRole` or `boardGeneration` implicitly.
+- The catalog writer enforces 50 unarchived Boards on create and restore.
 - A Board's conversations live in the Board: the sidebar, mobile home and Archive
   lists drop them with `isBoardSession` at their own sources, never in shared atoms
   (coordinators always; threads while the experiment is on). The palette shows a
   coordinator as its Board and a thread as "Board › thread". Every entry uses
   `boardEntrySearch` (the coordinator's own Tab, `?board=1`); a thread adds
-  `boardThread` (`boardMemberEntrySearch`). Both apply once and leave the URL; the page
-  clears it first, then hands `boardThread` to the panel, which opens it like its row.
-- A new Board has a name and a coordinator created without a first turn
-  (`createSession`); the goal is optional and the user speaks first. Its row records
+  `boardThread` (`boardMemberEntrySearch`). Clear these before opening the member
+  like its row. In-Board entries use the mounted navigation hook.
+- A new Board has a name, optional goal and coordinator created without a first
+  turn (`createSession`); the user speaks first. The row records
   `files.machineId`, the coordinator's machine. Closing the coordinator's Tab never
   deletes it as an empty session (`closeSessionTab`).
 - The panel's thread rows use visible metadata and one derived presence atom; they
   never acquire member documents. Live activity takes priority over waiting markers;
   without presence, only a marker newer than `lastMessageAt` means waiting. Thread
   and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
-  a Board row aggregates every member, coordinator included. No extra "done" state.
+  Board rows aggregate all members. Rows have no "done" mark.
+  Conversation cards alone show a secondary 14px Check for idle, read threads with
+  `lastMessageAt`; waiting, working and unread keep precedence.
   localProject catalogs are acquired at list level, once per machine.
 - `BoardSidebar` selects by Session/Tab `boardId`; scalar reads, memoized rows.
 - Thread rows reuse sidebar actions (no pin) and `SessionHeaderMenu`. Board glyph:
   headers/page tabs only. Back (`boardEntrySearch`) never on coordinator pages;
-  parent links use the palette format and `boardMemberEntrySearch`, not own Tabs.
+  full-page parent links use the palette format and `boardMemberEntrySearch`.
 - A thread opened in the panel is a `SessionChatInterface` whose workspace session
-  is the thread itself. Never give it a `side-session:` tab id: closing those
-  deletes the Session. Narrow windows open the thread's own page instead.
-- One conversation surface per Session: a direct child of the coordinator (Tab or
-  Side Chat) is already mounted by the page, so the panel selects it there
-  (`opensInCoordinatorPage`, for rows and `boardThread` alike).
+  is the thread itself. Never use a `side-session:` tab id: closing it deletes the Session.
+- `useBoardSessionNavigation` owns every in-Board session entry: cards, links,
+  relations, breadcrumbs, rows and the palette. Side mode opens in the panel;
+  narrow windows and expanded thread pages use page navigation. Direct children
+  (Tab/Side Chat) use `opensInCoordinatorPage`, never a second surface.
 - Thread rows keep a thread's opened sessions and Tabs under it, grouped by the
   family's strongest state.
-- A Board page remembers no split: it opens half and half on every entry, and
-  `layoutResetKey` (Board id + entry) resets it without remounting the page.
+- Board entries reset to half and half with `layoutResetKey` (Board id + entry),
+  without remounting or persisting the split.
 - The Files tab is the session file tree (`FileTreeProviderView`) over
-  `BoardDirectoryFileProvider`, with the shared notes one row above it; files open in
-  the Board preview, never a session viewer tab.
-- Panel and settings state belong to one Board: `BoardSidePanel` and `BoardSettings`
-  key themselves by workspace and Board id. Settings open from the conversation
-  header's gear, never from the panel.
+  `BoardDirectoryFileProvider`, with shared notes above it. Tree opens stay inside
+  Files; conversation links use closeable viewer tabs carrying `BoardFilePreview`.
+  Both read member resources with `boardId`, never the session filesystem provider.
+- `BoardSidePanel`/`BoardSettings` key state by workspace and Board id. Settings
+  open from the conversation header gear, never the panel.
 - The Board directory `<data dir>/boards/<ws>/<board>/{files,memory}/` lives on
   `boardFilesMachineId` (row, else the coordinator's machine). Only that machine
   serves it, after checking the asking session is a member in its own replica.

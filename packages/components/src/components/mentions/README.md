@@ -29,7 +29,10 @@ rules live in [AGENTS.md](AGENTS.md); the pipeline and its reasoning live in
   cancellable Worker, React lifecycle, and bounded path ranking.
 - `mention-session-source.ts` owns session slugs, candidates, the slug → id cache,
   hydration, the drop-time insertion, and the before-send expansion. Transfer
-  format and the self-drop check live in `lib/session-mention-drag.ts`.
+  format and the self-drop check live in `lib/session-mention-drag.ts`. Board membership
+  overrides project grouping; the current Board name labels the default menu scope,
+  and all-project scope still shows the full flat list. Other Boards also keep distinct
+  identities rather than joining the no-project scope.
 - `mention-agent-role-source.ts` owns the Agent Roles candidates, hydration, and
   the before-send rewrite. `useAgentRoleMentionItems` is the single owner of
   readable Roles and their availability: the menu shows disabled reasons after

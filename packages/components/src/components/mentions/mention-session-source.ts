@@ -1,4 +1,8 @@
 import * as React from 'react';
+import { useAtomValue } from 'jotai';
+import { getSessionRoomId } from '@lody/shared';
+import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
+import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { buildSessionLink } from '@lody/shared/session-link';
 import {
   hydrateSlugMentionsFromText,
@@ -46,7 +50,11 @@ export type SessionMentionItem = {
   projectKey: SessionMentionProjectKey;
 };
 
-export type SessionMentionProjectKey = `local:${string}:${string}` | `github:${string}` | 'chat';
+export type SessionMentionProjectKey =
+  | `local:${string}:${string}`
+  | `github:${string}`
+  | `board:${string}`
+  | 'chat';
 export type SessionMentionProjectScope = 'current' | 'all';
 
 function normalizeTitle(title: string | undefined): string {
@@ -80,8 +88,9 @@ function githubProjectKey(repoFullName: string | undefined): SessionMentionProje
 
 /** Stable project identity for grouping session candidates. */
 export function getSessionMentionProjectKey(
-  session: Pick<SessionMeta, 'machineId' | 'project' | 'repoFullName'>
+  session: Pick<SessionMeta, 'machineId' | 'project' | 'repoFullName' | 'boardId'>
 ): SessionMentionProjectKey {
+  if (session.boardId) return `board:${session.boardId}`;
   if (session.project?.kind === 'local') {
     return `local:${session.machineId}:${session.project.localProjectId}`;
   }
@@ -102,6 +111,24 @@ export function getMentionSourceProjectKey(
       : githubProjectKey(source.githubRepoFullName);
   }
   return 'chat';
+}
+
+/** Board membership takes precedence over the composer's project for menu scope. */
+export function useSessionMentionScope(
+  currentSessionId: string | null | undefined,
+  source: MentionProjectSource | undefined
+) {
+  const session = useAtomValue(
+    sessionMetaAtomFamily(currentSessionId ? getSessionRoomId(currentSessionId as SessionId) : '')
+  );
+  const { boards } = useWorkspaceCatalog();
+  const board = boards.find((entry) => entry.id === session?.boardId);
+  return {
+    key: session?.boardId
+      ? (`board:${session.boardId}` as const)
+      : getMentionSourceProjectKey(source),
+    label: board?.name,
+  };
 }
 
 /** Filter only the menu candidates; callers retain the complete item list for addressing. */

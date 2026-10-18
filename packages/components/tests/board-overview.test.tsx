@@ -1,4 +1,17 @@
 // @vitest-environment jsdom
+import {
+  useBoardSessionNavigation,
+  boardSessionNavigationAtom,
+} from '../src/components/boards/board-session-navigation';
+import { BoardFileLinkPreview } from '../src/components/boards/board-directory';
+import { resolveBoardFileLink } from '../src/lib/board-directory-file-provider';
+import {
+  MarkdownRenderer,
+  AgentFileLinkOpenContext,
+} from '../src/components/ai-gui/markdown-renderer';
+import { SessionLinkProvider } from '../src/components/ai-gui/session-link-context';
+import { BoardThreadStatusCard } from '../src/components/boards/board-thread-status-card';
+import { SessionRelationCard } from '../src/components/shared/session-relation-card';
 import { Toast } from '@lody/ui';
 import { toastManager } from '../src/lib/toast';
 import { BoardThreadMark } from '../src/components/boards/board-thread-mark';
@@ -1876,4 +1889,239 @@ describe('Board schedule scope', () => {
     ).toBe(false);
     expect(isScheduleBoardThread(next, testBoard())).toBe(true);
   });
+});
+
+describe('Board conversation navigation', () => {
+  it.each([
+    { mode: 'side', narrow: false, boardPage: true, destination: 'panel' },
+    { mode: 'narrow', narrow: true, boardPage: true, destination: 'page' },
+    { mode: 'expanded thread page', narrow: false, boardPage: false, destination: 'page' },
+  ])(
+    'opens cards and nested links in the $mode destination',
+    async ({ narrow, boardPage, destination }) => {
+      const store = createStore();
+      store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+      const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+      const thread = makeSession('thread');
+      const child = makeSession('child', { openedBySessionId: thread.id });
+      const tab = makeSession('tab', { parentSessionId: coordinator.id });
+      const side = makeSession('side', {
+        parentSessionId: coordinator.id,
+        childSessionPlacement: 'side-panel',
+      });
+      store.set(
+        sessionMetaCacheAtom,
+        Object.fromEntries(
+          [coordinator, thread, child, tab, side].map((session) => [
+            getSessionRoomId(session.id),
+            session,
+          ])
+        )
+      );
+      const board = testBoard();
+      function Page() {
+        const [shown, setShown] = useState('coordinator');
+        const open = useBoardSessionNavigation({
+          board: boardPage ? board : null,
+          narrow,
+          openPanel: (id) => setShown(`panel:${id}`),
+          showInCoordinatorPage: (target) =>
+            setShown(`coordinator:${target.tabSessionId ?? target.sessionId}`),
+          openPage: (target) => setShown(`page:${target.tabSessionId ?? target.sessionId}`),
+        });
+        return (
+          <SessionLinkProvider enabled>
+            <output>{shown}</output>
+            <BoardThreadStatusCard sessionId={thread.id} onNavigateSession={open} />
+            <SessionRelationCard
+              relation="opened-by"
+              label="Opener"
+              sessionTitle="thread"
+              actionLabel="Open parent"
+              onAction={() => open({ sessionId: thread.id })}
+            />
+            <MarkdownRenderer text="[Nested child](lody://session/child?workspace=ws)" />
+            <button onClick={() => open({ sessionId: coordinator.id, tabSessionId: tab.id })}>
+              Contained tab
+            </button>
+            <button onClick={() => open({ sessionId: side.id })}>Side chat</button>
+          </SessionLinkProvider>
+        );
+      }
+      const view = await mount(
+        <Provider store={store}>
+          <Page />
+        </Provider>
+      );
+      try {
+        await act(async () =>
+          view.host.querySelector<HTMLButtonElement>('[data-board-thread-card] button')!.click()
+        );
+        expect(view.host.querySelector('output')!.textContent).toBe(`${destination}:thread`);
+        await act(async () =>
+          view.host.querySelector<HTMLButtonElement>('[data-session-relation-card] button')!.click()
+        );
+        expect(view.host.querySelector('output')!.textContent).toBe(`${destination}:thread`);
+        if (boardPage) {
+          await act(async () =>
+            view.host.querySelector<HTMLButtonElement>('button[data-session-link]')!.click()
+          );
+          expect(view.host.querySelector('output')!.textContent).toBe(`${destination}:child`);
+          // The palette uses exactly the mounted page's navigation, including nested targets.
+          await act(async () =>
+            store.get(boardSessionNavigationAtom)!.open({ sessionId: thread.id })
+          );
+          expect(view.host.querySelector('output')!.textContent).toBe(`${destination}:thread`);
+        }
+        for (const [label, id] of [
+          ['Contained tab', 'tab'],
+          ['Side chat', 'side'],
+        ]) {
+          await act(async () =>
+            [...view.host.querySelectorAll('button')]
+              .find((button) => button.textContent === label)!
+              .click()
+          );
+          expect(view.host.querySelector('output')!.textContent).toBe(
+            `${boardPage && !narrow ? 'coordinator' : 'page'}:${id}`
+          );
+        }
+      } finally {
+        await view.unmount();
+      }
+      expect(store.get(boardSessionNavigationAtom)).toBeNull();
+    }
+  );
+});
+
+it.each(['files', 'memory'] as const)(
+  'opens a linked Board %s file through member reads and exposes read failures',
+  async (area) => {
+    const board = testBoard();
+    const store = createStore();
+    store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+    const coordinator = makeSession('coordinator', {
+      boardRole: 'coordinator',
+      machineId: 'devnuc',
+    });
+    store.set(sessionMetaCacheAtom, { [getSessionRoomId(coordinator.id)]: coordinator });
+    const href = `/data/boards/ws/bd_test/${area}/plan%20one.md:12`;
+    const ipc = installIpc({ [`file:${area}/plan one.md`]: '# Shared plan\n\nAuthorized bytes.' });
+    function FileTabs() {
+      const [file, setFile] = useState<ReturnType<typeof resolveBoardFileLink>>(null);
+      return (
+        <>
+          <AgentFileLinkOpenContext.Provider
+            value={(link) => {
+              const target = resolveBoardFileLink(link, 'ws', [board]);
+              return target ? () => setFile(target) : undefined;
+            }}
+          >
+            <MarkdownRenderer
+              text={`[Plan](${href}) [Missing](/data/boards/ws/bd_test/${area}/missing.md) [Workspace](src/main.ts)`}
+            />
+          </AgentFileLinkOpenContext.Provider>
+          {file && (
+            <section aria-label="File tab">
+              <BoardFileLinkPreview
+                key={file.filePath}
+                target={file}
+                memberSessionId={'thread' as SessionId}
+                onClose={() => setFile(null)}
+              />
+            </section>
+          )}
+        </>
+      );
+    }
+    const view = await mount(
+      <Provider store={store}>
+        <FileTabs />
+      </Provider>
+    );
+    try {
+      const button = (text: string) =>
+        [...view.host.querySelectorAll('button')].find((item) => item.textContent === text)!;
+      expect(button('Workspace').getAttribute('aria-label')).toContain('Copy agent file path');
+      expect(button('Plan').getAttribute('aria-label')).toContain('Open agent file');
+      await act(async () => button('Plan').click());
+      await vi.waitFor(() =>
+        expect(view.host.querySelector('[aria-label="File tab"] h1')?.textContent).toBe(
+          'Shared plan'
+        )
+      );
+      expect(view.host.textContent).toContain('Authorized bytes.');
+      expect(ipc.requests).toContainEqual({
+        method: 'openMemberFile',
+        params: {
+          workspaceId: 'ws',
+          machineId: 'devnuc',
+          sessionId: 'thread',
+          boardId: 'bd_test',
+          path: `${area}/plan one.md`,
+        },
+      });
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('[aria-label="Close tab"]')!.click()
+      );
+      expect(view.host.querySelector('[aria-label="File tab"]')).toBeNull();
+      await act(async () => button('Missing').click());
+      expect(view.host.textContent).toContain('file_not_found');
+    } finally {
+      await view.unmount();
+      ipc.remove();
+    }
+  }
+);
+
+it('keeps unknown Boards and workspaces in Board scope, preserving canonical filenames', () => {
+  const board = testBoard();
+  expect(
+    resolveBoardFileLink('/data/boards/ws/bd_test/memory/a%2520b.md#L2', 'ws', [board])?.path
+  ).toBe('a%20b.md');
+  expect(
+    resolveBoardFileLink('/data/boards/ws/bd_test/memory/a%20b.md', 'ws', [board], 'canonical')
+      ?.path
+  ).toBe('a%20b.md');
+  expect(
+    resolveBoardFileLink('/data/boards/other/bd_test/files/a.md', 'ws', [board])
+  ).toMatchObject({ board: undefined });
+  expect(resolveBoardFileLink('/data/boards/ws/bd_other/files/a.md', 'ws', [board])).toMatchObject({
+    board: undefined,
+  });
+  expect(resolveBoardFileLink('/data/boards/ws/bd_test/secrets/a.md', 'ws', [board])).toBeNull();
+});
+
+it('keeps an unavailable Board file in its preview until the catalog row arrives', async () => {
+  const store = createStore();
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  const coordinator = makeSession('coordinator', { boardRole: 'coordinator', machineId: 'devnuc' });
+  store.set(sessionMetaCacheAtom, { [getSessionRoomId(coordinator.id)]: coordinator });
+  const ipc = installIpc({ 'file:files/plan.md': '# Ready' });
+  const host = document.createElement('div');
+  // Use the same mounted preview while metadata arrives.
+  const viewRoot = createRoot(host);
+  const render = (boards: BoardMeta[]) =>
+    act(async () =>
+      viewRoot.render(
+        <Provider store={store}>
+          <BoardFileLinkPreview
+            target={resolveBoardFileLink('/data/boards/ws/bd_test/files/plan.md', 'ws', boards)!}
+            memberSessionId={'thread' as SessionId}
+            onClose={() => {}}
+          />
+        </Provider>
+      )
+    );
+  try {
+    await render([]);
+    expect(host.textContent).toBe('Board not found.');
+    await render([testBoard()]);
+    await vi.waitFor(() => expect(host.querySelector('h1')?.textContent).toBe('Ready'));
+  } finally {
+    await act(async () => {
+      viewRoot.unmount();
+    });
+    ipc.remove();
+  }
 });

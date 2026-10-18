@@ -164,6 +164,7 @@ export function BoardThreadOpenButton({ onOpen }: { onOpen: () => void }) {
 
 export function BoardThreadHeader({
   title,
+  showBoardMark = true,
   parentThread,
   location,
   startSlot,
@@ -173,6 +174,7 @@ export function BoardThreadHeader({
   onStop,
 }: {
   title: string;
+  showBoardMark?: boolean;
   parentThread?: { title: string; onOpen: () => void };
   location?: string;
   startSlot?: ReactNode;
@@ -187,7 +189,7 @@ export function BoardThreadHeader({
       startSlot={startSlot}
       titleSlot={
         <>
-          <BoardThreadMark />
+          {showBoardMark ? <BoardThreadMark /> : null}
           <span {...stylex.props(styles.title)}>
             {parentThread ? (
               <BoardThreadBreadcrumb

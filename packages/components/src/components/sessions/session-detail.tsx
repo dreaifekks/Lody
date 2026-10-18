@@ -1,3 +1,7 @@
+import { AgentFileLinkOpenContext } from '../ai-gui/markdown-renderer';
+import { resolveBoardFileLink } from '@/lib/board-directory-file-provider';
+import { BoardFileLinkPreview } from '../boards/board-directory';
+import { useBoardSessionNavigation } from '../boards/board-session-navigation';
 import { BoardThreadParentBreadcrumb } from '../boards/board-thread-breadcrumb';
 import { BoardThreadBackButton, BoardThreadOpenButton } from '../boards/board-panel-view';
 import { resolveBoardThreadPageNavigation } from '../boards/board-threads';
@@ -542,6 +546,7 @@ const MOBILE_FILES_VIEWER_ID = 'mobile-viewer:files';
 const PR_SIDEBAR_MIN_WIDTH_PX = 500;
 
 const detailStyles = stylex.create({
+  boardFilePreview: { overflow: 'auto' },
   boardThreadLocation: {
     flexShrink: 1,
     minWidth: 0,
@@ -1276,8 +1281,13 @@ const SessionDetail = ({
   );
   const codeCollabRequestedRole = useCodeCollabRequestedRole();
   const hasFileProviderViewerTabs = useMemo(
-    () => viewerTabs.some((tab) => tab.type === 'file' || tab.type === 'diff'),
-    [viewerTabs]
+    () =>
+      viewerTabs.some(
+        (tab) =>
+          tab.type === 'diff' ||
+          !resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical')
+      ),
+    [viewerTabs, currentWorkspaceId, boards]
   );
   const isFileProviderSidebarActive =
     isSidebarVisible && (activeSidebarTab === 'files' || activeSidebarTab === 'changes');
@@ -4248,6 +4258,24 @@ const SessionDetail = ({
   const handleOpenFile = useStableCallback(
     (filePath: string, options: SessionDetailOpenFileOptions = {}) => {
       const claimCloseTarget = semanticRouterRef.current?.deferActivation('side-panel');
+      const boardFile = resolveBoardFileLink(
+        filePath,
+        currentWorkspaceId,
+        boards,
+        options.pathKind
+      );
+      if (boardFile) {
+        upsertViewerTab(
+          {
+            id: getFileViewerTabId(boardFile.filePath),
+            type: 'file',
+            filePath: boardFile.filePath,
+            label: getBasename(boardFile.path),
+          },
+          () => claimCloseTarget?.()
+        );
+        return;
+      }
       setFileProviderRequestedByInteraction(true);
       const openedInSessionId = sessionId;
       void (async () => {
@@ -4332,6 +4360,10 @@ const SessionDetail = ({
     });
   });
 
+  const openBoardFileLink = useStableCallback((href: string) =>
+    resolveBoardFileLink(href, currentWorkspaceId, boards) ? () => handleOpenFile(href) : undefined
+  );
+
   /**
    * Every entry point whose path came from the file index. Kept stable so the
    * file tree's memoized rows do not re-render on each parent commit.
@@ -4366,7 +4398,10 @@ const SessionDetail = ({
     void (async () => {
       const resolutions = await Promise.all(
         viewerTabs.map(async (tab) => {
-          if (tab.type !== 'file') {
+          if (
+            tab.type !== 'file' ||
+            resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical')
+          ) {
             return { tab, next: tab };
           }
 
@@ -4434,7 +4469,7 @@ const SessionDetail = ({
     return () => {
       cancelled = true;
     };
-  }, [activeSessionFileProvider, viewerTabs]);
+  }, [activeSessionFileProvider, viewerTabs, currentWorkspaceId, boards]);
 
   const handleFileQuickOpenChange = useCallback((open: boolean) => {
     if (open) {
@@ -4518,7 +4553,7 @@ const SessionDetail = ({
     },
     [t, takePendingFork]
   );
-  const handleNavigateSession = useCallback(
+  const navigateSessionPage = useCallback(
     (target: SessionNavigationTarget) => {
       const currentTabNavigation = resolveCurrentWorkspaceTabNavigation(
         target,
@@ -4553,6 +4588,28 @@ const SessionDetail = ({
       workspaceSlug,
     ]
   );
+
+  const handleNavigateSession = useBoardSessionNavigation({
+    board: activeBoard,
+    narrow: isMobile || isCompactDesktop,
+    openPanel: (id) => {
+      setBoardThreadId(id);
+      selectSidePanelTab('board');
+      revealRightSidebar();
+    },
+    showInCoordinatorPage: (target) => {
+      setMobileBoardOpen(false);
+      const exactId = target.tabSessionId ?? target.sessionId;
+      if (sideSessions.some((side) => side.id === exactId)) {
+        selectSidePanelTab(getSideSessionPanelTabId(exactId));
+        revealRightSidebar();
+      } else navigateSessionPage(target);
+    },
+    openPage: (target) => {
+      setMobileBoardOpen(false);
+      navigateSessionPage(target);
+    },
+  });
 
   useEffect(() => {
     if (
@@ -6131,8 +6188,23 @@ const SessionDetail = ({
     />
   );
 
-  const renderViewerTabContent = (tab: ViewerTab, className = 'h-full', active = true) =>
-    tab.type === 'file' ? (
+  const renderViewerTabContent = (tab: ViewerTab, className = 'h-full', active = true) => {
+    const boardFile =
+      tab.type === 'file'
+        ? resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical')
+        : null;
+    if (boardFile)
+      return (
+        <div className={cn(className, stylex.props(detailStyles.boardFilePreview).className)}>
+          <BoardFileLinkPreview
+            key={tab.id}
+            target={boardFile}
+            memberSessionId={activeSession.id}
+            onClose={() => handleCloseViewerTab(tab.id)}
+          />
+        </div>
+      );
+    return tab.type === 'file' ? (
       <SessionFileContentView
         key={`${activeSession.id}:${tab.id}`}
         sessionId={activeSession.id}
@@ -6215,6 +6287,7 @@ const SessionDetail = ({
         className={className}
       />
     );
+  };
 
   // Mobile layout
   const navigateToChat = () => {
@@ -6229,52 +6302,39 @@ const SessionDetail = ({
       board={activeBoard}
       openThreadId={isMobile ? null : boardThreadId}
       onOpenThread={(thread) => {
-        // A narrow window has no room for a second conversation: open the page.
-        if (thread && (isMobile || isCompactDesktop)) {
-          setMobileBoardOpen(false);
-          handleNavigateSession({ sessionId: thread.id });
-          return;
-        }
-        setBoardThreadId(thread?.id ?? null);
+        if (thread) handleNavigateSession({ sessionId: thread.id });
+        else setBoardThreadId(null);
       }}
-      onShowInPage={(thread) => {
-        // One conversation surface per Session: a coordinator Tab is selected in
-        // the main area, a Side Chat in its own side-panel tab.
-        setMobileBoardOpen(false);
-        if (!isMobile && sideSessions.some((side) => side.id === thread.id)) {
-          selectSidePanelTab(getSideSessionPanelTabId(thread.id));
-          revealRightSidebar();
-          return;
-        }
-        handleNavigateSession({ sessionId: thread.id });
-      }}
-      onOpenThreadFull={(thread) => handleNavigateSession({ sessionId: thread.id })}
+      onShowInPage={(thread) => handleNavigateSession({ sessionId: thread.id })}
+      onOpenThreadFull={(thread) => navigateSessionPage({ sessionId: thread.id })}
       requestedThreadId={boardThreadRequest}
       requestedScheduleId={boardScheduleRequest}
       onScheduleRequestDone={() => setBoardScheduleRequest(null)}
       onThreadRequestDone={finishBoardThreadRequest}
       renderThread={(thread, controls) => (
-        <SessionChatInterface
-          key={thread.id}
-          ref={boardThreadChatRef}
-          session={thread}
-          // The thread owns its repository, PR and diff state, not the coordinator.
-          workspaceSession={thread}
-          className={stylex.props(detailStyles.rootFill).className}
-          headerVariant="board-thread"
-          headerLocation={controls.location}
-          headerParentThread={controls.parentThread}
-          headerStartSlot={<BoardThreadBackButton onBack={controls.onBack} />}
-          headerEndSlot={<BoardThreadOpenButton onOpen={controls.onOpenFull} />}
-          onArchiveSession={async () => {
-            await archiveSession(thread.id);
-            controls.onBack();
-          }}
-          onRestoreSession={() => restoreSession(thread.id)}
-          syncEnabled
-          isVisible={isSidebarVisible}
-          onNavigateSession={handleNavigateSession}
-        />
+        <AgentFileLinkOpenContext.Provider value={openBoardFileLink}>
+          <SessionChatInterface
+            key={thread.id}
+            ref={boardThreadChatRef}
+            session={thread}
+            // The thread owns its repository, PR and diff state, not the coordinator.
+            workspaceSession={thread}
+            className={stylex.props(detailStyles.rootFill).className}
+            headerVariant="board-thread"
+            headerLocation={controls.location}
+            headerParentThread={controls.parentThread}
+            headerStartSlot={<BoardThreadBackButton onBack={controls.onBack} />}
+            headerEndSlot={<BoardThreadOpenButton onOpen={controls.onOpenFull} />}
+            onArchiveSession={async () => {
+              await archiveSession(thread.id);
+              controls.onBack();
+            }}
+            onRestoreSession={() => restoreSession(thread.id)}
+            syncEnabled
+            isVisible={isSidebarVisible}
+            onNavigateSession={handleNavigateSession}
+          />
+        </AgentFileLinkOpenContext.Provider>
       )}
     />
   ) : null;

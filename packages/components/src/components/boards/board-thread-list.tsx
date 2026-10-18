@@ -2,7 +2,7 @@ import { BoardThreadBreadcrumb } from './board-thread-breadcrumb';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
-import { ChevronDown, ChevronRight, CircleAlert, CircleSlash } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, CircleSlash } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BoardSessionStatus } from '@lody/shared';
@@ -107,6 +107,7 @@ const styles = stylex.create({
   time: { fontSize: text.footnoteSize, color: colors.tertiaryLabel, whiteSpace: 'nowrap' },
   danger: { color: colors.destructive },
   quiet: { color: colors.tertiaryLabel },
+  completed: { color: colors.secondaryLabel },
   empty: {
     margin: 0,
     paddingInline: space[2],
@@ -125,9 +126,12 @@ const styles = stylex.create({
 export function BoardThreadStatusMark({
   status,
   unread,
+  completed = false,
 }: {
   status: BoardSessionStatus;
   unread: boolean;
+  /** Conversation cards only; list rows never add a resting done mark. */
+  completed?: boolean;
 }) {
   const { t } = useTranslation();
   const working = useWorkingHandOver(GROUP_BY_STATUS[status] === 'active', unread);
@@ -153,6 +157,14 @@ export function BoardThreadStatusMark({
         size={14}
         aria-label={t('boards.status.stopped', 'Stopped')}
         {...stylex.props(styles.quiet)}
+      />
+    );
+  if (status === 'idle' && completed)
+    return (
+      <Check
+        size={14}
+        aria-label={t('sessions.openedBy.status.succeeded', 'Completed')}
+        {...stylex.props(styles.completed)}
       />
     );
   return null;

@@ -233,6 +233,26 @@ describe('Session relation cards', () => {
     );
     expect(card?.querySelector('[data-session-unread-dot]')).toBeNull();
     expect(card?.querySelector('[data-session-row-indicator] svg')).not.toBeNull();
+    // A completed, read thread keeps one quiet check in the trailing status slot.
+    await act(async () =>
+      store.set(setDocMetaByRoomIdAtom, getSessionRoomId(createdSessionId), {
+        ...thread,
+        lastReadAt: 20,
+      })
+    );
+    const check = card?.querySelector('svg.lucide-check');
+    expect(check).not.toBeNull();
+    expect(check?.getAttribute('width')).toBe('14');
+    expect(check?.parentElement).toBe(card?.querySelector('button > span')?.lastElementChild);
+    // A fresh idle session has not completed anything yet.
+    await act(async () =>
+      store.set(setDocMetaByRoomIdAtom, getSessionRoomId(createdSessionId), {
+        ...thread,
+        lastMessageAt: undefined,
+        lastReadAt: undefined,
+      })
+    );
+    expect(card?.querySelector('svg.lucide-check')).toBeNull();
     // Results that went along with a message are one line, not replies.
     await render({
       id: 'batch',
