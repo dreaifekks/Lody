@@ -1,3 +1,5 @@
+import * as stylex from '@stylexjs/stylex';
+import { BoardPanelView } from '../components/boards/board-panel-view';
 import { AttachmentAddMenu } from '../components/chat/attachment-add-menu';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import {
@@ -337,6 +339,7 @@ const storyRoleItems = buildComposerAgentRoleItems({
 });
 
 type EditorFixture = {
+  board?: boolean;
   chatOnly?: boolean;
   /** Offer Roles; `bound` opens on one, as a schedule saved with it does. */
   roles?: 'offered' | 'bound';
@@ -494,6 +497,7 @@ function EditorStory({
         )}
         destination={({ revealMissing }) => (
           <ScheduleDestinationRows
+            board={fixture.board}
             value={destination}
             onChange={setDestination}
             sessions={chats}
@@ -768,3 +772,37 @@ export const EditorBesideList: Story = {
     );
   },
 };
+
+const boardListStyles = stylex.create({
+  panel: { width: '520px', maxWidth: '100%', height: '100%' },
+});
+
+export const BoardScheduleList: Story = {
+  args: {
+    board: true,
+    rows: rows.slice(0, 3).map((entry) => ({
+      ...entry,
+      boardId: 'bd_story',
+      destination: { kind: 'own_session', epoch: 0 },
+    })),
+    contextForRow: (entry) => ({
+      ...context(entry),
+      thread: entry.scheduleId === rows[0]!.scheduleId ? 'Daily release review' : undefined,
+    }),
+  },
+  render: (args) => (
+    <div {...stylex.props(boardListStyles.panel)}>
+      <BoardPanelView tab="schedules" onTabChange={() => {}}>
+        <ScheduleListView {...args} />
+      </BoardPanelView>
+    </div>
+  ),
+};
+export const BoardDedicatedThreadEditor: Story = editor({
+  fixture: {
+    board: true,
+    destination: { kind: 'own_session', epoch: 0 },
+    ownChatExists: true,
+    roles: 'offered',
+  },
+});

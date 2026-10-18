@@ -1,5 +1,5 @@
 import {
-  DEFAULT_SCHEDULE_DESTINATION,
+  defaultScheduleDestination,
   getMachineRoomId,
   getMachineFlockDocId,
   getMachineFlockLocalProjects,
@@ -10,6 +10,7 @@ import {
   getWorkspaceFlockDocId,
   agentConfigNoticeId,
   isLoroRepoDocDeleted,
+  isScheduleBoardThread,
   higherPermissionTier,
   isPermissionTierWithin,
   machineSupportsScheduleAgentRoles,
@@ -53,6 +54,10 @@ import {
   destinationSessionProblem,
   readScheduleAgentRole,
   scheduleDestinationSessionId,
+  resolveScheduleDestinationSession,
+  readScheduleBoard,
+  type DestinationSessionState,
+  scheduleDestinationSessionState,
 } from './schedule-run-preparation';
 
 export type ScheduleCommandContext = {
@@ -138,6 +143,11 @@ export async function executeScheduleCommand(
     );
   };
   const requesterPermissionTier = context.requesterPermissionTier;
+  let requesterBoardId: string | undefined;
+  const authorizeBoard = (boardId: string | undefined) => {
+    if (requesterSessionId && boardId && requesterBoardId !== boardId)
+      throw new Error('Board schedules can only be managed by a member of that Board');
+  };
   if (requesterSessionId) {
     const agentWrite =
       requesterPermissionTier !== undefined &&
@@ -153,6 +163,7 @@ export async function executeScheduleCommand(
       meta.machineId !== auth.machineId
     )
       throw new Error('Schedule tools require the invoking Session owner');
+    requesterBoardId = meta.boardId;
     // Proposal and pause notices are idempotent by entry id; read them from a
     // synced Session so a repeated call sees the notice it already published.
     const session = await manager.getOrCreateSessionDoc(requesterSessionId);
@@ -177,7 +188,9 @@ export async function executeScheduleCommand(
   if (!localOnly) await registry.syncOnce();
   if (command.action === 'list') {
     const rows = (await repository.list()).filter(
-      (row) => !command.query || row.title.toLowerCase().includes(command.query.toLowerCase())
+      (row) =>
+        (!command.boardId || row.boardId === command.boardId) &&
+        (!command.query || row.title.toLowerCase().includes(command.query.toLowerCase()))
     );
     rows.sort((a, b) => a.scheduleId.localeCompare(b.scheduleId));
     const offset = command.offset ?? 0;
@@ -190,6 +203,27 @@ export async function executeScheduleCommand(
   }
   if (command.action === 'propose') {
     if (!requesterSessionId) throw new Error('A proposal requires an invoking Session');
+    authorizeBoard(command.boardId);
+    const board = await readScheduleBoard({
+      manager,
+      workspaceId,
+      boardId: command.boardId,
+      localOnly,
+    });
+    if (board && command.destination?.kind === 'existing_session') {
+      await sync(getSessionRoomId(command.destination.sessionId as SessionId));
+      const record = await manager.repo.getDocMeta(
+        getSessionRoomId(command.destination.sessionId as SessionId)
+      );
+      const meta = record?.meta as SessionMeta | undefined;
+      if (
+        !meta ||
+        isLoroRepoDocDeleted(record!) ||
+        meta.isArchived ||
+        !isScheduleBoardThread(meta, board)
+      )
+        throw new Error('SESSION_UNAVAILABLE');
+    }
     // The rule must already be a schedule the editor could show, so a card the
     // person confirms cannot fail validation afterwards.
     scheduleProposalRuleToTrigger(command.rule, getServerNow());
@@ -210,6 +244,7 @@ export async function executeScheduleCommand(
       backend,
       {
         proposalId: command.requestId,
+        boardId: command.boardId,
         title: command.title,
         prompt: command.prompt,
         rule: command.rule,
@@ -257,12 +292,32 @@ export async function executeScheduleCommand(
       ),
     };
   }
+  const stored = await repository.read(id);
+  authorizeBoard(stored?.definition.boardId);
+  if (command.action === 'create' || command.action === 'edit')
+    authorizeBoard(command.draft.boardId);
   const machineId =
     command.action === 'create' || command.action === 'edit'
       ? command.draft.machineId
       : (await repository.read(id))?.definition.machineId;
   if (!machineId) throw new Error('Schedule not found');
   const needsTarget = command.action !== 'pause' && command.action !== 'delete';
+  const board = needsTarget
+    ? await readScheduleBoard({
+        manager,
+        workspaceId,
+        localOnly,
+        boardId:
+          command.action === 'create' || command.action === 'edit'
+            ? command.draft.boardId
+            : stored?.definition.boardId,
+      })
+    : undefined;
+  const readSession = async (sessionId: SessionId): Promise<DestinationSessionState> => {
+    await sync(getSessionRoomId(sessionId));
+    const record = await manager.repo.getDocMeta(getSessionRoomId(sessionId));
+    return scheduleDestinationSessionState(record);
+  };
   if (needsTarget && !localOnly) {
     // The target machine's record, Agents and Projects are its documents; read them current.
     await syncWorkspaceMetaForRead(manager, 'schedule:command:prewrite');
@@ -349,7 +404,9 @@ export async function executeScheduleCommand(
     };
   if (draft?.agentRole && (command.action === 'create' || command.action === 'edit')) {
     const { agentRole } = draft;
-    if ((draft.destination ?? DEFAULT_SCHEDULE_DESTINATION).kind === 'existing_session')
+    if (
+      (draft.destination ?? defaultScheduleDestination(draft.boardId)).kind === 'existing_session'
+    )
       throw new Error(
         'A schedule that sends into an existing chat follows that chat’s Agent and cannot keep an Agent Role; name that Agent as the target instead'
       );
@@ -379,10 +436,19 @@ export async function executeScheduleCommand(
     if (result) {
       // A chat the runs go into keeps what its Agent was last set to for any
       // option a run leaves alone, so that chat counts as well.
-      const destinationSessionId = scheduleDestinationSessionId(
-        id,
-        result.destination ?? DEFAULT_SCHEDULE_DESTINATION
-      );
+      const destination = result.destination ?? defaultScheduleDestination(result.boardId);
+      const plannedSessionId = scheduleDestinationSessionId(id, destination);
+      const destinationSessionId = plannedSessionId
+        ? (
+            await resolveScheduleDestinationSession({
+              scheduleId: id,
+              boardId: result.boardId,
+              destination,
+              plannedSessionId,
+              readSession,
+            })
+          ).sessionId
+        : undefined;
       const tier = higherPermissionTier(
         await tierOf(result),
         destinationSessionId ? await readSessionTier(destinationSessionId) : 'ask'
@@ -410,21 +476,23 @@ export async function executeScheduleCommand(
       if (!projects[draft.project.localProjectId])
         throw new Error('Choose a Project on the target machine');
     }
-    const destination = draft.destination ?? DEFAULT_SCHEDULE_DESTINATION;
+    const destination = draft.destination ?? defaultScheduleDestination(draft.boardId);
     const destinationSessionId = scheduleDestinationSessionId(id, destination);
     if (destinationSessionId) {
       // A shared chat carries its own workspace; a schedule sending into one
       // must not also claim a project of its own.
       if (draft.project) throw new Error('A schedule that sends into a chat has no project');
-      await sync(getSessionRoomId(destinationSessionId));
-      const sessionRecord = await manager.repo.getDocMeta(getSessionRoomId(destinationSessionId));
+      const { session } = await resolveScheduleDestinationSession({
+        scheduleId: id,
+        boardId: draft.boardId,
+        destination,
+        plannedSessionId: destinationSessionId,
+        readSession,
+      });
       const problem = destinationSessionProblem({
         destination,
-        session: !sessionRecord?.meta
-          ? { kind: 'absent' }
-          : isLoroRepoDocDeleted(sessionRecord)
-            ? { kind: 'deleted' }
-            : { kind: 'present', meta: sessionRecord.meta as SessionMeta },
+        session,
+        board,
         userId: auth.userId,
         machineId: machine.id,
         agentConfigId: configId,

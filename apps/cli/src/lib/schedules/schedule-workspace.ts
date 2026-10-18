@@ -38,7 +38,10 @@ import {
   resolveScheduleRunRole,
   buildScheduleSessionCreateOptions,
   destinationSessionProblem,
-  scheduleDestinationSessionId,
+  resolveScheduleDestinationSession,
+  readScheduleBoard,
+  type DestinationSessionState,
+  scheduleDestinationSessionState,
   scheduleRequiredLocalProjectId,
 } from './schedule-run-preparation';
 import { AgentExecutionSlots } from '../agent-execution-slots';
@@ -99,10 +102,20 @@ export async function createScheduleWorkspace(args: {
       ref,
     });
   };
+  const readSession = async (id: SessionId): Promise<DestinationSessionState> => {
+    const record = await manager.repo.getDocMeta(getSessionRoomId(id));
+    return scheduleDestinationSessionState(record);
+  };
   const resolveTarget = async (
     run: import('./schedule-store').ScheduleRun<PreparedSessionInput>,
     agentConfigId: string
   ) => {
+    const board = await readScheduleBoard({
+      manager,
+      workspaceId,
+      boardId: run.definition.boardId,
+      localOnly: args.localOnly,
+    });
     const machineRecord = await manager.repo.getDocMeta(getMachineRoomId(auth.machineId));
     const machine = machineRecord?.meta as MachineMeta | undefined;
     const agentConfig = await readMergedAgentConfigById(
@@ -133,28 +146,27 @@ export async function createScheduleWorkspace(args: {
       if (!projects[requiredLocalProjectId])
         throw new ScheduleConfigurationError('PROJECT_UNAVAILABLE');
     }
-    const destinationSessionId = scheduleDestinationSessionId(
-      run.definition.scheduleId,
-      run.definition.destination
-    );
-    let createsSession = true;
-    if (destinationSessionId) {
-      const sessionRecord = await manager.repo.getDocMeta(getSessionRoomId(destinationSessionId));
-      const problem = destinationSessionProblem({
-        destination: run.definition.destination,
-        session: !sessionRecord?.meta
-          ? { kind: 'absent' }
-          : isLoroRepoDocDeleted(sessionRecord)
-            ? { kind: 'deleted' }
-            : { kind: 'present', meta: sessionRecord.meta as SessionMeta },
-        userId: auth.userId,
-        machineId: auth.machineId,
-        agentConfigId,
-      });
-      if (problem) throw new ScheduleConfigurationError(problem);
-      createsSession = !sessionRecord?.meta;
-    }
+    const { sessionId, session } = run.prepared
+      ? { sessionId: run.prepared.sessionId, session: await readSession(run.prepared.sessionId) }
+      : await resolveScheduleDestinationSession({
+          scheduleId: run.scheduleId,
+          boardId: run.definition.boardId,
+          destination: run.definition.destination,
+          plannedSessionId: run.sessionId as SessionId,
+          readSession,
+        });
+    const problem = destinationSessionProblem({
+      destination: run.definition.destination,
+      session,
+      board,
+      userId: auth.userId,
+      machineId: auth.machineId,
+      agentConfigId,
+    });
+    if (problem) throw new ScheduleConfigurationError(problem);
+    const createsSession = session.kind === 'absent';
     return {
+      sessionId,
       createsSession,
       target: buildScheduleRunTarget({
         targetMachine: machine,
@@ -188,7 +200,7 @@ export async function createScheduleWorkspace(args: {
     prepare: async (run) => {
       const { prepareSessionInput, resolveTurnDispatchConfig } = await import('@/commands/session');
       const role = await resolveRunRole(run);
-      const { target, createsSession } = await resolveTarget(
+      const { target, createsSession, sessionId } = await resolveTarget(
         run,
         (role?.agent ?? run.definition.agent).agentConfigId
       );
@@ -204,10 +216,11 @@ export async function createScheduleWorkspace(args: {
         manager,
         buildScheduleRunPrompt({ prompt: run.prompt, role, createsSession }),
         buildScheduleSessionCreateOptions({
-          sessionId: run.sessionId as SessionId,
+          sessionId,
           userTurnId: run.userTurnId,
           agentConfigId: agent.agentConfigId,
           title: run.definition.title,
+          boardId: run.definition.boardId,
           project: run.definition.project,
           role,
         }),
@@ -220,7 +233,7 @@ export async function createScheduleWorkspace(args: {
             workspaceId,
             localOnly: args.localOnly,
             definition: run.definition,
-            sessionId: run.sessionId as SessionId,
+            sessionId,
           }),
         },
         target
@@ -228,6 +241,10 @@ export async function createScheduleWorkspace(args: {
       if (prepared.meta.machineId !== run.machineId || prepared.meta.userId !== auth.userId)
         throw new Error('Schedule target ownership changed');
       prepared.meta.scheduleId = run.scheduleId;
+      prepared.userTurn.inputConfig = {
+        ...prepared.userTurn.inputConfig,
+        _lodyScheduleId: run.scheduleId,
+      };
       prepared.source = {
         id: run.sourceEntryId,
         role: 'system',
@@ -246,36 +263,7 @@ export async function createScheduleWorkspace(args: {
     materialize: (prepared) => materializePreparedSessionInput(manager, prepared),
     isDispatched: (prepared) => isPreparedSessionDispatched(manager, prepared),
     dispatch: (prepared) => commitPreparedSessionDispatch(manager, prepared),
-    isFinished: async (run) => {
-      const id = run.sessionId as SessionId;
-      if (args.hasSessionWork(id)) return false;
-      const record = await manager.repo.getDocMeta(getSessionRoomId(id));
-      if (!record) return false;
-      if (isLoroRepoDocDeleted(record)) return true;
-      const meta = record.meta as SessionMeta;
-      if (
-        hasPendingUserTurnActivation(meta) ||
-        (meta.messageQueueUpdatedAt ?? 0) > (meta.messageQueueCheckedAt ?? 0)
-      )
-        return false;
-      const session = await manager.getOrCreateSessionDoc(id);
-      const backend = await createSessionBackend(session, meta);
-      if ((await backend.getMessageQueue()).length) return false;
-      const [userRead, assistantRead] = await Promise.all([
-        backend.readTurn(run.userTurnId),
-        backend.readTurn(`assistant:${run.userTurnId}`),
-      ]);
-      const userTurn = userRead.state === 'ready' ? userRead.turn : undefined;
-      const assistantTurn = assistantRead.state === 'ready' ? assistantRead.turn : undefined;
-      return (
-        !args.hasSessionWork(id) &&
-        ((userTurn?.id === run.userTurnId &&
-          ['handled', 'failed', 'canceled'].includes(userTurn.status ?? '')) ||
-          (assistantTurn?.role === 'assistant' &&
-            assistantTurn.userTurnId === run.userTurnId &&
-            (assistantTurn.finished === true || typeof assistantTurn.endedAt === 'number')))
-      );
-    },
+    isFinished: (run) => isScheduleRunFinished(manager, run, args.hasSessionWork),
     publish: async (runtime) => {
       const key = scheduleRegistryKeys.runtime(runtime.scheduleId, auth.machineId);
       const prior = ScheduleRuntimeRowSchema.safeParse(registry.flock.get(key));
@@ -426,4 +414,41 @@ export async function createScheduleWorkspace(args: {
       store.close();
     },
   };
+}
+
+/** Admission ends for an archived target once its actual local work has drained. */
+export async function isScheduleRunFinished(
+  manager: LoroDocumentManager,
+  run: Pick<import('./schedule-store').ScheduleRun, 'sessionId' | 'userTurnId'>,
+  hasSessionWork: (id: SessionId) => boolean
+): Promise<boolean> {
+  const id = run.sessionId as SessionId;
+  if (hasSessionWork(id)) return false;
+  const record = await manager.repo.getDocMeta(getSessionRoomId(id));
+  if (!record) return false;
+  if (isLoroRepoDocDeleted(record)) return true;
+  const meta = record.meta as SessionMeta;
+  if (meta.isArchived) return true;
+  if (
+    hasPendingUserTurnActivation(meta) ||
+    (meta.messageQueueUpdatedAt ?? 0) > (meta.messageQueueCheckedAt ?? 0)
+  )
+    return false;
+  const session = await manager.getOrCreateSessionDoc(id);
+  const backend = await createSessionBackend(session, meta);
+  if ((await backend.getMessageQueue()).length) return false;
+  const [userRead, assistantRead] = await Promise.all([
+    backend.readTurn(run.userTurnId),
+    backend.readTurn(`assistant:${run.userTurnId}`),
+  ]);
+  const userTurn = userRead.state === 'ready' ? userRead.turn : undefined;
+  const assistantTurn = assistantRead.state === 'ready' ? assistantRead.turn : undefined;
+  return (
+    !hasSessionWork(id) &&
+    ((userTurn?.id === run.userTurnId &&
+      ['handled', 'failed', 'canceled'].includes(userTurn.status ?? '')) ||
+      (assistantTurn?.role === 'assistant' &&
+        assistantTurn.userTurnId === run.userTurnId &&
+        (assistantTurn.finished === true || typeof assistantTurn.endedAt === 'number')))
+  );
 }

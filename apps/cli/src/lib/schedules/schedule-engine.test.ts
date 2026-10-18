@@ -4,6 +4,9 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildScheduleRegistryRow,
+  scheduleOwnSessionId,
+  type SessionId,
+  type SessionMeta,
   ScheduleDefinitionSchema,
   zonedLocalInputToInstant,
   type ScheduleDocument,
@@ -11,6 +14,12 @@ import {
 import { findNextDispatchableUserTurn } from '@/session/session-dispatch-logic';
 import { AgentExecutionSlots } from '../agent-execution-slots';
 import { ScheduleStore } from './schedule-store';
+import { isScheduleRunFinished } from './schedule-workspace';
+import type { LoroDocumentManager } from '../loro/doc';
+import {
+  resolveScheduleDestinationSession,
+  type DestinationSessionState,
+} from './schedule-run-preparation';
 import {
   ScheduleConfigurationError,
   ScheduleEngine,
@@ -66,7 +75,7 @@ function harness(d = document()) {
     list: async () => [row],
     read: async () => d,
     validateTarget: async () => {},
-    prepare: vi.fn(async (run) => ({ prompt: run.prompt })),
+    prepare: vi.fn(async (run) => ({ prompt: run.prompt, sessionId: run.sessionId })),
     materialize: vi.fn(async () => {}),
     isDispatched: async () => accepted,
     dispatch: vi.fn(async () => {
@@ -193,7 +202,10 @@ describe('Schedule worker handoff', () => {
     h.time(90_000);
     await h.engine.evaluate();
     expect(h.ports.prepare).toHaveBeenCalledTimes(1);
-    expect(h.ports.dispatch).toHaveBeenCalledWith({ prompt: 'original' });
+    expect(h.store.get(run.runKey)).toMatchObject({
+      state: 'dispatched',
+      prepared: { prompt: 'original', sessionId: run.sessionId },
+    });
     expect(h.store.get(run.runKey)?.plannedAt).toBe(60_000);
   });
   it('retains only the newest unprepared run and waits for another slot occupant', async () => {
@@ -276,7 +288,10 @@ describe('Schedule worker handoff', () => {
     h.ports.prepare = vi
       .fn()
       .mockRejectedValueOnce(new ScheduleConfigurationError('ROLE_NOT_FOUND'))
-      .mockImplementation(async () => ({ prompt: 'as the Role says now' }));
+      .mockImplementation(async (run) => ({
+        prompt: 'as the Role says now',
+        sessionId: run.sessionId,
+      }));
     await h.engine.evaluate();
     const blocked = h.store.unfinished('workspace')[0]!;
     expect(blocked).toMatchObject({
@@ -294,7 +309,10 @@ describe('Schedule worker handoff', () => {
     );
     h.time(90_000);
     await h.engine.evaluate();
-    expect(h.ports.dispatch).toHaveBeenCalledWith({ prompt: 'as the Role says now' });
+    expect(h.store.get(blocked.runKey)).toMatchObject({
+      state: 'dispatched',
+      prepared: { prompt: 'as the Role says now', sessionId: blocked.sessionId },
+    });
   });
   it('does not hand off a preparation that outlives its dispatch deadline', async () => {
     const h = harness();
@@ -349,4 +367,109 @@ it('recovers the committed ledger after closing a real SQLite file without repea
     store.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+describe('Frozen schedule destinations', () => {
+  it('settles an archived dispatched session after live work drains despite pending activation and queue markers', async () => {
+    const h = harness();
+    const meta = {
+      isArchived: false,
+      latestUserMsgId: 'pending',
+      messageQueueUpdatedAt: 20,
+      messageQueueCheckedAt: 0,
+    } as SessionMeta;
+    let liveWork = false;
+    const manager = {
+      repo: { getDocMeta: async () => ({ meta }) },
+    } as unknown as LoroDocumentManager;
+    h.ports.isFinished = (run) => isScheduleRunFinished(manager, run, () => liveWork);
+    await h.engine.evaluate();
+    const run = h.store.unfinished('workspace')[0]!;
+    await h.engine.evaluate();
+    expect(h.store.get(run.runKey)?.state).toBe('dispatched');
+    meta.isArchived = true;
+    liveWork = true;
+    await h.engine.evaluate();
+    expect(h.store.get(run.runKey)?.state).toBe('dispatched');
+    expect(h.slots.isBusy('agent')).toBe(true);
+    liveWork = false;
+    await h.engine.evaluate();
+    expect(h.store.get(run.runKey)?.state).toBe('finished');
+    expect(h.slots.isBusy('agent')).toBe(false);
+  });
+
+  it('persists the replacement session with preparation and keeps it on retry and restart', async () => {
+    const d = document();
+    d.definition.destination = { kind: 'own_session', epoch: 0 };
+    d.definition.trigger = { kind: 'once', at: '1970-01-01T00:01:00Z' };
+    const h = harness(d);
+    const zero = scheduleOwnSessionId('schedule', 0);
+    const next = scheduleOwnSessionId('schedule', 0, 1);
+    const states = new Map<SessionId, DestinationSessionState>([
+      [zero, { kind: 'present', meta: { isArchived: true } as SessionMeta }],
+    ]);
+    h.ports.prepare = async (run) => ({
+      prompt: run.prompt,
+      ...(await resolveScheduleDestinationSession({
+        scheduleId: run.scheduleId,
+        destination: run.definition.destination,
+        plannedSessionId: run.sessionId as SessionId,
+        readSession: async (id) => states.get(id) ?? { kind: 'absent' },
+      })),
+    });
+    let unavailable = true;
+    h.ports.materialize = async () => {
+      if (unavailable) throw new Error('injected storage failure');
+    };
+    await h.engine.evaluate();
+    expect(h.store.history('workspace', 'schedule')[0]).toMatchObject({
+      sessionId: next,
+      state: 'retry_wait',
+      prepared: { sessionId: next },
+    });
+    states.clear(); // Sequence zero is usable again; a prepared retry must ignore it.
+    unavailable = false;
+    h.time(90_000);
+    const restarted = new ScheduleEngine(h.ports);
+    restarted.restoreOccupancy();
+    await restarted.evaluate();
+    expect(h.store.history('workspace', 'schedule')[0]).toMatchObject({
+      sessionId: next,
+      state: 'dispatched',
+      prepared: { sessionId: next },
+    });
+  });
+  it('fails a prepared run if its destination becomes archived, releasing the slot', async () => {
+    const h = harness();
+    let archived = false;
+    h.ports.materialize = async () => {
+      archived = true;
+    };
+    h.ports.validateTarget = async () => {
+      if (archived) throw new ScheduleConfigurationError('SESSION_UNAVAILABLE');
+    };
+    await h.engine.evaluate();
+    expect(h.store.history('workspace', 'schedule')[0]).toMatchObject({
+      state: 'failed',
+      errorCode: 'SESSION_UNAVAILABLE',
+    });
+    expect(h.store.unfinished('workspace')).toEqual([]);
+    expect(h.slots.reserve('agent', 'other')).toBe(true);
+  });
+  it.each(['SESSION_UNAVAILABLE', 'BOARD_UNAVAILABLE'])(
+    'blocks unprepared %s without an attempt or occupied slot',
+    async (code) => {
+      const h = harness();
+      h.ports.prepare = async () => {
+        throw new ScheduleConfigurationError(code);
+      };
+      await h.engine.evaluate();
+      expect(h.store.unfinished('workspace')[0]).toMatchObject({
+        state: 'retry_wait',
+        attempts: 0,
+        errorCode: code,
+      });
+      expect(h.slots.reserve('agent', 'other')).toBe(true);
+    }
+  );
 });

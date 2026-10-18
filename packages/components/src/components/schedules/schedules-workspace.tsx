@@ -13,16 +13,17 @@ import { useTranslation } from 'react-i18next';
 import { v4 as uuid } from 'uuid';
 import { AlertTriangle } from 'lucide-react';
 import {
-  DEFAULT_SCHEDULE_DESTINATION,
+  defaultScheduleDestination,
   getAgentRoleEmoji,
   getDefaultSelectedMcpServerIds,
   type McpServerId,
   getDeviceTimeZone,
   getServerNow,
+  getSessionRoomId,
   machineSupportsScheduleAgentRoles,
   machineSupportsSchedulesProtocol,
   resolveScheduleAgentRole,
-  scheduleOwnSessionId,
+  type BoardMeta,
   ScheduleRepository,
   type AgentRoleInstanceId,
   type ScheduleAgentRoleRef,
@@ -83,6 +84,12 @@ import { ScheduleAgentControls } from './schedule-agent-controls';
 import { FieldIssueMark } from './schedule-field-issue-mark';
 import { pickScheduleAgent, seedScheduleAgentRunRef } from './schedule-agent-defaults';
 import { readChatLandingDefaults } from '@/lib/chat-landing-defaults';
+
+import {
+  isScheduleBoardThread,
+  scheduleBoundSession,
+  scheduleRowsForBoard,
+} from './schedule-scope';
 
 const DARK =
   ':where(.dark, .dark *, .dark-scope, .dark-scope *):not(:where(.light-scope, .light-scope *))';
@@ -227,12 +234,18 @@ const styles = stylex.create({
 
 export function SchedulesWorkspace({
   scheduleId,
+  board,
+  onSelectSchedule,
+  onOpenBoardThread,
   insetSafeArea = false,
   hideHeader = false,
   query,
   createScheduleRef,
 }: {
   scheduleId?: string;
+  board?: BoardMeta;
+  onSelectSchedule?: (id?: string) => void;
+  onOpenBoardThread?: (session: SessionMeta) => void;
   /**
    * The `/schedules` route on a phone has no shell inset. The home tab
    * already clears the status bar with its own header, so it leaves this off.
@@ -255,6 +268,11 @@ export function SchedulesWorkspace({
   const navigate = useNavigate();
   const setReturnTab = useSetAtom(mobileHomeReturnTabAtom);
   const registry = useSchedules();
+  const rows = scheduleRowsForBoard(registry.rows, board?.id);
+  const sessions = useAtomValue(sessionListAtom);
+  const archivedSessions = useAtomValue(archivedSessionListAtom);
+  const isDeletedSession = (id: SessionId) =>
+    runtime?.repo.getMeta().get(['e', getSessionRoomId(id)]) === false;
   const agents = useAtomValue(getAllAgentConfigAtom);
   const { roles } = useWorkspaceAgentRoles();
   // A schedule bound to a Role is listed as that Role, by its name today.
@@ -266,6 +284,8 @@ export function SchedulesWorkspace({
   const onlineMachines = useAtomValue(onlineMachineIdsAtom);
   const presenceSync = useAtomValue(lodyPresenceSyncStateAtom);
   const openSession = (id: string) => {
+    const session = sessions.find((entry) => entry.id === id);
+    if (board && session && onOpenBoardThread) return onOpenBoardThread(session);
     if (slug)
       void navigate({
         to: '/$workspaceName/sessions/$sessionId',
@@ -273,6 +293,7 @@ export function SchedulesWorkspace({
       });
   };
   const mobile = useIsMobile();
+  const stacked = mobile || !!board;
   const detail = useScheduleDocument(scheduleId);
   const [error, setError] = useState<string>();
   const [confirmation, setConfirmation] = useState<{
@@ -292,6 +313,7 @@ export function SchedulesWorkspace({
   // settings, bottom bar). Closing or saving replaces this page with that
   // tab. Desktop still returns to the schedules route.
   const open = (id?: string) => {
+    if (onSelectSchedule) return onSelectSchedule(id);
     if (!slug) return;
     if (!id && mobile) {
       setReturnTab('schedules');
@@ -391,7 +413,7 @@ export function SchedulesWorkspace({
     });
   const [columnWidths, setColumnWidths] = useAtom(scheduleListColumnWidthsAtom);
   const [splitListWidth, setSplitListWidth] = useAtom(scheduleSplitListWidthAtom);
-  const row = registry.rows.find((r) => r.scheduleId === scheduleId);
+  const row = rows.find((r) => r.scheduleId === scheduleId);
   const isOwner = !!row && row.ownerId === user?.id;
   const canManage =
     isOwner && machineSupportsSchedulesProtocol(machines.get(row.machineId as never));
@@ -410,6 +432,7 @@ export function SchedulesWorkspace({
   const content = !scheduleId ? null : scheduleId === 'new' ? (
     <ScheduleEditor
       key={`${runtime?.workspaceId}:new`}
+      board={board}
       onSaved={() => open()}
       onOpenSession={openSession}
     />
@@ -445,6 +468,7 @@ export function SchedulesWorkspace({
       <ScheduleEditor
         key={`${runtime?.workspaceId}:${scheduleId}:${row.activationId}`}
         document={detail.document}
+        board={board}
         disabledReason={
           !isOwner
             ? t('schedules.ownerOnly', 'Only the schedule owner can save changes.')
@@ -493,9 +517,11 @@ export function SchedulesWorkspace({
   const list = (
     <ScheduleListView
       {...registry}
-      onBlankClick={scheduleId && !mobile ? () => open() : undefined}
+      board={!!board}
+      rows={rows}
+      onBlankClick={scheduleId && !stacked ? () => open() : undefined}
       renderBody={
-        mobile
+        stacked
           ? undefined
           : (table) => (
               <ScheduleSplitView
@@ -520,6 +546,9 @@ export function SchedulesWorkspace({
       hideHeader={hideHeader}
       query={query}
       contextForRow={(item) => ({
+        thread: board
+          ? scheduleBoundSession(item, [...sessions, ...archivedSessions], isDeletedSession)?.title
+          : undefined,
         machine: machines.get(item.machineId as never)?.name ?? item.machineId,
         timeZone: machines.get(item.machineId as never)?.timeZone,
         agent:
@@ -582,7 +611,7 @@ export function SchedulesWorkspace({
         </p>
       ) : null}
       <div {...stylex.props(styles.content)}>
-        {mobile && scheduleId ? (
+        {stacked && scheduleId ? (
           <div {...stylex.props(styles.mobileDetail)}>{detailPane}</div>
         ) : (
           list
@@ -594,11 +623,13 @@ export function SchedulesWorkspace({
 
 function ScheduleEditor({
   document,
+  board,
   disabledReason,
   onSaved,
   onOpenSession,
 }: {
   document?: ScheduleDocument;
+  board?: BoardMeta;
   disabledReason?: string;
   onSaved: (id: string) => void;
   onOpenSession: (id: string) => void;
@@ -636,7 +667,7 @@ function ScheduleEditor({
   const { roles: workspaceRoles, synced: rolesSynced } = useWorkspaceAgentRoles();
   const [project, setProject] = useState<ProjectRef | null>(document?.definition.project ?? null);
   const [destination, setDestination] = useState<ScheduleDestination>(
-    document?.definition.destination ?? DEFAULT_SCHEDULE_DESTINATION
+    document?.definition.destination ?? defaultScheduleDestination(board?.id)
   );
   const { servers: mcpServers } = useWorkspaceMcpCatalog();
   const isMobile = useIsMobile();
@@ -755,20 +786,22 @@ function ScheduleEditor({
       .join(' · '),
   });
   const pickableSessions = useMemo(
-    () => sessions.filter((meta) => meta.userId === user?.id).map(describeSession),
+    () =>
+      sessions
+        .filter(
+          (meta) => meta.userId === user?.id && (!board || isScheduleBoardThread(meta, board))
+        )
+        .map(describeSession),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- describeSession reads stable atoms
-    [sessions, user?.id, agents, machines]
+    [sessions, user?.id, agents, machines, board]
   );
-  const ownSessionId =
-    destination.kind === 'own_session'
-      ? scheduleOwnSessionId(identity.scheduleId, destination.epoch)
-      : undefined;
-  const destinationMeta =
-    destination.kind === 'existing_session'
-      ? [...sessions, ...archivedSessions].find((meta) => meta.id === destination.sessionId)
-      : ownSessionId
-        ? [...sessions, ...archivedSessions].find((meta) => meta.id === ownSessionId)
-        : undefined;
+  const isDeletedSession = (id: SessionId) =>
+    runtime?.repo.getMeta().get(['e', getSessionRoomId(id)]) === false;
+  const destinationMeta = scheduleBoundSession(
+    { scheduleId: identity.scheduleId, destination, boardId: board?.id },
+    [...sessions, ...archivedSessions],
+    isDeletedSession
+  );
   const chooseDestination = (next: ScheduleDestination) => {
     setDestination(next);
     // A picked chat follows its own Agent, so a Role does not apply to it.
@@ -844,12 +877,16 @@ function ScheduleEditor({
       project,
       machineLocalProjectIds,
       destination,
+      board,
       // A chat with no recorded Agent cannot host appended turns; treat it as
       // driven by nothing, which the mismatch check then reports.
       destinationSession: destinationMeta
         ? {
             agentConfigId: destinationMeta.agentConfigId ?? '',
             machineId: destinationMeta.machineId,
+            id: destinationMeta.id,
+            boardId: destinationMeta.boardId,
+            isArchived: destinationMeta.isArchived,
           }
         : null,
     },
@@ -883,6 +920,7 @@ function ScheduleEditor({
             create: !document,
             draft: {
               title: value.title,
+              boardId: board?.id ?? document?.definition.boardId,
               prompt: value.prompt,
               trigger: value.trigger,
               machineId: selected.machineId,
@@ -1042,6 +1080,7 @@ function ScheduleEditor({
       )}
       destination={({ revealMissing }) => (
         <ScheduleDestinationRows
+          board={!!board}
           value={destination}
           onChange={chooseDestination}
           sessions={pickableSessions}

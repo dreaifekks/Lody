@@ -749,7 +749,12 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
       draggable
       onDragStart={(event) => startSessionMentionDrag(event, { sessionId: session.id, title })}
       className={cn(
-        'group w-full rounded-md px-2 text-left',
+        // Named group ('row') so the hover reveal scopes to this row only: a
+        // pinned project's Sessions sit inside the Pinned bucket's unnamed
+        // `group`, whose hover an unnamed group-hover would answer for every
+        // row at once. The plain `group` stays for the leading slot's
+        // menu-open trigger fill, which only this row's data-menu-open sets.
+        'group group/row w-full rounded-md px-2 text-left',
         'py-1',
         'border border-transparent bg-transparent',
         !showSelectedState &&
@@ -774,6 +779,9 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
           showMenuButton={hasContextMenuActions}
           menuLabel={moreActionsLabel}
           openedByTree={openedByTree}
+          fadeClassName="group-hover/row:opacity-0 group-data-[menu-open]/row:opacity-0"
+          restPointerClassName="group-hover/row:pointer-events-none group-data-[menu-open]/row:pointer-events-none"
+          revealClassName="group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-data-[menu-open]/row:opacity-100 group-data-[menu-open]/row:pointer-events-auto"
         />
         <div
           className={cn(
@@ -815,6 +823,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
           isWaitingPermission={isWaitingPermission}
           isWorking={isWorking}
           hasUnreadMessages={hasUnreadMessages}
+          fadeClassName="group-hover/row:opacity-0 group-data-[menu-open]/row:opacity-0"
           restIcon={
             showPr || showWorktreeIcon ? (
               <span className="flex items-center gap-1.5">
@@ -831,6 +840,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
                 label={archiveTooltipLabel}
                 confirmLabel={archiveConfirmLabel}
                 onConfirm={() => onArchive(session.id)}
+                revealClassName="group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-data-[menu-open]/row:opacity-100 group-data-[menu-open]/row:pointer-events-auto"
               />
             ) : undefined
           }

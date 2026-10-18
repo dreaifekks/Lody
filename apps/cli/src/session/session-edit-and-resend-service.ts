@@ -472,9 +472,12 @@ export class SessionEditAndResendService {
     replacement: SessionTurnInputConfig,
     preparedSessionId: ACPSessionId
   ): SessionTurnInputConfig {
-    return {
+    const { _lodyScheduleId: _scheduleId, ...inputConfig } = {
       ...original.inputConfig,
       ...replacement,
+    };
+    return {
+      ...inputConfig,
       cliType: meta.cliType,
       agentType: meta.agentType,
       resume: preparedSessionId,

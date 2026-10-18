@@ -11,7 +11,7 @@ import { SessionConversationPageHeader } from '../sessions/session-conversation-
 import { BoardThreadMark } from './board-thread-mark';
 
 /** The Board side panel: threads and the shared directory. A thread opens inside it. */
-export type BoardPanelTab = 'threads' | 'files';
+export type BoardPanelTab = 'threads' | 'files' | 'schedules';
 
 const styles = stylex.create({
   root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, minWidth: 0 },
@@ -70,6 +70,7 @@ export function BoardPanelView({
       <header {...stylex.props(styles.header)}>
         <Tabs.List size="small">
           <Tabs.Tab value="threads">{t('boards.threads', 'Threads')}</Tabs.Tab>
+          <Tabs.Tab value="schedules">{t('boards.schedules.title', 'Schedules')}</Tabs.Tab>
           <Tabs.Tab value="files">{t('boards.files.title', 'Board files')}</Tabs.Tab>
         </Tabs.List>
         <span {...stylex.props(styles.spacer)} />

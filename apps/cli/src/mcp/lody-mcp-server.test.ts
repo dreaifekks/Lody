@@ -30,6 +30,7 @@ import {
   type MachineId,
   type MachineMeta,
   type SessionId,
+  type SessionMeta,
   type SessionTurnInputConfig,
   type WorkspaceId,
 } from '@lody/shared';
@@ -60,6 +61,11 @@ import {
   buildSessionToolServer,
   runWithMcpSessionContext,
 } from './lody-mcp-server';
+import {
+  ScheduleCreateToolInputSchema,
+  ScheduleUpdateToolInputSchema,
+  buildScheduleCreateDraft,
+} from './schedule-agent-writes';
 import { TERMINAL_SESSION_TOOLS } from './daemon-session-tools';
 import {
   AgentRoleCreateToolInputSchema,
@@ -2180,4 +2186,50 @@ it('filters Board members and binds list cursors to the selected board', () => {
     sessionListFingerprint({ ...input, boardId: 'bd_other' }, ctx)
   );
   expect(SessionListToolInputSchema.parse({ boardId: 'current' }).boardId).toBe('current');
+});
+
+describe('Board schedule tool input', () => {
+  it('retains boardId across strict input parsing and defaults the resulting draft to a dedicated thread', () => {
+    const input = ScheduleCreateToolInputSchema.parse({
+      requestId: 'board-schedule',
+      boardId: 'bd_test',
+      title: 'Daily Board task',
+      prompt: 'Summarize yesterday.',
+      rule: { kind: 'manual' },
+    });
+    const draft = buildScheduleCreateDraft(input, {
+      now: Date.parse('2026-10-18T00:00:00Z'),
+      conversation: {
+        session: {
+          id: 'caller',
+          agentConfigId: 'agent',
+          machineId: 'machine',
+          boardId: 'bd_test',
+        } as SessionMeta,
+        runConfig: {},
+      },
+      agents: [
+        {
+          id: 'agent',
+          machineId: 'machine',
+          name: 'Agent',
+          cliType: 'builtin',
+          agentType: 'codex',
+        } as AgentConfigMeta,
+      ],
+      roles: [],
+      machineTimeZone: () => 'UTC',
+    });
+    expect(draft).toMatchObject({
+      boardId: 'bd_test',
+      destination: { kind: 'own_session', epoch: 0 },
+    });
+    expect(
+      ScheduleUpdateToolInputSchema.parse({
+        scheduleId: 'board-schedule',
+        requestId: 'edit',
+        boardId: 'bd_test',
+      }).boardId
+    ).toBe('bd_test');
+  });
 });

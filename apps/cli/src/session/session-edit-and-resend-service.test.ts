@@ -260,6 +260,24 @@ const spec = {
 };
 
 describe('SessionEditAndResendService', () => {
+  it('removes schedule provenance from a human edit-and-resend while preserving ordinary run config', async () => {
+    const history = historyFixture();
+    history[2]!.inputConfig = { ...history[2]!.inputConfig, _lodyScheduleId: 'schedule-1' };
+    const harness = createHarness({ history });
+    expect(harness.sessionData.history.readAll()[2]?.inputConfig?._lodyScheduleId).toBe(
+      'schedule-1'
+    );
+    const result = await harness.service.editAndResend(spec);
+    expect(result).toMatchObject({ success: true });
+    const replacement = harness.sessionData.history.readAll().at(-1)!;
+    expect(replacement).toMatchObject({
+      id: 'user-3',
+      author: { kind: 'human' },
+      inputConfig: { modelId: 'model-1', resume: 'acp-new' },
+    });
+    expect(replacement.inputConfig).not.toHaveProperty('_lodyScheduleId');
+  });
+
   it('forks before cancelling, then atomically replaces the history tail', async () => {
     const harness = createHarness({ active: true });
 

@@ -1751,6 +1751,73 @@ const boardHarness = async () => {
 };
 
 describe('Board reports through Operation Inbox', () => {
+  it.each([false, true])(
+    'persists scheduled input provenance and passively reports it (grandchild=%s)',
+    async (grandchild) => {
+      const h = await boardHarness();
+      try {
+        await h.add('parent');
+        await h.add(
+          'scheduled-thread',
+          grandchild ? { openedBySessionId: 'parent' as SessionId } : {}
+        );
+        const turn = h.input('scheduled-work', { human: true });
+        turn.inputConfig = { ...turn.inputConfig, _lodyScheduleId: 'schedule-1' };
+        await h.append('scheduled-thread', turn);
+        h.coordinator.start();
+        await h.drain();
+        await h.finish('scheduled-thread', 'scheduled-work', 'Scheduled conclusion');
+        await h.drain();
+        expect(h.reports()).toHaveLength(1);
+        const report = h.store.get(h.coordinatorId, h.reports()[0]!.operationId);
+        expect(report).toMatchObject({
+          frozenContinuationConfig: { deliverWithNextInput: true },
+          completion: {
+            value: {
+              boardReport: {
+                events: [
+                  {
+                    origin: 'schedule',
+                    kind: 'finished',
+                    output: { text: 'Scheduled conclusion' },
+                  },
+                ],
+              },
+            },
+          },
+        });
+        expect(h.launches).toEqual([]);
+        await h.drain();
+        expect(h.reports()).toHaveLength(1);
+        h.advance(10);
+        await h.append('scheduled-thread', {
+          ...h.input('scheduled-continuation', { role: 'system' }),
+          inputConfig: { ...turn.inputConfig, chainDepth: 2 },
+        });
+        await h.finish('scheduled-thread', 'scheduled-continuation', 'Final scheduled conclusion');
+        await h.drain();
+        expect(h.reports()).toHaveLength(2);
+        expect(
+          h
+            .reports()
+            .map(
+              (entry) =>
+                h.store.get(h.coordinatorId, entry.operationId).completion?.value.boardReport
+                  ?.events[0]?.origin
+            )
+        ).toEqual(['schedule', 'schedule']);
+        expect(h.launches).toEqual([]);
+        h.advance(10);
+        await h.append('scheduled-thread', h.input('human-followup', { human: true }));
+        await h.finish('scheduled-thread', 'human-followup');
+        await h.drain();
+        expect(h.reports()).toHaveLength(2);
+      } finally {
+        await h.close();
+      }
+    }
+  );
+
   it('cleans departed membership cursors while preserving archived members and queued reports', async () => {
     const h = await boardHarness();
     try {

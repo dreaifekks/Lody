@@ -18,6 +18,7 @@ import type {
   ScheduleDefinition,
   ScheduleDestination,
 } from './schedule-types';
+import { defaultScheduleDestination } from './schedule-types';
 import { isSensitiveAcpConfigOptionId } from './session-preparation';
 
 /** The Agent a schedule run is entrusted to; the machine follows from its config. */
@@ -172,7 +173,7 @@ export type ProposalTargetProblem =
  * A picked chat follows that chat's Agent, so a Role cannot be named with one.
  */
 export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(args: {
-  meta: Pick<ScheduleProposalMeta, 'target' | 'destination'>;
+  meta: Pick<ScheduleProposalMeta, 'target' | 'destination' | 'boardId'>;
   conversation: ProposalConversation | null;
   agents: readonly A[];
   roles: readonly CatalogAgentRole[];
@@ -246,7 +247,7 @@ export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(arg
       ? { kind: 'own_session', epoch: 0 }
       : meta.destination?.kind === 'existing_session'
         ? { kind: 'existing_session', sessionId: meta.destination.sessionId }
-        : { kind: 'new_session' };
+        : (meta.destination ?? defaultScheduleDestination(meta.boardId));
 
   // A shared chat carries its own workspace; only a fresh chat takes a project.
   const conversationProject =

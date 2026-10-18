@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,7 @@ import { initReactI18next } from 'react-i18next';
 import { createStore, Provider } from 'jotai';
 import type { ScheduleRegistryRow } from '@lody/shared';
 import en from '../../../locales/en.json';
+import zh from '../../../locales/zh_CN.json';
 import { sidebarCollapsedAtom } from '../src/atoms/sidebar-state';
 import { navigationSidebarVisibleAtom } from '../src/atoms/layout-state';
 import { ScheduleListView } from '../src/components/schedules/schedule-view';
@@ -259,6 +260,67 @@ describe('schedule list rows', () => {
     // apply the StyleX sheet, so the class change is the check.
     expect(header().className).not.toBe(embeddedClass);
   });
+
+  it('keeps Board search, thread details and row actions while removing page and column headings', () => {
+    function BoardList() {
+      const [items, setItems] = useState([manual, timed]);
+      return (
+        <ScheduleListView
+          board
+          rows={items}
+          runtimes={[]}
+          ready
+          now={NOW}
+          contextForRow={() => ({ ...context(), thread: 'Dedicated review thread' })}
+          {...handlers}
+          onNew={() =>
+            setItems([...items, { ...timed, scheduleId: 'added', title: 'Added schedule' }])
+          }
+        />
+      );
+    }
+    act(() => root.render(<BoardList />));
+    expect(container.querySelector('h1')).toBeNull();
+    expect(container.querySelector('[role="separator"]')).toBeNull();
+    expect(container.querySelector('input[aria-label="Search schedules"]')).not.toBeNull();
+    expect(container.textContent).toContain('Dedicated review thread');
+    expect(buttonIn(rowOf('Nightly review'), 'Pause')).not.toBeNull();
+    expect(buttonIn(rowOf('Deploy checklist'), 'Run now')).not.toBeNull();
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>('header button[aria-label="New schedule"]')!
+        .click()
+    );
+    expect(container.textContent).toContain('Added schedule');
+  });
+
+  it.each([
+    ['en', en],
+    ['zh_CN', zh],
+  ] as const)(
+    'uses destination-neutral Board empty copy while preserving the global page (%s)',
+    async (locale, translations) => {
+      i18next.addResourceBundle(locale, 'translation', translations, true, true);
+      await act(async () => {
+        await i18next.changeLanguage(locale);
+      });
+      try {
+        act(() =>
+          root.render(<ScheduleListView board rows={[]} runtimes={[]} ready {...handlers} />)
+        );
+        expect(container.textContent).toContain(translations['boards.schedules.emptyHelp']);
+        expect(container.textContent).not.toContain(translations['schedules.emptyHelp']);
+        expect(container.querySelector('h1')).toBeNull();
+        act(() => root.render(<ScheduleListView rows={[]} runtimes={[]} ready {...handlers} />));
+        expect(container.textContent).toContain(translations['schedules.emptyHelp']);
+        expect(container.querySelector('h1')?.textContent).toBe(translations['schedules.title']);
+      } finally {
+        await act(async () => {
+          await i18next.changeLanguage('en');
+        });
+      }
+    }
+  );
 
   it('uses the home search text and hides the standalone header', () => {
     act(() =>

@@ -7,6 +7,7 @@ import { sendScheduleCommand } from '@/lib/schedules/schedule-command-client';
 
 type Options = CommonCommandOptions & {
   file?: string;
+  board?: string;
   requestId?: string;
   query?: string;
   limit?: string;
@@ -34,6 +35,8 @@ for (const action of [
       .option('--query <text>', 'Filter schedule titles')
       .option('--limit <count>', 'Maximum results (1–100)', '30')
       .option('--offset <count>', 'Result offset', '0');
+  if (action === 'list' || action === 'create' || action === 'edit')
+    command.option('--board <board-id>', 'Board that owns the schedule');
   const hasId = action !== 'list' && action !== 'create';
   if (hasId) command.argument('<schedule-id>');
   if (action === 'create' || action === 'edit')
@@ -51,11 +54,23 @@ for (const action of [
       const input = ScheduleCommandSchema.parse({
         action,
         ...(action === 'list'
-          ? { query: options.query, limit: Number(options.limit), offset: Number(options.offset) }
+          ? {
+              boardId: options.board,
+              query: options.query,
+              limit: Number(options.limit),
+              offset: Number(options.offset),
+            }
           : {}),
         ...(action !== 'list' ? { scheduleId } : {}),
         ...(['create', 'edit', 'pause', 'resume', 'run'].includes(action) ? { requestId } : {}),
-        ...(options.file ? { draft: JSON.parse(await readFile(options.file, 'utf8')) } : {}),
+        ...(options.file
+          ? {
+              draft: {
+                ...JSON.parse(await readFile(options.file, 'utf8')),
+                ...(options.board ? { boardId: options.board } : {}),
+              },
+            }
+          : {}),
       });
       printJson(await sendScheduleCommand(input, { workspace: options.workspace }));
     });

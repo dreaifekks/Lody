@@ -436,7 +436,10 @@ export const SessionHistoryDeliveryKindSchema = z.enum(['steer', 'continue']);
 export type SessionHistoryDeliveryKind = z.infer<typeof SessionHistoryDeliveryKindSchema>;
 
 export const SessionHistoryInputConfigSchema = ACPTurnConfigSchema.partial()
-  .extend({ _lodyDeliveryKind: SessionHistoryDeliveryKindSchema.optional() })
+  .extend({
+    _lodyDeliveryKind: SessionHistoryDeliveryKindSchema.optional(),
+    _lodyScheduleId: z.string().min(1).optional(),
+  })
   .strip();
 
 const LooseSessionTurnInputConfigSchema = SessionHistoryInputConfigSchema.passthrough();
@@ -473,6 +476,8 @@ export const normalizeSessionTurnInputConfig = (
 
   const record = value as Record<string, unknown>;
   const normalized: SessionTurnInputConfig = {};
+  const scheduleId = trimOptionalString(record._lodyScheduleId);
+  if (scheduleId) normalized._lodyScheduleId = scheduleId;
 
   const prompt = trimOptionalString(record.prompt);
   if (prompt) {
@@ -3921,6 +3926,8 @@ export const ScheduleProposalTargetSchema = z
   .strict();
 
 export const ScheduleProposalMetaSchema = z.object({
+  boardId: z.string().min(1).max(128).optional(),
+  mcpServerIds: z.array(z.string().min(1).max(256)).max(256).optional(),
   proposalId: z.string().trim().min(1),
   title: z.string().trim().min(1).max(200),
   prompt: z.string().min(1).max(32768),

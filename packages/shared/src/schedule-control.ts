@@ -5,7 +5,7 @@ import {
   ScheduleProposalTargetSchema,
 } from './message-schemas';
 import { RESOLVED_PERMISSION_TIERS } from './permission-tier';
-import { ScheduleDefinitionSchema } from './schedule-types';
+import { ScheduleDestinationSchema, ScheduleDefinitionSchema } from './schedule-types';
 
 const id = z
   .string()
@@ -14,6 +14,7 @@ const id = z
   .regex(/^[a-zA-Z0-9_-]+$/);
 export const ScheduleDraftSchema = ScheduleDefinitionSchema.pick({
   title: true,
+  boardId: true,
   machineId: true,
   trigger: true,
   misfirePolicy: true,
@@ -25,13 +26,17 @@ export const ScheduleDraftSchema = ScheduleDefinitionSchema.pick({
   destination: true,
   retryPolicy: true,
 })
-  .extend({ prompt: z.string().min(1).max(32768) })
+  .extend({
+    prompt: z.string().min(1).max(32768),
+    destination: ScheduleDestinationSchema.optional(),
+  })
   .strict();
 
 export const ScheduleCommandSchema = z.discriminatedUnion('action', [
   z
     .object({
       action: z.literal('list'),
+      boardId: ScheduleDefinitionSchema.shape.boardId,
       query: z.string().max(200).optional(),
       limit: z.number().int().min(1).max(100).default(30),
       offset: z.number().int().min(0).max(100_000).optional(),
@@ -61,6 +66,7 @@ export const ScheduleCommandSchema = z.discriminatedUnion('action', [
   z
     .object({
       action: z.literal('propose'),
+      boardId: ScheduleDefinitionSchema.shape.boardId,
       requestId: id,
       title: z.string().trim().min(1).max(200),
       prompt: z.string().min(1).max(32768),

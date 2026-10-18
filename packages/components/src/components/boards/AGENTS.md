@@ -27,13 +27,10 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
   a Board row aggregates every member, coordinator included. No extra "done" state.
   localProject catalogs are acquired at list level, once per machine.
-- `BoardSidebar` selects by Session/Tab `boardId` or coordinator id; keep reads
-  scalar, rows memoized, handlers stable. Open reads metadata at call time.
-- Reuse sidebar actions (shared archive confirmation; no pin; toast failures) and `SessionHeaderMenu`.
-  Board glyphs: headers/page tabs only. Back: `boardEntrySearch`, Boards on,
-  never coordinator pages. Own Tabs have no parent breadcrumb; other parent links
-  share palette format and the same-Board `boardMemberEntrySearch` path.
-  Child titles take width before parent names.
+- `BoardSidebar` selects by Session/Tab `boardId`; scalar reads, memoized rows.
+- Thread rows reuse sidebar actions (no pin) and `SessionHeaderMenu`. Board glyph:
+  headers/page tabs only. Back (`boardEntrySearch`) never on coordinator pages;
+  parent links use the palette format and `boardMemberEntrySearch`, not own Tabs.
 - A thread opened in the panel is a `SessionChatInterface` whose workspace session
   is the thread itself. Never give it a `side-session:` tab id: closing those
   deletes the Session. Narrow windows open the thread's own page instead.
@@ -104,5 +101,8 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 - Reviewer/other grandchild completions return through their parent; blockers still
   report. A thread coordinates its own task: it opens sessions, decides changes and
   quotes reviewer conclusions verbatim. Cancellation never creates a report.
-- Startup prompts describe implemented reports. Round enforcement, handoff and digest
-  scheduling remain later steps.
+- The Schedules tab reuses `SchedulesWorkspace` scoped by `boardId`; ordinary
+  schedules stay in the global list. `?boardSchedule` opens this tab once, like
+  `boardThread`. Destination choices exclude the coordinator and other Boards.
+  Scheduled completions use per-turn provenance, bypass human/grandchild completion
+  filters and freeze passive delivery. Digest scheduling into the coordinator is deferred.
