@@ -927,7 +927,8 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
       sessionId={item.id}
       selected={showSelectedState}
       className={cn(
-        'min-w-0 flex-1 truncate font-normal',
+        'min-w-0 flex-1 font-normal',
+        titleContent ? stylex.props(rowStyles.composedTitle).className : 'truncate',
         showSelectedState ? 'text-sidebar-selection-foreground' : 'text-sidebar-row-foreground'
       )}
     >
@@ -1314,6 +1315,7 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
 UpdatedItemRow.displayName = 'UpdatedItemRow';
 
 const rowStyles = stylex.create({
+  composedTitle: { display: 'flex', minWidth: 0, overflow: 'hidden' },
   detail: {
     minWidth: 0,
     overflow: 'hidden',

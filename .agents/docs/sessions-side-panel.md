@@ -169,3 +169,10 @@ Coordinator pages (including their selected child Tabs) have neither control.
 A thread's own contained Tab keeps Back but adds no duplicate parent breadcrumb.
 Archive/Restore row failures use the sidebar's error toast; the row Open callback
 reads the latest visible metadata through a ref, retaining its identity on updates.
+
+The composed row title is a flex container, not one atomic inline ellipsis.
+The breadcrumb gives its parent at most 30% (capped at 7em), with independent
+ellipsis on parent and child. The child takes the remaining width. Parent buttons
+use `Button.focusRing="inset"`, preserving focus inside clipped/paint-contained
+rows. `ChildThreadRowsNarrow` fixes the manager preview at 900px (about a 310px
+Board panel); direct `iframe.html` previews should use a 900px browser viewport.

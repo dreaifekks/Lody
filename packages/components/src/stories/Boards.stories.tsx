@@ -6,7 +6,7 @@ import { BoardThreadParentBreadcrumb } from '@/components/boards/board-thread-br
  * the container uses.
  */
 import type { Meta, StoryObj } from '@storybook/react';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { createStore, Provider } from 'jotai';
 import { parseLodyPresenceStates } from '@lody/shared';
 import { useTranslation } from 'react-i18next';
@@ -1205,4 +1205,31 @@ export const ChildThreadRows: Story = {};
 export const ChildThreadFullPage: Story = {
   render: ThreadFullPage.render,
   args: { initial: { kind: 'thread', id: 'thread-entry-review' as SessionId } },
+};
+
+/** Constrain the preview viewport, not the product components, to the reported 310px panel. */
+function NarrowBoardViewport({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    const frame = window.frameElement as HTMLElement | null;
+    if (!frame) return undefined;
+    const previous = frame.style.cssText;
+    frame.style.setProperty('width', '900px', 'important');
+    frame.style.setProperty('min-width', '900px', 'important');
+    frame.style.setProperty('max-width', '900px', 'important');
+    return () => {
+      frame.style.cssText = previous;
+    };
+  }, []);
+  return children;
+}
+
+/** Open directly at 900px, or use the manager's fixed 900px preview. */
+export const ChildThreadRowsNarrow: Story = {
+  decorators: [
+    (Story) => (
+      <NarrowBoardViewport>
+        <Story />
+      </NarrowBoardViewport>
+    ),
+  ],
 };

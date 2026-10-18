@@ -453,3 +453,23 @@ click runs the shared archive action and never selects the row. Other sidebar
 rows keep their existing confirmation by default. The behavioral suite verifies
 both the immediate thread archive and the ordinary Board row's two-click flow.
 Full verification remains deferred until the user's visual feedback is integrated.
+
+## Narrow child-row titles and focus (2026-10-18)
+
+The 900px visual review found that the outer title treated a child breadcrumb as
+one inline unit and could replace all of it with an ellipsis. The composed-title
+slot now lays out its breadcrumb with flex; each part truncates independently.
+The secondary parent is capped at 30%/7em, leaving the child the remaining width.
+The shared Button gains an explicit inset focus option that retains its variant's
+surface shadow; other callers keep the existing outset behavior. Parent links use
+that option and inner text padding so their ring stays inside their own box.
+
+`ChildThreadRowsNarrow` preserves the 900px preview viewport without styling product
+components in the story. On the updated code, headless Chrome measured 275.5px
+child rows, 62.25px parent links and 132.58px child text in both themes; rows remained
+47.14px high and single-line. Light/dark screenshots show readable child titles and
+complete 2px inset rings. Keyboard Enter still opens the parent; the narrow panel
+header was also checked. These are synthetic Storybook checks, not daemon E2E.
+The existing one-click hover archive and row menus are unchanged.
+
+The final combined `pnpm check` passed after incorporating the visual corrections.

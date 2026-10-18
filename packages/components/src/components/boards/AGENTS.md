@@ -33,6 +33,7 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   Board glyphs: headers/page tabs only. Back: `boardEntrySearch`, Boards on,
   never coordinator pages. Own Tabs have no parent breadcrumb; other parent links
   share palette format and the same-Board `boardMemberEntrySearch` path.
+  Child titles take width before parent names.
 - A thread opened in the panel is a `SessionChatInterface` whose workspace session
   is the thread itself. Never give it a `side-session:` tab id: closing those
   deletes the Session. Narrow windows open the thread's own page instead.

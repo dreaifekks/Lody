@@ -18,6 +18,8 @@ export interface ButtonProps extends Omit<BaseProps, 'className'> {
   tone?: ButtonTone;
   shape?: ButtonShape;
   icon?: boolean;
+  /** Keep keyboard focus inside clipped rows or paint-contained surfaces. */
+  focusRing?: 'outset' | 'inset';
   className?: string;
 }
 
@@ -205,6 +207,11 @@ const styles = stylex.create({
     alignItems: 'stretch',
     gap: '1px',
   },
+  insetFocus: { boxShadow: { ':focus-visible': `inset ${RING}` } },
+  insetPrimaryFocus: { boxShadow: { ':focus-visible': `inset ${RING}, ${button.primaryEdge}` } },
+  insetSecondaryFocus: {
+    boxShadow: { ':focus-visible': `inset ${RING}, ${button.secondaryShadow}` },
+  },
   destructiveTone: {
     color: { default: colors.destructive, ':hover': colors.destructive },
     backgroundColor: { ':hover': `color-mix(in oklab, ${colors.destructive} 10%, transparent)` },
@@ -242,6 +249,7 @@ export const Button = forwardRef<HTMLElement, ButtonProps>(function Button(
     tone = 'neutral',
     shape = 'default',
     icon = false,
+    focusRing = 'outset',
     className,
     children,
     ...rest
@@ -259,7 +267,13 @@ export const Button = forwardRef<HTMLElement, ButtonProps>(function Button(
     tone === 'destructive' &&
       variant !== 'primary' &&
       variant !== 'destructive' &&
-      styles.destructiveTone
+      styles.destructiveTone,
+    focusRing === 'inset' &&
+      (variant === 'primary' || variant === 'destructive'
+        ? styles.insetPrimaryFocus
+        : variant === 'secondary'
+          ? styles.insetSecondaryFocus
+          : styles.insetFocus)
   );
   const glyph = stylex.props(styles.glyph);
   return (

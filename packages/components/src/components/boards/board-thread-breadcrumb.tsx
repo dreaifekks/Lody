@@ -25,6 +25,8 @@ const styles = stylex.create({
     whiteSpace: 'nowrap',
     verticalAlign: 'middle',
   },
+  withTitle: { display: 'flex', flex: '1 1 0', width: '100%', overflow: 'hidden' },
+  parentWithTitle: { maxWidth: 'min(30%, 7em)' },
   parent: {
     display: 'grid',
     gridTemplateColumns: 'minmax(0, 1fr)',
@@ -34,6 +36,8 @@ const styles = stylex.create({
   },
   prefix: { maxWidth: '12em' },
   parentText: {
+    paddingInline: `calc(${space[1]} / 2)`,
+    paddingBlock: `calc(${space[1]} / 2)`,
     color: colors.secondaryLabel,
     minWidth: 0,
     overflow: 'hidden',
@@ -63,12 +67,18 @@ export function BoardThreadBreadcrumb({
   const { t } = useTranslation();
   return (
     <span
-      {...stylex.props(styles.root)}
+      {...stylex.props(styles.root, title !== undefined && styles.withTitle)}
       title={title === undefined ? parentTitle : formatBoardSessionTitle(parentTitle, title)}
     >
-      <span {...stylex.props(styles.parent, title === undefined && styles.prefix)}>
+      <span
+        {...stylex.props(
+          styles.parent,
+          title === undefined ? styles.prefix : styles.parentWithTitle
+        )}
+      >
         <Button
           variant="link"
+          focusRing="inset"
           size="mini"
           title={parentTitle}
           aria-label={t('boards.openParentThread', 'Open parent thread: {{title}}', {
