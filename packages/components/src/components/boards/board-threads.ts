@@ -98,3 +98,81 @@ export function boardActivity(
   }
   return activity;
 }
+
+/** Selection follows membership, including a contained Tab with its own Board id. */
+export function resolveSidebarBoardSelection({
+  boards,
+  routeSessionId,
+  routeBoardId,
+  tabSessionId,
+  tabBoardId,
+}: {
+  boards: readonly { id: string; coordinatorSessionId: string }[];
+  routeSessionId: string | null;
+  routeBoardId?: string;
+  tabSessionId?: string;
+  tabBoardId?: string;
+}): string | undefined {
+  if (routeSessionId === null) return undefined;
+  const selectedSessionId = tabSessionId ?? routeSessionId;
+  const membership = tabSessionId === undefined ? routeBoardId : tabBoardId;
+  return boards.find((board) =>
+    membership ? board.id === membership : board.coordinatorSessionId === selectedSessionId
+  )?.id;
+}
+
+/** Shared with the command palette's Board › thread labels. */
+export const BOARD_SESSION_TITLE_SEPARATOR = '›';
+export const formatBoardSessionTitle = (parent: string, title: string) =>
+  `${parent} ${BOARD_SESSION_TITLE_SEPARATOR} ${title}`;
+
+/** Presentation provenance never grants membership: both conversations belong to this Board. */
+export function resolveBoardThreadParent(
+  session: Pick<SessionMeta, 'boardId' | 'parentSessionId' | 'openedBySessionId'>,
+  lookup: (id: SessionId) => SessionMeta | undefined
+): SessionMeta | undefined {
+  const parentId = session.parentSessionId ?? session.openedBySessionId;
+  const parent = parentId ? lookup(parentId) : undefined;
+  return session.boardId &&
+    parent?.boardId === session.boardId &&
+    parent.boardRole !== 'coordinator'
+    ? parent
+    : undefined;
+}
+
+/** Page-only navigation: contained Tabs already have their owning page's tab strip. */
+export function resolveBoardThreadPageNavigation({
+  enabled,
+  boards,
+  pageSession,
+  selectedSession,
+}: {
+  enabled: boolean;
+  boards: readonly BoardMeta[];
+  pageSession: Pick<SessionMeta, 'id' | 'boardRole'>;
+  selectedSession:
+    | Pick<SessionMeta, 'id' | 'boardId' | 'boardRole' | 'parentSessionId' | 'openedBySessionId'>
+    | null
+    | undefined;
+}) {
+  if (
+    !enabled ||
+    !selectedSession?.boardId ||
+    isBoardCoordinator(selectedSession) ||
+    isBoardCoordinator(pageSession)
+  )
+    return null;
+  const board = boards.find((entry) => entry.id === selectedSession.boardId);
+  if (!board || pageSession.id === board.coordinatorSessionId) return null;
+  const parentId = selectedSession.parentSessionId ?? selectedSession.openedBySessionId;
+  return {
+    back: {
+      sessionId: board.coordinatorSessionId,
+      search: boardEntrySearch(board.coordinatorSessionId),
+    },
+    parent:
+      parentId && parentId !== pageSession.id && parentId !== board.coordinatorSessionId
+        ? { sessionId: board.coordinatorSessionId, search: boardMemberEntrySearch(board, parentId) }
+        : null,
+  };
+}

@@ -1,11 +1,17 @@
+import { BoardThreadBreadcrumb } from './board-thread-breadcrumb';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
 import { ChevronDown, ChevronRight, CircleAlert, CircleSlash } from 'lucide-react';
-import { useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BoardSessionStatus } from '@lody/shared';
 import { useWorkingHandOver } from '@/ui/working-status-mark';
+import {
+  UpdatedItemRow,
+  useSidebarSessionMenuLabels,
+  type UpdatedItemRowProps,
+} from '../sidebar-updated-session-list';
 import { SessionRowStatusIndicator } from '../sidebar-row-shared';
 
 export interface BoardThreadItem {
@@ -19,9 +25,15 @@ export interface BoardThreadItem {
   /** "Agent · machine · project", the facts that say where it runs. */
   detail: string;
   updatedLabel: string;
+  updatedAt: number;
+  parentId?: string;
+  parentTitle?: string;
   /** Opened by another thread, or a contained Tab: drawn one step in. */
   depth?: number;
   archived?: boolean;
+  branchName?: string;
+  openedBySessionId?: string;
+  openedByRowSessionId?: string;
 }
 
 type GroupKey = 'attention' | 'active' | 'idle' | 'archived';
@@ -91,42 +103,8 @@ const styles = stylex.create({
     textAlign: 'start',
   },
   count: { fontWeight: 400, color: colors.tertiaryLabel },
-  row: {
-    display: 'grid',
-    gridTemplateColumns: '16px minmax(0, 1fr) auto',
-    columnGap: space[2],
-    rowGap: '2px',
-    alignItems: 'center',
-    width: '100%',
-    paddingBlock: space[2],
-    paddingInline: space[2],
-    borderWidth: 0,
-    borderRadius: radius.medium,
-    backgroundColor: { default: 'transparent', ':hover': colors.hoverFill },
-    color: colors.label,
-    textAlign: 'start',
-    cursor: 'pointer',
-  },
-  selected: { backgroundColor: colors.selectedFill },
-  indent: (depth: number) => ({ paddingInlineStart: `calc(${space[2]} + ${depth * 18}px)` }),
-  mark: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '16px' },
-  title: {
-    minWidth: 0,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-    fontSize: text.bodySize,
-  },
+  indent: (depth: number) => ({ paddingInlineStart: `${depth * 18}px` }),
   time: { fontSize: text.footnoteSize, color: colors.tertiaryLabel, whiteSpace: 'nowrap' },
-  secondLine: {
-    gridColumn: '2 / 4',
-    minWidth: 0,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-    fontSize: text.footnoteSize,
-    color: colors.secondaryLabel,
-  },
   danger: { color: colors.destructive },
   quiet: { color: colors.tertiaryLabel },
   empty: {
@@ -180,6 +158,91 @@ export function BoardThreadStatusMark({
   return null;
 }
 
+export type BoardThreadActions = Pick<
+  UpdatedItemRowProps,
+  'onArchive' | 'onRestore' | 'onMarkUnread' | 'onRename' | 'onCopyUrl' | 'onBeginRename'
+>;
+
+const noop = () => {};
+const BoardThreadRow = memo(function BoardThreadRow({
+  actions,
+  onOpen,
+  selected,
+  now,
+  ...thread
+}: BoardThreadItem & {
+  now: Date;
+  actions?: BoardThreadActions;
+  onOpen: (id: string, tabSessionId?: string) => void;
+  selected: boolean;
+}) {
+  const { t } = useTranslation();
+  const labels = useSidebarSessionMenuLabels();
+  const item = useMemo(
+    () => ({
+      id: thread.id,
+      kind: 'chat' as const,
+      title: thread.title,
+      sectionLabel: thread.detail,
+      latestMessageAt: thread.updatedAt,
+      branchName: thread.branchName,
+      openedBySessionId: thread.openedBySessionId,
+      openedByRowSessionId: thread.openedByRowSessionId,
+      hasUnreadMessages: thread.unread,
+      isWaitingPermission: thread.status === 'waiting_user',
+      isWorking: GROUP_BY_STATUS[thread.status] === 'active',
+    }),
+    [
+      thread.id,
+      thread.title,
+      thread.detail,
+      thread.updatedAt,
+      thread.branchName,
+      thread.openedBySessionId,
+      thread.openedByRowSessionId,
+      thread.unread,
+      thread.status,
+    ]
+  );
+  return (
+    <div {...stylex.props(styles.indent(thread.depth ?? 0))}>
+      <UpdatedItemRow
+        titleContent={
+          thread.parentId && thread.parentTitle ? (
+            <BoardThreadBreadcrumb
+              parentTitle={thread.parentTitle}
+              title={thread.title}
+              onOpenParent={() => onOpen(thread.parentId!)}
+            />
+          ) : undefined
+        }
+        rowId={thread.id}
+        item={item}
+        now={now}
+        selected={selected}
+        isMobile={false}
+        showPinnedIcon={false}
+        detailLine={thread.summary ?? thread.detail}
+        restIcon={
+          <>
+            <BoardThreadStatusMark status={thread.status} unread={thread.unread === true} />
+            <span {...stylex.props(styles.time)}>{thread.updatedLabel}</span>
+          </>
+        }
+        onSelect={onOpen}
+        {...actions}
+        onBeginRename={actions?.onBeginRename ?? noop}
+        onArchive={thread.archived ? undefined : actions?.onArchive}
+        onRestore={thread.archived ? actions?.onRestore : undefined}
+        contextMenuLabels={labels}
+        archiveTooltipLabel={t('sessions.archive', 'Archive session')}
+        archiveActionLabel={t('archive.title', 'Archive')}
+        archiveConfirmLabel={t('common.confirm', 'Confirm')}
+      />
+    </div>
+  );
+});
+
 /**
  * Threads grouped by what they need: the user, time, or nothing. Empty groups
  * are not drawn, archived threads stay folded, and a row's second line is its
@@ -189,10 +252,14 @@ export function BoardThreadListView({
   threads,
   selectedId,
   onOpen,
+  actions,
+  now,
 }: {
+  now: Date;
+  actions?: BoardThreadActions;
   threads: readonly BoardThreadItem[];
   selectedId?: string | null;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, tabSessionId?: string) => void;
 }) {
   const { t } = useTranslation();
   const [folded, setFolded] = useState<Partial<Record<GroupKey, boolean>>>({ archived: true });
@@ -235,26 +302,14 @@ export function BoardThreadListView({
           ...(isFolded
             ? []
             : items.map((item) => (
-                <button
+                <BoardThreadRow
                   key={item.id}
-                  type="button"
-                  data-scope-item="row"
-                  data-id={item.id}
-                  aria-current={item.id === selectedId ? 'true' : undefined}
-                  onClick={() => onOpen(item.id)}
-                  {...stylex.props(
-                    styles.row,
-                    item.id === selectedId && styles.selected,
-                    (item.depth ?? 0) > 0 && styles.indent(item.depth ?? 0)
-                  )}
-                >
-                  <span {...stylex.props(styles.mark)}>
-                    <BoardThreadStatusMark status={item.status} unread={item.unread === true} />
-                  </span>
-                  <span {...stylex.props(styles.title)}>{item.title}</span>
-                  <span {...stylex.props(styles.time)}>{item.updatedLabel}</span>
-                  <span {...stylex.props(styles.secondLine)}>{item.summary ?? item.detail}</span>
-                </button>
+                  {...item}
+                  selected={item.id === selectedId}
+                  onOpen={onOpen}
+                  actions={actions}
+                  now={now}
+                />
               ))),
         ];
       })}

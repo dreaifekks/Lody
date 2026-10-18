@@ -1,3 +1,6 @@
+import * as stylex from '@stylexjs/stylex';
+import { colors } from '@lody/ui/tokens/colors.stylex';
+import { text } from '@lody/ui/tokens/scales.stylex';
 import { isElectronRenderer } from '@/lib/electron';
 import { openSessionOnModifiedClick } from '@/lib/desktop-window';
 import { SessionWindowMenuItem } from './session-window-menu-item';
@@ -13,6 +16,7 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { startSessionMentionDrag } from '@/lib/session-mention-drag';
 import {
   Archive,
+  ArchiveRestore,
   Folder,
   GitBranch,
   GitPullRequest,
@@ -449,28 +453,7 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
     [t]
   );
 
-  const contextMenuLabels: SidebarUpdatedContextMenuLabels = useMemo(
-    () => ({
-      moreActions: t('sessions.moreActions', 'More actions'),
-      openPr: t('sessions.contextMenu.openPr', 'Open Pull Request'),
-      rename: t('sessions.contextMenu.rename', 'Rename'),
-      pin: t('sessions.contextMenu.pin', 'Pin Session'),
-      unpin: t('sessions.contextMenu.unpin', 'Unpin Session'),
-      archive: t('sessions.contextMenu.archive', 'Archive Session'),
-      markUnread: t('sessions.contextMenu.markUnread', 'Mark as unread'),
-      copyUrl: t('sessions.contextMenu.copyUrl', 'Copy Session URL'),
-      shareWithTeam: t('sessions.sharing.shareWithTeam', 'Share with team…'),
-      onlyOwnerCanShare: t('sessions.sharing.onlyOwnerCanShare', 'Only the device owner can share'),
-      registerDeviceToShare: t(
-        'sessions.sharing.registerDeviceToShare',
-        'Register this device before sharing'
-      ),
-      loadingSharing: t('sessions.sharing.loadingAction', 'Checking sharing…'),
-      copyBranch: t('sessions.contextMenu.copyBranch', 'Copy Current Branch'),
-      goToOpenerSession: t('sessions.contextMenu.goToOpenerSession', 'Go to Opener Session'),
-    }),
-    [t]
-  );
+  const contextMenuLabels = useSidebarSessionMenuLabels();
 
   const [renameTarget, setRenameTarget] = useState<RenameSessionDialogTarget | null>(null);
   const beginRename = useCallback((id: string, currentTitle: string) => {
@@ -742,7 +725,38 @@ function UpdatedItemProjectLine({ item }: { item: SidebarUpdatedItem }) {
   );
 }
 
-type UpdatedItemRowProps = {
+export function useSidebarSessionMenuLabels(): SidebarUpdatedContextMenuLabels {
+  const { t } = useTranslation();
+  return useMemo(
+    () => ({
+      moreActions: t('sessions.moreActions', 'More actions'),
+      openPr: t('sessions.contextMenu.openPr', 'Open Pull Request'),
+      rename: t('sessions.contextMenu.rename', 'Rename'),
+      pin: t('sessions.contextMenu.pin', 'Pin Session'),
+      unpin: t('sessions.contextMenu.unpin', 'Unpin Session'),
+      archive: t('sessions.contextMenu.archive', 'Archive Session'),
+      markUnread: t('sessions.contextMenu.markUnread', 'Mark as unread'),
+      copyUrl: t('sessions.contextMenu.copyUrl', 'Copy Session URL'),
+      shareWithTeam: t('sessions.sharing.shareWithTeam', 'Share with team…'),
+      onlyOwnerCanShare: t('sessions.sharing.onlyOwnerCanShare', 'Only the device owner can share'),
+      registerDeviceToShare: t(
+        'sessions.sharing.registerDeviceToShare',
+        'Register this device before sharing'
+      ),
+      loadingSharing: t('sessions.sharing.loadingAction', 'Checking sharing…'),
+      copyBranch: t('sessions.contextMenu.copyBranch', 'Copy Current Branch'),
+      goToOpenerSession: t('sessions.contextMenu.goToOpenerSession', 'Go to Opener Session'),
+    }),
+    [t]
+  );
+}
+
+export type UpdatedItemRowProps = {
+  titleContent?: ReactNode;
+  rowId?: string;
+  detailLine?: string;
+  restIcon?: ReactNode;
+  onRestore?: (id: string) => void;
   item: SidebarUpdatedItem;
   now: Date;
   selected: boolean;
@@ -766,7 +780,12 @@ type UpdatedItemRowProps = {
   archiveConfirmLabel: string;
 };
 
-const UpdatedItemRow = memo(function UpdatedItemRow({
+export const UpdatedItemRow = memo(function UpdatedItemRow({
+  titleContent,
+  rowId,
+  detailLine,
+  restIcon,
+  onRestore,
   item,
   now,
   selected,
@@ -789,6 +808,7 @@ const UpdatedItemRow = memo(function UpdatedItemRow({
   archiveActionLabel,
   archiveConfirmLabel,
 }: UpdatedItemRowProps) {
+  const { t } = useTranslation();
   const showSelectedState = selected;
   const useAnchor = typeof href === 'string' && href.length > 0;
   // Mobile keeps a right-edge relative time (no hover info card on touch).
@@ -878,6 +898,7 @@ const UpdatedItemRow = memo(function UpdatedItemRow({
     (canRename ||
       canTogglePin ||
       canArchive ||
+      Boolean(onRestore) ||
       canMarkUnread ||
       canCopyUrl ||
       Boolean(shareMenuState) ||
@@ -904,11 +925,12 @@ const UpdatedItemRow = memo(function UpdatedItemRow({
       sessionId={item.id}
       selected={showSelectedState}
       className={cn(
-        'min-w-0 flex-1 truncate font-normal',
+        'min-w-0 flex-1 font-normal',
+        titleContent ? stylex.props(rowStyles.composedTitle).className : 'truncate',
         showSelectedState ? 'text-sidebar-selection-foreground' : 'text-sidebar-row-foreground'
       )}
     >
-      {item.title}
+      {titleContent ?? item.title}
     </SidebarSessionTitleText>
   );
   const rowAriaLabel = projectLabel ? `${item.title}, ${projectLabel}` : item.title;
@@ -921,7 +943,7 @@ const UpdatedItemRow = memo(function UpdatedItemRow({
       tabIndex={!useAnchor && onSelect ? 0 : undefined}
       aria-label={!useAnchor && onSelect ? rowAriaLabel : undefined}
       aria-current={selected ? 'page' : undefined}
-      data-id={`updated:${item.id}`}
+      data-id={rowId ?? `updated:${item.id}`}
       data-scope-item="row"
       data-sidebar-session-id={item.id}
       data-sidebar-updated-id={item.id}
@@ -969,7 +991,7 @@ const UpdatedItemRow = memo(function UpdatedItemRow({
         useAnchor
           ? undefined
           : (event) => {
-              if (!onSelect) return;
+              if (event.target !== event.currentTarget || !onSelect) return;
               if (event.key !== 'Enter' && event.key !== ' ') return;
               event.preventDefault();
               onSelect(item.id);
@@ -1029,6 +1051,7 @@ const UpdatedItemRow = memo(function UpdatedItemRow({
           >
             {titleNode}
           </div>
+          {detailLine ? <div {...stylex.props(rowStyles.detail)}>{detailLine}</div> : null}
           {showProjectLine ? <UpdatedItemProjectLine item={item} /> : null}
         </div>
         {/* Keep PR at the right edge. Line totals stay in the hover card. */}
@@ -1040,7 +1063,8 @@ const UpdatedItemRow = memo(function UpdatedItemRow({
             hasUnreadMessages={item.hasUnreadMessages}
             fadeClassName="group-hover/row:opacity-0 group-data-[menu-open]/row:opacity-0"
             restIcon={
-              showPr ||
+              restIcon ??
+              (showPr ||
               showMergeablePill ||
               isMobile ||
               (item.kind === 'local' && item.isWorktree) ? (
@@ -1059,7 +1083,7 @@ const UpdatedItemRow = memo(function UpdatedItemRow({
                     <SessionPrIcon compact prStatus={prStatus} prCiState={item.prCiState} />
                   ) : null}
                 </span>
-              ) : undefined
+              ) : undefined)
             }
             archive={
               showInlineArchive ? (
@@ -1235,6 +1259,11 @@ const UpdatedItemRow = memo(function UpdatedItemRow({
         canArchive ? (
           <ContextMenu.Separator />
         ) : null}
+        {onRestore ? (
+          <ContextMenu.Item icon={ArchiveRestore} onClick={() => onRestore(item.id)}>
+            {t('archive.restore', 'Restore')}
+          </ContextMenu.Item>
+        ) : null}
         {canArchive ? (
           <ContextMenu.Item
             icon={Archive}
@@ -1281,3 +1310,15 @@ const UpdatedItemRow = memo(function UpdatedItemRow({
 });
 
 UpdatedItemRow.displayName = 'UpdatedItemRow';
+
+const rowStyles = stylex.create({
+  composedTitle: { display: 'flex', minWidth: 0, overflow: 'hidden' },
+  detail: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontSize: text.footnoteSize,
+    color: colors.secondaryLabel,
+  },
+});

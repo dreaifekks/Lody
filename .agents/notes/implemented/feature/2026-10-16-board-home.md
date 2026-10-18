@@ -362,3 +362,114 @@ With the rename and key fixes temporarily reverted, both new assertions fail.
 
 Evidence: Storybook screenshots of both navs (selected, focused, both, dark) and of the
 General and Memory pages, taken on devNuc.
+
+## Thread controls (2026-10-18)
+
+Threads previously hid the conversation header and their list had no lifecycle
+controls. The panel now renders the real `SessionHeaderMenu` in the shared page
+header, with thread title, Stop, Archive/Restore, rename, search and copy actions.
+The ordinary composer was already present: no panel-specific prop suppressed
+model, mode or permission, and existing-session agent restrictions remain intact.
+Fork and permanent delete remain on the full conversation page because their
+page-owned state targets that page's root; the panel does not redirect these
+operations onto the coordinator. Header share/IDE controls retain the same narrow
+container behavior.
+
+The thread list directly uses the sidebar's memoized `UpdatedItemRow` rather than
+copying its menu: rename, unread, copy link/branch, opener navigation, new
+window, and archive. It adds Restore for archived rows. Pin is omitted in the Board list because outside lists filter members. Archive uses `useSessionActions.archiveSession`
+and its recursive selector (contained Tabs and opened conversations); Restore
+keeps the ordinary direct-Tab scope. The list still reads metadata and one derived
+presence atom, without acquiring thread documents.
+
+Back is the first control in both the thread panel header and the full page's
+`SessionTabBar`. The latter enters the coordinator through `boardEntrySearch`,
+which resets the selected panel thread and exits Zen. Split resizing introduces
+no other maximize state. `LayoutDashboard` marks only panel conversation headers and full-page tabs while
+the experiment is on; coordinators are excluded. Sidebar and thread-list rows
+have no Board glyph or per-row membership subscription.
+
+Behavior tests cover menu rename and pin omission, recursive archive/direct-Tab restore,
+keyboard event ownership, return entry and membership marks. Stories
+`ThreadRowActions`, `ThreadControls` and `ThreadFullPage` use real UI leaves with
+synthetic state, including the ordinary run-config and permission menus; full-page
+story navigation is a fixture callback, not the router. Real Electron/daemon
+end-to-end operation is not established by these tests.
+
+The Board sidebar selection now follows the route or active Tab's `boardId`,
+including independently opened descendants and archived threads. Previously only
+the coordinator route matched, so opening inside the panel retained selection
+but opening the full thread lost it. `BoardSidebar` owns scalar-only membership
+subscriptions and a pure resolver; its rows are memoized with stable handlers.
+It keeps the existing `selectedFill`: with the experiment on, all outside thread
+lists are filtered; with it off, the Board section is absent. Ordinary session
+selection is unchanged. `ViewingThread` shows the selected Board beside the
+thread's real tab bar. The full-page Back button now follows the experiment gate;
+the membership mark also follows the same experiment gate.
+
+## Child-thread hierarchy (2026-10-18)
+
+Child conversations now show `parent › child` in the Board list and panel header.
+The parent name is secondary, clickable and bounded; both names stay on one line
+and truncate. The full page places the parent link and separator after Back,
+before the actual child tab, avoiding a duplicate child title. The palette's
+existing `Board › thread` format was extracted into `formatBoardSessionTitle`;
+all three surfaces use the same separator/format instead of inventing a new one.
+
+`resolveBoardThreadParent` uses `parentSessionId` before `openedBySessionId` and
+accepts only a parent thread in the same Board. The coordinator, missing metadata
+and another Board are not parent breadcrumbs. List/panel clicks use the existing
+row entry; full pages use `boardMemberEntrySearch`. Clicking a parent inside a row
+stops propagation so the child does not open immediately afterward. The page's
+connected breadcrumb selects only parent identity/title/membership; rows use their
+existing metadata lookup. No member document or second membership list is acquired.
+
+`ChildThreadOpen`, `ChildThreadRows` and `ChildThreadFullPage` render these real
+components with synthetic data. Behavioral tests cover both relation types,
+coordinator/cross-Board exclusion, row/header parent navigation, event ownership,
+and the full-page Board-member entry. Visual and real-app acceptance are delegated
+to the user; implementation work does not claim those have passed.
+
+## Thread-controls review corrections (2026-10-18)
+
+Archive/Restore failures now show the same error toast as sidebar session actions,
+including a removed local project's restoration refusal. Row Open retains one
+callback and reads the latest visible metadata at invocation. The page navigation
+rules live in `resolveBoardThreadPageNavigation`: coordinator pages expose no Board
+return control; a thread's own contained Tab exposes no duplicate parent breadcrumb.
+The two tests that recreated page wiring were removed in favor of production-function
+cases for ordinary threads, experiment off, coordinator Tabs, own Tabs and independent
+opened children. Real row-action tests assert the error toast and unchanged archive
+state. Board glyphs are restricted to conversation headers/page tabs; the redundant
+sidebar/list subscription was deleted. Targeted verification precedes the user-owned
+visual review; the combined full check is deferred until its feedback is incorporated.
+
+## Shared thread-row archive confirmation (2026-10-18)
+
+The user clarified that direct row archive means operating without entering the
+thread, not bypassing confirmation. The one-click exception from `5e4823ee1` is
+withdrawn: thread rows reuse the same two-click archive button as ordinary sidebar
+rows, with no Board-specific option. Hover archive/more, context menus and header
+controls remain available. Behavioral tests verify that the first click leaves
+the thread unarchived and unselected, and the confirmation archives it without
+opening it; ordinary Board rows retain the same confirmation flow.
+
+## Narrow child-row titles and focus (2026-10-18)
+
+The 900px visual review found that the outer title treated a child breadcrumb as
+one inline unit and could replace all of it with an ellipsis. The composed-title
+slot now lays out its breadcrumb with flex; each part truncates independently.
+The secondary parent is capped at 30%/7em, leaving the child the remaining width.
+The shared Button gains an explicit inset focus option that retains its variant's
+surface shadow; other callers keep the existing outset behavior. Parent links use
+that option and inner text padding so their ring stays inside their own box.
+
+`ChildThreadRowsNarrow` preserves the 900px preview viewport without styling product
+components in the story. On the updated code, headless Chrome measured 275.5px
+child rows, 62.25px parent links and 132.58px child text in both themes; rows remained
+47.14px high and single-line. Light/dark screenshots show readable child titles and
+complete 2px inset rings. Keyboard Enter still opens the parent; the narrow panel
+header was also checked. These are synthetic Storybook checks, not daemon E2E.
+The hover archive and row menus remain available with shared archive confirmation.
+
+The final combined `pnpm check` passed after incorporating the visual corrections.

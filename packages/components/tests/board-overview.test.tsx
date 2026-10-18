@@ -1,4 +1,8 @@
 // @vitest-environment jsdom
+import { Toast } from '@lody/ui';
+import { toastManager } from '../src/lib/toast';
+import { BoardThreadMark } from '../src/components/boards/board-thread-mark';
+import { BoardThreadPaneView } from '../src/components/boards/board-panel-view';
 import { act, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createStore, Provider } from 'jotai';
@@ -53,6 +57,10 @@ import { SessionHeaderMenu } from '../src/components/sessions/session-chat-inter
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';
 import {
   boardActivity,
+  resolveBoardThreadPageNavigation,
+  resolveBoardThreadParent,
+  formatBoardSessionTitle,
+  resolveSidebarBoardSelection,
   boardMemberEntrySearch,
   isBoardSession,
 } from '../src/components/boards/board-threads';
@@ -369,7 +377,11 @@ describe('Board side panel', () => {
           }}
           onShowInPage={() => {}}
           onOpenThreadFull={() => {}}
-          renderThread={(thread) => <p data-thread-surface={thread.id}>{thread.title}</p>}
+          renderThread={(thread, controls) => (
+            <BoardThreadPaneView title={thread.title ?? ''} {...controls}>
+              <p data-thread-surface={thread.id}>{thread.title}</p>
+            </BoardThreadPaneView>
+          )}
           onArchived={() => {}}
         />
       );
@@ -711,15 +723,31 @@ describe('Board side panel', () => {
   it('keeps the sessions a thread opened under it, lifted by the strongest state', async () => {
     const view = await mount(
       <BoardThreadListView
+        now={new Date(0)}
         threads={[
-          { id: 'idle', title: 'Idle thread', status: 'idle', detail: '', updatedLabel: '' },
-          { id: 'parent', title: 'Thread', status: 'idle', detail: '', updatedLabel: '' },
+          {
+            id: 'idle',
+            title: 'Idle thread',
+            status: 'idle',
+            detail: '',
+            updatedLabel: '',
+            updatedAt: 0,
+          },
+          {
+            id: 'parent',
+            title: 'Thread',
+            status: 'idle',
+            detail: '',
+            updatedLabel: '',
+            updatedAt: 0,
+          },
           {
             id: 'reviewer',
             title: 'Reviewer',
             status: 'waiting_user',
             detail: '',
             updatedLabel: '',
+            updatedAt: 0,
             depth: 1,
           },
         ]}
@@ -1358,7 +1386,7 @@ it('renames and archives the whole Board from its page header menu', async () =>
   }
 });
 
-it('shares, renames and archives a Board from its sidebar row menu', async () => {
+it('shares, renames and archives a Board from its sidebar row controls', async () => {
   const { env, store, archivedIds } = await boardWithMembers();
   creation.boards = [env.board('bd_test')];
   const copied: string[] = [];
@@ -1367,6 +1395,7 @@ it('shares, renames and archives a Board from its sidebar row menu', async () =>
   const view = await mount(
     <Provider store={store}>
       <BoardSidebar
+        routeSessionId="coordinator"
         boards={[
           {
             id: 'bd_test',
@@ -1427,12 +1456,353 @@ it('shares, renames and archives a Board from its sidebar row menu', async () =>
     await renameTo('Launch');
     expect(env.board('bd_test').name).toBe('Launch');
 
-    await openRowMenu();
-    await act(async () => menuItem('Archive Board')!.click());
+    const archiveButton = view.host.querySelector<HTMLButtonElement>(
+      '[data-id="bd_test"] button[aria-label="Archive Board"]'
+    )!;
+    await act(async () => archiveButton.click());
+    expect(await archivedIds()).toEqual([]);
+    await act(async () => archiveButton.click());
     expect(archived).toEqual(['bd_test']);
     expect(await archivedIds()).toEqual(['coordinator', 'root', 'review']);
   } finally {
     creation.boards = [];
+    await view.unmount();
+    await env.destroy();
+  }
+});
+
+it('uses sidebar menus and the shared recursive archive action for Board threads', async () => {
+  const sessions = [
+    makeSession('coordinator', { boardRole: 'coordinator' }),
+    makeSession('root', { openedBySessionId: 'coordinator' as SessionId }),
+    makeSession('tab', { parentSessionId: 'root' as SessionId }),
+    makeSession('opened', { openedBySessionId: 'root' as SessionId }),
+    makeSession('other'),
+  ];
+  const env = await boardRuntime(sessions);
+  const store = workspaceStore(env.runtime);
+  store.set(experimentalFeaturesEnabledAtom, true);
+  store.set(boardExperimentEnabledAtom, true);
+  store.set(
+    sessionMetaCacheAtom,
+    Object.fromEntries(sessions.map((session) => [getSessionRoomId(session.id), session]))
+  );
+  let selected: string | null = null;
+  let shownInPage: string | null = null;
+  const view = await mount(
+    <Provider store={store}>
+      <BoardSidePanel
+        board={testBoard()}
+        openThreadId={null}
+        onOpenThread={(session) => {
+          selected = session?.id ?? null;
+        }}
+        onShowInPage={(session) => {
+          shownInPage = session.id;
+        }}
+        onOpenThreadFull={() => {}}
+        renderThread={() => null}
+        requestedThreadId={null}
+        onThreadRequestDone={() => {}}
+      />
+    </Provider>
+  );
+  const row = () => view.host.querySelector<HTMLElement>('[data-id="root"]')!;
+  const openMenu = () =>
+    act(async () =>
+      row().dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 8, clientY: 8 })
+      )
+    );
+  try {
+    expect(row().querySelector('[aria-label="Board thread"]')).toBeNull();
+    await act(async () =>
+      row()
+        .querySelector('button[aria-label="More actions"]')!
+        .dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+        )
+    );
+    expect(selected).toBeNull();
+    await openMenu();
+    await act(async () => menuItem('Rename')!.click());
+    await renameTo('Renamed thread');
+    expect((await env.meta('root')).title).toBe('Renamed thread');
+    expect((await env.meta('coordinator')).title).toBe('coordinator');
+    await openMenu();
+    expect(menuItem('Pin Session')).toBeUndefined();
+    expect(menuItem('Unpin Session')).toBeUndefined();
+    expect((await env.meta('root')).boardId).toBe('bd_test');
+    await openMenu();
+    await act(async () => menuItem('Go to Opener Session')!.click());
+    expect(shownInPage).toBe('coordinator');
+    expect(selected).toBeNull();
+    await openMenu();
+    await act(async () => menuItem('Archive Session')!.click());
+    expect(
+      (await Promise.all(sessions.map((session) => env.meta(session.id))))
+        .filter((session) => session.isArchived)
+        .map((session) => session.id)
+    ).toEqual(['root', 'tab', 'opened']);
+    expect(selected).toBeNull();
+    // The shared restore action restores only the root and contained Tabs.
+    await act(async () =>
+      store.set(
+        sessionMetaCacheAtom,
+        Object.fromEntries(
+          await Promise.all(
+            sessions.map(async (session) => [
+              getSessionRoomId(session.id),
+              await env.meta(session.id),
+            ])
+          )
+        )
+      )
+    );
+    await act(async () =>
+      [...view.host.querySelectorAll<HTMLButtonElement>('button[aria-expanded]')]
+        .find((button) => button.textContent?.startsWith('Archived'))!
+        .click()
+    );
+    await openMenu();
+    expect(menuItem('Archive Session')).toBeUndefined();
+    await act(async () => menuItem('Restore')!.click());
+    expect((await env.meta('root')).isArchived).toBe(false);
+    expect((await env.meta('tab')).isArchived).toBe(false);
+    expect((await env.meta('opened')).isArchived).toBe(true);
+    const otherArchive = view.host.querySelector<HTMLButtonElement>(
+      '[data-id="other"] button[aria-label="Archive session"]'
+    )!;
+    await act(async () => otherArchive.click());
+    expect((await env.meta('other')).isArchived).not.toBe(true);
+    expect(selected).toBeNull();
+    await act(async () =>
+      view.host
+        .querySelector<HTMLButtonElement>(
+          '[data-id="other"] button[aria-label="Confirm Archive session"]'
+        )!
+        .click()
+    );
+    expect((await env.meta('other')).isArchived).toBe(true);
+    expect(selected).toBeNull();
+  } finally {
+    await view.unmount();
+    await env.destroy();
+  }
+});
+
+it('keeps the Board selected through its coordinator, threads and contained Tabs', () => {
+  const boards = [
+    testBoard(),
+    testBoard({ id: 'bd_other' as never, coordinatorSessionId: 'other-coordinator' as SessionId }),
+  ];
+  const selection = (routeSessionId: string | null, routeBoardId?: string, tabBoardId?: string) =>
+    resolveSidebarBoardSelection({
+      boards,
+      routeSessionId,
+      routeBoardId,
+      tabBoardId,
+      tabSessionId: tabBoardId === undefined ? undefined : 'tab',
+    });
+  // Opening inside the panel leaves the coordinator route unchanged.
+  expect(selection('coordinator')).toBe('bd_test');
+  expect(selection('thread', 'bd_test')).toBe('bd_test');
+  // Opened descendants and contained Tabs are members by their own boardId.
+  expect(selection('grandchild', 'bd_test')).toBe('bd_test');
+  expect(selection('thread', 'bd_test', 'bd_test')).toBe('bd_test');
+  expect(selection('chat', undefined, 'bd_test')).toBe('bd_test');
+  expect(selection('thread', 'bd_test', 'bd_other')).toBe('bd_other');
+  expect(
+    resolveSidebarBoardSelection({
+      boards,
+      routeSessionId: 'thread',
+      routeBoardId: 'bd_test',
+      tabSessionId: 'detached-tab',
+    })
+  ).toBeUndefined();
+  expect(selection('chat')).toBeUndefined();
+  expect(selection('thread', 'bd_missing')).toBeUndefined();
+  expect(selection(null, undefined, 'bd_test')).toBeUndefined();
+});
+
+it("opens a child's same-Board parent from both its row and panel header", async () => {
+  const parent = makeSession('parent', { title: 'Parent thread' });
+  const child = makeSession('child', { title: 'Review', openedBySessionId: parent.id });
+  const contained = makeSession('contained', {
+    parentSessionId: parent.id,
+    openedBySessionId: 'coordinator' as SessionId,
+  });
+  const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+  const byId = new Map([parent, child, contained, coordinator].map((entry) => [entry.id, entry]));
+  expect(resolveBoardThreadParent(child, (id) => byId.get(id))).toBe(parent);
+  expect(resolveBoardThreadParent(contained, (id) => byId.get(id))).toBe(parent);
+  expect(
+    resolveBoardThreadParent({ ...child, boardId: 'bd_other' as never }, (id) => byId.get(id))
+  ).toBeUndefined();
+  expect(
+    resolveBoardThreadParent({ ...child, openedBySessionId: coordinator.id }, (id) => byId.get(id))
+  ).toBeUndefined();
+  expect(resolveBoardThreadParent(child, () => undefined)).toBeUndefined();
+  expect(formatBoardSessionTitle(parent.title!, child.title!)).toBe('Parent thread › Review');
+  const store = createStore();
+  store.set(experimentalFeaturesEnabledAtom, true);
+  store.set(boardExperimentEnabledAtom, true);
+  store.set(
+    sessionMetaCacheAtom,
+    Object.fromEntries([...byId.values()].map((entry) => [getSessionRoomId(entry.id), entry]))
+  );
+  function Panel() {
+    const [open, setOpen] = useState<SessionId | null>(child.id);
+    return (
+      <BoardSidePanel
+        board={testBoard()}
+        openThreadId={open}
+        onOpenThread={(entry) => setOpen(entry?.id ?? null)}
+        onShowInPage={() => {}}
+        onOpenThreadFull={() => {}}
+        requestedThreadId={null}
+        onThreadRequestDone={() => {}}
+        renderThread={(entry, controls) => (
+          <BoardThreadPaneView title={entry.title!} {...controls}>
+            <p data-open-thread={entry.id}>{entry.title}</p>
+          </BoardThreadPaneView>
+        )}
+      />
+    );
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <Panel />
+    </Provider>
+  );
+  try {
+    expect(view.host.textContent).toContain('Parent thread›Review');
+    await act(async () =>
+      view.host
+        .querySelector<HTMLButtonElement>('[aria-label="Open parent thread: Parent thread"]')!
+        .click()
+    );
+    expect(view.host.querySelector('[data-open-thread="parent"]')).not.toBeNull();
+    await act(async () =>
+      view.host.querySelector<HTMLButtonElement>('[aria-label="Back to threads"]')!.click()
+    );
+    const childRow = view.host.querySelector<HTMLElement>('[data-id="child"]')!;
+    expect(childRow.textContent).toContain('Parent thread›Review');
+    await act(async () =>
+      childRow
+        .querySelector<HTMLButtonElement>('[aria-label="Open parent thread: Parent thread"]')!
+        .click()
+    );
+    expect(view.host.querySelector('[data-open-thread="parent"]')).not.toBeNull();
+    expect(view.host.querySelector('[data-open-thread="child"]')).toBeNull();
+  } finally {
+    await view.unmount();
+  }
+});
+
+it('resolves page navigation without duplicating coordinator or parent tabs', () => {
+  const board = testBoard();
+  const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+  const thread = makeSession('thread', { openedBySessionId: coordinator.id });
+  const tab = makeSession('tab', { parentSessionId: thread.id });
+  const child = makeSession('child', { openedBySessionId: thread.id });
+  const resolve = (
+    pageSession: SessionMeta,
+    selectedSession: SessionMeta = pageSession,
+    enabled = true
+  ) => resolveBoardThreadPageNavigation({ enabled, boards: [board], pageSession, selectedSession });
+  const back = { sessionId: coordinator.id, search: { board: true, tab: 'session:coordinator' } };
+  expect(resolve(thread)).toEqual({ back, parent: null });
+  expect(resolve(thread, thread, false)).toBeNull();
+  expect(resolve(makeSession('chat', { boardId: undefined }))).toBeNull();
+  expect(resolve(coordinator)).toBeNull();
+  expect(
+    resolve(coordinator, makeSession('coordinator-tab', { parentSessionId: coordinator.id }))
+  ).toBeNull();
+  // The catalog id also excludes a coordinator route before its role metadata arrives.
+  expect(resolve({ ...coordinator, boardRole: undefined }, tab)).toBeNull();
+  expect(resolve(thread, tab)).toEqual({ back, parent: null });
+  expect(resolve(child)).toEqual({
+    back,
+    parent: {
+      sessionId: coordinator.id,
+      search: { board: true, tab: 'session:coordinator', boardThread: thread.id },
+    },
+  });
+});
+
+it('gates the conversation-header Board mark on the experiment', async () => {
+  const store = createStore();
+  store.set(experimentalFeaturesEnabledAtom, true);
+  store.set(boardExperimentEnabledAtom, true);
+  const view = await mount(
+    <Provider store={store}>
+      <BoardThreadMark />
+    </Provider>
+  );
+  try {
+    expect(view.host.querySelector('[aria-label="Board thread"]')).not.toBeNull();
+    await act(async () => store.set(boardExperimentEnabledAtom, false));
+    expect(view.host.querySelector('[aria-label="Board thread"]')).toBeNull();
+  } finally {
+    await view.unmount();
+  }
+});
+
+it('reports archive and removed-project restore failures without changing lifecycle state', async () => {
+  const active = makeSession('active');
+  const archived = makeSession('archived-local', {
+    isArchived: true,
+    project: { kind: 'local', localProjectId: 'removed' } as SessionMeta['project'],
+  });
+  const env = await boardRuntime([active, archived]);
+  const store = workspaceStore(env.runtime);
+  store.set(sessionMetaCacheAtom, {
+    [getSessionRoomId(active.id)]: active,
+    [getSessionRoomId(archived.id)]: archived,
+  });
+  env.failing.add(getSessionRoomId(active.id));
+  const view = await mount(
+    <Toast.Provider manager={toastManager} timeout={0}>
+      <Provider store={store}>
+        <BoardSidePanel
+          board={testBoard()}
+          openThreadId={null}
+          onOpenThread={() => {}}
+          onShowInPage={() => {}}
+          onOpenThreadFull={() => {}}
+          renderThread={() => null}
+          requestedThreadId={null}
+          onThreadRequestDone={() => {}}
+        />
+      </Provider>
+    </Toast.Provider>
+  );
+  const openMenu = (id: string) =>
+    act(async () =>
+      view.host
+        .querySelector(`[data-id="${id}"]`)!
+        .dispatchEvent(
+          new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 8, clientY: 8 })
+        )
+    );
+  try {
+    await openMenu(active.id);
+    await act(async () => menuItem('Archive Session')!.click());
+    expect(document.body.textContent).toContain('disk full');
+    expect((await env.meta(active.id)).isArchived).not.toBe(true);
+    await act(async () =>
+      [...view.host.querySelectorAll<HTMLButtonElement>('button[aria-expanded]')]
+        .find((button) => button.textContent?.startsWith('Archived'))!
+        .click()
+    );
+    await openMenu(archived.id);
+    await act(async () => menuItem('Restore')!.click());
+    expect(document.body.textContent).toContain(
+      'Re-add this local project to restore its conversations.'
+    );
+    expect((await env.meta(archived.id)).isArchived).toBe(true);
+  } finally {
     await view.unmount();
     await env.destroy();
   }

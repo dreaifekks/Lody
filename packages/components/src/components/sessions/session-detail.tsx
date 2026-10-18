@@ -1,3 +1,6 @@
+import { BoardThreadParentBreadcrumb } from '../boards/board-thread-breadcrumb';
+import { BoardThreadBackButton, BoardThreadOpenButton } from '../boards/board-panel-view';
+import { resolveBoardThreadPageNavigation } from '../boards/board-threads';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
 import { pendingSessionLinkAtom } from '@/lib/session-deep-link';
 import { windowPreparationAtom } from '@/lib/window-preparation';
@@ -3600,6 +3603,7 @@ const SessionDetail = ({
   if (urlBoard === true && activeBoard) {
     if (restoredBoardPanel !== sessionId) {
       setRestoredBoardPanel(sessionId);
+      setBoardThreadId(null);
       setBoardEntrySeq((seq) => seq + 1);
       if (isMobile) {
         setMobileBoardOpen(true);
@@ -6249,7 +6253,7 @@ const SessionDetail = ({
       requestedScheduleId={boardScheduleRequest}
       onScheduleRequestDone={() => setBoardScheduleRequest(null)}
       onThreadRequestDone={finishBoardThreadRequest}
-      renderThread={(thread) => (
+      renderThread={(thread, controls) => (
         <SessionChatInterface
           key={thread.id}
           ref={boardThreadChatRef}
@@ -6257,7 +6261,16 @@ const SessionDetail = ({
           // The thread owns its repository, PR and diff state, not the coordinator.
           workspaceSession={thread}
           className={stylex.props(detailStyles.rootFill).className}
-          hideHeader
+          headerVariant="board-thread"
+          headerLocation={controls.location}
+          headerParentThread={controls.parentThread}
+          headerStartSlot={<BoardThreadBackButton onBack={controls.onBack} />}
+          headerEndSlot={<BoardThreadOpenButton onOpen={controls.onOpenFull} />}
+          onArchiveSession={async () => {
+            await archiveSession(thread.id);
+            controls.onBack();
+          }}
+          onRestoreSession={() => restoreSession(thread.id)}
           syncEnabled
           isVisible={isSidebarVisible}
           onNavigateSession={handleNavigateSession}
@@ -7439,6 +7452,24 @@ const SessionDetail = ({
     activeSession.isTabClosed === true && !closedConversationIds.has(activeSession.id)
       ? { ...activeSession, isTabClosed: false }
       : activeSession;
+  const boardPageNavigation = resolveBoardThreadPageNavigation({
+    enabled: boardsEnabled,
+    boards,
+    pageSession: activeSession,
+    selectedSession: activeTabSession,
+  });
+  const boardParentTarget = boardPageNavigation?.parent;
+  const backToBoard = boardPageNavigation ? (
+    <BoardThreadBackButton
+      onBack={() => {
+        void router.navigate({
+          to: '/$workspaceName/sessions/$sessionId',
+          params: { workspaceName: workspaceSlug!, sessionId: boardPageNavigation.back.sessionId },
+          search: boardPageNavigation.back.search,
+        });
+      }}
+    />
+  ) : null;
   const tabBar = (
     <SessionTabBar
       variant="session"
@@ -7455,7 +7486,27 @@ const SessionDetail = ({
       onTabRestore={handleTabRestore}
       onTabReorder={handleSessionTabReorder}
       onMentionSession={handleInsertDroppedSessionMention}
-      leftSlot={leftSidebarExpandButton}
+      leftSlot={
+        <>
+          {backToBoard}
+          {boardParentTarget && activeTabSession ? (
+            <BoardThreadParentBreadcrumb
+              session={activeTabSession}
+              onOpenParent={() => {
+                void router.navigate({
+                  to: '/$workspaceName/sessions/$sessionId',
+                  params: {
+                    workspaceName: workspaceSlug!,
+                    sessionId: boardParentTarget.sessionId,
+                  },
+                  search: boardParentTarget.search,
+                });
+              }}
+            />
+          ) : null}
+          {leftSidebarExpandButton}
+        </>
+      }
       rightSlot={desktopHeaderToolbar}
       className={cn(
         stylex.props(

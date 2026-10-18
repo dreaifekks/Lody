@@ -1,8 +1,9 @@
+import { toast } from '@/lib/toast';
 import * as stylex from '@stylexjs/stylex';
 import { space } from '@lody/ui/tokens/scales.stylex';
 import { Download } from 'lucide-react';
 import { atom, useAtomValue } from 'jotai';
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   deriveBoardSessionStatus,
@@ -20,6 +21,12 @@ import {
 
 const localProjectsOf = (rows: MachineFlockRowMap | undefined) =>
   rows ? getMachineFlockLocalProjects(rows) : undefined;
+import { useSessionActions } from '@/hooks/use-session-actions';
+import { buildSessionLink } from '@lody/shared/session-link';
+import {
+  RenameSessionDialogView,
+  type RenameSessionDialogTarget,
+} from '../sessions/rename-session-dialog';
 import { currentWorkspaceIdAtom } from '@/atoms';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { sessionLiveStatusAtomFamily } from '@/atoms/presence';
@@ -35,7 +42,7 @@ import { useBoardDocument } from '@/hooks/use-board-document';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import { BoardSchedules } from './board-schedules';
-import { BoardPanelView, BoardThreadPaneView, type BoardPanelTab } from './board-panel-view';
+import { BoardPanelView, type BoardPanelTab } from './board-panel-view';
 import { BoardThreadListView, type BoardThreadItem } from './board-thread-list';
 import { BoardDirectoryTreeView, BoardFileEditorView } from './board-files-view';
 import {
@@ -45,7 +52,7 @@ import {
 } from './board-directory';
 import { BoardNotesEditor } from './board-notes-panel';
 import { CreateBoardDialog } from './create-board-dialog';
-import { buildBoardRows, opensInCoordinatorPage } from './board-threads';
+import { buildBoardRows, opensInCoordinatorPage, resolveBoardThreadParent } from './board-threads';
 
 const panelStyles = stylex.create({
   padded: { display: 'flex', flexDirection: 'column', gap: space[1], padding: space[2] },
@@ -95,24 +102,33 @@ export function boardThreadItems(
     untitled: string;
   }
 ): BoardThreadItem[] {
-  return rows.map(({ session, depth }, index) => ({
-    id: session.id,
-    title: session.title || context.untitled,
-    depth,
-    archived: session.isArchived === true,
-    unread: sessionHasUnreadMessages(session),
-    status: deriveBoardSessionStatus({
-      liveStatus: live[index],
-      awaitingUserSince: session.awaitingUserSince,
-      lastMessageAt: session.lastMessageAt,
-      collaborationStopped: isBoardSessionStopped(session, context.lookup),
-    }),
-    detail: context.detail(session),
-    updatedLabel: formatCompactRelativeTime(
-      session.lastMessageAt ?? session.createdAt,
-      context.now
-    ),
-  }));
+  return rows.map(({ session, depth }, index) => {
+    const parent = depth > 0 ? resolveBoardThreadParent(session, context.lookup) : undefined;
+    return {
+      id: session.id,
+      title: session.title || context.untitled,
+      depth,
+      parentId: parent?.id,
+      parentTitle: parent ? parent.title || context.untitled : undefined,
+      archived: session.isArchived === true,
+      branchName: session.branchName,
+      openedBySessionId: session.openedBySessionId,
+      openedByRowSessionId: session.openedByRootSessionId,
+      unread: sessionHasUnreadMessages(session),
+      status: deriveBoardSessionStatus({
+        liveStatus: live[index],
+        awaitingUserSince: session.awaitingUserSince,
+        lastMessageAt: session.lastMessageAt,
+        collaborationStopped: isBoardSessionStopped(session, context.lookup),
+      }),
+      detail: context.detail(session),
+      updatedAt: new Date(session.lastMessageAt ?? session.createdAt).getTime(),
+      updatedLabel: formatCompactRelativeTime(
+        session.lastMessageAt ?? session.createdAt,
+        context.now
+      ),
+    };
+  });
 }
 
 function BoardThreads({
@@ -122,6 +138,36 @@ function BoardThreads({
   board: BoardMeta;
   onOpen: (session: SessionMeta) => void;
 }) {
+  const { archiveSession, restoreSession, markSessionUnread, updateSessionTitle } =
+    useSessionActions();
+  const workspaceId = useAtomValue(currentWorkspaceIdAtom);
+  const [renameTarget, setRenameTarget] = useState<RenameSessionDialogTarget | null>(null);
+  const actions = useMemo(
+    () => ({
+      onArchive: (id: string) => {
+        void archiveSession(id as SessionId).catch((error: unknown) => {
+          toast.error(error instanceof Error ? error.message : String(error));
+        });
+      },
+      onRestore: (id: string) => {
+        void restoreSession(id as SessionId).catch((error: unknown) => {
+          toast.error(error instanceof Error ? error.message : String(error));
+        });
+      },
+      onMarkUnread: (id: string) => {
+        void markSessionUnread(id as SessionId);
+      },
+      onRename: (id: string, title: string) => updateSessionTitle(id as SessionId, title),
+      onBeginRename: (id: string, title: string) =>
+        setRenameTarget({ sessionId: id as SessionId, initialTitle: title }),
+      onCopyUrl: (id: string) => {
+        void navigator.clipboard.writeText(
+          buildSessionLink({ sessionId: id, workspaceId: workspaceId! })
+        );
+      },
+    }),
+    [archiveSession, restoreSession, markSessionUnread, updateSessionTitle, workspaceId]
+  );
   const { allActiveSessions } = useVisibleSessionMetas();
   const { archivedSessions } = useVisibleArchivedSessionMetas();
   const metas = useAtomValue(sessionMetaCacheAtom);
@@ -153,15 +199,29 @@ function BoardThreads({
     now,
     untitled: t('boards.untitled', 'Untitled session'),
   });
-  const byId = new Map(rows.map(({ session }) => [session.id, session]));
+  const byId = useMemo(
+    () =>
+      new Map([...allActiveSessions, ...archivedSessions].map((session) => [session.id, session])),
+    [allActiveSessions, archivedSessions]
+  );
+  const byIdRef = useRef(byId);
+  byIdRef.current = byId;
+  const open = useCallback(
+    (id: string, tabSessionId?: string) => {
+      const session = byIdRef.current.get((tabSessionId ?? id) as SessionId);
+      if (session) onOpen(session);
+    },
+    [onOpen]
+  );
   return (
-    <BoardThreadListView
-      threads={threads}
-      onOpen={(id) => {
-        const session = byId.get(id as SessionId);
-        if (session) onOpen(session);
-      }}
-    />
+    <>
+      <BoardThreadListView now={now} threads={threads} onOpen={open} actions={actions} />
+      <RenameSessionDialogView
+        target={renameTarget}
+        onClose={() => setRenameTarget(null)}
+        onRename={actions.onRename}
+      />
+    </>
   );
 }
 
@@ -248,7 +308,15 @@ type BoardSidePanelProps = {
    */
   onShowInPage: (session: SessionMeta) => void;
   onOpenThreadFull: (session: SessionMeta) => void;
-  renderThread: (session: SessionMeta) => ReactNode;
+  renderThread: (
+    session: SessionMeta,
+    controls: {
+      onBack: () => void;
+      onOpenFull: () => void;
+      location?: string;
+      parentThread?: { title: string; onOpen: () => void };
+    }
+  ) => ReactNode;
   /** A member to open once (`?boardThread`), the way its row opens it; then `onThreadRequestDone`. */
   requestedScheduleId?: string | null;
   onScheduleRequestDone?: () => void;
@@ -302,9 +370,21 @@ function BoardSidePanelContent({
   const location = useThreadLocation(openThread);
   const openMember = useCallback(
     (session: SessionMeta) =>
-      opensInCoordinatorPage(board, session) ? onShowInPage(session) : onOpenThread(session),
+      session.id === board.coordinatorSessionId ||
+      session.boardId !== board.id ||
+      opensInCoordinatorPage(board, session)
+        ? onShowInPage(session)
+        : onOpenThread(session),
     [board, onOpenThread, onShowInPage]
   );
+  const parentThread = openThread
+    ? resolveBoardThreadParent(
+        openThread,
+        (id) =>
+          allActiveSessions.find((entry) => entry.id === id) ??
+          archivedSessions.find((entry) => entry.id === id)
+      )
+    : undefined;
   // A requested member opens as soon as its metadata is here.
   const requested =
     requestedThreadId === null
@@ -319,14 +399,17 @@ function BoardSidePanelContent({
   return (
     <>
       {openThread ? (
-        <BoardThreadPaneView
-          title={openThread.title || t('boards.untitled', 'Untitled session')}
-          location={location}
-          onBack={() => onOpenThread(null)}
-          onOpenFull={() => onOpenThreadFull(openThread)}
-        >
-          {renderThread(openThread)}
-        </BoardThreadPaneView>
+        renderThread(openThread, {
+          onBack: () => onOpenThread(null),
+          onOpenFull: () => onOpenThreadFull(openThread),
+          location,
+          parentThread: parentThread
+            ? {
+                title: parentThread.title || t('boards.untitled', 'Untitled session'),
+                onOpen: () => openMember(parentThread),
+              }
+            : undefined,
+        })
       ) : (
         <BoardPanelView
           tab={tab}

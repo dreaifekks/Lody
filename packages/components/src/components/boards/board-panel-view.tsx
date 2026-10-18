@@ -1,11 +1,14 @@
+import { BoardThreadBreadcrumb } from './board-thread-breadcrumb';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
 import { Tabs } from '@lody/ui/tabs';
-import { ArrowLeft, Maximize2, Plus } from 'lucide-react';
+import { ArrowLeft, Maximize2, Plus, Square } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
+import { SessionConversationPageHeader } from '../sessions/session-conversation-page';
+import { BoardThreadMark } from './board-thread-mark';
 
 /** The Board side panel: threads and the shared directory. A thread opens inside it. */
 export type BoardPanelTab = 'threads' | 'files' | 'schedules';
@@ -95,49 +98,136 @@ export function BoardPanelView({
  */
 export function BoardThreadPaneView({
   title,
+  parentThread,
   location,
   onBack,
   onOpenFull,
+  menuSlot,
+  onStop,
   children,
 }: {
   title: string;
+  parentThread?: { title: string; onOpen: () => void };
   /** "devnuc · Lody": where a project-bound thread runs. */
   location?: string;
   onBack: () => void;
   onOpenFull: () => void;
+  menuSlot?: ReactNode;
+  onStop?: () => void;
   children: ReactNode;
+}) {
+  return (
+    <div {...stylex.props(styles.root)}>
+      <BoardThreadHeader
+        title={title}
+        parentThread={parentThread}
+        location={location}
+        menuSlot={menuSlot}
+        onStop={onStop}
+        startSlot={<BoardThreadBackButton onBack={onBack} />}
+        endSlot={<BoardThreadOpenButton onOpen={onOpenFull} />}
+      />
+      <div {...stylex.props(styles.fill)}>{children}</div>
+    </div>
+  );
+}
+
+export function BoardThreadBackButton({ onBack }: { onBack: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Button
+      variant="ghost"
+      size="small"
+      icon
+      aria-label={t('boards.home.backToThreads', 'Back to threads')}
+      onClick={onBack}
+    >
+      <ArrowLeft size={16} aria-hidden />
+    </Button>
+  );
+}
+
+export function BoardThreadOpenButton({ onOpen }: { onOpen: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Button
+      variant="ghost"
+      size="small"
+      icon
+      aria-label={t('boards.home.openThread', 'Open as a full conversation')}
+      onClick={onOpen}
+    >
+      <Maximize2 size={14} aria-hidden />
+    </Button>
+  );
+}
+
+export function BoardThreadHeader({
+  title,
+  parentThread,
+  location,
+  startSlot,
+  endSlot,
+  menuSlot,
+  desktopActionsSlot,
+  onStop,
+}: {
+  title: string;
+  parentThread?: { title: string; onOpen: () => void };
+  location?: string;
+  startSlot?: ReactNode;
+  endSlot?: ReactNode;
+  menuSlot?: ReactNode;
+  desktopActionsSlot?: ReactNode;
+  onStop?: () => void;
 }) {
   const { t } = useTranslation();
   return (
-    <div {...stylex.props(styles.root)}>
-      <header {...stylex.props(styles.header)}>
-        <Button
-          variant="ghost"
-          size="small"
-          aria-label={t('boards.home.backToThreads', 'Back to threads')}
-          onClick={onBack}
-        >
-          <ArrowLeft size={16} aria-hidden />
-          <span {...stylex.props(styles.crumb)}>{t('boards.threads', 'Threads')}</span>
-        </Button>
-        <span {...stylex.props(styles.title)}>{title}</span>
-        <span {...stylex.props(styles.spacer)} />
-        {location ? (
-          <span title={location} {...stylex.props(styles.location)}>
-            {location}
+    <SessionConversationPageHeader
+      startSlot={startSlot}
+      titleSlot={
+        <>
+          <BoardThreadMark />
+          <span {...stylex.props(styles.title)}>
+            {parentThread ? (
+              <BoardThreadBreadcrumb
+                parentTitle={parentThread.title}
+                title={title}
+                onOpenParent={parentThread.onOpen}
+              />
+            ) : (
+              title
+            )}
           </span>
-        ) : null}
-        <Button
-          variant="ghost"
-          size="small"
-          icon
-          aria-label={t('boards.home.openThread', 'Open as a full conversation')}
-          onClick={onOpenFull}
-        >
-          <Maximize2 size={14} />
-        </Button>
-      </header>
-      <div {...stylex.props(styles.fill)}>{children}</div>
-    </div>
+        </>
+      }
+      desktopActionsSlot={desktopActionsSlot}
+      menuSlot={
+        <>
+          {onStop ? (
+            <Button
+              variant="ghost"
+              size="small"
+              icon
+              aria-label={t('sessions.stop', 'Stop')}
+              onClick={onStop}
+            >
+              <Square size={14} />
+            </Button>
+          ) : null}
+          {menuSlot}
+        </>
+      }
+      endSlot={
+        <>
+          {location ? (
+            <span title={location} {...stylex.props(styles.location)}>
+              {location}
+            </span>
+          ) : null}
+          {endSlot}
+        </>
+      }
+    />
   );
 }

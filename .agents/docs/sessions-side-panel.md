@@ -129,3 +129,50 @@ this page is the full text of the rules summarised there.
   `useSessionDoc` never survive an in-place session switch.
   Electron public-browser restoration only reattaches the existing `WebContentsView`; it must not
   issue another navigation to the cached URL, which would silently reload and lose page state.
+
+## Board threads
+
+The coordinator's Board panel selects a thread in `BoardSidePanel`. Its conversation
+is the real `SessionChatInterface` with `headerVariant="board-thread"`: the same
+`SessionHeaderMenu`, title/return/full-page controls, and the unchanged
+`SessionChatInputArea`. Header launch/share pills use the normal 800px container
+rule; model/mode/permission controls remain in the composer at every panel width.
+Existing-session agent locks are unchanged.
+
+The list renders the sidebar's memoized `UpdatedItemRow`, including its leading
+menu and hover archive button with the same two-click confirmation. Threads can
+be archived directly from their rows through `useSessionActions`.
+Full-page return lives in `SessionTabBar.leftSlot`, before the sidebar toggle,
+and navigates through `boardEntrySearch`. Re-entry clears the old panel thread.
+Resizing the split has no separate full-screen thread state. Zen is cleared by
+Board entry. The experiment-gated membership mark appears only in panel conversation headers
+and full-page session tabs; sidebar and thread-list rows have no mark subscription.
+
+The sidebar's Board row stays selected on a member's full page as well as in the
+coordinator panel. `BoardSidebar` selects only the route and active Tab's `boardId`
+from metadata; `resolveSidebarBoardSelection` matches that membership to the
+visible catalog. Contained Tabs with a different Board select their own Board.
+The existing selected fill is retained, and memoized Board rows get stable action
+callbacks. No membership list or layout-level metadata subscription is added.
+
+Child rows and panel headers render `BoardThreadBreadcrumb` with the same title
+format as the command palette. The direct contained parent takes precedence over
+the precise opener, and a parent must be a thread in the same Board. Clicking its
+name uses the row's navigation, without selecting the child through event bubbling.
+On the full page, the parent link and separator sit immediately after Back; the
+real child tab supplies the title. It uses `boardMemberEntrySearch` to enter the
+parent as its Board row would. The page breadcrumb selects only parent identity,
+title and membership from metadata; it does not load its document.
+
+`resolveBoardThreadPageNavigation` owns the page's Back and parent-entry targets.
+Coordinator pages (including their selected child Tabs) have neither control.
+A thread's own contained Tab keeps Back but adds no duplicate parent breadcrumb.
+Archive/Restore row failures use the sidebar's error toast; the row Open callback
+reads the latest visible metadata through a ref, retaining its identity on updates.
+
+The composed row title is a flex container, not one atomic inline ellipsis.
+The breadcrumb gives its parent at most 30% (capped at 7em), with independent
+ellipsis on parent and child. The child takes the remaining width. Parent buttons
+use `Button.focusRing="inset"`, preserving focus inside clipped/paint-contained
+rows. `ChildThreadRowsNarrow` fixes the manager preview at 900px (about a 310px
+Board panel); direct `iframe.html` previews should use a 900px browser viewport.

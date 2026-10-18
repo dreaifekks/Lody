@@ -1,3 +1,4 @@
+import { BoardThreadHeader } from '../boards/board-panel-view';
 import { useBoardMaintenanceRequest } from '../boards/board-lifecycle';
 import { BoardMembershipDialog } from '../boards/board-membership-dialog';
 import { boardEnabledAtom } from '@/atoms/settings';
@@ -2326,7 +2327,9 @@ interface SessionChatInterfaceProps {
    * (IDE launcher / browser / "…" menu / end slot) so session-detail can embed
    * them in the tab row — no title, no PR badge (the context strip owns PR).
    */
-  headerVariant?: 'page' | 'toolbar';
+  headerVariant?: 'page' | 'toolbar' | 'board-thread';
+  headerLocation?: string;
+  headerParentThread?: { title: string; onOpen: () => void };
   /**
    * When false, this surface still accepts a session-mention drop but does not
    * paint the page mask. Used under `SessionMentionDropLayer`, which owns one
@@ -2515,6 +2518,8 @@ export const SessionChatInterface = memo(
       onSideChatFirstPrompt,
       onOpenExistingBrowser,
       headerVariant = 'page',
+      headerLocation,
+      headerParentThread,
       paintSessionMentionOverlay = true,
       changesDiffStat,
       onOpenAllChanges,
@@ -6979,6 +6984,29 @@ export const SessionChatInterface = memo(
                       {headerEndSlot}
                     </div>
                   </ErrorBoundary>
+                ) : headerVariant === 'board-thread' ? (
+                  <BoardThreadHeader
+                    title={session.title || t('boards.untitled', 'Untitled session')}
+                    parentThread={headerParentThread}
+                    location={headerLocation}
+                    startSlot={headerStartSlot}
+                    endSlot={headerEndSlot}
+                    onStop={
+                      canStopAgent
+                        ? () => {
+                            void handleStop();
+                          }
+                        : undefined
+                    }
+                    menuSlot={headerMenuNode}
+                    desktopActionsSlot={
+                      <>
+                        {headerLauncherActions}
+                        {headerArchivedNode}
+                        {headerAccessNode}
+                      </>
+                    }
+                  />
                 ) : (
                   <ErrorBoundary name="SessionChatHeader" variant="inline" resetKeys={[session.id]}>
                     <SessionConversationPageHeader
