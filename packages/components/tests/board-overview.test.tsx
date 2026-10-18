@@ -1,9 +1,24 @@
 // @vitest-environment jsdom
+import {
+  useBoardSessionNavigation,
+  boardSessionNavigationAtom,
+} from '../src/components/boards/board-session-navigation';
+import { BoardFileLinkPreview } from '../src/components/boards/board-directory';
+import { resolveBoardFileLink } from '../src/lib/board-directory-file-provider';
+import {
+  MarkdownRenderer,
+  AgentFileLinkOpenContext,
+} from '../src/components/ai-gui/markdown-renderer';
+import { SESSION_DEEP_LINK_EVENT } from '../src/lib/session-deep-link';
+import { SessionLinkProvider } from '../src/components/ai-gui/session-link-context';
+import { WORKING_HAND_OVER_MS } from '../src/ui/working-status-mark';
+import { BoardThreadStatusCard } from '../src/components/boards/board-thread-status-card';
+import { SessionRelationCard } from '../src/components/shared/session-relation-card';
 import { Toast } from '@lody/ui';
 import { toastManager } from '../src/lib/toast';
 import { BoardThreadMark } from '../src/components/boards/board-thread-mark';
 import { BoardThreadPaneView } from '../src/components/boards/board-panel-view';
-import { act, useState } from 'react';
+import { act, Profiler, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createStore, Provider } from 'jotai';
 import { describe, it, expect, vi } from 'vitest';
@@ -31,7 +46,11 @@ import {
 import { PlatformContext } from '@lody/platform/react';
 import { userAtom, currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms';
 import { agentConfigMetaCacheAtom, sessionMetaCacheAtom } from '../src/atoms/doc-meta';
-import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '../src/atoms/presence';
+import {
+  lodyPresenceNowMsAtom,
+  lodyPresenceStatesAtom,
+  lodyPresenceSyncStateAtom,
+} from '../src/atoms/presence';
 import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
 import {
   scheduleRowsForBoard,
@@ -84,7 +103,11 @@ vi.mock('@/hooks/use-visible-session-metas', async () => {
   const { useAtomValue: read } = await import('jotai');
   const { allActiveSessionsAtom: active, archivedSessionListAtom: archived } =
     await import('../src/atoms/doc-meta');
+  const visibleMachineIds = new Set(['machine', 'remote', 'devnuc', 'machine-1']);
+  const visibleLocalProjectKeys = new Set<string>();
   return {
+    useVisibleMachineIdSet: () => ({ visibleMachineIds, isLoading: false }),
+    useVisibleLocalProjectKeySet: () => ({ visibleLocalProjectKeys, isLoading: false }),
     useVisibleSessionMetas: () => ({ allActiveSessions: read(active) }),
     useVisibleArchivedSessionMetas: () => ({ archivedSessions: read(archived) }),
   };
@@ -343,6 +366,300 @@ const live = (session: SessionMeta, status: SessionStatus) => ({
 });
 
 describe('Board side panel', () => {
+  it('leaves the card unmarked until its metadata belongs to a Board', async () => {
+    const store = createStore();
+    const thread = makeSession('thread', { boardId: undefined, lastMessageAt: 20, lastReadAt: 20 });
+    const child = makeSession('child', {
+      boardId: undefined,
+      openedBySessionId: thread.id,
+      awaitingUserSince: 30,
+    });
+    const view = await mount(
+      <Provider store={store}>
+        <BoardThreadStatusCard sessionId={thread.id} />
+      </Provider>
+    );
+    const marks = () =>
+      view.host.querySelector(
+        '[data-session-row-indicator], svg.lucide-check, svg.lucide-circle-slash'
+      );
+    try {
+      expect(marks()).toBeNull();
+      await act(async () => {
+        store.set(sessionMetaCacheAtom, {
+          [getSessionRoomId(thread.id)]: thread,
+          [getSessionRoomId(child.id)]: child,
+        });
+        store.set(lodyPresenceNowMsAtom, 1000);
+        store.set(lodyPresenceSyncStateAtom, 'synced');
+        store.set(lodyPresenceStatesAtom, {
+          machine: {
+            kind: 'machine',
+            machineId: thread.machineId,
+            instanceId: 'test' as never,
+            updatedAt: 1000,
+          },
+        });
+      });
+      expect(marks()).toBeNull();
+      await act(async () =>
+        store.set(sessionMetaCacheAtom, {
+          [getSessionRoomId(thread.id)]: { ...thread, boardId: 'bd_test' as never },
+          [getSessionRoomId(child.id)]: child,
+        })
+      );
+      expect(view.host.querySelector('svg.lucide-check')).not.toBeNull();
+      await act(async () =>
+        store.set(sessionMetaCacheAtom, {
+          [getSessionRoomId(thread.id)]: thread,
+          [getSessionRoomId(child.id)]: child,
+        })
+      );
+      expect(marks()).toBeNull();
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('does not commit card renders for unrelated activity or unchanged family status', async () => {
+    const store = createStore();
+    const thread = makeSession('thread', { lastMessageAt: 20, lastReadAt: 20 });
+    const child = makeSession('child', { openedBySessionId: thread.id });
+    const unrelated = makeSession('unrelated');
+    const outside = makeSession('outside', { boardId: undefined });
+    const sessions = [thread, child, unrelated, outside];
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(sessions.map((entry) => [getSessionRoomId(entry.id), entry]))
+    );
+    const online = {
+      machine: {
+        kind: 'machine' as const,
+        machineId: thread.machineId,
+        instanceId: 'test' as never,
+        updatedAt: 1000,
+      },
+    };
+    store.set(lodyPresenceNowMsAtom, 1000);
+    store.set(lodyPresenceSyncStateAtom, 'synced');
+    store.set(lodyPresenceStatesAtom, online);
+    let commits = 0;
+    const view = await mount(
+      <Provider store={store}>
+        <Profiler
+          id="thread-card"
+          onRender={() => {
+            commits++;
+          }}
+        >
+          <BoardThreadStatusCard sessionId={thread.id} />
+        </Profiler>
+      </Provider>
+    );
+    try {
+      expect(view.host.querySelector('svg.lucide-check')).not.toBeNull();
+      const initialCommits = commits;
+      await act(async () =>
+        store.set(lodyPresenceStatesAtom, {
+          ...online,
+          ...live(unrelated, { type: 'requestPermission' } as SessionStatus),
+        })
+      );
+      expect(commits).toBe(initialCommits);
+      for (const target of [outside, unrelated]) {
+        await act(async () =>
+          store.set(
+            sessionMetaCacheAtom,
+            Object.fromEntries(
+              sessions.map((entry) => [
+                getSessionRoomId(entry.id),
+                entry.id === target.id ? { ...entry, title: 'New title' } : entry,
+              ])
+            )
+          )
+        );
+        expect(commits).toBe(initialCommits);
+      }
+      expect(view.host.querySelector('svg.lucide-check')).not.toBeNull();
+      await act(async () =>
+        store.set(lodyPresenceStatesAtom, {
+          ...online,
+          ...live(child, { type: 'running' } as SessionStatus),
+        })
+      );
+      expect(view.host.querySelector('[data-session-working-indicator]')).not.toBeNull();
+      expect(view.host.querySelector('svg.lucide-check')).toBeNull();
+      const workingCommits = commits;
+      // A fresh presence object with the same rendered status must not commit again.
+      await act(async () =>
+        store.set(lodyPresenceStatesAtom, {
+          ...online,
+          ...live(child, { type: 'running' } as SessionStatus),
+        })
+      );
+      expect(commits).toBe(workingCommits);
+      await act(async () =>
+        store.set(lodyPresenceStatesAtom, {
+          ...online,
+          ...live(child, { type: 'requestPermission' } as SessionStatus),
+        })
+      );
+      expect(view.host.querySelector('[data-session-working-indicator]')).toBeNull();
+      expect(view.host.querySelector('[data-session-row-indicator] svg')).not.toBeNull();
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('shows a card as complete only after its entire visible family settles', async () => {
+    const store = createStore();
+    const thread = makeSession('thread', { lastMessageAt: 20, lastReadAt: 20 });
+    const child = makeSession('child', {
+      openedBySessionId: thread.id,
+      machineId: 'remote' as never,
+    });
+    const tab = makeSession('tab', { parentSessionId: child.id });
+    const unrelated = makeSession('unrelated', { awaitingUserSince: 30 });
+    const otherBoard = makeSession('other-board', {
+      boardId: 'bd_other' as never,
+      openedBySessionId: thread.id,
+      awaitingUserSince: 30,
+    });
+    const sessions = [thread, child, tab, unrelated, otherBoard];
+    const setSessions = (entries = sessions) =>
+      store.set(
+        sessionMetaCacheAtom,
+        Object.fromEntries(entries.map((entry) => [getSessionRoomId(entry.id), entry]))
+      );
+    setSessions();
+    const online = {
+      machine: {
+        kind: 'machine' as const,
+        machineId: thread.machineId,
+        instanceId: 'test' as never,
+        updatedAt: 1000,
+      },
+      remote: {
+        kind: 'machine' as const,
+        machineId: child.machineId,
+        instanceId: 'test' as never,
+        updatedAt: 1000,
+      },
+    };
+    store.set(lodyPresenceNowMsAtom, 1000);
+    store.set(lodyPresenceSyncStateAtom, 'synced');
+    store.set(lodyPresenceStatesAtom, online);
+    vi.useFakeTimers();
+    const view = await mount(
+      <Provider store={store}>
+        <BoardThreadStatusCard sessionId={thread.id} />
+      </Provider>
+    );
+    const check = () => view.host.querySelector('svg.lucide-check');
+    const working = () => view.host.querySelector('[data-session-working-indicator]');
+    const waiting = () => view.host.querySelector('[data-session-row-indicator] svg');
+    try {
+      expect(check()).not.toBeNull();
+      // Both opened sessions and their Tabs participate, including live phase changes.
+      for (const member of [child, tab]) {
+        for (const status of [
+          { type: 'running' },
+          { type: 'initializing' },
+          { type: 'running', phase: 'finalizing' },
+        ] as SessionStatus[]) {
+          await act(async () =>
+            store.set(lodyPresenceStatesAtom, { ...online, ...live(member, status) })
+          );
+          expect(check()).toBeNull();
+          expect(working()).not.toBeNull();
+        }
+        await act(async () =>
+          store.set(lodyPresenceStatesAtom, {
+            ...online,
+            ...live(thread, { type: 'running' } as SessionStatus),
+            ...live(member, { type: 'requestPermission' } as SessionStatus),
+          })
+        );
+        expect(check()).toBeNull();
+        expect(waiting()).not.toBeNull();
+        expect(working()).toBeNull();
+      }
+      await act(async () => {
+        store.set(lodyPresenceStatesAtom, online);
+        setSessions(
+          sessions.map((member) =>
+            member.id === child.id ? { ...member, awaitingUserSince: 30 } : member
+          )
+        );
+      });
+      expect(check()).toBeNull();
+      expect(waiting()).not.toBeNull();
+      await act(async () => vi.advanceTimersByTime(WORKING_HAND_OVER_MS));
+      await act(async () =>
+        setSessions(
+          sessions.map((member) =>
+            member.id === child.id ? { ...member, collaborationStopped: true } : member
+          )
+        )
+      );
+      expect(check()).toBeNull();
+      expect(view.host.querySelector('svg.lucide-circle-slash')).not.toBeNull();
+      await act(async () => setSessions());
+      expect(check()).not.toBeNull();
+      // Fresh heartbeats keep members online while the transport is not synced
+      // (a local-only workspace stays idle).
+      for (const state of ['idle', 'connecting', 'disconnected'] as const) {
+        await act(async () => store.set(lodyPresenceSyncStateAtom, state));
+        expect(check()).not.toBeNull();
+      }
+      await act(async () => {
+        store.set(lodyPresenceSyncStateAtom, 'synced');
+        store.set(lodyPresenceStatesAtom, { machine: online.machine });
+      });
+      expect(check()).toBeNull();
+      await act(async () => store.set(lodyPresenceStatesAtom, online));
+      expect(check()).not.toBeNull();
+      await act(async () =>
+        setSessions(
+          sessions.map((member) =>
+            member.id === thread.id
+              ? {
+                  ...member,
+                  latestUserMsgId: 'later-receipt',
+                  lastHandledUserMsgId: 'later-receipt',
+                  lastMessageAt: 40,
+                  lastReadAt: 40,
+                }
+              : member
+          )
+        )
+      );
+      expect(check()).not.toBeNull();
+      await act(async () =>
+        setSessions(
+          sessions.map((member) =>
+            member.id === child.id ? { ...member, lastMessageAt: 50 } : member
+          )
+        )
+      );
+      // Unopened child results do not hold the parent card's completion mark hostage.
+      expect(check()).not.toBeNull();
+      expect(view.host.querySelector('[data-session-unread-dot]')).toBeNull();
+      await act(async () =>
+        setSessions(
+          sessions.map((member) =>
+            member.id === thread.id ? { ...member, lastMessageAt: 50 } : member
+          )
+        )
+      );
+      expect(check()).toBeNull();
+      expect(view.host.querySelector('[data-session-unread-dot]')).not.toBeNull();
+    } finally {
+      await view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it('lists members from metadata and presence, groups them, and opens one in the panel', async () => {
     const store = createStore();
     const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
@@ -1876,4 +2193,271 @@ describe('Board schedule scope', () => {
     ).toBe(false);
     expect(isScheduleBoardThread(next, testBoard())).toBe(true);
   });
+});
+
+describe('Board conversation navigation', () => {
+  it.each([
+    { mode: 'side', narrow: false, boardPage: true, destination: 'panel' },
+    { mode: 'narrow', narrow: true, boardPage: true, destination: 'page' },
+    { mode: 'expanded thread page', narrow: false, boardPage: false, destination: 'page' },
+  ])(
+    'opens cards and nested links in the $mode destination',
+    async ({ narrow, boardPage, destination }) => {
+      const deepLinks: string[] = [];
+      const recordDeepLink = (event: Event) =>
+        deepLinks.push((event as CustomEvent<string>).detail);
+      window.addEventListener(SESSION_DEEP_LINK_EVENT, recordDeepLink);
+      const store = createStore();
+      store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+      const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+      const thread = makeSession('thread');
+      const external = [
+        makeSession('other-coordinator', {
+          boardId: 'bd_other' as never,
+          boardRole: 'coordinator',
+        }),
+        makeSession('other-thread', { boardId: 'bd_other' as never }),
+        makeSession('ordinary', { boardId: undefined }),
+      ];
+      const child = makeSession('child', { openedBySessionId: thread.id });
+      const tab = makeSession('tab', { parentSessionId: coordinator.id });
+      const side = makeSession('side', {
+        parentSessionId: coordinator.id,
+        childSessionPlacement: 'side-panel',
+      });
+      store.set(
+        sessionMetaCacheAtom,
+        Object.fromEntries(
+          [coordinator, thread, child, tab, side, ...external].map((session) => [
+            getSessionRoomId(session.id),
+            session,
+          ])
+        )
+      );
+      const board = testBoard();
+      function Page() {
+        const [shown, setShown] = useState('coordinator');
+        const open = useBoardSessionNavigation({
+          board: boardPage ? board : null,
+          narrow,
+          openPanel: (id) => setShown(`panel:${id}`),
+          showInCoordinatorPage: (target) =>
+            setShown(`coordinator:${target.tabSessionId ?? target.sessionId}`),
+          openPage: (target) => setShown(`page:${target.tabSessionId ?? target.sessionId}`),
+        });
+        return (
+          <SessionLinkProvider enabled>
+            <output>{shown}</output>
+            <BoardThreadStatusCard sessionId={thread.id} onNavigateSession={open} />
+            <SessionRelationCard
+              relation="opened-by"
+              label="Opener"
+              sessionTitle="thread"
+              actionLabel="Open parent"
+              onAction={() => open({ sessionId: thread.id })}
+            />
+            <MarkdownRenderer text="[Nested child](lody://session/child?workspace=ws)" />
+            {external.map((session) => (
+              <MarkdownRenderer
+                key={session.id}
+                text={`[${session.title}](lody://session/${session.id}?workspace=ws)`}
+              />
+            ))}
+            <button onClick={() => open({ sessionId: coordinator.id, tabSessionId: tab.id })}>
+              Contained tab
+            </button>
+            <button onClick={() => open({ sessionId: side.id })}>Side chat</button>
+          </SessionLinkProvider>
+        );
+      }
+      const view = await mount(
+        <Provider store={store}>
+          <Page />
+        </Provider>
+      );
+      try {
+        await act(async () =>
+          view.host.querySelector<HTMLButtonElement>('[data-board-thread-card] button')!.click()
+        );
+        expect(view.host.querySelector('output')!.textContent).toBe(`${destination}:thread`);
+        await act(async () =>
+          view.host.querySelector<HTMLButtonElement>('[data-session-relation-card] button')!.click()
+        );
+        expect(view.host.querySelector('output')!.textContent).toBe(`${destination}:thread`);
+        if (boardPage) {
+          await act(async () =>
+            view.host.querySelector<HTMLButtonElement>('button[data-session-link]')!.click()
+          );
+          if (narrow) expect(deepLinks.at(-1)).toBe('lody://session/child?workspace=ws');
+          else expect(view.host.querySelector('output')!.textContent).toBe('panel:child');
+          // The palette uses exactly the mounted page's navigation, including nested targets.
+          await act(async () =>
+            store.get(boardSessionNavigationAtom)!.open({ sessionId: thread.id })
+          );
+          expect(view.host.querySelector('output')!.textContent).toBe(`${destination}:thread`);
+          for (const session of external) {
+            await act(async () =>
+              view.host
+                .querySelector<HTMLButtonElement>(`button[data-session-link="${session.id}"]`)!
+                .click()
+            );
+            expect(deepLinks.at(-1)).toBe(`lody://session/${session.id}?workspace=ws`);
+            await act(async () =>
+              store.get(boardSessionNavigationAtom)!.open({ sessionId: session.id })
+            );
+            expect(view.host.querySelector('output')!.textContent).toBe(`page:${session.id}`);
+          }
+        }
+        for (const [label, id] of [
+          ['Contained tab', 'tab'],
+          ['Side chat', 'side'],
+        ]) {
+          await act(async () =>
+            [...view.host.querySelectorAll('button')]
+              .find((button) => button.textContent === label)!
+              .click()
+          );
+          expect(view.host.querySelector('output')!.textContent).toBe(
+            `${boardPage && !narrow ? 'coordinator' : 'page'}:${id}`
+          );
+        }
+      } finally {
+        window.removeEventListener(SESSION_DEEP_LINK_EVENT, recordDeepLink);
+        await view.unmount();
+      }
+      expect(store.get(boardSessionNavigationAtom)).toBeNull();
+    }
+  );
+});
+
+it.each(['files', 'memory'] as const)(
+  'opens a linked Board %s file through member reads and exposes read failures',
+  async (area) => {
+    const board = testBoard();
+    const store = createStore();
+    store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+    const coordinator = makeSession('coordinator', {
+      boardRole: 'coordinator',
+      machineId: 'devnuc',
+    });
+    store.set(sessionMetaCacheAtom, { [getSessionRoomId(coordinator.id)]: coordinator });
+    const href = `/data/boards/ws/bd_test/${area}/plan%20one.md:12`;
+    const ipc = installIpc({ [`file:${area}/plan one.md`]: '# Shared plan\n\nAuthorized bytes.' });
+    function FileTabs() {
+      const [file, setFile] = useState<ReturnType<typeof resolveBoardFileLink>>(null);
+      return (
+        <>
+          <AgentFileLinkOpenContext.Provider
+            value={(link) => {
+              const target = resolveBoardFileLink(link, 'ws', [board]);
+              return target ? () => setFile(target) : undefined;
+            }}
+          >
+            <MarkdownRenderer
+              text={`[Plan](${href}) [Missing](/data/boards/ws/bd_test/${area}/missing.md) [Workspace](src/main.ts)`}
+            />
+          </AgentFileLinkOpenContext.Provider>
+          {file && (
+            <section aria-label="File tab">
+              <BoardFileLinkPreview
+                key={file.filePath}
+                target={file}
+                memberSessionId={'thread' as SessionId}
+                onClose={() => setFile(null)}
+              />
+            </section>
+          )}
+        </>
+      );
+    }
+    const view = await mount(
+      <Provider store={store}>
+        <FileTabs />
+      </Provider>
+    );
+    try {
+      const button = (text: string) =>
+        [...view.host.querySelectorAll('button')].find((item) => item.textContent === text)!;
+      expect(button('Workspace').getAttribute('aria-label')).toContain('Copy agent file path');
+      expect(button('Plan').getAttribute('aria-label')).toContain('Open agent file');
+      await act(async () => button('Plan').click());
+      await vi.waitFor(() =>
+        expect(view.host.querySelector('[aria-label="File tab"] h1')?.textContent).toBe(
+          'Shared plan'
+        )
+      );
+      expect(view.host.textContent).toContain('Authorized bytes.');
+      expect(ipc.requests).toContainEqual({
+        method: 'openMemberFile',
+        params: {
+          workspaceId: 'ws',
+          machineId: 'devnuc',
+          sessionId: 'thread',
+          boardId: 'bd_test',
+          path: `${area}/plan one.md`,
+        },
+      });
+      await act(async () =>
+        view.host.querySelector<HTMLButtonElement>('[aria-label="Close tab"]')!.click()
+      );
+      expect(view.host.querySelector('[aria-label="File tab"]')).toBeNull();
+      await act(async () => button('Missing').click());
+      expect(view.host.textContent).toContain('file_not_found');
+    } finally {
+      await view.unmount();
+      ipc.remove();
+    }
+  }
+);
+
+it('anchors Board files to the current workspace while preserving canonical filenames', () => {
+  const board = testBoard();
+  expect(
+    resolveBoardFileLink('/data/boards/ws/bd_test/memory/a%2520b.md#L2', 'ws', [board])?.path
+  ).toBe('a%20b.md');
+  expect(
+    resolveBoardFileLink('/data/boards/ws/bd_test/memory/a%20b.md', 'ws', [board], 'canonical')
+      ?.path
+  ).toBe('a%20b.md');
+  expect(resolveBoardFileLink('/data/boards/other/bd_test/files/a.md', 'ws', [board])).toBeNull();
+  expect(resolveBoardFileLink('/data/boards/ws/bd_other/files/a.md', 'ws', [board])).toMatchObject({
+    board: undefined,
+  });
+  expect(resolveBoardFileLink('app/boards/[id]/[tab]/files/page.tsx', 'ws', [board])).toBeNull();
+  expect(resolveBoardFileLink('app/boards/[id]/[tab]/memory/page.tsx', 'ws', [board])).toBeNull();
+  expect(resolveBoardFileLink('/data/boards/ws/bd_test/secrets/a.md', 'ws', [board])).toBeNull();
+});
+
+it('keeps an unavailable Board file in its preview until the catalog row arrives', async () => {
+  const store = createStore();
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  const coordinator = makeSession('coordinator', { boardRole: 'coordinator', machineId: 'devnuc' });
+  store.set(sessionMetaCacheAtom, { [getSessionRoomId(coordinator.id)]: coordinator });
+  const ipc = installIpc({ 'file:files/plan.md': '# Ready' });
+  const host = document.createElement('div');
+  // Use the same mounted preview while metadata arrives.
+  const viewRoot = createRoot(host);
+  const render = (boards: BoardMeta[]) =>
+    act(async () =>
+      viewRoot.render(
+        <Provider store={store}>
+          <BoardFileLinkPreview
+            target={resolveBoardFileLink('/data/boards/ws/bd_test/files/plan.md', 'ws', boards)!}
+            memberSessionId={'thread' as SessionId}
+            onClose={() => {}}
+          />
+        </Provider>
+      )
+    );
+  try {
+    await render([]);
+    expect(host.textContent).toBe('Board not found.');
+    await render([testBoard()]);
+    await vi.waitFor(() => expect(host.querySelector('h1')?.textContent).toBe('Ready'));
+  } finally {
+    await act(async () => {
+      viewRoot.unmount();
+    });
+    ipc.remove();
+  }
 });

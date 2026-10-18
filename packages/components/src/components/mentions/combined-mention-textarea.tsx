@@ -18,7 +18,7 @@ import { hydrateFileMentionsFromText } from '@/components/mentions/file-at-menti
 import {
   buildSessionMentionInsertion,
   filterSessionMentionItemsByProject,
-  getMentionSourceProjectKey,
+  useSessionMentionScope,
   hydrateSessionMentionsFromText,
   resolveSessionMentionIds,
   useSessionMentionItems,
@@ -105,6 +105,7 @@ function TwoLevelMentionMenu({
   enableSessionMentions,
   sessionItems,
   sessionProjectKey,
+  sessionScopeLabel,
   commandsEnabled,
   enableAgentRoleMentions,
   agentRoleItems,
@@ -133,6 +134,7 @@ function TwoLevelMentionMenu({
   enableSessionMentions: boolean;
   sessionItems: SessionMentionItem[];
   sessionProjectKey: SessionMentionProjectKey;
+  sessionScopeLabel?: string;
   commandsEnabled: boolean;
   enableAgentRoleMentions: boolean;
   agentRoleItems: readonly AgentRoleMentionItem[];
@@ -268,9 +270,10 @@ function TwoLevelMentionMenu({
     [sessionItems, sessionProjectKey, sessionProjectScope]
   );
   const currentSessionScopeLabel =
-    sessionProjectKey === 'chat'
+    sessionScopeLabel ??
+    (sessionProjectKey === 'chat'
       ? t('mention.session.scope.none', 'No project')
-      : t('mention.session.scope.current', 'Current project');
+      : t('mention.session.scope.current', 'Current project'));
   const sessionSource = React.useMemo<MentionCategorySources['session']>(
     () => ({
       enabled: enableSessionMentions,
@@ -293,8 +296,9 @@ function TwoLevelMentionMenu({
       emptyState:
         sessionProjectScope === 'current' && visibleSessionItems.length === 0
           ? {
-              message:
-                sessionProjectKey === 'chat'
+              message: sessionProjectKey.startsWith('board:')
+                ? t('mention.session.empty.board', 'There are no other sessions in this Board.')
+                : sessionProjectKey === 'chat'
                   ? t(
                       'mention.session.empty.none',
                       'There are no other sessions without a project.'
@@ -874,10 +878,8 @@ export const CombinedMentionTextarea = React.forwardRef<
       [initializeLazyDirectory]
     );
     const sessionItems = useSessionMentionItems(currentSessionId);
-    const sessionProjectKey = React.useMemo(
-      () => getMentionSourceProjectKey(mentionSource),
-      [mentionSource]
-    );
+    const sessionScope = useSessionMentionScope(currentSessionId, mentionSource);
+    const sessionProjectKey = sessionScope.key;
     const agentRoleItems = useAgentRoleMentionItems();
     // A committed range carries only the Role id, so the caller's chip resolver
     // cannot reach the Role's emoji on its own. The composer already owns the
@@ -1173,6 +1175,7 @@ export const CombinedMentionTextarea = React.forwardRef<
           enableSessionMentions={enableSessionMentions}
           sessionItems={sessionItems}
           sessionProjectKey={sessionProjectKey}
+          sessionScopeLabel={sessionScope.label}
           commandsEnabled={commandsEnabled}
           enableAgentRoleMentions={enableAgentRoleMentions}
           agentRoleItems={agentRoleItems}

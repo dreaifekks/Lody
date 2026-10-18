@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { MachineId, SessionId, SessionMeta } from '@lody/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';
 import { SessionTabBar } from '../src/components/sessions/session-tab-bar';
 import { allocateAdaptiveTabStripLayout } from '../src/components/sessions/adaptive-tab-strip';
 import { useEmptySessionDraft } from '../src/hooks/use-empty-session-draft';
@@ -66,6 +67,37 @@ describe('SessionTabBar drag sources', () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it('keeps the Board mark beside the status slot and outside the title', async () => {
+    const store = createStore();
+    store.set(experimentalFeaturesEnabledAtom, true);
+    store.set(boardExperimentEnabledAtom, true);
+    await act(async () =>
+      root.render(
+        <Provider store={store}>
+          <Tooltip.Provider>
+            <SessionTabBar
+              variant="session"
+              parentSession={{ ...parentSession, boardId: 'bd_test' as never }}
+              childSessions={[]}
+              draftTabs={[]}
+              archivedChildSessions={[]}
+              activeTabSessionId={parentSession.id}
+              onTabSelect={() => {}}
+              onNewTab={() => {}}
+            />
+          </Tooltip.Provider>
+        </Provider>
+      )
+    );
+    const tab = container.querySelector('[role="tab"]')!;
+    const mark = tab.querySelector('svg.lucide-layout-dashboard')!;
+    expect(mark.parentElement).toBe(tab);
+    expect(mark.previousElementSibling).not.toBeNull();
+    expect(mark.nextElementSibling?.textContent).toBe('Main session');
+    await act(async () => store.set(boardExperimentEnabledAtom, false));
+    expect(tab.querySelector('svg.lucide-layout-dashboard')).toBeNull();
   });
 
   async function renderTabBar(

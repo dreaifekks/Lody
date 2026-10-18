@@ -1,4 +1,5 @@
 import type { BoardMeta, SessionId, SessionMeta, SessionStatus } from '@lody/shared';
+import { deriveBoardSessionStatus, isBoardSessionStopped } from '@lody/shared';
 import { buildOpenedBySessionTree } from '@/lib/session-opened-by-tree';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import { formatExplicitSessionTabSearch } from '@/lib/session-tab-url';
@@ -45,6 +46,20 @@ export function buildBoardRows(sessions: readonly SessionMeta[]) {
       .filter((session) => session.parentSessionId === node.id)
       .map((session) => ({ session, depth: node.depth + 1 })),
   ]);
+}
+
+/** Lists and cards share the same metadata-only state, including inherited stops. */
+export function boardThreadStatus(
+  session: SessionMeta,
+  liveStatus: SessionStatus | null | undefined,
+  lookup: (id: SessionId) => SessionMeta | undefined
+) {
+  return deriveBoardSessionStatus({
+    liveStatus,
+    awaitingUserSince: session.awaitingUserSince,
+    lastMessageAt: session.lastMessageAt,
+    collaborationStopped: isBoardSessionStopped(session, lookup),
+  });
 }
 
 /** A Board's coordinator is the Board itself; session lists show the Board instead. */

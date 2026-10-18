@@ -1,0 +1,73 @@
+import { atom, useStore } from 'jotai';
+import { useEffect } from 'react';
+import { getSessionRoomId, type SessionId } from '@lody/shared';
+import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
+import { useStableCallback } from '@/hooks/use-stable-callback';
+import type { BoardMeta, SessionMeta } from '@lody/shared';
+import type { SessionNavigationTarget } from '@/lib/session-navigation';
+import { opensInCoordinatorPage } from './board-threads';
+
+/** The mounted Board page also owns navigation from the global command palette. */
+export const boardSessionNavigationAtom = atom<{
+  boardId: BoardMeta['id'];
+  destination: (target: SessionNavigationTarget) => ReturnType<typeof boardSessionDestination>;
+  open: (target: SessionNavigationTarget) => void;
+} | null>(null);
+
+/** Expanded threads have their own page; narrow windows also use page navigation. */
+export function boardSessionDestination(
+  board: BoardMeta | null,
+  session: SessionMeta | undefined | null,
+  narrow: boolean
+): 'panel' | 'coordinator' | 'page' {
+  if (!board || !session || session.boardId !== board.id || narrow) return 'page';
+  if (session.id === board.coordinatorSessionId || opensInCoordinatorPage(board, session))
+    return 'coordinator';
+  return 'panel';
+}
+
+/** All session entries on a Board page share this one destination decision. */
+export function useBoardSessionNavigation({
+  board,
+  narrow,
+  openPanel,
+  showInCoordinatorPage,
+  openPage,
+}: {
+  board: BoardMeta | null;
+  narrow: boolean;
+  openPanel: (id: SessionId) => void;
+  showInCoordinatorPage: (target: SessionNavigationTarget) => void;
+  openPage: (target: SessionNavigationTarget) => void;
+}) {
+  const store = useStore();
+  const destination = useStableCallback((target: SessionNavigationTarget) => {
+    const exactId = target.tabSessionId ?? target.sessionId;
+    const session = store.get(sessionMetaAtomFamily(getSessionRoomId(exactId)));
+    return boardSessionDestination(board, session, narrow);
+  });
+  const open = useStableCallback((target: SessionNavigationTarget) => {
+    const exactId = target.tabSessionId ?? target.sessionId;
+    switch (destination(target)) {
+      case 'panel':
+        openPanel(exactId);
+        return;
+      case 'coordinator':
+        showInCoordinatorPage(target);
+        return;
+      case 'page':
+        openPage(target);
+        return;
+    }
+  });
+  useEffect(() => {
+    if (!board) return undefined;
+    const navigation = { boardId: board.id, destination, open };
+    store.set(boardSessionNavigationAtom, navigation);
+    return () => {
+      if (store.get(boardSessionNavigationAtom) === navigation)
+        store.set(boardSessionNavigationAtom, null);
+    };
+  }, [board, destination, open, store]);
+  return open;
+}

@@ -176,3 +176,27 @@ ellipsis on parent and child. The child takes the remaining width. Parent button
 use `Button.focusRing="inset"`, preserving focus inside clipped/paint-contained
 rows. `ChildThreadRowsNarrow` fixes the manager preview at 900px (about a 310px
 Board panel); direct `iframe.html` previews should use a 900px browser viewport.
+
+## Board conversation entries
+
+`useBoardSessionNavigation` is the Board page's session entry point. Thread cards,
+creation/opener cards, relation menus, Markdown session links, thread rows and parent
+breadcrumbs use it; the mounted page also registers it for the global command palette.
+Only members of the current Board open in its panel; other Boards and ordinary sessions
+retain page navigation (the palette keeps Board entry searches). Direct coordinator Tabs/Side Chats select
+the already mounted surface, and narrow windows or expanded thread pages navigate normally.
+The explicit maximize control bypasses panel navigation. Global entries outside a Board
+retain their existing routing, as do cross-workspace resource links. Resource links check
+`destination(target)` first: only panel/coordinator destinations use the Board opener;
+page destinations use `openSessionDeepLink`, preserving an explicit target tab and the
+existing metadata wait/timeout. Cards, breadcrumbs and palette navigation are unchanged.
+
+Conversation links into `boards/<current-workspace>/<board>/{files,memory}` open closeable file
+viewer tabs. These tabs render `BoardFilePreview` and read/download with the requesting
+member's id plus `boardId`; they never use the session file provider. Files-tree opens
+remain inside the Board Files panel with the same preview. A linked path needs no listing
+entry (the 500-entry tree limit is not an open gate); the daemon authorizes the member
+and relative area path. Missing current-workspace Board rows show an unavailable preview,
+never a session filesystem read. Paths with a different workspace segment remain ordinary
+file paths, so repository paths such as `app/boards/[id]/[tab]/files/page.tsx` are not intercepted. Panel-thread Markdown receives a scoped file opener so ordinary
+thread workspace links do not accidentally resolve against the coordinator's workspace.

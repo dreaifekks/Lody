@@ -51,6 +51,37 @@ describe('buildSessionMentionSlug', () => {
 });
 
 describe('buildSessionMentionItems', () => {
+  it('keeps Board members together across projects without mixing ungrouped chats', () => {
+    const items = buildSessionMentionItems(
+      [
+        session({ id: 'main', boardId: 'bd_one' as never, boardRole: 'coordinator' }),
+        session({
+          id: 'thread',
+          boardId: 'bd_one' as never,
+          project: { kind: 'local', localProjectId: 'project' } as never,
+        }),
+        session({ id: 'foreign', boardId: 'bd_two' as never }),
+        session({ id: 'chat' }),
+        session({ id: 'self', boardId: 'bd_one' as never }),
+        session({ id: 'archived', boardId: 'bd_one' as never, isArchived: true }),
+      ],
+      'self',
+      true
+    );
+    expect(
+      filterSessionMentionItemsByProject(items, 'board:bd_one', 'current').map(
+        (item) => item.sessionId
+      )
+    ).toEqual(['main', 'thread']);
+    expect(
+      filterSessionMentionItemsByProject(items, 'chat', 'current').map((item) => item.sessionId)
+    ).toEqual(['chat']);
+    expect(
+      filterSessionMentionItemsByProject(items, 'board:bd_one', 'all').map((item) => item.sessionId)
+    ).toEqual(['main', 'thread', 'foreign', 'chat']);
+    expect(resolveSessionMentionIds(items).get('fore')).toBe('foreign');
+  });
+
   it('orders by recency, drops the current session and archived ones', () => {
     const items = buildSessionMentionItems(
       [

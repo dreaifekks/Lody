@@ -544,6 +544,7 @@ function TabContent({
           />
         )}
       </span>
+      {isBoardThread(session) ? <BoardThreadMark /> : null}
       {isEditing ? (
         <input
           ref={inputRef}
@@ -559,10 +560,7 @@ function TabContent({
           {...stylex.props(styles.editInput)}
         />
       ) : (
-        <span {...stylex.props(styles.truncate)}>
-          {isBoardThread(session) ? <BoardThreadMark /> : null}
-          {label}
-        </span>
+        <span {...stylex.props(styles.truncate)}>{label}</span>
       )}
       {showClose && (
         <button

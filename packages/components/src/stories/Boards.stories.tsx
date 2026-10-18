@@ -1,3 +1,7 @@
+import { BoardThreadStatusCard } from '@/components/boards/board-thread-status-card';
+import { useBoardSessionNavigation } from '@/components/boards/board-session-navigation';
+import type { SessionNavigationTarget } from '@/lib/session-navigation';
+import * as stylex from '@stylexjs/stylex';
 import { BoardThreadParentBreadcrumb } from '@/components/boards/board-thread-breadcrumb';
 /**
  * Boards: the coordinator page with its Board side panel, the sidebar Boards
@@ -6,6 +10,8 @@ import { BoardThreadParentBreadcrumb } from '@/components/boards/board-thread-br
  * the container uses.
  */
 import type { Meta, StoryObj } from '@storybook/react';
+import { expect, userEvent, within } from 'storybook/test';
+import i18next from 'i18next';
 import { useEffect, useState, type ReactNode } from 'react';
 import { createStore, Provider } from 'jotai';
 import { parseLodyPresenceStates } from '@lody/shared';
@@ -25,10 +31,14 @@ import {
   type WorkspaceId,
   getSessionRoomId,
 } from '@lody/shared';
-import { currentWorkspaceIdAtom } from '@/atoms';
+import { currentWorkspaceIdAtom, userAtom } from '@/atoms';
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '@/atoms/settings';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
-import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '@/atoms/presence';
+import {
+  lodyPresenceNowMsAtom,
+  lodyPresenceStatesAtom,
+  lodyPresenceSyncStateAtom,
+} from '@/atoms/presence';
 import {
   DesktopRunConfigMenu,
   DesktopPermissionModeButton,
@@ -998,15 +1008,20 @@ export const InboxReports: Story = {
  * with a message are one line.
  */
 const assignedStore = createStore();
+assignedStore.set(userAtom, { id: 'user', name: 'Board demo', email: 'board@example.com' });
+assignedStore.set(experimentalFeaturesEnabledAtom, true);
+assignedStore.set(boardExperimentEnabledAtom, true);
 assignedStore.set(sessionMetaCacheAtom, {
   [getSessionRoomId(COORDINATOR)]: coordinatorSession,
   ...Object.fromEntries(members.map((session) => [getSessionRoomId(session.id), session])),
 });
 assignedStore.set(lodyPresenceNowMsAtom, NOW);
+assignedStore.set(lodyPresenceSyncStateAtom, 'synced');
 assignedStore.set(
   lodyPresenceStatesAtom,
-  parseLodyPresenceStates(
-    Object.fromEntries(
+  parseLodyPresenceStates({
+    machine: { kind: 'machine', machineId: 'devnuc', instanceId: 'story', updatedAt: NOW },
+    ...Object.fromEntries(
       Object.entries(live).map(([id, status]) => [
         id,
         {
@@ -1018,13 +1033,17 @@ assignedStore.set(
           status,
         },
       ])
-    )
-  )
+    ),
+  })
 );
 const assigned = [THREAD, 'thread-rounds', 'thread-memory', 'thread-ios', 'thread-entry-review'];
-export const AssignedThreads: Story = {
-  render: () => (
-    <Provider store={assignedStore}>
+function AssignedThreadCards({
+  onNavigateSession,
+}: {
+  onNavigateSession: (target: SessionNavigationTarget) => void;
+}) {
+  return (
+    <>
       <MessageRowView
         sessionId={COORDINATOR}
         message={{
@@ -1043,7 +1062,7 @@ export const AssignedThreads: Story = {
             },
           ],
         }}
-        onNavigateSession={() => {}}
+        onNavigateSession={onNavigateSession}
       />
       <MessageRowView
         sessionId={COORDINATOR}
@@ -1060,10 +1079,109 @@ export const AssignedThreads: Story = {
             },
           ],
         }}
-        onNavigateSession={() => {}}
+        onNavigateSession={onNavigateSession}
       />
-    </Provider>
+    </>
+  );
+}
+export const AssignedThreads: Story = {
+  render: () => (
+    <SettingsStoryProviders>
+      <Provider store={assignedStore}>
+        <AssignedThreadCards onNavigateSession={() => {}} />
+      </Provider>
+    </SettingsStoryProviders>
   ),
+};
+const completedStore = createStore();
+completedStore.set(userAtom, assignedStore.get(userAtom));
+completedStore.set(sessionMetaCacheAtom, {
+  ...assignedStore.get(sessionMetaCacheAtom),
+  [getSessionRoomId('thread-entry-review' as SessionId)]: {
+    ...members[1]!,
+    awaitingUserSince: undefined,
+  },
+});
+completedStore.set(lodyPresenceNowMsAtom, NOW);
+completedStore.set(lodyPresenceSyncStateAtom, 'synced');
+completedStore.set(lodyPresenceStatesAtom, assignedStore.get(lodyPresenceStatesAtom));
+export const CompletedThreadCard: Story = {
+  render: () => (
+    <SettingsStoryProviders>
+      <Provider store={completedStore}>
+        <BoardThreadStatusCard sessionId={THREAD} onNavigateSession={() => {}} />
+      </Provider>
+    </SettingsStoryProviders>
+  ),
+};
+const navigationStoryStyles = stylex.create({
+  split: { display: 'grid', gridTemplateColumns: '1fr 1fr', height: '600px' },
+  column: { minWidth: 0, overflow: 'auto' },
+});
+function AssignedThreadsNavigation() {
+  const [openId, setOpenId] = useState<SessionId | null>(null);
+  const open = useBoardSessionNavigation({
+    board,
+    narrow: false,
+    openPanel: setOpenId,
+    showInCoordinatorPage: () => setOpenId(null),
+    openPage: (target) => setOpenId(target.tabSessionId ?? target.sessionId),
+  });
+  const thread = members.find((item) => item.id === openId);
+  return (
+    <div {...stylex.props(navigationStoryStyles.split)}>
+      <div {...stylex.props(navigationStoryStyles.column)}>
+        <AssignedThreadCards onNavigateSession={open} />
+      </div>
+      <div {...stylex.props(navigationStoryStyles.column)}>
+        {thread ? (
+          <BoardThreadPaneView
+            title={thread.title!}
+            location="devnuc · Lody"
+            onBack={() => setOpenId(null)}
+            onOpenFull={() => {}}
+          >
+            <ChatSurface
+              sessionId={thread.id}
+              messages={threadMessages}
+              placeholder="回复这个线程…"
+            />
+          </BoardThreadPaneView>
+        ) : (
+          <BoardThreadListView
+            threads={threads}
+            now={new Date(NOW)}
+            onOpen={(id) => open({ sessionId: id as SessionId })}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+/** Cards and rows use the product navigation hook; only session data is synthetic. */
+export const AssignedThreadsSidePanel: Story = {
+  render: () => (
+    <SettingsStoryProviders>
+      <Provider store={assignedStore}>
+        <AssignedThreadsNavigation />
+      </Provider>
+    </SettingsStoryProviders>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = canvasElement.querySelector<HTMLButtonElement>('[data-board-thread-card] button')!;
+    const backLabel = i18next.t('boards.home.backToThreads', 'Back to threads');
+    await userEvent.click(card);
+    const back = await canvas.findByRole('button', { name: backLabel });
+    await expect(back.parentElement).toHaveTextContent(members[0]!.title!);
+    await userEvent.click(back);
+    await expect(canvas.queryByRole('button', { name: backLabel })).not.toBeInTheDocument();
+    card.focus();
+    await userEvent.keyboard('{Enter}');
+    const keyboardBack = await canvas.findByRole('button', { name: backLabel });
+    await expect(keyboardBack.parentElement).toHaveTextContent(members[0]!.title!);
+    await userEvent.click(keyboardBack);
+  },
 };
 
 /** Real tab bar and Board return control, with fixture-only navigation. */

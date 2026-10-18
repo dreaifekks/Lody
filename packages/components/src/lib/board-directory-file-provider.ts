@@ -1,4 +1,5 @@
-import type { BoardFileEntry, BoardFileList } from '@lody/shared';
+import { resolveSessionFileOpenTarget } from './session-file-open-target';
+import type { BoardFileArea, BoardMeta, BoardFileEntry, BoardFileList } from '@lody/shared';
 import { LazyDirectoryFileProvider, toFileEntry } from './lazy-directory-file-provider';
 import type {
   FileWorkspaceOpenResult,
@@ -45,4 +46,36 @@ export class BoardDirectoryFileProvider extends LazyDirectoryFileProvider {
     for (const entry of entries) this.listed.set(entry.path, entry);
     return entries.map((entry) => toFileEntry(entry.path, entry.sizeBytes));
   }
+}
+
+export type BoardFileLinkTarget = {
+  board: BoardMeta | undefined;
+  area: BoardFileArea;
+  path: string;
+  filePath: string;
+};
+
+/** Recognize the Board directory before ordinary workspace path shortening. */
+export function resolveBoardFileLink(
+  href: string,
+  workspaceId: string | null,
+  boards: readonly BoardMeta[],
+  pathKind: 'markdown-href' | 'canonical' = 'markdown-href'
+): BoardFileLinkTarget | null {
+  const { filePath } = resolveSessionFileOpenTarget({
+    rawPath: href,
+    pathKind,
+    preserveWorktreePath: true,
+  });
+  const segments = filePath.split('/');
+  const index = segments.findIndex(
+    (part, position) =>
+      part === 'boards' &&
+      segments[position + 1] === workspaceId &&
+      (segments[position + 3] === 'files' || segments[position + 3] === 'memory')
+  );
+  if (index < 0) return null;
+  const board = boards.find((entry) => entry.id === segments[index + 2]);
+  const area = segments[index + 3] as BoardFileArea;
+  return { board, area, path: segments.slice(index + 4).join('/'), filePath };
 }

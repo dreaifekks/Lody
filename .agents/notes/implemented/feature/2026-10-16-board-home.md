@@ -473,3 +473,70 @@ header was also checked. These are synthetic Storybook checks, not daemon E2E.
 The hover archive and row menus remain available with shared archive confirmation.
 
 The final combined `pnpm check` passed after incorporating the visual corrections.
+
+## Thread controls: second UI pass (2026-10-18)
+
+The Board glyph is a flex sibling of the tab status/agent slot, not inline title text.
+The panel header already has a centered flex row. Lists and sidebar rows remain glyph-free.
+Only coordinator conversation cards retain a quiet 14px Check. It now means the
+whole thread family has settled: `buildBoardRows` and `boardThreadFamilies` supply
+exactly the list's opened-session and Tab membership and strongest status;
+`boardThreadStatus` shares metadata-only status derivation, including inherited stops.
+Every member must be idle on an online machine (an online machine already means a
+fresh heartbeat; the transport's sync state is not required because it stays idle
+on a local-only workspace, found on the Mac test build); the card's
+thread must have `lastMessageAt` and be read. Family waiting and working, then
+the thread's own unread mark take precedence through `SessionRowStatusIndicator`.
+Unread child results never block the Check. Known stops, failures
+and cancellations prevent the Check. Creation Operation status and turn IDs no
+longer matter, so follow-ups, child receipts and scheduled turns can finish with a
+Check too. No member documents or synchronized outcome fields are added. Metadata
+cannot identify agent-error turns, so those may also show a Check once settled;
+this is completion, not proof of success. List rows retain no done state.
+The existing overview and relation-card suites cover family activity, permission
+waiting, an unsynced transport with online machines, offline member machines and later settled turns.
+Cards without loaded Board membership show no mark. `selectAtom` preserves Board
+member and family-row identity before tree/status work; presence reads cover only
+the selected family, and equal status/completion summaries keep their reference.
+The overview suite also verifies unopened child results and actual React commits
+for unrelated metadata/activity and repeated equivalent presence.
+
+`useBoardSessionNavigation` gives cards, relationship menus, resource links, parent
+breadcrumbs, rows (including Go to Opener) and the in-Board command palette one policy.
+Side mode opens only same-Board members in the panel; coordinator children select their
+existing Tab/Side Chat. Other Boards and ordinary sessions retain page navigation, including
+the command palette's Board entry searches. Narrow windows and expanded thread pages retain page routing. The maximize
+button explicitly opens the page. No thread is assigned a `side-session:` tab identity.
+Resource links inspect `destination(target)` and only use the Board opener for panel or
+coordinator destinations. Page destinations retain `openSessionDeepLink`: its explicit
+`session:<id>` search must win over a previously selected child tab, and its pending
+request retains metadata hydration and timeout handling. Other entry points are unchanged.
+The regression test mounts the real deep-link router and session-route `beforeLoad` with
+memory history, demonstrates ordinary entry restoring an old child, then clicks a rendered
+Board-page link and verifies the exact root tab, with and without target metadata.
+
+The panel thread lacked a file-open callback, so Markdown copied every file path.
+It now receives a scoped Board file opener. Recognized Board links create ordinary
+closeable viewer tabs, but render the existing Board preview and read/download member
+resources with `boardId`. They bypass the session file provider and tree listing limit;
+Files-tree opens keep the inline Board preview. Matching requires the current workspace
+segment after `boards`, so ordinary repository paths are not intercepted. A matching path
+with a missing Board row remains an unavailable Board preview, never a session-provider
+read. No filesystem access is added to the renderer.
+
+With the experiment enabled, session mentions use Board identity ahead of project identity, including members on other
+projects. The current scope displays the Board name. Other Boards also get distinct keys;
+all-project scope stays flat and hydration/expansion retain the complete candidate list.
+Turning Boards off restores project keys and scope labels, and invalidates the item cache.
+
+Behavioral coverage extends the Board, relation-card, tab-bar and mention suites for
+navigation destinations, existing child surfaces, member file reads/errors and status
+transitions. `CompletedThreadCard` and `AssignedThreadsSidePanel` render real components
+with synthetic metadata; the latter uses the product navigation hook. Real desktop visual
+review and daemon end-to-end validation remain outside this implementation pass.
+
+The interactive assigned-thread story uses the existing `SettingsStoryProviders`, as the
+coordinator-page story does. Without that shell, opening the real chat composer threw
+because the global preview provides no platform context. Its play checks mouse opening,
+thread header, Back, keyboard Enter and Back again. The application root already provides
+the platform; no product component or new mock provider is needed for this correction.

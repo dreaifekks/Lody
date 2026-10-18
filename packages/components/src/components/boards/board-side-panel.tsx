@@ -6,10 +6,8 @@ import { atom, useAtomValue } from 'jotai';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  deriveBoardSessionStatus,
   getMachineFlockLocalProjects,
   getSessionRoomId,
-  isBoardSessionStopped,
   type BoardFileEntry,
   type BoardMeta,
   type LocalProjectMeta,
@@ -52,7 +50,12 @@ import {
 } from './board-directory';
 import { BoardNotesEditor } from './board-notes-panel';
 import { CreateBoardDialog } from './create-board-dialog';
-import { buildBoardRows, opensInCoordinatorPage, resolveBoardThreadParent } from './board-threads';
+import {
+  boardThreadStatus,
+  buildBoardRows,
+  opensInCoordinatorPage,
+  resolveBoardThreadParent,
+} from './board-threads';
 
 const panelStyles = stylex.create({
   padded: { display: 'flex', flexDirection: 'column', gap: space[1], padding: space[2] },
@@ -115,12 +118,7 @@ export function boardThreadItems(
       openedBySessionId: session.openedBySessionId,
       openedByRowSessionId: session.openedByRootSessionId,
       unread: sessionHasUnreadMessages(session),
-      status: deriveBoardSessionStatus({
-        liveStatus: live[index],
-        awaitingUserSince: session.awaitingUserSince,
-        lastMessageAt: session.lastMessageAt,
-        collaborationStopped: isBoardSessionStopped(session, context.lookup),
-      }),
+      status: boardThreadStatus(session, live[index], context.lookup),
       detail: context.detail(session),
       updatedAt: new Date(session.lastMessageAt ?? session.createdAt).getTime(),
       updatedLabel: formatCompactRelativeTime(

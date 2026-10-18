@@ -2,7 +2,7 @@ import { BoardThreadBreadcrumb } from './board-thread-breadcrumb';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
-import { ChevronDown, ChevronRight, CircleAlert, CircleSlash } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, CircleSlash } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BoardSessionStatus } from '@lody/shared';
@@ -56,6 +56,17 @@ export function boardThreadGroup(item: Pick<BoardThreadItem, 'status' | 'archive
 }
 
 const GROUP_ORDER = ['attention', 'active', 'idle', 'archived'] as const;
+const STATUS_ORDER: readonly BoardSessionStatus[] = [
+  'waiting_user',
+  'running',
+  'initializing',
+  'finalizing',
+  'failed',
+  'stopped',
+  'cancelled',
+  'waiting_coordinator',
+  'idle',
+];
 
 /**
  * Threads with the sessions they opened, in list order (a root, then its rows
@@ -63,10 +74,10 @@ const GROUP_ORDER = ['attention', 'active', 'idle', 'archived'] as const;
  * its members, so a reviewer waiting for the user lifts its thread into
  * "Needs you" instead of standing apart from it.
  */
-export function boardThreadFamilies(
-  threads: readonly BoardThreadItem[]
-): { group: GroupKey; items: BoardThreadItem[] }[] {
-  const families: BoardThreadItem[][] = [];
+export function boardThreadFamilies<
+  T extends Pick<BoardThreadItem, 'depth' | 'status' | 'archived'>,
+>(threads: readonly T[]): { group: GroupKey; status: BoardSessionStatus; items: T[] }[] {
+  const families: T[][] = [];
   for (const item of threads) {
     const last = families.at(-1);
     if ((item.depth ?? 0) > 0 && last) last.push(item);
@@ -74,6 +85,13 @@ export function boardThreadFamilies(
   }
   return families.map((items) => ({
     items,
+    status: items.reduce(
+      (strongest, item) =>
+        STATUS_ORDER.indexOf(item.status) < STATUS_ORDER.indexOf(strongest)
+          ? item.status
+          : strongest,
+      items[0]!.status
+    ),
     group:
       items[0]?.archived === true
         ? 'archived'
@@ -107,6 +125,7 @@ const styles = stylex.create({
   time: { fontSize: text.footnoteSize, color: colors.tertiaryLabel, whiteSpace: 'nowrap' },
   danger: { color: colors.destructive },
   quiet: { color: colors.tertiaryLabel },
+  completed: { color: colors.secondaryLabel },
   empty: {
     margin: 0,
     paddingInline: space[2],
@@ -125,9 +144,12 @@ const styles = stylex.create({
 export function BoardThreadStatusMark({
   status,
   unread,
+  completed = false,
 }: {
   status: BoardSessionStatus;
   unread: boolean;
+  /** Conversation cards only; list rows never add a resting done mark. */
+  completed?: boolean;
 }) {
   const { t } = useTranslation();
   const working = useWorkingHandOver(GROUP_BY_STATUS[status] === 'active', unread);
@@ -153,6 +175,14 @@ export function BoardThreadStatusMark({
         size={14}
         aria-label={t('boards.status.stopped', 'Stopped')}
         {...stylex.props(styles.quiet)}
+      />
+    );
+  if (status === 'idle' && completed)
+    return (
+      <Check
+        size={14}
+        aria-label={t('sessions.openedBy.status.succeeded', 'Completed')}
+        {...stylex.props(styles.completed)}
       />
     );
   return null;

@@ -4507,6 +4507,7 @@
   "mention.session.scope.label": "Session project scope",
   "mention.session.scope.viewAll": "View all projects",
   "mention.session.scope.showAllAria": "Show sessions from all projects",
+  "mention.session.empty.board": "There are no other sessions in this Board.",
   "mention.session.empty.current": "There are no other sessions in the current project.",
   "mention.session.empty.none": "There are no other sessions without a project.",
   "errorBoundary.title": "Lody couldn't show this page",
