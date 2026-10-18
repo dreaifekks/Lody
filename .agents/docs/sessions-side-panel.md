@@ -138,8 +138,10 @@ is the real `SessionChatInterface` with `headerVariant="board-thread"`: the same
 `SessionChatInputArea`. Header launch/share pills use the normal 800px container
 rule; model/mode/permission controls remain in the composer at every panel width.
 Existing-session agent locks are unchanged. An open panel thread stays mounted while a
-file viewer covers it, with `isVisible=false`; its registered chat handle receives HTML
-preview annotations. Closing the Board tab or selecting another thread releases it.
+file viewer covers it; one on-screen condition gates `isVisible`, `syncEnabled` and
+`aria-hidden`, including fixed-body coverage by viewers/side chats. Its registered chat
+handle still receives HTML preview annotations. Closing the Board tab or selecting another
+thread releases it.
 
 The list renders the sidebar's memoized `UpdatedItemRow`, including its leading
 menu and hover archive button with the same two-click confirmation. Threads can
@@ -184,6 +186,7 @@ Board panel); direct `iframe.html` previews should use a 900px browser viewport.
 `useBoardSessionNavigation` is the Board page's session entry point. Thread cards,
 creation/opener cards, relation menus, Markdown session links, thread rows and parent
 breadcrumbs use it; the mounted page also registers it for the global command palette.
+Panel navigation to a member re-adds the Board tab if it was closed, then selects it.
 Only members of the current Board open in its panel; other Boards and ordinary sessions
 retain page navigation (the palette keeps Board entry searches). Direct coordinator Tabs/Side Chats select
 the already mounted surface, and narrow windows or expanded thread pages navigate normally.

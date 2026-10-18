@@ -4576,7 +4576,7 @@ const SessionDetail = ({
     narrow: isMobile || isCompactDesktop,
     openPanel: (id) => {
       setBoardThreadId(id);
-      selectSidePanelTab('board');
+      activateSidebarTab('board');
       revealRightSidebar();
     },
     showInCoordinatorPage: (target) => {
@@ -6303,6 +6303,14 @@ const SessionDetail = ({
         params: { workspaceName: workspaceSlug },
       });
   };
+  // Viewers and side chats render their own absolutely positioned surfaces on
+  // top; the fixed-panel body only shows when neither owns the panel.
+  const showFixedSidePanelBody =
+    effectiveActiveViewerTabId === null &&
+    effectiveActiveSideSessionId === null &&
+    openingActiveSideSessionId === null;
+  const boardPanelOnScreen =
+    isSidebarVisible && activeSidebarTab === 'board' && showFixedSidePanelBody;
   const boardPanel = activeBoard ? (
     <BoardSidePanel
       board={activeBoard}
@@ -6350,8 +6358,8 @@ const SessionDetail = ({
                 controls.onBack();
               }}
               onRestoreSession={() => restoreSession(thread.id)}
-              syncEnabled
-              isVisible={isSidebarVisible && activeSidebarTab === 'board'}
+              syncEnabled={boardPanelOnScreen}
+              isVisible={boardPanelOnScreen}
               onNavigateSession={handleNavigateSession}
             />
           </AgentFileLinkOpenContext.Provider>
@@ -7396,12 +7404,6 @@ const SessionDetail = ({
     </div>
   );
 
-  // Viewers and side chats render their own absolutely positioned surfaces on
-  // top; the fixed-panel body only shows when neither owns the panel.
-  const showFixedSidePanelBody =
-    effectiveActiveViewerTabId === null &&
-    effectiveActiveSideSessionId === null &&
-    openingActiveSideSessionId === null;
   // A Board opens with its conversation and its panel side by side, half each.
   const defaultSizes = activeBoard
     ? { main: 50, sidebar: 50 }
@@ -7866,7 +7868,7 @@ const SessionDetail = ({
                   : detailStyles.hiddenFill
               ).className
             }
-            aria-hidden={activeSidebarTab !== 'board' || !isSidebarVisible}
+            aria-hidden={!boardPanelOnScreen}
           >
             {boardPanel}
           </div>
