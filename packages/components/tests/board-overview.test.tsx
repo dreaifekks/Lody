@@ -3,15 +3,17 @@ import {
   useBoardSessionNavigation,
   boardSessionNavigationAtom,
 } from '../src/components/boards/board-session-navigation';
-import { SessionFileScope } from '../src/components/sessions/session-file-scope';
+import {
+  SessionFileScope,
+  SessionFileScopeHost,
+  useThreadFileLinks,
+} from '../src/components/sessions/session-file-scope';
 import { SessionFileContentView } from '../src/components/sessions/session-file-content-view';
 import { resolveSessionFileLinkOpen } from '../src/lib/session-file-link-open';
 import {
   createFakeSessionFileProvider,
   type SessionFileProvider,
 } from '../src/lib/session-file-provider';
-import { getProviderFileViewerTabId } from '../src/lib/session-file-provider-open-result';
-import type { PersistedViewerTab } from '../src/lib/session-draft-tabs';
 import { BoardFileLinkPreview } from '../src/components/boards/board-directory';
 import { resolveBoardFileLink } from '../src/lib/board-directory-file-provider';
 import {
@@ -99,6 +101,9 @@ import { writeWorkspaceBoard } from '../src/lib/workspace-catalog-write';
 const creation = vi.hoisted(() => ({
   machines: new Map<string, unknown>(),
   fileProviders: new Map<string, SessionFileProvider>(),
+  fileIndexRevision: 0,
+  fileIndexListeners: new Set<() => void>(),
+  fileLeases: new Set<string>(),
   startSession: undefined as undefined | ((...args: unknown[]) => Promise<unknown>),
   /** The product language, as i18next names it. */
   language: 'en',
@@ -111,20 +116,46 @@ vi.mock('@/hooks/use-visible-machine-metas', () => ({
 vi.mock('@/hooks/use-code-collab-requested-role', () => ({
   useCodeCollabRequestedRole: () => 'read',
 }));
-vi.mock('@/hooks/use-code-collab-session-file-provider', async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  useCodeCollabSessionFileProvider: ({
-    sessionId,
-    machineId,
-  }: {
-    sessionId: string;
-    machineId: string;
-  }) => ({
-    provider: creation.fileProviders.get(`${machineId}:${sessionId}`) ?? null,
-    status: 'ready',
-    role: 'read',
-  }),
-}));
+vi.mock('@/hooks/use-code-collab-session-file-provider', async (importOriginal) => {
+  const { useEffect, useSyncExternalStore } = await import('react');
+  const subscribe = (listener: () => void) => {
+    creation.fileIndexListeners.add(listener);
+    return () => {
+      creation.fileIndexListeners.delete(listener);
+    };
+  };
+  const noSubscription = () => () => {};
+  return {
+    ...(await importOriginal<object>()),
+    useCodeCollabSessionFileProvider: ({
+      sessionId,
+      machineId,
+      enabled,
+    }: {
+      sessionId: string;
+      machineId: string;
+      enabled: boolean;
+    }) => {
+      useSyncExternalStore(enabled ? subscribe : noSubscription, () =>
+        enabled ? creation.fileIndexRevision : 0
+      );
+      useEffect(() => {
+        if (!enabled) return undefined;
+        creation.fileLeases.add(sessionId);
+        return () => {
+          creation.fileLeases.delete(sessionId);
+        };
+      }, [enabled, sessionId]);
+      return {
+        provider: enabled
+          ? (creation.fileProviders.get(`${machineId}:${sessionId}`) ?? null)
+          : null,
+        status: enabled ? 'ready' : 'disabled',
+        role: 'read',
+      };
+    },
+  };
+});
 vi.mock('@/hooks/use-resolved-machine-meta', () => ({
   useResolvedMachineMeta: (id: string) => ({
     machine: creation.machines.get(id),
@@ -2579,56 +2610,45 @@ it.each([
     } as unknown as WorkspaceRuntime;
     function ThreadFiles() {
       const [tab, setTab] = useState<
-        (Extract<PersistedViewerTab, { type: 'file' }> & { htmlPreviewRequestSeq?: number }) | null
+        | (Awaited<ReturnType<typeof resolveSessionFileLinkOpen>> & {
+            ownerSessionId: SessionId;
+            htmlPreviewRequestSeq?: number;
+          })
+        | null
       >(null);
-      const [threadOpen, setThreadOpen] = useState(true);
       return (
         <>
-          {threadOpen && (
-            <SessionFileScope sessionId={thread.id}>
-              {(scope) => (
-                <MarkdownRenderer
-                  text={`[Report](${href})`}
-                  onAgentFileLinkClick={(path) => {
-                    void resolveSessionFileLinkOpen(
-                      path,
-                      {
-                        ...(href.endsWith('.html')
-                          ? { pathKind: 'canonical' as const, previewHtml: true }
-                          : {}),
-                        linkContext: () => ({ mentions: ['polish-2/report.md'], outputs: [] }),
-                      },
-                      scope,
-                      runtime
-                    ).then((target) =>
-                      setTab({
-                        id: getProviderFileViewerTabId(
-                          target.filePath,
-                          target.fileId,
-                          scope.session.id
-                        ),
-                        type: 'file',
-                        label: 'Report',
-                        ownerSessionId: scope.session.id,
-                        filePath: target.filePath,
-                        fileId: target.fileId,
-                        startLine: target.startLine,
-                        ...(href.endsWith('.html') ? { htmlPreviewRequestSeq: 1 } : {}),
-                      })
-                    );
-                  }}
-                />
-              )}
-            </SessionFileScope>
-          )}
-          <button onClick={() => setThreadOpen(false)}>Close thread</button>
+          <SessionFileScope sessionId={thread.id}>
+            {(scope) => (
+              <MarkdownRenderer
+                text={`[Report](${href})`}
+                onAgentFileLinkClick={(path) => {
+                  void resolveSessionFileLinkOpen(
+                    path,
+                    {
+                      ...(href.endsWith('.html')
+                        ? { pathKind: 'canonical' as const, previewHtml: true }
+                        : {}),
+                      linkContext: () => ({ mentions: ['polish-2/report.md'], outputs: [] }),
+                    },
+                    scope,
+                    runtime
+                  ).then((target) =>
+                    setTab({
+                      ...target,
+                      ownerSessionId: scope.session.id,
+                      filePath: target.filePath,
+                      fileId: target.fileId,
+                      startLine: target.startLine,
+                      ...(href.endsWith('.html') ? { htmlPreviewRequestSeq: 1 } : {}),
+                    })
+                  );
+                }}
+              />
+            )}
+          </SessionFileScope>
           {tab && (
-            <section
-              aria-label="File tab"
-              data-id={tab.id}
-              data-line={tab.startLine}
-              data-path={tab.filePath}
-            >
+            <section aria-label="File tab" data-line={tab.startLine} data-path={tab.filePath}>
               <SessionFileScope sessionId={tab.ownerSessionId!}>
                 {(scope) => (
                   <SessionFileContentView
@@ -2642,7 +2662,6 @@ it.each([
                   />
                 )}
               </SessionFileScope>
-              <button onClick={() => setTab(null)}>Close file</button>
             </section>
           )}
         </>
@@ -2663,9 +2682,6 @@ it.each([
       const tab = view.host.querySelector('[aria-label="File tab"]')!;
       expect(tab.getAttribute('data-path')).toBe(expectedPath);
       expect(tab.getAttribute('data-line')).toBe(line === undefined ? null : String(line));
-      expect(tab.getAttribute('data-id')).not.toBe(
-        getProviderFileViewerTabId(expectedPath, 'report')
-      );
       if (expectedPath.endsWith('.png')) {
         await vi.waitFor(() =>
           expect(tab.querySelector('img')?.getAttribute('src')).toBe(
@@ -2691,10 +2707,6 @@ it.each([
           options: { ownerSessionId: 'thread', timeoutMs: 2500 },
         });
       }
-      await act(async () => button('Close thread').click());
-      expect(view.host.querySelector('[aria-label="File tab"]')).not.toBeNull();
-      await act(async () => button('Close file').click());
-      expect(view.host.querySelector('[aria-label="File tab"]')).toBeNull();
     } finally {
       await view.unmount();
       creation.fileProviders.clear();
@@ -2702,3 +2714,101 @@ it.each([
     }
   }
 );
+
+it('keeps file subscriptions in a silent leaf and enables them only after a thread file click', async () => {
+  const thread = makeSession('file-thread', { machineId: 'remote' });
+  const store = createStore();
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(sessionMetaCacheAtom, { [getSessionRoomId(thread.id)]: thread });
+  const firstProvider = createFakeSessionFileProvider();
+  creation.fileProviders.set('remote:file-thread', firstProvider);
+  const opens: {
+    provider: SessionFileProvider | null;
+    title: string | undefined;
+    path: string;
+    options: unknown;
+  }[] = [];
+  let chatCommits = 0;
+  function ThreadSurface() {
+    const links = useThreadFileLinks(thread.id, (scope, path, options) => {
+      opens.push({ provider: scope.fileProvider, title: scope.session.title, path, options });
+    });
+    return (
+      <>
+        <SessionFileScopeHost
+          sessionId={thread.id}
+          enabled={links.enabled}
+          scopeRef={links.scopeRef}
+        />
+        <Profiler
+          id="chat"
+          onRender={() => {
+            chatCommits += 1;
+          }}
+        >
+          <button onClick={() => links.onFilePathClick('report.md')}>Open report</button>
+          <button onClick={() => links.onOpenHtmlFile('preview.html')}>Open HTML</button>
+        </Profiler>
+      </>
+    );
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <ThreadSurface />
+    </Provider>
+  );
+  try {
+    expect(creation.fileLeases.has(thread.id)).toBe(false);
+    await act(async () => view.host.querySelector('button')!.click());
+    expect(opens[0]).toMatchObject({ provider: null, path: 'report.md' });
+    expect(creation.fileLeases.has(thread.id)).toBe(true);
+    const beforeIndexUpdate = chatCommits;
+    const nextProvider = createFakeSessionFileProvider();
+    await act(async () => {
+      creation.fileProviders.set('remote:file-thread', nextProvider);
+      creation.fileIndexRevision += 1;
+      for (const listener of creation.fileIndexListeners) listener();
+      store.set(sessionMetaCacheAtom, {
+        [getSessionRoomId(thread.id)]: { ...thread, title: 'Latest thread' },
+      });
+    });
+    expect(chatCommits).toBe(beforeIndexUpdate);
+    await act(async () => view.host.querySelectorAll('button')[1]!.click());
+    expect(opens[1]).toEqual({
+      provider: nextProvider,
+      title: 'Latest thread',
+      path: 'preview.html',
+      options: { pathKind: 'canonical', source: 'html_attachment', previewHtml: true },
+    });
+  } finally {
+    await view.unmount();
+    creation.fileProviders.clear();
+  }
+  expect(creation.fileLeases.has(thread.id)).toBe(false);
+});
+
+it('shows the existing unavailable-file notice for an unhydrated or deleted viewer owner', async () => {
+  const store = createStore();
+  const thread = makeSession('restored-thread');
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  const view = await mount(
+    <Provider store={store}>
+      <SessionFileScope sessionId={thread.id}>
+        {() => <span>Owner available</span>}
+      </SessionFileScope>
+    </Provider>
+  );
+  try {
+    expect(view.host.textContent).toContain('File content is not available');
+    expect(creation.fileLeases.has(thread.id)).toBe(false);
+    await act(async () =>
+      store.set(sessionMetaCacheAtom, { [getSessionRoomId(thread.id)]: thread })
+    );
+    expect(view.host.textContent).toBe('Owner available');
+    await act(async () => store.set(sessionMetaCacheAtom, {}));
+    expect(view.host.textContent).toContain('File content is not available');
+    expect(creation.fileLeases.has(thread.id)).toBe(false);
+  } finally {
+    await view.unmount();
+  }
+});

@@ -50,6 +50,14 @@ export type ProviderFileViewerTab = {
   readonly label: string;
 };
 
+/** Unowned tabs keep the active-conversation semantics. Explicit owners never cross providers. */
+export function isFileViewerTabOwnedBySession(
+  tab: { readonly ownerSessionId?: string },
+  sessionId: string | undefined
+): boolean {
+  return tab.ownerSessionId === undefined || tab.ownerSessionId === sessionId;
+}
+
 export function getProviderFileViewerTabId(
   filePath: string,
   fileId?: string,

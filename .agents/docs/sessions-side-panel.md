@@ -137,7 +137,9 @@ is the real `SessionChatInterface` with `headerVariant="board-thread"`: the same
 `SessionHeaderMenu`, title/return/full-page controls, and the unchanged
 `SessionChatInputArea`. Header launch/share pills use the normal 800px container
 rule; model/mode/permission controls remain in the composer at every panel width.
-Existing-session agent locks are unchanged.
+Existing-session agent locks are unchanged. An open panel thread stays mounted while a
+file viewer covers it, with `isVisible=false`; its registered chat handle receives HTML
+preview annotations. Closing the Board tab or selecting another thread releases it.
 
 The list renders the sidebar's memoized `UpdatedItemRow`, including its leading
 menu and hover archive button with the same two-click confirmation. Threads can
@@ -206,3 +208,7 @@ workspace and Code Collab provider. Their viewer tabs persist `ownerSessionId` a
 it in file identity; reads, file actions and subsequent opens retain that owner after the
 thread panel closes or switches. The active-session fileId reconciliation skips other
 owners. Missing links use the existing conversation-context probes and viewer errors.
+The thread's file scope is a silent sibling that publishes into a ref, never a wrapper
+around its conversation. Stable file/HTML callbacks read that ref at click time, and
+only the first file interaction enables its index lease. Restored tabs without owner
+metadata show the existing unavailable-file notice; they never use coordinator files.

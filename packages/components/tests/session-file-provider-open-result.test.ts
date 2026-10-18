@@ -5,6 +5,7 @@ import type {
 } from '../src/lib/session-file-provider';
 import {
   getProviderFileViewerTabId,
+  isFileViewerTabOwnedBySession,
   normalizePinnedProviderOpenResult,
   refreshPinnedProviderFileViewerTab,
 } from '../src/lib/session-file-provider-open-result';
@@ -167,4 +168,14 @@ it('keeps same-name files in different sessions distinct across a pinned rename'
     getProviderFileViewerTabId('new.md', 'shared-file-id'),
   ]);
   expect(ids.size).toBe(3);
+});
+
+it('reconciles only unowned tabs and tabs owned by the active session', () => {
+  expect(isFileViewerTabOwnedBySession({}, 'coordinator')).toBe(true);
+  expect(isFileViewerTabOwnedBySession({ ownerSessionId: 'coordinator' }, 'coordinator')).toBe(
+    true
+  );
+  expect(isFileViewerTabOwnedBySession({ ownerSessionId: 'thread' }, 'coordinator')).toBe(false);
+  expect(isFileViewerTabOwnedBySession({ ownerSessionId: 'thread' }, undefined)).toBe(false);
+  expect(isFileViewerTabOwnedBySession({ ownerSessionId: 'thread' }, 'thread')).toBe(true);
 });

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useAtomValue } from 'jotai';
 import { getSessionRoomId, type SessionId, type SessionMeta } from '@lody/shared';
 import { userAtom } from '@/atoms';
@@ -23,7 +23,12 @@ import {
   resolveMachineDotlodyPath,
   resolveSessionWorkspacePath,
 } from '@/lib/session-workspace-path';
-import type { SessionFileOpenContext } from '@/lib/session-file-link-open';
+import type {
+  SessionDetailOpenFileOptions,
+  SessionFileOpenContext,
+} from '@/lib/session-file-link-open';
+import { useStableCallback } from '@/hooks/use-stable-callback';
+import { SessionFileErrorState } from './session-file-error-state';
 import { SessionFileActionsMenu } from './session-file-actions-menu';
 
 export type SessionFileScopeValue = SessionFileOpenContext & {
@@ -36,9 +41,13 @@ export type SessionFileScopeValue = SessionFileOpenContext & {
 /** File ownership lives outside the page's active conversation, including restored tabs. */
 export function SessionFileScope({
   sessionId,
+  enabled = true,
+  unavailable = <SessionFileErrorState message="" reason="metadata-only" />,
   children,
 }: {
   sessionId: SessionId;
+  enabled?: boolean;
+  unavailable?: ReactNode;
   children: (scope: SessionFileScopeValue) => ReactNode;
 }) {
   const session = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(sessionId)));
@@ -56,14 +65,14 @@ export function SessionFileScope({
   const files = useCodeCollabSessionFileProvider({
     workspaceId,
     sessionId,
-    enabled: Boolean(session && workspaceId),
+    enabled: Boolean(enabled && session && workspaceId),
     requestedRole,
     machineId: session?.machineId,
     requestedByUserId: user?.id ?? session?.userId,
     githubRepoFullName: session ? resolveSessionRepoFullName(session) : null,
     debugLabel: 'session-detail:owned-file-provider',
   });
-  if (!session) return null;
+  if (!session) return unavailable;
   const isLocalMachine = Boolean(localMachineId) && session.machineId === localMachineId;
   const workspacePath = resolveSessionWorkspacePath({
     sessionId,
@@ -85,6 +94,71 @@ export function SessionFileScope({
     fileProviderMessage: !workspaceId ? CODE_COLLAB_CHECKING_MESSAGE : files.message,
     role: files.role,
   });
+}
+
+/** A commit-time bridge: index and machine updates never render the conversation. */
+function PublishFileScope({
+  scope,
+  scopeRef,
+}: {
+  scope: SessionFileScopeValue | null;
+  scopeRef: RefObject<SessionFileScopeValue | null>;
+}) {
+  useLayoutEffect(() => {
+    scopeRef.current = scope;
+    return () => {
+      scopeRef.current = null;
+    };
+  }, [scope, scopeRef]);
+  return null;
+}
+
+export function SessionFileScopeHost({
+  sessionId,
+  enabled,
+  scopeRef,
+}: {
+  sessionId: SessionId;
+  enabled: boolean;
+  scopeRef: RefObject<SessionFileScopeValue | null>;
+}) {
+  return (
+    <SessionFileScope
+      sessionId={sessionId}
+      enabled={enabled}
+      unavailable={<PublishFileScope scope={null} scopeRef={scopeRef} />}
+    >
+      {(scope) => <PublishFileScope scope={scope} scopeRef={scopeRef} />}
+    </SessionFileScope>
+  );
+}
+
+export function useThreadFileLinks(
+  sessionId: SessionId | null,
+  onOpen: (
+    scope: SessionFileScopeValue,
+    path: string,
+    options?: SessionDetailOpenFileOptions
+  ) => void
+) {
+  const scopeRef = useRef<SessionFileScopeValue | null>(null);
+  const [requestedSessionId, setRequestedSessionId] = useState<SessionId | null>(null);
+  const onFilePathClick = useStableCallback(
+    (path: string, options?: SessionDetailOpenFileOptions) => {
+      const scope = scopeRef.current;
+      if (!scope || scope.session.id !== sessionId) return;
+      setRequestedSessionId(sessionId);
+      onOpen(scope, path, options);
+    }
+  );
+  const onOpenHtmlFile = useStableCallback((path: string) =>
+    onFilePathClick(path, {
+      pathKind: 'canonical',
+      source: 'html_attachment',
+      previewHtml: true,
+    })
+  );
+  return { scopeRef, enabled: requestedSessionId === sessionId, onFilePathClick, onOpenHtmlFile };
 }
 
 export function SessionOwnedFileActionsMenu({

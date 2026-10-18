@@ -1,5 +1,7 @@
 import {
   SessionFileScope,
+  SessionFileScopeHost,
+  useThreadFileLinks,
   SessionOwnedFileActionsMenu,
   type SessionFileScopeValue,
 } from './session-file-scope';
@@ -129,7 +131,16 @@ import {
   zenLayoutModeAtom,
   zenRightPanelAtom,
 } from '@/atoms/layout-state';
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { space, text as textScale } from '@lody/ui/tokens/scales.stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
@@ -322,6 +333,7 @@ import {
 import {
   getProviderFileViewerTabId as getFileViewerTabId,
   refreshPinnedProviderFileViewerTab,
+  isFileViewerTabOwnedBySession,
 } from '@/lib/session-file-provider-open-result';
 import { canOpenHistoricalSessionDiffs } from '@/lib/session-file-provider';
 import { useSessionDoc, useSessionDocSyncState } from '@/hooks/use-session-doc';
@@ -1263,7 +1275,7 @@ const SessionDetail = ({
       viewerTabs.some(
         (tab) =>
           tab.type === 'diff' ||
-          ((!tab.ownerSessionId || tab.ownerSessionId === activeSession?.id) &&
+          (isFileViewerTabOwnedBySession(tab, activeSession?.id) &&
             !resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical'))
       ),
     [viewerTabs, currentWorkspaceId, boards, activeSession?.id]
@@ -2409,6 +2421,14 @@ const SessionDetail = ({
       chatRefsMap.current.set(tabId, ref);
     },
     []
+  );
+
+  const setBoardThreadChatRef = useCallback(
+    (ref: SessionChatInterfaceHandle | null) => {
+      boardThreadChatRef.current = ref;
+      if (boardThreadId) setChatTabRef(boardThreadId, ref);
+    },
+    [boardThreadId, setChatTabRef]
   );
 
   const handleInsertDroppedSessionMention = useCallback(
@@ -4296,6 +4316,8 @@ const SessionDetail = ({
     }
   );
 
+  const threadFileLinks = useThreadFileLinks(boardThreadId, handleOpenFileForSession);
+
   const activeFileOpenContext: SessionFileOpenContext = {
     session: activeSession,
     workspacePath: activeSessionWorkspacePath,
@@ -4355,7 +4377,7 @@ const SessionDetail = ({
         viewerTabs.map(async (tab) => {
           if (
             tab.type !== 'file' ||
-            (tab.ownerSessionId !== undefined && tab.ownerSessionId !== activeSession?.id) ||
+            !isFileViewerTabOwnedBySession(tab, activeSession?.id) ||
             resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical')
           ) {
             return { tab, next: tab };
@@ -6219,7 +6241,7 @@ const SessionDetail = ({
         </div>
       );
     return tab.type === 'file' ? (
-      tab.ownerSessionId && tab.ownerSessionId !== activeSession.id ? (
+      tab.ownerSessionId && !isFileViewerTabOwnedBySession(tab, activeSession.id) ? (
         <SessionFileScope key={tab.ownerSessionId} sessionId={tab.ownerSessionId}>
           {(scope) => renderFileTab(tab, scope, className, active)}
         </SessionFileScope>
@@ -6296,41 +6318,44 @@ const SessionDetail = ({
       onScheduleRequestDone={() => setBoardScheduleRequest(null)}
       onThreadRequestDone={finishBoardThreadRequest}
       renderThread={(thread, controls) => (
-        <SessionFileScope key={thread.id} sessionId={thread.id}>
-          {(scope) => (
-            <AgentFileLinkOpenContext.Provider value={openBoardFileLink}>
-              <SessionChatInterface
-                key={thread.id}
-                onFilePathClick={(path, options) => handleOpenFileForSession(scope, path, options)}
-                onOpenHtmlFile={(path) =>
-                  handleOpenFileForSession(scope, path, {
-                    pathKind: 'canonical',
-                    source: 'html_attachment',
-                    previewHtml: true,
-                  })
-                }
-                ref={boardThreadChatRef}
-                session={thread}
-                // The thread owns its repository, PR and diff state, not the coordinator.
-                workspaceSession={thread}
-                className={stylex.props(detailStyles.rootFill).className}
-                headerVariant="board-thread"
-                headerLocation={controls.location}
-                headerParentThread={controls.parentThread}
-                headerStartSlot={<BoardThreadBackButton onBack={controls.onBack} />}
-                headerEndSlot={<BoardThreadOpenButton onOpen={controls.onOpenFull} />}
-                onArchiveSession={async () => {
-                  await archiveSession(thread.id);
-                  controls.onBack();
-                }}
-                onRestoreSession={() => restoreSession(thread.id)}
-                syncEnabled
-                isVisible={isSidebarVisible}
-                onNavigateSession={handleNavigateSession}
-              />
-            </AgentFileLinkOpenContext.Provider>
-          )}
-        </SessionFileScope>
+        <Fragment key={thread.id}>
+          <SessionFileScopeHost
+            sessionId={thread.id}
+            enabled={threadFileLinks.enabled}
+            scopeRef={threadFileLinks.scopeRef}
+          />
+          <AgentFileLinkOpenContext.Provider value={openBoardFileLink}>
+            <SessionChatInterface
+              key={thread.id}
+              onFilePathClick={threadFileLinks.onFilePathClick}
+              onOpenHtmlFile={threadFileLinks.onOpenHtmlFile}
+              ref={setBoardThreadChatRef}
+              onVisualAnnotationReferencesChange={getVisualAnnotationReferencesChangeHandler(
+                thread.id
+              )}
+              onVisualAnnotationReferencesSubmitted={getVisualAnnotationReferencesSubmittedHandler(
+                thread.id
+              )}
+              session={thread}
+              // The thread owns its repository, PR and diff state, not the coordinator.
+              workspaceSession={thread}
+              className={stylex.props(detailStyles.rootFill).className}
+              headerVariant="board-thread"
+              headerLocation={controls.location}
+              headerParentThread={controls.parentThread}
+              headerStartSlot={<BoardThreadBackButton onBack={controls.onBack} />}
+              headerEndSlot={<BoardThreadOpenButton onOpen={controls.onOpenFull} />}
+              onArchiveSession={async () => {
+                await archiveSession(thread.id);
+                controls.onBack();
+              }}
+              onRestoreSession={() => restoreSession(thread.id)}
+              syncEnabled
+              isVisible={isSidebarVisible && activeSidebarTab === 'board'}
+              onNavigateSession={handleNavigateSession}
+            />
+          </AgentFileLinkOpenContext.Provider>
+        </Fragment>
       )}
     />
   ) : null;
@@ -7270,9 +7295,7 @@ const SessionDetail = ({
     !isNativeAppShell() && isMacOSElectronRenderer() && !isElectronFullscreen;
 
   const nonBrowserSidebarContent =
-    activeSidebarTab === 'board' ? (
-      boardPanel
-    ) : activeSidebarTab === 'files' ? (
+    activeSidebarTab === 'files' ? (
       <FileTreeView
         session={activeSession}
         handleOpenFile={handleOpenIndexedFile}
@@ -7805,8 +7828,8 @@ const SessionDetail = ({
         moreSlot={
           activeViewerTab?.type === 'file' &&
           activeViewerTab.ownerSessionId &&
-          activeViewerTab.ownerSessionId !== activeSession.id ? (
-            <SessionFileScope sessionId={activeViewerTab.ownerSessionId}>
+          !isFileViewerTabOwnedBySession(activeViewerTab, activeSession.id) ? (
+            <SessionFileScope sessionId={activeViewerTab.ownerSessionId} unavailable={null}>
               {(scope) => (
                 <SessionOwnedFileActionsMenu scope={scope} filePath={activeViewerFilePath} />
               )}
@@ -7830,7 +7853,24 @@ const SessionDetail = ({
         )}
       />
       <div {...stylex.props(detailStyles.sidebarBody)}>
-        {showFixedSidePanelBody && activeSidebarTab !== null ? sidebarContent : null}
+        {showFixedSidePanelBody && activeSidebarTab !== null && activeSidebarTab !== 'board'
+          ? sidebarContent
+          : null}
+        {visibleOpenedSidebarTabs.includes('board') &&
+        (activeSidebarTab === 'board' || boardThreadId !== null) ? (
+          <div
+            className={
+              stylex.props(
+                activeSidebarTab === 'board' && showFixedSidePanelBody
+                  ? detailStyles.rootFill
+                  : detailStyles.hiddenFill
+              ).className
+            }
+            aria-hidden={activeSidebarTab !== 'board' || !isSidebarVisible}
+          >
+            {boardPanel}
+          </div>
+        ) : null}
         {showFixedSidePanelBody && activeSidebarTab === null && sidePanelTabs.length === 0 ? (
           <SessionSidePanelEmptyState
             panels={sidePanelOptions}
