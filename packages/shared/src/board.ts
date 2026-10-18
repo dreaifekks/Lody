@@ -328,3 +328,9 @@ export function isBoardSessionStopped(
   }
   return false;
 }
+
+/** Schedule destinations may be any member except the Board's main session. */
+export const isScheduleBoardThread = (
+  session: Pick<SessionMeta, 'id' | 'boardId'>,
+  board: Pick<BoardMeta, 'id' | 'coordinatorSessionId'>
+): boolean => session.boardId === board.id && session.id !== board.coordinatorSessionId;

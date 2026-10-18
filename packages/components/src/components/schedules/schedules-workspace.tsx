@@ -19,6 +19,7 @@ import {
   type McpServerId,
   getDeviceTimeZone,
   getServerNow,
+  getSessionRoomId,
   machineSupportsScheduleAgentRoles,
   machineSupportsSchedulesProtocol,
   resolveScheduleAgentRole,
@@ -269,6 +270,9 @@ export function SchedulesWorkspace({
   const registry = useSchedules();
   const rows = scheduleRowsForBoard(registry.rows, board?.id);
   const sessions = useAtomValue(sessionListAtom);
+  const archivedSessions = useAtomValue(archivedSessionListAtom);
+  const isDeletedSession = (id: SessionId) =>
+    runtime?.repo.getMeta().get(['e', getSessionRoomId(id)]) === false;
   const agents = useAtomValue(getAllAgentConfigAtom);
   const { roles } = useWorkspaceAgentRoles();
   // A schedule bound to a Role is listed as that Role, by its name today.
@@ -541,7 +545,9 @@ export function SchedulesWorkspace({
       hideHeader={hideHeader}
       query={query}
       contextForRow={(item) => ({
-        thread: board ? scheduleBoundSession(item, sessions)?.title : undefined,
+        thread: board
+          ? scheduleBoundSession(item, [...sessions, ...archivedSessions], isDeletedSession)?.title
+          : undefined,
         machine: machines.get(item.machineId as never)?.name ?? item.machineId,
         timeZone: machines.get(item.machineId as never)?.timeZone,
         agent:
@@ -782,24 +788,19 @@ function ScheduleEditor({
     () =>
       sessions
         .filter(
-          (meta) =>
-            meta.userId === user?.id &&
-            !meta.isArchived &&
-            (!board || isScheduleBoardThread(meta, board))
+          (meta) => meta.userId === user?.id && (!board || isScheduleBoardThread(meta, board))
         )
         .map(describeSession),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- describeSession reads stable atoms
     [sessions, user?.id, agents, machines, board]
   );
-  const destinationMeta =
-    destination.kind === 'own_session' &&
-    document?.definition.destination.kind === 'own_session' &&
-    destination.epoch !== document.definition.destination.epoch
-      ? undefined
-      : scheduleBoundSession({ scheduleId: identity.scheduleId, destination }, [
-          ...sessions,
-          ...archivedSessions,
-        ]);
+  const isDeletedSession = (id: SessionId) =>
+    runtime?.repo.getMeta().get(['e', getSessionRoomId(id)]) === false;
+  const destinationMeta = scheduleBoundSession(
+    { scheduleId: identity.scheduleId, destination, boardId: board?.id },
+    [...sessions, ...archivedSessions],
+    isDeletedSession
+  );
   const chooseDestination = (next: ScheduleDestination) => {
     setDestination(next);
     // A picked chat follows its own Agent, so a Role does not apply to it.

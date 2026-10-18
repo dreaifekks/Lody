@@ -55,13 +55,18 @@ apply to ordinary and Board schedules alike:
   Start at zero, skip archived sessions, and select the first absent or
   unarchived one. Sequence zero is the existing dedicated id. Decide only during
   preparation, freeze it with that run, and never select again on retries.
-  No additional definition state is written. UI links use the newest unarchived
-  Session carrying the schedule id.
+  No additional definition state is written. UI links select the current epoch’s
+  first existing, unarchived deterministic id still in the Board. A never-created
+  id means no thread yet; arbitrary Sessions with matching scheduleId do not count.
+  Permanently deleted ids are also skipped. Board schedules additionally skip
+  threads detached from their Board; ordinary schedules ignore Board membership.
 - An archived existing destination blocks as recoverable `SESSION_UNAVAILABLE`
   without retaining a slot. Restore it or change the destination; never silently
   substitute another thread.
 - If the frozen destination is archived after preparation but before handoff,
   fail that run instead of sending it.
+- A target archived after handoff releases admission once actual running work
+  drains. Archived sessions do not execute remaining pending/queued inputs.
 
 ### Results return as Board events
 

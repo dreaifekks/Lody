@@ -10,6 +10,7 @@ import {
   getWorkspaceFlockDocId,
   agentConfigNoticeId,
   isLoroRepoDocDeleted,
+  isScheduleBoardThread,
   higherPermissionTier,
   isPermissionTierWithin,
   machineSupportsScheduleAgentRoles,
@@ -56,6 +57,7 @@ import {
   resolveScheduleDestinationSession,
   readScheduleBoard,
   type DestinationSessionState,
+  scheduleDestinationSessionState,
 } from './schedule-run-preparation';
 
 export type ScheduleCommandContext = {
@@ -218,8 +220,7 @@ export async function executeScheduleCommand(
         !meta ||
         isLoroRepoDocDeleted(record!) ||
         meta.isArchived ||
-        meta.boardId !== board.id ||
-        meta.id === board.coordinatorSessionId
+        !isScheduleBoardThread(meta, board)
       )
         throw new Error('SESSION_UNAVAILABLE');
     }
@@ -315,11 +316,7 @@ export async function executeScheduleCommand(
   const readSession = async (sessionId: SessionId): Promise<DestinationSessionState> => {
     await sync(getSessionRoomId(sessionId));
     const record = await manager.repo.getDocMeta(getSessionRoomId(sessionId));
-    return !record?.meta
-      ? { kind: 'absent' }
-      : isLoroRepoDocDeleted(record)
-        ? { kind: 'deleted' }
-        : { kind: 'present', meta: record.meta as SessionMeta };
+    return scheduleDestinationSessionState(record);
   };
   if (needsTarget && !localOnly) {
     // The target machine's record, Agents and Projects are its documents; read them current.
@@ -445,6 +442,7 @@ export async function executeScheduleCommand(
         ? (
             await resolveScheduleDestinationSession({
               scheduleId: id,
+              boardId: result.boardId,
               destination,
               plannedSessionId,
               readSession,
@@ -486,6 +484,7 @@ export async function executeScheduleCommand(
       if (draft.project) throw new Error('A schedule that sends into a chat has no project');
       const { session } = await resolveScheduleDestinationSession({
         scheduleId: id,
+        boardId: draft.boardId,
         destination,
         plannedSessionId: destinationSessionId,
         readSession,

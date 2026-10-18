@@ -209,7 +209,6 @@ export class ScheduleEngine<Prepared> {
             sessionId: prepared.sessionId,
           });
         }
-        await p.validateTarget(current);
         await p.materialize(current.prepared!);
         p.store.transition(run.runKey, ['claimed'], { state: 'session_prepared' });
         const latest = (await p.list()).find((entry) => entry.scheduleId === run.scheduleId);
@@ -271,11 +270,7 @@ export class ScheduleEngine<Prepared> {
         } else {
           const code =
             error instanceof ScheduleConfigurationError ? error.code : 'DISPATCH_UNAVAILABLE';
-          if (
-            error instanceof ScheduleConfigurationError &&
-            code === 'SESSION_UNAVAILABLE' &&
-            current.prepared !== undefined
-          )
+          if (code === 'SESSION_UNAVAILABLE' && current.prepared !== undefined)
             p.store.transition(run.runKey, [current.state], {
               state: 'failed',
               errorCode: code,

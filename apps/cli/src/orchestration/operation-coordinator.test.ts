@@ -1790,10 +1790,28 @@ describe('Board reports through Operation Inbox', () => {
         await h.drain();
         expect(h.reports()).toHaveLength(1);
         h.advance(10);
+        await h.append('scheduled-thread', {
+          ...h.input('scheduled-continuation', { role: 'system' }),
+          inputConfig: { ...turn.inputConfig, chainDepth: 2 },
+        });
+        await h.finish('scheduled-thread', 'scheduled-continuation', 'Final scheduled conclusion');
+        await h.drain();
+        expect(h.reports()).toHaveLength(2);
+        expect(
+          h
+            .reports()
+            .map(
+              (entry) =>
+                h.store.get(h.coordinatorId, entry.operationId).completion?.value.boardReport
+                  ?.events[0]?.origin
+            )
+        ).toEqual(['schedule', 'schedule']);
+        expect(h.launches).toEqual([]);
+        h.advance(10);
         await h.append('scheduled-thread', h.input('human-followup', { human: true }));
         await h.finish('scheduled-thread', 'human-followup');
         await h.drain();
-        expect(h.reports()).toHaveLength(1);
+        expect(h.reports()).toHaveLength(2);
       } finally {
         await h.close();
       }

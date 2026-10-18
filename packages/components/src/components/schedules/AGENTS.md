@@ -66,8 +66,9 @@
 - Manual (`trigger.kind === 'manual'`) is never planned; the editor keeps the last
   timed rule while toggled to Manual.
 - Destination: new chat per run, owned chat (schedule + epoch + archive sequence),
-  or picked chat. The newest unarchived Session with this `scheduleId` is the owned
-  chat shown; changing epoch clears it until the next run. A picked chat follows
+  or picked chat. List and save checks select the current epoch’s first usable
+  deterministic id, skipping archived/deleted/detached identities; a missing id
+  means not created. Never match arbitrary Sessions by `scheduleId`. A picked chat follows
   its Agent and must remain available. Shared-chat destinations carry no project.
 - Agents propose (`schedule_proposal` → `ScheduleProposalNotice`) or use tier-capped MCP writes.
   Create on the card persists, with

@@ -34,7 +34,11 @@ import {
   scheduleBoundSession,
   isScheduleBoardThread,
 } from '../src/components/schedules/schedule-scope';
-import { buildScheduleRegistryRow, ScheduleDefinitionSchema } from '@lody/shared';
+import {
+  buildScheduleRegistryRow,
+  ScheduleDefinitionSchema,
+  scheduleOwnSessionId,
+} from '@lody/shared';
 import { CreateBoardDialog } from '../src/components/boards/create-board-dialog';
 import { changeBoardMembership } from '../src/components/boards/board-membership-dialog';
 import { BoardNotesEditor } from '../src/components/boards/board-notes-panel';
@@ -1468,12 +1472,34 @@ describe('Board schedule scope', () => {
     expect(scheduleRowsForBoard(rows, 'bd_test')).toEqual([own]);
     expect(scheduleRowsForBoard(rows, 'bd_other')).toEqual([other]);
   });
-  it('shows the newest unarchived dedicated thread and never offers the main session', () => {
+  it('selects the first usable deterministic id in the current epoch, ignoring unrelated scheduleId matches', () => {
     const row = definition('own', 'bd_test');
-    const old = makeSession('old', { scheduleId: 'own', isArchived: true });
-    const next = makeSession('next', { scheduleId: 'own', createdAt: '2026-10-16T00:00:00Z' });
-    const latest = makeSession('latest', { scheduleId: 'own', createdAt: '2026-10-17T00:00:00Z' });
-    expect(scheduleBoundSession(row, [old, next, latest])).toBe(latest);
+    const zeroId = scheduleOwnSessionId('own', 0);
+    const nextId = scheduleOwnSessionId('own', 0, 1);
+    const old = makeSession(zeroId, { scheduleId: 'own', isArchived: true });
+    const next = makeSession(nextId, { scheduleId: 'own', createdAt: '2026-10-16T00:00:00Z' });
+    const unrelated = makeSession('unrelated', {
+      scheduleId: 'own',
+      createdAt: '2026-10-17T00:00:00Z',
+    });
+    const sessions = [old, next, unrelated];
+    const deleted = new Set<SessionId>();
+    const isDeleted = (id: SessionId) => deleted.has(id);
+    expect(scheduleBoundSession(row, sessions, isDeleted)).toBe(next);
+    expect(
+      scheduleBoundSession(
+        { ...row, destination: { kind: 'own_session', epoch: 1 } },
+        sessions,
+        isDeleted
+      )
+    ).toBeUndefined();
+    old.isArchived = false;
+    expect(scheduleBoundSession(row, sessions, isDeleted)).toBe(old);
+    old.boardId = undefined;
+    expect(scheduleBoundSession(row, sessions, isDeleted)).toBe(next);
+    deleted.add(zeroId);
+    expect(scheduleBoundSession(row, [next, unrelated], isDeleted)).toBe(next);
+    expect(scheduleBoundSession(row, [unrelated], isDeleted)).toBeUndefined();
     expect(isScheduleBoardThread(makeSession('coordinator'), testBoard())).toBe(false);
     expect(
       isScheduleBoardThread(makeSession('foreign', { boardId: 'bd_other' as never }), testBoard())

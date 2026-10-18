@@ -602,7 +602,6 @@ const acpSessionConfigSchema = schema
       agentRoleRevision: schema.Number({ required: false }),
       agentRoleSnapshot: schema.Any({ required: false }),
       chainDepth: schema.Number({ required: false }),
-      _lodyScheduleId: schema.String({ required: false }),
     },
     { required: false }
   )

@@ -14,6 +14,8 @@ import {
 import { findNextDispatchableUserTurn } from '@/session/session-dispatch-logic';
 import { AgentExecutionSlots } from '../agent-execution-slots';
 import { ScheduleStore } from './schedule-store';
+import { isScheduleRunFinished } from './schedule-workspace';
+import type { LoroDocumentManager } from '../loro/doc';
 import {
   resolveScheduleDestinationSession,
   type DestinationSessionState,
@@ -368,6 +370,34 @@ it('recovers the committed ledger after closing a real SQLite file without repea
 });
 
 describe('Frozen schedule destinations', () => {
+  it('settles an archived dispatched session after live work drains despite pending activation and queue markers', async () => {
+    const h = harness();
+    const meta = {
+      isArchived: false,
+      latestUserMsgId: 'pending',
+      messageQueueUpdatedAt: 20,
+      messageQueueCheckedAt: 0,
+    } as SessionMeta;
+    let liveWork = false;
+    const manager = {
+      repo: { getDocMeta: async () => ({ meta }) },
+    } as unknown as LoroDocumentManager;
+    h.ports.isFinished = (run) => isScheduleRunFinished(manager, run, () => liveWork);
+    await h.engine.evaluate();
+    const run = h.store.unfinished('workspace')[0]!;
+    await h.engine.evaluate();
+    expect(h.store.get(run.runKey)?.state).toBe('dispatched');
+    meta.isArchived = true;
+    liveWork = true;
+    await h.engine.evaluate();
+    expect(h.store.get(run.runKey)?.state).toBe('dispatched');
+    expect(h.slots.isBusy('agent')).toBe(true);
+    liveWork = false;
+    await h.engine.evaluate();
+    expect(h.store.get(run.runKey)?.state).toBe('finished');
+    expect(h.slots.isBusy('agent')).toBe(false);
+  });
+
   it('persists the replacement session with preparation and keeps it on retry and restart', async () => {
     const d = document();
     d.definition.destination = { kind: 'own_session', epoch: 0 };

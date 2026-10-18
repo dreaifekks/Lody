@@ -10,6 +10,8 @@ import {
   snapshotAgentRole,
   normalizeLegacyScheduleAgent,
   normalizeBoardMeta,
+  isLoroRepoDocDeleted,
+  isScheduleBoardThread,
   workspaceFlockKeys,
   type BoardId,
   type BoardMeta,
@@ -166,8 +168,7 @@ export function destinationSessionProblem(args: {
     return destination.kind === 'existing_session' ? 'SESSION_UNAVAILABLE' : null;
   const meta = session.meta;
   return !meta.isArchived &&
-    (!args.board ||
-      (meta.boardId === args.board.id && meta.id !== args.board.coordinatorSessionId)) &&
+    (!args.board || isScheduleBoardThread(meta, args.board)) &&
     meta.userId === args.userId &&
     meta.machineId === args.machineId &&
     meta.agentConfigId === args.agentConfigId
@@ -175,11 +176,20 @@ export function destinationSessionProblem(args: {
     : 'SESSION_UNAVAILABLE';
 }
 
-/** Choose the first non-archived owned chat. Zero preserves the original identity. */
+/** Tombstones remain deleted even after their metadata has been removed. */
+export function scheduleDestinationSessionState(
+  record: { meta?: unknown; deleted?: boolean } | undefined
+): DestinationSessionState {
+  if (isLoroRepoDocDeleted(record)) return { kind: 'deleted' };
+  return record?.meta ? { kind: 'present', meta: record.meta as SessionMeta } : { kind: 'absent' };
+}
+
+/** Skip retired owned chats. Zero preserves the original identity. */
 export async function resolveScheduleDestinationSession(args: {
   scheduleId: string;
   destination: ScheduleDestination;
   plannedSessionId: SessionId;
+  boardId?: string;
   readSession: (id: SessionId) => Promise<DestinationSessionState>;
 }): Promise<{ sessionId: SessionId; session: DestinationSessionState }> {
   const { destination, readSession } = args;
@@ -188,7 +198,13 @@ export async function resolveScheduleDestinationSession(args: {
   for (let sequence = 0; ; sequence++) {
     const sessionId = scheduleOwnSessionId(args.scheduleId, destination.epoch, sequence);
     const session = await readSession(sessionId);
-    if (session.kind !== 'present' || !session.meta.isArchived) return { sessionId, session };
+    if (
+      session.kind === 'absent' ||
+      (session.kind === 'present' &&
+        !session.meta.isArchived &&
+        (!args.boardId || session.meta.boardId === args.boardId))
+    )
+      return { sessionId, session };
   }
 }
 

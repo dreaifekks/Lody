@@ -4570,7 +4570,6 @@ export const SessionChatInterface = memo(
             agentRoleSnapshot: inputConfig.agentRoleSnapshot,
             resume: inputConfig.resume ?? undefined,
             chainDepth: 0,
-            _lodyScheduleId: undefined,
           };
 
           if (!guardNewBillableTurn()) {

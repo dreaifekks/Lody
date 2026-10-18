@@ -19,6 +19,7 @@ import {
   buildScheduleSessionCreateOptions,
   destinationSessionProblem,
   resolveScheduleDestinationSession,
+  scheduleDestinationSessionState,
   readScheduleBoard,
   type DestinationSessionState,
   resolveScheduleRunRole,
@@ -413,6 +414,39 @@ describe('Board and archived schedule destinations', () => {
         agentConfigId: 'agent',
       })
     ).toBe('SESSION_UNAVAILABLE');
+  });
+  it.each([{ deleted: true, meta }, { deleted: true }])(
+    'skips deleted sequence zero even without metadata: %j',
+    async (record) => {
+      const zero = scheduleOwnSessionId('schedule', 0);
+      const result = await resolveScheduleDestinationSession({
+        scheduleId: 'schedule',
+        destination: { kind: 'own_session', epoch: 0 },
+        plannedSessionId: zero,
+        readSession: async (id) =>
+          scheduleDestinationSessionState(id === zero ? record : undefined),
+      });
+      expect(result).toEqual({
+        sessionId: scheduleOwnSessionId('schedule', 0, 1),
+        session: { kind: 'absent' },
+      });
+    }
+  );
+  it('skips detached Board threads but ordinary schedules can keep them', async () => {
+    const zero = scheduleOwnSessionId('schedule', 0);
+    const args = {
+      scheduleId: 'schedule',
+      destination: { kind: 'own_session', epoch: 0 } as const,
+      plannedSessionId: zero,
+      readSession: async (id: SessionId): Promise<DestinationSessionState> =>
+        id === zero
+          ? { kind: 'present', meta: { ...meta, boardId: undefined } }
+          : { kind: 'absent' },
+    };
+    expect(
+      (await resolveScheduleDestinationSession({ ...args, boardId: board.id })).sessionId
+    ).toBe(scheduleOwnSessionId('schedule', 0, 1));
+    expect((await resolveScheduleDestinationSession(args)).sessionId).toBe(zero);
   });
   it('reads the Board gate and rejects absent and archived Boards', async () => {
     let row: unknown = board;

@@ -2,9 +2,8 @@
 
 `CLAUDE.md` is a symlink to this file.
 
-- Schedule definitions live in `schedule-<id>` Loro docs. The workspace `:sr`
-  Flock Registry is the execution gate. A definition must match its published
-  fingerprint; existence discovery must never republish or enable an orphan.
+- Definitions live in `schedule-<id>` docs; the `:sr` Registry gates execution by
+  published fingerprint. Discovery must never republish or enable an orphan.
 - `schedule-workspace.ts` owns subscriptions, clock wakeups and target facts;
   `schedule-engine.ts` owns serialized planning and handoff; `schedule-store.ts`
   owns the Host-local SQLite ledger. Cursor advancement and a run intent share
@@ -69,8 +68,8 @@
 - A `manual` trigger has no next slot; Registry manual requests alone plan it.
   `new_session` derives a Session per run; `existing_session` names an owned,
   unarchived chat on this machine with the same Agent. `own_session` selects the
-  first absent/unarchived id from schedule + epoch + sequence; zero preserves the
-  original id. Preparation and the selected `sessionId` commit together in the
+  first usable id from schedule + epoch + sequence, skipping archived/deleted
+  and (for Boards) detached chats; zero preserves the original id. Preparation and the selected `sessionId` commit together in the
   ledger, before mutation. Retries validate that frozen id, never select again.
   A destination archived after preparation fails that run as `SESSION_UNAVAILABLE`;
   before preparation it is recoverable, with no attempt or retained slot.
@@ -79,9 +78,9 @@
   members other than the coordinator. Created Sessions carry only `boardId`, never
   `boardRole`. Agent writes check both stored and requested Board membership;
   proposal cards retain it. Board schedules default to `own_session`.
-- `_lodyScheduleId` is per-turn history provenance, not author identity or inherited
-  run configuration. It makes completion/failure a `schedule` Board event, including
-  descendant threads, with passive delivery. See [runtime flow](README.md).
+- `_lodyScheduleId` follows scheduled input and its Inbox continuations, not human
+  follow-ups or edit-and-resend. It produces passive `schedule` Board events.
+  Archived dispatched chats release slots once live work drains. [Flow](README.md).
 - `definition.agentRole` (`roleId`, optional `instanceId`) is a reference, never a
   copy. `prepare` reads the Role as it is then (`resolveScheduleRunRole`: the
   owner's readable catalog, `selectAgentRoleInstance` held to this machine, the

@@ -41,6 +41,7 @@ import {
   resolveScheduleDestinationSession,
   readScheduleBoard,
   type DestinationSessionState,
+  scheduleDestinationSessionState,
   scheduleRequiredLocalProjectId,
 } from './schedule-run-preparation';
 import { AgentExecutionSlots } from '../agent-execution-slots';
@@ -103,11 +104,7 @@ export async function createScheduleWorkspace(args: {
   };
   const readSession = async (id: SessionId): Promise<DestinationSessionState> => {
     const record = await manager.repo.getDocMeta(getSessionRoomId(id));
-    return !record?.meta
-      ? { kind: 'absent' }
-      : isLoroRepoDocDeleted(record)
-        ? { kind: 'deleted' }
-        : { kind: 'present', meta: record.meta as SessionMeta };
+    return scheduleDestinationSessionState(record);
   };
   const resolveTarget = async (
     run: import('./schedule-store').ScheduleRun<PreparedSessionInput>,
@@ -153,6 +150,7 @@ export async function createScheduleWorkspace(args: {
       ? { sessionId: run.prepared.sessionId, session: await readSession(run.prepared.sessionId) }
       : await resolveScheduleDestinationSession({
           scheduleId: run.scheduleId,
+          boardId: run.definition.boardId,
           destination: run.definition.destination,
           plannedSessionId: run.sessionId as SessionId,
           readSession,
@@ -265,36 +263,7 @@ export async function createScheduleWorkspace(args: {
     materialize: (prepared) => materializePreparedSessionInput(manager, prepared),
     isDispatched: (prepared) => isPreparedSessionDispatched(manager, prepared),
     dispatch: (prepared) => commitPreparedSessionDispatch(manager, prepared),
-    isFinished: async (run) => {
-      const id = run.sessionId as SessionId;
-      if (args.hasSessionWork(id)) return false;
-      const record = await manager.repo.getDocMeta(getSessionRoomId(id));
-      if (!record) return false;
-      if (isLoroRepoDocDeleted(record)) return true;
-      const meta = record.meta as SessionMeta;
-      if (
-        hasPendingUserTurnActivation(meta) ||
-        (meta.messageQueueUpdatedAt ?? 0) > (meta.messageQueueCheckedAt ?? 0)
-      )
-        return false;
-      const session = await manager.getOrCreateSessionDoc(id);
-      const backend = await createSessionBackend(session, meta);
-      if ((await backend.getMessageQueue()).length) return false;
-      const [userRead, assistantRead] = await Promise.all([
-        backend.readTurn(run.userTurnId),
-        backend.readTurn(`assistant:${run.userTurnId}`),
-      ]);
-      const userTurn = userRead.state === 'ready' ? userRead.turn : undefined;
-      const assistantTurn = assistantRead.state === 'ready' ? assistantRead.turn : undefined;
-      return (
-        !args.hasSessionWork(id) &&
-        ((userTurn?.id === run.userTurnId &&
-          ['handled', 'failed', 'canceled'].includes(userTurn.status ?? '')) ||
-          (assistantTurn?.role === 'assistant' &&
-            assistantTurn.userTurnId === run.userTurnId &&
-            (assistantTurn.finished === true || typeof assistantTurn.endedAt === 'number')))
-      );
-    },
+    isFinished: (run) => isScheduleRunFinished(manager, run, args.hasSessionWork),
     publish: async (runtime) => {
       const key = scheduleRegistryKeys.runtime(runtime.scheduleId, auth.machineId);
       const prior = ScheduleRuntimeRowSchema.safeParse(registry.flock.get(key));
@@ -445,4 +414,41 @@ export async function createScheduleWorkspace(args: {
       store.close();
     },
   };
+}
+
+/** Admission ends for an archived target once its actual local work has drained. */
+export async function isScheduleRunFinished(
+  manager: LoroDocumentManager,
+  run: Pick<import('./schedule-store').ScheduleRun, 'sessionId' | 'userTurnId'>,
+  hasSessionWork: (id: SessionId) => boolean
+): Promise<boolean> {
+  const id = run.sessionId as SessionId;
+  if (hasSessionWork(id)) return false;
+  const record = await manager.repo.getDocMeta(getSessionRoomId(id));
+  if (!record) return false;
+  if (isLoroRepoDocDeleted(record)) return true;
+  const meta = record.meta as SessionMeta;
+  if (meta.isArchived) return true;
+  if (
+    hasPendingUserTurnActivation(meta) ||
+    (meta.messageQueueUpdatedAt ?? 0) > (meta.messageQueueCheckedAt ?? 0)
+  )
+    return false;
+  const session = await manager.getOrCreateSessionDoc(id);
+  const backend = await createSessionBackend(session, meta);
+  if ((await backend.getMessageQueue()).length) return false;
+  const [userRead, assistantRead] = await Promise.all([
+    backend.readTurn(run.userTurnId),
+    backend.readTurn(`assistant:${run.userTurnId}`),
+  ]);
+  const userTurn = userRead.state === 'ready' ? userRead.turn : undefined;
+  const assistantTurn = assistantRead.state === 'ready' ? assistantRead.turn : undefined;
+  return (
+    !hasSessionWork(id) &&
+    ((userTurn?.id === run.userTurnId &&
+      ['handled', 'failed', 'canceled'].includes(userTurn.status ?? '')) ||
+      (assistantTurn?.role === 'assistant' &&
+        assistantTurn.userTurnId === run.userTurnId &&
+        (assistantTurn.finished === true || typeof assistantTurn.endedAt === 'number')))
+  );
 }

@@ -11,8 +11,11 @@ controls usable at narrow widths. Saving or closing returns to the owning list.
 The global route remains mounted across index/detail navigation. Its remembered
 column widths and desktop split width stay in the existing device atoms.
 
-`schedule-scope.ts` filters rows and picks the newest unarchived dedicated
-Session. Existing destinations offer only owned active Sessions, restricted to
+`schedule-scope.ts` filters rows and walks the current epoch’s deterministic
+Session ids in order. It skips archived/deleted/detached identities and stops at
+the first usable or never-created id. The existing metadata cache supplies
+Sessions; the Repo existence index distinguishes tombstones without metadata
+from never-created ids. List links and save checks share this result. Existing destinations offer only owned active Sessions, restricted to
 that Board's threads when scoped. `schedule-save-blockers.ts` also rejects a
 selected target that was archived or removed while editing.
 

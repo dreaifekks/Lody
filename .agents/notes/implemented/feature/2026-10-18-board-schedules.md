@@ -29,23 +29,32 @@ remain draft.
   idempotent replay comparisons. MCP checks both the old and new Board against
   current caller membership; UI and CLI use normal human-owned writes.
 - A dedicated id adds a sequence only after zero. Preparation selects the first
-  absent/unarchived session; the ledger writes `prepared` and `sessionId` in one
+  absent/usable session, skipping deleted tombstones (even without metadata),
+  archived sessions and detached Board threads; the ledger writes `prepared` and `sessionId` in one
   transaction. No asynchronous work enters the planning transaction. A durable
   retry uses the frozen id even if an earlier sequence is restored meanwhile.
 - The worker owns prehandoff validation and failure recovery. Board or unprepared
   existing-session unavailability parks the run with no attempt or retained
   slot. Frozen-session unavailability is terminal. The dispatch pointer remains
   the transfer of ownership to the normal Session watcher; committed work is
-  never redirected or rolled back. Shutdown ownership is unchanged.
+  never redirected or rolled back. An archived accepted target releases admission
+  once local work drains, even with pending activation/queue markers. The watcher
+  removes archived sessions; dispatch guards reject archived targets before queue
+  lookup and again before execution.
+  Shutdown ownership is unchanged.
 - `_lodyScheduleId` lives in the prepared user turn's input metadata, with a
-  primitive mirror field and the shared history parser/normalizer. This retains
+  primitive string through the mirror catch-all and shared history parser/normalizer.
+  Inbox continuations inherit it so their eventual conclusion still reports;
+  human edit-and-resend removes it from the replacement configuration. This retains
   the human author and user id while allowing `origin: schedule` reporting.
   Scheduled descendant work reports too, because it lacks an Operation receipt
   to its parent. Ordinary human follow-ups remain subject to `reportHumanTurns`.
 - `SchedulesWorkspace` takes a Board scope and navigation callbacks. The Board
   wrapper uses its existing list/form/actions, stacked at panel width; global
   rows exclude Board schedules. Proposal and provenance navigation enter the
-  owning Board's Schedules tab, on desktop and mobile.
+  owning Board's Schedules tab, on desktop and mobile. List and save validation use
+  the same current-epoch deterministic selector; restored earlier sequences win
+  over newer chats, other epochs and unrelated scheduleId matches.
 
 ## Alternatives and trade-offs
 
@@ -67,13 +76,15 @@ Board report workflow consumes the changed pure derivation unchanged.
 
 ## Verification
 
-Owning suites cover archive sequence selection, retry/restart identity,
+Owning suites cover archive/deletion/detachment sequence selection, current-epoch UI
+identity, human edit-and-resend provenance removal, Inbox provenance retention,
+archived post-handoff slot release, retry/restart identity,
 configuration blocking and slot release, real Session preparation membership,
 MCP membership authorization and Registry filtering, proposal retention, Board
 reports across the real history writer and passive Inbox, and UI scope/selection.
 Storybook covers the Board list and dedicated-thread editor.
 
-With official Node v22.23.3, `pnpm check` passed: CLI 4,879 tests (one existing
+With official Node v22.23.3, `pnpm check` passed: CLI 4,884 tests (one existing
 skip), components 5,897, shared 1,745 and Electron 306, along with type, lint,
 i18n and boundary checks. `pnpm format` passed; changed shared/component sources
 were also formatted explicitly because those packages have no format script.
