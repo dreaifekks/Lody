@@ -31,8 +31,9 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 - Thread rows reuse sidebar actions (no pin) and `SessionHeaderMenu`. Board glyph:
   headers/page tabs only. Back (`boardEntrySearch`) never on coordinator pages;
   full-page parent links use the palette format and `boardMemberEntrySearch`.
-- A thread opened in the panel is a `SessionChatInterface` whose workspace session
-  is the thread itself. Never use a `side-session:` tab id: closing it deletes the Session.
+- Panel threads use `SessionChatInterface`; workspace and file viewers belong to
+  the thread. Board files keep their authorized preview. Never use `side-session:`
+  ids: closing one deletes the Session.
 - `useBoardSessionNavigation` scopes cards, relations, breadcrumbs, rows and palette:
   only members open in-panel; outside, narrow and expanded targets use pages.
   Page-bound resource links retain the original exact-tab deep-link path.

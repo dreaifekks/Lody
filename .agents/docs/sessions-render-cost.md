@@ -9,7 +9,9 @@ this page is the full text of the rules summarised there.
 
 - `session-detail.tsx` must not subscribe page-level `activeSession` to Code Collab
   file-index Flock state. That state can update from file watchers and should only
-  invalidate file surfaces, not the whole chat/message list.
+  invalidate file surfaces, not the whole chat/message list. Board panel threads
+  put their file scope in a silent sibling, enable its lease on file interaction,
+  and read its committed ref from stable callbacks; never wrap the chat in it.
 - Message rows must not subscribe to full `sessionMetaAtomFamily`. Select only
   the fields needed by row UI (for example avatar `cliType`/`agentType`/`env`) so
   Code Collab shared-state metadata does not wake idle markdown rows.

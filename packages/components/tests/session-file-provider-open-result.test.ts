@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { SessionFileOpenResult, SessionFileProviderState } from '../src/lib/session-file-provider';
+import type {
+  SessionFileOpenResult,
+  SessionFileProviderState,
+} from '../src/lib/session-file-provider';
 import {
+  getProviderFileViewerTabId,
+  isFileViewerTabOwnedBySession,
   normalizePinnedProviderOpenResult,
   refreshPinnedProviderFileViewerTab,
 } from '../src/lib/session-file-provider-open-result';
@@ -134,4 +139,43 @@ describe('normalizePinnedProviderOpenResult', () => {
       startLine: 3,
     });
   });
+});
+
+it('keeps same-name files in different sessions distinct across a pinned rename', () => {
+  const tab = {
+    id: getProviderFileViewerTabId('old.md', 'shared-file-id', 'thread-a'),
+    type: 'file' as const,
+    filePath: 'old.md',
+    fileId: 'shared-file-id',
+    ownerSessionId: 'thread-a',
+    label: 'old.md',
+  };
+  const renamed = refreshPinnedProviderFileViewerTab(tab, {
+    path: 'new.md',
+    fileId: 'shared-file-id',
+    kind: 'text',
+    sourceState: 'live-readonly',
+  });
+  expect(renamed).toMatchObject({
+    id: tab.id,
+    ownerSessionId: 'thread-a',
+    filePath: 'new.md',
+    label: 'new.md',
+  });
+  const ids = new Set([
+    renamed.id,
+    getProviderFileViewerTabId('new.md', 'shared-file-id', 'thread-b'),
+    getProviderFileViewerTabId('new.md', 'shared-file-id'),
+  ]);
+  expect(ids.size).toBe(3);
+});
+
+it('reconciles only unowned tabs and tabs owned by the active session', () => {
+  expect(isFileViewerTabOwnedBySession({}, 'coordinator')).toBe(true);
+  expect(isFileViewerTabOwnedBySession({ ownerSessionId: 'coordinator' }, 'coordinator')).toBe(
+    true
+  );
+  expect(isFileViewerTabOwnedBySession({ ownerSessionId: 'thread' }, 'coordinator')).toBe(false);
+  expect(isFileViewerTabOwnedBySession({ ownerSessionId: 'thread' }, undefined)).toBe(false);
+  expect(isFileViewerTabOwnedBySession({ ownerSessionId: 'thread' }, 'thread')).toBe(true);
 });

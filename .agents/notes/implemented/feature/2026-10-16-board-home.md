@@ -540,3 +540,25 @@ coordinator-page story does. Without that shell, opening the real chat composer 
 because the global preview provides no platform context. Its play checks mouse opening,
 thread header, Back, keyboard Enter and Back again. The application root already provides
 the platform; no product component or new mock provider is needed for this correction.
+
+Panel-thread ordinary file links still copied paths because the scoped opener handled
+only Board directories. They now share the full-page file resolver and missing-link
+probes, passing the thread's own workspace, machine and Code Collab provider. File tabs
+persist their session owner, deduplicate within that owner and retain it for previews,
+HTML attachments, file actions and subsequent file opens; coordinator fileId refreshes
+skip them. Closing/switching the thread leaves its closeable file tabs intact. Board
+file previews keep their existing member-authorized path. Tests cover cross-machine
+ownership, relative/absolute paths, line anchors, images, missing links and persistence.
+
+Review corrected the scope lifetime: an always-enabled render-prop wrapper acquired an
+index lease on thread open and made index/machine updates render the conversation. A
+silent sibling now publishes the scope into a ref; stable click callbacks enable the
+lease on first use. File viewers remain enabled. The open thread stays mounted but
+invisible under file tabs and registers its handle and annotation callbacks, so HTML
+annotations reach its composer. Off-screen threads pause session sync; visibility, sync
+and accessibility use the same fixed-panel coverage condition. Message entries reopen a
+closed Board tab before selecting it, retaining both its tab-strip entry and content. Missing owner metadata renders the existing unavailable
+notice. Tests now exercise subscription isolation, first-click activation and ownership
+rules directly, omitting assertions about test-only tab close state. Separate scopes for
+mounted viewers and their menu remain; sharing them across those surfaces would require
+an additional owner registry and is deferred.

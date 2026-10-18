@@ -43,6 +43,7 @@ const persistedViewerTabSchema = z.discriminatedUnion('type', [
     type: z.literal('file'),
     filePath: z.string(),
     fileId: z.string().optional(),
+    ownerSessionId: SessionIdSchema.optional(),
     label: z.string(),
     startLine: z.number().int().optional(),
     endLine: z.number().int().optional(),
