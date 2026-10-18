@@ -7,7 +7,12 @@ callbacks, using the same editor, actions and save rules inside its panel.
 
 The global desktop route slides the editor beside the table under its header.
 Mobile and Board panels switch between the list and editor to keep the composer
-controls usable at narrow widths. Saving or closing returns to the owning list.
+controls usable at narrow widths. The Board passes `board` to `ScheduleListView`:
+its existing compact row geometry applies even inside a narrow panel on a wide
+desktop. Column headings/minimum table width and the duplicate page title are
+omitted; search and New remain. The Board empty state does not promise a
+particular destination. Global page layout and copy keep their existing defaults.
+Saving or closing returns to the owning list.
 The global route remains mounted across index/detail navigation. Its remembered
 column widths and desktop split width stay in the existing device atoms.
 
@@ -24,6 +29,6 @@ owning Board with a one-time `boardSchedule` search parameter. Both desktop and
 mobile pass that request into the panel. The workspace Registry remains complete
 so provenance can resolve Board schedules even though the global list hides them.
 
-Stories: `Workspace/Schedules/Board Schedule List` and `Board Dedicated Thread
+Stories: `Workspace/Schedules/Board Schedule List` (520px panel wrapper) and `Board Dedicated Thread
 Editor`. Rules: [AGENTS.md](AGENTS.md). Intent:
 [Board schedules](../../../../../specs/project-coordinator/board-schedules.md).

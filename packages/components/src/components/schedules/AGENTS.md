@@ -22,7 +22,9 @@
   checkbox, full-access warning or resume dialog.
 - The global route mounts `SchedulesWorkspace` once; opening details never remounts
   its list. Desktop uses `ScheduleSplitView` under the header; mobile and Board
-  panels stack list/editor. Blank space closes details, excluding controls/portals.
+  panels stack list/editor. Board lists force compact rows independent of viewport,
+  omit the duplicate title and use destination-neutral empty copy.
+  Blank space closes details, excluding controls/portals.
   Save/close returns to the owning list. Preserve the Electron drag-region exemption
   on header controls. Layout explanation: [README](README.md).
 - `boardId` scopes list and editor; absent means global rows only. Board drafts

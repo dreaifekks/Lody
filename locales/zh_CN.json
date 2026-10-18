@@ -1,4 +1,5 @@
 {
+  "boards.schedules.emptyHelp": "设置要做的事和运行时间",
   "schedules.errors.SESSION_UNAVAILABLE": "目标会话不可用或已归档。请恢复会话或选择其他会话。",
   "schedules.errors.BOARD_UNAVAILABLE": "看板已归档或不可用。恢复看板后定时任务会继续运行。",
   "boards.schedules.existingThread": "本看板已有线程",

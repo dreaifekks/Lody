@@ -113,64 +113,64 @@ const styles = stylex.create({
     columnGap: '12px',
   },
   cellName: { gridColumnStart: 1, gridRowStart: 1 },
-  cellFrequency: {
+  cellFrequency: (compact: boolean) => ({
     gridColumnEnd: {
       default: 'span 2',
-      '@media (min-width: 640px)': 3,
+      '@media (min-width: 640px)': compact ? 'span 2' : 3,
     },
     gridRowStart: {
       default: 2,
-      '@media (min-width: 640px)': 1,
+      '@media (min-width: 640px)': compact ? 2 : 1,
     },
     gridColumnStart: {
       default: null,
-      '@media (min-width: 640px)': 2,
+      '@media (min-width: 640px)': compact ? 'auto' : 2,
     },
-  },
-  cellNext: {
+  }),
+  cellNext: (compact: boolean) => ({
     gridColumnEnd: {
       default: 'span 2',
-      '@media (min-width: 640px)': 4,
+      '@media (min-width: 640px)': compact ? 'span 2' : 4,
     },
     gridRowStart: {
       default: 3,
-      '@media (min-width: 640px)': 1,
+      '@media (min-width: 640px)': compact ? 3 : 1,
     },
     gridColumnStart: {
       default: null,
-      '@media (min-width: 640px)': 3,
+      '@media (min-width: 640px)': compact ? 'auto' : 3,
     },
-  },
-  cellTarget: {
+  }),
+  cellTarget: (compact: boolean) => ({
     gridColumnEnd: {
       default: 'span 2',
-      '@media (min-width: 640px)': 5,
+      '@media (min-width: 640px)': compact ? 'span 2' : 5,
     },
     gridRowStart: {
       default: 4,
-      '@media (min-width: 640px)': 1,
+      '@media (min-width: 640px)': compact ? 4 : 1,
     },
     gridColumnStart: {
       default: null,
-      '@media (min-width: 640px)': 4,
+      '@media (min-width: 640px)': compact ? 'auto' : 4,
     },
-  },
-  cellActions: {
+  }),
+  cellActions: (compact: boolean) => ({
     gridColumnStart: {
       default: 2,
-      '@media (min-width: 640px)': 5,
+      '@media (min-width: 640px)': compact ? 2 : 5,
     },
     gridRowStart: {
       default: 1,
       '@media (min-width: 640px)': 1,
     },
-  },
-  row: {
+  }),
+  row: (compact: boolean) => ({
     position: 'relative',
     alignItems: 'flex-start',
     rowGap: {
       default: '2px',
-      '@media (min-width: 640px)': 0,
+      '@media (min-width: 640px)': compact ? '2px' : 0,
     },
     borderBottomWidth: '0.5px',
     borderBottomStyle: 'solid',
@@ -184,7 +184,7 @@ const styles = stylex.create({
     transitionProperty: 'background-color',
     transitionDuration: '150ms',
     transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
-  },
+  }),
   rowHover: { backgroundColor: { default: 'transparent', ':hover': 'hsl(var(--hover))' } },
   rowSelected: {
     backgroundColor: {
@@ -210,18 +210,18 @@ const styles = stylex.create({
     whiteSpace: 'nowrap',
     fontWeight: 400,
   },
-  mobileOnly: {
+  mobileOnly: (compact: boolean) => ({
     display: {
       default: null,
-      '@media (min-width: 640px)': 'none',
+      '@media (min-width: 640px)': compact ? 'inline' : 'none',
     },
-  },
-  desktopOnly: {
+  }),
+  desktopOnly: (compact: boolean) => ({
     display: {
       default: 'none',
-      '@media (min-width: 640px)': 'inline',
+      '@media (min-width: 640px)': compact ? 'none' : 'inline',
     },
-  },
+  }),
   frequency: {
     minWidth: 0,
     overflow: 'hidden',
@@ -342,6 +342,7 @@ const styles = stylex.create({
     minWidth: 0,
     flexShrink: 1,
   },
+  boardSearch: { minWidth: 0, flex: '1 1 0%' },
   newButtonLabel: {
     display: {
       default: 'none',
@@ -465,10 +466,12 @@ const styles = stylex.create({
     transitionDuration: '150ms',
     transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
   },
-  columnTracks: (name: number, frequency: number, next: number) => ({
+  columnTracks: (name: number, frequency: number, next: number, compact: boolean) => ({
     gridTemplateColumns: {
       default: 'minmax(0, 1fr) auto',
-      '@media (min-width: 640px)': `minmax(${MIN_COLUMN_WIDTH}px,${name}px) minmax(${MIN_COLUMN_WIDTH}px,${frequency}px) minmax(${MIN_COLUMN_WIDTH}px,${next}px) minmax(0, 1fr) 5.75rem`,
+      '@media (min-width: 640px)': compact
+        ? 'minmax(0, 1fr) auto'
+        : `minmax(${MIN_COLUMN_WIDTH}px,${name}px) minmax(${MIN_COLUMN_WIDTH}px,${frequency}px) minmax(${MIN_COLUMN_WIDTH}px,${next}px) minmax(0, 1fr) 5.75rem`,
     },
   }),
 });
@@ -523,7 +526,9 @@ function ScheduleListRow({
   onDelete,
   onOpenSession,
   selected,
+  compact,
 }: {
+  compact: boolean;
   row: ScheduleRegistryRow;
   runtime?: ScheduleRuntimeRow;
   /** The schedule open beside the list. */
@@ -557,8 +562,8 @@ function ScheduleListRow({
   const toggleLabel = row.enabled ? t('schedules.pause', 'Pause') : t('schedules.resume', 'Resume');
   const rowStyle = stylex.props(
     styles.listGrid,
-    styles.columnTracks(widths.name, widths.frequency, widths.next),
-    styles.row,
+    styles.columnTracks(widths.name, widths.frequency, widths.next, compact),
+    styles.row(compact),
     selected ? styles.rowSelected : styles.rowHover
   );
   const rowElement = (
@@ -574,17 +579,17 @@ function ScheduleListRow({
         <span {...stylex.props(styles.rowHitTarget)} aria-hidden="true" />
         <span {...stylex.props(styles.titleLine)}>
           <span {...stylex.props(styles.titleText)}>{row.title}</span>
-          <span {...stylex.props(styles.mobileOnly)}>
+          <span {...stylex.props(styles.mobileOnly(compact))}>
             <StatusPill status={status} />
           </span>
         </span>
       </button>
 
-      <div {...stylex.props(cell.frequency, styles.frequency)}>
+      <div {...stylex.props(cell.frequency(compact), styles.frequency)}>
         {describeTrigger(row.trigger, t, i18n.language, zone)}
       </div>
 
-      <div {...stylex.props(cell.next, styles.nextCell)}>
+      <div {...stylex.props(cell.next(compact), styles.nextCell)}>
         {next != null ? (
           <Tooltip.Root>
             <Tooltip.Trigger
@@ -617,12 +622,12 @@ function ScheduleListRow({
           </Tooltip.Root>
         ) : null}
         {/* A pill that starts the cell pulls its text back onto the column line. */}
-        <span {...stylex.props(styles.desktopOnly, styles.firstPill)}>
+        <span {...stylex.props(styles.desktopOnly(compact), styles.firstPill)}>
           <StatusPill status={status} />
         </span>
       </div>
 
-      <div {...stylex.props(cell.target, styles.target)}>
+      <div {...stylex.props(cell.target(compact), styles.target)}>
         <span {...stylex.props(styles.targetLine)}>
           <span {...stylex.props(styles.mutedText)}>{context?.agent ?? row.agentConfigId}</span>
           {offline ? (
@@ -650,7 +655,7 @@ function ScheduleListRow({
       </div>
 
       {/* 28px buttons centred on the 20px first line. */}
-      <div {...stylex.props(cell.actions, styles.actions)}>
+      <div {...stylex.props(cell.actions(compact), styles.actions)}>
         {runtime?.lastDispatch && onOpenSession ? (
           <Tooltip.Root>
             <Tooltip.Trigger
@@ -769,6 +774,7 @@ export function ScheduleListView({
   onBlankClick,
   insetSafeArea = false,
   hideHeader = false,
+  board = false,
   query: controlledQuery,
   now = getServerNow(),
 }: {
@@ -795,6 +801,8 @@ export function ScheduleListView({
   insetSafeArea?: boolean;
   /** Home tab draws search and the new button in its own header. */
   hideHeader?: boolean;
+  /** Embedded Board list: compact rows and a toolbar without a page title. */
+  board?: boolean;
   /** When set, the home search field filters this list. */
   query?: string;
   /** The schedule open beside the list, highlighted. */
@@ -813,7 +821,7 @@ export function ScheduleListView({
   const windowsCaptionRowPadClass = useWindowsCaptionRowPadClass();
   const hasMacOSTitlebarInset =
     !isNativeAppShell() && isMacOSElectronRenderer() && !isElectronFullscreen;
-  const showSidebarToggle = !isMobile && isLeftSidebarHidden;
+  const showSidebarToggle = !board && !isMobile && isLeftSidebarHidden;
   const headerChromeClassName = [
     windowDrag,
     windowsCaptionPadClass,
@@ -884,13 +892,18 @@ export function ScheduleListView({
                 <PanelLeft {...stylex.props(styles.glyph)} />
               </Button>
             ) : null}
-            <h1 {...stylex.props(styles.pageTitle)}>{t('schedules.title', 'Schedules')}</h1>
+            {board ? null : (
+              <h1 {...stylex.props(styles.pageTitle)}>{t('schedules.title', 'Schedules')}</h1>
+            )}
             <Input
               size="small"
               leading={<Search {...stylex.props(styles.mutedIcon)} aria-hidden="true" />}
               aria-label={t('schedules.search', 'Search schedules')}
               placeholder={t('schedules.search', 'Search schedules')}
-              className={cn(stylex.props(styles.search).className, WINDOW_DRAG_EXEMPT_CLASS)}
+              className={cn(
+                stylex.props(board ? styles.boardSearch : styles.search).className,
+                WINDOW_DRAG_EXEMPT_CLASS
+              )}
               value={query}
               onChange={(event) => setLocalQuery(event.target.value)}
             />
@@ -916,16 +929,17 @@ export function ScheduleListView({
           <div {...stylex.props(styles.tableScroller)}>
             <div
               {...stylex.props(
-                styles.tableMinimum(
-                  `${widths.name + widths.frequency + widths.next + 200 + 92 + 48 + 32}px`
-                )
+                !board &&
+                  styles.tableMinimum(
+                    `${widths.name + widths.frequency + widths.next + 200 + 92 + 48 + 32}px`
+                  )
               )}
             >
-              {ready && !error && filtered.length > 0 ? (
+              {!board && ready && !error && filtered.length > 0 ? (
                 <div
                   {...stylex.props(
                     styles.listGrid,
-                    styles.columnTracks(widths.name, widths.frequency, widths.next),
+                    styles.columnTracks(widths.name, widths.frequency, widths.next, false),
                     styles.headerRow
                   )}
                 >
@@ -983,10 +997,12 @@ export function ScheduleListView({
                   {query ? null : (
                     <>
                       <p {...stylex.props(styles.emptyHelp)}>
-                        {t(
-                          'schedules.emptyHelp',
-                          'Choose a prompt and a time. Your machine will start a new chat for each run.'
-                        )}
+                        {board
+                          ? t('boards.schedules.emptyHelp', 'Choose what to do and when to run it.')
+                          : t(
+                              'schedules.emptyHelp',
+                              'Choose a prompt and a time. Your machine will start a new chat for each run.'
+                            )}
                       </p>
                       <Button
                         variant="secondary"
@@ -1005,6 +1021,7 @@ export function ScheduleListView({
                   <ScheduleListRow
                     key={row.scheduleId}
                     row={row}
+                    compact={board}
                     now={now}
                     runtime={matchingScheduleRuntime(row, runtimes)}
                     context={contextForRow?.(row)}

@@ -54,7 +54,11 @@ remain draft.
   rows exclude Board schedules. Proposal and provenance navigation enter the
   owning Board's Schedules tab, on desktop and mobile. List and save validation use
   the same current-epoch deterministic selector; restored earlier sequences win
-  over newer chats, other epochs and unrelated scheduleId matches.
+  over newer chats, other epochs and unrelated scheduleId matches. The embedded
+  list explicitly selects compact row geometry, so a 520px Board panel does not
+  inherit the wide viewport’s table minimum. It hides the duplicate page title
+  while retaining search/New and uses destination-neutral empty copy. Global
+  layout and copy remain unchanged; the Board story wraps the list at 520px.
 
 ## Alternatives and trade-offs
 
@@ -85,7 +89,7 @@ reports across the real history writer and passive Inbox, and UI scope/selection
 Storybook covers the Board list and dedicated-thread editor.
 
 With official Node v22.23.3, `pnpm check` passed: CLI 4,884 tests (one existing
-skip), components 5,897, shared 1,745 and Electron 306, along with type, lint,
+skip), components 5,900, shared 1,745 and Electron 306, along with type, lint,
 i18n and boundary checks. `pnpm format` passed; changed shared/component sources
 were also formatted explicitly because those packages have no format script.
 `pnpm run docs check` reports zero errors and 71 existing warnings. The stories

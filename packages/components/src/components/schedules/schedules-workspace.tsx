@@ -517,6 +517,7 @@ export function SchedulesWorkspace({
   const list = (
     <ScheduleListView
       {...registry}
+      board={!!board}
       rows={rows}
       onBlankClick={scheduleId && !stacked ? () => open() : undefined}
       renderBody={
