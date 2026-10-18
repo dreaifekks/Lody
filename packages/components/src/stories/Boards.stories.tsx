@@ -10,6 +10,8 @@ import { BoardThreadParentBreadcrumb } from '@/components/boards/board-thread-br
  * the container uses.
  */
 import type { Meta, StoryObj } from '@storybook/react';
+import { expect, userEvent, within } from 'storybook/test';
+import i18next from 'i18next';
 import { useEffect, useState, type ReactNode } from 'react';
 import { createStore, Provider } from 'jotai';
 import { parseLodyPresenceStates } from '@lody/shared';
@@ -1155,10 +1157,27 @@ function AssignedThreadsNavigation() {
 /** Cards and rows use the product navigation hook; only session data is synthetic. */
 export const AssignedThreadsSidePanel: Story = {
   render: () => (
-    <Provider store={assignedStore}>
-      <AssignedThreadsNavigation />
-    </Provider>
+    <SettingsStoryProviders>
+      <Provider store={assignedStore}>
+        <AssignedThreadsNavigation />
+      </Provider>
+    </SettingsStoryProviders>
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = canvasElement.querySelector<HTMLButtonElement>('[data-board-thread-card] button')!;
+    const backLabel = i18next.t('boards.home.backToThreads', 'Back to threads');
+    await userEvent.click(card);
+    const back = await canvas.findByRole('button', { name: backLabel });
+    await expect(back.parentElement).toHaveTextContent(members[0]!.title!);
+    await userEvent.click(back);
+    await expect(canvas.queryByRole('button', { name: backLabel })).not.toBeInTheDocument();
+    card.focus();
+    await userEvent.keyboard('{Enter}');
+    const keyboardBack = await canvas.findByRole('button', { name: backLabel });
+    await expect(keyboardBack.parentElement).toHaveTextContent(members[0]!.title!);
+    await userEvent.click(keyboardBack);
+  },
 };
 
 /** Real tab bar and Board return control, with fixture-only navigation. */

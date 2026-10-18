@@ -375,3 +375,8 @@ Tab／Side Chat 选中原有挂载位置。窄窗口和展开后的线程完整�
 成员文件读取／失败及状态切换。`CompletedThreadCard`、`AssignedThreadsSidePanel`
 用合成元数据渲染真实组件，后者使用产品导航 hook。真实桌面视觉审查和 daemon 端到端
 验收不属于本次实现阶段，仍待后续安排。
+
+交互式派发线程故事复用协调者页故事已有的 `SettingsStoryProviders`。全局 preview 不提供
+platform context，缺少这层包装时打开真实聊天输入区就会抛错。play 检查鼠标打开、线程
+头部、返回、键盘 Enter 再次打开和返回。应用根布局已有 platform，本次没有修改产品
+组件，也没有新造 mock provider。

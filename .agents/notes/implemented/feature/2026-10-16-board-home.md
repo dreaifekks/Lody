@@ -520,3 +520,9 @@ navigation destinations, existing child surfaces, member file reads/errors and s
 transitions. `CompletedThreadCard` and `AssignedThreadsSidePanel` render real components
 with synthetic metadata; the latter uses the product navigation hook. Real desktop visual
 review and daemon end-to-end validation remain outside this implementation pass.
+
+The interactive assigned-thread story uses the existing `SettingsStoryProviders`, as the
+coordinator-page story does. Without that shell, opening the real chat composer threw
+because the global preview provides no platform context. Its play checks mouse opening,
+thread header, Back, keyboard Enter and Back again. The application root already provides
+the platform; no product component or new mock provider is needed for this correction.
