@@ -3,6 +3,15 @@ import {
   useBoardSessionNavigation,
   boardSessionNavigationAtom,
 } from '../src/components/boards/board-session-navigation';
+import { SessionFileScope } from '../src/components/sessions/session-file-scope';
+import { SessionFileContentView } from '../src/components/sessions/session-file-content-view';
+import { resolveSessionFileLinkOpen } from '../src/lib/session-file-link-open';
+import {
+  createFakeSessionFileProvider,
+  type SessionFileProvider,
+} from '../src/lib/session-file-provider';
+import { getProviderFileViewerTabId } from '../src/lib/session-file-provider-open-result';
+import type { PersistedViewerTab } from '../src/lib/session-draft-tabs';
 import { BoardFileLinkPreview } from '../src/components/boards/board-directory';
 import { resolveBoardFileLink } from '../src/lib/board-directory-file-provider';
 import {
@@ -89,6 +98,7 @@ import { writeWorkspaceBoard } from '../src/lib/workspace-catalog-write';
 
 const creation = vi.hoisted(() => ({
   machines: new Map<string, unknown>(),
+  fileProviders: new Map<string, SessionFileProvider>(),
   startSession: undefined as undefined | ((...args: unknown[]) => Promise<unknown>),
   /** The product language, as i18next names it. */
   language: 'en',
@@ -97,6 +107,32 @@ const creation = vi.hoisted(() => ({
 }));
 vi.mock('@/hooks/use-visible-machine-metas', () => ({
   useVisibleMachineMetas: () => ({ machines: creation.machines }),
+}));
+vi.mock('@/hooks/use-code-collab-requested-role', () => ({
+  useCodeCollabRequestedRole: () => 'read',
+}));
+vi.mock('@/hooks/use-code-collab-session-file-provider', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useCodeCollabSessionFileProvider: ({
+    sessionId,
+    machineId,
+  }: {
+    sessionId: string;
+    machineId: string;
+  }) => ({
+    provider: creation.fileProviders.get(`${machineId}:${sessionId}`) ?? null,
+    status: 'ready',
+    role: 'read',
+  }),
+}));
+vi.mock('@/hooks/use-resolved-machine-meta', () => ({
+  useResolvedMachineMeta: (id: string) => ({
+    machine: creation.machines.get(id),
+    machineFlockRows: {},
+  }),
+}));
+vi.mock('@/components/sessions/session-monaco-text-viewer', () => ({
+  SessionMonacoTextViewer: ({ text }: { text: string }) => <pre>{text}</pre>,
 }));
 // Visibility is its own concern; the panel reads every member from the real atoms.
 vi.mock('@/hooks/use-visible-session-metas', async () => {
@@ -114,6 +150,7 @@ vi.mock('@/hooks/use-visible-session-metas', async () => {
 });
 vi.mock('@/hooks/use-machine-flock-rows', () => ({
   useMachineFlockRowsByMachineIds: () => new Map(),
+  useMachineFlockRows: () => ({}),
 }));
 vi.mock('@/hooks/use-board-document', () => ({
   useBoardDocument: () => ({ document: { notes: '# Shared' }, save: async () => {} }),
@@ -2461,3 +2498,207 @@ it('keeps an unavailable Board file in its preview until the catalog row arrives
     ipc.remove();
   }
 });
+
+// The shell keeps the coordinator active; only file ownership crosses to the panel thread.
+it.each([
+  ['polish-2/report.md', 'polish-2/report.md', undefined],
+  ['/remote/chats/thread/polish-2/report.md#L12-L14', 'polish-2/report.md', 12],
+  ['polish-2/report.md:7', 'polish-2/report.md', 7],
+  ['polish-2/chart.png', 'polish-2/chart.png', undefined],
+  ['report.md', 'polish-2/report.md', undefined],
+  ['missing.md', 'missing.md', undefined],
+  ['polish-2/result.html', 'polish-2/result.html', undefined],
+] as const)(
+  'opens the panel thread link %s using its own file provider',
+  async (href, expectedPath, line) => {
+    const store = createStore();
+    const coordinator = makeSession('coordinator', { machineId: 'devnuc' });
+    const thread = makeSession('thread', { machineId: 'remote' });
+    store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+    store.set(sessionMetaCacheAtom, {
+      [getSessionRoomId(coordinator.id)]: coordinator,
+      [getSessionRoomId(thread.id)]: thread,
+    });
+    creation.machines.set('remote', {
+      id: 'remote',
+      workspacePaths: { thread: '/remote/chats/thread' },
+    });
+    creation.fileProviders.set(
+      'remote:thread',
+      createFakeSessionFileProvider({
+        files: [
+          {
+            path: 'polish-2/report.md',
+            fileId: 'report',
+            kind: 'text',
+            sourceState: 'live-readonly',
+          },
+          { path: 'polish-2/chart.png', kind: 'binary', sourceState: 'live-readonly' },
+          { path: 'polish-2/result.html', kind: 'text', sourceState: 'live-readonly' },
+        ],
+        snapshots: {
+          'polish-2/report.md': {
+            kind: 'text',
+            text: '# Thread report\n\nRead from the thread machine.',
+          },
+          'polish-2/result.html': { kind: 'text', text: '<h1>Read from the thread machine.</h1>' },
+          'polish-2/chart.png': {
+            kind: 'binary',
+            url: 'lody-resource://member/thread-chart',
+            mimeType: 'image/png',
+          },
+        },
+      })
+    );
+    creation.fileProviders.set(
+      'devnuc:coordinator',
+      createFakeSessionFileProvider({
+        files: [
+          {
+            path: 'polish-2/report.md',
+            fileId: 'report',
+            kind: 'text',
+            sourceState: 'live-readonly',
+          },
+        ],
+        snapshots: { 'polish-2/report.md': { kind: 'text', text: 'Wrong coordinator file' } },
+      })
+    );
+    const probes: unknown[] = [];
+    const runtime = {
+      requestFilePreview: async (
+        machineId: string,
+        request: { sessionId: string; path: string },
+        options: unknown
+      ) => {
+        probes.push({ machineId, request, options });
+        return request.path === 'polish-2/report.md'
+          ? { status: 'error', code: 'too_large', path: request.path }
+          : { status: 'error', code: 'file_not_found' };
+      },
+    } as unknown as WorkspaceRuntime;
+    function ThreadFiles() {
+      const [tab, setTab] = useState<
+        (Extract<PersistedViewerTab, { type: 'file' }> & { htmlPreviewRequestSeq?: number }) | null
+      >(null);
+      const [threadOpen, setThreadOpen] = useState(true);
+      return (
+        <>
+          {threadOpen && (
+            <SessionFileScope sessionId={thread.id}>
+              {(scope) => (
+                <MarkdownRenderer
+                  text={`[Report](${href})`}
+                  onAgentFileLinkClick={(path) => {
+                    void resolveSessionFileLinkOpen(
+                      path,
+                      {
+                        ...(href.endsWith('.html')
+                          ? { pathKind: 'canonical' as const, previewHtml: true }
+                          : {}),
+                        linkContext: () => ({ mentions: ['polish-2/report.md'], outputs: [] }),
+                      },
+                      scope,
+                      runtime
+                    ).then((target) =>
+                      setTab({
+                        id: getProviderFileViewerTabId(
+                          target.filePath,
+                          target.fileId,
+                          scope.session.id
+                        ),
+                        type: 'file',
+                        label: 'Report',
+                        ownerSessionId: scope.session.id,
+                        filePath: target.filePath,
+                        fileId: target.fileId,
+                        startLine: target.startLine,
+                        ...(href.endsWith('.html') ? { htmlPreviewRequestSeq: 1 } : {}),
+                      })
+                    );
+                  }}
+                />
+              )}
+            </SessionFileScope>
+          )}
+          <button onClick={() => setThreadOpen(false)}>Close thread</button>
+          {tab && (
+            <section
+              aria-label="File tab"
+              data-id={tab.id}
+              data-line={tab.startLine}
+              data-path={tab.filePath}
+            >
+              <SessionFileScope sessionId={tab.ownerSessionId!}>
+                {(scope) => (
+                  <SessionFileContentView
+                    sessionId={scope.session.id}
+                    session={scope.session}
+                    filePath={tab.filePath}
+                    fileId={tab.fileId}
+                    fileProvider={scope.fileProvider}
+                    fileProviderPending={scope.fileProviderPending}
+                    htmlPreviewRequestSeq={tab.htmlPreviewRequestSeq}
+                  />
+                )}
+              </SessionFileScope>
+              <button onClick={() => setTab(null)}>Close file</button>
+            </section>
+          )}
+        </>
+      );
+    }
+    const view = await mount(
+      <Provider store={store}>
+        <ThreadFiles />
+      </Provider>
+    );
+    try {
+      const button = (name: string) =>
+        [...view.host.querySelectorAll('button')].find((b) => b.textContent === name)!;
+      await act(async () => button('Report').click());
+      await vi.waitFor(() =>
+        expect(view.host.querySelector('[aria-label="File tab"]')).not.toBeNull()
+      );
+      const tab = view.host.querySelector('[aria-label="File tab"]')!;
+      expect(tab.getAttribute('data-path')).toBe(expectedPath);
+      expect(tab.getAttribute('data-line')).toBe(line === undefined ? null : String(line));
+      expect(tab.getAttribute('data-id')).not.toBe(
+        getProviderFileViewerTabId(expectedPath, 'report')
+      );
+      if (expectedPath.endsWith('.png')) {
+        await vi.waitFor(() =>
+          expect(tab.querySelector('img')?.getAttribute('src')).toBe(
+            'lody-resource://member/thread-chart'
+          )
+        );
+      } else if (expectedPath.endsWith('.html')) {
+        await vi.waitFor(() =>
+          expect(tab.querySelector('iframe')?.getAttribute('srcdoc')).toContain(
+            'Read from the thread machine.'
+          )
+        );
+      } else if (expectedPath !== 'missing.md') {
+        await vi.waitFor(() => expect(tab.textContent).toContain('Read from the thread machine.'));
+      } else {
+        await vi.waitFor(() => expect(tab.textContent).toMatch(/not found|not available/i));
+      }
+      expect(tab.textContent).not.toContain('Wrong coordinator file');
+      if (href === 'report.md') {
+        expect(probes).toContainEqual({
+          machineId: 'remote',
+          request: { sessionId: 'thread', path: 'polish-2/report.md', maxBytes: 1 },
+          options: { ownerSessionId: 'thread', timeoutMs: 2500 },
+        });
+      }
+      await act(async () => button('Close thread').click());
+      expect(view.host.querySelector('[aria-label="File tab"]')).not.toBeNull();
+      await act(async () => button('Close file').click());
+      expect(view.host.querySelector('[aria-label="File tab"]')).toBeNull();
+    } finally {
+      await view.unmount();
+      creation.fileProviders.clear();
+      creation.machines.delete('remote');
+    }
+  }
+);

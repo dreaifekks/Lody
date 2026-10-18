@@ -606,3 +606,20 @@ describe('session draft tabs', () => {
     });
   });
 });
+
+it('restores a file tab with its thread owner on the coordinator page', () => {
+  installWindowStorage();
+  const state = {
+    sessionTabId: 'coordinator',
+    viewerTab: {
+      id: 'file:session:thread:report',
+      type: 'file' as const,
+      filePath: 'report.md',
+      fileId: 'report',
+      label: 'report.md',
+      ownerSessionId: 'thread' as SessionId,
+    },
+  };
+  writeStoredLastActiveTabState('coordinator' as SessionId, state);
+  expect(readStoredLastActiveTabState('coordinator' as SessionId)).toEqual(state);
+});

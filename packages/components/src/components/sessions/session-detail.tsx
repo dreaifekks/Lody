@@ -1,3 +1,13 @@
+import {
+  SessionFileScope,
+  SessionOwnedFileActionsMenu,
+  type SessionFileScopeValue,
+} from './session-file-scope';
+import {
+  resolveSessionFileLinkOpen,
+  type SessionDetailOpenFileOptions,
+  type SessionFileOpenContext,
+} from '@/lib/session-file-link-open';
 import { AgentFileLinkOpenContext } from '../ai-gui/markdown-renderer';
 import { resolveBoardFileLink } from '@/lib/board-directory-file-provider';
 import { BoardFileLinkPreview } from '../boards/board-directory';
@@ -216,15 +226,6 @@ import { useBoardActions, useBoardMaintenanceRequest } from '../boards/board-lif
 import { BoardRenameDialog } from '../boards/board-rename-dialog';
 import { cn, getBasename } from '@/lib';
 
-import {
-  resolveSessionFileOpenTarget,
-  type SessionFileOpenPathKind,
-} from '@/lib/session-file-open-target';
-import {
-  classifyFileLinkProbe,
-  resolveMissingFileLink,
-  type FileLinkContext,
-} from '@/lib/session-file-link-fallback';
 import { isSessionMarkdownPath } from '@/lib/session-file-language';
 import { SessionNotFound } from './session-not-found';
 import { SessionSyncingIndicator } from './session-syncing-indicator';
@@ -390,6 +391,7 @@ type ViewerTab =
       type: 'file';
       filePath: string;
       fileId?: string;
+      ownerSessionId?: SessionId;
       label: string;
       startLine?: number;
       endLine?: number;
@@ -408,31 +410,6 @@ type ViewerTab =
       mode?: 'conversation' | 'base';
       label: string;
     };
-
-const FILE_LINK_PROBE_TIMEOUT_MS = 2_500;
-
-type SessionDetailOpenFileOptions = {
-  /** Analytics only. */
-  readonly source?:
-    | 'file_tree'
-    | 'conversation_file_diff'
-    | 'lsp'
-    | 'diff_header'
-    | 'html_attachment';
-  /** Defaults to `markdown-href`; see `lib/session-file-open-target.ts`. */
-  readonly pathKind?: SessionFileOpenPathKind;
-  /** Explicit 1-based anchor, for callers that have one without encoding it in the path. */
-  readonly startLine?: number;
-  readonly endLine?: number;
-  /** Enter rendered HTML after the file snapshot becomes available. */
-  readonly previewHtml?: boolean;
-  /**
-   * The conversation a chat link was clicked in. Lets a relative link the
-   * machine cannot find be looked up where the conversation says the file is;
-   * see `lib/session-file-link-fallback.ts`.
-   */
-  readonly linkContext?: () => FileLinkContext;
-};
 
 /** Mobile diff sheet state */
 type MobileDiffState = {
@@ -852,6 +829,7 @@ const areViewerTabsEquivalent = (prev: ViewerTab, next: ViewerTab): boolean => {
 
   if (prev.type === 'file' && next.type === 'file') {
     return (
+      prev.ownerSessionId === next.ownerSessionId &&
       prev.fileId === next.fileId &&
       prev.filePath === next.filePath &&
       prev.startLine === next.startLine &&
@@ -1285,9 +1263,10 @@ const SessionDetail = ({
       viewerTabs.some(
         (tab) =>
           tab.type === 'diff' ||
-          !resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical')
+          ((!tab.ownerSessionId || tab.ownerSessionId === activeSession?.id) &&
+            !resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical'))
       ),
-    [viewerTabs, currentWorkspaceId, boards]
+    [viewerTabs, currentWorkspaceId, boards, activeSession?.id]
   );
   const isFileProviderSidebarActive =
     isSidebarVisible && (activeSidebarTab === 'files' || activeSidebarTab === 'changes');
@@ -4255,8 +4234,12 @@ const SessionDetail = ({
 
   const openFileSessionIdRef = useRef(sessionId);
   openFileSessionIdRef.current = sessionId;
-  const handleOpenFile = useStableCallback(
-    (filePath: string, options: SessionDetailOpenFileOptions = {}) => {
+  const handleOpenFileForSession = useStableCallback(
+    (
+      context: SessionFileOpenContext,
+      filePath: string,
+      options: SessionDetailOpenFileOptions = {}
+    ) => {
       const claimCloseTarget = semanticRouterRef.current?.deferActivation('side-panel');
       const boardFile = resolveBoardFileLink(
         filePath,
@@ -4276,60 +4259,21 @@ const SessionDetail = ({
         );
         return;
       }
-      setFileProviderRequestedByInteraction(true);
+      if (context.session?.id === activeSession?.id) setFileProviderRequestedByInteraction(true);
+      const ownerSessionId =
+        context.session?.id === activeSession?.id ? undefined : context.session?.id;
       const openedInSessionId = sessionId;
       void (async () => {
-        // Where the path came from decides whether it may be rewritten at all;
-        // `resolveSessionFileOpenTarget` owns that rule and documents why.
-        const target = resolveSessionFileOpenTarget({
-          rawPath: filePath,
-          pathKind: options.pathKind ?? 'markdown-href',
-          workspacePath: activeSessionWorkspacePath,
-          preserveWorktreePath: isElectronRenderer() && isActiveSessionLocalMachine,
-          ...(options.startLine === undefined ? {} : { startLine: options.startLine }),
-          ...(options.endLine === undefined ? {} : { endLine: options.endLine }),
-        });
-        const linkSession = activeSession;
-        const linkMachineId = linkSession?.machineId;
-        // A path the index already lists exists; only an unlisted one is asked about.
-        const linkIsIndexed =
-          (await activeSessionFileProvider?.getFile(target.filePath).catch(() => null)) != null;
-        const openPath =
-          options.linkContext && runtime && linkSession && linkMachineId && !linkIsIndexed
-            ? await resolveMissingFileLink({
-                path: target.filePath,
-                context: options.linkContext,
-                // One byte is enough to learn whether the path exists, and a
-                // machine that does not answer must not hold the viewer back.
-                probe: async (path) =>
-                  classifyFileLinkProbe(
-                    await runtime.requestFilePreview(
-                      linkMachineId,
-                      { sessionId: linkSession.id, path, maxBytes: 1 },
-                      {
-                        ownerSessionId: linkSession.parentSessionId ?? linkSession.id,
-                        timeoutMs: FILE_LINK_PROBE_TIMEOUT_MS,
-                      }
-                    )
-                  ),
-              })
-            : target.filePath;
-        // The lookup waits on the machine. A tab must not land in the session
-        // the user moved to meanwhile, where the same name is another file.
+        const target = await resolveSessionFileLinkOpen(filePath, options, context, runtime);
+        // The lookup may finish after navigation to another page.
         if (openFileSessionIdRef.current !== openedInSessionId) return;
-        const resolution = await resolveSessionFileProviderOpenPath(
-          activeSessionFileProvider,
-          openPath
-        ).catch((): SessionFileProviderOpenPathResolution => ({
-          path: openPath,
-          redirected: false,
-        }));
-        const resolvedFilePath = resolution.path;
-
+        const resolvedFilePath = target.filePath;
+        const resolution = target;
         const requestSeq = nextFocusRequestSeq();
         upsertViewerTab(
           {
-            id: getFileViewerTabId(resolvedFilePath, resolution.fileId),
+            id: getFileViewerTabId(resolvedFilePath, resolution.fileId, ownerSessionId),
+            ...(ownerSessionId ? { ownerSessionId } : {}),
             type: 'file',
             filePath: resolvedFilePath,
             ...(resolution.fileId === undefined ? {} : { fileId: resolution.fileId }),
@@ -4350,6 +4294,17 @@ const SessionDetail = ({
         });
       })();
     }
+  );
+
+  const activeFileOpenContext: SessionFileOpenContext = {
+    session: activeSession,
+    workspacePath: activeSessionWorkspacePath,
+    preserveWorktreePath: isElectronRenderer() && isActiveSessionLocalMachine,
+    fileProvider: activeSessionFileProvider,
+  };
+  const handleOpenFile = useStableCallback(
+    (filePath: string, options: SessionDetailOpenFileOptions = {}) =>
+      handleOpenFileForSession(activeFileOpenContext, filePath, options)
   );
 
   const handleOpenHtmlFile = useStableCallback((filePath: string) => {
@@ -4400,6 +4355,7 @@ const SessionDetail = ({
         viewerTabs.map(async (tab) => {
           if (
             tab.type !== 'file' ||
+            (tab.ownerSessionId !== undefined && tab.ownerSessionId !== activeSession?.id) ||
             resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical')
           ) {
             return { tab, next: tab };
@@ -4422,7 +4378,11 @@ const SessionDetail = ({
           }
           const next: ViewerTab = {
             ...tab,
-            id: getFileViewerTabId(resolution.path, resolution.fileId ?? tab.fileId),
+            id: getFileViewerTabId(
+              resolution.path,
+              resolution.fileId ?? tab.fileId,
+              tab.ownerSessionId
+            ),
             filePath: resolution.path,
             ...(resolution.fileId === undefined ? {} : { fileId: resolution.fileId }),
             label: getBasename(resolution.path),
@@ -4469,7 +4429,7 @@ const SessionDetail = ({
     return () => {
       cancelled = true;
     };
-  }, [activeSessionFileProvider, viewerTabs, currentWorkspaceId, boards]);
+  }, [activeSessionFileProvider, activeSession?.id, viewerTabs, currentWorkspaceId, boards]);
 
   const handleFileQuickOpenChange = useCallback((open: boolean) => {
     if (open) {
@@ -6188,6 +6148,60 @@ const SessionDetail = ({
     />
   );
 
+  const renderFileTab = (
+    tab: Extract<ViewerTab, { type: 'file' }>,
+    scope: SessionFileScopeValue,
+    className: string,
+    active: boolean
+  ) => (
+    <SessionFileContentView
+      key={`${scope.session.id}:${tab.id}`}
+      sessionId={scope.session.id}
+      session={scope.session}
+      filePath={tab.filePath}
+      {...(tab.fileId === undefined ? {} : { fileId: tab.fileId })}
+      startLine={tab.startLine}
+      endLine={tab.endLine}
+      focusRequestSeq={tab.focusRequestSeq}
+      htmlPreviewRequestSeq={tab.htmlPreviewRequestSeq}
+      saveRequestSeq={viewerTabSaveStates[tab.id]?.saveRequestSeq ?? 0}
+      copyMarkdownRequestSeq={viewerTabSaveStates[tab.id]?.copyMarkdownRequestSeq ?? 0}
+      defaultHtmlPreview={isMobile}
+      preferNativeMarkdownSelection={isMobile}
+      fileProvider={scope.fileProvider}
+      fileProviderPending={scope.fileProviderPending}
+      fileProviderMessage={scope.fileProviderMessage}
+      active={active}
+      {...(scope.role === undefined ? {} : { fileProviderRole: scope.role })}
+      onSaveStateChange={(state) => handleViewerTabSaveStateChange(tab.id, state)}
+      visualAnnotationReferenceKeys={
+        visualAnnotationReferenceKeysBySession[scope.session.id] ??
+        EMPTY_VISUAL_ANNOTATION_REFERENCE_KEYS
+      }
+      onAddVisualAnnotationToChat={(reference) =>
+        handleAddPreviewAnnotationToChat(scope.session.id, reference)
+      }
+      onToggleVisualAnnotationInChat={(reference) =>
+        handleTogglePreviewAnnotationInChat(scope.session.id, reference)
+      }
+      onOpenFile={(target) => {
+        // The LSP locator travels as structured fields, never encoded into
+        // the path. Round-tripping it through a `:L<line>` suffix meant the
+        // path had to be re-parsed, and a filename that legitimately ends in
+        // `:<digits>` lost its tail. The viewer scrolls by line, so the
+        // column has nowhere to go and is dropped here rather than encoded.
+        handleOpenFileForSession(scope, target.filePath, {
+          pathKind: 'canonical',
+          // Was reported as `markdown_link` only because the locator used to
+          // ride in the path as a `:L<n>` suffix; name the real source now.
+          source: 'lsp',
+          ...(target.line === undefined ? {} : { startLine: target.line + 1 }),
+        });
+      }}
+      className={className}
+    />
+  );
+
   const renderViewerTabContent = (tab: ViewerTab, className = 'h-full', active = true) => {
     const boardFile =
       tab.type === 'file'
@@ -6205,54 +6219,24 @@ const SessionDetail = ({
         </div>
       );
     return tab.type === 'file' ? (
-      <SessionFileContentView
-        key={`${activeSession.id}:${tab.id}`}
-        sessionId={activeSession.id}
-        session={activeSession}
-        filePath={tab.filePath}
-        {...(tab.fileId === undefined ? {} : { fileId: tab.fileId })}
-        startLine={tab.startLine}
-        endLine={tab.endLine}
-        focusRequestSeq={tab.focusRequestSeq}
-        htmlPreviewRequestSeq={tab.htmlPreviewRequestSeq}
-        saveRequestSeq={viewerTabSaveStates[tab.id]?.saveRequestSeq ?? 0}
-        copyMarkdownRequestSeq={viewerTabSaveStates[tab.id]?.copyMarkdownRequestSeq ?? 0}
-        defaultHtmlPreview={isMobile}
-        preferNativeMarkdownSelection={isMobile}
-        fileProvider={activeSessionFileProvider}
-        fileProviderPending={activeSessionFileProviderPending}
-        fileProviderMessage={activeSessionFileProviderMessage}
-        active={active}
-        {...(activeSessionCodeCollabFiles.role === undefined
-          ? {}
-          : { fileProviderRole: activeSessionCodeCollabFiles.role })}
-        onSaveStateChange={(state) => handleViewerTabSaveStateChange(tab.id, state)}
-        visualAnnotationReferenceKeys={
-          visualAnnotationReferenceKeysBySession[activeSession.id] ??
-          EMPTY_VISUAL_ANNOTATION_REFERENCE_KEYS
-        }
-        onAddVisualAnnotationToChat={(reference) =>
-          handleAddPreviewAnnotationToChat(activeSession.id, reference)
-        }
-        onToggleVisualAnnotationInChat={(reference) =>
-          handleTogglePreviewAnnotationInChat(activeSession.id, reference)
-        }
-        onOpenFile={(target) => {
-          // The LSP locator travels as structured fields, never encoded into
-          // the path. Round-tripping it through a `:L<line>` suffix meant the
-          // path had to be re-parsed, and a filename that legitimately ends in
-          // `:<digits>` lost its tail. The viewer scrolls by line, so the
-          // column has nowhere to go and is dropped here rather than encoded.
-          handleOpenFile(target.filePath, {
-            pathKind: 'canonical',
-            // Was reported as `markdown_link` only because the locator used to
-            // ride in the path as a `:L<n>` suffix; name the real source now.
-            source: 'lsp',
-            ...(target.line === undefined ? {} : { startLine: target.line + 1 }),
-          });
-        }}
-        className={className}
-      />
+      tab.ownerSessionId && tab.ownerSessionId !== activeSession.id ? (
+        <SessionFileScope key={tab.ownerSessionId} sessionId={tab.ownerSessionId}>
+          {(scope) => renderFileTab(tab, scope, className, active)}
+        </SessionFileScope>
+      ) : (
+        renderFileTab(
+          tab,
+          {
+            ...activeFileOpenContext,
+            session: activeSession,
+            fileProviderPending: activeSessionFileProviderPending,
+            fileProviderMessage: activeSessionFileProviderMessage,
+            role: activeSessionCodeCollabFiles.role,
+          },
+          className,
+          active
+        )
+      )
     ) : (
       <SessionConversationDiffPanel
         sessionId={activeSession.id}
@@ -6312,29 +6296,41 @@ const SessionDetail = ({
       onScheduleRequestDone={() => setBoardScheduleRequest(null)}
       onThreadRequestDone={finishBoardThreadRequest}
       renderThread={(thread, controls) => (
-        <AgentFileLinkOpenContext.Provider value={openBoardFileLink}>
-          <SessionChatInterface
-            key={thread.id}
-            ref={boardThreadChatRef}
-            session={thread}
-            // The thread owns its repository, PR and diff state, not the coordinator.
-            workspaceSession={thread}
-            className={stylex.props(detailStyles.rootFill).className}
-            headerVariant="board-thread"
-            headerLocation={controls.location}
-            headerParentThread={controls.parentThread}
-            headerStartSlot={<BoardThreadBackButton onBack={controls.onBack} />}
-            headerEndSlot={<BoardThreadOpenButton onOpen={controls.onOpenFull} />}
-            onArchiveSession={async () => {
-              await archiveSession(thread.id);
-              controls.onBack();
-            }}
-            onRestoreSession={() => restoreSession(thread.id)}
-            syncEnabled
-            isVisible={isSidebarVisible}
-            onNavigateSession={handleNavigateSession}
-          />
-        </AgentFileLinkOpenContext.Provider>
+        <SessionFileScope key={thread.id} sessionId={thread.id}>
+          {(scope) => (
+            <AgentFileLinkOpenContext.Provider value={openBoardFileLink}>
+              <SessionChatInterface
+                key={thread.id}
+                onFilePathClick={(path, options) => handleOpenFileForSession(scope, path, options)}
+                onOpenHtmlFile={(path) =>
+                  handleOpenFileForSession(scope, path, {
+                    pathKind: 'canonical',
+                    source: 'html_attachment',
+                    previewHtml: true,
+                  })
+                }
+                ref={boardThreadChatRef}
+                session={thread}
+                // The thread owns its repository, PR and diff state, not the coordinator.
+                workspaceSession={thread}
+                className={stylex.props(detailStyles.rootFill).className}
+                headerVariant="board-thread"
+                headerLocation={controls.location}
+                headerParentThread={controls.parentThread}
+                headerStartSlot={<BoardThreadBackButton onBack={controls.onBack} />}
+                headerEndSlot={<BoardThreadOpenButton onOpen={controls.onOpenFull} />}
+                onArchiveSession={async () => {
+                  await archiveSession(thread.id);
+                  controls.onBack();
+                }}
+                onRestoreSession={() => restoreSession(thread.id)}
+                syncEnabled
+                isVisible={isSidebarVisible}
+                onNavigateSession={handleNavigateSession}
+              />
+            </AgentFileLinkOpenContext.Provider>
+          )}
+        </SessionFileScope>
       )}
     />
   ) : null;
@@ -7807,10 +7803,20 @@ const SessionDetail = ({
           t('sessions.fileViewer.closeTab', 'Close {{fileName}}', { fileName: tabLabel })
         }
         moreSlot={
-          <SessionFileActionsMenu
-            filePath={activeViewerFilePath}
-            items={activeSessionFileActions.menuItems}
-          />
+          activeViewerTab?.type === 'file' &&
+          activeViewerTab.ownerSessionId &&
+          activeViewerTab.ownerSessionId !== activeSession.id ? (
+            <SessionFileScope sessionId={activeViewerTab.ownerSessionId}>
+              {(scope) => (
+                <SessionOwnedFileActionsMenu scope={scope} filePath={activeViewerFilePath} />
+              )}
+            </SessionFileScope>
+          ) : (
+            <SessionFileActionsMenu
+              filePath={activeViewerFilePath}
+              items={activeSessionFileActions.menuItems}
+            />
+          )
         }
         endSlot={sidebarToggleButton}
         className={cn(

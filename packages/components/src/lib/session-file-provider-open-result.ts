@@ -46,11 +46,18 @@ export type ProviderFileViewerTab = {
   readonly type: 'file';
   readonly filePath: string;
   readonly fileId?: string;
+  readonly ownerSessionId?: string;
   readonly label: string;
 };
 
-export function getProviderFileViewerTabId(filePath: string, fileId?: string): string {
-  return `file:${fileId ?? filePath}`;
+export function getProviderFileViewerTabId(
+  filePath: string,
+  fileId?: string,
+  ownerSessionId?: string
+): string {
+  return ownerSessionId
+    ? `file:session:${ownerSessionId}:${fileId ?? filePath}`
+    : `file:${fileId ?? filePath}`;
 }
 
 export function refreshPinnedProviderFileViewerTab<TTab extends ProviderFileViewerTab>(
@@ -63,7 +70,7 @@ export function refreshPinnedProviderFileViewerTab<TTab extends ProviderFileView
 
   return {
     ...tab,
-    id: getProviderFileViewerTabId(entry.path, entry.fileId ?? tab.fileId),
+    id: getProviderFileViewerTabId(entry.path, entry.fileId ?? tab.fileId, tab.ownerSessionId),
     filePath: entry.path,
     fileId: entry.fileId ?? tab.fileId,
     label: getBasename(entry.path),

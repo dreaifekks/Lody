@@ -540,3 +540,12 @@ coordinator-page story does. Without that shell, opening the real chat composer 
 because the global preview provides no platform context. Its play checks mouse opening,
 thread header, Back, keyboard Enter and Back again. The application root already provides
 the platform; no product component or new mock provider is needed for this correction.
+
+Panel-thread ordinary file links still copied paths because the scoped opener handled
+only Board directories. They now share the full-page file resolver and missing-link
+probes, passing the thread's own workspace, machine and Code Collab provider. File tabs
+persist their session owner, deduplicate within that owner and retain it for previews,
+HTML attachments, file actions and subsequent file opens; coordinator fileId refreshes
+skip them. Closing/switching the thread leaves its closeable file tabs intact. Board
+file previews keep their existing member-authorized path. Tests cover cross-machine
+ownership, relative/absolute paths, line anchors, images, missing links and persistence.

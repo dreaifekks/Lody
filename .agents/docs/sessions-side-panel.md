@@ -198,5 +198,11 @@ remain inside the Board Files panel with the same preview. A linked path needs n
 entry (the 500-entry tree limit is not an open gate); the daemon authorizes the member
 and relative area path. Missing current-workspace Board rows show an unavailable preview,
 never a session filesystem read. Paths with a different workspace segment remain ordinary
-file paths, so repository paths such as `app/boards/[id]/[tab]/files/page.tsx` are not intercepted. Panel-thread Markdown receives a scoped file opener so ordinary
-thread workspace links do not accidentally resolve against the coordinator's workspace.
+file paths, so repository paths such as `app/boards/[id]/[tab]/files/page.tsx` are not intercepted.
+
+Panel-thread Markdown keeps the scoped Board opener. Ordinary file/image links and HTML
+attachments use the same session-file resolver as the full page, with the thread's machine,
+workspace and Code Collab provider. Their viewer tabs persist `ownerSessionId` and include
+it in file identity; reads, file actions and subsequent opens retain that owner after the
+thread panel closes or switches. The active-session fileId reconciliation skips other
+owners. Missing links use the existing conversation-context probes and viewer errors.
