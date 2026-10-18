@@ -69,7 +69,7 @@ import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { isElectronRenderer, useElectronFullscreen } from '@/lib/electron';
 import { WindowDragStrip } from '@/ui/window-drag-region';
 import { getIpcServices } from '@/lib/electron-ipc-client';
-import { formatSessionTabSearch } from '@/lib/session-tab-url';
+import { formatSessionTabSearch, parseSessionTabSearch } from '@/lib/session-tab-url';
 import { openExternalUrl } from '@/lib/native-browser';
 import { getChangelogUrl } from '@/lib/lody-urls';
 import { getCachedWorkspaceName } from '@/lib/local-storage-cache';
@@ -2161,23 +2161,37 @@ export function LoroAppSidebar({
     },
     [closeMobileDrawer, router, workspaceSlug]
   );
+  const boardTab = parseSessionTabSearch((location.search as { tab?: string }).tab);
+  const handleOpenBoardRow = useCallback(
+    (item: { coordinatorSessionId: SessionId }) => openBoard(item.coordinatorSessionId),
+    [openBoard]
+  );
+  const handleCopyBoardUrl = useCallback(
+    (item: { coordinatorSessionId: SessionId }) => handleCopySessionUrl(item.coordinatorSessionId),
+    [handleCopySessionUrl]
+  );
+  const handleBoardArchived = useCallback(
+    (board: { coordinatorSessionId: SessionId }) => {
+      if (!workspaceSlug || selectedSessionIdRef.current !== board.coordinatorSessionId) return;
+      void router.navigate({
+        to: '/$workspaceName/chat',
+        params: { workspaceName: workspaceSlug },
+      });
+    },
+    [router, workspaceSlug]
+  );
   const sidebarBoardsContent = boardsEnabled ? (
     <BoardSidebar
       boards={boardItems}
-      selectedId={boardItems.find((item) => item.coordinatorSessionId === selectedSessionId)?.id}
+      routeSessionId={selectedSessionId}
+      tabSessionId={boardTab.kind === 'session' ? boardTab.sessionId : undefined}
       collapsed={boardsCollapsed}
       isMobile={isMobile}
       onToggleCollapsed={() => setBoardsCollapsed(!boardsCollapsed)}
-      onOpen={(item) => openBoard(item.coordinatorSessionId)}
+      onOpen={handleOpenBoardRow}
       onCreate={() => setCreatingBoard(true)}
-      onCopyUrl={(item) => handleCopySessionUrl(item.coordinatorSessionId)}
-      onArchived={(board) => {
-        if (!workspaceSlug || selectedSessionIdRef.current !== board.coordinatorSessionId) return;
-        void router.navigate({
-          to: '/$workspaceName/chat',
-          params: { workspaceName: workspaceSlug },
-        });
-      }}
+      onCopyUrl={handleCopyBoardUrl}
+      onArchived={handleBoardArchived}
     />
   ) : null;
   // `allActiveSessions` is the only view that still contains child Tabs, so it

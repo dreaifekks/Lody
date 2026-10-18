@@ -27,6 +27,8 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
   a Board row aggregates every member, coordinator included. No extra "done" state.
   localProject catalogs are acquired at list level, once per machine.
+- Sidebar selection follows the route/selected Tab's `boardId` (or coordinator id);
+  membership subscriptions stay in `BoardSidebar`; memo rows receive stable handlers.
 - Thread rows reuse `UpdatedItemRow` and `useSessionActions`; archive keeps the
   shared recursive selector. Row actions never change Board membership.
 - Thread panel headers use `SessionHeaderMenu` and the ordinary composer. Back is

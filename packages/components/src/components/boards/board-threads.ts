@@ -98,3 +98,25 @@ export function boardActivity(
   }
   return activity;
 }
+
+/** Selection follows membership, including a contained Tab with its own Board id. */
+export function resolveSidebarBoardSelection({
+  boards,
+  routeSessionId,
+  routeBoardId,
+  tabSessionId,
+  tabBoardId,
+}: {
+  boards: readonly { id: string; coordinatorSessionId: string }[];
+  routeSessionId: string | null;
+  routeBoardId?: string;
+  tabSessionId?: string;
+  tabBoardId?: string;
+}): string | undefined {
+  if (routeSessionId === null) return undefined;
+  const selectedSessionId = tabSessionId ?? routeSessionId;
+  const membership = tabSessionId === undefined ? routeBoardId : tabBoardId;
+  return boards.find((board) =>
+    membership ? board.id === membership : board.coordinatorSessionId === selectedSessionId
+  )?.id;
+}

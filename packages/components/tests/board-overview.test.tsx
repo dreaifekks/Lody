@@ -49,6 +49,7 @@ import { SessionHeaderMenu } from '../src/components/sessions/session-chat-inter
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';
 import {
   boardActivity,
+  resolveSidebarBoardSelection,
   boardEntrySearch,
   boardMemberEntrySearch,
   isBoardSession,
@@ -1384,6 +1385,7 @@ it('shares, renames and archives a Board from its sidebar row menu', async () =>
   const view = await mount(
     <Provider store={store}>
       <BoardSidebar
+        routeSessionId="coordinator"
         boards={[
           {
             id: 'bd_test',
@@ -1625,4 +1627,38 @@ it('returns from a full thread tab bar to the coordinator entry and marks only t
   } finally {
     await view.unmount();
   }
+});
+
+it('keeps the Board selected through its coordinator, threads and contained Tabs', () => {
+  const boards = [
+    testBoard(),
+    testBoard({ id: 'bd_other' as never, coordinatorSessionId: 'other-coordinator' as SessionId }),
+  ];
+  const selection = (routeSessionId: string | null, routeBoardId?: string, tabBoardId?: string) =>
+    resolveSidebarBoardSelection({
+      boards,
+      routeSessionId,
+      routeBoardId,
+      tabBoardId,
+      tabSessionId: tabBoardId === undefined ? undefined : 'tab',
+    });
+  // Opening inside the panel leaves the coordinator route unchanged.
+  expect(selection('coordinator')).toBe('bd_test');
+  expect(selection('thread', 'bd_test')).toBe('bd_test');
+  // Opened descendants and contained Tabs are members by their own boardId.
+  expect(selection('grandchild', 'bd_test')).toBe('bd_test');
+  expect(selection('thread', 'bd_test', 'bd_test')).toBe('bd_test');
+  expect(selection('chat', undefined, 'bd_test')).toBe('bd_test');
+  expect(selection('thread', 'bd_test', 'bd_other')).toBe('bd_other');
+  expect(
+    resolveSidebarBoardSelection({
+      boards,
+      routeSessionId: 'thread',
+      routeBoardId: 'bd_test',
+      tabSessionId: 'detached-tab',
+    })
+  ).toBeUndefined();
+  expect(selection('chat')).toBeUndefined();
+  expect(selection('thread', 'bd_missing')).toBeUndefined();
+  expect(selection(null, undefined, 'bd_test')).toBeUndefined();
 });

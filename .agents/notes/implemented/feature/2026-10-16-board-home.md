@@ -395,3 +395,14 @@ keyboard event ownership, return entry and membership marks. Stories
 synthetic state, including the ordinary run-config and permission menus; full-page
 story navigation is a fixture callback, not the router. Real Electron/daemon
 end-to-end operation is not established by these tests.
+
+The Board sidebar selection now follows the route or active Tab's `boardId`,
+including independently opened descendants and archived threads. Previously only
+the coordinator route matched, so opening inside the panel retained selection
+but opening the full thread lost it. `BoardSidebar` owns scalar-only membership
+subscriptions and a pure resolver; its rows are memoized with stable handlers.
+It keeps the existing `selectedFill`: with the experiment on, all outside thread
+lists are filtered; with it off, the Board section is absent. Ordinary session
+selection is unchanged. `ViewingThread` shows the selected Board beside the
+thread's real tab bar. The full-page Back button now follows the experiment gate;
+the membership mark also follows the same experiment gate.

@@ -70,7 +70,11 @@ import { BoardSidebarSection } from '@/components/boards/board-sidebar-section';
 import { BoardCreateDialogView } from '@/components/boards/board-create-dialog-view';
 import { ArchivedBoardsView } from '@/components/boards/archived-boards-section';
 import { boardThreadItems } from '@/components/boards/board-side-panel';
-import { buildBoardRows, isBoardSession } from '@/components/boards/board-threads';
+import {
+  buildBoardRows,
+  isBoardSession,
+  resolveSidebarBoardSelection,
+} from '@/components/boards/board-threads';
 import { BoardDirectoryFileProvider } from '@/lib/board-directory-file-provider';
 import { cn } from '@/lib/utils';
 import { SettingsStoryProviders } from './settings-story-shell';
@@ -1119,4 +1123,44 @@ export const ThreadSidebar: Story = {
       </BoardStoryProvider>
     </SettingsStoryProviders>
   ),
+};
+
+/** Selection derives from the opened thread's metadata, exactly as the sidebar does. */
+export const ViewingThread: Story = {
+  render: function ViewingThreadStory() {
+    const [current, setCurrent] = useState(THREAD);
+    const session = members.find((entry) => entry.id === current);
+    const selectedId = resolveSidebarBoardSelection({
+      boards: [board],
+      routeSessionId: current,
+      routeBoardId: session?.boardId,
+    });
+    return (
+      <SettingsStoryProviders>
+        <BoardStoryProvider>
+          <BoardSidebarSection
+            boards={[
+              { id: BOARD, name: board.name, coordinatorSessionId: COORDINATOR, activity: IDLE },
+            ]}
+            selectedId={selectedId}
+            collapsed={false}
+            onToggleCollapsed={noop}
+            onOpen={() => setCurrent(COORDINATOR)}
+            onCreate={noop}
+            actions={boardRowActions}
+          />
+          <SessionTabBar
+            variant="session"
+            parentSession={session ?? coordinatorSession}
+            childSessions={[]}
+            draftTabs={[]}
+            archivedChildSessions={[]}
+            activeTabSessionId={current}
+            onTabSelect={noop}
+            onNewTab={noop}
+          />
+        </BoardStoryProvider>
+      </SettingsStoryProviders>
+    );
+  },
 };

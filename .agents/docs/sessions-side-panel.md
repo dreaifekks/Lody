@@ -146,3 +146,10 @@ and navigates through `boardEntrySearch`. Re-entry clears the old panel thread.
 Resizing the split has no separate full-screen thread state. Zen is cleared by
 Board entry. A small membership mark is shared by sidebar titles and session tabs,
 and follows the Board experiment gate.
+
+The sidebar's Board row stays selected on a member's full page as well as in the
+coordinator panel. `BoardSidebar` selects only the route and active Tab's `boardId`
+from metadata; `resolveSidebarBoardSelection` matches that membership to the
+visible catalog. Contained Tabs with a different Board select their own Board.
+The existing selected fill is retained, and memoized Board rows get stable action
+callbacks. No membership list or layout-level metadata subscription is added.

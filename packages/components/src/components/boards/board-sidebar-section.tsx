@@ -5,11 +5,12 @@ import { Button } from '@lody/ui/button';
 import { ContextMenu } from '@lody/ui/context-menu';
 import { Archive, LayoutDashboard, Link2, Pencil, Plus, Share2 } from 'lucide-react';
 import { useAtomValue, useStore } from 'jotai';
-import { useMemo, useState, type KeyboardEvent } from 'react';
+import { memo, useMemo, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { BoardMeta, SessionId, SessionMeta } from '@lody/shared';
+import { getSessionRoomId, type BoardMeta, type SessionId, type SessionMeta } from '@lody/shared';
+import { selectAtom } from 'jotai/utils';
 import { currentWorkspaceIdAtom } from '@/atoms';
-import { allActiveSessionsAtom } from '@/atoms/doc-meta';
+import { allActiveSessionsAtom, sessionMetaAtomFamily } from '@/atoms/doc-meta';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { useAppCapability } from '@/lib/app-platform';
 import { useLanSharing } from '@/lib/lan-session-share';
@@ -25,7 +26,7 @@ import {
 } from '../sidebar-row-shared';
 import { useBoardActions } from './board-lifecycle';
 import { BoardRenameDialog } from './board-rename-dialog';
-import type { BoardActivity } from './board-threads';
+import { resolveSidebarBoardSelection, type BoardActivity } from './board-threads';
 
 export interface BoardSidebarItem {
   id: string;
@@ -137,7 +138,7 @@ export function BoardSidebarSection({
   );
 }
 
-function BoardSidebarRow({
+function BoardSidebarRowView({
   board,
   selected,
   actions,
@@ -223,6 +224,20 @@ function BoardSidebarRow({
   );
 }
 
+const BoardSidebarRow = memo(
+  BoardSidebarRowView,
+  (previous, next) =>
+    previous.selected === next.selected &&
+    previous.actions === next.actions &&
+    previous.onOpen === next.onOpen &&
+    previous.board.id === next.board.id &&
+    previous.board.name === next.board.name &&
+    previous.board.coordinatorSessionId === next.board.coordinatorSessionId &&
+    previous.board.activity.isWorking === next.board.activity.isWorking &&
+    previous.board.activity.isWaitingPermission === next.board.activity.isWaitingPermission &&
+    previous.board.activity.hasUnreadMessages === next.board.activity.hasUnreadMessages
+);
+
 type BoardSidebarSectionProps = Parameters<typeof BoardSidebarSection>[0];
 
 /**
@@ -233,12 +248,42 @@ type BoardSidebarSectionProps = Parameters<typeof BoardSidebarSection>[0];
 export function BoardSidebar({
   onCopyUrl,
   onArchived,
+  routeSessionId,
+  tabSessionId,
   ...section
-}: Omit<BoardSidebarSectionProps, 'actions'> & {
+}: Omit<BoardSidebarSectionProps, 'actions' | 'selectedId'> & {
+  routeSessionId: string | null;
+  tabSessionId?: string;
   onCopyUrl: (board: BoardSidebarItem) => void;
   /** After a Board was archived, so a page showing it can leave. */
   onArchived: (board: BoardMeta) => void;
 }) {
+  // This leaf selects two low-frequency membership scalars; the layout acquires no new metadata subscription.
+  const routeMembership = useMemo(
+    () =>
+      selectAtom(
+        sessionMetaAtomFamily(getSessionRoomId((routeSessionId ?? '') as SessionId)),
+        (session) => session?.boardId
+      ),
+    [routeSessionId]
+  );
+  const tabMembership = useMemo(
+    () =>
+      selectAtom(
+        sessionMetaAtomFamily(getSessionRoomId((tabSessionId ?? '') as SessionId)),
+        (session) => session?.boardId
+      ),
+    [tabSessionId]
+  );
+  const routeBoardId = useAtomValue(routeMembership);
+  const tabBoardId = useAtomValue(tabMembership);
+  const selectedId = resolveSidebarBoardSelection({
+    boards: section.boards,
+    routeSessionId,
+    routeBoardId,
+    tabSessionId,
+    tabBoardId,
+  });
   const store = useStore();
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
   const { boards } = useWorkspaceCatalog();
@@ -272,7 +317,7 @@ export function BoardSidebar({
   }, [archive, boards, onArchived, onCopyUrl, shareWorkspaceId, store]);
   return (
     <>
-      <BoardSidebarSection {...section} actions={actions} />
+      <BoardSidebarSection {...section} selectedId={selectedId} actions={actions} />
       <BoardRenameDialog board={renaming} onClose={() => setRenaming(null)} />
       {shareWorkspaceId && sharing ? (
         lanSharing ? (

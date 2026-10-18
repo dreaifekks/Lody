@@ -283,3 +283,10 @@ Codex reviewer（gpt-6.1-sol high）提了 2 个 P1、1 个 P2，都已修：
 成员标记。故事 `ThreadRowActions`、`ThreadControls`、`ThreadFullPage` 使用真实 UI
 叶子和合成状态，包含普通运行配置与权限菜单；完整页故事的跳转是 fixture 回调，
 不是真实路由。这些测试不能证明真实 Electron/daemon 端到端操作。
+
+侧边栏看板选中现在按路由会话或当前 Tab 的 `boardId` 判定，包括独立打开的后代与
+已归档线程。原来只匹配协调者路由，因此面板内打开线程会保留强调，完整页则丢失。
+`BoardSidebar` 只订阅成员资格标量，调用纯函数判定；看板行 memo 化并使用稳定回调。
+沿用已有 `selectedFill`：实验开启时外部列表过滤线程，关闭时没有看板分组，普通会话
+选中逻辑不变。`ViewingThread` 故事展示看板强调与线程真实 Tab。完整页返回按钮现在
+遵守实验开关；成员标记也按同一实验开关显示。
