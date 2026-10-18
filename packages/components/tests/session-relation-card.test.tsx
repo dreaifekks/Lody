@@ -263,7 +263,7 @@ describe('Session relation cards', () => {
     );
     expect(card?.querySelector('[data-session-unread-dot]')).toBeNull();
     expect(card?.querySelector('[data-session-row-indicator] svg')).not.toBeNull();
-    // A completed, read thread keeps one quiet check in the trailing status slot.
+    // A completed, read thread keeps one quiet check in the leading status slot.
     await act(async () =>
       store.set(setDocMetaByRoomIdAtom, getSessionRoomId(createdSessionId), {
         ...thread,
@@ -273,7 +273,7 @@ describe('Session relation cards', () => {
     const check = card?.querySelector('svg.lucide-check');
     expect(check).not.toBeNull();
     expect(check?.getAttribute('width')).toBe('14');
-    expect(check?.parentElement).toBe(card?.querySelector('button > span')?.lastElementChild);
+    expect(check?.parentElement).toBe(card?.querySelector('button > span')?.firstElementChild);
     const setThread = (patch: Record<string, unknown>) =>
       act(async () =>
         store.set(setDocMetaByRoomIdAtom, getSessionRoomId(createdSessionId), {
