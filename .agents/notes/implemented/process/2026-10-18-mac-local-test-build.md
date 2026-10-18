@@ -23,10 +23,16 @@ its stores or its CLI. Packaged builds also ignore `LODY_ELECTRON_USER_DATA_DIR`
 reuses the normal build/package pipeline and its native dependency probes, and
 disables certificate signing, notarization, publishing and release stamping. The
 existing ad-hoc signing hook remains for local execution. Startup sets the
-short CLI data root and existing E2E host-port override before application modules
+short CLI data root and `LODY_LOCAL_CLI_HOST_PORT` before application modules
 open stores; the packaged desktop retains its normal single-instance lock. The
 default build remains unchanged. The profile also separates protocol registration
 and the desktop stores outside userData.
+
+Port selection must not enable E2E mode: that also changes Codex capability probes
+to use and delete `<cwd>/.codex`, which fails at `/` on Finder launches. The shared
+TS/CJS endpoint resolvers accept the dedicated port override with the existing
+port validation, and the test bootstrap clears `LODY_E2E`. Codex keeps normal
+credential and home-directory behavior.
 
 The script merges the latest `origin/lan-hub` into a dedicated clone's current
 branch, never resets local work, and retains caches. Renderer builds still run in
@@ -41,6 +47,8 @@ migration experiments. See [usage and paths](../../../../DEV.md#local-macos-test
 
 The desktop profile regression test, all 307 Electron tests, typecheck, lint,
 boundary checks, arm64 native packaging probes and a real packaged launch passed.
+After separating the port override, 17 host/profile tests and 11 Codex environment
+tests passed, including TS/CJS parity and the root-directory capability-probe case.
 The full repository check failed in two untouched CLI tests: inbox recovery passed
 when rerun in isolation; speculative-worktree ownership still failed. That failure
 remains outside this change. Document checks had no errors and 71 warnings.

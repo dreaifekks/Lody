@@ -11,8 +11,8 @@ import { initialDevbarControl } from './services/devbar/control'
 // Set this before logging, auth stores or the embedded CLI read their paths.
 if (import.meta.env.VITE_LODY_MAC_LOCAL_TEST === '1') {
   process.env.LODY_DATA_DIR = join(app.getPath('home'), '.lody-test')
-  process.env.LODY_E2E = '1'
-  process.env.LODY_E2E_LOCAL_CLI_HOST_PORT = '27789'
+  delete process.env.LODY_E2E
+  process.env.LODY_LOCAL_CLI_HOST_PORT = '27789'
 }
 
 // This module must be the first main entry import: auth/onboarding modules open

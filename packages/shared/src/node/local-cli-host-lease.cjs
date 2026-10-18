@@ -19,16 +19,15 @@ function getUserPipeSuffix() {
     .slice(0, 16);
 }
 
-function getE2eHostPort() {
-  if (process.env.LODY_E2E !== '1') return null;
-  const rawPort = process.env[E2E_HOST_PORT_ENV]?.trim();
+function getHostPort(envName) {
+  const rawPort = process.env[envName]?.trim();
   if (!rawPort) return null;
   if (!/^\d+$/u.test(rawPort)) {
-    throw new Error(`${E2E_HOST_PORT_ENV} must be an integer between 1024 and 65535`);
+    throw new Error(`${envName} must be an integer between 1024 and 65535`);
   }
   const port = Number(rawPort);
   if (!Number.isSafeInteger(port) || port < 1024 || port > 65_535) {
-    throw new Error(`${E2E_HOST_PORT_ENV} must be an integer between 1024 and 65535`);
+    throw new Error(`${envName} must be an integer between 1024 and 65535`);
   }
   return port;
 }
@@ -55,7 +54,10 @@ function getLocalCliHostEndpoint(platform) {
   return {
     kind: 'tcp',
     host: HOST_TCP_ADDRESS,
-    port: getE2eHostPort() ?? profile.localCliHostPort,
+    port:
+      getHostPort('LODY_LOCAL_CLI_HOST_PORT') ??
+      (process.env.LODY_E2E === '1' ? getHostPort(E2E_HOST_PORT_ENV) : null) ??
+      profile.localCliHostPort,
   };
 }
 

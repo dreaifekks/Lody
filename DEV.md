@@ -22,8 +22,9 @@ The build-time test profile isolates the app ID (`dev.loro.lody.test`), protocol
 (`lody-test`), userData/single-instance lock (`~/Library/Application Support/Lody Test`),
 adjacent desktop stores (`lody-test-desktop`), CLI data (`~/.lody-test`) and CLI host
 port (`27789`). These defaults are baked in, so opening the app from Finder needs
-no environment variables. The CLI port uses the existing `LODY_E2E` override;
-the packaged desktop still follows its normal startup and single-instance path.
+no environment variables. The CLI port uses `LODY_LOCAL_CLI_HOST_PORT`, which
+isolates the endpoint without E2E behavior. The packaged desktop follows its normal
+startup and single-instance path, and Codex keeps its normal home directory.
 The build has no LAN release stamp and therefore follows no release updater.
 
 The test installation starts empty and does not copy credentials or join a LAN.

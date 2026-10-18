@@ -130,6 +130,26 @@ describe('installation profile', () => {
     );
   });
 
+  it.runIf(process.platform !== 'win32')(
+    'isolates a host port without enabling E2E in TS and CJS',
+    () => {
+      const commonJs =
+        require('../src/node/local-cli-host-lease.cjs') as typeof import('../src/node/local-cli-host-lease');
+      vi.stubEnv('LODY_E2E', undefined);
+      vi.stubEnv('LODY_LOCAL_CLI_HOST_PORT', '27789');
+      for (const resolve of [getLocalCliHostEndpoint, commonJs.getLocalCliHostEndpoint]) {
+        expect(resolve('local')).toEqual({ kind: 'tcp', host: '127.0.0.1', port: 27789 });
+      }
+      expect(process.env.LODY_E2E).toBeUndefined();
+      vi.stubEnv('LODY_LOCAL_CLI_HOST_PORT', '27789junk');
+      for (const resolve of [getLocalCliHostEndpoint, commonJs.getLocalCliHostEndpoint]) {
+        expect(() => resolve('local')).toThrow(
+          'LODY_LOCAL_CLI_HOST_PORT must be an integer between 1024 and 65535'
+        );
+      }
+    }
+  );
+
   it('accepts only an explicit E2E-scoped Windows pipe', () => {
     vi.stubEnv('LODY_E2E', '1');
     vi.stubEnv('LODY_E2E_LOCAL_CLI_HOST_PIPE', '\\\\.\\pipe\\lody-e2e-round-123');

@@ -72,6 +72,16 @@ describe('spawnAcpProcess', () => {
 });
 
 describe('Codex title-agent environment', () => {
+  it('keeps a normal Codex home when only the desktop host port is isolated', () => {
+    const prepared = __test__.prepareCodexHomeEnv(
+      { cliType: 'builtin', agentType: 'codex', workdir: '/' },
+      { LODY_LOCAL_CLI_HOST_PORT: '27789' }
+    );
+    expect(prepared.shouldUseWorkdirCodexHome).toBe(false);
+    expect(prepared.env.CODEX_HOME).toBeUndefined();
+    expect(prepared.isTitleAgentCodexRun).toBe(false);
+  });
+
   it('isolates the title agent in the workdir Codex home', () => {
     const baseEnv = { LODY_TITLE_AGENT: '1', LODY_E2E: '1' };
 
