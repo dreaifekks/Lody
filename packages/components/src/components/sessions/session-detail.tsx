@@ -6190,6 +6190,18 @@ const SessionDetail = ({
       copyMarkdownRequestSeq={viewerTabSaveStates[tab.id]?.copyMarkdownRequestSeq ?? 0}
       defaultHtmlPreview={isMobile}
       preferNativeMarkdownSelection={isMobile}
+      onAddSelectionToChat={
+        scope.session.isArchived
+          ? undefined
+          : (selection) => {
+              const chat = chatRefsMap.current.get(scope.session.id);
+              return !closedConversationIds.has(scope.session.id) &&
+                chat &&
+                'addDocumentSelection' in chat
+                ? chat.addDocumentSelection(selection)
+                : false;
+            }
+      }
       fileProvider={scope.fileProvider}
       fileProviderPending={scope.fileProviderPending}
       fileProviderMessage={scope.fileProviderMessage}

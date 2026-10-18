@@ -12,6 +12,8 @@ import { SessionFileAudioPreview } from './session-file-media-preview';
 import { SessionFileOfficePreview } from './session-file-office-preview';
 import { SessionFilePdfPreview } from './session-file-pdf-preview';
 import { SessionFileNoticeCard } from './session-file-error-state';
+import { DocumentSelectionSurface } from './document-selection-surface';
+import type { DocumentSelection } from '@/lib/document-selection';
 
 interface SessionFileBinaryPreviewProps {
   readonly path: string;
@@ -19,6 +21,7 @@ interface SessionFileBinaryPreviewProps {
   readonly url?: string;
   readonly fileActions?: SessionFileErrorActions;
   readonly active?: boolean;
+  readonly onAddSelectionToChat?: (selection: DocumentSelection) => boolean;
 }
 
 /**
@@ -26,7 +29,29 @@ interface SessionFileBinaryPreviewProps {
  * video open inline; everything else offers its file actions. Render-only:
  * binary bytes and resource URLs come from the file-content snapshot.
  */
-export const SessionFileBinaryPreview = memo(function SessionFileBinaryPreview({
+export const SessionFileBinaryPreview = memo(function SessionFileBinaryPreview(
+  props: SessionFileBinaryPreviewProps
+) {
+  const { path, bytes, url, active = true, onAddSelectionToChat } = props;
+  const selectable =
+    isPdfFilePath(path) || getOfficePreviewKind(path) || getImageMimeTypeForPath(path);
+  const preview = <BinaryPreviewContent {...props} />;
+  return selectable && onAddSelectionToChat ? (
+    <DocumentSelectionSurface
+      standaloneCapture={Boolean(getImageMimeTypeForPath(path))}
+      path={path}
+      source={url ?? bytes}
+      active={active}
+      onAdd={onAddSelectionToChat}
+    >
+      {preview}
+    </DocumentSelectionSurface>
+  ) : (
+    preview
+  );
+});
+
+function BinaryPreviewContent({
   path,
   bytes,
   url,
@@ -102,4 +127,4 @@ export const SessionFileBinaryPreview = memo(function SessionFileBinaryPreview({
       fileActions={fileActions}
     />
   );
-});
+}
