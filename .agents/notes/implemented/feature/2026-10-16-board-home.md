@@ -444,15 +444,15 @@ state. Board glyphs are restricted to conversation headers/page tabs; the redund
 sidebar/list subscription was deleted. Targeted verification precedes the user-owned
 visual review; the combined full check is deferred until its feedback is incorporated.
 
-## Immediate thread-row archive (2026-10-18)
+## Shared thread-row archive confirmation (2026-10-18)
 
-The user confirmed that removing redundant row glyphs must retain the hover
-archive/more buttons, context menu, and conversation header controls. Board thread
-rows now opt out of confirmation on the same shared archive button: the first
-click runs the shared archive action and never selects the row. Other sidebar
-rows keep their existing confirmation by default. The behavioral suite verifies
-both the immediate thread archive and the ordinary Board row's two-click flow.
-Full verification remains deferred until the user's visual feedback is integrated.
+The user clarified that direct row archive means operating without entering the
+thread, not bypassing confirmation. The one-click exception from `5e4823ee1` is
+withdrawn: thread rows reuse the same two-click archive button as ordinary sidebar
+rows, with no Board-specific option. Hover archive/more, context menus and header
+controls remain available. Behavioral tests verify that the first click leaves
+the thread unarchived and unselected, and the confirmation archives it without
+opening it; ordinary Board rows retain the same confirmation flow.
 
 ## Narrow child-row titles and focus (2026-10-18)
 
@@ -470,6 +470,6 @@ child rows, 62.25px parent links and 132.58px child text in both themes; rows re
 47.14px high and single-line. Light/dark screenshots show readable child titles and
 complete 2px inset rings. Keyboard Enter still opens the parent; the narrow panel
 header was also checked. These are synthetic Storybook checks, not daemon E2E.
-The existing one-click hover archive and row menus are unchanged.
+The hover archive and row menus remain available with shared archive confirmation.
 
 The final combined `pnpm check` passed after incorporating the visual corrections.

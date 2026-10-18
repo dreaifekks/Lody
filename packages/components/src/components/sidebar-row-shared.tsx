@@ -594,14 +594,12 @@ export function SessionOpenedByTreeRow({
 export function SidebarRowArchiveButton({
   label,
   confirmLabel,
-  confirmArchive = true,
   onConfirm,
   /** Which group's hover reveals the button — e.g. 'group-hover/row:...' for named groups. */
   revealClassName = 'group-hover:opacity-100 group-hover:pointer-events-auto group-data-[menu-open]:opacity-100 group-data-[menu-open]:pointer-events-auto',
 }: {
   label: string;
   confirmLabel: string;
-  confirmArchive?: boolean;
   onConfirm: () => void;
   revealClassName?: string;
 }) {
@@ -613,7 +611,6 @@ export function SidebarRowArchiveButton({
           <SidebarConfirmArchiveButton
             label={label}
             confirmLabel={confirmLabel}
-            confirmArchive={confirmArchive}
             className={cn(
               'absolute right-0 top-0 z-20 opacity-0 pointer-events-none',
               revealClassName

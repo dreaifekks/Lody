@@ -1564,6 +1564,15 @@ it('uses sidebar menus and the shared recursive archive action for Board threads
       '[data-id="other"] button[aria-label="Archive session"]'
     )!;
     await act(async () => otherArchive.click());
+    expect((await env.meta('other')).isArchived).not.toBe(true);
+    expect(selected).toBeNull();
+    await act(async () =>
+      view.host
+        .querySelector<HTMLButtonElement>(
+          '[data-id="other"] button[aria-label="Confirm Archive session"]'
+        )!
+        .click()
+    );
     expect((await env.meta('other')).isArchived).toBe(true);
     expect(selected).toBeNull();
   } finally {

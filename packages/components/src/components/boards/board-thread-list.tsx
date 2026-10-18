@@ -207,7 +207,6 @@ const BoardThreadRow = memo(function BoardThreadRow({
   return (
     <div {...stylex.props(styles.indent(thread.depth ?? 0))}>
       <UpdatedItemRow
-        confirmArchive={false}
         titleContent={
           thread.parentId && thread.parentTitle ? (
             <BoardThreadBreadcrumb

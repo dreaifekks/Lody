@@ -140,8 +140,8 @@ rule; model/mode/permission controls remain in the composer at every panel width
 Existing-session agent locks are unchanged.
 
 The list renders the sidebar's memoized `UpdatedItemRow`, including its leading
-menu and hover archive button; Board thread rows archive on the first click,
-while other sidebar rows retain confirmation. Actions go through `useSessionActions`.
+menu and hover archive button with the same two-click confirmation. Threads can
+be archived directly from their rows through `useSessionActions`.
 Full-page return lives in `SessionTabBar.leftSlot`, before the sidebar toggle,
 and navigates through `boardEntrySearch`. Re-entry clears the old panel thread.
 Resizing the split has no separate full-screen thread state. Zen is cleared by
