@@ -192,9 +192,9 @@ export function boardReportOperationId(
  * A Board's coordinator only assigns work: results of what it dispatched, and
  * Board reports, wait for its next human or scheduled input instead of waking it.
  */
-export function boardDeliveryConfig(
-  requester: Pick<SessionMeta, 'boardRole'>
-): { deliverWithNextInput?: true } {
+export function boardDeliveryConfig(requester: Pick<SessionMeta, 'boardRole'>): {
+  deliverWithNextInput?: true;
+} {
   return requester.boardRole === 'coordinator' ? { deliverWithNextInput: true } : {};
 }
 
@@ -223,6 +223,7 @@ export function deriveBoardReports(input: {
   const events: BoardReportEvent[] = [];
   if (!state) return { events, cursor };
   const { turn, following } = state;
+  const scheduled = !!turn.inputConfig?._lodyScheduleId;
   const since = meta.boardJoinedAtMs ?? 0;
   const turnAt = Date.parse(turn.timestamp);
   const assistant = following.find((entry) => entry.role === 'assistant');
@@ -236,7 +237,7 @@ export function deriveBoardReports(input: {
     machineId: meta.machineId,
     generation: meta.boardGeneration,
     contextWindowUsage: meta.contextWindowUsage,
-    origin: turn.author?.kind ?? ('system' as const),
+    origin: scheduled ? ('schedule' as const) : (turn.author?.kind ?? ('system' as const)),
   };
   if (cursor.lastTurnId !== turn.id) {
     const terminal =
@@ -258,7 +259,10 @@ export function deriveBoardReports(input: {
             at,
             output: boardOutputPreview(failure?.meta?.message ?? 'Turn failed'),
           });
-        } else if (!grandchild && (reportHumanTurns || turn.author?.kind !== 'human')) {
+        } else if (
+          (!grandchild || scheduled) &&
+          (reportHumanTurns || scheduled || turn.author?.kind !== 'human')
+        ) {
           events.push({
             ...base,
             kind: 'finished',

@@ -241,3 +241,17 @@ call reads current Session membership. Replacement also requires the coordinator
 and matching Board coordinator id. Overview reads bounded metadata/presence rows; inspect
 individual histories for conclusions. Notes use the shared LoroText writer and the daemon's
 existing persistence/sync path. See the [Board design](../../../../specs/project-coordinator/design.md#pr2-implemented).
+
+
+### Board schedules
+
+Schedule create/update/propose accept `boardId`; list accepts it as a filter and
+returns it on Registry rows. With no list filter the MCP surface still lists all
+schedules. Board drafts default to a dedicated thread. Agent writes authorize
+both the saved Board and the resulting Board against the invoking Session's
+current membership; non-members cannot write Board schedules, even via pause or
+resume. Existing-session targets must be unarchived members other than the main
+session. Proposal confirmation keeps the Board, Role and MCP selection.
+
+The human `lody schedule create/edit/list` commands also accept `--board`.
+Execution uses the [same Schedule worker](../lib/schedules/README.md).

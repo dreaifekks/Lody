@@ -241,7 +241,10 @@ export class ScheduleStore<Prepared = unknown> {
     runKey: string,
     from: readonly ScheduleRunState[],
     patch: Partial<
-      Pick<ScheduleRun<Prepared>, 'state' | 'prepared' | 'attempts' | 'retryAt' | 'errorCode'>
+      Pick<
+        ScheduleRun<Prepared>,
+        'state' | 'prepared' | 'sessionId' | 'attempts' | 'retryAt' | 'errorCode'
+      >
     >
   ): ScheduleRun<Prepared> {
     return this.db

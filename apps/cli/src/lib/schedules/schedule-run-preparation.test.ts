@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   getWorkspaceFlockDocId,
+  scheduleOwnSessionId,
+  normalizeBoardMeta,
   type AgentConfigMeta,
   type MachineMeta,
   type ProjectRef,
@@ -16,6 +18,9 @@ import {
   buildScheduleRunTarget,
   buildScheduleSessionCreateOptions,
   destinationSessionProblem,
+  resolveScheduleDestinationSession,
+  readScheduleBoard,
+  type DestinationSessionState,
   resolveScheduleRunRole,
   scheduleDestinationSessionId,
   scheduleRequiredLocalProjectId,
@@ -172,7 +177,12 @@ describe('Where a run is sent', () => {
     expect(destinationSessionProblem({ ...base, destination, session: { kind: 'deleted' } })).toBe(
       'SESSION_UNAVAILABLE'
     );
-    for (const wrong of [{ userId: 'other' }, { machineId: 'laptop' }, { agentConfigId: 'writer' }])
+    for (const wrong of [
+      { userId: 'other' },
+      { machineId: 'laptop' },
+      { agentConfigId: 'writer' },
+      { isArchived: true },
+    ])
       expect(
         destinationSessionProblem({
           ...base,
@@ -343,5 +353,82 @@ describe('A run of a schedule bound to a Role', () => {
     });
     for (const field of ['agentRoleId', 'agentRoleRevision', 'agentRoleSnapshot'])
       expect(buildScheduleSessionCreateOptions(run())).not.toHaveProperty(field);
+  });
+});
+
+describe('Board and archived schedule destinations', () => {
+  const board = normalizeBoardMeta({
+    version: 1,
+    id: 'bd_test',
+    name: 'Board',
+    coordinatorSessionId: 'main',
+    createdAtMs: 1,
+    createdByUserId: 'owner',
+  })!;
+  const meta = {
+    id: 'thread',
+    boardId: board.id,
+    userId: 'owner',
+    machineId: 'machine',
+    agentConfigId: 'agent',
+  } as SessionMeta;
+  it('preserves sequence zero and skips only archived owned sessions', async () => {
+    const states = new Map<SessionId, DestinationSessionState>([
+      [
+        scheduleOwnSessionId('schedule', 0),
+        { kind: 'present', meta: { ...meta, isArchived: true } },
+      ],
+      [
+        scheduleOwnSessionId('schedule', 0, 1),
+        { kind: 'present', meta: { ...meta, isArchived: true } },
+      ],
+    ]);
+    const args = {
+      scheduleId: 'schedule',
+      destination: { kind: 'own_session', epoch: 0 } as const,
+      plannedSessionId: scheduleOwnSessionId('schedule', 0),
+      readSession: async (id: SessionId) => states.get(id) ?? ({ kind: 'absent' } as const),
+    };
+    expect(scheduleOwnSessionId('schedule', 0, 0)).toBe('565486d7-0121-84a7-93ad-304604a4f78f');
+    const resolved = await resolveScheduleDestinationSession(args);
+    expect(resolved).toEqual({
+      sessionId: scheduleOwnSessionId('schedule', 0, 2),
+      session: { kind: 'absent' },
+    });
+    states.set(resolved.sessionId, { kind: 'present', meta });
+    expect((await resolveScheduleDestinationSession(args)).sessionId).toBe(resolved.sessionId);
+  });
+  it.each([
+    { ...meta, isArchived: true },
+    { ...meta, boardId: 'bd_other' },
+    { ...meta, id: 'main' },
+  ])('refuses archived, foreign and coordinator destinations', (invalid) => {
+    expect(
+      destinationSessionProblem({
+        destination: { kind: 'existing_session', sessionId: invalid.id },
+        session: { kind: 'present', meta: invalid as SessionMeta },
+        board,
+        userId: 'owner',
+        machineId: 'machine',
+        agentConfigId: 'agent',
+      })
+    ).toBe('SESSION_UNAVAILABLE');
+  });
+  it('reads the Board gate and rejects absent and archived Boards', async () => {
+    let row: unknown = board;
+    const manager = {
+      repo: { openFlockDoc: async () => ({ flock: { get: () => row } }) },
+    } as unknown as LoroDocumentManager;
+    const args = {
+      manager,
+      workspaceId: 'workspace' as WorkspaceId,
+      boardId: board.id,
+      localOnly: true,
+    };
+    expect(await readScheduleBoard(args)).toEqual(board);
+    row = { ...board, archivedAtMs: 2 };
+    await expect(readScheduleBoard(args)).rejects.toMatchObject({ code: 'BOARD_UNAVAILABLE' });
+    row = undefined;
+    await expect(readScheduleBoard(args)).rejects.toMatchObject({ code: 'BOARD_UNAVAILABLE' });
   });
 });

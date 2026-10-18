@@ -20,21 +20,15 @@
   cache just to save. Ordinary Session config validation owns runtime support.
   No project is required (none = plain chat). No consent checkbox, directory-scope
   checkbox, full-access warning or resume dialog.
-- The list is the page; no tabs, no dialog. `routes/…/schedules.tsx` is a
-  layout route that mounts `SchedulesWorkspace` once (its index and `$scheduleId`
-  children render nothing), so opening a schedule animates instead of
-  remounting. On desktop it slides in beside the table (`ScheduleSplitView`,
-  under the list header via `renderBody`, so title/search/New never move; the
-  panel itself rises full height over the header's trailing end); the
-  table keeps every column, scrolling sideways; the boundary is a drag handle
-  (`scheduleSplitListWidthAtom`). A click on blank page space closes it
-  (`onBlankClick`; rows, controls, the panel and portalled popups excluded).
-  Mobile pushes a page. The header
-  (`ScheduleDetailToolbar`) is close plus compact icon actions; run history is
-  the panel's last section, under the editor (no second drawer). Top-of-pane headers join the Electron drag strip
-  (`useWindowDragRegionClass`) with buttons `WINDOW_DRAG_EXEMPT_CLASS`, or the
-  strip swallows their clicks. Saving and closing return to the full list. Hidden
-  desktop nav: PanelLeft expand at 96px on macOS Electron (Chat Landing/Archive).
+- The global route mounts `SchedulesWorkspace` once; opening details never remounts
+  its list. Desktop uses `ScheduleSplitView` under the header; mobile and Board
+  panels stack list/editor. Blank space closes details, excluding controls/portals.
+  Save/close returns to the owning list. Preserve the Electron drag-region exemption
+  on header controls. Layout explanation: [README](README.md).
+- `boardId` scopes list and editor; absent means global rows only. Board drafts
+  default to a dedicated thread; picked destinations exclude archived/foreign
+  sessions and the coordinator. Provenance and proposal links enter its Board's
+  Schedules tab through `useOpenSchedule`, never the global detail page.
 - The editor reuses the composer's parts: one box holds name, a hairline, the
   prompt and, along its bottom, the composer's Agent controls
   (`ScheduleAgentControls` = `DesktopRunConfigMenu` + `DesktopPermissionModeButton`).
@@ -71,10 +65,10 @@
   Cron day-of-week ranges expand from raw bounds before folding 7 onto 0.
 - Manual (`trigger.kind === 'manual'`) is never planned; the editor keeps the last
   timed rule while toggled to Manual.
-- Destination: new chat per run, ONE owned chat (`own_session`, id derived from
-  schedule id + `epoch`, "Start a new chat" = `epoch + 1`, never stored), or a
-  picked chat. A chat destination has no project and follows the chat's Agent;
-  mismatches are `invalid` issues on the Agent controls / chat row.
+- Destination: new chat per run, owned chat (schedule + epoch + archive sequence),
+  or picked chat. The newest unarchived Session with this `scheduleId` is the owned
+  chat shown; changing epoch clears it until the next run. A picked chat follows
+  its Agent and must remain available. Shared-chat destinations carry no project.
 - Agents propose (`schedule_proposal` → `ScheduleProposalNotice`) or use tier-capped MCP writes.
   Create on the card persists, with
   `proposalId` as schedule id. Edit reshapes name, prompt and rule in the card

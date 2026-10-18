@@ -1497,6 +1497,7 @@ export type ScheduleProposalTarget = {
  * proposal, it stays in history unresolved until acted on.
  */
 export type ScheduleProposalMeta = {
+  boardId?: string;
   mcpServerIds?: string[];
   /** Stable id; a retried proposal replaces itself instead of stacking. */
   proposalId: string;
@@ -1973,6 +1974,8 @@ export type ACPSessionConfig = ACPTurnConfig & {
  * Keep this looser than `ACPSessionConfig` so older docs and partial writes remain readable.
  */
 export type SessionTurnInputConfig = Partial<ACPTurnConfig> & {
+  /** Schedule provenance belongs to this input, never subsequent human turns. */
+  _lodyScheduleId?: string;
   /** An accepted steer has no independently editable provider turn boundary. */
   _lodyDeliveryKind?: import('./message-schemas').SessionHistoryDeliveryKind;
 };

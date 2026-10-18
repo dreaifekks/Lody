@@ -1,4 +1,10 @@
 {
+  "schedules.errors.SESSION_UNAVAILABLE": "目标会话不可用或已归档。请恢复会话或选择其他会话。",
+  "schedules.errors.BOARD_UNAVAILABLE": "看板已归档或不可用。恢复看板后定时任务会继续运行。",
+  "boards.schedules.existingThread": "本看板已有线程",
+  "boards.schedules.ownThread": "专用线程",
+  "boards.schedules.newThread": "每次新建线程",
+  "boards.schedules.title": "定时",
   "settings.agent.dialog.deepseek.configPath": "配置路径: {{path}}",
   "sessions.relations.stopCollaboration": "终止全部对话协作",
   "sessions.relations.resumeCollaboration": "恢复协作",

@@ -1,7 +1,9 @@
 # 看板定时任务
 
 Status: draft
-Translation: pending
+Translation: current
+
+[English](board-schedules.md)
 
 2026-10-18 用户提出（分支 `feat/board-schedules`，叠在[看板调度模型](board-dispatcher-model.zh.md)上）。
 它补上[看板与协调者](design.zh.md)里留给以后的「定时」一块；「每日摘要」那一节（发进主会话）
@@ -56,7 +58,8 @@ x 点让某线程做 y」，主会话用 `lody_schedule_*` 工具带 `boardId` �
 
 - 结果走看板现有路径：线程自己的 `lastMessageAt` 前进，线程行和看板行亮蓝点。
 - 定时触发的回合在线程里完成或失败时，记成看板事件（来源 `schedule`），不受「记录用户直接
-  对话」（`reportHumanTurns`）开关影响：用户没有亲眼看过这一轮。和其他事件一样冻结
+  对话」（`reportHumanTurns`）开关影响：用户没有亲眼看过这一轮。即使目标是子线程也记，
+  因为定时没有父级 Operation 回执。和其他事件一样冻结
   `deliverWithNextInput`，主会话不被唤醒，下一次人工或定时输入时附带。
 - 线程按[调度模型](board-dispatcher-model.zh.md)是负责人：定时那一轮里它照样可以开子会话。
 
@@ -78,8 +81,8 @@ x 点让某线程做 y」，主会话用 `lody_schedule_*` 工具带 `boardId` �
    它会把排队事件一起带走、主会话上下文每天多一回合，留到做摘要时再定。
 3. **已有线程被归档时挡住而不是自动换新线程。** 用户明确挑的线程，换成别的会让结果落到
    意外的地方；专用线程本来就是「这个定时的」，所以自动换。
-4. **看板归档时定时不自动暂停**，只是到点不跑（每轮记一次配置问题，24 小时后记失败）。
-   好处是恢复看板就恢复，不用记得再打开；代价是归档期间每轮都留一条失败记录。
+4. **看板归档时定时不自动暂停**，只是到点不跑（每轮记一次配置问题，24 小时后按现有调度器记 `skipped / DISPATCH_EXPIRED`）。
+   好处是恢复看板就恢复，不用记得再打开；代价是归档期间每轮都留一条过期记录。这里沿用现有调度器的过期语义，不另加失败状态。
 5. **定时回合的完成一律记成看板事件**，即使用户之后打开线程看过。主会话下次会多读到这些
    摘要（每条截到 1,000 字符）。
 6. 旧版本客户端不认识 `boardId`，会拒绝这类定义、不列也不跑；fork 内所有机器同版本，不做
@@ -97,4 +100,4 @@ x 点让某线程做 y」，主会话用 `lody_schedule_*` 工具带 `boardId` �
   `apps/cli/src/orchestration/board-report-workflow.ts`、
   `packages/components/src/components/boards/board-panel-view.tsx`（面板标签页）。
 - 已归档会话卡住定时：2026-10-16 实际发生（排查记录在个人笔记，不在仓库）。
-- 实现和验证见 PR 与对应 Agent Note。
+- 实现与验证：[Agent Note](../../.agents/notes/implemented/feature/2026-10-18-board-schedules.zh.md)。

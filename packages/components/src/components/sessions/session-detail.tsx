@@ -1038,6 +1038,7 @@ const SessionDetail = ({
   urlSimulator,
   urlBoard,
   urlBoardThread,
+  urlBoardSchedule,
   onMobileBack,
 }: {
   sessionId: SessionId;
@@ -1049,6 +1050,7 @@ const SessionDetail = ({
   urlBoard?: boolean;
   /** With `?board=1`: a thread to open in the Board panel (its own page on narrow windows). */
   urlBoardThread?: string;
+  urlBoardSchedule?: string;
   onMobileBack?: () => void;
 }) => {
   const { t } = useTranslation();
@@ -1121,6 +1123,7 @@ const SessionDetail = ({
   // layout remounts the panel subtree.
   const [boardThreadId, setBoardThreadId] = useState<SessionId | null>(null);
   // `?boardThread`, handed to the Board panel once the URL no longer carries it.
+  const [boardScheduleRequest, setBoardScheduleRequest] = useState<string | null>(null);
   const [boardThreadRequest, setBoardThreadRequest] = useState<SessionId | null>(null);
   const finishBoardThreadRequest = useCallback(() => setBoardThreadRequest(null), []);
   const [mobileBoardOpen, setMobileBoardOpen] = useState(false);
@@ -3628,6 +3631,7 @@ const SessionDetail = ({
         const next = { ...prev };
         delete next.board;
         delete next.boardThread;
+        delete next.boardSchedule;
         return next;
       },
       replace: true,
@@ -3635,6 +3639,7 @@ const SessionDetail = ({
     // The panel opens the member the way its row does, after the URL has
     // left, so a thread's own page is not replaced by this one.
     if (urlBoardThread) setBoardThreadRequest(urlBoardThread as SessionId);
+    if (urlBoardSchedule) setBoardScheduleRequest(urlBoardSchedule);
   }, [
     restoredBoardPanel,
     router,
@@ -3642,6 +3647,7 @@ const SessionDetail = ({
     setZenLayoutMode,
     urlBoard,
     urlBoardThread,
+    urlBoardSchedule,
     workspaceSlug,
   ]);
 
@@ -6240,6 +6246,8 @@ const SessionDetail = ({
       }}
       onOpenThreadFull={(thread) => handleNavigateSession({ sessionId: thread.id })}
       requestedThreadId={boardThreadRequest}
+      requestedScheduleId={boardScheduleRequest}
+      onScheduleRequestDone={() => setBoardScheduleRequest(null)}
       onThreadRequestDone={finishBoardThreadRequest}
       renderThread={(thread) => (
         <SessionChatInterface

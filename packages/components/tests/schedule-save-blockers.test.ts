@@ -124,7 +124,10 @@ describe('sending runs into a chat', () => {
     ).toContain(en['schedules.destination.requireChat']);
     expect(
       collectScheduleSaveBlockers(
-        ready({ destination: { kind: 'existing_session', sessionId: 's1' } }),
+        ready({
+          destination: { kind: 'existing_session', sessionId: 's1' },
+          destinationSession: { agentConfigId: 'agent', machineId: 'machine' },
+        }),
         t
       )
     ).toEqual([]);

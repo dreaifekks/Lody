@@ -42,6 +42,8 @@ const DRAFT_GUIDE = [
   'through its instance on the schedule’s machine, so later edits to the Role change the',
   'schedule, and a run is blocked while the Role is deleted or has no instance there. A Role',
   'cannot be combined with existing_session, which follows that chat’s Agent.',
+  'For Board work, set boardId to your own Board; only its members can write its schedules.',
+  'Board schedules default to own_session; existing_session must be a thread in that Board, never its main session.',
   'Destination: new_session (a fresh chat per run, default), own_session (one chat this task',
   'keeps continuing), or existing_session {sessionId}. Reuse requestId when retrying.',
   'mcpServerIds accepts workspace MCP ids or names (saved as ids). Omit to use enabledByDefault',
@@ -143,6 +145,7 @@ export function registerScheduleTools(
       inputSchema: z
         .object({
           query: z.string().max(200).optional(),
+          boardId: ScheduleDefinitionSchema.shape.boardId,
           limit: z.number().int().min(1).max(100).default(30),
           offset: z.number().int().min(0).max(100_000).optional(),
         })
@@ -181,6 +184,7 @@ export function registerScheduleTools(
       inputSchema: z
         .object({
           requestId: id,
+          boardId: ScheduleDefinitionSchema.shape.boardId,
           title: z.string().trim().min(1).max(200),
           prompt: z.string().min(1).max(32768),
           rule: ScheduleProposalRuleSchema,

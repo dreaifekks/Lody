@@ -7,6 +7,7 @@ import {
   getStaticBuiltinAcpCapabilities,
   normalizeAgentRole,
   scheduleDefinitionFingerprint,
+  scheduleOwnSessionId,
   SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION,
   SCHEDULES_PROTOCOL_VERSION,
   type ResolvedPermissionTier,
@@ -90,48 +91,51 @@ async function fixture() {
   const agents = new Map<string, Record<string, unknown>>();
   /** Fields of a Session meta beyond the invoking owner's, by Session id. */
   const sessions = new Map<string, Record<string, unknown>>();
+  const missingSessions = new Set<string>();
   const runtimeReports = new Map<string, Record<string, unknown>>();
   const context = {
     manager: {
       repo: {
         ...port,
         getDocMeta: async (id: string) =>
-          id.startsWith('session-')
-            ? {
-                meta: {
-                  id: 'session',
-                  userId: owner,
-                  machineId: 'machine',
-                  processingUserMsgId: 'turn',
-                  ...sessions.get(id.slice('session-'.length)),
-                },
-              }
-            : id.startsWith('agent-') && agents.has(id.slice('agent-'.length))
-              ? { meta: agents.get(id.slice('agent-'.length)) }
-              : id === 'machine-machine' && machinePresent
-                ? {
-                    meta: {
-                      id: 'machine',
-                      ownerUserId: 'owner',
-                      protocolCapabilities: {
-                        schedules: SCHEDULES_PROTOCOL_VERSION,
-                        ...(roleSupport
-                          ? { scheduleAgentRoles: SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION }
-                          : {}),
-                      },
-                    },
-                  }
-                : id === 'agent-agent' && agentPresent
+          missingSessions.has(id)
+            ? undefined
+            : id.startsWith('session-')
+              ? {
+                  meta: {
+                    id: 'session',
+                    userId: owner,
+                    machineId: 'machine',
+                    processingUserMsgId: 'turn',
+                    ...sessions.get(id.slice('session-'.length)),
+                  },
+                }
+              : id.startsWith('agent-') && agents.has(id.slice('agent-'.length))
+                ? { meta: agents.get(id.slice('agent-'.length)) }
+                : id === 'machine-machine' && machinePresent
                   ? {
                       meta: {
-                        id: 'agent',
-                        machineId: 'machine',
-                        name: 'Agent',
-                        cliType: 'builtin',
-                        agentType: 'claude',
+                        id: 'machine',
+                        ownerUserId: 'owner',
+                        protocolCapabilities: {
+                          schedules: SCHEDULES_PROTOCOL_VERSION,
+                          ...(roleSupport
+                            ? { scheduleAgentRoles: SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION }
+                            : {}),
+                        },
                       },
                     }
-                  : undefined,
+                  : id === 'agent-agent' && agentPresent
+                    ? {
+                        meta: {
+                          id: 'agent',
+                          machineId: 'machine',
+                          name: 'Agent',
+                          cliType: 'builtin',
+                          agentType: 'claude',
+                        },
+                      }
+                    : undefined,
       },
       getOrCreateSessionDoc: async (sessionId: string) =>
         withHistoryPort({
@@ -159,6 +163,17 @@ async function fixture() {
     documentSync,
     notificationSync,
     history: () => history,
+    missingSession: (id: string) => missingSessions.add(`session-${id}`),
+    board: (id: string, archivedAtMs?: number) =>
+      rows.set(JSON.stringify(['board', id]), {
+        version: 1,
+        id,
+        name: 'Synthetic Board',
+        coordinatorSessionId: 'main',
+        createdAtMs: 1,
+        createdByUserId: 'owner',
+        archivedAtMs,
+      }),
     addMcp: (id: string, name: string) =>
       rows.set(JSON.stringify(['mcpServer', id]), {
         id,
@@ -560,6 +575,123 @@ describe('Agent writes within the invoking conversation’s permission tier', ()
         draftContext
       ),
     });
+
+  it('scopes Board writes to membership, preserves proposals and filters Registry listings', async () => {
+    const h = await asAgent('full');
+    h.board('bd_test');
+    h.board('bd_other');
+    const input: ScheduleCreateToolInput = {
+      requestId: 'board-task',
+      boardId: 'bd_test',
+      title: 'Board task',
+      prompt: 'Summarize commits.',
+      rule: { kind: 'manual' },
+    };
+    const draft = buildScheduleCreateDraft(input, draftContext);
+    expect(draft.destination).toEqual({ kind: 'own_session', epoch: 0 });
+    h.missingSession(scheduleOwnSessionId('board-task', 0));
+    const command = {
+      action: 'create' as const,
+      scheduleId: 'board-task',
+      requestId: 'board-task',
+      draft: { ...draft, destination: undefined },
+    };
+    await expect(executeScheduleCommand(h.context, command)).rejects.toThrow(
+      'member of that Board'
+    );
+    h.session('session', { boardId: 'bd_other' });
+    await expect(executeScheduleCommand(h.context, command)).rejects.toThrow(
+      'member of that Board'
+    );
+    h.session('session', { boardId: 'bd_test' });
+    await executeScheduleCommand(h.context, command);
+    await executeScheduleCommand(h.context, command); // Idempotent Board definition replay.
+    expect((await h.repository.read('board-task'))?.definition.boardId).toBe('bd_test');
+    expect(
+      await executeScheduleCommand(h.context, { action: 'list', boardId: 'bd_test', limit: 30 })
+    ).toMatchObject({ matched: 1, schedules: [{ boardId: 'bd_test', scheduleId: 'board-task' }] });
+    expect(await executeScheduleCommand(h.context, { action: 'list', limit: 30 })).toMatchObject({
+      matched: 2,
+    });
+    await executeScheduleCommand(h.context, {
+      action: 'propose',
+      ...input,
+      requestId: 'board-proposal',
+    });
+    expect(
+      h.history().find((entry) => entry.id === 'schedule-proposal-board-proposal')
+    ).toMatchObject({ items: [{ meta: { boardId: 'bd_test' } }] });
+    h.session('session', { boardId: 'bd_other' });
+    const current = (await h.repository.read('board-task'))!;
+    await expect(
+      executeScheduleCommand(h.context, {
+        action: 'edit',
+        scheduleId: 'board-task',
+        requestId: 'foreign-edit',
+        draft: buildScheduleEditDraft(
+          { scheduleId: 'board-task', requestId: 'foreign-edit', boardId: 'bd_other' },
+          current,
+          draftContext
+        ),
+      })
+    ).rejects.toThrow('member of that Board');
+    await expect(
+      executeScheduleCommand(h.context, {
+        action: 'pause',
+        scheduleId: 'board-task',
+        requestId: 'foreign-pause',
+      })
+    ).rejects.toThrow('member of that Board');
+    await expect(
+      executeScheduleCommand(h.context, {
+        action: 'resume',
+        scheduleId: 'board-task',
+        requestId: 'foreign-resume',
+      })
+    ).rejects.toThrow('member of that Board');
+    await expect(
+      executeScheduleCommand(h.context, {
+        action: 'propose',
+        ...input,
+        requestId: 'foreign-proposal',
+      })
+    ).rejects.toThrow('member of that Board');
+  });
+
+  it('rejects archived Boards and archived, foreign or coordinator destinations at save', async () => {
+    const h = await asAgent('full');
+    h.session('session', { boardId: 'bd_test' });
+    h.board('bd_test');
+    const input: ScheduleCreateToolInput = {
+      requestId: 'board-task',
+      boardId: 'bd_test',
+      title: 'Board task',
+      prompt: 'Summarize commits.',
+      rule: { kind: 'manual' },
+      destination: { kind: 'existing_session', sessionId: 'thread' },
+    };
+    const draft = buildScheduleCreateDraft(input, draftContext);
+    const command = {
+      action: 'create' as const,
+      scheduleId: 'board-task',
+      requestId: 'board-task',
+      draft,
+    };
+    for (const extra of [{ isArchived: true }, { boardId: 'bd_other' }, { id: 'main' }]) {
+      h.session('thread', { id: 'thread', agentConfigId: 'agent', boardId: 'bd_test', ...extra });
+      await expect(executeScheduleCommand(h.context, command)).rejects.toThrow(
+        'Choose one of your own chats'
+      );
+    }
+    h.session('thread', { id: 'thread', agentConfigId: 'agent', boardId: 'bd_test' });
+    h.board('bd_test', 2);
+    await expect(executeScheduleCommand(h.context, command)).rejects.toThrow('BOARD_UNAVAILABLE');
+    h.board('bd_test');
+    await executeScheduleCommand(h.context, command);
+    expect((await h.repository.read('board-task'))?.definition.destination).toEqual(
+      input.destination
+    );
+  });
 
   it('stores MCP ids from create/update and preserves omitted versus empty selections', async () => {
     const h = await asAgent('edit');

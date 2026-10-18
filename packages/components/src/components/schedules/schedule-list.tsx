@@ -57,6 +57,7 @@ export function matchingScheduleRuntime(row: ScheduleRegistryRow, runtimes: Sche
 
 export type ScheduleRowContext = {
   machine: string;
+  thread?: string;
   timeZone?: string;
   agent: string;
   /** `null` for a chat-only schedule that is not bound to any project. */
@@ -543,9 +544,10 @@ function ScheduleListRow({
   // A run that is appended to a chat has that chat's workspace, so the
   // destination is the more useful fact than a project it does not have.
   const project =
-    row.destination.kind !== 'new_session'
+    context?.thread ??
+    (row.destination.kind !== 'new_session'
       ? describeDestination(row.destination, t)
-      : (context?.project ?? (row.projectKey || null) ?? t('schedules.chatOnly', 'Chat only'));
+      : (context?.project ?? (row.projectKey || null) ?? t('schedules.chatOnly', 'Chat only')));
   const manual = row.trigger.kind === 'manual';
   const offline = context ? context.presence !== 'online' : false;
   const canToggle = !!onToggle && context?.canToggle !== false;

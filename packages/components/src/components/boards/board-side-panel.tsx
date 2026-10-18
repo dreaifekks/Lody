@@ -34,6 +34,7 @@ import {
 import { useBoardDocument } from '@/hooks/use-board-document';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
+import { BoardSchedules } from './board-schedules';
 import { BoardPanelView, BoardThreadPaneView, type BoardPanelTab } from './board-panel-view';
 import { BoardThreadListView, type BoardThreadItem } from './board-thread-list';
 import { BoardDirectoryTreeView, BoardFileEditorView } from './board-files-view';
@@ -249,6 +250,8 @@ type BoardSidePanelProps = {
   onOpenThreadFull: (session: SessionMeta) => void;
   renderThread: (session: SessionMeta) => ReactNode;
   /** A member to open once (`?boardThread`), the way its row opens it; then `onThreadRequestDone`. */
+  requestedScheduleId?: string | null;
+  onScheduleRequestDone?: () => void;
   requestedThreadId: SessionId | null;
   onThreadRequestDone: () => void;
 };
@@ -273,9 +276,19 @@ function BoardSidePanelContent({
   renderThread,
   requestedThreadId,
   onThreadRequestDone,
+  requestedScheduleId,
+  onScheduleRequestDone,
 }: BoardSidePanelProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<BoardPanelTab>('threads');
+  const [scheduleId, setScheduleId] = useState<string>();
+  useEffect(() => {
+    if (!requestedScheduleId) return;
+    setTab('schedules');
+    setScheduleId(requestedScheduleId);
+    onOpenThread(null);
+    onScheduleRequestDone?.();
+  }, [requestedScheduleId, onScheduleRequestDone, onOpenThread]);
   const [creatingThread, setCreatingThread] = useState(false);
   const { allActiveSessions } = useVisibleSessionMetas();
   const { archivedSessions } = useVisibleArchivedSessionMetas();
@@ -322,6 +335,13 @@ function BoardSidePanelContent({
         >
           {tab === 'threads' ? (
             <BoardThreads board={board} onOpen={openMember} />
+          ) : tab === 'schedules' ? (
+            <BoardSchedules
+              board={board}
+              scheduleId={scheduleId}
+              onSelect={setScheduleId}
+              onOpenThread={openMember}
+            />
           ) : (
             <BoardFiles board={board} />
           )}

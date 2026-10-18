@@ -29,6 +29,12 @@ import { userAtom, currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../s
 import { agentConfigMetaCacheAtom, sessionMetaCacheAtom } from '../src/atoms/doc-meta';
 import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '../src/atoms/presence';
 import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
+import {
+  scheduleRowsForBoard,
+  scheduleBoundSession,
+  isScheduleBoardThread,
+} from '../src/components/schedules/schedule-scope';
+import { buildScheduleRegistryRow, ScheduleDefinitionSchema } from '@lody/shared';
 import { CreateBoardDialog } from '../src/components/boards/create-board-dialog';
 import { changeBoardMembership } from '../src/components/boards/board-membership-dialog';
 import { BoardNotesEditor } from '../src/components/boards/board-notes-panel';
@@ -1426,4 +1432,52 @@ it('shares, renames and archives a Board from its sidebar row menu', async () =>
     await view.unmount();
     await env.destroy();
   }
+});
+
+describe('Board schedule scope', () => {
+  const definition = (scheduleId: string, boardId?: string) =>
+    buildScheduleRegistryRow({
+      definition: ScheduleDefinitionSchema.parse({
+        scheduleId,
+        boardId,
+        title: scheduleId,
+        ownerId: 'user',
+        machineId: 'machine',
+        enabled: true,
+        activationId: 'activation',
+        activeFrom: 0,
+        trigger: { kind: 'manual' },
+        misfirePolicy: { kind: 'run_once' },
+        overlapPolicy: 'queue_one',
+        agent: { agentConfigId: 'agent' },
+        destination: { kind: 'own_session', epoch: 0 },
+        retryPolicy: { dispatchMaxAttempts: 5, dispatchMaxAgeMs: 86400000 },
+        createdAt: 0,
+        updatedAt: 0,
+        createdBy: 'user',
+      }),
+      prompt: 'Synthetic schedule',
+      timeline: [],
+    });
+  it('lists each schedule only in its owning global or Board surface', () => {
+    const global = definition('global');
+    const own = definition('own', 'bd_test');
+    const other = definition('other', 'bd_other');
+    const rows = [global, own, other];
+    expect(scheduleRowsForBoard(rows)).toEqual([global]);
+    expect(scheduleRowsForBoard(rows, 'bd_test')).toEqual([own]);
+    expect(scheduleRowsForBoard(rows, 'bd_other')).toEqual([other]);
+  });
+  it('shows the newest unarchived dedicated thread and never offers the main session', () => {
+    const row = definition('own', 'bd_test');
+    const old = makeSession('old', { scheduleId: 'own', isArchived: true });
+    const next = makeSession('next', { scheduleId: 'own', createdAt: '2026-10-16T00:00:00Z' });
+    const latest = makeSession('latest', { scheduleId: 'own', createdAt: '2026-10-17T00:00:00Z' });
+    expect(scheduleBoundSession(row, [old, next, latest])).toBe(latest);
+    expect(isScheduleBoardThread(makeSession('coordinator'), testBoard())).toBe(false);
+    expect(
+      isScheduleBoardThread(makeSession('foreign', { boardId: 'bd_other' as never }), testBoard())
+    ).toBe(false);
+    expect(isScheduleBoardThread(next, testBoard())).toBe(true);
+  });
 });

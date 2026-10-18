@@ -9,6 +9,10 @@ import {
   scheduleOwnSessionId,
   snapshotAgentRole,
   normalizeLegacyScheduleAgent,
+  normalizeBoardMeta,
+  workspaceFlockKeys,
+  type BoardId,
+  type BoardMeta,
   type AgentRole,
   type AgentRoleInstance,
   type ScheduleAgentRoleRef,
@@ -46,6 +50,7 @@ export type ScheduleRunIdentity = {
   userTurnId: string;
   agentConfigId: string;
   title: string;
+  boardId?: string;
   project?: ProjectRef;
   /** The Role this run resolved, recorded on the Session and its Turn as provenance. */
   role?: ScheduleRunRole;
@@ -82,6 +87,7 @@ export function buildScheduleSessionCreateOptions(
     sessionId: run.sessionId,
     userTurnId: run.userTurnId,
     title: run.title,
+    ...(run.boardId ? { boardId: run.boardId } : {}),
     // The Schedule engine has already refreshed workspace meta for this run.
     workspaceMetaPrewriteSatisfied: true,
     ...buildProjectOptions(run.project),
@@ -152,18 +158,57 @@ export function destinationSessionProblem(args: {
   userId: string;
   machineId: string;
   agentConfigId: string;
+  board?: BoardMeta;
 }): 'SESSION_UNAVAILABLE' | null {
   const { destination, session } = args;
-  if (destination.kind === 'new_session') return null;
   if (session.kind === 'deleted') return 'SESSION_UNAVAILABLE';
   if (session.kind === 'absent')
     return destination.kind === 'existing_session' ? 'SESSION_UNAVAILABLE' : null;
   const meta = session.meta;
-  return meta.userId === args.userId &&
+  return !meta.isArchived &&
+    (!args.board ||
+      (meta.boardId === args.board.id && meta.id !== args.board.coordinatorSessionId)) &&
+    meta.userId === args.userId &&
     meta.machineId === args.machineId &&
     meta.agentConfigId === args.agentConfigId
     ? null
     : 'SESSION_UNAVAILABLE';
+}
+
+/** Choose the first non-archived owned chat. Zero preserves the original identity. */
+export async function resolveScheduleDestinationSession(args: {
+  scheduleId: string;
+  destination: ScheduleDestination;
+  plannedSessionId: SessionId;
+  readSession: (id: SessionId) => Promise<DestinationSessionState>;
+}): Promise<{ sessionId: SessionId; session: DestinationSessionState }> {
+  const { destination, readSession } = args;
+  if (destination.kind !== 'own_session')
+    return { sessionId: args.plannedSessionId, session: await readSession(args.plannedSessionId) };
+  for (let sequence = 0; ; sequence++) {
+    const sessionId = scheduleOwnSessionId(args.scheduleId, destination.epoch, sequence);
+    const session = await readSession(sessionId);
+    if (session.kind !== 'present' || !session.meta.isArchived) return { sessionId, session };
+  }
+}
+
+/** Catalog reads are authoritative for both command validation and handoff. */
+export async function readScheduleBoard(args: {
+  manager: import('../loro/doc').LoroDocumentManager;
+  workspaceId: WorkspaceId;
+  boardId: string | undefined;
+  localOnly: boolean;
+}): Promise<BoardMeta | undefined> {
+  if (!args.boardId) return undefined;
+  const docId = getWorkspaceFlockDocId(args.workspaceId);
+  if (!args.localOnly) await args.manager.syncFlockDocOrThrow(docId, { reason: 'schedule:board' });
+  const catalog = await args.manager.repo.openFlockDoc(docId);
+  const board = normalizeBoardMeta(
+    catalog.flock.get(workspaceFlockKeys.board(args.boardId as BoardId))
+  );
+  if (!board || board.archivedAtMs !== undefined)
+    throw new ScheduleConfigurationError('BOARD_UNAVAILABLE');
+  return board;
 }
 
 /**

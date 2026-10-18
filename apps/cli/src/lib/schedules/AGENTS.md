@@ -43,9 +43,8 @@
   validates it as a trigger before writing; it publishes one idempotent
   `schedule_proposal` system notice per `requestId` through
   `schedule-proposal.ts` and reports the person's outcome on a repeated call.
-  The tool description tells the agent to ask rather than guess when the
-  prompt, rule or destination is unclear — that guidance is the product
-  behaviour, so keep it in step with what the card can resolve.
+  Tool guidance must ask when prompt, rule or destination is unclear and match
+  what the card can resolve.
 - `mcpServerIds` is optional: new/owned chats use workspace `enabledByDefault` ids
   when absent, and `[]` means none. Freeze the choice on the prepared turn; retries
   keep it. Existing-chat destinations inherit the chat's choice, else defaults. CLI/MCP writes
@@ -67,17 +66,22 @@
   the PRODUCTION `prepareSessionInput` for this — an `ownerTarget` bypasses
   project resolution, so only that path proves the resulting `SessionMeta`
   carries no `project`, `repoFullName` or `baseBranch`.
-- A `manual` trigger is never due and has no next slot; only a Registry manual
-  request plans it. `definition.destination` chooses the Session: `new_session`
-  derives one per run, `own_session` derives ONE from schedule id + epoch, and
-  `existing_session` is the person's chosen chat. `scheduleRunIds` is the single
-  place that decides this; turn and source ids stay unique per run. Before
-  handoff, `destinationSessionProblem` requires a shared chat to be absent (owned
-  only) or the owner's, on this machine, driven by this Agent — the exact fields
-  `materializePreparedSessionInput` refuses to change — and reports
-  `SESSION_UNAVAILABLE` as a recoverable configuration problem. The command
-  service applies the same rule on create/edit and rejects a project on a
-  schedule that sends into a chat.
+- A `manual` trigger has no next slot; Registry manual requests alone plan it.
+  `new_session` derives a Session per run; `existing_session` names an owned,
+  unarchived chat on this machine with the same Agent. `own_session` selects the
+  first absent/unarchived id from schedule + epoch + sequence; zero preserves the
+  original id. Preparation and the selected `sessionId` commit together in the
+  ledger, before mutation. Retries validate that frozen id, never select again.
+  A destination archived after preparation fails that run as `SESSION_UNAVAILABLE`;
+  before preparation it is recoverable, with no attempt or retained slot.
+- Optional `boardId` belongs to the definition and Registry fingerprint. Missing or
+  archived Boards block with `BOARD_UNAVAILABLE`; existing destinations must be
+  members other than the coordinator. Created Sessions carry only `boardId`, never
+  `boardRole`. Agent writes check both stored and requested Board membership;
+  proposal cards retain it. Board schedules default to `own_session`.
+- `_lodyScheduleId` is per-turn history provenance, not author identity or inherited
+  run configuration. It makes completion/failure a `schedule` Board event, including
+  descendant threads, with passive delivery. See [runtime flow](README.md).
 - `definition.agentRole` (`roleId`, optional `instanceId`) is a reference, never a
   copy. `prepare` reads the Role as it is then (`resolveScheduleRunRole`: the
   owner's readable catalog, `selectAgentRoleInstance` held to this machine, the

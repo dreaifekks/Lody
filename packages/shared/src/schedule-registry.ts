@@ -70,6 +70,7 @@ export function buildScheduleRegistryRow(document: ScheduleDocument): ScheduleRe
   const d = document.definition;
   return ScheduleRegistryRowSchema.parse({
     scheduleId: d.scheduleId,
+    boardId: d.boardId,
     title: d.title,
     ownerId: d.ownerId,
     machineId: d.machineId,
@@ -103,14 +104,12 @@ export function scheduleRunKey(
 export function manualScheduleRunKey(scheduleId: string, manualRunId: string): string {
   return digest([scheduleId, 'manual', manualRunId]);
 }
-/**
- * The chat this schedule owns for `own_session`. Derived, never stored: the
- * same schedule and epoch always name the same chat, so a retry, a restart or
- * a second device cannot create a duplicate, and "start a new chat" is only a
- * new epoch.
+/** Deterministic dedicated ids. Sequence zero retains the original schedule + epoch id.
+ * Preparation skips archived sequences and freezes the chosen id in the run ledger.
  */
-export function scheduleOwnSessionId(scheduleId: string, epoch: number): SessionId {
-  return uuidV8(['lody.schedule.v1', 'own-session', scheduleId, epoch]) as SessionId;
+export function scheduleOwnSessionId(scheduleId: string, epoch: number, sequence = 0): SessionId {
+  const identity = ['lody.schedule.v1', 'own-session', scheduleId, epoch];
+  return uuidV8(sequence === 0 ? identity : [...identity, sequence]) as SessionId;
 }
 
 function uuidV8(payload: unknown): string {
