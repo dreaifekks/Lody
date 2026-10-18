@@ -4,6 +4,7 @@ import {
   machineSupportsScheduleAgentRoles,
   machineSupportsSchedulesProtocol,
   type AgentConfigMeta,
+  type BoardMeta,
   type MachineLegacyMetaFields,
   type MachineMeta,
   type ProjectRef,
@@ -28,11 +29,18 @@ export type ScheduleSaveContext = {
   /** Local projects available on the agent's machine. */
   machineLocalProjectIds: ReadonlySet<string>;
   destination: ScheduleDestination;
+  board?: BoardMeta;
   /**
    * The chat runs will be appended to, once it exists: a picked chat, or an
    * owned chat after its first run. Its Agent and machine are then fixed.
    */
-  destinationSession?: { agentConfigId: string; machineId: string } | null;
+  destinationSession?: {
+    agentConfigId: string;
+    machineId: string;
+    id?: string;
+    boardId?: string;
+    isArchived?: boolean;
+  } | null;
 };
 
 /**
@@ -147,6 +155,33 @@ export function collectScheduleSaveIssues(
   // A shared chat already has an Agent on a machine; the CLI refuses to append
   // a turn driven by any other. Say so here rather than at dispatch time.
   const session = context.destinationSession;
+  if (context.board?.archivedAtMs !== undefined)
+    push(
+      'form',
+      'invalid',
+      t(
+        'schedules.errors.BOARD_UNAVAILABLE',
+        'This Board is archived or unavailable. Restore it to run its schedules.'
+      )
+    );
+  if (
+    context.destination.kind === 'existing_session' &&
+    context.destination.sessionId &&
+    (!session ||
+      session.isArchived ||
+      (context.board &&
+        (session.boardId !== context.board.id ||
+          session.id === context.board.coordinatorSessionId)))
+  )
+    push(
+      'destination',
+      'invalid',
+      t(
+        'schedules.errors.SESSION_UNAVAILABLE',
+        'The destination chat is unavailable or archived. Restore it or choose another chat.'
+      )
+    );
+
   if (session && agentConfig && agentConfig.id !== session.agentConfigId)
     push(
       'agent',

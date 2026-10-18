@@ -84,7 +84,7 @@ export const BoardReportEventSchema = z
     machineId: z.string(),
     generation: z.number().optional(),
     contextWindowUsage: z.object({ size: z.number(), used: z.number() }).optional(),
-    origin: z.enum(['human', 'agent', 'system']),
+    origin: z.enum(['human', 'agent', 'system', 'schedule']),
     output: OperationOutputPreviewSchema.optional(),
     awaitingUserSince: z.number().optional(),
     noticeId: z.string().optional(),

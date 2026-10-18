@@ -18,6 +18,7 @@ export type SessionDetailSearch = {
   board?: boolean;
   /** With `board`: the thread to open in the Board panel, once. */
   boardThread?: string;
+  boardSchedule?: string;
 };
 
 const SessionDetailRoute = () => {
@@ -55,6 +56,7 @@ const SessionDetailRoute = () => {
         urlSimulator={search.simulator}
         urlBoard={search.board}
         urlBoardThread={search.boardThread}
+        urlBoardSchedule={search.boardSchedule}
       />
     </AppThemeShell>
   );
@@ -88,6 +90,7 @@ export const Route = createFileRoute('/$workspaceName/_auth/sessions/$sessionId'
     simulator: parseBrowserFlag(search.simulator),
     board: parseBrowserFlag(search.board),
     boardThread: typeof search.boardThread === 'string' ? search.boardThread : undefined,
+    boardSchedule: typeof search.boardSchedule === 'string' ? search.boardSchedule : undefined,
   }),
   /* Entry-scoped last-active-tab restoration. An ABSENT `?tab` means "no
      explicit choice" (external entries: sidebar rows, notifications, pasted

@@ -34,6 +34,7 @@ const fields = {
 export const ScheduleCreateToolInputSchema = z
   .object({
     requestId: id,
+    boardId: ScheduleDefinitionSchema.shape.boardId,
     title: fields.title,
     prompt: fields.prompt,
     rule: fields.rule,
@@ -48,6 +49,7 @@ export const ScheduleUpdateToolInputSchema = z
   .object({
     scheduleId: id,
     requestId: id,
+    boardId: ScheduleDefinitionSchema.shape.boardId,
     title: fields.title.optional(),
     prompt: fields.prompt.optional(),
     rule: fields.rule.optional(),
@@ -81,7 +83,7 @@ const PROBLEMS: Record<ProposalTargetProblem, string> = {
 };
 
 const resolveTarget = (
-  meta: Pick<ScheduleProposalMeta, 'target' | 'destination'>,
+  meta: Pick<ScheduleProposalMeta, 'target' | 'destination' | 'boardId'>,
   context: ScheduleDraftContext
 ) => {
   const resolved = resolveScheduleProposalTarget({
@@ -118,6 +120,7 @@ export function buildScheduleCreateDraft(
   const machineId = target.agentConfig.machineId;
   return {
     title: input.title,
+    boardId: input.boardId,
     prompt: input.prompt,
     trigger: scheduleProposalRuleToTrigger(
       input.rule,
@@ -175,6 +178,7 @@ export function buildScheduleEditDraft(
         : definition.project;
   return {
     title: input.title ?? definition.title,
+    boardId: input.boardId ?? definition.boardId,
     prompt: input.prompt ?? current.prompt,
     trigger: input.rule
       ? scheduleProposalRuleToTrigger(input.rule, context.now, context.machineTimeZone(machineId))

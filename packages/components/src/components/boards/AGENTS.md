@@ -97,5 +97,8 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 - Reviewer/other grandchild completions return through their parent; blockers still
   report. A thread coordinates its own task: it opens sessions, decides changes and
   quotes reviewer conclusions verbatim. Cancellation never creates a report.
-- Startup prompts describe implemented reports. Round enforcement, handoff and digest
-  scheduling remain later steps.
+- The Schedules tab reuses `SchedulesWorkspace` scoped by `boardId`; ordinary
+  schedules stay in the global list. `?boardSchedule` opens this tab once, like
+  `boardThread`. Destination choices exclude the coordinator and other Boards.
+  Scheduled completions use per-turn provenance, bypass human/grandchild completion
+  filters and freeze passive delivery. Digest scheduling into the coordinator is deferred.

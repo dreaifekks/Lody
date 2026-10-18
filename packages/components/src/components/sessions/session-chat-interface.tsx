@@ -9,6 +9,7 @@ import {
   buildDraftUserHistoryEntry,
   type SessionAttachmentDraft,
 } from '@/lib/session-attachment-draft';
+import { useOpenSchedule } from '../schedules/schedule-navigation';
 import { useSchedules } from '@/hooks/use-schedules';
 import { useWorkspaceGitHubRepositories } from '@/hooks/use-workspace-github-repositories';
 import { useGitHubAvatarUser } from '@/hooks/use-github-avatar';
@@ -69,7 +70,6 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { useRouter } from '@tanstack/react-router';
 import { Spinner } from '@lody/ui/spinner';
 import { Switch } from '@lody/ui/switch';
 import { Button } from '@lody/ui/button';
@@ -159,7 +159,6 @@ import {
   conversationFontSizeAtom,
   conversationWideModeAtom,
   currentWorkspaceIdAtom,
-  currentWorkspaceSlugAtom,
   getAllAgentConfigAtom,
   queuedMessageBehaviorAtom,
   userAtom,
@@ -5487,9 +5486,8 @@ export const SessionChatInterface = memo(
       if (run.url) window.open(run.url, '_blank', 'noopener,noreferrer');
     }, []);
 
-    const router = useRouter();
-    const workspaceSlug = useAtomValue(currentWorkspaceSlugAtom);
     const scheduleRegistry = useSchedules();
+    const openSchedule = useOpenSchedule();
 
     // Presentation-only "opened by" provenance (MCP `lody_session_create`).
     // Read from the already-loaded session meta cache, so it costs no extra
@@ -7182,14 +7180,7 @@ export const SessionChatInterface = memo(
                                     (row) => row.scheduleId === session.scheduleId
                                   )?.title ?? t('schedules.source', 'Scheduled task'),
                                 onOpen: () => {
-                                  if (workspaceSlug && session.scheduleId)
-                                    void router.navigate({
-                                      to: '/$workspaceName/schedules/$scheduleId',
-                                      params: {
-                                        workspaceName: workspaceSlug,
-                                        scheduleId: session.scheduleId,
-                                      },
-                                    });
+                                  if (session.scheduleId) openSchedule(session.scheduleId);
                                 },
                               }
                             : null

@@ -28,7 +28,7 @@ export type ScheduleEnginePorts<Prepared> = {
   list: () => Promise<ScheduleRegistryRow[]>;
   read: (scheduleId: string) => Promise<ScheduleDocument | null>;
   validateTarget: (run: ScheduleRun<Prepared>) => Promise<void>;
-  prepare: (run: ScheduleRun<Prepared>) => Promise<Prepared>;
+  prepare: (run: ScheduleRun<Prepared>) => Promise<Prepared & { sessionId: string }>;
   materialize: (prepared: Prepared) => Promise<void>;
   isDispatched: (prepared: Prepared) => Promise<boolean>;
   dispatch: (prepared: Prepared) => Promise<void>;
@@ -204,7 +204,10 @@ export class ScheduleEngine<Prepared> {
         });
         if (current.prepared === undefined) {
           const prepared = await p.prepare(current);
-          current = p.store.transition(run.runKey, ['claimed'], { prepared });
+          current = p.store.transition(run.runKey, ['claimed'], {
+            prepared,
+            sessionId: prepared.sessionId,
+          });
         }
         await p.materialize(current.prepared!);
         p.store.transition(run.runKey, ['claimed'], { state: 'session_prepared' });
@@ -254,7 +257,7 @@ export class ScheduleEngine<Prepared> {
           lastDispatch: {
             scheduledFor: run.scheduledFor,
             dispatchedAt: p.now(),
-            sessionId: run.sessionId,
+            sessionId: current.sessionId,
           },
         });
       } catch (error) {
@@ -267,7 +270,13 @@ export class ScheduleEngine<Prepared> {
         } else {
           const code =
             error instanceof ScheduleConfigurationError ? error.code : 'DISPATCH_UNAVAILABLE';
-          if (error instanceof ScheduleConfigurationError)
+          if (code === 'SESSION_UNAVAILABLE' && current.prepared !== undefined)
+            p.store.transition(run.runKey, [current.state], {
+              state: 'failed',
+              errorCode: code,
+              retryAt: undefined,
+            });
+          else if (error instanceof ScheduleConfigurationError)
             p.store.transition(run.runKey, [current.state], {
               state: 'retry_wait',
               attempts: run.attempts,

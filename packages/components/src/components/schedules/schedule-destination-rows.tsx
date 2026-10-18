@@ -64,7 +64,9 @@ export function ScheduleDestinationRows({
   onOpenSession,
   issues = [],
   disabled,
+  board = false,
 }: {
+  board?: boolean;
   value: ScheduleDestination;
   onChange: (next: ScheduleDestination) => void;
   /** Chats the person may send into (their own, on any machine). */
@@ -84,9 +86,15 @@ export function ScheduleDestinationRows({
   const chatIssues = value.kind === 'existing_session' ? issues : [];
   const sendToIssues = value.kind === 'existing_session' ? [] : issues;
   const labels: Record<ScheduleDestination['kind'], string> = {
-    new_session: t('schedules.destination.newSession', 'New chat each run'),
-    own_session: t('schedules.destination.ownSession', 'One chat for this task'),
-    existing_session: t('schedules.destination.existingSession', 'An existing chat'),
+    new_session: board
+      ? t('boards.schedules.newThread', 'New thread each run')
+      : t('schedules.destination.newSession', 'New chat each run'),
+    own_session: board
+      ? t('boards.schedules.ownThread', 'Dedicated thread')
+      : t('schedules.destination.ownSession', 'One chat for this task'),
+    existing_session: board
+      ? t('boards.schedules.existingThread', 'An existing Board thread')
+      : t('schedules.destination.existingSession', 'An existing chat'),
   };
   return (
     <>

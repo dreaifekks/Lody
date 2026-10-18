@@ -62,6 +62,7 @@ const prepare = (
   {
     prompt = 'Say good morning.',
     title = 'Morning check-in',
+    boardId = undefined as string | undefined,
     mcpServerIds = [] as McpServerId[],
   } = {}
 ) =>
@@ -75,6 +76,7 @@ const prepare = (
       userTurnId: 'turn-1',
       agentConfigId: 'agent',
       title,
+      boardId,
       project,
     }),
     {
@@ -86,6 +88,11 @@ const prepare = (
   );
 
 describe('Session preparation for a scheduled run', () => {
+  it('creates an ordinary Board member without a coordinator role', async () => {
+    const prepared = await prepare(undefined, { boardId: 'bd_test' });
+    expect(prepared.meta.boardId).toBe('bd_test');
+    expect(prepared.meta.boardRole).toBeUndefined();
+  });
   it.each([{ selection: ['chat-mcp'] }, { selection: [] }])(
     'retains an existing chat MCP choice $selection instead of Schedule defaults',
     async ({ selection }) => {

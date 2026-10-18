@@ -64,6 +64,8 @@ export const ScheduleDestinationSchema = z.discriminatedUnion('kind', [
 ]);
 export type ScheduleDestination = z.infer<typeof ScheduleDestinationSchema>;
 export const DEFAULT_SCHEDULE_DESTINATION: ScheduleDestination = { kind: 'new_session' };
+export const defaultScheduleDestination = (boardId?: string): ScheduleDestination =>
+  boardId ? { kind: 'own_session', epoch: 0 } : DEFAULT_SCHEDULE_DESTINATION;
 
 export const ScheduleAgentSchema = z
   .object({
@@ -132,6 +134,7 @@ export function normalizeLegacyScheduleAgent(
 export const ScheduleDefinitionSchema = z
   .object({
     scheduleId: identifier,
+    boardId: z.string().min(1).max(128).optional(),
     title: z.string().trim().min(1).max(200),
     ownerId: z.string().min(1),
     // Pin execution to the machine that the human authorized. Moving an Agent
@@ -186,6 +189,7 @@ export type ScheduleDocument = {
 
 export const ScheduleRegistryRowSchema = ScheduleDefinitionSchema.pick({
   scheduleId: true,
+  boardId: true,
   title: true,
   ownerId: true,
   machineId: true,

@@ -1,4 +1,11 @@
 {
+  "boards.schedules.emptyHelp": "Choose what to do and when to run it.",
+  "schedules.errors.SESSION_UNAVAILABLE": "The destination chat is unavailable or archived. Restore it or choose another chat.",
+  "schedules.errors.BOARD_UNAVAILABLE": "This Board is archived or unavailable. Restore it to run its schedules.",
+  "boards.schedules.existingThread": "An existing Board thread",
+  "boards.schedules.ownThread": "Dedicated thread",
+  "boards.schedules.newThread": "New thread each run",
+  "boards.schedules.title": "Schedules",
   "settings.agent.dialog.deepseek.configPath": "Configuration path: {{path}}",
   "sessions.relations.stopCollaboration": "Stop all conversation collaboration",
   "sessions.relations.resumeCollaboration": "Restore collaboration",

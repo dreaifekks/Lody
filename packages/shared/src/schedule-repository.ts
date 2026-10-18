@@ -12,7 +12,7 @@ import {
   scheduleRegistryKeys,
 } from './schedule-registry';
 import {
-  DEFAULT_SCHEDULE_DESTINATION,
+  defaultScheduleDestination,
   ScheduleActivitySchema,
   ScheduleDefinitionSchema,
   ScheduleTombstoneSchema,
@@ -22,6 +22,7 @@ import {
 
 export type ScheduleDraft = Pick<
   ScheduleDefinition,
+  | 'boardId'
   | 'title'
   | 'machineId'
   | 'trigger'
@@ -125,6 +126,7 @@ export class ScheduleRepository {
         // definition but present (possibly undefined) keys in the mirrored map.
         definition: {
           ...document.definition,
+          boardId: document.definition.boardId,
           project: document.definition.project,
           agentRole: document.definition.agentRole,
           mcpServerIds: document.definition.mcpServerIds,
@@ -181,7 +183,7 @@ export class ScheduleRepository {
     // idempotency comparison must see the same shape on both sides.
     const incoming: ScheduleDraft = {
       ...args.draft,
-      destination: args.draft.destination ?? DEFAULT_SCHEDULE_DESTINATION,
+      destination: args.draft.destination ?? defaultScheduleDestination(args.draft.boardId),
     };
     const prior = previous?.timeline.find((entry) => entry.id === args.activityId);
     if (prior) {
@@ -194,6 +196,7 @@ export class ScheduleRepository {
         agent,
         agentRole,
         mcpServerIds,
+        boardId,
         project,
         destination,
         retryPolicy,
@@ -207,6 +210,7 @@ export class ScheduleRepository {
         agent,
         agentRole,
         mcpServerIds,
+        boardId,
         project,
         destination,
         retryPolicy,

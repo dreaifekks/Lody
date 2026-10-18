@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { useAtomValue } from 'jotai';
-import { useNavigate } from '@tanstack/react-router';
+import { useOpenSchedule } from './schedule-navigation';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { CalendarClock } from 'lucide-react';
@@ -26,7 +26,8 @@ import {
   type ScheduleProposalMeta,
   type SessionId,
 } from '@lody/shared';
-import { currentWorkspaceSlugAtom, userAtom } from '@/atoms';
+import { userAtom, sessionListAtom, archivedSessionListAtom } from '@/atoms';
+import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { getAllAgentConfigAtom } from '@/atoms/agents';
 import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
@@ -204,8 +205,7 @@ export function ScheduleProposalNotice({
   itemIndex,
 }: ScheduleProposalNoticeProps) {
   const { t, i18n } = useTranslation();
-  const navigate = useNavigate();
-  const slug = useAtomValue(currentWorkspaceSlugAtom);
+  const navigateToSchedule = useOpenSchedule();
   const user = useAtomValue(userAtom);
   const activeRuntime = useAtomValue(activeWorkspaceRuntimeAtom);
   const scope = useResolvedWorkspaceScope();
@@ -319,10 +319,29 @@ export function ScheduleProposalNotice({
       ),
     [local.projects, target?.agentConfig.machineId]
   );
+  const { boards } = useWorkspaceCatalog();
+  const board = boards.find((entry) => entry.id === meta.boardId);
+  const activeSessions = useAtomValue(sessionListAtom);
+  const archivedSessions = useAtomValue(archivedSessionListAtom);
+  const destinationSession = [...activeSessions, ...archivedSessions].find(
+    (entry) =>
+      target?.destination.kind === 'existing_session' && entry.id === target.destination.sessionId
+  );
   const blockers = target
     ? collectScheduleSaveBlockers(
         {
           workspaceReady: !!runtime,
+          board,
+          disabledReason:
+            meta.boardId && !board
+              ? t(
+                  'schedules.errors.BOARD_UNAVAILABLE',
+                  'This Board is archived or unavailable. Restore it to run its schedules.'
+                )
+              : undefined,
+          destinationSession: destinationSession
+            ? { ...destinationSession, agentConfigId: destinationSession.agentConfigId ?? '' }
+            : null,
           userId: user?.id,
           agent: target.agent,
           usesAgentRole: !!target.agentRole,
@@ -359,16 +378,7 @@ export function ScheduleProposalNotice({
     [entryId, itemIndex, runtime, sessionId]
   );
 
-  const openSchedule = useCallback(
-    (scheduleId: string) => {
-      if (slug)
-        void navigate({
-          to: '/$workspaceName/schedules/$scheduleId',
-          params: { workspaceName: slug, scheduleId },
-        });
-    },
-    [navigate, slug]
-  );
+  const openSchedule = (scheduleId: string) => navigateToSchedule(scheduleId, meta.boardId);
 
   const create = useCallback(() => {
     void (async () => {
@@ -423,6 +433,7 @@ export function ScheduleProposalNotice({
                 machineId: final.target.agentConfig.machineId,
                 agent: final.target.agent,
                 mcpServerIds: meta.mcpServerIds,
+                boardId: meta.boardId,
                 ...(final.target.agentRole ? { agentRole: final.target.agentRole } : {}),
                 ...(final.target.project ? { project: final.target.project } : {}),
                 destination: final.target.destination,

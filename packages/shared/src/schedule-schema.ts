@@ -5,6 +5,7 @@ import type { ScheduleDefinition, ScheduleActivity } from './schedule-types';
 export const scheduleDocSchema = schema({
   definition: schema.LoroMap({
     scheduleId: schema.String(),
+    boardId: schema.String({ required: false }),
     title: schema.String(),
     ownerId: schema.String(),
     machineId: schema.String(),
