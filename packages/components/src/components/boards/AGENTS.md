@@ -15,17 +15,17 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   `boardEntrySearch` (the coordinator's own Tab, `?board=1`); a thread adds
   `boardThread` (`boardMemberEntrySearch`). Clear these before opening the member
   like its row. In-Board entries use the mounted navigation hook.
-- A new Board has a name, optional goal and coordinator created without a first
-  turn (`createSession`); the user speaks first. The row records
-  `files.machineId`, the coordinator's machine. Closing the coordinator's Tab never
-  deletes it as an empty session (`closeSessionTab`).
+- New Boards have a name, optional goal and coordinator without a first turn
+  (`createSession`). `files.machineId` records its machine. `closeSessionTab` never
+  deletes an empty coordinator.
 - The panel's thread rows use visible metadata and one derived presence atom; they
   never acquire member documents. Live activity takes priority over waiting markers;
   without presence, only a marker newer than `lastMessageAt` means waiting. Thread
   and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
   Board rows aggregate all members. Rows have no "done" mark.
-  Conversation cards alone show a secondary 14px Check for idle, read threads with
-  `lastMessageAt`; waiting, working and unread keep precedence.
+  Cards alone show a 14px Check for a succeeded create-Operation turn matching
+  `latestUserMsgId` and `lastHandledUserMsgId`, with no processing turn, synced
+  presence, online machine and idle/read status. Other outcomes never imply success.
   localProject catalogs are acquired at list level, once per machine.
 - `BoardSidebar` selects by Session/Tab `boardId`; scalar reads, memoized rows.
 - Thread rows reuse sidebar actions (no pin) and `SessionHeaderMenu`. Board glyph:
@@ -34,17 +34,16 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 - A thread opened in the panel is a `SessionChatInterface` whose workspace session
   is the thread itself. Never use a `side-session:` tab id: closing it deletes the Session.
 - `useBoardSessionNavigation` owns every in-Board session entry: cards, links,
-  relations, breadcrumbs, rows and the palette. Side mode opens in the panel;
-  narrow windows and expanded thread pages use page navigation. Direct children
+  relations, breadcrumbs, rows and the palette. Only same-Board members open in the panel;
+  other targets, narrow windows and expanded pages navigate normally. Direct children
   (Tab/Side Chat) use `opensInCoordinatorPage`, never a second surface.
-- Thread rows keep a thread's opened sessions and Tabs under it, grouped by the
-  family's strongest state.
+- Thread rows group opened sessions and Tabs by the family's strongest state.
 - Board entries reset to half and half with `layoutResetKey` (Board id + entry),
   without remounting or persisting the split.
 - The Files tab is the session file tree (`FileTreeProviderView`) over
   `BoardDirectoryFileProvider`, with shared notes above it. Tree opens stay inside
   Files; conversation links use closeable viewer tabs carrying `BoardFilePreview`.
-  Both read member resources with `boardId`, never the session filesystem provider.
+  Current-workspace Board paths use member resources, never the session provider.
 - `BoardSidePanel`/`BoardSettings` key state by workspace and Board id. Settings
   open from the conversation header gear, never the panel.
 - The Board directory `<data dir>/boards/<ws>/<board>/{files,memory}/` lives on

@@ -2853,6 +2853,7 @@ const SystemMessageRowView = ({
             liveBoardThreads={boardMainSession}
             cards={item.items.map((target) => ({
               sessionId: target.target.sessionId,
+              userTurnId: target.target.userTurnId,
               fallbackTitle: target.label,
               status: target.status,
             }))}

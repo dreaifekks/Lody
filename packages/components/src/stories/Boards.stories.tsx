@@ -32,7 +32,11 @@ import {
 import { currentWorkspaceIdAtom } from '@/atoms';
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '@/atoms/settings';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
-import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '@/atoms/presence';
+import {
+  lodyPresenceNowMsAtom,
+  lodyPresenceStatesAtom,
+  lodyPresenceSyncStateAtom,
+} from '@/atoms/presence';
 import {
   DesktopRunConfigMenu,
   DesktopPermissionModeButton,
@@ -1006,13 +1010,24 @@ assignedStore.set(experimentalFeaturesEnabledAtom, true);
 assignedStore.set(boardExperimentEnabledAtom, true);
 assignedStore.set(sessionMetaCacheAtom, {
   [getSessionRoomId(COORDINATOR)]: coordinatorSession,
-  ...Object.fromEntries(members.map((session) => [getSessionRoomId(session.id), session])),
+  ...Object.fromEntries(
+    members.map((session) => [
+      getSessionRoomId(session.id),
+      {
+        ...session,
+        latestUserMsgId: `${session.id}-turn`,
+        lastHandledUserMsgId: `${session.id}-turn`,
+      },
+    ])
+  ),
 });
 assignedStore.set(lodyPresenceNowMsAtom, NOW);
+assignedStore.set(lodyPresenceSyncStateAtom, 'synced');
 assignedStore.set(
   lodyPresenceStatesAtom,
-  parseLodyPresenceStates(
-    Object.fromEntries(
+  parseLodyPresenceStates({
+    machine: { kind: 'machine', machineId: 'devnuc', instanceId: 'story', updatedAt: NOW },
+    ...Object.fromEntries(
       Object.entries(live).map(([id, status]) => [
         id,
         {
@@ -1024,8 +1039,8 @@ assignedStore.set(
           status,
         },
       ])
-    )
-  )
+    ),
+  })
 );
 const assigned = [THREAD, 'thread-rounds', 'thread-memory', 'thread-ios', 'thread-entry-review'];
 function AssignedThreadCards({
@@ -1085,7 +1100,11 @@ export const AssignedThreads: Story = {
 export const CompletedThreadCard: Story = {
   render: () => (
     <Provider store={assignedStore}>
-      <BoardThreadStatusCard sessionId={THREAD} onNavigateSession={() => {}} />
+      <BoardThreadStatusCard
+        sessionId={THREAD}
+        successfulTurnId={`${THREAD}-turn`}
+        onNavigateSession={() => {}}
+      />
     </Provider>
   ),
 };

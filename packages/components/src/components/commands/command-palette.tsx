@@ -93,7 +93,7 @@ export function CommandPalette() {
       if (!workspaceSlug) return;
       handleOpenChange(false);
       const boardNavigation = store.get(boardSessionNavigationAtom);
-      if (boardNavigation) {
+      if (boardNavigation && boardNavigation.boardId === session.boardId) {
         boardNavigation.open({ sessionId: session.id });
         return;
       }

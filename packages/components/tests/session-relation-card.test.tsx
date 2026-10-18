@@ -6,6 +6,12 @@ import { createStore, Provider } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getSessionRoomId, type SessionHistoryParsed, type SessionId } from '@lody/shared';
 
+import {
+  lodyPresenceStatesAtom,
+  lodyPresenceNowMsAtom,
+  lodyPresenceSyncStateAtom,
+} from '../src/atoms/presence';
+import { parseLodyPresenceStates, type OperationProgressContent } from '@lody/shared';
 import { setDocMetaByRoomIdAtom } from '../src/atoms/doc-meta';
 import {
   MessageRowView,
@@ -159,6 +165,12 @@ describe('Session relation cards', () => {
   });
   it('shows a Board main session each assigned thread as it is now, and no long receipt', async () => {
     const store = createStore();
+    const online = parseLodyPresenceStates({
+      machine: { kind: 'machine', machineId: 'devnuc', instanceId: 'test', updatedAt: 1000 },
+    });
+    store.set(lodyPresenceNowMsAtom, 1000);
+    store.set(lodyPresenceSyncStateAtom, 'synced');
+    store.set(lodyPresenceStatesAtom, online);
     store.set(setDocMetaByRoomIdAtom, getSessionRoomId(openerSessionId), {
       id: openerSessionId,
       machineId: 'machine-1',
@@ -178,6 +190,8 @@ describe('Session relation cards', () => {
       isWorktree: true,
       lastMessageAt: 20,
       lastReadAt: 10,
+      latestUserMsgId: 'user-turn',
+      lastHandledUserMsgId: 'user-turn',
     };
     store.set(setDocMetaByRoomIdAtom, getSessionRoomId(createdSessionId), thread);
     const progress: SessionHistoryParsed = {
@@ -244,15 +258,62 @@ describe('Session relation cards', () => {
     expect(check).not.toBeNull();
     expect(check?.getAttribute('width')).toBe('14');
     expect(check?.parentElement).toBe(card?.querySelector('button > span')?.lastElementChild);
+    const setThread = (patch: Record<string, unknown>) =>
+      act(async () =>
+        store.set(setDocMetaByRoomIdAtom, getSessionRoomId(createdSessionId), {
+          ...thread,
+          lastReadAt: 20,
+          ...patch,
+        })
+      );
+    for (const status of ['failed', 'cancelled', 'running', 'created'] as const) {
+      const content = progress.items[0] as OperationProgressContent;
+      await render({
+        ...progress,
+        items: [{ ...content, items: content.items.map((item) => ({ ...item, status })) }],
+      });
+      expect(card?.querySelector('svg.lucide-check'), status).toBeNull();
+    }
+    await render(progress);
+    expect(card?.querySelector('svg.lucide-check')).not.toBeNull();
+    for (const patch of [
+      { processingUserMsgId: 'user-turn' },
+      { latestUserMsgId: 'followup', lastHandledUserMsgId: 'followup' },
+      { lastHandledUserMsgId: undefined },
+      { collaborationStopped: true },
+    ]) {
+      await setThread(patch);
+      expect(card?.querySelector('svg.lucide-check')).toBeNull();
+    }
+    await setThread({});
+    for (const state of ['connecting', 'disconnected'] as const) {
+      await act(async () => store.set(lodyPresenceSyncStateAtom, state));
+      expect(card?.querySelector('svg.lucide-check')).toBeNull();
+    }
+    await act(async () => {
+      store.set(lodyPresenceSyncStateAtom, 'synced');
+      store.set(lodyPresenceStatesAtom, {});
+    });
+    expect(card?.querySelector('svg.lucide-check')).toBeNull();
+    await act(async () => store.set(lodyPresenceStatesAtom, online));
+    expect(card?.querySelector('svg.lucide-check')).not.toBeNull();
     // A fresh idle session has not completed anything yet.
     await act(async () =>
       store.set(setDocMetaByRoomIdAtom, getSessionRoomId(createdSessionId), {
         ...thread,
         lastMessageAt: undefined,
         lastReadAt: undefined,
+        latestUserMsgId: undefined,
+        lastHandledUserMsgId: undefined,
       })
     );
     expect(card?.querySelector('svg.lucide-check')).toBeNull();
+    await setThread({});
+    // Mixed system rows and legacy standalone completions carry the same exact result.
+    await render({ ...progress, items: [...progress.items, { type: 'text', text: 'Context' }] });
+    expect(container.querySelector('[data-board-thread-card] svg.lucide-check')).not.toBeNull();
+    await render(completionMessage);
+    expect(container.querySelector('[data-board-thread-card] svg.lucide-check')).not.toBeNull();
     // Results that went along with a message are one line, not replies.
     await render({
       id: 'batch',

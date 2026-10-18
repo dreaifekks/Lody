@@ -65,7 +65,8 @@ describe('buildSessionMentionItems', () => {
         session({ id: 'self', boardId: 'bd_one' as never }),
         session({ id: 'archived', boardId: 'bd_one' as never, isArchived: true }),
       ],
-      'self'
+      'self',
+      true
     );
     expect(
       filterSessionMentionItemsByProject(items, 'board:bd_one', 'current').map(

@@ -1903,6 +1903,14 @@ describe('Board conversation navigation', () => {
       store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
       const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
       const thread = makeSession('thread');
+      const external = [
+        makeSession('other-coordinator', {
+          boardId: 'bd_other' as never,
+          boardRole: 'coordinator',
+        }),
+        makeSession('other-thread', { boardId: 'bd_other' as never }),
+        makeSession('ordinary', { boardId: undefined }),
+      ];
       const child = makeSession('child', { openedBySessionId: thread.id });
       const tab = makeSession('tab', { parentSessionId: coordinator.id });
       const side = makeSession('side', {
@@ -1912,7 +1920,7 @@ describe('Board conversation navigation', () => {
       store.set(
         sessionMetaCacheAtom,
         Object.fromEntries(
-          [coordinator, thread, child, tab, side].map((session) => [
+          [coordinator, thread, child, tab, side, ...external].map((session) => [
             getSessionRoomId(session.id),
             session,
           ])
@@ -1941,6 +1949,12 @@ describe('Board conversation navigation', () => {
               onAction={() => open({ sessionId: thread.id })}
             />
             <MarkdownRenderer text="[Nested child](lody://session/child?workspace=ws)" />
+            {external.map((session) => (
+              <MarkdownRenderer
+                key={session.id}
+                text={`[${session.title}](lody://session/${session.id}?workspace=ws)`}
+              />
+            ))}
             <button onClick={() => open({ sessionId: coordinator.id, tabSessionId: tab.id })}>
               Contained tab
             </button>
@@ -1972,6 +1986,14 @@ describe('Board conversation navigation', () => {
             store.get(boardSessionNavigationAtom)!.open({ sessionId: thread.id })
           );
           expect(view.host.querySelector('output')!.textContent).toBe(`${destination}:thread`);
+          for (const session of external) {
+            await act(async () =>
+              view.host
+                .querySelector<HTMLButtonElement>(`button[data-session-link="${session.id}"]`)!
+                .click()
+            );
+            expect(view.host.querySelector('output')!.textContent).toBe(`page:${session.id}`);
+          }
         }
         for (const [label, id] of [
           ['Contained tab', 'tab'],
@@ -2074,7 +2096,7 @@ it.each(['files', 'memory'] as const)(
   }
 );
 
-it('keeps unknown Boards and workspaces in Board scope, preserving canonical filenames', () => {
+it('anchors Board files to the current workspace while preserving canonical filenames', () => {
   const board = testBoard();
   expect(
     resolveBoardFileLink('/data/boards/ws/bd_test/memory/a%2520b.md#L2', 'ws', [board])?.path
@@ -2083,12 +2105,12 @@ it('keeps unknown Boards and workspaces in Board scope, preserving canonical fil
     resolveBoardFileLink('/data/boards/ws/bd_test/memory/a%20b.md', 'ws', [board], 'canonical')
       ?.path
   ).toBe('a%20b.md');
-  expect(
-    resolveBoardFileLink('/data/boards/other/bd_test/files/a.md', 'ws', [board])
-  ).toMatchObject({ board: undefined });
+  expect(resolveBoardFileLink('/data/boards/other/bd_test/files/a.md', 'ws', [board])).toBeNull();
   expect(resolveBoardFileLink('/data/boards/ws/bd_other/files/a.md', 'ws', [board])).toMatchObject({
     board: undefined,
   });
+  expect(resolveBoardFileLink('app/boards/[id]/[tab]/files/page.tsx', 'ws', [board])).toBeNull();
+  expect(resolveBoardFileLink('app/boards/[id]/[tab]/memory/page.tsx', 'ws', [board])).toBeNull();
   expect(resolveBoardFileLink('/data/boards/ws/bd_test/secrets/a.md', 'ws', [board])).toBeNull();
 });
 

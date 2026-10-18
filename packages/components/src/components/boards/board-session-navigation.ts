@@ -9,6 +9,7 @@ import { opensInCoordinatorPage } from './board-threads';
 
 /** The mounted Board page also owns navigation from the global command palette. */
 export const boardSessionNavigationAtom = atom<{
+  boardId: BoardMeta['id'];
   open: (target: SessionNavigationTarget) => void;
 } | null>(null);
 
@@ -18,7 +19,7 @@ export function boardSessionDestination(
   session: SessionMeta | undefined | null,
   narrow: boolean
 ): 'panel' | 'coordinator' | 'page' {
-  if (!board || !session || narrow) return 'page';
+  if (!board || !session || session.boardId !== board.id || narrow) return 'page';
   if (session.id === board.coordinatorSessionId || opensInCoordinatorPage(board, session))
     return 'coordinator';
   return 'panel';
@@ -56,7 +57,7 @@ export function useBoardSessionNavigation({
   });
   useEffect(() => {
     if (!board) return undefined;
-    const navigation = { open };
+    const navigation = { boardId: board.id, open };
     store.set(boardSessionNavigationAtom, navigation);
     return () => {
       if (store.get(boardSessionNavigationAtom) === navigation)

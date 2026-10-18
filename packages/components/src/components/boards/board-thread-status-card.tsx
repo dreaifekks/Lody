@@ -10,7 +10,11 @@ import {
   type SessionId,
 } from '@lody/shared';
 import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
-import { sessionLiveStatusAtomFamily } from '@/atoms/presence';
+import {
+  sessionLiveStatusAtomFamily,
+  machineOnlineStatusAtomFamily,
+  lodyPresenceSyncStateAtom,
+} from '@/atoms/presence';
 import { useMachineFlockRowsByMachineIds } from '@/hooks/use-machine-flock-rows';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import type { SessionNavigationTarget } from '@/lib/session-navigation';
@@ -49,15 +53,28 @@ const styles = stylex.create({
 export function BoardThreadStatusCard({
   sessionId,
   fallbackTitle,
+  successfulTurnId,
   onNavigateSession,
 }: {
   sessionId: SessionId;
   fallbackTitle?: string;
+  /** Explicit successful create-Operation result, bound to its exact user turn. */
+  successfulTurnId?: string;
   onNavigateSession?: (target: SessionNavigationTarget) => void;
 }) {
   const { t } = useTranslation();
   const session = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(sessionId)));
   const live = useAtomValue(sessionLiveStatusAtomFamily(sessionId));
+  const machineStatus = useAtomValue(machineOnlineStatusAtomFamily(session?.machineId));
+  const presenceSynced = useAtomValue(lodyPresenceSyncStateAtom) === 'synced';
+  const completed = Boolean(
+    successfulTurnId &&
+    successfulTurnId === session?.latestUserMsgId &&
+    successfulTurnId === session.lastHandledUserMsgId &&
+    !session.processingUserMsgId &&
+    presenceSynced &&
+    machineStatus === 'online'
+  );
   const machineRows = useMachineFlockRowsByMachineIds(session ? [session.machineId] : [], {
     families: ['localProject'],
   });
@@ -91,7 +108,7 @@ export function BoardThreadStatusCard({
                   collaborationStopped: session.collaborationStopped === true,
                 })}
                 unread={sessionHasUnreadMessages(session)}
-                completed={session.lastMessageAt !== undefined}
+                completed={completed}
               />
             ) : null}
           </span>

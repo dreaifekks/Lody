@@ -41,6 +41,7 @@ vi.mock('../src/hooks/use-recoverable-convex-query', () => ({
 vi.mock('@/hooks/use-machine-flock-rows', () => machineFlockMocks);
 vi.mock('../src/hooks/use-machine-flock-rows', () => machineFlockMocks);
 
+import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';
 import { userAtom } from '../src/atoms';
 import { sessionMetaCacheAtom } from '../src/atoms/doc-meta';
 import { currentWorkspaceIdAtom } from '../src/atoms/workspace-context';
@@ -130,6 +131,38 @@ describe('useSessionMentionItems', () => {
       await Promise.resolve();
     });
   }
+
+  it('rebuilds project grouping when the Board experiment is toggled', async () => {
+    const chat = cachedSession({ id: 'chat', boardId: 'bd_one' as never });
+    const project = cachedSession({
+      id: 'project',
+      boardId: 'bd_one' as never,
+      project: { kind: 'github', repoFullName: 'owner/repo' } as never,
+    });
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries([chat, project].map((session) => [getSessionRoomId(session.id), session]))
+    );
+    store.set(experimentalFeaturesEnabledAtom, true);
+    store.set(boardExperimentEnabledAtom, true);
+    function Groups() {
+      const items = useSessionMentionItems();
+      return (
+        <output>
+          {items
+            .map((item) => `${item.sessionId}=${item.projectKey}`)
+            .sort()
+            .join(',')}
+        </output>
+      );
+    }
+    await mount(<Groups />);
+    expect(container?.textContent).toBe('chat=board:bd_one,project=board:bd_one');
+    await act(async () => store.set(boardExperimentEnabledAtom, false));
+    expect(container?.textContent).toBe('chat=chat,project=github:owner/repo');
+    await act(async () => store.set(boardExperimentEnabledAtom, true));
+    expect(container?.textContent).toBe('chat=board:bd_one,project=board:bd_one');
+  });
 
   it('offers child sessions, not just sidebar rows', async () => {
     // The sidebar-row projection (`sessionListAtom`) deliberately hides child

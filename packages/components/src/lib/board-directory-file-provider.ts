@@ -71,13 +71,11 @@ export function resolveBoardFileLink(
   const index = segments.findIndex(
     (part, position) =>
       part === 'boards' &&
+      segments[position + 1] === workspaceId &&
       (segments[position + 3] === 'files' || segments[position + 3] === 'memory')
   );
   if (index < 0) return null;
-  const board =
-    segments[index + 1] === workspaceId
-      ? boards.find((entry) => entry.id === segments[index + 2])
-      : undefined;
+  const board = boards.find((entry) => entry.id === segments[index + 2]);
   const area = segments[index + 3] as BoardFileArea;
   return { board, area, path: segments.slice(index + 4).join('/'), filePath };
 }

@@ -98,7 +98,7 @@ true })`. The fetch timestamp rides on the cached entry (survives IndexedDB).
 - `useSessionMentionItems` is the single owner of the mentionable-session list,
   reading child-inclusive `allActiveSessions`; archived and own sessions stay excluded. Project scope is a menu-only
   filter over that complete list — never scope hydration, expansion, drag
-  insertion, slug resolution, or child-session addressing. Board identity takes
+  insertion, slug resolution, or child-session addressing. With Boards enabled, Board identity takes
   precedence over project identity; the current scope is named for its Board,
   across projects. All-project scope stays flat.
 - A session mention commits as plain `@<title-slug>` (no `session:` marker); the

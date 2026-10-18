@@ -2,6 +2,7 @@
 
 import React, { act } from 'react';
 import { Provider, createStore } from 'jotai';
+import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';
 import { sessionMetaCacheAtom } from '../src/atoms/doc-meta';
 import { getSessionRoomId, type SessionMeta, type SessionId } from '@lody/shared';
 const boardCatalog = vi.hoisted(() => ({ boards: [] as { id: string; name: string }[] }));
@@ -365,6 +366,8 @@ describe('CombinedMentionTextarea mention enablement and activation', () => {
 
   it('labels the current Board scope with its name and keeps other chats outside it', async () => {
     const store = createStore();
+    store.set(experimentalFeaturesEnabledAtom, true);
+    store.set(boardExperimentEnabledAtom, true);
     boardCatalog.boards = [{ id: 'bd_one', name: 'Release Board' }];
     store.set(sessionMetaCacheAtom, {
       [getSessionRoomId('self' as SessionId)]: { id: 'self', boardId: 'bd_one' } as SessionMeta,
@@ -386,6 +389,9 @@ describe('CombinedMentionTextarea mention enablement and activation', () => {
     )!;
     await act(async () => all.click());
     expect(document.body.textContent).toContain('Ungrouped chat');
+    await act(async () => store.set(boardExperimentEnabledAtom, false));
+    expect(document.body.textContent).not.toContain('Release Board');
+    expect(document.body.textContent).toContain('No project');
   });
 
   it('starts in the current project and toggles without losing query or focus', async () => {

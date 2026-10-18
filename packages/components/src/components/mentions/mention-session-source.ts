@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { useAtomValue } from 'jotai';
+import { boardEnabledAtom } from '@/atoms/settings';
 import { getSessionRoomId } from '@lody/shared';
 import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
@@ -88,9 +89,10 @@ function githubProjectKey(repoFullName: string | undefined): SessionMentionProje
 
 /** Stable project identity for grouping session candidates. */
 export function getSessionMentionProjectKey(
-  session: Pick<SessionMeta, 'machineId' | 'project' | 'repoFullName' | 'boardId'>
+  session: Pick<SessionMeta, 'machineId' | 'project' | 'repoFullName' | 'boardId'>,
+  boardsEnabled = false
 ): SessionMentionProjectKey {
-  if (session.boardId) return `board:${session.boardId}`;
+  if (boardsEnabled && session.boardId) return `board:${session.boardId}`;
   if (session.project?.kind === 'local') {
     return `local:${session.machineId}:${session.project.localProjectId}`;
   }
@@ -122,11 +124,11 @@ export function useSessionMentionScope(
     sessionMetaAtomFamily(currentSessionId ? getSessionRoomId(currentSessionId as SessionId) : '')
   );
   const { boards } = useWorkspaceCatalog();
-  const board = boards.find((entry) => entry.id === session?.boardId);
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
+  const boardId = boardsEnabled ? session?.boardId : undefined;
+  const board = boards.find((entry) => entry.id === boardId);
   return {
-    key: session?.boardId
-      ? (`board:${session.boardId}` as const)
-      : getMentionSourceProjectKey(source),
+    key: boardId ? (`board:${boardId}` as const) : getMentionSourceProjectKey(source),
     label: board?.name,
   };
 }
@@ -154,7 +156,8 @@ export function filterSessionMentionItemsByProject(
  */
 export function buildSessionMentionItems(
   sessions: readonly SessionMeta[],
-  currentSessionId?: string | null
+  currentSessionId?: string | null,
+  boardsEnabled = false
 ): SessionMentionItem[] {
   const ordered = sessions
     .filter((session) => session.id !== currentSessionId && !session.isArchived)
@@ -178,7 +181,7 @@ export function buildSessionMentionItems(
       sessionId: session.id,
       title: normalizeTitle(session.title),
       activityAt,
-      projectKey: getSessionMentionProjectKey(session),
+      projectKey: getSessionMentionProjectKey(session, boardsEnabled),
     });
   }
   return items;
@@ -337,6 +340,7 @@ export function rememberSessionMentionSlugs(items: readonly SessionMentionItem[]
 let lastMentionItems: {
   sessions: readonly SessionMeta[];
   currentSessionId: string | null;
+  boardsEnabled: boolean;
   items: SessionMentionItem[];
 } | null = null;
 
@@ -351,22 +355,29 @@ function sameSessions(left: readonly SessionMeta[], right: readonly SessionMeta[
 
 function getSessionMentionItems(
   sessions: readonly SessionMeta[],
-  currentSessionId: string | null
+  currentSessionId: string | null,
+  boardsEnabled: boolean
 ): SessionMentionItem[] {
   const last = lastMentionItems;
-  if (last && last.currentSessionId === currentSessionId && sameSessions(last.sessions, sessions)) {
+  if (
+    last &&
+    last.currentSessionId === currentSessionId &&
+    last.boardsEnabled === boardsEnabled &&
+    sameSessions(last.sessions, sessions)
+  ) {
     return last.items;
   }
-  const items = buildSessionMentionItems(sessions, currentSessionId);
-  lastMentionItems = { sessions, currentSessionId, items };
+  const items = buildSessionMentionItems(sessions, currentSessionId, boardsEnabled);
+  lastMentionItems = { sessions, currentSessionId, boardsEnabled, items };
   return items;
 }
 
 export function useSessionMentionItems(currentSessionId?: string | null): SessionMentionItem[] {
   const { allActiveSessions } = useVisibleSessionMetas();
+  const boardsEnabled = useAtomValue(boardEnabledAtom);
   const items = React.useMemo(
-    () => getSessionMentionItems(allActiveSessions, currentSessionId ?? null),
-    [currentSessionId, allActiveSessions]
+    () => getSessionMentionItems(allActiveSessions, currentSessionId ?? null, boardsEnabled),
+    [currentSessionId, allActiveSessions, boardsEnabled]
   );
   // Keep the slug -> id map durable so a draft reloaded tomorrow, or one whose
   // session has since been renamed, still resolves.

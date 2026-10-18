@@ -478,26 +478,35 @@ The final combined `pnpm check` passed after incorporating the visual correction
 
 The Board glyph is a flex sibling of the tab status/agent slot, not inline title text.
 The panel header already has a centered flex row. Lists and sidebar rows remain glyph-free.
-Only coordinator conversation cards retain a quiet 14px Check: the existing status
-projection is `idle`, `lastMessageAt` exists, and unread is false. Waiting, activity and
-unread use `SessionRowStatusIndicator` first; rows never acquire a done state or documents.
+Only coordinator conversation cards retain a quiet 14px Check. A succeeded create
+Operation supplies its exact user-turn id, which must match both `latestUserMsgId` and
+`lastHandledUserMsgId`. No processing turn may remain; presence must be synced, the machine
+online, and the derived status idle/read. Failed/cancelled results, stopped sessions and
+unknown presence show no Check. Metadata alone proves no success. Later turns without a
+matching successful creation result deliberately omit the mark; no member documents or
+new synchronized outcome fields are introduced. Waiting, activity and unread still use
+`SessionRowStatusIndicator`; rows have no done state.
 
 `useBoardSessionNavigation` gives cards, relationship menus, resource links, parent
 breadcrumbs, rows (including Go to Opener) and the in-Board command palette one policy.
-Side mode opens the exact target in the panel; coordinator children select their existing
-Tab/Side Chat. Narrow windows and expanded thread pages retain page routing. The maximize
+Side mode opens only same-Board members in the panel; coordinator children select their
+existing Tab/Side Chat. Other Boards and ordinary sessions retain page navigation, including
+the command palette's Board entry searches. Narrow windows and expanded thread pages retain page routing. The maximize
 button explicitly opens the page. No thread is assigned a `side-session:` tab identity.
 
 The panel thread lacked a file-open callback, so Markdown copied every file path.
 It now receives a scoped Board file opener. Recognized Board links create ordinary
 closeable viewer tabs, but render the existing Board preview and read/download member
 resources with `boardId`. They bypass the session file provider and tree listing limit;
-Files-tree opens keep the inline Board preview. Missing or cross-workspace catalog rows stay
-in Board preview scope and show unavailable. No filesystem access is added to the renderer.
+Files-tree opens keep the inline Board preview. Matching requires the current workspace
+segment after `boards`, so ordinary repository paths are not intercepted. A matching path
+with a missing Board row remains an unavailable Board preview, never a session-provider
+read. No filesystem access is added to the renderer.
 
-Session mentions use Board identity ahead of project identity, including members on other
+With the experiment enabled, session mentions use Board identity ahead of project identity, including members on other
 projects. The current scope displays the Board name. Other Boards also get distinct keys;
 all-project scope stays flat and hydration/expansion retain the complete candidate list.
+Turning Boards off restores project keys and scope labels, and invalidates the item cache.
 
 Behavioral coverage extends the Board, relation-card, tab-bar and mention suites for
 navigation destinations, existing child surfaces, member file reads/errors and status
