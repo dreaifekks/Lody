@@ -478,14 +478,20 @@ The final combined `pnpm check` passed after incorporating the visual correction
 
 The Board glyph is a flex sibling of the tab status/agent slot, not inline title text.
 The panel header already has a centered flex row. Lists and sidebar rows remain glyph-free.
-Only coordinator conversation cards retain a quiet 14px Check. A succeeded create
-Operation supplies its exact user-turn id, which must match both `latestUserMsgId` and
-`lastHandledUserMsgId`. No processing turn may remain; presence must be synced, the machine
-online, and the derived status idle/read. Failed/cancelled results, stopped sessions and
-unknown presence show no Check. Metadata alone proves no success. Later turns without a
-matching successful creation result deliberately omit the mark; no member documents or
-new synchronized outcome fields are introduced. Waiting, activity and unread still use
-`SessionRowStatusIndicator`; rows have no done state.
+Only coordinator conversation cards retain a quiet 14px Check. It now means the
+whole thread family has settled: `buildBoardRows` and `boardThreadFamilies` supply
+exactly the list's opened-session and Tab membership and strongest status;
+`boardThreadStatus` shares metadata-only status derivation, including inherited stops.
+Every member must be idle with synced presence and an online machine; the card's
+thread must have `lastMessageAt` and be read. Family waiting, working and unread
+marks take precedence through `SessionRowStatusIndicator`. Known stops, failures
+and cancellations prevent the Check. Creation Operation status and turn IDs no
+longer matter, so follow-ups, child receipts and scheduled turns can finish with a
+Check too. No member documents or synchronized outcome fields are added. Metadata
+cannot identify agent-error turns, so those may also show a Check once settled;
+this is completion, not proof of success. List rows retain no done state.
+The existing overview and relation-card suites cover family activity, permission
+waiting, unknown presence, offline member machines and later settled turns.
 
 `useBoardSessionNavigation` gives cards, relationship menus, resource links, parent
 breadcrumbs, rows (including Go to Opener) and the in-Board command palette one policy.

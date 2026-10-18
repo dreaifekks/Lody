@@ -344,11 +344,15 @@ hover 归档和行菜单仍保留，归档遵循共享确认流程。
 
 看板标记改为 Tab 状态／agent 图标同级的 flex 子元素，不再嵌在标题文字中；面板头部
 本来就是垂直居中的 flex 行。列表和侧边栏仍不画看板标记。仅主会话卡片保留次要色
-14px ✓：创建 Operation 明确 succeeded，其目标 userTurnId 同时等于线程的
-`latestUserMsgId` 与 `lastHandledUserMsgId`，没有 processing 回合，presence 已同步、
-机器在线、状态 idle 且已读。失败／取消结果、停止和未知 presence 都不亮；元数据空闲
-不能证明成功。后续回合没有匹配的成功创建结果时刻意不显示勾，不获取成员文档或新增
-同步结果字段。等待、工作和未读仍复用 `SessionRowStatusIndicator`；列表不增加完成态。
+14px ✓，现在表示整棵线程树已跑完：`buildBoardRows` 与 `boardThreadFamilies` 复用
+列表的 openedBy 会话、Tab 家族范围和最强状态；`boardThreadStatus` 共用元数据状态
+推导，包括继承的停止状态。全体成员须空闲、presence 已同步且机器在线，线程本身有
+`lastMessageAt` 且已读；家族等待、工作、未读通过 `SessionRowStatusIndicator` 优先显示。
+可推导的停止、失败、取消不亮。创建 Operation 状态和回合 ID 不再参与判断，因此
+追问、子会话回执和定时回合结束后也能亮 ✓。不获取成员文档或新增同步结果字段。
+元数据无法识别 agent 报错的失败轮次，这类轮次结束后也可能亮 ✓：表示跑完而非证明
+成功。列表仍不增加完成态。现有 overview 和 relation-card 测试覆盖家族活动、等待用户、
+未知 presence、成员机器离线和后续回合结束。
 
 `useBoardSessionNavigation` 统一卡片、关系菜单、会话链接、父级面包屑、线程行
 （含 Go to Opener）和看板页内命令面板。侧边模式只在面板打开本看板成员；其他看板和

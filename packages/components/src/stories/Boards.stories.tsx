@@ -31,7 +31,7 @@ import {
   type WorkspaceId,
   getSessionRoomId,
 } from '@lody/shared';
-import { currentWorkspaceIdAtom } from '@/atoms';
+import { currentWorkspaceIdAtom, userAtom } from '@/atoms';
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '@/atoms/settings';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import {
@@ -1008,20 +1008,12 @@ export const InboxReports: Story = {
  * with a message are one line.
  */
 const assignedStore = createStore();
+assignedStore.set(userAtom, { id: 'user', name: 'Board demo', email: 'board@example.com' });
 assignedStore.set(experimentalFeaturesEnabledAtom, true);
 assignedStore.set(boardExperimentEnabledAtom, true);
 assignedStore.set(sessionMetaCacheAtom, {
   [getSessionRoomId(COORDINATOR)]: coordinatorSession,
-  ...Object.fromEntries(
-    members.map((session) => [
-      getSessionRoomId(session.id),
-      {
-        ...session,
-        latestUserMsgId: `${session.id}-turn`,
-        lastHandledUserMsgId: `${session.id}-turn`,
-      },
-    ])
-  ),
+  ...Object.fromEntries(members.map((session) => [getSessionRoomId(session.id), session])),
 });
 assignedStore.set(lodyPresenceNowMsAtom, NOW);
 assignedStore.set(lodyPresenceSyncStateAtom, 'synced');
@@ -1094,20 +1086,32 @@ function AssignedThreadCards({
 }
 export const AssignedThreads: Story = {
   render: () => (
-    <Provider store={assignedStore}>
-      <AssignedThreadCards onNavigateSession={() => {}} />
-    </Provider>
+    <SettingsStoryProviders>
+      <Provider store={assignedStore}>
+        <AssignedThreadCards onNavigateSession={() => {}} />
+      </Provider>
+    </SettingsStoryProviders>
   ),
 };
+const completedStore = createStore();
+completedStore.set(userAtom, assignedStore.get(userAtom));
+completedStore.set(sessionMetaCacheAtom, {
+  ...assignedStore.get(sessionMetaCacheAtom),
+  [getSessionRoomId('thread-entry-review' as SessionId)]: {
+    ...members[1]!,
+    awaitingUserSince: undefined,
+  },
+});
+completedStore.set(lodyPresenceNowMsAtom, NOW);
+completedStore.set(lodyPresenceSyncStateAtom, 'synced');
+completedStore.set(lodyPresenceStatesAtom, assignedStore.get(lodyPresenceStatesAtom));
 export const CompletedThreadCard: Story = {
   render: () => (
-    <Provider store={assignedStore}>
-      <BoardThreadStatusCard
-        sessionId={THREAD}
-        successfulTurnId={`${THREAD}-turn`}
-        onNavigateSession={() => {}}
-      />
-    </Provider>
+    <SettingsStoryProviders>
+      <Provider store={completedStore}>
+        <BoardThreadStatusCard sessionId={THREAD} onNavigateSession={() => {}} />
+      </Provider>
+    </SettingsStoryProviders>
   ),
 };
 const navigationStoryStyles = stylex.create({

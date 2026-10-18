@@ -23,9 +23,9 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   without presence, only a marker newer than `lastMessageAt` means waiting. Thread
   and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
   Board rows aggregate all members. Rows have no "done" mark.
-  Cards alone show a 14px Check for a succeeded create-Operation turn matching
-  `latestUserMsgId` and `lastHandledUserMsgId`, with no processing turn, synced
-  presence, online machine and idle/read status. Other outcomes never imply success.
+  Cards alone add a 14px Check for idle `boardThreadFamilies`, synced presence,
+  online machines and a read thread with `lastMessageAt`. Family wait/work/unread
+  wins; known stop/failure/cancel blocks it. It means settled, not Operation success.
   localProject catalogs are acquired at list level, once per machine.
 - `BoardSidebar` selects by Session/Tab `boardId`; scalar reads, memoized rows.
 - Thread rows reuse sidebar actions (no pin) and `SessionHeaderMenu`. Board glyph:

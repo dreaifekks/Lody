@@ -56,6 +56,17 @@ export function boardThreadGroup(item: Pick<BoardThreadItem, 'status' | 'archive
 }
 
 const GROUP_ORDER = ['attention', 'active', 'idle', 'archived'] as const;
+const STATUS_ORDER: readonly BoardSessionStatus[] = [
+  'waiting_user',
+  'running',
+  'initializing',
+  'finalizing',
+  'failed',
+  'stopped',
+  'cancelled',
+  'waiting_coordinator',
+  'idle',
+];
 
 /**
  * Threads with the sessions they opened, in list order (a root, then its rows
@@ -63,10 +74,10 @@ const GROUP_ORDER = ['attention', 'active', 'idle', 'archived'] as const;
  * its members, so a reviewer waiting for the user lifts its thread into
  * "Needs you" instead of standing apart from it.
  */
-export function boardThreadFamilies(
-  threads: readonly BoardThreadItem[]
-): { group: GroupKey; items: BoardThreadItem[] }[] {
-  const families: BoardThreadItem[][] = [];
+export function boardThreadFamilies<
+  T extends Pick<BoardThreadItem, 'depth' | 'status' | 'archived'>,
+>(threads: readonly T[]): { group: GroupKey; status: BoardSessionStatus; items: T[] }[] {
+  const families: T[][] = [];
   for (const item of threads) {
     const last = families.at(-1);
     if ((item.depth ?? 0) > 0 && last) last.push(item);
@@ -74,6 +85,13 @@ export function boardThreadFamilies(
   }
   return families.map((items) => ({
     items,
+    status: items.reduce(
+      (strongest, item) =>
+        STATUS_ORDER.indexOf(item.status) < STATUS_ORDER.indexOf(strongest)
+          ? item.status
+          : strongest,
+      items[0]!.status
+    ),
     group:
       items[0]?.archived === true
         ? 'archived'

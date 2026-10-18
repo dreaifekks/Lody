@@ -11,6 +11,7 @@ import {
 } from '../src/components/ai-gui/markdown-renderer';
 import { SESSION_DEEP_LINK_EVENT } from '../src/lib/session-deep-link';
 import { SessionLinkProvider } from '../src/components/ai-gui/session-link-context';
+import { WORKING_HAND_OVER_MS } from '../src/ui/working-status-mark';
 import { BoardThreadStatusCard } from '../src/components/boards/board-thread-status-card';
 import { SessionRelationCard } from '../src/components/shared/session-relation-card';
 import { Toast } from '@lody/ui';
@@ -45,7 +46,11 @@ import {
 import { PlatformContext } from '@lody/platform/react';
 import { userAtom, currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms';
 import { agentConfigMetaCacheAtom, sessionMetaCacheAtom } from '../src/atoms/doc-meta';
-import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '../src/atoms/presence';
+import {
+  lodyPresenceNowMsAtom,
+  lodyPresenceStatesAtom,
+  lodyPresenceSyncStateAtom,
+} from '../src/atoms/presence';
 import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
 import {
   scheduleRowsForBoard,
@@ -357,6 +362,143 @@ const live = (session: SessionMeta, status: SessionStatus) => ({
 });
 
 describe('Board side panel', () => {
+  it('shows a card as complete only after its entire visible family settles', async () => {
+    const store = createStore();
+    const thread = makeSession('thread', { lastMessageAt: 20, lastReadAt: 20 });
+    const child = makeSession('child', {
+      openedBySessionId: thread.id,
+      machineId: 'remote' as never,
+    });
+    const tab = makeSession('tab', { parentSessionId: child.id });
+    const unrelated = makeSession('unrelated', { awaitingUserSince: 30 });
+    const otherBoard = makeSession('other-board', {
+      boardId: 'bd_other' as never,
+      openedBySessionId: thread.id,
+      awaitingUserSince: 30,
+    });
+    const sessions = [thread, child, tab, unrelated, otherBoard];
+    const setSessions = (entries = sessions) =>
+      store.set(
+        sessionMetaCacheAtom,
+        Object.fromEntries(entries.map((entry) => [getSessionRoomId(entry.id), entry]))
+      );
+    setSessions();
+    const online = {
+      machine: {
+        kind: 'machine' as const,
+        machineId: thread.machineId,
+        instanceId: 'test' as never,
+        updatedAt: 1000,
+      },
+      remote: {
+        kind: 'machine' as const,
+        machineId: child.machineId,
+        instanceId: 'test' as never,
+        updatedAt: 1000,
+      },
+    };
+    store.set(lodyPresenceNowMsAtom, 1000);
+    store.set(lodyPresenceSyncStateAtom, 'synced');
+    store.set(lodyPresenceStatesAtom, online);
+    vi.useFakeTimers();
+    const view = await mount(
+      <Provider store={store}>
+        <BoardThreadStatusCard sessionId={thread.id} />
+      </Provider>
+    );
+    const check = () => view.host.querySelector('svg.lucide-check');
+    const working = () => view.host.querySelector('[data-session-working-indicator]');
+    const waiting = () => view.host.querySelector('[data-session-row-indicator] svg');
+    try {
+      expect(check()).not.toBeNull();
+      // Both opened sessions and their Tabs participate, including live phase changes.
+      for (const member of [child, tab]) {
+        for (const status of [
+          { type: 'running' },
+          { type: 'initializing' },
+          { type: 'running', phase: 'finalizing' },
+        ] as SessionStatus[]) {
+          await act(async () =>
+            store.set(lodyPresenceStatesAtom, { ...online, ...live(member, status) })
+          );
+          expect(check()).toBeNull();
+          expect(working()).not.toBeNull();
+        }
+        await act(async () =>
+          store.set(lodyPresenceStatesAtom, {
+            ...online,
+            ...live(thread, { type: 'running' } as SessionStatus),
+            ...live(member, { type: 'requestPermission' } as SessionStatus),
+          })
+        );
+        expect(check()).toBeNull();
+        expect(waiting()).not.toBeNull();
+        expect(working()).toBeNull();
+      }
+      await act(async () => {
+        store.set(lodyPresenceStatesAtom, online);
+        setSessions(
+          sessions.map((member) =>
+            member.id === child.id ? { ...member, awaitingUserSince: 30 } : member
+          )
+        );
+      });
+      expect(check()).toBeNull();
+      expect(waiting()).not.toBeNull();
+      await act(async () => vi.advanceTimersByTime(WORKING_HAND_OVER_MS));
+      await act(async () =>
+        setSessions(
+          sessions.map((member) =>
+            member.id === child.id ? { ...member, collaborationStopped: true } : member
+          )
+        )
+      );
+      expect(check()).toBeNull();
+      expect(view.host.querySelector('svg.lucide-circle-slash')).not.toBeNull();
+      await act(async () => setSessions());
+      expect(check()).not.toBeNull();
+      for (const state of ['connecting', 'disconnected'] as const) {
+        await act(async () => store.set(lodyPresenceSyncStateAtom, state));
+        expect(check()).toBeNull();
+      }
+      await act(async () => {
+        store.set(lodyPresenceSyncStateAtom, 'synced');
+        store.set(lodyPresenceStatesAtom, { machine: online.machine });
+      });
+      expect(check()).toBeNull();
+      await act(async () => store.set(lodyPresenceStatesAtom, online));
+      expect(check()).not.toBeNull();
+      await act(async () =>
+        setSessions(
+          sessions.map((member) =>
+            member.id === thread.id
+              ? {
+                  ...member,
+                  latestUserMsgId: 'later-receipt',
+                  lastHandledUserMsgId: 'later-receipt',
+                  lastMessageAt: 40,
+                  lastReadAt: 40,
+                }
+              : member
+          )
+        )
+      );
+      expect(check()).not.toBeNull();
+      await act(async () =>
+        setSessions(
+          sessions.map((member) =>
+            member.id === child.id ? { ...member, lastMessageAt: 50, lastReadAt: 40 } : member
+          )
+        )
+      );
+      expect(check()).toBeNull();
+      expect(view.host.querySelector('[data-session-unread-dot]')).not.toBeNull();
+    } finally {
+      await view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it('lists members from metadata and presence, groups them, and opens one in the panel', async () => {
     const store = createStore();
     const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });

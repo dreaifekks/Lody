@@ -22,6 +22,18 @@ import { SessionRelationCard } from '../src/components/shared/session-relation-c
 import { SessionInfoBar } from '../src/components/sessions/session-info-bar';
 import { CurrentSessionRelationsChip } from '../src/components/sessions/session-relations-chip';
 
+// Keep real metadata/presence updates; access filtering has its own suites.
+vi.mock('../src/hooks/use-visible-session-metas', async () => {
+  const { useAtomValue } = await import('jotai');
+  const { allActiveSessionsAtom, archivedSessionListAtom } = await import('../src/atoms/doc-meta');
+  return {
+    useVisibleSessionMetas: () => ({ allActiveSessions: useAtomValue(allActiveSessionsAtom) }),
+    useVisibleArchivedSessionMetas: () => ({
+      archivedSessions: useAtomValue(archivedSessionListAtom),
+    }),
+  };
+});
+
 // This suite exercises relation rendering and navigation; collaboration controls
 // and their workspace-backed actions have their own behavioral suites.
 vi.mock('../src/hooks/use-session-actions', () => ({
@@ -266,25 +278,24 @@ describe('Session relation cards', () => {
           ...patch,
         })
       );
-    for (const status of ['failed', 'cancelled', 'running', 'created'] as const) {
+    // Even an old, unfinished creation record follows the tree's current state.
+    {
       const content = progress.items[0] as OperationProgressContent;
       await render({
         ...progress,
-        items: [{ ...content, items: content.items.map((item) => ({ ...item, status })) }],
+        items: [
+          { ...content, items: content.items.map((item) => ({ ...item, status: 'created' })) },
+        ],
       });
-      expect(card?.querySelector('svg.lucide-check'), status).toBeNull();
+      expect(card?.querySelector('svg.lucide-check')).not.toBeNull();
     }
     await render(progress);
     expect(card?.querySelector('svg.lucide-check')).not.toBeNull();
-    for (const patch of [
-      { processingUserMsgId: 'user-turn' },
-      { latestUserMsgId: 'followup', lastHandledUserMsgId: 'followup' },
-      { lastHandledUserMsgId: undefined },
-      { collaborationStopped: true },
-    ]) {
-      await setThread(patch);
-      expect(card?.querySelector('svg.lucide-check')).toBeNull();
-    }
+    // Follow-ups, child receipts and scheduled turns no longer invalidate the check forever.
+    await setThread({ latestUserMsgId: 'followup', lastHandledUserMsgId: 'followup' });
+    expect(card?.querySelector('svg.lucide-check')).not.toBeNull();
+    await setThread({ collaborationStopped: true });
+    expect(card?.querySelector('svg.lucide-check')).toBeNull();
     await setThread({});
     for (const state of ['connecting', 'disconnected'] as const) {
       await act(async () => store.set(lodyPresenceSyncStateAtom, state));

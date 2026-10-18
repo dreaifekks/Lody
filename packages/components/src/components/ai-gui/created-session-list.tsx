@@ -11,9 +11,7 @@ import { withClassName } from '@/lib/stylex';
 import { BoardThreadStatusCard } from '../boards/board-thread-status-card';
 import { CreatedSessionOperationCard } from './created-session-operation-card';
 
-type Card = Omit<ComponentProps<typeof CreatedSessionOperationCard>, 'onNavigateSession'> & {
-  userTurnId?: string;
-};
+type Card = Omit<ComponentProps<typeof CreatedSessionOperationCard>, 'onNavigateSession'>;
 
 /** Only pure creation records may coalesce; notices and failures keep their own rows. */
 export function getCreatedSessionCards(message: SessionHistoryParsed): Card[] | null {
@@ -24,7 +22,6 @@ export function getCreatedSessionCards(message: SessionHistoryParsed): Card[] | 
       cards.push(
         ...item.items.map((entry) => ({
           sessionId: entry.target.sessionId,
-          userTurnId: entry.target.userTurnId,
           fallbackTitle: entry.label,
           status: entry.status,
         }))
@@ -40,7 +37,6 @@ export function getCreatedSessionCards(message: SessionHistoryParsed): Card[] | 
         if (!entry.target || entry.status !== 'succeeded') return null;
         cards.push({
           sessionId: entry.target.sessionId,
-          userTurnId: entry.target.userTurnId,
           fallbackTitle: entry.label,
           status: entry.status,
           detail: summarizeOperationOutput(entry.output?.text),
@@ -138,7 +134,6 @@ export function CreatedSessionList({
             {liveBoardThreads ? (
               <BoardThreadStatusCard
                 sessionId={card.sessionId}
-                successfulTurnId={card.status === 'succeeded' ? card.userTurnId : undefined}
                 fallbackTitle={card.fallbackTitle}
                 onNavigateSession={onNavigateSession}
               />
