@@ -2330,6 +2330,7 @@ interface SessionChatInterfaceProps {
    */
   headerVariant?: 'page' | 'toolbar' | 'board-thread';
   headerLocation?: string;
+  headerParentThread?: { title: string; onOpen: () => void };
   /**
    * When false, this surface still accepts a session-mention drop but does not
    * paint the page mask. Used under `SessionMentionDropLayer`, which owns one
@@ -2519,6 +2520,7 @@ export const SessionChatInterface = memo(
       onOpenExistingBrowser,
       headerVariant = 'page',
       headerLocation,
+      headerParentThread,
       paintSessionMentionOverlay = true,
       changesDiffStat,
       onOpenAllChanges,
@@ -6987,6 +6989,7 @@ export const SessionChatInterface = memo(
                 ) : headerVariant === 'board-thread' ? (
                   <BoardThreadHeader
                     title={session.title || t('boards.untitled', 'Untitled session')}
+                    parentThread={headerParentThread}
                     location={headerLocation}
                     startSlot={headerStartSlot}
                     endSlot={headerEndSlot}

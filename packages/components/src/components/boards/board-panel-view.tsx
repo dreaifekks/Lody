@@ -1,3 +1,4 @@
+import { BoardThreadBreadcrumb } from './board-thread-breadcrumb';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { space, text } from '@lody/ui/tokens/scales.stylex';
@@ -96,6 +97,7 @@ export function BoardPanelView({
  */
 export function BoardThreadPaneView({
   title,
+  parentThread,
   location,
   onBack,
   onOpenFull,
@@ -104,6 +106,7 @@ export function BoardThreadPaneView({
   children,
 }: {
   title: string;
+  parentThread?: { title: string; onOpen: () => void };
   /** "devnuc · Lody": where a project-bound thread runs. */
   location?: string;
   onBack: () => void;
@@ -116,6 +119,7 @@ export function BoardThreadPaneView({
     <div {...stylex.props(styles.root)}>
       <BoardThreadHeader
         title={title}
+        parentThread={parentThread}
         location={location}
         menuSlot={menuSlot}
         onStop={onStop}
@@ -159,6 +163,7 @@ export function BoardThreadOpenButton({ onOpen }: { onOpen: () => void }) {
 
 export function BoardThreadHeader({
   title,
+  parentThread,
   location,
   startSlot,
   endSlot,
@@ -167,6 +172,7 @@ export function BoardThreadHeader({
   onStop,
 }: {
   title: string;
+  parentThread?: { title: string; onOpen: () => void };
   location?: string;
   startSlot?: ReactNode;
   endSlot?: ReactNode;
@@ -181,7 +187,17 @@ export function BoardThreadHeader({
       titleSlot={
         <>
           <BoardThreadMark />
-          <span {...stylex.props(styles.title)}>{title}</span>
+          <span {...stylex.props(styles.title)}>
+            {parentThread ? (
+              <BoardThreadBreadcrumb
+                parentTitle={parentThread.title}
+                title={title}
+                onOpenParent={parentThread.onOpen}
+              />
+            ) : (
+              title
+            )}
+          </span>
         </>
       }
       desktopActionsSlot={desktopActionsSlot}

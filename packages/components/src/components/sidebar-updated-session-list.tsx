@@ -752,6 +752,7 @@ export function useSidebarSessionMenuLabels(): SidebarUpdatedContextMenuLabels {
 }
 
 export type UpdatedItemRowProps = {
+  titleContent?: ReactNode;
   rowId?: string;
   detailLine?: string;
   restIcon?: ReactNode;
@@ -780,6 +781,7 @@ export type UpdatedItemRowProps = {
 };
 
 export const UpdatedItemRow = memo(function UpdatedItemRow({
+  titleContent,
   rowId,
   detailLine,
   restIcon,
@@ -927,7 +929,7 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
         showSelectedState ? 'text-sidebar-selection-foreground' : 'text-sidebar-row-foreground'
       )}
     >
-      {item.title}
+      {titleContent ?? item.title}
     </SidebarSessionTitleText>
   );
   const rowAriaLabel = projectLabel ? `${item.title}, ${projectLabel}` : item.title;

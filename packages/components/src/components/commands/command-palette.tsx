@@ -14,7 +14,7 @@ import { currentWorkspaceSlugAtom } from '@/atoms';
 import { boardEnabledAtom } from '@/atoms/settings';
 import { useVisibleSessionMetas } from '@/hooks/use-visible-session-metas';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
-import { boardMemberEntrySearch } from '@/components/boards/board-threads';
+import { boardMemberEntrySearch, formatBoardSessionTitle } from '@/components/boards/board-threads';
 import { useVisibleLocalProjects } from '@/hooks/use-visible-local-projects';
 import { useStableNow } from '@/hooks/use-stable-now';
 import type { SessionListEntry } from '@/lib/session-visibility';
@@ -139,7 +139,11 @@ export function CommandPalette() {
       return {
         kind: 'session',
         key: `session:${session.id}`,
-        title: board ? (coordinator ? board.name : `${board.name} › ${title}`) : title,
+        title: board
+          ? coordinator
+            ? board.name
+            : formatBoardSessionTitle(board.name, title)
+          : title,
         subtitle: coordinator
           ? t('boards.panelTab', 'Board')
           : getSessionPaletteSubtitle(session, localProjects),

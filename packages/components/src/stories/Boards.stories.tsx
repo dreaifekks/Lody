@@ -1,3 +1,4 @@
+import { BoardThreadParentBreadcrumb } from '@/components/boards/board-thread-breadcrumb';
 /**
  * Boards: the coordinator page with its Board side panel, the sidebar Boards
  * section, the settings dialog and the create dialog. Real components with
@@ -74,6 +75,7 @@ import {
   buildBoardRows,
   isBoardSession,
   resolveSidebarBoardSelection,
+  resolveBoardThreadParent,
 } from '@/components/boards/board-threads';
 import { BoardDirectoryFileProvider } from '@/lib/board-directory-file-provider';
 import { cn } from '@/lib/utils';
@@ -426,7 +428,7 @@ type PanelState =
       /** The listing stopped at its 500-file limit. */
       truncated?: boolean;
     }
-  | { kind: 'thread'; running?: boolean };
+  | { kind: 'thread'; id?: SessionId; running?: boolean };
 
 const sharedFiles: BoardFileEntry[] = [
   { path: 'design/board-home.md', sizeBytes: 8_200, modifiedAtMs: NOW - 2 * 3_600_000 },
@@ -484,14 +486,22 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
     onBeginRename: (sessionId: string, initialTitle: string) =>
       setRenameTarget({ sessionId: sessionId as SessionId, initialTitle }),
   };
-  const thread = members.find((session) => session.id === THREAD)!;
+  const thread = members.find(
+    (session) => session.id === (panel.kind === 'thread' ? (panel.id ?? THREAD) : THREAD)
+  )!;
+  const parent = resolveBoardThreadParent(thread, (id) => members.find((entry) => entry.id === id));
   return panel.kind === 'thread' ? (
     <BoardThreadPaneView
       title={thread.title ?? ''}
       location="devnuc · Lody"
+      parentThread={
+        parent
+          ? { title: parent.title!, onOpen: () => setPanel({ kind: 'thread', id: parent.id }) }
+          : undefined
+      }
       onBack={() => setPanel({ kind: 'tabs', tab: 'threads' })}
       onOpenFull={() => {}}
-      onStop={panel.running ? () => setPanel({ kind: 'thread' }) : undefined}
+      onStop={panel.running ? () => setPanel({ kind: 'thread', id: thread.id }) : undefined}
       menuSlot={
         <SessionHeaderMenu
           session={thread}
@@ -501,14 +511,14 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
           onOpenSearch={noop}
           onRename={noop}
           onArchive={() => {
-            actions.onArchive(THREAD);
+            actions.onArchive(thread.id);
             setPanel({ kind: 'tabs', tab: 'threads' });
           }}
           t={t}
         />
       }
     >
-      <ChatSurface sessionId={THREAD} messages={threadMessages} placeholder="回复这个线程…" />
+      <ChatSurface sessionId={thread.id} messages={threadMessages} placeholder="回复这个线程…" />
     </BoardThreadPaneView>
   ) : (
     <BoardPanelView
@@ -527,8 +537,8 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
             now={new Date(NOW)}
             threads={listItems}
             actions={actions}
-            onOpen={() => {
-              if (!narrow) setPanel({ kind: 'thread' });
+            onOpen={(id) => {
+              if (!narrow) setPanel({ kind: 'thread', id: id as SessionId });
             }}
           />
         </>
@@ -1057,11 +1067,13 @@ export const AssignedThreads: Story = {
 
 /** Real tab bar and Board return control, with fixture-only navigation. */
 export const ThreadFullPage: Story = {
-  render: function FullThreadStory() {
-    const [back, setBack] = useState(false);
-    const thread = members.find((session) => session.id === THREAD)!;
+  render: function FullThreadStory({ initial }) {
+    const [back, setBack] = useState<PanelState | null>(null);
+    const thread = members.find(
+      (session) => session.id === (initial.kind === 'thread' ? (initial.id ?? THREAD) : THREAD)
+    )!;
     return back ? (
-      <CoordinatorPage initial={{ kind: 'tabs', tab: 'threads' }} />
+      <CoordinatorPage initial={back} />
     ) : (
       <SettingsStoryProviders>
         <BoardStoryProvider>
@@ -1074,15 +1086,25 @@ export const ThreadFullPage: Story = {
                 childSessions={[]}
                 draftTabs={[]}
                 archivedChildSessions={[]}
-                activeTabSessionId={THREAD}
+                activeTabSessionId={thread.id}
                 onTabSelect={noop}
                 onNewTab={noop}
-                leftSlot={<BoardThreadBackButton onBack={() => setBack(true)} />}
+                leftSlot={
+                  <>
+                    <BoardThreadBackButton
+                      onBack={() => setBack({ kind: 'tabs', tab: 'threads' })}
+                    />
+                    <BoardThreadParentBreadcrumb
+                      session={thread}
+                      onOpenParent={(id) => setBack({ kind: 'thread', id })}
+                    />
+                  </>
+                }
               />
             }
             chatSurfaces={
               <ChatSurface
-                sessionId={THREAD}
+                sessionId={thread.id}
                 messages={threadMessages}
                 placeholder="回复这个线程…"
               />
@@ -1163,4 +1185,13 @@ export const ViewingThread: Story = {
       </SettingsStoryProviders>
     );
   },
+};
+
+export const ChildThreadOpen: Story = {
+  args: { initial: { kind: 'thread', id: 'thread-entry-review' as SessionId } },
+};
+export const ChildThreadRows: Story = {};
+export const ChildThreadFullPage: Story = {
+  render: ThreadFullPage.render,
+  args: { initial: { kind: 'thread', id: 'thread-entry-review' as SessionId } },
 };

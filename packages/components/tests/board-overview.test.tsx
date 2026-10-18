@@ -1,3 +1,4 @@
+import { BoardThreadParentBreadcrumb } from '../src/components/boards/board-thread-breadcrumb';
 import { isBoardThread } from '../src/components/boards/board-thread-mark';
 import { SessionTabBar } from '../src/components/sessions/session-tab-bar';
 import {
@@ -49,6 +50,8 @@ import { SessionHeaderMenu } from '../src/components/sessions/session-chat-inter
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';
 import {
   boardActivity,
+  resolveBoardThreadParent,
+  formatBoardSessionTitle,
   resolveSidebarBoardSelection,
   boardEntrySearch,
   boardMemberEntrySearch,
@@ -1661,4 +1664,130 @@ it('keeps the Board selected through its coordinator, threads and contained Tabs
   expect(selection('chat')).toBeUndefined();
   expect(selection('thread', 'bd_missing')).toBeUndefined();
   expect(selection(null, undefined, 'bd_test')).toBeUndefined();
+});
+
+it("opens a child's same-Board parent from both its row and panel header", async () => {
+  const parent = makeSession('parent', { title: 'Parent thread' });
+  const child = makeSession('child', { title: 'Review', openedBySessionId: parent.id });
+  const contained = makeSession('contained', {
+    parentSessionId: parent.id,
+    openedBySessionId: 'coordinator' as SessionId,
+  });
+  const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
+  const byId = new Map([parent, child, contained, coordinator].map((entry) => [entry.id, entry]));
+  expect(resolveBoardThreadParent(child, (id) => byId.get(id))).toBe(parent);
+  expect(resolveBoardThreadParent(contained, (id) => byId.get(id))).toBe(parent);
+  expect(
+    resolveBoardThreadParent({ ...child, boardId: 'bd_other' as never }, (id) => byId.get(id))
+  ).toBeUndefined();
+  expect(
+    resolveBoardThreadParent({ ...child, openedBySessionId: coordinator.id }, (id) => byId.get(id))
+  ).toBeUndefined();
+  expect(resolveBoardThreadParent(child, () => undefined)).toBeUndefined();
+  expect(formatBoardSessionTitle(parent.title!, child.title!)).toBe('Parent thread › Review');
+  const store = createStore();
+  store.set(experimentalFeaturesEnabledAtom, true);
+  store.set(boardExperimentEnabledAtom, true);
+  store.set(
+    sessionMetaCacheAtom,
+    Object.fromEntries([...byId.values()].map((entry) => [getSessionRoomId(entry.id), entry]))
+  );
+  function Panel() {
+    const [open, setOpen] = useState<SessionId | null>(child.id);
+    return (
+      <BoardSidePanel
+        board={testBoard()}
+        openThreadId={open}
+        onOpenThread={(entry) => setOpen(entry?.id ?? null)}
+        onShowInPage={() => {}}
+        onOpenThreadFull={() => {}}
+        requestedThreadId={null}
+        onThreadRequestDone={() => {}}
+        renderThread={(entry, controls) => (
+          <BoardThreadPaneView title={entry.title!} {...controls}>
+            <p data-open-thread={entry.id}>{entry.title}</p>
+          </BoardThreadPaneView>
+        )}
+      />
+    );
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <Panel />
+    </Provider>
+  );
+  try {
+    expect(view.host.textContent).toContain('Parent thread›Review');
+    await act(async () =>
+      view.host
+        .querySelector<HTMLButtonElement>('[aria-label="Open parent thread: Parent thread"]')!
+        .click()
+    );
+    expect(view.host.querySelector('[data-open-thread="parent"]')).not.toBeNull();
+    await act(async () =>
+      view.host.querySelector<HTMLButtonElement>('[aria-label="Back to threads"]')!.click()
+    );
+    const childRow = view.host.querySelector<HTMLElement>('[data-id="child"]')!;
+    expect(childRow.textContent).toContain('Parent thread›Review');
+    await act(async () =>
+      childRow
+        .querySelector<HTMLButtonElement>('[aria-label="Open parent thread: Parent thread"]')!
+        .click()
+    );
+    expect(view.host.querySelector('[data-open-thread="parent"]')).not.toBeNull();
+    expect(view.host.querySelector('[data-open-thread="child"]')).toBeNull();
+  } finally {
+    await view.unmount();
+  }
+});
+
+it('uses the Board member entry when the full-page parent breadcrumb is activated', async () => {
+  const parent = makeSession('parent', { title: 'Parent thread' });
+  const child = makeSession('child', { title: 'Review', openedBySessionId: parent.id });
+  const store = createStore();
+  store.set(experimentalFeaturesEnabledAtom, true);
+  store.set(boardExperimentEnabledAtom, true);
+  store.set(sessionMetaCacheAtom, { [getSessionRoomId(parent.id)]: parent });
+  function Page() {
+    const [entry, setEntry] = useState<ReturnType<typeof boardMemberEntrySearch> | null>(null);
+    return entry ? (
+      <output>{JSON.stringify(entry)}</output>
+    ) : (
+      <SessionTabBar
+        variant="session"
+        parentSession={child}
+        childSessions={[]}
+        draftTabs={[]}
+        archivedChildSessions={[]}
+        activeTabSessionId={child.id}
+        onTabSelect={() => {}}
+        onNewTab={() => {}}
+        leftSlot={
+          <BoardThreadParentBreadcrumb
+            session={child}
+            onOpenParent={(id) => setEntry(boardMemberEntrySearch(testBoard(), id))}
+          />
+        }
+      />
+    );
+  }
+  const view = await mount(
+    <Provider store={store}>
+      <Page />
+    </Provider>
+  );
+  try {
+    await act(async () =>
+      view.host
+        .querySelector<HTMLButtonElement>('[aria-label="Open parent thread: Parent thread"]')!
+        .click()
+    );
+    expect(JSON.parse(view.host.querySelector('output')!.textContent!)).toEqual({
+      board: true,
+      tab: 'session:coordinator',
+      boardThread: 'parent',
+    });
+  } finally {
+    await view.unmount();
+  }
 });

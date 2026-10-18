@@ -1,6 +1,7 @@
+import { BoardThreadParentBreadcrumb } from '../boards/board-thread-breadcrumb';
 import { BoardThreadBackButton, BoardThreadOpenButton } from '../boards/board-panel-view';
 import { isBoardThread } from '../boards/board-thread-mark';
-import { boardEntrySearch } from '../boards/board-threads';
+import { boardEntrySearch, boardMemberEntrySearch } from '../boards/board-threads';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
 import { pendingSessionLinkAtom } from '@/lib/session-deep-link';
 import { windowPreparationAtom } from '@/lib/window-preparation';
@@ -6255,6 +6256,7 @@ const SessionDetail = ({
           className={stylex.props(detailStyles.rootFill).className}
           headerVariant="board-thread"
           headerLocation={controls.location}
+          headerParentThread={controls.parentThread}
           headerStartSlot={<BoardThreadBackButton onBack={controls.onBack} />}
           headerEndSlot={<BoardThreadOpenButton onOpen={controls.onOpenFull} />}
           onArchiveSession={async () => {
@@ -7477,6 +7479,21 @@ const SessionDetail = ({
       leftSlot={
         <>
           {backToBoard}
+          {threadBoard && activeTabSession ? (
+            <BoardThreadParentBreadcrumb
+              session={activeTabSession}
+              onOpenParent={(id) => {
+                void router.navigate({
+                  to: '/$workspaceName/sessions/$sessionId',
+                  params: {
+                    workspaceName: workspaceSlug!,
+                    sessionId: threadBoard.coordinatorSessionId,
+                  },
+                  search: boardMemberEntrySearch(threadBoard, id),
+                });
+              }}
+            />
+          ) : null}
           {leftSidebarExpandButton}
         </>
       }

@@ -27,13 +27,13 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
   a Board row aggregates every member, coordinator included. No extra "done" state.
   localProject catalogs are acquired at list level, once per machine.
-- Sidebar selection follows the route/selected Tab's `boardId` (or coordinator id);
-  membership subscriptions stay in `BoardSidebar`; memo rows receive stable handlers.
-- Thread rows reuse `UpdatedItemRow` and `useSessionActions`; archive keeps the
-  shared recursive selector. Row actions never change Board membership.
-- Thread panel headers use `SessionHeaderMenu` and the ordinary composer. Back is
-  first in that header and the full page's `SessionTabBar`; the latter uses
-  `boardEntrySearch` to reopen the coordinator's thread list, clearing old selection.
+- Board rows stay selected by the current Session/Tab's `boardId` (or coordinator
+  id). Membership reads stay in `BoardSidebar`; memo rows take stable handlers.
+- Thread rows reuse `UpdatedItemRow`/`useSessionActions` (no pin); headers use
+  `SessionHeaderMenu`. Marks and Back follow the experiment. Back is first in the
+  panel/page tabs and reenters the coordinator list through `boardEntrySearch`.
+- Child titles share the palette's breadcrumb format. Parent links use same-Board
+  provenance and row navigation; full pages use `boardMemberEntrySearch`.
 - A thread opened in the panel is a `SessionChatInterface` whose workspace session
   is the thread itself. Never give it a `side-session:` tab id: closing those
   deletes the Session. Narrow windows open the thread's own page instead.

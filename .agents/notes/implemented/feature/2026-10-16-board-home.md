@@ -406,3 +406,26 @@ lists are filtered; with it off, the Board section is absent. Ordinary session
 selection is unchanged. `ViewingThread` shows the selected Board beside the
 thread's real tab bar. The full-page Back button now follows the experiment gate;
 the membership mark also follows the same experiment gate.
+
+## Child-thread hierarchy (2026-10-18)
+
+Child conversations now show `parent › child` in the Board list and panel header.
+The parent name is secondary, clickable and bounded; both names stay on one line
+and truncate. The full page places the parent link and separator after Back,
+before the actual child tab, avoiding a duplicate child title. The palette's
+existing `Board › thread` format was extracted into `formatBoardSessionTitle`;
+all three surfaces use the same separator/format instead of inventing a new one.
+
+`resolveBoardThreadParent` uses `parentSessionId` before `openedBySessionId` and
+accepts only a parent thread in the same Board. The coordinator, missing metadata
+and another Board are not parent breadcrumbs. List/panel clicks use the existing
+row entry; full pages use `boardMemberEntrySearch`. Clicking a parent inside a row
+stops propagation so the child does not open immediately afterward. The page's
+connected breadcrumb selects only parent identity/title/membership; rows use their
+existing metadata lookup. No member document or second membership list is acquired.
+
+`ChildThreadOpen`, `ChildThreadRows` and `ChildThreadFullPage` render these real
+components with synthetic data. Behavioral tests cover both relation types,
+coordinator/cross-Board exclusion, row/header parent navigation, event ownership,
+and the full-page Board-member entry. Visual and real-app acceptance are delegated
+to the user; implementation work does not claim those have passed.

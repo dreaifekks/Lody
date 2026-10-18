@@ -153,3 +153,12 @@ from metadata; `resolveSidebarBoardSelection` matches that membership to the
 visible catalog. Contained Tabs with a different Board select their own Board.
 The existing selected fill is retained, and memoized Board rows get stable action
 callbacks. No membership list or layout-level metadata subscription is added.
+
+Child rows and panel headers render `BoardThreadBreadcrumb` with the same title
+format as the command palette. The direct contained parent takes precedence over
+the precise opener, and a parent must be a thread in the same Board. Clicking its
+name uses the row's navigation, without selecting the child through event bubbling.
+On the full page, the parent link and separator sit immediately after Back; the
+real child tab supplies the title. It uses `boardMemberEntrySearch` to enter the
+parent as its Board row would. The page breadcrumb selects only parent identity,
+title and membership from metadata; it does not load its document.

@@ -1,3 +1,4 @@
+import { BoardThreadBreadcrumb } from './board-thread-breadcrumb';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
@@ -25,6 +26,8 @@ export interface BoardThreadItem {
   detail: string;
   updatedLabel: string;
   updatedAt: number;
+  parentId?: string;
+  parentTitle?: string;
   /** Opened by another thread, or a contained Tab: drawn one step in. */
   depth?: number;
   archived?: boolean;
@@ -204,6 +207,15 @@ const BoardThreadRow = memo(function BoardThreadRow({
   return (
     <div {...stylex.props(styles.indent(thread.depth ?? 0))}>
       <UpdatedItemRow
+        titleContent={
+          thread.parentId && thread.parentTitle ? (
+            <BoardThreadBreadcrumb
+              parentTitle={thread.parentTitle}
+              title={thread.title}
+              onOpenParent={() => onOpen(thread.parentId!)}
+            />
+          ) : undefined
+        }
         rowId={thread.id}
         item={item}
         now={now}

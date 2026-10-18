@@ -50,7 +50,7 @@ import {
 } from './board-directory';
 import { BoardNotesEditor } from './board-notes-panel';
 import { CreateBoardDialog } from './create-board-dialog';
-import { buildBoardRows, opensInCoordinatorPage } from './board-threads';
+import { buildBoardRows, opensInCoordinatorPage, resolveBoardThreadParent } from './board-threads';
 
 const panelStyles = stylex.create({
   padded: { display: 'flex', flexDirection: 'column', gap: space[1], padding: space[2] },
@@ -100,28 +100,33 @@ export function boardThreadItems(
     untitled: string;
   }
 ): BoardThreadItem[] {
-  return rows.map(({ session, depth }, index) => ({
-    id: session.id,
-    title: session.title || context.untitled,
-    depth,
-    archived: session.isArchived === true,
-    branchName: session.branchName,
-    openedBySessionId: session.openedBySessionId,
-    openedByRowSessionId: session.openedByRootSessionId,
-    unread: sessionHasUnreadMessages(session),
-    status: deriveBoardSessionStatus({
-      liveStatus: live[index],
-      awaitingUserSince: session.awaitingUserSince,
-      lastMessageAt: session.lastMessageAt,
-      collaborationStopped: isBoardSessionStopped(session, context.lookup),
-    }),
-    detail: context.detail(session),
-    updatedAt: new Date(session.lastMessageAt ?? session.createdAt).getTime(),
-    updatedLabel: formatCompactRelativeTime(
-      session.lastMessageAt ?? session.createdAt,
-      context.now
-    ),
-  }));
+  return rows.map(({ session, depth }, index) => {
+    const parent = depth > 0 ? resolveBoardThreadParent(session, context.lookup) : undefined;
+    return {
+      id: session.id,
+      title: session.title || context.untitled,
+      depth,
+      parentId: parent?.id,
+      parentTitle: parent ? parent.title || context.untitled : undefined,
+      archived: session.isArchived === true,
+      branchName: session.branchName,
+      openedBySessionId: session.openedBySessionId,
+      openedByRowSessionId: session.openedByRootSessionId,
+      unread: sessionHasUnreadMessages(session),
+      status: deriveBoardSessionStatus({
+        liveStatus: live[index],
+        awaitingUserSince: session.awaitingUserSince,
+        lastMessageAt: session.lastMessageAt,
+        collaborationStopped: isBoardSessionStopped(session, context.lookup),
+      }),
+      detail: context.detail(session),
+      updatedAt: new Date(session.lastMessageAt ?? session.createdAt).getTime(),
+      updatedLabel: formatCompactRelativeTime(
+        session.lastMessageAt ?? session.createdAt,
+        context.now
+      ),
+    };
+  });
 }
 
 function BoardThreads({
@@ -297,7 +302,12 @@ type BoardSidePanelProps = {
   onOpenThreadFull: (session: SessionMeta) => void;
   renderThread: (
     session: SessionMeta,
-    controls: { onBack: () => void; onOpenFull: () => void; location?: string }
+    controls: {
+      onBack: () => void;
+      onOpenFull: () => void;
+      location?: string;
+      parentThread?: { title: string; onOpen: () => void };
+    }
   ) => ReactNode;
   /** A member to open once (`?boardThread`), the way its row opens it; then `onThreadRequestDone`. */
   requestedThreadId: SessionId | null;
@@ -325,6 +335,7 @@ function BoardSidePanelContent({
   requestedThreadId,
   onThreadRequestDone,
 }: BoardSidePanelProps) {
+  const { t } = useTranslation();
   const [tab, setTab] = useState<BoardPanelTab>('threads');
   const [creatingThread, setCreatingThread] = useState(false);
   const { allActiveSessions } = useVisibleSessionMetas();
@@ -346,6 +357,14 @@ function BoardSidePanelContent({
         : onOpenThread(session),
     [board, onOpenThread, onShowInPage]
   );
+  const parentThread = openThread
+    ? resolveBoardThreadParent(
+        openThread,
+        (id) =>
+          allActiveSessions.find((entry) => entry.id === id) ??
+          archivedSessions.find((entry) => entry.id === id)
+      )
+    : undefined;
   // A requested member opens as soon as its metadata is here.
   const requested =
     requestedThreadId === null
@@ -364,6 +383,12 @@ function BoardSidePanelContent({
           onBack: () => onOpenThread(null),
           onOpenFull: () => onOpenThreadFull(openThread),
           location,
+          parentThread: parentThread
+            ? {
+                title: parentThread.title || t('boards.untitled', 'Untitled session'),
+                onOpen: () => openMember(parentThread),
+              }
+            : undefined,
         })
       ) : (
         <BoardPanelView

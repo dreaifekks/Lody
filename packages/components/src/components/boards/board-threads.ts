@@ -120,3 +120,22 @@ export function resolveSidebarBoardSelection({
     membership ? board.id === membership : board.coordinatorSessionId === selectedSessionId
   )?.id;
 }
+
+/** Shared with the command palette's Board › thread labels. */
+export const BOARD_SESSION_TITLE_SEPARATOR = '›';
+export const formatBoardSessionTitle = (parent: string, title: string) =>
+  `${parent} ${BOARD_SESSION_TITLE_SEPARATOR} ${title}`;
+
+/** Presentation provenance never grants membership: both conversations belong to this Board. */
+export function resolveBoardThreadParent(
+  session: Pick<SessionMeta, 'boardId' | 'parentSessionId' | 'openedBySessionId'>,
+  lookup: (id: SessionId) => SessionMeta | undefined
+): SessionMeta | undefined {
+  const parentId = session.parentSessionId ?? session.openedBySessionId;
+  const parent = parentId ? lookup(parentId) : undefined;
+  return session.boardId &&
+    parent?.boardId === session.boardId &&
+    parent.boardRole !== 'coordinator'
+    ? parent
+    : undefined;
+}
