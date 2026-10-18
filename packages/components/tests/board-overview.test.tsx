@@ -1376,7 +1376,7 @@ it('renames and archives the whole Board from its page header menu', async () =>
   }
 });
 
-it('shares, renames and archives a Board from its sidebar row menu', async () => {
+it('shares, renames and archives a Board from its sidebar row controls', async () => {
   const { env, store, archivedIds } = await boardWithMembers();
   creation.boards = [env.board('bd_test')];
   const copied: string[] = [];
@@ -1446,8 +1446,12 @@ it('shares, renames and archives a Board from its sidebar row menu', async () =>
     await renameTo('Launch');
     expect(env.board('bd_test').name).toBe('Launch');
 
-    await openRowMenu();
-    await act(async () => menuItem('Archive Board')!.click());
+    const archiveButton = view.host.querySelector<HTMLButtonElement>(
+      '[data-id="bd_test"] button[aria-label="Archive Board"]'
+    )!;
+    await act(async () => archiveButton.click());
+    expect(await archivedIds()).toEqual([]);
+    await act(async () => archiveButton.click());
     expect(archived).toEqual(['bd_test']);
     expect(await archivedIds()).toEqual(['coordinator', 'root', 'review']);
   } finally {
@@ -1560,14 +1564,6 @@ it('uses sidebar menus and the shared recursive archive action for Board threads
       '[data-id="other"] button[aria-label="Archive session"]'
     )!;
     await act(async () => otherArchive.click());
-    expect((await env.meta('other')).isArchived).not.toBe(true);
-    await act(async () =>
-      view.host
-        .querySelector<HTMLButtonElement>(
-          '[data-id="other"] button[aria-label="Confirm Archive session"]'
-        )!
-        .click()
-    );
     expect((await env.meta('other')).isArchived).toBe(true);
     expect(selected).toBeNull();
   } finally {

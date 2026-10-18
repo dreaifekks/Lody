@@ -29,7 +29,7 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   localProject catalogs are acquired at list level, once per machine.
 - `BoardSidebar` selects by Session/Tab `boardId` or coordinator id; keep reads
   scalar, rows memoized, handlers stable. Open reads metadata at call time.
-- Reuse sidebar actions (no pin; toast failures) and `SessionHeaderMenu`.
+- Reuse sidebar actions (one-click row archive; no pin; toast failures) and `SessionHeaderMenu`.
   Board glyphs: headers/page tabs only. Back: `boardEntrySearch`, Boards on,
   never coordinator pages. Own Tabs have no parent breadcrumb; other parent links
   share palette format and the same-Board `boardMemberEntrySearch` path.

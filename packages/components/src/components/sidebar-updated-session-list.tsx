@@ -752,6 +752,7 @@ export function useSidebarSessionMenuLabels(): SidebarUpdatedContextMenuLabels {
 }
 
 export type UpdatedItemRowProps = {
+  confirmArchive?: boolean;
   titleContent?: ReactNode;
   rowId?: string;
   detailLine?: string;
@@ -781,6 +782,7 @@ export type UpdatedItemRowProps = {
 };
 
 export const UpdatedItemRow = memo(function UpdatedItemRow({
+  confirmArchive = true,
   titleContent,
   rowId,
   detailLine,
@@ -1089,6 +1091,7 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
                 <SidebarRowArchiveButton
                   label={archiveTooltipLabel}
                   confirmLabel={archiveConfirmLabel}
+                  confirmArchive={confirmArchive}
                   onConfirm={() => onArchive?.(item.id)}
                   revealClassName="group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-data-[menu-open]/row:opacity-100 group-data-[menu-open]/row:pointer-events-auto"
                 />

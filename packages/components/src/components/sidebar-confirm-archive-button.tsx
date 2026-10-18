@@ -17,6 +17,7 @@ const CONFIRM_RESET_DELAY_MS = 3500;
 type SidebarConfirmArchiveButtonProps = {
   label: string;
   confirmLabel: string;
+  confirmArchive?: boolean;
   className?: string;
   iconClassName?: string;
   onConfirm: () => void;
@@ -29,6 +30,7 @@ export const SidebarConfirmArchiveButton = forwardRef<
   {
     label,
     confirmLabel,
+    confirmArchive = true,
     className,
     iconClassName,
     onConfirm,
@@ -74,7 +76,7 @@ export const SidebarConfirmArchiveButton = forwardRef<
     event.preventDefault();
     event.stopPropagation();
 
-    if (!isConfirming) {
+    if (confirmArchive && !isConfirming) {
       armConfirming();
       return;
     }

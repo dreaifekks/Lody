@@ -443,3 +443,13 @@ opened children. Real row-action tests assert the error toast and unchanged arch
 state. Board glyphs are restricted to conversation headers/page tabs; the redundant
 sidebar/list subscription was deleted. Targeted verification precedes the user-owned
 visual review; the combined full check is deferred until its feedback is incorporated.
+
+## Immediate thread-row archive (2026-10-18)
+
+The user confirmed that removing redundant row glyphs must retain the hover
+archive/more buttons, context menu, and conversation header controls. Board thread
+rows now opt out of confirmation on the same shared archive button: the first
+click runs the shared archive action and never selects the row. Other sidebar
+rows keep their existing confirmation by default. The behavioral suite verifies
+both the immediate thread archive and the ordinary Board row's two-click flow.
+Full verification remains deferred until the user's visual feedback is integrated.
