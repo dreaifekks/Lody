@@ -5,11 +5,11 @@
  * the container uses.
  */
 import type { Meta, StoryObj } from '@storybook/react';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { createStore, Provider } from 'jotai';
 import { parseLodyPresenceStates } from '@lody/shared';
 import { useTranslation } from 'react-i18next';
-import { ArrowUp, Bot, ChevronDown, Download, Monitor, Settings2 } from 'lucide-react';
+import { ArrowUp, ChevronDown, Download, Monitor, Settings2 } from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import {
   normalizeBoardMeta,
@@ -28,12 +28,21 @@ import { currentWorkspaceIdAtom } from '@/atoms';
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '@/atoms/settings';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '@/atoms/presence';
+import {
+  DesktopRunConfigMenu,
+  DesktopPermissionModeButton,
+} from '@/components/sessions/desktop-run-config-menu';
+import {
+  RenameSessionDialogView,
+  type RenameSessionDialogTarget,
+} from '@/components/sessions/rename-session-dialog';
 import { ChatComposer } from '@/components/chat/chat-composer';
 import {
   MessageRowView,
   SessionChatStreamView,
   type ChatStreamItem,
 } from '@/components/ai-gui/view';
+import { SidebarUpdatedSessionList } from '@/components/sidebar-updated-session-list';
 import { LoroSidebar } from '@/components/loro-sidebar';
 import { SessionAccessControl } from '@/components/session-sharing';
 import { SessionHeaderMenu } from '@/components/sessions/session-chat-interface';
@@ -45,6 +54,7 @@ import { ForceMobileLayoutProvider } from '@/hooks/use-mobile';
 import {
   BoardPanelView,
   BoardThreadPaneView,
+  BoardThreadBackButton,
   type BoardPanelTab,
 } from '@/components/boards/board-panel-view';
 import { BoardThreadListView } from '@/components/boards/board-thread-list';
@@ -60,7 +70,7 @@ import { BoardSidebarSection } from '@/components/boards/board-sidebar-section';
 import { BoardCreateDialogView } from '@/components/boards/board-create-dialog-view';
 import { ArchivedBoardsView } from '@/components/boards/archived-boards-section';
 import { boardThreadItems } from '@/components/boards/board-side-panel';
-import { buildBoardRows } from '@/components/boards/board-threads';
+import { buildBoardRows, isBoardSession } from '@/components/boards/board-threads';
 import { BoardDirectoryFileProvider } from '@/lib/board-directory-file-provider';
 import { cn } from '@/lib/utils';
 import { SettingsStoryProviders } from './settings-story-shell';
@@ -311,6 +321,23 @@ function Conversation({
 
 function Composer({ placeholder }: { placeholder: string }) {
   const [prompt, setPrompt] = useState('');
+  const { t } = useTranslation();
+  const [model, setModel] = useState<string | null>('opus');
+  const [mode, setMode] = useState<string | null>('auto');
+  const [config, setConfig] = useState<Record<string, string | boolean>>({ plan_mode: false });
+  const modes = [
+    { value: 'auto', label: 'Auto' },
+    { value: 'default', label: 'Default' },
+  ];
+  const selectors = [
+    {
+      type: 'boolean' as const,
+      configId: 'plan_mode',
+      label: 'Plan',
+      options: [] as [],
+      currentValue: false,
+    },
+  ];
   return (
     <ChatComposer
       tone="dark"
@@ -320,14 +347,38 @@ function Composer({ placeholder }: { placeholder: string }) {
       promptPlaceholder={placeholder}
       promptRows={1}
       selector={
-        <Button variant="ghost" size="small">
-          <Bot size={14} aria-hidden />
-          Opus 5.5
-          <ChevronDown size={14} aria-hidden />
-        </Button>
+        <>
+          <DesktopRunConfigMenu
+            agentSelection={null}
+            fallbackAgent={{ cliType: 'builtin', agentType: 'claude' }}
+            agentLocked
+            modelOptions={[
+              { value: 'opus', label: 'Opus 5.5' },
+              { value: 'sonnet', label: 'Sonnet' },
+            ]}
+            selectedModelId={model}
+            onModelChange={setModel}
+            modeOptions={modes}
+            selectedModeId={mode}
+            configOptionSelectors={selectors}
+            configOptionValues={config}
+            onConfigOptionChange={(id, value) => setConfig({ ...config, [id]: value })}
+          />
+          <DesktopPermissionModeButton
+            modeOptions={modes}
+            selectedModeId={mode}
+            onModeChange={setMode}
+          />
+        </>
       }
       primaryAction={
-        <Button type="button" variant="primary" aria-label="Send" shape="pill" icon>
+        <Button
+          type="button"
+          variant="primary"
+          aria-label={t('chat.send', 'Send')}
+          shape="pill"
+          icon
+        >
           <ArrowUp size={16} />
         </Button>
       }
@@ -371,7 +422,7 @@ type PanelState =
       /** The listing stopped at its 500-file limit. */
       truncated?: boolean;
     }
-  | { kind: 'thread' };
+  | { kind: 'thread'; running?: boolean };
 
 const sharedFiles: BoardFileEntry[] = [
   { path: 'design/board-home.md', sizeBytes: 8_200, modifiedAtMs: NOW - 2 * 3_600_000 },
@@ -409,6 +460,26 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
     '# 2026-10-16\n\n- PR4：轮数检查放在 lody_session_chat，followUp 不计轮。\n- 侧边栏入口待用户选择。'
   );
   const { t } = useTranslation();
+  const [listItems, setItems] = useState(threads);
+  const [renameTarget, setRenameTarget] = useState<RenameSessionDialogTarget | null>(null);
+  const rename = (id: string, title: string) =>
+    setItems((items) => items.map((item) => (item.id === id ? { ...item, title } : item)));
+  const actions = {
+    onArchive: (id: string) =>
+      setItems((items) =>
+        items.map((item) => (item.id === id ? { ...item, archived: true } : item))
+      ),
+    onRestore: (id: string) =>
+      setItems((items) =>
+        items.map((item) => (item.id === id ? { ...item, archived: false } : item))
+      ),
+    onMarkUnread: (id: string) =>
+      setItems((items) => items.map((item) => (item.id === id ? { ...item, unread: true } : item))),
+    onCopyUrl: () => {},
+    onRename: rename,
+    onBeginRename: (sessionId: string, initialTitle: string) =>
+      setRenameTarget({ sessionId: sessionId as SessionId, initialTitle }),
+  };
   const thread = members.find((session) => session.id === THREAD)!;
   return panel.kind === 'thread' ? (
     <BoardThreadPaneView
@@ -416,6 +487,22 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
       location="devnuc · Lody"
       onBack={() => setPanel({ kind: 'tabs', tab: 'threads' })}
       onOpenFull={() => {}}
+      onStop={panel.running ? () => setPanel({ kind: 'thread' }) : undefined}
+      menuSlot={
+        <SessionHeaderMenu
+          session={thread}
+          machineName="devnuc"
+          onCopyUrl={noop}
+          onCopyConversationHistory={noop}
+          onOpenSearch={noop}
+          onRename={noop}
+          onArchive={() => {
+            actions.onArchive(THREAD);
+            setPanel({ kind: 'tabs', tab: 'threads' });
+          }}
+          t={t}
+        />
+      }
     >
       <ChatSurface sessionId={THREAD} messages={threadMessages} placeholder="回复这个线程…" />
     </BoardThreadPaneView>
@@ -426,12 +513,21 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
       onNewThread={() => {}}
     >
       {panel.tab === 'threads' ? (
-        <BoardThreadListView
-          threads={threads}
-          onOpen={() => {
-            if (!narrow) setPanel({ kind: 'thread' });
-          }}
-        />
+        <>
+          <RenameSessionDialogView
+            target={renameTarget}
+            onClose={() => setRenameTarget(null)}
+            onRename={rename}
+          />
+          <BoardThreadListView
+            now={new Date(NOW)}
+            threads={listItems}
+            actions={actions}
+            onOpen={() => {
+              if (!narrow) setPanel({ kind: 'thread' });
+            }}
+          />
+        </>
       ) : panel.notes === true ? (
         <BoardFileEditorView
           name={t('boards.notes')}
@@ -574,9 +670,25 @@ function Sidebar({ selectedId, onOpen }: { selectedId: string; onOpen: (id: stri
 }
 
 /** Boards are an experiment: the page's menu names Board actions only while it is on. */
-const boardsOnStore = createStore();
-boardsOnStore.set(experimentalFeaturesEnabledAtom, true);
-boardsOnStore.set(boardExperimentEnabledAtom, true);
+function BoardStoryProvider({
+  children,
+  enabled = true,
+}: {
+  children: ReactNode;
+  enabled?: boolean;
+}) {
+  const [store] = useState(() => {
+    const fixtureStore = createStore();
+    fixtureStore.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(members.map((session) => [getSessionRoomId(session.id), session]))
+    );
+    fixtureStore.set(experimentalFeaturesEnabledAtom, true);
+    fixtureStore.set(boardExperimentEnabledAtom, enabled);
+    return fixtureStore;
+  });
+  return <Provider store={store}>{children}</Provider>;
+}
 
 /**
  * The conversation header's controls as the coordinator's page draws them: the
@@ -622,7 +734,7 @@ function CoordinatorPage({ initial }: { initial: PanelState }) {
   ];
   return (
     <SettingsStoryProviders>
-      <Provider store={boardsOnStore}>
+      <BoardStoryProvider>
         <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
           <Sidebar
             selectedId={entry.board}
@@ -674,7 +786,7 @@ function CoordinatorPage({ initial }: { initial: PanelState }) {
             />
           </main>
         </div>
-      </Provider>
+      </BoardStoryProvider>
     </SettingsStoryProviders>
   );
 }
@@ -936,5 +1048,75 @@ export const AssignedThreads: Story = {
         onNavigateSession={() => {}}
       />
     </Provider>
+  ),
+};
+
+/** Real tab bar and Board return control, with fixture-only navigation. */
+export const ThreadFullPage: Story = {
+  render: function FullThreadStory() {
+    const [back, setBack] = useState(false);
+    const thread = members.find((session) => session.id === THREAD)!;
+    return back ? (
+      <CoordinatorPage initial={{ kind: 'tabs', tab: 'threads' }} />
+    ) : (
+      <SettingsStoryProviders>
+        <BoardStoryProvider>
+          <DesktopSessionDetailLayout
+            defaultSizes={{ main: 50, sidebar: 50 }}
+            topBar={
+              <SessionTabBar
+                variant="session"
+                parentSession={thread}
+                childSessions={[]}
+                draftTabs={[]}
+                archivedChildSessions={[]}
+                activeTabSessionId={THREAD}
+                onTabSelect={noop}
+                onNewTab={noop}
+                leftSlot={<BoardThreadBackButton onBack={() => setBack(true)} />}
+              />
+            }
+            chatSurfaces={
+              <ChatSurface
+                sessionId={THREAD}
+                messages={threadMessages}
+                placeholder="回复这个线程…"
+              />
+            }
+            terminalDock={null}
+            secondaryPanel={null}
+            sidebarOpen={false}
+            onSidebarCollapse={noop}
+            deleteConfirmDialog={null}
+          />
+        </BoardStoryProvider>
+      </SettingsStoryProviders>
+    );
+  },
+};
+export const ThreadControls: Story = { args: { initial: { kind: 'thread', running: true } } };
+export const ThreadRowActions: Story = {};
+
+/** With the experiment off, Updated/Pinned keeps threads but hides their Board marks. */
+export const ThreadSidebar: Story = {
+  render: () => (
+    <SettingsStoryProviders>
+      <BoardStoryProvider enabled={false}>
+        <SidebarUpdatedSessionList
+          now={new Date(NOW)}
+          onSelectItem={noop}
+          onArchiveItem={noop}
+          items={members
+            .filter((session) => !isBoardSession(session, false))
+            .map((session) => ({
+              id: session.id,
+              kind: 'chat',
+              title: session.title ?? '',
+              sectionLabel: '',
+              latestMessageAt: session.lastMessageAt ?? NOW,
+            }))}
+        />
+      </BoardStoryProvider>
+    </SettingsStoryProviders>
   ),
 };

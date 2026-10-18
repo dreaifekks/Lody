@@ -5365,6 +5365,7 @@
   "boards.updatesAttachedUnknown": "{{count}} 条线程更新已保存，主会话是否收到尚不确定",
   "boards.constraints": "线程说明",
   "boards.creating": "创建中…",
+  "boards.thread": "看板线程",
   "boards.threads": "线程",
   "boards.noThreads": "协调者创建的会话会显示在这里。",
   "boards.notFound": "未找到看板。",

@@ -20,6 +20,12 @@ import {
 
 const localProjectsOf = (rows: MachineFlockRowMap | undefined) =>
   rows ? getMachineFlockLocalProjects(rows) : undefined;
+import { useSessionActions } from '@/hooks/use-session-actions';
+import { buildSessionLink } from '@lody/shared/session-link';
+import {
+  RenameSessionDialogView,
+  type RenameSessionDialogTarget,
+} from '../sessions/rename-session-dialog';
 import { currentWorkspaceIdAtom } from '@/atoms';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { sessionLiveStatusAtomFamily } from '@/atoms/presence';
@@ -34,7 +40,7 @@ import {
 import { useBoardDocument } from '@/hooks/use-board-document';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
-import { BoardPanelView, BoardThreadPaneView, type BoardPanelTab } from './board-panel-view';
+import { BoardPanelView, type BoardPanelTab } from './board-panel-view';
 import { BoardThreadListView, type BoardThreadItem } from './board-thread-list';
 import { BoardDirectoryTreeView, BoardFileEditorView } from './board-files-view';
 import {
@@ -99,6 +105,9 @@ export function boardThreadItems(
     title: session.title || context.untitled,
     depth,
     archived: session.isArchived === true,
+    branchName: session.branchName,
+    openedBySessionId: session.openedBySessionId,
+    openedByRowSessionId: session.openedByRootSessionId,
     unread: sessionHasUnreadMessages(session),
     status: deriveBoardSessionStatus({
       liveStatus: live[index],
@@ -107,6 +116,7 @@ export function boardThreadItems(
       collaborationStopped: isBoardSessionStopped(session, context.lookup),
     }),
     detail: context.detail(session),
+    updatedAt: new Date(session.lastMessageAt ?? session.createdAt).getTime(),
     updatedLabel: formatCompactRelativeTime(
       session.lastMessageAt ?? session.createdAt,
       context.now
@@ -121,6 +131,32 @@ function BoardThreads({
   board: BoardMeta;
   onOpen: (session: SessionMeta) => void;
 }) {
+  const { archiveSession, restoreSession, markSessionUnread, updateSessionTitle } =
+    useSessionActions();
+  const workspaceId = useAtomValue(currentWorkspaceIdAtom);
+  const [renameTarget, setRenameTarget] = useState<RenameSessionDialogTarget | null>(null);
+  const actions = useMemo(
+    () => ({
+      onArchive: (id: string) => {
+        void archiveSession(id as SessionId);
+      },
+      onRestore: (id: string) => {
+        void restoreSession(id as SessionId);
+      },
+      onMarkUnread: (id: string) => {
+        void markSessionUnread(id as SessionId);
+      },
+      onRename: (id: string, title: string) => updateSessionTitle(id as SessionId, title),
+      onBeginRename: (id: string, title: string) =>
+        setRenameTarget({ sessionId: id as SessionId, initialTitle: title }),
+      onCopyUrl: (id: string) => {
+        void navigator.clipboard.writeText(
+          buildSessionLink({ sessionId: id, workspaceId: workspaceId! })
+        );
+      },
+    }),
+    [archiveSession, restoreSession, markSessionUnread, updateSessionTitle, workspaceId]
+  );
   const { allActiveSessions } = useVisibleSessionMetas();
   const { archivedSessions } = useVisibleArchivedSessionMetas();
   const metas = useAtomValue(sessionMetaCacheAtom);
@@ -152,15 +188,27 @@ function BoardThreads({
     now,
     untitled: t('boards.untitled', 'Untitled session'),
   });
-  const byId = new Map(rows.map(({ session }) => [session.id, session]));
+  const byId = useMemo(
+    () =>
+      new Map([...allActiveSessions, ...archivedSessions].map((session) => [session.id, session])),
+    [allActiveSessions, archivedSessions]
+  );
+  const open = useCallback(
+    (id: string, tabSessionId?: string) => {
+      const session = byId.get((tabSessionId ?? id) as SessionId);
+      if (session) onOpen(session);
+    },
+    [byId, onOpen]
+  );
   return (
-    <BoardThreadListView
-      threads={threads}
-      onOpen={(id) => {
-        const session = byId.get(id as SessionId);
-        if (session) onOpen(session);
-      }}
-    />
+    <>
+      <BoardThreadListView now={now} threads={threads} onOpen={open} actions={actions} />
+      <RenameSessionDialogView
+        target={renameTarget}
+        onClose={() => setRenameTarget(null)}
+        onRename={actions.onRename}
+      />
+    </>
   );
 }
 
@@ -247,7 +295,10 @@ type BoardSidePanelProps = {
    */
   onShowInPage: (session: SessionMeta) => void;
   onOpenThreadFull: (session: SessionMeta) => void;
-  renderThread: (session: SessionMeta) => ReactNode;
+  renderThread: (
+    session: SessionMeta,
+    controls: { onBack: () => void; onOpenFull: () => void; location?: string }
+  ) => ReactNode;
   /** A member to open once (`?boardThread`), the way its row opens it; then `onThreadRequestDone`. */
   requestedThreadId: SessionId | null;
   onThreadRequestDone: () => void;
@@ -274,7 +325,6 @@ function BoardSidePanelContent({
   requestedThreadId,
   onThreadRequestDone,
 }: BoardSidePanelProps) {
-  const { t } = useTranslation();
   const [tab, setTab] = useState<BoardPanelTab>('threads');
   const [creatingThread, setCreatingThread] = useState(false);
   const { allActiveSessions } = useVisibleSessionMetas();
@@ -289,7 +339,11 @@ function BoardSidePanelContent({
   const location = useThreadLocation(openThread);
   const openMember = useCallback(
     (session: SessionMeta) =>
-      opensInCoordinatorPage(board, session) ? onShowInPage(session) : onOpenThread(session),
+      session.id === board.coordinatorSessionId ||
+      session.boardId !== board.id ||
+      opensInCoordinatorPage(board, session)
+        ? onShowInPage(session)
+        : onOpenThread(session),
     [board, onOpenThread, onShowInPage]
   );
   // A requested member opens as soon as its metadata is here.
@@ -306,14 +360,11 @@ function BoardSidePanelContent({
   return (
     <>
       {openThread ? (
-        <BoardThreadPaneView
-          title={openThread.title || t('boards.untitled', 'Untitled session')}
-          location={location}
-          onBack={() => onOpenThread(null)}
-          onOpenFull={() => onOpenThreadFull(openThread)}
-        >
-          {renderThread(openThread)}
-        </BoardThreadPaneView>
+        renderThread(openThread, {
+          onBack: () => onOpenThread(null),
+          onOpenFull: () => onOpenThreadFull(openThread),
+          location,
+        })
       ) : (
         <BoardPanelView
           tab={tab}

@@ -5365,6 +5365,7 @@
   "boards.updatesAttachedUnknown": "{{count}} thread updates saved; delivery to the main session is uncertain",
   "boards.constraints": "Thread instructions",
   "boards.creating": "Creating…",
+  "boards.thread": "Board thread",
   "boards.threads": "Threads",
   "boards.noThreads": "Sessions created by the coordinator will appear here.",
   "boards.notFound": "Board not found.",

@@ -1,3 +1,4 @@
+import { SessionBoardThreadMark } from './boards/board-thread-mark';
 import {
   useId,
   useState,
@@ -346,6 +347,7 @@ export function SidebarSessionTitleText({
   const isUnsent = useSessionUnsentNewConversation(sessionId);
   return (
     <span className={cn(className, isUnsent && !selected && SIDEBAR_UNSENT_TITLE_CLASS)}>
+      <SessionBoardThreadMark sessionId={sessionId} />
       {children}
     </span>
   );

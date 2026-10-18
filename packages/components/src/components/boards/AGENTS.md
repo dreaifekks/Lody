@@ -27,6 +27,11 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
   a Board row aggregates every member, coordinator included. No extra "done" state.
   localProject catalogs are acquired at list level, once per machine.
+- Thread rows reuse `UpdatedItemRow` and `useSessionActions`; archive keeps the
+  shared recursive selector. Row actions never change Board membership.
+- Thread panel headers use `SessionHeaderMenu` and the ordinary composer. Back is
+  first in that header and the full page's `SessionTabBar`; the latter uses
+  `boardEntrySearch` to reopen the coordinator's thread list, clearing old selection.
 - A thread opened in the panel is a `SessionChatInterface` whose workspace session
   is the thread itself. Never give it a `side-session:` tab id: closing those
   deletes the Session. Narrow windows open the thread's own page instead.

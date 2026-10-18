@@ -153,7 +153,7 @@ LAN 里所有机器属于同一个用户，同一用户跨机器能碰到文件�
 - **`BOARD_NOT_FOUND` 是成员机器的 catalog 副本没同步。** 现场证据：在每台机器上直接向本机
   守护进程的 control socket 发桌面用的 `board/files-list`（看板 `bd_ce75…`，协调者在 devNuc）。
   devNuc（宿主）和 homeN100 返回空列表；mba 返回 `BOARD_NOT_FOUND:this machine knows no such
-  Board`，这条报错来自发起方自己读看板行的 `LanFileHandoff.boardOf`，请求根本没发到宿主机。
+Board`，这条报错来自发起方自己读看板行的 `LanFileHandoff.boardOf`，请求根本没发到宿主机。
   在 mba 上跑一次会让守护进程同步 workspace catalog 的 `lody-lan mcp list` 之后，同一请求立即
   返回列表。代码上，读 catalog 的其他地方（看板工具、成员启动提示、Role / MCP 读取）都先
   `syncFlockDocOrThrow`，只有 `lody-fleet.ts` 的 `readBoard` 直接读本地副本。修法是抽出
@@ -259,3 +259,27 @@ Codex reviewer（gpt-6.1-sol high）提了 2 个 P1、1 个 P2，都已修：
 
 证据：在 devNuc 上用 Storybook 截图核对两处导航（选中、焦点、两者同时、深色）以及「通用」页
 和「记忆」页。
+
+## 线程控件（2026-10-18）
+
+线程面板原来隐藏会话头部，列表也没有生命周期操作。现在面板在共享会话头部中
+渲染真实 `SessionHeaderMenu`，包含线程标题、停止、归档/恢复、重命名、搜索和复制。
+输入区原本就使用普通会话的组件：没有面板专用 prop 隐藏模型、模式或权限，已有会话
+的 agent 限制保持不变。分叉和永久删除仍在完整会话页使用，因为这些操作的页面状态
+以该页根会话为目标；面板不会把它们误作用到协调者。分享/IDE 控件沿用窄容器规则。
+
+线程列表直接使用侧边栏 memo 化的 `UpdatedItemRow`，不复制菜单：重命名、
+标记未读、复制链接/分支、回到发起会话、新窗口和归档，已归档行另有恢复。
+看板线程菜单不提供置顶，因为外部列表会过滤看板成员。归档调用 `useSessionActions.archiveSession`
+及递归选择器（包含 Tab 和打开的会话）；恢复仍只带直接 Tab。列表继续只读元数据和
+一个派生 presence atom，不获取线程文档。
+
+返回按钮位于线程面板头部与完整页 `SessionTabBar` 的最前面。完整页通过
+`boardEntrySearch` 回协调者，清除旧面板线程选择并退出 Zen。分栏调整宽度没有另一个
+线程放大状态。`LayoutDashboard` 标记用于面板标题、完整页 Tab 和共享侧边栏标题叶子
+（随实验开关显示）；协调者不显示。侧边栏叶子只订阅成员资格布尔值。
+
+行为测试覆盖菜单重命名与不提供置顶、递归归档/仅直接 Tab 恢复、键盘事件归属、返回入口和
+成员标记。故事 `ThreadRowActions`、`ThreadControls`、`ThreadFullPage` 使用真实 UI
+叶子和合成状态，包含普通运行配置与权限菜单；完整页故事的跳转是 fixture 回调，
+不是真实路由。这些测试不能证明真实 Electron/daemon 端到端操作。

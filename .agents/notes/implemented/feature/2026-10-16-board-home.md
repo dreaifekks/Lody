@@ -362,3 +362,36 @@ With the rename and key fixes temporarily reverted, both new assertions fail.
 
 Evidence: Storybook screenshots of both navs (selected, focused, both, dark) and of the
 General and Memory pages, taken on devNuc.
+
+## Thread controls (2026-10-18)
+
+Threads previously hid the conversation header and their list had no lifecycle
+controls. The panel now renders the real `SessionHeaderMenu` in the shared page
+header, with thread title, Stop, Archive/Restore, rename, search and copy actions.
+The ordinary composer was already present: no panel-specific prop suppressed
+model, mode or permission, and existing-session agent restrictions remain intact.
+Fork and permanent delete remain on the full conversation page because their
+page-owned state targets that page's root; the panel does not redirect these
+operations onto the coordinator. Header share/IDE controls retain the same narrow
+container behavior.
+
+The thread list directly uses the sidebar's memoized `UpdatedItemRow` rather than
+copying its menu: rename, unread, copy link/branch, opener navigation, new
+window, and archive. It adds Restore for archived rows. Pin is omitted in the Board list because outside lists filter members. Archive uses `useSessionActions.archiveSession`
+and its recursive selector (contained Tabs and opened conversations); Restore
+keeps the ordinary direct-Tab scope. The list still reads metadata and one derived
+presence atom, without acquiring thread documents.
+
+Back is the first control in both the thread panel header and the full page's
+`SessionTabBar`. The latter enters the coordinator through `boardEntrySearch`,
+which resets the selected panel thread and exits Zen. Split resizing introduces
+no other maximize state. `LayoutDashboard` marks thread titles in the panel,
+full-page tabs and shared sidebar title leaf (only while the experiment is on); coordinators are excluded. The sidebar leaf selects only the
+membership boolean.
+
+Behavior tests cover menu rename and pin omission, recursive archive/direct-Tab restore,
+keyboard event ownership, return entry and membership marks. Stories
+`ThreadRowActions`, `ThreadControls` and `ThreadFullPage` use real UI leaves with
+synthetic state, including the ordinary run-config and permission menus; full-page
+story navigation is a fixture callback, not the router. Real Electron/daemon
+end-to-end operation is not established by these tests.

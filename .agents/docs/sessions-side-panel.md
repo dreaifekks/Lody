@@ -129,3 +129,20 @@ this page is the full text of the rules summarised there.
   `useSessionDoc` never survive an in-place session switch.
   Electron public-browser restoration only reattaches the existing `WebContentsView`; it must not
   issue another navigation to the cached URL, which would silently reload and lose page state.
+
+## Board threads
+
+The coordinator's Board panel selects a thread in `BoardSidePanel`. Its conversation
+is the real `SessionChatInterface` with `headerVariant="board-thread"`: the same
+`SessionHeaderMenu`, title/return/full-page controls, and the unchanged
+`SessionChatInputArea`. Header launch/share pills use the normal 800px container
+rule; model/mode/permission controls remain in the composer at every panel width.
+Existing-session agent locks are unchanged.
+
+The list renders the sidebar's memoized `UpdatedItemRow`, including its leading
+menu and hover archive confirmation; actions go through `useSessionActions`.
+Full-page return lives in `SessionTabBar.leftSlot`, before the sidebar toggle,
+and navigates through `boardEntrySearch`. Re-entry clears the old panel thread.
+Resizing the split has no separate full-screen thread state. Zen is cleared by
+Board entry. A small membership mark is shared by sidebar titles and session tabs,
+and follows the Board experiment gate.

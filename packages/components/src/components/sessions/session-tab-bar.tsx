@@ -1,3 +1,4 @@
+import { BoardThreadMark, isBoardThread } from '../boards/board-thread-mark';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { space, radius } from '@lody/ui/tokens/scales.stylex';
@@ -558,7 +559,10 @@ function TabContent({
           {...stylex.props(styles.editInput)}
         />
       ) : (
-        <span {...stylex.props(styles.truncate)}>{label}</span>
+        <span {...stylex.props(styles.truncate)}>
+          {isBoardThread(session) ? <BoardThreadMark /> : null}
+          {label}
+        </span>
       )}
       {showClose && (
         <button
