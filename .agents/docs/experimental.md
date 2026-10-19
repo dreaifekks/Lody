@@ -264,7 +264,9 @@ and give the path in the reply. No tool, CLI or protocol change.
   `credentialless`) and the widget policy: scripts, styles, fonts, images and
   `connect-src` from the widget CDNs only (`LODY_WIDGET_CDN_ORIGINS`), and the app's
   theme variables. A `srcdoc` frame inherits the app's own policy, which runs no
-  inline script or CDN code there. The page cannot send prompts; links ask first.
+  inline script or CDN code there. The page is already loaded when the article
+  arrives, so the article's `DOMContentLoaded`/`load` handlers run after its last
+  script. The page cannot send prompts; links ask first.
   Collapsed tabs keep the ordinary no-network HTML preview. Element comments
   (visual annotation) are not available in the expanded HTML view.
 - Refresh: while expanded and on screen, the file is revalidated with its digest
@@ -272,7 +274,8 @@ and give the path in the reply. No tool, CLI or protocol change.
   (`hooks/use-session-file-digest-watch.ts`). Markdown re-renders in place; an open
   selection comment holds the update. HTML waits 1 s for writes to settle and does
   not reload while the pointer or focus is in the page (or left it under 3 s ago);
-  the toolbar then shows "Updated · Reload".
+  the toolbar then shows "Updated · Reload". A check that returns after the reader
+  started editing the source, or collapsed the article, is dropped.
 - Layout: `components/sessions/board-article-focus.tsx`. Expanding only switches
   classes and styles on elements that are always rendered, so the thread's
   conversation never remounts and keeps its composer text and chips.

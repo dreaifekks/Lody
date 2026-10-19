@@ -17,16 +17,24 @@ const styles = stylex.create({
 });
 
 /*
- * Posted ahead of the article. The widget page is sized to its content and
- * already loaded when the article arrives, so the article scrolls in the
- * page itself, and its load handlers run as soon as its scripts do.
+ * Posted around the article. The widget page is sized to its content and
+ * already loaded when the article arrives, so the article scrolls in the page
+ * itself. The page runs the article's scripts one by one, waiting for each CDN
+ * script, so its `DOMContentLoaded`/`load` handlers are held until the last
+ * script has run, then called in that order (`onload` too).
  */
 const ARTICLE_PRELUDE =
   '<style>html,body{height:100%;overflow:auto!important}</style>' +
-  '<script>(function(){[window,document].forEach(function(t){var add=t.addEventListener;' +
-  "t.addEventListener=function(type,fn,o){if(type==='DOMContentLoaded'||type==='load'){" +
-  "setTimeout(function(){var e=new Event(type);typeof fn==='function'?fn.call(t,e):fn&&fn.handleEvent&&fn.handleEvent(e);});return;}" +
-  'return add.call(this,type,fn,o);};});})();</script>';
+  '<script>(function(){var ready={DOMContentLoaded:[],load:[]},done=false;' +
+  "function call(t,type,fn){var e=new Event(type);typeof fn==='function'?fn.call(t,e):fn&&fn.handleEvent&&fn.handleEvent(e);}" +
+  '[window,document].forEach(function(t){var add=t.addEventListener;' +
+  't.addEventListener=function(type,fn,o){if(ready[type]){' +
+  'if(done)setTimeout(function(){call(t,type,fn);});else ready[type].push([t,fn]);return;}' +
+  'return add.call(this,type,fn,o);};});' +
+  'window.__lodyArticleReady=function(){if(done)return;done=true;' +
+  "['DOMContentLoaded','load'].forEach(function(type){ready[type].forEach(function(e){call(e[0],type,e[1]);});});" +
+  "if(typeof window.onload==='function')call(window,'load',window.onload);};})();</script>";
+const ARTICLE_EPILOGUE = '<script>window.__lodyArticleReady&&window.__lodyArticleReady();</script>';
 
 /**
  * A thread's HTML article beside its conversation. It runs in the widget page
@@ -67,7 +75,7 @@ export function ArticleHtmlFrame({ html, title }: { html: string; title: string 
         readyRef.current = true;
         post({
           type: 'lody-widget:render',
-          code: ARTICLE_PRELUDE + latest.current.html,
+          code: ARTICLE_PRELUDE + latest.current.html + ARTICLE_EPILOGUE,
           mode: latest.current.resolvedTheme,
           vars: readWidgetThemeVars(),
         });

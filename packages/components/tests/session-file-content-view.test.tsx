@@ -736,6 +736,65 @@ describe('SessionFileContentView', () => {
     );
   });
 
+  it('follows an expanded article as the agent writes, but never over edits made meanwhile', async () => {
+    vi.useFakeTimers();
+    let answerRecheck: (response: FilePreviewV3Response) => void = () => undefined;
+    const previewFile = vi.fn<CodeCollabSessionFileProviderRuntime['previewFile']>(
+      async (_path, knownDigest) => {
+        if (knownDigest === undefined) return filePreviewResult('let value = 1;', DIGEST_1);
+        return await new Promise((resolve) => {
+          answerRecheck = resolve;
+        });
+      }
+    );
+    const provider = createCodeCollabProvider(createCodeCollabRuntime({ previewFile }));
+    const view = await render(
+      createElement(SessionFileContentView, {
+        sessionId: session.id,
+        session,
+        filePath: 'src/live.ts',
+        fileId: 'src/live.ts',
+        fileProvider: provider,
+        fileProviderPending: false,
+        fileProviderRole: 'write',
+        active: true,
+        article: true,
+      })
+    );
+    await flushMicrotasks();
+    const shownText = () =>
+      view.querySelector('[data-testid="monaco-viewer"]')?.getAttribute('data-text');
+    expect(shownText()).toBe('let value = 1;');
+
+    // An idle thread's article is rechecked by digest after 15 s; a new revision shows.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect(previewFile).toHaveBeenLastCalledWith('src/live.ts', DIGEST_1);
+    await act(async () => {
+      answerRecheck(filePreviewResult('let value = 2;', DIGEST_2));
+    });
+    await flushMicrotasks();
+    expect(shownText()).toBe('let value = 2;');
+
+    // The next recheck is still out when the reader starts editing: the edit stays.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    await act(async () => {
+      monacoMockState.onContentChange?.('let value = 20;');
+    });
+    await act(async () => {
+      answerRecheck(
+        filePreviewResult('let value = 3;', `sha256:${'3'.repeat(64)}` as CodeCollabV2FileDigest)
+      );
+    });
+    await flushMicrotasks();
+    expect(shownText()).toBe('let value = 20;');
+    expect(view.textContent).toContain('Unsaved');
+    vi.useRealTimers();
+  });
+
   it('shows saving while an explicit disk save is in flight', async () => {
     vi.useFakeTimers();
     const provider = createEditableProvider();

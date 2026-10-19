@@ -1427,17 +1427,19 @@ function SessionFileContentViewImpl({
       ? (latestEditorTextRef.current ?? data.snapshot.text)
       : null
   );
+  const articleWatchEnabled = isArticle && shouldUseProviderFileContent && isTextFileReady;
+  const articleWatchEnabledRef = useLatestRef(articleWatchEnabled);
   const checkArticle = useCallback(async () => {
     if (!fileProvider || providerEditorDirtyRef.current) return;
     try {
-      const result = normalizePinnedProviderOpenResult(
-        await fileProvider.openFile(fileId ?? normalizedPath),
-        {
-          ...(fileId === undefined ? {} : { fileId }),
-          path: normalizedPath,
-          providerState: fileProvider.getState(),
-        }
-      );
+      const opened = await fileProvider.openFile(fileId ?? normalizedPath);
+      // The reader may have collapsed the article or started editing meanwhile.
+      if (!articleWatchEnabledRef.current || providerEditorDirtyRef.current) return;
+      const result = normalizePinnedProviderOpenResult(opened, {
+        ...(fileId === undefined ? {} : { fileId }),
+        path: normalizedPath,
+        providerState: fileProvider.getState(),
+      });
       const next = sessionFileOpenResultToContentLoadResult(result);
       if (next.status !== 'ready' || next.snapshot.kind !== 'text') return;
       const text = next.snapshot.text;
@@ -1457,7 +1459,7 @@ function SessionFileContentViewImpl({
         message: error instanceof Error ? error.message : String(error),
       });
     }
-  }, [fileId, fileProvider, normalizedPath, sessionId, shownTextRef]);
+  }, [articleWatchEnabledRef, fileId, fileProvider, normalizedPath, sessionId, shownTextRef]);
   // Only the working/idle bit, so presence ticks do not re-render the view.
   const articleWorkingAtom = useMemo(
     () =>
@@ -1468,12 +1470,18 @@ function SessionFileContentViewImpl({
   );
   const articleSessionWorking = useAtomValue(articleWorkingAtom);
   useSessionFileDigestWatch({
-    enabled: isArticle && shouldUseProviderFileContent && isTextFileReady,
+    enabled: articleWatchEnabled,
     busy: articleSessionWorking,
     check: checkArticle,
   });
   const applyArticleUpdate = useCallback(() => {
     if (!articleUpdate) return;
+    if (providerEditorDirtyRef.current) {
+      // Unsaved edits win; saving reports the conflict with the new revision.
+      setArticleUpdate(null);
+      setArticleUpdateHeld(false);
+      return;
+    }
     setProviderEntry(articleUpdate.entry);
     setData(articleUpdate.next);
     externalSeqRef.current += 1;
@@ -1482,6 +1490,11 @@ function SessionFileContentViewImpl({
     setArticleUpdate(null);
     setArticleUpdateHeld(false);
   }, [articleUpdate]);
+  useEffect(() => {
+    if (articleWatchEnabled) return;
+    setArticleUpdate(null);
+    setArticleUpdateHeld(false);
+  }, [articleWatchEnabled]);
   useEffect(() => {
     if (!articleUpdate) return undefined;
     if (!isHtmlTextFile) {
