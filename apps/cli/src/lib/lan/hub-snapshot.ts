@@ -7,6 +7,7 @@ import path from 'node:path';
 import { Readable, type Writable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
+import { setImmediate } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { z } from 'zod';
@@ -52,7 +53,7 @@ export const LanHubSnapshotRequestSchema = z
   .object({ have: z.array(SHA256).max(MAX_BLOCKS) })
   .strict();
 
-/** What a standby keeps next to its copy, so the next pull need not read the copy again. */
+/** Expected block digests for validating the kept copy and requesting the next delta. */
 const KeptSchema = z
   .object({
     takenAt: z.string(),
@@ -70,12 +71,16 @@ function line(value: unknown): Buffer {
 
 export async function hashLanHubBlocks(
   filePath: string,
-  blockBytes = LAN_HUB_SNAPSHOT_BLOCK_BYTES
+  blockBytes = LAN_HUB_SNAPSHOT_BLOCK_BYTES,
+  range?: { start: number; end: number }
 ): Promise<string[]> {
   const blocks: string[] = [];
   let hash = crypto.createHash('sha256');
   let filled = 0;
-  for await (const chunk of fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 })) {
+  for await (const chunk of fs.createReadStream(filePath, {
+    ...range,
+    highWaterMark: 1024 * 1024,
+  })) {
     let data = chunk as Buffer;
     while (data.length > 0) {
       const take = Math.min(blockBytes - filled, data.length);
@@ -123,6 +128,7 @@ export async function writeLanHubSnapshot(options: {
           .update(copy.subarray(start, start + blockBytes))
           .digest('hex')
       );
+      if (blocks.length % 256 === 0) await setImmediate();
     }
     result.sizeBytes = copy.length;
     result.blocks = blocks.length;
@@ -173,6 +179,15 @@ export function readKeptLanHubSnapshot(
   }
 }
 
+async function syncDirectory(directory: string): Promise<void> {
+  const handle = await fs.promises.open(directory, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * Stages verified changed blocks and side files before touching the current copy.
  * Once patching begins, snapshot.json stays absent until the whole image matches:
@@ -185,7 +200,23 @@ export async function pullLanHubSnapshot(options: {
 }): Promise<LanHubSnapshotKept & { received: number }> {
   const { directory } = options;
   await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
-  const kept = readKeptLanHubSnapshot(directory);
+  const keptPath = path.join(directory, KEPT_FILE_NAME);
+  let kept = readKeptLanHubSnapshot(directory);
+  if (kept) {
+    const blocks = await hashLanHubBlocks(
+      path.join(kept.path, DATABASE_FILE_NAME),
+      kept.blockBytes
+    );
+    const expected = kept.blocks;
+    if (
+      blocks.length !== expected.length ||
+      blocks.some((block, index) => block !== expected[index])
+    ) {
+      await fs.promises.rm(keptPath);
+      await syncDirectory(directory);
+      kept = null;
+    }
+  }
   const response = await (options.fetch ?? fetch)(`${options.hub.url}${LAN_HUB_SNAPSHOT_PATH}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${options.hub.token}`, 'Content-Type': 'application/json' },
@@ -254,7 +285,10 @@ export async function pullLanHubSnapshot(options: {
         }
         if (hash.digest('hex') !== file.sha256) throw new Error(`${file.name} arrived damaged`);
       }
-      if (!kept) await handle.truncate(header.sizeBytes);
+      if (!kept) {
+        await handle.truncate(header.sizeBytes);
+        await handle.datasync();
+      }
     } finally {
       await handle.close();
     }
@@ -269,6 +303,13 @@ export async function pullLanHubSnapshot(options: {
       throw new Error('The hub did not send every changed block');
     }
 
+    if (!kept) {
+      const blocks = await hashLanHubBlocks(database, header.blockBytes);
+      if (blocks.length !== header.blocks.length || blocks.some((b, i) => b !== header.blocks[i])) {
+        throw new Error('The copy does not match the hub after patching');
+      }
+    }
+
     // Finish all network work before invalidating the last good copy.
     await pullLanHubSharesCopy({
       hub: options.hub,
@@ -277,9 +318,9 @@ export async function pullLanHubSnapshot(options: {
       fetch: options.fetch,
     });
 
-    const keptPath = path.join(directory, KEPT_FILE_NAME);
     if (kept) {
       await fs.promises.rm(keptPath);
+      await syncDirectory(directory);
       const currentDatabase = path.join(kept.path, DATABASE_FILE_NAME);
       const target = await fs.promises.open(currentDatabase, 'r+');
       try {
@@ -293,18 +334,23 @@ export async function pullLanHubSnapshot(options: {
             await target.write(data, 0, data.length, position);
             position += data.length;
           }
+          const start = index * header.blockBytes;
+          const [hash] = await hashLanHubBlocks(currentDatabase, header.blockBytes, {
+            start,
+            end: start + block.length - 1,
+          });
+          if (hash !== header.blocks[index])
+            throw new Error(`Block ${index} does not match the hub after patching`);
         }
         await target.truncate(header.sizeBytes);
+        await target.datasync();
       } finally {
         await target.close();
       }
       await fs.promises.rename(currentDatabase, database);
       await fs.promises.rm(patch);
     }
-    const blocks = await hashLanHubBlocks(database, header.blockBytes);
-    if (blocks.length !== header.blocks.length || blocks.some((b, i) => b !== header.blocks[i])) {
-      throw new Error('The copy does not match the hub after patching');
-    }
+    await syncDirectory(next);
 
     const current = path.join(directory, CURRENT);
     const previous = path.join(directory, PREVIOUS);
@@ -320,8 +366,15 @@ export async function pullLanHubSnapshot(options: {
       blockBytes: header.blockBytes,
       blocks: header.blocks,
     };
-    await fs.promises.writeFile(`${keptPath}.tmp`, `${JSON.stringify(result)}\n`, { mode: 0o600 });
+    const marker = await fs.promises.open(`${keptPath}.tmp`, 'w', 0o600);
+    try {
+      await marker.writeFile(`${JSON.stringify(result)}\n`);
+      await marker.sync();
+    } finally {
+      await marker.close();
+    }
     await fs.promises.rename(`${keptPath}.tmp`, keptPath);
+    await syncDirectory(directory);
     return { ...result, received };
   } finally {
     source.destroy();

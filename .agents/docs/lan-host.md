@@ -56,14 +56,20 @@ fresh copy stays the standby until another is clearly closer.
 The standby copies the hub every ten minutes. The hub serializes a consistent
 SQLite image in memory, without a temporary database on disk, and streams only
 the 64 KB blocks whose digests differ, with its other files. This uses about one
-database's worth of hub memory. The standby stages and verifies changed blocks
-in a compact patch file, and finishes copying side files and shares before
-patching its current database in place and truncating it to the new size. It
-invalidates `snapshot.json` before that write and restores it only after checking
-the complete database against the header. A failed transfer preserves the last
-good copy; interruption during patching makes it unusable for takeover and the
-next pull fetches a full copy. Failures are logged at warn level and retry after
-ten minutes, doubling up to two hours; a success restores the ten-minute cadence.
+database's worth of hub memory; hashing yields to the event loop every 256 blocks.
+Before asking for a delta, the standby hashes its current database against the
+kept digests; a mismatch invalidates that copy and requests a full one. It stages
+and verifies changed blocks in a compact patch file, and finishes copying side
+files and shares before patching its current database in place and truncating it
+to the new size. It removes `snapshot.json` and syncs its directory before the
+first overwrite, checks only the changed blocks after writing, and datasyncs the
+database before closing it. It syncs the new marker before renaming it and then
+syncs the directory, so a power loss cannot leave a valid marker over mixed pages.
+A failed transfer preserves the last good copy; interruption during patching makes
+it unusable for takeover and the next pull fetches a full copy. Failures are logged
+at warn level and retry after ten minutes, doubling up to two hours; a success
+restores the ten-minute cadence. A moved hub URL does not inherit the old URL's
+retry delay.
 
 ```text
  every member, every minute      hub away 2 min: ask the members where it is

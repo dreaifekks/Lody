@@ -182,7 +182,7 @@ export class LanHubStandby {
   private running: Promise<void> | null = null;
   private readonly watches = new Map<string, Watch>();
   private closed = false;
-  private readonly snapshotRetries = new Map<string, { at: number; delay: number }>();
+  private readonly snapshotRetries = new Map<string, { url: string; at: number; delay: number }>();
 
   constructor(private readonly options: LanHubStandbyOptions) {}
 
@@ -301,7 +301,8 @@ export class LanHubStandby {
     if (rtt !== null) {
       const age = kept ? now - Date.parse(kept.takenAt) : Number.POSITIVE_INFINITY;
       const interval = this.options.snapshotIntervalMs ?? SNAPSHOT_INTERVAL_MS;
-      const retry = this.snapshotRetries.get(hub.id);
+      const lastRetry = this.snapshotRetries.get(hub.id);
+      const retry = lastRetry?.url === hub.url ? lastRetry : undefined;
       if (retry ? now < retry.at : age < interval) return;
       const started = this.now();
       let pulled: Awaited<ReturnType<typeof pullLanHubSnapshot>>;
@@ -309,7 +310,7 @@ export class LanHubStandby {
         pulled = await (this.options.pull ?? pullLanHubSnapshot)({ hub, directory });
       } catch (error) {
         const delay = Math.min(retry ? retry.delay * 2 : interval, MAX_SNAPSHOT_RETRY_MS);
-        this.snapshotRetries.set(hub.id, { at: this.now() + delay, delay });
+        this.snapshotRetries.set(hub.id, { url: hub.url, at: this.now() + delay, delay });
         throw error;
       }
       this.snapshotRetries.delete(hub.id);

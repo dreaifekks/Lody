@@ -58,9 +58,7 @@ describe('a standby copy of a hub', () => {
       if (String(url).endsWith(LAN_SHARES_COPY_PATH) && options.shares) return options.shares();
       const stream = new PassThrough();
       const sending = String(url).endsWith(LAN_SHARES_COPY_PATH)
-        ? writeLanHubSharesCopy({ dataDir: hubDir, have }, stream).then(() => {
-            stream.end();
-          })
+        ? writeLanHubSharesCopy({ dataDir: hubDir, have }, stream)
         : writeLanHubSnapshot({
             dataDir: hubDir,
             have,
@@ -353,6 +351,146 @@ describe('a standby copy of a hub', () => {
     const recovered = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
     expect(recovered.received).toBe(recovered.blocks.length);
     expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(205);
+  });
+
+  it('durably invalidates the marker before patching and syncs the image before publishing it', async () => {
+    await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    const currentFile = path.join(standbyDir, 'current', 'streams.sqlite');
+    const oldImage = fs.readFileSync(currentFile);
+    append(5);
+    const newImage = database.serialize();
+    const boundaries: string[] = [];
+    const reads: Array<{ valid: boolean; range: boolean }> = [];
+    const createReadStream = fs.createReadStream;
+    vi.spyOn(fs, 'createReadStream').mockImplementation((file, options) => {
+      if (file === currentFile)
+        reads.push({
+          valid: readKeptLanHubSnapshot(standbyDir) !== null,
+          range: typeof options === 'object' && options?.start !== undefined,
+        });
+      return createReadStream(file, options);
+    });
+    const open = fs.promises.open;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
+      const handle = await open(...args);
+      if (args[0] === standbyDir) {
+        const sync = handle.sync.bind(handle);
+        vi.spyOn(handle, 'sync').mockImplementation(async () => {
+          if (readKeptLanHubSnapshot(standbyDir)) {
+            expect(boundaries).toEqual(['invalidated', 'data', 'marker']);
+            expect(fs.readFileSync(currentFile)).toEqual(newImage);
+            boundaries.push('published');
+          } else {
+            expect(fs.readFileSync(currentFile)).toEqual(oldImage);
+            boundaries.push('invalidated');
+          }
+          await sync();
+        });
+      } else if (args[0] === currentFile && args[1] === 'r+') {
+        expect(boundaries).toEqual(['invalidated']);
+        const datasync = handle.datasync.bind(handle);
+        vi.spyOn(handle, 'datasync').mockImplementation(async () => {
+          expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+          expect(fs.readFileSync(currentFile)).toEqual(newImage);
+          await datasync();
+          boundaries.push('data');
+        });
+      } else if (args[0] === path.join(standbyDir, 'snapshot.json.tmp')) {
+        const sync = handle.sync.bind(handle);
+        vi.spyOn(handle, 'sync').mockImplementation(async () => {
+          expect(boundaries).toEqual(['invalidated', 'data']);
+          expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+          expect(JSON.parse(fs.readFileSync(String(args[0]), 'utf8')).sizeBytes).toBe(
+            newImage.length
+          );
+          await sync();
+          boundaries.push('marker');
+        });
+      }
+      return handle;
+    });
+    const result = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    expect(boundaries).toEqual(['invalidated', 'data', 'marker', 'published']);
+    expect(reads).toEqual([
+      { valid: true, range: false },
+      ...Array.from({ length: result.received }, () => ({ valid: false, range: true })),
+    ]);
+    expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(205);
+  });
+
+  it.each(['directory', 'data', 'marker'])(
+    'leaves no usable marker when the %s sync fails',
+    async (failure) => {
+      await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+      const currentFile = path.join(standbyDir, 'current', 'streams.sqlite');
+      const image = fs.readFileSync(currentFile);
+      append(5);
+      const open = fs.promises.open;
+      vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
+        const handle = await open(...args);
+        if (failure === 'directory' && args[0] === standbyDir) {
+          vi.spyOn(handle, 'sync').mockRejectedValue(new Error('sync failed'));
+        } else if (failure === 'data' && args[0] === currentFile && args[1] === 'r+') {
+          vi.spyOn(handle, 'datasync').mockRejectedValue(new Error('sync failed'));
+        } else if (failure === 'marker' && args[0] === path.join(standbyDir, 'snapshot.json.tmp')) {
+          vi.spyOn(handle, 'sync').mockRejectedValue(new Error('sync failed'));
+        }
+        return handle;
+      });
+      await expect(
+        pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() })
+      ).rejects.toThrow('sync failed');
+      expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+      if (failure === 'directory') expect(fs.readFileSync(currentFile)).toEqual(image);
+      vi.restoreAllMocks();
+      const recovered = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+      expect(recovered.received).toBe(recovered.blocks.length);
+      expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(205);
+    }
+  );
+
+  it('rejects a corrupted kept image before requesting a delta and recovers with a full pull', async () => {
+    await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    const file = path.join(standbyDir, 'current', 'streams.sqlite');
+    const image = fs.readFileSync(file);
+    image[image.length - 1] ^= 0xff;
+    fs.writeFileSync(file, image);
+    const have: string[][] = [];
+    const unavailable = (async (_url: string | URL | Request, init?: RequestInit) => {
+      have.push(JSON.parse(String(init?.body)).have);
+      expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+      return new Response('unavailable', { status: 503 });
+    }) as typeof fetch;
+    await expect(
+      pullLanHubSnapshot({ hub, directory: standbyDir, fetch: unavailable })
+    ).rejects.toThrow('503');
+    expect(have).toEqual([[]]);
+    const recovered = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    expect(recovered.received).toBe(recovered.blocks.length);
+    expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(200);
+  });
+
+  it('yields to the event loop while hashing many blocks before sending the header', async () => {
+    let yielded = false;
+    const immediate = new Promise<void>((resolve) =>
+      setImmediate(() => {
+        yielded = true;
+        resolve();
+      })
+    );
+    let first = true;
+    const stream = new Writable({
+      write(_chunk, _encoding, done) {
+        if (first) {
+          expect(yielded).toBe(true);
+          first = false;
+        }
+        done();
+      },
+    });
+    await writeLanHubSnapshot({ dataDir: hubDir, have: [], stream, blockBytes: 1024 });
+    await immediate;
+    expect(first).toBe(false);
   });
 
   it('truncates the patched image when the hub database shrinks', async () => {

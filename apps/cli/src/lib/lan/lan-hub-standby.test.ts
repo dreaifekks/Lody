@@ -223,6 +223,33 @@ describe('the standby of a LAN hub', () => {
     }
   );
 
+  it('pulls immediately from a moved hub instead of keeping the old URL backoff', async () => {
+    let hub = { ...home };
+    const requests: Array<{ url: string; minute: number }> = [];
+    const fetchHub = (async (url: string | URL | Request) => {
+      requests.push({ url: String(url), minute: (now - START) / 60_000 });
+      return new Response('unavailable', { status: 503 });
+    }) as typeof fetch;
+    const keeper = standby(3, {
+      hubs: () => [hub],
+      pull: (options) => pullLanHubSnapshot({ ...options, fetch: fetchHub }),
+    });
+    await keeper.tick();
+    now += 60_000;
+    await keeper.tick();
+    hub = { ...home, url: 'http://10.0.0.2:8788' };
+    await keeper.tick();
+    now += 9 * 60_000;
+    await keeper.tick();
+    now += 60_000;
+    await keeper.tick();
+    expect(requests).toEqual([
+      { url: `${home.url}/lan/snapshot`, minute: 0 },
+      { url: `${hub.url}/lan/snapshot`, minute: 1 },
+      { url: `${hub.url}/lan/snapshot`, minute: 11 },
+    ]);
+  });
+
   it('leaves the copy to a member that is clearly closer to the hub', async () => {
     await register(OTHER, { lanHubRole: { capable: true, hosting: false, hubRttMs: 1 } });
     await standby(20).tick();
