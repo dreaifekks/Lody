@@ -4426,6 +4426,7 @@
   "sessions.article.outline": "Outline",
   "sessions.fileViewer.selection.lines": "Lines {{start}}–{{end}}",
   "sessions.fileViewer.selection.line": "Line {{line}}",
+  "sessions.fileViewer.selection.annotate": "Comment",
   "settings.experimental.agentToolsSaveFailed": "Could not update agent tools",
   "agentSurfaces.planReview.label": "Plan",
   "agentSurfaces.planReview.open": "Open plan",

@@ -31,7 +31,13 @@ export function createRelocatableHost(): RelocatableHost {
       (best, entry) => (best && best.priority > entry.priority ? best : entry),
       undefined
     )?.element;
-    if (!slot || node.parentElement === slot) return;
+    // With no place left the node leaves the document, so a host whose
+    // subtree is gone cannot keep taking room in its last slot.
+    if (!slot) {
+      node.remove();
+      return;
+    }
+    if (node.parentElement === slot) return;
     if (typeof slot.moveBefore === 'function' && node.isConnected && slot.isConnected)
       slot.moveBefore(node, null);
     else slot.appendChild(node);
@@ -50,20 +56,27 @@ export function createRelocatableHost(): RelocatableHost {
   };
 }
 
-/** A place a relocatable subtree shows in; see `RelocatableHost.claim` for which one wins. */
+/**
+ * A place a relocatable subtree shows in; see `RelocatableHost.claim` for which
+ * one wins. A slot about to leave the document lets go first (`held` false):
+ * only a move between two places that are both in the document keeps scroll
+ * offsets, since an element that is detached and attached again loses them.
+ */
 export function RelocatableSlot({
   host,
   priority = 0,
+  held = true,
   className,
 }: {
   host: RelocatableHost;
   priority?: number;
+  held?: boolean;
   className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const slot = ref.current;
-    return slot ? host.claim(slot, priority) : undefined;
-  }, [host, priority]);
+    return slot && held ? host.claim(slot, priority) : undefined;
+  }, [held, host, priority]);
   return <div ref={ref} className={className} />;
 }

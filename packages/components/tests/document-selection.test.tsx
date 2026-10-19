@@ -224,6 +224,45 @@ describe('document selection ownership', () => {
     expect(received).toEqual([{ path: 'report.xlsx', location: 'A1', text: 'North', comment: '' }]);
     expect(container.querySelector('[aria-label="Selection annotation"]')).toBeNull();
   });
+  it('offers a Comment button for selected text and opens the editor only from it', async () => {
+    // jsdom has no layout for ranges; the selection sits on one line.
+    const rect = new DOMRect(10, 10, 120, 16);
+    Object.defineProperties(Range.prototype, {
+      getBoundingClientRect: { configurable: true, value: () => rect },
+      getClientRects: { configurable: true, value: () => [rect] },
+    });
+    await act(async () =>
+      root.render(
+        <DocumentSelectionSurface
+          path="report.md"
+          source="revision-1"
+          active
+          onAdd={() => true}
+          textSelectionPrompt
+        >
+          <p>Revenue grew by 12%.</p>
+        </DocumentSelectionSurface>
+      )
+    );
+    const paragraph = container.querySelector('p')!;
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    await act(async () => paragraph.dispatchEvent(new Event('pointerup', { bubbles: true })));
+    // Selecting to copy shows only the button.
+    expect(container.querySelector('[aria-label="Selection annotation"]')).toBeNull();
+    await act(async () => button('Comment').click());
+    expect(container.querySelector('[aria-label="Selection annotation"]')).not.toBeNull();
+    expect(container.textContent).toContain('Revenue grew by 12%.');
+    // Escape closes the editor before anything around the preview sees it.
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    await act(async () => document.body.dispatchEvent(escape));
+    expect(escape.defaultPrevented).toBe(true);
+    expect(container.querySelector('[aria-label="Selection annotation"]')).toBeNull();
+    delete (Range.prototype as Partial<Range>).getBoundingClientRect;
+    delete (Range.prototype as Partial<Range>).getClientRects;
+  });
   it('cancels region mode with Escape without staging any content', async () => {
     await render(createElement(DocumentCaptureButton));
     await act(async () => button('Select screenshot area').click());

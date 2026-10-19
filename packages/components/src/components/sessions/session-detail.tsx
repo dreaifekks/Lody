@@ -1142,9 +1142,11 @@ const SessionDetail = ({
   // (experimental). The thread keeps its one conversation: it is portalled
   // into a relocatable host that the dialog borrows while open.
   const [articleDialog, setArticleDialog] = useState<{
-    readonly threadId: SessionId;
+    /** The thread whose workspace holds the file; the dialog's thread may change. */
+    readonly ownerThreadId: SessionId;
     readonly filePath: string;
     readonly fileId?: string;
+    readonly closing?: true;
   } | null>(null);
   const [articlePanel, setArticlePanel] = useState<HTMLElement | null>(null);
   const threadChatHostsRef = useRef(new Map<SessionId, RelocatableHost>());
@@ -1487,6 +1489,7 @@ const SessionDetail = ({
     setBoardThreadRequest(null);
     setMobileBoardOpen(false);
     setBoardSettingsOpen(false);
+    setArticleDialog(null);
   }
 
   const setDraftTabs = useCallback(
@@ -4362,7 +4365,7 @@ const SessionDetail = ({
           return;
         }
         setArticleDialog({
-          threadId: scope.session.id,
+          ownerThreadId: scope.session.id,
           filePath: target.filePath,
           ...(target.fileId === undefined ? {} : { fileId: target.fileId }),
         });
@@ -4380,19 +4383,25 @@ const SessionDetail = ({
     }
     return host;
   };
-  // Closes with the switch, and on any layout without room for it: the compact
-  // layout also remounts the Board panel, conversation included.
+  // The dialog shows whichever thread the Board panel has open, so moving to
+  // another member through its breadcrumb keeps it; it closes with the switch,
+  // with the panel's thread, and on any layout without room for it (the compact
+  // layout also remounts the Board panel, conversation included).
   const articleDialogThreadId =
-    articleDialog &&
-    boardArticleEnabled &&
-    !isMobile &&
-    !isCompactDesktop &&
-    articleDialog.threadId === boardThreadId
-      ? articleDialog.threadId
+    articleDialog && !articleDialog.closing && boardArticleEnabled && !isMobile && !isCompactDesktop
+      ? boardThreadId
       : null;
-  useEffect(() => {
+  // Closing takes two commits: the dialog lets go of the conversation while it
+  // is still in the document, then unmounts.
+  const closeArticleDialog = useCallback(
+    () => setArticleDialog((current) => (current ? { ...current, closing: true } : null)),
+    []
+  );
+  useLayoutEffect(() => {
     if (articleDialog && articleDialogThreadId === null) setArticleDialog(null);
   }, [articleDialog, articleDialogThreadId]);
+  // Its thread, held for the commit in which the dialog lets go of it.
+  const articleDialogHostThreadId = articleDialogThreadId ?? boardThreadId;
 
   const activeFileOpenContext: SessionFileOpenContext = {
     session: activeSession,
@@ -4655,7 +4664,10 @@ const SessionDetail = ({
       activateSidebarTab('board');
       revealRightSidebar();
     },
+    // A member opens in the panel, so an open article dialog follows it; every
+    // other destination leaves the panel and closes the dialog.
     showInCoordinatorPage: (target) => {
+      closeArticleDialog();
       setMobileBoardOpen(false);
       const exactId = target.tabSessionId ?? target.sessionId;
       if (sideSessions.some((side) => side.id === exactId)) {
@@ -4664,6 +4676,7 @@ const SessionDetail = ({
       } else navigateSessionPage(target);
     },
     openPage: (target) => {
+      closeArticleDialog();
       setMobileBoardOpen(false);
       navigateSessionPage(target);
     },
@@ -6454,7 +6467,7 @@ const SessionDetail = ({
                     size="small"
                     icon
                     aria-label={t('common.close', 'Close')}
-                    onClick={() => setArticleDialog(null)}
+                    onClick={closeArticleDialog}
                   >
                     <X {...stylex.props(detailStyles.icon16)} />
                   </Button>
@@ -8035,14 +8048,15 @@ const SessionDetail = ({
       }
     >
       {boardSettings}
-      {articleDialogThreadId && articleDialog ? (
+      {articleDialog && articleDialogHostThreadId ? (
         <BoardArticleDialog
           title={getBasename(articleDialog.filePath)}
-          threadHost={getThreadChatHost(articleDialogThreadId)}
+          threadHost={getThreadChatHost(articleDialogHostThreadId)}
+          holdsThread={articleDialogThreadId !== null}
           onPanelChange={setArticlePanel}
-          onClose={() => setArticleDialog(null)}
+          onClose={closeArticleDialog}
           article={
-            <SessionFileScope sessionId={articleDialogThreadId}>
+            <SessionFileScope sessionId={articleDialog.ownerThreadId}>
               {(scope) => (
                 <SessionFileContentView
                   key={`${scope.session.id}:${articleDialog.filePath}`}
@@ -8057,14 +8071,17 @@ const SessionDetail = ({
                   active
                   article={{
                     onOpenInTab: () => {
-                      setArticleDialog(null);
+                      closeArticleDialog();
                       handleOpenFileForSession(scope, articleDialog.filePath, {
                         pathKind: 'canonical',
                       });
                     },
                   }}
+                  // Comments go to the thread beside the article, which may be
+                  // another member the reader moved to.
                   onAddSelectionToChat={(selection) => {
-                    const chat = chatRefsMap.current.get(scope.session.id);
+                    if (!articleDialogThreadId) return false;
+                    const chat = chatRefsMap.current.get(articleDialogThreadId);
                     return chat && 'addDocumentSelection' in chat
                       ? chat.addDocumentSelection(selection)
                       : false;

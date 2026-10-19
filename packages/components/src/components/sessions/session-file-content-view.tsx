@@ -1859,6 +1859,7 @@ function SessionFileContentViewImpl({
               });
         }}
         onDraftChange={setSelectionDraftOpen}
+        textSelectionPrompt
       >
         {previewSurface}
       </DocumentSelectionSurface>

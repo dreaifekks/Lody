@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { SquareDashedMousePointer, X } from 'lucide-react';
+import { MessageSquarePlus, SquareDashedMousePointer, X } from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import { DocumentSelectionTooltip as Tooltip } from './document-selection-tooltip';
 import { colors, shadow } from '@lody/ui/tokens/colors.stylex';
@@ -168,6 +168,7 @@ const styles = stylex.create({
     boxShadow: shadow.popover,
   },
   imagePopup: { width: 'min(420px, calc(100% - 24px))' },
+  prompt: { position: 'absolute', zIndex: 3, boxShadow: shadow.raised, borderRadius: radius.small },
   hint: {
     position: 'absolute',
     zIndex: 4,
@@ -196,6 +197,7 @@ export function DocumentSelectionSurface({
   standaloneCapture = false,
   locateText,
   onDraftChange,
+  textSelectionPrompt = false,
 }: {
   readonly path: string;
   readonly active: boolean;
@@ -207,6 +209,11 @@ export function DocumentSelectionSurface({
   readonly locateText?: (text: string) => string | undefined;
   /** Whether a selection is waiting in the floating editor. */
   readonly onDraftChange?: (open: boolean) => void;
+  /**
+   * Selected text first shows a small Comment button beside it and opens the
+   * editor only when that is pressed, so a selection made to copy is left alone.
+   */
+  readonly textSelectionPrompt?: boolean;
 }) {
   const { t } = useTranslation();
   const locate = (root: HTMLElement, rect: SelectionRect) =>
@@ -223,6 +230,11 @@ export function DocumentSelectionSurface({
   const [mode, setMode] = useState(false);
   const [captureRect, setCaptureRect] = useState<SelectionRect | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [prompt, setPrompt] = useState<{
+    readonly draft: Draft;
+    readonly left: number;
+    readonly top: number;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [layout, setLayout] = useState<{
@@ -321,6 +333,7 @@ export function DocumentSelectionSurface({
   }, [mode]);
   useEffect(() => {
     setDraft(null);
+    setPrompt(null);
     setMode(false);
     setCaptureRect(null);
     setBusy(false);
@@ -332,6 +345,28 @@ export function DocumentSelectionSurface({
       request.current = null;
     };
   }, [path, source, active]);
+  useEffect(() => {
+    if (!prompt) return undefined;
+    const collapsed = () => {
+      if (window.getSelection()?.isCollapsed !== false) setPrompt(null);
+    };
+    document.addEventListener('selectionchange', collapsed);
+    return () => document.removeEventListener('selectionchange', collapsed);
+  }, [prompt]);
+  useEffect(() => {
+    if (!draft || !textSelectionPrompt) return undefined;
+    // An open editor takes Escape before anything around it (a dialog the
+    // preview sits in), wherever focus is.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDraft(null);
+      dirty.current = false;
+    };
+    window.addEventListener('keydown', escape, true);
+    return () => window.removeEventListener('keydown', escape, true);
+  }, [draft, textSelectionPrompt]);
   useEffect(() => {
     if (!draft) return undefined;
     const outside = (event: PointerEvent) => {
@@ -406,7 +441,7 @@ export function DocumentSelectionSurface({
     const sourceRange = range.cloneRange(),
       box = range.getBoundingClientRect(),
       bounds = root.getBoundingClientRect();
-    setDraft({
+    const next: Draft = {
       selection: {
         path,
         location:
@@ -422,6 +457,16 @@ export function DocumentSelectionSurface({
       measure: () =>
         sourceRange.startContainer.isConnected ? Array.from(sourceRange.getClientRects()) : [],
       autoFocus: false,
+    };
+    if (!textSelectionPrompt) {
+      setDraft(next);
+      return;
+    }
+    const end = Array.from(range.getClientRects()).at(-1) ?? box;
+    setPrompt({
+      draft: { ...next, autoFocus: true },
+      left: Math.max(0, Math.min(end.right - bounds.left - 24, bounds.width - 96)),
+      top: end.bottom - bounds.top + 6,
     });
   };
   const point = (event: React.PointerEvent<HTMLElement>) => {
@@ -511,6 +556,27 @@ export function DocumentSelectionSurface({
             }}
           >
             {children}
+            {prompt && enabled && !draft ? (
+              <div
+                {...stylex.props(styles.prompt)}
+                style={{ left: prompt.left, top: prompt.top }}
+                data-document-selection-overlay
+              >
+                <Button
+                  size="mini"
+                  variant="secondary"
+                  // Pressing keeps the selection the comment is about.
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    setDraft(prompt.draft);
+                    setPrompt(null);
+                  }}
+                >
+                  <MessageSquarePlus size={14} aria-hidden />
+                  {t('sessions.fileViewer.selection.annotate', 'Comment')}
+                </Button>
+              </div>
+            ) : null}
             {standaloneCapture && enabled ? (
               <div {...stylex.props(styles.fallback)}>
                 <DocumentCaptureButton />

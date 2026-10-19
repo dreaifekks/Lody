@@ -12,7 +12,7 @@ import { BoardThreadParentBreadcrumb } from '@/components/boards/board-thread-br
 import type { Meta, StoryObj } from '@storybook/react';
 import { expect, userEvent, within } from 'storybook/test';
 import i18next from 'i18next';
-import { useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
 import { createStore, Provider } from 'jotai';
 import { parseLodyPresenceStates } from '@lody/shared';
 import { useTranslation } from 'react-i18next';
@@ -41,7 +41,11 @@ import { createPortal } from 'react-dom';
 import { PopupContainerProvider } from '@lody/ui/popup-container';
 import { X } from 'lucide-react';
 import { BoardArticleDialog } from '@/components/boards/board-article-dialog';
-import { createRelocatableHost, RelocatableSlot } from '@/components/boards/relocatable-host';
+import {
+  createRelocatableHost,
+  RelocatableSlot,
+  type RelocatableHost,
+} from '@/components/boards/relocatable-host';
 import { SessionFileContentView } from '@/components/sessions/session-file-content-view';
 import { createFakeSessionFileProvider } from '@/lib/session-file-provider';
 import { ARTICLE_DEMO_HTML, ARTICLE_REPORT_MD } from './board-article-demo';
@@ -888,15 +892,35 @@ const articleProvider = createFakeSessionFileProvider({
 
 /**
  * A thread's article over the coordinator page, as the page opens it from a
- * link in the thread: the thread's one conversation is portalled into a
+ * link in the thread: each thread's one conversation is portalled into a
  * relocatable host that sits in the Board panel, or in the dialog while open.
+ * The dialog follows the panel to another member; the article stays.
  */
-function ArticleDialogPage({ path }: { path: string | null }) {
+function ArticleDialogPage({
+  path,
+  initialThread = THREAD,
+}: {
+  path: string | null;
+  initialThread?: SessionId;
+}) {
   const [open, setOpen] = useState(path);
+  const [closing, setClosing] = useState(false);
   const [panel, setPanel] = useState<HTMLElement | null>(null);
-  const [host] = useState(createRelocatableHost);
-  const thread = members.find((session) => session.id === THREAD)!;
-  const inArticle = open !== null;
+  const [threadId, setThreadId] = useState(initialThread);
+  const [hosts] = useState(() => new Map<SessionId, RelocatableHost>());
+  if (!hosts.has(threadId)) hosts.set(threadId, createRelocatableHost());
+  const host = hosts.get(threadId)!;
+  const owner = members.find((session) => session.id === THREAD)!;
+  const thread = members.find((session) => session.id === threadId)!;
+  const parent = resolveBoardThreadParent(thread, (id) => members.find((entry) => entry.id === id));
+  const inArticle = open !== null && !closing;
+  // The page closes in two commits: the dialog lets go, then unmounts.
+  useLayoutEffect(() => {
+    if (!closing) return;
+    setOpen(null);
+    setClosing(false);
+  }, [closing]);
+  const close = () => setClosing(true);
   return (
     <SettingsStoryProviders>
       <BoardStoryProvider articles>
@@ -937,7 +961,7 @@ function ArticleDialogPage({ path }: { path: string | null }) {
                     closeTabLabel={(label) => `关闭 ${label}`}
                   />
                   <div className="min-h-0 flex-1">
-                    <RelocatableSlot host={host} className="h-full" />
+                    <RelocatableSlot key={threadId} host={host} className="h-full" />
                   </div>
                 </div>
               }
@@ -947,74 +971,79 @@ function ArticleDialogPage({ path }: { path: string | null }) {
             />
           </main>
         </div>
-        {createPortal(
-          <PopupContainerProvider container={inArticle ? panel : undefined}>
-            <div className="flex h-full min-h-0 flex-col">
-              <BoardThreadHeader
-                title={thread.title ?? ''}
-                location="devnuc · Lody"
-                startSlot={inArticle ? undefined : <BoardThreadBackButton onBack={() => {}} />}
-                endSlot={
-                  inArticle ? (
-                    <Button
-                      variant="ghost"
-                      size="small"
-                      icon
-                      aria-label="关闭"
-                      onClick={() => setOpen(null)}
-                    >
-                      <X size={16} />
-                    </Button>
-                  ) : (
-                    <BoardThreadOpenButton onOpen={() => {}} />
-                  )
-                }
-              />
-              <div className="min-h-0 flex-1">
-                <ChatSurface
-                  sessionId={thread.id}
-                  messages={threadMessages}
-                  placeholder="回复这个线程…"
+        <Fragment key={threadId}>
+          {createPortal(
+            <PopupContainerProvider container={inArticle ? panel : undefined}>
+              <div className="flex h-full min-h-0 flex-col">
+                <BoardThreadHeader
+                  title={thread.title ?? ''}
+                  location="devnuc · Lody"
+                  {...(parent
+                    ? {
+                        parentThread: {
+                          title: parent.title!,
+                          onOpen: () => setThreadId(parent.id),
+                        },
+                      }
+                    : {})}
+                  startSlot={inArticle ? undefined : <BoardThreadBackButton onBack={() => {}} />}
+                  endSlot={
+                    inArticle ? (
+                      <Button variant="ghost" size="small" icon aria-label="关闭" onClick={close}>
+                        <X size={16} />
+                      </Button>
+                    ) : (
+                      <BoardThreadOpenButton onOpen={() => {}} />
+                    )
+                  }
                 />
-              </div>
-              {inArticle ? null : (
-                <div className="flex gap-2 border-t border-border p-2 text-sm">
-                  <Button
-                    size="small"
-                    variant="secondary"
-                    onClick={() => setOpen('articles/report.md')}
-                  >
-                    report.md
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="secondary"
-                    onClick={() => setOpen('articles/demo.html')}
-                  >
-                    demo.html
-                  </Button>
+                <div className="min-h-0 flex-1">
+                  <ChatSurface
+                    sessionId={thread.id}
+                    messages={threadMessages}
+                    placeholder="回复这个线程…"
+                  />
                 </div>
-              )}
-            </div>
-          </PopupContainerProvider>,
-          host.node
-        )}
+                {open ? null : (
+                  <div className="flex gap-2 border-t border-border p-2 text-sm">
+                    <Button
+                      size="small"
+                      variant="secondary"
+                      onClick={() => setOpen('articles/report.md')}
+                    >
+                      report.md
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="secondary"
+                      onClick={() => setOpen('articles/demo.html')}
+                    >
+                      demo.html
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </PopupContainerProvider>,
+            host.node
+          )}
+        </Fragment>
         {open ? (
           <BoardArticleDialog
             title={open.split('/').at(-1)!}
             threadHost={host}
+            holdsThread={!closing}
             onPanelChange={setPanel}
-            onClose={() => setOpen(null)}
+            onClose={close}
             article={
               <SessionFileContentView
                 key={open}
-                sessionId={thread.id}
-                session={thread}
+                sessionId={owner.id}
+                session={owner}
                 filePath={open}
                 fileId={open}
                 fileProvider={articleProvider}
                 fileProviderRole="read"
-                article={{ onOpenInTab: () => setOpen(null) }}
+                article={{ onOpenInTab: close }}
                 onAddSelectionToChat={() => true}
                 className="h-full"
               />
@@ -1034,6 +1063,16 @@ export const ArticleReport: Story = {
 /** An interactive HTML article that loads Chart.js from a CDN inside the widget page. */
 export const ArticleHtml: Story = {
   render: () => <ArticleDialogPage path="articles/demo.html" />,
+};
+
+/** The report's dialog after its breadcrumb moved to a member the thread opened. */
+export const ArticleOtherThread: Story = {
+  render: () => (
+    <ArticleDialogPage
+      path="articles/report.md"
+      initialThread={'thread-entry-review' as SessionId}
+    />
+  ),
 };
 
 /** The page before an article opens and after it closes: the thread back in its panel. */

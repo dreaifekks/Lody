@@ -248,9 +248,12 @@ hides its surfaces and keeps sessions and Board data intact.
 A row under Boards, shown while Boards is on. In a Board, clicking a `.md`/`.html`
 file link in a thread open in the side panel opens the article window over the page
 instead of a file tab: the file on the left, that thread's conversation on the right
-(60/40, the divider drags, nothing is remembered). Escape, the backdrop or the ×
-in the thread header closes it and leaves the page as it was. The file header's ⋯
-has "Open in side tab". Other files, phones, the compact desktop layout and a
+(60/40, the divider drags, nothing is remembered). Escape (after any open comment
+editor), the backdrop or the × in the thread header closes it and leaves the page as
+it was. The file header's ⋯ has "Open in side tab". The right pane is whichever
+thread the Board panel has open: moving to another member through the thread
+header's breadcrumb or a session link keeps the window and the article (still read
+from its own thread); a destination outside the panel closes it. Other files, phones, the compact desktop layout and a
 thread opened as its own page keep the file tab; turning the switch off or going
 compact closes an open window. The agent side is a convention for the Board's thread
 instructions: write `articles/<name>.md|html` and give the path in the reply. No
@@ -261,13 +264,17 @@ tool, CLI or protocol change.
   changes its tree. The Board panel and the open dialog each render a slot; the
   node sits in the dialog's while it is open (a higher priority, so a panel that
   remounts meanwhile does not take it back), moved with `moveBefore` where the
-  browser has it. React never
+  browser has it. Only such a move between two places in the document keeps the
+  conversation's scroll offset, so closing takes two commits: the dialog lets go
+  of the conversation while it is still in the document, then unmounts. React never
   remounts the conversation, so its composer text, selection chips, scroll and
   `chatRefsMap` entry stay as they were. While open, the conversation's popups
   mount in the dialog panel (`PopupContainerProvider`), and only the backdrop
   dismisses by pointer, since its menus are not the dialog's React descendants.
-- Markdown: with this switch on, selecting rendered Markdown in any file view opens
-  the document-selection comment (upstream #1649). The source lines are found from
+- Markdown: with this switch on, selecting rendered Markdown in any file view shows
+  a small Comment button beside the selection, and pressing it opens the
+  document-selection comment (upstream #1649); a selection made to copy is left
+  alone. An open editor takes Escape first. The source lines are found from
   the selected text (`locateMarkdownSelection` in `lib/document-selection.ts`);
   text that repeats or cannot be placed carries no lines. The comment joins the
   thread's composer as a chip and is sent as plain text. In the window, headings
@@ -276,7 +283,9 @@ tool, CLI or protocol change.
   the desktop's loopback page that hosts widgets, with the same `allow-scripts`
   sandbox (plus `credentialless`) and the widget policy: scripts, styles, fonts,
   images and `connect-src` from the widget CDNs only (`LODY_WIDGET_CDN_ORIGINS`),
-  and the app's theme variables. A `srcdoc` frame inherits the app's own policy,
+  and the app's theme variables. The article's text starts at the conversation
+  font size rather than the widget page's 15px (its own sizes still win); the
+  widget page itself is unchanged, since inline widgets are sized for it. A `srcdoc` frame inherits the app's own policy,
   which runs no inline script or CDN code there. The page is already loaded when the
   article arrives, so the article's `DOMContentLoaded`/`load` handlers run after its
   last script. The page cannot send prompts; links ask first. File tabs keep the

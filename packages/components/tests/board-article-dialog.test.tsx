@@ -17,23 +17,30 @@ vi.mock('react-i18next', () => ({
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let mounts = 0;
+const threadNames = new WeakMap<RelocatableHost, string>();
+const threadName = (host: RelocatableHost) => threadNames.get(host) ?? 'other';
 
 /** Stands in for the thread's conversation: a composer whose draft lives in the DOM. */
-function Conversation() {
+function Conversation({ thread }: { thread: string }) {
   useEffect(() => {
     mounts += 1;
   }, []);
-  return createElement('textarea', { 'aria-label': 'composer' });
+  return createElement('textarea', { 'aria-label': 'composer', 'data-thread': thread });
 }
 
+const ARTICLE = createElement('article', null, 'Report');
+
+/** The page as it renders a Board thread: one slot in the panel, the conversation portalled. */
 function Page({
   host,
   open,
+  holds,
   onClose,
   panelKey = 'panel',
 }: {
   host: RelocatableHost;
   open: boolean;
+  holds: boolean;
   onClose: () => void;
   /** A new key remounts the Board panel's slot, as a layout change does. */
   panelKey?: string;
@@ -45,14 +52,19 @@ function Page({
     createElement(
       'aside',
       { 'data-testid': 'board-panel' },
-      createElement(RelocatableSlot, { host, key: panelKey })
+      createElement(RelocatableSlot, { host, key: `${panelKey}:${threadName(host)}` })
     ),
-    createPortal(createElement(Conversation), host.node),
+    createElement(
+      'div',
+      { key: threadName(host) },
+      createPortal(createElement(Conversation, { thread: threadName(host) }), host.node)
+    ),
     open
       ? createElement(BoardArticleDialog, {
           title: 'report.md',
-          article: createElement('article', null, 'Report'),
+          article: ARTICLE,
           threadHost: host,
+          holdsThread: holds,
           onPanelChange: setPanel,
           onClose,
         })
@@ -63,14 +75,16 @@ function Page({
 describe('BoardArticleDialog', () => {
   let root: Root;
   let container: HTMLDivElement;
+  let threadHost: RelocatableHost;
   let host: RelocatableHost;
   let open: boolean;
+  let holds: boolean;
   const onClose = vi.fn(() => {
     open = false;
   });
   const render = (panelKey?: string) =>
     act(async () => {
-      root.render(createElement(Page, { host, open, onClose, panelKey }));
+      root.render(createElement(Page, { host: threadHost, open, holds, onClose, panelKey }));
     });
 
   beforeEach(() => {
@@ -78,6 +92,9 @@ describe('BoardArticleDialog', () => {
     open = false;
     onClose.mockClear();
     host = createRelocatableHost();
+    threadHost = host;
+    holds = true;
+    threadNames.set(host, 'thread');
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -126,6 +143,72 @@ describe('BoardArticleDialog', () => {
     await render('remounted');
     expect(document.querySelector('[data-testid="board-panel"]')?.contains(composer)).toBe(true);
     expect(mounts).toBe(1);
+  });
+
+  it('returns the conversation with its scroll when the dialog lets go before unmounting', async () => {
+    // A browser keeps an element's scroll offsets only across `moveBefore`
+    // between two places in the document; inserting it again resets them.
+    const insertBefore = Node.prototype.insertBefore;
+    const appendChild = Node.prototype.appendChild;
+    let moving = false;
+    const scrolled = () => document.querySelector<HTMLTextAreaElement>('textarea')!;
+    const reset = (node: Node) => {
+      if (!moving && node === host.node)
+        host.node.querySelector('textarea')?.setAttribute('data-scroll-top', '0');
+    };
+    Object.defineProperty(Element.prototype, 'moveBefore', {
+      configurable: true,
+      value(this: Element, node: Node, child: Node | null) {
+        if (!this.isConnected || !node.isConnected)
+          throw new DOMException('', 'HierarchyRequestError');
+        moving = true;
+        insertBefore.call(this, node, child);
+        moving = false;
+      },
+    });
+    Node.prototype.appendChild = function <T extends Node>(this: Node, node: T): T {
+      reset(node);
+      return appendChild.call(this, node) as T;
+    };
+    try {
+      await render();
+      scrolled().dataset.scrollTop = '1200';
+      open = true;
+      await render();
+      expect(document.querySelector('[role="dialog"]')?.contains(scrolled())).toBe(true);
+      // The page's two-step close: the dialog lets go, then unmounts.
+      holds = false;
+      await render();
+      open = false;
+      await render();
+      expect(document.querySelector('[data-testid="board-panel"]')?.contains(scrolled())).toBe(
+        true
+      );
+      expect(scrolled().dataset.scrollTop).toBe('1200');
+    } finally {
+      delete (Element.prototype as { moveBefore?: unknown }).moveBefore;
+      Node.prototype.appendChild = appendChild;
+    }
+  });
+
+  it('follows the panel to another thread and keeps the article', async () => {
+    const other = createRelocatableHost();
+    open = true;
+    await render();
+    const article = document.querySelector('article')!;
+    // The breadcrumb opened another member: its conversation takes the pane.
+    threadHost = other;
+    await render();
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.querySelector('article')).toBe(article);
+    // The pane holds the new thread alone; the old one left nothing behind.
+    expect(other.node.parentElement?.childNodes).toHaveLength(1);
+    expect(dialog.querySelector('textarea')?.dataset.thread).toBe('other');
+    open = false;
+    await render();
+    expect(document.querySelector('[data-testid="board-panel"] textarea')?.dataset.thread).toBe(
+      'other'
+    );
   });
 
   it('closes on Escape', async () => {

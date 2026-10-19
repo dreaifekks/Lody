@@ -42,7 +42,7 @@ export const ARTICLE_DEMO_HTML = `<!doctype html>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
   body { margin: 0; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); background: var(--surface-0); }
-  h1 { font-size: 20px; margin: 0 0 4px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
   p { color: var(--text-secondary); margin: 0 0 16px; }
   .controls { display: flex; gap: 8px; margin-bottom: 16px; }
   button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--surface-1); color: var(--text-primary); cursor: pointer; }

@@ -4426,6 +4426,7 @@
   "sessions.article.outline": "大纲",
   "sessions.fileViewer.selection.lines": "第 {{start}}–{{end}} 行",
   "sessions.fileViewer.selection.line": "第 {{line}} 行",
+  "sessions.fileViewer.selection.annotate": "批注",
   "settings.experimental.agentToolsSaveFailed": "没能更新 agent 工具设置",
   "agentSurfaces.planReview.label": "计划",
   "agentSurfaces.planReview.open": "打开计划",

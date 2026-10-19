@@ -66,12 +66,18 @@ export function BoardArticleDialog({
   title,
   article,
   threadHost,
+  holdsThread = true,
   onPanelChange,
   onClose,
 }: {
   title: string;
   article: ReactNode;
   threadHost: RelocatableHost;
+  /**
+   * False for the one commit before the dialog unmounts, so the conversation
+   * moves back while both places are still in the document.
+   */
+  holdsThread?: boolean;
   /** The panel element, so the conversation's popups can mount inside it. */
   onPanelChange: (panel: HTMLElement | null) => void;
   onClose: () => void;
@@ -145,6 +151,7 @@ export function BoardArticleDialog({
             <RelocatableSlot
               host={threadHost}
               priority={1}
+              held={holdsThread}
               className={stylex.props(styles.thread).className}
             />
           </div>
