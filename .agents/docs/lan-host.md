@@ -53,11 +53,17 @@ the capable member closest to the hub that does not host it. One that keeps a
 fresh copy stays the standby until another is clearly closer.
 `LODY_LAN_STANDBY=off` keeps a server out of it.
 
-The standby copies the hub every ten minutes. The hub backs its database up
-while it serves (SQLite's online backup) and sends only the 64 KB blocks whose
-digests differ from the standby's copy, with its other files; the standby
-patches its copy beside the current one and keeps it only when every block
-matches.
+The standby copies the hub every ten minutes. The hub serializes a consistent
+SQLite image in memory, without a temporary database on disk, and streams only
+the 64 KB blocks whose digests differ, with its other files. This uses about one
+database's worth of hub memory. The standby stages and verifies changed blocks
+in a compact patch file, and finishes copying side files and shares before
+patching its current database in place and truncating it to the new size. It
+invalidates `snapshot.json` before that write and restores it only after checking
+the complete database against the header. A failed transfer preserves the last
+good copy; interruption during patching makes it unusable for takeover and the
+next pull fetches a full copy. Failures are logged at warn level and retry after
+ten minutes, doubling up to two hours; a success restores the ten-minute cadence.
 
 ```text
  every member, every minute      hub away 2 min: ask the members where it is

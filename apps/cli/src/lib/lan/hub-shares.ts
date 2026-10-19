@@ -1204,14 +1204,19 @@ export async function pullLanHubSharesCopy(options: {
   } catch {
     response = null;
   }
-  if (response?.status === 404 || response?.status === 405) return null;
+  if (response?.status === 404 || response?.status === 405) {
+    await response.body?.cancel();
+    return null;
+  }
   if (!response?.ok || !response.body) {
+    await response?.body?.cancel();
     if (options.previous) await keepLanHubShares(options.previous, options.next);
     return null;
   }
-  return await readLanHubSharesCopy(
-    Readable.fromWeb(response.body as WebReadableStream<Uint8Array>),
-    options.next,
-    options.previous
-  );
+  const stream = Readable.fromWeb(response.body as WebReadableStream<Uint8Array>);
+  try {
+    return await readLanHubSharesCopy(stream, options.next, options.previous);
+  } finally {
+    stream.destroy();
+  }
 }

@@ -819,6 +819,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       return;
     }
     const run = async () => {
+      if (response.destroyed) return;
       // A hub that hands over or moved has no copy to give: the data is elsewhere.
       if (state.kind !== 'serving') {
         sendJson(request, response, 409, { error: state.kind });
@@ -830,7 +831,6 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       });
       try {
         const sent = await writeLanHubSnapshot({ dataDir, have, stream: response });
-        response.end();
         options.log?.(
           `[standby] Sent a copy: ${sent.sent} of ${sent.blocks} block(s) of ${sent.sizeBytes} bytes.`
         );

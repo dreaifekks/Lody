@@ -5,13 +5,19 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LoroRepo } from 'loro-repo';
 import { SqliteRepoStore } from 'loro-repo/storage/sqlite';
 import { getMachineRoomId, type MachineId, type MachineMeta, type WorkspaceId } from '@lody/shared';
+import { LAN_SHARES_COPY_PATH } from '@lody/shared/lan-share';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import type { LanHubRole } from '@lody/shared/lan-hub-role';
 import { addLanHub, type LanHub } from '@lody/shared/node/lan-hub';
 import type { Logger } from '@/utils/logger';
-import type { pullLanHubSnapshot } from './hub-snapshot';
+import { pullLanHubSnapshot } from './hub-snapshot';
 import type { askLanHubPeer, LanHubPeerAnswer } from './lan-hub-peers';
-import { LanHubStandby, getLanHubStandbyDirectory, roundLanHubRtt } from './lan-hub-standby';
+import {
+  LanHubStandby,
+  getLanHubStandbyDirectory,
+  roundLanHubRtt,
+  type LanHubStandbyOptions,
+} from './lan-hub-standby';
 import type { LanMemberWorkspace } from './lan-members';
 import { fillMissingLanHubCredentials } from './lan-credential-sync';
 
@@ -118,7 +124,7 @@ describe('the standby of a LAN hub', () => {
   let superseded: number;
   let hubHears: boolean;
 
-  const standby = (rtt: number | null = 3) =>
+  const standby = (rtt: number | null = 3, overrides: Partial<LanHubStandbyOptions> = {}) =>
     new LanHubStandby({
       logger: silentLogger(),
       machineId: THIS,
@@ -152,6 +158,7 @@ describe('the standby of a LAN hub', () => {
         return hubHears;
       },
       now: () => now,
+      ...overrides,
     });
   const endpoint = { version: 1 as const, host: '10.0.0.9', port: 8789 };
 
@@ -169,16 +176,52 @@ describe('the standby of a LAN hub', () => {
     expect(fs.existsSync(getLanHubStandbyDirectory(root, home.id))).toBe(true);
   });
 
-  it('refreshes its copy every ten minutes, not on every round', async () => {
-    const keeper = standby();
-    await keeper.tick();
-    now += 5 * 60_000;
-    await keeper.tick();
-    expect(pulls).toBe(1);
-    now += 6 * 60_000;
-    await keeper.tick();
-    expect(pulls).toBe(2);
-  });
+  it.each([false, true])(
+    'backs off failed requests and resets after success (existing copy: %s)',
+    async (existing) => {
+      if (existing) {
+        await pull({ hub: home, directory: getLanHubStandbyDirectory(root, home.id) });
+        now += 10 * 60_000;
+      }
+      const start = now;
+      const requests: number[] = [];
+      const warnings: string[] = [];
+      const logger = silentLogger();
+      logger.warn = (message) => {
+        warnings.push(String(message));
+      };
+      const fetchHub = (async (url: string | URL | Request) => {
+        if (String(url).endsWith(LAN_SHARES_COPY_PATH)) {
+          return new Response('{"type":"shares","objects":[]}\n{"type":"end"}\n');
+        }
+        requests.push((now - start) / 60_000);
+        const attempt = requests.length;
+        if (attempt <= 6 || attempt === 9 || attempt === 10)
+          return new Response('unavailable', { status: 503 });
+        return new Response(
+          `${JSON.stringify({
+            type: 'snapshot',
+            takenAt: new Date(now).toISOString(),
+            sizeBytes: 0,
+            blockBytes: 65536,
+            blocks: [],
+          })}\n{"type":"end"}\n`
+        );
+      }) as typeof fetch;
+      const keeper = standby(3, {
+        logger,
+        pull: (options) => pullLanHubSnapshot({ ...options, fetch: fetchHub }),
+      });
+      for (let minute = 0; minute <= 440; minute += 1) {
+        now = start + minute * 60_000;
+        await keeper.tick();
+      }
+      expect(requests).toEqual([0, 10, 30, 70, 150, 270, 390, 400, 410, 420, 440]);
+      expect(warnings).toHaveLength(8);
+      expect(warnings.every((message) => message.includes('503'))).toBe(true);
+      expect(await roleOf(THIS)).toMatchObject({ snapshotAt: new Date(now).toISOString() });
+    }
+  );
 
   it('leaves the copy to a member that is clearly closer to the hub', async () => {
     await register(OTHER, { lanHubRole: { capable: true, hosting: false, hubRttMs: 1 } });

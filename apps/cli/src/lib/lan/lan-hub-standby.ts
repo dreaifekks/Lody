@@ -43,6 +43,7 @@ import { LanServiceManager, resolveLanServiceCommand } from './service';
 
 const TICK_MS = 60_000;
 const SNAPSHOT_INTERVAL_MS = 10 * 60_000;
+const MAX_SNAPSHOT_RETRY_MS = 2 * 60 * 60_000;
 /** A member that has not reached its hub for this long asks the others where it is. */
 const ASK_PEERS_AFTER_MS = 2 * 60_000;
 /** The standby takes over once the hub has been away this long and nobody reaches it. */
@@ -181,6 +182,7 @@ export class LanHubStandby {
   private running: Promise<void> | null = null;
   private readonly watches = new Map<string, Watch>();
   private closed = false;
+  private readonly snapshotRetries = new Map<string, { at: number; delay: number }>();
 
   constructor(private readonly options: LanHubStandbyOptions) {}
 
@@ -240,7 +242,7 @@ export class LanHubStandby {
       try {
         await this.keep(hub, workspace, capable);
       } catch (error) {
-        this.options.logger.debug(`[standby] ${hub.name}: ${formatErrorMessage(error)}`);
+        this.options.logger.warn(`[standby] ${hub.name}: ${formatErrorMessage(error)}`);
       }
     }
   }
@@ -298,9 +300,19 @@ export class LanHubStandby {
 
     if (rtt !== null) {
       const age = kept ? now - Date.parse(kept.takenAt) : Number.POSITIVE_INFINITY;
-      if (age < (this.options.snapshotIntervalMs ?? SNAPSHOT_INTERVAL_MS)) return;
+      const interval = this.options.snapshotIntervalMs ?? SNAPSHOT_INTERVAL_MS;
+      const retry = this.snapshotRetries.get(hub.id);
+      if (retry ? now < retry.at : age < interval) return;
       const started = this.now();
-      const pulled = await (this.options.pull ?? pullLanHubSnapshot)({ hub, directory });
+      let pulled: Awaited<ReturnType<typeof pullLanHubSnapshot>>;
+      try {
+        pulled = await (this.options.pull ?? pullLanHubSnapshot)({ hub, directory });
+      } catch (error) {
+        const delay = Math.min(retry ? retry.delay * 2 : interval, MAX_SNAPSHOT_RETRY_MS);
+        this.snapshotRetries.set(hub.id, { at: this.now() + delay, delay });
+        throw error;
+      }
+      this.snapshotRetries.delete(hub.id);
       kept = readKeptLanHubSnapshot(directory);
       this.options.logger.info(
         `[standby] Copied ${hub.name}: ${pulled.received} of ${pulled.blocks.length} block(s) in ${
