@@ -3,7 +3,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RateLimit } from 'acp-extension-core';
-import { ANTIGRAVITY_ARGON_LIMIT_ID, type AgentConfigId } from '@lody/shared';
+import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_ARGON_LIMIT_ID,
+  getMachineFlockDocId,
+  getMachineFlockRateLimits,
+  getRateLimitEntryKey,
+  readMachineFlockRowsFromFlock,
+  type AgentConfigId,
+  type MachineId,
+  type WorkspaceId,
+} from '@lody/shared';
+import { LoroRepo } from 'loro-repo';
+import { MachineDocument } from './loro/doc';
 import type { Logger } from '@/utils/logger';
 import {
   AntigravityQuotaPoller,
@@ -218,69 +230,131 @@ describe('createAntigravityQuotaClient', () => {
 });
 
 describe('AntigravityQuotaPoller', () => {
-  const limit = (limitId: string): RateLimit => ({
-    limitId,
-    scope: { providerId: 'antigravity-acp' },
-    windows: [],
+  const workspaceId = 'quota-workspace' as WorkspaceId;
+  const machineId = 'quota-machine' as MachineId;
+  const configId = 'a' as AgentConfigId;
+  const otherConfigId = 'b' as AgentConfigId;
+  let repo: LoroRepo;
+  let document: MachineDocument;
+
+  beforeEach(async () => {
+    repo = await LoroRepo.create({});
+    document = new MachineDocument(repo, workspaceId, machineId, () => {});
+    await document.init();
   });
 
-  it('writes every limit to every Antigravity provider of the machine', async () => {
-    const written: [AgentConfigId, string][] = [];
-    const poller = new AntigravityQuotaPoller({
-      listAgentConfigIds: async () => ['a' as AgentConfigId, 'b' as AgentConfigId],
-      write: async (configId, rateLimit) => {
-        written.push([configId, rateLimit.limitId]);
-      },
-      fetchRateLimits: async () => [limit('gemini'), limit('third-party')],
-      logger: silentLogger,
+  afterEach(async () => {
+    await document.destroy();
+    await repo.destroy();
+  });
+
+  const readLimits = async () => {
+    const { flock } = await repo.openFlockDoc(getMachineFlockDocId(workspaceId, machineId));
+    return getMachineFlockRateLimits(readMachineFlockRowsFromFlock(flock));
+  };
+  const replaceRateLimits = (id: AgentConfigId, limits: RateLimit[]) =>
+    document.replaceRateLimits(id, ANTIGRAVITY_AGENT_TYPE, limits);
+  const proLimits = antigravityRateLimitsFromSummary(SUMMARY);
+  const ultraLimits = proLimits.slice(0, 2).map((limit) => ({
+    ...limit,
+    windows: limit.windows.map((window) => ({ ...window, usedPercent: 10 })),
+  }));
+  const entries = (id: AgentConfigId, limits: RateLimit[], cliType = ANTIGRAVITY_AGENT_TYPE) =>
+    Object.fromEntries(
+      limits.map((limit) => [getRateLimitEntryKey(cliType, limit.limitId, id), limit])
+    );
+
+  it('replaces Pro with Ultra quota and preserves other providers and CLI types', async () => {
+    await replaceRateLimits(configId, proLimits);
+    await replaceRateLimits(otherConfigId, proLimits);
+    await document.updateRateLimits(configId, 'codex', proLimits[2]!);
+    await document.updateRateLimits(undefined, 'claude', proLimits[2]!);
+    expect(await readLimits()).toEqual({
+      ...entries(configId, proLimits),
+      ...entries(otherConfigId, proLimits),
+      ...entries(configId, [proLimits[2]!], 'codex'),
+      [getRateLimitEntryKey('claude', 'argon')]: proLimits[2],
     });
 
+    const poller = new AntigravityQuotaPoller({
+      listAgentConfigIds: async () => [configId],
+      replaceRateLimits,
+      fetchRateLimits: async () => ultraLimits,
+      logger: silentLogger,
+    });
     await poller.poll();
 
-    expect(written).toEqual([
-      ['a', 'gemini'],
-      ['a', 'third-party'],
-      ['b', 'gemini'],
-      ['b', 'third-party'],
-    ]);
+    expect(await readLimits()).toEqual({
+      ...entries(configId, ultraLimits),
+      ...entries(otherConfigId, proLimits),
+      ...entries(configId, [proLimits[2]!], 'codex'),
+      [getRateLimitEntryKey('claude', 'argon')]: proLimits[2],
+    });
+  });
+
+  it('writes the complete snapshot to every Antigravity provider', async () => {
+    const poller = new AntigravityQuotaPoller({
+      listAgentConfigIds: async () => [configId, otherConfigId],
+      replaceRateLimits,
+      fetchRateLimits: async () => proLimits,
+      logger: silentLogger,
+    });
+    await poller.poll();
+    expect(await readLimits()).toEqual({
+      ...entries(configId, proLimits),
+      ...entries(otherConfigId, proLimits),
+    });
+  });
+
+  it.each(['signed out', 'failed'] as const)(
+    'preserves stored quota when fetch is %s and replaces it after recovery',
+    async (failure) => {
+      await replaceRateLimits(configId, proLimits);
+      let recovered = false;
+      const poller = new AntigravityQuotaPoller({
+        listAgentConfigIds: async () => [configId],
+        replaceRateLimits,
+        fetchRateLimits: async () => {
+          if (recovered) return ultraLimits;
+          if (failure === 'failed') throw new Error('offline');
+          return null;
+        },
+        logger: silentLogger,
+      });
+      await poller.poll();
+      expect(await readLimits()).toEqual(entries(configId, proLimits));
+
+      recovered = true;
+      await poller.poll();
+      expect(await readLimits()).toEqual(entries(configId, ultraLimits));
+    }
+  );
+
+  it('removes all groups after a successful empty snapshot', async () => {
+    await replaceRateLimits(configId, proLimits);
+    const poller = new AntigravityQuotaPoller({
+      listAgentConfigIds: async () => [configId],
+      replaceRateLimits,
+      fetchRateLimits: async () => [],
+      logger: silentLogger,
+    });
+    await poller.poll();
+    expect(await readLimits()).toEqual({});
   });
 
   it('asks Google nothing while the machine has no Antigravity provider', async () => {
     let asked = false;
     const poller = new AntigravityQuotaPoller({
       listAgentConfigIds: async () => [],
-      write: async () => undefined,
+      replaceRateLimits,
       fetchRateLimits: async () => {
         asked = true;
         return [];
       },
       logger: silentLogger,
     });
-
     await poller.poll();
-
     expect(asked).toBe(false);
-  });
-
-  it('survives a failed round and writes on the next one', async () => {
-    const written: string[] = [];
-    let fail = true;
-    const poller = new AntigravityQuotaPoller({
-      listAgentConfigIds: async () => ['a' as AgentConfigId],
-      write: async (_configId, rateLimit) => {
-        written.push(rateLimit.limitId);
-      },
-      fetchRateLimits: async () => {
-        if (fail) throw new Error('offline');
-        return [limit('gemini')];
-      },
-      logger: silentLogger,
-    });
-
-    await poller.poll();
-    fail = false;
-    await poller.poll();
-
-    expect(written).toEqual(['gemini']);
+    expect(await readLimits()).toEqual({});
   });
 });

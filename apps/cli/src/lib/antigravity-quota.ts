@@ -243,7 +243,7 @@ export function createAntigravityQuotaClient(options: AntigravityQuotaClientOpti
 export type AntigravityQuotaPollerOptions = {
   /** Antigravity providers of this machine. */
   listAgentConfigIds: () => Promise<AgentConfigId[]>;
-  write: (agentConfigId: AgentConfigId, limits: RateLimit) => Promise<void>;
+  replaceRateLimits: (agentConfigId: AgentConfigId, limits: RateLimit[]) => Promise<void>;
   fetchRateLimits: () => Promise<RateLimit[] | null>;
   logger: Logger;
   intervalMs?: number;
@@ -288,9 +288,7 @@ export class AntigravityQuotaPoller {
         return;
       }
       for (const configId of configIds) {
-        for (const limit of limits) {
-          await this.options.write(configId, limit);
-        }
+        await this.options.replaceRateLimits(configId, limits);
       }
       this.lastFailure = null;
     } catch (error) {

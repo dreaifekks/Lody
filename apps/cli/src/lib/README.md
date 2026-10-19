@@ -19,6 +19,9 @@ subdirectory; this file is the navigation index. Cross-module explanations live 
   its weekly window. Ultra reports Argon within Gemini. Session selection uses
   these explicit ids; provider rows show Gemini plus labeled Argon windows, and
   the compact machine view retains one row per group.
+  Successful polls replace that config/type's complete Machine Flock quota
+  snapshot, removing groups absent from the response (including Argon after
+  switching to Ultra). Signed-out and failed fetches preserve the cached snapshot.
 
 ## Resource discovery
 

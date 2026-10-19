@@ -61,6 +61,7 @@ import {
   machineFlockKeys,
   readMachineFlockRowsFromFlock,
   getMachineFlockAgentConfigs,
+  getProviderRateLimitKeys,
   isBuiltinAgentType,
   resolveSessionHistoryStatus,
   writeMachineFlockRowToFlock,
@@ -1722,6 +1723,19 @@ export class LoroDocumentManager {
    */
   subscribePresenceStates(listener: (states: LodyPresenceStateMap) => void): (() => void) | null {
     return this.presenceRuntime?.subscribe(listener) ?? null;
+  }
+
+  async replaceRateLimits(
+    machineId: MachineId,
+    agentConfigId: AgentConfigId,
+    cliType: string,
+    limits: RateLimit[]
+  ): Promise<void> {
+    if (!this.machine) {
+      this.machine = this.createMachineDocument(machineId);
+      await this.machine.init();
+    }
+    await this.machine.replaceRateLimits(agentConfigId, cliType, limits);
   }
 
   async updateRateLimits(
@@ -3631,6 +3645,45 @@ export class MachineDocument implements LoroDocument<{}, MachineMeta> {
       () => undefined
     );
     return current;
+  }
+
+  /** Replace a provider's complete quota snapshot, removing groups it no longer reports. */
+  async replaceRateLimits(
+    agentConfigId: AgentConfigId,
+    cliType: string,
+    limits: RateLimit[]
+  ): Promise<void> {
+    return this.enqueueRateLimitsUpdate(async () => {
+      const handle = await this.openMachineFlockDoc();
+      const limitIds = new Set(limits.map((limit) => limit.limitId));
+      const staleKeys = getProviderRateLimitKeys(
+        readMachineFlockRowsFromFlock(handle.flock, { families: ['rateLimit'] }),
+        agentConfigId
+      ).filter((key) => key[2] === cliType && !limitIds.has(key[3]));
+      let changed = false;
+      for (const limit of limits) {
+        changed =
+          writeMachineFlockRowToFlock(handle.flock, {
+            key: machineFlockKeys.rateLimit(agentConfigId, cliType, limit.limitId),
+            value: limit,
+          }) || changed;
+      }
+      for (const key of staleKeys) {
+        handle.flock.delete(key);
+      }
+      if (staleKeys.length > 0) {
+        handle.flock.commit();
+        changed = true;
+      }
+      if (changed) {
+        await this.repo.flush();
+        if (this.markMachineFlockDirty) {
+          this.markMachineFlockDirty('rate-limit-update');
+        } else {
+          await handle.syncOnce().catch(() => undefined);
+        }
+      }
+    });
   }
 
   async updateRateLimits(
