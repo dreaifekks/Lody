@@ -67,6 +67,7 @@ import { SessionFileImagePreview } from './session-file-image-preview';
 import { MarkdownRenderer } from '../ai-gui/markdown-renderer';
 import { MarkdownFileResources } from '../ai-gui/markdown-file-image';
 import { isSvgPath } from '@/lib/image-file-preview';
+import { isPdfFilePath } from '@/lib/pdf-file-preview';
 import { logCodeCollabDebug } from '@/lib/code-collab-debug';
 import {
   decideCodeCollabLiveTextUpdate,
@@ -1749,11 +1750,13 @@ function SessionFileContentViewImpl({
     }
   }
 
+  // PDF and Office own their scrollports and need a definite height; the outer
+  // ScrollArea content wrapper sizes itself from its children instead.
   const bodyUsesNativeScrolling =
     (isTextFileReady && !showSvgRendered && !showMarkdownRendered) ||
     (data.status === 'ready' &&
       data.snapshot.kind === 'binary' &&
-      getOfficePreviewKind(normalizedPath) !== null);
+      (isPdfFilePath(normalizedPath) || getOfficePreviewKind(normalizedPath) !== null));
   const showRealtimeStatusBar = shouldUseProviderFileContent || showProviderConnecting;
   // Top toolbar controls. The render-mode toggle moved here from the bottom
   // status bar (which now only carries save/live/offline state). The search
