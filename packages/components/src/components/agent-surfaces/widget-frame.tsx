@@ -29,9 +29,12 @@ const styles = stylex.create({
   url: { overflowWrap: 'anywhere', fontFamily: 'ui-monospace, monospace', fontSize: '12px' },
 });
 
-type HostSource = { kind: 'url'; url: string } | { kind: 'srcdoc' } | { kind: 'unavailable' };
+export type WidgetHostSource =
+  | { kind: 'url'; url: string }
+  | { kind: 'srcdoc' }
+  | { kind: 'unavailable' };
 
-let hostSource: Promise<HostSource> | null = null;
+let hostSource: Promise<WidgetHostSource> | null = null;
 
 /**
  * Where widgets are framed from. The desktop serves the page from its own
@@ -39,12 +42,12 @@ let hostSource: Promise<HostSource> | null = null;
  * builds (the web app, Storybook) frame the same page through `srcdoc`, where
  * it also inherits the host page's policy.
  */
-const loadHostSource = (): Promise<HostSource> => {
+export const loadWidgetHostSource = (): Promise<WidgetHostSource> => {
   const ipc = isElectronRenderer() ? getIpcServices() : null;
   hostSource ??= ipc
     ? ipc.widgets.getHostUrl().then(
-        (url): HostSource => ({ kind: 'url', url }),
-        (): HostSource => {
+        (url): WidgetHostSource => ({ kind: 'url', url }),
+        (): WidgetHostSource => {
           hostSource = null;
           return { kind: 'unavailable' };
         }
@@ -67,7 +70,7 @@ export function WidgetFrame({ code, title }: { code: string; title: string }) {
   const turnId = useContext(AgentSurfaceTurnContext);
   const resolvedTheme = useResolvedTheme();
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const [source, setSource] = useState<HostSource | null>(null);
+  const [source, setSource] = useState<WidgetHostSource | null>(null);
   const [height, setHeight] = useState(INITIAL_HEIGHT_PX);
   const [pendingLink, setPendingLink] = useState<string | null>(null);
   const readyRef = useRef(false);
@@ -76,7 +79,7 @@ export function WidgetFrame({ code, title }: { code: string; title: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    void loadHostSource().then((next) => {
+    void loadWidgetHostSource().then((next) => {
       if (!cancelled) setSource(next);
     });
     return () => {
@@ -151,40 +154,48 @@ export function WidgetFrame({ code, title }: { code: string; title: string }) {
           style={{ height, maxHeight: WIDGET_MAX_HEIGHT_PX, colorScheme: resolvedTheme }}
         />
       ) : null}
-      <AlertDialog.Root
-        open={pendingLink !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingLink(null);
-        }}
-      >
-        <AlertDialog.Content>
-          <AlertDialog.Header>
-            <AlertDialog.Title>
-              {t('agentSurfaces.widget.openLinkTitle', 'Open this link?')}
-            </AlertDialog.Title>
-            <AlertDialog.Description>
-              <span {...stylex.props(styles.url)}>{pendingLink}</span>
-            </AlertDialog.Description>
-          </AlertDialog.Header>
-          <AlertDialog.Footer>
-            <AlertDialog.Close render={<Button variant="secondary" />}>
-              {t('common.cancel', 'Cancel')}
-            </AlertDialog.Close>
-            <AlertDialog.Close
-              render={
-                <Button
-                  variant="primary"
-                  onClick={() => {
-                    if (pendingLink) void openExternalUrl(pendingLink);
-                  }}
-                />
-              }
-            >
-              {t('agentSurfaces.widget.openLink', 'Open')}
-            </AlertDialog.Close>
-          </AlertDialog.Footer>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
+      <WidgetLinkDialog url={pendingLink} onClose={() => setPendingLink(null)} />
     </div>
+  );
+}
+
+/** A link a frame asked to open: only http(s), and only after the user confirms. */
+export function WidgetLinkDialog({ url, onClose }: { url: string | null; onClose: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <AlertDialog.Root
+      open={url !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <AlertDialog.Content>
+        <AlertDialog.Header>
+          <AlertDialog.Title>
+            {t('agentSurfaces.widget.openLinkTitle', 'Open this link?')}
+          </AlertDialog.Title>
+          <AlertDialog.Description>
+            <span {...stylex.props(styles.url)}>{url}</span>
+          </AlertDialog.Description>
+        </AlertDialog.Header>
+        <AlertDialog.Footer>
+          <AlertDialog.Close render={<Button variant="secondary" />}>
+            {t('common.cancel', 'Cancel')}
+          </AlertDialog.Close>
+          <AlertDialog.Close
+            render={
+              <Button
+                variant="primary"
+                onClick={() => {
+                  if (url) void openExternalUrl(url);
+                }}
+              />
+            }
+          >
+            {t('agentSurfaces.widget.openLink', 'Open')}
+          </AlertDialog.Close>
+        </AlertDialog.Footer>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
   );
 }

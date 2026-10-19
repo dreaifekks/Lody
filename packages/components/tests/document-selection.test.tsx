@@ -6,6 +6,7 @@ import {
   captureDocumentRegion,
   documentSelectionLocation,
   formatDocumentSelection,
+  locateMarkdownSelection,
   MAX_SELECTION_PIXELS,
   MAX_SELECTION_TEXT,
   selectionRect,
@@ -74,6 +75,68 @@ describe('document selections', () => {
         new AbortController().signal
       )
     ).rejects.toThrow(RangeError);
+  });
+});
+
+describe('rendered Markdown selection lines', () => {
+  const report = [
+    '# Quarterly **report**', // 1
+    '',
+    'Revenue grew by *12%* in the [north region](https://example.com/north).', // 3
+    'Costs stayed flat.', // 4
+    '',
+    '- First `item`', // 6
+    '- [x] Second item', // 7
+    '',
+    '| Region | Revenue |', // 9
+    '| --- | ---: |',
+    '| North | 125000 |', // 11
+    '',
+    '```ts', // 13
+    'const total = sum(rows);', // 14
+    '```',
+    '',
+    'Costs stayed flat.', // 17
+  ].join('\n');
+
+  it('places a selection inside one block on its source line', () => {
+    expect(locateMarkdownSelection(report, 'Quarterly report')).toEqual({
+      startLine: 1,
+      endLine: 1,
+    });
+    expect(locateMarkdownSelection(report, 'const total = sum(rows);')).toEqual({
+      startLine: 14,
+      endLine: 14,
+    });
+  });
+
+  it('spans rendered markup, soft-wrapped lines, list markers and table cells', () => {
+    expect(
+      locateMarkdownSelection(report, 'grew by 12% in the north region.\nCosts stayed flat.')
+    ).toEqual({ startLine: 3, endLine: 4 });
+    expect(locateMarkdownSelection(report, 'First item\nSecond item')).toEqual({
+      startLine: 6,
+      endLine: 7,
+    });
+    expect(locateMarkdownSelection(report, 'North\t125000')).toEqual({
+      startLine: 11,
+      endLine: 11,
+    });
+  });
+
+  it('places both ends when rendering changes the middle of a long selection', () => {
+    expect(
+      locateMarkdownSelection(
+        report,
+        'Second item\n\nRegion\tRevenue\n(added by the renderer)\nNorth\t125000\n\nconst total = sum(rows);'
+      )
+    ).toEqual({ startLine: 7, endLine: 14 });
+  });
+
+  it('gives no lines for text that repeats or is not in the source', () => {
+    expect(locateMarkdownSelection(report, 'Costs stayed flat.')).toBeNull();
+    expect(locateMarkdownSelection(report, 'Profit')).toBeNull();
+    expect(locateMarkdownSelection(report, '  \n ')).toBeNull();
   });
 });
 

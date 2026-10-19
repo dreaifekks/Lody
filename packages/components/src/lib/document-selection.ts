@@ -244,3 +244,77 @@ export async function selectionImageCanvas(
     image.close();
   }
 }
+
+export interface SourceLineRange {
+  readonly startLine: number;
+  readonly endLine: number;
+}
+
+/** Characters that rendering removes or keeps depending on context; ignored on both sides. */
+const looseText = (text: string): string =>
+  text
+    .replace(/[\\*_~`#>|]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+
+/** One Markdown source line as its rendered text roughly reads. */
+const renderedLine = (line: string): string => {
+  if (
+    /^\s*(?:```|~~~)/u.test(line) ||
+    /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-*:?\s*)*\|?\s*$/u.test(line)
+  )
+    return '';
+  return line
+    .replace(/^\s*(?:>\s?)*/u, '')
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/u, '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/gu, '$1')
+    .replace(/<(https?:[^>\s]+)>/gu, '$1')
+    .replace(/<\/?[a-z][^>]*>/giu, ' ');
+};
+
+/**
+ * The source lines a selection of rendered Markdown came from, or `null` when
+ * the text cannot be placed unambiguously. Compares loosened text on both
+ * sides: rendering drops markup, list markers and table pipes, and a selection
+ * across blocks joins them with line breaks.
+ */
+export function locateMarkdownSelection(source: string, selected: string): SourceLineRange | null {
+  const needle = looseText(selected);
+  if (!needle) return null;
+  const lineAt: number[] = [];
+  let haystack = '';
+  source.split(/\r?\n/u).forEach((line, index) => {
+    const text = looseText(renderedLine(line));
+    if (!text) return;
+    if (haystack) {
+      haystack += ' ';
+      lineAt.push(index + 1);
+    }
+    for (let i = 0; i < text.length; i += 1) lineAt.push(index + 1);
+    haystack += text;
+  });
+  const unique = (part: string): number => {
+    const first = haystack.indexOf(part);
+    return first !== -1 && haystack.indexOf(part, first + 1) === -1 ? first : -1;
+  };
+  const range = (start: number, end: number): SourceLineRange => ({
+    startLine: lineAt[start],
+    endLine: lineAt[end],
+  });
+  const whole = unique(needle);
+  if (whole !== -1) return range(whole, whole + needle.length - 1);
+  if (haystack.includes(needle) || needle.length < 24) return null;
+  // Rendering may add or drop text in the middle (numbering, cell gaps): place
+  // both ends, each by its longest piece that the source still has.
+  for (let size = Math.min(32, needle.length - 1); size >= 12; size -= 1) {
+    const head = unique(needle.slice(0, size));
+    if (head === -1) continue;
+    for (let tailSize = size; tailSize >= 12; tailSize -= 1) {
+      const tailText = needle.slice(-tailSize);
+      const tail = haystack.indexOf(tailText, head + size);
+      if (tail !== -1) return range(head, tail + tailText.length - 1);
+    }
+    return null;
+  }
+  return null;
+}

@@ -229,7 +229,20 @@ import { getCommandKeybindings, useCommand } from '@/lib/commands';
 import { useDesktopTabCloser } from '@/lib/desktop-tab-or-window-close';
 import { useSemanticActionRouter } from '@/lib/commands/use-semantic-action-router';
 import type { SemanticActionRouter } from '@/lib/commands/semantic-action-router';
-import { boardEnabledAtom, semanticShortcutsFeatureEnabledAtom } from '@/atoms/settings';
+import {
+  boardArticleFeatureEnabledAtom,
+  boardEnabledAtom,
+  semanticShortcutsFeatureEnabledAtom,
+} from '@/atoms/settings';
+import {
+  ARTICLE_FOCUS_DEFAULT_RATIO,
+  ArticleFocusButton,
+  ArticleFocusDivider,
+  articleFocusColumns,
+  articleFocusStyles,
+  isBoardArticlePath,
+  useArticleFocusFrame,
+} from './board-article-focus';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { BoardSidePanel, useThreadLocation } from '../boards/board-side-panel';
 import { BoardSettings } from '../boards/board-settings-panel';
@@ -1125,6 +1138,10 @@ const SessionDetail = ({
   const [boardThreadRequest, setBoardThreadRequest] = useState<SessionId | null>(null);
   const finishBoardThreadRequest = useCallback(() => setBoardThreadRequest(null), []);
   const [mobileBoardOpen, setMobileBoardOpen] = useState(false);
+  // The open thread's article expanded beside it (experimental); see
+  // `board-article-focus.tsx`. The split is not remembered.
+  const [articleFocus, setArticleFocus] = useState(false);
+  const [articleFocusRatio, setArticleFocusRatio] = useState(ARTICLE_FOCUS_DEFAULT_RATIO);
   const [boardSettingsOpen, setBoardSettingsOpen] = useState(false);
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab | null>(
     () => initialTabState.sidePanel.tab
@@ -5033,6 +5050,30 @@ const SessionDetail = ({
     fileProvider: activeSessionFileProvider,
   });
   const activeViewerFilePath = activeViewerTab?.type === 'file' ? activeViewerTab.filePath : null;
+  const boardArticleEnabled = useAtomValue(boardArticleFeatureEnabledAtom);
+  // Only a file the open Board thread owns can sit beside that thread.
+  const canFocusArticle =
+    boardArticleEnabled &&
+    !isMobile &&
+    isSidebarVisible &&
+    boardThreadId !== null &&
+    visibleOpenedSidebarTabs.includes('board') &&
+    activeViewerTab?.type === 'file' &&
+    activeViewerTab.ownerSessionId === boardThreadId &&
+    isBoardArticlePath(activeViewerTab.filePath);
+  const articleFocusActive = articleFocus && canFocusArticle;
+  useEffect(() => {
+    if (!canFocusArticle) setArticleFocus(false);
+  }, [canFocusArticle]);
+  useEffect(() => {
+    if (!articleFocusActive) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.defaultPrevented) setArticleFocus(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [articleFocusActive]);
+  const articleFocusFrame = useArticleFocusFrame(desktopActionRootRef, articleFocusActive);
   const handleSaveCurrentFile = useCallback(() => {
     if (!effectiveActiveViewerTabId || activeViewerTab?.type !== 'file') {
       return;
@@ -6174,9 +6215,11 @@ const SessionDetail = ({
     tab: Extract<ViewerTab, { type: 'file' }>,
     scope: SessionFileScopeValue,
     className: string,
-    active: boolean
+    active: boolean,
+    article: boolean
   ) => (
     <SessionFileContentView
+      article={article}
       key={`${scope.session.id}:${tab.id}`}
       sessionId={scope.session.id}
       session={scope.session}
@@ -6236,7 +6279,12 @@ const SessionDetail = ({
     />
   );
 
-  const renderViewerTabContent = (tab: ViewerTab, className = 'h-full', active = true) => {
+  const renderViewerTabContent = (
+    tab: ViewerTab,
+    className = 'h-full',
+    active = true,
+    article = false
+  ) => {
     const boardFile =
       tab.type === 'file'
         ? resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical')
@@ -6255,7 +6303,7 @@ const SessionDetail = ({
     return tab.type === 'file' ? (
       tab.ownerSessionId && !isFileViewerTabOwnedBySession(tab, activeSession.id) ? (
         <SessionFileScope key={tab.ownerSessionId} sessionId={tab.ownerSessionId}>
-          {(scope) => renderFileTab(tab, scope, className, active)}
+          {(scope) => renderFileTab(tab, scope, className, active, article)}
         </SessionFileScope>
       ) : (
         renderFileTab(
@@ -6268,7 +6316,8 @@ const SessionDetail = ({
             role: activeSessionCodeCollabFiles.role,
           },
           className,
-          active
+          active,
+          article
         )
       )
     ) : (
@@ -6321,8 +6370,9 @@ const SessionDetail = ({
     effectiveActiveViewerTabId === null &&
     effectiveActiveSideSessionId === null &&
     openingActiveSideSessionId === null;
-  const boardPanelOnScreen =
-    isSidebarVisible && activeSidebarTab === 'board' && showFixedSidePanelBody;
+  const boardPanelShown =
+    (activeSidebarTab === 'board' && showFixedSidePanelBody) || articleFocusActive;
+  const boardPanelOnScreen = isSidebarVisible && boardPanelShown;
   const boardPanel = activeBoard ? (
     <BoardSidePanel
       board={activeBoard}
@@ -7749,14 +7799,18 @@ const SessionDetail = ({
       <div
         key={tab.id}
         className={
-          stylex.props(isActive ? detailStyles.rootFill : detailStyles.hiddenFill).className
+          stylex.props(
+            isActive ? detailStyles.rootFill : detailStyles.hiddenFill,
+            isActive && articleFocusActive && articleFocusStyles.article
+          ).className
         }
         aria-hidden={!isActive || !isSidebarVisible}
       >
         {renderViewerTabContent(
           tab,
           stylex.props(detailStyles.rootFill).className,
-          isActive && isSidebarVisible
+          isActive && isSidebarVisible,
+          isActive && articleFocusActive
         )}
       </div>
     );
@@ -7825,8 +7879,13 @@ const SessionDetail = ({
       data-lody-action-scope="side-panel"
       className={cn(
         'group/close-scope',
-        stylex.props(stylex.defaultMarker(), detailStyles.desktopPanelShell).className
+        stylex.props(
+          stylex.defaultMarker(),
+          detailStyles.desktopPanelShell,
+          articleFocusActive && articleFocusStyles.shell
+        ).className
       )}
+      style={articleFocusActive ? articleFocusFrame : undefined}
     >
       <SessionSidePanelTabBar
         tabs={sidePanelTabs}
@@ -7840,20 +7899,28 @@ const SessionDetail = ({
           t('sessions.fileViewer.closeTab', 'Close {{fileName}}', { fileName: tabLabel })
         }
         moreSlot={
-          activeViewerTab?.type === 'file' &&
-          activeViewerTab.ownerSessionId &&
-          !isFileViewerTabOwnedBySession(activeViewerTab, activeSession.id) ? (
-            <SessionFileScope sessionId={activeViewerTab.ownerSessionId} unavailable={null}>
-              {(scope) => (
-                <SessionOwnedFileActionsMenu scope={scope} filePath={activeViewerFilePath} />
-              )}
-            </SessionFileScope>
-          ) : (
-            <SessionFileActionsMenu
-              filePath={activeViewerFilePath}
-              items={activeSessionFileActions.menuItems}
-            />
-          )
+          <>
+            {canFocusArticle ? (
+              <ArticleFocusButton
+                active={articleFocusActive}
+                onToggle={() => setArticleFocus(!articleFocusActive)}
+              />
+            ) : null}
+            {activeViewerTab?.type === 'file' &&
+            activeViewerTab.ownerSessionId &&
+            !isFileViewerTabOwnedBySession(activeViewerTab, activeSession.id) ? (
+              <SessionFileScope sessionId={activeViewerTab.ownerSessionId} unavailable={null}>
+                {(scope) => (
+                  <SessionOwnedFileActionsMenu scope={scope} filePath={activeViewerFilePath} />
+                )}
+              </SessionFileScope>
+            ) : (
+              <SessionFileActionsMenu
+                filePath={activeViewerFilePath}
+                items={activeSessionFileActions.menuItems}
+              />
+            )}
+          </>
         }
         endSlot={sidebarToggleButton}
         className={cn(
@@ -7866,7 +7933,10 @@ const SessionDetail = ({
           windowsCaptionPadClass
         )}
       />
-      <div {...stylex.props(detailStyles.sidebarBody)}>
+      <div
+        {...stylex.props(detailStyles.sidebarBody, articleFocusActive && articleFocusStyles.body)}
+        style={articleFocusActive ? articleFocusColumns(articleFocusRatio) : undefined}
+      >
         {showFixedSidePanelBody && activeSidebarTab !== null && activeSidebarTab !== 'board'
           ? sidebarContent
           : null}
@@ -7875,9 +7945,8 @@ const SessionDetail = ({
           <div
             className={
               stylex.props(
-                activeSidebarTab === 'board' && showFixedSidePanelBody
-                  ? detailStyles.rootFill
-                  : detailStyles.hiddenFill
+                boardPanelShown ? detailStyles.rootFill : detailStyles.hiddenFill,
+                articleFocusActive && articleFocusStyles.thread
               ).className
             }
             aria-hidden={!boardPanelOnScreen}
@@ -7895,6 +7964,11 @@ const SessionDetail = ({
         {desktopSideSessionSurfaces}
         {sideChatOpeningSurface}
         {desktopViewerSurfaces}
+        <ArticleFocusDivider
+          active={articleFocusActive}
+          ratio={articleFocusRatio}
+          onRatioChange={setArticleFocusRatio}
+        />
       </div>
     </div>
   );

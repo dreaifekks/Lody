@@ -194,6 +194,8 @@ export function DocumentSelectionSurface({
   onAdd,
   children,
   standaloneCapture = false,
+  locateText,
+  onDraftChange,
 }: {
   readonly path: string;
   readonly active: boolean;
@@ -201,6 +203,10 @@ export function DocumentSelectionSurface({
   readonly onAdd?: (selection: DocumentSelection) => boolean;
   readonly children: ReactNode;
   readonly standaloneCapture?: boolean;
+  /** Where selected text sits in the source, when the preview can tell. */
+  readonly locateText?: (text: string) => string | undefined;
+  /** Whether a selection is waiting in the floating editor. */
+  readonly onDraftChange?: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
   const locate = (root: HTMLElement, rect: SelectionRect) =>
@@ -226,6 +232,14 @@ export function DocumentSelectionSurface({
     rects: SelectionRect[];
   }>({ left: 12, top: 48, visible: true, rects: [] });
   const enabled = Boolean(onAdd) && active;
+  const draftOpen = draft !== null && enabled;
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
+  useEffect(() => {
+    if (!draftOpen) return undefined;
+    onDraftChangeRef.current?.(true);
+    return () => onDraftChangeRef.current?.(false);
+  }, [draftOpen]);
   const cancelCapture = useCallback(() => {
     request.current?.abort();
     request.current = null;
@@ -395,12 +409,14 @@ export function DocumentSelectionSurface({
     setDraft({
       selection: {
         path,
-        location: locate(root, {
-          x: box.left - bounds.left,
-          y: box.top - bounds.top,
-          width: box.width,
-          height: box.height,
-        }),
+        location:
+          locateText?.(value) ??
+          locate(root, {
+            x: box.left - bounds.left,
+            y: box.top - bounds.top,
+            width: box.width,
+            height: box.height,
+          }),
         text: value,
       },
       measure: () =>

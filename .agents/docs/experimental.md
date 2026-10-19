@@ -19,6 +19,7 @@ While it is on, its rows follow the master switch in the same section:
 | Notifications from agents | `agentNotifyExperimentEnabledAtom` (`lody-agent-notify-experiment-enabled`) |
 | Plan review | `planReviewExperimentEnabledAtom` (`lody-plan-review-experiment-enabled`) |
 | Interactive widgets | `inlineWidgetExperimentEnabledAtom` (`lody-inline-widget-experiment-enabled`) |
+| Articles beside threads (under Boards) | `boardArticleExperimentEnabledAtom` (`lody-board-article-experiment-enabled`) |
 
 Every switch is this device's own. A feature is on where both the master switch
 and its own switch are (`*FeatureEnabledAtom`). Turning the master switch off
@@ -241,3 +242,37 @@ user, and thread and Board rows carry the sidebar's ✋, working and unread mark
 limits, handoff and daily digests remain later steps in the
 [Board design](../../specs/project-coordinator/design.md). Disabling the experiment
 hides its surfaces and keeps sessions and Board data intact.
+
+### Articles beside threads
+
+A row under Boards, shown while Boards is on. When a Board thread is open in the
+side panel and the active file tab is a `.md`/`.html` file that thread owns, the tab
+row gets an expand button. Expanded, the side panel covers the session area: the
+file on the left, the thread on the right (60/40, the divider drags, nothing is
+remembered); the same button or Escape collapses it. Desktop wide layout only; a
+thread opened as its own page and ordinary sessions have no expand. The agent side
+is a convention for the Board's thread instructions: write `articles/<name>.md|html`
+and give the path in the reply. No tool, CLI or protocol change.
+
+- Markdown: with this switch on, selecting rendered Markdown in any file tab opens
+  the document-selection comment (upstream #1649). The source lines are found from
+  the selected text (`locateMarkdownSelection` in `lib/document-selection.ts`);
+  text that repeats or cannot be placed carries no lines. The comment joins the
+  thread's composer as a chip and is sent as plain text.
+- HTML: runs in the widget page (`article-html-frame.tsx`), the desktop's loopback
+  page that hosts widgets, with the same `allow-scripts` sandbox (plus
+  `credentialless`) and the widget policy: scripts, styles, fonts, images and
+  `connect-src` from the widget CDNs only (`LODY_WIDGET_CDN_ORIGINS`), and the app's
+  theme variables. A `srcdoc` frame inherits the app's own policy, which runs no
+  inline script or CDN code there. The page cannot send prompts; links ask first.
+  Collapsed tabs keep the ordinary no-network HTML preview. Element comments
+  (visual annotation) are not available in the expanded HTML view.
+- Refresh: while expanded and on screen, the file is revalidated with its digest
+  every 5 s while the thread works, 15 s while idle, and once when a turn ends
+  (`hooks/use-session-file-digest-watch.ts`). Markdown re-renders in place; an open
+  selection comment holds the update. HTML waits 1 s for writes to settle and does
+  not reload while the pointer or focus is in the page (or left it under 3 s ago);
+  the toolbar then shows "Updated · Reload".
+- Layout: `components/sessions/board-article-focus.tsx`. Expanding only switches
+  classes and styles on elements that are always rendered, so the thread's
+  conversation never remounts and keeps its composer text and chips.
