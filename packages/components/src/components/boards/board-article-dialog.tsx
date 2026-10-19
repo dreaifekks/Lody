@@ -141,7 +141,12 @@ export function BoardArticleDialog({
             />
           </div>
           <div {...stylex.props(styles.pane)}>
-            <RelocatableSlot host={threadHost} className={stylex.props(styles.thread).className} />
+            {/* Held over the Board panel's slot, even one that remounts meanwhile. */}
+            <RelocatableSlot
+              host={threadHost}
+              priority={1}
+              className={stylex.props(styles.thread).className}
+            />
           </div>
         </div>
       </Dialog.Content>

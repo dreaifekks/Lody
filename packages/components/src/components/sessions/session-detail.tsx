@@ -4347,6 +4347,7 @@ const SessionDetail = ({
       if (
         !boardArticleEnabled ||
         isMobile ||
+        isCompactDesktop ||
         resolveBoardFileLink(path, currentWorkspaceId, boards, options.pathKind)
       ) {
         handleOpenFileForSession(scope, path, options);
@@ -4379,8 +4380,14 @@ const SessionDetail = ({
     }
     return host;
   };
+  // Closes with the switch, and on any layout without room for it: the compact
+  // layout also remounts the Board panel, conversation included.
   const articleDialogThreadId =
-    articleDialog && !isMobile && articleDialog.threadId === boardThreadId
+    articleDialog &&
+    boardArticleEnabled &&
+    !isMobile &&
+    !isCompactDesktop &&
+    articleDialog.threadId === boardThreadId
       ? articleDialog.threadId
       : null;
   useEffect(() => {
@@ -6466,13 +6473,6 @@ const SessionDetail = ({
             />
           </AgentFileLinkOpenContext.Provider>
         );
-        if (!boardArticleEnabled)
-          return (
-            <Fragment key={thread.id}>
-              {scopeHost}
-              {chat}
-            </Fragment>
-          );
         // One conversation, two places: the panel's slot, or the article
         // dialog's while it is open. Its popups follow it into the dialog.
         const host = getThreadChatHost(thread.id);

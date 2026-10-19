@@ -250,15 +250,18 @@ file link in a thread open in the side panel opens the article window over the p
 instead of a file tab: the file on the left, that thread's conversation on the right
 (60/40, the divider drags, nothing is remembered). Escape, the backdrop or the ×
 in the thread header closes it and leaves the page as it was. The file header's ⋯
-has "Open in side tab". Other files, narrow layouts and a thread opened as its own
-page keep the file tab. The agent side is a convention for the Board's thread
+has "Open in side tab". Other files, phones, the compact desktop layout and a
+thread opened as its own page keep the file tab; turning the switch off or going
+compact closes an open window. The agent side is a convention for the Board's thread
 instructions: write `articles/<name>.md|html` and give the path in the reply. No
 tool, CLI or protocol change.
 
-- One conversation: with the switch on, the panel's thread conversation is
-  portalled into a relocatable host (`components/boards/relocatable-host.tsx`).
-  The Board panel and the open dialog each render a slot; the node sits in the
-  latest one, moved with `moveBefore` where the browser has it. React never
+- One conversation: the panel's thread conversation is always portalled into a
+  relocatable host (`components/boards/relocatable-host.tsx`), so the switch never
+  changes its tree. The Board panel and the open dialog each render a slot; the
+  node sits in the dialog's while it is open (a higher priority, so a panel that
+  remounts meanwhile does not take it back), moved with `moveBefore` where the
+  browser has it. React never
   remounts the conversation, so its composer text, selection chips, scroll and
   `chatRefsMap` entry stay as they were. While open, the conversation's popups
   mount in the dialog panel (`PopupContainerProvider`), and only the backdrop

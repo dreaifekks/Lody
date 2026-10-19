@@ -30,10 +30,13 @@ function Page({
   host,
   open,
   onClose,
+  panelKey = 'panel',
 }: {
   host: RelocatableHost;
   open: boolean;
   onClose: () => void;
+  /** A new key remounts the Board panel's slot, as a layout change does. */
+  panelKey?: string;
 }) {
   const [, setPanel] = useState<HTMLElement | null>(null);
   return createElement(
@@ -42,7 +45,7 @@ function Page({
     createElement(
       'aside',
       { 'data-testid': 'board-panel' },
-      createElement(RelocatableSlot, { host })
+      createElement(RelocatableSlot, { host, key: panelKey })
     ),
     createPortal(createElement(Conversation), host.node),
     open
@@ -65,9 +68,9 @@ describe('BoardArticleDialog', () => {
   const onClose = vi.fn(() => {
     open = false;
   });
-  const render = () =>
+  const render = (panelKey?: string) =>
     act(async () => {
-      root.render(createElement(Page, { host, open, onClose }));
+      root.render(createElement(Page, { host, open, onClose, panelKey }));
     });
 
   beforeEach(() => {
@@ -110,6 +113,18 @@ describe('BoardArticleDialog', () => {
     await render();
     expect(document.querySelector('[role="dialog"]')?.contains(composer)).toBe(true);
     expect(composer.value).toBe('这里数据过时了');
+    expect(mounts).toBe(1);
+  });
+
+  it('keeps the conversation while a Board panel slot remounts under it', async () => {
+    open = true;
+    await render();
+    const composer = document.querySelector<HTMLTextAreaElement>('textarea')!;
+    await render('remounted');
+    expect(document.querySelector('[role="dialog"]')?.contains(composer)).toBe(true);
+    open = false;
+    await render('remounted');
+    expect(document.querySelector('[data-testid="board-panel"]')?.contains(composer)).toBe(true);
     expect(mounts).toBe(1);
   });
 

@@ -11,8 +11,12 @@ import { useLayoutEffect, useRef } from 'react';
  */
 export type RelocatableHost = {
   readonly node: HTMLDivElement;
-  /** Puts the node in `slot` until the returned release; the previous slot gets it back then. */
-  claim(slot: HTMLElement): () => void;
+  /**
+   * Puts the node in `slot` until the returned release. The node sits in the
+   * slot of the highest `priority`, the latest claimed among equals; a slot
+   * that mounts later at a lower priority does not take it away.
+   */
+  claim(slot: HTMLElement, priority?: number): () => void;
 };
 
 type MovableParent = HTMLElement & { moveBefore?: (node: Node, child: Node | null) => void };
@@ -21,9 +25,12 @@ export function createRelocatableHost(): RelocatableHost {
   const node = document.createElement('div');
   node.style.height = '100%';
   node.style.minHeight = '0';
-  const slots: HTMLElement[] = [];
+  const slots: { readonly element: HTMLElement; readonly priority: number }[] = [];
   const place = () => {
-    const slot: MovableParent | undefined = slots.at(-1);
+    const slot: MovableParent | undefined = slots.reduce<(typeof slots)[number] | undefined>(
+      (best, entry) => (best && best.priority > entry.priority ? best : entry),
+      undefined
+    )?.element;
     if (!slot || node.parentElement === slot) return;
     if (typeof slot.moveBefore === 'function' && node.isConnected && slot.isConnected)
       slot.moveBefore(node, null);
@@ -31,29 +38,32 @@ export function createRelocatableHost(): RelocatableHost {
   };
   return {
     node,
-    claim(slot) {
-      slots.push(slot);
+    claim(element, priority = 0) {
+      const entry = { element, priority };
+      slots.push(entry);
       place();
       return () => {
-        slots.splice(slots.lastIndexOf(slot), 1);
+        slots.splice(slots.indexOf(entry), 1);
         place();
       };
     },
   };
 }
 
-/** A place a relocatable subtree shows in while this slot is the latest one mounted. */
+/** A place a relocatable subtree shows in; see `RelocatableHost.claim` for which one wins. */
 export function RelocatableSlot({
   host,
+  priority = 0,
   className,
 }: {
   host: RelocatableHost;
+  priority?: number;
   className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const slot = ref.current;
-    return slot ? host.claim(slot) : undefined;
-  }, [host]);
+    return slot ? host.claim(slot, priority) : undefined;
+  }, [host, priority]);
   return <div ref={ref} className={className} />;
 }
