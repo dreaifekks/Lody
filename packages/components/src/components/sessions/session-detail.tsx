@@ -48,6 +48,7 @@ import {
   Shrink,
   Trash2,
   Users,
+  X,
 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { useTranslation } from 'react-i18next';
@@ -234,15 +235,14 @@ import {
   boardEnabledAtom,
   semanticShortcutsFeatureEnabledAtom,
 } from '@/atoms/settings';
+import { createPortal } from 'react-dom';
+import { PopupContainerProvider, usePopupContainer } from '@lody/ui/popup-container';
+import { BoardArticleDialog, isBoardArticlePath } from '../boards/board-article-dialog';
 import {
-  ARTICLE_FOCUS_DEFAULT_RATIO,
-  ArticleFocusButton,
-  ArticleFocusDivider,
-  articleFocusColumns,
-  articleFocusStyles,
-  isBoardArticlePath,
-  useArticleFocusFrame,
-} from './board-article-focus';
+  createRelocatableHost,
+  RelocatableSlot,
+  type RelocatableHost,
+} from '../boards/relocatable-host';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { BoardSidePanel, useThreadLocation } from '../boards/board-side-panel';
 import { BoardSettings } from '../boards/board-settings-panel';
@@ -1138,10 +1138,16 @@ const SessionDetail = ({
   const [boardThreadRequest, setBoardThreadRequest] = useState<SessionId | null>(null);
   const finishBoardThreadRequest = useCallback(() => setBoardThreadRequest(null), []);
   const [mobileBoardOpen, setMobileBoardOpen] = useState(false);
-  // The open thread's article expanded beside it (experimental); see
-  // `board-article-focus.tsx`. The split is not remembered.
-  const [articleFocus, setArticleFocus] = useState(false);
-  const [articleFocusRatio, setArticleFocusRatio] = useState(ARTICLE_FOCUS_DEFAULT_RATIO);
+  // A thread's article open over the page with that thread beside it
+  // (experimental). The thread keeps its one conversation: it is portalled
+  // into a relocatable host that the dialog borrows while open.
+  const [articleDialog, setArticleDialog] = useState<{
+    readonly threadId: SessionId;
+    readonly filePath: string;
+    readonly fileId?: string;
+  } | null>(null);
+  const [articlePanel, setArticlePanel] = useState<HTMLElement | null>(null);
+  const threadChatHostsRef = useRef(new Map<SessionId, RelocatableHost>());
   const [boardSettingsOpen, setBoardSettingsOpen] = useState(false);
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab | null>(
     () => initialTabState.sidePanel.tab
@@ -4333,7 +4339,53 @@ const SessionDetail = ({
     }
   );
 
-  const threadFileLinks = useThreadFileLinks(boardThreadId, handleOpenFileForSession);
+  const boardArticleEnabled = useAtomValue(boardArticleFeatureEnabledAtom);
+  // A thread's Markdown or HTML link opens the article dialog; every other
+  // file, and every narrow layout, opens the side-panel tab as before.
+  const handleOpenThreadFile = useStableCallback(
+    (scope: SessionFileScopeValue, path: string, options: SessionDetailOpenFileOptions = {}) => {
+      if (
+        !boardArticleEnabled ||
+        isMobile ||
+        resolveBoardFileLink(path, currentWorkspaceId, boards, options.pathKind)
+      ) {
+        handleOpenFileForSession(scope, path, options);
+        return;
+      }
+      const openedInSessionId = sessionId;
+      void (async () => {
+        const target = await resolveSessionFileLinkOpen(path, options, scope, runtime);
+        if (openFileSessionIdRef.current !== openedInSessionId) return;
+        if (!isBoardArticlePath(target.filePath)) {
+          handleOpenFileForSession(scope, path, options);
+          return;
+        }
+        setArticleDialog({
+          threadId: scope.session.id,
+          filePath: target.filePath,
+          ...(target.fileId === undefined ? {} : { fileId: target.fileId }),
+        });
+      })();
+    }
+  );
+  const threadFileLinks = useThreadFileLinks(boardThreadId, handleOpenThreadFile);
+  const outerPopupContainer = usePopupContainer();
+  const getThreadChatHost = (threadId: SessionId) => {
+    const hosts = threadChatHostsRef.current;
+    let host = hosts.get(threadId);
+    if (!host) {
+      host = createRelocatableHost();
+      hosts.set(threadId, host);
+    }
+    return host;
+  };
+  const articleDialogThreadId =
+    articleDialog && !isMobile && articleDialog.threadId === boardThreadId
+      ? articleDialog.threadId
+      : null;
+  useEffect(() => {
+    if (articleDialog && articleDialogThreadId === null) setArticleDialog(null);
+  }, [articleDialog, articleDialogThreadId]);
 
   const activeFileOpenContext: SessionFileOpenContext = {
     session: activeSession,
@@ -5050,30 +5102,6 @@ const SessionDetail = ({
     fileProvider: activeSessionFileProvider,
   });
   const activeViewerFilePath = activeViewerTab?.type === 'file' ? activeViewerTab.filePath : null;
-  const boardArticleEnabled = useAtomValue(boardArticleFeatureEnabledAtom);
-  // Only a file the open Board thread owns can sit beside that thread.
-  const canFocusArticle =
-    boardArticleEnabled &&
-    !isMobile &&
-    isSidebarVisible &&
-    boardThreadId !== null &&
-    visibleOpenedSidebarTabs.includes('board') &&
-    activeViewerTab?.type === 'file' &&
-    activeViewerTab.ownerSessionId === boardThreadId &&
-    isBoardArticlePath(activeViewerTab.filePath);
-  const articleFocusActive = articleFocus && canFocusArticle;
-  useEffect(() => {
-    if (!canFocusArticle) setArticleFocus(false);
-  }, [canFocusArticle]);
-  useEffect(() => {
-    if (!articleFocusActive) return undefined;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) setArticleFocus(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [articleFocusActive]);
-  const articleFocusFrame = useArticleFocusFrame(desktopActionRootRef, articleFocusActive);
   const handleSaveCurrentFile = useCallback(() => {
     if (!effectiveActiveViewerTabId || activeViewerTab?.type !== 'file') {
       return;
@@ -6215,11 +6243,9 @@ const SessionDetail = ({
     tab: Extract<ViewerTab, { type: 'file' }>,
     scope: SessionFileScopeValue,
     className: string,
-    active: boolean,
-    article: boolean
+    active: boolean
   ) => (
     <SessionFileContentView
-      article={article}
       key={`${scope.session.id}:${tab.id}`}
       sessionId={scope.session.id}
       session={scope.session}
@@ -6279,12 +6305,7 @@ const SessionDetail = ({
     />
   );
 
-  const renderViewerTabContent = (
-    tab: ViewerTab,
-    className = 'h-full',
-    active = true,
-    article = false
-  ) => {
+  const renderViewerTabContent = (tab: ViewerTab, className = 'h-full', active = true) => {
     const boardFile =
       tab.type === 'file'
         ? resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical')
@@ -6303,7 +6324,7 @@ const SessionDetail = ({
     return tab.type === 'file' ? (
       tab.ownerSessionId && !isFileViewerTabOwnedBySession(tab, activeSession.id) ? (
         <SessionFileScope key={tab.ownerSessionId} sessionId={tab.ownerSessionId}>
-          {(scope) => renderFileTab(tab, scope, className, active, article)}
+          {(scope) => renderFileTab(tab, scope, className, active)}
         </SessionFileScope>
       ) : (
         renderFileTab(
@@ -6316,8 +6337,7 @@ const SessionDetail = ({
             role: activeSessionCodeCollabFiles.role,
           },
           className,
-          active,
-          article
+          active
         )
       )
     ) : (
@@ -6370,9 +6390,8 @@ const SessionDetail = ({
     effectiveActiveViewerTabId === null &&
     effectiveActiveSideSessionId === null &&
     openingActiveSideSessionId === null;
-  const boardPanelShown =
-    (activeSidebarTab === 'board' && showFixedSidePanelBody) || articleFocusActive;
-  const boardPanelOnScreen = isSidebarVisible && boardPanelShown;
+  const boardPanelOnScreen =
+    isSidebarVisible && activeSidebarTab === 'board' && showFixedSidePanelBody;
   const boardPanel = activeBoard ? (
     <BoardSidePanel
       board={activeBoard}
@@ -6387,13 +6406,17 @@ const SessionDetail = ({
       requestedScheduleId={boardScheduleRequest}
       onScheduleRequestDone={() => setBoardScheduleRequest(null)}
       onThreadRequestDone={finishBoardThreadRequest}
-      renderThread={(thread, controls) => (
-        <Fragment key={thread.id}>
+      renderThread={(thread, controls) => {
+        const inArticle = articleDialogThreadId === thread.id;
+        const threadOnScreen = boardPanelOnScreen || inArticle;
+        const scopeHost = (
           <SessionFileScopeHost
             sessionId={thread.id}
             enabled={threadFileLinks.enabled}
             scopeRef={threadFileLinks.scopeRef}
           />
+        );
+        const chat = (
           <AgentFileLinkOpenContext.Provider value={openBoardFileLink}>
             <SessionChatInterface
               key={thread.id}
@@ -6413,20 +6436,62 @@ const SessionDetail = ({
               headerVariant="board-thread"
               headerLocation={controls.location}
               headerParentThread={controls.parentThread}
-              headerStartSlot={<BoardThreadBackButton onBack={controls.onBack} />}
-              headerEndSlot={<BoardThreadOpenButton onOpen={controls.onOpenFull} />}
+              headerStartSlot={
+                inArticle ? undefined : <BoardThreadBackButton onBack={controls.onBack} />
+              }
+              headerEndSlot={
+                inArticle ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="small"
+                    icon
+                    aria-label={t('common.close', 'Close')}
+                    onClick={() => setArticleDialog(null)}
+                  >
+                    <X {...stylex.props(detailStyles.icon16)} />
+                  </Button>
+                ) : (
+                  <BoardThreadOpenButton onOpen={controls.onOpenFull} />
+                )
+              }
               onArchiveSession={async () => {
                 await archiveSession(thread.id);
                 controls.onBack();
               }}
               onRestoreSession={() => restoreSession(thread.id)}
-              syncEnabled={boardPanelOnScreen}
-              isVisible={boardPanelOnScreen}
+              syncEnabled={threadOnScreen}
+              isVisible={threadOnScreen}
               onNavigateSession={handleNavigateSession}
             />
           </AgentFileLinkOpenContext.Provider>
-        </Fragment>
-      )}
+        );
+        if (!boardArticleEnabled)
+          return (
+            <Fragment key={thread.id}>
+              {scopeHost}
+              {chat}
+            </Fragment>
+          );
+        // One conversation, two places: the panel's slot, or the article
+        // dialog's while it is open. Its popups follow it into the dialog.
+        const host = getThreadChatHost(thread.id);
+        return (
+          <Fragment key={thread.id}>
+            {scopeHost}
+            <RelocatableSlot
+              host={host}
+              className={stylex.props(detailStyles.rootFill).className}
+            />
+            {createPortal(
+              <PopupContainerProvider container={inArticle ? articlePanel : outerPopupContainer}>
+                {chat}
+              </PopupContainerProvider>,
+              host.node
+            )}
+          </Fragment>
+        );
+      }}
     />
   ) : null;
   const boardSettings =
@@ -7799,18 +7864,14 @@ const SessionDetail = ({
       <div
         key={tab.id}
         className={
-          stylex.props(
-            isActive ? detailStyles.rootFill : detailStyles.hiddenFill,
-            isActive && articleFocusActive && articleFocusStyles.article
-          ).className
+          stylex.props(isActive ? detailStyles.rootFill : detailStyles.hiddenFill).className
         }
         aria-hidden={!isActive || !isSidebarVisible}
       >
         {renderViewerTabContent(
           tab,
           stylex.props(detailStyles.rootFill).className,
-          isActive && isSidebarVisible,
-          isActive && articleFocusActive
+          isActive && isSidebarVisible
         )}
       </div>
     );
@@ -7879,13 +7940,8 @@ const SessionDetail = ({
       data-lody-action-scope="side-panel"
       className={cn(
         'group/close-scope',
-        stylex.props(
-          stylex.defaultMarker(),
-          detailStyles.desktopPanelShell,
-          articleFocusActive && articleFocusStyles.shell
-        ).className
+        stylex.props(stylex.defaultMarker(), detailStyles.desktopPanelShell).className
       )}
-      style={articleFocusActive ? articleFocusFrame : undefined}
     >
       <SessionSidePanelTabBar
         tabs={sidePanelTabs}
@@ -7899,28 +7955,20 @@ const SessionDetail = ({
           t('sessions.fileViewer.closeTab', 'Close {{fileName}}', { fileName: tabLabel })
         }
         moreSlot={
-          <>
-            {canFocusArticle ? (
-              <ArticleFocusButton
-                active={articleFocusActive}
-                onToggle={() => setArticleFocus(!articleFocusActive)}
-              />
-            ) : null}
-            {activeViewerTab?.type === 'file' &&
-            activeViewerTab.ownerSessionId &&
-            !isFileViewerTabOwnedBySession(activeViewerTab, activeSession.id) ? (
-              <SessionFileScope sessionId={activeViewerTab.ownerSessionId} unavailable={null}>
-                {(scope) => (
-                  <SessionOwnedFileActionsMenu scope={scope} filePath={activeViewerFilePath} />
-                )}
-              </SessionFileScope>
-            ) : (
-              <SessionFileActionsMenu
-                filePath={activeViewerFilePath}
-                items={activeSessionFileActions.menuItems}
-              />
-            )}
-          </>
+          activeViewerTab?.type === 'file' &&
+          activeViewerTab.ownerSessionId &&
+          !isFileViewerTabOwnedBySession(activeViewerTab, activeSession.id) ? (
+            <SessionFileScope sessionId={activeViewerTab.ownerSessionId} unavailable={null}>
+              {(scope) => (
+                <SessionOwnedFileActionsMenu scope={scope} filePath={activeViewerFilePath} />
+              )}
+            </SessionFileScope>
+          ) : (
+            <SessionFileActionsMenu
+              filePath={activeViewerFilePath}
+              items={activeSessionFileActions.menuItems}
+            />
+          )
         }
         endSlot={sidebarToggleButton}
         className={cn(
@@ -7933,10 +7981,7 @@ const SessionDetail = ({
           windowsCaptionPadClass
         )}
       />
-      <div
-        {...stylex.props(detailStyles.sidebarBody, articleFocusActive && articleFocusStyles.body)}
-        style={articleFocusActive ? articleFocusColumns(articleFocusRatio) : undefined}
-      >
+      <div {...stylex.props(detailStyles.sidebarBody)}>
         {showFixedSidePanelBody && activeSidebarTab !== null && activeSidebarTab !== 'board'
           ? sidebarContent
           : null}
@@ -7945,8 +7990,9 @@ const SessionDetail = ({
           <div
             className={
               stylex.props(
-                boardPanelShown ? detailStyles.rootFill : detailStyles.hiddenFill,
-                articleFocusActive && articleFocusStyles.thread
+                activeSidebarTab === 'board' && showFixedSidePanelBody
+                  ? detailStyles.rootFill
+                  : detailStyles.hiddenFill
               ).className
             }
             aria-hidden={!boardPanelOnScreen}
@@ -7964,11 +8010,6 @@ const SessionDetail = ({
         {desktopSideSessionSurfaces}
         {sideChatOpeningSurface}
         {desktopViewerSurfaces}
-        <ArticleFocusDivider
-          active={articleFocusActive}
-          ratio={articleFocusRatio}
-          onRatioChange={setArticleFocusRatio}
-        />
       </div>
     </div>
   );
@@ -7994,6 +8035,47 @@ const SessionDetail = ({
       }
     >
       {boardSettings}
+      {articleDialogThreadId && articleDialog ? (
+        <BoardArticleDialog
+          title={getBasename(articleDialog.filePath)}
+          threadHost={getThreadChatHost(articleDialogThreadId)}
+          onPanelChange={setArticlePanel}
+          onClose={() => setArticleDialog(null)}
+          article={
+            <SessionFileScope sessionId={articleDialogThreadId}>
+              {(scope) => (
+                <SessionFileContentView
+                  key={`${scope.session.id}:${articleDialog.filePath}`}
+                  sessionId={scope.session.id}
+                  session={scope.session}
+                  filePath={articleDialog.filePath}
+                  {...(articleDialog.fileId === undefined ? {} : { fileId: articleDialog.fileId })}
+                  fileProvider={scope.fileProvider}
+                  fileProviderPending={scope.fileProviderPending}
+                  fileProviderMessage={scope.fileProviderMessage}
+                  {...(scope.role === undefined ? {} : { fileProviderRole: scope.role })}
+                  active
+                  article={{
+                    onOpenInTab: () => {
+                      setArticleDialog(null);
+                      handleOpenFileForSession(scope, articleDialog.filePath, {
+                        pathKind: 'canonical',
+                      });
+                    },
+                  }}
+                  onAddSelectionToChat={(selection) => {
+                    const chat = chatRefsMap.current.get(scope.session.id);
+                    return chat && 'addDocumentSelection' in chat
+                      ? chat.addDocumentSelection(selection)
+                      : false;
+                  }}
+                  className={stylex.props(detailStyles.rootFill).className}
+                />
+              )}
+            </SessionFileScope>
+          }
+        />
+      ) : null}
       <DesktopSessionDetailLayout
         defaultSizes={defaultSizes}
         // A Board opens half and half on every entry, refresh included: Boards

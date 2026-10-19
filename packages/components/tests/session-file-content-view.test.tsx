@@ -758,7 +758,7 @@ describe('SessionFileContentView', () => {
         fileProviderPending: false,
         fileProviderRole: 'write',
         active: true,
-        article: true,
+        article: { onOpenInTab: () => undefined },
       })
     );
     await flushMicrotasks();

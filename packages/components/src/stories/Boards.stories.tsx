@@ -12,7 +12,7 @@ import { BoardThreadParentBreadcrumb } from '@/components/boards/board-thread-br
 import type { Meta, StoryObj } from '@storybook/react';
 import { expect, userEvent, within } from 'storybook/test';
 import i18next from 'i18next';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { createStore, Provider } from 'jotai';
 import { parseLodyPresenceStates } from '@lody/shared';
 import { useTranslation } from 'react-i18next';
@@ -37,14 +37,11 @@ import {
   boardExperimentEnabledAtom,
   experimentalFeaturesEnabledAtom,
 } from '@/atoms/settings';
-import {
-  ARTICLE_FOCUS_DEFAULT_RATIO,
-  ArticleFocusButton,
-  ArticleFocusDivider,
-  articleFocusColumns,
-  articleFocusStyles,
-  useArticleFocusFrame,
-} from '@/components/sessions/board-article-focus';
+import { createPortal } from 'react-dom';
+import { PopupContainerProvider } from '@lody/ui/popup-container';
+import { X } from 'lucide-react';
+import { BoardArticleDialog } from '@/components/boards/board-article-dialog';
+import { createRelocatableHost, RelocatableSlot } from '@/components/boards/relocatable-host';
 import { SessionFileContentView } from '@/components/sessions/session-file-content-view';
 import { createFakeSessionFileProvider } from '@/lib/session-file-provider';
 import { ARTICLE_DEMO_HTML, ARTICLE_REPORT_MD } from './board-article-demo';
@@ -81,6 +78,8 @@ import {
   BoardPanelView,
   BoardThreadPaneView,
   BoardThreadBackButton,
+  BoardThreadHeader,
+  BoardThreadOpenButton,
   type BoardPanelTab,
 } from '@/components/boards/board-panel-view';
 import { BoardThreadListView } from '@/components/boards/board-thread-list';
@@ -865,197 +864,181 @@ export const Home: Story = {};
 /** A thread open inside the panel. */
 export const ThreadOpen: Story = { args: { initial: { kind: 'thread' } } };
 
-const ARTICLE_TABS = [
-  { id: 'board', label: '看板', kind: 'board' as const, closeable: true },
-  {
-    id: 'file:articles/report.md',
-    label: 'report.md',
-    kind: 'file' as const,
-    filePath: 'articles/report.md',
-    closeable: true,
+const articleProvider = createFakeSessionFileProvider({
+  sourceState: 'live-collaborative',
+  files: [
+    {
+      fileId: 'articles/report.md',
+      path: 'articles/report.md',
+      kind: 'text',
+      sourceState: 'live-readonly',
+    },
+    {
+      fileId: 'articles/demo.html',
+      path: 'articles/demo.html',
+      kind: 'text',
+      sourceState: 'live-readonly',
+    },
+  ],
+  snapshots: {
+    'articles/report.md': { kind: 'text', text: ARTICLE_REPORT_MD },
+    'articles/demo.html': { kind: 'text', text: ARTICLE_DEMO_HTML },
   },
-  {
-    id: 'file:articles/demo.html',
-    label: 'demo.html',
-    kind: 'file' as const,
-    filePath: 'articles/demo.html',
-    closeable: true,
-  },
-];
+});
 
 /**
- * A thread's article beside the thread, as the coordinator page lays it out:
- * the same always-mounted elements, switched by the same classes and styles.
+ * A thread's article over the coordinator page, as the page opens it from a
+ * link in the thread: the thread's one conversation is portalled into a
+ * relocatable host that sits in the Board panel, or in the dialog while open.
  */
-function ArticleBesideThreadPage({ path, expanded }: { path: string; expanded: boolean }) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const [activeTab, setActiveTab] = useState(`file:${path}`);
-  const [focus, setFocus] = useState(expanded);
-  const [ratio, setRatio] = useState(ARTICLE_FOCUS_DEFAULT_RATIO);
-  const activePath = ARTICLE_TABS.find((tab) => tab.id === activeTab)?.filePath ?? null;
-  const focusActive = focus && activePath !== null;
-  const frame = useArticleFocusFrame(rootRef, focusActive);
+function ArticleDialogPage({ path }: { path: string | null }) {
+  const [open, setOpen] = useState(path);
+  const [panel, setPanel] = useState<HTMLElement | null>(null);
+  const [host] = useState(createRelocatableHost);
   const thread = members.find((session) => session.id === THREAD)!;
-  const provider = useMemo(
-    () =>
-      createFakeSessionFileProvider({
-        sourceState: 'live-collaborative',
-        files: [
-          {
-            fileId: 'articles/report.md',
-            path: 'articles/report.md',
-            kind: 'text',
-            sourceState: 'live-readonly',
-          },
-          {
-            fileId: 'articles/demo.html',
-            path: 'articles/demo.html',
-            kind: 'text',
-            sourceState: 'live-readonly',
-          },
-        ],
-        snapshots: {
-          'articles/report.md': { kind: 'text', text: ARTICLE_REPORT_MD },
-          'articles/demo.html': { kind: 'text', text: ARTICLE_DEMO_HTML },
-        },
-      }),
-    []
-  );
-  useEffect(() => {
-    if (!focusActive) return undefined;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) setFocus(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [focusActive]);
+  const inArticle = open !== null;
   return (
     <SettingsStoryProviders>
       <BoardStoryProvider articles>
         <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
           <Sidebar selectedId={BOARD} onOpen={() => {}} />
           <main className="min-w-0 flex-1 overflow-hidden">
-            <div ref={rootRef} className="h-full">
-              <DesktopSessionDetailLayout
-                defaultSizes={{ main: 50, sidebar: 50 }}
-                layoutStorageId={null}
-                topBar={
-                  <SessionTabBar
-                    variant="session"
-                    parentSession={coordinatorSession}
-                    childSessions={[]}
-                    draftTabs={[]}
-                    archivedChildSessions={[]}
-                    activeTabSessionId={COORDINATOR}
+            <DesktopSessionDetailLayout
+              defaultSizes={{ main: 50, sidebar: 50 }}
+              layoutStorageId={null}
+              topBar={
+                <SessionTabBar
+                  variant="session"
+                  parentSession={coordinatorSession}
+                  childSessions={[]}
+                  draftTabs={[]}
+                  archivedChildSessions={[]}
+                  activeTabSessionId={COORDINATOR}
+                  onTabSelect={() => {}}
+                  onNewTab={() => {}}
+                  rightSlot={<BoardHeaderToolbar />}
+                />
+              }
+              chatSurfaces={
+                <ChatSurface
+                  sessionId={COORDINATOR}
+                  messages={coordinatorMessages}
+                  placeholder="告诉协调者…"
+                />
+              }
+              terminalDock={null}
+              secondaryPanel={
+                <div className="flex h-full min-h-0 flex-col">
+                  <SessionSidePanelTabBar
+                    tabs={[{ id: 'board', label: '看板', kind: 'board', closeable: true }]}
+                    activeTabId="board"
                     onTabSelect={() => {}}
-                    onNewTab={() => {}}
-                    rightSlot={<BoardHeaderToolbar />}
+                    onTabClose={() => {}}
+                    closeTabLabel={(label) => `关闭 ${label}`}
                   />
-                }
-                chatSurfaces={
-                  <ChatSurface
-                    sessionId={COORDINATOR}
-                    messages={coordinatorMessages}
-                    placeholder="告诉协调者…"
-                  />
-                }
-                terminalDock={null}
-                secondaryPanel={
-                  <div
-                    className={cn(
-                      'flex h-full min-h-0 flex-col bg-background',
-                      stylex.props(focusActive && articleFocusStyles.shell).className
-                    )}
-                    style={focusActive ? frame : undefined}
-                  >
-                    <SessionSidePanelTabBar
-                      tabs={ARTICLE_TABS}
-                      activeTabId={activeTab}
-                      onTabSelect={setActiveTab}
-                      onTabClose={() => {}}
-                      closeTabLabel={(label) => `关闭 ${label}`}
-                      moreSlot={
-                        activePath ? (
-                          <ArticleFocusButton
-                            active={focusActive}
-                            onToggle={() => setFocus(!focusActive)}
-                          />
-                        ) : null
-                      }
-                    />
-                    <div
-                      className={cn(
-                        'relative min-h-0 flex-1 overflow-hidden',
-                        stylex.props(focusActive && articleFocusStyles.body).className
-                      )}
-                      style={focusActive ? articleFocusColumns(ratio) : undefined}
-                    >
-                      <div
-                        className={cn(
-                          activeTab === 'board' || focusActive ? 'h-full' : 'hidden',
-                          stylex.props(focusActive && articleFocusStyles.thread).className
-                        )}
-                      >
-                        <BoardPanel initial={{ kind: 'thread' }} />
-                      </div>
-                      {ARTICLE_TABS.filter((tab) => tab.filePath).map((tab) => (
-                        <div
-                          key={tab.id}
-                          className={cn(
-                            tab.id === activeTab ? 'h-full' : 'hidden',
-                            stylex.props(
-                              tab.id === activeTab && focusActive && articleFocusStyles.article
-                            ).className
-                          )}
-                        >
-                          {tab.id === activeTab ? (
-                            <SessionFileContentView
-                              sessionId={thread.id}
-                              session={thread}
-                              filePath={tab.filePath!}
-                              fileId={tab.filePath}
-                              fileProvider={provider}
-                              fileProviderRole="read"
-                              article={focusActive}
-                              onAddSelectionToChat={() => true}
-                              className="h-full"
-                            />
-                          ) : null}
-                        </div>
-                      ))}
-                      <ArticleFocusDivider
-                        active={focusActive}
-                        ratio={ratio}
-                        onRatioChange={setRatio}
-                      />
-                    </div>
+                  <div className="min-h-0 flex-1">
+                    <RelocatableSlot host={host} className="h-full" />
                   </div>
-                }
-                sidebarOpen
-                onSidebarCollapse={() => {}}
-                deleteConfirmDialog={null}
-              />
-            </div>
+                </div>
+              }
+              sidebarOpen
+              onSidebarCollapse={() => {}}
+              deleteConfirmDialog={null}
+            />
           </main>
         </div>
+        {createPortal(
+          <PopupContainerProvider container={inArticle ? panel : undefined}>
+            <div className="flex h-full min-h-0 flex-col">
+              <BoardThreadHeader
+                title={thread.title ?? ''}
+                location="devnuc · Lody"
+                startSlot={inArticle ? undefined : <BoardThreadBackButton onBack={() => {}} />}
+                endSlot={
+                  inArticle ? (
+                    <Button
+                      variant="ghost"
+                      size="small"
+                      icon
+                      aria-label="关闭"
+                      onClick={() => setOpen(null)}
+                    >
+                      <X size={16} />
+                    </Button>
+                  ) : (
+                    <BoardThreadOpenButton onOpen={() => {}} />
+                  )
+                }
+              />
+              <div className="min-h-0 flex-1">
+                <ChatSurface
+                  sessionId={thread.id}
+                  messages={threadMessages}
+                  placeholder="回复这个线程…"
+                />
+              </div>
+              {inArticle ? null : (
+                <div className="flex gap-2 border-t border-border p-2 text-sm">
+                  <Button
+                    size="small"
+                    variant="secondary"
+                    onClick={() => setOpen('articles/report.md')}
+                  >
+                    report.md
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="secondary"
+                    onClick={() => setOpen('articles/demo.html')}
+                  >
+                    demo.html
+                  </Button>
+                </div>
+              )}
+            </div>
+          </PopupContainerProvider>,
+          host.node
+        )}
+        {open ? (
+          <BoardArticleDialog
+            title={open.split('/').at(-1)!}
+            threadHost={host}
+            onPanelChange={setPanel}
+            onClose={() => setOpen(null)}
+            article={
+              <SessionFileContentView
+                key={open}
+                sessionId={thread.id}
+                session={thread}
+                filePath={open}
+                fileId={open}
+                fileProvider={articleProvider}
+                fileProviderRole="read"
+                article={{ onOpenInTab: () => setOpen(null) }}
+                onAddSelectionToChat={() => true}
+                className="h-full"
+              />
+            }
+          />
+        ) : null}
       </BoardStoryProvider>
     </SettingsStoryProviders>
   );
 }
 
-/** A thread's Markdown report expanded beside the thread; select text to comment on it. */
+/** A thread's Markdown report over the page, its thread beside it; select text to comment. */
 export const ArticleReport: Story = {
-  render: () => <ArticleBesideThreadPage path="articles/report.md" expanded />,
+  render: () => <ArticleDialogPage path="articles/report.md" />,
 };
 
 /** An interactive HTML article that loads Chart.js from a CDN inside the widget page. */
 export const ArticleHtml: Story = {
-  render: () => <ArticleBesideThreadPage path="articles/demo.html" expanded />,
+  render: () => <ArticleDialogPage path="articles/demo.html" />,
 };
 
-/** The same article collapsed back into its side-panel tab. */
-export const ArticleCollapsed: Story = {
-  render: () => <ArticleBesideThreadPage path="articles/report.md" expanded={false} />,
+/** The page before an article opens and after it closes: the thread back in its panel. */
+export const ArticleClosed: Story = {
+  render: () => <ArticleDialogPage path={null} />,
 };
 
 /** The shared notes and the Board directory's `files/`. */

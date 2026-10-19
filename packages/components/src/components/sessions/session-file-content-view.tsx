@@ -8,6 +8,8 @@ import {
   Eye,
   EyeClosed,
   MessageCircle,
+  MoreHorizontal,
+  PanelRight,
   RefreshCw,
   Save,
   Search,
@@ -41,6 +43,9 @@ import { boardArticleFeatureEnabledAtom } from '@/atoms/settings';
 import { sessionLiveStatusAtomFamily } from '@/atoms/presence';
 import { useSessionFileDigestWatch } from '@/hooks/use-session-file-digest-watch';
 import { ArticleHtmlFrame } from './article-html-frame';
+import { ArticleOutline } from './article-outline';
+import { Menu } from '@/ui/menu';
+import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { runtimeAtom } from '@/atoms/runtime';
 import {
   resolveSessionLocalFileSource,
@@ -261,6 +266,36 @@ const styles = stylex.create({
   icon: { width: '14px', height: '14px' },
   iconSmall: { width: '12px', height: '12px', flexShrink: 0 },
   contentBody: { position: 'relative', minHeight: 0, flex: 1, overflow: 'hidden' },
+  articleHeader: {
+    display: 'flex',
+    height: '48px',
+    flexShrink: 0,
+    alignItems: 'center',
+    gap: '8px',
+    paddingInline: '12px 8px',
+    borderBottomWidth: '1px',
+    borderBottomStyle: 'solid',
+    borderBottomColor: 'hsl(var(--border) / 0.5)',
+  },
+  articleKind: {
+    flexShrink: 0,
+    paddingInline: '5px',
+    borderRadius: '4px',
+    backgroundColor: 'hsl(var(--muted))',
+    color: 'hsl(var(--muted-foreground))',
+    fontSize: '0.6875rem',
+    fontWeight: 600,
+    lineHeight: '18px',
+  },
+  articleName: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontSize: '0.875rem',
+    fontWeight: 500,
+  },
+  articleTime: { flexShrink: 0, fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))' },
   fullSize: { width: '100%', height: '100%' },
   fullMinContent: { minWidth: 0, minHeight: '100%' },
   sourceTextarea: {
@@ -503,11 +538,12 @@ export type SessionFileContentViewProps = {
   onAddSelectionToChat?: (selection: DocumentSelection) => boolean;
   onToggleVisualAnnotationInChat?: (reference: VisualAnnotationReferencePayload) => boolean | void;
   /**
-   * Shown as an article beside its thread (Board side panel, experimental):
-   * the file rechecks itself while on screen, faster while the session works,
-   * and HTML runs in the widget page with its CDNs.
+   * Shown as a thread's article (Board article dialog, experimental): an
+   * article header replaces the toolbar, the file rechecks itself while on
+   * screen (faster while the session works), and HTML runs in the widget page
+   * with its CDNs.
    */
-  article?: boolean;
+  article?: { readonly onOpenInTab: () => void };
 };
 
 const NOT_WORKING_ATOM = atom(false);
@@ -1195,7 +1231,7 @@ function SessionFileContentViewImpl({
       : null;
   const isHtmlTextFile = htmlPreviewSource !== null;
   const showHtmlRendered = isActiveSurface && isHtmlTextFile && htmlRenderMode === 'rendered';
-  const isArticle = article === true && isActiveSurface;
+  const isArticle = article !== undefined && isActiveSurface;
   const showArticleHtml = isArticle && showHtmlRendered;
   const htmlPreviewDocument = useMemo(
     () =>
@@ -1421,6 +1457,7 @@ function SessionFileContentViewImpl({
   const [articleReloadSeq, setArticleReloadSeq] = useState(0);
   const [selectionDraftOpen, setSelectionDraftOpen] = useState(false);
   const articleFrameRef = useRef<HTMLDivElement>(null);
+  const contentBodyRef = useRef<HTMLDivElement>(null);
   const articlePointerRef = useRef({ inside: false, leftAt: -Infinity });
   const shownTextRef = useLatestRef(
     data.status === 'ready' && data.snapshot.kind === 'text'
@@ -1991,17 +2028,86 @@ function SessionFileContentViewImpl({
     showRefreshButton;
 
   const viewerRootClassName = stylex.props(styles.viewerRoot).className;
+  const articleModifiedTime = providerEntry?.modifiedTime;
+  const articleCopyPath = sessionFileActions.menuItems.find(
+    (item) => item.id === 'copy-relative-path' && (item.isAvailable?.(normalizedPath) ?? true)
+  );
+  const articleMenuItems = sessionFileActions.menuItems.filter(
+    (item) => item.id !== 'copy-relative-path' && (item.isAvailable?.(normalizedPath) ?? true)
+  );
+  const articleHeader = article ? (
+    <div {...stylex.props(styles.articleHeader)}>
+      <span {...stylex.props(styles.articleKind)}>{isHtmlFile ? 'HTML' : 'MD'}</span>
+      <span {...stylex.props(styles.articleName)} title={normalizedPath}>
+        {normalizedPath.split('/').at(-1)}
+      </span>
+      {articleModifiedTime !== undefined ? (
+        <span {...stylex.props(styles.articleTime)}>
+          {formatCompactRelativeTime(articleModifiedTime)}
+        </span>
+      ) : null}
+      <div {...stylex.props(styles.toolbarActions)}>
+        {articleUpdateHeld && articleUpdate ? (
+          <Button size="mini" variant="ghost" onClick={applyArticleUpdate}>
+            {t('sessions.article.updated', 'Updated')} · {t('sessions.article.reload', 'Reload')}
+          </Button>
+        ) : null}
+        <Button
+          size="small"
+          variant="ghost"
+          icon
+          aria-label={t('sessions.browser.reload', 'Reload')}
+          title={t('sessions.browser.reload', 'Reload')}
+          disabled={isRefreshing}
+          onClick={handleReloadHtmlPreview}
+        >
+          <Spinner icon={RefreshCw} spinning={isRefreshing} {...stylex.props(styles.spinner14)} />
+        </Button>
+        {articleCopyPath ? (
+          <Button
+            size="small"
+            variant="ghost"
+            icon
+            aria-label={articleCopyPath.label}
+            title={articleCopyPath.label}
+            onClick={() => articleCopyPath.run(normalizedPath)}
+          >
+            <Copy {...stylex.props(styles.icon)} aria-hidden="true" />
+          </Button>
+        ) : null}
+        <Menu.Root>
+          <Menu.Trigger
+            render={
+              <Button
+                size="small"
+                variant="ghost"
+                icon
+                aria-label={t('sessions.fileActions.more', 'File actions')}
+              />
+            }
+          >
+            <MoreHorizontal {...stylex.props(styles.icon)} aria-hidden="true" />
+          </Menu.Trigger>
+          <Menu.Content align="end" className="min-w-[190px]">
+            <Menu.Item icon={PanelRight} onClick={article.onOpenInTab}>
+              {t('sessions.article.openInTab', 'Open in side tab')}
+            </Menu.Item>
+            {articleMenuItems.map((item) => (
+              <Menu.Item key={item.id} icon={item.icon} onClick={() => item.run(normalizedPath)}>
+                {item.label}
+              </Menu.Item>
+            ))}
+          </Menu.Content>
+        </Menu.Root>
+      </div>
+    </div>
+  ) : null;
   return (
     <div className={[viewerRootClassName, className].filter(Boolean).join(' ')}>
-      {showViewerTopBar ? (
+      {articleHeader}
+      {showViewerTopBar && !article ? (
         <div {...stylex.props(styles.toolbar)}>
           <div {...stylex.props(styles.toolbarActions)}>
-            {articleUpdateHeld && articleUpdate ? (
-              <Button size="mini" variant="ghost" onClick={applyArticleUpdate}>
-                {t('sessions.article.updated', 'Updated')} ·{' '}
-                {t('sessions.article.reload', 'Reload')}
-              </Button>
-            ) : null}
             {showPreviewToggle ? (
               <FilePreviewToggle
                 active={filePreviewActive}
@@ -2170,7 +2276,10 @@ function SessionFileContentViewImpl({
           </div>
         </div>
       ) : null}
-      <div {...stylex.props(styles.contentBody)}>
+      <div ref={contentBodyRef} {...stylex.props(styles.contentBody)}>
+        {isArticle && showMarkdownRendered ? (
+          <ArticleOutline root={contentBodyRef} revision={markdownPreviewText} />
+        ) : null}
         {bodyUsesNativeScrolling ? (
           <div {...stylex.props(styles.fullSize)}>{body}</div>
         ) : (

@@ -19,7 +19,7 @@ While it is on, its rows follow the master switch in the same section:
 | Notifications from agents | `agentNotifyExperimentEnabledAtom` (`lody-agent-notify-experiment-enabled`) |
 | Plan review | `planReviewExperimentEnabledAtom` (`lody-plan-review-experiment-enabled`) |
 | Interactive widgets | `inlineWidgetExperimentEnabledAtom` (`lody-inline-widget-experiment-enabled`) |
-| Articles beside threads (under Boards) | `boardArticleExperimentEnabledAtom` (`lody-board-article-experiment-enabled`) |
+| Article window (under Boards) | `boardArticleExperimentEnabledAtom` (`lody-board-article-experiment-enabled`) |
 
 Every switch is this device's own. A feature is on where both the master switch
 and its own switch are (`*FeatureEnabledAtom`). Turning the master switch off
@@ -243,39 +243,48 @@ limits, handoff and daily digests remain later steps in the
 [Board design](../../specs/project-coordinator/design.md). Disabling the experiment
 hides its surfaces and keeps sessions and Board data intact.
 
-### Articles beside threads
+### Article window
 
-A row under Boards, shown while Boards is on. When a Board thread is open in the
-side panel and the active file tab is a `.md`/`.html` file that thread owns, the tab
-row gets an expand button. Expanded, the side panel covers the session area: the
-file on the left, the thread on the right (60/40, the divider drags, nothing is
-remembered); the same button or Escape collapses it. Desktop wide layout only; a
-thread opened as its own page and ordinary sessions have no expand. The agent side
-is a convention for the Board's thread instructions: write `articles/<name>.md|html`
-and give the path in the reply. No tool, CLI or protocol change.
+A row under Boards, shown while Boards is on. In a Board, clicking a `.md`/`.html`
+file link in a thread open in the side panel opens the article window over the page
+instead of a file tab: the file on the left, that thread's conversation on the right
+(60/40, the divider drags, nothing is remembered). Escape, the backdrop or the ×
+in the thread header closes it and leaves the page as it was. The file header's ⋯
+has "Open in side tab". Other files, narrow layouts and a thread opened as its own
+page keep the file tab. The agent side is a convention for the Board's thread
+instructions: write `articles/<name>.md|html` and give the path in the reply. No
+tool, CLI or protocol change.
 
-- Markdown: with this switch on, selecting rendered Markdown in any file tab opens
+- One conversation: with the switch on, the panel's thread conversation is
+  portalled into a relocatable host (`components/boards/relocatable-host.tsx`).
+  The Board panel and the open dialog each render a slot; the node sits in the
+  latest one, moved with `moveBefore` where the browser has it. React never
+  remounts the conversation, so its composer text, selection chips, scroll and
+  `chatRefsMap` entry stay as they were. While open, the conversation's popups
+  mount in the dialog panel (`PopupContainerProvider`), and only the backdrop
+  dismisses by pointer, since its menus are not the dialog's React descendants.
+- Markdown: with this switch on, selecting rendered Markdown in any file view opens
   the document-selection comment (upstream #1649). The source lines are found from
   the selected text (`locateMarkdownSelection` in `lib/document-selection.ts`);
   text that repeats or cannot be placed carries no lines. The comment joins the
-  thread's composer as a chip and is sent as plain text.
-- HTML: runs in the widget page (`article-html-frame.tsx`), the desktop's loopback
-  page that hosts widgets, with the same `allow-scripts` sandbox (plus
-  `credentialless`) and the widget policy: scripts, styles, fonts, images and
-  `connect-src` from the widget CDNs only (`LODY_WIDGET_CDN_ORIGINS`), and the app's
-  theme variables. A `srcdoc` frame inherits the app's own policy, which runs no
-  inline script or CDN code there. The page is already loaded when the article
-  arrives, so the article's `DOMContentLoaded`/`load` handlers run after its last
-  script. The page cannot send prompts; links ask first.
-  Collapsed tabs keep the ordinary no-network HTML preview. Element comments
-  (visual annotation) are not available in the expanded HTML view.
-- Refresh: while expanded and on screen, the file is revalidated with its digest
-  every 5 s while the thread works, 15 s while idle, and once when a turn ends
+  thread's composer as a chip and is sent as plain text. In the window, headings
+  show as a rail on the left (`article-outline.tsx`); hovering lists them.
+- HTML: in the window it always runs in the widget page (`article-html-frame.tsx`),
+  the desktop's loopback page that hosts widgets, with the same `allow-scripts`
+  sandbox (plus `credentialless`) and the widget policy: scripts, styles, fonts,
+  images and `connect-src` from the widget CDNs only (`LODY_WIDGET_CDN_ORIGINS`),
+  and the app's theme variables. A `srcdoc` frame inherits the app's own policy,
+  which runs no inline script or CDN code there. The page is already loaded when the
+  article arrives, so the article's `DOMContentLoaded`/`load` handlers run after its
+  last script. The page cannot send prompts; links ask first. File tabs keep the
+  ordinary no-network HTML preview. Element comments (visual annotation) are not
+  available in the window.
+- Refresh: while the window is open the file is revalidated with its digest every
+  5 s while the thread works, 15 s while idle, and once when a turn ends
   (`hooks/use-session-file-digest-watch.ts`). Markdown re-renders in place; an open
   selection comment holds the update. HTML waits 1 s for writes to settle and does
   not reload while the pointer or focus is in the page (or left it under 3 s ago);
-  the toolbar then shows "Updated · Reload". A check that returns after the reader
-  started editing the source, or collapsed the article, is dropped.
-- Layout: `components/sessions/board-article-focus.tsx`. Expanding only switches
-  classes and styles on elements that are always rendered, so the thread's
-  conversation never remounts and keeps its composer text and chips.
+  the header then shows "Updated · Reload". A check that returns after the reader
+  started editing the source, or closed the window, is dropped.
+- Layout: `components/boards/board-article-dialog.tsx`; the file header is the file
+  view's article mode (`session-file-content-view.tsx`, `article` prop).
