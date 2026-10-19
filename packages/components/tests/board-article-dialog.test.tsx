@@ -1,0 +1,224 @@
+// @vitest-environment jsdom
+import { act, createElement, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BoardArticleDialog } from '../src/components/boards/board-article-dialog';
+import {
+  createRelocatableHost,
+  RelocatableSlot,
+  type RelocatableHost,
+} from '../src/components/boards/relocatable-host';
+
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({ t: (_key: string, fallback: string) => fallback }),
+}));
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+let mounts = 0;
+const threadNames = new WeakMap<RelocatableHost, string>();
+const threadName = (host: RelocatableHost) => threadNames.get(host) ?? 'other';
+
+/** Stands in for the thread's conversation: a composer whose draft lives in the DOM. */
+function Conversation({ thread }: { thread: string }) {
+  useEffect(() => {
+    mounts += 1;
+  }, []);
+  return createElement('textarea', { 'aria-label': 'composer', 'data-thread': thread });
+}
+
+const ARTICLE = createElement('article', null, 'Report');
+
+/** The page as it renders a Board thread: one slot in the panel, the conversation portalled. */
+function Page({
+  host,
+  open,
+  holds,
+  onClose,
+  panelKey = 'panel',
+}: {
+  host: RelocatableHost;
+  open: boolean;
+  holds: boolean;
+  onClose: () => void;
+  /** A new key remounts the Board panel's slot, as a layout change does. */
+  panelKey?: string;
+}) {
+  const [, setPanel] = useState<HTMLElement | null>(null);
+  return createElement(
+    'div',
+    null,
+    createElement(
+      'aside',
+      { 'data-testid': 'board-panel' },
+      createElement(RelocatableSlot, { host, key: `${panelKey}:${threadName(host)}` })
+    ),
+    createElement(
+      'div',
+      { key: threadName(host) },
+      createPortal(createElement(Conversation, { thread: threadName(host) }), host.node)
+    ),
+    open
+      ? createElement(BoardArticleDialog, {
+          title: 'report.md',
+          article: ARTICLE,
+          threadHost: host,
+          holdsThread: holds,
+          onPanelChange: setPanel,
+          onClose,
+        })
+      : null
+  );
+}
+
+describe('BoardArticleDialog', () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  let threadHost: RelocatableHost;
+  let host: RelocatableHost;
+  let open: boolean;
+  let holds: boolean;
+  const onClose = vi.fn(() => {
+    open = false;
+  });
+  const render = (panelKey?: string) =>
+    act(async () => {
+      root.render(createElement(Page, { host: threadHost, open, holds, onClose, panelKey }));
+    });
+
+  beforeEach(() => {
+    mounts = 0;
+    open = false;
+    onClose.mockClear();
+    host = createRelocatableHost();
+    threadHost = host;
+    holds = true;
+    threadNames.set(host, 'thread');
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('borrows the one conversation while open and gives it back, draft and all', async () => {
+    await render();
+    const composer = document.querySelector<HTMLTextAreaElement>('textarea')!;
+    composer.value = '这里数据过时了';
+    expect(document.querySelector('[data-testid="board-panel"]')?.contains(composer)).toBe(true);
+
+    open = true;
+    await render();
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.contains(composer)).toBe(true);
+    expect(dialog?.textContent).toContain('Report');
+    expect(document.querySelectorAll('textarea')).toHaveLength(1);
+
+    // The backdrop closes it, as Escape and the conversation's own close do.
+    await act(async () => {
+      document.querySelector<HTMLElement>('[data-article-dismiss]')!.click();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await render();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[data-testid="board-panel"]')?.contains(composer)).toBe(true);
+
+    open = true;
+    await render();
+    expect(document.querySelector('[role="dialog"]')?.contains(composer)).toBe(true);
+    expect(composer.value).toBe('这里数据过时了');
+    expect(mounts).toBe(1);
+  });
+
+  it('keeps the conversation while a Board panel slot remounts under it', async () => {
+    open = true;
+    await render();
+    const composer = document.querySelector<HTMLTextAreaElement>('textarea')!;
+    await render('remounted');
+    expect(document.querySelector('[role="dialog"]')?.contains(composer)).toBe(true);
+    open = false;
+    await render('remounted');
+    expect(document.querySelector('[data-testid="board-panel"]')?.contains(composer)).toBe(true);
+    expect(mounts).toBe(1);
+  });
+
+  it('returns the conversation with its scroll when the dialog lets go before unmounting', async () => {
+    // A browser keeps an element's scroll offsets only across `moveBefore`
+    // between two places in the document; inserting it again resets them.
+    const insertBefore = Node.prototype.insertBefore;
+    const appendChild = Node.prototype.appendChild;
+    let moving = false;
+    const scrolled = () => document.querySelector<HTMLTextAreaElement>('textarea')!;
+    const reset = (node: Node) => {
+      if (!moving && node === host.node)
+        host.node.querySelector('textarea')?.setAttribute('data-scroll-top', '0');
+    };
+    Object.defineProperty(Element.prototype, 'moveBefore', {
+      configurable: true,
+      value(this: Element, node: Node, child: Node | null) {
+        if (!this.isConnected || !node.isConnected)
+          throw new DOMException('', 'HierarchyRequestError');
+        moving = true;
+        insertBefore.call(this, node, child);
+        moving = false;
+      },
+    });
+    Node.prototype.appendChild = function <T extends Node>(this: Node, node: T): T {
+      reset(node);
+      return appendChild.call(this, node) as T;
+    };
+    try {
+      await render();
+      scrolled().dataset.scrollTop = '1200';
+      open = true;
+      await render();
+      expect(document.querySelector('[role="dialog"]')?.contains(scrolled())).toBe(true);
+      // The page's two-step close: the dialog lets go, then unmounts.
+      holds = false;
+      await render();
+      open = false;
+      await render();
+      expect(document.querySelector('[data-testid="board-panel"]')?.contains(scrolled())).toBe(
+        true
+      );
+      expect(scrolled().dataset.scrollTop).toBe('1200');
+    } finally {
+      delete (Element.prototype as { moveBefore?: unknown }).moveBefore;
+      Node.prototype.appendChild = appendChild;
+    }
+  });
+
+  it('follows the panel to another thread and keeps the article', async () => {
+    const other = createRelocatableHost();
+    open = true;
+    await render();
+    const article = document.querySelector('article')!;
+    // The breadcrumb opened another member: its conversation takes the pane.
+    threadHost = other;
+    await render();
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.querySelector('article')).toBe(article);
+    // The pane holds the new thread alone; the old one left nothing behind.
+    expect(other.node.parentElement?.childNodes).toHaveLength(1);
+    expect(dialog.querySelector('textarea')?.dataset.thread).toBe('other');
+    open = false;
+    await render();
+    expect(document.querySelector('[data-testid="board-panel"] textarea')?.dataset.thread).toBe(
+      'other'
+    );
+  });
+
+  it('closes on Escape', async () => {
+    open = true;
+    await render();
+    await act(async () => {
+      document
+        .querySelector('[role="dialog"]')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});

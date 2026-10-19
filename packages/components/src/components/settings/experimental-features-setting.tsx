@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { Switch } from '@lody/ui/switch';
 import {
+  boardArticleExperimentEnabledAtom,
   boardExperimentEnabledAtom,
   agentNotifyExperimentEnabledAtom,
   enabledAgentToolsAtom,
@@ -43,6 +44,7 @@ export function ExperimentalFeatureRows() {
     syncAgentTools();
   };
   const [boardEnabled, setBoardEnabled] = useAtom(boardExperimentEnabledAtom);
+  const [boardArticleEnabled, setBoardArticleEnabled] = useAtom(boardArticleExperimentEnabledAtom);
   const [voiceEnabled, setVoiceEnabled] = useAtom(voiceExperimentEnabledAtom);
 
   return (
@@ -70,6 +72,21 @@ export function ExperimentalFeatureRows() {
               aria-label={t('boards.title', 'Boards')}
             />
           </CompactRow>
+          {boardEnabled ? (
+            <CompactRow
+              label={t('settings.experimental.boardArticle', 'Article window')}
+              helper={t(
+                'settings.experimental.boardArticleHelper',
+                "In a Board, a Markdown or HTML file a thread links opens over the page with that thread's conversation beside it. Comment on selections; the file refreshes as the agent writes."
+              )}
+            >
+              <Switch
+                checked={boardArticleEnabled}
+                onCheckedChange={setBoardArticleEnabled}
+                aria-label={t('settings.experimental.boardArticle', 'Article window')}
+              />
+            </CompactRow>
+          ) : null}
           <CompactRow
             label={t('settings.experimental.voice', 'Voice')}
             helper={t(

@@ -12,7 +12,7 @@ import { BoardThreadParentBreadcrumb } from '@/components/boards/board-thread-br
 import type { Meta, StoryObj } from '@storybook/react';
 import { expect, userEvent, within } from 'storybook/test';
 import i18next from 'i18next';
-import { useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
 import { createStore, Provider } from 'jotai';
 import { parseLodyPresenceStates } from '@lody/shared';
 import { useTranslation } from 'react-i18next';
@@ -32,7 +32,23 @@ import {
   getSessionRoomId,
 } from '@lody/shared';
 import { currentWorkspaceIdAtom, userAtom } from '@/atoms';
-import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '@/atoms/settings';
+import {
+  boardArticleExperimentEnabledAtom,
+  boardExperimentEnabledAtom,
+  experimentalFeaturesEnabledAtom,
+} from '@/atoms/settings';
+import { createPortal } from 'react-dom';
+import { PopupContainerProvider } from '@lody/ui/popup-container';
+import { X } from 'lucide-react';
+import { BoardArticleDialog } from '@/components/boards/board-article-dialog';
+import {
+  createRelocatableHost,
+  RelocatableSlot,
+  type RelocatableHost,
+} from '@/components/boards/relocatable-host';
+import { SessionFileContentView } from '@/components/sessions/session-file-content-view';
+import { createFakeSessionFileProvider } from '@/lib/session-file-provider';
+import { ARTICLE_DEMO_HTML, ARTICLE_REPORT_MD } from './board-article-demo';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import {
   lodyPresenceNowMsAtom,
@@ -66,6 +82,8 @@ import {
   BoardPanelView,
   BoardThreadPaneView,
   BoardThreadBackButton,
+  BoardThreadHeader,
+  BoardThreadOpenButton,
   type BoardPanelTab,
 } from '@/components/boards/board-panel-view';
 import { BoardThreadListView } from '@/components/boards/board-thread-list';
@@ -698,9 +716,11 @@ function Sidebar({ selectedId, onOpen }: { selectedId: string; onOpen: (id: stri
 function BoardStoryProvider({
   children,
   enabled = true,
+  articles = false,
 }: {
   children: ReactNode;
   enabled?: boolean;
+  articles?: boolean;
 }) {
   const [store] = useState(() => {
     const fixtureStore = createStore();
@@ -710,6 +730,7 @@ function BoardStoryProvider({
     );
     fixtureStore.set(experimentalFeaturesEnabledAtom, true);
     fixtureStore.set(boardExperimentEnabledAtom, enabled);
+    fixtureStore.set(boardArticleExperimentEnabledAtom, articles);
     return fixtureStore;
   });
   return <Provider store={store}>{children}</Provider>;
@@ -846,6 +867,218 @@ export const Home: Story = {};
 
 /** A thread open inside the panel. */
 export const ThreadOpen: Story = { args: { initial: { kind: 'thread' } } };
+
+const articleProvider = createFakeSessionFileProvider({
+  sourceState: 'live-collaborative',
+  files: [
+    {
+      fileId: 'articles/report.md',
+      path: 'articles/report.md',
+      kind: 'text',
+      sourceState: 'live-readonly',
+    },
+    {
+      fileId: 'articles/demo.html',
+      path: 'articles/demo.html',
+      kind: 'text',
+      sourceState: 'live-readonly',
+    },
+  ],
+  snapshots: {
+    'articles/report.md': { kind: 'text', text: ARTICLE_REPORT_MD },
+    'articles/demo.html': { kind: 'text', text: ARTICLE_DEMO_HTML },
+  },
+});
+
+/**
+ * A thread's article over the coordinator page, as the page opens it from a
+ * link in the thread: each thread's one conversation is portalled into a
+ * relocatable host that sits in the Board panel, or in the dialog while open.
+ * The dialog follows the panel to another member; the article stays.
+ */
+function ArticleDialogPage({
+  path,
+  initialThread = THREAD,
+}: {
+  path: string | null;
+  initialThread?: SessionId;
+}) {
+  const [open, setOpen] = useState(path);
+  const [closing, setClosing] = useState(false);
+  const [panel, setPanel] = useState<HTMLElement | null>(null);
+  const [threadId, setThreadId] = useState(initialThread);
+  const [hosts] = useState(() => new Map<SessionId, RelocatableHost>());
+  if (!hosts.has(threadId)) hosts.set(threadId, createRelocatableHost());
+  const host = hosts.get(threadId)!;
+  const owner = members.find((session) => session.id === THREAD)!;
+  const thread = members.find((session) => session.id === threadId)!;
+  const parent = resolveBoardThreadParent(thread, (id) => members.find((entry) => entry.id === id));
+  const inArticle = open !== null && !closing;
+  // The page closes in two commits: the dialog lets go, then unmounts.
+  useLayoutEffect(() => {
+    if (!closing) return;
+    setOpen(null);
+    setClosing(false);
+  }, [closing]);
+  const close = () => setClosing(true);
+  return (
+    <SettingsStoryProviders>
+      <BoardStoryProvider articles>
+        <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
+          <Sidebar selectedId={BOARD} onOpen={() => {}} />
+          <main className="min-w-0 flex-1 overflow-hidden">
+            <DesktopSessionDetailLayout
+              defaultSizes={{ main: 50, sidebar: 50 }}
+              layoutStorageId={null}
+              topBar={
+                <SessionTabBar
+                  variant="session"
+                  parentSession={coordinatorSession}
+                  childSessions={[]}
+                  draftTabs={[]}
+                  archivedChildSessions={[]}
+                  activeTabSessionId={COORDINATOR}
+                  onTabSelect={() => {}}
+                  onNewTab={() => {}}
+                  rightSlot={<BoardHeaderToolbar />}
+                />
+              }
+              chatSurfaces={
+                <ChatSurface
+                  sessionId={COORDINATOR}
+                  messages={coordinatorMessages}
+                  placeholder="告诉协调者…"
+                />
+              }
+              terminalDock={null}
+              secondaryPanel={
+                <div className="flex h-full min-h-0 flex-col">
+                  <SessionSidePanelTabBar
+                    tabs={[{ id: 'board', label: '看板', kind: 'board', closeable: true }]}
+                    activeTabId="board"
+                    onTabSelect={() => {}}
+                    onTabClose={() => {}}
+                    closeTabLabel={(label) => `关闭 ${label}`}
+                  />
+                  <div className="min-h-0 flex-1">
+                    <RelocatableSlot key={threadId} host={host} className="h-full" />
+                  </div>
+                </div>
+              }
+              sidebarOpen
+              onSidebarCollapse={() => {}}
+              deleteConfirmDialog={null}
+            />
+          </main>
+        </div>
+        <Fragment key={threadId}>
+          {createPortal(
+            <PopupContainerProvider container={inArticle ? panel : undefined}>
+              <div className="flex h-full min-h-0 flex-col">
+                <BoardThreadHeader
+                  title={thread.title ?? ''}
+                  location="devnuc · Lody"
+                  {...(parent
+                    ? {
+                        parentThread: {
+                          title: parent.title!,
+                          onOpen: () => setThreadId(parent.id),
+                        },
+                      }
+                    : {})}
+                  startSlot={inArticle ? undefined : <BoardThreadBackButton onBack={() => {}} />}
+                  endSlot={
+                    inArticle ? (
+                      <Button variant="ghost" size="small" icon aria-label="关闭" onClick={close}>
+                        <X size={16} />
+                      </Button>
+                    ) : (
+                      <BoardThreadOpenButton onOpen={() => {}} />
+                    )
+                  }
+                />
+                <div className="min-h-0 flex-1">
+                  <ChatSurface
+                    sessionId={thread.id}
+                    messages={threadMessages}
+                    placeholder="回复这个线程…"
+                  />
+                </div>
+                {open ? null : (
+                  <div className="flex gap-2 border-t border-border p-2 text-sm">
+                    <Button
+                      size="small"
+                      variant="secondary"
+                      onClick={() => setOpen('articles/report.md')}
+                    >
+                      report.md
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="secondary"
+                      onClick={() => setOpen('articles/demo.html')}
+                    >
+                      demo.html
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </PopupContainerProvider>,
+            host.node
+          )}
+        </Fragment>
+        {open ? (
+          <BoardArticleDialog
+            title={open.split('/').at(-1)!}
+            threadHost={host}
+            holdsThread={!closing}
+            onPanelChange={setPanel}
+            onClose={close}
+            article={
+              <SessionFileContentView
+                key={open}
+                sessionId={owner.id}
+                session={owner}
+                filePath={open}
+                fileId={open}
+                fileProvider={articleProvider}
+                fileProviderRole="read"
+                article={{ onOpenInTab: close }}
+                onAddSelectionToChat={() => true}
+                className="h-full"
+              />
+            }
+          />
+        ) : null}
+      </BoardStoryProvider>
+    </SettingsStoryProviders>
+  );
+}
+
+/** A thread's Markdown report over the page, its thread beside it; select text to comment. */
+export const ArticleReport: Story = {
+  render: () => <ArticleDialogPage path="articles/report.md" />,
+};
+
+/** An interactive HTML article that loads Chart.js from a CDN inside the widget page. */
+export const ArticleHtml: Story = {
+  render: () => <ArticleDialogPage path="articles/demo.html" />,
+};
+
+/** The report's dialog after its breadcrumb moved to a member the thread opened. */
+export const ArticleOtherThread: Story = {
+  render: () => (
+    <ArticleDialogPage
+      path="articles/report.md"
+      initialThread={'thread-entry-review' as SessionId}
+    />
+  ),
+};
+
+/** The page before an article opens and after it closes: the thread back in its panel. */
+export const ArticleClosed: Story = {
+  render: () => <ArticleDialogPage path={null} />,
+};
 
 /** The shared notes and the Board directory's `files/`. */
 export const Files: Story = { args: { initial: { kind: 'tabs', tab: 'files' } } };

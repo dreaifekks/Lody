@@ -8,6 +8,8 @@ import {
   Eye,
   EyeClosed,
   MessageCircle,
+  MoreHorizontal,
+  PanelRight,
   RefreshCw,
   Save,
   Search,
@@ -24,7 +26,7 @@ import {
   type SessionMeta,
   type VisualAnnotationReferencePayload,
 } from '@lody/shared';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { atom, useAtomValue, useSetAtom } from 'jotai';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { writeTextToClipboard } from '@/lib/clipboard';
 import { useActiveVSCodeTheme, useResolvedTheme } from '../../theme-provider';
@@ -37,6 +39,13 @@ import {
   userAtom,
 } from '@/atoms';
 import { localMachineIdAtom } from '@/atoms/local-probe';
+import { boardArticleFeatureEnabledAtom } from '@/atoms/settings';
+import { sessionLiveStatusAtomFamily } from '@/atoms/presence';
+import { useSessionFileDigestWatch } from '@/hooks/use-session-file-digest-watch';
+import { ArticleHtmlFrame } from './article-html-frame';
+import { ArticleOutline } from './article-outline';
+import { Menu } from '@/ui/menu';
+import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { runtimeAtom } from '@/atoms/runtime';
 import {
   resolveSessionLocalFileSource,
@@ -63,6 +72,8 @@ import {
 import { normalizePinnedProviderOpenResult } from '@/lib/session-file-provider-open-result';
 import { SessionFileBinaryPreview } from './session-file-binary-preview';
 import { SessionFileCsvPreview } from './session-file-csv-preview';
+import { DocumentSelectionSurface } from './document-selection-surface';
+import { locateMarkdownSelection, type DocumentSelection } from '@/lib/document-selection';
 import { SessionFileImagePreview } from './session-file-image-preview';
 import { MarkdownRenderer } from '../ai-gui/markdown-renderer';
 import { MarkdownFileResources } from '../ai-gui/markdown-file-image';
@@ -256,6 +267,36 @@ const styles = stylex.create({
   icon: { width: '14px', height: '14px' },
   iconSmall: { width: '12px', height: '12px', flexShrink: 0 },
   contentBody: { position: 'relative', minHeight: 0, flex: 1, overflow: 'hidden' },
+  articleHeader: {
+    display: 'flex',
+    height: '48px',
+    flexShrink: 0,
+    alignItems: 'center',
+    gap: '8px',
+    paddingInline: '12px 8px',
+    borderBottomWidth: '1px',
+    borderBottomStyle: 'solid',
+    borderBottomColor: 'hsl(var(--border) / 0.5)',
+  },
+  articleKind: {
+    flexShrink: 0,
+    paddingInline: '5px',
+    borderRadius: '4px',
+    backgroundColor: 'hsl(var(--muted))',
+    color: 'hsl(var(--muted-foreground))',
+    fontSize: '0.6875rem',
+    fontWeight: 600,
+    lineHeight: '18px',
+  },
+  articleName: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontSize: '0.875rem',
+    fontWeight: 500,
+  },
+  articleTime: { flexShrink: 0, fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))' },
   fullSize: { width: '100%', height: '100%' },
   fullMinContent: { minWidth: 0, minHeight: '100%' },
   sourceTextarea: {
@@ -495,10 +536,33 @@ export type SessionFileContentViewProps = {
   }) => void;
   visualAnnotationReferenceKeys?: readonly string[];
   onAddVisualAnnotationToChat?: (reference: VisualAnnotationReferencePayload) => boolean | void;
+  onAddSelectionToChat?: (selection: DocumentSelection) => boolean;
   onToggleVisualAnnotationInChat?: (reference: VisualAnnotationReferencePayload) => boolean | void;
+  /**
+   * Shown as a thread's article (Board article dialog, experimental): an
+   * article header replaces the toolbar, the file rechecks itself while on
+   * screen (faster while the session works), and HTML runs in the widget page
+   * with its CDNs.
+   */
+  article?: { readonly onOpenInTab: () => void };
 };
 
+const NOT_WORKING_ATOM = atom(false);
+
 const isHtmlPath = (filePath: string): boolean => /\.(?:html|htm)$/iu.test(filePath);
+
+/** An agent writes a file in bursts; a new article revision waits this long for the last one. */
+const ARTICLE_HTML_SETTLE_MS = 1_000;
+/** A page the pointer left this recently is still being used. */
+const ARTICLE_INTERACTION_GRACE_MS = 3_000;
+
+/** Tells article revisions apart without keeping each one. */
+const hashText = (text: string): string => {
+  let hash = 5381;
+  for (let index = 0; index < text.length; index += 1)
+    hash = (Math.imul(hash, 33) ^ text.charCodeAt(index)) | 0;
+  return `${text.length}:${hash >>> 0}`;
+};
 
 // The local-project read defaults to a 64 KiB PREVIEW budget, which is right
 // for a mention popover and wrong for the file viewer — it truncated anything
@@ -537,7 +601,9 @@ function SessionFileContentViewImpl({
   onOpenFile,
   visualAnnotationReferenceKeys,
   onAddVisualAnnotationToChat,
+  onAddSelectionToChat,
   onToggleVisualAnnotationInChat,
+  article,
 }: SessionFileContentViewProps) {
   const { t } = useTranslation();
   const postHog = usePostHog();
@@ -552,6 +618,7 @@ function SessionFileContentViewImpl({
   // Match the main conversation Markdown typography (settings → font size).
   const conversationFontSize = useAtomValue(conversationFontSizeAtom);
   const extendedCodeLanguagesEnabled = useAtomValue(extendedCodeLanguagesEnabledAtom);
+  const boardArticleEnabled = useAtomValue(boardArticleFeatureEnabledAtom);
   const localMachineId = useAtomValue(localMachineIdAtom);
   const currentUserId = useAtomValue(userAtom)?.id ?? null;
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
@@ -1165,12 +1232,14 @@ function SessionFileContentViewImpl({
       : null;
   const isHtmlTextFile = htmlPreviewSource !== null;
   const showHtmlRendered = isActiveSurface && isHtmlTextFile && htmlRenderMode === 'rendered';
+  const isArticle = article !== undefined && isActiveSurface;
+  const showArticleHtml = isArticle && showHtmlRendered;
   const htmlPreviewDocument = useMemo(
     () =>
-      showHtmlRendered && supportsHtmlPreview && htmlPreviewSource !== null
+      showHtmlRendered && !showArticleHtml && supportsHtmlPreview && htmlPreviewSource !== null
         ? buildStaticHtmlPreviewDocument(htmlPreviewSource)
         : null,
-    [htmlPreviewSource, showHtmlRendered, supportsHtmlPreview]
+    [htmlPreviewSource, showArticleHtml, showHtmlRendered, supportsHtmlPreview]
   );
   const htmlPreviewLogicalUrl = useMemo(
     () => getStaticHtmlPreviewLogicalUrl(normalizedPath),
@@ -1372,7 +1441,125 @@ function SessionFileContentViewImpl({
     shouldUseProviderFileContent,
   ]);
 
+  // An article beside its thread opens rendered and follows the agent's
+  // writes: each check is a digest revalidation, and a changed file waits
+  // while the reader is inside it (a selection being commented, a page in use).
+  useEffect(() => {
+    if (!isArticle) return;
+    setMarkdownRenderMode('rendered');
+    setHtmlRenderMode('rendered');
+  }, [isArticle]);
+  const [articleUpdate, setArticleUpdate] = useState<{
+    readonly entry: SessionFileProviderEntry | null;
+    readonly text: string;
+    readonly next: ViewData;
+  } | null>(null);
+  const [articleUpdateHeld, setArticleUpdateHeld] = useState(false);
+  const [articleReloadSeq, setArticleReloadSeq] = useState(0);
+  const [selectionDraftOpen, setSelectionDraftOpen] = useState(false);
+  const articleFrameRef = useRef<HTMLDivElement>(null);
+  const contentBodyRef = useRef<HTMLDivElement>(null);
+  const articlePointerRef = useRef({ inside: false, leftAt: -Infinity });
+  const shownTextRef = useLatestRef(
+    data.status === 'ready' && data.snapshot.kind === 'text'
+      ? (latestEditorTextRef.current ?? data.snapshot.text)
+      : null
+  );
+  const articleWatchEnabled = isArticle && shouldUseProviderFileContent && isTextFileReady;
+  const articleWatchEnabledRef = useLatestRef(articleWatchEnabled);
+  const checkArticle = useCallback(async () => {
+    if (!fileProvider || providerEditorDirtyRef.current) return;
+    try {
+      const opened = await fileProvider.openFile(fileId ?? normalizedPath);
+      // The reader may have collapsed the article or started editing meanwhile.
+      if (!articleWatchEnabledRef.current || providerEditorDirtyRef.current) return;
+      const result = normalizePinnedProviderOpenResult(opened, {
+        ...(fileId === undefined ? {} : { fileId }),
+        path: normalizedPath,
+        providerState: fileProvider.getState(),
+      });
+      const next = sessionFileOpenResultToContentLoadResult(result);
+      if (next.status !== 'ready' || next.snapshot.kind !== 'text') return;
+      const text = next.snapshot.text;
+      if (text === shownTextRef.current) {
+        setArticleUpdate(null);
+        setArticleUpdateHeld(false);
+        return;
+      }
+      setArticleUpdate((current) =>
+        current?.text === text ? current : { entry: result.entry ?? null, text, next }
+      );
+    } catch (error) {
+      // The next check asks again.
+      logCodeCollabDebug('article recheck failed', {
+        sessionId,
+        filePath: normalizedPath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [articleWatchEnabledRef, fileId, fileProvider, normalizedPath, sessionId, shownTextRef]);
+  // Only the working/idle bit, so presence ticks do not re-render the view.
+  const articleWorkingAtom = useMemo(
+    () =>
+      isArticle
+        ? atom((get) => get(sessionLiveStatusAtomFamily(sessionId)) !== null)
+        : NOT_WORKING_ATOM,
+    [isArticle, sessionId]
+  );
+  const articleSessionWorking = useAtomValue(articleWorkingAtom);
+  useSessionFileDigestWatch({
+    enabled: articleWatchEnabled,
+    busy: articleSessionWorking,
+    check: checkArticle,
+  });
+  const applyArticleUpdate = useCallback(() => {
+    if (!articleUpdate) return;
+    if (providerEditorDirtyRef.current) {
+      // Unsaved edits win; saving reports the conflict with the new revision.
+      setArticleUpdate(null);
+      setArticleUpdateHeld(false);
+      return;
+    }
+    setProviderEntry(articleUpdate.entry);
+    setData(articleUpdate.next);
+    externalSeqRef.current += 1;
+    latestEditorTextRef.current = articleUpdate.text;
+    setExternalTextUpdate({ seq: externalSeqRef.current, text: articleUpdate.text });
+    setArticleUpdate(null);
+    setArticleUpdateHeld(false);
+  }, [articleUpdate]);
+  useEffect(() => {
+    if (articleWatchEnabled) return;
+    setArticleUpdate(null);
+    setArticleUpdateHeld(false);
+  }, [articleWatchEnabled]);
+  useEffect(() => {
+    if (!articleUpdate) return undefined;
+    if (!isHtmlTextFile) {
+      // Markdown re-renders in place; only an open selection comment holds it.
+      if (selectionDraftOpen) setArticleUpdateHeld(true);
+      else applyArticleUpdate();
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      const pointer = articlePointerRef.current;
+      const frame = articleFrameRef.current;
+      const inUse =
+        pointer.inside ||
+        Date.now() - pointer.leftAt < ARTICLE_INTERACTION_GRACE_MS ||
+        (frame !== null && frame.contains(document.activeElement));
+      if (inUse) setArticleUpdateHeld(true);
+      else applyArticleUpdate();
+    }, ARTICLE_HTML_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [applyArticleUpdate, articleUpdate, isHtmlTextFile, selectionDraftOpen]);
+  const articleHtmlKey = useMemo(
+    () => (showArticleHtml && htmlPreviewSource !== null ? hashText(htmlPreviewSource) : ''),
+    [htmlPreviewSource, showArticleHtml]
+  );
+
   const handleReloadHtmlPreview = useCallback(() => {
+    setArticleReloadSeq((seq) => seq + 1);
     setHtmlPreviewCommand((current) => ({
       id: (current?.id ?? 0) + 1,
       action: 'reload',
@@ -1576,6 +1763,7 @@ function SessionFileContentViewImpl({
         url={data.snapshot.url}
         active={isActiveSurface}
         fileActions={sessionFileActions.buildErrorActions(normalizedPath, data.snapshot)}
+        onAddSelectionToChat={onAddSelectionToChat}
       />
     );
   } else if (data.snapshot.kind === 'missing') {
@@ -1584,6 +1772,25 @@ function SessionFileContentViewImpl({
         message={t('sessions.fileViewer.missing', 'File not found.')}
         reason="deleted"
       />
+    );
+  } else if (showArticleHtml && htmlPreviewSource !== null) {
+    body = (
+      <div
+        ref={articleFrameRef}
+        {...stylex.props(styles.previewFrame)}
+        onPointerEnter={() => {
+          articlePointerRef.current = { inside: true, leftAt: -Infinity };
+        }}
+        onPointerLeave={() => {
+          articlePointerRef.current = { inside: false, leftAt: Date.now() };
+        }}
+      >
+        <ArticleHtmlFrame
+          key={`${articleHtmlKey}:${articleReloadSeq}`}
+          html={htmlPreviewSource}
+          title={normalizedPath}
+        />
+      </div>
     );
   } else if (showHtmlRendered && !supportsHtmlPreview && htmlPreviewSource !== null) {
     body = <ReadOnlyHtmlPreview text={htmlPreviewSource} />;
@@ -1622,11 +1829,41 @@ function SessionFileContentViewImpl({
     );
   } else if (showCsvRendered && data.snapshot.kind === 'text') {
     body = (
-      <SessionFileCsvPreview
-        text={latestEditorTextRef.current ?? data.snapshot.text}
+      <DocumentSelectionSurface
         path={normalizedPath}
+        source={latestEditorTextRef.current ?? data.snapshot.text}
         active={isActiveSurface}
-      />
+        onAdd={onAddSelectionToChat}
+      >
+        <SessionFileCsvPreview
+          text={latestEditorTextRef.current ?? data.snapshot.text}
+          path={normalizedPath}
+          active={isActiveSurface}
+        />
+      </DocumentSelectionSurface>
+    );
+  } else if (showMarkdownRendered && boardArticleEnabled && onAddSelectionToChat) {
+    body = (
+      <DocumentSelectionSurface
+        path={normalizedPath}
+        source={markdownPreviewText}
+        active={isActiveSurface}
+        onAdd={onAddSelectionToChat}
+        locateText={(text) => {
+          const lines = locateMarkdownSelection(markdownPreviewText, text);
+          if (lines === null) return undefined;
+          return lines.startLine === lines.endLine
+            ? t('sessions.fileViewer.selection.line', 'Line {{line}}', { line: lines.startLine })
+            : t('sessions.fileViewer.selection.lines', 'Lines {{start}}–{{end}}', {
+                start: lines.startLine,
+                end: lines.endLine,
+              });
+        }}
+        onDraftChange={setSelectionDraftOpen}
+        textSelectionPrompt
+      >
+        {previewSurface}
+      </DocumentSelectionSurface>
     );
   } else if (showSvgRendered || showMarkdownRendered) {
     body = previewSurface;
@@ -1795,9 +2032,84 @@ function SessionFileContentViewImpl({
     showRefreshButton;
 
   const viewerRootClassName = stylex.props(styles.viewerRoot).className;
+  const articleModifiedTime = providerEntry?.modifiedTime;
+  const articleCopyPath = sessionFileActions.menuItems.find(
+    (item) => item.id === 'copy-relative-path' && (item.isAvailable?.(normalizedPath) ?? true)
+  );
+  const articleMenuItems = sessionFileActions.menuItems.filter(
+    (item) => item.id !== 'copy-relative-path' && (item.isAvailable?.(normalizedPath) ?? true)
+  );
+  const articleHeader = article ? (
+    <div {...stylex.props(styles.articleHeader)}>
+      <span {...stylex.props(styles.articleKind)}>{isHtmlFile ? 'HTML' : 'MD'}</span>
+      <span {...stylex.props(styles.articleName)} title={normalizedPath}>
+        {normalizedPath.split('/').at(-1)}
+      </span>
+      {articleModifiedTime !== undefined ? (
+        <span {...stylex.props(styles.articleTime)}>
+          {formatCompactRelativeTime(articleModifiedTime)}
+        </span>
+      ) : null}
+      <div {...stylex.props(styles.toolbarActions)}>
+        {articleUpdateHeld && articleUpdate ? (
+          <Button size="mini" variant="ghost" onClick={applyArticleUpdate}>
+            {t('sessions.article.updated', 'Updated')} · {t('sessions.article.reload', 'Reload')}
+          </Button>
+        ) : null}
+        <Button
+          size="small"
+          variant="ghost"
+          icon
+          aria-label={t('sessions.browser.reload', 'Reload')}
+          title={t('sessions.browser.reload', 'Reload')}
+          disabled={isRefreshing}
+          onClick={handleReloadHtmlPreview}
+        >
+          <Spinner icon={RefreshCw} spinning={isRefreshing} {...stylex.props(styles.spinner14)} />
+        </Button>
+        {articleCopyPath ? (
+          <Button
+            size="small"
+            variant="ghost"
+            icon
+            aria-label={articleCopyPath.label}
+            title={articleCopyPath.label}
+            onClick={() => articleCopyPath.run(normalizedPath)}
+          >
+            <Copy {...stylex.props(styles.icon)} aria-hidden="true" />
+          </Button>
+        ) : null}
+        <Menu.Root>
+          <Menu.Trigger
+            render={
+              <Button
+                size="small"
+                variant="ghost"
+                icon
+                aria-label={t('sessions.fileActions.more', 'File actions')}
+              />
+            }
+          >
+            <MoreHorizontal {...stylex.props(styles.icon)} aria-hidden="true" />
+          </Menu.Trigger>
+          <Menu.Content align="end" className="min-w-[190px]">
+            <Menu.Item icon={PanelRight} onClick={article.onOpenInTab}>
+              {t('sessions.article.openInTab', 'Open in side tab')}
+            </Menu.Item>
+            {articleMenuItems.map((item) => (
+              <Menu.Item key={item.id} icon={item.icon} onClick={() => item.run(normalizedPath)}>
+                {item.label}
+              </Menu.Item>
+            ))}
+          </Menu.Content>
+        </Menu.Root>
+      </div>
+    </div>
+  ) : null;
   return (
     <div className={[viewerRootClassName, className].filter(Boolean).join(' ')}>
-      {showViewerTopBar ? (
+      {articleHeader}
+      {showViewerTopBar && !article ? (
         <div {...stylex.props(styles.toolbar)}>
           <div {...stylex.props(styles.toolbarActions)}>
             {showPreviewToggle ? (
@@ -1848,7 +2160,7 @@ function SessionFileContentViewImpl({
                 <Copy {...stylex.props(styles.icon)} aria-hidden="true" />
               </button>
             ) : null}
-            {showHtmlRendered && supportsHtmlPreview ? (
+            {showHtmlRendered && supportsHtmlPreview && !showArticleHtml ? (
               <button
                 type="button"
                 aria-pressed={htmlAnnotationEnabled}
@@ -1968,7 +2280,10 @@ function SessionFileContentViewImpl({
           </div>
         </div>
       ) : null}
-      <div {...stylex.props(styles.contentBody)}>
+      <div ref={contentBodyRef} {...stylex.props(styles.contentBody)}>
+        {isArticle && showMarkdownRendered ? (
+          <ArticleOutline root={contentBodyRef} revision={markdownPreviewText} />
+        ) : null}
         {bodyUsesNativeScrolling ? (
           <div {...stylex.props(styles.fullSize)}>{body}</div>
         ) : (

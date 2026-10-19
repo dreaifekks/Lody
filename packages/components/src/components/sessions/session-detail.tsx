@@ -48,6 +48,7 @@ import {
   Shrink,
   Trash2,
   Users,
+  X,
 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { useTranslation } from 'react-i18next';
@@ -229,7 +230,19 @@ import { getCommandKeybindings, useCommand } from '@/lib/commands';
 import { useDesktopTabCloser } from '@/lib/desktop-tab-or-window-close';
 import { useSemanticActionRouter } from '@/lib/commands/use-semantic-action-router';
 import type { SemanticActionRouter } from '@/lib/commands/semantic-action-router';
-import { boardEnabledAtom, semanticShortcutsFeatureEnabledAtom } from '@/atoms/settings';
+import {
+  boardArticleFeatureEnabledAtom,
+  boardEnabledAtom,
+  semanticShortcutsFeatureEnabledAtom,
+} from '@/atoms/settings';
+import { createPortal } from 'react-dom';
+import { PopupContainerProvider, usePopupContainer } from '@lody/ui/popup-container';
+import { BoardArticleDialog, isBoardArticlePath } from '../boards/board-article-dialog';
+import {
+  createRelocatableHost,
+  RelocatableSlot,
+  type RelocatableHost,
+} from '../boards/relocatable-host';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { BoardSidePanel, useThreadLocation } from '../boards/board-side-panel';
 import { BoardSettings } from '../boards/board-settings-panel';
@@ -1125,6 +1138,18 @@ const SessionDetail = ({
   const [boardThreadRequest, setBoardThreadRequest] = useState<SessionId | null>(null);
   const finishBoardThreadRequest = useCallback(() => setBoardThreadRequest(null), []);
   const [mobileBoardOpen, setMobileBoardOpen] = useState(false);
+  // A thread's article open over the page with that thread beside it
+  // (experimental). The thread keeps its one conversation: it is portalled
+  // into a relocatable host that the dialog borrows while open.
+  const [articleDialog, setArticleDialog] = useState<{
+    /** The thread whose workspace holds the file; the dialog's thread may change. */
+    readonly ownerThreadId: SessionId;
+    readonly filePath: string;
+    readonly fileId?: string;
+    readonly closing?: true;
+  } | null>(null);
+  const [articlePanel, setArticlePanel] = useState<HTMLElement | null>(null);
+  const threadChatHostsRef = useRef(new Map<SessionId, RelocatableHost>());
   const [boardSettingsOpen, setBoardSettingsOpen] = useState(false);
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab | null>(
     () => initialTabState.sidePanel.tab
@@ -1464,6 +1489,7 @@ const SessionDetail = ({
     setBoardThreadRequest(null);
     setMobileBoardOpen(false);
     setBoardSettingsOpen(false);
+    setArticleDialog(null);
   }
 
   const setDraftTabs = useCallback(
@@ -4316,7 +4342,66 @@ const SessionDetail = ({
     }
   );
 
-  const threadFileLinks = useThreadFileLinks(boardThreadId, handleOpenFileForSession);
+  const boardArticleEnabled = useAtomValue(boardArticleFeatureEnabledAtom);
+  // A thread's Markdown or HTML link opens the article dialog; every other
+  // file, and every narrow layout, opens the side-panel tab as before.
+  const handleOpenThreadFile = useStableCallback(
+    (scope: SessionFileScopeValue, path: string, options: SessionDetailOpenFileOptions = {}) => {
+      if (
+        !boardArticleEnabled ||
+        isMobile ||
+        isCompactDesktop ||
+        resolveBoardFileLink(path, currentWorkspaceId, boards, options.pathKind)
+      ) {
+        handleOpenFileForSession(scope, path, options);
+        return;
+      }
+      const openedInSessionId = sessionId;
+      void (async () => {
+        const target = await resolveSessionFileLinkOpen(path, options, scope, runtime);
+        if (openFileSessionIdRef.current !== openedInSessionId) return;
+        if (!isBoardArticlePath(target.filePath)) {
+          handleOpenFileForSession(scope, path, options);
+          return;
+        }
+        setArticleDialog({
+          ownerThreadId: scope.session.id,
+          filePath: target.filePath,
+          ...(target.fileId === undefined ? {} : { fileId: target.fileId }),
+        });
+      })();
+    }
+  );
+  const threadFileLinks = useThreadFileLinks(boardThreadId, handleOpenThreadFile);
+  const outerPopupContainer = usePopupContainer();
+  const getThreadChatHost = (threadId: SessionId) => {
+    const hosts = threadChatHostsRef.current;
+    let host = hosts.get(threadId);
+    if (!host) {
+      host = createRelocatableHost();
+      hosts.set(threadId, host);
+    }
+    return host;
+  };
+  // The dialog shows whichever thread the Board panel has open, so moving to
+  // another member through its breadcrumb keeps it; it closes with the switch,
+  // with the panel's thread, and on any layout without room for it (the compact
+  // layout also remounts the Board panel, conversation included).
+  const articleDialogThreadId =
+    articleDialog && !articleDialog.closing && boardArticleEnabled && !isMobile && !isCompactDesktop
+      ? boardThreadId
+      : null;
+  // Closing takes two commits: the dialog lets go of the conversation while it
+  // is still in the document, then unmounts.
+  const closeArticleDialog = useCallback(
+    () => setArticleDialog((current) => (current ? { ...current, closing: true } : null)),
+    []
+  );
+  useLayoutEffect(() => {
+    if (articleDialog && articleDialogThreadId === null) setArticleDialog(null);
+  }, [articleDialog, articleDialogThreadId]);
+  // Its thread, held for the commit in which the dialog lets go of it.
+  const articleDialogHostThreadId = articleDialogThreadId ?? boardThreadId;
 
   const activeFileOpenContext: SessionFileOpenContext = {
     session: activeSession,
@@ -4579,7 +4664,10 @@ const SessionDetail = ({
       activateSidebarTab('board');
       revealRightSidebar();
     },
+    // A member opens in the panel, so an open article dialog follows it; every
+    // other destination leaves the panel and closes the dialog.
     showInCoordinatorPage: (target) => {
+      closeArticleDialog();
       setMobileBoardOpen(false);
       const exactId = target.tabSessionId ?? target.sessionId;
       if (sideSessions.some((side) => side.id === exactId)) {
@@ -4588,6 +4676,7 @@ const SessionDetail = ({
       } else navigateSessionPage(target);
     },
     openPage: (target) => {
+      closeArticleDialog();
       setMobileBoardOpen(false);
       navigateSessionPage(target);
     },
@@ -6190,6 +6279,18 @@ const SessionDetail = ({
       copyMarkdownRequestSeq={viewerTabSaveStates[tab.id]?.copyMarkdownRequestSeq ?? 0}
       defaultHtmlPreview={isMobile}
       preferNativeMarkdownSelection={isMobile}
+      onAddSelectionToChat={
+        scope.session.isArchived
+          ? undefined
+          : (selection) => {
+              const chat = chatRefsMap.current.get(scope.session.id);
+              return !closedConversationIds.has(scope.session.id) &&
+                chat &&
+                'addDocumentSelection' in chat
+                ? chat.addDocumentSelection(selection)
+                : false;
+            }
+      }
       fileProvider={scope.fileProvider}
       fileProviderPending={scope.fileProviderPending}
       fileProviderMessage={scope.fileProviderMessage}
@@ -6325,13 +6426,17 @@ const SessionDetail = ({
       requestedScheduleId={boardScheduleRequest}
       onScheduleRequestDone={() => setBoardScheduleRequest(null)}
       onThreadRequestDone={finishBoardThreadRequest}
-      renderThread={(thread, controls) => (
-        <Fragment key={thread.id}>
+      renderThread={(thread, controls) => {
+        const inArticle = articleDialogThreadId === thread.id;
+        const threadOnScreen = boardPanelOnScreen || inArticle;
+        const scopeHost = (
           <SessionFileScopeHost
             sessionId={thread.id}
             enabled={threadFileLinks.enabled}
             scopeRef={threadFileLinks.scopeRef}
           />
+        );
+        const chat = (
           <AgentFileLinkOpenContext.Provider value={openBoardFileLink}>
             <SessionChatInterface
               key={thread.id}
@@ -6351,20 +6456,55 @@ const SessionDetail = ({
               headerVariant="board-thread"
               headerLocation={controls.location}
               headerParentThread={controls.parentThread}
-              headerStartSlot={<BoardThreadBackButton onBack={controls.onBack} />}
-              headerEndSlot={<BoardThreadOpenButton onOpen={controls.onOpenFull} />}
+              headerStartSlot={
+                inArticle ? undefined : <BoardThreadBackButton onBack={controls.onBack} />
+              }
+              headerEndSlot={
+                inArticle ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="small"
+                    icon
+                    aria-label={t('common.close', 'Close')}
+                    onClick={closeArticleDialog}
+                  >
+                    <X {...stylex.props(detailStyles.icon16)} />
+                  </Button>
+                ) : (
+                  <BoardThreadOpenButton onOpen={controls.onOpenFull} />
+                )
+              }
               onArchiveSession={async () => {
                 await archiveSession(thread.id);
                 controls.onBack();
               }}
               onRestoreSession={() => restoreSession(thread.id)}
-              syncEnabled={boardPanelOnScreen}
-              isVisible={boardPanelOnScreen}
+              syncEnabled={threadOnScreen}
+              isVisible={threadOnScreen}
               onNavigateSession={handleNavigateSession}
             />
           </AgentFileLinkOpenContext.Provider>
-        </Fragment>
-      )}
+        );
+        // One conversation, two places: the panel's slot, or the article
+        // dialog's while it is open. Its popups follow it into the dialog.
+        const host = getThreadChatHost(thread.id);
+        return (
+          <Fragment key={thread.id}>
+            {scopeHost}
+            <RelocatableSlot
+              host={host}
+              className={stylex.props(detailStyles.rootFill).className}
+            />
+            {createPortal(
+              <PopupContainerProvider container={inArticle ? articlePanel : outerPopupContainer}>
+                {chat}
+              </PopupContainerProvider>,
+              host.node
+            )}
+          </Fragment>
+        );
+      }}
     />
   ) : null;
   const boardSettings =
@@ -7908,6 +8048,51 @@ const SessionDetail = ({
       }
     >
       {boardSettings}
+      {articleDialog && articleDialogHostThreadId ? (
+        <BoardArticleDialog
+          title={getBasename(articleDialog.filePath)}
+          threadHost={getThreadChatHost(articleDialogHostThreadId)}
+          holdsThread={articleDialogThreadId !== null}
+          onPanelChange={setArticlePanel}
+          onClose={closeArticleDialog}
+          article={
+            <SessionFileScope sessionId={articleDialog.ownerThreadId}>
+              {(scope) => (
+                <SessionFileContentView
+                  key={`${scope.session.id}:${articleDialog.filePath}`}
+                  sessionId={scope.session.id}
+                  session={scope.session}
+                  filePath={articleDialog.filePath}
+                  {...(articleDialog.fileId === undefined ? {} : { fileId: articleDialog.fileId })}
+                  fileProvider={scope.fileProvider}
+                  fileProviderPending={scope.fileProviderPending}
+                  fileProviderMessage={scope.fileProviderMessage}
+                  {...(scope.role === undefined ? {} : { fileProviderRole: scope.role })}
+                  active
+                  article={{
+                    onOpenInTab: () => {
+                      closeArticleDialog();
+                      handleOpenFileForSession(scope, articleDialog.filePath, {
+                        pathKind: 'canonical',
+                      });
+                    },
+                  }}
+                  // Comments go to the thread beside the article, which may be
+                  // another member the reader moved to.
+                  onAddSelectionToChat={(selection) => {
+                    if (!articleDialogThreadId) return false;
+                    const chat = chatRefsMap.current.get(articleDialogThreadId);
+                    return chat && 'addDocumentSelection' in chat
+                      ? chat.addDocumentSelection(selection)
+                      : false;
+                  }}
+                  className={stylex.props(detailStyles.rootFill).className}
+                />
+              )}
+            </SessionFileScope>
+          }
+        />
+      ) : null}
       <DesktopSessionDetailLayout
         defaultSizes={defaultSizes}
         // A Board opens half and half on every entry, refresh included: Boards

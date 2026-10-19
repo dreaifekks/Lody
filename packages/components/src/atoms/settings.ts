@@ -413,3 +413,14 @@ export const boardExperimentEnabledAtom = atomWithStorage<boolean>(
 export const boardEnabledAtom = atom(
   (get) => get(experimentalFeaturesEnabledAtom) && get(boardExperimentEnabledAtom)
 );
+
+/** Opt-in for opening a thread's article beside its conversation (Board side panel only). */
+export const boardArticleExperimentEnabledAtom = atomWithStorage<boolean>(
+  'lody-board-article-experiment-enabled',
+  false,
+  undefined,
+  { getOnInit: true }
+);
+export const boardArticleFeatureEnabledAtom = atom(
+  (get) => get(boardEnabledAtom) && get(boardArticleExperimentEnabledAtom)
+);
