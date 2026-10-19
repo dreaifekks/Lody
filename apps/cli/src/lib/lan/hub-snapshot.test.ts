@@ -1,9 +1,10 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PassThrough, Readable } from 'node:stream';
+import { PassThrough, Readable, Writable } from 'node:stream';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LAN_SHARES_COPY_PATH } from '@lody/shared/lan-share';
 import { writeLanHubSharesCopy } from './hub-shares';
 import { pullLanHubSnapshot, readKeptLanHubSnapshot, writeLanHubSnapshot } from './hub-snapshot';
@@ -15,6 +16,7 @@ describe('a standby copy of a hub', () => {
   let hubDir: string;
   let standbyDir: string;
   let database: Database.Database;
+  let sends: Promise<unknown>[];
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-hub-snapshot-'));
@@ -27,9 +29,12 @@ describe('a standby copy of a hub', () => {
     database.pragma('journal_mode = WAL');
     database.exec('create table entries (id integer primary key, body blob)');
     append(200);
+    sends = [];
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.allSettled(sends);
+    vi.restoreAllMocks();
     database.close();
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -40,33 +45,58 @@ describe('a standby copy of a hub', () => {
   }
 
   /** The hub, as a standby reaches it: the request is answered with what the hub writes. */
-  const hubFetch = (options: { damage?: boolean } = {}) =>
+  const hubFetch = (
+    options: {
+      damage?: boolean;
+      blockBytes?: number;
+      interrupt?: boolean;
+      shares?: () => Response | Promise<Response>;
+    } = {}
+  ) =>
     (async (url: string | URL | Request, init?: RequestInit) => {
       const { have } = JSON.parse(String(init?.body)) as { have: string[] };
+      if (String(url).endsWith(LAN_SHARES_COPY_PATH) && options.shares) return options.shares();
       const stream = new PassThrough();
-      if (String(url).endsWith(LAN_SHARES_COPY_PATH)) {
-        void writeLanHubSharesCopy({ dataDir: hubDir, have }, stream).then(() => stream.end());
-        return new Response(Readable.toWeb(stream) as ReadableStream, { status: 200 });
-      }
-      const sending = writeLanHubSnapshot({ dataDir: hubDir, have, stream, blockBytes: BLOCK });
-      void sending.then(() => stream.end());
-      let body: Readable = stream;
-      if (options.damage) {
-        let flipped = false;
-        body = stream.pipe(
-          new PassThrough({
-            transform(chunk: Buffer, _encoding, done) {
-              // A byte of the first block that arrives after its header.
-              if (!flipped && chunk.length > 4096) {
-                flipped = true;
-                chunk[chunk.length - 1] ^= 0xff;
+      const sending = String(url).endsWith(LAN_SHARES_COPY_PATH)
+        ? writeLanHubSharesCopy({ dataDir: hubDir, have }, stream)
+        : writeLanHubSnapshot({
+            dataDir: hubDir,
+            have,
+            stream,
+            blockBytes: options.blockBytes ?? BLOCK,
+          });
+      // Observe rejection immediately; individual tests inspect the transfer outcome.
+      sends.push(sending);
+      void sending.catch(() => {});
+      let flipped = false;
+      let binary = false;
+      const body = (Readable.toWeb(stream) as ReadableStream<Uint8Array>).pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            if (binary) {
+              binary = false;
+              if (options.interrupt) {
+                controller.enqueue(chunk.subarray(0, 10));
+                controller.terminate();
+                return;
               }
-              done(null, chunk);
-            },
-          })
-        );
-      }
-      return new Response(Readable.toWeb(body) as ReadableStream, { status: 200 });
+              if (options.damage && !flipped) {
+                chunk = Buffer.from(chunk);
+                chunk[chunk.length - 1] ^= 0xff;
+                flipped = true;
+              }
+            } else if (Buffer.from(chunk).toString().startsWith('{"type":"block"')) {
+              binary = true;
+            }
+            // Fragment even a large header, as HTTP does; an unsplit line would
+            // bypass ByteReader's buffered-length limit.
+            for (let start = 0; start < chunk.length; start += 16 * 1024) {
+              controller.enqueue(chunk.subarray(start, start + 16 * 1024));
+            }
+          },
+        })
+      );
+      return new Response(body, { status: 200 });
     }) as typeof fetch;
   const hub = { url: 'http://hub.invalid:8788', token: 'the-credential' };
   const rowsOf = (dataDir: string) => {
@@ -85,20 +115,415 @@ describe('a standby copy of a hub', () => {
     expect(kept && rowsOf(kept.path)).toBe(200);
     expect(fs.readFileSync(path.join(kept?.path ?? '', 'token'), 'utf8')).toBe('the-credential\n');
 
+    const inode = fs.statSync(path.join(kept?.path ?? '', 'streams.sqlite')).ino;
     append(5);
     const second = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
     expect(second.received).toBeGreaterThan(0);
     expect(second.received).toBeLessThan(second.blocks.length / 2);
-    expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(205);
+    const current = readKeptLanHubSnapshot(standbyDir)?.path ?? '';
+    expect(fs.statSync(path.join(current, 'streams.sqlite')).ino).toBe(inode);
+    expect(fs.readFileSync(path.join(current, 'streams.sqlite'))).toEqual(database.serialize());
+    expect(rowsOf(current)).toBe(205);
   });
 
   it('keeps the last good copy when a copy arrives damaged', async () => {
     await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    const marker = fs.readFileSync(path.join(standbyDir, 'snapshot.json'));
     append(50);
 
     await expect(
       pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch({ damage: true }) })
     ).rejects.toThrow(/does not match/);
+    expect(fs.readFileSync(path.join(standbyDir, 'snapshot.json'))).toEqual(marker);
+    expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(200);
+  });
+
+  it('receives a fragmented header larger than 1 MB', async () => {
+    const result = await pullLanHubSnapshot({
+      hub,
+      directory: standbyDir,
+      fetch: hubFetch({ blockBytes: 48 }),
+    });
+    expect(result.blocks.length * 67).toBeGreaterThan(1024 * 1024);
+    expect(result.received).toBe(result.blocks.length);
+    expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(200);
+  });
+
+  it.skipIf(process.platform !== 'linux')(
+    'finishes a disconnected send without snapshot files, open descriptors or growing listeners',
+    async () => {
+      const descriptors = () =>
+        fs
+          .readdirSync('/proc/self/fd')
+          .flatMap((fd) => {
+            try {
+              const file = fs.readlinkSync(`/proc/self/fd/${fd}`);
+              return file.startsWith(hubDir) ? [file] : [];
+            } catch {
+              return [];
+            }
+          })
+          .sort();
+      // SQLite may defer an fd close while another connection in this process
+      // holds WAL locks. Warm that pool, then prove repeated sends do not grow it.
+      await writeLanHubSnapshot({
+        dataDir: hubDir,
+        have: [],
+        stream: new Writable({
+          write(_chunk, _encoding, done) {
+            done();
+          },
+        }),
+      });
+      const before = descriptors();
+      for (const stopAt of [20, 2000]) {
+        let chunks = 0;
+        const counts: number[][] = [];
+        const stream = new Writable({
+          write(_chunk, _encoding, done) {
+            chunks += 1;
+            counts.push(
+              ['close', 'error', 'end', 'finish'].map((event) => stream.listenerCount(event))
+            );
+            if (chunks === stopAt) stream.destroy(new Error('client disconnected'));
+            done();
+          },
+        });
+        await expect(
+          writeLanHubSnapshot({ dataDir: hubDir, have: [], stream, blockBytes: 48 })
+        ).rejects.toThrow('client disconnected');
+        expect(counts.length).toBe(stopAt);
+        expect(counts.every((count) => JSON.stringify(count) === JSON.stringify(counts[0]))).toBe(
+          true
+        );
+        expect(Math.max(...counts.flat())).toBeLessThanOrEqual(5);
+        expect(descriptors()).toEqual(before);
+        expect(fs.readdirSync(hubDir).filter((name) => name.startsWith('.snapshot-'))).toEqual([]);
+      }
+      database.close();
+      expect(descriptors()).toEqual([]);
+    }
+  );
+
+  it('keeps the current image and marker usable after an interrupted pull', async () => {
+    await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    const current = path.join(standbyDir, 'current');
+    const image = fs.readFileSync(path.join(current, 'streams.sqlite'));
+    const marker = fs.readFileSync(path.join(standbyDir, 'snapshot.json'));
+    append(50);
+    fs.writeFileSync(path.join(hubDir, 'token'), 'new-side-file');
+    await expect(
+      pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch({ interrupt: true }) })
+    ).rejects.toThrow(/middle of a file/);
+    expect(fs.readFileSync(path.join(current, 'streams.sqlite'))).toEqual(image);
+    expect(fs.readFileSync(path.join(standbyDir, 'snapshot.json'))).toEqual(marker);
+    expect(fs.readFileSync(path.join(current, 'token'), 'utf8')).toBe('the-credential\n');
+    expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(200);
+    expect(fs.existsSync(path.join(standbyDir, 'next'))).toBe(false);
+    const outcomes = await Promise.allSettled(sends);
+    expect(outcomes.at(-1)?.status).toBe('rejected');
+  });
+
+  it('cancels the response when parsing fails', async () => {
+    let cancelled = false;
+    const response = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(Buffer.from('{"type":"invalid"}\n'));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      })
+    );
+    await expect(
+      pullLanHubSnapshot({
+        hub,
+        directory: standbyDir,
+        fetch: (async () => response) as typeof fetch,
+      })
+    ).rejects.toThrow();
+    expect(cancelled).toBe(true);
+    expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+  });
+
+  it('keeps the database, side files and shares together when the shares transfer fails', async () => {
+    await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    const current = path.join(standbyDir, 'current');
+    const marker = fs.readFileSync(path.join(standbyDir, 'snapshot.json'));
+    fs.writeFileSync(path.join(current, 'shares', 'index.json'), 'previous shares');
+    append(5);
+    fs.writeFileSync(path.join(hubDir, 'token'), 'updated token');
+    let cancelled = false;
+    await expect(
+      pullLanHubSnapshot({
+        hub,
+        directory: standbyDir,
+        fetch: hubFetch({
+          shares: () =>
+            new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.enqueue(Buffer.from('{"type":"invalid"}\n'));
+                },
+                cancel() {
+                  cancelled = true;
+                },
+              })
+            ),
+        }),
+      })
+    ).rejects.toThrow();
+    expect(cancelled).toBe(true);
+    expect(fs.readFileSync(path.join(standbyDir, 'snapshot.json'))).toEqual(marker);
+    expect(rowsOf(current)).toBe(200);
+    expect(fs.readFileSync(path.join(current, 'token'), 'utf8')).toBe('the-credential\n');
+    expect(fs.readFileSync(path.join(current, 'shares', 'index.json'), 'utf8')).toBe(
+      'previous shares'
+    );
+  });
+
+  it('promotes side files and reuses share objects alongside an incremental database patch', async () => {
+    const object = Buffer.from('shared object');
+    const sha256 = crypto.createHash('sha256').update(object).digest('hex');
+    const shares = (index: string, sendObject: boolean) => () => {
+      const file = (name: string, data: Buffer) => [
+        Buffer.from(
+          `${JSON.stringify({
+            type: 'file',
+            name,
+            sizeBytes: data.length,
+            sha256: crypto.createHash('sha256').update(data).digest('hex'),
+          })}\n`
+        ),
+        data,
+      ];
+      return new Response(
+        Buffer.concat([
+          Buffer.from(`${JSON.stringify({ type: 'shares', objects: [sha256] })}\n`),
+          ...file('shares/index.json', Buffer.from(index)),
+          ...(sendObject ? file(`shares/objects/${sha256}`, object) : []),
+          Buffer.from('{"type":"end"}\n'),
+        ])
+      );
+    };
+    await pullLanHubSnapshot({
+      hub,
+      directory: standbyDir,
+      fetch: hubFetch({ shares: shares('first', true) }),
+    });
+    const current = path.join(standbyDir, 'current');
+    const objectPath = path.join(current, 'shares', 'objects', sha256);
+    const inode = fs.statSync(objectPath).ino;
+    append(5);
+    fs.writeFileSync(path.join(hubDir, 'token'), 'updated token');
+    await pullLanHubSnapshot({
+      hub,
+      directory: standbyDir,
+      fetch: hubFetch({ shares: shares('second', false) }),
+    });
+    expect(rowsOf(current)).toBe(205);
+    expect(fs.readFileSync(path.join(current, 'token'), 'utf8')).toBe('updated token');
+    expect(fs.readFileSync(path.join(current, 'shares', 'index.json'), 'utf8')).toBe('second');
+    expect(fs.readFileSync(objectPath)).toEqual(object);
+    expect(fs.statSync(objectPath).ino).toBe(inode);
+    expect(fs.existsSync(path.join(standbyDir, 'previous'))).toBe(false);
+  });
+
+  it('invalidates the marker before patching and recovers with a full pull after a write failure', async () => {
+    await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    append(5);
+    const open = fs.promises.open;
+    const spy = vi
+      .spyOn(fs.promises, 'open')
+      .mockImplementation(async (...args: Parameters<typeof open>) => {
+        if (args[0] === path.join(standbyDir, 'current', 'streams.sqlite') && args[1] === 'r+') {
+          expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+          throw new Error('disk write failed');
+        }
+        return open(...args);
+      });
+    await expect(
+      pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() })
+    ).rejects.toThrow('disk write failed');
+    expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+    spy.mockRestore();
+    const recovered = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    expect(recovered.received).toBe(recovered.blocks.length);
+    expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(205);
+  });
+
+  it('durably invalidates the marker before patching and syncs the image before publishing it', async () => {
+    await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    const currentFile = path.join(standbyDir, 'current', 'streams.sqlite');
+    const oldImage = fs.readFileSync(currentFile);
+    append(5);
+    const newImage = database.serialize();
+    const boundaries: string[] = [];
+    const reads: Array<{ valid: boolean; range: boolean }> = [];
+    const createReadStream = fs.createReadStream;
+    vi.spyOn(fs, 'createReadStream').mockImplementation((file, options) => {
+      if (file === currentFile)
+        reads.push({
+          valid: readKeptLanHubSnapshot(standbyDir) !== null,
+          range: typeof options === 'object' && options?.start !== undefined,
+        });
+      return createReadStream(file, options);
+    });
+    const open = fs.promises.open;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
+      const handle = await open(...args);
+      if (args[0] === standbyDir) {
+        const sync = handle.sync.bind(handle);
+        vi.spyOn(handle, 'sync').mockImplementation(async () => {
+          if (readKeptLanHubSnapshot(standbyDir)) {
+            expect(boundaries).toEqual(['invalidated', 'data', 'marker']);
+            expect(fs.readFileSync(currentFile)).toEqual(newImage);
+            boundaries.push('published');
+          } else {
+            expect(fs.readFileSync(currentFile)).toEqual(oldImage);
+            boundaries.push('invalidated');
+          }
+          await sync();
+        });
+      } else if (args[0] === currentFile && args[1] === 'r+') {
+        expect(boundaries).toEqual(['invalidated']);
+        const datasync = handle.datasync.bind(handle);
+        vi.spyOn(handle, 'datasync').mockImplementation(async () => {
+          expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+          expect(fs.readFileSync(currentFile)).toEqual(newImage);
+          await datasync();
+          boundaries.push('data');
+        });
+      } else if (args[0] === path.join(standbyDir, 'snapshot.json.tmp')) {
+        const sync = handle.sync.bind(handle);
+        vi.spyOn(handle, 'sync').mockImplementation(async () => {
+          expect(boundaries).toEqual(['invalidated', 'data']);
+          expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+          expect(JSON.parse(fs.readFileSync(String(args[0]), 'utf8')).sizeBytes).toBe(
+            newImage.length
+          );
+          await sync();
+          boundaries.push('marker');
+        });
+      }
+      return handle;
+    });
+    const result = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    expect(boundaries).toEqual(['invalidated', 'data', 'marker', 'published']);
+    expect(reads).toEqual([
+      { valid: true, range: false },
+      ...Array.from({ length: result.received }, () => ({ valid: false, range: true })),
+    ]);
+    expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(205);
+  });
+
+  it.each(['directory', 'data', 'marker'])(
+    'leaves no usable marker when the %s sync fails',
+    async (failure) => {
+      await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+      const currentFile = path.join(standbyDir, 'current', 'streams.sqlite');
+      const image = fs.readFileSync(currentFile);
+      append(5);
+      const open = fs.promises.open;
+      vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
+        const handle = await open(...args);
+        if (failure === 'directory' && args[0] === standbyDir) {
+          vi.spyOn(handle, 'sync').mockRejectedValue(new Error('sync failed'));
+        } else if (failure === 'data' && args[0] === currentFile && args[1] === 'r+') {
+          vi.spyOn(handle, 'datasync').mockRejectedValue(new Error('sync failed'));
+        } else if (failure === 'marker' && args[0] === path.join(standbyDir, 'snapshot.json.tmp')) {
+          vi.spyOn(handle, 'sync').mockRejectedValue(new Error('sync failed'));
+        }
+        return handle;
+      });
+      await expect(
+        pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() })
+      ).rejects.toThrow('sync failed');
+      expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+      if (failure === 'directory') expect(fs.readFileSync(currentFile)).toEqual(image);
+      vi.restoreAllMocks();
+      const recovered = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+      expect(recovered.received).toBe(recovered.blocks.length);
+      expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(205);
+    }
+  );
+
+  it('rejects a corrupted kept image before requesting a delta and recovers with a full pull', async () => {
+    await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    const file = path.join(standbyDir, 'current', 'streams.sqlite');
+    const image = fs.readFileSync(file);
+    image[image.length - 1] ^= 0xff;
+    fs.writeFileSync(file, image);
+    const have: string[][] = [];
+    const unavailable = (async (_url: string | URL | Request, init?: RequestInit) => {
+      have.push(JSON.parse(String(init?.body)).have);
+      expect(readKeptLanHubSnapshot(standbyDir)).toBeNull();
+      return new Response('unavailable', { status: 503 });
+    }) as typeof fetch;
+    await expect(
+      pullLanHubSnapshot({ hub, directory: standbyDir, fetch: unavailable })
+    ).rejects.toThrow('503');
+    expect(have).toEqual([[]]);
+    const recovered = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    expect(recovered.received).toBe(recovered.blocks.length);
+    expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(200);
+  });
+
+  it('yields to the event loop while hashing many blocks before sending the header', async () => {
+    let yielded = false;
+    const immediate = new Promise<void>((resolve) =>
+      setImmediate(() => {
+        yielded = true;
+        resolve();
+      })
+    );
+    let first = true;
+    const stream = new Writable({
+      write(_chunk, _encoding, done) {
+        if (first) {
+          expect(yielded).toBe(true);
+          first = false;
+        }
+        done();
+      },
+    });
+    await writeLanHubSnapshot({ dataDir: hubDir, have: [], stream, blockBytes: 1024 });
+    await immediate;
+    expect(first).toBe(false);
+  });
+
+  it('truncates the patched image when the hub database shrinks', async () => {
+    const first = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    database.exec('delete from entries where id > 5; vacuum;');
+    const second = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    expect(second.sizeBytes).toBeLessThan(first.sizeBytes);
+    const current = readKeptLanHubSnapshot(standbyDir)?.path ?? '';
+    expect(fs.readFileSync(path.join(current, 'streams.sqlite'))).toEqual(database.serialize());
+    expect(rowsOf(current)).toBe(5);
+  });
+
+  it('rejects a missing changed block before invalidating the current image', async () => {
+    await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    const kept = readKeptLanHubSnapshot(standbyDir);
+    const marker = fs.readFileSync(path.join(standbyDir, 'snapshot.json'));
+    const response = new Response(
+      `${JSON.stringify({
+        type: 'snapshot',
+        takenAt: '2026-10-19T00:00:00Z',
+        sizeBytes: kept?.sizeBytes,
+        blockBytes: kept?.blockBytes,
+        blocks: kept?.blocks.map(() => crypto.createHash('sha256').update('missing').digest('hex')),
+      })}\n{"type":"end"}\n`
+    );
+    await expect(
+      pullLanHubSnapshot({
+        hub,
+        directory: standbyDir,
+        fetch: (async () => response) as typeof fetch,
+      })
+    ).rejects.toThrow('did not send every changed block');
+    expect(fs.readFileSync(path.join(standbyDir, 'snapshot.json'))).toEqual(marker);
     expect(rowsOf(readKeptLanHubSnapshot(standbyDir)?.path ?? '')).toBe(200);
   });
 });

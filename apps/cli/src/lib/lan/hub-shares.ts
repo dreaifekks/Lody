@@ -234,8 +234,8 @@ function sendJson(response: http.ServerResponse, status: number, body: unknown):
   response.end(JSON.stringify(body));
 }
 
-function writeLine(stream: Writable, value: unknown): void {
-  stream.write(`${JSON.stringify(value)}\n`);
+function encodeLine(value: unknown): Buffer {
+  return Buffer.from(`${JSON.stringify(value)}\n`);
 }
 
 async function digestFile(filePath: string): Promise<string> {
@@ -742,7 +742,6 @@ export function createLanHubShares(options: {
         await idle();
         response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
         await writeLanHubSharesCopy({ dataDir: options.dataDir, have: parsed.data.have }, response);
-        response.end();
         return;
       }
       const [revoked] = groups(MANAGE_SHARE_ROUTE, route) ?? [];
@@ -985,28 +984,32 @@ export function readLanHubShareFiles(
 }
 
 /** Sends one file of the shares: a line that names it, then exactly its bytes. */
-async function writeShareFile(
-  stream: Writable,
+async function* shareFileChunks(
   dataDir: string,
   name: string,
   bytes: Buffer | null,
   type = 'file'
-): Promise<void> {
+): AsyncGenerator<Buffer> {
   const filePath = path.join(dataDir, name);
   if (bytes) {
-    writeLine(stream, {
+    yield encodeLine({
       type,
       name,
       sizeBytes: bytes.length,
       sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     });
-    stream.write(bytes);
+    yield bytes;
     return;
   }
   const { size } = await fs.promises.stat(filePath);
-  writeLine(stream, { type, name, sizeBytes: size, sha256: await digestFile(filePath) });
+  yield encodeLine({ type, name, sizeBytes: size, sha256: await digestFile(filePath) });
   if (size > 0) {
-    await pipeline(fs.createReadStream(filePath, { end: size - 1 }), stream, { end: false });
+    const handle = await fs.promises.open(filePath, 'r');
+    try {
+      yield* handle.createReadStream({ end: size - 1, autoClose: false });
+    } finally {
+      await handle.close();
+    }
   }
 }
 
@@ -1024,14 +1027,18 @@ export async function writeLanHubShareFiles(
 ): Promise<number> {
   const shares = readLanHubShareFiles(dataDir);
   if (!shares) return 0;
-  await writeShareFile(stream, dataDir, LAN_HUB_SHARES_INDEX_FILE, shares.index, type);
-  if (shares.images) {
-    await writeShareFile(stream, dataDir, LAN_HUB_SHARES_IMAGES_FILE, shares.images, type);
-  }
-  for (const sha256 of shares.objects) {
-    const name = `${LAN_HUB_SHARES_DIR}/${OBJECTS_DIR}/${sha256}`;
-    await writeShareFile(stream, dataDir, name, null, type);
-  }
+  const chunks = async function* (): AsyncGenerator<Buffer> {
+    yield* shareFileChunks(dataDir, LAN_HUB_SHARES_INDEX_FILE, shares.index, type);
+    if (shares.images) {
+      yield* shareFileChunks(dataDir, LAN_HUB_SHARES_IMAGES_FILE, shares.images, type);
+    }
+    for (const sha256 of shares.objects) {
+      const name = `${LAN_HUB_SHARES_DIR}/${OBJECTS_DIR}/${sha256}`;
+      yield* shareFileChunks(dataDir, name, null, type);
+    }
+  };
+  // The handover owns the response and still has its end record to send.
+  await pipeline(Readable.from(chunks()), stream, { end: false });
   return 1 + (shares.images ? 1 : 0) + shares.objects.length;
 }
 
@@ -1067,21 +1074,24 @@ export async function writeLanHubSharesCopy(
   options: { dataDir: string; have: readonly string[] },
   stream: Writable
 ): Promise<void> {
-  const shares = readLanHubShareFiles(options.dataDir);
-  writeLine(stream, { type: 'shares', objects: shares?.objects ?? [] });
-  if (shares) {
-    await writeShareFile(stream, options.dataDir, LAN_HUB_SHARES_INDEX_FILE, shares.index);
-    if (shares.images) {
-      await writeShareFile(stream, options.dataDir, LAN_HUB_SHARES_IMAGES_FILE, shares.images);
+  async function* chunks(): AsyncGenerator<Buffer> {
+    const shares = readLanHubShareFiles(options.dataDir);
+    yield encodeLine({ type: 'shares', objects: shares?.objects ?? [] });
+    if (shares) {
+      yield* shareFileChunks(options.dataDir, LAN_HUB_SHARES_INDEX_FILE, shares.index);
+      if (shares.images) {
+        yield* shareFileChunks(options.dataDir, LAN_HUB_SHARES_IMAGES_FILE, shares.images);
+      }
+      const have = new Set(options.have);
+      for (const sha256 of shares.objects) {
+        if (have.has(sha256)) continue;
+        const name = `${LAN_HUB_SHARES_DIR}/${OBJECTS_DIR}/${sha256}`;
+        yield* shareFileChunks(options.dataDir, name, null);
+      }
     }
-    const have = new Set(options.have);
-    for (const sha256 of shares.objects) {
-      if (have.has(sha256)) continue;
-      const name = `${LAN_HUB_SHARES_DIR}/${OBJECTS_DIR}/${sha256}`;
-      await writeShareFile(stream, options.dataDir, name, null);
-    }
+    yield encodeLine({ type: 'end' });
   }
-  writeLine(stream, { type: 'end' });
+  await pipeline(Readable.from(chunks()), stream);
 }
 
 /**
@@ -1204,14 +1214,19 @@ export async function pullLanHubSharesCopy(options: {
   } catch {
     response = null;
   }
-  if (response?.status === 404 || response?.status === 405) return null;
+  if (response?.status === 404 || response?.status === 405) {
+    await response.body?.cancel();
+    return null;
+  }
   if (!response?.ok || !response.body) {
+    await response?.body?.cancel();
     if (options.previous) await keepLanHubShares(options.previous, options.next);
     return null;
   }
-  return await readLanHubSharesCopy(
-    Readable.fromWeb(response.body as WebReadableStream<Uint8Array>),
-    options.next,
-    options.previous
-  );
+  const stream = Readable.fromWeb(response.body as WebReadableStream<Uint8Array>);
+  try {
+    return await readLanHubSharesCopy(stream, options.next, options.previous);
+  } finally {
+    stream.destroy();
+  }
 }

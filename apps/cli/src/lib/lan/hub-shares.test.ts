@@ -4,7 +4,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { PassThrough, Readable } from 'node:stream';
+import { PassThrough, Readable, Writable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -500,7 +500,7 @@ describe('conversations a LAN shares', () => {
       const sending = writeLanHubSharesCopy(
         { dataDir, have: previous ? listLanHubShareObjects(previous) : [] },
         stream
-      ).then(() => stream.end());
+      );
       const result = await readLanHubSharesCopy(stream, target, previous);
       await sending;
       return result;
@@ -519,6 +519,120 @@ describe('conversations a LAN shares', () => {
     const reread = await fetch(`${promoted.shareUrl}/s/${second.shareId}/share.json`);
     expect(reread.status).toBe(200);
   });
+});
+
+describe('streaming a standby share copy', () => {
+  let dataDir: string;
+  let expected: string[];
+
+  beforeEach(async () => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-share-copy-stream-'));
+    const prepared = await capture(
+      'Root history.',
+      Array.from({ length: 24 }, (_, index) => `${index}:` + 'synthetic text '.repeat(10_000))
+    );
+    const objects = path.join(dataDir, 'shares', 'objects');
+    fs.mkdirSync(objects, { recursive: true });
+    for (const object of prepared.manifest.objects) {
+      const bytes = prepared.objects.get(object.id);
+      if (!bytes) throw new Error('Missing fixture object');
+      fs.writeFileSync(path.join(objects, object.sha256), bytes);
+    }
+    const deployment = crypto.createHash('sha256').update(prepared.manifestBytes).digest('hex');
+    fs.writeFileSync(path.join(objects, deployment), prepared.manifestBytes);
+    fs.writeFileSync(
+      path.join(dataDir, 'shares', 'index.json'),
+      JSON.stringify({
+        version: 1,
+        publicUrl: null,
+        shares: {
+          ['synthetic-share'.padEnd(32, '0')]: {
+            title: 'Synthetic share',
+            rootSourceId: 'session-root',
+            sources: [],
+            conversationCount: prepared.manifest.conversations.length,
+            revision: 1,
+            deployment,
+            retired: [],
+            createdAt: '2026-10-19T00:00:00Z',
+            updatedAt: '2026-10-19T00:00:00Z',
+          },
+        },
+      })
+    );
+    expected = readLanHubShareFiles(dataDir)?.objects ?? [];
+    expect(expected.length).toBeGreaterThan(10);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('keeps response listeners constant across more than ten objects and sends a complete copy', async () => {
+    const chunks: Buffer[] = [];
+    const listeners: number[][] = [];
+    const stream = new Writable({
+      write(chunk: Buffer, _encoding, done) {
+        chunks.push(chunk);
+        listeners.push(
+          ['close', 'error', 'end', 'finish'].map((event) => stream.listenerCount(event))
+        );
+        done();
+      },
+    });
+    await writeLanHubSharesCopy({ dataDir, have: [] }, stream);
+    expect(stream.writableFinished).toBe(true);
+    expect(listeners.every((count) => JSON.stringify(count) === JSON.stringify(listeners[0]))).toBe(
+      true
+    );
+    expect(Math.max(...listeners.flat())).toBeLessThanOrEqual(5);
+    const target = path.join(dataDir, 'received');
+    const copied = await readLanHubSharesCopy(Readable.from(chunks), target, null);
+    expect(copied).toEqual({ objects: expected.length, received: expected.length + 1 });
+    for (const sha256 of expected) {
+      expect(fs.readFileSync(path.join(target, 'shares', 'objects', sha256))).toEqual(
+        fs.readFileSync(path.join(dataDir, 'shares', 'objects', sha256))
+      );
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')(
+    'closes source file descriptors when disconnected mid-object',
+    async () => {
+      const descriptors = () =>
+        fs.readdirSync('/proc/self/fd').flatMap((fd) => {
+          try {
+            const file = fs.readlinkSync(`/proc/self/fd/${fd}`);
+            return file.startsWith(dataDir) ? [file] : [];
+          } catch {
+            return [];
+          }
+        });
+      for (const stopAt of [1, 12]) {
+        let objects = 0;
+        let body = false;
+        let interrupted = false;
+        const stream = new Writable({
+          write(chunk: Buffer, _encoding, done) {
+            if (chunk.toString().startsWith('{"type":"file","name":"shares/objects/')) {
+              objects += 1;
+              body = true;
+            } else if (body && objects === stopAt) {
+              expect(descriptors().length).toBeGreaterThan(0);
+              interrupted = true;
+              stream.destroy(new Error('client disconnected'));
+            }
+            done();
+          },
+        });
+        await expect(writeLanHubSharesCopy({ dataDir, have: [] }, stream)).rejects.toThrow(
+          'client disconnected'
+        );
+        expect(interrupted).toBe(true);
+        expect(descriptors()).toEqual([]);
+      }
+    }
+  );
 });
 
 describe('the objects of shares', () => {
