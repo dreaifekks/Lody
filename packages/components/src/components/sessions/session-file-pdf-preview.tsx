@@ -224,10 +224,8 @@ export function SessionFilePdfPreview({ bytes, url, fileActions }: SessionFilePd
     };
     const handleRotationChanging = (event: RotationChangingEvent) =>
       setRotation(event.pagesRotation);
-    // pdf.js sizes fit modes from the container and never re-measures it. The
-    // side panel's container is 0 wide while the panel is collapsed or still
-    // sliding open, so a fit computed then is nothing; wait for a real size,
-    // and fit again whenever the size changes.
+    // PDF.js does not re-fit preset scales when the panel opens or resizes.
+    // Wait for a usable scrollport, then keep the selected fit mode in sync.
     const fitToContainer = () => {
       if (!pdfViewer.pdfDocument || container.clientWidth === 0 || container.clientHeight === 0) {
         return;
