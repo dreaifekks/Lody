@@ -1,5 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_ARGON_LIMIT_ID,
+  ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
   CODEX_SPARK_LIMIT_ID,
   getRateLimitEntryKey,
   getServerNow,
@@ -8,6 +11,7 @@ import {
   type MachineId,
   type MachineViewMeta,
 } from '@lody/shared';
+import { MachineQuotaCompact } from '@/components/settings/machine-quota-compact';
 import { ProviderRow } from '@/components/settings/provider-row';
 import { cn } from '@/lib/utils';
 
@@ -245,4 +249,84 @@ export const CustomProviderWithUsage: Story = {
     machine: makeMachine(),
     usage: { conversations: 1, lastUsedAt: getServerNow() - 2 * 60_000 },
   },
+};
+
+const antigravityConfig = makeConfig({
+  name: 'Antigravity',
+  cliType: 'registry',
+  agentType: ANTIGRAVITY_AGENT_TYPE,
+});
+const antigravityMachine = makeMachine({
+  raceLimits: Object.fromEntries(
+    [
+      {
+        limitId: ANTIGRAVITY_ARGON_LIMIT_ID,
+        limitName: 'Argon',
+        windows: [
+          {
+            label: 'Argon',
+            usedPercent: 43.5,
+            windowDurationSeconds: 604_800,
+            resetsAtEpochSeconds: resetIn(4 * 86_400),
+          },
+        ],
+      },
+      {
+        limitId: 'gemini',
+        limitName: 'Gemini',
+        windows: [
+          {
+            label: 'Gemini',
+            usedPercent: 50,
+            windowDurationSeconds: 18_000,
+            resetsAtEpochSeconds: resetIn(3_600),
+          },
+          {
+            label: 'Gemini',
+            usedPercent: 25,
+            windowDurationSeconds: 604_800,
+            resetsAtEpochSeconds: resetIn(86_400),
+          },
+        ],
+      },
+      {
+        limitId: ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
+        limitName: 'Claude / GPT',
+        windows: [
+          {
+            label: 'Claude / GPT',
+            usedPercent: 0,
+            windowDurationSeconds: 18_000,
+            resetsAtEpochSeconds: resetIn(3_600),
+          },
+          {
+            label: 'Claude / GPT',
+            usedPercent: 0,
+            windowDurationSeconds: 604_800,
+            resetsAtEpochSeconds: resetIn(86_400),
+          },
+        ],
+      },
+    ].map((limit) => [
+      getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, limit.limitId, antigravityConfig.id),
+      { ...limit, scope: { providerId: ANTIGRAVITY_AGENT_TYPE } },
+    ])
+  ),
+});
+
+export const AntigravityPro: Story = {
+  args: { config: antigravityConfig, machine: antigravityMachine, showActions: true },
+};
+
+export const AntigravityProNarrow: Story = {
+  args: { ...AntigravityPro.args, narrow: true },
+};
+
+export const AntigravityProCompact: Story = {
+  args: AntigravityPro.args,
+  render: ({ machine }) => (
+    <div className="w-[340px]">
+      <MachineQuotaCompact raceLimits={machine.raceLimits} />
+    </div>
+  ),
 };

@@ -12,6 +12,14 @@ subdirectory; this file is the navigation index. Cross-module explanations live 
   provide the lock through the shared `fileLocksLegacy` runtime until daemon
   composition migrates.
 
+## Provider quota
+
+- `antigravity-quota.ts` — maps Cloud Code groups to provider-scoped limits.
+  Gemini keeps `gemini`; Pro's `gemini-argon-wtu` maps to `argon` / Argon with
+  its weekly window. Ultra reports Argon within Gemini. Session selection uses
+  these explicit ids; provider rows show Gemini plus labeled Argon windows, and
+  the compact machine view retains one row per group.
+
 ## Resource discovery
 
 - `workspace-command-manager.ts` — overlapping cloud commands borrow one document

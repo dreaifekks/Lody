@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_ARGON_LIMIT_ID,
   ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
   ANTIGRAVITY_THIRD_PARTY_MODELS_ENV,
   getRateLimitEntryKey,
@@ -242,7 +243,12 @@ describe('ProviderRow Antigravity quota', () => {
   });
 
   const config = makeConfig({ cliType: 'registry', agentType: ANTIGRAVITY_AGENT_TYPE });
-  const group = (limitId: string, limitName: string, usedPercent: number) => ({
+  const group = (
+    limitId: string,
+    limitName: string,
+    usedPercent: number,
+    windowDurationSeconds = 18_000
+  ) => ({
     limitId,
     limitName,
     scope: { providerId: ANTIGRAVITY_AGENT_TYPE },
@@ -250,7 +256,7 @@ describe('ProviderRow Antigravity quota', () => {
       {
         label: limitName,
         usedPercent,
-        windowDurationSeconds: 5 * 60 * 60,
+        windowDurationSeconds,
         resetsAtEpochSeconds: null,
       },
     ],
@@ -258,17 +264,28 @@ describe('ProviderRow Antigravity quota', () => {
   const quotaMachine: MachineViewMeta = {
     ...machine,
     raceLimits: {
-      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, 'gemini', config.id)]: group(
-        'gemini',
-        'Gemini',
-        10
+      // Argon arrives first: it must not displace Gemini.
+      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, ANTIGRAVITY_ARGON_LIMIT_ID, config.id)]: group(
+        ANTIGRAVITY_ARGON_LIMIT_ID,
+        'Argon',
+        43.5,
+        604_800
       ),
+      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, 'gemini', config.id)]: {
+        ...group('gemini', 'Gemini', 50),
+        windows: [
+          ...group('gemini', 'Gemini', 50).windows,
+          ...group('gemini', 'Gemini', 25, 604_800).windows,
+        ],
+      },
       [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, ANTIGRAVITY_THIRD_PARTY_LIMIT_ID, config.id)]:
         group(ANTIGRAVITY_THIRD_PARTY_LIMIT_ID, 'Claude / GPT', 60),
     },
   };
   const meterTitles = () =>
-    Array.from(container.querySelectorAll('[role="meter"]')).map((node) => node.getAttribute('aria-label'));
+    Array.from(container.querySelectorAll('[role="meter"]')).map((node) =>
+      node.getAttribute('aria-label')
+    );
 
   const render = async (env: Record<string, string>) => {
     await act(async () => {
@@ -284,14 +301,14 @@ describe('ProviderRow Antigravity quota', () => {
   };
 
   // Google never counts ACP use against the Claude/GPT group, so even a
-  // provider that offers those models shows only its Gemini quota.
+  // provider that offers those models shows Gemini and separate Argon quota.
   it.each([
     { offersClaude: false, env: {} },
     { offersClaude: true, env: { [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: '1' } },
-  ])('shows only the Gemini quota (offers Claude: $offersClaude)', async ({ env }) => {
+  ])('shows Gemini and Argon quota (offers Claude: $offersClaude)', async ({ env }) => {
     await render(env);
 
-    expect(meterTitles()).toContain('5h: 90% left');
+    expect(meterTitles()).toEqual(['5h: 50% left', '7d: 75% left', '7d · Argon: 57% left']);
     expect(meterTitles()).not.toContain('5h: 40% left');
     expect(meterTitles().some((title) => title?.includes('Claude / GPT'))).toBe(false);
   });

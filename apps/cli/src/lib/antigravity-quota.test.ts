@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RateLimit } from 'acp-extension-core';
-import type { AgentConfigId } from '@lody/shared';
+import { ANTIGRAVITY_ARGON_LIMIT_ID, type AgentConfigId } from '@lody/shared';
 import type { Logger } from '@/utils/logger';
 import {
   AntigravityQuotaPoller,
@@ -36,6 +36,20 @@ const SUMMARY = {
       buckets: [
         { bucketId: '3p-weekly', window: 'weekly', resetTime: '2026-10-10T14:42:16Z' },
         { bucketId: '3p-5h', window: '5h', remainingFraction: 1 },
+      ],
+    },
+    {
+      displayName: 'Gemini 4 Argon',
+      description:
+        'For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) is available on Ultra plans.',
+      buckets: [
+        {
+          bucketId: 'gemini-argon-wtu-weekly',
+          displayName: 'Gemini 4 Argon Weekly Limit',
+          window: 'weekly',
+          resetTime: '2026-10-24T02:47:02Z',
+          remainingFraction: 0.5653113126754761,
+        },
       ],
     },
   ],
@@ -82,6 +96,19 @@ describe('antigravityRateLimitsFromSummary', () => {
             usedPercent: 100,
             windowDurationSeconds: 7 * 24 * 60 * 60,
             resetsAtEpochSeconds: Date.parse('2026-10-10T14:42:16Z') / 1000,
+          },
+        ],
+      },
+      {
+        limitId: ANTIGRAVITY_ARGON_LIMIT_ID,
+        scope: { providerId: 'antigravity-acp' },
+        limitName: 'Argon',
+        windows: [
+          {
+            label: 'Argon',
+            usedPercent: 43.5,
+            windowDurationSeconds: 7 * 24 * 60 * 60,
+            resetsAtEpochSeconds: Date.parse('2026-10-24T02:47:02Z') / 1000,
           },
         ],
       },
@@ -159,7 +186,11 @@ describe('createAntigravityQuotaClient', () => {
 
     await writeToken('refresh-a');
     const limits = await client.fetchRateLimits();
-    expect(limits?.map((limit) => limit.limitId)).toEqual(['gemini', 'third-party']);
+    expect(limits?.map((limit) => limit.limitId)).toEqual([
+      'gemini',
+      'third-party',
+      ANTIGRAVITY_ARGON_LIMIT_ID,
+    ]);
 
     // Signing in again with another account replaces the cached access token.
     await writeToken('refresh-b');

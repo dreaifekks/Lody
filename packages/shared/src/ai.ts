@@ -56,6 +56,8 @@ export function isAntigravityThirdPartyModelsEnabled(
 }
 /** Rate-limit id of Antigravity's Claude/GPT quota group; the Gemini group is `gemini`. */
 export const ANTIGRAVITY_THIRD_PARTY_LIMIT_ID = 'third-party';
+/** Separate Argon quota on Pro plans; Ultra includes Argon in the Gemini group. */
+export const ANTIGRAVITY_ARGON_LIMIT_ID = 'argon';
 /** Agent types that may own rate-limit rows: managed builtins plus Antigravity. */
 export type RateLimitAgentType = CliType | typeof ANTIGRAVITY_AGENT_TYPE;
 

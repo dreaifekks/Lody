@@ -8,7 +8,7 @@ import { MoreHorizontal, RefreshCw, Trash2 } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import {
   ANTIGRAVITY_AGENT_TYPE,
-  ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
+  ANTIGRAVITY_ARGON_LIMIT_ID,
   REGISTRY_ACP_AGENTS,
   type AgentConfigCliType,
   type AgentConfigMeta,
@@ -178,13 +178,15 @@ export function ProviderRow({
     if (!showRateLimits || !machine?.raceLimits) return [];
     const entries = getAgentRateLimitEntries(machine.raceLimits, agentType, config.id);
     if (agentType === ANTIGRAVITY_AGENT_TYPE) {
-      // Only the Gemini group: Google does not count Claude/GPT use made through
-      // the ACP server against its Claude/GPT group, which therefore always reads
-      // full. Its windows drop the group label, which would only repeat "Gemini".
-      const gemini = entries.find((entry) => entry.limitId !== ANTIGRAVITY_THIRD_PARTY_LIMIT_ID);
-      return gemini
-        ? getAgentRateLimitWindows(gemini.limits).map(({ label: _label, ...window }) => window)
-        : [];
+      // Keep Gemini first and distinguish the separate Pro Argon window.
+      // Google does not count ACP use against the Claude/GPT bucket.
+      return ['gemini', ANTIGRAVITY_ARGON_LIMIT_ID].flatMap((limitId) => {
+        const entry = entries.find((candidate) => candidate.limitId === limitId);
+        if (!entry) return [];
+        return getAgentRateLimitWindows(entry.limits).map(({ label: _label, ...window }) =>
+          limitId === ANTIGRAVITY_ARGON_LIMIT_ID ? { ...window, label: 'Argon' } : window
+        );
+      });
     }
     for (const entry of entries) {
       const windows = getAgentRateLimitWindows(entry.limits);

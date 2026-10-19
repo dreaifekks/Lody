@@ -1,6 +1,7 @@
 import type { AcpCapabilityCacheEntry } from '@lody/shared';
 import {
   ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_ARGON_LIMIT_ID,
   CODEX_SPARK_LIMIT_ID,
   hasBuiltinEnvAuthRouting,
   resolveAgentBrandId,
@@ -194,6 +195,17 @@ export function resolveAgentRateLimitForModel({
   if (entries.length === 0) return null;
 
   const normalizedModelId = normalizeModelName(modelId);
+  if (agentType === ANTIGRAVITY_AGENT_TYPE) {
+    const wantsArgon = normalizedModelId.includes('argon');
+    if (wantsArgon) {
+      const argon = entries.find((entry) => entry.limitId === ANTIGRAVITY_ARGON_LIMIT_ID);
+      if (argon) return argon;
+    }
+    // Ultra includes Argon in Gemini. The Claude/GPT bucket does not count ACP use.
+    return !normalizedModelId || wantsArgon || normalizedModelId.includes('gemini')
+      ? (entries.find((entry) => entry.limitId === 'gemini') ?? null)
+      : null;
+  }
   if (normalizedModelId) {
     const namedMatch = entries
       .map((entry) => ({ entry, name: normalizeModelName(entry.limits.limitName) }))
@@ -205,11 +217,6 @@ export function resolveAgentRateLimitForModel({
       (entry) => normalizeModelName(entry.limitId) === normalizedModelId
     );
     if (exactLimitIdMatch) return exactLimitIdMatch;
-
-    // Gemini models matched their group by name above. Antigravity's Claude/GPT
-    // group is not shown: Google does not count use made through the ACP server
-    // against it, so it always reads full.
-    if (agentType === ANTIGRAVITY_AGENT_TYPE) return null;
 
     const wantsCodexSpark = agentType === 'codex' && normalizedModelId.includes('spark');
     if (wantsCodexSpark) {
