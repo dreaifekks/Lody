@@ -697,7 +697,7 @@ const isMachineFlockRateLimitRow = (
   row: MachineFlockRow
 ): row is Extract<MachineFlockRow, { key: MachineFlockRateLimitKey }> => row.key[0] === 'rateLimit';
 
-function getProviderRateLimitKeys(
+export function getProviderRateLimitKeys(
   rows: MachineFlockRowMap,
   agentConfigId: AgentConfigId
 ): MachineFlockProviderRateLimitKey[] {

@@ -4170,8 +4170,8 @@ export class MessageHandler {
             this.machineId
           )
         ).map((config) => config.id),
-      write: async (agentConfigId, limits) =>
-        await this.workspaceDocument.updateRateLimits(
+      replaceRateLimits: async (agentConfigId, limits) =>
+        await this.workspaceDocument.replaceRateLimits(
           this.machineId,
           agentConfigId,
           ANTIGRAVITY_AGENT_TYPE,

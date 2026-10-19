@@ -100,12 +100,14 @@ and MUST sample without a cloud transport. Cloud observers/snapshots attach only
 the authorized remote bridge attaches, and detach on offline/revocation. Sampling is
 observer-lease driven; never start OS probes permanently or persist snapshots.
 
-## Machine Flock writes for this machine are local-first
+## Local-first Machine Flock writes
+
+Antigravity replaces quota only for the fetched config/type; null/errors retain cache.
 
 After `repo.flush()`, call `LoroDocumentManager.markMachineFlockDocDirty(...)` (or use
-the manager as sync scheduler); never await `handle.syncOnce()` in user/RPC paths. `machine-flock-sync-coordinator.ts` owns the live room, dirty
-state, and exponential retry; request-scoped `syncOnce()` failures must not make local
-project add/update flows fail after the local write is durable.
+the manager as sync scheduler). Never await `handle.syncOnce()` in user/RPC paths
+or fail durable local project changes on sync errors. `machine-flock-sync-coordinator.ts`
+owns the live room, dirty state and exponential retry.
 
 ## Durable commands are scanned, not evented
 

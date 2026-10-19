@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_ARGON_LIMIT_ID,
   ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
   CODEX_SPARK_LIMIT_ID,
   getRateLimitEntryKey,
@@ -173,10 +174,28 @@ describe('session usage', () => {
     ).toBe('codex');
   });
 
-  it("shows Antigravity's Gemini quota only for its Gemini models", () => {
+  it('selects Antigravity Argon or Gemini quota by model and available groups', () => {
     const configId = 'antigravity-mac' as AgentConfigId;
     const scope = { providerId: ANTIGRAVITY_AGENT_TYPE };
+    const argonKey = getRateLimitEntryKey(
+      ANTIGRAVITY_AGENT_TYPE,
+      ANTIGRAVITY_ARGON_LIMIT_ID,
+      configId
+    );
     const rateLimits: MachineRateLimits = {
+      [argonKey]: usage({
+        limitId: ANTIGRAVITY_ARGON_LIMIT_ID,
+        limitName: 'Argon',
+        scope,
+        windows: [
+          {
+            label: 'Argon',
+            usedPercent: 43.5,
+            windowDurationSeconds: 604_800,
+            resetsAtEpochSeconds: null,
+          },
+        ],
+      }),
       [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, 'gemini', configId)]: usage({
         limitId: 'gemini',
         limitName: 'Gemini',
@@ -193,11 +212,15 @@ describe('session usage', () => {
         modelId,
       })?.limitId;
 
+    expect(limitFor('gemini-4-argon-high')).toBe(ANTIGRAVITY_ARGON_LIMIT_ID);
     expect(limitFor('gemini-3.8-flash-high')).toBe('gemini');
     expect(limitFor('gemini-pro-agent')).toBe('gemini');
     // Google never counts ACP use against the Claude/GPT group, so it is not shown.
     expect(limitFor('claude-opus-5-5-high')).toBeUndefined();
     expect(limitFor('gpt-oss-120b-medium')).toBeUndefined();
+    delete rateLimits[argonKey];
+    expect(limitFor('gemini-4-argon-high')).toBe('gemini');
+    expect(limitFor('gemini-3.8-flash-high')).toBe('gemini');
   });
 
   it('keeps quota snapshots isolated between Codex provider configs', () => {
