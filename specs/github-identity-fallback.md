@@ -51,8 +51,8 @@ and blocks replacement; a timeout or interrupted waiter does not prove release.
 ## Providers and availability
 
 A local HTTP broker only supplies personal and App tokens. Its cloud requests
-have a 2.5-second deadline; helper requests have a 3-second deadline including
-response bodies. Successful credentials may be cached for up to 60 seconds,
+have a 15-second deadline; helper requests wait 20 seconds including response
+bodies, so a helper always outlasts the broker's own cloud request. Successful credentials may be cached for up to 60 seconds,
 partitioned by repository, owner, machine and source and bounded by token expiry.
 Failures are not cached. Configuration changes can invalidate the cache; remote
 revocation while disconnected is not guaranteed instantaneous.

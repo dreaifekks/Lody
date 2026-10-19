@@ -1437,6 +1437,78 @@ describe('SessionManager preparation compatibility', () => {
     expect(coldCreate).toHaveBeenCalledWith(durableConfig, undefined, undefined);
   });
 
+  // A tree that outlived one forced termination used to keep the retirement's
+  // rejection forever, failing every later turn of the Session before its prompt.
+  it('retries a failed preparation release on the next create instead of replaying its failure', async () => {
+    const manager = new SessionManager(
+      createLogger(),
+      'token',
+      'machine-1' as MachineId,
+      'workspace-1' as WorkspaceId,
+      createWorkspaceDocument(new Map()),
+      {
+        sessionSandboxFactory: async () => createNoopSessionSandbox(),
+        cloudPort: createTestCloudPort(),
+      }
+    );
+    const sessionId = 'failed-preparation-release-retry' as SessionId;
+    const agentConfigId = 'agent-grok' as AgentConfigId;
+    const prepared = {
+      config: { mcpServerIds: [], configOptionValues: { permission_mode: 'always-approve' } },
+      compatibility: createPreparedTestCompatibility({}, [], { permission_mode: 'always-approve' }),
+      initialized: Promise.resolve(),
+      sessionReady: Promise.resolve(),
+      dispose: vi
+        .fn(async () => undefined)
+        .mockRejectedValueOnce(
+          new AggregateError([], `Session ${sessionId} resources were not released`)
+        ),
+    } satisfies PreparedTestResource;
+    const identity = {
+      requestedByUserId: 'user-1',
+      agentConfigId,
+      cliType: 'builtin' as const,
+      agentType: 'grok',
+    };
+    const internals = manager as unknown as {
+      preparationService: SessionPreparationService<PreparedTestResource>;
+      createSessionFromPreparationOrCold(config: SessionConfig): Promise<ISession>;
+      createSessionInnerWithAgent(config: SessionConfig): Promise<ISession>;
+    };
+    internals.preparationService.start({
+      preparationId: 'prepare-failed-release',
+      sessionId,
+      requesterUserId: 'user-1',
+      requestKey: buildSessionPreparationRequestKey(identity),
+      claimKey: buildSessionPreparationClaimKey(identity),
+      create: async () => prepared,
+    });
+    await vi.waitFor(() =>
+      expect(internals.preparationService.getState(sessionId)).toBe('session-ready')
+    );
+    const coldSession = { sessionId } as ISession;
+    const coldCreate = vi
+      .spyOn(internals, 'createSessionInnerWithAgent')
+      .mockResolvedValue(coldSession);
+    const durableConfig = createSessionConfig({
+      sessionId,
+      agentConfigId,
+      agentType: 'grok',
+      configOptionValues: { permission_mode: 'ask' },
+    });
+
+    await expect(internals.createSessionFromPreparationOrCold(durableConfig)).rejects.toThrow(
+      'resources were not released'
+    );
+    expect(coldCreate).not.toHaveBeenCalled();
+
+    await expect(internals.createSessionFromPreparationOrCold(durableConfig)).resolves.toBe(
+      coldSession
+    );
+    expect(prepared.dispose).toHaveBeenCalledTimes(2);
+    expect(coldCreate).toHaveBeenCalledTimes(1);
+  });
+
   it('waits for a published preparation to release its worktree when durable launch config is absent', async () => {
     const manager = new SessionManager(
       createLogger(),

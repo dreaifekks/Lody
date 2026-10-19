@@ -18,11 +18,40 @@ export interface SessionPreparationResource {
   dispose(): Promise<void>;
 }
 
-/** Creation may reject normally only after releasing all partially acquired resources. */
+/**
+ * Creation may reject normally only after releasing all partially acquired resources.
+ * `retry` repeats that release over whatever the failed attempt still holds.
+ */
 export class SessionPreparationCleanupError extends Error {
-  constructor(cause: unknown) {
+  readonly retry: (() => Promise<void>) | undefined;
+  constructor(cause: unknown, retry?: () => Promise<void>) {
     super(`Session preparation cleanup failed: ${formatErrorMessage(cause)}`, { cause });
     this.name = 'SessionPreparationCleanupError';
+    this.retry = retry;
+  }
+}
+
+/**
+ * One retirement. Its failure keeps fencing same-session replacement, but the
+ * next caller retries it instead of receiving the stale rejection: a tree that
+ * outlived one termination is usually gone, or killable, a turn later.
+ */
+class Retirement {
+  private attempt: Promise<void> | null = null;
+  private failed = false;
+  constructor(private readonly release: () => Promise<void>) {}
+
+  run(): Promise<void> {
+    if (this.attempt && !this.failed) return this.attempt;
+    this.failed = false;
+    const attempt = Promise.resolve().then(this.release);
+    this.attempt = attempt;
+    // Registered before any caller's handler, so a caller that observes the
+    // rejection and asks again always starts a new attempt.
+    attempt.catch(() => {
+      if (this.attempt === attempt) this.failed = true;
+    });
+    return attempt;
   }
 }
 
@@ -44,7 +73,9 @@ type PreparationRecord<T extends SessionPreparationResource> = {
   resource?: T;
   resourcePromise: Promise<T>;
   cleanupPromise?: Promise<void>;
-  retirementPromise?: Promise<void>;
+  retirement?: Retirement;
+  /** Creation's own rollback failure, already reported once and retried after. */
+  rollbackFailure?: SessionPreparationCleanupError;
 };
 
 export type SessionPreparationClaimResult<T extends SessionPreparationResource> =
@@ -53,7 +84,7 @@ export type SessionPreparationClaimResult<T extends SessionPreparationResource> 
 
 export class SessionPreparationService<T extends SessionPreparationResource> {
   private readonly records = new Map<SessionId, PreparationRecord<T>>();
-  private readonly retiring = new Map<SessionId, Promise<void>>();
+  private readonly retiring = new Map<SessionId, Retirement>();
 
   constructor(
     private readonly logger: LoggerLike,
@@ -83,7 +114,7 @@ export class SessionPreparationService<T extends SessionPreparationResource> {
     if (current && current.requesterUserId !== args.requesterUserId) return 'busy';
 
     let disposition: SessionPreparationStartDisposition = 'accepted';
-    let predecessorCleanup = this.retiring.get(args.sessionId) ?? null;
+    let predecessorCleanup = this.retirementOf(args.sessionId);
     const requesterRecord = Array.from(this.records.values()).find(
       (record) => record.requesterUserId === args.requesterUserId
     );
@@ -170,7 +201,7 @@ export class SessionPreparationService<T extends SessionPreparationResource> {
 
   discard(sessionId: SessionId): Promise<void> | null {
     const record = this.records.get(sessionId);
-    if (!record) return this.retiring.get(sessionId) ?? null;
+    if (!record) return this.retirementOf(sessionId);
     return this.expire(record, 'expired');
   }
 
@@ -194,7 +225,7 @@ export class SessionPreparationService<T extends SessionPreparationResource> {
   }): SessionPreparationClaimResult<T> {
     const record = this.records.get(args.sessionId);
     if (!record) {
-      return { status: 'miss', cleanup: this.retiring.get(args.sessionId) ?? null };
+      return { status: 'miss', cleanup: this.retirementOf(args.sessionId) };
     }
     if (
       record.requesterUserId !== args.requesterUserId ||
@@ -230,7 +261,7 @@ export class SessionPreparationService<T extends SessionPreparationResource> {
     for (const record of records) {
       void this.expire(record, 'expired');
     }
-    await Promise.allSettled(Array.from(this.retiring.values()));
+    await Promise.allSettled(Array.from(this.retiring.values(), (retirement) => retirement.run()));
   }
 
   private advance(record: PreparationRecord<T>, state: 'initialized' | 'session-ready'): void {
@@ -253,8 +284,13 @@ export class SessionPreparationService<T extends SessionPreparationResource> {
     void this.expire(record, 'failed');
   }
 
+  /** The session's pending retirement, retrying it first if its last attempt failed. */
+  private retirementOf(sessionId: SessionId): Promise<void> | null {
+    return this.retiring.get(sessionId)?.run() ?? null;
+  }
+
   private expire(record: PreparationRecord<T>, state: 'expired' | 'failed'): Promise<void> {
-    if (record.retirementPromise) return record.retirementPromise;
+    if (record.retirement) return record.retirement.run();
     if (this.records.get(record.sessionId) === record) {
       this.records.delete(record.sessionId);
     }
@@ -264,24 +300,22 @@ export class SessionPreparationService<T extends SessionPreparationResource> {
     // Keep retirement discoverable after the lease is removed, including while
     // create() is still returning its resource. Publish before abort listeners run.
     const predecessor = this.retiring.get(record.sessionId);
-    const cleanup = Promise.all([
-      predecessor,
-      controlClosed,
-      Promise.resolve().then(() => this.waitForCleanup(record)),
-    ])
-      .then(() => undefined)
-      .then(() => {
-        if (this.retiring.get(record.sessionId) === cleanup) {
-          this.retiring.delete(record.sessionId);
-        }
-      });
-    // A failed release remains discoverable and blocks same-session replacement.
-    // Observers may ignore cancel's receipt, so log without consuming its failure.
-    void cleanup.catch((error: unknown) => {
-      this.logger.debug(`Session preparation retirement failed: ${formatErrorMessage(error)}`);
+    const retirement: Retirement = new Retirement(async () => {
+      try {
+        await Promise.all([predecessor?.run(), controlClosed, this.waitForCleanup(record)]);
+      } catch (error) {
+        // A failed release remains discoverable and blocks same-session replacement.
+        // Observers may ignore cancel's receipt, so log without consuming its failure.
+        this.logger.debug(`Session preparation retirement failed: ${formatErrorMessage(error)}`);
+        throw error;
+      }
+      if (this.retiring.get(record.sessionId) === retirement) {
+        this.retiring.delete(record.sessionId);
+      }
     });
-    record.retirementPromise = cleanup;
-    this.retiring.set(record.sessionId, cleanup);
+    record.retirement = retirement;
+    this.retiring.set(record.sessionId, retirement);
+    const cleanup = retirement.run();
     record.abortController.abort();
     return cleanup;
   }
@@ -290,6 +324,9 @@ export class SessionPreparationService<T extends SessionPreparationResource> {
     if (record.cleanupPromise) return record.cleanupPromise;
     const cleanup = Promise.resolve().then(() => resource.dispose());
     void cleanup.catch((error: unknown) => {
+      // The resource still owns what it failed to release; the next retirement
+      // attempt disposes it again.
+      if (record.cleanupPromise === cleanup) record.cleanupPromise = undefined;
       this.logger.debug(`Failed to dispose session preparation: ${formatErrorMessage(error)}`);
     });
     record.cleanupPromise = cleanup;
@@ -297,10 +334,20 @@ export class SessionPreparationService<T extends SessionPreparationResource> {
   }
 
   private async waitForCleanup(record: PreparationRecord<T>): Promise<void> {
-    const resource = await record.resourcePromise.catch((error: unknown) => {
-      if (error instanceof SessionPreparationCleanupError) throw error;
-      return undefined;
-    });
-    if (resource) await this.scheduleCleanup(record, resource);
+    let resource: T;
+    try {
+      resource = await record.resourcePromise;
+    } catch (error) {
+      if (!(error instanceof SessionPreparationCleanupError)) return;
+      // Creation already attempted its rollback: report that failure once,
+      // then retry the rollback on every later attempt.
+      if (record.rollbackFailure !== error || !error.retry) {
+        record.rollbackFailure = error;
+        throw error;
+      }
+      await error.retry();
+      return;
+    }
+    await this.scheduleCleanup(record, resource);
   }
 }

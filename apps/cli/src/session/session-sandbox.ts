@@ -131,6 +131,8 @@ interface SessionSandboxDeps {
   readSelfCgroupPath: () => Promise<string>;
   configureExecutionProcess: (pid: number, logger?: Logger) => Promise<void>;
   killPid: (pid: number, signal?: NodeJS.Signals | 0) => void;
+  /** Must describe the same process table as `killPid`. */
+  listProcessGroup?: NodeProcessApi['listProcessGroup'];
 }
 
 interface CreateSessionSandboxFactoryOptions {
@@ -164,6 +166,7 @@ const defaultSandboxDeps = (): SessionSandboxDeps => ({
   },
   killPid: (pid: number, signal?: NodeJS.Signals | 0) =>
     nodeProcessLive.kill(pid, signal ?? 'SIGTERM'),
+  listProcessGroup: nodeProcessLive.listProcessGroup,
 });
 
 const toNodeProcess = (deps: SessionSandboxDeps): NodeProcessApi => ({
@@ -171,6 +174,7 @@ const toNodeProcess = (deps: SessionSandboxDeps): NodeProcessApi => ({
   spawn: deps.spawnProcess,
   spawnSync: nodeProcessLive.spawnSync,
   kill: (pid, signal) => deps.killPid(pid, signal),
+  ...(deps.listProcessGroup ? { listProcessGroup: deps.listProcessGroup } : {}),
 });
 
 const configureProcessBestEffort =
@@ -192,6 +196,8 @@ export function createSessionSandboxFactory(
 ): SessionSandboxFactory {
   const deps: SessionSandboxDeps = {
     ...defaultSandboxDeps(),
+    // A substituted process table must not be judged by the host's.
+    ...(options.deps?.killPid ? { listProcessGroup: undefined } : {}),
     ...(options.deps ?? {}),
   };
   const facade = { logger: options.logger, nodeProcess: toNodeProcess(deps) };

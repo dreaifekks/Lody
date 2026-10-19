@@ -387,31 +387,44 @@ describe('SessionPreparationService', () => {
     });
   });
 
-  it('retains failed rollback before resource publication to fence replacement', async () => {
+  it('fences replacement on failed rollback before publication and retries it on demand', async () => {
     const service = createService();
     const createStarted = deferred();
     const releaseCreate = gate();
+    const rollbackOutcomes = [new Error('still running'), null];
+    let rollbackRetries = 0;
     service.start({
       ...lease,
       requestKey: 'key',
       create: async () => {
         createStarted.resolve();
         await releaseCreate.promise;
-        throw new SessionPreparationCleanupError(new Error('process termination failed'));
+        throw new SessionPreparationCleanupError(
+          new Error('process termination failed'),
+          async () => {
+            rollbackRetries += 1;
+            const outcome = rollbackOutcomes.shift();
+            if (outcome) throw outcome;
+          }
+        );
       },
     });
     await createStarted.promise;
     const cleanup = service.discard(sessionId);
     releaseCreate.resolve();
     await expect(cleanup).rejects.toThrow('process termination failed');
-    expect(service.discard(sessionId)).toBe(cleanup);
-    expect(service.claim({ ...identity, isCompatible: () => true })).toEqual({
-      status: 'miss',
-      cleanup,
-    });
+    expect(rollbackRetries).toBe(0);
+
+    // Each later caller retries the rollback; a failed retry still fences.
+    const claim = service.claim({ ...identity, isCompatible: () => true });
+    expect(claim.status).toBe('miss');
+    await expect(claim.status === 'miss' ? claim.cleanup : null).rejects.toThrow('still running');
+    await expect(service.discard(sessionId)).resolves.toBeUndefined();
+    expect(rollbackRetries).toBe(2);
+    expect(service.discard(sessionId)).toBeNull();
   });
 
-  it('releases failed creation but retains failed disposal to fence replacement', async () => {
+  it('releases failed creation, and retries failed disposal until it succeeds', async () => {
     const service = createService();
     const createStarted = deferred();
     const releaseCreate = gate();
@@ -432,16 +445,21 @@ describe('SessionPreparationService', () => {
     expect(service.discard(sessionId)).toBeNull();
     const prepared = start(service);
     await prepared.started.promise;
+    let disposals = 0;
     prepared.resource.dispose = async () => {
-      throw new Error('disposal failed');
+      disposals += 1;
+      if (disposals === 1) throw new Error('disposal failed');
     };
-    const failedRelease = service.discard(sessionId);
-    await expect(failedRelease).rejects.toThrow('disposal failed');
-    expect(service.discard(sessionId)).toBe(failedRelease);
-    expect(service.claim({ ...identity, isCompatible: () => true })).toEqual({
-      status: 'miss',
-      cleanup: failedRelease,
-    });
+    await expect(service.discard(sessionId)).rejects.toThrow('disposal failed');
     expect(service.peek(identity)).toBeNull();
+
+    // A replacement waits for the retried disposal, then starts and is claimable.
+    const replacement = start(service);
+    await replacement.started.promise;
+    expect(disposals).toBe(2);
+    expect(service.claim({ ...identity, isCompatible: () => true })).toEqual({
+      status: 'claimed',
+      resource: replacement.resource,
+    });
   });
 });

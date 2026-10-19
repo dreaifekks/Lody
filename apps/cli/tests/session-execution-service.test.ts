@@ -1,6 +1,7 @@
 import * as quotaRunner from '../src/agent/acp-runner';
 import { ProviderQuotaRefreshCache } from '../src/session/provider-quota-refresh-cache';
 import { createSessionBackend } from '@/session/session-backend';
+import type { MachineAccessVerification } from '@/session/session-access-retry';
 import {
   RequestError,
   type ContentBlock,
@@ -10839,9 +10840,8 @@ describe('Operation Inbox execution boundary', () => {
     sessionId = 'inbox-session' as SessionId
   ) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-inbox-execution-'));
-    const store = new LodyOperationStore(path.join(root, 'operations.sqlite3'), () =>
-      Date.parse('2026-10-12T00:00:00Z')
-    );
+    const now = () => Date.parse('2026-10-12T00:00:00Z');
+    const store = new LodyOperationStore(path.join(root, 'operations.sqlite3'), now);
     let meta: Partial<SessionMeta> = {
       id: sessionId,
       machineId: 'machine-1',
@@ -11031,6 +11031,7 @@ describe('Operation Inbox execution boundary', () => {
       bridge,
       wake: () => bridge.wake(),
       storePath: path.join(root, 'operations.sqlite3'),
+      now,
     };
   }
 
@@ -11286,6 +11287,130 @@ describe('Operation Inbox execution boundary', () => {
       expect(state?.turn.id).not.toMatch(/^inbox:completion:/);
     } finally {
       await h.close();
+    }
+  });
+
+  it('keeps an access-unverified input pending so the access retry executes it once', async () => {
+    const received: ContentBlock[][] = [];
+    const f = inboxExecutionFixture(async (blocks) => {
+      received.push(structuredClone(blocks));
+      return { stopReason: 'end_turn' };
+    });
+    try {
+      await f.accept();
+      const dispatch = (access: MachineAccessVerification) => {
+        const onAccessIndeterminate = vi.fn(async () => {});
+        return {
+          onAccessIndeterminate,
+          run: f.service.dispatchPreparedSessionTurn({
+            sessionId: f.message.sessionId,
+            sessionDoc: f.doc,
+            userTurnId: 'human-input',
+            invocation: {
+              sourceTurnId: 'human-input',
+              requesterUserId: 'user-1',
+              inputConfig: f.message.acpSessionConfig,
+            },
+            dispatchSource: 'crdt',
+            accessPromise: Promise.resolve(access),
+            requestPromise: Promise.resolve({ mode: 'continue' as const, request: f.message }),
+            onAccessAllowed: async () => {},
+            onAccessDenied: async () => {},
+            onAccessIndeterminate,
+          }),
+        };
+      };
+      const backend = await createSessionBackend(f.doc);
+      const status = async () =>
+        (await backend.readHistory()).find((turn) => turn.id === 'human-input')?.status;
+
+      // A network blip during verification leaves both the turn and its input pending.
+      const offline = dispatch({
+        outcome: 'indeterminate',
+        cause: 'network',
+        error: 'fetch failed',
+      });
+      await offline.run;
+      expect(offline.onAccessIndeterminate).toHaveBeenCalledTimes(1);
+      expect(received).toEqual([]);
+      expect(
+        findNextDispatchableUserTurn(await backend.readHistory(), {
+          id: f.message.sessionId,
+        } as SessionMeta)?.id
+      ).toBe('human-input');
+      expect(f.store.inbox.inputEnded('workspace-1', f.message.sessionId, 'human-input')).toBe(
+        false
+      );
+      expect(f.service.getExecutionSnapshot(f.message.sessionId).hasActiveTurn).toBe(false);
+
+      // The retry reuses the same execution id and is admitted, not rejected.
+      await dispatch({ outcome: 'allowed' }).run;
+      expect(received).toEqual([[{ type: 'text', text: 'CURRENT_REQUEST' }]]);
+      expect(await status()).toBe('handled');
+      expect(f.store.inbox.inputEnded('workspace-1', f.message.sessionId, 'human-input')).toBe(
+        true
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('retires a pending turn whose Inbox input already ended so later messages run', async () => {
+    const received: ContentBlock[][] = [];
+    const f = inboxExecutionFixture(async (blocks) => {
+      received.push(structuredClone(blocks));
+      return { stopReason: 'end_turn' };
+    });
+    try {
+      await f.accept();
+      const input = {
+        workspaceId: 'workspace-1',
+        sessionId: f.message.sessionId,
+        userId: 'user-1',
+        inputId: 'human-input',
+        kind: 'human' as const,
+        config: f.message.acpSessionConfig,
+      };
+      // State left by daemons before the withdraw fix: the input ended while its
+      // user turn stayed pending in history.
+      expect(f.store.inbox.begin(input, 'assistant:human-input')).toBe(true);
+      f.store.inbox.release({ ...input, executionId: 'assistant:human-input', outcome: 'failed' });
+
+      await expect(f.service.continueSession(f.message)).resolves.toBeUndefined();
+      const backend = await createSessionBackend(f.doc);
+      const old = (await backend.readHistory()).find((turn) => turn.id === 'human-input');
+      expect(old).toMatchObject({ status: 'failed' });
+      if (!old) throw new Error('Missing original human input');
+      expect(f.service.getExecutionSnapshot(f.message.sessionId).hasActiveTurn).toBe(false);
+      expect(received).toEqual([]);
+
+      await f.doc.sessionData.commands.applyHistoryAction({
+        kind: 'upsert-turn',
+        turn: {
+          ...old,
+          id: 'next-human',
+          status: 'pending',
+          items: [{ type: 'text', text: 'NEXT_REQUEST' }],
+        },
+      });
+      const history = await backend.readHistory();
+      expect(
+        findNextDispatchableUserTurn(history, { id: f.message.sessionId } as SessionMeta)?.id
+      ).toBe('next-human');
+      await f.service.acceptInboxHumanInput({
+        sessionId: f.message.sessionId,
+        inputId: 'next-human',
+        userId: 'user-1',
+        config: { ...f.message.acpSessionConfig, prompt: 'NEXT_REQUEST' },
+      });
+      await f.service.continueSession({
+        ...f.message,
+        userTurnId: 'next-human',
+        acpSessionConfig: { ...f.message.acpSessionConfig, prompt: 'NEXT_REQUEST' },
+      });
+      expect(received).toEqual([[{ type: 'text', text: 'NEXT_REQUEST' }]]);
+    } finally {
+      await f.close();
     }
   });
 
@@ -11709,7 +11834,7 @@ describe('Operation Inbox execution boundary', () => {
       };
       const id = (item as Extract<typeof item, { type: 'operation_completion_batch' }>).batchId;
       expect(f.store.inbox.getBatch(id, scope)?.state).toBe('unknown');
-      const other = new LodyOperationStore(f.storePath);
+      const other = new LodyOperationStore(f.storePath, f.now);
       try {
         other.inbox.activate('workspace-1', 'replacement');
         expect(other.inbox.getBatch(id, scope)?.state).toBe('unknown');

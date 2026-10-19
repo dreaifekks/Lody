@@ -355,19 +355,16 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
     const activeProcess = this.activeProcess;
     const agentProcess = this.agentProcess;
 
-    // The per-process trees first, then the sandbox as a whole: the latter also
-    // reaches terminal commands and groups whose leader already exited.
+    // The sandbox as a whole also reaches terminal commands and groups whose
+    // leader already exited. It tracks the per-process trees too, so ending
+    // them one after the other would double every bounded wait on a survivor.
     const failures: unknown[] = [];
     for (const outcome of await Promise.allSettled([
       activeProcess?.terminate(termination.force),
       agentProcess?.terminate(termination.force),
+      this.sandbox.terminate(termination.force),
     ])) {
       if (outcome.status === 'rejected') failures.push(outcome.reason);
-    }
-    try {
-      await this.sandbox.terminate(termination.force);
-    } catch (error) {
-      failures.push(error);
     }
     await terminalsDisposed;
     for (const failure of failures) {

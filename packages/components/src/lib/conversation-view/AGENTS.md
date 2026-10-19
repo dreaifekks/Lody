@@ -56,6 +56,11 @@
   release HOLDS the background scan and keeps the facts: deriving one needs the
   turn's body, so discarding them re-materialized the conversation on the next
   open. The table is collected with its view.
+- `lastUpdateAt` stamps backend change notifications only, never opening,
+  hydration or paging. It stays in memory and never bumps `version`. Liveness UI
+  must not persist it or move `endedAt` while a turn streams, and must count it
+  only inside the current live-sync window, gated on presence.
+  [Decision](../../../../../.agents/notes/implemented/feature/2026-10-15-turn-timing-liveness.md).
 - Control-plane Mirror ignores history and does not enumerate its containers.
   Queue identity must retain non-enumerable `$cid` through Immer, not a
   `structuredClone` that drops it.

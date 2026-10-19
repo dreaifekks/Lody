@@ -3661,6 +3661,19 @@ export class MessageHandler {
         }
         await this.recordWorkspaceAccessSnapshot(null);
       },
+      // Members get a TTL-bounded cached allow refreshed by every confirmed
+      // backend allow and cleared by a definitive deny.
+      recordMemberAccessSnapshot: async ({ requesterUserId, localProjectId, verdict }) =>
+        await fileLocksLegacy.runPromise(
+          this.localWorkspaceCatalog.recordMemberAccessSnapshot({
+            workspaceId: this.workspaceId,
+            requesterUserId,
+            ...(localProjectId ? { localProjectId } : {}),
+            ownerUserId: this.userId,
+            machineId: this.machineId,
+            verifiedAt: verdict === 'allowed' ? new Date(getServerNow()).toISOString() : null,
+          })
+        ),
       recordChatFailure: async (sessionDoc, reason, message) =>
         await this.recordChatFailure(sessionDoc, reason, message),
       onStartupBootstrapComplete: () => {

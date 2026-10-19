@@ -67,6 +67,7 @@ record: [process tree layer](../../../../.agents/notes/implemented/architecture/
 - Never signal a child without a pid (pid 0 is the caller's own group), and
   never resolve a Windows command from the working directory.
 - Liveness covers the whole tree (process group, cgroup), not just the root.
+  A group left with only zombies is gone; only an exact member scan proves it.
 - A command that exits on its own keeps what it deliberately left running; only
   a caller that stops waiting (timeout, interruption, output limit) ends the tree.
 - Scope owns process acquisition before configuration or other interruptible

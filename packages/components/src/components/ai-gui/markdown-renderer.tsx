@@ -1496,6 +1496,9 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   const readonly = useContext(SessionReadonlyContext);
   const getAgentFileLinkContextMenuItems = useContext(AgentFileLinkContextMenuItemsContext);
   const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    void import('./markdown-math-copy');
+  }, []);
   /** Text nodes split for search marks in this block, with what to undo. */
   const searchSplitsRef = useRef<SearchTextSplit[]>([]);
   const search = useSelectionStableValue(useSessionSearch());

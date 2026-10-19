@@ -1104,6 +1104,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     let adoptionPromise: Promise<void> | null = null;
     let started = false;
     let cleanupPromise: Promise<void> | null = null;
+    let sandboxCleanupFailed = false;
     const initialized = createDeferred<void>();
     const sessionStart = createDeferred<AcpSessionStartTarget>();
     const workspaceReady = createDeferred<PreparedWorktree | null>();
@@ -1142,7 +1143,13 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
             await session.terminate(true);
           } else if (sandbox) {
             await sandbox.terminate(true);
-            await sandbox.cleanup();
+            // A failed cleanup receipt is final; a retry reaches the retained resources.
+            const recover = sandboxCleanupFailed
+              ? sandbox.recoverCleanup?.bind(sandbox)
+              : undefined;
+            sandboxCleanupFailed = true;
+            await (recover ? recover() : sandbox.cleanup());
+            sandboxCleanupFailed = false;
           }
         } catch (error) {
           // Revoke authority but retain the workdir/retirement receipt.
@@ -1165,7 +1172,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
           await rm(provisionalWorkdir, { recursive: true, force: true });
         }
       })().catch((error: unknown) => {
-        throw new SessionPreparationCleanupError(error);
+        // Every step retries safely: a Session or sandbox starts a fresh termination
+        // over the processes it still owns, and released steps are no-ops.
+        cleanupPromise = null;
+        throw new SessionPreparationCleanupError(error, cleanup);
       });
       return cleanupPromise;
     };

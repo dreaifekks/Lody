@@ -69,7 +69,8 @@ CLI/MCP orchestration contract is specs/session-orchestration.md.
   which self-gates on the session's GitHub binding).
 - `session-diff-stats-target.ts` — chooses which writer owns a session's `diffStats`.
 - `session-access-policy.ts` — local-first dispatch access precheck (optimistic-allow cache,
-  D11). It may allow owner-cached turns from the catalog snapshot, deny `remote_missing`
+  D11). It may allow owner-cached turns from the catalog snapshot, allow a workspace member
+  whose backend allow for the same local project is under one hour old, deny `remote_missing`
   workspaces, or return `remote` to preserve the existing Convex three-state path. Catalog read
   failures degrade to `remote`, never to an error.
 - `session-access-retry.ts` — remote machine access verification: bounded retries at command

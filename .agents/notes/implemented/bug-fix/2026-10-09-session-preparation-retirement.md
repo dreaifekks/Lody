@@ -42,6 +42,9 @@ This implements the [preparation handoff contract](../../../../specs/session-wor
 and does not change archive/restore retention, cross-process marker ownership,
 or repair already broken resident Sessions in an installed app.
 
+A failed release first kept its rejection forever; it is now retried by the next caller
+([retryable unreleased resources](2026-10-15-unreleased-session-resources-retry.md)).
+
 ## Verification and limits
 
 The owning service suite uses explicit promise gates, fake TTL timers and temporary

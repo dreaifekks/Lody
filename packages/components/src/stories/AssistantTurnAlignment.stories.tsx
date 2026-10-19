@@ -10,7 +10,7 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { Provider, createStore, useAtomValue } from 'jotai';
 import { expect, waitFor } from 'storybook/test';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { MessageContent, SessionHistoryParsed, SessionId } from '@lody/shared';
 import type { ChatStreamItem, SessionChatStreamViewProps } from '@/components/ai-gui/view';
 import { MessageRowView, SessionChatStreamView } from '@/components/ai-gui/view';
@@ -24,6 +24,7 @@ import { conversationFontSizeAtom } from '@/atoms/settings';
 import { InterfaceFontController } from '@/components/interface-font-controller';
 import { ForceMobileLayoutProvider } from '@/hooks/use-mobile';
 import { SessionPinContext } from '@/components/sessions/session-pin-context';
+import { createConversationViewFromHistory, type ConversationView } from '@/lib/conversation-view';
 
 /**
  * `usePermissionResponse` reports `isReady: !!runtime`, and a NOT-ready card
@@ -735,6 +736,141 @@ export const DesktopFinishedTurn: Story = {
       />
     </div>
   ),
+};
+
+/**
+ * A view whose last history update landed `silentForMs` ago: the same turns
+ * arriving once more from the "backend", stamped by an injected clock.
+ */
+function useSilentConversationView(turn: SessionHistoryParsed, silentForMs: number) {
+  const [view] = useState<ConversationView>(() => {
+    let history = [turn];
+    let notify: () => void = () => undefined;
+    const next = createConversationViewFromHistory({
+      sessionId,
+      getHistory: () => history as never,
+      subscribe: (listener) => {
+        notify = listener;
+        return () => undefined;
+      },
+      now: () => Date.now() - silentForMs,
+    });
+    history = history.slice();
+    notify();
+    return next;
+  });
+  return view;
+}
+
+async function openTurnInfo(canvasElement: HTMLElement): Promise<HTMLElement> {
+  const findTrigger = () =>
+    waitFor(() => {
+      const node = canvasElement.querySelector<HTMLElement>('[aria-label="Turn configuration"]');
+      if (!node) throw new Error('Turn configuration button is not mounted');
+      return node;
+    });
+  // Row overlays mount once a pointer arms their row; arming remounts the trigger.
+  (await findTrigger())
+    .closest('[data-virtual-index]')
+    ?.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  // Click once: a retried click would toggle the popover shut again.
+  (await findTrigger()).click();
+  return await waitFor(() => {
+    const timing = document.querySelector<HTMLElement>('[data-turn-timing]');
+    if (!timing) throw new Error('Turn timing did not open');
+    return timing;
+  });
+}
+
+const timingModelInfo = {
+  modelId: 'claude-opus-5-5',
+  name: 'Claude Opus 5.5',
+  _meta: { lodyThoughtLevel: 'high' },
+};
+
+const silentLiveTurn: SessionHistoryParsed = {
+  id: 'alignment-timing-live',
+  role: 'assistant',
+  // Opened later, the story still reads "8m 40s" in, "4m" silent.
+  timestamp: new Date(Date.now() - 520_000).toISOString(),
+  read: true,
+  finished: false,
+  modelInfo: timingModelInfo,
+  items: [
+    {
+      type: 'tool_call',
+      toolCallId: 'alignment-timing-lint',
+      title: 'Run pnpm check',
+      kind: 'execute',
+      status: 'in_progress',
+    },
+    { type: 'text', text: 'Running the lint gate before committing.' },
+  ],
+};
+
+/**
+ * A live turn that has received nothing for four minutes: the status line says
+ * so, and the turn popover shows start, running time and a warned Last update.
+ */
+export const DesktopTurnTimingLive: Story = {
+  args: { sessionId, items: [], renderMessageRow },
+  globals: { theme: 'dark' },
+  render: function Render() {
+    const view = useSilentConversationView(silentLiveTurn, 250_000);
+    // Live sync opened well before the last update, so that update counts.
+    const [historyLive] = useState(() => ({ sync: 'live' as const, since: Date.now() - 600_000 }));
+    return (
+      <div className="h-[520px] w-full bg-background">
+        <SessionChatStreamView
+          items={[{ type: 'message', sessionId, message: silentLiveTurn, turnIndex: 0 }]}
+          sessionId={sessionId}
+          conversationView={view}
+          liveTurnActivity="working"
+          historyLive={historyLive}
+          renderMessageRow={renderMessageRow}
+          lastAssistantMessageId={silentLiveTurn.id}
+          agentActivityLabel="Working"
+          agentActivityTone="primary"
+          agentActivityShimmer
+        />
+      </div>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const timing = await openTurnInfo(canvasElement);
+    // Seconds keep ticking while the story loads; assert the minute.
+    await expect(timing.textContent).toMatch(/running 8m \d\ds/);
+    await expect(timing.querySelector('[data-stale]')?.textContent).toMatch(/^4m \d\ds ago$/);
+  },
+};
+
+const timedFinishedTurn: SessionHistoryParsed = {
+  ...finishedTurn,
+  id: 'alignment-timing-finished',
+  modelInfo: timingModelInfo,
+};
+
+/** A finished turn: Started, Ended and the Worked-for duration; no liveness row. */
+export const DesktopTurnTimingFinished: Story = {
+  args: { sessionId, items: [], renderMessageRow },
+  globals: { theme: 'dark' },
+  render: () => (
+    <div className="h-[520px] w-full bg-background">
+      <SessionChatStreamView
+        items={[{ type: 'message', sessionId, message: timedFinishedTurn, turnIndex: 0 }]}
+        sessionId={sessionId}
+        renderMessageRow={renderMessageRow}
+        lastAssistantMessageId={timedFinishedTurn.id}
+        lastCompletedAssistantMessageId={timedFinishedTurn.id}
+      />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const timing = await openTurnInfo(canvasElement);
+    await expect(timing.textContent).toContain('Ended');
+    await expect(timing.textContent).not.toContain('Last update');
+  },
 };
 
 export const DesktopForkingTurn: Story = {
