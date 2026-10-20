@@ -22,7 +22,9 @@ import {
   normalizeBoardMeta,
   type BoardFileEntry,
   type BoardId,
+  type BoardProjectRef,
   type BoardReportEvent,
+  type LocalProjectId,
   type MachineId,
   type SessionHistoryParsed,
   type SessionId,
@@ -97,6 +99,11 @@ import {
 import { BoardFilePreview, BoardFileRowsView } from '@/components/boards/board-directory';
 import { BoardSidebarSection } from '@/components/boards/board-sidebar-section';
 import { BoardCreateDialogView } from '@/components/boards/board-create-dialog-view';
+import { BoardProjectScopePickerView } from '@/components/boards/board-project-scope-picker';
+import {
+  buildBoardScopeOptions,
+  type BoardScopeLocalProject,
+} from '@/components/boards/board-project-scope';
 import { ArchivedBoardsView } from '@/components/boards/archived-boards-section';
 import { boardThreadItems } from '@/components/boards/board-side-panel';
 import {
@@ -610,6 +617,45 @@ function BoardPanel({ initial, narrow = false }: { initial: PanelState; narrow?:
   );
 }
 
+/** Synthetic projects: one repository on three machines, one on two, one on one. */
+const scopeProjects: BoardScopeLocalProject[] = [
+  ['devnuc', 'Lody'],
+  ['n100', 'Lody'],
+  ['mba', 'Lody'],
+  ['devnuc', 'lody-ios'],
+  ['mba', 'lody-ios'],
+  ['devnuc', 'hebi8xc'],
+].map(([machine, name]) => ({
+  machineId: `machine-${machine}` as MachineId,
+  machineName: machine!,
+  localProjectId: `local-project-${name}-${machine}` as LocalProjectId,
+  name: name!,
+}));
+const scopeRefs = (...names: string[]): BoardProjectRef[] =>
+  scopeProjects
+    .filter((project) => names.includes(project.name))
+    .map(({ machineId, localProjectId, name }) => ({
+      kind: 'local',
+      machineId,
+      localProjectId,
+      name,
+    }));
+
+function ScopePicker({ initial }: { initial: BoardProjectRef[] }) {
+  const [value, setValue] = useState(initial);
+  return (
+    <BoardProjectScopePickerView
+      options={buildBoardScopeOptions({
+        localProjects: scopeProjects,
+        repositories: ['example/web-app'],
+        scope: value,
+      })}
+      value={value}
+      onChange={setValue}
+    />
+  );
+}
+
 /** The settings dialog over synthetic data: the real view, memory rows included. */
 function SettingsDialogStory({ initialPage }: { initialPage: BoardSettingsPage }) {
   const [page, setPage] = useState(initialPage);
@@ -626,6 +672,7 @@ function SettingsDialogStory({ initialPage }: { initialPage: BoardSettingsPage }
         onDraftChange={(patch) => setDraft({ ...draft, ...patch })}
         onArchive={() => {}}
         autoMemory={<BoardFileRowsView entries={memoryFiles} onOpen={() => {}} />}
+        projectScope={<ScopePicker initial={scopeRefs('Lody', 'lody-ios')} />}
         onSave={() => {}}
         onClose={() => {}}
       />
@@ -1115,12 +1162,55 @@ export const CreateBoard: Story = {
               <ChevronDown size={14} aria-hidden />
             </Button>
           }
+          projectScope={<ScopePicker initial={[]} />}
           onSubmit={() => {}}
           onClose={() => {}}
         />
       </SettingsStoryProviders>
     );
   },
+};
+
+const openScopeMenu: NonNullable<Story['play']> = async ({ canvasElement }) => {
+  await userEvent.click(within(canvasElement).getByRole('button', { name: /project scope/i }));
+};
+
+/** Project scope left at every project: the trigger says so, "All projects" is ticked. */
+export const ProjectScopeAll: Story = {
+  render: () => (
+    <SettingsStoryProviders>
+      <ScopePicker initial={[]} />
+    </SettingsStoryProviders>
+  ),
+  play: openScopeMenu,
+};
+
+/** Narrowed to two projects: the trigger names them. */
+export const ProjectScopeNarrowed: Story = {
+  render: () => (
+    <SettingsStoryProviders>
+      <ScopePicker initial={scopeRefs('Lody', 'hebi8xc')} />
+    </SettingsStoryProviders>
+  ),
+  play: openScopeMenu,
+};
+
+/**
+ * One row per project name across machines. lody-ios is ticked on devnuc only,
+ * so after mba added it the row reads as partial; ticking it adds mba.
+ */
+export const ProjectScopeMerged: Story = {
+  render: () => (
+    <SettingsStoryProviders>
+      <ScopePicker
+        initial={[
+          ...scopeRefs('Lody'),
+          ...scopeRefs('lody-ios').filter((ref) => ref.kind === 'local' && ref.machineId === 'machine-devnuc'),
+        ]}
+      />
+    </SettingsStoryProviders>
+  ),
+  play: openScopeMenu,
 };
 
 /** 390 px: the Board drawer. */

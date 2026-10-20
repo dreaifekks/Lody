@@ -1,10 +1,12 @@
 import {
   type BoardMeta,
+  boardProjectScope,
   LODY_MAX_CHAIN_DEPTH,
   type IssuePRMention,
   type ProjectRef,
   type SessionMeta,
 } from '@lody/shared';
+import { describeBoardProject } from '@/lib/board-directory';
 import { getLanSessionCommandReminder } from '@/lib/lan/lan-session-command';
 
 export {
@@ -128,6 +130,12 @@ export const buildPrompt = (
   return `${promptWithReferences}${feedbackInstruction}${systemCommands}${LODY_MCP_TOOLS_REMINDER}${FILE_PATH_REMINDER}${getLanSessionCommandReminder()}${boardContext ? buildBoardInstructions(boardContext.board, boardContext.role, boardContext.directory) : ''}`;
 };
 
+function buildBoardScopeInstructions(board: BoardMeta): string {
+  const scope = boardProjectScope(board);
+  if (!scope) return '';
+  return `\nProject scope: this Board works only in these projects. Open sessions in them with lody_session_create:\n${scope.map((project) => `- ${describeBoardProject(project)}`).join('\n')}\nA session in any other project is rejected with BOARD_PROJECT_OUT_OF_SCOPE. Chat sessions (workContext {"kind":"chat"}) and useCurrentSessionAsParent are not limited.`;
+}
+
 function buildBoardInstructions(
   board: BoardMeta,
   role?: SessionMeta['boardRole'],
@@ -159,5 +167,5 @@ The Board's main session ${board.coordinatorSessionId} assigned this task. Lody 
       : ' The main session maintains MEMORY.md.';
   return `\n\n${identity}
 Shared notes: use lody_board_notes_get and lody_board_notes_append to record conclusions and decisions.${role === 'coordinator' ? ' You may reorganize notes with lody_board_notes_replace.' : ' Only the main session can replace the notes.'}
-${files}${memoryOwner}${rules}${instructions}`;
+${files}${memoryOwner}${buildBoardScopeInstructions(board)}${rules}${instructions}`;
 }

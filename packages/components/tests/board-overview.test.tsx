@@ -41,6 +41,8 @@ import {
   readSessionOperationTargets,
   type AgentConfigMeta,
   type BoardMeta,
+  type LocalProjectId,
+  type MachineId,
   type SessionHistoryInput,
   type SessionId,
   type SessionMeta,
@@ -82,6 +84,13 @@ import { BoardThreadListView } from '../src/components/boards/board-thread-list'
 import { localProbeResultAtom } from '../src/atoms/local-probe';
 import { useBoardActions, useBoardLifecycle } from '../src/components/boards/board-lifecycle';
 import { BoardRenameDialog } from '../src/components/boards/board-rename-dialog';
+import {
+  boardScopeNames,
+  boardScopeOptionState,
+  buildBoardScopeOptions,
+  toggleBoardScopeOption,
+  type BoardScopeLocalProject,
+} from '../src/components/boards/board-project-scope';
 import { BoardSidebar } from '../src/components/boards/board-sidebar-section';
 import { SessionHeaderMenu } from '../src/components/sessions/session-chat-interface';
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';
@@ -111,7 +120,11 @@ const creation = vi.hoisted(() => ({
   boards: [] as BoardMeta[],
 }));
 vi.mock('@/hooks/use-visible-machine-metas', () => ({
-  useVisibleMachineMetas: () => ({ machines: creation.machines }),
+  useVisibleMachineMetas: () => ({
+    machines: creation.machines,
+    accessByMachineId: new Map(),
+    isLoading: false,
+  }),
 }));
 vi.mock('@/hooks/use-code-collab-requested-role', () => ({
   useCodeCollabRequestedRole: () => 'read',
@@ -2811,4 +2824,75 @@ it('shows the existing unavailable-file notice for an unhydrated or deleted view
   } finally {
     await view.unmount();
   }
+});
+
+describe('Board project scope picker', () => {
+  const project = (machine: string, name: string): BoardScopeLocalProject => ({
+    machineId: `m-${machine}` as MachineId,
+    machineName: machine,
+    localProjectId: `p-${name}-${machine}` as LocalProjectId,
+    name,
+  });
+  const localProjects = [
+    project('n100', 'lody-ios'),
+    project('devnuc', 'lody-ios'),
+    project('mba', 'lody-ios'),
+    project('devnuc', 'Lody'),
+  ];
+
+  it('merges a project of one name across machines into one row', () => {
+    const options = buildBoardScopeOptions({
+      localProjects,
+      repositories: ['owner/web'],
+      scope: [],
+    });
+    expect(
+      options.map((option) =>
+        option.kind === 'local'
+          ? [option.name, option.projects.map((entry) => entry.machineName)]
+          : [option.repoFullName]
+      )
+    ).toEqual([['Lody', ['devnuc']], ['lody-ios', ['devnuc', 'mba', 'n100']], ['owner/web']]);
+  });
+
+  it('ticks every machine of a row, reads a machine added later as partial and completes it', () => {
+    const before = buildBoardScopeOptions({
+      localProjects: localProjects.filter((entry) => entry.machineName !== 'mba'),
+      repositories: [],
+      scope: [],
+    });
+    const ios = before.find((option) => option.key === 'local:lody-ios');
+    if (!ios) throw new Error('Expected the lody-ios row');
+    const scope = toggleBoardScopeOption([], ios);
+    expect(scope).toEqual([
+      { kind: 'local', machineId: 'm-devnuc', localProjectId: 'p-lody-ios-devnuc', name: 'lody-ios' },
+      { kind: 'local', machineId: 'm-n100', localProjectId: 'p-lody-ios-n100', name: 'lody-ios' },
+    ]);
+    expect(boardScopeNames(scope)).toEqual(['lody-ios']);
+    // mba adds the same repository: it does not join the scope by itself.
+    const after = buildBoardScopeOptions({ localProjects, repositories: [], scope });
+    const grown = after.find((option) => option.key === 'local:lody-ios');
+    if (!grown) throw new Error('Expected the lody-ios row');
+    expect(boardScopeOptionState(grown, scope)).toBe('partial');
+    const completed = toggleBoardScopeOption(scope, grown);
+    expect(completed).toHaveLength(3);
+    expect(boardScopeOptionState(grown, completed)).toBe('checked');
+    expect(toggleBoardScopeOption(completed, grown)).toEqual([]);
+  });
+
+  it('keeps a row for a scoped project nobody sees any more, so it can be removed', () => {
+    const gone = {
+      kind: 'local' as const,
+      machineId: 'm-old' as MachineId,
+      localProjectId: 'p-old' as LocalProjectId,
+      name: 'retired',
+    };
+    const options = buildBoardScopeOptions({ localProjects: [], repositories: [], scope: [gone] });
+    expect(options).toMatchObject([
+      { kind: 'local', name: 'retired', projects: [{ machineName: 'm-old' }] },
+    ]);
+    const [row] = options;
+    if (!row) throw new Error('Expected the retired row');
+    expect(toggleBoardScopeOption([gone], row)).toEqual([]);
+  });
 });

@@ -10,7 +10,12 @@ import type { SessionHistoryInput, SessionMeta } from '../src/schema';
 import { LoroDoc } from 'loro-crdt';
 import { readBoardDocument, writeBoardNotes, BOARD_NOTES_MAX_BYTES } from '../src/board-repository';
 import { describe, expect, it } from 'vitest';
-import { normalizeBoardMeta, deriveBoardSessionStatus } from '../src/board';
+import {
+  normalizeBoardMeta,
+  deriveBoardSessionStatus,
+  boardProjectScope,
+  isProjectInBoardScope,
+} from '../src/board';
 import {
   DEFAULT_BOARD_CONTINUITY,
   boardCompactionThreshold,
@@ -56,6 +61,32 @@ describe('boards in the workspace catalog', () => {
     expect(
       normalizeBoardMeta({ ...board, rules: { executorConstraints: 'x'.repeat(2001) } })
     ).toBeNull();
+  });
+  it('reads a project scope, where a missing or empty list means every project', () => {
+    const old = normalizeBoardMeta(board);
+    expect(old?.context).toBeUndefined();
+    expect(old && boardProjectScope(old)).toBeUndefined();
+    const empty = normalizeBoardMeta({ ...board, context: { projects: [] } });
+    expect(empty && boardProjectScope(empty)).toBeUndefined();
+    const projects = [
+      { kind: 'local', machineId: 'm1', localProjectId: 'p1', name: 'Lody' },
+      { kind: 'local', machineId: 'm2', localProjectId: 'p2', name: 'Lody' },
+      { kind: 'github', repoFullName: 'Owner/Repo' },
+    ];
+    const narrowed = normalizeBoardMeta({ ...board, context: { projects } });
+    const scope = (narrowed && boardProjectScope(narrowed)) ?? [];
+    expect(scope).toEqual(projects);
+    expect(normalizeBoardMeta({ ...board, context: { projects: [{ kind: 'local' }] } })).toBeNull();
+    // A local project matches only on its own machine; a repository by name.
+    const local = { kind: 'local', machineId: 'm2', localProjectId: 'p2' } as const;
+    expect(isProjectInBoardScope(scope, local)).toBe(true);
+    expect(isProjectInBoardScope(scope, { ...local, machineId: 'm1' })).toBe(false);
+    expect(isProjectInBoardScope(scope, { kind: 'github', repoFullName: 'owner/repo' })).toBe(
+      true
+    );
+    expect(isProjectInBoardScope(scope, { kind: 'github', repoFullName: 'owner/other' })).toBe(
+      false
+    );
   });
   it('lists, updates and removes rows and rejects mismatched row identities', () => {
     const key = ['board', board.id];

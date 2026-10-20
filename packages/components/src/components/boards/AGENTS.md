@@ -56,11 +56,13 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   working directory, links resolved, as attachments do. Everyone else
   reaches it through its local agent: `board/files-list`, member ranges with
   `boardId`, `lody_board_files_*` over the LAN `files` connection (`lanBoardFiles`).
-  A daemon reads the Board row with `readSyncedBoard`: its catalog replica lacks rows
-  made elsewhere until it syncs.
-  The renderer never reads it directly. Shared notes stay the Loro document.
-- Older clients strip `instructions`/`files` and refuse goal-less rows, so every client
-  that writes Board rows must run the same version; no compatibility layer.
+  A daemon reads the Board row with `readSyncedBoard` (its replica lacks unsynced
+  rows). The renderer never reads the directory; shared notes stay the Loro document.
+- Older clients strip `instructions`/`files`/`context` and refuse goal-less rows, so
+  all Board-row writers must run one version; no compatibility layer.
+- `context.projects` (none = all) limits only members' agent creates in local/GitHub
+  projects (`assertBoardProjectInScope`); chats, parent Tabs and user threads are
+  free. The picker merges by name, storing each machine's pair.
 - Instructions (≤16,000 code points) and the directory join each member's start
   prompt, coordinator included. Threads keep what they read; the coordinator
   rereads the current row after Lody compacts or replaces its agent conversation.
@@ -69,19 +71,17 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   they nor their late output move `lastMessageAt`). It yields to user turns and
   results, never fakes compaction (skips agents it cannot confirm) or changes
   `coordinatorSessionId`.
-- A Board's entries act on the whole Board, as a chat's do on the chat: the page's
-  header menu (`SessionHeaderMenu` on a coordinator) and the sidebar row
-  (`BoardSidebar`) rename, archive and restore through `useBoardActions`, which reads
-  members when it runs; share opens the coordinator conversation's share editor. A
-  coordinator offers no permanent delete or owner change.
+- A Board's entries act on the whole Board: the page's header menu
+  (`SessionHeaderMenu` on a coordinator) and the sidebar row (`BoardSidebar`) rename,
+  archive and restore via `useBoardActions`, which reads members when it runs; share
+  opens the coordinator's share editor. No permanent delete or owner change.
 - Archiving a Board archives member roots, then the coordinator, then writes
   `archivedAtMs`; restoring restores every root (Session restore covers only direct
-  Tabs), then the coordinator, then clears it. The coordinator (whose state the page
-  menu follows) and the row change last, so a failure leaves the Board where it was,
-  with its entries to retry; no rollback. Rename patches the current row's name.
+  Tabs), then the coordinator, then clears it. The coordinator (the page menu follows
+  it) and the row change last: a failure leaves the Board as it was, retryable; no
+  rollback. Rename patches the current row's name.
 - The experiment gates the sidebar section, the Board panel and archived Boards.
-  Turning it off retains data and does not stop ordinary sessions or their
-  membership inheritance.
+  Turning it off keeps data, ordinary sessions and membership inheritance.
 - Manual membership changes affect only the selected Session, clear its generation,
   and never detach the fixed coordinator. Tab inheritance happens at creation.
 - Board tools are advertised at ACP startup, but the daemon authorizes against
@@ -105,4 +105,4 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   schedules stay in the global list. `?boardSchedule` opens this tab once, like
   `boardThread`. Destination choices exclude the coordinator and other Boards.
   Scheduled completions use per-turn provenance, bypass human/grandchild completion
-  filters and freeze passive delivery. Digest scheduling into the coordinator is deferred.
+  filters and freeze passive delivery.

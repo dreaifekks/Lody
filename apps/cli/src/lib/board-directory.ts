@@ -5,6 +5,13 @@ import { pipeline } from 'node:stream/promises';
 import {
   BOARD_FILES_LIST_MAX,
   BoardFilePathSchema,
+  boardProjectScope,
+  isProjectInBoardScope,
+  makeLodyError,
+  type BoardProjectRef,
+  type LodyError,
+  type MachineId,
+  type ProjectRef,
   getWorkspaceFlockDocId,
   normalizeBoardMeta,
   workspaceFlockKeys,
@@ -42,6 +49,49 @@ export async function readSyncedBoard(
   });
   const catalog = await manager.repo.openFlockDoc(docId);
   return normalizeBoardMeta(catalog.flock.get(workspaceFlockKeys.board(boardId as BoardId)));
+}
+
+/** One project of a Board's scope, with the ids a create call names it by. */
+export const describeBoardProject = (project: BoardProjectRef): string =>
+  project.kind === 'local'
+    ? `${project.name} on machine ${project.machineId}: workContext {"kind":"local","projectId":"${project.localProjectId}"} with machineId "${project.machineId}"`
+    : `${project.repoFullName} on GitHub: workContext {"kind":"github","repo":"${project.repoFullName}"}`;
+
+export class BoardProjectOutOfScopeError extends Error {
+  readonly code = 'BOARD_PROJECT_OUT_OF_SCOPE';
+  toLodyError(): LodyError {
+    return makeLodyError(this.code, this.message, false);
+  }
+}
+
+/**
+ * A member of a narrowed Board opens sessions only in the Board's projects.
+ * The caller leaves out chats and Tabs of a parent: neither opens a project.
+ */
+export async function assertBoardProjectInScope(
+  manager: Pick<LoroDocumentManager, 'repo' | 'syncFlockDocOrThrow'>,
+  workspaceId: string,
+  boardId: string,
+  machineId: MachineId,
+  project: ProjectRef,
+  logger: Pick<Logger, 'warn'>
+): Promise<void> {
+  const board = await readSyncedBoard(manager, workspaceId, boardId, logger);
+  const scope = board ? boardProjectScope(board) : undefined;
+  if (
+    !board ||
+    !scope ||
+    isProjectInBoardScope(
+      scope,
+      project.kind === 'local'
+        ? { kind: 'local', machineId, localProjectId: project.localProjectId }
+        : project
+    )
+  )
+    return;
+  throw new BoardProjectOutOfScopeError(
+    `Board "${board.name}" works only in these projects:\n${scope.map((entry) => `- ${describeBoardProject(entry)}`).join('\n')}\nOpen the session in one of them, or as a chat (workContext {"kind":"chat"}).`
+  );
 }
 
 /**

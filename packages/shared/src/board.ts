@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { BoardId, MachineId, SessionId } from './ids';
 export type { BoardId } from './ids';
+import type { LocalProjectId } from './project';
 import type { SessionHistoryInput, SessionStatus, SessionMeta } from './schema';
 import type { BoardReportEvent, LodyOperationOutputPreview } from './session-orchestration';
 import { sha256Hex } from './sha256';
@@ -15,6 +16,19 @@ export const DEFAULT_BOARD_RULES = {
   executorConstraints: '',
 };
 const boundedText = (max: number) => z.string().refine((text) => Array.from(text).length <= max);
+/** A local project is one path on one machine, so the scope names both. */
+const BoardProjectRefSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('local'),
+    machineId: z.string().min(1),
+    localProjectId: z.string().min(1),
+    name: boundedText(200),
+  }),
+  z.object({ kind: z.literal('github'), repoFullName: z.string().min(1).max(200) }),
+]);
+export type BoardProjectRef =
+  | { kind: 'local'; machineId: MachineId; localProjectId: LocalProjectId; name: string }
+  | { kind: 'github'; repoFullName: string };
 const BoardMetaSchema = z.object({
   version: z.literal(1),
   id: z.string().startsWith('bd_').min(4),
@@ -37,6 +51,8 @@ const BoardMetaSchema = z.object({
     .object({ machineId: z.string().min(1) })
     .strict()
     .optional(),
+  /** The projects members may open sessions in; absent or empty means every project. */
+  context: z.object({ projects: z.array(BoardProjectRefSchema).max(200).optional() }).optional(),
   /** When Lody tidies the coordinator's context; see `board-continuity.ts`. */
   continuity: BoardContinuitySettingsSchema.default(DEFAULT_BOARD_CONTINUITY),
   digestScheduleId: z.string().min(1).optional(),
@@ -44,15 +60,41 @@ const BoardMetaSchema = z.object({
 });
 export type BoardMeta = Omit<
   z.infer<typeof BoardMetaSchema>,
-  'id' | 'coordinatorSessionId' | 'files'
+  'id' | 'coordinatorSessionId' | 'files' | 'context'
 > & {
   id: BoardId;
   coordinatorSessionId: SessionId;
   files?: { machineId: MachineId };
+  context?: { projects?: BoardProjectRef[] };
 };
 export function normalizeBoardMeta(value: unknown): BoardMeta | null {
   const parsed = BoardMetaSchema.safeParse(value);
   return parsed.success ? (parsed.data as BoardMeta) : null;
+}
+
+/** The projects a Board is narrowed to, or undefined when it covers every project. */
+export function boardProjectScope(
+  board: Pick<BoardMeta, 'context'>
+): readonly BoardProjectRef[] | undefined {
+  const projects = board.context?.projects;
+  return projects?.length ? projects : undefined;
+}
+
+/** Whether a session's project is one the scope names: the exact machine pair, or the repository. */
+export function isProjectInBoardScope(
+  scope: readonly BoardProjectRef[],
+  project:
+    | { kind: 'local'; machineId: string; localProjectId: string }
+    | { kind: 'github'; repoFullName: string }
+): boolean {
+  return scope.some((entry) =>
+    entry.kind === 'local'
+      ? project.kind === 'local' &&
+        entry.machineId === project.machineId &&
+        entry.localProjectId === project.localProjectId
+      : project.kind === 'github' &&
+        entry.repoFullName.toLowerCase() === project.repoFullName.toLowerCase()
+  );
 }
 
 /**

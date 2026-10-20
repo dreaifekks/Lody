@@ -177,3 +177,45 @@ it('omits an empty Board goal and adds the user instructions for every member', 
   // No thread rules: no empty heading for them either.
   expect(plainThread).not.toContain('Thread rules');
 });
+
+it('lists a narrowed project scope for every member and says nothing for all projects', () => {
+  const base = {
+    version: 1,
+    id: 'bd_scope',
+    name: 'Scoped',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: 'user',
+  };
+  const board = normalizeBoardMeta({
+    ...base,
+    context: {
+      projects: [
+        { kind: 'local', machineId: 'devnuc', localProjectId: 'local-project-a', name: 'Lody' },
+        { kind: 'github', repoFullName: 'owner/app' },
+      ],
+    },
+  });
+  if (!board) throw new Error('Invalid fixture');
+  for (const role of ['coordinator', undefined] as const) {
+    const prompt = buildPrompt('Hello', undefined, undefined, undefined, {
+      boardContext: { board, role },
+    });
+    expect(prompt).toContain('Project scope: this Board works only in these projects.');
+    expect(prompt).toContain(
+      '- Lody on machine devnuc: workContext {"kind":"local","projectId":"local-project-a"} with machineId "devnuc"'
+    );
+    expect(prompt).toContain('- owner/app on GitHub: workContext {"kind":"github","repo":"owner/app"}');
+    expect(prompt).toContain('BOARD_PROJECT_OUT_OF_SCOPE');
+    expect(prompt).toContain('Chat sessions (workContext {"kind":"chat"})');
+  }
+  for (const context of [undefined, { projects: [] }]) {
+    const all = normalizeBoardMeta({ ...base, ...(context ? { context } : {}) });
+    if (!all) throw new Error('Invalid fixture');
+    const prompt = buildPrompt('Hello', undefined, undefined, undefined, {
+      boardContext: { board: all },
+    });
+    expect(prompt).not.toContain('Project scope');
+    expect(prompt).not.toContain('BOARD_PROJECT_OUT_OF_SCOPE');
+  }
+});

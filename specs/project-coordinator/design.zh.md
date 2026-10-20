@@ -547,29 +547,34 @@ Overview 的协调者行显示「自主链 n/16」，n 取协调者最新驱动�
 
 ```ts
 type BoardProjectRef =
-  | {
-      kind: 'local';
-      machineId: MachineId;
-      localProjectId: LocalProjectId;
-      name: string;
-      githubRepoFullName?: string;
-    }
+  | { kind: 'local'; machineId: MachineId; localProjectId: LocalProjectId; name: string }
   | { kind: 'github'; repoFullName: string };
-// BoardMeta.context?: { projects?: BoardProjectRef[] }，缺省 = 全部
+// BoardMeta.context?: { projects?: BoardProjectRef[] }，缺省或为空 = 全部
 ```
 
 本地项目的 id 是机器内路径的散列，同一个仓库在两台机器上是两个 id。所以这里存
-`machineId + localProjectId` 这一对，和 `getLocalProjectVisibilityKey` 一致；另附名称和
-可选的 GitHub 仓库名，用来显示和做跨机提示。
+`machineId + localProjectId` 这一对，和 `getLocalProjectVisibilityKey` 一致，另附名称用来显示。
+有范围之前建的看板没有 `context`，覆盖全部项目。
 
 范围用在四处：
-1. 协调者和线程的启动提示列出范围内的项目（名称、机器、路径）。
-2. `lody_board_get` 返回范围。
-3. 看板成员调用 `lody_session_create` 时，workContext 必须在范围内，否则以
-   `BOARD_PROJECT_OUT_OF_SCOPE` 拒绝。chat 不受限。
-4. 「+ 新线程」的项目选择只列范围内的项目。
+1. 协调者和线程的启动提示列出范围内的项目（名称、机器 id、在那里开会话用的 workContext），
+   并说明范围外的项目会被拒绝、chat 不受限。
+2. `lody_board_get` 随看板行一起返回范围。
+3. 看板成员（元数据带 `boardId` 的会话）调用 `lody_session_create` 或
+   `lody_session_create_many`，用 local 或 GitHub workContext 开到范围外的项目时，以
+   `BOARD_PROJECT_OUT_OF_SCOPE` 拒绝，错误信息列出范围内的项目。chat 和
+   `useCurrentSessionAsParent` 不受限。检查放在 CLI 解析 create 目标的地方，读的是 daemon
+   眼里的看板行（`readSyncedBoard`）。
+4. 新建对话框和看板设置里的选择器。同名项目合并成一行，后面列出有它的机器
+   （「lody-ios · devnuc、n100、mba」）；勾上就存所有机器上的那几对。以后别的机器加了同名项目
+   不会自动进范围：设置里这一行显示为部分勾选，再勾一次就补上。工作区能读到的 GitHub 仓库也一并
+   列出。
 
-范围为空（即全部）时，以上都不生效，提示里只写「可以用 `lody_project_list` 查看全部项目」。
+「+ 新线程」不受范围限制：用户可以开 chat，或在任意项目（本地直接目录、本地 worktree、GitHub）
+里开，线程照常加入看板。范围限制的是 agent 开的会话，不是用户手动开的。
+
+范围为空（即全部）时，以上都不生效，提示里也不提项目。会话头部没有范围徽标，侧边栏、
+`lody_project_list` 和定时任务也不按范围过滤。
 
 **共享目录**
 
@@ -679,8 +684,9 @@ type BoardProjectRef =
      文件 tab 本步只有共享笔记和共享目录的占位。
 2. **设置浮窗与新建对话框（已实现）。** 设置浮窗写看板行（名称、目标、规则）并能归档看板；
    新建对话框换成新版。项目范围、记忆、每日摘要在各自的步骤实现前不显示。
-3. **项目范围。** `BoardMeta.context`、提示段、`lody_board_get` 返回、`lody_session_create`
-   范围检查、新线程的项目过滤，以及设置浮窗和新建对话框里的选择。
+3. **项目范围（已实现）。** `BoardMeta.context`、提示段、`lody_board_get` 返回、
+   `lody_session_create` 范围检查、新线程的项目选择（不受范围限制），以及设置浮窗和新建对话框
+   里的选择。
    - 模块：`packages/shared/src/board.ts`、`apps/cli/src/session/session-execution-helpers.ts`、
      `apps/cli/src/mcp/lody-mcp-server.ts`、`components/boards/*`。
 4. **共享目录（已实现）。** `BoardMeta.files`、宿主机上的目录、`files` 连接的 `list` / `put`
@@ -731,6 +737,14 @@ PR4（轮数、交接）和 PR5（每日摘要）和以上各步互不依赖，�
 15. 看板页头部沿用对话头部的「…」菜单和分享控件，设置按钮保留；侧边栏看板行和对话行一样，
     悬停出现「⋯」和归档，右键打开同一份菜单。重命名、归档、恢复作用于整个看板；分享的是
     协调者的对话。
+
+2026-10-20 用户确认了项目范围（第 3 步，见「看板上下文 › 项目范围」）：
+
+16. 看板成员开到范围外的会话照旧拒绝；chat 不受限。
+17. 「+ 新线程」可以选任意项目或 chat，不受范围限制：用户手动开的线程没必要限制。
+18. 选择器把各机器上的同名本地项目合并成一行，存下所有机器的那几对；以后加进来的机器要用户
+    再勾一次才进范围。
+19. 会话头部不加范围徽标，侧边栏、`lody_project_list` 和定时任务也不过滤。
 
 ## 共享笔记
 
