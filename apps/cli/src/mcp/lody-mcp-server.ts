@@ -1,6 +1,7 @@
 import { loadWorkspaceAgentRoleCatalog } from '@/lib/agent-role-create';
 
 import { registerBoardTools } from './board-tools';
+import { BoardProjectOutOfScopeError } from '@/lib/board-directory';
 import { LODY_MCP_BOARD_ID_ENV } from './lody-mcp-http-protocol';
 import {
   boardDeliveryConfig,
@@ -1105,7 +1106,8 @@ const normalizeMcpError = (error: unknown) => {
   }
   if (
     error instanceof WorkspaceSyncUnavailableError ||
-    error instanceof MachineFlockReadUnavailableError
+    error instanceof MachineFlockReadUnavailableError ||
+    error instanceof BoardProjectOutOfScopeError
   ) {
     return error.toLodyError();
   }
@@ -3006,6 +3008,9 @@ const startSessionCreateOperation = async (args: SessionCreateCommandInput): Pro
           machineAccessError.retryable
         );
       }
+      if (error instanceof BoardProjectOutOfScopeError) {
+        throw new LodyOperationStoreError(error.code, error.message, false);
+      }
       throw new LodyOperationStoreError('COMMAND_REJECTED', formatMcpErrorMessage(error), false);
     }
     const preallocatedSessionId = randomUUID() as SessionId;
@@ -3682,6 +3687,12 @@ const startSessionCreateManyOperation = async (
                 machineAccessError.retryable,
                 label
               ),
+              dispatchConfig: null,
+            };
+          }
+          if (error instanceof BoardProjectOutOfScopeError) {
+            return {
+              operationItem: batchFailure(error.code, error.message, false, label),
               dispatchConfig: null,
             };
           }

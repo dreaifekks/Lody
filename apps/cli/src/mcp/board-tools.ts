@@ -34,7 +34,7 @@ export function registerBoardTools(
   const tools = [
     [
       'lody_board_get',
-      'Read this Board, its rules, coordinator and your role.',
+      'Read this Board, its rules, project scope, coordinator and your role.',
       z.object({}).strict(),
     ],
     [

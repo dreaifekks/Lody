@@ -17,6 +17,7 @@ import {
   type BoardContinuitySettings,
   type BoardFileEntry,
   type BoardMeta,
+  type BoardProjectRef,
 } from '@lody/shared';
 import { currentWorkspaceIdAtom } from '@/atoms';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
@@ -34,6 +35,7 @@ import {
 } from './board-directory';
 import { useBoardActions } from './board-lifecycle';
 import { boardStyles } from './board-view';
+import { BoardProjectScopePicker } from './board-project-scope-picker';
 
 export interface BoardSettingsDraft {
   name: string;
@@ -43,6 +45,8 @@ export interface BoardSettingsDraft {
   reportHumanTurns: boolean;
   executorConstraints: string;
   continuity: BoardContinuitySettings;
+  /** Empty: every project. */
+  projects: BoardProjectRef[];
 }
 
 export function boardSettingsDraft(board: BoardMeta): BoardSettingsDraft {
@@ -52,6 +56,7 @@ export function boardSettingsDraft(board: BoardMeta): BoardSettingsDraft {
     instructions: board.instructions,
     ...board.rules,
     continuity: board.continuity,
+    projects: board.context?.projects ?? [],
   };
 }
 
@@ -180,11 +185,14 @@ export function BoardSettingsGeneralView({
   value,
   onChange,
   onArchive,
+  projectScope,
 }: {
   value: BoardSettingsDraft;
   onChange: (patch: Partial<BoardSettingsDraft>) => void;
   /** Absent for an archived Board. */
   onArchive?: () => void;
+  /** The project picker over `value.projects`. */
+  projectScope?: ReactNode;
 }) {
   const { t, i18n } = useTranslation();
   const instructionsLength = Array.from(value.instructions).length;
@@ -213,6 +221,17 @@ export function BoardSettingsGeneralView({
             onChange={(event) => onChange({ purpose: event.target.value })}
           />
         </StackedRow>
+        {projectScope ? (
+          <CompactRow
+            label={t('boards.scope.title', 'Project scope')}
+            helper={t(
+              'boards.scope.helper',
+              'Agents of this Board open sessions only in these projects. Chats and threads you start yourself are not limited.'
+            )}
+          >
+            {projectScope}
+          </CompactRow>
+        ) : null}
       </CompactSection>
 
       <CompactSection title={t('boards.settings.rules', 'Rules')}>
@@ -458,6 +477,7 @@ export function BoardSettingsDialogView({
   onDraftChange,
   onArchive,
   autoMemory,
+  projectScope,
   saving = false,
   error = '',
   onSave,
@@ -471,6 +491,7 @@ export function BoardSettingsDialogView({
   onArchive?: () => void;
   /** The memory files, as the directory lists them. */
   autoMemory: ReactNode;
+  projectScope?: ReactNode;
   saving?: boolean;
   error?: string;
   onSave: () => void;
@@ -544,6 +565,7 @@ export function BoardSettingsDialogView({
                   value={draft}
                   onChange={onDraftChange}
                   onArchive={onArchive}
+                  projectScope={projectScope}
                 />
               ) : (
                 <BoardMemoryView
@@ -600,7 +622,7 @@ export function BoardSettingsDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const save = async () => {
-    const { name, purpose, instructions, continuity, ...rules } = draft;
+    const { name, purpose, instructions, continuity, projects, ...rules } = draft;
     const next = normalizeBoardMeta({
       ...board,
       name: name.trim(),
@@ -608,6 +630,7 @@ export function BoardSettingsDialog({
       instructions,
       rules,
       continuity,
+      context: { ...board.context, projects },
     });
     if (!next) {
       setError(
@@ -636,6 +659,13 @@ export function BoardSettingsDialog({
       onDraftChange={(patch) => setDraft({ ...draft, ...patch })}
       onArchive={onArchive}
       autoMemory={<BoardAutoMemory board={board} />}
+      projectScope={
+        <BoardProjectScopePicker
+          labelled
+          value={draft.projects}
+          onChange={(projects) => setDraft({ ...draft, projects })}
+        />
+      }
       saving={saving}
       error={error}
       onSave={() => void save()}

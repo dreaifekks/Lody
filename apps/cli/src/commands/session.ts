@@ -148,6 +148,7 @@ import {
   type WorkspaceSummary,
 } from '@/lib/workspace';
 import { readMachineLocalProjects } from '@/lib/local-project-meta';
+import { assertBoardProjectInScope } from '@/lib/board-directory';
 import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
 import { listMergedAgentConfigs } from '@/lib/agent-config-machine-flock';
 import { getCliPlatformKind } from '@/lib/cli-platform';
@@ -3443,6 +3444,16 @@ async function resolveCreateContext(args: {
     requester: args.requester,
     localProjectId: project?.kind === 'local' ? project.localProjectId : undefined,
   });
+  if (!parentSession && project && currentSession?.boardId) {
+    await assertBoardProjectInScope(
+      args.manager,
+      workspaceId,
+      currentSession.boardId,
+      targetMachine.id,
+      project,
+      getLogger('session')
+    );
+  }
 
   return {
     targetMachine,

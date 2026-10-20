@@ -10,6 +10,8 @@ import {
   type AcpCapabilityCacheEntry,
   type AgentConfigMeta,
   type AgentRole,
+  type LocalProjectId,
+  type LocalProjectMeta,
   type MachineId,
   type MachineMeta,
   type McpServerId,
@@ -98,11 +100,16 @@ const createModelCapability = (): AcpCapabilityCacheEntry => ({
 });
 
 /** Real command resolution and Loro history, with only transport/storage replaced. */
-function createFixture(agentType: 'codex' | 'claude', capability?: AcpCapabilityCacheEntry) {
+function createFixture(
+  agentType: 'codex' | 'claude',
+  capability?: AcpCapabilityCacheEntry,
+  localProjects: readonly LocalProjectMeta[] = []
+) {
   let freshnessConfirmed = false;
   let failDispatchPointer = false;
   let invocationInputConfig: SessionHistoryInput['inputConfig'];
   let mcpDefaults: string[] = [];
+  let boardRow: object | undefined;
   const machine: MachineMeta = {
     id: machineId,
     name: 'Synthetic machine',
@@ -145,6 +152,7 @@ function createFixture(agentType: 'codex' | 'claude', capability?: AcpCapability
       openFlockDoc: async () => ({
         flock: {
           subscribe: () => () => {},
+          get: (key: readonly unknown[]) => (key[0] === 'board' ? boardRow : undefined),
           // Provider discovery works even when its ACP capability row has not arrived.
           scan: ({ prefix }: { prefix?: readonly unknown[] } = {}) =>
             [
@@ -152,6 +160,10 @@ function createFixture(agentType: 'codex' | 'claude', capability?: AcpCapability
               ...(capability
                 ? [{ key: ['acpCapability', agentConfig.id], value: capability }]
                 : []),
+              ...localProjects.map((project) => ({
+                key: ['localProject', project.id],
+                value: project,
+              })),
               ...mcpDefaults.map((id) => ({
                 key: ['mcpServer', id],
                 value: {
@@ -286,13 +298,16 @@ function createFixture(agentType: 'codex' | 'claude', capability?: AcpCapability
             { userTurnId: turnId, chainDepth: 0, bypassSessionQuota: true }
           )
     );
-  const validateCreate = (dispatchConfig: ResolvedTurnDispatchConfig = {}) =>
+  const validateCreate = (
+    dispatchConfig: ResolvedTurnDispatchConfig = {},
+    options: Partial<CreateOptions> = {}
+  ) =>
     runWithSessionCommandEnvironment(environment, () =>
       validateSessionCreateOptions({
         auth: environment.auth,
         workspace: environment.workspace,
         manager,
-        options: { agentConfig: agentConfig.id },
+        options: { agentConfig: agentConfig.id, ...options },
         dispatchConfig,
       })
     );
@@ -308,6 +323,9 @@ function createFixture(agentType: 'codex' | 'claude', capability?: AcpCapability
     validateCreate,
     setMcpDefaults: (ids: string[]) => {
       mcpDefaults = ids;
+    },
+    setBoard: (row: object | undefined) => {
+      boardRow = row;
     },
     runMcp: async <T>(requesterSessionId: SessionId, invoke: () => Promise<T>): Promise<T> => {
       // The MCP server owns a process-long SQLite connection. Capture that real
@@ -1918,4 +1936,111 @@ describe.each([
       expect(fixture.dispatched).toEqual([]);
     }
   );
+});
+
+describe('Board project scope on create', () => {
+  const project = (id: string, name: string): LocalProjectMeta => ({
+    id: id as LocalProjectId,
+    name,
+    rootPath: os.tmpdir(),
+    createdAtMs: 0,
+  });
+  const scopedBoard = {
+    version: 1,
+    id: 'bd_scope',
+    name: 'Scoped',
+    coordinatorSessionId: 'coordinator',
+    createdAtMs: 1,
+    createdByUserId: userId,
+    context: {
+      projects: [{ kind: 'local', machineId, localProjectId: 'in-scope', name: 'Lody' }],
+    },
+  };
+  const setup = async (boardId?: string) => {
+    const fixture = createFixture('codex', createModelCapability(), [
+      project('in-scope', 'Lody'),
+      project('outside', 'Other'),
+    ]);
+    fixture.setCapability(createModelCapability(), true);
+    fixture.setBoard(scopedBoard);
+    await fixture.seedChat();
+    if (boardId) {
+      const roomId = getSessionRoomId(sessionId);
+      fixture.metadata.set(roomId, { ...fixture.metadata.get(roomId), boardId });
+    }
+    return fixture;
+  };
+
+  it('opens a Board member session in a project of the scope or as a chat', async () => {
+    const fixture = await setup('bd_scope');
+    await expect(
+      fixture.validateCreate({}, { currentSessionId: sessionId, localProject: 'in-scope' })
+    ).resolves.toBeDefined();
+    await expect(
+      fixture.validateCreate({}, { currentSessionId: sessionId })
+    ).resolves.toBeDefined();
+  });
+
+  it('rejects a Board member session in another project and names the scope', async () => {
+    const fixture = await setup('bd_scope');
+    const rejected = fixture.validateCreate(
+      {},
+      { currentSessionId: sessionId, localProject: 'outside' }
+    );
+    await expect(rejected).rejects.toMatchObject({ code: 'BOARD_PROJECT_OUT_OF_SCOPE' });
+    await expect(rejected).rejects.toThrow(
+      'Lody on machine default-fallback-machine: workContext {"kind":"local","projectId":"in-scope"}'
+    );
+  });
+
+  it('leaves sessions outside a Board, and Boards over every project, unlimited', async () => {
+    const outsider = await setup();
+    await expect(
+      outsider.validateCreate({}, { currentSessionId: sessionId, localProject: 'outside' })
+    ).resolves.toBeDefined();
+    const all = await setup('bd_scope');
+    all.setBoard({ ...scopedBoard, context: { projects: [] } });
+    await expect(
+      all.validateCreate({}, { currentSessionId: sessionId, localProject: 'outside' })
+    ).resolves.toBeDefined();
+  });
+
+  it('fails only the out-of-scope item of an agent batch, with its own code', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lody-board-scope-'));
+    roots.add(root);
+    vi.stubEnv('LODY_DATA_DIR', root);
+    const fixture = await setup('bd_scope');
+    await fixture.runMcp(sessionId, () =>
+      __lodyMcpServerInternals.startSessionCreateManyOperation({
+        operationId: 'board-scope-many',
+        items: [
+          {
+            label: 'inside',
+            prompt: 'Work',
+            workContext: { kind: 'local', projectId: 'in-scope' },
+          },
+          {
+            label: 'outside',
+            prompt: 'Work',
+            workContext: { kind: 'local', projectId: 'outside' },
+          },
+          { label: 'chat', prompt: 'Research', workContext: { kind: 'chat' } },
+        ],
+      })
+    );
+    const store = new LodyOperationStore(getLodyOperationStorePath(machineId));
+    try {
+      expect(store.get(sessionId, 'board-scope-many')?.items).toMatchObject([
+        { label: 'inside', status: 'active' },
+        {
+          label: 'outside',
+          status: 'failed',
+          error: { code: 'BOARD_PROJECT_OUT_OF_SCOPE', retryable: false },
+        },
+        { label: 'chat', status: 'active' },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
 });

@@ -617,32 +617,43 @@ padding and offsets it with a negative margin (`board-view.tsx`, `boardStyles.fo
 
 ```ts
 type BoardProjectRef =
-  | {
-      kind: 'local';
-      machineId: MachineId;
-      localProjectId: LocalProjectId;
-      name: string;
-      githubRepoFullName?: string;
-    }
+  | { kind: 'local'; machineId: MachineId; localProjectId: LocalProjectId; name: string }
   | { kind: 'github'; repoFullName: string };
-// BoardMeta.context?: { projects?: BoardProjectRef[] }; absent = all
+// BoardMeta.context?: { projects?: BoardProjectRef[] }; absent or empty = all
 ```
 
 A local project id is a hash of its path on one machine, so the same repository has a
 different id on each machine. The scope therefore stores `machineId + localProjectId`
-pairs, matching `getLocalProjectVisibilityKey`. A name and an optional GitHub
-repository name are stored for display and as a cross-machine hint.
+pairs, matching `getLocalProjectVisibilityKey`, with the name for display. Boards
+created before the scope existed have no `context` and cover every project.
 
 The scope is used in four places:
 1. Coordinator and thread startup instructions list the projects in scope (name,
-   machine, path).
-2. `lody_board_get` returns the scope.
-3. When a Board member calls `lody_session_create`, a work context outside the scope
-   is rejected with `BOARD_PROJECT_OUT_OF_SCOPE`. Chat is unrestricted.
-4. The project picker under "+ New thread" lists only projects in scope.
+   machine id, and the work context that opens a session there) and say that other
+   projects are rejected while chats are not.
+2. `lody_board_get` returns the scope with the rest of the row.
+3. When a Board member (a session whose metadata has `boardId`) calls
+   `lody_session_create` or `lody_session_create_many` with a local or GitHub work
+   context outside the scope, the create is rejected with
+   `BOARD_PROJECT_OUT_OF_SCOPE` and the message lists the projects in scope. Chats and
+   `useCurrentSessionAsParent` are unrestricted. The check runs where the CLI resolves
+   a create's target, against the Board row as the daemon reads it
+   (`readSyncedBoard`).
+4. The picker in the create dialog and in Board settings. It shows one row per
+   project name, with the machines that have it ("lody-ios · devnuc, n100, mba");
+   ticking the row stores every machine's pair. A machine that adds a project of the
+   same name later does not join the scope by itself: the row reads as partly ticked
+   in settings, and ticking it again adds the new pair. GitHub repositories the
+   workspace can read are listed as well.
 
-When the scope is empty (all projects), none of this applies; the instructions only
-say that `lody_project_list` lists every project.
+"+ New thread" is not limited by the scope: the user may start a thread as a chat or
+in any project, local (direct or worktree) or GitHub, and it joins the Board like
+any other thread. The scope limits what agents open, not what the user starts by
+hand.
+
+When the scope is empty (all projects), none of this applies and the instructions
+say nothing about projects. There is no scope badge in the session header, and the
+sidebar, `lody_project_list` and schedules are not filtered by it.
 
 **Shared directory**
 
@@ -783,9 +794,10 @@ Each step merges on its own; the order is the dependency order.
    Board row (name, goal, rules) and archives the Board; the new create dialog
    replaces the old one. Project scope, memory and the daily digest stay hidden until
    their steps land.
-3. **Project scope.** `BoardMeta.context`, the instruction section, `lody_board_get`
-   output, the `lody_session_create` scope check, project filtering for new threads,
-   and the choice in the settings and create dialogs.
+3. **Project scope (implemented).** `BoardMeta.context`, the instruction section,
+   `lody_board_get` output, the `lody_session_create` scope check, a project choice
+   for new threads (not limited by the scope), and the choice in the settings and
+   create dialogs.
    - Modules: `packages/shared/src/board.ts`,
      `apps/cli/src/session/session-execution-helpers.ts`,
      `apps/cli/src/mcp/lody-mcp-server.ts`, `components/boards/*`.
@@ -856,6 +868,18 @@ the same top-right actions a chat has, at least archive and share (implemented i
     settings gear; the sidebar Board row is a chat row's twin, with ⋯ and Archive on
     hover and the same menu on right click. Rename, archive and restore act on the whole
     Board; share shares the coordinator's conversation.
+
+On 2026-10-20 the user confirmed the project scope (step 3, see "Board context ›
+Project scope"):
+
+16. Out-of-scope creates by Board members stay rejected; chats are unrestricted.
+17. "+ New thread" offers any project or a chat and ignores the scope: a thread the
+    user starts by hand needs no limit.
+18. The picker merges local projects by name across machines and stores every
+    machine's pair; a machine added later joins only when the user ticks the row
+    again.
+19. No scope badge in the session header, and no filtering of the sidebar,
+    `lody_project_list` or schedules.
 
 ## Shared notes
 

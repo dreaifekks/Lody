@@ -18,9 +18,12 @@ import {
   buildSessionTurnInputConfig,
   buildPendingUserHistoryEntry,
   getDefaultSelectedMcpServerIds,
+  githubFetchDefaultBranch,
   type AgentRoleInstanceId,
   type BoardMeta,
+  type BoardProjectRef,
   type MachineId,
+  type ProjectRef,
   type SessionId,
 } from '@lody/shared';
 import { userAtom } from '@/atoms';
@@ -41,6 +44,13 @@ import {
 } from '@/hooks/use-workspace-agent-roles';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { useSessionActions } from '@/hooks/use-session-actions';
+import { useVisibleLocalProjects } from '@/hooks/use-visible-local-projects';
+import { useWorkspaceGitHubRepositories } from '@/hooks/use-workspace-github-repositories';
+import { useOpenSettings } from '@/hooks/use-open-settings';
+import { useAppCapability } from '@/lib/app-platform';
+import { withGitHubTokenRetry } from '@/lib/github-token';
+import { ProjectRefSelector } from '@/components/shared/project-ref-selector';
+import { WorktreeCheckboxPill } from '@/components/shared/workdir-mode-selector';
 import {
   buildComposerAgentRoleItems,
   findComposerAgentRoleItem,
@@ -54,6 +64,7 @@ import { DesktopMachineMenu } from '../sessions/desktop-run-config-menu';
 import type { AgentRunRef } from '../shared/agent-run-ref';
 import { boardStyles } from './board-view';
 import { BoardCreateDialogView } from './board-create-dialog-view';
+import { BoardProjectScopePicker } from './board-project-scope-picker';
 
 const lastBoardAgentAtom = atomWithStorage<{
   machineId: MachineId;
@@ -120,6 +131,33 @@ export function CreateBoardDialog({
   const config = agents.find((entry) => entry.id === shownAgent?.agentConfigId);
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
+  const [projectScope, setProjectScope] = useState<BoardProjectRef[]>([]);
+  // A new thread starts as a chat, or in any project: the scope limits what
+  // agents open, not what the user starts by hand.
+  const [threadProject, setThreadProject] = useState<ProjectRef | null>(null);
+  const localProjects = useVisibleLocalProjects({ includeMachineFlock: true });
+  const repositories = useWorkspaceGitHubRepositories(
+    existingBoard ? runtime?.workspaceId : undefined
+  );
+  const { openSettings } = useOpenSettings();
+  const githubIntegrationAvailable = useAppCapability('githubIntegration');
+  const localGitHubCredentialAvailable = useAppCapability('localGitHubCredential');
+  const githubSettingsAvailable = githubIntegrationAvailable || localGitHubCredentialAvailable;
+  const machineProjects = [...localProjects.projects.values()]
+    .filter((entry) => entry.machineId === machineId)
+    .map((entry) => ({
+      key: entry.key,
+      machineId: entry.machineId,
+      localProjectId: entry.project.id,
+      name: entry.project.name,
+      rootPath: entry.project.rootPath,
+    }));
+  // A local project belongs to one machine; choosing another machine leaves a chat.
+  const project =
+    threadProject?.kind === 'local' &&
+    !machineProjects.some((entry) => entry.localProjectId === threadProject.localProjectId)
+      ? null
+      : threadProject;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [ids] = useState(() => ({ board: `bd_${uuid()}`, session: uuid() as SessionId }));
@@ -140,7 +178,8 @@ export function CreateBoardDialog({
     ready: { userId: string; machineId: MachineId; config: NonNullable<typeof config> },
     board: BoardMeta,
     sessionId: SessionId,
-    title: string
+    title: string,
+    threadProjectRef?: ProjectRef | null
   ) => ({
     sessionId,
     userId: ready.userId,
@@ -153,6 +192,7 @@ export function CreateBoardDialog({
     env: ready.config.env,
     title,
     boardId: board.id,
+    ...(threadProjectRef ? { project: threadProjectRef } : {}),
     ...(role
       ? {
           agentRoleId: role.role.id,
@@ -203,6 +243,7 @@ export function CreateBoardDialog({
       createdByUserId: user.id,
       // The coordinator's machine keeps the Board directory.
       files: { machineId: machine.id },
+      context: { projects: projectScope },
     });
     if (!board) {
       setError(
@@ -305,12 +346,25 @@ export function CreateBoardDialog({
       return;
     }
     try {
+      // The selector names no branch for a repository: start from its default one.
+      const threadProjectRef =
+        project?.kind === 'github'
+          ? {
+              ...project,
+              branch: await withGitHubTokenRetry(
+                runtime.workspaceId,
+                project.repoFullName,
+                (token) => githubFetchDefaultBranch(token, project.repoFullName)
+              ),
+            }
+          : project;
       const created = await startSession(
         sessionPayload(
           { userId: user.id, machineId: machine.id, config },
           board,
           ids.session,
-          name.trim()
+          name.trim(),
+          threadProjectRef
         ),
         history
       );
@@ -382,6 +436,7 @@ export function CreateBoardDialog({
         onGoalChange={setPurpose}
         onNameChange={setName}
         coordinator={coordinatorControls}
+        projectScope={<BoardProjectScopePicker value={projectScope} onChange={setProjectScope} />}
         saving={saving}
         error={error}
         onSubmit={() => void create()}
@@ -426,6 +481,27 @@ export function CreateBoardDialog({
             />
           </label>
           {coordinatorControls}
+          <div {...stylex.props(boardStyles.controls)}>
+            <ProjectRefSelector
+              triggerVariant="chip"
+              value={project}
+              onChange={setThreadProject}
+              localProjects={machineProjects}
+              repositories={(repositories ?? []).map((repository) => ({
+                fullName: repository.fullName,
+              }))}
+              onAddLocalProject={() => openSettings('projects')}
+              onConnectGitRepo={githubSettingsAvailable ? () => openSettings('github') : undefined}
+            />
+            {project?.kind === 'local' ? (
+              <WorktreeCheckboxPill
+                checked={project.useWorktree === true}
+                onCheckedChange={(checked) =>
+                  setThreadProject({ ...project, useWorktree: checked })
+                }
+              />
+            ) : null}
+          </div>
           {error ? (
             <p role="alert" {...stylex.props(boardStyles.error)}>
               {error}
