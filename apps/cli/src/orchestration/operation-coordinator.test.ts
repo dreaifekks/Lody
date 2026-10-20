@@ -2387,6 +2387,29 @@ describe('Board coordinator continuity', () => {
     }
   });
 
+  it('counts passive thread reports waiting for the next input toward the threshold', async () => {
+    const h = await largeIdleCoordinator(149_900);
+    try {
+      await h.add('thread');
+      await h.append('thread', h.input('thread-work'));
+      h.coordinator.start();
+      h.advance(10 * 60_000 + 1);
+      await h.drain();
+      // Below the threshold on its own: nothing waits, nothing runs.
+      expect(h.maintenance.runs).toEqual([]);
+      await h.finish('thread', 'thread-work', 'x'.repeat(2_000));
+      await h.drain();
+      expect(h.reports()).toHaveLength(1);
+      expect(h.launches).toEqual([]);
+      // With the waiting report the context crosses it: the idle run starts at once.
+      expect(steps(h)[0]).toBe('memory');
+      await settled(h, 'done');
+      expect(steps(h)).toEqual(expect.arrayContaining(['memory', 'compact']));
+    } finally {
+      await h.close();
+    }
+  });
+
   it('skips an agent that cannot compact with a log, and never claims success', async () => {
     const h = await largeIdleCoordinator();
     try {

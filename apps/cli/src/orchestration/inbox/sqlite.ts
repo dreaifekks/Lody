@@ -277,6 +277,15 @@ export class InboxSqlite {
         SELECT 1 FROM inbox_intents i WHERE i.workspace_id=s.workspace_id AND i.session_id=s.session_id AND i.user_id=s.user_id AND i.state IN ('pending','prepared')))) LIMIT 1`)
       .get(workspaceId, sessionId);
   }
+  /** Results no batch has claimed yet, oldest first: what the next input would carry. */
+  waitingResults(workspaceId: string, sessionId: string): InboxMember[] {
+    return this.db
+      .prepare(
+        'SELECT sequence,operation_id,operation_kind,source_turn_id,created_at,completed_at,chain_depth,completion_json FROM inbox_results WHERE workspace_id=? AND session_id=? AND consumed=0 AND claim IS NULL ORDER BY sequence'
+      )
+      .all(workspaceId, sessionId)
+      .map((row) => this.decodeMember(row));
+  }
   /** The user's Stop paused this Session's Inbox until their next message. */
   paused(workspaceId: string, sessionId: string): boolean {
     return !!this.db

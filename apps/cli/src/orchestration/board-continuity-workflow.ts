@@ -254,6 +254,8 @@ export class BoardContinuityWorkflow {
       const decision = decideBoardIdleCompaction({
         settings: board.continuity,
         usage: meta.contextWindowUsage,
+        // Passive reports pile up while the coordinator is idle and arrive with the next input.
+        pendingTokens: maintenance.pendingTokens(id),
         idleSinceMs:
           activity.role === 'assistant' && typeof activity.endedAt === 'number'
             ? activity.endedAt

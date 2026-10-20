@@ -56,3 +56,14 @@ Lody 在同一个会话里依次跑三个安静的维护回合：整理记忆、
   多半会记为未确认；Grok 没有声明压缩能力。看板上没有运行中的 agent、缓存的命令里也没有
   `compact` 时，自动整理会跳过。
 - PR：待补（随 `board-coordinator` 分支的 PR #53）。
+
+## 后续决定（2026-10-20）：空闲整理算上待送达回执
+
+看板回执是被动的：协调者空闲时它们堆在 Inbox 里，等下一条输入一起送达。用户的实际用法是同时在
+几个线程里推进好几个需求，十几二十个回执会一起涌进主线程。所以空闲判断改成
+`used + pending >= 阈值`：`pending` 是 Inbox 里还没有批次认领的结果，按 `batchPreview` 实际产出
+的文本（上限 64 KiB）用 `estimateTokenCount` 估算。取数是 `CoordinatorBoardMaintenance.pendingTokens`，
+不新增触发：回执写入 Inbox 的同一次 reconcile 里会重跑空闲判断（`coordinator-workflow.ts` 先跑看板
+回报再跑连续性）。窗口比例可以配到 95%，所以不能指望阈值以下的余量装得下这些回执。
+
+考虑过把回执批次放到当前请求之前；用户决定保持上游顺序（请求在前、回执在后）。

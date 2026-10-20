@@ -1,5 +1,6 @@
 import { listAliveSessionMetas } from '@/lib/command-runtime';
 import {
+  estimateTokenCount,
   getWorkspaceFlockDocId,
   getSessionIdFromRoomId,
   normalizeBoardMeta,
@@ -26,6 +27,7 @@ import {
 import { Effect, Layer } from 'effect';
 import { CoordinatorPorts, type CoordinatorHistory } from '../coordinator-ports';
 import type { OperationInboxLegacy } from '../inbox/legacy';
+import { batchPreview } from '../inbox/model';
 import type { LodyOperationCoordinatorOptions } from '../operation-coordinator';
 import type { LodyOperationStore } from '../operation-store';
 
@@ -248,6 +250,14 @@ export const coordinatorSessionsLayer = (
         runnable: store.inbox.hasRunnableWork(options.workspaceId, id),
         paused: store.inbox.paused(options.workspaceId, id),
       }),
+      pendingTokens: (id) => {
+        const members = store.inbox.waitingResults(options.workspaceId, id);
+        return members.length
+          ? estimateTokenCount(
+              batchPreview({ batchId: 'pending', memberCount: members.length }, members)
+            )
+          : 0;
+      },
       compactionSupport: (id, meta) =>
         io(async () => {
           const live = options.executionService.contextCompactionSupport(id);

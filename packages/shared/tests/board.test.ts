@@ -245,6 +245,7 @@ describe('coordinator continuity', () => {
     decideBoardIdleCompaction({
       settings: DEFAULT_BOARD_CONTINUITY,
       usage: { used: 160_000, size: 1_000_000 },
+      pendingTokens: 0,
       idleSinceMs: 0,
       nowMs: 10 * 60_000,
       ...overrides,
@@ -264,6 +265,21 @@ describe('coordinator continuity', () => {
       reason: 'below-threshold',
     });
     expect(idle({ usage: { used: 81_000, size: 200_000 } })).toEqual({ kind: 'compact' });
+    // Results waiting for the next input count: they arrive with it.
+    expect(idle({ usage: { used: 140_000, size: 1_000_000 }, pendingTokens: 10_000 })).toEqual({
+      kind: 'compact',
+    });
+    expect(
+      idle({ usage: { used: 140_000, size: 1_000_000 }, pendingTokens: 10_000, nowMs: 60_000 })
+    ).toEqual({ kind: 'wait', delayMs: 9 * 60_000 });
+    expect(idle({ usage: { used: 140_000, size: 1_000_000 }, pendingTokens: 9_999 })).toEqual({
+      kind: 'none',
+      reason: 'below-threshold',
+    });
+    expect(idle({ usage: undefined, pendingTokens: 200_000 })).toEqual({
+      kind: 'none',
+      reason: 'no-usage',
+    });
     expect(idle({ usage: undefined })).toEqual({ kind: 'none', reason: 'no-usage' });
     expect(
       idle({ settings: { ...DEFAULT_BOARD_CONTINUITY, idleCompaction: false } })

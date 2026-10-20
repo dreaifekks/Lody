@@ -71,11 +71,14 @@ export type BoardIdleCompactionDecision =
 
 /**
  * The usage policy: compact once the coordinator has been idle long enough and
- * its context crossed the threshold. Pure, so a thread's handoff hint can reuse it.
+ * its context, with the results its next input will carry, crossed the threshold.
+ * Pure, so a thread's handoff hint can reuse it.
  */
 export function decideBoardIdleCompaction(input: {
   settings: BoardContinuitySettings;
   usage: SessionContextWindowUsage | undefined;
+  /** Estimated tokens of the Inbox results waiting for the next input. */
+  pendingTokens: number;
   idleSinceMs: number;
   nowMs: number;
 }): BoardIdleCompactionDecision {
@@ -83,7 +86,7 @@ export function decideBoardIdleCompaction(input: {
   if (!settings.idleCompaction) return { kind: 'none', reason: 'disabled' };
   if (!usage || !Number.isFinite(usage.used) || usage.used <= 0)
     return { kind: 'none', reason: 'no-usage' };
-  if (usage.used < boardCompactionThreshold(usage.size, settings))
+  if (usage.used + input.pendingTokens < boardCompactionThreshold(usage.size, settings))
     return { kind: 'none', reason: 'below-threshold' };
   const delayMs = input.idleSinceMs + settings.idleMinutes * 60_000 - input.nowMs;
   return delayMs > 0 ? { kind: 'wait', delayMs } : { kind: 'compact' };
