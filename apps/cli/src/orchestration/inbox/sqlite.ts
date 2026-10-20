@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { OrchestrationConnection } from '../platform/database';
 import {
   batchDepth,
+  INBOX_INLINE_MEMBERS,
   type InboxBatch,
   type InboxInput,
   type InboxMember,
@@ -276,6 +277,15 @@ export class InboxSqlite {
       (s.active_execution IS NOT NULL OR s.blocked=1 OR (s.paused=0 AND EXISTS(
         SELECT 1 FROM inbox_intents i WHERE i.workspace_id=s.workspace_id AND i.session_id=s.session_id AND i.user_id=s.user_id AND i.state IN ('pending','prepared')))) LIMIT 1`)
       .get(workspaceId, sessionId);
+  }
+  /** The unclaimed results the user's next input would show inline, oldest first. */
+  waitingResults(s: InboxScope): InboxMember[] {
+    return this.db
+      .prepare(
+        'SELECT sequence,operation_id,operation_kind,source_turn_id,created_at,completed_at,chain_depth,completion_json FROM inbox_results WHERE workspace_id=? AND session_id=? AND user_id=? AND consumed=0 AND claim IS NULL ORDER BY sequence LIMIT ?'
+      )
+      .all(s.workspaceId, s.sessionId, s.userId, INBOX_INLINE_MEMBERS)
+      .map((row) => this.decodeMember(row));
   }
   /** The user's Stop paused this Session's Inbox until their next message. */
   paused(workspaceId: string, sessionId: string): boolean {

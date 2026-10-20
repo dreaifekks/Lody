@@ -38,6 +38,8 @@ export type CoordinatorBoardMaintenance = {
   busy(id: SessionId): boolean;
   /** `runnable`: the Inbox holds work to run; `paused`: the user pressed Stop. */
   inbox(id: SessionId): { runnable: boolean; paused: boolean };
+  /** Estimated tokens of the waiting Inbox results the user's next input will carry. */
+  pendingTokens(id: SessionId, userId: string): number;
   /**
    * Whether the coordinator's agent compacts on `/compact`: the running agent's
    * capability, else its cached commands; undefined when neither says.
