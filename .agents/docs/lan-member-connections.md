@@ -37,6 +37,15 @@ terminals on the desktop; the shells keep running over there, and listing the
 session again finds them. `LODY_LAN_TERMINAL_PORT` chooses another port, `0`
 any port, and `off` closes a machine's terminals to members.
 
+Links in the desktop's terminal (`components/terminal/terminal-links.ts`) open
+the system browser on a click and the session's Browser panel on Cmd/Ctrl +
+click; file paths open beside the conversation, with the modifier only. A
+loopback URL (`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`) printed by another
+member's session goes to the Browser panel on a plain click as well: the system
+browser's localhost is this machine, while the panel's Managed Preview reaches
+that member's port. A link the terminal wrapped onto a second row is recognized
+only up to the end of the first.
+
 A shell can also belong to a machine rather than to a session. Its terminals
 are opened, listed and attached under the scope `lody-shell:<machine id>` in
 place of a session id (`machineShellScope` in

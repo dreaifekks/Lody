@@ -1169,6 +1169,8 @@ const SessionDetail = ({
   const [browserCandidateNavigationRequest, setBrowserCandidateNavigationRequest] = useState<{
     sessionId: SessionId;
     id: number;
+    /** Set when the request names its own address (a terminal link). */
+    url?: string;
   } | null>(null);
   const browserCandidateNavigationSequenceRef = useRef(0);
   const [viewerTabs, setViewerTabs] = useState<ViewerTab[]>(() => initialTabState.viewerTabs);
@@ -4163,7 +4165,8 @@ const SessionDetail = ({
   );
 
   const handleOpenBrowser = useCallback(
-    (tabSessionId?: SessionId, navigateCandidate = false) => {
+    // `true` navigates to the agent-reported candidate, `{ url }` to that address.
+    (tabSessionId?: SessionId, navigateCandidate: boolean | { url: string } = false) => {
       const browserSessionId = tabSessionId ?? activeBrowserSession?.id;
       if (tabSessionId) {
         navigateToSessionTab(tabSessionId, { push: true });
@@ -4172,6 +4175,7 @@ const SessionDetail = ({
         setBrowserCandidateNavigationRequest({
           sessionId: browserSessionId,
           id: ++browserCandidateNavigationSequenceRef.current,
+          ...(navigateCandidate === true ? {} : { url: navigateCandidate.url }),
         });
       }
       if (isMobile) {
@@ -4196,6 +4200,12 @@ const SessionDetail = ({
       replaceSessionUrlBrowser,
     ]
   );
+
+  // The terminal dock belongs to the route session. From a draft or child tab,
+  // switch to that session's tab so its Browser opens the link.
+  const handleOpenTerminalUrl = useStableCallback((url: string) => {
+    handleOpenBrowser(activeBrowserSession?.id === sessionId ? undefined : sessionId, { url });
+  });
 
   const handleBrowserCandidateNavigationRequestHandled = useCallback((requestId: number) => {
     setBrowserCandidateNavigationRequest((current) => (current?.id === requestId ? null : current));
@@ -7311,6 +7321,11 @@ const SessionDetail = ({
                       ? browserCandidateNavigationRequest.id
                       : 0
                   }
+                  candidateNavigationUrl={
+                    browserCandidateNavigationRequest?.sessionId === activeBrowserSession.id
+                      ? browserCandidateNavigationRequest.url
+                      : undefined
+                  }
                   onCandidateNavigationRequestHandled={
                     handleBrowserCandidateNavigationRequestHandled
                   }
@@ -7504,6 +7519,11 @@ const SessionDetail = ({
               browserCandidateNavigationRequest?.sessionId === activeBrowserSession.id
                 ? browserCandidateNavigationRequest.id
                 : 0
+            }
+            candidateNavigationUrl={
+              browserCandidateNavigationRequest?.sessionId === activeBrowserSession.id
+                ? browserCandidateNavigationRequest.url
+                : undefined
             }
             onCandidateNavigationRequestHandled={handleBrowserCandidateNavigationRequestHandled}
             visualAnnotationReferenceKeys={
@@ -8101,7 +8121,12 @@ const SessionDetail = ({
         {...(activeBoard ? { layoutResetKey: `${activeBoard.id}:${boardEntrySeq}` } : {})}
         topBar={tabBar}
         chatSurfaces={desktopChatSurfaces}
-        terminalDock={<TerminalDockHost />}
+        terminalDock={
+          <TerminalDockHost
+            onOpenUrlInSidePanel={handleOpenTerminalUrl}
+            onOpenFileInSidePanel={handleOpenFile}
+          />
+        }
         secondaryPanel={desktopSecondaryPanel}
         sidebarOpen={isSidebarVisible}
         onSidebarCollapse={handleToggleSidebar}

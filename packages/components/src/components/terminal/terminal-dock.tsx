@@ -113,6 +113,10 @@ export interface TerminalDockProps {
   canCreateTerminal?: boolean;
   autoOpenFirstTerminal?: boolean;
   defaultView?: DockView;
+  /** Link handling for the terminals; see `LocalTerminalPanelProps`. */
+  sessionIsRemote?: boolean;
+  onOpenUrlInSidePanel?: (url: string) => void;
+  onOpenFileInSidePanel?: (path: string) => void;
   className?: string;
 }
 
@@ -122,6 +126,9 @@ export function TerminalDock({
   canCreateTerminal = Boolean(sessionId),
   autoOpenFirstTerminal = false,
   defaultView,
+  sessionIsRemote,
+  onOpenUrlInSidePanel,
+  onOpenFileInSidePanel,
   className,
 }: TerminalDockProps) {
   const postHog = usePostHog();
@@ -585,6 +592,9 @@ export function TerminalDock({
                   });
                 }}
                 onTitleChange={updateActiveTitle}
+                sessionIsRemote={sessionIsRemote}
+                onOpenUrlInSidePanel={onOpenUrlInSidePanel}
+                onOpenFileInSidePanel={onOpenFileInSidePanel}
                 className="px-2 py-1"
               />
             ) : (
