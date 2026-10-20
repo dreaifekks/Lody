@@ -20,10 +20,14 @@ import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 
 export const ANTIGRAVITY_QUOTA_INTERVAL_MS = 5 * 60_000;
-const CLOUD_CODE_URL = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
+// The host and User-Agent the agy CLI uses. Cloud Code tells products apart by
+// User-Agent (a missing one reads as unlicensed, 403). The production host or a
+// bare `antigravity` agent answers with windows that never start and no Argon
+// group; the daily host with a versioned CLI agent answers with real usage.
+const CLOUD_CODE_URL =
+  'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
 const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
-// Cloud Code tells products apart by User-Agent; without it the account reads as unlicensed (403).
-const CLOUD_CODE_USER_AGENT = 'antigravity';
+const CLOUD_CODE_USER_AGENT = `antigravity/cli/1.4.2 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
 const REQUEST_TIMEOUT_MS = 20_000;
 /** An access token is replaced this long before Google says it expires. */
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;

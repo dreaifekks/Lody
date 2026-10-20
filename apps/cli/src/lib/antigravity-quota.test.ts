@@ -172,10 +172,10 @@ describe('createAntigravityQuotaClient', () => {
           expires_in: 3600,
         });
       }
-      if (url.endsWith('/v1internal:retrieveUserQuotaSummary')) {
+      if (url === 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary') {
         const headers = new Headers(init?.headers);
-        // Like Cloud Code: a caller that is not Antigravity holds no licence.
-        if (headers.get('User-Agent') !== 'antigravity') {
+        // Like Cloud Code: only a versioned Antigravity CLI agent reads the real summary.
+        if (!/^antigravity\/cli\/\d+\.\d+\.\d+ \w+\/\w+$/.test(headers.get('User-Agent') ?? '')) {
           return Response.json(
             { error: { code: 403, message: 'You do not have a valid license of this product.' } },
             { status: 403 }
