@@ -29,46 +29,55 @@ export function BoardProjectScopePickerView({
   value,
   onChange,
   disabled = false,
+  labelled = false,
 }: {
   options: readonly BoardScopeOption[];
   value: readonly BoardProjectRef[];
   onChange: (next: BoardProjectRef[]) => void;
   disabled?: boolean;
+  /** A row label already says "Project scope": the trigger names only the projects. */
+  labelled?: boolean;
 }) {
   const { t } = useTranslation();
-  const names = boardScopeNames(value);
-  const label =
-    names.length === 0
-      ? t('boards.scope.all', 'Projects: All')
-      : t('boards.scope.some', 'Projects: {{names}}', {
-          names: names.join(t('boards.scope.separator', ', ')),
-        });
+  const names = boardScopeNames(value).join(t('boards.scope.separator', ', '));
+  const label = labelled
+    ? names || t('boards.scope.allProjects', 'All projects')
+    : names
+      ? t('boards.scope.some', 'Projects: {{names}}', { names })
+      : t('boards.scope.all', 'Projects: All');
   const local = options.filter((option) => option.kind === 'local');
   const github = options.filter((option) => option.kind === 'github');
   const row = (option: BoardScopeOption) => {
     const state = boardScopeOptionState(option, value);
-    return (
+    const toggle = () => onChange(toggleBoardScopeOption(value, option));
+    const shortcut =
+      option.kind === 'local'
+        ? option.projects
+            .map((project) => project.machineName)
+            .join(t('boards.scope.separator', ', '))
+        : undefined;
+    const text = option.kind === 'local' ? option.name : option.repoFullName;
+    // A row on some of its machines: the dash sits where the tick would.
+    return state === 'partial' ? (
+      <Menu.Item
+        key={option.key}
+        role="menuitemcheckbox"
+        aria-checked="mixed"
+        icon={Minus}
+        closeOnClick={false}
+        onClick={toggle}
+        shortcut={shortcut}
+      >
+        {text}
+      </Menu.Item>
+    ) : (
       <Menu.CheckboxItem
         key={option.key}
         checked={state === 'checked'}
-        onCheckedChange={() => onChange(toggleBoardScopeOption(value, option))}
-        shortcut={
-          option.kind === 'local'
-            ? option.projects
-                .map((project) => project.machineName)
-                .join(t('boards.scope.separator', ', '))
-            : undefined
-        }
-        endContent={
-          state === 'partial' ? (
-            <Minus
-              {...stylex.props(surface.glyph14)}
-              aria-label={t('boards.scope.partial', 'Not on every machine yet')}
-            />
-          ) : null
-        }
+        onCheckedChange={toggle}
+        shortcut={shortcut}
       >
-        {option.kind === 'local' ? option.name : option.repoFullName}
+        {text}
       </Menu.CheckboxItem>
     );
   };
@@ -110,10 +119,12 @@ export function BoardProjectScopePicker({
   value,
   onChange,
   disabled,
+  labelled,
 }: {
   value: readonly BoardProjectRef[];
   onChange: (next: BoardProjectRef[]) => void;
   disabled?: boolean;
+  labelled?: boolean;
 }) {
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const local = useVisibleLocalProjects({ includeMachineFlock: true });
@@ -138,6 +149,7 @@ export function BoardProjectScopePicker({
       value={value}
       onChange={onChange}
       disabled={disabled}
+      labelled={labelled}
     />
   );
 }

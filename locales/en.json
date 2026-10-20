@@ -5434,7 +5434,6 @@
   "boards.scope.allProjects": "All projects",
   "boards.scope.local": "Local projects",
   "boards.scope.github": "GitHub",
-  "boards.scope.partial": "Not on every machine yet",
   "boards.scope.helper": "Agents of this Board open sessions only in these projects. Chats and threads you start yourself are not limited.",
   "sessions.openedBy.status.waitingUser": "Waiting for you",
   "sessions.openedBy.status.notice": "Notice",

@@ -5434,7 +5434,6 @@
   "boards.scope.allProjects": "全部项目",
   "boards.scope.local": "本地项目",
   "boards.scope.github": "GitHub",
-  "boards.scope.partial": "还有机器未包含",
   "boards.scope.helper": "看板里的 agent 只能在这些项目里开会话。对话和你手动开的线程不受限制。",
   "sessions.openedBy.status.waitingUser": "等你回答",
   "sessions.openedBy.status.notice": "通知",

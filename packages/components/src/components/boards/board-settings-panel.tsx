@@ -661,6 +661,7 @@ export function BoardSettingsDialog({
       autoMemory={<BoardAutoMemory board={board} />}
       projectScope={
         <BoardProjectScopePicker
+          labelled
           value={draft.projects}
           onChange={(projects) => setDraft({ ...draft, projects })}
         />

@@ -641,7 +641,7 @@ const scopeRefs = (...names: string[]): BoardProjectRef[] =>
       name,
     }));
 
-function ScopePicker({ initial }: { initial: BoardProjectRef[] }) {
+function ScopePicker({ initial, labelled }: { initial: BoardProjectRef[]; labelled?: boolean }) {
   const [value, setValue] = useState(initial);
   return (
     <BoardProjectScopePickerView
@@ -652,6 +652,7 @@ function ScopePicker({ initial }: { initial: BoardProjectRef[] }) {
       })}
       value={value}
       onChange={setValue}
+      labelled={labelled}
     />
   );
 }
@@ -672,7 +673,7 @@ function SettingsDialogStory({ initialPage }: { initialPage: BoardSettingsPage }
         onDraftChange={(patch) => setDraft({ ...draft, ...patch })}
         onArchive={() => {}}
         autoMemory={<BoardFileRowsView entries={memoryFiles} onOpen={() => {}} />}
-        projectScope={<ScopePicker initial={scopeRefs('Lody', 'lody-ios')} />}
+        projectScope={<ScopePicker labelled initial={scopeRefs('Lody', 'lody-ios')} />}
         onSave={() => {}}
         onClose={() => {}}
       />
@@ -1205,7 +1206,9 @@ export const ProjectScopeMerged: Story = {
       <ScopePicker
         initial={[
           ...scopeRefs('Lody'),
-          ...scopeRefs('lody-ios').filter((ref) => ref.kind === 'local' && ref.machineId === 'machine-devnuc'),
+          ...scopeRefs('lody-ios').filter(
+            (ref) => ref.kind === 'local' && ref.machineId === 'machine-devnuc'
+          ),
         ]}
       />
     </SettingsStoryProviders>
