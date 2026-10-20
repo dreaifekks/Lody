@@ -40,7 +40,8 @@ Translation: current
   `useWorkspaceGitHubRepositories`，另外保留范围里已经没人看得到的项目，方便取消勾选。只有部分
   机器在范围里的行显示部分勾选标记，勾一下补齐缺的那几对。「+ 新线程」加了普通的项目选择和
   worktree 勾选（`ProjectRefSelector`、`WorktreeCheckboxPill`），像普通新会话一样在该项目里开
-  线程，不按范围过滤。
+  线程，不按范围过滤。选择器不给 GitHub 仓库指定分支，所以创建前先向 GitHub 查默认分支
+  （`githubFetchDefaultBranch`），和新对话落地页一致。
 
 ## 考虑过的方案
 

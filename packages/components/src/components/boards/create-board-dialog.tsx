@@ -18,6 +18,7 @@ import {
   buildSessionTurnInputConfig,
   buildPendingUserHistoryEntry,
   getDefaultSelectedMcpServerIds,
+  githubFetchDefaultBranch,
   type AgentRoleInstanceId,
   type BoardMeta,
   type BoardProjectRef,
@@ -47,6 +48,7 @@ import { useVisibleLocalProjects } from '@/hooks/use-visible-local-projects';
 import { useWorkspaceGitHubRepositories } from '@/hooks/use-workspace-github-repositories';
 import { useOpenSettings } from '@/hooks/use-open-settings';
 import { useAppCapability } from '@/lib/app-platform';
+import { withGitHubTokenRetry } from '@/lib/github-token';
 import { ProjectRefSelector } from '@/components/shared/project-ref-selector';
 import { WorktreeCheckboxPill } from '@/components/shared/workdir-mode-selector';
 import {
@@ -176,7 +178,8 @@ export function CreateBoardDialog({
     ready: { userId: string; machineId: MachineId; config: NonNullable<typeof config> },
     board: BoardMeta,
     sessionId: SessionId,
-    title: string
+    title: string,
+    threadProjectRef?: ProjectRef | null
   ) => ({
     sessionId,
     userId: ready.userId,
@@ -189,7 +192,7 @@ export function CreateBoardDialog({
     env: ready.config.env,
     title,
     boardId: board.id,
-    ...(existingBoard && project ? { project } : {}),
+    ...(threadProjectRef ? { project: threadProjectRef } : {}),
     ...(role
       ? {
           agentRoleId: role.role.id,
@@ -343,12 +346,25 @@ export function CreateBoardDialog({
       return;
     }
     try {
+      // The selector names no branch for a repository: start from its default one.
+      const threadProjectRef =
+        project?.kind === 'github'
+          ? {
+              ...project,
+              branch: await withGitHubTokenRetry(
+                runtime.workspaceId,
+                project.repoFullName,
+                (token) => githubFetchDefaultBranch(token, project.repoFullName)
+              ),
+            }
+          : project;
       const created = await startSession(
         sessionPayload(
           { userId: user.id, machineId: machine.id, config },
           board,
           ids.session,
-          name.trim()
+          name.trim(),
+          threadProjectRef
         ),
         history
       );

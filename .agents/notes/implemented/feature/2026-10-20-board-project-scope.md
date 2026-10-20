@@ -56,7 +56,9 @@ The intent is in the [Board design](../../../../specs/project-coordinator/design
   some of its machines in scope shows a partial mark; ticking it adds the missing
   pairs. "+ New thread" gained the ordinary project chip and worktree checkbox
   (`ProjectRefSelector`, `WorktreeCheckboxPill`) and starts the thread like a new chat
-  in that project; it is not filtered by the scope.
+  in that project; it is not filtered by the scope. The selector names no branch
+  for a repository, so creation asks GitHub for its default branch first
+  (`githubFetchDefaultBranch`), as the chat landing does.
 
 ## Alternatives considered
 

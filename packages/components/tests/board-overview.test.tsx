@@ -229,6 +229,22 @@ vi.mock('@/hooks/use-authenticated-convex', () => ({
 vi.mock('@/components/schedules/schedule-agent-controls', () => ({
   ScheduleAgentControls: () => null,
 }));
+// The project picker is its own suite; here it only hands the dialog a repository.
+vi.mock('@/components/shared/project-ref-selector', () => ({
+  ProjectRefSelector: ({ onChange }: { onChange: (project: unknown) => void }) => (
+    <button
+      type="button"
+      data-testid="pick-repository"
+      onClick={() => onChange({ kind: 'github', repoFullName: 'owner/web', branch: 'main' })}
+    />
+  ),
+}));
+// GitHub answers the repository's default branch.
+vi.mock('@/lib/github-token', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  withGitHubTokenRetry: async (_workspaceId: string, repoFullName: string) =>
+    repoFullName === 'owner/web' ? 'release' : 'main',
+}));
 vi.mock('@/components/sessions/desktop-run-config-menu', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   DesktopMachineMenu: () => null,
@@ -1581,7 +1597,8 @@ it('edits and previews shared notes and retains an unsaved draft on write failur
   }
 });
 
-it('submits a new Board thread as chat without the coordinator role', async () => {
+/** Fills in and submits "+ New thread"; returns what was handed to `startSession`. */
+async function submitNewBoardThread(options: { pickRepository?: boolean } = {}) {
   const store = createStore();
   const board = normalizeBoardMeta({
     version: 1,
@@ -1654,28 +1671,46 @@ it('submits a new Board thread as chat without the coordinator role', async () =
       );
       task.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    if (options.pickRepository)
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[data-testid="pick-repository"]')!.click();
+      });
     await act(async () => {
       document
         .querySelector('form')!
         .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     });
     expect(container.textContent).toBe('Thread accepted');
-    expect(accepted).toHaveLength(1);
-    expect(accepted[0]?.payload).toMatchObject({
-      boardId: board.id,
-      title: 'Implement notes',
-      machineId: 'machine',
-    });
-    expect(accepted[0]?.payload).not.toHaveProperty('boardRole');
-    expect(accepted[0]?.payload).not.toHaveProperty('project');
-    expect(accepted[0]?.payload.sessionId).not.toBe(board.coordinatorSessionId);
-    expect(accepted[0]?.history.inputConfig?.prompt).toContain('Build shared notes');
+    return { board, accepted };
   } finally {
     await act(async () => root.unmount());
     container.remove();
     creation.startSession = undefined;
     creation.machines.clear();
   }
+}
+
+it('submits a new Board thread as chat without the coordinator role', async () => {
+  const { board, accepted } = await submitNewBoardThread();
+  expect(accepted).toHaveLength(1);
+  expect(accepted[0]?.payload).toMatchObject({
+    boardId: board.id,
+    title: 'Implement notes',
+    machineId: 'machine',
+  });
+  expect(accepted[0]?.payload).not.toHaveProperty('boardRole');
+  expect(accepted[0]?.payload).not.toHaveProperty('project');
+  expect(accepted[0]?.payload.sessionId).not.toBe(board.coordinatorSessionId);
+  expect(accepted[0]?.history.inputConfig?.prompt).toContain('Build shared notes');
+});
+
+it('starts a new Board thread in a repository from its default branch', async () => {
+  const { accepted } = await submitNewBoardThread({ pickRepository: true });
+  expect(accepted[0]?.payload.project).toEqual({
+    kind: 'github',
+    repoFullName: 'owner/web',
+    branch: 'release',
+  });
 });
 
 /** A Board of three members, its row in the catalog and its Sessions in the metadata cache. */
@@ -2865,7 +2900,12 @@ describe('Board project scope picker', () => {
     if (!ios) throw new Error('Expected the lody-ios row');
     const scope = toggleBoardScopeOption([], ios);
     expect(scope).toEqual([
-      { kind: 'local', machineId: 'm-devnuc', localProjectId: 'p-lody-ios-devnuc', name: 'lody-ios' },
+      {
+        kind: 'local',
+        machineId: 'm-devnuc',
+        localProjectId: 'p-lody-ios-devnuc',
+        name: 'lody-ios',
+      },
       { kind: 'local', machineId: 'm-n100', localProjectId: 'p-lody-ios-n100', name: 'lody-ios' },
     ]);
     expect(boardScopeNames(scope)).toEqual(['lody-ios']);
