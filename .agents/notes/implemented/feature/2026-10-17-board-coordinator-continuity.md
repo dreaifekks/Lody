@@ -82,12 +82,16 @@ implementation differs from the proposal.
 Board reports are passive: while the coordinator sits idle they wait in the Inbox and
 arrive with the next input. The user drives several requests across several threads at
 once, so ten or twenty reports can reach the main thread together. The idle check is now
-`used + pending >= threshold`: `pending` covers Inbox results no batch has claimed yet,
+`used + pending >= threshold`: `pending` covers the coordinator user's Inbox results no
+batch has claimed yet (scoped by user and capped at 50 members, like the next input),
 estimated with `estimateTokenCount` over the text `batchPreview` would produce (capped at
 64 KiB). It comes from `CoordinatorBoardMaintenance.pendingTokens` and needs no new
 trigger: the reconcile that writes a report into the Inbox reruns the idle check
 (`coordinator-workflow.ts` runs Board reports before continuity). The window share can be
 set as high as 95%, so the headroom below the threshold cannot be relied on to absorb them.
+With no coordinator activity since the last maintenance run the check does not rerun, even
+as reports pile up: compaction only shrinks the existing context, the reports arrive with
+the next input, and compacting again right after a compaction saves little.
 
 Placing the receipt batch before the current request was considered; the user chose to
 keep the upstream order (request first, receipts after).

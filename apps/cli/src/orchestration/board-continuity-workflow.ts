@@ -255,7 +255,7 @@ export class BoardContinuityWorkflow {
         settings: board.continuity,
         usage: meta.contextWindowUsage,
         // Passive reports pile up while the coordinator is idle and arrive with the next input.
-        pendingTokens: maintenance.pendingTokens(id),
+        pendingTokens: maintenance.pendingTokens(id, meta.userId),
         idleSinceMs:
           activity.role === 'assistant' && typeof activity.endedAt === 'number'
             ? activity.endedAt

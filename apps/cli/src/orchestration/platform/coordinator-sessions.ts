@@ -250,8 +250,12 @@ export const coordinatorSessionsLayer = (
         runnable: store.inbox.hasRunnableWork(options.workspaceId, id),
         paused: store.inbox.paused(options.workspaceId, id),
       }),
-      pendingTokens: (id) => {
-        const members = store.inbox.waitingResults(options.workspaceId, id);
+      pendingTokens: (id, userId) => {
+        const members = store.inbox.waitingResults({
+          workspaceId: options.workspaceId,
+          sessionId: id,
+          userId,
+        });
         return members.length
           ? estimateTokenCount(
               batchPreview({ batchId: 'pending', memberCount: members.length }, members)

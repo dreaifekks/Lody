@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   boardMaintenanceTurn,
+  makeLodyError,
   getAgentConfigRoomId,
   getSessionRoomId,
   readBoardMaintenance,
@@ -2392,6 +2393,25 @@ describe('Board coordinator continuity', () => {
     try {
       await h.add('thread');
       await h.append('thread', h.input('thread-work'));
+      // Another user's waiting result rides on their own next input, not this one.
+      h.store.accept({
+        workspaceId: h.workspaceId,
+        ownerMachineId: h.machineId,
+        requesterSessionId: h.coordinatorId,
+        requesterUserId: 'other-user',
+        operationId: 'other-user-result',
+        kind: 'session_chat',
+        canonicalCommand: { id: 'other-user-result' },
+        frozenContinuationConfig: { inputConfig: {}, deliverWithNextInput: true },
+        initiatorChainDepth: 0,
+        createdAt: new Date(TEST_NOW_MS).toISOString(),
+        deadlineAt: new Date(TEST_NOW_MS + 60 * 60_000).toISOString(),
+        items: [],
+      });
+      h.store.finish(h.coordinatorId, 'other-user-result', {
+        type: 'error',
+        error: makeLodyError('COORDINATOR_FAILED', 'y'.repeat(4_000), false),
+      });
       h.coordinator.start();
       h.advance(10 * 60_000 + 1);
       await h.drain();
