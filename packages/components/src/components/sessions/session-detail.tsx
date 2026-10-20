@@ -4201,8 +4201,10 @@ const SessionDetail = ({
     ]
   );
 
+  // The terminal dock belongs to the route session. From a draft or child tab,
+  // switch to that session's tab so its Browser opens the link.
   const handleOpenTerminalUrl = useStableCallback((url: string) => {
-    handleOpenBrowser(undefined, { url });
+    handleOpenBrowser(activeBrowserSession?.id === sessionId ? undefined : sessionId, { url });
   });
 
   const handleBrowserCandidateNavigationRequestHandled = useCallback((requestId: number) => {
