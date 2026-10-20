@@ -13,6 +13,7 @@ import {
   terminalFontSizeAtom,
 } from '@/atoms';
 import { formatKeyBinding } from '@/lib/commands';
+import { openExternalUrl } from '@/lib/native-browser';
 import { observeResizeOnAnimationFrame } from '@/lib/resize-observer';
 import { cn } from '@/lib/utils';
 import { ContextMenu } from '@lody/ui/context-menu';
@@ -34,6 +35,12 @@ import {
   type CellPos,
 } from './terminal-keyboard-selection';
 import {
+  findTerminalLineLinks,
+  isSidePanelLinkModifier,
+  resolveTerminalLinkAction,
+  type TerminalLinkKind,
+} from './terminal-links';
+import {
   buildTerminalFontLoadSpec,
   buildTerminalTheme,
   resolveTerminalFontFamily,
@@ -52,6 +59,12 @@ export interface LocalTerminalPanelProps {
   onCommandSubmitted?: () => void;
   onTitleChange?: (title: string) => void;
   onExit?: (exitCode: number) => void;
+  /** The session runs on another LAN machine; its loopback URLs open in the Browser panel. */
+  sessionIsRemote?: boolean;
+  /** Cmd/Ctrl + click on a URL. Without it every URL opens in the system browser. */
+  onOpenUrlInSidePanel?: (url: string) => void;
+  /** Cmd/Ctrl + click on a file path. Without it paths are not links. */
+  onOpenFileInSidePanel?: (path: string) => void;
   className?: string;
 }
 
@@ -82,6 +95,9 @@ export function LocalTerminalPanel({
   onCommandSubmitted,
   onTitleChange,
   onExit,
+  sessionIsRemote = false,
+  onOpenUrlInSidePanel,
+  onOpenFileInSidePanel,
   className,
 }: LocalTerminalPanelProps) {
   const { t: translate } = useTranslation();
@@ -109,6 +125,12 @@ export function LocalTerminalPanel({
   onTitleChangeRef.current = onTitleChange;
   onExitRef.current = onExit;
   onCommandSubmittedRef.current = onCommandSubmitted;
+  const sessionIsRemoteRef = useRef(sessionIsRemote);
+  const onOpenUrlInSidePanelRef = useRef(onOpenUrlInSidePanel);
+  const onOpenFileInSidePanelRef = useRef(onOpenFileInSidePanel);
+  sessionIsRemoteRef.current = sessionIsRemote;
+  onOpenUrlInSidePanelRef.current = onOpenUrlInSidePanel;
+  onOpenFileInSidePanelRef.current = onOpenFileInSidePanel;
   // Drive a re-theme (without tearing down xterm) when the mode or VS Code theme
   // changes; these come from the same ThemeProvider that paints the rest of the UI.
   const resolvedTheme = useResolvedTheme();
@@ -125,6 +147,20 @@ export function LocalTerminalPanel({
     let offExit: (() => void) | undefined;
     const disposers: Array<() => void> = [];
 
+    const activateLink = (
+      event: globalThis.MouseEvent,
+      link: { kind: TerminalLinkKind; text: string }
+    ) => {
+      const action = resolveTerminalLinkAction(link, {
+        sidePanelModifier: isSidePanelLinkModifier(event),
+        sessionIsRemote: sessionIsRemoteRef.current,
+        canOpenUrlInSidePanel: Boolean(onOpenUrlInSidePanelRef.current),
+      });
+      if (action?.target === 'system-browser') void openExternalUrl(action.url);
+      if (action?.target === 'side-browser') onOpenUrlInSidePanelRef.current?.(action.url);
+      if (action?.target === 'side-file') onOpenFileInSidePanelRef.current?.(action.path);
+    };
+
     const start = () => {
       if (disposed) return;
 
@@ -136,6 +172,8 @@ export function LocalTerminalPanel({
         theme: buildTerminalTheme(host),
         allowProposedApi: true,
         scrollback: 5000,
+        // OSC 8 hyperlinks; xterm only hands over http(s) ones.
+        linkHandler: { activate: (event, text) => activateLink(event, { kind: 'url', text }) },
       });
       termRef.current = t;
       const fitAddon = new FitAddon();
@@ -230,6 +268,28 @@ export function LocalTerminalPanel({
       );
       disposers.push(t.onTitleChange((title) => onTitleChangeRef.current?.(title)).dispose);
       disposers.push(t.onSelectionChange(syncKeyboardSelectionCache).dispose);
+      disposers.push(
+        t.registerLinkProvider({
+          provideLinks: (bufferLineNumber, callback) => {
+            const line = t.buffer.active.getLine(bufferLineNumber - 1);
+            const links = line
+              ? findTerminalLineLinks(line, { paths: Boolean(onOpenFileInSidePanelRef.current) })
+              : [];
+            callback(
+              links.length === 0
+                ? undefined
+                : links.map((link) => ({
+                    range: {
+                      start: { x: link.startX, y: bufferLineNumber },
+                      end: { x: link.endX, y: bufferLineNumber },
+                    },
+                    text: link.text,
+                    activate: (event) => activateLink(event, link),
+                  }))
+            );
+          },
+        }).dispose
+      );
 
       offData = channel.onData((event) => {
         if (event.terminalId !== terminalId) return;

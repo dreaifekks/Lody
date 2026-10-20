@@ -47,6 +47,8 @@ type SessionBrowserPanelProps = {
   className?: string;
   leadingSlot?: ReactNode;
   candidateNavigationRequestId?: number;
+  /** The request's own address (a clicked terminal link) instead of the suggested one. */
+  candidateNavigationUrl?: string;
   onCandidateNavigationRequestHandled?: (requestId: number) => void;
   visualAnnotationReferenceKeys?: readonly string[];
   onAddVisualAnnotationToChat?: (reference: VisualAnnotationReferencePayload) => boolean | void;
@@ -96,6 +98,7 @@ function SessionBrowserPanelController({
   className,
   leadingSlot,
   candidateNavigationRequestId = 0,
+  candidateNavigationUrl,
   onCandidateNavigationRequestHandled,
   visualAnnotationReferenceKeys,
   onAddVisualAnnotationToChat,
@@ -753,9 +756,10 @@ function SessionBrowserPanelController({
     ) {
       return;
     }
+    const candidateAddress = candidateNavigationUrl ?? suggestedAddress;
     // Wait for the initial status read to expose an already-prepared endpoint;
     // the create path's empty viewer state would discard the speculative frame.
-    if (!suggestedAddress) {
+    if (!candidateAddress) {
       // Hold the request while a reported candidate is still on its way: meta
       // knows one exists, the doc has not delivered its target yet. Consuming it
       // here would open an empty panel and drop the user's intent for good.
@@ -769,10 +773,10 @@ function SessionBrowserPanelController({
     handledCandidateNavigationRequestRef.current = candidateNavigationRequestId;
     onCandidateNavigationRequestHandled?.(candidateNavigationRequestId);
     try {
-      const next = parseBrowserAddress(suggestedAddress);
-      // Clicking Browser on an agent-reported candidate IS the approval for that
-      // exact target, so a remote session opens straight through the tunnel it
-      // needs instead of stopping on a confirmation. Only loopback candidates
+      const next = parseBrowserAddress(candidateAddress);
+      // Clicking Browser on an agent-reported candidate (or a terminal link) IS
+      // the approval for that exact target, so a remote session opens straight
+      // through the tunnel it needs instead of stopping on a confirmation. Only loopback candidates
       // qualify — the CLI accepts nothing else from an agent report, and a
       // private-LAN target still goes through the normal confirmation.
       void openAddress(next, { approved: next.targetClass === 'loopback' });
@@ -783,6 +787,7 @@ function SessionBrowserPanelController({
     active,
     busy,
     candidateNavigationRequestId,
+    candidateNavigationUrl,
     checkingPreview,
     isLocalDesktopSession,
     managedNavigationPhase,

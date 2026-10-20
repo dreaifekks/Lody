@@ -35,7 +35,8 @@ export function canReachSessionTerminal(input: {
   if (!input.sessionMachineId || !input.localMachineId) return false;
   if (input.sessionMachineId === input.localMachineId) return true;
   return (
-    input.sessionMachineOnline && parseLanTerminalEndpoint(input.sessionMachine?.lanTerminal) !== null
+    input.sessionMachineOnline &&
+    parseLanTerminalEndpoint(input.sessionMachine?.lanTerminal) !== null
   );
 }
 
@@ -45,9 +46,16 @@ export function canReachSessionTerminal(input: {
  * machine (`canReachSessionTerminal`) — that gate is also what makes the
  * session header's dock icon and the ⌃`/⌘J command appear (via the dock
  * controller). The daemon status + restart/terminate controls now live in
- * Settings → General → Startup.
+ * Settings → General → Startup. The side-panel callbacks let Cmd/Ctrl + click
+ * on a terminal link open it beside the conversation.
  */
-export function TerminalDockHost() {
+export function TerminalDockHost({
+  onOpenUrlInSidePanel,
+  onOpenFileInSidePanel,
+}: {
+  onOpenUrlInSidePanel?: (url: string) => void;
+  onOpenFileInSidePanel?: (path: string) => void;
+}) {
   const params = useParams({ strict: false });
   const isElectron = typeof window !== 'undefined' && window.__LODY_ELECTRON__ === true;
   const localMachineId = useAtomValue(localMachineIdAtom);
@@ -92,6 +100,9 @@ export function TerminalDockHost() {
       channel={terminalChannel}
       sessionId={terminalSessionId}
       canCreateTerminal={canCreateTerminal}
+      sessionIsRemote={routeMachineId !== localMachineId}
+      onOpenUrlInSidePanel={onOpenUrlInSidePanel}
+      onOpenFileInSidePanel={onOpenFileInSidePanel}
     />
   );
 }

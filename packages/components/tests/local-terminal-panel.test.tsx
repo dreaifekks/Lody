@@ -12,6 +12,7 @@ import {
 } from '../src/atoms/settings';
 import { LocalTerminalPanel } from '../src/components/terminal/local-terminal-panel';
 import type { TerminalChannel } from '../src/components/terminal/terminal-channel';
+import type { ILink, ILinkProvider } from '@xterm/xterm';
 import { initI18n } from '../src/i18n';
 import { __resetPlatformCacheForTests } from '../src/lib/commands/platform';
 
@@ -29,8 +30,18 @@ const mocks = vi.hoisted(() => ({
     customKeyEventHandler?: (event: KeyboardEvent) => boolean;
     selectionChangeHandler?: () => void;
     dataHandler?: (data: string) => void;
+    lineText: string;
+    linkProvider?: ILinkProvider;
   }>,
   fit: vi.fn(),
+  openedExternalUrls: [] as string[],
+}));
+
+vi.mock('../src/lib/native-browser', () => ({
+  openExternalUrl: async (url: string) => {
+    mocks.openedExternalUrls.push(url);
+    return true;
+  },
 }));
 
 vi.mock('@xterm/addon-fit', () => ({
@@ -49,13 +60,19 @@ vi.mock('@xterm/xterm', () => ({
     selectedRanges: Array<{ column: number; row: number; length: number }> = [];
     selectionRange?: { start: { x: number; y: number }; end: { x: number; y: number } };
     selectionChangeHandler?: () => void;
+    lineText = 'hello world';
+    linkProvider?: ILinkProvider;
     buffer = {
       active: {
         cursorX: 5,
         cursorY: 2,
         baseY: 0,
         length: 24,
-        getLine: () => ({ translateToString: () => 'hello world' }),
+        getLine: () => ({
+          translateToString: () => this.lineText,
+          length: this.lineText.length,
+          getCell: (x: number) => ({ getChars: () => this.lineText[x], getWidth: () => 1 }),
+        }),
       },
     };
     customKeyEventHandler?: (event: KeyboardEvent) => boolean;
@@ -121,6 +138,10 @@ vi.mock('@xterm/xterm', () => ({
     onTitleChange() {
       return { dispose: vi.fn() };
     }
+    registerLinkProvider(provider: ILinkProvider) {
+      this.linkProvider = provider;
+      return { dispose: vi.fn() };
+    }
   },
 }));
 
@@ -163,6 +184,19 @@ function openTerminalContextMenu(container: HTMLDivElement | undefined): void {
   );
 }
 
+function provideLinks(terminal: (typeof mocks.terminalInstances)[number], line: string): ILink[] {
+  terminal.lineText = line;
+  let links: ILink[] | undefined;
+  terminal.linkProvider?.provideLinks(1, (provided) => {
+    links = provided;
+  });
+  return links ?? [];
+}
+
+function click(link: ILink, init: MouseEventInit = {}): void {
+  link.activate(new MouseEvent('click', init), link.text);
+}
+
 function getMenuItem(label: string): HTMLElement {
   const menuItem = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
     (item) => item.textContent?.includes(label)
@@ -179,6 +213,7 @@ describe('LocalTerminalPanel', () => {
     await initI18n('en');
     __resetPlatformCacheForTests();
     mocks.terminalInstances.length = 0;
+    mocks.openedExternalUrls.length = 0;
     mocks.fit.mockClear();
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0);
@@ -540,5 +575,91 @@ describe('LocalTerminalPanel', () => {
     expect(copyItem.textContent).not.toContain('Ctrl+Shift+C');
     const pasteItem = getMenuItem('Paste');
     expect(pasteItem.textContent).toContain('⌘V');
+  });
+
+  describe('links', () => {
+    beforeEach(() => {
+      vi.stubGlobal('__LODY_PLATFORM__', { os: 'linux' });
+      __resetPlatformCacheForTests();
+    });
+
+    async function renderPanel(props: Partial<React.ComponentProps<typeof LocalTerminalPanel>>) {
+      await act(async () => {
+        root?.render(
+          <LocalTerminalPanel channel={createChannel()} terminalId="terminal-1" {...props} />
+        );
+        await Promise.resolve();
+      });
+      return mocks.terminalInstances[0];
+    }
+
+    it('opens a URL in the system browser on click and in the side panel on Ctrl+click', async () => {
+      const sidePanelUrls: string[] = [];
+      const terminal = await renderPanel({
+        onOpenUrlInSidePanel: (url) => sidePanelUrls.push(url),
+      });
+
+      const [link] = provideLinks(terminal, '  Local:   http://localhost:5173/');
+      expect(link.text).toBe('http://localhost:5173/');
+      expect(link.range).toEqual({ start: { x: 12, y: 1 }, end: { x: 33, y: 1 } });
+
+      click(link);
+      expect(mocks.openedExternalUrls).toEqual(['http://localhost:5173/']);
+      expect(sidePanelUrls).toEqual([]);
+
+      click(link, { ctrlKey: true });
+      expect(sidePanelUrls).toEqual(['http://localhost:5173/']);
+      expect(mocks.openedExternalUrls).toEqual(['http://localhost:5173/']);
+    });
+
+    it("opens a remote session's loopback URL in the side panel on a plain click", async () => {
+      const sidePanelUrls: string[] = [];
+      const terminal = await renderPanel({
+        sessionIsRemote: true,
+        onOpenUrlInSidePanel: (url) => sidePanelUrls.push(url),
+      });
+
+      const [loopback, publicSite] = provideLinks(
+        terminal,
+        'http://0.0.0.0:3000 https://example.com/docs'
+      );
+      click(loopback);
+      click(publicSite);
+      expect(sidePanelUrls).toEqual(['http://localhost:3000']);
+      expect(mocks.openedExternalUrls).toEqual(['https://example.com/docs']);
+    });
+
+    it('opens a file path only on Ctrl+click, and only where a side panel takes it', async () => {
+      const openedFiles: string[] = [];
+      const terminal = await renderPanel({
+        onOpenFileInSidePanel: (path) => openedFiles.push(path),
+      });
+
+      const [path] = provideLinks(terminal, 'error in src/app.ts:12:5');
+      expect(path.text).toBe('src/app.ts:12:5');
+      click(path);
+      expect(openedFiles).toEqual([]);
+      click(path, { ctrlKey: true });
+      expect(openedFiles).toEqual(['src/app.ts:12:5']);
+      expect(mocks.openedExternalUrls).toEqual([]);
+
+      await renderPanel({ onOpenFileInSidePanel: undefined });
+      expect(provideLinks(terminal, 'error in src/app.ts:12:5')).toEqual([]);
+    });
+
+    it('routes OSC 8 hyperlinks the same way', async () => {
+      const sidePanelUrls: string[] = [];
+      const terminal = await renderPanel({
+        onOpenUrlInSidePanel: (url) => sidePanelUrls.push(url),
+      });
+      const linkHandler = terminal.options.linkHandler as {
+        activate: (event: MouseEvent, text: string) => void;
+      };
+
+      linkHandler.activate(new MouseEvent('click'), 'https://example.com/pr/1');
+      linkHandler.activate(new MouseEvent('click', { ctrlKey: true }), 'https://example.com/pr/2');
+      expect(mocks.openedExternalUrls).toEqual(['https://example.com/pr/1']);
+      expect(sidePanelUrls).toEqual(['https://example.com/pr/2']);
+    });
   });
 });

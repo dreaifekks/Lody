@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { PanelBottom } from 'lucide-react';
 
@@ -25,7 +25,10 @@ class StoryTerminalChannel implements TerminalChannel {
   private readonly exitHandlers = new Set<(event: TerminalExitEvent) => void>();
   private readonly titleHandlers = new Set<(event: TerminalTitleEvent) => void>();
 
-  constructor(private readonly defaultCwd = '~/Documents/Codex/2026') {}
+  constructor(
+    private readonly defaultCwd = '~/Documents/Codex/2026',
+    private readonly banner = ''
+  ) {}
 
   list() {
     return Promise.resolve(
@@ -51,7 +54,7 @@ class StoryTerminalChannel implements TerminalChannel {
       this.emitTitle(terminalId, this.titleFor(terminal.cwd));
       this.emitData(
         terminalId,
-        `${DIM}(storybook shell - no backend)${RESET}\r\n${this.prompt(terminal.cwd)}`
+        `${DIM}(storybook shell - no backend)${RESET}\r\n${this.banner}${this.prompt(terminal.cwd)}`
       );
     });
   }
@@ -149,8 +152,8 @@ class StoryTerminalChannel implements TerminalChannel {
   }
 }
 
-function DockHarness(props: Partial<TerminalDockProps>) {
-  const channel = useMemo(() => new StoryTerminalChannel(), []);
+function DockHarness({ banner, ...props }: Partial<TerminalDockProps> & { banner?: string }) {
+  const channel = useMemo(() => new StoryTerminalChannel(undefined, banner), [banner]);
   // Mirrors the session header's dock toggle: the dock is hidden until opened.
   const controller = useAtomValue(terminalControllerAtom);
   return (
@@ -190,6 +193,48 @@ type Story = StoryObj<typeof meta>;
 
 export const InLocalSession: Story = {
   render: () => <DockHarness sessionId="sess-1" defaultView="terminal" autoOpenFirstTerminal />,
+};
+
+// Plain click opens a URL in the system browser; Cmd/Ctrl + click asks for the
+// side panel, which the harness only reports. Paths open only with the modifier.
+const LINK_OUTPUT = [
+  `  VITE v6.0.0  ready in 312 ms`,
+  `  ➜  Local:   ${BLUE}http://localhost:5173/${RESET}`,
+  `  ➜  Network: http://0.0.0.0:5173/`,
+  `Docs (https://vite.dev/guide/), PR https://github.com/LodyAI/Lody/pull/1.`,
+  `src/components/terminal/terminal-links.ts:42:7 - error TS2322`,
+  `打开 http://localhost:3000，然后看 docs/准备.md`,
+  `\x1b]8;;https://example.com/osc8\x07OSC 8 hyperlink\x1b]8;;\x07`,
+  '',
+].join('\r\n');
+
+function LinkHarness({ sessionIsRemote }: { sessionIsRemote?: boolean }) {
+  const [request, setRequest] = useState('');
+  return (
+    <>
+      <div className="fixed left-3 top-12 z-10 text-xs text-muted-foreground">
+        {request || 'Cmd/Ctrl + click a link to request the side panel'}
+      </div>
+      <DockHarness
+        sessionId="sess-1"
+        defaultView="terminal"
+        autoOpenFirstTerminal
+        banner={LINK_OUTPUT}
+        sessionIsRemote={sessionIsRemote}
+        onOpenUrlInSidePanel={(url) => setRequest(`Browser panel: ${url}`)}
+        onOpenFileInSidePanel={(path) => setRequest(`File tab: ${path}`)}
+      />
+    </>
+  );
+}
+
+export const WithLinks: Story = {
+  render: () => <LinkHarness />,
+};
+
+// A session on another LAN machine: its loopback URLs go to the side panel on a plain click.
+export const WithLinksRemoteSession: Story = {
+  render: () => <LinkHarness sessionIsRemote />,
 };
 
 export const OutOfSession: Story = {
