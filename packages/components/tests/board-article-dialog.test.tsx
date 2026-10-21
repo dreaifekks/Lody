@@ -39,7 +39,6 @@ const COMMENT: ArticleAnnotation = {
   path: 'report.md',
   quote: 'Revenue grew',
   comment: 'Which quarter?',
-  lines: null,
   block: { index: 0, text: 'Revenue grew.' },
 };
 
@@ -237,7 +236,7 @@ describe('BoardArticleDialog', () => {
     );
   });
 
-  it('closes a comment list on the first Escape and itself on the next', async () => {
+  it('closes an edit, then the comment list, then itself, one Escape each', async () => {
     // jsdom lays nothing out; the paragraph reads as one line.
     Object.defineProperty(Range.prototype, 'getClientRects', {
       configurable: true,
@@ -268,6 +267,11 @@ describe('BoardArticleDialog', () => {
           new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
         );
       });
+    await act(async () => list.querySelector<HTMLButtonElement>('[aria-label="Edit"]')!.click());
+    expect(document.activeElement).toBe(list.querySelector('textarea'));
+    await escape();
+    expect(list.querySelector('textarea')).toBeNull();
+    expect(document.querySelector('[role="list"]')).not.toBeNull();
     await escape();
     expect(document.querySelector('[role="list"]')).toBeNull();
     expect(onClose).not.toHaveBeenCalled();

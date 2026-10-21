@@ -283,7 +283,7 @@ tool, CLI or protocol change.
   (`components/boards/article-annotations.ts`, an in-memory Jotai atom, lost on
   restart). Each records the thread beside the article when it was written (it
   rides with that thread's next message), the article (owner thread and path), the
-  quote, its source lines and the rendered block the selection starts in (index
+  quote and the rendered block the selection starts in (index
   among blocks and its text; after the agent rewrites the file the block is found
   again by that text, then by the quote, then by the nearest index). A small mark
   floats at the end of the block's last line (`article-annotation-markers.tsx`,
@@ -291,9 +291,11 @@ tool, CLI or protocol change.
   holds more than one; pressing it opens a popover listing them to edit or delete.
   The composer reads the same atom: it shows "Includes N comments" as its status
   line, and `sendMessage` appends them to the text as a Markdown block (`---`, the
-  count, then numbered `` `path:line` ``, quoted lines and the comment), grouped
-  by file in document order. Only an accepted send removes the comments it
-  carried, so a failed one keeps them; the conversation being single, a send
+  count, then numbered `` `path` ``, quoted lines and the comment), grouped by
+  file in document order. It gives no line numbers: the file may change while the
+  window is closed, and the quote finds the passage. Only an accepted send removes
+  the comments it carried, and only in the version it carried, so a failed send
+  keeps them and an edit made while it waited stays; the conversation being single, a send
   from the side panel after the window closed carries them too. Escape leaves an
   edit, then the popover, then the window.
 - HTML: in the window it always runs in the widget page (`article-html-frame.tsx`),

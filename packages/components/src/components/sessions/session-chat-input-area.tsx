@@ -1874,7 +1874,7 @@ export const SessionChatInputArea = memo(
               void onVisualAnnotationReferencesSubmitted?.(submittedVisualAnnotationReferences);
             }
             if (submittedAnnotations.length > 0)
-              removeArticleAnnotations(new Set(submittedAnnotations.map((item) => item.id)));
+              removeArticleAnnotations(new Set(submittedAnnotations));
           }
         } finally {
           submission.finish();

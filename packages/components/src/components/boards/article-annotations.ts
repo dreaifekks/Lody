@@ -1,7 +1,6 @@
 import { atom, useAtomValue, useSetAtom } from 'jotai';
 import { useMemo } from 'react';
 import type { SessionId } from '@lody/shared';
-import type { SourceLineRange } from '@/lib/document-selection';
 
 /**
  * A comment on a passage of a Board thread's Markdown article (experimental).
@@ -16,8 +15,6 @@ export interface ArticleAnnotation {
   readonly path: string;
   readonly quote: string;
   readonly comment: string;
-  /** Source lines of the quote, when the Markdown places it unambiguously. */
-  readonly lines: SourceLineRange | null;
   /** The rendered block the selection starts in: its index among blocks, and its text. */
   readonly block: { readonly index: number; readonly text: string };
 }
@@ -51,7 +48,12 @@ export function useArticleAnnotationActions() {
         set((items) => [...items, { ...annotation, id: `annotation-${++nextAnnotationId}` }]),
       update: (id: string, comment: string) =>
         set((items) => items.map((item) => (item.id === id ? { ...item, comment } : item))),
-      remove: (ids: ReadonlySet<string>) => set((items) => items.filter((item) => !ids.has(item.id))),
+      /**
+       * Drops these exact versions: a comment edited since (a new object)
+       * stays, so a send retires only what it carried.
+       */
+      remove: (versions: ReadonlySet<ArticleAnnotation>) =>
+        set((items) => items.filter((item) => !versions.has(item))),
     }),
     [set]
   );
@@ -96,12 +98,13 @@ const indent = (text: string, prefix: string) =>
 
 /**
  * The comments as the end of a message, grouped by file and in document
- * order within each file:
+ * order within each file. No line numbers: the file may have changed since,
+ * and the quote finds the passage anyway.
  *
  *     ---
  *     <heading>
  *
- *     1. `path:line`
+ *     1. `path`
  *        > quote
  *        comment
  */
@@ -115,22 +118,12 @@ export function formatArticleAnnotations(
     files.set(key, [...(files.get(key) ?? []), annotation]);
   }
   const ordered = [...files.values()].flatMap((items) =>
-    items.toSorted(
-      (a, b) =>
-        a.block.index - b.block.index ||
-        (a.lines?.startLine ?? 0) - (b.lines?.startLine ?? 0)
-    )
+    items.toSorted((a, b) => a.block.index - b.block.index)
   );
   const entries = ordered.map((annotation, index) => {
-    const { lines } = annotation;
-    const location = !lines
-      ? ''
-      : lines.startLine === lines.endLine
-        ? `:${lines.startLine}`
-        : `:${lines.startLine}-${lines.endLine}`;
     const comment = annotation.comment.trim();
     return [
-      `${index + 1}. \`${annotation.path}${location}\``,
+      `${index + 1}. \`${annotation.path}\``,
       indent(annotation.quote, '   > '),
       ...(comment ? [indent(comment, '   ')] : []),
     ].join('\n');

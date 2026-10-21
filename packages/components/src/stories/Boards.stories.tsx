@@ -56,7 +56,6 @@ import {
   useThreadArticleAnnotations,
   type ArticleAnnotation,
 } from '@/components/boards/article-annotations';
-import { locateMarkdownSelection } from '@/lib/document-selection';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import {
   lodyPresenceNowMsAtom,
@@ -1140,7 +1139,6 @@ const reportComment = (
   path: 'articles/report.md',
   quote,
   comment,
-  lines: locateMarkdownSelection(ARTICLE_REPORT_MD, quote),
   block: { index: -1, text: blockText },
 });
 

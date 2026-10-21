@@ -1896,14 +1896,12 @@ function SessionFileContentViewImpl({
         source={markdownPreviewText}
         active={isActiveSurface}
         onAdd={(selection, range) => {
-          const quote = selection.text ?? '';
           annotationActions.add({
             threadId: annotationThreadId,
             ownerThreadId: sessionId,
             path: normalizedPath,
-            quote,
+            quote: selection.text ?? '',
             comment: selection.comment?.trim() ?? '',
-            lines: locateMarkdownSelection(markdownPreviewText, quote),
             block: articleBlockOf(markdownRoot!, range!),
           });
           return true;

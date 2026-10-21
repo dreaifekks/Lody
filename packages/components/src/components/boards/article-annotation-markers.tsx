@@ -1,5 +1,5 @@
 import * as stylex from '@stylexjs/stylex';
-import { useLayoutEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MessageSquare, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@lody/ui/button';
@@ -191,10 +191,23 @@ function AnnotationItem({ annotation }: { annotation: ArticleAnnotation }) {
   const { t } = useTranslation();
   const actions = useArticleAnnotationActions();
   const [draft, setDraft] = useState<string | null>(null);
+  const editButton = useRef<HTMLElement>(null);
+  const leftEdit = useRef(false);
+  // Leaving an edit hands focus back to its Edit button: the textarea goes, and
+  // focus left on the page would let the next Escape close the window too.
+  const leaveEdit = () => {
+    leftEdit.current = true;
+    setDraft(null);
+  };
+  useEffect(() => {
+    if (draft !== null || !leftEdit.current) return;
+    leftEdit.current = false;
+    editButton.current!.focus();
+  }, [draft]);
   const save = () => {
     if (draft === null) return;
     actions.update(annotation.id, draft);
-    setDraft(null);
+    leaveEdit();
   };
   return (
     <div {...stylex.props(styles.item)} role="listitem">
@@ -205,6 +218,7 @@ function AnnotationItem({ annotation }: { annotation: ArticleAnnotation }) {
         <div {...stylex.props(styles.row)}>
           <p {...stylex.props(styles.comment)}>{annotation.comment}</p>
           <Button
+            ref={editButton}
             type="button"
             size="mini"
             variant="ghost"
@@ -220,7 +234,7 @@ function AnnotationItem({ annotation }: { annotation: ArticleAnnotation }) {
             variant="ghost"
             icon
             aria-label={t('common.delete', 'Delete')}
-            onClick={() => actions.remove(new Set([annotation.id]))}
+            onClick={() => actions.remove(new Set([annotation]))}
           >
             <Trash2 size={14} aria-hidden />
           </Button>
@@ -244,12 +258,12 @@ function AnnotationItem({ annotation }: { annotation: ArticleAnnotation }) {
               if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopPropagation();
-                setDraft(null);
+                leaveEdit();
               }
             }}
           />
           <div {...stylex.props(styles.actions)}>
-            <Button type="button" size="mini" variant="ghost" onClick={() => setDraft(null)}>
+            <Button type="button" size="mini" variant="ghost" onClick={leaveEdit}>
               {t('common.cancel', 'Cancel')}
             </Button>
             <Button type="button" size="mini" onClick={save}>

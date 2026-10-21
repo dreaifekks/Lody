@@ -646,7 +646,6 @@ describe('SessionChatInputArea submission feedback', () => {
       threadId: sessionId as never,
       ownerThreadId: 'thread-owner' as never,
       path: 'notes/report.md',
-      lines: null,
       block: { index: 0, text: '' },
       ...fields,
     });
@@ -659,7 +658,6 @@ describe('SessionChatInputArea submission feedback', () => {
       comment('late', {
         quote: 'Hiring paused',
         comment: 'Since when?',
-        lines: { startLine: 9, endLine: 9 },
         block: { index: 4, text: 'Hiring paused' },
       }),
       comment('plan', {
@@ -671,18 +669,17 @@ describe('SessionChatInputArea submission feedback', () => {
       comment('early', {
         quote: 'Revenue grew\nby 12%',
         comment: 'Which quarter?\nAnd which region?',
-        lines: { startLine: 3, endLine: 4 },
         block: { index: 1, text: 'Revenue grew by 12%' },
       }),
       elsewhere,
     ]);
     const submissions: SessionInputBlock[][] = [];
-    let accept = false;
+    let acceptance: ReturnType<typeof deferredBoolean> | null = null;
     const textarea = await renderComposer({
       sessionId,
       onSendMessage: async (blocks) => {
         submissions.push(blocks);
-        return accept;
+        return acceptance ? acceptance.promise : false;
       },
       overrides: { initialInputText: 'Please revise the report.' },
     });
@@ -697,13 +694,13 @@ describe('SessionChatInputArea submission feedback', () => {
       '---',
       'Comments (3)',
       '',
-      '1. `notes/report.md:3-4`',
+      '1. `notes/report.md`',
       '   > Revenue grew',
       '   > by 12%',
       '   Which quarter?',
       '   And which region?',
       '',
-      '2. `notes/report.md:9`',
+      '2. `notes/report.md`',
       '   > Hiring paused',
       '   Since when?',
       '',
@@ -714,19 +711,45 @@ describe('SessionChatInputArea submission feedback', () => {
     // A send that did not go out keeps them for the retry.
     expect(getDefaultStore().get(articleAnnotationsAtom)).toHaveLength(4);
 
-    accept = true;
+    // While the retry waits for acceptance, one comment is edited: the
+    // accepted message carried the old words, so the edit stays for the next.
+    acceptance = deferredBoolean();
     await submit('keyboard');
     expect(submissions[1]).toEqual(submissions[0]);
+    const edited = { ...getDefaultStore().get(articleAnnotationsAtom)[1], comment: 'Or June?' };
+    await act(async () => {
+      getDefaultStore().set(articleAnnotationsAtom, (items) =>
+        items.map((item) => (item.id === 'plan' ? edited : item))
+      );
+    });
+    await act(async () => acceptance!.resolve(true));
+    expect(getDefaultStore().get(articleAnnotationsAtom)).toEqual([edited, elsewhere]);
+    expect(container!.querySelector('[role="status"]')?.textContent).toBe('Includes 1 comment');
+
+    const type = (value: string) =>
+      act(async () => {
+        textarea.value = value;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    acceptance = deferredBoolean();
+    acceptance.resolve(true);
+    await type('Thanks');
+    await submit('keyboard');
+    expect(submissions[2]).toEqual([
+      {
+        type: 'text',
+        text: ['Thanks', '', '---', 'Comments (1)', '', '1. `plan.md`', '   > Ship in May', '   Or June?'].join(
+          '\n'
+        ),
+      },
+    ]);
     expect(getDefaultStore().get(articleAnnotationsAtom)).toEqual([elsewhere]);
     expect(container!.querySelector('[role="status"]')).toBeNull();
 
     // Without comments a message is exactly what was typed.
-    await act(async () => {
-      textarea.value = 'Thanks';
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await type('Done');
     await submit('keyboard');
-    expect(submissions[2]).toEqual([{ type: 'text', text: 'Thanks' }]);
+    expect(submissions[3]).toEqual([{ type: 'text', text: 'Done' }]);
     getDefaultStore().set(articleAnnotationsAtom, []);
   });
 

@@ -1197,10 +1197,9 @@ describe('SessionFileContentView', () => {
         path: 'notes/report.md',
         quote: 'grew by 12%',
         comment: 'Which quarter?',
-        lines: { startLine: 3, endLine: 3 },
       },
       { quote: 'this quarter', comment: 'Compare with last year.' },
-      { quote: 'Hiring paused', comment: 'Since when?', lines: { startLine: 6, endLine: 6 } },
+      { quote: 'Hiring paused', comment: 'Since when?' },
     ]);
 
     // The paragraph's mark lists both comments to edit or delete.
