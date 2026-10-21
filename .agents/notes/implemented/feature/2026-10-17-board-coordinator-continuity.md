@@ -122,6 +122,10 @@ documents was considered: it covers GC only, archive and dispatch cleanup would 
 observation, and GC would have to know about Boards. The cost is that Board Session documents are
 loaded again after GC (the agent process still exits), as the Worker already does at startup for
 every Board member.
+The report observer keeps one finalizer on the Worker Scope that detaches the subscriptions
+still held when it closes; an early detach removes its own entry, so repeated GC and membership
+changes no longer leave the Scope holding old documents (found in cross-review: each
+subscription used to add its own finalizer).
 
 UI: a `requested` divider now reads "Tidy requested · starts when the coordinator is free" (and the
 same for a new conversation), separate from the `running` "Tidying context…".

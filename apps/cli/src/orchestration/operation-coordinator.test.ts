@@ -2459,6 +2459,35 @@ describe('Board coordinator continuity', () => {
     }
   });
 
+  it('keeps no released coordinator document alive across repeated GC', async () => {
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const collect = runInNewContext('gc') as () => void;
+    const h = await boardHarness({ realDocuments: true });
+    try {
+      const manager = h.manager!;
+      h.release();
+      await h.finish(h.coordinatorId, 'coordinator-input');
+      h.coordinator.start();
+      await h.drain();
+      const released: WeakRef<object>[] = [];
+      for (let round = 0; round < 4; round++) {
+        released.push(new WeakRef(await manager.getOrCreateSessionDoc(h.coordinatorId)));
+        await manager.cleanSessionDoc(h.coordinatorId);
+        await h.coordinator.idle();
+        // The workflow observes the Session again from a fresh open.
+        expect(manager.sessions.has(h.coordinatorId)).toBe(true);
+      }
+      // WeakRef targets stay alive until the current job ends.
+      await new Promise((resolve) => setImmediate(resolve));
+      collect();
+      expect(released.map((ref) => ref.deref() === undefined)).toEqual([true, true, true, true]);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('leaves a context below the threshold alone', async () => {
     const h = await largeIdleCoordinator(100_000);
     try {

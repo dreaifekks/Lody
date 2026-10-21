@@ -36,6 +36,7 @@ export class BoardReportWorkflow {
   private wakeQueued = false;
   private membershipDirty = true;
   private retries = 0;
+  private owned = false;
 
   constructor(
     private readonly options: { workspaceId: WorkspaceId; machineId: MachineId },
@@ -83,10 +84,16 @@ export class BoardReportWorkflow {
     }.bind(this)
   );
 
+  /** One Scope finalizer detaches what is still subscribed; an early detach drops its own. */
   private own = Effect.fnUntraced(
     function* (this: BoardReportWorkflow, detach: Effect.Effect<void>) {
       this.subscriptions.add(detach);
-      yield* Scope.addFinalizer(this.scope, detach);
+      if (this.owned) return;
+      this.owned = true;
+      yield* Scope.addFinalizer(
+        this.scope,
+        Effect.suspend(() => this.recoverSubscriptions())
+      );
     }.bind(this)
   );
 
