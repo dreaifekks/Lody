@@ -83,6 +83,20 @@ function lastLineRect(block: HTMLElement): DOMRect {
   return Array.from(range.getClientRects()).at(-1) ?? block.getBoundingClientRect();
 }
 
+/**
+ * A code block scrolled sideways has its last line's end out of sight, so its
+ * mark sits in the block's top-right corner instead, left of the toolbar's
+ * actions (wrap, copy) on the same row.
+ */
+function overflowingCodeActions(block: HTMLElement): DOMRect | null {
+  const codeBlock = block.closest('[data-streamdown="code-block"]');
+  const scroller = block.parentElement!;
+  if (!codeBlock || scroller.scrollWidth <= scroller.clientWidth) return null;
+  return codeBlock
+    .querySelector('[data-streamdown="code-block-actions"]')!
+    .getBoundingClientRect();
+}
+
 interface MarkerGroup {
   /** The block's index among the article's blocks. */
   readonly key: number;
@@ -131,10 +145,19 @@ export function ArticleAnnotationMarkers({
       setGroups(
         [...byBlock]
           .map(([block, items]) => {
+            const key = blocks.indexOf(block);
+            const actions = overflowingCodeActions(block);
+            if (actions)
+              return {
+                key,
+                left: actions.left - box.left - MARKER_SIZE - 2,
+                top: actions.top + actions.height / 2 - box.top - MARKER_SIZE / 2,
+                items,
+              };
             const line = lastLineRect(block);
             const right = Math.min(line.right, block.getBoundingClientRect().right);
             return {
-              key: blocks.indexOf(block),
+              key,
               left: Math.min(right - box.left + 2, limit),
               top: line.top + line.height / 2 - box.top - MARKER_SIZE / 2,
               items,

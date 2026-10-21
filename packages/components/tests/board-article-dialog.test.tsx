@@ -291,3 +291,109 @@ describe('BoardArticleDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ArticleAnnotationMarkers', () => {
+  /** A rendered fenced code block: a toolbar of actions over a sideways scroller. */
+  const codeBlock = (code: string, scroll: string, actionsRect: string, preRect: string) =>
+    createElement(
+      'div',
+      { 'data-streamdown': 'code-block' },
+      createElement(
+        'div',
+        { 'data-streamdown': 'code-block-toolbar' },
+        createElement(
+          'div',
+          { 'data-streamdown': 'code-block-actions', 'data-rect': actionsRect },
+          createElement('button', { type: 'button' }, 'Copy')
+        )
+      ),
+      createElement(
+        'div',
+        { 'data-streamdown': 'code-block-body', 'data-scroll': scroll },
+        createElement('pre', { 'data-rect': preRect }, createElement('code', null, code))
+      )
+    );
+  const comment = (id: string, code: string): ArticleAnnotation => ({
+    ...COMMENT,
+    id,
+    quote: code,
+    block: { index: -1, text: code },
+  });
+
+  it('puts the mark of a code block scrolled sideways left of its actions, others at the line end', async () => {
+    // jsdom lays nothing out: elements state their boxes and scroll widths.
+    const rectOf = (element: Element) => {
+      const [x, y, width, height] = (element.getAttribute('data-rect') ?? '0,0,0,0')
+        .split(',')
+        .map(Number);
+      return new DOMRect(x, y, width, height);
+    };
+    const scrollOf = (element: Element) =>
+      (element.getAttribute('data-scroll') ?? '0,0').split(',').map(Number);
+    const saved = {
+      rect: HTMLElement.prototype.getBoundingClientRect,
+      scrollWidth: Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth')!,
+      clientWidth: Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!,
+    };
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      return rectOf(this);
+    };
+    Object.defineProperty(Element.prototype, 'scrollWidth', {
+      configurable: true,
+      get(this: Element) {
+        return scrollOf(this)[0];
+      },
+    });
+    Object.defineProperty(Element.prototype, 'clientWidth', {
+      configurable: true,
+      get(this: Element) {
+        return scrollOf(this)[1];
+      },
+    });
+    // The last line of the code that fits ends at x = 130.
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [new DOMRect(10, 300, 120, 16)],
+    });
+    function CodeArticle() {
+      const [root, setRoot] = useState<HTMLElement | null>(null);
+      return createElement(
+        'div',
+        { 'data-rect': '0,0,640,800' },
+        createElement(
+          'article',
+          { ref: setRoot, 'data-rect': '0,0,600,800' },
+          codeBlock('const wide = 1;', '900,400', '500,100,52,24', '0,124,900,40'),
+          codeBlock('const fits = 2;', '400,400', '500,260,52,24', '0,284,400,40'),
+          createElement(ArticleAnnotationMarkers, {
+            root,
+            revision: '1',
+            annotations: [comment('wide', 'const wide = 1;'), comment('fits', 'const fits = 2;')],
+          })
+        )
+      );
+    }
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(createElement(CodeArticle)));
+      const marks = Array.from(
+        container.querySelectorAll<HTMLElement>('[data-article-annotation-marker]')
+      ).map((mark) => [mark.style.left, mark.style.top]);
+      expect(marks).toEqual([
+        // On the toolbar row, 2 px left of the actions (x = 500), not over the code.
+        ['474px', '100px'],
+        // At the end of its last line, centred on it.
+        ['132px', '296px'],
+      ]);
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      HTMLElement.prototype.getBoundingClientRect = saved.rect;
+      Object.defineProperty(Element.prototype, 'scrollWidth', saved.scrollWidth);
+      Object.defineProperty(Element.prototype, 'clientWidth', saved.clientWidth);
+      delete (Range.prototype as Partial<Range>).getClientRects;
+    }
+  });
+});

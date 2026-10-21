@@ -287,8 +287,9 @@ tool, CLI or protocol change.
   among blocks and its text; after the agent rewrites the file the block is found
   again by that text, then by the quote, then by the nearest index). A small mark
   floats at the end of the block's last line (`article-annotation-markers.tsx`,
-  positioned over the Markdown, never inserted into it), numbered when the block
-  holds more than one; pressing it opens a popover listing them to edit or delete.
+  positioned over the Markdown, never inserted into it; a code block scrolled
+  sideways has it in its toolbar row, left of the wrap and copy buttons), numbered
+  when the block holds more than one; pressing it opens a popover listing them to edit or delete.
   The composer reads the same atom: it shows "Includes N comments" as its status
   line, and `sendMessage` appends them to the text as a Markdown block (`---`, the
   count, then numbered `` `path` ``, quoted lines and the comment), grouped by
