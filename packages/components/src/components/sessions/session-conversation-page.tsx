@@ -27,6 +27,8 @@ export interface SessionConversationPageHeaderProps {
   endSlot?: ReactNode;
   nativeApp?: boolean;
   reserveMacTrafficLightInset?: boolean;
+  /** In the side panel: one row at any width, with the tab strip's inset so the edge controls line up. */
+  sidePanel?: boolean;
 }
 
 export function SessionConversationPageHeader({
@@ -37,18 +39,26 @@ export function SessionConversationPageHeader({
   endSlot,
   nativeApp = false,
   reserveMacTrafficLightInset = false,
+  sidePanel = false,
 }: SessionConversationPageHeaderProps) {
   return (
     <div
       className={cn(
         SESSION_PAGE_CONTAINER_CLASS,
-        'flex flex-col justify-center gap-1 border-b border-border px-3 py-2 shrink-0 h-12',
+        'flex flex-col justify-center gap-1 border-b border-border py-2 shrink-0 h-12',
+        sidePanel ? 'px-2' : 'px-3',
         nativeApp &&
           'h-[calc(3rem+var(--safe-area-top))] pt-[calc(0.5rem+var(--safe-area-top))] pl-[calc(0.75rem+var(--safe-area-left))] pr-[calc(0.75rem+var(--safe-area-right))]',
         reserveMacTrafficLightInset && 'pl-20'
       )}
     >
-      <div className={cn('flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-center')}>
+      <div
+        className={cn(
+          'flex w-full min-w-0 gap-2',
+          // The panel is narrow at any window width: its row stays one line and truncates.
+          sidePanel ? 'flex-row items-center' : 'flex-col sm:flex-row sm:items-center'
+        )}
+      >
         <div className="flex flex-1 min-w-0 items-center gap-2">
           {startSlot}
           {titleSlot}
