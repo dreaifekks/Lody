@@ -74,6 +74,12 @@ import { SessionFileBinaryPreview } from './session-file-binary-preview';
 import { SessionFileCsvPreview } from './session-file-csv-preview';
 import { DocumentSelectionSurface } from './document-selection-surface';
 import { locateMarkdownSelection, type DocumentSelection } from '@/lib/document-selection';
+import { ArticleAnnotationMarkers } from '../boards/article-annotation-markers';
+import {
+  articleBlockOf,
+  useArticleAnnotationActions,
+  useThreadArticleAnnotations,
+} from '../boards/article-annotations';
 import { SessionFileImagePreview } from './session-file-image-preview';
 import { MarkdownRenderer } from '../ai-gui/markdown-renderer';
 import { MarkdownFileResources } from '../ai-gui/markdown-file-image';
@@ -132,6 +138,7 @@ import {
 const styles = stylex.create({
   spinner16: { width: '16px', height: '16px', flexShrink: 0 },
   spinner14: { width: '14px', height: '14px', flexShrink: 0 },
+  articleMarkdown: { position: 'relative' },
   markdownPreview: {
     width: '100%',
     maxWidth: '48rem',
@@ -542,9 +549,13 @@ export type SessionFileContentViewProps = {
    * Shown as a thread's article (Board article dialog, experimental): an
    * article header replaces the toolbar, the file rechecks itself while on
    * screen (faster while the session works), and HTML runs in the widget page
-   * with its CDNs.
+   * with its CDNs. Markdown comments wait at their passages until the thread
+   * beside the article (`annotationThreadId`) sends its next message.
    */
-  article?: { readonly onOpenInTab: () => void };
+  article?: {
+    readonly onOpenInTab: () => void;
+    readonly annotationThreadId: SessionId | null;
+  };
 };
 
 const NOT_WORKING_ATOM = atom(false);
@@ -1647,12 +1658,30 @@ function SessionFileContentViewImpl({
     data.status === 'ready' && data.snapshot.kind === 'text'
       ? (latestEditorTextRef.current ?? data.snapshot.text)
       : '';
+  // A Markdown article's comments wait here, at their passages, for the next
+  // message of the thread beside it; nothing goes into its composer.
+  const annotationThreadId = isArticle && isMarkdownTextFile ? article.annotationThreadId : null;
+  const [markdownRoot, setMarkdownRoot] = useState<HTMLDivElement | null>(null);
+  const annotationActions = useArticleAnnotationActions();
+  const threadAnnotations = useThreadArticleAnnotations(annotationThreadId);
+  const articleAnnotations = useMemo(
+    () =>
+      threadAnnotations.filter(
+        (annotation) =>
+          annotation.ownerThreadId === sessionId && annotation.path === normalizedPath
+      ),
+    [normalizedPath, sessionId, threadAnnotations]
+  );
   // The rendered surface for a previewable text file (Markdown doc / SVG image).
   // Only shown after the user clicks the preview toggle — hover never mounts it.
   // Typography tracks conversationFontSize so side-panel README preview matches
   // the left chat Markdown (default = text-sm; was hard-coded large/"base").
   const previewSurface: ReactNode = isMarkdownTextFile ? (
-    <div {...stylex.props(styles.markdownPreview)} data-native-selection-allow>
+    <div
+      ref={setMarkdownRoot}
+      {...stylex.props(styles.markdownPreview, annotationThreadId && styles.articleMarkdown)}
+      data-native-selection-allow
+    >
       {fileProvider ? (
         <MarkdownFileResources
           key={`${session.machineId}:${sessionId}`}
@@ -1666,6 +1695,13 @@ function SessionFileContentViewImpl({
       ) : (
         <MarkdownRenderer text={markdownPreviewText} size={conversationFontSize} />
       )}
+      {annotationThreadId && showMarkdownRendered ? (
+        <ArticleAnnotationMarkers
+          root={markdownRoot}
+          revision={markdownPreviewText}
+          annotations={articleAnnotations}
+        />
+      ) : null}
     </div>
   ) : isSvgTextFile && data.status === 'ready' && data.snapshot.kind === 'text' ? (
     <SessionFileImagePreview path={normalizedPath} svgText={data.snapshot.text} />
@@ -1716,6 +1752,17 @@ function SessionFileContentViewImpl({
     normalizedPath,
     sessionId,
   ]);
+
+  const locateMarkdownLines = (text: string) => {
+    const lines = locateMarkdownSelection(markdownPreviewText, text);
+    if (lines === null) return undefined;
+    return lines.startLine === lines.endLine
+      ? t('sessions.fileViewer.selection.line', 'Line {{line}}', { line: lines.startLine })
+      : t('sessions.fileViewer.selection.lines', 'Lines {{start}}–{{end}}', {
+          start: lines.startLine,
+          end: lines.endLine,
+        });
+  };
 
   if (showProviderConnecting) {
     body = (
@@ -1842,6 +1889,33 @@ function SessionFileContentViewImpl({
         />
       </DocumentSelectionSurface>
     );
+  } else if (showMarkdownRendered && annotationThreadId) {
+    body = (
+      <DocumentSelectionSurface
+        path={normalizedPath}
+        source={markdownPreviewText}
+        active={isActiveSurface}
+        onAdd={(selection, range) => {
+          const quote = selection.text ?? '';
+          annotationActions.add({
+            threadId: annotationThreadId,
+            ownerThreadId: sessionId,
+            path: normalizedPath,
+            quote,
+            comment: selection.comment?.trim() ?? '',
+            lines: locateMarkdownSelection(markdownPreviewText, quote),
+            block: articleBlockOf(markdownRoot!, range!),
+          });
+          return true;
+        }}
+        locateText={locateMarkdownLines}
+        onDraftChange={setSelectionDraftOpen}
+        textSelectionPrompt
+        addLabel={t('sessions.article.annotation.add', 'Add comment')}
+      >
+        {previewSurface}
+      </DocumentSelectionSurface>
+    );
   } else if (showMarkdownRendered && boardArticleEnabled && onAddSelectionToChat) {
     body = (
       <DocumentSelectionSurface
@@ -1849,16 +1923,7 @@ function SessionFileContentViewImpl({
         source={markdownPreviewText}
         active={isActiveSurface}
         onAdd={onAddSelectionToChat}
-        locateText={(text) => {
-          const lines = locateMarkdownSelection(markdownPreviewText, text);
-          if (lines === null) return undefined;
-          return lines.startLine === lines.endLine
-            ? t('sessions.fileViewer.selection.line', 'Line {{line}}', { line: lines.startLine })
-            : t('sessions.fileViewer.selection.lines', 'Lines {{start}}–{{end}}', {
-                start: lines.startLine,
-                end: lines.endLine,
-              });
-        }}
+        locateText={locateMarkdownLines}
         onDraftChange={setSelectionDraftOpen}
         textSelectionPrompt
       >

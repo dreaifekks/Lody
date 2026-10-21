@@ -101,12 +101,14 @@ export function DocumentSelectionEditor({
   autoFocus = true,
   allowMarkup = false,
   onDirtyChange,
+  addLabel,
 }: {
   readonly selection: DocumentSelection;
   readonly image?: HTMLCanvasElement;
   readonly autoFocus?: boolean;
   readonly allowMarkup?: boolean;
   readonly onDirtyChange?: (dirty: boolean) => void;
+  readonly addLabel?: string;
   readonly onCancel: () => void;
   readonly onAdd: (selection: DocumentSelection) => boolean;
 }) {
@@ -340,7 +342,7 @@ export function DocumentSelectionEditor({
       <div {...stylex.props(styles.footer)}>
         <span {...stylex.props(styles.spacer)} />
         <Button size="mini" onClick={() => void add()} disabled={busy}>
-          {t('sessions.fileViewer.selection.add', 'Add to chat')}
+          {addLabel ?? t('sessions.fileViewer.selection.add', 'Add to chat')}
         </Button>
       </div>
       {error ? (

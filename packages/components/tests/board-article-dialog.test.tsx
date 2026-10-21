@@ -4,6 +4,8 @@ import { createPortal } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoardArticleDialog } from '../src/components/boards/board-article-dialog';
+import { ArticleAnnotationMarkers } from '../src/components/boards/article-annotation-markers';
+import type { ArticleAnnotation } from '../src/components/boards/article-annotations';
 import {
   createRelocatableHost,
   RelocatableSlot,
@@ -30,6 +32,28 @@ function Conversation({ thread }: { thread: string }) {
 
 const ARTICLE = createElement('article', null, 'Report');
 
+const COMMENT: ArticleAnnotation = {
+  id: 'comment-1',
+  threadId: 'thread' as never,
+  ownerThreadId: 'thread' as never,
+  path: 'report.md',
+  quote: 'Revenue grew',
+  comment: 'Which quarter?',
+  lines: null,
+  block: { index: 0, text: 'Revenue grew.' },
+};
+
+/** A rendered Markdown article with one comment waiting at its paragraph. */
+function CommentedArticle() {
+  const [root, setRoot] = useState<HTMLElement | null>(null);
+  return createElement(
+    'article',
+    { ref: setRoot, style: { position: 'relative' } },
+    createElement('p', null, 'Revenue grew.'),
+    createElement(ArticleAnnotationMarkers, { root, revision: '1', annotations: [COMMENT] })
+  );
+}
+
 /** The page as it renders a Board thread: one slot in the panel, the conversation portalled. */
 function Page({
   host,
@@ -37,6 +61,7 @@ function Page({
   holds,
   onClose,
   panelKey = 'panel',
+  article = ARTICLE,
 }: {
   host: RelocatableHost;
   open: boolean;
@@ -44,6 +69,7 @@ function Page({
   onClose: () => void;
   /** A new key remounts the Board panel's slot, as a layout change does. */
   panelKey?: string;
+  article?: ReturnType<typeof createElement>;
 }) {
   const [, setPanel] = useState<HTMLElement | null>(null);
   return createElement(
@@ -62,7 +88,7 @@ function Page({
     open
       ? createElement(BoardArticleDialog, {
           title: 'report.md',
-          article: ARTICLE,
+          article,
           threadHost: host,
           holdsThread: holds,
           onPanelChange: setPanel,
@@ -209,6 +235,45 @@ describe('BoardArticleDialog', () => {
     expect(document.querySelector('[data-testid="board-panel"] textarea')?.dataset.thread).toBe(
       'other'
     );
+  });
+
+  it('closes a comment list on the first Escape and itself on the next', async () => {
+    // jsdom lays nothing out; the paragraph reads as one line.
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [new DOMRect(10, 10, 120, 16)],
+    });
+    open = true;
+    await act(async () => {
+      root.render(
+        createElement(Page, {
+          host: threadHost,
+          open,
+          holds,
+          onClose,
+          article: createElement(CommentedArticle),
+        })
+      );
+    });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await act(async () =>
+      dialog.querySelector<HTMLButtonElement>('[data-article-annotation-marker] button')!.click()
+    );
+    // The list mounts in the dialog's panel, so the modal keeps it interactive.
+    const list = dialog.querySelector('[role="list"]')!;
+    expect(list.textContent).toContain('Which quarter?');
+    const escape = () =>
+      act(async () => {
+        (document.activeElement ?? document.body).dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+        );
+      });
+    await escape();
+    expect(document.querySelector('[role="list"]')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await escape();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    delete (Range.prototype as Partial<Range>).getClientRects;
   });
 
   it('closes on Escape', async () => {

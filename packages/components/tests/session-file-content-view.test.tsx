@@ -35,6 +35,7 @@ import { localProbeResultAtom } from '../src/atoms/local-probe';
 import { SaveTextConflictError } from '../src/hooks/use-code-collab-save-text';
 import { Tooltip } from '@lody/ui/tooltip';
 import { writeTextToClipboard } from '../src/lib/clipboard';
+import { articleAnnotationsAtom } from '../src/components/boards/article-annotations';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -1123,6 +1124,118 @@ describe('SessionFileContentView', () => {
       markdown
     );
     expect(view.querySelector('button[aria-label="Preview"]')).not.toBeNull();
+  });
+
+  it('keeps Markdown article comments at the end of their blocks until the thread sends', async () => {
+    // jsdom lays nothing out; every range reads as one line.
+    const rect = new DOMRect(10, 10, 120, 16);
+    Object.defineProperties(Range.prototype, {
+      getBoundingClientRect: { configurable: true, value: () => rect },
+      getClientRects: { configurable: true, value: () => [rect] },
+    });
+    const markdown = ['# Report', '', 'Revenue grew by 12% this quarter.', '', '- Costs fell', '- Hiring paused'].join(
+      '\n'
+    );
+    const provider = createFakeSessionFileProvider({
+      files: [{ path: 'notes/report.md', kind: 'text', sourceState: 'live-readonly' }],
+      snapshots: { 'notes/report.md': { kind: 'text', text: markdown } },
+    });
+    const article = (key: string) =>
+      createElement(SessionFileContentView, {
+        key,
+        sessionId: session.id,
+        session,
+        filePath: 'notes/report.md',
+        fileProvider: provider,
+        fileProviderPending: false,
+        active: true,
+        article: { onOpenInTab: () => undefined, annotationThreadId: 'thread-beside' as SessionId },
+      });
+    const view = await render(article('opened'));
+    await flushMicrotasks();
+    const named = (name: string) =>
+      Array.from(document.querySelectorAll('button')).find(
+        (button) => button.getAttribute('aria-label') === name || button.textContent === name
+      )!;
+    const type = (field: HTMLTextAreaElement, value: string) =>
+      act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+          field,
+          value
+        );
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    const comment = async (element: Element, text: string, note: string) => {
+      const node = Array.from(element.childNodes).find((child) => child.textContent?.includes(text))!;
+      const start = node.textContent!.indexOf(text);
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, start + text.length);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      await act(async () => element.dispatchEvent(new Event('pointerup', { bubbles: true })));
+      await act(async () => named('Comment').click());
+      await type(view.querySelector('textarea[aria-label="Selection comment"]')!, note);
+      await act(async () => named('Add comment').click());
+    };
+    const markers = () => Array.from(view.querySelectorAll('[data-article-annotation-marker]'));
+
+    const paragraph = view.querySelector('p')!;
+    await comment(paragraph, 'grew by 12%', 'Which quarter?');
+    // The comment waits at its paragraph; no editor or chip is left behind.
+    expect(view.querySelector('[aria-label="Selection annotation"]')).toBeNull();
+    expect(markers()).toHaveLength(1);
+    expect(markers()[0].textContent).toBe('');
+    await comment(paragraph, 'this quarter', 'Compare with last year.');
+    await comment(view.querySelectorAll('li')[1], 'Hiring paused', 'Since when?');
+    // One mark per block, numbered only when a block holds more than one.
+    expect(markers().map((marker) => marker.textContent)).toEqual(['2', '']);
+    expect(currentStore!.get(articleAnnotationsAtom)).toMatchObject([
+      {
+        threadId: 'thread-beside',
+        ownerThreadId: session.id,
+        path: 'notes/report.md',
+        quote: 'grew by 12%',
+        comment: 'Which quarter?',
+        lines: { startLine: 3, endLine: 3 },
+      },
+      { quote: 'this quarter', comment: 'Compare with last year.' },
+      { quote: 'Hiring paused', comment: 'Since when?', lines: { startLine: 6, endLine: 6 } },
+    ]);
+
+    // The paragraph's mark lists both comments to edit or delete.
+    await act(async () => markers()[0].querySelector('button')!.click());
+    const list = () => document.querySelector('[role="list"]')!;
+    expect(list().textContent).toContain('grew by 12%');
+    expect(list().textContent).toContain('Which quarter?');
+    expect(list().textContent).toContain('Compare with last year.');
+    await act(async () => named('Edit').click());
+    await type(list().querySelector('textarea')!, 'Which fiscal quarter?');
+    await act(async () => named('Save').click());
+    expect(list().textContent).toContain('Which fiscal quarter?');
+    await act(async () =>
+      list()
+        .querySelectorAll('[role="listitem"]')[1]
+        .querySelector<HTMLButtonElement>('button[aria-label="Delete"]')!
+        .click()
+    );
+    expect(list().querySelectorAll('[role="listitem"]')).toHaveLength(1);
+    expect(markers().map((marker) => marker.textContent)).toEqual(['', '']);
+    expect(currentStore!.get(articleAnnotationsAtom).map((item) => item.comment)).toEqual([
+      'Which fiscal quarter?',
+      'Since when?',
+    ]);
+
+    // Closing and reopening the article finds them where they were.
+    await rerender(article('reopened'));
+    await flushMicrotasks();
+    expect(markers().map((marker) => marker.textContent)).toEqual(['', '']);
+
+    // Sending retires them, and their marks go with them.
+    await act(async () => currentStore!.set(articleAnnotationsAtom, []));
+    expect(markers()).toHaveLength(0);
+    delete (Range.prototype as Partial<Range>).getBoundingClientRect;
+    delete (Range.prototype as Partial<Range>).getClientRects;
   });
 
   it('loads document-relative remote images only after a click, while keeping the prose visible', async () => {
