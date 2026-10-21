@@ -78,7 +78,7 @@ import {
 } from '@/components/ai-gui/view';
 import { SidebarUpdatedSessionList } from '@/components/sidebar-updated-session-list';
 import { LoroSidebar } from '@/components/loro-sidebar';
-import { SessionAccessControl } from '@/components/session-sharing';
+import { SessionAccessControl, SessionArchivedBadge } from '@/components/session-sharing';
 import { SessionHeaderMenu } from '@/components/sessions/session-chat-interface';
 import { SESSION_PAGE_HEADER_PILLS_CLASS } from '@/components/sessions/session-conversation-page';
 import { DesktopSessionDetailLayout } from '@/components/sessions/desktop-session-detail-layout';
@@ -965,11 +965,14 @@ function ArticleDialogPage({
   path,
   initialThread = THREAD,
   annotations,
+  archived = false,
 }: {
   path: string | null;
   initialThread?: SessionId;
   annotations?: readonly ArticleAnnotation[];
+  archived?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(path);
   const [closing, setClosing] = useState(false);
   const [panel, setPanel] = useState<HTMLElement | null>(null);
@@ -1044,7 +1047,24 @@ function ArticleDialogPage({
               <div className="flex h-full min-h-0 flex-col">
                 <BoardThreadHeader
                   title={thread.title ?? ''}
-                  location="devnuc · Lody"
+                  location={archived ? 'homeN100 · algorithm-practice' : 'devnuc · Lody'}
+                  {...(archived
+                    ? {
+                        desktopActionsSlot: <SessionArchivedBadge iconOnlyWhenNarrow />,
+                        menuSlot: (
+                          <SessionHeaderMenu
+                            session={thread}
+                            machineName="homeN100"
+                            onCopyUrl={noop}
+                            onCopyConversationHistory={noop}
+                            onOpenSearch={noop}
+                            onRename={noop}
+                            onArchive={noop}
+                            t={t}
+                          />
+                        ),
+                      }
+                    : {})}
                   {...(parent
                     ? {
                         parentThread: {
@@ -1190,6 +1210,11 @@ export const ArticleOtherThread: Story = {
 /** The page before an article opens and after it closes: the thread back in its panel. */
 export const ArticleClosed: Story = {
   render: () => <ArticleDialogPage path={null} />,
+};
+
+/** An archived thread in the panel: its header with the badge, menu and a long location. */
+export const ArchivedThreadPanel: Story = {
+  render: () => <ArticleDialogPage path={null} archived />,
 };
 
 /** The shared notes and the Board directory's `files/`. */

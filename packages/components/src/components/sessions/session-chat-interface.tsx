@@ -7020,7 +7020,9 @@ export const SessionChatInterface = memo(
                     desktopActionsSlot={
                       <>
                         {headerLauncherActions}
-                        {headerArchivedNode}
+                        {session.isArchived === true ? (
+                          <SessionArchivedBadge iconOnlyWhenNarrow />
+                        ) : null}
                         {headerAccessNode}
                       </>
                     }
