@@ -5441,6 +5441,8 @@
   "boards.chainLimit": "自主链已到上限，说一句话继续。",
   "boards.maintenance.compacting": "正在整理上下文…",
   "boards.maintenance.starting": "正在开始新对话…",
+  "boards.maintenance.compactRequested": "已请求整理 · 协调者空闲后开始",
+  "boards.maintenance.startRequested": "已请求新对话 · 协调者空闲后开始",
   "boards.maintenance.compactedTokens": "已整理上下文 · {{tokens}}",
   "boards.maintenance.compacted": "已整理上下文",
   "boards.maintenance.started": "已开始新对话",

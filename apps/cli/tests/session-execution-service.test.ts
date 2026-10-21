@@ -10918,6 +10918,7 @@ describe('Operation Inbox execution boundary', () => {
       workspaceDocument: {
         repo,
         getOrCreateSessionDoc: async () => doc,
+        onSessionDocReleased: () => () => {},
         getOrOpenSessionCode: async () => null,
         updateAcpCapabilities: async () => {},
       } as never,
@@ -11084,6 +11085,7 @@ describe('Operation Inbox execution boundary', () => {
             workspaceDocument: {
               repo,
               getOrCreateSessionDoc: async (id: SessionId) => docs.get(id),
+              onSessionDocReleased: () => () => {},
             },
             now: () => Date.parse('2026-10-12T00:00:02Z'),
           } as never,

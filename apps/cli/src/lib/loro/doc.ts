@@ -1140,6 +1140,7 @@ export class LoroDocumentManager {
   }
 
   private pendingSessionDocs = new Map<SessionId, Promise<SessionDocument>>();
+  private readonly sessionDocReleaseListeners = new Set<(sessionId: SessionId) => void>();
   private readonly localDocRoomHydrateQueue = new ConcurrentQueue<string>(4);
   private readonly localDocOwnershipChains = new Map<string, Promise<void>>();
   private localDocRoomBridgeGeneration = 0;
@@ -1942,10 +1943,21 @@ export class LoroDocumentManager {
     this.machineMonitorRuntime?.clearProvider();
   }
 
+  /**
+   * Called after `cleanSessionDoc` destroyed a cached SessionDocument and dropped
+   * it from the cache, so the next `getOrCreateSessionDoc` opens a fresh one.
+   * Every holder's subscriptions on the old instance are dead by then.
+   */
+  onSessionDocReleased(listener: (sessionId: SessionId) => void): () => void {
+    this.sessionDocReleaseListeners.add(listener);
+    return () => this.sessionDocReleaseListeners.delete(listener);
+  }
+
   async cleanSessionDoc(
     sessionId: SessionId,
     options: { preserveStatus?: boolean } = {}
   ): Promise<void> {
+    let released = false;
     // Also await any in-flight init for this session
     const pending = this.pendingSessionDocs.get(sessionId);
     if (pending) {
@@ -1956,6 +1968,7 @@ export class LoroDocumentManager {
           localMachineId: this.localMachineId,
         });
         this.sessions.delete(sessionId);
+        released = true;
       } catch {
         // Init failed — nothing to clean up
       }
@@ -1969,7 +1982,9 @@ export class LoroDocumentManager {
         localMachineId: this.localMachineId,
       });
       this.sessions.delete(sessionId);
+      released = true;
     }
+    if (released) for (const listener of this.sessionDocReleaseListeners) listener(sessionId);
   }
 }
 
