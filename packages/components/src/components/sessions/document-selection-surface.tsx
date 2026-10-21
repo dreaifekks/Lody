@@ -68,6 +68,8 @@ interface Draft {
   readonly selection: DocumentSelection;
   readonly image?: HTMLCanvasElement;
   readonly measure?: Measure;
+  /** The selected text's range, for a text selection. */
+  readonly range?: Range;
   readonly autoFocus: boolean;
 }
 
@@ -198,11 +200,12 @@ export function DocumentSelectionSurface({
   locateText,
   onDraftChange,
   textSelectionPrompt = false,
+  addLabel,
 }: {
   readonly path: string;
   readonly active: boolean;
   readonly source: unknown;
-  readonly onAdd?: (selection: DocumentSelection) => boolean;
+  readonly onAdd?: (selection: DocumentSelection, range?: Range) => boolean;
   readonly children: ReactNode;
   readonly standaloneCapture?: boolean;
   /** Where selected text sits in the source, when the preview can tell. */
@@ -214,6 +217,8 @@ export function DocumentSelectionSurface({
    * editor only when that is pressed, so a selection made to copy is left alone.
    */
   readonly textSelectionPrompt?: boolean;
+  /** The editor's submit button, when it does not add to the chat. */
+  readonly addLabel?: string;
 }) {
   const { t } = useTranslation();
   const locate = (root: HTMLElement, rect: SelectionRect) =>
@@ -456,6 +461,7 @@ export function DocumentSelectionSurface({
       },
       measure: () =>
         sourceRange.startContainer.isConnected ? Array.from(sourceRange.getClientRects()) : [],
+      range: sourceRange,
       autoFocus: false,
     };
     if (!textSelectionPrompt) {
@@ -610,6 +616,7 @@ export function DocumentSelectionSurface({
                     image={draft.image}
                     allowMarkup={false}
                     autoFocus={draft.autoFocus}
+                    addLabel={addLabel}
                     onDirtyChange={(value) => {
                       dirty.current = value;
                     }}
@@ -618,7 +625,7 @@ export function DocumentSelectionSurface({
                       focusCapture();
                     }}
                     onAdd={(selection) => {
-                      const accepted = onAdd?.(selection) ?? false;
+                      const accepted = onAdd?.(selection, draft.range) ?? false;
                       if (accepted) {
                         closeEditor();
                         window.getSelection()?.removeAllRanges();

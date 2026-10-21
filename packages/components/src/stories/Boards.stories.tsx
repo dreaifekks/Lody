@@ -51,6 +51,11 @@ import {
 import { SessionFileContentView } from '@/components/sessions/session-file-content-view';
 import { createFakeSessionFileProvider } from '@/lib/session-file-provider';
 import { ARTICLE_DEMO_HTML, ARTICLE_REPORT_MD } from './board-article-demo';
+import {
+  articleAnnotationsAtom,
+  useThreadArticleAnnotations,
+  type ArticleAnnotation,
+} from '@/components/boards/article-annotations';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import {
   lodyPresenceNowMsAtom,
@@ -73,7 +78,7 @@ import {
 } from '@/components/ai-gui/view';
 import { SidebarUpdatedSessionList } from '@/components/sidebar-updated-session-list';
 import { LoroSidebar } from '@/components/loro-sidebar';
-import { SessionAccessControl } from '@/components/session-sharing';
+import { SessionAccessControl, SessionArchivedBadge } from '@/components/session-sharing';
 import { SessionHeaderMenu } from '@/components/sessions/session-chat-interface';
 import { SESSION_PAGE_HEADER_PILLS_CLASS } from '@/components/sessions/session-conversation-page';
 import { DesktopSessionDetailLayout } from '@/components/sessions/desktop-session-detail-layout';
@@ -361,9 +366,11 @@ function Conversation({
   );
 }
 
-function Composer({ placeholder }: { placeholder: string }) {
+function Composer({ sessionId, placeholder }: { sessionId: SessionId; placeholder: string }) {
   const [prompt, setPrompt] = useState('');
   const { t } = useTranslation();
+  // Stands in for the session composer's hint about a Board article's comments.
+  const annotations = useThreadArticleAnnotations(sessionId);
   const [model, setModel] = useState<string | null>('opus');
   const [mode, setMode] = useState<string | null>('auto');
   const [config, setConfig] = useState<Record<string, string | boolean>>({ plan_mode: false });
@@ -388,6 +395,13 @@ function Composer({ placeholder }: { placeholder: string }) {
       onPromptChange={setPrompt}
       promptPlaceholder={placeholder}
       promptRows={1}
+      statusMessage={
+        annotations.length > 0
+          ? t('sessions.article.annotation.pending', 'Includes {{count}} comments', {
+              count: annotations.length,
+            })
+          : undefined
+      }
       selector={
         <>
           <DesktopRunConfigMenu
@@ -444,7 +458,7 @@ function ChatSurface({
         <Conversation sessionId={sessionId} messages={messages} />
       </div>
       <div className="mx-auto w-full max-w-3xl px-4 pb-3">
-        <Composer placeholder={placeholder} />
+        <Composer sessionId={sessionId} placeholder={placeholder} />
       </div>
     </div>
   );
@@ -765,10 +779,12 @@ function BoardStoryProvider({
   children,
   enabled = true,
   articles = false,
+  annotations = [],
 }: {
   children: ReactNode;
   enabled?: boolean;
   articles?: boolean;
+  annotations?: readonly ArticleAnnotation[];
 }) {
   const [store] = useState(() => {
     const fixtureStore = createStore();
@@ -779,6 +795,7 @@ function BoardStoryProvider({
     fixtureStore.set(experimentalFeaturesEnabledAtom, true);
     fixtureStore.set(boardExperimentEnabledAtom, enabled);
     fixtureStore.set(boardArticleExperimentEnabledAtom, articles);
+    fixtureStore.set(articleAnnotationsAtom, annotations);
     return fixtureStore;
   });
   return <Provider store={store}>{children}</Provider>;
@@ -947,10 +964,15 @@ const articleProvider = createFakeSessionFileProvider({
 function ArticleDialogPage({
   path,
   initialThread = THREAD,
+  annotations,
+  archived = false,
 }: {
   path: string | null;
   initialThread?: SessionId;
+  annotations?: readonly ArticleAnnotation[];
+  archived?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(path);
   const [closing, setClosing] = useState(false);
   const [panel, setPanel] = useState<HTMLElement | null>(null);
@@ -971,7 +993,7 @@ function ArticleDialogPage({
   const close = () => setClosing(true);
   return (
     <SettingsStoryProviders>
-      <BoardStoryProvider articles>
+      <BoardStoryProvider articles annotations={annotations}>
         <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
           <Sidebar selectedId={BOARD} onOpen={() => {}} />
           <main className="min-w-0 flex-1 overflow-hidden">
@@ -1025,7 +1047,24 @@ function ArticleDialogPage({
               <div className="flex h-full min-h-0 flex-col">
                 <BoardThreadHeader
                   title={thread.title ?? ''}
-                  location="devnuc · Lody"
+                  location={archived ? 'homeN100 · algorithm-practice' : 'devnuc · Lody'}
+                  {...(archived
+                    ? {
+                        desktopActionsSlot: <SessionArchivedBadge iconOnlyWhenNarrow />,
+                        menuSlot: (
+                          <SessionHeaderMenu
+                            session={thread}
+                            machineName="homeN100"
+                            onCopyUrl={noop}
+                            onCopyConversationHistory={noop}
+                            onOpenSearch={noop}
+                            onRename={noop}
+                            onArchive={noop}
+                            t={t}
+                          />
+                        ),
+                      }
+                    : {})}
                   {...(parent
                     ? {
                         parentThread: {
@@ -1091,8 +1130,7 @@ function ArticleDialogPage({
                 fileId={open}
                 fileProvider={articleProvider}
                 fileProviderRole="read"
-                article={{ onOpenInTab: close }}
-                onAddSelectionToChat={() => true}
+                article={{ onOpenInTab: close, annotationThreadId: inArticle ? threadId : null }}
                 className="h-full"
               />
             }
@@ -1106,6 +1144,52 @@ function ArticleDialogPage({
 /** A thread's Markdown report over the page, its thread beside it; select text to comment. */
 export const ArticleReport: Story = {
   render: () => <ArticleDialogPage path="articles/report.md" />,
+};
+
+/** A report comment waiting at its passage; the block's last line ends in a mark. */
+const reportComment = (
+  id: string,
+  quote: string,
+  comment: string,
+  blockText = quote
+): ArticleAnnotation => ({
+  id,
+  threadId: THREAD,
+  ownerThreadId: THREAD,
+  path: 'articles/report.md',
+  quote,
+  comment,
+  block: { index: -1, text: blockText },
+});
+
+/** Unsent comments on the report: two on one list item, one each on a quote and code. */
+export const ArticleAnnotated: Story = {
+  render: () => (
+    <ArticleDialogPage
+      path="articles/report.md"
+      annotations={[
+        reportComment(
+          'cdn',
+          '只能从几个 CDN 加载脚本和样式',
+          '列出是哪几个 CDN。',
+          'HTML 在 widget 页面里运行，只能从几个 CDN 加载脚本和样式。'
+        ),
+        reportComment(
+          'widget',
+          'HTML 在 widget 页面里运行',
+          '和普通文件 tab 的 HTML 预览是同一个页面吗？',
+          'HTML 在 widget 页面里运行，只能从几个 CDN 加载脚本和样式。'
+        ),
+        reportComment('code', 'useSessionFileDigestWatch', '这个 hook 在哪个文件？'),
+        reportComment(
+          'stale',
+          '上游 0.107.0 还没打 tag',
+          '打了 tag 之后更新这句。',
+          '这份数据可能过时了：上游 0.107.0 还没打 tag。'
+        ),
+      ]}
+    />
+  ),
 };
 
 /** An interactive HTML article that loads Chart.js from a CDN inside the widget page. */
@@ -1126,6 +1210,11 @@ export const ArticleOtherThread: Story = {
 /** The page before an article opens and after it closes: the thread back in its panel. */
 export const ArticleClosed: Story = {
   render: () => <ArticleDialogPage path={null} />,
+};
+
+/** An archived thread in the panel: its header with the badge, menu and a long location. */
+export const ArchivedThreadPanel: Story = {
+  render: () => <ArticleDialogPage path={null} archived />,
 };
 
 /** The shared notes and the Board directory's `files/`. */

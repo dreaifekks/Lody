@@ -8096,15 +8096,9 @@ const SessionDetail = ({
                         pathKind: 'canonical',
                       });
                     },
-                  }}
-                  // Comments go to the thread beside the article, which may be
-                  // another member the reader moved to.
-                  onAddSelectionToChat={(selection) => {
-                    if (!articleDialogThreadId) return false;
-                    const chat = chatRefsMap.current.get(articleDialogThreadId);
-                    return chat && 'addDocumentSelection' in chat
-                      ? chat.addDocumentSelection(selection)
-                      : false;
+                    // Comments ride with the next message of the thread beside
+                    // the article, which may be another member the reader moved to.
+                    annotationThreadId: articleDialogThreadId,
                   }}
                   className={stylex.props(detailStyles.rootFill).className}
                 />

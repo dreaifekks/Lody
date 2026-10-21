@@ -267,7 +267,7 @@ tool, CLI or protocol change.
   browser has it. Only such a move between two places in the document keeps the
   conversation's scroll offset, so closing takes two commits: the dialog lets go
   of the conversation while it is still in the document, then unmounts. React never
-  remounts the conversation, so its composer text, selection chips, scroll and
+  remounts the conversation, so its composer text, chips, scroll and
   `chatRefsMap` entry stay as they were. While open, the conversation's popups
   mount in the dialog panel (`PopupContainerProvider`), and only the backdrop
   dismisses by pointer, since its menus are not the dialog's React descendants.
@@ -276,9 +276,29 @@ tool, CLI or protocol change.
   document-selection comment (upstream #1649); a selection made to copy is left
   alone. An open editor takes Escape first. The source lines are found from
   the selected text (`locateMarkdownSelection` in `lib/document-selection.ts`);
-  text that repeats or cannot be placed carries no lines. The comment joins the
-  thread's composer as a chip and is sent as plain text. In the window, headings
-  show as a rail on the left (`article-outline.tsx`); hovering lists them.
+  text that repeats or cannot be placed carries no lines. In a file tab the comment
+  joins the session's composer as a chip and is sent as plain text. In the window,
+  headings show as a rail on the left (`article-outline.tsx`); hovering lists them.
+- Comments in the window stay in the article instead
+  (`components/boards/article-annotations.ts`, an in-memory Jotai atom, lost on
+  restart). Each records the thread beside the article when it was written (it
+  rides with that thread's next message), the article (owner thread and path), the
+  quote and the rendered block the selection starts in (index
+  among blocks and its text; after the agent rewrites the file the block is found
+  again by that text, then by the quote, then by the nearest index). A small mark
+  floats at the end of the block's last line (`article-annotation-markers.tsx`,
+  positioned over the Markdown, never inserted into it; a code block scrolled
+  sideways has it in its toolbar row, left of the wrap and copy buttons), numbered
+  when the block holds more than one; pressing it opens a popover listing them to edit or delete.
+  The composer reads the same atom: it shows "Includes N comments" as its status
+  line, and `sendMessage` appends them to the text as a Markdown block (`---`, the
+  count, then numbered `` `path` ``, quoted lines and the comment), grouped by
+  file in document order. It gives no line numbers: the file may change while the
+  window is closed, and the quote finds the passage. Only an accepted send removes
+  the comments it carried, and only in the version it carried, so a failed send
+  keeps them and an edit made while it waited stays; the conversation being single, a send
+  from the side panel after the window closed carries them too. Escape leaves an
+  edit, then the popover, then the window.
 - HTML: in the window it always runs in the widget page (`article-html-frame.tsx`),
   the desktop's loopback page that hosts widgets, with the same `allow-scripts`
   sandbox (plus `credentialless`) and the widget policy: scripts, styles, fonts,
@@ -293,8 +313,8 @@ tool, CLI or protocol change.
   available in the window.
 - Refresh: while the window is open the file is revalidated with its digest every
   5 s while the thread works, 15 s while idle, and once when a turn ends
-  (`hooks/use-session-file-digest-watch.ts`). Markdown re-renders in place; an open
-  selection comment holds the update. HTML waits 1 s for writes to settle and does
+  (`hooks/use-session-file-digest-watch.ts`). Markdown re-renders in place and the
+  comment marks follow their blocks; an open selection comment holds the update. HTML waits 1 s for writes to settle and does
   not reload while the pointer or focus is in the page (or left it under 3 s ago);
   the header then shows "Updated · Reload". A check that returns after the reader
   started editing the source, or closed the window, is dropped.

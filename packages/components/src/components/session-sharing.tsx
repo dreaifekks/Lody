@@ -186,7 +186,14 @@ export const SESSION_HEADER_STATUS_PILL_CLASS =
   'text-foreground/80';
 
 /** Read-only status pill for archived conversations in the desktop toolbar. */
-export function SessionArchivedBadge({ className }: { className?: string }) {
+export function SessionArchivedBadge({
+  className,
+  iconOnlyWhenNarrow = false,
+}: {
+  className?: string;
+  /** Below a 400px session header, only the icon; the tooltip still names it. */
+  iconOnlyWhenNarrow?: boolean;
+}) {
   const { t } = useTranslation();
   const label = t('sessions.archived', 'Archived');
   const description = t(
@@ -205,7 +212,9 @@ export function SessionArchivedBadge({ className }: { className?: string }) {
             className={cn(SESSION_HEADER_STATUS_PILL_CLASS, className)}
           >
             <Archive className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>{label}</span>
+            <span className={iconOnlyWhenNarrow ? '@max-[400px]/session-page:hidden' : undefined}>
+              {label}
+            </span>
           </span>
         }
       />

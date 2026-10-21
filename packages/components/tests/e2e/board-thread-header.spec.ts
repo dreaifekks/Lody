@@ -30,3 +30,31 @@ test('keeps the open button on the panel edge and the location whole at every pa
     expect(clipped).toBe(false);
   }
 });
+
+test('folds an archived badge to its icon in a narrow panel, leaving the text room', async ({
+  page,
+}) => {
+  const archived =
+    '/iframe.html?id=workspace-boards--archived-thread-panel&viewMode=story&globals=locale:en';
+  // Viewports 900 and 1920 give panels of about 310px and 820px.
+  for (const [width, folded] of [
+    [900, true],
+    [1920, false],
+  ] as const) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(archived);
+    const badge = page.locator('[aria-label^="Archived: "]');
+    await expect(badge).toBeVisible({ timeout: 60_000 });
+    const location = page.getByTitle('homeN100 · algorithm-practice');
+    const title = location.locator('xpath=preceding-sibling::span[1]');
+    if (folded) {
+      await expect(badge.getByText('Archived')).toBeHidden();
+      expect((await badge.boundingBox())!.width).toBeLessThan(36);
+      // With the label beside them, each had about 36px.
+      expect((await title.boundingBox())!.width).toBeGreaterThan(50);
+      expect((await location.boundingBox())!.width).toBeGreaterThan(50);
+    } else {
+      await expect(badge.getByText('Archived')).toBeVisible();
+    }
+  }
+});

@@ -32,6 +32,10 @@ import type {
   SessionInputBlock,
 } from '@lody/shared';
 import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
+import {
+  articleAnnotationsAtom,
+  type ArticleAnnotation,
+} from '../src/components/boards/article-annotations';
 
 const sessionAgentRoleState = vi.hoisted(() => ({
   control: {
@@ -630,6 +634,123 @@ describe('SessionChatInputArea submission feedback', () => {
     expect(textarea.value).toContain('annual.pdf');
     await submit('keyboard');
     expect(submissions[1]).toEqual(submissions[0]);
+  });
+
+  it("carries a thread article's comments at the end of its next message and retires them once accepted", async () => {
+    const sessionId = 'thread-with-comments';
+    const comment = (
+      id: string,
+      fields: Partial<ArticleAnnotation> & Pick<ArticleAnnotation, 'quote' | 'comment'>
+    ): ArticleAnnotation => ({
+      id,
+      threadId: sessionId as never,
+      ownerThreadId: 'thread-owner' as never,
+      path: 'notes/report.md',
+      block: { index: 0, text: '' },
+      ...fields,
+    });
+    const elsewhere = comment('elsewhere', {
+      threadId: 'another-thread' as never,
+      quote: 'Unrelated',
+      comment: 'Not for this thread',
+    });
+    getDefaultStore().set(articleAnnotationsAtom, [
+      comment('late', {
+        quote: 'Hiring paused',
+        comment: 'Since when?',
+        block: { index: 4, text: 'Hiring paused' },
+      }),
+      comment('plan', {
+        path: 'plan.md',
+        quote: 'Ship in May',
+        comment: '',
+        block: { index: 1, text: 'Ship in May' },
+      }),
+      comment('early', {
+        quote: 'Revenue grew\nby 12%',
+        comment: 'Which quarter?\nAnd which region?',
+        block: { index: 1, text: 'Revenue grew by 12%' },
+      }),
+      elsewhere,
+    ]);
+    const submissions: SessionInputBlock[][] = [];
+    let acceptance: ReturnType<typeof deferredBoolean> | null = null;
+    const textarea = await renderComposer({
+      sessionId,
+      onSendMessage: async (blocks) => {
+        submissions.push(blocks);
+        return acceptance ? acceptance.promise : false;
+      },
+      overrides: { initialInputText: 'Please revise the report.' },
+    });
+    // They wait beside the article: the composer only says they will go along.
+    expect(textarea.value).toBe('Please revise the report.');
+    expect(container!.querySelector('[role="status"]')?.textContent).toBe('Includes 3 comments');
+
+    await submit('keyboard');
+    const expected = [
+      'Please revise the report.',
+      '',
+      '---',
+      'Comments (3)',
+      '',
+      '1. `notes/report.md`',
+      '   > Revenue grew',
+      '   > by 12%',
+      '   Which quarter?',
+      '   And which region?',
+      '',
+      '2. `notes/report.md`',
+      '   > Hiring paused',
+      '   Since when?',
+      '',
+      '3. `plan.md`',
+      '   > Ship in May',
+    ].join('\n');
+    expect(submissions[0]).toEqual([{ type: 'text', text: expected }]);
+    // A send that did not go out keeps them for the retry.
+    expect(getDefaultStore().get(articleAnnotationsAtom)).toHaveLength(4);
+
+    // While the retry waits for acceptance, one comment is edited: the
+    // accepted message carried the old words, so the edit stays for the next.
+    acceptance = deferredBoolean();
+    await submit('keyboard');
+    expect(submissions[1]).toEqual(submissions[0]);
+    const edited = { ...getDefaultStore().get(articleAnnotationsAtom)[1], comment: 'Or June?' };
+    await act(async () => {
+      getDefaultStore().set(articleAnnotationsAtom, (items) =>
+        items.map((item) => (item.id === 'plan' ? edited : item))
+      );
+    });
+    await act(async () => acceptance!.resolve(true));
+    expect(getDefaultStore().get(articleAnnotationsAtom)).toEqual([edited, elsewhere]);
+    expect(container!.querySelector('[role="status"]')?.textContent).toBe('Includes 1 comment');
+
+    const type = (value: string) =>
+      act(async () => {
+        textarea.value = value;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    acceptance = deferredBoolean();
+    acceptance.resolve(true);
+    await type('Thanks');
+    await submit('keyboard');
+    expect(submissions[2]).toEqual([
+      {
+        type: 'text',
+        text: ['Thanks', '', '---', 'Comments (1)', '', '1. `plan.md`', '   > Ship in May', '   Or June?'].join(
+          '\n'
+        ),
+      },
+    ]);
+    expect(getDefaultStore().get(articleAnnotationsAtom)).toEqual([elsewhere]);
+    expect(container!.querySelector('[role="status"]')).toBeNull();
+
+    // Without comments a message is exactly what was typed.
+    await type('Done');
+    await submit('keyboard');
+    expect(submissions[3]).toEqual([{ type: 'text', text: 'Done' }]);
+    getDefaultStore().set(articleAnnotationsAtom, []);
   });
 
   it('rejects image annotations atomically when image input is disabled or the session is archived', async () => {

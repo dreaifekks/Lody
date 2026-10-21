@@ -114,6 +114,11 @@ import { validateSessionImageFile } from '@/lib/session-image-upload';
 import { formatDocumentSelection, type DocumentSelection } from '@/lib/document-selection';
 import { PendingImageMarkupDialog } from './pending-image-markup-dialog';
 import {
+  formatArticleAnnotations,
+  useArticleAnnotationActions,
+  useThreadArticleAnnotations,
+} from '../boards/article-annotations';
+import {
   SESSION_FILE_MAX_SIZE_MB,
   validateSessionFile,
   type SessionFileTransferPhase,
@@ -708,6 +713,9 @@ export const SessionChatInputArea = memo(
     >([]);
     const visualAnnotationReferencesRef = useRef<VisualAnnotationReferenceChipItem[]>([]);
     const visualAnnotationRefIdCounter = useRef(0);
+    // Comments on a Board article wait beside it; the next message carries them at its end.
+    const articleAnnotations = useThreadArticleAnnotations(session.id);
+    const { remove: removeArticleAnnotations } = useArticleAnnotationActions();
 
     const publishCommentReferences = useCallback(
       (items: CommentReferenceChipItem[]) => {
@@ -1741,11 +1749,26 @@ export const SessionChatInputArea = memo(
           trimmedPrompt,
           expandedPrompt.spans
         );
-        const textBlocks: SessionInputBlock[] = trimmedPrompt
+        const submittedAnnotations = articleAnnotations;
+        const messageText =
+          submittedAnnotations.length === 0
+            ? trimmedPrompt
+            : [
+                trimmedPrompt,
+                formatArticleAnnotations(
+                  submittedAnnotations,
+                  t('sessions.article.annotation.count', 'Comments ({{count}})', {
+                    count: submittedAnnotations.length,
+                  })
+                ),
+              ]
+                .filter(Boolean)
+                .join('\n\n');
+        const textBlocks: SessionInputBlock[] = messageText
           ? [
               {
                 type: 'text',
-                text: trimmedPrompt,
+                text: messageText,
                 ...(trimmedSpans ? { spans: trimmedSpans } : {}),
               },
             ]
@@ -1850,12 +1873,15 @@ export const SessionChatInputArea = memo(
             if (submittedVisualAnnotationReferences.length > 0) {
               void onVisualAnnotationReferencesSubmitted?.(submittedVisualAnnotationReferences);
             }
+            if (submittedAnnotations.length > 0)
+              removeArticleAnnotations(new Set(submittedAnnotations));
           }
         } finally {
           submission.finish();
         }
       },
       [
+        articleAnnotations,
         beginSubmission,
         onSendMessage,
         clearInput,
@@ -1874,9 +1900,11 @@ export const SessionChatInputArea = memo(
         publishCommentReferences,
         publishVisualAnnotationReferences,
         postHog,
+        removeArticleAnnotations,
         session.id,
         session.machineId,
         sessionProjectKind,
+        t,
         updatePastedTextDraftsForSession,
         userInput,
         usesMobileKeyboardAction,
@@ -1916,7 +1944,8 @@ export const SessionChatInputArea = memo(
       pendingImages.length > 0 ||
       pendingFiles.length > 0 ||
       commentReferences.length > 0 ||
-      visualAnnotationReferences.length > 0;
+      visualAnnotationReferences.length > 0 ||
+      articleAnnotations.length > 0;
 
     const hasUploadedImages = pendingImages.length > 0;
     const hasUploadedFiles = pendingFiles.length > 0;
@@ -1925,7 +1954,8 @@ export const SessionChatInputArea = memo(
       hasUploadedImages ||
       hasUploadedFiles ||
       commentReferences.length > 0 ||
-      visualAnnotationReferences.length > 0;
+      visualAnnotationReferences.length > 0 ||
+      articleAnnotations.length > 0;
     const showStopButton = canStopAgent && !hasDraft && !isArchived;
     const isSendActionDisabled =
       !isVisible ||
@@ -2403,6 +2433,13 @@ export const SessionChatInputArea = memo(
         onFileRetry={submissionPending || isArchived ? undefined : handleRetryFile}
         footerSelector={footerSelectorNode}
         bottomBar={bottomBarNode}
+        statusMessage={
+          articleAnnotations.length > 0
+            ? t('sessions.article.annotation.pending', 'Includes {{count}} comments', {
+                count: articleAnnotations.length,
+              })
+            : undefined
+        }
         primaryAction={
           <>
             {voiceControlsNode}

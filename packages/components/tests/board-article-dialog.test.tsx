@@ -4,6 +4,8 @@ import { createPortal } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoardArticleDialog } from '../src/components/boards/board-article-dialog';
+import { ArticleAnnotationMarkers } from '../src/components/boards/article-annotation-markers';
+import type { ArticleAnnotation } from '../src/components/boards/article-annotations';
 import {
   createRelocatableHost,
   RelocatableSlot,
@@ -30,6 +32,27 @@ function Conversation({ thread }: { thread: string }) {
 
 const ARTICLE = createElement('article', null, 'Report');
 
+const COMMENT: ArticleAnnotation = {
+  id: 'comment-1',
+  threadId: 'thread' as never,
+  ownerThreadId: 'thread' as never,
+  path: 'report.md',
+  quote: 'Revenue grew',
+  comment: 'Which quarter?',
+  block: { index: 0, text: 'Revenue grew.' },
+};
+
+/** A rendered Markdown article with one comment waiting at its paragraph. */
+function CommentedArticle() {
+  const [root, setRoot] = useState<HTMLElement | null>(null);
+  return createElement(
+    'article',
+    { ref: setRoot, style: { position: 'relative' } },
+    createElement('p', null, 'Revenue grew.'),
+    createElement(ArticleAnnotationMarkers, { root, revision: '1', annotations: [COMMENT] })
+  );
+}
+
 /** The page as it renders a Board thread: one slot in the panel, the conversation portalled. */
 function Page({
   host,
@@ -37,6 +60,7 @@ function Page({
   holds,
   onClose,
   panelKey = 'panel',
+  article = ARTICLE,
 }: {
   host: RelocatableHost;
   open: boolean;
@@ -44,6 +68,7 @@ function Page({
   onClose: () => void;
   /** A new key remounts the Board panel's slot, as a layout change does. */
   panelKey?: string;
+  article?: ReturnType<typeof createElement>;
 }) {
   const [, setPanel] = useState<HTMLElement | null>(null);
   return createElement(
@@ -62,7 +87,7 @@ function Page({
     open
       ? createElement(BoardArticleDialog, {
           title: 'report.md',
-          article: ARTICLE,
+          article,
           threadHost: host,
           holdsThread: holds,
           onPanelChange: setPanel,
@@ -211,6 +236,50 @@ describe('BoardArticleDialog', () => {
     );
   });
 
+  it('closes an edit, then the comment list, then itself, one Escape each', async () => {
+    // jsdom lays nothing out; the paragraph reads as one line.
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [new DOMRect(10, 10, 120, 16)],
+    });
+    open = true;
+    await act(async () => {
+      root.render(
+        createElement(Page, {
+          host: threadHost,
+          open,
+          holds,
+          onClose,
+          article: createElement(CommentedArticle),
+        })
+      );
+    });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await act(async () =>
+      dialog.querySelector<HTMLButtonElement>('[data-article-annotation-marker] button')!.click()
+    );
+    // The list mounts in the dialog's panel, so the modal keeps it interactive.
+    const list = dialog.querySelector('[role="list"]')!;
+    expect(list.textContent).toContain('Which quarter?');
+    const escape = () =>
+      act(async () => {
+        (document.activeElement ?? document.body).dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+        );
+      });
+    await act(async () => list.querySelector<HTMLButtonElement>('[aria-label="Edit"]')!.click());
+    expect(document.activeElement).toBe(list.querySelector('textarea'));
+    await escape();
+    expect(list.querySelector('textarea')).toBeNull();
+    expect(document.querySelector('[role="list"]')).not.toBeNull();
+    await escape();
+    expect(document.querySelector('[role="list"]')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await escape();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    delete (Range.prototype as Partial<Range>).getClientRects;
+  });
+
   it('closes on Escape', async () => {
     open = true;
     await render();
@@ -220,5 +289,111 @@ describe('BoardArticleDialog', () => {
         .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ArticleAnnotationMarkers', () => {
+  /** A rendered fenced code block: a toolbar of actions over a sideways scroller. */
+  const codeBlock = (code: string, scroll: string, actionsRect: string, preRect: string) =>
+    createElement(
+      'div',
+      { 'data-streamdown': 'code-block' },
+      createElement(
+        'div',
+        { 'data-streamdown': 'code-block-toolbar' },
+        createElement(
+          'div',
+          { 'data-streamdown': 'code-block-actions', 'data-rect': actionsRect },
+          createElement('button', { type: 'button' }, 'Copy')
+        )
+      ),
+      createElement(
+        'div',
+        { 'data-streamdown': 'code-block-body', 'data-scroll': scroll },
+        createElement('pre', { 'data-rect': preRect }, createElement('code', null, code))
+      )
+    );
+  const comment = (id: string, code: string): ArticleAnnotation => ({
+    ...COMMENT,
+    id,
+    quote: code,
+    block: { index: -1, text: code },
+  });
+
+  it('puts the mark of a code block scrolled sideways left of its actions, others at the line end', async () => {
+    // jsdom lays nothing out: elements state their boxes and scroll widths.
+    const rectOf = (element: Element) => {
+      const [x, y, width, height] = (element.getAttribute('data-rect') ?? '0,0,0,0')
+        .split(',')
+        .map(Number);
+      return new DOMRect(x, y, width, height);
+    };
+    const scrollOf = (element: Element) =>
+      (element.getAttribute('data-scroll') ?? '0,0').split(',').map(Number);
+    const saved = {
+      rect: HTMLElement.prototype.getBoundingClientRect,
+      scrollWidth: Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth')!,
+      clientWidth: Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!,
+    };
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      return rectOf(this);
+    };
+    Object.defineProperty(Element.prototype, 'scrollWidth', {
+      configurable: true,
+      get(this: Element) {
+        return scrollOf(this)[0];
+      },
+    });
+    Object.defineProperty(Element.prototype, 'clientWidth', {
+      configurable: true,
+      get(this: Element) {
+        return scrollOf(this)[1];
+      },
+    });
+    // The last line of the code that fits ends at x = 130.
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [new DOMRect(10, 300, 120, 16)],
+    });
+    function CodeArticle() {
+      const [root, setRoot] = useState<HTMLElement | null>(null);
+      return createElement(
+        'div',
+        { 'data-rect': '0,0,640,800' },
+        createElement(
+          'article',
+          { ref: setRoot, 'data-rect': '0,0,600,800' },
+          codeBlock('const wide = 1;', '900,400', '500,100,52,24', '0,124,900,40'),
+          codeBlock('const fits = 2;', '400,400', '500,260,52,24', '0,284,400,40'),
+          createElement(ArticleAnnotationMarkers, {
+            root,
+            revision: '1',
+            annotations: [comment('wide', 'const wide = 1;'), comment('fits', 'const fits = 2;')],
+          })
+        )
+      );
+    }
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(createElement(CodeArticle)));
+      const marks = Array.from(
+        container.querySelectorAll<HTMLElement>('[data-article-annotation-marker]')
+      ).map((mark) => [mark.style.left, mark.style.top]);
+      expect(marks).toEqual([
+        // On the toolbar row, 2 px left of the actions (x = 500), not over the code.
+        ['474px', '100px'],
+        // At the end of its last line, centred on it.
+        ['132px', '296px'],
+      ]);
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      HTMLElement.prototype.getBoundingClientRect = saved.rect;
+      Object.defineProperty(Element.prototype, 'scrollWidth', saved.scrollWidth);
+      Object.defineProperty(Element.prototype, 'clientWidth', saved.clientWidth);
+      delete (Range.prototype as Partial<Range>).getClientRects;
+    }
   });
 });
