@@ -23,8 +23,12 @@ const styles = stylex.create({
     flexShrink: 0,
     paddingInline: space[2],
   },
+  // Short of room, the title and its location split what is left, each up to its
+  // own text; with room, the location sits at the end.
   title: {
+    flex: '1 1 0',
     minWidth: 0,
+    maxWidth: 'max-content',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -34,9 +38,10 @@ const styles = stylex.create({
   crumb: { color: colors.secondaryLabel, flexShrink: 0 },
   spacer: { flex: '1 1 0' },
   location: {
-    flexShrink: 1,
+    flex: '1 1 0',
     minWidth: 0,
-    maxWidth: '40%',
+    maxWidth: 'max-content',
+    marginInlineStart: 'auto',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -199,11 +204,6 @@ export function BoardThreadHeader({
               title
             )}
           </span>
-        </>
-      }
-      desktopActionsSlot={
-        <>
-          {desktopActionsSlot}
           {location ? (
             <span title={location} {...stylex.props(styles.location)}>
               {location}
@@ -211,6 +211,7 @@ export function BoardThreadHeader({
           ) : null}
         </>
       }
+      desktopActionsSlot={desktopActionsSlot}
       menuSlot={
         <>
           {onStop ? (
