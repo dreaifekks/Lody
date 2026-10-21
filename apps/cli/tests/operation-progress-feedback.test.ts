@@ -135,6 +135,7 @@ describe('nested operation progress feedback', () => {
           },
         },
         getOrCreateSessionDoc: async (id: string) => docs.get(id),
+        onSessionDocReleased: () => () => {},
       } as never,
       executionService: { getExecutionSnapshot: () => ({}) } as never,
       dispatchWatcher: {} as never,

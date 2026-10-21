@@ -342,6 +342,7 @@ const makeHarness = async (options?: {
     workspaceDocument: {
       repo,
       getOrCreateSessionDoc: async (sessionId: SessionId) => sessionDoc(sessionId),
+      onSessionDocReleased: () => () => {},
       syncRemoteDocOrThrow,
       syncMachineFlockDoc,
     } as never,
@@ -1492,7 +1493,7 @@ type MaintenanceTurnRequest = {
   freshAgentSession?: boolean;
 };
 
-const boardHarness = async () => {
+const boardHarness = async ({ realDocuments = false }: { realDocuments?: boolean } = {}) => {
   const { LoroRepo } = await import('loro-repo');
   const { createSessionMirror, normalizeBoardMeta, getWorkspaceFlockDocId, workspaceFlockKeys } =
     await import('@lody/shared');
@@ -1514,6 +1515,17 @@ const boardHarness = async () => {
   catalog.flock.set(workspaceFlockKeys.board(board.id), board);
   let now = TEST_NOW_MS + 1000;
   const store = new LodyOperationStore(':memory:', () => now);
+  // Real documents: the daemon side is a LoroDocumentManager over `repo`, and `docs`
+  // are renderer replicas whose writes reach it as the local data plane imports them.
+  const manager = realDocuments
+    ? new (await import('@/lib/loro/doc')).LoroDocumentManager({
+        repo,
+        workspaceId,
+        userId: 'user-1',
+        metaSub: null,
+        logger: { debug: () => {}, warn: () => {}, info: () => {}, error: () => {} } as never,
+      })
+    : undefined;
   const docs = new Map<SessionId, ReturnType<typeof createDoc>>();
   function createDoc(id: SessionId) {
     const loro = new LoroDoc();
@@ -1592,9 +1604,11 @@ const boardHarness = async () => {
     fileDiff: [],
   });
   const append = async (id: string, turn: SessionHistoryInput) => {
-    await docs
-      .get(id as SessionId)!
-      .sessionData.commands.appendTurn({ ...turn, fileDiff: turn.fileDiff ?? [] });
+    const doc = docs.get(id as SessionId)!;
+    await doc.sessionData.commands.appendTurn({ ...turn, fileDiff: turn.fileDiff ?? [] });
+    if (!manager) return;
+    const replica = (await repo.openPersistedDoc(getSessionRoomId(id as SessionId))).doc;
+    replica.import(doc.loro.export({ mode: 'update', from: replica.oplogVersion() }));
   };
   const finish = async (id: string, turnId: string, text = 'Synthetic conclusion') =>
     append(id, {
@@ -1633,10 +1647,13 @@ const boardHarness = async () => {
     userId: 'user-1',
     now: () => now,
     workerBootId: 'board-worker',
-    workspaceDocument: {
-      repo,
-      getOrCreateSessionDoc: async (id: SessionId) => docs.get(id),
-    } as never,
+    workspaceDocument:
+      manager ??
+      ({
+        repo,
+        getOrCreateSessionDoc: async (id: SessionId) => docs.get(id),
+        onSessionDocReleased: () => () => {},
+      } as never),
     executionService: {
       getExecutionSnapshot: () => ({ hasActiveTurn: hold || maintenance.active }),
       contextCompactionSupport: () => maintenance.support,
@@ -1652,7 +1669,10 @@ const boardHarness = async () => {
         try {
           await maintenance.duringStep(request);
           const compact = request.prompt.startsWith('/compact');
-          await docs.get(request.sessionId)!.sessionData.commands.appendTurn({
+          const target = manager
+            ? (await manager.getOrCreateSessionDoc(request.sessionId)).sessionData
+            : docs.get(request.sessionId)!.sessionData;
+          await target.commands.appendTurn({
             id: `assistant:${request.stepTurnId}`,
             role: 'assistant',
             userTurnId: request.stepTurnId,
@@ -1737,6 +1757,7 @@ const boardHarness = async () => {
     launches,
     warnings,
     maintenance,
+    manager,
     advance: (ms: number) => {
       now += ms;
     },
@@ -1746,7 +1767,8 @@ const boardHarness = async () => {
     close: async () => {
       await coordinator.stop();
       for (const doc of docs.values()) doc.mirror.dispose();
-      await repo.destroy();
+      if (manager) await manager.cleanUp({ fast: true });
+      else await repo.destroy();
     },
   };
 };
@@ -2370,6 +2392,68 @@ describe('Board coordinator continuity', () => {
       h.advance(60 * 60_000);
       await h.drain();
       expect(h.maintenance.runs).toHaveLength(3);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('starts a request written after GC released the idle coordinator document', async () => {
+    const h = await boardHarness({ realDocuments: true });
+    try {
+      const manager = h.manager!;
+      h.release();
+      await h.finish(h.coordinatorId, 'coordinator-input');
+      h.coordinator.start();
+      await h.drain();
+      const released = await manager.getOrCreateSessionDoc(h.coordinatorId);
+      // GC unloads the idle coordinator; no wake but the release and the write itself.
+      await manager.cleanSessionDoc(h.coordinatorId);
+      expect(released.isDestroyed).toBe(true);
+      await h.coordinator.idle();
+      // The workflow opened the Session again on its own.
+      expect(manager.sessions.has(h.coordinatorId)).toBe(true);
+      const live = await manager.getOrCreateSessionDoc(h.coordinatorId);
+      expect(live).not.toBe(released);
+      // Observed after the workflow's own subscription: by then its wake is queued.
+      const observed = new Promise<void>((resolve) => {
+        const observation = live.sessionData.history.observe(() => {
+          if (live.sessionData.history.readTurn('board-maintenance:after-gc').state !== 'ready')
+            return;
+          observation.unsubscribe();
+          resolve();
+        });
+      });
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'after-gc',
+          { boardId: h.board.id, kind: 'compact', trigger: 'manual', status: 'requested' },
+          new Date(TEST_NOW_MS).toISOString()
+        )
+      );
+      await observed;
+      await h.coordinator.idle();
+      const record = () => {
+        const read = live.sessionData.history.readTurn('board-maintenance:after-gc');
+        return read.state === 'ready'
+          ? readBoardMaintenance(read.turn as SessionHistoryInput)
+          : undefined;
+      };
+      await new Promise<void>((resolve) => {
+        const check = () => record()?.status === 'done' && record()?.renewed === true;
+        if (check()) return resolve();
+        const off = live.subscribeAll(() => {
+          if (!check()) return;
+          off();
+          resolve();
+        });
+      });
+      expect(steps(h)).toEqual(['memory', 'compact', 'renew']);
+      // The divider went to the repository's replica, not the released instance.
+      expect(live.handle?.doc).toBe(
+        (await h.repo.openPersistedDoc(getSessionRoomId(h.coordinatorId))).doc
+      );
+      expect(record()).toMatchObject({ trigger: 'manual', status: 'done', renewed: true });
     } finally {
       await h.close();
     }

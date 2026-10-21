@@ -95,3 +95,42 @@ the next input, and compacting again right after a compaction saves little.
 
 Placing the receipt batch before the current request was considered; the user chose to
 keep the upstream order (request first, receipts after).
+
+## Fix (2026-10-21): a manual request did not start after GC unloaded the coordinator document
+
+Symptom: after GC cleaned an idle coordinator, "Tidy context now" stayed at "Tidying context…"
+until the user sent another message. In the persisted history of the algorithm Board on devNuc,
+the manual requests of 11:49 and 12:09 were still `requested`; the run that finished at 13:00
+was an idle run under another run id, and none of its dividers reached storage.
+
+Cause: the report observer opens each Board Session's `SessionDocument` once and subscribes to
+its history. `cleanSessionDoc` (used by GC, archive and dispatch cleanup) destroys that instance
+and drops it from the cache; later writes land in the repository's fresh replica, so the old
+instance neither sees changes nor persists its own writes. A manual request writes history only,
+not metadata, so nothing woke the reconcile. The user's message changed metadata and woke it, but
+it still read and wrote the old instance: it saw no request, its last activity was still 09:36,
+and with "idle for three hours" plus a turn that pushed usage past 150K it started an idle run at
+once and wrote its dividers into the old instance.
+
+Fix: `LoroDocumentManager.onSessionDocReleased` notifies after `cleanSessionDoc` destroyed and
+uncached a document; `CoordinatorHistory.observe` wakes once when its own Session is released,
+and `released()` reads the instance's `isDestroyed`; in `refresh` the report observer drops
+released observations and reopens and resubscribes by membership. The reopen happens in the
+reconcile right after the release, so later writes (the renderer's manual request included) wake
+as usual and reads and writes go to the repository's current replica. Having GC skip Board
+documents was considered: it covers GC only, archive and dispatch cleanup would still break the
+observation, and GC would have to know about Boards. The cost is that Board Session documents are
+loaded again after GC (the agent process still exits), as the Worker already does at startup for
+every Board member.
+
+UI: a `requested` divider now reads "Tidy requested · starts when the coordinator is free" (and the
+same for a new conversation), separate from the `running` "Tidying context…".
+
+Tests: "Board coordinator continuity" adds a case on a real `LoroDocumentManager`: after
+`cleanSessionDoc`, with no test wake, only the release notification and the write itself, the
+manual request starts and is recorded `done` in the repository replica. Without the reopen in
+`refresh` the case fails.
+
+Not changed: `CoordinatorWorkflow`'s history subscriptions on Operation targets
+(`subscriptions`) are not rebuilt after a release either; SQLite and metadata wakes cover that
+path, and it stays as is.

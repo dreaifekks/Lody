@@ -30,7 +30,10 @@ export type CoordinatorHistory = {
   ): Effect.Effect<Array<SessionDirectoryScalars & { position: number }>, unknown>;
   applyHistoryAction(action: HistoryAction): Effect.Effect<unknown, unknown>;
   flushLocalWrites: Effect.Effect<void, unknown>;
+  /** Also wakes once the document is released, after which it no longer changes. */
   observe(wake: Effect.Effect<void>): Effect.Effect<Effect.Effect<void>, unknown>;
+  /** The document was released (GC, archive): reads and changes need a fresh `session`. */
+  released(): boolean;
 };
 /** What Board maintenance needs from the Session runtime on the coordinator's machine. */
 export type CoordinatorBoardMaintenance = {

@@ -41,8 +41,14 @@ export function BoardMaintenanceDivider({ meta }: { meta: BoardMaintenanceMeta }
   const compact = meta.kind === 'compact';
   const labels: Record<BoardMaintenanceMeta['status'], string> = {
     requested: compact
-      ? t('boards.maintenance.compacting', 'Tidying context…')
-      : t('boards.maintenance.starting', 'Starting a new conversation…'),
+      ? t(
+          'boards.maintenance.compactRequested',
+          'Tidy requested · starts when the coordinator is free'
+        )
+      : t(
+          'boards.maintenance.startRequested',
+          'New conversation requested · starts when the coordinator is free'
+        ),
     running: compact
       ? t('boards.maintenance.compacting', 'Tidying context…')
       : t('boards.maintenance.starting', 'Starting a new conversation…'),

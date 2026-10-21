@@ -5441,6 +5441,8 @@
   "boards.chainLimit": "Autonomous chain reached its limit. Send a message to continue.",
   "boards.maintenance.compacting": "Tidying context…",
   "boards.maintenance.starting": "Starting a new conversation…",
+  "boards.maintenance.compactRequested": "Tidy requested · starts when the coordinator is free",
+  "boards.maintenance.startRequested": "New conversation requested · starts when the coordinator is free",
   "boards.maintenance.compactedTokens": "Context tidied · {{tokens}}",
   "boards.maintenance.compacted": "Context tidied",
   "boards.maintenance.started": "New conversation",

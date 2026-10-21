@@ -176,6 +176,15 @@ export class BoardReportWorkflow {
         else this.members.delete(id);
         this.dirty.add(id);
       }
+      // A released document (GC unloads idle Sessions) no longer changes or wakes:
+      // observe the Session again from a fresh open.
+      for (const [id, { history, detach }] of this.watched) {
+        if (!history.released()) continue;
+        yield* detach;
+        this.subscriptions.delete(detach);
+        this.watched.delete(id);
+        this.membershipDirty = true;
+      }
       if (!this.membershipDirty) return;
       const eligible = new Set<SessionId>();
       for (const board of this.boards.values()) {

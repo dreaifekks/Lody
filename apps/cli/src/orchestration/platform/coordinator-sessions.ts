@@ -214,14 +214,19 @@ export const coordinatorSessionsLayer = (
           observe: (wake) =>
             Effect.sync(() => {
               const detach = subscribeSessionChanges(doc, () => runSignal(wake), backend);
+              const detachRelease = options.workspaceDocument.onSessionDocReleased((released) => {
+                if (released === id) runSignal(wake);
+              });
               let closed = false;
               return Effect.sync(() => {
                 if (!closed) {
                   detach();
+                  detachRelease();
                   closed = true;
                 }
               });
             }),
+          released: () => doc.isDestroyed,
         } satisfies CoordinatorHistory;
       }),
     confirmReadable: (id, reason) =>

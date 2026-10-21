@@ -189,6 +189,7 @@ function createFixture(
       }
     },
     waitUntilMetaSynced: async () => true,
+    onSessionDocReleased: () => () => {},
     getOrCreateSessionDoc: async (id: SessionId) => {
       const existing = sessions.get(id);
       if (existing) return existing;
