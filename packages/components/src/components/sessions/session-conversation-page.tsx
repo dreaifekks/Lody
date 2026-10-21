@@ -27,6 +27,8 @@ export interface SessionConversationPageHeaderProps {
   endSlot?: ReactNode;
   nativeApp?: boolean;
   reserveMacTrafficLightInset?: boolean;
+  /** In the side panel: its tab strip's inset, so the edge controls line up with it. */
+  sidePanel?: boolean;
 }
 
 export function SessionConversationPageHeader({
@@ -37,12 +39,14 @@ export function SessionConversationPageHeader({
   endSlot,
   nativeApp = false,
   reserveMacTrafficLightInset = false,
+  sidePanel = false,
 }: SessionConversationPageHeaderProps) {
   return (
     <div
       className={cn(
         SESSION_PAGE_CONTAINER_CLASS,
-        'flex flex-col justify-center gap-1 border-b border-border px-3 py-2 shrink-0 h-12',
+        'flex flex-col justify-center gap-1 border-b border-border py-2 shrink-0 h-12',
+        sidePanel ? 'px-2' : 'px-3',
         nativeApp &&
           'h-[calc(3rem+var(--safe-area-top))] pt-[calc(0.5rem+var(--safe-area-top))] pl-[calc(0.75rem+var(--safe-area-left))] pr-[calc(0.75rem+var(--safe-area-right))]',
         reserveMacTrafficLightInset && 'pl-20'

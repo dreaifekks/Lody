@@ -36,7 +36,7 @@ const styles = stylex.create({
   location: {
     flexShrink: 1,
     minWidth: 0,
-    maxWidth: '45%',
+    maxWidth: '40%',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -201,7 +201,16 @@ export function BoardThreadHeader({
           </span>
         </>
       }
-      desktopActionsSlot={desktopActionsSlot}
+      desktopActionsSlot={
+        <>
+          {desktopActionsSlot}
+          {location ? (
+            <span title={location} {...stylex.props(styles.location)}>
+              {location}
+            </span>
+          ) : null}
+        </>
+      }
       menuSlot={
         <>
           {onStop ? (
@@ -218,16 +227,8 @@ export function BoardThreadHeader({
           {menuSlot}
         </>
       }
-      endSlot={
-        <>
-          {location ? (
-            <span title={location} {...stylex.props(styles.location)}>
-              {location}
-            </span>
-          ) : null}
-          {endSlot}
-        </>
-      }
+      endSlot={endSlot}
+      sidePanel
     />
   );
 }
