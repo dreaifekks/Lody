@@ -1,7 +1,6 @@
 import { app, BrowserWindow, dialog, type WebContents } from 'electron'
 import path from 'node:path'
 import { z } from 'zod'
-import { join } from 'node:path'
 import { getLodyDataDir } from '@lody/shared/node/installation-profile'
 import { mainPlatformKind } from '../../platform'
 import {
@@ -61,8 +60,7 @@ export class MachineRpcIpc extends IpcService {
     assertProductWindowSender(getIpcContext().event)
     if (typeof machineId !== 'string' || !machineId) return false
     return (
-      machineId ===
-      (await readFileMachineId(join(getLodyDataDir(mainPlatformKind), 'credentials.json')))
+      machineId === (await readFileMachineId(getLodyDataDir(mainPlatformKind), mainPlatformKind))
     )
   }
 
@@ -73,9 +71,7 @@ export class MachineRpcIpc extends IpcService {
     assertProductWindowSender(event)
     const owner = event.sender
     const generation = getResourceOwner(owner)
-    const machineId = await readFileMachineId(
-      join(getLodyDataDir(mainPlatformKind), 'credentials.json')
-    )
+    const machineId = await readFileMachineId(getLodyDataDir(mainPlatformKind), mainPlatformKind)
     if (owner.isDestroyed() || resourceOwners.get(owner.id) !== generation)
       throw new Error('Preview window closed.')
     const response = await previewLocalFile(localFileResources, generation, parsed, machineId)

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { z } from 'zod'
+import type { PlatformKind } from '@lody/shared/platform-kind'
 import { resolveFilePreviewPath } from '@lody/shared/node/file-preview-path-policy'
 import type { LocalFileResources } from './local-file-resource'
 
@@ -15,9 +16,15 @@ export const LocalFilePreviewRequestSchema = z
 export type LocalFilePreviewRequest = z.infer<typeof LocalFilePreviewRequestSchema>
 
 /** Disk identity, not daemon liveness. Never expose the other credential fields. */
-export async function readFileMachineId(credentialsPath: string): Promise<string | null> {
+export async function readFileMachineId(
+  dataDirectory: string,
+  platform: PlatformKind
+): Promise<string | null> {
   try {
-    const raw: unknown = JSON.parse(await readFile(credentialsPath, 'utf8'))
+    if (platform === 'local') {
+      return (await readFile(join(dataDirectory, 'machine-id'), 'utf8')).trim() || null
+    }
+    const raw: unknown = JSON.parse(await readFile(join(dataDirectory, 'credentials.json'), 'utf8'))
     const parsed = z
       .object({ machine: z.object({ machineId: z.string().trim().min(1) }) })
       .safeParse(raw)

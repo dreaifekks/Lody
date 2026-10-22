@@ -3,6 +3,10 @@
 Local session-history watch timeouts include the requested owner wait plus the
 ordinary read allowance. Preserve the shorter deadline for ordinary control reads.
 
+File previews read disk identity without a daemon: local composition uses
+`machine-id`, cloud uses `credentials.json` machine metadata. Never require a cloud
+login for local files or expose other credential fields.
+
 App icons are macOS packaged-app only. `app-icon-service.ts` owns device-local
 preferences and the serialized native apply path; the renderer supplies only a
 catalog identifier. Never edit signed resources or the shared development

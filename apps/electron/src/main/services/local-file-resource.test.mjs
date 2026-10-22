@@ -12,9 +12,10 @@ import {
 
 void test('desktop preview reads disk identity and files with no daemon dependency', async (t) => {
   const file = await fixture(t, 'notes.md', 'offline content')
-  const credentials = `${file.absolutePath}.credentials.json`
+  const dataDirectory = join(file.absolutePath, '..')
+  const credentials = join(dataDirectory, 'credentials.json')
   await writeFile(credentials, JSON.stringify({ machine: { machineId: 'this-desktop' } }))
-  const machineId = await readFileMachineId(credentials)
+  const machineId = await readFileMachineId(dataDirectory, 'cloud')
   const resources = new LocalFileResources()
   const request = LocalFilePreviewRequestSchema.parse({ machineId, path: file.absolutePath })
   const opened = await previewLocalFile(resources, 1, request, machineId)
@@ -31,7 +32,33 @@ void test('desktop preview reads disk identity and files with no daemon dependen
     null
   )
   assert.equal(await previewLocalFile(resources, 1, request, null), null)
-  assert.equal(await readFileMachineId(`${credentials}.missing`), null)
+  assert.equal(await readFileMachineId(`${dataDirectory}.missing`, 'cloud'), null)
+})
+
+void test('local desktop preview uses its persisted machine id without cloud credentials', async (t) => {
+  const file = await fixture(t, 'notes.md', 'local offline content')
+  const dataDirectory = join(file.absolutePath, '..')
+  await writeFile(join(dataDirectory, 'machine-id'), 'this-local-desktop\n')
+  assert.equal(await readFileMachineId(dataDirectory, 'cloud'), null)
+  const machineId = await readFileMachineId(dataDirectory, 'local')
+  assert.equal(machineId, 'this-local-desktop')
+  const resources = new LocalFileResources()
+  const request = { machineId: 'this-local-desktop', path: file.absolutePath }
+  assert.equal(
+    (await previewLocalFile(resources, 1, request, machineId)).content.text,
+    'local offline content'
+  )
+  assert.equal(
+    await previewLocalFile(resources, 1, { ...request, machineId: 'remote' }, machineId),
+    null
+  )
+  // Local composition keeps using its own identity even if old login state exists.
+  await writeFile(
+    join(dataDirectory, 'credentials.json'),
+    JSON.stringify({ machine: { machineId: 'old-cloud-desktop' } })
+  )
+  assert.equal(await readFileMachineId(dataDirectory, 'local'), 'this-local-desktop')
+  assert.equal(await readFileMachineId(`${dataDirectory}.missing`, 'local'), null)
 })
 
 void test('desktop relative paths require their supplied root and report filesystem failures', async (t) => {
