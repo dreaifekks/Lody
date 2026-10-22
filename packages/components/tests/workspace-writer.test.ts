@@ -122,6 +122,14 @@ describe('createDirectWorkspaceWriter', () => {
         expect(flock.get(key)).toEqual({
           ...role,
           runConfig,
+          instances: [
+            {
+              id: 'role:machine',
+              machineId: role.machineId,
+              agentConfigId: role.agentConfigId,
+              runConfig,
+            },
+          ],
           revision: 2,
           updatedAt: 3,
         });

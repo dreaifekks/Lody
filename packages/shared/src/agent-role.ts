@@ -392,9 +392,8 @@ export const normalizeAgentRole = (value: unknown): AgentRole | undefined => {
 };
 
 /**
- * The row a Role is stored as. A single-target Role keeps the v1 shape, so
- * upgrading — including automatic schema reconciliation — changes nothing an
- * older client can see. Only a Role with several targets is written as v2.
+ * Single-target Roles retain a v1 instance mirror for older fork members.
+ * Only a Role with several targets is written as v2, which old clients skip.
  */
 export const serializeAgentRoleRow = (role: AgentRole): Record<string, unknown> => {
   const {
@@ -412,6 +411,9 @@ export const serializeAgentRoleRow = (role: AgentRole): Record<string, unknown> 
       v: AGENT_ROLE_VERSION,
       ...shared,
       targetId: targetId ?? legacyAgentRoleInstanceId(role.id, machineId),
+      // Older fork clients read and write only this mirror. Keep their stable
+      // target identity and alias when members upgrade at different times.
+      instances: getAgentRoleTargets(role),
       machineId,
       agentConfigId,
       runConfig,

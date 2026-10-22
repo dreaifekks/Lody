@@ -710,6 +710,41 @@ describe('Agent Role proposals', () => {
 });
 
 describe('fork target data migration', () => {
+  it('keeps a single target intact through an older fork row projection and edit', () => {
+    const target = instance('stable-target-uuid', 'one', {
+      alias: 'Review',
+      runConfig: {
+        modelId: 'model-a',
+        modeId: 'safe',
+        configOptionValues: { plan_mode: true },
+        memory: { providerId: 'nowledge-mem', memoryId: 'synthetic-reviewer' },
+      },
+    });
+    const stored = serializeAgentRoleRow(multiRole(target));
+    expect(stored).toMatchObject({ v: 1, instances: [target] });
+
+    // Pre-target fork clients retain the instances array, but do not know the
+    // new targetId or top-level alias fields. Neither field may own identity.
+    const { targetId: _targetId, alias: _alias, ...olderRow } = stored;
+    expect(getAgentRoleTargets(normalizeAgentRole(olderRow)!)).toEqual([target]);
+
+    const editedTarget = {
+      ...target,
+      runConfig: { ...target.runConfig, modelId: 'model-b' },
+    };
+    const returned = normalizeAgentRole({
+      ...olderRow,
+      instances: [editedTarget],
+      runConfig: editedTarget.runConfig,
+      revision: 2,
+    })!;
+    expect(getAgentRoleTargets(returned)).toEqual([editedTarget]);
+    expect(selectAgentRoleInstance(returned, { instanceId: target.id }, () => true)).toMatchObject({
+      kind: 'selected',
+      instance: editedTarget,
+    });
+  });
+
   it('reads every legacy instance without mutating the row, then writes v2 and back to v1 with stable identity', () => {
     const instances = [
       instance('stable-a', 'one', {

@@ -39,11 +39,12 @@ the editor does not rewrite the catalog. Missing/provisional capabilities preser
 stored options; model and mode pins remain explicit user choices. The existing
 content comparison advances the revision once when reconciliation changes the row.
 
-Workspace startup also reconciles owned Roles against fresh runtime schemas without
-opening Settings. A conditional writer transaction fences delayed probe results
-against edits and deletion, then uses the same durability/upload split. See the
-[schema reconciliation Spec](../../specs/agent-role-schema-reconciliation.md) for
-which options may be removed and which pins remain user decisions.
+This fork does not mount startup schema reconciliation: opening a workspace or
+reading the catalog never rewrites Role rows. Legacy instances and placements
+become targets in memory. Explicit Save writes one target as v1, with an
+`instances` mirror so older fork members retain its stable id, alias and run config
+when they edit it. Multiple targets use v2, which older clients skip. The mirror
+is a storage compatibility field, not a second execution model.
 
 A Role can also carry a machine-scoped memory identity reference. The daemon's
 Provider adapter owns commands and environment mapping; neither memory contents

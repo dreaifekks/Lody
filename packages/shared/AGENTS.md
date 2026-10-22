@@ -107,9 +107,10 @@ Exact deletion bypasses discovery: [relations](../../specs/session-relations.md)
   `modeId`/`_permission` pins hide the permission button, retaining warnings.
   No Role-level auto-approval policy.
   Settings/mentions check read/manage access; explicit MCP ids need no mention grant.
-- Roles have stable targets, each binding a machine, Agent config, run config and memory.
-  Single targets write v1, multiple v2. Read legacy instances/placements with ids and
-  configs intact. Catalog reads never write; old clients skip v2.
+- Role targets bind ids to machine, Agent config, run config and memory.
+  Write one as v1 with an `instances` mirror preserving ids/aliases/config on old
+  forks; multiple as v2. Read legacy instances/placements intact, without writing.
+  Old clients skip v2.
 - Within one Role/machine, alias or unaliased Agent family is unique. Aliases may
   repeat elsewhere. Multiple machines require a machine; multiple targets there
   require an alias/id. Pins fail without fallback. Menus list and pin every target.
