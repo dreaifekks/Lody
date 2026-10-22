@@ -30,7 +30,7 @@ save path's text reads.
   preview and Code Collab still require their existing workspace resolution.
 - `file-preview-service.ts` never throws for a domain failure: every rejection is a
   typed `status: 'error'` response.
-- `file-preview-path-policy.ts` is the security boundary. Hosted remote
+- Shared `node/file-preview-path-policy.ts` is the security boundary. Hosted remote
   `file/preview` requests may read only the session workspace root, `os.tmpdir()`,
   `<LodyDataDir>/chats`, and `LODY_FILE_PREVIEW_EXTRA_ROOTS`. On the local
   platform `MessageHandler` lifts the boundary (`allowArbitraryPaths`): the only
@@ -65,6 +65,10 @@ save path's text reads.
 - A missing target has no realpath, so classify it against BOTH the resolved and the
   unresolved roots. That step only picks the error code; it never grants a read, and
   it still reports `file_not_found` only inside an allowed root.
+- Failed path probes must retain non-missing filesystem errors: EACCES/EPERM are
+  permission failures; other non-ENOENT/ENOTDIR errors are I/O failures. Apply the
+  remote path boundary before returning that classification. Diagnostics stay local
+  and contain identity/error codes, never file contents.
 - Unit-test the fold rule through an injected `FilePreviewDirectoryReader`
   (`file-preview-path-policy.test.ts`), not only against the real filesystem.
 - Remote oversize is refused, never truncated. The read takes one byte past the limit so a
@@ -77,7 +81,8 @@ save path's text reads.
 - **Remote previews remain one bounded complete response. Local content never rides
   that response.** `file/resolve-local` returns the canonical absolute path after
   owner/path resolution; Electron owns bounded content reads and resource lifetime.
-  Negotiate `localFileResources` through the central machine protocol binding.
+  Legacy clients negotiate `localFileResources`. Current Electron resolves and reads
+  directly, using its own disk machine identity rather than daemon ownership checks.
 - A LAN member reads a file in parts over its `files` connection, never through
   this response. `resolveReadablePath` answers where such a file is under the SAME
   resolution and authorization as `previewFile`, without its size limits and

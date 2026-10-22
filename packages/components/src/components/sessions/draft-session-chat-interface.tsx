@@ -647,38 +647,38 @@ export const DraftSessionChatInterface = memo(
 
       return (
         <AgentRoleMentionMachineContext.Provider value={parentSession.machineId ?? null}>
-        <div className="flex h-full flex-col">
-          <div className="relative min-h-0 flex-1 bg-background">
-            <ChildTabEmptyState onSuggest={(text) => inputAreaRef.current?.setInputText(text)} />
-          </div>
-          <SessionChatInputArea
-            ref={inputAreaRef}
-            session={transientSession}
-            sessionLocalProjectRootPath={sessionLocalProjectRootPath}
-            isMachineRemoved={!sessionMachine && docMetaCacheReady}
-            isAgentBusy={false}
-            isDark={isDark}
-            isEmptyConversation={true}
-            commandsEnabled={commandsEnabled}
-            selectedModeId={selectedModeId}
-            selectedModelId={selectedModelId}
-            modeOptions={modeOptions}
-            modelOptions={modelOptions}
-            quotaConfig={sessionAgentConfig}
-            rateLimits={
-              (!draft.agentConfigId || sessionAgentConfig) &&
-              canShowSubscriptionRateLimits({
-                cliType: draft.cliType,
-                agentType: draft.agentType,
-                config: sessionAgentConfig,
-                capability: draft.agentConfigId
-                  ? sessionMachine?.acpCapabilities?.[draft.agentConfigId]?.rateLimits
-                  : undefined,
-              })
-                ? sessionMachine?.raceLimits
-                : undefined
-            }
-            /* Judged here, with the resolved config: a side chat can run a
+          <div className="flex h-full flex-col">
+            <div className="relative min-h-0 flex-1 bg-background">
+              <ChildTabEmptyState onSuggest={(text) => inputAreaRef.current?.setInputText(text)} />
+            </div>
+            <SessionChatInputArea
+              ref={inputAreaRef}
+              session={transientSession}
+              sessionLocalProjectRootPath={sessionLocalProjectRootPath}
+              isMachineRemoved={!sessionMachine && docMetaCacheReady}
+              isAgentBusy={false}
+              isDark={isDark}
+              isEmptyConversation={true}
+              commandsEnabled={commandsEnabled}
+              selectedModeId={selectedModeId}
+              selectedModelId={selectedModelId}
+              modeOptions={modeOptions}
+              modelOptions={modelOptions}
+              quotaConfig={sessionAgentConfig}
+              rateLimits={
+                (!draft.agentConfigId || sessionAgentConfig) &&
+                canShowSubscriptionRateLimits({
+                  cliType: draft.cliType,
+                  agentType: draft.agentType,
+                  config: sessionAgentConfig,
+                  capability: draft.agentConfigId
+                    ? sessionMachine?.acpCapabilities?.[draft.agentConfigId]?.rateLimits
+                    : undefined,
+                })
+                  ? sessionMachine?.raceLimits
+                  : undefined
+              }
+              /* Judged here, with the resolved config: a side chat can run a
                Codex-compatible provider whose identity `cliType`/`agentType`
                alone would not reveal. */
               showCodexResetForecast={

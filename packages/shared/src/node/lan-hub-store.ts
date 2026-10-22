@@ -1,12 +1,7 @@
 // The LANs of this installation as a long-running process holds them: read
 // once, kept current while the settings file changes, and edited through one
 // place so every edit is validated and written the same way.
-import {
-  LanHubInputError,
-  formatLanInvite,
-  parseLanInvite,
-  type LanHubSummary,
-} from '../lan-hub';
+import { LanHubInputError, formatLanInvite, parseLanInvite, type LanHubSummary } from '../lan-hub';
 import {
   addLanHub,
   normalizeMachineNameInput,
@@ -148,7 +143,9 @@ export class LanHubStore {
     name?: string | null;
     url?: string | null;
   }): LanHubStoreResult<{ lan: LanHubSummary }> {
-    return this.editLan((hubs) => updateLanHub(hubs, input.id, { name: input.name, url: input.url }));
+    return this.editLan((hubs) =>
+      updateLanHub(hubs, input.id, { name: input.name, url: input.url })
+    );
   }
 
   remove(input: { id: string }): LanHubStoreResult {

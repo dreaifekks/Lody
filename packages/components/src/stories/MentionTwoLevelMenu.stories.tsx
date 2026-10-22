@@ -25,13 +25,12 @@ import { buildAgentRoleMentionItems } from '@/components/mentions/mention-agent-
 import { buildComposerAgentRoleItems } from '@/lib/composer-agent-roles';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRoleInstances,
+  withAgentRoleTargets,
   type AcpCapabilityCacheEntry,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
+  type AgentRole,
   type AgentConfigId,
   type AgentConfigMeta,
-  type AgentRole,
   type AgentRoleAvailability as RoleAvailability,
   type AgentRoleId,
   type MachineId,
@@ -167,7 +166,9 @@ const ROLE_AGENT_CONFIG = {
   name: 'Codex',
 } as const;
 
-const agentRole = (overrides: Partial<AgentRole>): CatalogAgentRole => {
+const agentRole = (
+  overrides: Partial<AgentRole> & { instances?: import('@lody/shared').AgentRoleTarget[] }
+): AgentRole => {
   const role: Omit<AgentRole, 'instances'> = {
     v: AGENT_ROLE_VERSION,
     id: 'role-1' as AgentRoleId,
@@ -183,7 +184,7 @@ const agentRole = (overrides: Partial<AgentRole>): CatalogAgentRole => {
     updatedAt: 2,
     ...overrides,
   };
-  return withAgentRoleInstances(
+  return withAgentRoleTargets(
     role,
     overrides.instances ?? [
       {
@@ -272,7 +273,7 @@ const CLAUDE_REPORTED_CAPABILITIES = {
 
 /** Roles' mention entries, built as the composer builds them on the Studio. */
 const roleMentionItems = (
-  roles: CatalogAgentRole[],
+  roles: AgentRole[],
   availability: RoleAvailability = { kind: 'available' }
 ) =>
   buildAgentRoleMentionItems(
@@ -292,7 +293,7 @@ const roleMentionItems = (
 
 /** A Role's mention candidates as listed without a machine in the term. */
 const roleCandidates = (
-  role: CatalogAgentRole,
+  role: AgentRole,
   availability: RoleAvailability = { kind: 'available' },
   availabilityText?: string
 ): MentionCandidate[] =>
@@ -302,7 +303,7 @@ const roleCandidates = (
 
 /** A Role with one entry. */
 const roleCandidate = (
-  { role, availability }: { role: CatalogAgentRole; availability: RoleAvailability },
+  { role, availability }: { role: AgentRole; availability: RoleAvailability },
   availabilityText?: string
 ): MentionCandidate => roleCandidates(role, availability, availabilityText)[0]!;
 

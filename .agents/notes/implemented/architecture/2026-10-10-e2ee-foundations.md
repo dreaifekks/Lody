@@ -20,7 +20,7 @@ ledger policy and platform custody still need separate implementation and accept
 Start from public main `249661be340af5a20b8d0b7334d2e923fe5b5a99` and reuse its
 Effect 4.0.2 catalog. No Streams/repo dependency; main retains repo 0.21.2 and
 CRDT 0.16.2. Pin candidate crypto libraries rather than changing algorithms.
-[Provenance](../../../../packages/e2ee-core/provenance.json) records candidate
+[Provenance](https://github.com/LodyAI/Lody/blob/5f97599e60700d6185834632df85922ea0d73ec6/packages/e2ee-core/provenance.json) records candidate
 `bd5a9c1ec71ed7fa8085e51faec4f1e8dbe985b8`, exact source hashes and extraction changes.
 The candidate had staged work; the selected sources all matched that commit and
 were read only.
@@ -44,13 +44,13 @@ no candidate source/index mutation. Core: 5 passed, 7 failed across four suites.
 Lab review2-b-sync: 12 passed, 2 failed (requires loopback socket permission).
 These are ownership evidence, not accepted failures:
 
-| Candidate suite | Failures | Owner |
-| --- | --- | --- |
-| review2-a | Forged LedgerView (1) | Verified ledger authority |
-| review2-c-delivery | Read limit, 4096-envelope outbox (2) | Key delivery |
-| review2-c-rotation | Lost rotator (1) | Rotation/recovery |
-| review2-e-api-boundary | Injected verifier, impossible Owner snapshot, substituted persisted trust (3) | Ledger/snapshot trust |
-| Lab review2-b-sync | Duplicate committed record, rollback page (2) | Control sync/cursor recovery |
+| Candidate suite        | Failures                                                                      | Owner                        |
+| ---------------------- | ----------------------------------------------------------------------------- | ---------------------------- |
+| review2-a              | Forged LedgerView (1)                                                         | Verified ledger authority    |
+| review2-c-delivery     | Read limit, 4096-envelope outbox (2)                                          | Key delivery                 |
+| review2-c-rotation     | Lost rotator (1)                                                              | Rotation/recovery            |
+| review2-e-api-boundary | Injected verifier, impossible Owner snapshot, substituted persisted trust (3) | Ledger/snapshot trust        |
+| Lab review2-b-sync     | Duplicate committed record, rollback page (2)                                 | Control sync/cursor recovery |
 
 None of those constructors, services or policies is imported. No verified ledger
 view or injected signature verdict exists here. Mixed-torsion A/R regressions
@@ -79,7 +79,7 @@ seven independent probe groups pass. The focused suite passes 46/46, including
 exact 8192/8193 bytes, shared values, cycles, depth 8/9 and fixed header vectors.
 Its guarded expansion regression fails against the old codec (45 pass, 1 fail),
 without needing an OOM in the test runner. Source fingerprints stay unchanged;
-[provenance](../../../../packages/e2ee-core/provenance.json) refreshes only migrated
+[provenance](https://github.com/LodyAI/Lody/blob/5f97599e60700d6185834632df85922ea0d73ec6/packages/e2ee-core/provenance.json) refreshes only migrated
 code fingerprints and records this adaptation. Full `pnpm check` was rerun and
 reproduced only the same CLI Git fixture failure described below; typecheck, lint,
 format and documentation/boundary checks pass. Reviewer re-verification remains

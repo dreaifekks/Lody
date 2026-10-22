@@ -356,7 +356,9 @@ export function SessionFileErrorState({
   message,
   reason,
   fileActions,
+  onRetry,
 }: {
+  readonly onRetry?: () => void;
   readonly message: string;
   readonly reason?: CodeCollabContentUnavailableReason;
   readonly fileActions?: SessionFileErrorActions;
@@ -364,7 +366,9 @@ export function SessionFileErrorState({
   const { t } = useTranslation();
   const presentation = getSessionFileErrorPresentation(message, reason, t);
   const actions = fileActions && offersFileActions(presentation.kind) ? fileActions : undefined;
-  return <SessionFileNoticeCard presentation={presentation} fileActions={actions} />;
+  return (
+    <SessionFileNoticeCard presentation={presentation} fileActions={actions} onRetry={onRetry} />
+  );
 }
 
 /** Shared presentation for files that cannot be displayed inline. */
@@ -372,7 +376,9 @@ export function SessionFileNoticeCard({
   presentation,
   compact = false,
   fileActions: actions,
+  onRetry,
 }: {
+  readonly onRetry?: () => void;
   readonly compact?: boolean;
   readonly presentation: Pick<
     SessionFileErrorPresentation,
@@ -393,6 +399,13 @@ export function SessionFileNoticeCard({
       >
         <h2 {...stylex.props(styles.title)}>{presentation.title}</h2>
         <p {...stylex.props(styles.description)}>{presentation.description}</p>
+        {onRetry ? (
+          <div {...stylex.props(styles.actions)}>
+            <Button size="small" variant="secondary" onClick={onRetry}>
+              {t('common.retry', 'Retry')}
+            </Button>
+          </div>
+        ) : null}
         {actions ? (
           <div {...stylex.props(styles.actions)}>
             {actions.onShare ? (

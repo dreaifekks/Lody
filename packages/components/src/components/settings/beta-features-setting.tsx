@@ -69,19 +69,19 @@ export function BetaFeaturesSection() {
       </CompactRow>
 
       {!lanPlatform && (
-      <CompactRow
-        label={t('settings.experimental.roostHistory', 'Roost history')}
-        helper={t(
-          'settings.experimental.roostHistoryHelper',
-          'Use Roost for new conversations. Existing conversations keep their current history backend.'
-        )}
-      >
-        <Switch
-          checked={roostHistoryEnabled}
-          onCheckedChange={setRoostHistoryEnabled}
-          aria-label={t('settings.experimental.roostHistory', 'Roost history')}
-        />
-      </CompactRow>
+        <CompactRow
+          label={t('settings.experimental.roostHistory', 'Roost history')}
+          helper={t(
+            'settings.experimental.roostHistoryHelper',
+            'Use Roost for new conversations. Existing conversations keep their current history backend.'
+          )}
+        >
+          <Switch
+            checked={roostHistoryEnabled}
+            onCheckedChange={setRoostHistoryEnabled}
+            aria-label={t('settings.experimental.roostHistory', 'Roost history')}
+          />
+        </CompactRow>
       )}
     </CompactSection>
   );

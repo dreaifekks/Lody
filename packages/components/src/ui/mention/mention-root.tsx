@@ -719,10 +719,7 @@ const MentionRoot = React.forwardRef<RootElement, MentionRootProps>((props, forw
         let result = { value: sourceValue, mentions: initialMentions, caret: sourceValue.length };
         for (const entry of requests) {
           const at = Math.max(0, Math.min(result.value.length, entry.at ?? result.value.length));
-          const replaceEnd = Math.max(
-            at,
-            Math.min(result.value.length, entry.replaceEnd ?? at)
-          );
+          const replaceEnd = Math.max(at, Math.min(result.value.length, entry.replaceEnd ?? at));
           result = applyMentionSplice(result.value, result.mentions, {
             replaceStart: at,
             replaceEnd,

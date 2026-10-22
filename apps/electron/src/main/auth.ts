@@ -104,7 +104,7 @@ const opened = openAuthStorageBackend(
   () =>
     new ConfConstructor<Record<string, unknown>>({
       cwd: app.getPath('userData'),
-      projectName: app.getName(),
+      projectName: desktopInstallationProfile.desktopStoreName,
       projectVersion: app.getVersion()
     }),
   { path: authStoragePath, backup: backupAuthStorageFile }

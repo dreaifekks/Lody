@@ -1,4 +1,38 @@
+import type { NotificationPresentation } from '@lody/shared/notifications';
+import type { TerminalOutcome } from '@lody/shared/notifications';
 import { anyApi, type FunctionReference } from 'convex/server';
+import type {
+  RecoveryVaultPutRequest,
+  RecoveryVaultReadRequest,
+  RecoveryVaultIndexReadRequest,
+  RecoveryVaultIndexCasRequest,
+  RecoveryVaultIndexCasReply,
+  RecoveryVaultDeleteRequest,
+  RecoveryVaultCiphertextDto,
+} from './e2ee-recovery-vault';
+export type {
+  RecoveryVaultPutRequest,
+  RecoveryVaultReadRequest,
+  RecoveryVaultIndexReadRequest,
+  RecoveryVaultIndexCasRequest,
+  RecoveryVaultIndexCasReply,
+  RecoveryVaultDeleteRequest,
+  RecoveryVaultCiphertextDto,
+} from './e2ee-recovery-vault';
+import type {
+  StageEpochGroupRequest,
+  ReadEpochGroupRequest,
+  DeleteEpochGroupRequest,
+  EpochStagedGroupDto,
+} from './e2ee-epoch-staging';
+export type {
+  EpochStagedGroupKeyDto,
+  EpochStagedEnvelopeDto,
+  EpochStagedGroupDto,
+  StageEpochGroupRequest,
+  ReadEpochGroupRequest,
+  DeleteEpochGroupRequest,
+} from './e2ee-epoch-staging';
 import type {
   BeginShareDeployment,
   SessionShareManagement,
@@ -331,6 +365,19 @@ type SeatInvitePreview =
     };
 
 export type CloudApi = {
+  /** Optional E2EE ciphertext staging. No ordinary/local product constructs it. */
+  e2eeRecoveryVault: {
+    putImmutable: Mutation<RecoveryVaultPutRequest, { ok: true }>;
+    readEntry: Query<RecoveryVaultReadRequest, RecoveryVaultCiphertextDto | null>;
+    readIndex: Query<RecoveryVaultIndexReadRequest, RecoveryVaultCiphertextDto | null>;
+    compareAndSwapIndex: Mutation<RecoveryVaultIndexCasRequest, RecoveryVaultIndexCasReply>;
+    deleteUnreferenced: Mutation<RecoveryVaultDeleteRequest, { ok: true }>;
+  };
+  e2eeEpochStaging: {
+    stageGroup: Mutation<StageEpochGroupRequest, { ok: true }>;
+    readGroup: Query<ReadEpochGroupRequest, EpochStagedGroupDto | null>;
+    deleteGroup: Mutation<DeleteEpochGroupRequest, { ok: true; done: boolean }>;
+  };
   promptShortcuts: {
     stageDocument: Mutation<
       {
@@ -560,6 +607,16 @@ export type CloudApi = {
     setSubscriptionInterval: Action<
       { workspaceId: string; interval: BillingInterval },
       { billingInterval: BillingInterval; effectiveAt: number | null }
+    >;
+  };
+  githubPersonalAuthorization: {
+    begin: Action<
+      { workspaceId: string; challenge: string; callbackURL: string },
+      { state: string; url: string }
+    >;
+    complete: Action<
+      { workspaceId: string; state: string; code: string; verifier: string },
+      { success: true }
     >;
   };
   github: {
@@ -860,6 +917,8 @@ export type CloudApi = {
         workspaceId: string;
         sessionId: string;
         occurrenceId: string;
+        outcome?: TerminalOutcome;
+        presentation?: NotificationPresentation;
         cliToken: string;
         workspaceSlug: string;
       },
@@ -871,11 +930,13 @@ export type CloudApi = {
         toolTitle?: string;
         toolKind?: string;
         requestKind?: 'permission' | 'ask_user_question';
+        presentation?: NotificationPresentation;
         userId: string;
         workspaceId: string;
         sessionId: string;
         cliToken: string;
         workspaceSlug: string;
+        deliveryVersion?: 1;
         requestId: string;
         toolCallId: string;
       },

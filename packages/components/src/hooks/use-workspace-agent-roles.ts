@@ -3,6 +3,7 @@ import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { selectAtom } from 'jotai/utils';
 import {
+  getAgentRoleTargets,
   listAccessibleAgentRoles,
   machineSupportsMemoryProviders,
   resolveAgentRoleAvailability,
@@ -12,8 +13,7 @@ import {
   type AgentRoleAvailability,
   type AgentRoleAvailabilityContext,
   type AgentRoleId,
-  type AgentRoleInstance,
-  type CatalogAgentRole,
+  type AgentRoleTarget,
   type MachineId,
 } from '@lody/shared';
 import { userAtom } from '@/atoms';
@@ -29,7 +29,7 @@ import { deleteWorkspaceAgentRole, writeWorkspaceAgentRole } from '@/lib/workspa
 
 export type WorkspaceAgentRolesSnapshot = {
   /** Roles this user may see: their own, plus every workspace-shared one. */
-  roles: CatalogAgentRole[];
+  roles: AgentRole[];
   /** True once the first remote sync landed, which makes an empty catalog authoritative. */
   synced: boolean;
 };
@@ -53,8 +53,8 @@ export function useWorkspaceAgentRoles(): WorkspaceAgentRolesSnapshot {
 
 export type AgentRoleAvailabilityResolver = {
   /** A Role: available while any of its instances is. */
-  resolve: (role: Pick<AgentRole, 'instances'>) => AgentRoleAvailability;
-  resolveInstance: (instance: AgentRoleInstance) => AgentRoleAvailability;
+  resolve: (role: AgentRole) => AgentRoleAvailability;
+  resolveInstance: (instance: AgentRoleTarget) => AgentRoleAvailability;
 };
 
 /**
@@ -68,11 +68,15 @@ export type AgentRoleAvailabilityResolver = {
  * to another config.
  */
 export function useAgentRoleAvailability(
-  roles: readonly Pick<AgentRole, 'instances'>[]
+  roles: readonly AgentRole[]
 ): AgentRoleAvailabilityResolver {
   const roleMachineIdsKey = useMemo(
     () =>
-      [...new Set(roles.flatMap((role) => role.instances.map((instance) => instance.machineId)))]
+      [
+        ...new Set(
+          roles.flatMap((role) => getAgentRoleTargets(role).map((instance) => instance.machineId))
+        ),
+      ]
         .sort()
         .join('\0'),
     [roles]
@@ -128,11 +132,11 @@ export function useAgentRoleAvailability(
   }, [agentConfigs, loadedMachineIds, machines, onlineMachineIds]);
 
   const resolve = useCallback(
-    (role: Pick<AgentRole, 'instances'>) => resolveAgentRoleAvailability(role, context),
+    (role: AgentRole) => resolveAgentRoleAvailability(role, context),
     [context]
   );
   const resolveInstance = useCallback(
-    (instance: AgentRoleInstance) => resolveAgentRoleInstanceAvailability(instance, context),
+    (instance: AgentRoleTarget) => resolveAgentRoleInstanceAvailability(instance, context),
     [context]
   );
 
@@ -145,12 +149,12 @@ export function useWorkspaceAgentRoleActions(): {
    * on its own; no surface waits for it, because the row already exists and a
    * deferred upload is not something the user can act on.
    */
-  upsert: (role: CatalogAgentRole) => Promise<void>;
+  upsert: (role: AgentRole) => Promise<void>;
   remove: (id: AgentRoleId) => Promise<void>;
 } {
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const upsert = useCallback(
-    async (role: CatalogAgentRole) => {
+    async (role: AgentRole) => {
       if (!runtime) throw new Error('Workspace runtime is unavailable');
       await writeWorkspaceAgentRole(runtime, role);
     },

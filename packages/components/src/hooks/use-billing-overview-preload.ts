@@ -14,9 +14,10 @@ import {
 export function useBillingOverviewPreload(workspaceId: string | null): void {
   const billingAvailable = useAppCapability('billing');
   const { authSessionId } = useAuthenticatedConvex();
-  const previousWorkspaceAuthRef = useRef<{ workspaceId: string; authSessionId: string | null } | null>(
-    null
-  );
+  const previousWorkspaceAuthRef = useRef<{
+    workspaceId: string;
+    authSessionId: string | null;
+  } | null>(null);
   const overview = useCloudQuery(
     cloudOperations.billing.getBillingOverview,
     billingAvailable && authSessionId && workspaceId ? { workspaceId } : 'skip'

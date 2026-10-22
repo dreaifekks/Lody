@@ -9,9 +9,9 @@ import {
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRoleId,
-  type AgentRoleInstance,
+  type AgentRoleTarget,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
+  type AgentRole,
   type MachineId,
 } from '@lody/shared';
 
@@ -96,7 +96,7 @@ vi.mock('../src/atoms/agents', async (importOriginal) => {
 vi.mock('../src/hooks/use-workspace-agent-roles', () => ({
   useWorkspaceAgentRoles: () => ({ roles: world.roles, synced: true }),
   useAgentRoleAvailability: () => ({
-    resolveInstance: (instance: AgentRoleInstance) =>
+    resolveInstance: (instance: AgentRoleTarget) =>
       resolveAgentRoleInstanceAvailability(instance, {
         authorizedMachineIds: new Set(world.machines.keys()) as Set<MachineId>,
         onlineMachineIds: new Set(world.machines.keys()) as Set<MachineId>,
@@ -152,16 +152,16 @@ const instance = (
   id: string,
   machineId: MachineId,
   agentConfigId: string,
-  runConfig: AgentRoleInstance['runConfig'],
+  runConfig: AgentRoleTarget['runConfig'],
   alias?: string
-): AgentRoleInstance => ({
+): AgentRoleTarget => ({
   id: id as AgentRoleInstanceId,
   machineId,
   agentConfigId: agentConfigId as AgentConfigId,
   runConfig,
   ...(alias ? { alias } : {}),
 });
-const role = (id: string, instances: AgentRoleInstance[]): CatalogAgentRole =>
+const role = (id: string, instances: AgentRoleTarget[]): AgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     id: id as AgentRoleId,
@@ -293,14 +293,16 @@ describe('picking a Role on the new-chat page', () => {
     };
   };
 
-  it('offers every group once, this machine first', () => {
+  it('offers every target separately, this machine first', () => {
     expect(world.menu?.agentSelection).toEqual({ agentId: 'claude-here', machineId: here });
-    expect(world.menu?.agentRoles.items.map((item) => [item.title, item.instance.id])).toEqual([
-      ['perf', 'perf-here'],
-      ['uiStyle · Claude', 'ui-claude-here'],
-      ['uiStyle · Codex', 'ui-codex-here'],
-      ['vision', 'vision-here'],
-      ['remote · n100', 'remote-there'],
+    expect(world.menu?.agentRoles.items.map((item) => item.instance.id)).toEqual([
+      'perf-here',
+      'ui-claude-here',
+      'ui-codex-here',
+      'vision-here',
+      'remote-there',
+      'ui-claude-there',
+      'vision-there',
     ]);
   });
 

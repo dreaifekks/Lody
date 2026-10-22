@@ -1,5 +1,5 @@
 diff --git a/src/capabilities.ts b/src/capabilities.ts
-index 8e52be4..64c7922 100644
+index 5a84a24..0359526 100644
 --- a/src/capabilities.ts
 +++ b/src/capabilities.ts
 @@ -55,6 +55,13 @@ export type LodyRateLimitsCapability = LodyVersionOneCapability & {
@@ -16,10 +16,10 @@ index 8e52be4..64c7922 100644
  export type LodyExtensionCapabilities = {
    subagentEvents?: LodyVersionOneCapability;
    /** Owns title generation; pushes tagged session_info_update titles without a client request. */
-@@ -69,4 +76,5 @@ export type LodyExtensionCapabilities = {
-   compaction?: LodyVersionOneCapability;
-   sessionHistory?: LodyVersionOneCapability;
+@@ -71,4 +78,5 @@ export type LodyExtensionCapabilities = {
    worktreeProject?: LodyVersionOneCapability;
+   /** Pushes `_lody/session/activity_update` levels, including outside client prompts. */
+   sessionActivity?: LodyVersionOneCapability;
 +  voice?: LodyVoiceCapability;
  };
 diff --git a/src/index.ts b/src/index.ts
@@ -35,10 +35,10 @@ index 5fdb070..2e7d453 100644
  export * from './subagent-events.js';
  export * from './subagent-emitter.js';
 diff --git a/src/methods.ts b/src/methods.ts
-index c8ca0cd..554609b 100644
+index 221c2a8..5cad42d 100644
 --- a/src/methods.ts
 +++ b/src/methods.ts
-@@ -12,6 +12,11 @@ export const LODY_EXTENSION_METHODS = {
+@@ -13,6 +13,11 @@ export const LODY_EXTENSION_METHODS = {
    subagentsList: '_lody/subagents/list',
    subagentsCancel: '_lody/subagents/cancel',
    subagentsOutput: '_lody/subagents/output',
@@ -50,7 +50,7 @@ index c8ca0cd..554609b 100644
  } as const;
  
  export type LodyExtensionMethod =
-@@ -46,6 +51,22 @@ export type LodyExtensionRequestMap<TPrompt = unknown> = {
+@@ -47,6 +52,22 @@ export type LodyExtensionRequestMap<TPrompt = unknown> = {
      params: LodySubagentOutputRequest;
      result: LodySubagentOutputResponse;
    };
@@ -73,15 +73,15 @@ index c8ca0cd..554609b 100644
  };
  
  export type LodyExtensionNotificationMap = {
-@@ -53,6 +74,7 @@ export type LodyExtensionNotificationMap = {
-   [LODY_EXTENSION_METHODS.sessionUsageUpdate]: SessionUsageUpdate;
+@@ -55,6 +76,7 @@ export type LodyExtensionNotificationMap = {
    [LODY_EXTENSION_METHODS.rateLimitsUpdate]: RateLimitsUpdate;
    [LODY_EXTENSION_METHODS.sessionSteerApplied]: LodySteerApplied;
+   [LODY_EXTENSION_METHODS.sessionActivityUpdate]: LodySessionActivityUpdate;
 +  [LODY_EXTENSION_METHODS.voiceEvent]: LodyVoiceEventNotification;
  };
  
  export type LodyExtensionRequestMethod = keyof LodyExtensionRequestMap;
-@@ -91,3 +113,11 @@ import type {
+@@ -94,3 +116,11 @@ import type {
    LodySubagentsListResponse,
  } from './session.js';
  import type { SessionUsageUpdate } from './usage.js';

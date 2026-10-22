@@ -154,9 +154,7 @@ function HostedSource({
   run,
 }: {
   source: HostedConfigSource;
-  run: (
-    categories: HostedConfigCategory[]
-  ) => ReturnType<LanMachinesControl['importHostedConfig']>;
+  run: (categories: HostedConfigCategory[]) => ReturnType<LanMachinesControl['importHostedConfig']>;
 }) {
   const { t } = useTranslation();
   const [excluded, setExcluded] = useState<ReadonlySet<HostedConfigCategory>>(new Set());

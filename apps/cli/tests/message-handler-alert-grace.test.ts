@@ -69,9 +69,14 @@ function createHandler(
   const complete = () =>
     (
       handler as unknown as {
-        notifySessionCompleted: (id: SessionId, userId: string, turn: string) => Promise<void>;
+        notifyTurnOutcome: (
+          id: SessionId,
+          userId: string,
+          turn: string,
+          outcome: string
+        ) => Promise<void>;
       }
-    ).notifySessionCompleted(sessionId, 'owner', 'turn-1');
+    ).notifyTurnOutcome(sessionId, 'owner', 'turn-1', 'succeeded');
   return {
     complete,
     notifySessionCompleted,

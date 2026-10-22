@@ -1,6 +1,9 @@
+import type { NotificationPresentation } from '@lody/shared/notifications';
 import type { Effect, Scope } from 'effect';
 export type { LoroStreamsTokenProvider } from '@lody/shared';
+import type { TerminalOutcome } from '@lody/shared/notifications';
 import type {
+  BugReportClientLog,
   LiveActivityConversationItem,
   LiveActivityPermissionAlert,
   LiveActivityStatusCounts,
@@ -165,6 +168,7 @@ export interface CloudPermissionRequestNotificationInput {
    * chat. Hosted delivery ignores it.
    */
   projectId?: string | null;
+  presentation?: NotificationPresentation;
 }
 
 export interface CloudPermissionRequestResolutionInput {
@@ -219,6 +223,8 @@ export interface CloudNotificationsPort {
   notifySessionCompleted(input: {
     sessionId: SessionId;
     occurrenceId: string;
+    outcome?: TerminalOutcome;
+    presentation?: NotificationPresentation;
     sessionTitle?: string | null;
     pullRequests?: readonly SessionPullRequestMeta[];
     workspaceId: WorkspaceId;
@@ -335,6 +341,8 @@ export interface CloudBugReportInput {
   reporterUserId: string;
   requestToken: string;
   machineUserId: string;
+  /** The reporter's client log, already validated against its schema. */
+  clientLog?: BugReportClientLog;
 }
 
 export interface CloudBugReportPort {

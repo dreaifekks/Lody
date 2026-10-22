@@ -244,6 +244,7 @@ export class MachineRuntime {
 
     this.messageProcessor.stop();
     this.handler?.cancelPendingPermissionRequests();
+    this.handler?.cancelPendingHistoryWatches();
     await this.messageProcessor.drainWithTimeout(5000);
 
     if (this.handler) {
@@ -364,6 +365,7 @@ export class MachineRuntime {
 
     this.gcManager = new SessionGCManager(gcConfig, {
       getSessionLastActivity: (sessionId) => handler.getLastActivity(sessionId),
+      getNativeWork: (sessionId) => handler.getNativeWork(sessionId),
       hasActiveTurn: (sessionId) => handler.hasActiveTurn(sessionId),
       hasActiveGoal: async (sessionId) => await handler.hasActiveGoal(sessionId),
       hasPendingUpdates: (sessionId) => handler.hasPendingUpdates(sessionId),

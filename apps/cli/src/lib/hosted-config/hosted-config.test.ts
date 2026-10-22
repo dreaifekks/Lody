@@ -8,7 +8,7 @@ import {
   getWorkspaceFlockDocId,
   listWorkspaceAgentRoles,
   legacyAgentRoleInstanceId,
-  withAgentRoleInstances,
+  withAgentRoleTargets,
   readWorkspaceFlockRowsFromFlock,
   writeWorkspaceAgentRoleToFlock,
   type AgentConfigId,
@@ -68,7 +68,7 @@ const role = (overrides: Partial<AgentRole> & { id: string }): AgentRole => {
     updatedAt: 20,
     ...overrides,
   } as AgentRole;
-  return withAgentRoleInstances(row, [
+  return withAgentRoleTargets(row, [
     {
       id: legacyAgentRoleInstanceId(row.id, row.machineId),
       machineId: row.machineId,

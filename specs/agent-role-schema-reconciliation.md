@@ -1,42 +1,23 @@
-# Automatic Agent Role schema reconciliation
+# Agent Role schema reconciliation on Save
 
 Status: draft
 Translation: pending
 
-After upgrading and opening a workspace, the app automatically reconciles the
-current user's saved Roles against their agents. Each instance of a Role (one
-machine and its agent configuration; a machine may hold several) is reconciled on
-its own, against that instance's agent only. No Settings visit, save,
-confirmation, toast or success notice is required. The workspace shell starts the
-work after catalog readiness; offline targets wait until they become available.
+Opening a workspace or Role catalog never rewrites saved Roles. The former automatic
+startup reconciliation hook is not mounted. The editor owns reconciliation on an
+explicit Save, per target, using that target's machine and Agent capabilities.
 
-Only a successful runtime capability refresh for the exact machine and agent
-configuration, matching its runtime override and the client's current cache format,
-may authorize removal. Static defaults, absent schemas, failed probes and older or
-newer cache formats never authorize destructive reconciliation. This restriction
-applies to automatic writes only; ordinary cache readability remains governed by
-[cache compatibility](acp-capability-cache-compatibility.md).
+Only authoritative capabilities can change saved option selections. Failed or
+unavailable probes preserve the stored configuration. Model and permission pins
+remain visible when incompatible, preventing a silent change to runtime defaults.
+The editor filters sensitive options and checks the resulting values before saving.
 
-Remove option keys the fresh schema no longer advertises. Preserve values of
-advertised fields even when invalid, along with model and permission pins. Explicit
-permission, approval and sandbox options remain visible for manual correction.
-When a retired `collaboration_mode` contains `default` or `plan` and the new schema
-advertises boolean `plan_mode`, preserve that choice as false or true. An existing
-`plan_mode` wins. A retired `interaction_mode: plan` also migrates to true when
-neither the new field nor a recognized legacy collaboration choice exists.
-New optional defaults are not pinned during maintenance.
-For other option removals, a Role's pinned model must match the probe's model;
-otherwise retain potentially model-dependent keys until their support is known.
+Only the Role owner may save. The editor receives the complete catalog Role so an
+edit to one target retains all other targets and their memory bindings. Effective
+changes advance the revision once; a no-op save retains it. Writes serialize one
+target as v1 and multiple targets as v2, resolve on local durability, and upload
+independently. Accepted Operations keep their frozen configuration.
 
-Only the Role owner may persist reconciliation. Delayed results must not recreate
-deleted Roles or overwrite intervening edits. A changed Role advances its revision
-once; repeating reconciliation without further changes performs no write. Already
-accepted Operations and Session provenance remain frozen.
-
-Writes resolve locally and upload independently through the existing catalog path.
-Failed probes or writes preserve the original Role; reopening retries automatically.
-Reconnect also retries failed probes. No global "upgrade complete" flag may suppress
-work for a Role or machine that was unavailable during the first launch.
-
-Evidence: `packages/components/src/hooks/use-agent-role-schema-reconciliation.ts`,
-`packages/components/src/lib/agent-role-schema-reconciliation.ts`, and their tests.
+Evidence: [editor](../packages/components/src/components/settings/agent-role-editor-dialog.tsx),
+[explicit-save preparation](../packages/components/src/lib/agent-role-form.ts), and
+[shared authoring](../packages/shared/src/agent-role-form.ts).

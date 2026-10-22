@@ -11,7 +11,6 @@ import {
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
   type AgentRoleId,
   type MachineId,
 } from '@lody/shared';
@@ -40,9 +39,7 @@ const agentConfig: AgentConfigMeta = {
   env: {},
 };
 
-const makeRole = (
-  overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
-): CatalogAgentRole =>
+const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     ownerUserId: 'user-1',
@@ -57,7 +54,7 @@ const makeRole = (
   });
 
 const entryOf = (
-  role: CatalogAgentRole,
+  role: AgentRole,
   availability: ComposerAgentRoleItem['availability']
 ): ComposerAgentRoleItem => composerItemsOf(role, { availability })[0]!;
 const reviewer: ComposerAgentRoleItem = {

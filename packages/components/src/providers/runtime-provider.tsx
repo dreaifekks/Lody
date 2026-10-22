@@ -29,6 +29,7 @@ import {
 } from '@/atoms/control-connection';
 import { API_BASE_URL } from '@/lib';
 import { getCachedWorkspaceId } from '@/lib/local-storage-cache';
+import { recordClientError } from '@/lib/client-log';
 import { usePostHog } from '@posthog/react';
 import { createWorkspaceRuntime } from './create-workspace-runtime';
 import { resolveCloudPlatformRuntimePolicy } from './cloud-platform-runtime-policy';
@@ -60,6 +61,7 @@ const logRuntimeOperationError = (operation: string, error: unknown): void => {
     return;
   }
   console.error(`RuntimeProvider: ${operation} failed`, error);
+  recordClientError('runtime.operation_failed', error, { operation });
 };
 
 const resolveRuntimeEagerSyncSurface = (): EagerSyncSurface => {

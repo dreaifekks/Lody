@@ -1,9 +1,10 @@
+import { agentRoleWriteCommand } from './agent-role-write';
 import { Command } from 'commander';
 import { z } from 'zod';
 import type { WorkspaceId } from '@lody/shared';
 import { createResourceDiscovery } from '@/lib/resource-discovery-runtime';
 import type {
-  AgentRoleDiscoveryInstance,
+  AgentRoleDiscoveryTarget,
   DiscoveryResource,
   DiscoveryRow,
 } from '@/lib/resource-discovery';
@@ -57,8 +58,8 @@ const LEGACY_LIST_KEYS: Record<DiscoveryResource, string> = {
 
 /** A Role's instances, in dispatch order. */
 const roleMachines = (row: DiscoveryRow): string | undefined =>
-  Array.isArray(row.instances)
-    ? (row.instances as AgentRoleDiscoveryInstance[])
+  Array.isArray(row.targets)
+    ? (row.targets as AgentRoleDiscoveryTarget[])
         .map((instance) => `${instance.group.name ?? instance.agentConfigId}@${instance.machineId}`)
         .join(', ')
     : undefined;
@@ -232,6 +233,8 @@ export function discoveryGetCommand(resource: 'agent_config' | 'agent_role'): Co
 }
 
 export const agentRoleCommand = new Command('agent-role')
-  .description('Inspect Agent Roles')
+  .description('Inspect Agent Roles and propose creations or updates')
   .addCommand(discoveryListCommand('agent_role'))
-  .addCommand(discoveryGetCommand('agent_role'));
+  .addCommand(discoveryGetCommand('agent_role'))
+  .addCommand(agentRoleWriteCommand('create'))
+  .addCommand(agentRoleWriteCommand('update'));

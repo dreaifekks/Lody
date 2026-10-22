@@ -9,7 +9,7 @@
 
 ## Composition and transports
 
-- Cloud commands share workspace managers.
+- Daemon commands share its replica; cleanup failure never fences.
 
 - GitHub auth: conversation-owner personal → matching-owner machine → repo App,
   once per source. Failures advance without a policy RPC; local context grants
@@ -29,10 +29,9 @@
   require `LODY_LORO_STREAMS_BASE_URL` as a parallel hidden composition path.
 - `cloud-pr-association.ts`: use `authSiteUrl`, not `authBaseUrl` (internal proxy).
   Six failures/workspace/repo, no eviction; reset on client recreation. Log once.
-- Local session control preserves every intermediate response: new clients negotiate
-  NDJSON, legacy clients keep the buffered JSON envelope. `MachineRuntime` may collect
-  responses for completion, but must also forward each to the streaming observer as it
-  is sent.
+- Local control negotiates NDJSON or legacy buffered JSON, preserving intermediate
+  replies. `MachineRuntime` may collect responses but forwards each as sent. Cancel
+  parked history watches before shutdown drain; preserve shared writers.
 - Route every remote bridge attach/detach/revoke through `machine-runtime.ts`
   `runBridgeTransition` and keep long waits OUT of transition bodies: attach is
   deliberately short, so a queued detach/revoke stays prompt. Backfill enable/disable
@@ -65,12 +64,13 @@ never pushed to renderers as local room health.
 ## Sessions and turns
 
 - `session-gc-manager.ts`: `evaluateMemoryPressure` returns TWO verdicts, `evict` and
-  `block`, which must not share a threshold. Every probe fails OPEN, and `null`
-  (UNDETERMINED) Windows commit growth must never collapse to `0`. Do not let the
-  periodic sweep force the cached commit probe; never act on a cached sample once
-  anything looks like pressure; re-check with a short delay before failing a turn; keep
-  eviction bounded per call. The threshold is a safety MARGIN, never "what a turn
-  needs". [Per-OS signals](../../../../.agents/docs/cli-lib-memory-pressure.md).
+  `block`, sharing no threshold. Probes fail OPEN; `null` Windows commit growth
+  never becomes `0`. Sweeps never force the cached commit probe; never act on a
+  cached sample once pressure appears; re-check briefly before failing a turn; bound
+  evictions per call. The threshold is a safety MARGIN, not "what a turn needs".
+  [Per-OS signals](../../../../.agents/docs/cli-lib-memory-pressure.md). Idle counts
+  native work: never clean `running`, cap background waits. Post-turn output resets
+  it only for `sessionActivity` agents.
 - **Session attachments**: before changing preparation, transfer, materialization,
   or backfill, read the [lifecycle rules](../../../../.agents/docs/cli-lib-session-files.md).
   CLI/MCP input preparation must finish before history/dispatch; recovery uses frozen

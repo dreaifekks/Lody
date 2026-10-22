@@ -1,17 +1,17 @@
 import {
+  getAgentRoleTargets,
   AGENT_ROLE_VERSION,
   getAgentRoleMentionSlug,
   isAgentRoleContentEqual,
   normalizeAgentRoleDescription,
   normalizeAgentRoleEmoji,
-  normalizeAgentRoleInstanceAlias,
+  normalizeAgentRoleTargetAlias,
   normalizeAgentRoleMentionSlug,
   normalizeAgentRoleRunConfig,
-  withAgentRoleInstances,
+  withAgentRoleTargets,
   type AgentRole,
-  type AgentRoleInstance,
+  type AgentRoleTarget,
   type AgentRoleRunConfig,
-  type CatalogAgentRole,
 } from './agent-role';
 import { getAgentRoleInstanceGroup, type AgentRoleAgentFamily } from './agent-role-group';
 import type { AgentConfigId, AgentRoleId, AgentRoleInstanceId, MachineId } from './ids';
@@ -111,7 +111,7 @@ export const buildAgentRoleFormValueFromRunConfig = (input: {
   };
 };
 
-export const buildAgentRoleFormInstance = (instance: AgentRoleInstance): AgentRoleFormInstance => ({
+export const buildAgentRoleFormInstance = (instance: AgentRoleTarget): AgentRoleFormInstance => ({
   id: instance.id,
   alias: instance.alias ?? '',
   machineId: instance.machineId,
@@ -122,11 +122,11 @@ export const buildAgentRoleFormInstance = (instance: AgentRoleInstance): AgentRo
   ...(instance.runConfig.memory ? { memory: instance.runConfig.memory } : {}),
 });
 
-export const buildAgentRoleFormValue = (role: CatalogAgentRole): AgentRoleFormValue => ({
+export const buildAgentRoleFormValue = (role: AgentRole): AgentRoleFormValue => ({
   name: role.name,
   description: role.description ?? '',
   emoji: role.emoji ?? '',
-  instances: role.instances.map(buildAgentRoleFormInstance),
+  instances: getAgentRoleTargets(role).map(buildAgentRoleFormInstance),
   promptPrefix: role.promptPrefix ?? '',
   shareWithWorkspace: role.visibility === 'workspace',
 });
@@ -144,7 +144,7 @@ const formInstanceGroupKey = (
   instance: AgentRoleFormInstance,
   agentFamilyOf: (id: AgentConfigId) => AgentRoleAgentFamily | undefined
 ): string => {
-  const alias = normalizeAgentRoleInstanceAlias(instance.alias);
+  const alias = normalizeAgentRoleTargetAlias(instance.alias);
   return getAgentRoleInstanceGroup(
     { ...(alias ? { alias } : {}), agentConfigId: instance.agentConfigId as AgentConfigId },
     instance.agentConfigId ? agentFamilyOf(instance.agentConfigId) : undefined
@@ -248,17 +248,17 @@ export const buildAgentRoleFromForm = (
   value: AgentRoleFormValue,
   options: {
     /** The catalog row being edited. */
-    existing?: CatalogAgentRole;
+    existing?: AgentRole;
     ownerUserId: string;
     now: number;
     createId: () => AgentRoleId;
   }
-): CatalogAgentRole => {
+): AgentRole => {
   const { existing, ownerUserId, now } = options;
   const emoji = normalizeAgentRoleEmoji(value.emoji);
   const promptPrefix = value.promptPrefix.trim();
-  const instances = value.instances.map((instance): AgentRoleInstance => {
-    const alias = normalizeAgentRoleInstanceAlias(instance.alias);
+  const instances = value.instances.map((instance): AgentRoleTarget => {
+    const alias = normalizeAgentRoleTargetAlias(instance.alias);
     return {
       id: instance.id,
       ...(alias ? { alias } : {}),
@@ -267,7 +267,7 @@ export const buildAgentRoleFromForm = (
       runConfig: buildAgentRoleRunConfig(instance),
     };
   });
-  const next = withAgentRoleInstances(
+  const next = withAgentRoleTargets(
     {
       v: AGENT_ROLE_VERSION,
       id: existing?.id ?? options.createId(),

@@ -1,3 +1,5 @@
+import { projectTurnAttention } from '@lody/shared/notifications';
+import { turnNotificationAudience } from '../notifications/turn-notification-audience';
 import { describe, expect, it } from 'vitest';
 import { withHistoryPort } from '../../../tests/history-port-fixture';
 import {
@@ -5,7 +7,7 @@ import {
   type AcpCapabilityCacheEntry,
   type AgentConfigMeta,
   type AgentRole,
-  type AgentRoleInstance,
+  type AgentRoleTarget,
   type MachineMeta,
   type McpServerId,
   type ProjectRef,
@@ -137,6 +139,24 @@ describe('Session preparation for a scheduled run', () => {
     expect(prepared.userTurn.status).toBe('prepared');
   });
 
+  it('treats a prepared scheduled turn as an ordinary user notification source', async () => {
+    const prepared = await prepare();
+    expect(prepared.userTurn.role).toBe('user');
+    const audience = turnNotificationAudience(prepared.userTurn.author);
+    expect(audience).toEqual({ kind: 'user' });
+    for (const outcome of [{ kind: 'succeeded' }, { kind: 'failed', code: 'synthetic' }] as const) {
+      const item = projectTurnAttention({
+        scope: { workspaceId: 'workspace' as WorkspaceId, recipientId: prepared.meta.userId },
+        sessionId: prepared.sessionId,
+        turnId: prepared.userTurn.id,
+        audience,
+        outcome,
+      });
+      expect(item?.source.turnId).toBe(prepared.userTurn.id);
+      expect(item?.outcome).toBe(outcome.kind);
+    }
+  });
+
   it('keeps an explicit title as final, so no generated title replaces it', async () => {
     const prepared = await prepare();
     expect(prepared.meta.title).toBe('Morning check-in');
@@ -264,7 +284,7 @@ describe('Schedule ACP values reach ordinary Session preparation', () => {
         machineId: 'machine',
         agentConfigId: 'agent',
         runConfig: { configOptionValues: { plan_mode: true } },
-      } as AgentRoleInstance,
+      } as AgentRoleTarget,
       groupName: 'Night shift',
     };
     const prepareRun = (createsSession: boolean) =>

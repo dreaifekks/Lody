@@ -1,8 +1,9 @@
+import { withAgentRoleTargets, getAgentRoleTargets } from '../src/agent-role';
 import { describe, expect, it } from 'vitest';
 import {
   ScheduleAgentSchema,
   type AgentConfigMeta,
-  type CatalogAgentRole,
+  type AgentRole,
   type ScheduleProposalMeta,
   type SessionMeta,
 } from '../src';
@@ -32,35 +33,31 @@ const writerRunConfig = {
   modelId: 'sonnet',
   configOptionValues: { verbose: true },
 };
-const role = {
-  id: 'role-1',
-  name: 'Release manager',
-  emoji: '🚀',
-  machineId: 'studio',
-  agentConfigId: 'writer',
-  runConfig: writerRunConfig,
-  instances: [
+const role = withAgentRoleTargets(
+  {
+    v: 1,
+    id: 'role-1',
+    name: 'Release manager',
+    emoji: '🚀',
+    ownerUserId: 'user',
+    visibility: 'private',
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  } as AgentRole,
+  [
     {
       id: 'release-studio',
       machineId: 'studio',
       agentConfigId: 'writer',
       runConfig: writerRunConfig,
     },
-  ],
-} as unknown as CatalogAgentRole;
-/** Instances on the studio and the MacBook, studio first. */
-const twoMachineRole = {
-  ...role,
-  instances: [
-    ...role.instances,
-    {
-      id: 'release-mac',
-      machineId: 'macbook',
-      agentConfigId: 'reviewer',
-      runConfig: {},
-    },
-  ],
-} as unknown as CatalogAgentRole;
+  ] as never
+);
+const twoMachineRole = withAgentRoleTargets(role, [
+  ...getAgentRoleTargets(role),
+  { id: 'release-mac', machineId: 'macbook', agentConfigId: 'reviewer', runConfig: {} },
+] as never);
 
 const session = {
   id: 's1',
@@ -150,7 +147,7 @@ describe('where a proposed schedule runs', () => {
     });
   });
 
-  it('runs a Role on the conversation machine when it has an instance there', () => {
+  it('requires an explicit machine instead of preferring the conversation machine', () => {
     // The conversation runs on the MacBook, the second machine in the list.
     const result = resolveScheduleProposalTarget({
       meta: meta({ agentRoleId: 'role-1' }),
@@ -158,8 +155,7 @@ describe('where a proposed schedule runs', () => {
       agents,
       roles: [twoMachineRole],
     });
-    expect(result).toMatchObject({ ok: true, target: { agentConfig: reviewer } });
-    expect(result.ok && result.target.roleInstance?.id).toBe('release-mac');
+    expect(result).toEqual({ ok: false, problem: 'role_machine_required' });
   });
 
   it('runs a named instance, or a Role on a named machine only where it has one', () => {
@@ -196,7 +192,7 @@ describe('where a proposed schedule runs', () => {
       agents,
       roles: [twoMachineRole],
     });
-    expect(bare.ok && bare.target.agentRole).toEqual({ roleId: 'role-1' });
+    expect(bare).toEqual({ ok: false, problem: 'role_machine_required' });
     const pinned = resolveScheduleProposalTarget({
       meta: meta({ agentRoleId: 'role-1', agentRoleInstanceId: 'release-studio' }),
       conversation,
@@ -315,7 +311,7 @@ describe('what a schedule bound to a Role runs', () => {
   const resolve = (
     ref: { roleId: string; instanceId?: string },
     machineId: string,
-    roles: CatalogAgentRole[],
+    roles: AgentRole[],
     known = agents
   ) => resolveScheduleAgentRole({ ref, machineId, roles, agents: known });
 
@@ -342,20 +338,16 @@ describe('what a schedule bound to a Role runs', () => {
   it('runs what the Role says at that moment, not what it said when saved', () => {
     const ref = { roleId: 'role-1', instanceId: 'release-studio' };
     const before = resolve(ref, 'studio', [role]);
-    const edited = {
-      ...role,
-      revision: 2,
-      instances: [
-        {
-          ...role.instances[0]!,
-          runConfig: {
-            modeId: 'bypassPermissions',
-            modelId: 'opus',
-            memory: { providerId: 'nmem', memoryId: 'm1' },
-          },
+    const edited = withAgentRoleTargets({ ...role, revision: 2 }, [
+      {
+        ...getAgentRoleTargets(role)[0]!,
+        runConfig: {
+          modeId: 'bypassPermissions',
+          modelId: 'opus',
+          memory: { providerId: 'nmem', memoryId: 'm1' },
         },
-      ],
-    } as unknown as CatalogAgentRole;
+      },
+    ]);
     const after = resolve(ref, 'studio', [edited]);
     expect(before.ok && before.agent.modelId).toBe('sonnet');
     expect(after).toMatchObject({
@@ -374,10 +366,9 @@ describe('what a schedule bound to a Role runs', () => {
   });
 
   it('names the instance by its group, the way a dispatched Role is recorded', () => {
-    const aliased = {
-      ...role,
-      instances: [{ ...role.instances[0]!, alias: 'Night shift' }],
-    } as unknown as CatalogAgentRole;
+    const aliased = withAgentRoleTargets(role, [
+      { ...getAgentRoleTargets(role)[0]!, alias: 'Night shift' },
+    ]);
     expect(resolve({ roleId: 'role-1' }, 'studio', [aliased])).toMatchObject({
       ok: true,
       groupName: 'Night shift',

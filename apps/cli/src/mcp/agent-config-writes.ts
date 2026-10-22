@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import {
+  getAgentRoleTargets,
   agentConfigNoticeId,
   canonicalScheduleJson,
   canReadAgentRole,
@@ -134,13 +135,13 @@ const ensureNotice = async (
 
 /** A Role write's identity: its revision and a digest of what it holds. */
 export const agentRoleWriteId = (role: AgentRole): string => {
-  const { name, description, emoji, visibility, instances, promptPrefix } = role;
+  const { name, description, emoji, visibility, promptPrefix } = role;
   const content = canonicalScheduleJson({
     name,
     description,
     emoji,
     visibility,
-    instances,
+    targets: getAgentRoleTargets(role),
     promptPrefix,
   });
   return `r${role.revision}-${createHash('sha256').update(content).digest('hex').slice(0, 16)}`;
@@ -235,7 +236,7 @@ export function createAgentConfigWrites(deps: {
       const agents: ProposalTargetAgent[] = [];
       for (const agentConfigId of new Set(
         [
-          ...(role?.instances.map((instance) => instance.agentConfigId) ?? []),
+          ...(role ? getAgentRoleTargets(role).map((instance) => instance.agentConfigId) : []),
           target?.agentConfigId,
           invoking.session.agentConfigId,
         ].filter((value): value is string => Boolean(value))
@@ -393,5 +394,5 @@ const summarizeRole = (role: AgentRole) => ({
   name: role.name,
   visibility: role.visibility,
   revision: role.revision,
-  instances: role.instances,
+  targets: getAgentRoleTargets(role),
 });

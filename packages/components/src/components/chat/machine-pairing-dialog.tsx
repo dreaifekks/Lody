@@ -212,16 +212,20 @@ export function MachinePairingDialog({
                       {command}
                     </code>
                     <Tooltip.Root>
-                      <Tooltip.Trigger render={<Button
-                          type="button"
-                          variant="ghost"
-                          icon
-                          className="absolute right-1.5 top-1.5"
-                          onClick={() => void copyCommand()}
-                          aria-label={t('machinePairing.copyCommand', 'Copy command')}
-                        >
-                          <Copy className="h-4 w-4" aria-hidden="true" />
-                        </Button>}/>
+                      <Tooltip.Trigger
+                        render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            icon
+                            className="absolute right-1.5 top-1.5"
+                            onClick={() => void copyCommand()}
+                            aria-label={t('machinePairing.copyCommand', 'Copy command')}
+                          >
+                            <Copy className="h-4 w-4" aria-hidden="true" />
+                          </Button>
+                        }
+                      />
                       <Tooltip.Content>
                         {t('machinePairing.copyCommand', 'Copy command')}
                       </Tooltip.Content>

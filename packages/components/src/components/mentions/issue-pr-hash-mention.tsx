@@ -924,17 +924,21 @@ export function IssuePrMentionTitleHint({
         if (!next) close();
       }}
     >
-      <Popover.Trigger render={<span
-          aria-hidden="true"
-          style={{
-            position: 'fixed',
-            left: active.anchor.left,
-            top: active.anchor.top,
-            width: 1,
-            height: 1,
-            pointerEvents: 'none',
-          }}
-        />}/>
+      <Popover.Trigger
+        render={
+          <span
+            aria-hidden="true"
+            style={{
+              position: 'fixed',
+              left: active.anchor.left,
+              top: active.anchor.top,
+              width: 1,
+              height: 1,
+              pointerEvents: 'none',
+            }}
+          />
+        }
+      />
       <Popover.Content
         side="top"
         align="start"

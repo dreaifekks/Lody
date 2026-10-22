@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 // @vitest-environment jsdom
 
 import {
@@ -235,7 +236,7 @@ describe('SessionChatInputArea submission feedback', () => {
       createdAt: 1,
       updatedAt: 1,
     });
-    const instance = role.instances[0]!;
+    const instance = getAgentRoleTargets(role)[0]!;
     sessionAgentRoleState.control = {
       items: composerItemsOf(role),
       selectedInstanceId: instance.id,
@@ -738,9 +739,16 @@ describe('SessionChatInputArea submission feedback', () => {
     expect(submissions[2]).toEqual([
       {
         type: 'text',
-        text: ['Thanks', '', '---', 'Comments (1)', '', '1. `plan.md`', '   > Ship in May', '   Or June?'].join(
-          '\n'
-        ),
+        text: [
+          'Thanks',
+          '',
+          '---',
+          'Comments (1)',
+          '',
+          '1. `plan.md`',
+          '   > Ship in May',
+          '   Or June?',
+        ].join('\n'),
       },
     ]);
     expect(getDefaultStore().get(articleAnnotationsAtom)).toEqual([elsewhere]);

@@ -8,7 +8,7 @@ import {
   DEFAULT_AGENT_ROLE_EMOJI,
   type AgentConfigId,
   type AgentRoleId,
-  type CatalogAgentRole,
+  type AgentRole,
   type MachineId,
 } from '@lody/shared';
 
@@ -55,7 +55,7 @@ import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const role = (emoji?: string): CatalogAgentRole =>
+const role = (emoji?: string): AgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     id: 'role-1' as AgentRoleId,
@@ -71,9 +71,12 @@ const role = (emoji?: string): CatalogAgentRole =>
     updatedAt: 1,
   });
 
-const itemOf = (entry: CatalogAgentRole): AgentRoleMentionItem => ({
+const itemOf = (entry: AgentRole): AgentRoleMentionItem => ({
   ...composerItemsOf(entry)[0]!,
   slug: 'Code-Reviewer',
+  value: 'role-1:machine-1',
+  pinned: true,
+  machineSlug: 'machine-1',
 });
 
 describe('agent role chip in the composer', () => {

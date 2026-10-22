@@ -1,6 +1,5 @@
 import { MagpieImportDialogContainer } from './settings/magpie-import-dialog-container';
 import { useWorkspaceBadge } from '@/hooks/use-workspace-badge';
-import { useAgentRoleSchemaReconciliation } from '@/hooks/use-agent-role-schema-reconciliation';
 import { currentWorkspaceSlugAtom } from '@/atoms/workspace-context';
 import { useWorkspaceWindowOwner, WorkspaceWindowOwnerContext } from '@/lib/desktop-window';
 import { type ReactNode, useLayoutEffect } from 'react';
@@ -39,11 +38,6 @@ export function WorkspaceRuntimeShell({
 
 function WorkspaceBadge() {
   useWorkspaceBadge();
-  return null;
-}
-
-function AgentRoleSchemaReconciliation() {
-  useAgentRoleSchemaReconciliation();
   return null;
 }
 
@@ -89,7 +83,6 @@ export function MainLayout({
           {children}
           {workspaceReady ? <ScheduleRegistrySync /> : null}
           {owner && workspaceReady ? <WorkspaceBadge /> : null}
-          {owner && workspaceReady ? <AgentRoleSchemaReconciliation /> : null}
           {workspaceReady ? <BugReportDialogContainer /> : null}
           <JoinCommunityDialogContainer />
           <StuckConnectionBannerContainer />

@@ -268,12 +268,14 @@ export function buildRecentRunConfigItems({
   const configByKey = new Map(
     agentConfigs.map((config) => [`${config.machineId} ${config.id}`, config])
   );
-  const findRoleItem = (record: RecentRunConfigRecord) =>
-    (agentRoleItems ?? []).find((item) =>
-      record.agentRoleInstanceId
-        ? item.instance.id === record.agentRoleInstanceId
-        : item.role.id === record.agentRoleId
+  const findRoleItem = (record: RecentRunConfigRecord) => {
+    const matches = (agentRoleItems ?? []).filter(
+      (item) =>
+        item.role.id === record.agentRoleId &&
+        (!record.agentRoleInstanceId || item.instance.id === record.agentRoleInstanceId)
     );
+    return matches.length === 1 ? matches[0] : undefined;
+  };
   const items: RecentRunConfigItem[] = [];
   const seen = new Set<string>();
   for (const record of records) {

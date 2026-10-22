@@ -250,6 +250,8 @@ export type FrozenOperationContinuationConfig = {
   inputConfig: SessionTurnInputConfig;
   /** Frozen causal Turn for delegated Operations; recovery must not re-resolve it. */
   sourceTurnId?: string;
+  /** Human requests whose result this requester is still assembling. Not authorization. */
+  notificationOriginTurnIds?: string[];
   /**
    * The result never wakes the requester: it waits in the Inbox for the next
    * human or scheduled input. Frozen for a Board coordinator, which only assigns work.

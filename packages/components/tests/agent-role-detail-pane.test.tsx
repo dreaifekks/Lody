@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 // @vitest-environment jsdom
 
 import { act, createElement, type ComponentProps } from 'react';
@@ -73,7 +74,7 @@ describe('AgentRoleDetailPane', () => {
       root?.render(
         createElement(AgentRoleDetailPane, {
           role: role(),
-          instance: (props.role ?? role()).instances[0]!,
+          instance: getAgentRoleTargets(props.role ?? role())[0]!,
           agentConfig,
           ...props,
         })

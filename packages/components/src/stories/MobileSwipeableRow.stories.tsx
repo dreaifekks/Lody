@@ -24,12 +24,8 @@ function RowContent({ row, dimmed }: { row: Row; dimmed?: boolean }) {
       <div className="h-9 w-9 shrink-0 rounded-lg bg-muted" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1">
-          {row.pinned ? (
-            <Pin className="h-3 w-3 shrink-0 text-primary" />
-          ) : null}
-          <span
-            className={`truncate text-sm font-medium ${dimmed ? 'text-muted-foreground' : ''}`}
-          >
+          {row.pinned ? <Pin className="h-3 w-3 shrink-0 text-primary" /> : null}
+          <span className={`truncate text-sm font-medium ${dimmed ? 'text-muted-foreground' : ''}`}>
             {row.title}
           </span>
         </div>

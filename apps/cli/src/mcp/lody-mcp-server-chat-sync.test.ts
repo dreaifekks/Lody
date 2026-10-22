@@ -606,6 +606,56 @@ describe('turn-scoped reverse chat rejection', () => {
     }
   );
 
+  it.each([false, true])(
+    'freezes exact pending input provenance before Operation acceptance (delegated=%s)',
+    async (delegated) => {
+      setInput('pending-provenance', delegated ? 'sender-session' : undefined);
+      mocks.activeInvocation.mockReturnValue({
+        ...mocks.activeInvocation(),
+        notificationOriginTurnIds: [],
+        notificationProvenancePending: true,
+      });
+      await startSessionChatOperation({
+        operationId: 'provenance-operation',
+        sessionId: targetSession.id,
+        prompt: 'Work',
+      });
+      expect(
+        store.get(requesterSession.id as SessionId, 'provenance-operation').frozenContinuationConfig
+          .notificationOriginTurnIds
+      ).toEqual(delegated ? [] : ['pending-provenance']);
+    }
+  );
+
+  it('rejects unsynchronized provenance before acceptance and accepts the same id after sync', async () => {
+    const active = {
+      type: 'session/active-invocation-context',
+      sessionId: requesterSession.id,
+      active: true,
+      requesterUserId: requesterSession.userId,
+      sourceTurnId: 'late-input',
+      inputConfig: {},
+      notificationOriginTurnIds: [],
+      notificationProvenancePending: true,
+    };
+    mocks.activeInvocation.mockReturnValue(active);
+    const args = { operationId: 'late-provenance', sessionId: targetSession.id, prompt: 'Work' };
+    const result = await callAndMapMcpError(() => startSessionChatOperation(args));
+    expect(JSON.parse((result.content[0] as { text: string }).text)).toMatchObject({
+      error: { code: 'INVOKING_INPUT_NOT_READY', retryable: true },
+    });
+    expect(storedOperations()).toEqual([]);
+    expect(delivered).toEqual([]);
+    setInput('late-input');
+    mocks.activeInvocation.mockReturnValue(active);
+    await startSessionChatOperation(args);
+    expect(
+      store.get(requesterSession.id as SessionId, args.operationId).frozenContinuationConfig
+        .notificationOriginTurnIds
+    ).toEqual(['late-input']);
+    expect(delivered).toHaveLength(1);
+  });
+
   it('does not fall back to earlier history when the exact active input is unavailable', async () => {
     mocks.activeInvocation.mockReturnValue({
       type: 'session/active-invocation-context',

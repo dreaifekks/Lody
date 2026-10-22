@@ -1,17 +1,19 @@
 import {
+  bindAgentRoleTarget,
+  getAgentRoleTargets,
   getWorkspaceFlockDocId,
   listWorkspaceAgentRoles,
   readWorkspaceFlockRowsFromFlock,
   snapshotAgentRole,
   selectAgentRoleInstance,
-  type AgentRoleInstance,
+  type AgentRoleTarget,
   type MachineId,
   type SessionId,
   type AgentRole,
   type WorkspaceId,
 } from '@lody/shared';
 import { createResourceDiscovery } from './resource-discovery-runtime';
-import type { AgentRoleDiscoveryInstance } from './resource-discovery';
+import type { AgentRoleDiscoveryTarget } from './resource-discovery';
 import {
   resolveCreateCurrentSessionId,
   resolveSessionMetaOrThrow,
@@ -77,6 +79,20 @@ export const selectUniqueAgentRoleByIdOrName = (
   const nameMatches = roles.filter((role) => normalizeCliValue(role.name) === normalizedSelector);
   const [onlyNameMatch] = nameMatches;
   if (nameMatches.length === 1 && onlyNameMatch) {
+    const aliases = roles.flatMap((role) =>
+      getAgentRoleTargets(role)
+        .filter((target) => target.alias && normalizeCliValue(target.alias) === normalizedSelector)
+        .map((target) => ({ role, target }))
+    );
+    if (
+      aliases.some(
+        ({ role }) => role.id !== onlyNameMatch.id || getAgentRoleTargets(role).length > 1
+      )
+    ) {
+      throw new Error(
+        `Agent Role selector is ambiguous: ${normalizedSelector} names a Role and target aliases. Use a Role or target id. Candidates: ${formatAgentRoleCandidates(roles)}`
+      );
+    }
     return onlyNameMatch;
   }
   if (nameMatches.length > 1) {
@@ -88,6 +104,73 @@ export const selectUniqueAgentRoleByIdOrName = (
   throw new Error(
     `Agent Role not found: ${normalizedSelector}. Candidates: ${formatAgentRoleCandidates(roles)}`
   );
+};
+
+const formatAgentRoleTargets = (role: AgentRole): string =>
+  getAgentRoleTargets(role)
+    .map((target) => `${target.id} (${target.machineId}${target.alias ? `, ${target.alias}` : ''})`)
+    .join(', ');
+
+/**
+ * The Role bound to the machine that will run it.
+ *
+ * A selector may be a Role id, its unique name, or one target's alias, which
+ * names the machine by itself. A Role on several machines otherwise needs
+ * `machineId`: nothing picks one of its targets on the caller's behalf. For a
+ * single-target Role any supplied machine must still match.
+ */
+export const selectAgentRoleTarget = (
+  roles: readonly AgentRole[],
+  selector: string,
+  machine?: { machineId?: string }
+): AgentRole => {
+  const normalizedSelector = normalizeCliValue(selector);
+  const machineId = normalizeCliValue(machine?.machineId);
+  const targetIds = roles.flatMap((role) =>
+    getAgentRoleTargets(role)
+      .filter((target) => target.id === normalizedSelector)
+      .map((target) => ({ role, target }))
+  );
+  if (!roles.some((role) => role.id === normalizedSelector) && targetIds.length) {
+    if (targetIds.length !== 1) throw new Error(`Agent Role target id is ambiguous: ${selector}.`);
+    const { role, target } = targetIds[0]!;
+    if (machineId && machineId !== target.machineId)
+      throw new Error(`Target ${target.id} does not run on machine ${machineId}.`);
+    return bindAgentRoleTarget(role, target.machineId, target.id)!;
+  }
+  const aliasMatches = roles.flatMap((role) =>
+    getAgentRoleTargets(role)
+      .filter(
+        (target) =>
+          target.id === normalizedSelector ||
+          (target.alias && normalizeCliValue(target.alias) === normalizedSelector)
+      )
+      .map((target) => ({ role, target }))
+  );
+  const isIdOrName = roles.some(
+    (role) => role.id === normalizedSelector || normalizeCliValue(role.name) === normalizedSelector
+  );
+  if (!isIdOrName && aliasMatches.length) {
+    if (aliasMatches.length !== 1)
+      throw new Error(
+        `Agent Role alias is ambiguous: ${selector}. Targets: ${aliasMatches.map(({ role, target }) => `${role.name}/${target.id} (${target.machineId})`).join(', ')}`
+      );
+    const { role, target } = aliasMatches[0]!;
+    if (machineId && machineId !== target.machineId)
+      throw new Error(`Target ${target.id} does not run on machine ${machineId}.`);
+    return bindAgentRoleTarget(role, target.machineId, target.id)!;
+  }
+  const role = selectUniqueAgentRoleByIdOrName(roles, selector);
+  const choice = selectAgentRoleInstance(
+    role,
+    { machineId: machineId as MachineId | undefined },
+    () => true
+  );
+  if (choice.kind === 'rejected')
+    throw new Error(
+      `Agent Role ${role.name}: ${choice.reason}. Targets: ${formatAgentRoleTargets(role)}`
+    );
+  return bindAgentRoleTarget(role, choice.instance.machineId, choice.instance.id)!;
 };
 
 /** Manual create flags that an explicit Role replaces; their values are ignored. */
@@ -122,7 +205,7 @@ export const listIgnoredAgentRoleOverrides = (options: AgentRoleCreateOverrides)
 
 export type ResolvedAgentRoleCreate = {
   role: AgentRole;
-  instance: AgentRoleInstance;
+  instance: AgentRoleTarget;
   machineId: AgentRole['machineId'];
   agentConfigId: AgentRole['agentConfigId'];
   prompt: string;
@@ -136,9 +219,9 @@ export const resolveAgentRoleCreate = (args: {
   prompt: string;
   overrides?: AgentRoleCreateOverrides;
   request?: Parameters<typeof selectAgentRoleInstance>[1];
-  instances?: readonly AgentRoleDiscoveryInstance[];
+  instances?: readonly AgentRoleDiscoveryTarget[];
 }): ResolvedAgentRoleCreate => {
-  const reportOf = (instance: AgentRoleInstance) =>
+  const reportOf = (instance: AgentRoleTarget) =>
     args.instances?.find((entry) => entry.id === instance.id);
   const choice = selectAgentRoleInstance(
     args.role,
@@ -172,7 +255,19 @@ export const resolveAgentRoleCreateFromCatalog = async (args: {
   overrides?: CreateOptions;
 }): Promise<ResolvedAgentRoleCreate> => {
   const catalog = await loadWorkspaceAgentRoleCatalog(args.manager, args.workspaceId);
-  const role = selectUniqueAgentRoleByIdOrName([...catalog.values()], args.selector);
+  const roles = [...catalog.values()];
+  const namedRole = roles.find(
+    (role) =>
+      role.id === normalizeCliValue(args.selector) ||
+      normalizeCliValue(role.name) === normalizeCliValue(args.selector)
+  );
+  const targetIdMatch = roles.some((role) =>
+    getAgentRoleTargets(role).some((target) => target.id === normalizeCliValue(args.selector))
+  );
+  const role =
+    namedRole && (!targetIdMatch || namedRole.id === normalizeCliValue(args.selector))
+      ? selectUniqueAgentRoleByIdOrName(roles, args.selector)
+      : selectAgentRoleTarget(roles, args.selector);
   const discovery = await createResourceDiscovery(args);
   const options = args.overrides ?? {};
   const machine = normalizeCliValue(options.machine);
@@ -188,7 +283,7 @@ export const resolveAgentRoleCreateFromCatalog = async (args: {
           projectId,
           machineId
             ? [machineId]
-            : [...new Set(role.instances.map((instance) => instance.machineId))],
+            : [...new Set(getAgentRoleTargets(role).map((instance) => instance.machineId))],
           (project) => selectLocalProjectsBySelector([project], projectId).length > 0
         )
       : undefined;
@@ -201,7 +296,7 @@ export const resolveAgentRoleCreateFromCatalog = async (args: {
     role,
     prompt: args.prompt,
     overrides: options,
-    instances: await discovery.agentRoleInstances(role.id),
+    instances: await discovery.agentRoleTargets(role.id),
     request: {
       machineId,
       workContextMachineId,

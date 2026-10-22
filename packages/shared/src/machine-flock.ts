@@ -1396,8 +1396,6 @@ const normalizeSessionLaunchConfig = (value: unknown): SessionLaunchConfig | und
 const isCliType = (value: unknown): value is CliType =>
   typeof value === 'string' && isBuiltinAgentType(value);
 
-
-
 const isAgentConfigCliType = (value: unknown): value is AgentConfigCliType =>
   value === 'builtin' || value === 'registry' || value === 'custom';
 

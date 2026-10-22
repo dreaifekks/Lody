@@ -118,11 +118,10 @@ true })`. The fetch timestamp rides on the cached entry (survives IndexedDB).
 
 ## Agent Roles
 
-- Role mentions use plain `@<token>` with an instance id on the range. Expansion asks
-  for Session creation with Role/instance ids. Unavailable or ambiguous mentions stay text.
-  `getAgentRoleInstanceMentionSlug` derives Role name plus `:<group>` for multiple groups;
-  bare names follow bare picks. `@<machine>` pins its instance (`pinned:<id>`, no stand-in),
-  offered only for a machine term. Root rules own MCP create/freeze.
+- Role and composer menus list every target separately. Each choice pins its stable
+  id; unaliased targets display their Agent family. `@Role@machine` lists every
+  target there. Hydration requires one match; no ordering/availability fallback.
+  Existing instance-id ranges still resolve exactly; deleted pins stay plain text.
 - A Role candidate's emoji REPLACES the category glyph (`iconEmoji`, defaulted
   by `getAgentRoleEmoji`), with no detail `title`. The committed range shows
   it via `applyAgentRoleEmojiChip`, boxed and clipped; agent config and machine

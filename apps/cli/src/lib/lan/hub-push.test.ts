@@ -177,6 +177,41 @@ describe('LAN host push', () => {
     });
   });
 
+  it.each(['failed', 'unknown'] as const)(
+    'preserves trusted %s outcomes, presentation and project grouping',
+    async (outcome) => {
+      await register({ locale: 'en-US' });
+      const notifications = port();
+      await notifications.notifySessionCompleted({
+        sessionId: 'session-outcome' as never,
+        occurrenceId: 'turn-outcome',
+        sessionTitle: 'Fallback title',
+        workspaceId: WORKSPACE as never,
+        workspaceSlug: WORKSPACE,
+        userId: USER,
+        projectId: 'github:synthetic/project',
+        outcome,
+        presentation: {
+          kind: 'schedule',
+          conversationTitle: 'Release checks',
+          scheduleName: 'Nightly',
+          projectName: 'Project',
+          pullRequestNumber: 42,
+        },
+      });
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.payload).toMatchObject({
+        aps: {
+          alert: {
+            title: 'Release checks',
+            body: `${outcome === 'failed' ? 'Scheduled task failed' : 'Scheduled task interrupted'} Project PR #42 Nightly`,
+          },
+          'thread-id': 'project:github:synthetic/project',
+        },
+      });
+    }
+  );
+
   it('tells a question from a permission and reports failures and schedules', async () => {
     await register({ locale: 'en-US' });
     const notifications = port();

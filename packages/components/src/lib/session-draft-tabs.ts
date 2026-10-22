@@ -6,7 +6,7 @@ import type {
   AgentConfigId,
   AgentRole,
   AgentRoleId,
-  AgentRoleInstance,
+  AgentRoleTarget,
   AgentRoleInstanceId,
   SessionId,
 } from '@lody/shared';
@@ -188,7 +188,7 @@ export const createDraftSessionTab = (options: {
  * footer claim the Role while dispatching unrelated settings.
  */
 export const buildDraftSessionAgentRolePatch = (
-  { role, instance }: { role: Pick<AgentRole, 'id'>; instance: AgentRoleInstance },
+  { role, instance }: { role: Pick<AgentRole, 'id'>; instance: AgentRoleTarget },
   agentConfig: AgentConfigMeta
 ): Partial<DraftSessionTab> | null => {
   if (agentConfig.id !== instance.agentConfigId || agentConfig.machineId !== instance.machineId) {

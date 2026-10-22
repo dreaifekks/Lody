@@ -1,8 +1,8 @@
 diff --git a/src/acp-agent.ts b/src/acp-agent.ts
-index d272f3c..c29e004 100644
+index ad5af4d..a4e655e 100644
 --- a/src/acp-agent.ts
 +++ b/src/acp-agent.ts
-@@ -681,6 +681,19 @@ function getLodyForkTurnId(meta: unknown): string | undefined {
+@@ -683,6 +683,19 @@ function getLodyForkTurnId(meta: unknown): string | undefined {
    return version === 1 && typeof turnId === "string" && turnId.length > 0 ? turnId : undefined;
  }
  
@@ -22,7 +22,7 @@ index d272f3c..c29e004 100644
  /** Stops one Claude background task without cancelling the parent prompt turn. */
  const ASYNC_TASK_STOP_METHOD = "_session/async_task/stop";
  
-@@ -1670,6 +1683,7 @@ export function computeSessionFingerprint(params: {
+@@ -1674,6 +1687,7 @@ export function computeSessionFingerprint(params: {
        systemPrompt: meta?.systemPrompt,
        disableBuiltInTools: meta?.disableBuiltInTools,
        emitRawSDKMessages: meta?.claudeCode?.emitRawSDKMessages,
@@ -30,7 +30,7 @@ index d272f3c..c29e004 100644
        options,
      }),
    );
-@@ -7532,7 +7546,16 @@ export class ClaudeAcpAgent {
+@@ -7545,7 +7559,16 @@ export class ClaudeAcpAgent {
              break;
            }
            case "tool_use_summary":
@@ -47,7 +47,7 @@ index d272f3c..c29e004 100644
              break;
            case "auth_status":
              if (!message.isAuthenticating && message.error === undefined) {
-@@ -10039,6 +10062,7 @@ export class ClaudeAcpAgent {
+@@ -10052,6 +10075,7 @@ export class ClaudeAcpAgent {
        settingSources: ["user", "project", "local"],
        ...(thinking !== undefined && { thinking }),
        ...userProvidedOptions,
@@ -56,7 +56,7 @@ index d272f3c..c29e004 100644
        // for clients that negotiated per-turn file-change reports; this avoids
        // snapshot I/O for every other session.
 diff --git a/src/tests/acp-agent.test.ts b/src/tests/acp-agent.test.ts
-index 8429b7a..66e0c11 100644
+index 2475297..9ee9abc 100644
 --- a/src/tests/acp-agent.test.ts
 +++ b/src/tests/acp-agent.test.ts
 @@ -14976,6 +14976,79 @@ describe("emitRawSDKMessages", () => {

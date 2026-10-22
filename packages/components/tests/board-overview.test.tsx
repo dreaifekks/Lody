@@ -1,3 +1,4 @@
+import { normalizeAgentRole } from '@lody/shared';
 // @vitest-environment jsdom
 import {
   useBoardSessionNavigation,
@@ -109,6 +110,8 @@ import { writeWorkspaceBoard } from '../src/lib/workspace-catalog-write';
 
 const creation = vi.hoisted(() => ({
   machines: new Map<string, unknown>(),
+  roles: [] as import('@lody/shared').AgentRole[],
+  unavailableTargets: new Set<string>(),
   fileProviders: new Map<string, SessionFileProvider>(),
   fileIndexRevision: 0,
   fileIndexListeners: new Set<() => void>(),
@@ -206,8 +209,13 @@ vi.mock('@/hooks/use-workspace-catalog', () => ({
   useWorkspaceCatalog: () => ({ servers: [], boards: creation.boards }),
 }));
 vi.mock('@/hooks/use-workspace-agent-roles', () => ({
-  useWorkspaceAgentRoles: () => ({ roles: [] }),
-  useAgentRoleAvailability: () => ({ resolveInstance: () => ({ kind: 'available' }) }),
+  useWorkspaceAgentRoles: () => ({ roles: creation.roles }),
+  useAgentRoleAvailability: () => ({
+    resolveInstance: (target: { id: string }) =>
+      creation.unavailableTargets.has(target.id)
+        ? { kind: 'unavailable', reason: 'agent_config_missing' }
+        : { kind: 'available' },
+  }),
   useComposerAgentRoleNames: () => ({ machine: () => 'Desktop', unknownAgent: 'Unknown' }),
 }));
 // Archive, restore and rename are the real Session actions over the test runtime;
@@ -1598,7 +1606,9 @@ it('edits and previews shared notes and retains an unsaved draft on write failur
 });
 
 /** Fills in and submits "+ New thread"; returns what was handed to `startSession`. */
-async function submitNewBoardThread(options: { pickRepository?: boolean } = {}) {
+async function submitNewBoardThread(
+  options: { pickRepository?: boolean; roleState?: 'selected' | 'missing' | 'unavailable' } = {}
+) {
   const store = createStore();
   const board = normalizeBoardMeta({
     version: 1,
@@ -1626,6 +1636,53 @@ async function submitNewBoardThread(options: { pickRepository?: boolean } = {}) 
   creation.machines = new Map([
     ['machine', { id: 'machine', name: 'Desktop', ownerUserId: 'user' }],
   ]);
+  if (options.roleState) {
+    localStorage.setItem(
+      'lody-board-last-agent',
+      JSON.stringify({
+        machineId: 'machine',
+        agent: { agentConfigId: 'config', modelId: 'saved-agent' },
+        instanceId: 'target-second',
+      })
+    );
+    creation.roles =
+      options.roleState === 'missing'
+        ? []
+        : [
+            normalizeAgentRole({
+              v: 2,
+              id: 'synthetic-role',
+              name: 'Reviewer',
+              ownerUserId: 'user',
+              visibility: 'private',
+              revision: 4,
+              createdAt: 1,
+              updatedAt: 1,
+              targets: [
+                {
+                  id: 'target-first',
+                  machineId: 'machine',
+                  agentConfigId: 'config',
+                  runConfig: {
+                    modelId: 'first-model',
+                    memory: { providerId: 'nowledge-mem', memoryId: 'first-memory' },
+                  },
+                },
+                {
+                  id: 'target-second',
+                  alias: 'Second',
+                  machineId: 'machine',
+                  agentConfigId: 'config',
+                  runConfig: {
+                    modelId: 'second-model',
+                    memory: { providerId: 'nowledge-mem', memoryId: 'second-memory' },
+                  },
+                },
+              ],
+            })!,
+          ];
+    if (options.roleState === 'unavailable') creation.unavailableTargets.add('target-second');
+  }
   const accepted: { payload: SessionToCreate; history: Omit<SessionHistoryInput, 'id'> }[] = [];
   creation.startSession = async (...args: unknown[]) => {
     const [payload, history] = args as [SessionToCreate, Omit<SessionHistoryInput, 'id'>];
@@ -1680,13 +1737,21 @@ async function submitNewBoardThread(options: { pickRepository?: boolean } = {}) 
         .querySelector('form')!
         .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     });
-    expect(container.textContent).toBe('Thread accepted');
+    if (options.roleState === 'missing' || options.roleState === 'unavailable') {
+      expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+        'The selected Role target is missing or unavailable.'
+      );
+      expect(accepted).toEqual([]);
+    } else expect(container.textContent).toBe('Thread accepted');
     return { board, accepted };
   } finally {
     await act(async () => root.unmount());
     container.remove();
     creation.startSession = undefined;
     creation.machines.clear();
+    creation.roles = [];
+    creation.unavailableTargets.clear();
+    localStorage.removeItem('lody-board-last-agent');
   }
 }
 
@@ -1703,6 +1768,23 @@ it('submits a new Board thread as chat without the coordinator role', async () =
   expect(accepted[0]?.payload.sessionId).not.toBe(board.coordinatorSessionId);
   expect(accepted[0]?.history.inputConfig?.prompt).toContain('Build shared notes');
 });
+
+it.each(['selected', 'missing', 'unavailable'] as const)(
+  'keeps a Board thread pinned to its exact Role target (%s)',
+  async (roleState) => {
+    const { accepted } = await submitNewBoardThread({ roleState });
+    if (roleState !== 'selected') return;
+    expect(accepted[0]?.payload).toMatchObject({
+      agentRoleId: 'synthetic-role',
+      agentRoleInstanceId: 'target-second',
+    });
+    expect(accepted[0]?.history.inputConfig).toMatchObject({
+      modelId: 'second-model',
+      memory: { providerId: 'nowledge-mem', memoryId: 'second-memory' },
+      agentRoleSnapshot: { instanceId: 'target-second', revision: 4 },
+    });
+  }
+);
 
 it('starts a new Board thread in a repository from its default branch', async () => {
   const { accepted } = await submitNewBoardThread({ pickRepository: true });

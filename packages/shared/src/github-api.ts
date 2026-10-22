@@ -157,14 +157,12 @@ const GithubUserSchema = z
     html_url: z.string(),
   })
   .passthrough()
-  .transform(
-    (item): GitHubUser => ({
-      login: item.login,
-      id: item.id,
-      avatarUrl: item.avatar_url,
-      htmlUrl: item.html_url,
-    })
-  );
+  .transform((item): GitHubUser => ({
+    login: item.login,
+    id: item.id,
+    avatarUrl: item.avatar_url,
+    htmlUrl: item.html_url,
+  }));
 
 const GithubReactionRollupSchema = z
   .object({
@@ -179,19 +177,17 @@ const GithubReactionRollupSchema = z
     eyes: z.number().optional(),
   })
   .passthrough()
-  .transform(
-    (item): GitHubReactionRollup => ({
-      totalCount: item.total_count ?? 0,
-      '+1': item['+1'] ?? 0,
-      '-1': item['-1'] ?? 0,
-      laugh: item.laugh ?? 0,
-      hooray: item.hooray ?? 0,
-      confused: item.confused ?? 0,
-      heart: item.heart ?? 0,
-      rocket: item.rocket ?? 0,
-      eyes: item.eyes ?? 0,
-    })
-  );
+  .transform((item): GitHubReactionRollup => ({
+    totalCount: item.total_count ?? 0,
+    '+1': item['+1'] ?? 0,
+    '-1': item['-1'] ?? 0,
+    laugh: item.laugh ?? 0,
+    hooray: item.hooray ?? 0,
+    confused: item.confused ?? 0,
+    heart: item.heart ?? 0,
+    rocket: item.rocket ?? 0,
+    eyes: item.eyes ?? 0,
+  }));
 
 const GITHUB_AUTHOR_ASSOCIATIONS = new Set<string>([
   'COLLABORATOR',
@@ -242,32 +238,30 @@ const GithubReviewCommentSchema = z
     reactions: GithubReactionRollupSchema.optional(),
   })
   .passthrough()
-  .transform(
-    (item): GitHubReviewComment => ({
-      id: item.id,
-      nodeId: item.node_id,
-      pullRequestReviewId: item.pull_request_review_id ?? null,
-      body: item.body,
-      path: item.path,
-      commitId: item.commit_id,
-      originalCommitId: item.original_commit_id ?? item.commit_id,
-      diffHunk: item.diff_hunk ?? '',
-      inReplyToId: item.in_reply_to_id,
-      subjectType: normalizeReviewSubjectType(item.subject_type),
-      user: item.user,
-      authorAssociation: normalizeAuthorAssociation(item.author_association),
-      createdAt: item.created_at,
-      updatedAt: item.updated_at,
-      htmlUrl: item.html_url,
-      line: item.line ?? null,
-      originalLine: item.original_line ?? null,
-      side: normalizeReviewSide(item.side),
-      startLine: item.start_line ?? null,
-      originalStartLine: item.original_start_line ?? null,
-      startSide: item.start_side === 'LEFT' || item.start_side === 'RIGHT' ? item.start_side : null,
-      reactions: item.reactions,
-    })
-  );
+  .transform((item): GitHubReviewComment => ({
+    id: item.id,
+    nodeId: item.node_id,
+    pullRequestReviewId: item.pull_request_review_id ?? null,
+    body: item.body,
+    path: item.path,
+    commitId: item.commit_id,
+    originalCommitId: item.original_commit_id ?? item.commit_id,
+    diffHunk: item.diff_hunk ?? '',
+    inReplyToId: item.in_reply_to_id,
+    subjectType: normalizeReviewSubjectType(item.subject_type),
+    user: item.user,
+    authorAssociation: normalizeAuthorAssociation(item.author_association),
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    htmlUrl: item.html_url,
+    line: item.line ?? null,
+    originalLine: item.original_line ?? null,
+    side: normalizeReviewSide(item.side),
+    startLine: item.start_line ?? null,
+    originalStartLine: item.original_start_line ?? null,
+    startSide: item.start_side === 'LEFT' || item.start_side === 'RIGHT' ? item.start_side : null,
+    reactions: item.reactions,
+  }));
 
 const GithubReviewCommentsResponseSchema = z.array(GithubReviewCommentSchema);
 
@@ -300,19 +294,17 @@ const GithubReviewSchema = z
     html_url: z.string(),
   })
   .passthrough()
-  .transform(
-    (item): GitHubReview => ({
-      id: item.id,
-      nodeId: item.node_id,
-      body: item.body ?? '',
-      state: normalizeReviewState(item.state),
-      user: item.user,
-      authorAssociation: normalizeAuthorAssociation(item.author_association),
-      commitId: item.commit_id ?? null,
-      submittedAt: item.submitted_at ?? null,
-      htmlUrl: item.html_url,
-    })
-  );
+  .transform((item): GitHubReview => ({
+    id: item.id,
+    nodeId: item.node_id,
+    body: item.body ?? '',
+    state: normalizeReviewState(item.state),
+    user: item.user,
+    authorAssociation: normalizeAuthorAssociation(item.author_association),
+    commitId: item.commit_id ?? null,
+    submittedAt: item.submitted_at ?? null,
+    htmlUrl: item.html_url,
+  }));
 
 const GithubReviewsResponseSchema = z.array(GithubReviewSchema);
 
@@ -1968,33 +1960,31 @@ const GithubPullRequestDetailsSchema = z
     mergeable_state: z.string().nullable().optional(),
   })
   .passthrough()
-  .transform(
-    (item): GitHubPullRequestDetails => ({
-      number: item.number,
-      nodeId: item.node_id,
-      title: item.title,
-      body: item.body ?? '',
-      state: (item.state === 'closed' ? 'closed' : 'open') as GitHubPullRequestState,
-      merged: item.merged ?? false,
-      draft: item.draft ?? false,
-      htmlUrl: item.html_url,
-      baseRef: item.base.ref,
-      baseSha: item.base.sha ?? undefined,
-      headRef: item.head.ref,
-      headSha: item.head.sha,
-      user: item.user,
-      createdAt: item.created_at,
-      updatedAt: item.updated_at,
-      mergedAt: item.merged_at ?? null,
-      closedAt: item.closed_at ?? null,
-      additions: item.additions ?? 0,
-      deletions: item.deletions ?? 0,
-      changedFiles: item.changed_files ?? 0,
-      commits: item.commits ?? 0,
-      mergeable: item.mergeable ?? null,
-      mergeableState: normalizeMergeableState(item.mergeable_state),
-    })
-  );
+  .transform((item): GitHubPullRequestDetails => ({
+    number: item.number,
+    nodeId: item.node_id,
+    title: item.title,
+    body: item.body ?? '',
+    state: (item.state === 'closed' ? 'closed' : 'open') as GitHubPullRequestState,
+    merged: item.merged ?? false,
+    draft: item.draft ?? false,
+    htmlUrl: item.html_url,
+    baseRef: item.base.ref,
+    baseSha: item.base.sha ?? undefined,
+    headRef: item.head.ref,
+    headSha: item.head.sha,
+    user: item.user,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    mergedAt: item.merged_at ?? null,
+    closedAt: item.closed_at ?? null,
+    additions: item.additions ?? 0,
+    deletions: item.deletions ?? 0,
+    changedFiles: item.changed_files ?? 0,
+    commits: item.commits ?? 0,
+    mergeable: item.mergeable ?? null,
+    mergeableState: normalizeMergeableState(item.mergeable_state),
+  }));
 
 const GithubIssueCommentSchema = z
   .object({
@@ -2010,20 +2000,18 @@ const GithubIssueCommentSchema = z
     reactions: GithubReactionRollupSchema.optional(),
   })
   .passthrough()
-  .transform(
-    (item): GitHubIssueComment => ({
-      id: item.id,
-      nodeId: item.node_id,
-      body: item.body,
-      user: item.user,
-      authorAssociation: normalizeAuthorAssociation(item.author_association),
-      createdAt: item.created_at,
-      updatedAt: item.updated_at,
-      htmlUrl: item.html_url,
-      issueUrl: item.issue_url,
-      reactions: item.reactions,
-    })
-  );
+  .transform((item): GitHubIssueComment => ({
+    id: item.id,
+    nodeId: item.node_id,
+    body: item.body,
+    user: item.user,
+    authorAssociation: normalizeAuthorAssociation(item.author_association),
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    htmlUrl: item.html_url,
+    issueUrl: item.issue_url,
+    reactions: item.reactions,
+  }));
 
 const GithubIssueCommentsResponseSchema = z.array(GithubIssueCommentSchema);
 
@@ -2065,18 +2053,16 @@ const GithubCheckRunSchema = z
     app: z.object({ name: z.string().optional() }).passthrough().nullable().optional(),
   })
   .passthrough()
-  .transform(
-    (item): GitHubCheckRun => ({
-      id: item.id,
-      name: item.name,
-      status: normalizeCheckRunStatus(item.status),
-      conclusion: normalizeCheckRunConclusion(item.conclusion),
-      htmlUrl: item.html_url ?? null,
-      startedAt: item.started_at ?? null,
-      completedAt: item.completed_at ?? null,
-      appName: item.app?.name ?? null,
-    })
-  );
+  .transform((item): GitHubCheckRun => ({
+    id: item.id,
+    name: item.name,
+    status: normalizeCheckRunStatus(item.status),
+    conclusion: normalizeCheckRunConclusion(item.conclusion),
+    htmlUrl: item.html_url ?? null,
+    startedAt: item.started_at ?? null,
+    completedAt: item.completed_at ?? null,
+    appName: item.app?.name ?? null,
+  }));
 
 const GithubCheckRunsResponseSchema = z
   .object({

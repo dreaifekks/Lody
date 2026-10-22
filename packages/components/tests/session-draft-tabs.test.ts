@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
   AgentConfigId,
@@ -122,7 +123,10 @@ describe('session draft tabs', () => {
     } satisfies AgentConfigMeta;
 
     expect(
-      buildDraftSessionAgentRolePatch({ role, instance: role.instances[0]! }, agentConfig)
+      buildDraftSessionAgentRolePatch(
+        { role, instance: getAgentRoleTargets(role)[0]! },
+        agentConfig
+      )
     ).toEqual({
       agentRoleId: role.id,
       agentRoleInstanceId: 'reviewer:machine-1',
@@ -160,7 +164,10 @@ describe('session draft tabs', () => {
     } satisfies AgentConfigMeta;
 
     expect(
-      buildDraftSessionAgentRolePatch({ role, instance: role.instances[0]! }, wrongConfig)
+      buildDraftSessionAgentRolePatch(
+        { role, instance: getAgentRoleTargets(role)[0]! },
+        wrongConfig
+      )
     ).toBeNull();
   });
 

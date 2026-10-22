@@ -980,11 +980,13 @@ describe('local platform zero-cloud integration', () => {
       await expect(
         run({ command: 'agent-config-show', selector: 'Server agent' })
       ).rejects.toBeInstanceOf(WorkspaceSyncUnavailableError);
+      // Daemon discovery reads the owned catalog after its baseline, without a new
+      // network dependency. The explicit terminal configuration lookup above still syncs.
       const projects = await call('lody_project_list', { kind: 'local' });
-      expect(projects.isError).toBe(true);
+      expect(projects.isError).not.toBe(true);
       expect(JSON.parse((projects.content as Array<{ text: string }>)[0]!.text)).toMatchObject({
-        ok: false,
-        error: { code: 'SYNC_UNAVAILABLE', retryable: true },
+        ok: true,
+        items: expect.any(Array),
       });
       expect(cloudConnectionAttempts).toBe(0);
     } finally {

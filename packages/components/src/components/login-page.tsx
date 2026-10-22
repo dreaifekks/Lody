@@ -715,10 +715,7 @@ export function LoginPage({
   // It is deliberately NOT gated on a sign-in click — a social login navigates
   // away immediately, so a fetch started at click time is usually discarded,
   // and the whole point is to have the chunk before the redirect returns.
-  useEffect(
-    () => scheduleIdleTask(() => void preloadMainLayout().catch(() => {})),
-    []
-  );
+  useEffect(() => scheduleIdleTask(() => void preloadMainLayout().catch(() => {})), []);
 
   useEffect(() => {
     if (loginViewedRef.current) {

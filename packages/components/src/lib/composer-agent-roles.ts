@@ -1,16 +1,19 @@
 import {
   getAgentRoleAgentFamily,
-  getAgentRoleInstanceGroup,
-  groupAgentRoleInstances,
+  getAgentRoleTargets,
+  LODY_PLAN_MODE_CONFIG_ID,
+  ACP_COLLABORATION_MODE_CONFIG_ID,
+  ACP_COLLABORATION_MODE_PLAN_VALUE,
+  ACP_COLLABORATION_MODE_DEFAULT_VALUE,
   snapshotAgentRole,
   type AgentConfigMeta,
   type AgentRoleAvailability,
   type AgentRoleId,
-  type AgentRoleInstance,
+  type AgentRoleTarget,
   type AgentRoleInstanceId,
   type AgentRoleRunConfig,
   type AgentRoleUnavailableReason,
-  type CatalogAgentRole,
+  type AgentRole,
   type MachineId,
 } from '@lody/shared';
 import {
@@ -20,34 +23,19 @@ import {
 } from '@/components/shared/acp-selector-options';
 import type { AgentSelection } from '@/components/shared/agent-selector';
 
-/**
- * Agent Roles as the composer's run-config menu uses them.
- *
- * A Role is a template; what the menu offers are its instance GROUPS
- * (`agent-role-group.ts`), one entry each, each a packaged answer to "which
- * agent, which model, which run options" — the same knobs the menu's detail
- * tab exposes one at a time. That is the whole relationship between the two
- * tabs, and it is why the rules here are about identity rather than repair:
- * picking an instance must set exactly what it says, and the composer must stop
- * naming it the moment the running configuration is no longer that instance's.
- *
- * The composer's own machine is preferred, never required: its entries come
- * first and a group shows its instance there when it has one.
- */
-
+/** Each menu entry names one stable target and its complete run configuration. */
 export type ComposerAgentRoleItem = {
-  /** The whole catalog row: the template, and every instance. */
-  role: CatalogAgentRole;
+  /** Complete catalog row, retained for editing and provenance. */
+  role: AgentRole;
   /** The instance this entry runs. Selection, checks and records all use it. */
-  instance: AgentRoleInstance;
+  instance: AgentRoleTarget;
   /**
-   * The Role's name, plus the group's name when the Role has several groups,
-   * plus the machine when it is not the composer's.
+   * The Role, target alias or Agent family, and machine name.
    */
   title: string;
-  /** The group's name: its alias, else its agent's. */
+  /** Target alias, else the Agent family's display name. */
   groupName: string;
-  /** Whether the Role has other groups, so the entry needs its group's name. */
+  /** Whether the Role has several separately selectable targets. */
   hasSiblingGroups: boolean;
   /** Whether the instance is on the composer's machine. */
   local: boolean;
@@ -56,13 +44,7 @@ export type ComposerAgentRoleItem = {
    * suffix and the detail pane read this one name.
    */
   machineName: string;
-  /**
-   * Every instance of this entry's group, each read as an entry of its own, in
-   * the order a bare pick tries them: this machine first, then list order.
-   */
-  group: readonly ComposerAgentRoleItem[];
-  /** The group's position in its Role, the order a bare pick tries groups in. */
-  groupIndex: number;
+  targetIndex: number;
   availability: AgentRoleAvailability;
   /**
    * The instance's config while it still exists; its absence is itself the
@@ -108,11 +90,7 @@ export const findComposerAgentRoleItem = (
   instanceId: AgentRoleInstanceId | null | undefined
 ): ComposerAgentRoleItem | undefined => {
   if (!instanceId) return undefined;
-  for (const item of items) {
-    const member = item.group.find((entry) => entry.instance.id === instanceId);
-    if (member) return member;
-  }
-  return undefined;
+  return items.find((item) => item.instance.id === instanceId);
 };
 
 /**
@@ -128,7 +106,10 @@ export const findRecordedComposerAgentRoleItem = (
   instanceId: AgentRoleInstanceId | null | undefined
 ): ComposerAgentRoleItem | undefined =>
   instanceId
-    ? findComposerAgentRoleItem(items, instanceId)
+    ? findComposerAgentRoleItem(
+        items.filter((item) => item.role.id === roleId),
+        instanceId
+      )
     : findDefaultComposerAgentRoleItem(items, roleId);
 
 /**
@@ -138,23 +119,15 @@ export const findRecordedComposerAgentRoleItem = (
  */
 export const doesAgentRoleTitleNameAgent = (
   item: Pick<ComposerAgentRoleItem, 'instance' | 'hasSiblingGroups'>
-): boolean => item.hasSiblingGroups && !item.instance.alias;
+): boolean => !item.instance.alias;
 
-/**
- * What a Role picked without an instance runs: its groups in order, and in
- * each the composer's machine first, the first entry that can run — the same
- * rule a bare Role follows over MCP. Falls back to the Role's first entry so a
- * Role that cannot run still reads as itself, disabled.
- */
+/** Bare legacy selections resolve only when exactly one target remains. */
 export const findDefaultComposerAgentRoleItem = (
   items: readonly ComposerAgentRoleItem[],
   roleId: string
 ): ComposerAgentRoleItem | undefined => {
-  const entries = items
-    .filter((item) => item.role.id === roleId)
-    .sort((left, right) => left.groupIndex - right.groupIndex)
-    .flatMap((item) => item.group);
-  return entries.find((entry) => entry.availability.kind === 'available') ?? entries[0];
+  const entries = items.filter((item) => item.role.id === roleId);
+  return entries.length === 1 ? entries[0] : undefined;
 };
 
 export type ComposerRunConfigOverrides = {
@@ -198,9 +171,8 @@ export function resolveProgrammaticTurnAgentRole({
 
 /**
  * Revalidate an inherited Role against the actual run config a programmatic
- * Turn will freeze. Execute-plan and similar actions deliberately override
- * Plan/mode values; keeping the old Role id beside those different values
- * would make the Turn claim a configuration it is not running.
+ * Turn will freeze. Independent Plan toggles preserve the Role; changes to
+ * pinned model, permission, or other options still detach it.
  *
  * A catalog-pending Role may still be carried when the run config is untouched.
  * Once an override exists we must be able to verify the picked instance, or
@@ -237,31 +209,17 @@ export function resolveTurnAgentRoleForRunConfig({
   return isAgentRoleRunConfigApplied(item.instance.runConfig, effective) ? turnSelection : null;
 }
 
-const groupsOf = (role: CatalogAgentRole, configById: ReadonlyMap<string, AgentConfigMeta>) =>
-  groupAgentRoleInstances(role, (instance) => {
-    const config = configById.get(instance.agentConfigId);
-    return getAgentRoleInstanceGroup(instance, config && getAgentRoleAgentFamily(config));
-  });
-
-/**
- * One instance read the way a composer entry reads it on its own machine:
- * the Role's name, plus its group's name when the Role has several groups.
- */
 export const describeComposerAgentRoleInstance = (
-  role: CatalogAgentRole,
-  instance: AgentRoleInstance,
+  role: AgentRole,
+  instance: AgentRoleTarget,
   agentConfigs: readonly AgentConfigMeta[],
   unknownAgent: string
 ): Pick<ComposerAgentRoleItem, 'title' | 'groupName' | 'hasSiblingGroups'> => {
-  const groups = groupsOf(role, new Map(agentConfigs.map((config) => [config.id, config])));
-  const group = groups.find((entry) => entry.instances.includes(instance));
-  const groupName = group?.name ?? unknownAgent;
-  const hasSiblingGroups = groups.length > 1;
-  return {
-    title: hasSiblingGroups ? `${role.name} · ${groupName}` : role.name,
-    groupName,
-    hasSiblingGroups,
-  };
+  const config = agentConfigs.find((entry) => entry.id === instance.agentConfigId);
+  const groupName =
+    instance.alias || (config ? getAgentRoleAgentFamily(config).name : unknownAgent);
+  const hasSiblingGroups = getAgentRoleTargets(role).length > 1;
+  return { title: `${role.name} · ${groupName}`, groupName, hasSiblingGroups };
 };
 
 /** Names the builder cannot know: machines, and an agent whose config is unknown. */
@@ -270,18 +228,7 @@ export type ComposerAgentRoleNames = {
   unknownAgent: string;
 };
 
-/**
- * The Role entries the composer offers: one per instance group, every Role's,
- * whatever machine it is on.
- *
- * Entries on the composer's machine come first, then the others, each part by
- * Role name and the Role's own group order. A group shows its instance on this
- * machine when it has one, else its first instance elsewhere that can run,
- * else its first; an entry elsewhere names its machine.
- *
- * Unavailable entries stay listed. Seeing that one exists and why it cannot
- * run is what lets someone fix it; dropping the row makes it look deleted.
- */
+/** Every target remains visible; ordering never chooses a target on the caller's behalf. */
 export function buildComposerAgentRoleItems({
   roles,
   machineId,
@@ -289,61 +236,45 @@ export function buildComposerAgentRoleItems({
   resolveAvailability,
   names,
 }: {
-  roles: readonly CatalogAgentRole[];
+  roles: readonly AgentRole[];
   /** The composer's machine: preferred, never required. */
   machineId: MachineId | null | undefined;
   agentConfigs: readonly AgentConfigMeta[];
-  resolveAvailability: (instance: AgentRoleInstance) => AgentRoleAvailability;
+  resolveAvailability: (instance: AgentRoleTarget) => AgentRoleAvailability;
   names: ComposerAgentRoleNames;
 }): ComposerAgentRoleItem[] {
-  const configById = new Map(agentConfigs.map((config) => [config.id as string, config]));
-  const items = roles.flatMap((role) => {
-    const groups = groupsOf(role, configById);
-    return groups.map((group, groupIndex) => {
-      const groupName = group.name ?? names.unknownAgent;
-      const hasSiblingGroups = groups.length > 1;
-      const ordered = [
-        ...group.instances.filter((instance) => instance.machineId === machineId),
-        ...group.instances.filter((instance) => instance.machineId !== machineId),
-      ];
-      const members: ComposerAgentRoleItem[] = [];
-      for (const instance of ordered) {
+  const configById = new Map(agentConfigs.map((config) => [config.id, config]));
+  return roles
+    .flatMap((role) =>
+      getAgentRoleTargets(role).map((instance, targetIndex) => {
         const local = instance.machineId === machineId;
         const machineName = names.machine(instance.machineId) ?? instance.machineId;
-        members.push({
+        const description = describeComposerAgentRoleInstance(
           role,
           instance,
-          title: [
-            role.name,
-            hasSiblingGroups ? groupName : undefined,
-            local ? undefined : machineName,
-          ]
-            .filter(Boolean)
-            .join(' · '),
-          groupName,
-          hasSiblingGroups,
+          agentConfigs,
+          names.unknownAgent
+        );
+        const item: ComposerAgentRoleItem = {
+          role,
+          instance,
+          ...description,
+          title: `${description.title} · ${machineName}`,
           local,
           machineName,
-          group: members,
-          groupIndex,
+          targetIndex,
           availability: resolveAvailability(instance),
           agentConfig: configById.get(instance.agentConfigId),
-        });
-      }
-      return (
-        (members[0]!.local ? members[0] : undefined) ??
-        members.find((entry) => entry.availability.kind === 'available') ??
-        members[0]!
-      );
-    });
-  });
-  return items.sort(
-    (left, right) =>
-      Number(right.local) - Number(left.local) ||
-      left.role.name.localeCompare(right.role.name) ||
-      left.role.id.localeCompare(right.role.id) ||
-      left.groupIndex - right.groupIndex
-  );
+        };
+        return item;
+      })
+    )
+    .sort(
+      (left, right) =>
+        Number(right.local) - Number(left.local) ||
+        left.role.name.localeCompare(right.role.name) ||
+        left.targetIndex - right.targetIndex
+    );
 }
 
 /**
@@ -382,16 +313,11 @@ export const canFixedComposerUseAgentRoleEntry = (
   entry: Pick<ComposerAgentRoleItem, 'local'>
 ): boolean => entry.local;
 
-/** Rewrite every entry, group members included, keeping each group shared. */
+/** Apply availability changes independently to every target. */
 export const mapComposerAgentRoleEntries = (
   items: readonly ComposerAgentRoleItem[],
   map: (entry: ComposerAgentRoleItem) => ComposerAgentRoleItem
-): ComposerAgentRoleItem[] =>
-  items.map((item) => {
-    const group: ComposerAgentRoleItem[] = [];
-    for (const entry of item.group) group.push({ ...map(entry), group });
-    return group[item.group.indexOf(item)]!;
-  });
+): ComposerAgentRoleItem[] => items.map(map);
 
 /**
  * Whether this run config pins the permission mode.
@@ -501,6 +427,22 @@ export function isAgentRoleRunConfigApplied(
   if (modelId && selection.modelId !== modelId) return false;
   for (const [configId, value] of Object.entries(configOptionValues ?? {})) {
     const selected = selection.configOptionValues[configId];
+    if (
+      configId === LODY_PLAN_MODE_CONFIG_ID &&
+      typeof value === 'boolean' &&
+      typeof selected === 'boolean'
+    )
+      continue;
+    if (
+      configId === ACP_COLLABORATION_MODE_CONFIG_ID &&
+      [ACP_COLLABORATION_MODE_PLAN_VALUE, ACP_COLLABORATION_MODE_DEFAULT_VALUE].includes(
+        value as string
+      ) &&
+      [ACP_COLLABORATION_MODE_PLAN_VALUE, ACP_COLLABORATION_MODE_DEFAULT_VALUE].includes(
+        selected as string
+      )
+    )
+      continue;
     if (selected === value) continue;
     if (
       selected === undefined &&
@@ -525,7 +467,7 @@ export function isAgentRoleRunConfigApplied(
  * the selection state fell back to the agent's own.
  */
 export function isComposerAgentRoleApplied(
-  instance: AgentRoleInstance,
+  instance: AgentRoleTarget,
   selection: ComposerRunConfigSelection
 ): boolean {
   const { agentSelection } = selection;
@@ -562,12 +504,12 @@ export function selectSessionAgentRoles({
   resolveAvailability,
   names,
 }: {
-  roles: readonly CatalogAgentRole[];
+  roles: readonly AgentRole[];
   /** Existing Sessions stay on this exact machine and provider binding. */
   machineId: MachineId | null | undefined;
   agentConfigId: AgentConfigMeta['id'] | null | undefined;
   agentConfigs: readonly AgentConfigMeta[];
-  resolveAvailability: (instance: AgentRoleInstance) => AgentRoleAvailability;
+  resolveAvailability: (instance: AgentRoleTarget) => AgentRoleAvailability;
   names: ComposerAgentRoleNames;
 }): ComposerAgentRoleItem[] {
   if (!machineId || !agentConfigId) return [];

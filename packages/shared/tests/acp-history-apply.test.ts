@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { MessageContent } from '../src/ai';
 import { LODY_WIDGET_CODE_MAX_CHARS, matchAgentSurfaceToolCall } from '../src/lody-agent-tools';
+import type { SessionHistoryInput } from '../src/schema';
 import {
   MAX_STORED_TERMINAL_COMMAND_BYTES,
   MAX_STORED_TERMINAL_OUTPUT_BYTES,
@@ -1557,5 +1558,52 @@ describe('acp history apply', () => {
         }),
       ]);
     });
+  });
+  it('indexes run identity once per batch and preserves progress order', () => {
+    let inspected = 0;
+    const task = (i: number): MessageContent => ({
+      get type() {
+        inspected++;
+        return 'subagent_task' as const;
+      },
+      taskId: `run-${i}`,
+      status: 'in_progress',
+      run: {
+        sessionId: 'root',
+        snapshot: {
+          state: 'running',
+          support: { stream: [], progress: true, cancel: false, outputRead: 'none' },
+        },
+        items: [],
+      },
+    });
+    const items = Array.from({ length: 128 }, (_, i) => task(i));
+    const history = [
+      { id: 'turn', role: 'assistant', timestamp: '2026-01-01T00:00:00Z', items, fileDiff: [] },
+    ] as SessionHistoryInput[];
+    const notifications = Array.from({ length: 32 }, (_, i) =>
+      parseSessionNotification({
+        sessionId: 'root',
+        update: {
+          sessionUpdate: 'subagent_event',
+          event: {
+            version: 1,
+            sessionId: 'root',
+            runId: 'run-127',
+            type: 'progress',
+            progress: { totalTokens: i },
+          },
+        },
+      })
+    );
+    const result = applyNotificationOnHistory(history, notifications);
+    // A linear lookup per event inspects 4096 items; one index build visits 128,
+    // with a small constant amount of per-event work for the matching run.
+    expect(inspected).toBeLessThan(256);
+    expect(result[0]!.items[127]).toMatchObject({
+      taskId: 'run-127',
+      run: { progress: { totalTokens: 31 } },
+    });
+    expect(result[0]!.items).toHaveLength(128);
   });
 });

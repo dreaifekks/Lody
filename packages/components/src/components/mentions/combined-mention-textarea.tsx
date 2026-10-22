@@ -61,7 +61,7 @@ import {
   type SkillMentionItem,
   useMentionProjectSkills,
 } from '@/components/mentions/mention-skill-source';
-import { getAgentRoleEmoji, type AcpCommandSummary } from '@lody/shared';
+import { getAgentRoleEmoji, type AcpCommandSummary, type MachineId } from '@lody/shared';
 import { Mention, MentionInput, MentionLabel, useMentionContext } from '@/ui/mention';
 import type { Mention as MentionRange, MentionChipResolver } from '@/ui/mention/index';
 import { Textarea, type TextareaProps } from '@lody/ui/textarea';
@@ -880,25 +880,23 @@ export const CombinedMentionTextarea = React.forwardRef<
     const sessionItems = useSessionMentionItems(currentSessionId);
     const sessionScope = useSessionMentionScope(currentSessionId, mentionSource);
     const sessionProjectKey = sessionScope.key;
-    const agentRoleItems = useAgentRoleMentionItems();
+    const agentRoleItems = useAgentRoleMentionItems(
+      (skillAgent?.machineId as MachineId | undefined) ?? null
+    );
     // A committed range carries only the Role id, so the caller's chip resolver
     // cannot reach the Role's emoji on its own. The composer already owns the
     // mentionable list, so it upgrades the glyph on the way through.
-    const agentRoleEmojiById = React.useMemo(
-      () =>
-        new Map(
-          agentRoleItems.flatMap((item) => [
-            // A range names any instance of an entry's group, or pins one.
-            ...item.group.map(
-              (entry) => [entry.instance.id as string, getAgentRoleEmoji(item.role)] as const
-            ),
-            [item.value, getAgentRoleEmoji(item.role)] as const,
-            // A range saved before instances carries the Role id.
-            [item.role.id as string, getAgentRoleEmoji(item.role)] as const,
-          ])
-        ),
-      [agentRoleItems]
-    );
+    const agentRoleEmojiById = React.useMemo(() => {
+      const emojis = new Map<string, string>();
+      for (const item of agentRoleItems) {
+        const emoji = getAgentRoleEmoji(item.role);
+        emojis.set(item.value, emoji);
+        emojis.set(item.instance.id, emoji);
+        emojis.set(`pinned:${item.instance.id}`, emoji);
+        if (!item.role.additionalTargets?.length) emojis.set(item.role.id, emoji);
+      }
+      return emojis;
+    }, [agentRoleItems]);
     const resolveMentionChip = React.useMemo<MentionChipResolver | undefined>(() => {
       if (!getMentionChip) return undefined;
       return (mention, text) => {

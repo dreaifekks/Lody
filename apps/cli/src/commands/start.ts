@@ -251,11 +251,6 @@ export const startCommand = new Command('start')
       );
     }
 
-    const startupTimeSync =
-      platformKind !== 'local' && LODY_SERVER_URL
-        ? syncCliServerTime(logger, LODY_SERVER_URL)
-        : undefined;
-
     const machineNameOverride = options.machineName?.trim();
     // A LAN identifies a machine by its name, so the local platform names it
     // after the machine rather than after the network it is on right now.
@@ -540,6 +535,10 @@ export const startCommand = new Command('start')
       return recovery;
     };
 
+    const startupTimeSync =
+      platformKind !== 'local' && LODY_SERVER_URL
+        ? syncCliServerTime(logger, LODY_SERVER_URL)
+        : undefined;
     try {
       await startAgentService(
         options,
@@ -561,6 +560,7 @@ export const startCommand = new Command('start')
         localStart
       );
     } catch (error) {
+      await startupTimeSync?.stop();
       captureAgentServiceEvent('agent_service_startup_failed', {
         failure_stage: runtimeStateReporter.snapshot().startupStage ?? 'unknown',
       });
@@ -592,7 +592,7 @@ async function startAgentService(
   logger: Logger,
   runtimeStateReporter: CliRuntimeStateReporter,
   authMethod: StartAuthMethod,
-  startupTimeSync: Promise<void> | undefined,
+  startupTimeSync: ReturnType<typeof syncCliServerTime> | undefined,
   recoverRejectedCredential: () => Promise<RejectedCredentialRecovery>,
   foregroundHostLease: LocalCliHostLease | null,
   supervisorIdentity: LocalSupervisorIdentity | null,
@@ -748,7 +748,7 @@ async function startAgentService(
         : {}),
       runtimeStateReporter,
       cloudPort,
-      startupTimeSync,
+      startupTimeSync: startupTimeSync?.ready,
       machineLifecycleCapability,
       onFatalAuthFailure: (error) => triggerFatalAuthShutdown?.(error),
       onProcessLifecycleAction: (action) => triggerProcessLifecycleAction?.(action),
@@ -771,6 +771,7 @@ async function startAgentService(
   const stopDaemonAndApplication = async () => {
     const failures: unknown[] = [];
     for (const stop of [
+      () => startupTimeSync?.stop(),
       () => managedRuntimeUpdates.shutdown(),
       () => fleet.shutdown(),
       closeLoginShellApplicationLegacy,

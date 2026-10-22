@@ -1,15 +1,16 @@
 import {
   canManageAgentRole,
+  getAgentRoleTargets,
   getWorkspaceFlockDocId,
   isAgentRoleContentEqual,
   normalizeAgentRole,
-  withAgentRoleInstances,
+  withAgentRoleTargets,
+  serializeAgentRoleRow,
   workspaceFlockKeys,
   type AcpCapabilityCacheEntry,
   type AgentRole,
-  type AgentRoleInstance,
+  type AgentRoleTarget,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
 } from '@lody/shared';
 import type { WorkspaceRuntime } from '@/atoms/runtime';
 import { uploadWorkspaceCatalog } from './workspace-catalog-write';
@@ -20,25 +21,25 @@ import { uploadWorkspaceCatalog } from './workspace-catalog-write';
  * only the instance it was made for.
  */
 export function reconcileAgentRoleSchema(
-  role: CatalogAgentRole,
+  role: AgentRole,
   instanceId: AgentRoleInstanceId,
   capability: AcpCapabilityCacheEntry
-): CatalogAgentRole {
+): AgentRole {
   if (capability.provenance !== 'runtime' || !capability.configOptions) return role;
-  const instance = role.instances.find((entry) => entry.id === instanceId);
+  const instance = getAgentRoleTargets(role).find((entry) => entry.id === instanceId);
   if (!instance) return role;
   const next = reconcileInstance(instance, capability.configOptions);
   if (next === instance) return role;
-  return withAgentRoleInstances(
+  return withAgentRoleTargets(
     role,
-    role.instances.map((entry) => (entry === instance ? next : entry))
+    getAgentRoleTargets(role).map((entry) => (entry.id === instance.id ? next : entry))
   );
 }
 
 function reconcileInstance(
-  instance: AgentRoleInstance,
+  instance: AgentRoleTarget,
   configOptions: NonNullable<AcpCapabilityCacheEntry['configOptions']>
-): AgentRoleInstance {
+): AgentRoleTarget {
   const { runConfig } = instance;
   const advertised = new Set(configOptions.map((option) => option.id));
   const values = { ...runConfig.configOptionValues };
@@ -71,10 +72,14 @@ function reconcileInstance(
   return { ...instance, runConfig: { ...runConfig, configOptionValues: values } };
 }
 
-/** Fence a delayed probe against editing, deletion, ownership and workspace changes. */
+/**
+ * Fence a delayed probe against editing, deletion, ownership and workspace changes.
+ * `expected` is the Role bound to the probed machine; only that target changes,
+ * and the row keeps its stored shape (v1 for a single-target Role).
+ */
 export async function persistReconciledAgentRole(
   runtime: WorkspaceRuntime,
-  expected: CatalogAgentRole,
+  expected: AgentRole,
   instanceId: AgentRoleInstanceId,
   capability: AcpCapabilityCacheEntry,
   userId: string,
@@ -96,15 +101,11 @@ export async function persistReconciledAgentRole(
         !isAgentRoleContentEqual(role, expected)
       )
         return undefined;
-      return {
-        ...(current as AgentRole),
-        instances: next.instances,
-        machineId: next.machineId,
-        agentConfigId: next.agentConfigId,
-        runConfig: next.runConfig,
+      return serializeAgentRoleRow({
+        ...next,
         revision: role.revision + 1,
         updatedAt: now,
-      };
+      });
     }
   );
   if (changed) void uploadWorkspaceCatalog(runtime);

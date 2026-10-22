@@ -20,6 +20,36 @@ been removed.
   handlers.
 - `README.md` — package smoke-test notes.
 
+## Request scheduling
+
+Ordinary handlers have a shared execution pool (default 16) and bounded admission
+(default 128, including active tasks). History writes, including immutable input
+acceptance, have four reserved execution slots; control methods have four more.
+Each foreground pool admits at most 128 active/queued tasks. Batch intake examines
+control and write requests first and acquires handler permits inside tracked tasks.
+A full ordinary pool never waits at intake: excess requests get a protocol busy
+response through another bounded four-slot pool. At most 128 busy responses are
+retained; further overload is logged and left to the caller's timeout/recovery.
+No overload result proves the outcome of an earlier duplicate dispatched write.
+
+Local Electron history reads instead use their own pool (at most eight active
+sessions) in `MessageProcessor`. Writes remain ordered on the session writer lane.
+Remote RPC calls the history handlers directly. Stop prevents queued handlers from
+starting; already-started raw work retains its task/permit until it settles.
+[Incremental recovery and scheduling decision](../notes/implemented/bug-fix/2026-10-16-roost-incremental-history.md)
+records boundary tests and limits; none is a live-service latency measurement.
+
+`session/history-watch` is an independently negotiated, owner-encrypted read method.
+It admits at most 128 parked requests in a separate lane; MessageHandler also caps
+owner waits across transports at 128. The checkpoint wait lasts at most 15 seconds
+outside ordinary permits, SQLite execution and writer serialization. After publication
+or deadline, its change/body read acquires an ordinary permit. The client response
+budget is 45 seconds. Local watches use independent wait lanes and a bounded
+post-wake read pool; one viewer cannot park another viewer behind its same-session wait.
+Stop aborts parked waits and fences queued work. The existing dispatcher retains raw
+reads through settlement; it never interprets waiter cancellation as write rollback.
+See [peer observation](../notes/implemented/bug-fix/2026-10-16-roost-peer-reader-readiness.md).
+
 ## History readiness and error provenance
 
 History RPC verifies session identity, owning machine and the persisted Roost backend
@@ -97,6 +127,23 @@ a real error rather than a clean end of read.
 Stable shard selection exists for the same kind of reason: a randomly picked
 write shard re-runs the cross-origin CORS preflight on every append, while a
 stable one reuses the warm connection and the cached preflight.
+
+### Foreground input receipt recovery
+
+The browser dispatcher also renews a response read when an appended
+`accept_input`/`accept_input_and_dispatch` has no response after two seconds.
+The shared live-mode policy moves SSE to long-poll; a stalled long-poll connection
+is renewed too. One timer covers overlapping inputs and each pending input gets
+one renewal. Normal replies, request deadlines, owner cancellation and dispatcher
+stop remove the timer. Explicit transport pins and static-policy clients retain
+their existing behavior; idle history watches do not arm this recovery.
+
+Renewal preserves the response offset, request IDs and original RPC deadlines.
+It never re-appends input, confirms delivery or needs a new daemon protocol. A
+slow owner still has to produce a real receipt. Two seconds is a recovery trigger,
+not a delivery bound or evidence that SSE caused a particular delay. A normal
+owner taking longer can also trigger long-poll and its CORS cost for the existing
+five-minute SSE cooldown. [Evidence and limits](../notes/proposed/bug-fix/2026-10-18-roost-remote-receipt-latency.md).
 
 ## Why `file/preview` sits outside `code-collab/`
 

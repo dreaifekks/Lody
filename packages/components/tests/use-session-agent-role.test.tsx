@@ -100,6 +100,7 @@ describe('useSessionAgentRole', () => {
     durableRoleReady?: boolean;
     runConfigHasUserEdits?: boolean;
     selectedModelId: string;
+    planMode?: boolean;
   };
 
   function Harness() {
@@ -120,7 +121,7 @@ describe('useSessionAgentRole', () => {
       modeOptions: [],
       selectedModeId: null,
       configOptionSelectors: [],
-      configOptionValues: {},
+      configOptionValues: hookProps.planMode === undefined ? {} : { plan_mode: hookProps.planMode },
     });
     return null;
   }
@@ -136,6 +137,7 @@ describe('useSessionAgentRole', () => {
     durableRoleReady,
     runConfigHasUserEdits,
     selectedModelId = 'model-1',
+    planMode,
   }: {
     sessionId?: string;
     provenanceRoleId?: AgentRoleId;
@@ -147,6 +149,7 @@ describe('useSessionAgentRole', () => {
     durableRoleReady?: boolean;
     runConfigHasUserEdits?: boolean;
     selectedModelId?: string;
+    planMode?: boolean;
   }) => {
     hookProps = {
       sessionId,
@@ -159,6 +162,7 @@ describe('useSessionAgentRole', () => {
       durableRoleReady,
       runConfigHasUserEdits,
       selectedModelId,
+      planMode,
     };
     await act(async () => root?.render(createElement(Harness)));
   };
@@ -379,7 +383,10 @@ describe('useSessionAgentRole', () => {
       { ...agentConfig, id: 'agent-devnuc', machineId: 'devnuc' } as AgentConfigMeta,
     ];
     await render({});
-    expect(control?.items.map((item) => item.instance.id)).toEqual(['vision:here']);
+    expect(control?.items.map((item) => item.instance.id)).toEqual([
+      'vision:here',
+      'vision:devnuc',
+    ]);
     await act(async () => control?.onSelect('vision:here' as AgentRoleInstanceId));
     expect(control?.selectedInstanceId).toBe('vision:here');
     expect(control?.turnSelection).toMatchObject({
@@ -412,7 +419,7 @@ describe('useSessionAgentRole', () => {
 
   it('drops a recorded instance once deleted or moved, never handing the Role to another', async () => {
     const memory = (memoryId: string) => ({ providerId: 'nowledge-mem', memoryId });
-    const withInstances = (...instances: AgentRole['instances']) =>
+    const withInstances = (...instances: import('@lody/shared').AgentRoleTarget[]) =>
       singleMachineRole({ ...role('pair', 'model-1'), instances });
     const first = {
       id: 'pair:first' as AgentRoleInstanceId,
@@ -482,7 +489,7 @@ describe('useSessionAgentRole', () => {
       durableRoleRevision: 1,
       durableSourceTurnKey: 'turn:turn-2',
     });
-    expect(control?.selectedInstanceId).toBe('pair:first');
+    expect(control?.selectedInstanceId).toBeNull();
   });
 
   it('shows the creating Role after the workspace catalog loads', async () => {

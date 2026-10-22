@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 import type { Meta, StoryObj } from '@storybook/react';
 import { Provider, createStore } from 'jotai';
 import { useMemo, useState } from 'react';
@@ -6,14 +7,13 @@ import { createLocalPlatformProvider, createStaticStore } from '@lody/platform';
 import { PlatformContext } from '@lody/platform/react';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRoleInstances,
+  withAgentRoleTargets,
   getAgentConfigRoomId,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleId,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 
@@ -179,8 +179,9 @@ const selectors: AcpConfigOptionSelector[] = [
 ];
 
 const makeRole = (
-  overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
-): CatalogAgentRole => {
+  overrides: (Partial<AgentRole> & { instances?: import('@lody/shared').AgentRoleTarget[] }) &
+    Pick<AgentRole, 'id' | 'name'>
+): AgentRole => {
   const role: Omit<AgentRole, 'instances'> = {
     v: AGENT_ROLE_VERSION,
     ownerUserId: 'user-storybook',
@@ -193,7 +194,7 @@ const makeRole = (
     updatedAt: 1,
     ...overrides,
   };
-  return withAgentRoleInstances(
+  return withAgentRoleTargets(
     role,
     overrides.instances ?? [
       {
@@ -208,7 +209,7 @@ const makeRole = (
 
 /** The composer's entries for a Role, built and titled as the composer builds them. */
 const itemsOf = (
-  role: CatalogAgentRole,
+  role: AgentRole,
   availability: ComposerAgentRoleItem['availability']
 ): ComposerAgentRoleItem[] =>
   buildComposerAgentRoleItems({
@@ -586,7 +587,7 @@ export const LandingNoRoles: Story = {
 
 /** A selected Role changes the docked composer's face and may hide permission. */
 export const LandingRoleSelected: Story = {
-  args: { landing: true, initialInstanceId: reviewer.instances[0]!.id },
+  args: { landing: true, initialInstanceId: getAgentRoleTargets(reviewer)[0]!.id },
   play: async ({ canvasElement }) => {
     await openRoleSubmenu(canvasElement);
   },
@@ -613,7 +614,7 @@ export const ExistingSessionRoles: Story = {
  * beside the button, and the permission button is gone because the Role pins it.
  */
 export const RoleSelected: Story = {
-  args: { initialInstanceId: reviewer.instances[0]!.id },
+  args: { initialInstanceId: getAgentRoleTargets(reviewer)[0]!.id },
   play: async ({ canvasElement }) => {
     await openRoleSubmenu(canvasElement);
   },
@@ -638,7 +639,7 @@ export const RoleWithWarningPermission: Story = {
       },
       ...roleItems.slice(1),
     ],
-    initialInstanceId: reviewer.instances[0]!.id,
+    initialInstanceId: getAgentRoleTargets(reviewer)[0]!.id,
   },
 };
 

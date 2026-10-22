@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import {
   canManageAgentRole,
+  getAgentRoleTargets,
   getServerNow,
   isAcpCapabilityCacheEntryCurrentForRuntimeOverrides,
   type MachineAcpCapabilitiesRefreshResponse,
@@ -20,12 +21,14 @@ export function useAgentRoleSchemaReconciliation(): void {
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const userId = useAtomValue(userAtom)?.id;
   const { roles, synced } = useWorkspaceAgentRoles();
+  // One entry per machine target, each bound so its inline fields are that
+  // machine's: every target is reconciled against its own agent.
   const owned = useMemo(
     () => roles.filter((role) => canManageAgentRole(role, userId)),
     [roles, userId]
   );
   const machineIds = useMemo(
-    () => owned.flatMap((role) => role.instances.map((instance) => instance.machineId)),
+    () => owned.flatMap((role) => getAgentRoleTargets(role).map((instance) => instance.machineId)),
     [owned]
   );
   useMachineFlockAgentConfigsForMachineIds(machineIds);
@@ -48,7 +51,7 @@ export function useAgentRoleSchemaReconciliation(): void {
     if (!runtime || !userId || !synced) return undefined;
     let cancelled = false;
     for (const [role, instance] of owned.flatMap((entry) =>
-      entry.instances.map((item) => [entry, item] as const)
+      getAgentRoleTargets(entry).map((item) => [entry, item] as const)
     )) {
       const config = configs.find(
         (item) => item.id === instance.agentConfigId && item.machineId === instance.machineId

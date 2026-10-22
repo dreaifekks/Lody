@@ -1,3 +1,4 @@
+import { turnNotificationAudience } from '@/lib/notifications/turn-notification-audience';
 import { MemoryBindingSchema } from '@lody/shared';
 import type { RepoTransportRoomStatus, RepoWatchHandle } from 'loro-repo';
 import { Effect, Fiber } from 'effect';
@@ -79,10 +80,6 @@ type SessionDispatchWatcherDeps = {
   // instead of the daemon host's git config.
   userResolver: SessionUserResolverLike;
   accessPolicy?: SessionAccessPolicyService;
-  getPreparedSessionLaunchConfig?: (input: {
-    sessionMeta: SessionMeta;
-    requesterUserId: string;
-  }) => { config: SessionLaunchConfig | undefined } | null;
   // Three-way result (allowed / definitive deny / indeterminate). The
   // indeterminate case is what keeps a transient outage from dropping the turn —
   // see {@link verifyMachineAccessWithRetry}.
@@ -1375,6 +1372,13 @@ export class SessionDispatchWatcher {
       // ── Handle guard/stale-status results (no history needed) ──
       if (guardAction.type === 'noop') {
         outcome = `guard-noop-${guardAction.reason}`;
+        if (guardAction.reason === 'release-blocked') {
+          // This input is waiting on an unconfirmed release: ask for recovery and
+          // re-check once the slot is free, instead of waiting for another trigger.
+          void this.deps.executionService.requestReleaseRecovery?.(sessionId).then((released) => {
+            if (released) void this.enqueueSessionCheck(sessionId);
+          });
+        }
         return;
       }
 
@@ -1482,23 +1486,14 @@ export class SessionDispatchWatcher {
         requesterUserId,
         localProjectId,
       });
-      const preparedLaunchConfig =
-        dispatchAction.mode === 'create'
-          ? this.deps.getPreparedSessionLaunchConfig?.({
-              sessionMeta: freshMeta,
-              requesterUserId,
-            })
-          : null;
-      const launchConfigPromise = preparedLaunchConfig
-        ? Promise.resolve(preparedLaunchConfig.config)
-        : dispatchTurnPromise.then((turn) =>
-            traceAsync(
-              this.deps.logger,
-              'dispatch.resolve_launch_config',
-              { sessionId, userTurnId: turn.nextUserTurn.id },
-              async () => await this.resolveSessionLaunchConfig(turn.freshMeta)
-            )
-          );
+      const launchConfigPromise = dispatchTurnPromise.then((turn) =>
+        traceAsync(
+          this.deps.logger,
+          'dispatch.resolve_launch_config',
+          { sessionId, userTurnId: turn.nextUserTurn.id },
+          async () => await this.resolveSessionLaunchConfig(turn.freshMeta)
+        )
+      );
       void launchConfigPromise.catch(() => undefined);
       const userResolution = this.startUserResolution(sessionId, nextUserTurn.id, requesterUserId);
       const userForRequestPromise = dispatchTurnPromise.then((turn) =>
@@ -1641,6 +1636,10 @@ export class SessionDispatchWatcher {
               sourceTurnId: nextUserTurn.id,
               requesterUserId: nextUserTurn.userId,
               inputConfig: nextUserTurn.inputConfig ?? {},
+              notificationAudience:
+                dispatchSource === 'rpc'
+                  ? { kind: 'unknown' }
+                  : turnNotificationAudience(nextUserTurn.author),
             },
             dispatchSource,
             accessPromise: executionAccessPromise,

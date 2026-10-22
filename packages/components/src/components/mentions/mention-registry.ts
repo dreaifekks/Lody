@@ -579,8 +579,8 @@ export function toAgentRoleCandidate(
   // out the Role's own mark. Every Role has one, defaulted, so rows stay aligned.
   const emoji = getAgentRoleEmoji(role);
   return {
-    // The range payload is the stable instance id; the text only carries the
-    // token derived from the names, which their owner may rename at any time.
+    // The range payload is the stable Role id; the text only carries the token
+    // derived from the name, which its owner may rename at any time.
     value: item.value,
     label: item.slug,
     insertText: `${MENTION_TRIGGER}${item.slug}`,
@@ -588,8 +588,8 @@ export function toAgentRoleCandidate(
     icon: 'agent_role',
     iconEmoji: emoji,
     title: item.title,
-    // Who does the work, unless the title already says it; the title also names
-    // the machine of an entry elsewhere.
+    // Who does the work and where: two Roles named alike on two machines are
+    // told apart here without opening the pane.
     hint: doesAgentRoleTitleNameAgent(item) ? undefined : item.agentConfig?.name,
     disabled: item.availability.kind !== 'available',
     subtitle: availabilityText,

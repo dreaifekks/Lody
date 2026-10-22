@@ -12,8 +12,8 @@ import {
 } from '@lody/shared';
 import {
   listAliveDocMetas,
-  syncFlockDocForRead,
   syncWorkspaceMetaForRead,
+  WorkspaceSyncUnavailableError,
   type AuthContext,
 } from './command-runtime';
 import type { LoroDocumentManager } from './loro/doc';
@@ -25,7 +25,7 @@ import { listLocalGitHubRepositories } from './lan/lan-github-repos';
 import { listWorkspaceMcpCatalog } from './workspace-mcp-store';
 import { ResourceDiscovery } from './resource-discovery';
 import { getCliPlatformKind } from './cli-platform';
-import { getSessionCommandEnvironment } from './session-command-environment';
+import { getDaemonWorkspace, getSessionCommandEnvironment } from './session-command-environment';
 
 export async function createResourceDiscovery(args: {
   manager: LoroDocumentManager;
@@ -34,13 +34,60 @@ export async function createResourceDiscovery(args: {
   delegatedRequester?: DelegatedSessionRequester;
   selectedMcpServerIds?: readonly string[];
   offline?: boolean;
+  requireFreshCatalogs?: boolean;
+  initialCatalogWaitMs?: number;
 }): Promise<ResourceDiscovery> {
   const { manager, auth, workspaceId } = args;
-  if (!args.offline) await syncWorkspaceMetaForRead(manager, 'resource.discovery');
+  // The daemon owns ongoing synchronization. Discovery reads its current replica
+  // without making catalog availability depend on another remote catch-up.
+  const isDaemon = getDaemonWorkspace()?.manager === manager;
+  const shouldSync = args.offline !== true && (!isDaemon || args.requireFreshCatalogs === true);
+  if (args.requireFreshCatalogs) {
+    try {
+      await manager.syncMetaOrThrow({
+        reason: 'resource.discovery',
+        requireRemoteConfirmation: true,
+      });
+    } catch (cause) {
+      throw new WorkspaceSyncUnavailableError({
+        message: 'Workspace metadata synchronization is unavailable; retry the request.',
+        cause,
+      });
+    }
+  } else if (shouldSync) {
+    await syncWorkspaceMetaForRead(manager, 'resource.discovery');
+  }
   const synced = new Set<string>();
+  const baselines = new Map<string | undefined, boolean>();
+  const machineBaselines = new Map<MachineId, boolean>();
+  const deadline = performance.now() + (args.offline ? 0 : (args.initialCatalogWaitMs ?? 1_000));
+  async function baseline(id: string | undefined) {
+    if (!isDaemon || shouldSync || baselines.has(id)) return;
+    baselines.set(
+      id,
+      await manager.catalogBaselineReady(id, Math.max(0, deadline - performance.now()))
+    );
+  }
   async function sync(id: string) {
-    if (!args.offline && !synced.has(id)) {
-      await syncFlockDocForRead(manager, id, 'resource.discovery');
+    // First-baseline waits share one request budget. Timeout keeps the daemon
+    // reader alive and this request unconfirmed, even if later reads catch up.
+    if (isDaemon && !shouldSync) {
+      await manager.holdCatalogFlockDoc(id);
+      await baseline(id);
+    }
+    if (shouldSync && !synced.has(id)) {
+      try {
+        await manager.syncFlockDocOrThrow(id, {
+          reason: 'resource.discovery',
+          requireRemoteConfirmation: args.requireFreshCatalogs === true,
+        });
+      } catch (cause) {
+        if (!args.requireFreshCatalogs) throw cause;
+        throw new WorkspaceSyncUnavailableError({
+          message: 'Target catalog synchronization is unavailable; retry the request.',
+          cause,
+        });
+      }
       synced.add(id);
     }
   }
@@ -48,17 +95,28 @@ export async function createResourceDiscovery(args: {
     workspaceId,
     userId: args.delegatedRequester?.userId ?? auth.userId,
     selectedMcpServerIds: args.selectedMcpServerIds,
-    machines: async () =>
-      (await listAliveDocMetas<MachineMeta>(manager, isMachineDocRoomId)).map((row) => row.meta),
-    onlineMachineIds: async () => {
-      const environment = getSessionCommandEnvironment();
-      // Inside the agent service the hub says who is there, where it reaches other machines.
-      if (environment && !environment.host.remote) return new Set([auth.machineId]);
-      return args.offline ? null : manager.getOnlineMachineIds();
+    machines: async () => {
+      await baseline(undefined);
+      return (await listAliveDocMetas<MachineMeta>(manager, isMachineDocRoomId)).map(
+        (row) => row.meta
+      );
     },
+    catalogReadiness: () => ({
+      metadata: baselines.get(undefined) !== false,
+      workspace: baselines.get(getWorkspaceFlockDocId(workspaceId)) !== false,
+      machines: machineBaselines,
+    }),
+    onlineMachineIds: async () =>
+      getSessionCommandEnvironment() && !getSessionCommandEnvironment()!.host.remote
+        ? new Set([auth.machineId])
+        : args.offline
+          ? null
+          : manager.getOnlineMachineIds(),
     canAccess: async (machineId, localProjectId) =>
       // On the local platform every project of a machine its user reaches is theirs.
-      (localProjectId !== undefined && getSessionCommandEnvironment() !== undefined) ||
+      (localProjectId !== undefined &&
+        getCliPlatformKind() === 'local' &&
+        getSessionCommandEnvironment() !== undefined) ||
       (
         await readSessionMachineAccess({
           auth,
@@ -70,16 +128,25 @@ export async function createResourceDiscovery(args: {
       ).allowed,
     configs: async (machineId) => {
       await sync(getMachineFlockDocId(workspaceId, machineId));
+      machineBaselines.set(
+        machineId,
+        baselines.get(getMachineFlockDocId(workspaceId, machineId)) !== false
+      );
       return listMergedAgentConfigs(manager.repo, workspaceId, [machineId]);
     },
     capabilities: async (machineId: MachineId) => {
       const id = getMachineFlockDocId(workspaceId, machineId);
       await sync(id);
+      machineBaselines.set(machineId, baselines.get(id) !== false);
       const handle = await manager.repo.openFlockDoc(id);
       return getMachineFlockAcpCapabilities(readMachineFlockRowsFromFlock(handle.flock));
     },
     projects: async (machineId) => {
       await sync(getMachineFlockDocId(workspaceId, machineId));
+      machineBaselines.set(
+        machineId,
+        baselines.get(getMachineFlockDocId(workspaceId, machineId)) !== false
+      );
       return Object.values(await readMachineLocalProjects(manager.repo, workspaceId, machineId));
     },
     roles: async () => {

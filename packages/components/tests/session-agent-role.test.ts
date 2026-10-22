@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 // Coverage for the Role offer inside an EXISTING session: which Roles it may
 // reuse, and what "still applied" means when the session's agent is fixed.
 
@@ -86,8 +87,12 @@ describe('selectSessionAgentRoles', () => {
     // Claude here runs another agent: not offered. The Auditor on the build box
     // is listed, but the Session cannot move there.
     expect(items.map((item) => [item.role.id, item.title, item.availability])).toEqual([
-      ['r-codex', 'Reviewer', { kind: 'available' }],
-      ['r-codex-2', 'Auditor · Build box', { kind: 'unavailable', reason: 'other_machine' }],
+      ['r-codex', 'Reviewer · Codex · machine-1', { kind: 'available' }],
+      [
+        'r-codex-2',
+        'Auditor · Codex · Build box',
+        { kind: 'unavailable', reason: 'other_machine' },
+      ],
     ]);
   });
 
@@ -179,6 +184,6 @@ describe('isAgentRoleRunConfigApplied', () => {
       agentSelection: { agentId: 'codex-2' as AgentConfigId, machineId: 'machine-1' as MachineId },
     };
     expect(isAgentRoleRunConfigApplied(role.runConfig, selection)).toBe(true);
-    expect(isComposerAgentRoleApplied(role.instances[0]!, selection)).toBe(false);
+    expect(isComposerAgentRoleApplied(getAgentRoleTargets(role)[0]!, selection)).toBe(false);
   });
 });

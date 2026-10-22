@@ -83,33 +83,24 @@ See the [decision and verification](../../../../.agents/notes/implemented/bug-fi
 
 ## Role dispatch
 
-- `session_create` and `session_create_many` resolve an explicit Agent Role id directly from
-  the workspace catalog; no driving-Turn mention authorization is required. Resolve its target,
-  Prompt prefix, revision, and concrete run config before Operation acceptance. Recovery uses
-  the frozen canonical Prompt and target dispatch config and never rereads the mutable catalog.
-  A Role is a template (name, description, Prompt prefix) with ordered instances: each has a
-  stable id, an optional alias, a machine, an Agent config, a run config and optional memory.
-  Instances with one alias, or without one on one agent family (runtime plus provider brand),
-  are a group that stands in for itself across machines; a machine holds at most one instance
-  per group, and writes refuse a second. The create picks one with `selectAgentRoleInstance`
-  before resolving the rest: a named `agentRoleInstanceId` must exist, run now and match any
-  `machineId` passed with it; an explicit `machineId`, else the machine of a local `workContext`
-  project (or the requester's, with `useCurrentSessionAsParent`), runs that machine's instance
-  in the earliest group; otherwise the first group, in list order, with a usable instance runs,
-  the requester's machine first inside it. A pinned machine or instance that cannot run the Role
-  fails the create with the usable instances listed, never moving the work, and the reply's
-  `agentRole` (`agentRoles` for a batch) names the instance id, group name, machine and rule.
-  "Usable" is the per-instance availability `lody_agent_role_list/get` report (with each
-  instance's alias and group): anything not `unavailable`.
-  A Local Project requester defaults to a child only when the chosen machine is its own.
-  Writers also keep the legacy single-machine fields as a mirror of the first instance, so a
-  client that predates instances still runs the Role there. Readers convert older rows
-  deterministically: a lan.4 `placements` row gives one instance per switched-on machine and a
-  single-machine row one instance, each with the id `<roleId>:<machineId>` and no alias.
-  `readDelegatedMachineAccess`
-  requires both the executing Machine owner and the driving human to be able to use the target
-  (owned, or shared plus shared project); never decide it from synced `MachineMeta.ownerUserId`
-  ([note](../../../../.agents/notes/implemented/bug-fix/2026-09-28-mcp-cross-machine-agent-role.md)).
+Roles share a name, prompt and visibility, with stable targets owning machine,
+Agent config, run options and memory. A Role/machine permits different unaliased
+Agent families; repeated families need aliases. Aliases are unique only within
+that Role/machine. Discovery includes every target and its availability.
+
+`session_create` and batches resolve explicit Role ids without a mention grant.
+`agentRoleInstanceId` pins the stable target, including old stored references.
+Otherwise use `agentRoleMachineId` or `machineId`; several targets there require
+an explicit id. Conflicting machine/work-context pins fail. No selection depends
+on order, online state or caller machine. CLI bare aliases require one match.
+Acceptance freezes target/config/prompt/revision; recovery never rereads the Role.
+Deleted/unavailable pins never run a saved Agent instead. Access checks still
+require both the executing machine owner and invoking human to reach the target.
+
+Readers retain all legacy `instances` and enabled `placements`, including each
+memory binding. Single targets serialize as v1; multiple targets as v2, which old
+clients skip without rewriting. Opening a catalog never writes. Explicit Save
+performs any supported run-option reconciliation.
 
 ## Board membership
 
@@ -137,14 +128,7 @@ Board-specific tools and automatic reports are later steps.
   `targetDispatchConfigs`, so recovery never rereads the catalog or history.
   ([note](../../../../.agents/notes/implemented/bug-fix/2026-10-17-agent-session-workspace-mcp.md))
 
-## Local routing
-
-- Local Session/catalog tools route through `session/call-tool` to the daemon's
-  existing repo. `session-tool-router.ts` reuses SDK-parsed MCP arguments and
-  parses daemon inputs; `session-command-environment.ts` scopes identity and
-  host operations with AsyncLocalStorage. Require an active local user Turn and
-  exact workspace/machine scope; never open a second local writer replica.
-  Cloud keeps its authenticated command runtime and remote recovery confirmation.
+## Daemon routing
 
 ## Agent config writes
 
@@ -162,8 +146,8 @@ Schedule by what its Role resolves to at the moment of the write, never by the A
 saved beside the reference, and a run is not ranked again: raising a Role afterwards
 is itself a person's edit or a capped `lody_agent_role_update`. Known limits:
 
-- A reference without an instance runs the first usable instance of the Role on that
-  machine, so adding an instance ahead of it there changes what the Schedule runs.
+- A reference without a target id requires exactly one target on its machine;
+  adding another makes it ambiguous until a target is chosen.
 - Slot admission and the Registry row keep the Agent the Role resolved to at the last
   save until the Schedule is saved again.
 - A build without the `scheduleAgentRoles` capability rejects the definition and its
@@ -196,6 +180,19 @@ JSON drafts, for example `"mcpServerIds": ["mail", "search"]` or
 `"mcpServerIds": []`. CLI edit replaces the full draft, so omitting the field
 there restores workspace defaults. The editor's composer menu also sets the
 selection; confirmation cards preserve proposed ids.
+
+- Session/catalog tools route through `session/call-tool` to the daemon's
+  existing repo in both compositions. `session-tool-router.ts` reuses SDK-parsed
+  MCP arguments and parses daemon inputs; `session-command-environment.ts` lends
+  the daemon replica (`runWithDaemonWorkspace`) and, on the local platform, also
+  scopes identity and host operations with AsyncLocalStorage. Require exact
+  workspace/machine scope and an active invoking Turn (the local user's on the
+  local platform); never open a second replica. Cloud keeps its authenticated command behavior and
+  remote recovery confirmation; only the replica changes. Schedule tools use the
+  daemon's schedule control, and cancel/archive run in-process rather than through
+  a child `lody` CLI. Calls keep a ten-minute IPC bound; legacy `wait: true` adds
+  its maximum wait. See
+  the [decision](../../../../.agents/notes/implemented/architecture/2026-10-16-daemon-hosted-mcp-workspace-commands.md).
 
 ## Bounded collaboration
 
@@ -242,7 +239,6 @@ and matching Board coordinator id. Overview reads bounded metadata/presence rows
 individual histories for conclusions. Notes use the shared LoroText writer and the daemon's
 existing persistence/sync path. See the [Board design](../../../../specs/project-coordinator/design.md#pr2-implemented).
 
-
 ### Board schedules
 
 Schedule create/update/propose accept `boardId`; list accepts it as a filter and
@@ -255,3 +251,84 @@ session. Proposal confirmation keeps the Board, Role and MCP selection.
 
 The human `lody schedule create/edit/list` commands also accept `--board`.
 Execution uses the [same Schedule worker](../lib/schedules/README.md).
+
+## Agent Role proposals
+
+`lody_agent_role_create_proposal` and `lody_agent_role_update_proposal` publish a durable review card
+in the invoking conversation; neither writes the Role catalog. Both use the active
+Turn's human identity and the daemon Session tool route in both compositions. Save is a renderer
+catalog write by that user. Updating requires Role ownership and patches only name,
+description and promptPrefix against the latest row. There is no revision precondition:
+concurrent replicas use the existing Flock merge behavior. Deleted Roles are not recreated.
+New Roles are private, bind explicit machineId + agentConfigId, and use Agent defaults.
+
+Reuse requestId for retries. The same request returns the stored pending/saved/dismissed
+outcome; changed input under that id fails. The generated Role id lives in the card, so
+retrying a create confirmation does not create another Role. An upload failure does not
+roll back a locally durable save. Accepted Operations retain their frozen configurations.
+
+CLI uses the same tools and confirmation flow. It needs an active conversation via
+`--session` or `LODY_SESSION_ID`; `--workspace` selects the workspace when ambiguous.
+
+All writable fields can be passed directly:
+
+```sh
+lody agent-role create --name "Reviewer" --description "Review code" \
+  --prompt-prefix "Find actionable bugs" --machine-id MACHINE_ID --agent-config-id CONFIG_ID
+lody agent-role update ROLE_ID --name "Reviewer" --description "" \
+  --prompt-prefix "Focus on correctness"
+```
+
+Creation requires `--name`, `--machine-id`, and `--agent-config-id`; description and
+prompt prefix are optional. Updates accept `--name`, `--description`, and
+`--prompt-prefix`, and require at least one field. Omitted fields stay unchanged;
+`--description ""` and `--prompt-prefix ""` clear the corresponding text.
+For multiline instructions, the shell can supply `--prompt-prefix "$(cat reviewer.md)"`.
+
+JSON file input remains available, but cannot be combined with direct Role field
+options. Session, workspace, request-id, and output options work with either mode.
+
+```sh
+lody agent-role create --file role.json --request-id reviewer-create
+lody agent-role update ROLE_ID --file patch.json --request-id reviewer-update
+```
+
+A create file contains `name`, `machineId`, `agentConfigId`, and optional `description`
+and `promptPrefix`. An update file contains only the changed `name`, `description`,
+or `promptPrefix`; an empty string clears description/instructions. Neither accepts
+credentials, MCP selections, ownership, visibility, or run configuration. The command
+prints the requestId and pending result; it does not claim the Role was saved.
+
+`role.json`:
+
+```json
+{
+  "name": "Reviewer",
+  "machineId": "MACHINE_ID",
+  "agentConfigId": "CONFIG_ID",
+  "description": "Review code",
+  "promptPrefix": "Check correctness.\nReport actionable bugs."
+}
+```
+
+`patch.json`:
+
+```json
+{
+  "description": "",
+  "promptPrefix": "Focus on correctness.\nExplain each finding."
+}
+```
+
+Files must contain a single UTF-8 JSON object, using the camelCase keys shown above.
+The update file is the patch itself: do not wrap it in `patch`; pass the Role ID as the
+command argument. Pass retry IDs with `--request-id`. JSON strings use `\n` for line
+breaks; comments and trailing commas are not valid JSON.
+
+All field values are strings. Creation requires `name`, `machineId`, and `agentConfigId`.
+Updates require at least one supported field. Omitted update fields stay unchanged;
+`""` clears description or instructions, while `null` is rejected. Names must be nonempty,
+mention-compatible and at most 60 characters after trimming; descriptions allow up to
+140 Unicode code points; instructions allow up to 32,768 characters before trimming.
+Machine/config IDs must be nonempty and at most 128 characters after trimming.
+Unsupported fields are rejected.

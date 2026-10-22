@@ -1,6 +1,7 @@
+import { getAgentRoleTargets, normalizeAgentRole } from '../src/agent-role';
 import { describe, expect, it } from 'vitest';
 
-import { AGENT_ROLE_VERSION, withAgentRoleInstances, type AgentRole } from '../src/agent-role';
+import { AGENT_ROLE_VERSION, withAgentRoleTargets, type AgentRole } from '../src/agent-role';
 import type { AgentConfigId, AgentRoleId, MachineId, McpServerId, WorkspaceId } from '../src/ids';
 import {
   applyWorkspaceFlockRowEvents,
@@ -25,8 +26,11 @@ import {
 import type { WorkspaceMcpServerMeta } from '../src/workspace-mcp';
 
 const id = (value: string): McpServerId => value as McpServerId;
-const agentRole = (roleId: string, overrides: Partial<AgentRole> = {}): AgentRole =>
-  withAgentRoleInstances(
+const agentRole = (
+  roleId: string,
+  overrides: Partial<AgentRole> & { instances?: import('@lody/shared').AgentRoleTarget[] } = {}
+): AgentRole =>
+  withAgentRoleTargets(
     {
       v: AGENT_ROLE_VERSION,
       id: roleId as AgentRoleId,
@@ -40,10 +44,10 @@ const agentRole = (roleId: string, overrides: Partial<AgentRole> = {}): AgentRol
     },
     overrides.instances ?? [
       {
-        id: `${roleId}:machine-1` as AgentRole['instances'][number]['id'],
+        id: `${roleId}:machine-1` as import('@lody/shared').AgentRoleInstanceId,
         machineId: 'machine-1' as MachineId,
         agentConfigId: 'config-1' as AgentConfigId,
-        runConfig: {},
+        runConfig: overrides.runConfig ?? {},
       },
     ]
   );
@@ -262,33 +266,29 @@ describe('workspace Flock helpers', () => {
     expect(deleteWorkspaceAgentRoleFromFlock(flock, role.id)).toBe(false);
   });
 
-  it('writes the first instance into the legacy fields older clients read', () => {
+  it('writes every migrated target as v2 without a stale legacy mirror', () => {
     const flock = new FakeWorkspaceFlock();
     const role = agentRole('role-1', {
       instances: [
         {
-          id: 'claude' as AgentRole['instances'][number]['id'],
+          id: 'claude' as import('@lody/shared').AgentRoleInstanceId,
           machineId: 'machine-2' as MachineId,
           agentConfigId: 'config-2' as AgentConfigId,
           runConfig: { modelId: 'opus', memory: { providerId: 'nowledge-mem', memoryId: 'lody' } },
         },
         {
-          id: 'codex' as AgentRole['instances'][number]['id'],
+          id: 'codex' as import('@lody/shared').AgentRoleInstanceId,
           machineId: 'machine-1' as MachineId,
           agentConfigId: 'config-1' as AgentConfigId,
           runConfig: {},
         },
       ],
     });
-    // A row whose mirror went stale is rewritten from its instances on write.
-    writeWorkspaceAgentRoleToFlock(flock, { ...role, machineId: 'machine-1' as MachineId });
-    expect(
-      flock.rows.get(JSON.stringify(workspaceFlockKeys.agentRole(role.id)))?.value
-    ).toMatchObject({
-      machineId: 'machine-2',
-      agentConfigId: 'config-2',
-      runConfig: { modelId: 'opus', memory: { providerId: 'nowledge-mem', memoryId: 'lody' } },
-    });
+    writeWorkspaceAgentRoleToFlock(flock, role);
+    const stored = flock.rows.get(JSON.stringify(workspaceFlockKeys.agentRole(role.id)))?.value;
+    expect(stored).toMatchObject({ v: 2, targets: getAgentRoleTargets(role) });
+    expect(stored).not.toHaveProperty('machineId');
+    expect(stored).not.toHaveProperty('instances');
   });
 
   it('drops a role row whose stored value no longer validates', () => {
@@ -310,5 +310,88 @@ describe('workspace Flock helpers', () => {
       modelId: 'gpt-5.6',
       configOptionValues: { fast: true },
     });
+  });
+
+  it('stores a multi-machine role as v2 and a single-machine role as the unchanged v1 row', () => {
+    const flock = new FakeWorkspaceFlock();
+    const key = workspaceFlockKeys.agentRole('role-1' as AgentRoleId);
+    const single = agentRole('role-1', { runConfig: { modelId: 'gpt-5.6' } });
+    writeWorkspaceAgentRoleToFlock(flock, single);
+    const storedSingle = flock.rows.get(JSON.stringify(key))?.value as Record<string, unknown>;
+    // Exactly what an older client wrote and still reads.
+    expect(storedSingle).toMatchObject({ v: 1, machineId: 'machine-1', agentConfigId: 'config-1' });
+    expect(storedSingle).not.toHaveProperty('additionalTargets');
+    expect(storedSingle).not.toHaveProperty('targets');
+
+    const multi: AgentRole = {
+      ...single,
+      alias: 'Reviewer-Mac',
+      additionalTargets: [
+        {
+          machineId: 'machine-2' as MachineId,
+          agentConfigId: 'config-2' as AgentConfigId,
+          runConfig: { modelId: 'gpt-5.6-luna' },
+        },
+      ],
+    };
+    expect(writeWorkspaceAgentRoleToFlock(flock, multi)).toBe(true);
+    const storedMulti = flock.rows.get(JSON.stringify(key))?.value as Record<string, unknown>;
+    // Older clients accept only v1, so they skip this row instead of rewriting
+    // it without the second machine.
+    expect(storedMulti.v).toBe(2);
+    expect(storedMulti).not.toHaveProperty('machineId');
+    expect(storedMulti.targets).toEqual(getAgentRoleTargets(multi));
+    expect(listWorkspaceAgentRoles(readWorkspaceFlockRowsFromFlock(flock))).toEqual([
+      normalizeAgentRole(multi),
+    ]);
+    expect(writeWorkspaceAgentRoleToFlock(flock, multi)).toBe(false);
+
+    // Back to one machine: the row returns to the v1 shape and the alias goes.
+    writeWorkspaceAgentRoleToFlock(flock, single);
+    expect(flock.rows.get(JSON.stringify(key))?.value).toMatchObject({ v: 1 });
+  });
+  it('leaves legacy and opaque v2 catalog rows byte-for-byte unchanged on reads and unrelated writes', () => {
+    const flock = new FakeWorkspaceFlock();
+    const legacy = {
+      ...agentRole('legacy'),
+      instances: [
+        {
+          id: 'kept-a',
+          machineId: 'machine-1',
+          agentConfigId: 'config-1',
+          runConfig: { memory: { providerId: 'nowledge-mem', memoryId: 'synthetic-a' } },
+        },
+        {
+          id: 'kept-b',
+          machineId: 'machine-1',
+          agentConfigId: 'config-2',
+          runConfig: { modelId: 'synthetic-b' },
+        },
+      ],
+    };
+    const opaque = {
+      ...agentRole('opaque'),
+      v: 2,
+      targets: legacy.instances,
+      extensionFromPeer: { retain: true },
+    };
+    const future = { ...opaque, id: 'future', v: 3 };
+    for (const row of [legacy, opaque, future])
+      flock.set(workspaceFlockKeys.agentRole(row.id as AgentRoleId), row);
+    const before = JSON.stringify([...flock.rows]);
+    const commits = flock.commits;
+    const loaded = listWorkspaceAgentRoles(readWorkspaceFlockRowsFromFlock(flock));
+    expect(loaded.map((role) => role.id)).toEqual(['legacy', 'opaque']);
+    expect(loaded.map((role) => getAgentRoleTargets(role).map((target) => target.id))).toEqual([
+      ['kept-a', 'kept-b'],
+      ['kept-a', 'kept-b'],
+    ]);
+    expect(JSON.stringify([...flock.rows])).toBe(before);
+    expect(flock.commits).toBe(commits);
+    writeWorkspaceMcpServerToFlock(flock, entry('synthetic-server'));
+    for (const row of [legacy, opaque, future])
+      expect(
+        flock.rows.get(JSON.stringify(workspaceFlockKeys.agentRole(row.id as AgentRoleId)))?.value
+      ).toEqual(row);
   });
 });

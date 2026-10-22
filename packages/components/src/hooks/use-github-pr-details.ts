@@ -317,7 +317,8 @@ export function useGitHubPrDetails({
     useAuthenticatedConvex();
   const isAuthenticated = hostedGitHub ? isConvexAuthenticated : true;
   const isConvexAuthLoading = hostedGitHub && isConvexAuthLoadingRaw;
-  const canFetch = enabledWithInputs && (publicRead || canRunAuthedWorkspaceQuery(workspaceId, isAuthenticated));
+  const canFetch =
+    enabledWithInputs && (publicRead || canRunAuthedWorkspaceQuery(workspaceId, isAuthenticated));
 
   const [payload, setPayload] = useState<PrCachePayload | null>(null);
   // The PR `payload`/`state` describe. A switched view keeps the previous PR's

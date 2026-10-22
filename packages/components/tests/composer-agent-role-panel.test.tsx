@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 // @vitest-environment jsdom
 
 import { act, createElement, type ComponentProps } from 'react';
@@ -8,7 +9,6 @@ import {
   DEFAULT_AGENT_ROLE_EMOJI,
   type AgentConfigId,
   type AgentRole,
-  type CatalogAgentRole,
   type AgentRoleId,
   type AgentRoleInstanceId,
   type MachineId,
@@ -24,9 +24,7 @@ import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const makeRole = (
-  overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
-): CatalogAgentRole =>
+const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     ownerUserId: 'user-1',
@@ -52,7 +50,7 @@ const reviewerRole = makeRole({
   },
 });
 const reviewer: ComposerAgentRoleItem = composerItemsOf(reviewerRole)[0]!;
-const reviewerInstanceId = reviewerRole.instances[0]!.id;
+const reviewerInstanceId = getAgentRoleTargets(reviewerRole)[0]!.id;
 
 type PanelProps = ComponentProps<typeof ComposerAgentRolePanel>;
 
@@ -107,8 +105,12 @@ describe('ComposerAgentRolePanel', () => {
     const pairRole = singleMachineRole({
       ...reviewerRole,
       instances: [
-        { ...reviewerRole.instances[0]! },
-        { ...reviewerRole.instances[0]!, id: 'strict' as AgentRoleInstanceId, alias: 'Strict' },
+        { ...getAgentRoleTargets(reviewerRole)[0]! },
+        {
+          ...getAgentRoleTargets(reviewerRole)[0]!,
+          id: 'strict' as AgentRoleInstanceId,
+          alias: 'Strict',
+        },
       ],
     });
     const rows = composerItemsOf(pairRole);
@@ -117,7 +119,9 @@ describe('ComposerAgentRolePanel', () => {
       (row) => row.textContent ?? ''
     );
     // Titled by its agent: the second line is the model alone.
-    expect(rowText.find((text) => text.includes('Code Reviewer · Codex'))).not.toContain('Codex ·');
+    expect(
+      rowText.find((text) => text.includes('Code Reviewer · Codex'))?.match(/Codex/g)
+    ).toHaveLength(1);
     // Titled by its alias: the second line still says which agent.
     expect(rowText.find((text) => text.includes('Code Reviewer · Strict'))).toContain('Codex ·');
   });

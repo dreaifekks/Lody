@@ -54,8 +54,8 @@ strings on i18n rather than the registry's inline English.
 - Dialog-contained `OptionSelector` menus must portal into the nearest
   `[data-lody-dialog-content]`; a body portal is outside the modal's scroll and
   focus guards. `src/ui/dialog.tsx` emits that attribute on every panel.
-- `DiffViewer` uses the shared `@pierre/diffs` worker pools for syntax work regardless
-  of file size. Do not create or terminate a worker pool per viewer.
+- `DiffViewer` bounds standalone inline parsing by characters AND lines; syntax
+  and other parsing share Workers. Preserve context/fallbacks; no per-viewer pools.
 - Every floating surface passes `useSafeAreaCollisionPadding` as
   `collisionPadding`; the default parks a colliding surface flush against the
   screen edge and caps `--available-height` there too.
@@ -70,7 +70,7 @@ strings on i18n rather than the registry's inline English.
   while work is in flight is a plain `Button`, never `Action`/`Cancel` —
   those are `Close`, and `Close` always closes.
 - Tooltips come from `@lody/ui/tooltip` (Base UI): `Tooltip.Provider/Root/
-  Trigger/Content`, `render` instead of `asChild`, `delay` on the trigger or
+Trigger/Content`, `render` instead of `asChild`, `delay` on the trigger or
   provider. The chip is visual-only — no `role="tooltip"`, no
   `aria-describedby` — so an icon-only trigger names itself with `aria-label`.
 - Overlay list hover (menus, command palette, select) is

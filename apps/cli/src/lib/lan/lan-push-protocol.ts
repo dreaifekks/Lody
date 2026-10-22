@@ -1,3 +1,4 @@
+import type { TerminalOutcome, NotificationPresentation } from '@lody/shared/notifications';
 // What members of a LAN tell its hub so the hub can push to phones, and what
 // a phone registers. Both sides run from this package, so the shapes live here.
 import {
@@ -58,6 +59,8 @@ export function lanAlertProjectId(session: {
 export type LanPushEvent =
   | (LanAlertEventBase & {
       type: 'session-completed';
+      outcome?: TerminalOutcome;
+      presentation?: NotificationPresentation;
       sessionId: string;
       occurrenceId: string;
       sessionTitle?: string | null;
@@ -80,6 +83,7 @@ export type LanPushEvent =
     })
   | (LanAlertEventBase & {
       type: 'permission-requested';
+      presentation?: NotificationPresentation;
       sessionId: string;
       sessionTitle?: string | null;
       requestId: string;

@@ -8,6 +8,10 @@
     "./src/visual-annotation-inspector-global.ts"
   ],
   "exports": {
+    "./notifications": {
+      "types": "./src/notifications/index.ts",
+      "import": "./src/notifications/index.ts"
+    },
     "./loro-sync-errors": {
       "types": "./src/loro-sync-errors/index.ts",
       "import": "./src/loro-sync-errors/index.ts"
@@ -123,6 +127,10 @@
     "./ids": {
       "types": "./src/ids.ts",
       "import": "./src/ids.ts"
+    },
+    "./bug-report-client-log": {
+      "types": "./src/bug-report-client-log.ts",
+      "import": "./src/bug-report-client-log.ts"
     },
     "./platform-kind": {
       "types": "./src/platform-kind.ts",

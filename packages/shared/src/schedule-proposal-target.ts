@@ -3,12 +3,7 @@ import {
   type AcpConfigOptionValue,
   type ScheduleProposalMeta,
 } from './ai';
-import {
-  selectAgentRoleInstance,
-  type AgentRole,
-  type AgentRoleInstance,
-  type CatalogAgentRole,
-} from './agent-role';
+import { selectAgentRoleInstance, type AgentRole, type AgentRoleTarget } from './agent-role';
 import { getAgentRoleAgentFamily, getAgentRoleInstanceGroup } from './agent-role-group';
 import type { AgentConfigId, MachineId } from './ids';
 import type { AgentConfigMeta, SessionMeta } from './schema';
@@ -19,7 +14,7 @@ import type {
   ScheduleDestination,
 } from './schedule-types';
 import { defaultScheduleDestination } from './schedule-types';
-import { isSensitiveAcpConfigOptionId } from './session-preparation';
+import { isSensitiveAcpConfigOptionId } from './acp-config-option-sensitivity';
 
 /** The Agent a schedule run is entrusted to; the machine follows from its config. */
 type ProposalRunRef = Omit<ScheduleDefinition['agent'], 'agentConfigId'> & {
@@ -58,7 +53,7 @@ function scheduleOptionValues(
 }
 
 /** The run config a Role instance gives a schedule. */
-const scheduleAgentOfRoleInstance = (instance: AgentRoleInstance): ProposalRunRef => {
+const scheduleAgentOfRoleInstance = (instance: AgentRoleTarget): ProposalRunRef => {
   const { memory, modeId, modelId } = instance.runConfig;
   const configOptionValues = scheduleOptionValues(instance.runConfig.configOptionValues);
   return {
@@ -70,14 +65,14 @@ const scheduleAgentOfRoleInstance = (instance: AgentRoleInstance): ProposalRunRe
   };
 };
 
-const roleInstanceGroup = (instance: AgentRoleInstance, agents: readonly ProposalTargetAgent[]) => {
+const roleInstanceGroup = (instance: AgentRoleTarget, agents: readonly ProposalTargetAgent[]) => {
   const agent = agents.find((entry) => entry.id === instance.agentConfigId);
   return getAgentRoleInstanceGroup(instance, agent && getAgentRoleAgentFamily(agent));
 };
 
 /** The shared dispatch rules over the Agents that exist: one on its own machine is usable. */
 const selectRoleInstance = (
-  role: Pick<AgentRole, 'instances'>,
+  role: AgentRole,
   request: Parameters<typeof selectAgentRoleInstance>[1],
   agents: readonly ProposalTargetAgent[]
 ) =>
@@ -109,7 +104,7 @@ export function resolveScheduleAgentRole<A extends ProposalTargetAgent>(args: {
   | {
       ok: true;
       role: AgentRole;
-      instance: AgentRoleInstance;
+      instance: AgentRoleTarget;
       /** The instance's group name: its alias, else its agent's. */
       groupName?: string;
       agentConfig: A;
@@ -146,12 +141,14 @@ export type ResolvedProposalTarget<A extends ProposalTargetAgent = AgentConfigMe
   source: { agent: 'conversation' | 'role' | 'named'; project: 'conversation' | 'named' | 'none' };
   role?: AgentRole;
   /** The instance of `role` the schedule runs. */
-  roleInstance?: AgentRoleInstance;
+  roleInstance?: AgentRoleTarget;
   /** The reference a schedule keeps to `role`; it names an instance only when one was named. */
   agentRole?: ScheduleAgentRoleRef;
 };
 
 export type ProposalTargetProblem =
+  | 'role_machine_required'
+  | 'role_target_required'
   | 'role_not_found'
   | 'agent_not_found'
   | 'machine_mismatch'
@@ -176,7 +173,7 @@ export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(arg
   meta: Pick<ScheduleProposalMeta, 'target' | 'destination' | 'boardId'>;
   conversation: ProposalConversation | null;
   agents: readonly A[];
-  roles: readonly CatalogAgentRole[];
+  roles: readonly AgentRole[];
 }):
   | { ok: true; target: ResolvedProposalTarget<A> }
   | { ok: false; problem: ProposalTargetProblem } {
@@ -187,7 +184,7 @@ export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(arg
   // else one on the named machine, else the first group with a known agent,
   // the conversation's machine first.
   let role: AgentRole | undefined;
-  let instance: AgentRoleInstance | undefined;
+  let instance: AgentRoleTarget | undefined;
   if (named.agentRoleId) {
     role = roles.find((entry) => entry.id === named.agentRoleId);
     if (!role) return { ok: false, problem: 'role_not_found' };
@@ -206,12 +203,16 @@ export function resolveScheduleProposalTarget<A extends ProposalTargetAgent>(arg
       return {
         ok: false,
         problem:
-          choice.reason === 'instance_not_found'
-            ? 'role_not_found'
-            : choice.reason === 'machine_has_no_instance' ||
-                choice.reason === 'instance_machine_mismatch'
-              ? 'machine_mismatch'
-              : 'agent_not_found',
+          choice.reason === 'machine_required'
+            ? 'role_machine_required'
+            : choice.reason === 'target_required'
+              ? 'role_target_required'
+              : choice.reason === 'instance_not_found'
+                ? 'role_not_found'
+                : choice.reason === 'machine_has_no_instance' ||
+                    choice.reason === 'instance_machine_mismatch'
+                  ? 'machine_mismatch'
+                  : 'agent_not_found',
       };
     instance = choice.instance;
   }

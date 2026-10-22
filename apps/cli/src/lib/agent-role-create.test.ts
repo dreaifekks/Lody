@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  getAgentRoleTargets,
   AGENT_ROLE_VERSION,
   snapshotAgentRole,
   normalizeAgentRole,
@@ -12,7 +13,7 @@ import {
   type WorkspaceId,
 } from '@lody/shared';
 import type { AuthContext } from './command-runtime';
-import type { AgentRoleDiscoveryInstance } from './resource-discovery';
+import type { AgentRoleDiscoveryTarget } from './resource-discovery';
 import type { LoroDocumentManager } from '@/lib/loro/doc';
 import type { CreateOptions } from '@/commands/session';
 import {
@@ -23,6 +24,7 @@ import {
   loadWorkspaceAgentRoleCatalog,
   resolveAgentRoleCreate,
   resolveAgentRoleCreateFromCatalog,
+  selectAgentRoleTarget,
   selectUniqueAgentRoleByIdOrName,
 } from './agent-role-create';
 import { __lodyMcpServerInternals } from '../mcp/lody-mcp-server';
@@ -31,12 +33,12 @@ const { buildMcpCreateOptions, getSessionContext, resolveMcpSessionCreate } =
   __lodyMcpServerInternals;
 
 const discoveryState = vi.hoisted(() => ({
-  instances: [] as AgentRoleDiscoveryInstance[],
+  instances: [] as AgentRoleDiscoveryTarget[],
   projectMachineId: undefined as MachineId | undefined,
 }));
 vi.mock('./resource-discovery-runtime', () => ({
   createResourceDiscovery: async () => ({
-    agentRoleInstances: async () => discoveryState.instances,
+    agentRoleTargets: async () => discoveryState.instances,
     localProjectMachineId: async () => discoveryState.projectMachineId,
     resolveMachine: async (selector: string) => selector,
   }),
@@ -185,7 +187,7 @@ describe('resolveAgentRoleCreateFromCatalog', () => {
         },
       ],
     });
-    discoveryState.instances = role.instances.map((instance) => ({
+    discoveryState.instances = getAgentRoleTargets(role).map((instance) => ({
       ...instance,
       alias: null,
       group: { key: 'claude', name: 'Claude' },
@@ -211,7 +213,7 @@ describe('resolveAgentRoleCreateFromCatalog', () => {
         workContext: { kind: 'local', projectId: 'project-b' },
       },
       discovery: async () => ({
-        agentRoleInstances: async () => discoveryState.instances,
+        agentRoleTargets: async () => discoveryState.instances,
         localProjectMachineId: async () => discoveryState.projectMachineId,
       }),
     });
@@ -220,7 +222,9 @@ describe('resolveAgentRoleCreateFromCatalog', () => {
     expect(cli.dispatchConfig.modelId).toBe('b');
     const options: CreateOptions = {};
     applyAgentRoleCreateTarget(options, cli);
-    expect(options.agentRoleSnapshot).toEqual(snapshotAgentRole(role, role.instances[1]));
+    expect(options.agentRoleSnapshot).toEqual(
+      snapshotAgentRole(role, getAgentRoleTargets(role)[1])
+    );
     const pinned = await resolveAgentRoleCreateFromCatalog({
       auth,
       manager,
@@ -304,7 +308,9 @@ describe('applyAgentRoleCreateTarget', () => {
     expect(options.configOption).toEqual([]);
     expect(options.agentRoleId).toBe('reviewer');
     expect(options.agentRoleRevision).toBe(7);
-    expect(options.agentRoleSnapshot).toEqual(snapshotAgentRole(role, role.instances[0]));
+    expect(options.agentRoleSnapshot).toEqual(
+      snapshotAgentRole(role, getAgentRoleTargets(role)[0])
+    );
   });
 
   it('keeps work-context flags untouched while replacing the target', () => {
@@ -350,7 +356,7 @@ describe('MCP resolution parity', () => {
       { operationId: 'role-review-1', prompt, agentRoleId: 'reviewer' },
       undefined,
       { machineId: 'current-machine' as MachineId, project: undefined },
-      { role, instance: role.instances[0]!, rule: 'available' }
+      { role, instance: getAgentRoleTargets(role)[0]!, rule: 'available' }
     );
 
     expect(cli.machineId).toBe(mcp.input.machineId);
@@ -381,5 +387,88 @@ describe('loadWorkspaceAgentRoleCatalog', () => {
     const catalog = await loadWorkspaceAgentRoleCatalog(manager, 'workspace-id' as WorkspaceId);
 
     expect(catalog.get(role.id)).toEqual(role);
+  });
+});
+
+describe('a Role on several machines', () => {
+  const both = agentRole({
+    runConfig: { modelId: 'opus' },
+    alias: 'Reviewer-Remote',
+    additionalTargets: [
+      {
+        machineId: 'laptop' as MachineId,
+        agentConfigId: 'codex' as AgentConfigId,
+        runConfig: { modelId: 'gpt-5.6' },
+        alias: 'Reviewer-Laptop',
+      },
+    ],
+  });
+
+  it('selects a target by alias or by id plus machine, and never picks one itself', () => {
+    expect(selectAgentRoleTarget([both], 'Reviewer-Laptop')).toMatchObject({
+      machineId: 'laptop',
+      agentConfigId: 'codex',
+    });
+    expect(selectAgentRoleTarget([both], 'reviewer', { machineId: 'laptop' }).runConfig).toEqual({
+      modelId: 'gpt-5.6',
+    });
+    expect(() => selectAgentRoleTarget([both], 'Reviewer')).toThrow(/machine_required/);
+    expect(() => selectAgentRoleTarget([both], 'reviewer', { machineId: 'ci' })).toThrow(
+      /machine_has_no_instance/
+    );
+  });
+
+  it('lets --machine pick the target instead of reporting it as overridden', async () => {
+    const { manager } = createRoleCatalogManager([
+      both,
+      agentRole({ id: 'solo' as AgentRoleId, name: 'Solo' }),
+    ]);
+    const picked = await resolveAgentRoleCreateFromCatalog({
+      manager,
+      auth: { machineId: 'caller', userId: 'user' } as never,
+      workspaceId: 'workspace-id' as WorkspaceId,
+      selector: 'reviewer',
+      prompt: 'Review this.',
+      overrides: { machine: 'laptop', model: 'manual' },
+    });
+    expect(picked).toMatchObject({ machineId: 'laptop', agentConfigId: 'codex' });
+    expect(picked.dispatchConfig.modelId).toBe('gpt-5.6');
+    expect(picked.ignoredOverrides).toEqual(['--model']);
+
+    await expect(
+      resolveAgentRoleCreateFromCatalog({
+        manager,
+        auth: { machineId: 'caller', userId: 'user' } as never,
+        workspaceId: 'workspace-id' as WorkspaceId,
+        selector: 'solo',
+        prompt: 'Review.',
+        overrides: { machine: 'laptop' },
+      })
+    ).rejects.toThrow('machine_has_no_instance');
+  });
+
+  it('rejects a readable name that also names another Role target alias', () => {
+    const named = agentRole({ id: 'named' as AgentRoleId, name: 'Shared label' });
+    const aliased = agentRole({
+      id: 'aliased' as AgentRoleId,
+      name: 'Other role',
+      alias: 'Shared label',
+    });
+    expect(() => selectUniqueAgentRoleByIdOrName([named, aliased], 'Shared label')).toThrow(
+      'ambiguous'
+    );
+    expect(selectAgentRoleTarget([named, aliased], 'named').id).toBe('named');
+    expect(selectAgentRoleTarget([named, aliased], 'aliased:remote-machine').id).toBe('aliased');
+  });
+
+  it('resolves stable target ids and rejects bare aliases shared across machines', () => {
+    const selected = selectAgentRoleTarget([both], 'reviewer:laptop');
+    expect(selected).toMatchObject({ machineId: 'laptop', agentConfigId: 'codex' });
+    const repeated = {
+      ...both,
+      alias: 'Same',
+      additionalTargets: both.additionalTargets!.map((target) => ({ ...target, alias: 'Same' })),
+    };
+    expect(() => selectAgentRoleTarget([repeated], 'Same')).toThrow('ambiguous');
   });
 });

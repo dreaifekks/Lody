@@ -1,11 +1,10 @@
 import {
-  legacyAgentRoleInstanceId,
-  withAgentRoleInstances,
+  normalizeAgentRole,
+  getAgentRoleTargets,
   type AcpCapabilityCacheEntry,
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleAvailability,
-  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 import {
@@ -19,27 +18,15 @@ import {
  * for such a row), unless `instances` is given.
  */
 export const singleMachineRole = (
-  row: Omit<AgentRole, 'instances'> & Partial<Pick<AgentRole, 'instances'>>
-): CatalogAgentRole =>
-  withAgentRoleInstances(
-    row,
-    row.instances ?? [
-      {
-        id: legacyAgentRoleInstanceId(row.id, row.machineId),
-        label: 'Default',
-        machineId: row.machineId,
-        agentConfigId: row.agentConfigId,
-        runConfig: row.runConfig,
-      },
-    ]
-  );
+  row: AgentRole & { instances?: import('@lody/shared').AgentRoleTarget[] }
+): AgentRole => normalizeAgentRole(row)!;
 
 /**
  * A Role's composer entries, built as the composer builds them on the Role's
  * first machine; its agents are taken as Codex unless `agentConfigs` says.
  */
 export const composerItemsOf = (
-  role: CatalogAgentRole,
+  role: AgentRole,
   options: {
     availability?: AgentRoleAvailability;
     machineId?: MachineId;
@@ -48,10 +35,10 @@ export const composerItemsOf = (
 ): ComposerAgentRoleItem[] =>
   buildComposerAgentRoleItems({
     roles: [role],
-    machineId: options.machineId ?? role.instances[0]!.machineId,
+    machineId: options.machineId ?? getAgentRoleTargets(role)[0]!.machineId,
     agentConfigs:
       options.agentConfigs ??
-      role.instances.map(
+      getAgentRoleTargets(role).map(
         (instance) =>
           ({
             id: instance.agentConfigId,

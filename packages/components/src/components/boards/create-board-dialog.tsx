@@ -125,8 +125,10 @@ export function CreateBoardDialog({
         ? lastAgent.agent
         : seedScheduleAgentRunRef(defaultConfig, machine)
       : null);
-  const shownAgent = role
-    ? { agentConfigId: role.instance.agentConfigId, ...role.instance.runConfig }
+  const shownAgent = selectedInstanceId
+    ? role
+      ? { agentConfigId: role.instance.agentConfigId, ...role.instance.runConfig }
+      : null
     : agent;
   const config = agents.find((entry) => entry.id === shownAgent?.agentConfigId);
   const [name, setName] = useState('');
@@ -160,6 +162,14 @@ export function CreateBoardDialog({
       : threadProject;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const roleProblem =
+    selectedInstanceId && (!role || role.availability.kind !== 'available')
+      ? t(
+          'boards.roleTargetUnavailable',
+          'The selected Role target is missing or unavailable. Choose a target or Agent.'
+        )
+      : '';
+  const displayedError = error || roleProblem;
   const [ids] = useState(() => ({ board: `bd_${uuid()}`, session: uuid() as SessionId }));
   const chooseMachine = (id: MachineId) => {
     const next = pickScheduleAgent({
@@ -254,10 +264,6 @@ export function CreateBoardDialog({
       );
       return;
     }
-    if (role && role.availability.kind !== 'available') {
-      setError(t('boards.agentUnavailable', 'Choose an available agent.'));
-      return;
-    }
     setSaving(true);
     setError('');
     try {
@@ -296,13 +302,13 @@ export function CreateBoardDialog({
   };
   /** A new thread of an existing Board: it starts with its task, like a new chat. */
   const create = async () => {
+    if (roleProblem) {
+      setError(roleProblem);
+      return;
+    }
     if (!existingBoard) return await createBoard();
     if (!runtime || !user || !machine || !config || !shownAgent || saving) return;
     const board = existingBoard;
-    if (role && role.availability.kind !== 'available') {
-      setError(t('boards.agentUnavailable', 'Choose an available agent.'));
-      return;
-    }
     setSaving(true);
     setError('');
     const task = purpose.trim();
@@ -408,7 +414,7 @@ export function CreateBoardDialog({
         }}
         agentRoles={{
           items: roleItems,
-          selectedInstanceId: role?.instance.id ?? null,
+          selectedInstanceId: selectedInstanceId ?? null,
           machine: machine ?? null,
           onSelect: (id) => {
             const item = findComposerAgentRoleItem(roleItems, id);
@@ -421,8 +427,15 @@ export function CreateBoardDialog({
                 },
                 instanceId: id,
               });
-            else if (shownAgent && machineId)
-              setChoice({ machineId, agent: shownAgent, instanceId: null });
+            else if (id === null && agent && machineId)
+              setChoice({ machineId, agent, instanceId: null });
+            else if (id !== null)
+              setError(
+                t(
+                  'boards.roleTargetUnavailable',
+                  'The selected Role target is missing or unavailable. Choose a target or Agent.'
+                )
+              );
           },
         }}
       />
@@ -438,7 +451,7 @@ export function CreateBoardDialog({
         coordinator={coordinatorControls}
         projectScope={<BoardProjectScopePicker value={projectScope} onChange={setProjectScope} />}
         saving={saving}
-        error={error}
+        error={displayedError}
         onSubmit={() => void create()}
         onClose={onClose}
       />
@@ -502,9 +515,9 @@ export function CreateBoardDialog({
               />
             ) : null}
           </div>
-          {error ? (
+          {displayedError ? (
             <p role="alert" {...stylex.props(boardStyles.error)}>
-              {error}
+              {displayedError}
             </p>
           ) : null}
           <Button type="submit" disabled={saving || !config || !machine}>

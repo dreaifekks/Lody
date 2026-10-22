@@ -113,7 +113,8 @@ export async function writeUserTurn(
   throwIfSendAborted(signal);
   if (send.queue) await runtime.writer.enqueueSessionMessage(send.sessionId, send.queue);
   else await runtime.writer.appendSessionTurn(send.sessionId, send.entry);
-  if (send.delivery.kind === 'dispatch') await activateUserTurn(runtime, send.sessionId, send.entry.id);
+  if (send.delivery.kind === 'dispatch')
+    await activateUserTurn(runtime, send.sessionId, send.entry.id);
 }
 
 /** Only local control metadata; this does not write history or start execution. */

@@ -92,9 +92,7 @@ function overflowingCodeActions(block: HTMLElement): DOMRect | null {
   const codeBlock = block.closest('[data-streamdown="code-block"]');
   const scroller = block.parentElement!;
   if (!codeBlock || scroller.scrollWidth <= scroller.clientWidth) return null;
-  return codeBlock
-    .querySelector('[data-streamdown="code-block-actions"]')!
-    .getBoundingClientRect();
+  return codeBlock.querySelector('[data-streamdown="code-block-actions"]')!.getBoundingClientRect();
 }
 
 interface MarkerGroup {
@@ -141,7 +139,9 @@ export function ArticleAnnotationMarkers({
       const box = element.getBoundingClientRect();
       // Into the room beside the article when there is some, never past it.
       const limit =
-        (element.parentElement?.getBoundingClientRect().right ?? box.right) - box.left - MARKER_SIZE;
+        (element.parentElement?.getBoundingClientRect().right ?? box.right) -
+        box.left -
+        MARKER_SIZE;
       setGroups(
         [...byBlock]
           .map(([block, items]) => {

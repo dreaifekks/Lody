@@ -93,6 +93,10 @@ and [display preference](../../../../.agents/notes/implemented/feature/2026-09-2
   keeps an accessible name and a hover tooltip. The page and its editors stay
   mounted through resizing; header actions wrap within the pane. [Decision and
   verification](../../../../.agents/notes/implemented/bug-fix/2026-10-01-narrow-settings-panel.md).
+- Machine settings' connected Agent badges in
+  [`settings/my-machine-connected-resources.tsx`](settings/my-machine-connected-resources.tsx)
+  use the shared `AgentIcon`, including provider-brand inference and custom/unknown
+  Agent fallbacks, in the Badge's leading icon slot.
 - GitHub personal identity authorization stays available in cloud-capable native
   clients: Authorize opens the current workspace's `/settings/github` on
   `VITE_SITE_URL` (default `https://lody.ai`) in the external browser. Complete
@@ -178,3 +182,14 @@ companion `useSessionShareStatus` answering the header's "already shared?".
 `sessions/session-chat-interface.tsx` owns the editor instance both the control
 and the "…" menu open. Rationale:
 [header share control](../../../../.agents/notes/implemented/feature/2026-09-14-session-header-share-control.md).
+
+## PR auto-archive
+
+`auto-archive-pr-watcher.tsx` keeps observed PR transitions separate from unfinished
+archive attempts. Its owning window retries the existing Session action with capped
+backoff and drops superseded work on scope changes. The action's automatic-only
+progress receipt records accepted targets; its cancellation check uses the
+authoritative snapshot before retry side effects, so restoring a partially archived
+Session or Tab supersedes the unfinished operation. Startup and restore still only
+establish the PR baseline.
+See the [retry decision](../../../../.agents/notes/implemented/bug-fix/2026-10-17-pr-auto-archive-retry.md).

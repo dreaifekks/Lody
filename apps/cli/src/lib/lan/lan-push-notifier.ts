@@ -152,6 +152,8 @@ export function createLanNotificationsPort(options: {
     notifySessionCompleted: async (input) => {
       await send({
         type: 'session-completed',
+        outcome: input.outcome,
+        presentation: input.presentation,
         sessionId: input.sessionId,
         occurrenceId: input.occurrenceId,
         sessionTitle: input.sessionTitle,
@@ -170,6 +172,7 @@ export function createLanNotificationsPort(options: {
     notifyPermissionRequested: async (input) => {
       await send({
         type: 'permission-requested',
+        presentation: input.presentation,
         sessionId: input.sessionId,
         sessionTitle: input.sessionTitle,
         requestId: input.requestId,

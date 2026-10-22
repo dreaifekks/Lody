@@ -8,6 +8,11 @@
   `session-command-environment.ts`. Require an active local user Turn and exact
   workspace/machine scope. `cli/call-tool`: read-only `TERMINAL_SESSION_TOOLS`, daemon identity. Cloud keeps
   authenticated commands and recovery confirmation.
+- Route Session/catalog tools via `session/call-tool` to the daemon repo in every
+  composition, never a second replica or child `lody` CLI. Reuse SDK-parsed arguments
+  and validate daemon inputs in `session-tool-router.ts`; scope replica/identity with
+  ALS in `session-command-environment.ts`. Require exact workspace/machine scope
+  and an active Turn (local: its user). Cloud keeps authenticated commands/recovery.
 
 - MCP sharing requires the active Turn user to equal the CLI authenticated account.
   Fail closed on shared-machine account mismatch; never substitute the machine owner.
@@ -19,7 +24,7 @@
   review, updates and selection. Credential fields accept `${VAR}` or daemon passthrough,
   never literals; responses must not echo connection values. Changes apply to later
   turns/sessions, never hot-load the running Agent.
-- Terminate all HTTP responses; `GET /mcp` returns 405.
+- End HTTP responses; `GET /mcp` returns 405.
 - Apply `withLoopbackNoProxy` last in agent env assembly (`session.ts` `buildShellEnv`,
   `acp-runner.ts`), setting both `NO_PROXY` and `no_proxy` to bypass loopback.
   [HTTP/proxy rationale](README.md#http-and-loopback).
@@ -27,22 +32,19 @@
   Serialize per-workspace Agent config writes before checking local name/count bounds;
   the shared CRDT is not a global CAS. Keep catalog writes locally durable while surfacing sync
   failures as unsynced.
-- Create tools resolve explicit Role ids from the catalog without mention authorization.
-  Before accepting an Operation, freeze the Role target, Prompt prefix, revision and run
-  config. Recovery uses the frozen canonical Prompt and dispatch config, never rereading
-  the Role. `selectAgentRoleInstance` picks the instance; Local Projects default to child
-  Sessions only on the requester's. `readDelegatedMachineAccess`
-  requires access for both executing Machine owner and driving human (owned, or shared with
-  shared project), never trusting synced `MachineMeta.ownerUserId`.
-- Derive orchestration identity only from the active execution runtime's dispatch payload;
-  reject absent runtime/userId, never infer from daemon credential, Session owner or history.
-  Freeze `requesterUserId`/`sourceTurnId` on acceptance. Authors are provenance only;
-  recovery uses the owner Machine and current authorization.
-- Before Role/Schedule writes, read [permission rules](../../../../packages/platform/AGENTS.md#agent-authored-configuration).
-- Direct Role creation stays on the ordinary `lody_session_create` and
-  `lody_session_create_many` tools. With `agentRoleId`, `agentRoleInstanceId`/`machineId` only
-  pick the instance; accept but drop manual Agent/run-config fields before resolution: the
-  instance is authoritative; they never affect validation, canonical identity, recovery or dispatch.
+- Explicit Role ids need no mention grant. Acceptance freezes target/config/prompt/revision;
+  recovery never rereads the Role. Local-project creates default to children only on
+  the caller's machine. `readDelegatedMachineAccess` requires both the machine owner
+  and invoking human's access, never trusting synced metadata ownership.
+- Operation identity comes from active Host dispatch, never credentials or Session
+  ownership. Freeze requester/source ids and notification origins; unresolved exact
+  input provenance rejects retryably before acceptance. Recovery checks current access.
+- Role creates accept stable `agentRoleInstanceId`, or a machine plus an unambiguous
+  target. `agentRoleMachineId` and `machineId` must agree. Work context must match;
+  no automatic fallback. Manual Agent/run-config overrides are ignored.
+- Role/Schedule direct writes retain the [permission cap](../../../../packages/platform/AGENTS.md#agent-authored-configuration).
+  Role proposals/CLI publish [review cards](README.md#agent-role-proposals);
+  Save checks ownership and patches current text.
 
 ## Session tool contracts
 
@@ -51,8 +53,7 @@
   rejected batch items.
 
 - Catalog uncertainty is not `INVALID_ITEM`; only retryable failures abort batches.
-  Default-only calls allow no cache. Internal inferred defaults
-  rederive until authored. Explicit choices/access stay strict.
+  Default-only calls allow no cache; rederive inferred defaults. Explicit access stays strict.
   [Freshness/retries](README.md#machine-catalog-retry-guidance).
 
 - `lody_ios_simulator_preview` is the native-app tool; web previews remain
@@ -60,11 +61,11 @@
   the daemon resolves the active user. Return operation handles, never viewer URLs or
   raw preview/transport errors. Reuse simulator lifecycle/schema, never a second owner.
 
-- Resource discovery uses `lib/resource-discovery.ts` for CLI and MCP. Resolve the
-  active Turn user for MCP, never the daemon owner. Role list/get use
-  `canReadAgentRole`; explicit Role creation retains its separate existing contract.
-  Preserve unavailable readable Roles and three-state presence. List MCP entries
-  through the allowlisted summary, never return launch/connection credentials.
+- Discovery shares `lib/resource-discovery.ts`: daemon caches report `catalog_syncing`
+  until first baseline; Role target validation requires fresh sync. Standalone CLI
+  syncs unless `--offline`. Use active Turn identity and `canReadAgentRole`;
+  explicit creation keeps its separate grant contract. Keep unavailable readable Roles,
+  three-state presence and credential allowlists.
 - Directory cursors bind resource, workspace, user and filters. Operations additionally
   bind requester Session and query only that user's machine-local rows; list replies
   contain no canonical prompt or assistant output. See

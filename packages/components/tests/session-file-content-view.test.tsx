@@ -1133,9 +1133,14 @@ describe('SessionFileContentView', () => {
       getBoundingClientRect: { configurable: true, value: () => rect },
       getClientRects: { configurable: true, value: () => [rect] },
     });
-    const markdown = ['# Report', '', 'Revenue grew by 12% this quarter.', '', '- Costs fell', '- Hiring paused'].join(
-      '\n'
-    );
+    const markdown = [
+      '# Report',
+      '',
+      'Revenue grew by 12% this quarter.',
+      '',
+      '- Costs fell',
+      '- Hiring paused',
+    ].join('\n');
     const provider = createFakeSessionFileProvider({
       files: [{ path: 'notes/report.md', kind: 'text', sourceState: 'live-readonly' }],
       snapshots: { 'notes/report.md': { kind: 'text', text: markdown } },
@@ -1166,7 +1171,9 @@ describe('SessionFileContentView', () => {
         field.dispatchEvent(new Event('input', { bubbles: true }));
       });
     const comment = async (element: Element, text: string, note: string) => {
-      const node = Array.from(element.childNodes).find((child) => child.textContent?.includes(text))!;
+      const node = Array.from(element.childNodes).find((child) =>
+        child.textContent?.includes(text)
+      )!;
       const start = node.textContent!.indexOf(text);
       const range = document.createRange();
       range.setStart(node, start);
@@ -2074,5 +2081,53 @@ describe('independent preview remount investigation', () => {
     expect(view.textContent).toContain('Original');
     await click('Hide preview');
     expect(textarea()?.value).toBe('# Original');
+  });
+});
+
+describe('failed file preview recovery', () => {
+  it.each(['reopen', 'retry button'])('reads the recovered file through %s', async (action) => {
+    let available = false;
+    const provider = createCodeCollabProvider(
+      createCodeCollabRuntime({
+        previewFile: async () =>
+          available
+            ? filePreviewResult('recovered file', DIGEST_1)
+            : { status: 'error', v: 3, code: 'file_not_found', message: 'File was not found.' },
+      })
+    );
+    const viewNode = (focusRequestSeq: number) =>
+      createElement(SessionFileContentView, {
+        sessionId: session.id,
+        session,
+        filePath: 'src/live.ts',
+        fileId: 'src/live.ts',
+        fileProvider: provider,
+        fileProviderPending: false,
+        fileProviderRole: 'write',
+        active: true,
+        focusRequestSeq,
+      });
+    const view = await render(viewNode(1));
+    expect(view.textContent).toContain('File not found');
+    available = true;
+    if (action === 'reopen') await rerender(viewNode(2));
+    else
+      await act(async () => {
+        const retry = [...view.querySelectorAll('button')].find(
+          (button) => button.textContent === 'Retry'
+        );
+        expect(retry).toBeDefined();
+        retry?.click();
+      });
+    expect(view.querySelector('[data-testid="session-file-error-state"]')).toBeNull();
+    expect(view.querySelector('[data-testid="monaco-viewer"]')?.getAttribute('data-text')).toBe(
+      'recovered file'
+    );
+    // Focusing a successful preview must not replace its accepted snapshot.
+    available = false;
+    await rerender(viewNode(3));
+    expect(view.querySelector('[data-testid="monaco-viewer"]')?.getAttribute('data-text')).toBe(
+      'recovered file'
+    );
   });
 });

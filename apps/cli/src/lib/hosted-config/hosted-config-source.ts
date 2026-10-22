@@ -10,7 +10,7 @@ import {
   listWorkspaceMcpServers,
   readWorkspaceFlockRowsFromFlock,
   type AgentConfigMeta,
-  type CatalogAgentRole,
+  type AgentRole,
   type LocalProjectId,
   type LocalProjectMeta,
   type MachineId,
@@ -39,7 +39,7 @@ export type HostedWorktreeScript = {
 export type HostedConfigSnapshot = HostedWorkspace & {
   agentConfigs: AgentConfigMeta[];
   mcpServers: WorkspaceMcpServerMeta[];
-  agentRoles: CatalogAgentRole[];
+  agentRoles: AgentRole[];
   localProjects: LocalProjectMeta[];
   worktreeScripts: HostedWorktreeScript[];
 };

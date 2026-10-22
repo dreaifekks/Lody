@@ -193,8 +193,11 @@ describe('MessageHandler machine registration', () => {
       providerRateLimitsRefresh: 1,
       magpieImport: 1,
       dshProviderIsolation: 1,
+      terminalNotifications: 1,
       memoryProviders: 1,
       sessionHistory: 2,
+      sessionHistoryIncremental: 1,
+      sessionHistoryWatch: 1,
       sessionInputAcceptance: 1,
       sessionInputDispatch: 1,
       mcpToolDiscovery: 1,
@@ -222,6 +225,7 @@ describe('MessageHandler machine registration', () => {
       realtimeVoice: 3,
       sessionInputAttachments: 1,
       sessionCollaborationControl: 1,
+      bugReportClientLog: 1,
     });
 
     await handler.cleanup();
@@ -357,7 +361,7 @@ describe('MessageHandler machine registration', () => {
         machineId: MachineId,
         fn: (client: unknown) => Promise<unknown>
       ) => Promise<unknown>;
-      withSessionCommandEnvironment<T>(run: () => T): T;
+      withDaemonCommandScope<T>(run: () => T): T;
     };
     internals.withRemoteMachineRpcClient = async (_machineId, fn) =>
       await fn({
@@ -367,7 +371,7 @@ describe('MessageHandler machine registration', () => {
         },
       });
     const cancel = async () =>
-      await internals.withSessionCommandEnvironment(
+      await internals.withDaemonCommandScope(
         async () => await getSessionCommandEnvironment()!.host.cancelSession(sessionId)
       );
 

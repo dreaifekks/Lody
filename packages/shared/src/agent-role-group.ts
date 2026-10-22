@@ -1,25 +1,12 @@
 import { REGISTRY_ACP_AGENTS } from './acp/registry-generated';
 import { resolveAgentBrandId } from './agent-brand';
-import type { AgentRole, AgentRoleInstance } from './agent-role';
+import type { AgentRoleTarget } from './agent-role';
 import { getBuiltinAgentByAgentType } from './ai';
 import type { MachineId } from './ids';
 import type { AgentConfigMeta } from './schema';
 
-/**
- * Role instance groups.
- *
- * An instance the user gave an alias belongs to that alias's group; one
- * without an alias belongs to its agent family's. A group is one entry in
- * every Role list and one queue for a bare Role: its instances on different
- * machines stand in for each other. An alias is how a user says "these are the
- * same thing" for instances whose agents are configured differently, so an
- * aliased instance never joins the unaliased ones of its agent.
- */
-
-/**
- * What grouping reads from an instance's Agent config. `env` only infers a
- * brand an older config did not record; a summary that resolved it passes
- * `brandId` alone.
+/** Target identity keys for display and per-Role/per-machine uniqueness.
+ * These keys never group dispatch candidates or authorize fallback.
  */
 export type AgentRoleAgentConfig = Pick<
   AgentConfigMeta,
@@ -57,7 +44,7 @@ export const getAgentRoleAgentFamily = (config: AgentRoleAgentConfig): AgentRole
  * One whose Agent config is not known groups alone until it is.
  */
 export const getAgentRoleInstanceGroup = (
-  instance: Pick<AgentRoleInstance, 'alias' | 'agentConfigId'>,
+  instance: Pick<AgentRoleTarget, 'alias' | 'agentConfigId'>,
   family: AgentRoleAgentFamily | undefined
 ): AgentRoleInstanceGroupId => {
   if (instance.alias) return { key: `alias:${instance.alias.toLowerCase()}`, name: instance.alias };
@@ -65,41 +52,21 @@ export const getAgentRoleInstanceGroup = (
   return { key: `agent:${family.key}`, name: family.name };
 };
 
-export type AgentRoleInstanceGroup = AgentRoleInstanceGroupId & {
-  /** In list order. */
-  instances: AgentRoleInstance[];
-};
-
-/** A Role's groups, in the order each first appears in its list. */
-export const groupAgentRoleInstances = (
-  role: Pick<AgentRole, 'instances'>,
-  groupOf: (instance: AgentRoleInstance) => AgentRoleInstanceGroupId
-): AgentRoleInstanceGroup[] => {
-  const groups = new Map<string, AgentRoleInstanceGroup>();
-  for (const instance of role.instances) {
-    const id = groupOf(instance);
-    const group = groups.get(id.key);
-    if (group) group.instances.push(instance);
-    else groups.set(id.key, { ...id, instances: [instance] });
-  }
-  return [...groups.values()];
-};
-
 /**
  * Two instances of one group on one machine, if any: a machine runs a group
  * through exactly one instance, so the second needs an alias of its own.
  */
 export const findAgentRoleGroupClash = (
-  instances: readonly AgentRoleInstance[],
-  groupOf: (instance: AgentRoleInstance) => AgentRoleInstanceGroupId
+  instances: readonly AgentRoleTarget[],
+  groupOf: (instance: AgentRoleTarget) => AgentRoleInstanceGroupId
 ):
   | {
       machineId: MachineId;
       name: string | undefined;
-      instances: [AgentRoleInstance, AgentRoleInstance];
+      instances: [AgentRoleTarget, AgentRoleTarget];
     }
   | undefined => {
-  const seen = new Map<string, AgentRoleInstance>();
+  const seen = new Map<string, AgentRoleTarget>();
   for (const instance of instances) {
     const group = groupOf(instance);
     const slot = `${instance.machineId}\u0000${group.key}`;

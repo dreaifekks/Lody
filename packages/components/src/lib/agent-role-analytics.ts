@@ -1,4 +1,10 @@
-import { type AgentRole, type MachineId, type MessageTextSpan } from '@lody/shared';
+import { resolveAgentRoleMentionValue } from '@lody/shared';
+import {
+  getAgentRoleTargets,
+  type AgentRole,
+  type MachineId,
+  type MessageTextSpan,
+} from '@lody/shared';
 import { capturePostHogEvent, type PostHogAnalyticsClient } from '@/lib/posthog-analytics';
 
 export type AgentRoleAppliedSource = 'new_chat' | 'existing_session' | 'mention';
@@ -36,12 +42,15 @@ export function captureAgentRoleMentionsApplied(
 ): void {
   for (const span of input.spans ?? []) {
     if (span.kind !== 'agent_role' || !span.target) continue;
-    const role = input.roles.find((entry) => entry.id === span.target);
+    // The span's target names the machine for a Role on several machines.
+    const role = resolveAgentRoleMentionValue(input.roles, span.target);
     if (!role) continue;
     captureAgentRoleApplied(postHog, role, {
       source: 'mention',
       crossMachine: input.executionMachineId
-        ? !role.instances.some((instance) => instance.machineId === input.executionMachineId)
+        ? !getAgentRoleTargets(role).some(
+            (instance) => instance.machineId === input.executionMachineId
+          )
         : null,
     });
   }

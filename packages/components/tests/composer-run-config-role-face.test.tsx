@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 // @vitest-environment jsdom
 
 import { act, createElement, type ComponentProps } from 'react';
@@ -7,7 +8,7 @@ import {
   AGENT_ROLE_VERSION,
   type AgentConfigId,
   type AgentConfigMeta,
-  type CatalogAgentRole,
+  type AgentRole,
   type AgentRoleId,
   type MachineId,
 } from '@lody/shared';
@@ -38,7 +39,7 @@ const agentConfig: AgentConfigMeta = {
   env: {},
 };
 
-const role: CatalogAgentRole = singleMachineRole({
+const role: AgentRole = singleMachineRole({
   v: AGENT_ROLE_VERSION,
   id: 'role-1' as AgentRoleId,
   ownerUserId: 'user-1',
@@ -255,7 +256,9 @@ describe('DesktopRunConfigMenu role face', () => {
             ...composerItemsOf(
               singleMachineRole({
                 ...role,
-                instances: [{ ...role.instances[0]!, runConfig: { modelId: 'gpt-5.5' } }],
+                instances: [
+                  { ...getAgentRoleTargets(role)[0]!, runConfig: { modelId: 'gpt-5.5' } },
+                ],
               })
             )[0]!,
             agentConfig,

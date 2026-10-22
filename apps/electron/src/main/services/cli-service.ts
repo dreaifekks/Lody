@@ -41,7 +41,6 @@ import {
   makeLocalProbeClientAuto
 } from '@lody/shared/node/local-ipc'
 import { getLodyDataDir } from '@lody/shared/node/installation-profile'
-import { ACP_CAPABILITIES_REFRESH_CLIENT_BACKSTOP_MS } from '@lody/shared/acp-startup-budget'
 import type {
   LocalProjectControlRequest,
   LocalProjectControlResponse,
@@ -75,6 +74,7 @@ import type { DesktopExecutionHost } from './desktop-execution-host'
 import { getUserShellEnvCachedLegacy, shouldUseWindowsShell } from './shell-env'
 import { applyProxyEnvFallback, resolveSystemProxyEnv } from './system-proxy-env'
 import type { CliOutputEvent, CliRunResult } from '../types'
+import { resolveLocalSessionControlTimeoutMs } from './local-session-control-budget'
 
 const CLI_OUTPUT_BUFFER_MAX_EVENTS = 2000
 // How long to wait for the embedded CLI to exit on SIGTERM during app quit before
@@ -109,23 +109,6 @@ const CLI_ELECTRON_BOOTSTRAP_ENV = 'LODY_ELECTRON_BOOTSTRAP'
 const CLI_ELECTRON_SESSION_TOKEN_ENV = 'LODY_ELECTRON_SESSION_TOKEN'
 // See apps/cli/src/commands/start.ts:ELECTRON_SESSION_USER_ID_ENV for rationale.
 const CLI_ELECTRON_SESSION_USER_ID_ENV = 'LODY_ELECTRON_SESSION_USER_ID'
-const LOCAL_SESSION_CONTROL_TIMEOUT_MS = 10_000
-// The machine owns this deadline and answers with its own failure reason. This
-// is only a backstop for a daemon that died without replying, so it is derived
-// from the machine's worst case rather than set to a second, smaller number:
-// a 120s socket timeout here expired requests the CLI was still working on
-// (a cold `npx` init alone may run 300s) and reported them as our timeout.
-const LOCAL_SESSION_CONTROL_ACP_REFRESH_TIMEOUT_MS = ACP_CAPABILITIES_REFRESH_CLIENT_BACKSTOP_MS
-// Downloading + unpacking a registry agent binary can take minutes on a slow
-// link, so the local-control request must outlive the default before falling
-// back to Streams RPC.
-const LOCAL_SESSION_CONTROL_BINARY_INSTALL_TIMEOUT_MS = 300_000
-// Local file handoff hashes + copies up to 8 files (≤100 MB each) into the blob
-// store before responding; give it well beyond the default 10s.
-const LOCAL_SESSION_CONTROL_FILE_SEND_LOCAL_TIMEOUT_MS = 120_000
-// Files for a session another member of a LAN runs travel to that machine, which
-// may be reached through a relay that carries tens of kilobytes a second.
-const LOCAL_SESSION_CONTROL_FILE_SEND_MEMBER_TIMEOUT_MS = 900_000
 const LOCAL_PROJECT_CONTROL_TIMEOUT_MS = 20_000
 const LOCAL_PROJECT_CONTROL_LIST_FILES_TIMEOUT_MS = 120_000
 const LOCAL_PROJECT_CONTROL_SHARE_PUBLISH_TIMEOUT_MS = 600_000
@@ -297,25 +280,6 @@ function resolveLocalProjectControlTimeoutMs(type: LocalProjectControlRequest['t
   // A shared conversation uploads every history and image to the hub.
   if (type === 'lan/share-publish') return LOCAL_PROJECT_CONTROL_SHARE_PUBLISH_TIMEOUT_MS
   return LOCAL_PROJECT_CONTROL_TIMEOUT_MS
-}
-
-function resolveLocalSessionControlTimeoutMs(message: LocalSessionControlRequest): number {
-  const { type } = message
-  if (type === 'machine/acp-capabilities-refresh') {
-    return LOCAL_SESSION_CONTROL_ACP_REFRESH_TIMEOUT_MS
-  }
-  if (type === 'machine/acp-authenticate') {
-    return LOCAL_SESSION_CONTROL_BINARY_INSTALL_TIMEOUT_MS
-  }
-  if (type === 'machine/acp-binary-install') {
-    return LOCAL_SESSION_CONTROL_BINARY_INSTALL_TIMEOUT_MS
-  }
-  if (message.type === 'session/file-send-local' || message.type === 'session/file-read-local') {
-    return message.targetMachineId
-      ? LOCAL_SESSION_CONTROL_FILE_SEND_MEMBER_TIMEOUT_MS
-      : LOCAL_SESSION_CONTROL_FILE_SEND_LOCAL_TIMEOUT_MS
-  }
-  return LOCAL_SESSION_CONTROL_TIMEOUT_MS
 }
 
 function resolveBundledCliEntry(): string | null {

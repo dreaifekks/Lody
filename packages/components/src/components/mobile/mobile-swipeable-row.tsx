@@ -220,9 +220,7 @@ export function MobileSwipeableRow({
        pin at fixed width with archive growing past it — drawer ends
        up wider than the revealed area and the pin gets clipped under
        the row content. */
-  const pinWidth = useTransform(x, (value) =>
-    -value >= AUTO_ARCHIVE_AT ? 0 : ACTION_WIDTH
-  );
+  const pinWidth = useTransform(x, (value) => (-value >= AUTO_ARCHIVE_AT ? 0 : ACTION_WIDTH));
   const pinOpacity = useTransform(x, (value) => (-value >= AUTO_ARCHIVE_AT ? 0 : 1));
   const archiveWidth = useTransform(x, (value) => {
     const dragged = -value;

@@ -20,10 +20,7 @@ import { openExternalUrl } from '@/lib/native-browser';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { getDownloadPageUrl, getNightlyDownloadPageUrl, getWebsiteUrl } from '@/lib/lody-urls';
 import { developerModeEnabledAtom } from '@/atoms/settings';
-import {
-  desktopOnboardingDraftAtom,
-  desktopOnboardingPhaseAtom
-} from '@/atoms/onboarding';
+import { desktopOnboardingDraftAtom, desktopOnboardingPhaseAtom } from '@/atoms/onboarding';
 import { clearDesktopOnboardingFlowId } from '@/components/onboarding/onboarding-analytics';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { MobileAboutSettings } from '@/components/mobile/mobile-about-settings';

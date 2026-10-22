@@ -121,7 +121,6 @@ describe('createDirectWorkspaceWriter', () => {
         const runConfig = { configOptionValues: {} };
         expect(flock.get(key)).toEqual({
           ...role,
-          instances: [{ ...role.instances[0], runConfig }],
           runConfig,
           revision: 2,
           updatedAt: 3,

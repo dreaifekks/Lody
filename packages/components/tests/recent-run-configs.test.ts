@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 // @vitest-environment jsdom
 
 // Coverage for the "Recently used" run-config list: what counts as the SAME
@@ -12,7 +13,7 @@ import {
   type AgentConfigMeta,
   type AgentRoleId,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
+  type AgentRole,
   type MachineId,
 } from '@lody/shared';
 
@@ -234,7 +235,7 @@ describe('applying a record to the current selectors', () => {
 });
 
 describe('recent Agent Role entries', () => {
-  const role = (id: string, name: string): CatalogAgentRole =>
+  const role = (id: string, name: string): AgentRole =>
     singleMachineRole({
       v: AGENT_ROLE_VERSION,
       id: id as AgentRoleId,
@@ -259,9 +260,9 @@ describe('recent Agent Role entries', () => {
     );
   });
 
-  const itemOf = (entry: CatalogAgentRole, index = 0) => ({
+  const itemOf = (entry: AgentRole, index = 0) => ({
     role: entry,
-    instance: entry.instances[index]!,
+    instance: getAgentRoleTargets(entry)[index]!,
     title: entry.name,
   });
 

@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 import { prepareAgentRoleInstanceForSave } from '@/lib/agent-role-form';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
@@ -15,7 +16,6 @@ import {
   type AgentRole,
   type AgentRoleFormInstance,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
   type AgentRoleFormValue,
   type AgentRoleId,
 } from '@lody/shared';
@@ -50,7 +50,7 @@ import { SETTINGS_EDITOR_DIALOG_LAYOUT, SETTINGS_EDITOR_DIALOG_WIDTH } from './s
  */
 export type AgentRoleEditorState =
   | { mode: 'add'; roleId: AgentRoleId; value: AgentRoleFormValue }
-  | { mode: 'edit'; role: CatalogAgentRole; value: AgentRoleFormValue };
+  | { mode: 'edit'; role: AgentRole; value: AgentRoleFormValue };
 
 export const openAgentRoleEditorForCreate = (value: AgentRoleFormValue): AgentRoleEditorState => ({
   mode: 'add',
@@ -62,7 +62,7 @@ export const openAgentRoleEditorForCreate = (value: AgentRoleFormValue): AgentRo
  * Edit the catalog row, the only Role value the type admits: a Role assembled
  * anywhere else could miss instances, and saving it would drop them.
  */
-export const openAgentRoleEditorForEdit = (role: CatalogAgentRole): AgentRoleEditorState => ({
+export const openAgentRoleEditorForEdit = (role: AgentRole): AgentRoleEditorState => ({
   mode: 'edit',
   role,
   value: buildAgentRoleFormValue(role),
@@ -70,7 +70,7 @@ export const openAgentRoleEditorForEdit = (role: CatalogAgentRole): AgentRoleEdi
 
 /** Edit a Role a composer picked one instance of, by id, from the catalog. */
 export const openAgentRoleEditorById = (
-  catalog: readonly CatalogAgentRole[],
+  catalog: readonly AgentRole[],
   roleId: AgentRoleId
 ): AgentRoleEditorState | null => {
   const role = catalog.find((entry) => entry.id === roleId);
@@ -262,12 +262,20 @@ export function AgentRoleEditorDialog({
 
   const save = async () => {
     if (!openEditor || !editor || !editorValue || formErrors.length > 0 || !currentUserId) return;
-    const role = buildAgentRoleFromForm({ ...editorValue, instances: editorValue.instances.map(instance => prepareAgentRoleInstanceForSave(instance, selectorOptionsByInstance.get(instance.id))) }, {
-      existing: editor.mode === 'edit' ? editor.role : undefined,
-      ownerUserId: currentUserId,
-      now: getServerNow(),
-      createId: () => (editor.mode === 'add' ? editor.roleId : editor.role.id),
-    });
+    const role = buildAgentRoleFromForm(
+      {
+        ...editorValue,
+        instances: editorValue.instances.map((instance) =>
+          prepareAgentRoleInstanceForSave(instance, selectorOptionsByInstance.get(instance.id))
+        ),
+      },
+      {
+        existing: editor.mode === 'edit' ? editor.role : undefined,
+        ownerUserId: currentUserId,
+        now: getServerNow(),
+        createId: () => (editor.mode === 'add' ? editor.roleId : editor.role.id),
+      }
+    );
 
     setSubmitting(true);
     setError(undefined);
@@ -282,7 +290,7 @@ export function AgentRoleEditorDialog({
           visibility: role.visibility,
           has_prompt_prefix: Boolean(role.promptPrefix),
           run_config_option_count: Object.keys(role.runConfig.configOptionValues ?? {}).length,
-          instance_count: role.instances.length,
+          instance_count: getAgentRoleTargets(role).length,
         });
       }
       onSaved?.(role, { created: editor.mode === 'add' });

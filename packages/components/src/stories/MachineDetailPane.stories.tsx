@@ -167,11 +167,7 @@ export const OwnWithProviders: Story = {
             },
           ],
         },
-        [getRateLimitEntryKey(
-          'codex',
-          CODEX_SPARK_LIMIT_ID,
-          'cfg-codex' as AgentConfigId
-        )]: {
+        [getRateLimitEntryKey('codex', CODEX_SPARK_LIMIT_ID, 'cfg-codex' as AgentConfigId)]: {
           limitId: CODEX_SPARK_LIMIT_ID,
           scope: { providerId: 'codex' },
           planName: 'Codex Spark',

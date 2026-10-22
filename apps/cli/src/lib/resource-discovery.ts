@@ -1,5 +1,6 @@
 import {
   canReadAgentRole,
+  getAgentRoleTargets,
   getAcpCapabilityCacheKey,
   summarizeAgentRunConfigCapabilities,
   normalizeAgentRoleRunConfig,
@@ -10,7 +11,7 @@ import {
   getAgentRoleAgentFamily,
   getAgentRoleInstanceGroup,
   resolveAgentBrandId,
-  type AgentRoleInstance,
+  type AgentRoleTarget,
   type LocalProjectMeta,
   type MachineId,
   type MachineMeta,
@@ -36,7 +37,7 @@ export type DiscoveryRow = {
   availability?: DiscoveryAvailability;
   [key: string]: unknown;
 };
-export type AgentRoleDiscoveryInstance = {
+export type AgentRoleDiscoveryTarget = {
   id: string;
   alias: string | null;
   /**
@@ -49,11 +50,27 @@ export type AgentRoleDiscoveryInstance = {
   runConfig: ReturnType<typeof normalizeAgentRoleRunConfig>;
   availability: DiscoveryAvailability;
 };
+export class CatalogSyncingError extends Error {
+  constructor() {
+    super(
+      'CATALOG_SYNCING: catalog has not completed its first synchronization; retry the request.'
+    );
+  }
+  toLodyError() {
+    return { code: 'CATALOG_SYNCING', message: this.message, retryable: true };
+  }
+}
+
 export type DiscoverySource = {
   workspaceId: string;
   userId: string;
   /** Undefined means there is no active Turn selection to report. */
   selectedMcpServerIds?: readonly string[];
+  catalogReadiness?(): {
+    metadata: boolean;
+    workspace: boolean;
+    machines: ReadonlyMap<MachineId, boolean>;
+  };
   machines(): Promise<MachineMeta[]>;
   onlineMachineIds(): Promise<ReadonlySet<MachineId> | null>;
   canAccess(machineId: MachineId, projectId?: string): Promise<boolean>;
@@ -119,6 +136,18 @@ export class ResourceDiscovery {
     return match.id;
   }
 
+  private catalogSyncing(resource: DiscoveryResource): boolean {
+    const state = this.source.catalogReadiness?.();
+    if (!state) return false;
+    if (resource === 'mcp') return !state.workspace;
+    if (!state.metadata) return true;
+    if (resource === 'machine') return false;
+    return (
+      (resource === 'agent_role' && !state.workspace) ||
+      [...state.machines.values()].some((ready) => !ready)
+    );
+  }
+
   private async rows(
     resource: DiscoveryResource,
     query: DiscoveryQuery,
@@ -145,7 +174,9 @@ export class ResourceDiscovery {
               canReadAgentRole(role, source.userId) &&
               (!id || role.id === id) &&
               (!query.machineId ||
-                role.instances.some((instance) => instance.machineId === query.machineId))
+                getAgentRoleTargets(role).some(
+                  (instance) => instance.machineId === query.machineId
+                ))
           )
         : [];
     const machines = await source.machines();
@@ -156,7 +187,7 @@ export class ResourceDiscovery {
       if (resource === 'agent_role') {
         if (
           !roles.some((role) =>
-            role.instances.some((instance) => instance.machineId === machine.id)
+            getAgentRoleTargets(role).some((instance) => instance.machineId === machine.id)
           )
         )
           continue;
@@ -231,7 +262,7 @@ export class ResourceDiscovery {
           capabilityStatus: capability ? 'reported' : 'unknown',
         };
       });
-    const instanceAvailability = (instance: AgentRoleInstance): DiscoveryAvailability => {
+    const instanceAvailability = (instance: AgentRoleTarget): DiscoveryAvailability => {
       const config = configs.get(instance.agentConfigId);
       let state: DiscoveryAvailability;
       if (!authorized.some((machine) => machine.id === instance.machineId))
@@ -240,6 +271,12 @@ export class ResourceDiscovery {
       else if (config.machineId !== instance.machineId)
         state = { state: 'unavailable', reason: 'agent_config_machine_mismatch' };
       else state = availability(instance.machineId);
+      const catalogState = source.catalogReadiness?.();
+      const pending =
+        catalogState &&
+        (!catalogState.metadata ||
+          !catalogState.workspace ||
+          catalogState.machines.get(instance.machineId) === false);
       const capability = config ? capabilityOf(config) : undefined;
       if (state.state === 'available' && !capability)
         state = { state: 'unknown', reason: 'capabilities_unreported' };
@@ -252,23 +289,40 @@ export class ResourceDiscovery {
         !models.some((model) => model.id === runConfig.modelId)
       )
         state = { state: 'unavailable', reason: 'model_unavailable' };
-      const permission = capability?.configOptions?.find(
-        (option) => option.id === '_permission' || option.category === 'mode'
-      );
-      const modeId = runConfig.modeId ?? runConfig.configOptionValues?._permission;
-      if (
-        state.state === 'available' &&
-        capability &&
-        modeId &&
-        !(permission
-          ? permission.options.some((option) => option.value === modeId)
-          : capability.modes.some((mode) => mode.id === modeId))
-      )
+      // A Role pins permission as `modeId` (legacy modes or a `mode` option) or
+      // as the value of the agent's `_permission` option, e.g. Grok's
+      // `permission_mode`. Check each pin against the knob that carries it.
+      const modeOption = capability?.configOptions?.find((option) => option.category === 'mode');
+      const modeId = runConfig.modeId;
+      const unavailableMode =
+        Boolean(modeId) &&
+        !(modeOption
+          ? modeOption.options.some((option) => option.value === modeId)
+          : capability?.modes.some((mode) => mode.id === modeId));
+      const unavailablePermission = (capability?.configOptions ?? []).some((option) => {
+        if (option.category !== '_permission') return false;
+        const value = runConfig.configOptionValues?.[option.id];
+        return (
+          value !== undefined && !option.options.some((candidate) => candidate.value === value)
+        );
+      });
+      if (state.state === 'available' && capability && (unavailableMode || unavailablePermission))
         state = { state: 'unavailable', reason: 'mode_unavailable' };
+      if (
+        pending &&
+        (state.reason === 'agent_config_missing' ||
+          state.reason === 'capabilities_unreported' ||
+          state.reason === 'model_unavailable' ||
+          state.reason === 'mode_unavailable' ||
+          (state.reason === 'machine_inaccessible_or_missing' &&
+            !catalogState.metadata &&
+            !machines.some((machine) => machine.id === instance.machineId)))
+      )
+        state = { state: 'unknown', reason: 'catalog_syncing' };
       return state;
     };
     return roles.map((role) => {
-      const instances = role.instances.map((instance): AgentRoleDiscoveryInstance => {
+      const instances = getAgentRoleTargets(role).map((instance): AgentRoleDiscoveryTarget => {
         const config = configs.get(instance.agentConfigId);
         const group = getAgentRoleInstanceGroup(
           instance,
@@ -292,10 +346,11 @@ export class ResourceDiscovery {
       return {
         id: role.id,
         name: role.name,
+        ...(role.alias ? { alias: role.alias } : {}),
         description: role.description ?? '',
         visibility: role.visibility,
         revision: role.revision,
-        instances,
+        targets: instances,
         availability: state,
         ...(id ? { promptPrefix: role.promptPrefix } : {}),
       };
@@ -321,6 +376,9 @@ export class ResourceDiscovery {
     return {
       ok: true as const,
       workspaceId: this.source.workspaceId,
+      ...(this.catalogSyncing(resource) && !(resource === 'project' && query.kind === 'github')
+        ? { sync: { state: 'syncing' as const, reason: 'catalog_syncing', retryable: true } }
+        : {}),
       ...discoveryPage(
         rows,
         query,
@@ -330,16 +388,31 @@ export class ResourceDiscovery {
     };
   }
 
-  async get(resource: 'agent_config' | 'agent_role', id: string) {
-    const row = (await this.rows(resource, {}, id)).find((candidate) => candidate.id === id);
-    if (!row) throw new Error('RESOURCE_NOT_FOUND: resource does not exist or is not readable.');
-    return { ok: true as const, workspaceId: this.source.workspaceId, item: row };
+  async get(resource: 'agent_config' | 'agent_role', id: string, machineId?: string) {
+    const rows = (await this.rows(resource, machineId ? { machineId } : {}, id)).filter(
+      (candidate) => candidate.id === id
+    );
+    const [row] = rows;
+    if (!row) {
+      if (this.catalogSyncing(resource)) throw new CatalogSyncingError();
+      throw new Error('RESOURCE_NOT_FOUND: resource does not exist or is not readable.');
+    }
+    // A Role on several machines has one row per machine; all are returned.
+    return {
+      ok: true as const,
+      workspaceId: this.source.workspaceId,
+      item: row,
+      ...(this.catalogSyncing(resource)
+        ? { sync: { state: 'syncing' as const, reason: 'catalog_syncing', retryable: true } }
+        : {}),
+      ...(rows.length > 1 ? { targets: rows } : {}),
+    };
   }
 
   /** The instances of one readable Role with their availability, as `get` reports them. */
-  async agentRoleInstances(id: string): Promise<AgentRoleDiscoveryInstance[]> {
+  async agentRoleTargets(id: string): Promise<AgentRoleDiscoveryTarget[]> {
     const { item } = await this.get('agent_role', id);
-    return item.instances as AgentRoleDiscoveryInstance[];
+    return item.targets as AgentRoleDiscoveryTarget[];
   }
 
   /** Which of these machines holds the local project with this id. */
@@ -348,8 +421,13 @@ export class ResourceDiscovery {
     machineIds: readonly MachineId[],
     matchesProject: (project: LocalProjectMeta) => boolean = (project) => project.id === projectId
   ): Promise<MachineId | undefined> {
+    const matches: MachineId[] = [];
     for (const machineId of machineIds)
-      if ((await this.source.projects(machineId)).some(matchesProject)) return machineId;
-    return undefined;
+      if ((await this.source.projects(machineId)).some(matchesProject)) matches.push(machineId);
+    if (matches.length > 1)
+      throw new Error(
+        `Project ${projectId} is on multiple machines (${matches.join(', ')}); specify a machine or target id.`
+      );
+    return matches[0];
   }
 }

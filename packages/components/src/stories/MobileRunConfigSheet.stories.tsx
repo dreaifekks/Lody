@@ -4,12 +4,11 @@ import { useMemo, useState } from 'react';
 import { fn } from 'storybook/test';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRoleInstances,
+  withAgentRoleTargets,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
+  type AgentRole,
   type AgentConfigId,
   type AgentConfigMeta,
-  type AgentRole,
   type AgentRoleId,
   type MachineId,
   type SessionId,
@@ -315,8 +314,9 @@ export const ManyModels: Story = {
 };
 
 const makeRole = (
-  overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>
-): CatalogAgentRole => {
+  overrides: (Partial<AgentRole> & { instances?: import('@lody/shared').AgentRoleTarget[] }) &
+    Pick<AgentRole, 'id' | 'name'>
+): AgentRole => {
   const role: Omit<AgentRole, 'instances'> = {
     v: AGENT_ROLE_VERSION,
     ownerUserId: 'user-1',
@@ -329,7 +329,7 @@ const makeRole = (
     updatedAt: 1,
     ...overrides,
   };
-  return withAgentRoleInstances(
+  return withAgentRoleTargets(
     role,
     overrides.instances ?? [
       {
@@ -344,7 +344,7 @@ const makeRole = (
 
 /** A Role's one entry, as the composer lists it on this machine. */
 const entryOf = (
-  role: CatalogAgentRole,
+  role: AgentRole,
   availability: ComposerAgentRoleItem['availability'] = { kind: 'available' }
 ): ComposerAgentRoleItem =>
   buildComposerAgentRoleItems({

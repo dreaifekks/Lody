@@ -10,6 +10,8 @@
   an IMMEDIATE transaction. Preserve cursor/run ids across restarts.
 - Session history goes through `sessionData` (`readSessionHistory` reads,
   `commands.appendTurn` appends missing entries); there is no whole-list rewrite.
+- Freeze the task name in `userTurn.scheduleRun`, bound to the exact input id,
+  for notification presentation; never infer scheduled execution from Session metadata.
 - Freeze JSON `PreparedSessionInput` before Session mutation. Its fixed user turn
   uses `prepared`, inert until `latestUserMsgId` is committed. After this pointer,
   the ordinary watcher owns execution. Never retry with another Session or Turn,
@@ -83,10 +85,10 @@
   Archived dispatched chats release slots once live work drains. [Flow](README.md).
 - `definition.agentRole` (`roleId`, optional `instanceId`) is a reference, never a
   copy. `prepare` reads the Role as it is then (`resolveScheduleRunRole`: the
-  owner's readable catalog, `selectAgentRoleInstance` held to this machine, the
-  named instance or else the first usable one) and freezes the result; later
+  owner's readable catalog, shared target selector held to this machine, the
+  named target or sole target) and freezes the result; later
   attempts of that run validate the Agent it froze. A Role that is gone, or has
-  no usable instance here, blocks the run as `ROLE_NOT_FOUND` /
+  no unambiguous usable target here, blocks the run as `ROLE_NOT_FOUND` /
   `ROLE_INSTANCE_UNAVAILABLE`, a recoverable configuration problem: never run the
   saved `definition.agent`, an instance on another machine or another Agent.
   `agent` beside a reference is what the Role resolved to at the last save; the
@@ -98,10 +100,8 @@
   a landed `requestId`, which keeps the `agent` saved then), refuses it with
   `existing_session` or on a machine without the `scheduleAgentRoles` capability,
   and ranks a bound Schedule's tier by what its Role resolves to now
-  (unresolvable = unknown). The editor shows and saves that resolution too; an
-  Agent choice made by hand ends the reference, a picked chat offers no Role, and
-  a reference that cannot resolve is an `invalid` issue on the Agent controls. A build that predates the
-  field rejects the definition and its Registry row: it lists and runs nothing.
+  (unresolvable = unknown). The editor saves that resolution; choosing an Agent
+  ends the reference. Unresolved references are invalid. Older builds reject the definition.
 - Dispose Schedule workers before tearing down a workspace's Lody runtime.
   Timers and active evaluations must not survive workspace revocation.
 - Deterministic tests use injected clocks, explicit sync barriers and temporary

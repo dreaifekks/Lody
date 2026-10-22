@@ -90,21 +90,12 @@ this page is the full text of the rules summarised there.
   should adopt it.
   `DesktopRunConfigMenu` gains a **Role** row when the caller passes
   `agentRoles`. It sits ABOVE Agent, since a Role answers every row under it at
-  once. What it lists is one flat list of every Role's instance GROUPS
-  (`buildComposerAgentRoleItems`; a group is the instances sharing an alias, or
-  without one on one agent family): the composer's machine first, then the
-  rest, which carry their machine's name. A group shows its instance here when
-  it has one, else the first elsewhere that can run. A Role with one group reads
-  as its name, one with several as `uiStyle · Claude` per group, and search
-  matches both. Selection, the "is this still the Role" check and the Turn
-  record all name the instance id. A Role picked without an instance (a restored
-  default, a just-created Role) runs its first group that can run, this machine
-  first inside it — the MCP bare-Role rule (`findDefaultComposerAgentRoleItem`).
-  Only a record without an instance reads that way: a recorded instance that is
-  deleted, or that a fixed composer finds on another machine, ends the selection
-  instead of handing it, and its memory, to another (`findRecordedComposerAgentRoleItem`).
-  An entry titled by its agent (an unaliased group of a Role with several) does
-  not repeat the agent beside the title.
+  once. It lists every target separately, naming its alias or Agent family and
+  machine. Ordering may put the current machine first, but never selects a target.
+  Menu choices and turn records pin stable target ids. A bare restored Role resolves
+  only when it has one target; missing or unavailable pins never use another target.
+  Independent Plan toggles keep the Role selected; model, permission and other
+  pinned options still determine whether the Role is applied.
   The callers split by whether a Session exists yet, and that difference is
   load-bearing:
 
@@ -148,7 +139,13 @@ this page is the full text of the rules summarised there.
   ready because its transient provider defaults are not a valid run config.
   Programmatic Turns inherit the current
   Role only after their final run-config overrides are applied; if an override
-  breaks a value the Role pins, freeze explicit None instead of a lying Role id.
+  breaks a non-Plan value the Role pins, freeze explicit None. Independent Plan
+  is a per-turn override: valid boolean `plan_mode` toggles and legacy
+  `collaboration_mode` default/plan switches retain the Role, revision, snapshot,
+  and memory. Selecting the Role still seeds its saved Plan value; dispatch uses
+  the actual composer/override value, without rewriting the Role catalog. Missing
+  or invalid Plan values still fail matching. Permission-based Plan (`modeId`
+  or permission options) remains a pinned permission, not this exception.
   A legacy/non-composer Turn with both fields absent inherits the most recent
   explicit selection; only `agentRoleId: null` means None. Keep unsynced catalog
   rows and not-yet-hydrated Session docs in the unknown state — neither may
@@ -240,9 +237,9 @@ this page is the full text of the rules summarised there.
   rather than clearing the preference, which would re-seed the value just
   changed. With a Role selected the TRIGGER carries the Role and nothing else,
   and the model/reasoning/permission/Plan/Fast values render beside it as inert
-  dimmed text: a Role IS the whole configuration, so changing one of those by
-  hand is exactly what unnames it, and a knob that silently unnames the thing
-  next to it is a trap. Permission is one of those values
+  dimmed text. Changing a pinned non-Plan value by hand unnames the Role;
+  independent Plan remains adjustable inside the menu. Permission is pinned
+  when present
   (`doesAgentRolePinPermissionMode`), so `DesktopPermissionModeButton` is not
   rendered at all while a Role that pins it is selected — but it STAYS a button
   when the Role pins nothing there, because an agent with no permission control

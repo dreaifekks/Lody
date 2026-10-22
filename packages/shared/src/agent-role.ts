@@ -1,15 +1,13 @@
 import { MemoryBindingSchema, type MemoryBinding } from './memory-provider';
 import type { AgentConfigId, AgentRoleId, AgentRoleInstanceId, MachineId } from './ids';
-import { isSensitiveAcpConfigOptionId } from './session-preparation';
+import { isSensitiveAcpConfigOptionId } from './acp-config-option-sensitivity';
 
 /**
- * Agent Role — a named, mentionable template for *creating* a Session.
+ * Agent Role — a named, mentionable preset for *creating* a Session.
  *
- * A Role says WHAT to do (name, description, prompt prefix); it never runs by
- * itself. Its instances say HOW: each instance is one Agent Config on one
- * machine with its own run config and memory binding, and is the unit that is
- * picked, dispatched and recorded. That boundary is the reason for most of the
- * rules below:
+ * A Role says how to USE an Agent Config (model, reasoning, run options, prompt
+ * prefix); it is never a provider and never a running agent. That boundary is
+ * the reason for most of the rules below:
  *
  * - No secrets. A workspace Flock row is replicated to every member's client,
  *   so `private` limits trusted UI discovery and editing; it is not transport
@@ -17,18 +15,20 @@ import { isSensitiveAcpConfigOptionId } from './session-preparation';
  *   V1 therefore refuses to persist anything secret-shaped in the first place
  *   (`isSensitiveAgentRoleConfigOptionKey`), rather than pretending a private
  *   row is a safe place to put one.
- * - Instances are ordered and fall into groups: instances with one alias, or
- *   without an alias on one agent family, are one group and stand in for each
- *   other across machines (`agent-role-group.ts`). A machine holds at most one
- *   instance per group. Dispatch picks one by explicit, ordered rules
- *   (`selectAgentRoleInstance`) and reports which; it never swaps the agent or
- *   config inside an instance.
- * - `id` is the stable identity of a Role and of an instance. Mention tokens
- *   are DERIVED from the names and change when they do, so a mention range
- *   carries the ids.
+ * - No silent fallback. `machineId + agentConfigId` bind the execution site
+ *   exactly; when either is gone the Role stays in Settings marked unavailable
+ *   with the precise reason, and never becomes a submittable mention.
+ * - `id` is the stable identity. The mention token is DERIVED from the name and
+ *   changes when the name does, so a mention range carries the id.
  */
 
 export const AGENT_ROLE_VERSION = 1;
+/**
+ * The stored shape of a Role with more than one machine target. Older clients
+ * accept only `v: 1`, so they skip these rows instead of rewriting them without
+ * the targets they cannot see. Single-target Roles keep the v1 shape.
+ */
+export const AGENT_ROLE_MULTI_TARGET_VERSION = 2;
 
 export type AgentRoleVisibility = 'private' | 'workspace';
 
@@ -36,7 +36,6 @@ export type AgentRoleVisibility = 'private' | 'workspace';
  * The non-sensitive half of a Session config: what the agent capability itself
  * advertises. Deliberately not `AcpConfigOptionValue`-typed against the ACP
  * module — a Role stores only the primitive shapes an option selector produces.
- * `memory` is the instance's memory identity on its machine.
  */
 export type AgentRoleRunConfig = {
   memory?: MemoryBinding;
@@ -45,20 +44,9 @@ export type AgentRoleRunConfig = {
   configOptionValues?: Record<string, string | boolean>;
 };
 
-/** One way a Role runs: an Agent Config on one machine and that agent's run config. */
-export type AgentRoleInstance = {
-  id: AgentRoleInstanceId;
-  /**
-   * The user's name for it. Instances sharing an alias are one group across
-   * machines; without one, the instance groups with its agent family.
-   */
-  alias?: string;
-  machineId: MachineId;
-  agentConfigId: AgentConfigId;
-  runConfig: AgentRoleRunConfig;
-};
-
 export type AgentRole = {
+  /** Stable target identity; old instance references keep resolving. */
+  targetId?: AgentRoleInstanceId;
   v: typeof AGENT_ROLE_VERSION;
   id: AgentRoleId;
   ownerUserId: string;
@@ -71,18 +59,21 @@ export type AgentRole = {
   emoji?: string;
 
   /**
-   * Ordered and never empty. The order of first appearance orders the groups,
-   * and inside a group the order dispatch tries machines in.
-   */
-  instances: AgentRoleInstance[];
-  /**
-   * The first instance, also persisted so a client that predates instances
-   * still reads the Role as a single-machine one. Never read for anything
-   * else: every surface works with an instance.
+   * The first machine target. With `additionalTargets` absent this is the whole
+   * Role, exactly the v1 row. A Role resolved for one machine
+   * (`bindAgentRoleTarget`) carries that machine here, so execution paths read
+   * these three fields without knowing about targets.
    */
   machineId: MachineId;
   agentConfigId: AgentConfigId;
   runConfig: AgentRoleRunConfig;
+  /** Optional label of the first target, retained when other targets are removed. */
+  alias?: string;
+  /**
+   * Additional targets, including distinct targets on the same machine.
+   * Authoring order never grants a dispatch preference.
+   */
+  additionalTargets?: readonly AgentRoleTarget[];
   promptPrefix?: string;
 
   /** Bumped on every effective edit; frozen when a create Operation accepts this Role. */
@@ -91,15 +82,14 @@ export type AgentRole = {
   updatedAt: number;
 };
 
-declare const catalogAgentRoleBrand: unique symbol;
-
-/**
- * A Role as the catalog holds it, with every instance. Only reading a stored
- * row (`normalizeAgentRole`) or building one from a complete instance list
- * (`withAgentRoleInstances`) produces one, so only a whole row reaches the
- * editor and the catalog writers.
- */
-export type CatalogAgentRole = AgentRole & { readonly [catalogAgentRoleBrand]: true };
+/** How one machine runs a Role. Name, prompt and sharing stay on the Role. */
+export type AgentRoleTarget = {
+  id: AgentRoleInstanceId;
+  machineId: MachineId;
+  agentConfigId: AgentConfigId;
+  runConfig: AgentRoleRunConfig;
+  alias?: string;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -120,6 +110,7 @@ export const isAgentRoleVisibility = (value: unknown): value is AgentRoleVisibil
 /** Long enough to stay readable inline, short enough not to dominate a prompt. */
 export const AGENT_ROLE_MENTION_SLUG_MAX_LENGTH = 40;
 export const AGENT_ROLE_NAME_MAX_LENGTH = 60;
+export const AGENT_ROLE_ALIAS_MAX_LENGTH = AGENT_ROLE_NAME_MAX_LENGTH;
 export const AGENT_ROLE_DESCRIPTION_MAX_LENGTH = 140;
 
 export const normalizeAgentRoleDescription = (value: string | undefined): string =>
@@ -172,15 +163,6 @@ export const normalizeAgentRoleMentionSlug = (value: string): string => {
  * the list and the mention menu, and the picker is a change rather than a
  * decision the user has to make before the Role looks finished.
  */
-/** A Role's instruction, ahead of the task of the Session it creates. */
-export const composeAgentRolePrompt = (
-  promptPrefix: string | undefined,
-  prompt: string
-): string => {
-  const prefix = promptPrefix?.trim();
-  return prefix ? `${prefix}\n\n${prompt}` : prompt;
-};
-
 export const DEFAULT_AGENT_ROLE_EMOJI = '🪼';
 
 export const getAgentRoleEmoji = (role: Pick<AgentRole, 'emoji'>): string =>
@@ -208,7 +190,7 @@ export const normalizeAgentRoleEmoji = (value: unknown): string | undefined => {
  * Option keys a Role may never persist.
  *
  * The shared `isSensitiveAcpConfigOptionId` rule is the base so a Role refuses
- * exactly what session preparation already refuses to retain — one rule, not two
+ * exactly what other retained selections refuse to keep — one rule, not two
  * that drift. The extra names are Role-specific: a Role is a durable, possibly
  * workspace-shared row, so anything that looks like a stored identity belongs
  * in the Agent Config, not here.
@@ -277,24 +259,409 @@ const serializeRunConfig = (value: AgentRoleRunConfig): string => {
   ]);
 };
 
-const serializeInstances = (instances: readonly AgentRoleInstance[]): string =>
-  JSON.stringify(
-    instances.map((instance) => [
-      instance.id,
-      instance.alias ?? '',
-      instance.machineId,
-      instance.agentConfigId,
-      serializeRunConfig(instance.runConfig),
-    ])
+const runConfigsEqual = (left: AgentRoleRunConfig, right: AgentRoleRunConfig): boolean =>
+  serializeRunConfig(left) === serializeRunConfig(right);
+
+// ---------------------------------------------------------------------------
+// Role validation
+// ---------------------------------------------------------------------------
+
+const isStoredRunConfig = (value: unknown): boolean =>
+  value === undefined ||
+  (isRecord(value) &&
+    (value.memory === undefined || MemoryBindingSchema.safeParse(value.memory).success));
+
+const isStoredTarget = (value: unknown): value is Record<string, unknown> =>
+  isRecord(value) &&
+  isNonEmptyString(value.machineId) &&
+  isNonEmptyString(value.agentConfigId) &&
+  isStoredRunConfig(value.runConfig) &&
+  (value.alias === undefined || typeof value.alias === 'string');
+
+export const normalizeAgentRoleAlias = (value: string | undefined): string =>
+  Array.from((value ?? '').trim())
+    .slice(0, AGENT_ROLE_ALIAS_MAX_LENGTH)
+    .join('')
+    .trim();
+
+const normalizeTarget = (value: Record<string, unknown>, roleId: string): AgentRoleTarget => {
+  const alias = normalizeAgentRoleAlias(value.alias as string | undefined);
+  return {
+    id: (typeof value.id === 'string'
+      ? value.id
+      : legacyAgentRoleInstanceId(roleId, value.machineId as string)) as AgentRoleInstanceId,
+    machineId: (value.machineId as string).trim() as MachineId,
+    agentConfigId: (value.agentConfigId as string).trim() as AgentConfigId,
+    runConfig: normalizeAgentRoleRunConfig(value.runConfig),
+    // An alias that has no mention token could never be typed after `@`.
+    ...(alias && normalizeAgentRoleMentionSlug(alias) ? { alias } : {}),
+  };
+};
+
+/**
+ * The targets a stored or in-memory row carries, in order: a v1 row (or an
+ * in-memory Role) has its first target inline plus `additionalTargets`; a v2
+ * row has a `targets` list. Undefined when any target is malformed.
+ */
+const readTargets = (value: Record<string, unknown>): Record<string, unknown>[] | undefined => {
+  if (value.v === AGENT_ROLE_MULTI_TARGET_VERSION) {
+    if (!Array.isArray(value.targets) || value.targets.length === 0) return undefined;
+    return value.targets.every(isStoredTarget) ? value.targets : undefined;
+  }
+  if (value.v !== AGENT_ROLE_VERSION || !isStoredTarget(value)) return undefined;
+  if (Array.isArray(value.instances) || Array.isArray(value.placements)) {
+    return readAgentRoleTargets(value as Record<string, unknown> & AgentRoleLegacyFields);
+  }
+  const additional = value.additionalTargets ?? [];
+  if (!Array.isArray(additional) || !additional.every(isStoredTarget)) return undefined;
+  return [
+    {
+      ...value,
+      id:
+        value.targetId ?? legacyAgentRoleInstanceId(value.id as string, value.machineId as string),
+    },
+    ...additional,
+  ];
+};
+
+/**
+ * Whether an untrusted value is a Role row.
+ *
+ * Flock rows arrive from whatever wrote them — an older client, a newer one, or
+ * a hand-edited document — so nothing reads a Role without passing through
+ * here first.
+ */
+export const isAgentRole = (value: unknown): value is AgentRole =>
+  normalizeAgentRole(value) !== undefined;
+
+/**
+ * Read a persisted Role into the shape the product uses.
+ *
+ * Normalizing on read rather than trusting the row is what keeps a secret-named
+ * option written by an older or buggy client from reaching a Session config.
+ * Every legacy instance keeps its stable id, run config and memory binding.
+ */
+export const normalizeAgentRole = (value: unknown): AgentRole | undefined => {
+  if (
+    !isRecord(value) ||
+    !isNonEmptyString(value.id) ||
+    !isNonEmptyString(value.ownerUserId) ||
+    !isAgentRoleVisibility(value.visibility) ||
+    !isNonEmptyString(value.name) ||
+    !isFiniteNumber(value.revision) ||
+    !isFiniteNumber(value.createdAt) ||
+    !isFiniteNumber(value.updatedAt)
+  ) {
+    return undefined;
+  }
+  if (value.emoji !== undefined && typeof value.emoji !== 'string') return undefined;
+  if (value.description !== undefined && typeof value.description !== 'string') return undefined;
+  if (value.promptPrefix !== undefined && typeof value.promptPrefix !== 'string') return undefined;
+  // A name that normalizes to nothing (only punctuation the token strips) has no
+  // mention token, so it could never be used for what a Role is for.
+  if (!getAgentRoleMentionSlug({ name: value.name.trim() })) return undefined;
+  const storedTargets = readTargets(value);
+  if (!storedTargets) return undefined;
+
+  const targets = storedTargets.map((stored) => normalizeTarget(stored, value.id as string));
+  const [first, ...additional] = targets as [AgentRoleTarget, ...AgentRoleTarget[]];
+  const multi = additional.length > 0;
+  const emoji = normalizeAgentRoleEmoji(value.emoji);
+  const description = normalizeAgentRoleDescription(value.description);
+  const promptPrefix = value.promptPrefix?.trim();
+  return {
+    v: AGENT_ROLE_VERSION,
+    id: value.id.trim() as AgentRoleId,
+    ownerUserId: value.ownerUserId.trim(),
+    visibility: value.visibility,
+    name: value.name.trim(),
+    ...(description ? { description } : {}),
+    ...(emoji ? { emoji } : {}),
+    targetId: first.id,
+    machineId: first.machineId,
+    agentConfigId: first.agentConfigId,
+    runConfig: first.runConfig,
+    // An alias labels one target among several; a single-target Role is its name.
+    ...(first.alias ? { alias: first.alias } : {}),
+    ...(multi ? { additionalTargets: additional } : {}),
+    ...(promptPrefix ? { promptPrefix } : {}),
+    revision: Math.max(1, Math.trunc(value.revision)),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+};
+
+/**
+ * The row a Role is stored as. A single-target Role keeps the v1 shape, so
+ * upgrading — including automatic schema reconciliation — changes nothing an
+ * older client can see. Only a Role with several targets is written as v2.
+ */
+export const serializeAgentRoleRow = (role: AgentRole): Record<string, unknown> => {
+  const {
+    additionalTargets,
+    alias,
+    targetId,
+    machineId,
+    agentConfigId,
+    runConfig,
+    v: _v,
+    ...shared
+  } = role;
+  if (!additionalTargets?.length) {
+    return {
+      v: AGENT_ROLE_VERSION,
+      ...shared,
+      targetId: targetId ?? legacyAgentRoleInstanceId(role.id, machineId),
+      machineId,
+      agentConfigId,
+      runConfig,
+      ...(alias ? { alias } : {}),
+    };
+  }
+  return {
+    v: AGENT_ROLE_MULTI_TARGET_VERSION,
+    ...shared,
+    targets: getAgentRoleTargets(role),
+  };
+};
+
+/** Every machine target of a Role, first target first. */
+export const getAgentRoleTargets = (role: AgentRole): AgentRoleTarget[] => [
+  {
+    id: role.targetId ?? legacyAgentRoleInstanceId(role.id, role.machineId),
+    machineId: role.machineId,
+    agentConfigId: role.agentConfigId,
+    runConfig: role.runConfig,
+    ...(role.alias ? { alias: role.alias } : {}),
+  },
+  ...(role.additionalTargets ?? []).map((target) => ({
+    ...target,
+    id: target.id ?? legacyAgentRoleInstanceId(role.id, target.machineId),
+  })),
+];
+
+export const getAgentRoleTarget = (
+  role: AgentRole,
+  machineId: MachineId,
+  targetId?: string
+): AgentRoleTarget | undefined => {
+  const matches = getAgentRoleTargets(role).filter(
+    (target) => target.machineId === machineId && (!targetId || target.id === targetId)
   );
+  return matches.length === 1 ? matches[0] : undefined;
+};
+
+export const isMultiTargetAgentRole = (role: AgentRole): boolean =>
+  Boolean(role.additionalTargets?.length);
+
+/**
+ * Rebuild a Role from its shared fields and a target list. Callers pass at
+ * least one target; stable ids and aliases survive reduction to one target.
+ */
+export const withAgentRoleTargets = (
+  role: Omit<AgentRole, 'machineId' | 'agentConfigId' | 'runConfig'>,
+  targets: readonly AgentRoleTarget[]
+): AgentRole => {
+  const [first, ...additional] = targets;
+  if (!first) throw new Error('A Role needs at least one target.');
+  const {
+    additionalTargets: _additional,
+    alias: _alias,
+    instances: _instances,
+    placements: _placements,
+    ...shared
+  } = role as typeof role & { instances?: unknown; placements?: unknown };
+  const multi = additional.length > 0;
+  return {
+    ...shared,
+    targetId: first.id,
+    machineId: first.machineId,
+    agentConfigId: first.agentConfigId,
+    runConfig: first.runConfig,
+    ...(first.alias ? { alias: first.alias } : {}),
+    ...(multi ? { additionalTargets: additional } : {}),
+  };
+};
+
+/**
+ * The Role as one machine runs it: that target's machine, Agent Config, run
+ * config and alias in the inline fields. Execution and provenance read only
+ * those, so a bound Role flows through every single-machine path unchanged.
+ */
+export const bindAgentRoleTarget = (
+  role: AgentRole,
+  machineId: MachineId,
+  targetId?: string
+): AgentRole | undefined => {
+  const target = getAgentRoleTarget(role, machineId, targetId);
+  if (!target) return undefined;
+  // A bound Role represents exactly this target, never a new candidate list.
+  return withAgentRoleTargets(role, [target]);
+};
+
+/**
+ * The label one target of a Role goes by: its alias, else the Role name. Used
+ * for the `@` token, so it is what mention uniqueness checks.
+ */
+export const getAgentRoleTargetLabel = (
+  role: Pick<AgentRole, 'name'>,
+  target: Pick<AgentRoleTarget, 'alias'>
+): string => target.alias || role.name;
+
+/**
+ * The value an `@` range carries for one target of a Role: the Role id, plus
+ * the machine when the Role has several targets — the id alone would not say
+ * which machine was meant. Role ids never contain `@`.
+ */
+export const formatAgentRoleMentionValue = (
+  roleId: AgentRoleId,
+  machineId?: MachineId,
+  targetId?: string
+): string =>
+  targetId
+    ? `${roleId}@${machineId ?? ''}@${targetId}`
+    : machineId
+      ? `${roleId}@${machineId}`
+      : roleId;
+
+export const parseAgentRoleMentionValue = (
+  value: string
+): { roleId: AgentRoleId; machineId?: MachineId; targetId?: AgentRoleInstanceId } => {
+  const [roleId, machineId, targetId] = value.split('@');
+  return {
+    roleId: roleId as AgentRoleId,
+    ...(machineId ? { machineId: machineId as MachineId } : {}),
+    ...(targetId ? { targetId: targetId as AgentRoleInstanceId } : {}),
+  };
+};
+
+export const resolveAgentRoleMentionValue = (
+  roles: readonly AgentRole[],
+  value: string
+): AgentRole | undefined => {
+  const { roleId, machineId, targetId } = parseAgentRoleMentionValue(value);
+  const role = roles.find((entry) => entry.id === roleId);
+  if (!role) return undefined;
+  const target = targetId
+    ? getAgentRoleTargets(role).find((entry) => entry.id === targetId)
+    : undefined;
+  if (targetId && (!target || (machineId && target.machineId !== machineId))) return undefined;
+  if (target) return bindAgentRoleTarget(role, target.machineId, target.id);
+  if (machineId) return bindAgentRoleTarget(role, machineId);
+  return isMultiTargetAgentRole(role) ? undefined : role;
+};
+
+const targetsEqual = (left: AgentRoleTarget, right: AgentRoleTarget): boolean =>
+  left.id === right.id &&
+  left.machineId === right.machineId &&
+  left.agentConfigId === right.agentConfigId &&
+  (left.alias ?? '') === (right.alias ?? '') &&
+  runConfigsEqual(left.runConfig, right.runConfig);
+
+/**
+ * Whether two Roles differ in anything worth a new revision.
+ *
+ * `revision` is recorded as Session provenance and in accepted Operations, so a
+ * write that changes nothing must not create a new revision.
+ */
+export const isAgentRoleContentEqual = (left: AgentRole, right: AgentRole): boolean => {
+  const leftTargets = getAgentRoleTargets(left);
+  const rightTargets = getAgentRoleTargets(right);
+  return (
+    left.name === right.name &&
+    (left.description ?? '') === (right.description ?? '') &&
+    (left.emoji ?? '') === (right.emoji ?? '') &&
+    left.visibility === right.visibility &&
+    (left.promptPrefix ?? '') === (right.promptPrefix ?? '') &&
+    leftTargets.length === rightTargets.length &&
+    leftTargets.every((target, index) => {
+      const other = rightTargets[index];
+      return other !== undefined && targetsEqual(target, other);
+    })
+  );
+};
 
 // ---------------------------------------------------------------------------
-// Instances
+// Visibility and ownership
 // ---------------------------------------------------------------------------
 
-export const AGENT_ROLE_INSTANCE_ALIAS_MAX_LENGTH = 40;
+/**
+ * The authoritative trusted-UI discovery rule for Settings and the mention menu.
+ */
+export const canReadAgentRole = (role: AgentRole, userId: string | null | undefined): boolean =>
+  role.visibility === 'workspace' || (Boolean(userId) && role.ownerUserId === userId);
 
-export const normalizeAgentRoleInstanceAlias = (value: string): string =>
+/** V1: only the owner edits, shares, unshares, or deletes. */
+export const canManageAgentRole = (role: AgentRole, userId: string | null | undefined): boolean =>
+  Boolean(userId) && role.ownerUserId === userId;
+
+export const listAccessibleAgentRoles = (
+  roles: readonly AgentRole[],
+  userId: string | null | undefined
+): AgentRole[] => roles.filter((role) => canReadAgentRole(role, userId));
+
+// ---------------------------------------------------------------------------
+// Availability
+// ---------------------------------------------------------------------------
+
+export type AgentRoleUnavailableReason =
+  | 'memory_unsupported'
+  | 'machine_unknown'
+  | 'machine_offline'
+  | 'agent_config_missing'
+  | 'agent_config_machine_mismatch'
+  | 'other_machine';
+
+export type AgentRoleAvailability =
+  | { kind: 'available' }
+  /** The binding cannot be judged yet — that machine's configs are not loaded. */
+  | { kind: 'unknown' }
+  | { kind: 'unavailable'; reason: AgentRoleUnavailableReason };
+
+export type AgentRoleAvailabilityContext = {
+  /** Machines the current user may reach at all. */
+  authorizedMachineIds: ReadonlySet<MachineId>;
+  memoryProviderMachineIds?: ReadonlySet<MachineId>;
+  onlineMachineIds: ReadonlySet<MachineId>;
+  /** Agent config id -> the machine it belongs to. */
+  agentConfigMachineIds: ReadonlyMap<AgentConfigId, MachineId>;
+  /**
+   * Machines whose agent configs have actually been read. A machine outside
+   * this set yields `unknown`, never `agent_config_missing`: reporting a Role
+   * broken because its config list has not loaded is the same silent lie as
+   * falling back to another config.
+   */
+  loadedAgentConfigMachineIds: ReadonlySet<MachineId>;
+};
+
+export const resolveAgentRoleInstanceAvailability = (
+  role: Pick<AgentRoleTarget, 'machineId' | 'agentConfigId' | 'runConfig'>,
+  context: AgentRoleAvailabilityContext
+): AgentRoleAvailability => {
+  if (!context.authorizedMachineIds.has(role.machineId)) {
+    return { kind: 'unavailable', reason: 'machine_unknown' };
+  }
+  if (!context.loadedAgentConfigMachineIds.has(role.machineId)) {
+    return { kind: 'unknown' };
+  }
+  const configMachineId = context.agentConfigMachineIds.get(role.agentConfigId);
+  if (configMachineId === undefined) {
+    return { kind: 'unavailable', reason: 'agent_config_missing' };
+  }
+  if (configMachineId !== role.machineId) {
+    return { kind: 'unavailable', reason: 'agent_config_machine_mismatch' };
+  }
+  if (!context.onlineMachineIds.has(role.machineId)) {
+    return { kind: 'unavailable', reason: 'machine_offline' };
+  }
+  if (role.runConfig.memory && !context.memoryProviderMachineIds?.has(role.machineId))
+    return { kind: 'unavailable', reason: 'memory_unsupported' };
+  return { kind: 'available' };
+};
+
+export const AGENT_ROLE_INSTANCE_ALIAS_MAX_LENGTH = AGENT_ROLE_ALIAS_MAX_LENGTH;
+
+export const normalizeAgentRoleTargetAlias = (value: string): string =>
   Array.from(
     value
       .replace(/\p{Cc}/gu, '')
@@ -317,7 +684,7 @@ const readMemoryOk = (runConfig: unknown): boolean =>
   runConfig.memory === undefined ||
   MemoryBindingSchema.safeParse(runConfig.memory).success;
 
-const readAgentRoleInstance = (value: unknown): AgentRoleInstance | undefined => {
+const readAgentRoleTarget = (value: unknown): AgentRoleTarget | undefined => {
   if (
     !isRecord(value) ||
     !isNonEmptyString(value.id) ||
@@ -327,7 +694,7 @@ const readAgentRoleInstance = (value: unknown): AgentRoleInstance | undefined =>
     !readMemoryOk(value.runConfig)
   )
     return undefined;
-  const alias = typeof value.alias === 'string' ? normalizeAgentRoleInstanceAlias(value.alias) : '';
+  const alias = typeof value.alias === 'string' ? normalizeAgentRoleTargetAlias(value.alias) : '';
   return {
     id: value.id.trim() as AgentRoleInstanceId,
     ...(alias ? { alias } : {}),
@@ -343,7 +710,7 @@ const legacyInstance = (
   machineId: string,
   agentConfigId: string,
   runConfig: unknown
-): AgentRoleInstance => {
+): AgentRoleTarget => {
   const normalized = normalizeAgentRoleRunConfig(runConfig);
   return {
     id: legacyAgentRoleInstanceId(roleId, machineId),
@@ -360,13 +727,13 @@ const legacyInstance = (
  *   switched-off one is dropped;
  * - otherwise the single machine the legacy fields name.
  */
-const readAgentRoleInstances = (row: Record<string, unknown> & AgentRoleLegacyFields) => {
+const readAgentRoleTargets = (row: Record<string, unknown> & AgentRoleLegacyFields) => {
   const roleId = row.id.trim();
   if (Array.isArray(row.instances)) {
     const ids = new Set<string>();
-    const instances: AgentRoleInstance[] = [];
+    const instances: AgentRoleTarget[] = [];
     for (const entry of row.instances) {
-      const instance = readAgentRoleInstance(entry);
+      const instance = readAgentRoleTarget(entry);
       if (!instance || ids.has(instance.id)) continue;
       ids.add(instance.id);
       instances.push(instance);
@@ -375,7 +742,7 @@ const readAgentRoleInstances = (row: Record<string, unknown> & AgentRoleLegacyFi
   }
   if (Array.isArray(row.placements)) {
     const machines = new Set<string>();
-    const instances: AgentRoleInstance[] = [];
+    const instances: AgentRoleTarget[] = [];
     for (const entry of row.placements) {
       if (
         !isRecord(entry) ||
@@ -404,60 +771,18 @@ type AgentRoleLegacyFields = {
   placements?: unknown;
 };
 
-/**
- * Make a catalog row from a Role and its COMPLETE instance list, with the
- * legacy mirror that goes with it. Every writer builds rows through here, so
- * the mirror is always the first instance. The caller guarantees the list is
- * not empty.
- */
-export const withAgentRoleInstances = (
-  role: Omit<AgentRole, 'instances' | 'machineId' | 'agentConfigId' | 'runConfig'>,
-  instances: AgentRoleInstance[]
-): CatalogAgentRole => {
-  const primary = instances[0]!;
-  return {
-    ...role,
-    instances,
-    machineId: primary.machineId,
-    agentConfigId: primary.agentConfigId,
-    runConfig: primary.runConfig,
-  } as CatalogAgentRole;
-};
-
+/** Stable ids keep the existing persisted instance-id references valid. */
+export const findAgentRoleInstance = (role: AgentRole, id: string): AgentRoleTarget | undefined =>
+  getAgentRoleTargets(role).find((target) => target.id === id);
 export const listAgentRoleInstancesOnMachine = (
-  role: Pick<AgentRole, 'instances'>,
+  role: AgentRole,
   machineId: MachineId
-): AgentRoleInstance[] => role.instances.filter((instance) => instance.machineId === machineId);
+): AgentRoleTarget[] =>
+  getAgentRoleTargets(role).filter((target) => target.machineId === machineId);
 
-export const findAgentRoleInstance = (
-  role: Pick<AgentRole, 'instances'>,
-  instanceId: string
-): AgentRoleInstance | undefined => role.instances.find((instance) => instance.id === instanceId);
-
-/**
- * Which instance a Role-based create runs. The rules, in order:
- *
- * 0. A named instance runs as named, or the create fails; a machine named
- *    beside it, or bound by the work, must be that instance's machine.
- * 1. An explicitly requested machine must hold a usable instance; otherwise the
- *    create fails — it is never silently moved.
- * 2. A machine bound by the work (a local project, or a parent Session the new
- *    one joins) is the only one that makes sense; it fails the same way.
- * 3. Otherwise the first group, in the Role's order, with a usable instance;
- *    inside it the preferred (caller's) machine first, then list order.
- *
- * On a pinned machine its instance in the earliest group runs. The rule is
- * returned so callers can say which instance was picked and why.
- */
-export type AgentRoleInstanceRule =
-  | 'instance'
-  | 'explicit'
-  | 'work_context'
-  | 'caller'
-  | 'first_available';
-
+export type AgentRoleInstanceRule = 'instance' | 'explicit' | 'work_context';
 export type AgentRoleInstanceChoice =
-  | { kind: 'selected'; instance: AgentRoleInstance; rule: AgentRoleInstanceRule }
+  | { kind: 'selected'; instance: AgentRoleTarget; rule: AgentRoleInstanceRule }
   | {
       kind: 'rejected';
       reason:
@@ -466,263 +791,84 @@ export type AgentRoleInstanceChoice =
         | 'instance_unavailable'
         | 'machine_has_no_instance'
         | 'machine_unavailable'
-        | 'no_instance_available';
+        | 'machine_required'
+        | 'target_required';
       instanceId?: string;
       machineId?: MachineId;
-      rule?: 'instance' | 'explicit' | 'work_context';
-      /** Instances that could run the Role right now, in list order. */
-      usableInstances: AgentRoleInstance[];
+      rule?: AgentRoleInstanceRule;
+      usableInstances: AgentRoleTarget[];
     };
 
-/**
- * The instances in the order a bare Role tries them: group by group in the
- * order groups first appear, and inside a group the preferred machine first,
- * then list order.
- */
-export const orderAgentRoleInstances = (
-  role: Pick<AgentRole, 'instances'>,
-  groupKeyOf: (instance: AgentRoleInstance) => string,
-  preferredMachineId?: MachineId | null
-): AgentRoleInstance[] => {
-  const groups = new Map<string, AgentRoleInstance[]>();
-  for (const instance of role.instances) {
-    const key = groupKeyOf(instance);
-    groups.set(key, [...(groups.get(key) ?? []), instance]);
-  }
-  return [...groups.values()].flatMap((group) => [
-    ...group.filter((instance) => instance.machineId === preferredMachineId),
-    ...group.filter((instance) => instance.machineId !== preferredMachineId),
-  ]);
-};
-
+/** Resolve only explicit identity or an unambiguous target; availability never breaks ties. */
 export const selectAgentRoleInstance = (
-  role: Pick<AgentRole, 'instances'>,
+  role: AgentRole,
   request: {
     instanceId?: string;
+    alias?: string;
     machineId?: MachineId;
     workContextMachineId?: MachineId;
     callerMachineId?: MachineId;
   },
-  isUsable: (instance: AgentRoleInstance) => boolean,
-  groupKeyOf: (instance: AgentRoleInstance) => string
+  isUsable: (target: AgentRoleTarget) => boolean,
+  _groupKeyOf?: (target: AgentRoleTarget) => string
 ): AgentRoleInstanceChoice => {
-  const usableInstances = role.instances.filter(isUsable);
+  const targets = getAgentRoleTargets(role);
+  const usableInstances = targets.filter(isUsable);
   const reject = (
-    reason: Extract<AgentRoleInstanceChoice, { kind: 'rejected' }>['reason'],
-    rule: 'instance' | 'explicit' | 'work_context',
-    detail: { instanceId?: string; machineId?: MachineId }
-  ): AgentRoleInstanceChoice => ({ kind: 'rejected', reason, rule, ...detail, usableInstances });
-
+    reason: Extract<AgentRoleInstanceChoice, { kind: 'rejected' }>['reason']
+  ): AgentRoleInstanceChoice => ({
+    kind: 'rejected',
+    reason,
+    usableInstances,
+    instanceId: request.instanceId,
+    machineId: request.machineId ?? request.workContextMachineId,
+    rule: request.instanceId ? 'instance' : request.machineId ? 'explicit' : 'work_context',
+  });
+  if (
+    request.machineId &&
+    request.workContextMachineId &&
+    request.machineId !== request.workContextMachineId
+  )
+    return reject('instance_machine_mismatch');
   if (request.instanceId) {
-    const instance = findAgentRoleInstance(role, request.instanceId);
-    if (!instance)
-      return reject('instance_not_found', 'instance', { instanceId: request.instanceId });
-    for (const machineId of [request.machineId, request.workContextMachineId])
-      if (machineId && machineId !== instance.machineId)
-        return reject('instance_machine_mismatch', 'instance', {
-          instanceId: instance.id,
-          machineId,
-        });
-    if (!usableInstances.includes(instance))
-      return reject('instance_unavailable', 'instance', { instanceId: instance.id });
-    return { kind: 'selected', instance, rule: 'instance' };
+    const instance = targets.find((entry) => entry.id === request.instanceId);
+    if (!instance) return reject('instance_not_found');
+    if (
+      [request.machineId, request.workContextMachineId].some(
+        (machineId) => machineId && machineId !== instance.machineId
+      )
+    )
+      return reject('instance_machine_mismatch');
+    return isUsable(instance)
+      ? { kind: 'selected', instance, rule: 'instance' }
+      : reject('instance_unavailable');
   }
-  const ordered = orderAgentRoleInstances(role, groupKeyOf, request.callerMachineId);
-  const pinned: Array<['explicit' | 'work_context', MachineId | undefined]> = [
-    ['explicit', request.machineId],
-    ['work_context', request.workContextMachineId],
-  ];
-  for (const [rule, machineId] of pinned) {
-    if (!machineId) continue;
-    if (!role.instances.some((instance) => instance.machineId === machineId))
-      return reject('machine_has_no_instance', rule, { machineId });
-    const instance = ordered.find((entry) => entry.machineId === machineId && isUsable(entry));
-    if (!instance) return reject('machine_unavailable', rule, { machineId });
-    return { kind: 'selected', instance, rule };
-  }
-  const first = ordered.find(isUsable);
-  return first
+  const machineId = request.machineId ?? request.workContextMachineId;
+  if (!machineId && new Set(targets.map((target) => target.machineId)).size > 1)
+    return reject('machine_required');
+  const matches = targets.filter(
+    (target) =>
+      (!machineId || target.machineId === machineId) &&
+      (!request.alias || target.alias === request.alias)
+  );
+  if (!matches.length) return reject('machine_has_no_instance');
+  if (matches.length > 1) return reject('target_required');
+  const instance = matches[0]!;
+  return isUsable(instance)
     ? {
         kind: 'selected',
-        instance: first,
-        rule: first.machineId === request.callerMachineId ? 'caller' : 'first_available',
+        instance,
+        rule: request.workContextMachineId && !request.machineId ? 'work_context' : 'explicit',
       }
-    : { kind: 'rejected', reason: 'no_instance_available', usableInstances };
+    : reject('machine_unavailable');
 };
 
-// ---------------------------------------------------------------------------
-// Role validation
-// ---------------------------------------------------------------------------
-
-/**
- * Whether an untrusted value is a Role row.
- *
- * Flock rows arrive from whatever wrote them — an older client, a newer one, or
- * a hand-edited document — so nothing reads a Role without passing through
- * here first. The legacy single-machine fields are always present: every
- * writer keeps them as the mirror of the first instance.
- */
-export const isAgentRole = (value: unknown): value is AgentRole => {
-  if (
-    !isRecord(value) ||
-    value.v !== AGENT_ROLE_VERSION ||
-    !isNonEmptyString(value.id) ||
-    !isNonEmptyString(value.ownerUserId) ||
-    !isAgentRoleVisibility(value.visibility) ||
-    !isNonEmptyString(value.name) ||
-    !isNonEmptyString(value.machineId) ||
-    !isNonEmptyString(value.agentConfigId) ||
-    !isFiniteNumber(value.revision) ||
-    !isFiniteNumber(value.createdAt) ||
-    !isFiniteNumber(value.updatedAt)
-  ) {
-    return false;
-  }
-  if (value.emoji !== undefined && typeof value.emoji !== 'string') return false;
-  if (value.description !== undefined && typeof value.description !== 'string') return false;
-  if (value.promptPrefix !== undefined && typeof value.promptPrefix !== 'string') return false;
-  if (value.runConfig !== undefined && !isRecord(value.runConfig)) return false;
-  if (!readMemoryOk(value.runConfig)) return false;
-  // A name that normalizes to nothing (only punctuation the token strips) has no
-  // mention token, so it could never be used for what a Role is for.
-  return getAgentRoleMentionSlug({ name: value.name.trim() }).length > 0;
-};
-
-/**
- * Read a persisted Role into the shape the product uses.
- *
- * Normalizing on read rather than trusting the row is what keeps a secret-named
- * option written by an older or buggy client from reaching a Session config,
- * and is where rows from older clients become instances
- * (`readAgentRoleInstances`).
- */
-export const normalizeAgentRole = (value: unknown): CatalogAgentRole | undefined => {
-  if (!isAgentRole(value)) return undefined;
-  const emoji = normalizeAgentRoleEmoji(value.emoji);
-  const description = normalizeAgentRoleDescription(value.description);
-  const promptPrefix = value.promptPrefix?.trim();
-  return withAgentRoleInstances(
-    {
-      v: AGENT_ROLE_VERSION,
-      id: value.id.trim() as AgentRoleId,
-      ownerUserId: value.ownerUserId.trim(),
-      visibility: value.visibility,
-      name: value.name.trim(),
-      ...(description ? { description } : {}),
-      ...(emoji ? { emoji } : {}),
-      ...(promptPrefix ? { promptPrefix } : {}),
-      revision: Math.max(1, Math.trunc(value.revision)),
-      createdAt: value.createdAt,
-      updatedAt: value.updatedAt,
-    },
-    readAgentRoleInstances(value as unknown as Record<string, unknown> & AgentRoleLegacyFields)
-  );
-};
-
-/**
- * Whether two Roles differ in anything worth a new revision.
- *
- * `revision` is recorded as Session provenance and in accepted Operations, so a
- * write that changes nothing must not create a new revision.
- */
-export const isAgentRoleContentEqual = (left: AgentRole, right: AgentRole): boolean =>
-  left.name === right.name &&
-  (left.description ?? '') === (right.description ?? '') &&
-  (left.emoji ?? '') === (right.emoji ?? '') &&
-  left.visibility === right.visibility &&
-  (left.promptPrefix ?? '') === (right.promptPrefix ?? '') &&
-  serializeInstances(left.instances) === serializeInstances(right.instances);
-
-// ---------------------------------------------------------------------------
-// Visibility and ownership
-// ---------------------------------------------------------------------------
-
-/**
- * The authoritative trusted-UI discovery rule for Settings and the mention menu.
- */
-export const canReadAgentRole = (role: AgentRole, userId: string | null | undefined): boolean =>
-  role.visibility === 'workspace' || (Boolean(userId) && role.ownerUserId === userId);
-
-/** V1: only the owner edits, shares, unshares, or deletes. */
-export const canManageAgentRole = (role: AgentRole, userId: string | null | undefined): boolean =>
-  Boolean(userId) && role.ownerUserId === userId;
-
-export const listAccessibleAgentRoles = <T extends AgentRole>(
-  roles: readonly T[],
-  userId: string | null | undefined
-): T[] => roles.filter((role) => canReadAgentRole(role, userId));
-
-// ---------------------------------------------------------------------------
-// Availability
-// ---------------------------------------------------------------------------
-
-export type AgentRoleUnavailableReason =
-  | 'memory_unsupported'
-  | 'machine_unknown'
-  | 'machine_offline'
-  | 'agent_config_missing'
-  | 'agent_config_machine_mismatch'
-  /** It runs elsewhere, and this conversation's machine is fixed. */
-  | 'other_machine';
-
-export type AgentRoleAvailability =
-  | { kind: 'available' }
-  /** The binding cannot be judged yet — that machine's configs are not loaded. */
-  | { kind: 'unknown' }
-  | { kind: 'unavailable'; reason: AgentRoleUnavailableReason };
-
-export type AgentRoleAvailabilityContext = {
-  /** Machines the current user may reach at all. */
-  authorizedMachineIds: ReadonlySet<MachineId>;
-  memoryProviderMachineIds?: ReadonlySet<MachineId>;
-  onlineMachineIds: ReadonlySet<MachineId>;
-  /** Agent config id -> the machine it belongs to. */
-  agentConfigMachineIds: ReadonlyMap<AgentConfigId, MachineId>;
-  /**
-   * Machines whose agent configs have actually been read. A machine outside
-   * this set yields `unknown`, never `agent_config_missing`: reporting a Role
-   * broken because its config list has not loaded is the same silent lie as
-   * falling back to another config.
-   */
-  loadedAgentConfigMachineIds: ReadonlySet<MachineId>;
-};
-
-export const resolveAgentRoleInstanceAvailability = (
-  instance: AgentRoleInstance,
-  context: AgentRoleAvailabilityContext
-): AgentRoleAvailability => {
-  const { machineId } = instance;
-  if (!context.authorizedMachineIds.has(machineId)) {
-    return { kind: 'unavailable', reason: 'machine_unknown' };
-  }
-  if (!context.loadedAgentConfigMachineIds.has(machineId)) {
-    return { kind: 'unknown' };
-  }
-  const configMachineId = context.agentConfigMachineIds.get(instance.agentConfigId);
-  if (configMachineId === undefined) {
-    return { kind: 'unavailable', reason: 'agent_config_missing' };
-  }
-  if (configMachineId !== machineId) {
-    return { kind: 'unavailable', reason: 'agent_config_machine_mismatch' };
-  }
-  if (!context.onlineMachineIds.has(machineId)) {
-    return { kind: 'unavailable', reason: 'machine_offline' };
-  }
-  if (instance.runConfig.memory && !context.memoryProviderMachineIds?.has(machineId))
-    return { kind: 'unavailable', reason: 'memory_unsupported' };
-  return { kind: 'available' };
-};
-
-/**
- * A Role is available when any instance is; otherwise `unknown` while some
- * instance cannot be judged yet, else the first instance's reason.
- */
 export const resolveAgentRoleAvailability = (
-  role: Pick<AgentRole, 'instances'>,
+  role: AgentRole,
   context: AgentRoleAvailabilityContext
 ): AgentRoleAvailability => {
-  const results = role.instances.map((instance) =>
-    resolveAgentRoleInstanceAvailability(instance, context)
+  const results = getAgentRoleTargets(role).map((target) =>
+    resolveAgentRoleInstanceAvailability(target, context)
   );
   return (
     results.find((result) => result.kind === 'available') ??
@@ -730,3 +876,5 @@ export const resolveAgentRoleAvailability = (
     results[0] ?? { kind: 'unknown' }
   );
 };
+export const composeAgentRolePrompt = (prefix: string | undefined, prompt: string): string =>
+  prefix?.trim() ? `${prefix.trim()}\n\n${prompt}` : prompt;

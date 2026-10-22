@@ -71,7 +71,6 @@ interface FolderIconProps {
   className?: string;
 }
 
-
 export const FileIcon = ({ filePath, className = 'h-4 w-4' }: FileIconProps) => {
   const iconUrl = useMemo(() => {
     const iconName = getFileIconName(filePath);

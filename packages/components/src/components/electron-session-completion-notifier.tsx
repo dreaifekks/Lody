@@ -1,3 +1,10 @@
+import { formatNotification, resolveNotificationPresentation } from '@lody/shared/notifications';
+import { LegacyElectronSessionNotifier } from './legacy-electron-session-notifier';
+import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
+import { machineMetaCacheAtom } from '@/atoms/doc-meta';
+import { lodyPresenceSyncStateAtom } from '@/atoms/presence';
+import { createTerminalNotificationConsumer } from '@/lib/terminal-notification-consumer';
+import { getServerNow } from '@lody/shared';
 import { WorkspaceWindowOwnerContext } from '@/lib/desktop-window';
 import { useContext, useEffect, useRef } from 'react';
 import { useRouter } from '@tanstack/react-router';
@@ -10,226 +17,139 @@ import {
 } from '@/atoms';
 import { agentNotifyFeatureEnabledAtom } from '@/atoms/settings';
 import { useVisibleSessionMetas } from '@/hooks/use-visible-session-metas';
-import {
-  isAppForeground,
-  shouldNotifySessionCompletion,
-} from '@/lib/session-completion-notification';
-import type { SessionListEntry } from '@/lib/session-visibility';
-import type { SessionLegacyMetaFields } from '@lody/shared';
+import { isAppForeground } from '@/lib/session-completion-notification';
 import { getIpcServices, onIpcEvent } from '@/lib/electron-ipc-client';
 
-type SessionStatusType = 'running' | 'initializing' | 'requestPermission' | 'idle';
-
-const NOTIFICATION_DEBOUNCE_MS = 5_000;
-
-function normalizeSessionStatusType(status: unknown): SessionStatusType {
-  if (status == null || typeof status !== 'object') {
-    return 'idle';
-  }
-
-  const type = (status as { type?: unknown }).type;
-  if (type === 'idle') {
-    return 'idle';
-  }
-  if (type === 'initializing') {
-    return 'initializing';
-  }
-  if (type === 'requestPermission') {
-    return 'requestPermission';
-  }
-  return 'running';
-}
-
-function isWorkingStatusType(statusType: SessionStatusType): boolean {
-  return statusType !== 'idle';
-}
-
-function isNonEmptyString(value: string | undefined | null): value is string {
-  return value != null && value !== '';
+function isNonEmptyString(value: string | null | undefined): value is string {
+  return !!value;
 }
 
 export function ElectronSessionCompletionNotifier() {
   const owner = useContext(WorkspaceWindowOwnerContext);
   const router = useRouter();
   const { t } = useTranslation();
-  const { sessions } = useVisibleSessionMetas();
+  const { sessions, allActiveSessions, isLoading } = useVisibleSessionMetas();
+  const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
+  const machines = useAtomValue(machineMetaCacheAtom);
+  const presenceSync = useAtomValue(lodyPresenceSyncStateAtom);
   const user = useAtomValue(userAtom);
   const currentUserId = typeof user?.id === 'string' ? user.id.trim() : '';
   const workspaceSlug = useAtomValue(currentWorkspaceSlugAtom);
   const enabled = useAtomValue(electronSessionCompletionNotificationsEnabledAtom);
   const isElectron = typeof window !== 'undefined' && window.__LODY_ELECTRON__ === true;
   const agentNoticesEnabled = useAtomValue(agentNotifyFeatureEnabledAtom);
-  const previousStatusBySessionRef = useRef<Map<string, SessionStatusType>>(new Map());
-  /**
-   * Every Agent notice id seen per session: an id alerts once, also when it is
-   * delivered again after another notice (a retried write re-sends its own).
-   */
-  const seenNoticesBySessionRef = useRef<Map<string, Set<string>>>(new Map());
-  const pendingCompletionTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  const latestSessionsByIdRef = useRef<Map<string, SessionListEntry>>(new Map());
-  const initializedRef = useRef(false);
-
-  latestSessionsByIdRef.current = new Map(sessions.map((session) => [session.id, session]));
-
+  const seenNotices = useRef(new Map<string, Set<string>>());
+  const noticesInitialized = useRef(false);
   useEffect(() => {
-    if (!owner || !isElectron || typeof window === 'undefined') {
-      initializedRef.current = false;
-      previousStatusBySessionRef.current.clear();
-      seenNoticesBySessionRef.current.clear();
-      return undefined;
+    if (!owner || !isElectron) {
+      seenNotices.current.clear();
+      noticesInitialized.current = false;
+      return;
     }
-
-    // The agent's own words, so the title is the conversation and the body is the message.
-    const showAgentNotice = (session: SessionListEntry): void => {
-      const notice = session.agentNotice;
-      if (!notice) return;
-      const sessionTitle = typeof session.title === 'string' ? session.title.trim() : '';
-      void getIpcServices()?.notifications.showSessionCompletion({
-        sessionId: session.id,
-        workspaceSlug: workspaceSlug ?? undefined,
-        title: notice.title || sessionTitle || t('notifications.desktopCompletion.title'),
-        body: notice.body,
-      });
-    };
-
-    const showCompletionNotification = (session: SessionListEntry): void => {
-      const sessionTitle = typeof session.title === 'string' ? session.title.trim() : '';
-      const title = t('notifications.desktopCompletion.title');
-      const body = sessionTitle
-        ? t('notifications.desktopCompletion.bodyWithTitle', { title: sessionTitle })
-        : t('notifications.desktopCompletion.body');
-      void getIpcServices()?.notifications.showSessionCompletion({
-        sessionId: session.id,
-        workspaceSlug: workspaceSlug ?? undefined,
-        title,
-        body,
-      });
-    };
-
-    const showPermissionRequestNotification = (session: SessionListEntry): void => {
-      const sessionTitle = typeof session.title === 'string' ? session.title.trim() : '';
-      const title = t('notifications.desktopPermissionRequest.title');
-      const body = isNonEmptyString(sessionTitle)
-        ? t('notifications.desktopPermissionRequest.bodyWithSession', { sessionTitle })
-        : t('notifications.desktopPermissionRequest.body');
-      void getIpcServices()?.notifications.showSessionCompletion({
-        sessionId: session.id,
-        workspaceSlug: workspaceSlug ?? undefined,
-        title,
-        body,
-      });
-    };
-
-    const clearTimerForSession = (sessionId: string): void => {
-      const timer = pendingCompletionTimersRef.current.get(sessionId);
-      if (timer) {
-        clearTimeout(timer);
-        pendingCompletionTimersRef.current.delete(sessionId);
-      }
-    };
-
-    const activeSessionIds = new Set<string>();
+    const activeIds = new Set<string>();
     for (const session of sessions) {
-      if (!currentUserId || session.userId !== currentUserId) {
-        continue;
-      }
-
-      activeSessionIds.add(session.id);
-      const currentStatusType = normalizeSessionStatusType(session.status);
-      const previousStatusType = previousStatusBySessionRef.current.get(session.id);
-      const legacy = session as SessionLegacyMetaFields;
-
-      const shouldStartCompletionTimer =
-        shouldNotifySessionCompletion({
-          initialized: initializedRef.current,
-          enabled,
-          previousStatusType,
-          currentStatusType,
-          latestGoal: legacy.latestGoal,
-        }) && !pendingCompletionTimersRef.current.has(session.id);
-
-      if (shouldStartCompletionTimer) {
-        const timer = setTimeout(() => {
-          pendingCompletionTimersRef.current.delete(session.id);
-          const latestSession = latestSessionsByIdRef.current.get(session.id);
-          const latestStatusType = latestSession
-            ? normalizeSessionStatusType(latestSession.status)
-            : 'idle';
-          if (latestStatusType !== 'idle') {
-            return;
-          }
-          if (isAppForeground()) {
-            return;
-          }
-          showCompletionNotification(latestSession ?? session);
-        }, NOTIFICATION_DEBOUNCE_MS);
-        pendingCompletionTimersRef.current.set(session.id, timer);
-      }
-
+      if (session.userId !== currentUserId) continue;
+      activeIds.add(session.id);
+      const notice = session.agentNotice;
+      const seen = seenNotices.current.get(session.id);
       if (
-        isWorkingStatusType(currentStatusType) &&
-        pendingCompletionTimersRef.current.has(session.id)
-      ) {
-        clearTimerForSession(session.id);
-      }
-
-      if (
-        initializedRef.current &&
+        notice &&
+        seen &&
+        !seen.has(notice.id) &&
+        noticesInitialized.current &&
         enabled &&
-        previousStatusType !== undefined &&
-        previousStatusType !== 'requestPermission' &&
-        currentStatusType === 'requestPermission' &&
+        (agentNoticesEnabled || notice.kind === 'config_change') &&
         !isAppForeground()
       ) {
-        showPermissionRequestNotification(session);
+        void getIpcServices()?.notifications.showSessionCompletion({
+          sessionId: session.id,
+          workspaceSlug: workspaceSlug ?? undefined,
+          title: notice.title || session.title || t('notifications.desktopCompletion.title'),
+          body: notice.body,
+        });
       }
-
-      previousStatusBySessionRef.current.set(session.id, currentStatusType);
-
-      const noticeId = session.agentNotice?.id;
-      const seenNotices = seenNoticesBySessionRef.current.get(session.id);
-      if (
-        initializedRef.current &&
-        enabled &&
-        // A Role or Schedule an Agent wrote is Lody's notice, not the experiment's.
-        (agentNoticesEnabled || session.agentNotice?.kind === 'config_change') &&
-        noticeId !== undefined &&
-        seenNotices !== undefined &&
-        !seenNotices.has(noticeId) &&
-        !isAppForeground()
-      ) {
-        showAgentNotice(session);
-      }
-      if (!seenNotices) seenNoticesBySessionRef.current.set(session.id, new Set());
-      if (noticeId !== undefined) seenNoticesBySessionRef.current.get(session.id)!.add(noticeId);
+      const ids = seen ?? new Set<string>();
+      if (notice) ids.add(notice.id);
+      seenNotices.current.set(session.id, ids);
     }
-
-    for (const sessionId of Array.from(previousStatusBySessionRef.current.keys())) {
-      if (!activeSessionIds.has(sessionId)) {
-        previousStatusBySessionRef.current.delete(sessionId);
-        seenNoticesBySessionRef.current.delete(sessionId);
-        clearTimerForSession(sessionId);
-      }
-    }
-
-    if (!initializedRef.current) {
-      initializedRef.current = true;
-    }
-    return undefined;
-  }, [owner, currentUserId, enabled, agentNoticesEnabled, isElectron, sessions, t, workspaceSlug]);
+    for (const id of seenNotices.current.keys())
+      if (!activeIds.has(id)) seenNotices.current.delete(id);
+    noticesInitialized.current = true;
+  }, [owner, isElectron, currentUserId, enabled, agentNoticesEnabled, sessions, workspaceSlug, t]);
+  const terminalConsumerRef = useRef<ReturnType<typeof createTerminalNotificationConsumer> | null>(
+    null
+  );
+  const latestRef = useRef({
+    allActiveSessions,
+    enabled,
+    currentUserId,
+    workspaceSlug,
+    runtime,
+  });
+  latestRef.current = {
+    allActiveSessions,
+    enabled,
+    currentUserId,
+    workspaceSlug,
+    runtime,
+  };
 
   useEffect(() => {
-    if (!isElectron || typeof window === 'undefined') {
+    if (
+      !owner ||
+      !isElectron ||
+      !runtime ||
+      !currentUserId ||
+      isLoading ||
+      presenceSync !== 'synced'
+    )
       return undefined;
-    }
-    const timers = pendingCompletionTimersRef.current;
+    const consumer = createTerminalNotificationConsumer({
+      recipientId: currentUserId,
+      now: getServerNow,
+      read: (sessionId, signal) =>
+        runtime.withSessionStore(sessionId, async (store) => {
+          signal.throwIfAborted();
+          await store.waitUntilSynced(signal);
+          return store.getState().notification;
+        }),
+      show: async (sessionId, notification) => {
+        const latest = latestRef.current;
+        const session = latest.allActiveSessions.find((s) => s.id === sessionId && !s.isArchived);
+        if (
+          !latest.enabled ||
+          latest.runtime !== runtime ||
+          latest.currentUserId !== currentUserId ||
+          !session
+        )
+          return;
+        const route = `/${encodeURIComponent(latest.workspaceSlug ?? '')}/sessions/${encodeURIComponent(sessionId)}`;
+        if (isAppForeground() && router.state.location.pathname === route) return;
+        await getIpcServices()?.notifications.showSessionCompletion({
+          sessionId,
+          workspaceSlug: latest.workspaceSlug ?? undefined,
+          ...formatNotification(
+            notification.outcome,
+            notification.presentation ?? resolveNotificationPresentation(session, []),
+            (key) => t(key)
+          ),
+          allowWhileForeground: true,
+        });
+      },
+      onError: () => console.debug('[notifications] Terminal notification attempt failed'),
+    });
+    terminalConsumerRef.current = consumer;
+    // Establish a baseline before reacting to any later index change.
+    void consumer.observe(latestRef.current.allActiveSessions);
     return () => {
-      for (const timer of timers.values()) {
-        clearTimeout(timer);
-      }
-      timers.clear();
+      consumer.dispose();
+      terminalConsumerRef.current = null;
     };
-  }, [isElectron, owner]);
+  }, [owner, isElectron, runtime, currentUserId, isLoading, presenceSync, router, t]);
+
+  useEffect(() => {
+    void terminalConsumerRef.current?.observe(allActiveSessions);
+  }, [allActiveSessions]);
 
   useEffect(() => {
     if (!isElectron || typeof window === 'undefined') {
@@ -259,5 +179,14 @@ export function ElectronSessionCompletionNotifier() {
     });
   }, [isElectron, router, workspaceSlug]);
 
-  return null;
+  return (
+    <LegacyElectronSessionNotifier
+      sessions={sessions}
+      machines={machines}
+      runtime={runtime}
+      currentUserId={currentUserId}
+      workspaceSlug={workspaceSlug ?? null}
+      enabled={enabled}
+    />
+  );
 }

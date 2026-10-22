@@ -67,7 +67,9 @@ vi.mock('@lody/platform/react', () => ({
 vi.mock('@/hooks/use-visible-machine-metas', () => ({
   useVisibleMachineMetas: () => ({ isLoading: true }),
 }));
-vi.mock('@/providers/local-platform-provider', () => ({
+vi.mock('@/providers/local-platform-provider', async () => ({
+  resolveLocalWorkspace: (await import('../src/providers/local-platform-follower'))
+    .resolveLocalWorkspace,
   useLocalWorkspace: (slug: string | null) =>
     environment.workspaces.find((workspace) => workspace.slug === slug) ??
     environment.workspaces[0] ??

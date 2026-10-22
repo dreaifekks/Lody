@@ -1,16 +1,16 @@
 diff --git a/src/methods.ts b/src/methods.ts
-index 554609b..439f512 100644
+index 5cad42d1ffbdc4a6bf89434d85bce67e225ef8a1..7375ef211c5420e4a398338a6d802a0ddaec03e7 100644
 --- a/src/methods.ts
 +++ b/src/methods.ts
-@@ -7,6 +7,7 @@ export const LODY_EXTENSION_METHODS = {
-   rateLimitsUpdate: '_lody/rate_limits/update',
+@@ -8,6 +8,7 @@
    sessionSteer: '_lody/session/steer',
    sessionSteerApplied: '_lody/session/steer_applied',
+   sessionActivityUpdate: '_lody/session/activity_update',
 +  sessionPromptSuggestion: '_lody/session/prompt_suggestion',
    sessionGoal: '_lody/session/goal',
    sessionHistoryRead: '_lody/session/history/read',
    subagentsList: '_lody/subagents/list',
-@@ -71,6 +72,7 @@ export type LodyExtensionRequestMap<TPrompt = unknown> = {
+@@ -72,6 +73,7 @@
  
  export type LodyExtensionNotificationMap = {
    [LODY_EXTENSION_METHODS.subagentEvent]: LodySubagentEvent;
@@ -18,19 +18,19 @@ index 554609b..439f512 100644
    [LODY_EXTENSION_METHODS.sessionUsageUpdate]: SessionUsageUpdate;
    [LODY_EXTENSION_METHODS.rateLimitsUpdate]: RateLimitsUpdate;
    [LODY_EXTENSION_METHODS.sessionSteerApplied]: LodySteerApplied;
-@@ -100,6 +102,7 @@ import type {
- import type {
+@@ -103,6 +105,7 @@
    LodyGoalControlRequest,
+   LodySessionActivityUpdate,
    LodyGoalControlResponse,
 +  LodyPromptSuggestion,
    LodySessionHistoryReadRequest,
    LodySessionHistoryReadResponse,
    LodySteerApplied,
 diff --git a/src/session.ts b/src/session.ts
-index 7452c25..0ebec02 100644
+index d23a4d9fecc6488fc1e091759888e9c9f3f6ae6e..d648c589fad908c546a8b764efed8e537c76e73b 100644
 --- a/src/session.ts
 +++ b/src/session.ts
-@@ -105,6 +105,16 @@ export type LodySteerApplied = {
+@@ -130,6 +130,16 @@
    steerId: string;
  };
  
@@ -47,7 +47,7 @@ index 7452c25..0ebec02 100644
  export type LodySubagentTask = {
    taskId: string;
    description: string;
-@@ -170,6 +180,8 @@ export type LodySessionMeta = {
+@@ -195,6 +205,8 @@
    worktreeProject?: LodyWorktreeProject;
    turnId?: string;
    forkAtTurn?: { version: 1; turnId?: string };

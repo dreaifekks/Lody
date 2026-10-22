@@ -2,6 +2,7 @@ import * as React from 'react';
 import { useAtomValue } from 'jotai';
 import {
   getAgentRoleEmoji,
+  getAgentRoleTargets,
   getAgentRoleMentionSlug,
   normalizeAgentRoleMentionSlug,
   type AgentRoleInstanceId,
@@ -86,9 +87,6 @@ export const getAgentRoleInstanceMentionSlug = (
 
 const PINNED_VALUE_PREFIX = 'pinned:';
 
-const pinAgentRoleMentionValue = (instanceId: AgentRoleInstanceId): string =>
-  `${PINNED_VALUE_PREFIX}${instanceId}`;
-
 // ---------------------------------------------------------------------------
 // Candidates
 // ---------------------------------------------------------------------------
@@ -105,7 +103,7 @@ export const selectAgentRoleMentionCandidates = (
   term: string,
   limit = items.length
 ): AgentRoleMentionItem[] => {
-  const listed = items.filter((item) => !item.pinned);
+  const listed = items;
   const at = term.indexOf('@');
   const machineTerm = term.slice(at + 1).toLowerCase();
   const onMachine =
@@ -140,33 +138,18 @@ export const buildAgentRoleMentionItems = (
   items: readonly ComposerAgentRoleItem[],
   machineOf: (machineId: MachineId) => AgentRoleMentionItem['machine']
 ): AgentRoleMentionItem[] => {
-  const read = (item: ComposerAgentRoleItem) => ({
-    ...item,
-    slug: getAgentRoleInstanceMentionSlug(item),
-    value: item.instance.id as string,
-    pinned: false,
-    machineSlug: normalizeAgentRoleMentionSlug(item.machineName),
-    machine: machineOf(item.instance.machineId) ?? null,
+  return items.map((item) => {
+    const machineSlug = normalizeAgentRoleMentionSlug(item.machineName);
+    const token = getAgentRoleInstanceMentionSlug(item);
+    return {
+      ...item,
+      slug: getAgentRoleTargets(item.role).length > 1 ? `${token}@${machineSlug}` : token,
+      value: item.instance.id,
+      pinned: true,
+      machineSlug,
+      machine: machineOf(item.instance.machineId) ?? null,
+    };
   });
-  const pinned = items.flatMap((item) =>
-    item.group.map((member) => {
-      const entry = read(member);
-      return {
-        ...entry,
-        title: [
-          member.role.name,
-          member.hasSiblingGroups ? member.groupName : undefined,
-          member.machineName,
-        ]
-          .filter(Boolean)
-          .join(' · '),
-        slug: `${entry.slug}@${entry.machineSlug}`,
-        value: pinAgentRoleMentionValue(member.instance.id),
-        pinned: true,
-      };
-    })
-  );
-  return [...items.map(read), ...pinned];
 };
 
 /**
@@ -206,24 +189,18 @@ export function useAgentRoleMentionItems(
   );
 }
 
-/**
- * The instance a committed range runs: a pinned one exactly; the one it names,
- * or — the instances of a group standing in for each other — the first of its
- * group that can run; a range written before instances carries the Role id,
- * which means what a bare pick of that Role runs.
- */
+/** Resolve stored target pins exactly, including legacy instance-id ranges. */
 const findMentionTarget = (
   items: readonly AgentRoleMentionItem[],
   value: string
 ): ComposerAgentRoleItem | undefined => {
-  if (value.startsWith(PINNED_VALUE_PREFIX)) return items.find((item) => item.value === value);
-  const listed = items.filter((item) => !item.pinned);
-  const named = findComposerAgentRoleItem(listed, value as AgentRoleInstanceId);
-  if (named)
-    return named.availability.kind === 'available'
-      ? named
-      : named.group.find((entry) => entry.availability.kind === 'available');
-  return findDefaultComposerAgentRoleItem(listed, value);
+  if (value.startsWith(PINNED_VALUE_PREFIX))
+    return findComposerAgentRoleItem(
+      items,
+      value.slice(PINNED_VALUE_PREFIX.length) as AgentRoleInstanceId
+    );
+  const named = findComposerAgentRoleItem(items, value as AgentRoleInstanceId);
+  return named ?? findDefaultComposerAgentRoleItem(items, value);
 };
 
 // ---------------------------------------------------------------------------
@@ -301,50 +278,26 @@ export const hydrateAgentRoleMentionsFromText = (
     knownFileTokens,
   });
 
-/**
- * Token → range value. An entry's token names its group, which runs its first
- * instance that can (this machine first); a pinned entry's runs its instance;
- * a bare Role name names what a bare pick of the Role runs, and `<Role>@<machine>`
- * pins the first group there, in group order, that can run. A token two entries
- * would both produce — a Role named `a:b` beside Role `a`'s group `b`, or two
- * machines of one name — is left out, so it stays plain text rather than picking
- * one of them; that holds while one of them cannot run.
- */
+/** Hydrate only uniquely named targets, even when other matches are unavailable. */
 export const buildAgentRoleMentionSlugMap = (
   items: readonly AgentRoleMentionItem[]
 ): Map<string, string> => {
-  const listed = items.filter((item) => !item.pinned);
   const claims = new Map<string, AgentRoleMentionItem[]>();
-  for (const item of items) claims.set(item.slug, [...(claims.get(item.slug) ?? []), item]);
-  const map = new Map<string, string>();
-  for (const [slug, owners] of claims) {
-    if (owners.length !== 1) continue;
-    const [owner] = owners as [AgentRoleMentionItem];
-    if (owner.pinned) {
-      if (owner.availability.kind === 'available') map.set(slug, owner.value);
-      continue;
-    }
-    const runs = owner.group.find((entry) => entry.availability.kind === 'available');
-    if (runs) map.set(slug, runs.instance.id);
-  }
-  for (const item of listed) {
-    const roleSlug = getAgentRoleMentionSlug(item.role);
-    if (claims.has(roleSlug) || map.has(roleSlug)) continue;
-    const runs = findDefaultComposerAgentRoleItem(listed, item.role.id);
-    if (runs?.availability.kind === 'available') map.set(roleSlug, runs.instance.id);
-  }
   for (const item of items) {
-    const slug = `${getAgentRoleMentionSlug(item.role)}@${item.machineSlug}`;
-    if (!item.pinned || claims.has(slug) || map.has(slug)) continue;
-    const there = items
-      .filter(
-        (entry) =>
-          entry.pinned && entry.role.id === item.role.id && entry.machineSlug === item.machineSlug
-      )
-      .sort((left, right) => left.groupIndex - right.groupIndex);
-    if (new Set(there.map((entry) => entry.instance.machineId)).size > 1) continue;
-    const runs = there.find((entry) => entry.availability.kind === 'available');
-    if (runs) map.set(slug, runs.value);
+    for (const slug of new Set([
+      item.slug,
+      getAgentRoleInstanceMentionSlug(item),
+      getAgentRoleMentionSlug(item.role),
+      `${getAgentRoleMentionSlug(item.role)}@${item.machineSlug}`,
+    ])) {
+      claims.set(slug, [...(claims.get(slug) ?? []), item]);
+    }
   }
-  return map;
+  return new Map(
+    [...claims].flatMap(([slug, owners]) =>
+      owners.length === 1 && owners[0]!.availability.kind === 'available'
+        ? [[slug, owners[0]!.value]]
+        : []
+    )
+  );
 };

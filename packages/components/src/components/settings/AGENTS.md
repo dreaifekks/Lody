@@ -96,14 +96,13 @@ resolved by CLI MCP creation, so these are cross-surface rules rather than
 component details.
 
 - Before changing Role settings or dispatch, read the authoritative
-  [shared Role contracts](../../../../shared/AGENTS.md#workspace-mcp-and-agent-roles).
-  Each instance uses its own machine's Provider RPC and memory identity.
-  Memory settings reuse Agents machine pills/catalog rows; missing nmem shows its URL,
-  never a blocking dialog. Only ready Provider inventory marks missing identities;
-  unlinking never deletes provider data.
-  The Role editor has template fields then instances, no tabs. Instances have optional
-  aliases, one per group/machine. `RoleMemoryPicker` marks missing imports and links Memory.
-  List each Role once. Editors/writers take `CatalogAgentRole`; composers pass Role ids.
+  [shared Role contracts](../../../../shared/AGENTS.md#workspace-mcp--roles).
+  Each target uses its machine's Provider RPC and memory identity. Only ready
+  inventory marks missing memories; unlinking never deletes provider data.
+  The editor shows shared fields and separately editable targets, including several
+  on one machine. Alias or unaliased Agent family is unique per Role/machine.
+  Lists use the upstream Role row; editors receive the complete catalog Role.
+  Catalog opening never reconciles or writes. Explicit Save can reconcile options.
 
 ## Workspace ownership
 
@@ -122,3 +121,5 @@ component details.
 - Removal/leave do not cancel accrued service fees. Deleted workspace invoices stay
   reachable for the retained billing owner through `deleted-workspace-billing.tsx`
   in personal Account settings; invoice details reuse `BillingInvoiceDetails`.
+
+- Billing telemetry: never infer payment from returns; exclude URLs, codes and raw errors.

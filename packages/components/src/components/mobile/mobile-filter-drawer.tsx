@@ -4,13 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import type { PanInfo } from 'framer-motion';
 import { Check, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
 
-import {
-  Drawer,
-  DrawerClose,
-  DrawerContent,
-  DrawerDescription,
-  DrawerTitle,
-} from '@/ui/drawer';
+import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerTitle } from '@/ui/drawer';
 import { cn } from '@/lib/utils';
 import type { MultiSelectPill } from './mobile-filter-pill-bar';
 
@@ -171,9 +165,7 @@ function SummaryPage({
                  tappable → drill into that dimension's pick list,
                  since the user almost always wants to edit the
                  narrowing they just summarised. */
-              const includedOptions = pill.options.filter((opt) =>
-                pill.selectedIds.has(opt.id)
-              );
+              const includedOptions = pill.options.filter((opt) => pill.selectedIds.has(opt.id));
               const MAX_VISIBLE = 3;
               const visible = includedOptions.slice(0, MAX_VISIBLE);
               const overflowCount = includedOptions.length - visible.length;
@@ -379,10 +371,7 @@ function DimensionPage({ pill, onBack }: { pill: MultiSelectPill; onBack: () => 
               'focus-within:ring-primary/40'
             )}
           >
-            <Search
-              className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-              aria-hidden="true"
-            />
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
             <input
               type="search"
               value={query}

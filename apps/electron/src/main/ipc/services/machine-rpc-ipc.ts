@@ -1,11 +1,15 @@
 import { app, BrowserWindow, dialog, type WebContents } from 'electron'
 import path from 'node:path'
 import { z } from 'zod'
+import { join } from 'node:path'
+import { getLodyDataDir } from '@lody/shared/node/installation-profile'
+import { mainPlatformKind } from '../../platform'
 import {
-  FilePreviewV3ErrorSchema,
-  LocalMachineRpcRequestSchema
-} from '@lody/shared/local-machine-rpc'
-import { LocalFileResolutionSchema } from '@lody/shared/local-file-preview'
+  LocalFilePreviewRequestSchema,
+  previewLocalFile,
+  readFileMachineId,
+  type LocalFilePreviewRequest
+} from '../../services/local-file-preview'
 import { localFileResources } from '../../services/local-file-resource-protocol'
 import {
   memberFileResources,
@@ -17,6 +21,7 @@ import { formatUnknownError } from '../../utils'
 import { getIpcContext, IpcMethod, IpcService } from 'electron-ipc-decorator'
 import type { LocalMachineRpcRequest } from '@lody/shared/local-machine-rpc'
 import { getIpcServiceDeps } from '../ipc-service-deps'
+import { assertProductWindowSender } from '../assert-sender'
 
 const text = z.string().trim().min(1).max(256)
 /**
@@ -52,19 +57,28 @@ export class MachineRpcIpc extends IpcService {
   static override readonly groupName = 'machineRpc'
 
   @IpcMethod()
-  async previewFile(message: LocalMachineRpcRequest) {
-    const parsed = LocalMachineRpcRequestSchema.parse(message)
-    if (parsed.method !== 'file/resolve-local') throw new Error('Invalid preview request.')
+  async isLocalFileMachine(machineId: string) {
+    assertProductWindowSender(getIpcContext().event)
+    if (typeof machineId !== 'string' || !machineId) return false
+    return (
+      machineId ===
+      (await readFileMachineId(join(getLodyDataDir(mainPlatformKind), 'credentials.json')))
+    )
+  }
+
+  @IpcMethod()
+  async previewFile(message: LocalFilePreviewRequest) {
+    const parsed = LocalFilePreviewRequestSchema.parse(message)
     const { event } = getIpcContext()
+    assertProductWindowSender(event)
     const owner = event.sender
     const generation = getResourceOwner(owner)
-    const result = await getIpcServiceDeps().cliService.sendLocalMachineRpc(parsed)
+    const machineId = await readFileMachineId(
+      join(getLodyDataDir(mainPlatformKind), 'credentials.json')
+    )
     if (owner.isDestroyed() || resourceOwners.get(owner.id) !== generation)
       throw new Error('Preview window closed.')
-    if (!result.ok) throw new Error(result.error)
-    const file = LocalFileResolutionSchema.safeParse(result.result)
-    if (!file.success) return FilePreviewV3ErrorSchema.parse(result.result)
-    const response = await localFileResources.preview(generation, file.data)
+    const response = await previewLocalFile(localFileResources, generation, parsed, machineId)
     if (owner.isDestroyed() || resourceOwners.get(owner.id) !== generation) {
       localFileResources.releaseOwner(generation)
       throw new Error('Preview window closed.')

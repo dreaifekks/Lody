@@ -1117,20 +1117,20 @@ describe('typing a mention into the input', () => {
     (action) => {
       const roleRows = () => rows().filter((row) => row.includes('uiStyle'));
       type('ask @ui');
-      expect(roleRows()).toHaveLength(1);
+      expect(roleRows()).toHaveLength(2);
       expect(roleRows()[0]).not.toContain('n100');
       type('@');
       // The second `@` belongs to the query: the menu stays, now by machine.
       expect(latest.open).toBe(true);
       type('n1');
       expect(rows()).toHaveLength(1);
-      expect(rows()[0]).toContain('uiStyle · n100');
+      expect(rows()[0]).toContain('n100');
 
       if (action === 'Enter') press('Enter');
       else act(() => document.querySelector<HTMLElement>('[data-slot="mention-item"]')?.click());
-      expect(latest.inputValue).toBe('ask @uiStyle@n100 ');
+      expect(latest.inputValue).toBe('ask @uiStyle:Claude@n100 ');
       expect(latest.mentions).toEqual([
-        { value: 'pinned:ui-n100', start: 4, end: 17, kind: 'agent_role' },
+        { value: 'ui-n100', start: 4, end: 24, kind: 'agent_role' },
       ]);
     }
   );

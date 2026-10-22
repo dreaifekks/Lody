@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 import { describe, expect, it } from 'vitest';
 import { reconcileAgentRoleSchema } from '../src/lib/agent-role-schema-reconciliation';
 import {
@@ -13,7 +14,6 @@ import {
   type AgentRole,
   type AgentRoleId,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
   type MachineId,
 } from '@lody/shared';
 import type { AcpSelectorOptions } from '../src/components/shared/acp-selector-options';
@@ -27,7 +27,7 @@ import {
 import { buildAcpSelectorOptions } from '../src/components/shared/acp-selector-options';
 import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
 
-const role = (overrides: Partial<AgentRole> = {}): CatalogAgentRole =>
+const role = (overrides: Partial<AgentRole> = {}): AgentRole =>
   singleMachineRole({
     v: AGENT_ROLE_VERSION,
     id: 'role-1' as AgentRoleId,
@@ -228,7 +228,7 @@ describe('automatic role schema reconciliation', () => {
       instances: [entry('a', 'machine-2'), entry('b', 'machine-1'), entry('c', 'machine-1')],
     });
     const after = reconcileAgentRoleSchema(before, 'b' as AgentRoleInstanceId, capability);
-    expect(after.instances.map((item) => item.runConfig.configOptionValues)).toEqual([
+    expect(getAgentRoleTargets(after).map((item) => item.runConfig.configOptionValues)).toEqual([
       { future_removed: true },
       {},
       { future_removed: true },
@@ -398,7 +398,12 @@ describe('building a role from the form', () => {
       createId,
       selectorOptions: capabilities,
     };
-    const prepared = { ...value, instances: value.instances.map(instance => prepareAgentRoleInstanceForSave(instance, capabilities)) };
+    const prepared = {
+      ...value,
+      instances: value.instances.map((instance) =>
+        prepareAgentRoleInstanceForSave(instance, capabilities)
+      ),
+    };
     const saved = buildAgentRoleFromForm(prepared, options);
     expect(saved.runConfig).toEqual({
       ...existing.runConfig,
@@ -417,10 +422,18 @@ describe('building a role from the form', () => {
 
   it('uses current option defaults for invalid values without replacing model or mode pins', () => {
     const saved = buildAgentRoleFromForm(
-      formValue({ instances: [prepareAgentRoleInstanceForSave(formInstance({
-        modelId: 'retired-model', modeId: 'retired-mode',
-        configOptionValues: { thought_level: 'ultra', 'fast-mode': 'true' },
-      }), selectorOptions())] }),
+      formValue({
+        instances: [
+          prepareAgentRoleInstanceForSave(
+            formInstance({
+              modelId: 'retired-model',
+              modeId: 'retired-mode',
+              configOptionValues: { thought_level: 'ultra', 'fast-mode': 'true' },
+            }),
+            selectorOptions()
+          ),
+        ],
+      }),
       { ownerUserId: 'user-1', now: 20, createId, selectorOptions: selectorOptions() }
     );
     expect(saved.runConfig).toEqual({
@@ -435,13 +448,21 @@ describe('building a role from the form', () => {
     (capabilityAuthority) => {
       const existing = role({ runConfig: { configOptionValues: { thinking: 'high' } } });
       expect(
-        buildAgentRoleFromForm({ ...buildAgentRoleFormValue(existing), instances: buildAgentRoleFormValue(existing).instances.map(instance => prepareAgentRoleInstanceForSave(instance, selectorOptions({ capabilityAuthority }))) }, {
-          existing,
-          ownerUserId: 'user-1',
-          now: 20,
-          createId,
-          selectorOptions: selectorOptions({ capabilityAuthority }),
-        })
+        buildAgentRoleFromForm(
+          {
+            ...buildAgentRoleFormValue(existing),
+            instances: buildAgentRoleFormValue(existing).instances.map((instance) =>
+              prepareAgentRoleInstanceForSave(instance, selectorOptions({ capabilityAuthority }))
+            ),
+          },
+          {
+            existing,
+            ownerUserId: 'user-1',
+            now: 20,
+            createId,
+            selectorOptions: selectorOptions({ capabilityAuthority }),
+          }
+        )
       ).toBe(existing);
     }
   );
@@ -494,7 +515,9 @@ describe('building a role from the form', () => {
       formValue({}, { configOptionValues: { thought_level: 'high', api_key: 'sk-live' } }),
       { ownerUserId: 'user-1', now: 100, createId }
     );
-    expect(created.instances[0]?.runConfig.configOptionValues).toEqual({ thought_level: 'high' });
+    expect(getAgentRoleTargets(created)[0]?.runConfig.configOptionValues).toEqual({
+      thought_level: 'high',
+    });
   });
 
   it('keeps every instance with its own memory, in order, and mirrors the first', () => {
@@ -515,7 +538,12 @@ describe('building a role from the form', () => {
       { ownerUserId: 'user-1', now: 100, createId }
     );
     expect(
-      created.instances.map((entry) => [entry.id, entry.alias, entry.machineId, entry.runConfig])
+      getAgentRoleTargets(created).map((entry) => [
+        entry.id,
+        entry.alias,
+        entry.machineId,
+        entry.runConfig,
+      ])
     ).toEqual([
       // No alias is stored as none, not as an empty string.
       ['instance-1', undefined, 'machine-1', { modelId: 'gpt-5.6' }],

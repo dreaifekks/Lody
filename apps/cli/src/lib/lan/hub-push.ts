@@ -1,3 +1,8 @@
+import {
+  formatNotification,
+  notificationMessages,
+  type NotificationCopyKey,
+} from '@lody/shared/notifications';
 // Push for a self-hosted hub. Phones register their APNs tokens here, members
 // report what their agents did, and the hub turns that into alerts and Live
 // Activity updates. A LAN has one user, so every registered phone hears about
@@ -75,6 +80,7 @@ const ANSWER_HOLD_MS = 25_000;
 
 type Language = 'en' | 'zh';
 type Copy = {
+  notification: (key: NotificationCopyKey) => string;
   completed: string;
   failed: (detail: string) => string;
   permission: (tool: string) => string;
@@ -90,6 +96,7 @@ type Copy = {
 };
 const COPY: Record<Language, Copy> = {
   en: {
+    notification: (key) => notificationMessages.en[key],
     completed: 'Finished',
     failed: (detail) => (detail ? `Failed: ${detail}` : 'Failed'),
     permission: (tool) => `Needs your approval: ${tool}`,
@@ -105,6 +112,7 @@ const COPY: Record<Language, Copy> = {
     test: 'Push notifications from this LAN work.',
   },
   zh: {
+    notification: (key) => notificationMessages.zh[key],
     completed: '已完成',
     failed: (detail) => (detail ? `失败：${detail}` : '失败'),
     permission: (tool) => `需要你批准：${tool}`,
@@ -998,7 +1006,17 @@ export function createLanHubPush(options: {
       if (!firstTime(`completed:${event.sessionId}:${event.occurrenceId}`)) return null;
       await alert(
         event,
-        (copy) => ({ title: event.sessionTitle || copy.untitled, body: copy.completed }),
+        (copy) =>
+          event.outcome
+            ? formatNotification(
+                event.outcome,
+                event.presentation ?? {
+                  kind: 'conversation',
+                  conversationTitle: event.sessionTitle ?? undefined,
+                },
+                copy.notification
+              )
+            : { title: event.sessionTitle || copy.untitled, body: copy.completed },
         { sessionId: event.sessionId, collapseId: `done-${event.sessionId}` }
       );
     } else if (event.type === 'session-failed') {
@@ -1040,7 +1058,14 @@ export function createLanHubPush(options: {
       };
       const delivered = alert(
         event,
-        (copy) => ({ title: event.sessionTitle || copy.untitled, body: body(copy) }),
+        (copy) =>
+          event.presentation
+            ? formatNotification(
+                event.requestKind === 'ask_user_question' ? 'question' : 'permission',
+                event.presentation,
+                copy.notification
+              )
+            : { title: event.sessionTitle || copy.untitled, body: body(copy) },
         // A member whose hub was away may have sent it as well.
         {
           sessionId: event.sessionId,

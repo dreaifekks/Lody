@@ -12,7 +12,6 @@ import { Copy, Download, ExternalLink, FolderOpen, Share2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { useTranslation } from 'react-i18next';
 import {
-  getMachineFlockLocalProjects,
   machineSupportsLanFileRanges,
   type CodeCollabContentUnavailableReason,
   type SessionMeta,
@@ -20,7 +19,7 @@ import {
 import { getMachineMetaByIdAtomFamily } from '@/atoms';
 import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
 import { localHomeDirAtom, localMachineIdAtom } from '@/atoms/local-probe';
-import { useMachineFlockRows } from '@/hooks/use-machine-flock-rows';
+import { useSessionWorkspacePath } from '@/hooks/use-session-workspace-path';
 import { usePostHog } from '@posthog/react';
 import { writeTextToClipboard } from '@/lib/clipboard';
 import { capturePostHogEvent, getAnalyticsFileKind } from '@/lib/posthog-analytics';
@@ -43,10 +42,6 @@ import {
 import { isAbsoluteFilePath, resolveLocalWorkspaceFilePath } from '@/lib/session-local-file-path';
 import { resolveSessionFileOpenTarget } from '@/lib/session-file-open-target';
 import {
-  resolveSessionLocalProjectRootPath,
-  resolveSessionRepoFullName,
-} from '@/lib/session-local-file-source';
-import {
   buildPathLauncherLaunchInput,
   buildPathLauncherProbes,
   getAvailablePathLauncherOptions,
@@ -57,10 +52,6 @@ import {
   resolveSelectedPathLauncher,
   type PathLauncherOption,
 } from '@/lib/session-path-launchers';
-import {
-  resolveMachineDotlodyPath,
-  resolveSessionWorkspacePath,
-} from '@/lib/session-workspace-path';
 
 export type SessionFileLocalHostActionSet = {
   readonly revealLabel: string;
@@ -191,49 +182,14 @@ export function useSessionFileActions({
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
   const localMachineId = useAtomValue(localMachineIdAtom);
   const localHomeDir = useAtomValue(localHomeDirAtom);
-  const sessionMachine = useAtomValue(
-    getMachineMetaByIdAtomFamily(session?.machineId ?? undefined)
-  );
-  const machineFlockRows = useMachineFlockRows(session?.machineId ?? null, {
-    // `dotlodyPath` is what turns a worktree session into an absolute path.
-    families: ['localProject', 'dotlodyPath'],
-  });
-
+  const sessionMachine = useAtomValue(getMachineMetaByIdAtomFamily(session?.machineId));
   const isElectronRenderer = typeof window !== 'undefined' && window.__LODY_ELECTRON__ === true;
   const isLocalMachine = Boolean(localMachineId) && session?.machineId === localMachineId;
   const platform = normalizeSessionFileActionPlatform(
     typeof window === 'undefined' ? undefined : window.__LODY_PLATFORM__?.os
   );
 
-  const localProjectRootPath = useMemo(
-    () =>
-      session
-        ? resolveSessionLocalProjectRootPath(session, {
-            ...(sessionMachine?.localProjects ?? {}),
-            ...getMachineFlockLocalProjects(machineFlockRows),
-          })
-        : null,
-    [machineFlockRows, session, sessionMachine?.localProjects]
-  );
-  const machineDotlodyPath = useMemo(
-    () => resolveMachineDotlodyPath(machineFlockRows, isLocalMachine ? localHomeDir : null),
-    [isLocalMachine, localHomeDir, machineFlockRows]
-  );
-  const workspacePath = useMemo(
-    () =>
-      !session
-        ? null
-        : resolveSessionWorkspacePath({
-            sessionId: session.id,
-            ownerSessionId: session.parentSessionId,
-            isWorktree: session.isWorktree,
-            dotlodyPath: machineDotlodyPath,
-            localProjectRootPath,
-            repoFullName: resolveSessionRepoFullName(session),
-            legacyWorkspacePath: sessionMachine?.workspacePaths?.[session.id],
-          }),
-    [localProjectRootPath, machineDotlodyPath, session, sessionMachine?.workspacePaths]
-  );
+  const workspacePath = useSessionWorkspacePath(session, isLocalMachine ? localHomeDir : null);
 
   const resolveHostPath = useCallback(
     (filePath: string) =>

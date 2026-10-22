@@ -1,3 +1,4 @@
+import { notificationLabel } from '@lody/shared/notifications';
 import type { RepoRoomSubscription } from 'loro-repo';
 import type { CloudNotificationsPort } from '@lody/platform';
 import {
@@ -244,6 +245,11 @@ export async function createScheduleWorkspace(args: {
       prepared.userTurn.inputConfig = {
         ...prepared.userTurn.inputConfig,
         _lodyScheduleId: run.scheduleId,
+      };
+      prepared.userTurn.scheduleRun = {
+        scheduleId: run.scheduleId,
+        turnId: prepared.userTurn.id,
+        title: notificationLabel(run.definition.title) ?? '',
       };
       prepared.source = {
         id: run.sourceEntryId,

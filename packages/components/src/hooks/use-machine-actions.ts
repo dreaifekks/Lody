@@ -25,7 +25,9 @@ export function useMachineActions(params: {
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
   const onlineMachineIds = useAtomValue(onlineMachineIdsAtom);
   const teamSharingAvailable = useAppCapability('teamSharing');
-  const setMachineSharedWithTeam = useCloudMutation(cloudOperations.machines.setMachineSharedWithTeam);
+  const setMachineSharedWithTeam = useCloudMutation(
+    cloudOperations.machines.setMachineSharedWithTeam
+  );
 
   const renameMachine = useCallback(
     async (machineId: MachineId, newName: string) => {

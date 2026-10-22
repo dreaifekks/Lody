@@ -12,10 +12,7 @@ import {
   archivedSessionListAtom,
   sessionMetaAtomFamily,
 } from '@/atoms/doc-meta';
-import {
-  sessionLiveStatusAtomFamily,
-  machineOnlineStatusAtomFamily,
-} from '@/atoms/presence';
+import { sessionLiveStatusAtomFamily, machineOnlineStatusAtomFamily } from '@/atoms/presence';
 import { useMachineFlockRowsByMachineIds } from '@/hooks/use-machine-flock-rows';
 import {
   useVisibleMachineIdSet,
@@ -140,10 +137,10 @@ export function BoardThreadStatusCard({
             // An online machine already means a fresh heartbeat; the transport's sync
             // state stays idle on a local-only workspace.
             completed: family.items.every(
-                ({ session: member, status }) =>
-                  status === 'idle' &&
-                  get(machineOnlineStatusAtomFamily(member.machineId)) === 'online'
-              ),
+              ({ session: member, status }) =>
+                status === 'idle' &&
+                get(machineOnlineStatusAtomFamily(member.machineId)) === 'online'
+            ),
           };
         }),
         (value) => value,

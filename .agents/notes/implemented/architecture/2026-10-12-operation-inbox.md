@@ -162,14 +162,14 @@ SQLite upgrade regression is included in the Operation store suite.
 
 Before the ACP base upgrade (head `86553a65e`), author validation included installation and checks in the actual author worktree: Node 24.21.0, pnpm 10.20.0 and locked Effect 4.0.2. `pnpm install --frozen-lockfile` succeeds without changing the lockfile. The install guard permits this checkout; the earlier assumption that it was a nested workspace was incorrect. Earlier isolated-copy results remain historical evidence, not an independent base/head review. Overlapping scopes must not be added.
 
-| Scope | Pre-ACP-upgrade implementation evidence |
-| --- | --- |
-| Author-worktree intersection | 5 suites, 413 passed: Inbox, Coordinator, execution service, dispatch watcher and Fleet. Final Inbox rerun: 51 passed, including five operator recovery cases and frozen caller-event regression |
-| Admission ablation | Earlier isolated-copy tests fail at both deterministic competition positions when the submission lock is removed, and pass when restored; unknown-submission non-replay assertions retained |
-| SQLite / ownership | Shared in-memory completion transaction, rollback and asynchronous-callback rejection; disk reopen, actual release and shared-close recovery behavior retained |
-| Types / static / format | Author-worktree root type checks, lint, format and check:quick pass; native core boundaries checked |
-| pnpm check | Author-worktree run is not green: types and lint pass; CLI reports 4142 passed, 4 skipped and one Git transport failure (`context_unreadable` / remote helper aborted). Both transport source and test are unchanged from main. No independent baseline reproduction; recursive termination prevents a full-root test acceptance claim |
-| Documentation | Author docs check passes; earlier 82 broken-link errors are historical (the previously absent submodule source files are now present) |
+| Scope                        | Pre-ACP-upgrade implementation evidence                                                                                                                                                                                                                                                                                                |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Author-worktree intersection | 5 suites, 413 passed: Inbox, Coordinator, execution service, dispatch watcher and Fleet. Final Inbox rerun: 51 passed, including five operator recovery cases and frozen caller-event regression                                                                                                                                       |
+| Admission ablation           | Earlier isolated-copy tests fail at both deterministic competition positions when the submission lock is removed, and pass when restored; unknown-submission non-replay assertions retained                                                                                                                                            |
+| SQLite / ownership           | Shared in-memory completion transaction, rollback and asynchronous-callback rejection; disk reopen, actual release and shared-close recovery behavior retained                                                                                                                                                                         |
+| Types / static / format      | Author-worktree root type checks, lint, format and check:quick pass; native core boundaries checked                                                                                                                                                                                                                                    |
+| pnpm check                   | Author-worktree run is not green: types and lint pass; CLI reports 4142 passed, 4 skipped and one Git transport failure (`context_unreadable` / remote helper aborted). Both transport source and test are unchanged from main. No independent baseline reproduction; recursive termination prevents a full-root test acceptance claim |
+| Documentation                | Author docs check passes; earlier 82 broken-link errors are historical (the previously absent submodule source files are now present)                                                                                                                                                                                                  |
 
 The CLI editor project now includes source and test files, so both use the same `@/*` alias. Production type checking explicitly uses `tsconfig.typecheck.json` with the previous exclusions. A real TypeScript language-server probe confirms that both a colocated test and a `tests/` file belong to the configured project and resolve `timeout-utils`; unrelated test typing errors are not claimed as fixed. Two test cleanup paths now await Coordinator shutdown before closing SQLite (144 focused cases pass). Root types, lint, format, quick boundaries and docs pass; the full check still stops at the same Git transport failure listed below.
 
@@ -266,3 +266,32 @@ Local cancellation authority precedes stale target history and deadline fallback
 Finalization rechecks Stop under the SQLite writer transaction and normalizes both stored items and completion before indexing. A precomputed success cannot overtake an already committed Stop. The full check still passes; the final 156-case Inbox/coordinator/store intersection also passes.
 
 Follow-up implementation: [PR #1553](https://github.com/LodyAI/Lody/pull/1553).
+
+## Deterministic operator recovery verification (2026-10-17)
+
+The two Inbox failures observed during [Roost PR #1626](https://github.com/LodyAI/Lody/pull/1626)
+were reproduced with the same controlled memory-probe failure in an archive of
+its unmodified main baseline `fb4d565fa235fc56f626aef50bf4721ad6e5ea42`.
+The process sampler, operator adapter, recovery probe and recovery predicate have
+identical Git blobs in that baseline and the original Roost head `b625473e3`.
+This establishes the pre-existing warning behavior, rather than inferring
+independence merely because the files were unchanged.
+
+The success tests depended on the real machine's process and optional macOS
+memory sampling. Their success therefore required a warning-free host snapshot.
+The operator suite now supplies deterministic command output at the process I/O
+boundary, while retaining the real Host lease, SQLite reopen, scoped platform
+adapter and native workflow. Assertions cover paused recovery without replay,
+absent/live known roots, unavailable probes, and the existing macOS memory-warning
+refusal. A failure still retains the blocked execution and prevents its successor;
+Scope exit still releases the operator lease.
+
+This change fixes test determinism. It does not relax production release checks
+or change their existing treatment of memory warnings. A separate PID-only probe
+would require its own bounded behavior change and review. Effect 4.0.2, native
+ownership boundaries and migration ledger facts remain unchanged.
+
+Final verification for this fixture correction: all 63 Inbox cases and the root
+`pnpm check` pass, including 4287 CLI and 5402 component cases. Formatting and
+documentation checks pass; missing isolated Kimi/Pi checkouts were initialized at
+the existing pins without changing the dependency graph or their tracked source.

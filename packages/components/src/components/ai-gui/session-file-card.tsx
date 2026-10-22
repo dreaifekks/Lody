@@ -173,6 +173,7 @@ const styles = stylex.create({
 
 /** The delivered card layout, also used while attachment preparation is pending. */
 export function SessionFileCardLayout({
+  inline = false,
   fileName,
   subtitle,
   icon,
@@ -187,6 +188,7 @@ export function SessionFileCardLayout({
   mediaKind,
   className,
 }: {
+  inline?: boolean;
   fileName: string;
   subtitle: string;
   icon: ReactNode;
@@ -201,8 +203,9 @@ export function SessionFileCardLayout({
   mediaKind?: SessionFileKind;
   className?: string;
 }) {
+  const Frame = inline ? 'span' : 'div';
   const information = (
-    <div
+    <Frame
       className={cn(
         stylex.props(styles.frame, !!media && styles.mediaInfo).className,
         'group',
@@ -269,7 +272,7 @@ export function SessionFileCardLayout({
       </button>
       {secondaryAction}
       {progress}
-    </div>
+    </Frame>
   );
   return media ? (
     <div

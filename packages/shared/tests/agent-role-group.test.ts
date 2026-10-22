@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentRoleInstance } from '../src/agent-role';
+import type { AgentRoleTarget } from '../src/agent-role';
 import {
   findAgentRoleGroupClash,
   getAgentRoleAgentFamily,
   getAgentRoleInstanceGroup,
-  groupAgentRoleInstances,
   type AgentRoleAgentConfig,
 } from '../src/agent-role-group';
 import type { AgentConfigId, AgentRoleInstanceId, MachineId } from '../src/ids';
@@ -29,7 +28,7 @@ const instance = (
   machine: string,
   agentConfigId: string,
   alias?: string
-): AgentRoleInstance => ({
+): AgentRoleTarget => ({
   id: id as AgentRoleInstanceId,
   ...(alias ? { alias } : {}),
   machineId: machine as MachineId,
@@ -37,7 +36,7 @@ const instance = (
   runConfig: {},
 });
 
-const groupOf = (entry: AgentRoleInstance) => {
+const groupOf = (entry: AgentRoleTarget) => {
   const config = configs[entry.agentConfigId];
   return getAgentRoleInstanceGroup(entry, config && getAgentRoleAgentFamily(config));
 };
@@ -59,39 +58,27 @@ describe('agent role instance groups', () => {
     });
   });
 
-  it('merges unaliased instances of one family across machines, whatever the config is called', () => {
-    const groups = groupAgentRoleInstances(
-      {
-        instances: [
-          instance('a', 'devnuc', 'claude-devnuc'),
-          instance('b', 'n100', 'deepseek-n100'),
-          instance('c', 'n100', 'claude-n100'),
+  it('permits different unaliased families on one machine and repeated aliases across machines', () => {
+    expect(
+      findAgentRoleGroupClash(
+        [
+          instance('a', 'one', 'claude-devnuc'),
+          instance('b', 'one', 'gemini-devnuc'),
+          instance('c', 'one', 'deepseek-n100', 'Review'),
+          instance('d', 'two', 'claude-n100', 'Review'),
         ],
-      },
-      groupOf
-    );
-    expect(groups.map((group) => [group.name, group.instances.map((entry) => entry.id)])).toEqual([
-      ['Claude Code', ['a', 'c']],
-      ['DeepSeek', ['b']],
-    ]);
-  });
-
-  it('keeps an aliased instance apart from its agent, and merges one alias across machines', () => {
-    const groups = groupAgentRoleInstances(
-      {
-        instances: [
-          instance('plain', 'devnuc', 'claude-devnuc'),
-          instance('strict-devnuc', 'devnuc', 'gemini-devnuc', 'Strict'),
-          instance('strict-n100', 'n100', 'claude-n100', 'strict'),
+        groupOf
+      )
+    ).toBeUndefined();
+    expect(
+      findAgentRoleGroupClash(
+        [
+          instance('a', 'one', 'claude-devnuc', 'Review'),
+          instance('b', 'one', 'gemini-devnuc', 'review'),
         ],
-      },
-      groupOf
-    );
-    expect(groups.map((group) => [group.name, group.instances.map((entry) => entry.id)])).toEqual([
-      ['Claude Code', ['plain']],
-      // Aliases match regardless of case, even over different agents.
-      ['Strict', ['strict-devnuc', 'strict-n100']],
-    ]);
+        groupOf
+      )
+    ).toMatchObject({ machineId: 'one' });
   });
 
   it('groups an instance whose agent is not known alone, with no name yet', () => {

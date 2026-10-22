@@ -1,6 +1,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import {
+  getAgentRoleTargets,
   AGENT_ROLE_DESCRIPTION_MAX_LENGTH,
   AGENT_ROLE_INSTANCE_ALIAS_MAX_LENGTH,
   AGENT_ROLE_NAME_MAX_LENGTH,
@@ -18,9 +19,9 @@ import {
   type AgentRoleFormError,
   type AgentRoleFormInstance,
   type AgentRoleFormValue,
-  type AgentRoleInstance,
+  type AgentRoleTarget,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
+  type AgentRole,
   type AgentRoleId,
   type AgentConfigId,
   type MachineId,
@@ -77,7 +78,7 @@ const InstanceSchema = z
       .max(AGENT_ROLE_INSTANCE_ALIAS_MAX_LENGTH)
       .optional()
       .describe(
-        'Optional name. Instances with one alias are one group across machines; without one, an instance groups with its agent (Claude Code, Codex…). Needed for a second instance of the same agent on one machine. Omitted means none.'
+        'Optional name. The alias is unique within this Role on this machine. Without one, the Agent family is the key; a second target of the same family needs an alias. Omitted means none.'
       ),
     agentConfigId: z
       .string()
@@ -93,7 +94,7 @@ const InstancesSchema = z
   .min(1)
   .max(20)
   .describe(
-    'How the Role runs: each instance is one Agent config with its run config on its machine. Instances group by alias, else by agent; a group stands in for itself across machines and a machine holds one instance per group. A bare Role runs the first group, in list order, that can run, preferring the caller machine inside it.'
+    'How the Role runs: each instance is one Agent config with its run config on its machine. Targets never stand in for each other. Select a machine when there are several, and a target id when there are several on that machine.'
   );
 
 const editableFields = {
@@ -121,7 +122,7 @@ export const AgentRoleCreateToolInputSchema = z
     name: editableFields.name,
     description: editableFields.description.optional(),
     emoji: editableFields.emoji.optional(),
-    instances: InstancesSchema,
+    targets: InstancesSchema,
     promptPrefix: editableFields.promptPrefix.optional(),
     shareWithWorkspace: editableFields.shareWithWorkspace.optional(),
   })
@@ -134,7 +135,7 @@ export const AgentRoleUpdateToolInputSchema = z
     name: editableFields.name.optional(),
     description: editableFields.description.optional(),
     emoji: editableFields.emoji.optional(),
-    instances: InstancesSchema.optional().describe(
+    targets: InstancesSchema.optional().describe(
       'Replaces the whole list; give every instance its full runConfig. An instance passed with its id keeps its memory binding.'
     ),
     promptPrefix: editableFields.promptPrefix.optional(),
@@ -151,13 +152,13 @@ export type AgentRoleWriteDeps = {
   userId: string;
   /** Tier of the Session driving this call. */
   callerTier: ResolvedPermissionTier;
-  roles: () => Promise<CatalogAgentRole[]>;
+  roles: () => Promise<AgentRole[]>;
   /** An Agent config this user can read; throws otherwise. */
   agentConfig: (
     agentConfigId: AgentConfigId
   ) => Promise<AgentRoleAgentConfig & { machineId: MachineId }>;
   tierOf: (
-    instance: Pick<AgentRoleInstance, 'machineId' | 'agentConfigId' | 'runConfig'>
+    instance: Pick<AgentRoleTarget, 'machineId' | 'agentConfigId' | 'runConfig'>
   ) => Promise<ResolvedPermissionTier>;
   now: () => number;
   createId: () => AgentRoleId;
@@ -176,9 +177,9 @@ const FORM_ERRORS: Record<AgentRoleFormError, string> = {
 
 /** The first instance that runs higher than the caller, if any. */
 const findInstanceAboveCaller = async (
-  instances: readonly AgentRoleInstance[],
+  instances: readonly AgentRoleTarget[],
   deps: AgentRoleWriteDeps
-): Promise<{ instance: AgentRoleInstance; tier: ResolvedPermissionTier } | undefined> => {
+): Promise<{ instance: AgentRoleTarget; tier: ResolvedPermissionTier } | undefined> => {
   for (const instance of instances) {
     const tier = await deps.tierOf(instance);
     if (!isPermissionTierWithin(tier, deps.callerTier)) return { instance, tier };
@@ -186,7 +187,7 @@ const findInstanceAboveCaller = async (
   return undefined;
 };
 
-const describeInstance = ({ instance }: { instance: AgentRoleInstance }) =>
+const describeInstance = ({ instance }: { instance: AgentRoleTarget }) =>
   `instance ${instance.alias ?? instance.id} on machine ${instance.machineId}`;
 
 const SETTINGS = 'Settings → Agent Roles';
@@ -201,7 +202,7 @@ const UNKNOWN_HINT =
 export async function buildAgentRoleFromAgent(
   request: AgentRoleWrite,
   deps: AgentRoleWriteDeps
-): Promise<CatalogAgentRole> {
+): Promise<AgentRole> {
   const roles = await deps.roles();
   const existing =
     request.action === 'update'
@@ -210,7 +211,7 @@ export async function buildAgentRoleFromAgent(
   if (request.action === 'update') {
     if (!existing || !canManageAgentRole(existing, deps.userId))
       throw new Error('No Agent Role with that id that you own.');
-    const above = await findInstanceAboveCaller(existing.instances, deps);
+    const above = await findInstanceAboveCaller(getAgentRoleTargets(existing), deps);
     if (above)
       throw new Error(
         `This Role runs with more permissions than this conversation in ${describeInstance(above)} (Role: ${above.tier}, conversation: ${deps.callerTier}). Only the user can change it, in ${SETTINGS}.`
@@ -225,7 +226,7 @@ export async function buildAgentRoleFromAgent(
     : EMPTY_AGENT_ROLE_FORM_VALUE;
   const instances: AgentRoleFormInstance[] = [];
   const families = new Map<AgentConfigId, AgentRoleAgentFamily>();
-  for (const entry of input.instances ?? []) {
+  for (const entry of input.targets ?? []) {
     const agentConfigId = entry.agentConfigId as AgentConfigId;
     const config = await deps.agentConfig(agentConfigId);
     families.set(agentConfigId, getAgentRoleAgentFamily(config));
@@ -252,7 +253,7 @@ export async function buildAgentRoleFromAgent(
     ...(input.shareWithWorkspace !== undefined
       ? { shareWithWorkspace: input.shareWithWorkspace }
       : {}),
-    ...(input.instances ? { instances } : {}),
+    ...(input.targets ? { instances } : {}),
   };
   const errors = validateAgentRoleForm(value, {
     accessibleRoles: listAccessibleAgentRoles(roles, deps.userId),
@@ -266,7 +267,7 @@ export async function buildAgentRoleFromAgent(
     now: deps.now(),
     createId: deps.createId,
   });
-  const above = await findInstanceAboveCaller(role.instances, deps);
+  const above = await findInstanceAboveCaller(getAgentRoleTargets(role), deps);
   if (above)
     throw new Error(
       `The Role would run with more permissions than this conversation in ${describeInstance(above)} (Role: ${above.tier}, conversation: ${deps.callerTier}). Only the user can set that, in ${SETTINGS}.${above.tier === 'unknown' ? ` ${UNKNOWN_HINT}` : ''}`
@@ -286,7 +287,7 @@ export function registerAgentRoleWriteTools(
     {
       title: 'Create an Agent Role',
       description: [
-        'Create an Agent Role (a named task template: prompt prefix plus instances, each an Agent',
+        'Create an Agent Role (shared instructions plus targets, each an Agent',
         'config on its machine with the model, mode and options it runs with) when the user asks for one. Read ids and runConfig choices with',
         'lody_agent_config_list / lody_agent_config_get. New Roles are private unless',
         'shareWithWorkspace is set. Credentials, identities and memory cannot be set here.',
@@ -301,7 +302,7 @@ export function registerAgentRoleWriteTools(
     {
       title: 'Change an Agent Role',
       description: [
-        'Change an Agent Role the user owns. Omitted fields stay; instances replaces the whole',
+        'Change an Agent Role the user owns. Omitted fields stay; targets replaces the whole',
         'list (pass an existing instance id to keep it). A Role with an instance that already runs with more permissions than this conversation can',
         'only be changed by the user. Roles cannot be deleted here.',
         ROLE_CEILING,
@@ -309,5 +310,52 @@ export function registerAgentRoleWriteTools(
       inputSchema: AgentRoleUpdateToolInputSchema,
     },
     (input) => write({ action: 'update', input })
+  );
+}
+
+import {
+  AgentRoleCreateProposalSchema,
+  AgentRoleUpdateProposalSchema,
+  type AgentRoleProposalCommand,
+} from '@lody/shared';
+
+export function registerAgentRoleTools(
+  register: ReturnType<typeof createSessionToolRegistrar>,
+  execute: (command: AgentRoleProposalCommand) => Promise<unknown>,
+  errorResult?: (error: unknown) => CallToolResult
+) {
+  const call = async (command: AgentRoleProposalCommand) => {
+    try {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(await execute(command)) }] };
+    } catch (error) {
+      if (errorResult) return errorResult(error);
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text' as const,
+            text: error instanceof Error ? error.message : 'Role proposal failed',
+          },
+        ],
+      };
+    }
+  };
+  const consent =
+    'Writes a review card in the current conversation. The Role changes only when the user presses Save; report pending until then. Reuse requestId when retrying. Only propose changes the user requested.';
+  register(
+    'lody_agent_role_create_proposal',
+    {
+      description: `Propose a new private Agent Role. Resolve exact machineId and agentConfigId using discovery. The Role uses the Agent defaults. ${consent}`,
+      inputSchema: AgentRoleCreateProposalSchema,
+    },
+    (args) => call({ action: 'create', ...args })
+  );
+  register(
+    'lody_agent_role_update_proposal',
+    {
+      description: `Propose changes to a Role you manage. Read it with lody_agent_role_get first. Omitted patch fields stay unchanged; empty description or promptPrefix clears that field. Other Role configuration is preserved. ${consent}`,
+      inputSchema: AgentRoleUpdateProposalSchema,
+    },
+    (args) => call({ action: 'update', ...args })
   );
 }

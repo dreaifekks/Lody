@@ -4,13 +4,11 @@
 
 ## Mirrors over synced docs tolerate unknown root keys
 
-Synced Mirrors use `ignoreUnknownProperties: true`; unknown newer roots must not
-block client writes. Regression:
-`packages/shared/tests/session-doc-forward-compat.test.ts`.
+Synced Mirrors use `ignoreUnknownProperties: true`; unknown roots must not block writes.
+Test: `packages/shared/tests/session-doc-forward-compat.test.ts`.
 
-SessionDocument's private Mirror is control-only. HistoryWriter writes; SessionData
-reads. `session-agent-writes.ts` reuses shared planners over that writer, never
-UI port methods or a second writer.
+SessionDocument Mirror is control-only. HistoryWriter writes; SessionData reads.
+`session-agent-writes.ts` uses shared planners, never UI ports or a second writer.
 Replacement rules: [shared](../../../../../packages/shared/AGENTS.md#session-history).
 
 ## Opening a doc pulls its stream
@@ -43,8 +41,7 @@ Rules:
   teardown write status/meta for docs that must stay hidden (e.g. unfinished
   fork targets).
 
-The dispatch watcher's contract, "session metadata is the activation index", is
-documented in `../../session/AGENTS.md` and applies to any module enumerating rooms.
+Room enumeration follows the metadata activation index: `../../session/AGENTS.md`.
 
 `getOrCreateSessionDoc(..., { skipAutoRead: true })` affects only newly initialized
 wrappers. Use it for observation in an isolated command manager, never to change
@@ -88,8 +85,9 @@ cannot retire a Turn. Its Legacy entry owns execution/analytics. Intent:
 
 `workspace-presence.ts` owns Scopes; `presence-replica.ts` is synchronous.
 Only Legacy entries execute. No kernel Promise/timers,
-extra runtime or POST/SSE queue. Failed release retains work/Cause/owner
-and fences replacement; close joins completion. Revoke preserves local
+extra runtime or POST/SSE queue. Failed release retains work/Cause/owner and
+fences its generations; the registry retires it, never blocking the workspace.
+Close joins completion. Revoke preserves local
 production. CLI owns registry/token Scopes; durable/presence share one provider.
 `platform/presence.ts` consumes the published SDK native entry.
 
@@ -100,9 +98,14 @@ and MUST sample without a cloud transport. Cloud observers/snapshots attach only
 the authorized remote bridge attaches, and detach on offline/revocation. Sampling is
 observer-lease driven; never start OS probes permanently or persist snapshots.
 
-## Local-first Machine Flock writes
+## Catalog readers
 
-Antigravity replaces quota only for the fetched config/type; null/errors retain cache.
+Share Repo; close readers first. Timeouts end waiters.
+Retry baseline errors in-place. Role writes confirm remote sync.
+
+## Machine Flock writes for this machine are local-first
+
+Antigravity quota updates only its config/type; null/errors retain cache.
 
 After `repo.flush()`, call `LoroDocumentManager.markMachineFlockDocDirty(...)` (or use
 the manager as sync scheduler). Never await `handle.syncOnce()` in user/RPC paths
@@ -119,11 +122,11 @@ failures retry with bounded backoff. Events are only low-latency wakeups and car
 `authoritative`, which gates provider setup — a stale local setup row must not outrun
 a remote cancellation. Route both the event and rejoin paths through
 `MessageHandler.rescanMachineCommands`; a family wired to only one of them fails
-silently, because its queue stops draining. Room-status recovery uses the shared
+silently, because its queue stops draining. Recovery uses
 `isRecoverableStreamsRoomStatus` ('detached' is never recoverable). Local project
 removal rules live in [../AGENTS.md](../AGENTS.md).
 
-## Streams recovery has TWO signals and they must not be recombined
+## Keep Streams recovery signals separate
 
 `connection-recovery.ts` has TWO signals. `onStreamsOnline` is cheap, unthrottled, and
 fires on every health rising edge — it RELEASES work parked while offline (dirty

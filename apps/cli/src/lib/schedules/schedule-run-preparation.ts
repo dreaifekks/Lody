@@ -1,4 +1,5 @@
 import {
+  getAgentRoleTargets,
   composeAgentRolePrompt,
   getSessionRoomId,
   getWorkspaceFlockDocId,
@@ -16,7 +17,7 @@ import {
   type BoardId,
   type BoardMeta,
   type AgentRole,
-  type AgentRoleInstance,
+  type AgentRoleTarget,
   type ScheduleAgentRoleRef,
   type ScheduleDefinition,
   type WorkspaceId,
@@ -61,7 +62,7 @@ export type ScheduleRunIdentity = {
 /** A Role as one run resolved it: the Role then, and its instance on this machine. */
 export type ScheduleRunRole = {
   role: AgentRole;
-  instance: AgentRoleInstance;
+  instance: AgentRoleTarget;
   /** The instance's group name: its alias, else its agent's. */
   groupName?: string;
 };
@@ -250,7 +251,7 @@ export async function readScheduleAgentRole(args: {
   const agents: AgentConfigMeta[] = [];
   for (const agentConfigId of new Set(
     roles.flatMap((role) =>
-      role.instances
+      getAgentRoleTargets(role)
         .filter((instance) => instance.machineId === machineId)
         .map((instance) => instance.agentConfigId)
     )

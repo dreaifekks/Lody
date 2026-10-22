@@ -1,3 +1,9 @@
+import {
+  ACP_CONFIG_OPTION_OFF_VALUE,
+  isAcpThoughtLevelConfigOption,
+  EMPTY_AGENT_ROLE_FORM_VALUE,
+  buildEmptyAgentRoleFormInstance,
+} from '@lody/shared';
 import type { TFunction } from 'i18next';
 import {
   isSensitiveAgentRoleConfigOptionKey,
@@ -176,11 +182,54 @@ export const prepareAgentRoleInstanceForSave = (
   selectorOptions: AcpSelectorOptions | null | undefined
 ): AgentRoleFormInstance => {
   if (selectorOptions?.capabilityAuthority !== 'authoritative') return value;
-  return { ...value, configOptionValues: Object.fromEntries(
-    selectAuthorableAgentRoleConfigOptions(selectorOptions.configOptionSelectors).map(selector => [
-      selector.configId,
-      isConfigOptionValueValid(selector, value.configOptionValues[selector.configId])
-        ? value.configOptionValues[selector.configId] : selector.currentValue,
-    ])
-  ) };
+  return {
+    ...value,
+    configOptionValues: Object.fromEntries(
+      selectAuthorableAgentRoleConfigOptions(selectorOptions.configOptionSelectors).map(
+        (selector) => [
+          selector.configId,
+          isConfigOptionValueValid(selector, value.configOptionValues[selector.configId])
+            ? value.configOptionValues[selector.configId]
+            : selector.currentValue,
+        ]
+      )
+    ),
+  };
 };
+
+export const buildAgentRoleRunConfigSummary = (runConfig: AgentRoleRunConfig): string[] => {
+  // A Role stores option IDS only — the capability's `category` is not part of
+  // the row — so the id is tested as both, which also matches an agent whose
+  // reasoning option is literally named after the category.
+  const isReasoning = (configId: string) =>
+    isAcpThoughtLevelConfigOption({ id: configId, category: configId });
+  const options = Object.entries(runConfig.configOptionValues ?? {});
+  const reasoning = options.filter(([configId]) => isReasoning(configId));
+  const rest = options.filter(([configId]) => !isReasoning(configId));
+
+  const describe = (entries: [string, string | boolean][]): string[] =>
+    entries.flatMap(([configId, value]) => {
+      if (typeof value === 'boolean') return value ? [configId] : [];
+      if (value === ACP_CONFIG_OPTION_OFF_VALUE) return [];
+      return [value];
+    });
+
+  return [
+    ...(runConfig.modelId ? [runConfig.modelId] : []),
+    ...describe(reasoning),
+    ...(runConfig.modeId ? [runConfig.modeId] : []),
+    ...describe(rest),
+  ];
+};
+
+export const createAgentRoleFormValue = (
+  machineId: import('@lody/shared').MachineId | null
+): import('@lody/shared').AgentRoleFormValue => ({
+  ...EMPTY_AGENT_ROLE_FORM_VALUE,
+  instances: [
+    buildEmptyAgentRoleFormInstance(
+      crypto.randomUUID() as import('@lody/shared').AgentRoleInstanceId,
+      machineId
+    ),
+  ],
+});

@@ -48,14 +48,33 @@ export async function sendScheduleCommand(
     throw new Error(
       'Choose an active local workspace with --workspace; start the local daemon first'
     );
+  return sendDaemonScheduleCommand(command, {
+    machineId: catalog.machine.machineId,
+    workspaceId: candidates[0]!.workspaceId,
+    requesterSessionId: options.requesterSessionId,
+    requesterPermissionTier: options.requesterPermissionTier,
+  });
+}
+
+/** Execute against the running daemon's workspace replica, in any composition. */
+export async function sendDaemonScheduleCommand(
+  command: ScheduleCommand,
+  target: {
+    machineId: string;
+    workspaceId: string;
+    requesterSessionId?: SessionId;
+    socketPath?: string;
+    requesterPermissionTier?: ResolvedPermissionTier;
+  }
+): Promise<unknown> {
   const response = await Effect.runPromise(
-    makeLocalControlClientAuto()
+    makeLocalControlClientAuto({ socketPath: target.socketPath })
       .scheduleControl({
-        machineId: catalog.machine.machineId,
-        workspaceId: candidates[0]!.workspaceId,
+        machineId: target.machineId,
+        workspaceId: target.workspaceId,
         command,
-        requesterSessionId: options.requesterSessionId,
-        requesterPermissionTier: options.requesterPermissionTier,
+        requesterSessionId: target.requesterSessionId,
+        requesterPermissionTier: target.requesterPermissionTier,
       })
       .pipe(Effect.result)
   );

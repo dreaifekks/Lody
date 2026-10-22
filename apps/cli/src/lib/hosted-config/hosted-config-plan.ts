@@ -1,10 +1,10 @@
 import {
   CODEX_PROFILE_LEGACY_LAUNCH_GUARD,
   legacyAgentRoleInstanceId,
-  withAgentRoleInstances,
+  withAgentRoleTargets,
   type AgentConfigId,
   type AgentConfigMeta,
-  type CatalogAgentRole,
+  type AgentRole,
   type HostedConfigCategory,
   type HostedConfigItem,
   type LocalProjectMeta,
@@ -18,7 +18,7 @@ export type HostedImportTarget = {
   userId: string;
   agentConfigs: readonly AgentConfigMeta[];
   mcpServers: readonly WorkspaceMcpServerMeta[];
-  agentRoles: readonly CatalogAgentRole[];
+  agentRoles: readonly AgentRole[];
   localProjects: readonly LocalProjectMeta[];
   worktreeScripts: readonly HostedWorktreeScript[];
 };
@@ -26,7 +26,7 @@ export type HostedImportTarget = {
 export type HostedImportWrites = {
   agentConfigs: AgentConfigMeta[];
   mcpServers: WorkspaceMcpServerMeta[];
-  agentRoles: CatalogAgentRole[];
+  agentRoles: AgentRole[];
   localProjects: LocalProjectMeta[];
   worktreeScripts: HostedWorktreeScript[];
 };
@@ -168,9 +168,9 @@ function planMcpServers(input: HostedImportPlanInput): {
 function planAgentRoles(
   input: HostedImportPlanInput,
   imported: ReadonlyMap<AgentConfigId, AgentConfigId>
-): { items: HostedConfigItem[]; writes: CatalogAgentRole[] } {
+): { items: HostedConfigItem[]; writes: AgentRole[] } {
   const items: HostedConfigItem[] = [];
-  const writes: CatalogAgentRole[] = [];
+  const writes: AgentRole[] = [];
   for (const hosted of input.source.agentRoles) {
     const item = { category: 'agentRoles' as const, id: hosted.id, name: hosted.name };
     // A Role names one agent of one machine and never falls back to another.
@@ -185,7 +185,7 @@ function planAgentRoles(
     }
     const counterpart = input.target.agentRoles.find((role) => role.id === hosted.id);
     // A hosted Role is a single-machine one; it becomes one instance here.
-    const next = withAgentRoleInstances(
+    const next = withAgentRoleTargets(
       {
         ...hosted,
         ownerUserId: input.target.userId,
@@ -196,7 +196,7 @@ function planAgentRoles(
       [
         {
           id: legacyAgentRoleInstanceId(hosted.id, input.target.machineId),
-          ...(hosted.instances[0]!.alias ? { alias: hosted.instances[0]!.alias } : {}),
+          ...(hosted.alias ? { alias: hosted.alias } : {}),
           machineId: input.target.machineId,
           agentConfigId,
           runConfig: hosted.runConfig,

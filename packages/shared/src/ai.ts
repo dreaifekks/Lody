@@ -1,3 +1,4 @@
+import type { AgentRoleProposalMeta } from './agent-role-proposal';
 import type { LodyRateLimitsCapability } from 'acp-extension-core';
 import type { MemoryBinding } from './memory-provider';
 import type { AcpModelControls } from './acp-model-capabilities';
@@ -1347,7 +1348,8 @@ export type SystemNoticeName =
   | 'schedule_proposal'
   | 'session_fork_origin'
   | 'board_chain_limit'
-  | 'board_context_maintenance';
+  | 'board_context_maintenance'
+  | 'agent_role_proposal';
 
 /**
  * Metadata for the resume_from_external_chat_history system notice
@@ -1526,6 +1528,7 @@ export type SystemNoticeMeta = {
   agent_warning: AgentWarningMeta;
   task_proposal: TaskProposalMeta;
   schedule_proposal: ScheduleProposalMeta;
+  agent_role_proposal: AgentRoleProposalMeta;
   session_fork_origin: SessionForkOriginMeta;
   board_chain_limit: { boardId: string; drivingTurnId: string };
   board_context_maintenance: BoardMaintenanceMeta;

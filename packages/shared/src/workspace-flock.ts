@@ -1,6 +1,6 @@
 import { normalizeBoardMeta, type BoardMeta } from './board';
 import type { BoardId } from './ids';
-import { normalizeAgentRole, type CatalogAgentRole } from './agent-role';
+import { normalizeAgentRole, serializeAgentRoleRow, type AgentRole } from './agent-role';
 import type { AgentConfigId, AgentRoleId, MachineId, McpServerId, WorkspaceId } from './ids';
 import { isWorkspaceMcpServerMeta, type WorkspaceMcpServerMeta } from './workspace-mcp';
 import { LODY_AGENT_TOOL_IDS, type LodyAgentToolId } from './lody-agent-tools';
@@ -210,7 +210,7 @@ export type WorkspaceFlockMcpServerRow = {
 };
 export type WorkspaceFlockAgentRoleRow = {
   key: WorkspaceFlockAgentRoleKey;
-  value: CatalogAgentRole;
+  value: AgentRole;
 };
 export type WorkspaceFlockVoiceSettingRow = {
   key: WorkspaceFlockVoiceSettingKey;
@@ -377,7 +377,7 @@ export const listWorkspaceMcpServers = (rows: WorkspaceFlockRowMap): WorkspaceMc
     .map((row) => row.value)
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
 
-export const listWorkspaceAgentRoles = (rows: WorkspaceFlockRowMap): CatalogAgentRole[] =>
+export const listWorkspaceAgentRoles = (rows: WorkspaceFlockRowMap): AgentRole[] =>
   Object.values(rows)
     .filter(isAgentRoleRow)
     .map((row) => row.value)
@@ -404,7 +404,7 @@ export const deleteWorkspaceMcpServerFromFlock = (
 
 export const writeWorkspaceAgentRoleToFlock = (
   flock: WorkspaceFlockWritableFlock,
-  role: CatalogAgentRole
+  role: AgentRole
 ): boolean => writeWorkspaceFlockRow(flock, workspaceFlockKeys.agentRole(role.id), role);
 
 export const deleteWorkspaceAgentRoleFromFlock = (
@@ -426,7 +426,7 @@ const writeWorkspaceFlockRow = (
   if (workspaceFlockRowsEqual(previous, row)) {
     return false;
   }
-  flock.set(row.key, row.value);
+  flock.set(row.key, isAgentRoleRow(row) ? serializeAgentRoleRow(row.value) : row.value);
   flock.commit();
   return true;
 };

@@ -1,3 +1,4 @@
+import { getAgentRoleTargets } from '@lody/shared';
 // @vitest-environment jsdom
 
 import { act, createElement, useState } from 'react';
@@ -7,12 +8,12 @@ import { atom } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGENT_ROLE_VERSION,
-  withAgentRoleInstances,
+  withAgentRoleTargets,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRoleId,
   type AgentRoleInstanceId,
-  type CatalogAgentRole,
+  type AgentRole,
   type MachineId,
 } from '@lody/shared';
 
@@ -59,7 +60,7 @@ const machineA = 'machine-a' as MachineId;
 const memory = { providerId: 'nowledge-mem', memoryId: 'reviewer' };
 
 /** Two instances on A and an aliased one on B, each with its own run config; B's carries memory. */
-const catalogRole: CatalogAgentRole = withAgentRoleInstances(
+const catalogRole: AgentRole = withAgentRoleTargets(
   {
     v: AGENT_ROLE_VERSION,
     id: 'reviewer' as AgentRoleId,
@@ -164,7 +165,7 @@ describe('editing a Role opened from a composer', () => {
     if (!save) throw new Error('Missing save button');
     await act(async () => save.click());
     expect(mocks.saved).toHaveLength(1);
-    return mocks.saved[0] as CatalogAgentRole;
+    return mocks.saved[0] as AgentRole;
   };
 
   it('saves the catalog row with every instance and its memory, edited from one instance', async () => {
@@ -177,8 +178,8 @@ describe('editing a Role opened from a composer', () => {
       names: { machine: (id) => id, unknownAgent: 'Unknown agent' },
     });
     expect(items.map((item) => item.title)).toEqual([
-      'Reviewer · Agent a',
-      'Reviewer · Agent c',
+      'Reviewer · Agent a · machine-a',
+      'Reviewer · Agent c · machine-a',
       'Reviewer · Strict · machine-b',
     ]);
     // …and the second one's edit button opens the catalog row by its Role id.
@@ -188,13 +189,13 @@ describe('editing a Role opened from a composer', () => {
     const saved = await editDescriptionAndSave(editor);
     expect(saved.description).toBe('Reviews diffs before merging');
     expect(saved.revision).toBe(4);
-    expect(saved.instances).toEqual(catalogRole.instances);
+    expect(getAgentRoleTargets(saved)).toEqual(getAgentRoleTargets(catalogRole));
     expect(saved).toMatchObject({ machineId: machineA, agentConfigId: 'config-a' });
   });
 
   it('keeps every instance when Settings opens the row directly', async () => {
     const saved = await editDescriptionAndSave(openAgentRoleEditorForEdit(catalogRole));
-    expect(saved.instances).toEqual(catalogRole.instances);
+    expect(getAgentRoleTargets(saved)).toEqual(getAgentRoleTargets(catalogRole));
   });
 
   it('opens nothing for a Role the catalog no longer has', () => {

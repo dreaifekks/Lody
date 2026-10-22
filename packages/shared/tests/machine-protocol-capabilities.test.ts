@@ -18,12 +18,48 @@ import {
   REALTIME_VOICE_PROTOCOL_VERSION,
   resolveNewSessionHistoryBackend,
   machineSupportsSessionInputDispatch,
+  machineSupportsSessionHistoryIncremental,
+  machineSupportsSessionHistoryWatch,
 } from '../src/machine-protocol-capabilities';
 import { MachineVoiceRequestSchema } from '../src/machine-voice';
 import {
   MachineAcpCapabilitiesRefreshRequestSchema,
   safeParseLocalSessionControlRequest,
 } from '../src/message-schemas';
+
+it('requires independent checkpoint observation and validates its bounded wait', () => {
+  expect(machineSupportsSessionHistoryWatch(undefined)).toBe(false);
+  expect(
+    machineSupportsSessionHistoryWatch({ protocolCapabilities: { sessionHistoryIncremental: 1 } })
+  ).toBe(false);
+  expect(
+    machineSupportsSessionHistoryWatch({ protocolCapabilities: { sessionHistoryWatch: 1 } })
+  ).toBe(false);
+  expect(
+    machineSupportsSessionHistoryWatch({
+      protocolCapabilities: CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
+    })
+  ).toBe(true);
+  const request = {
+    type: 'session/history-read',
+    machineId: 'synthetic-machine',
+    workspaceId: 'synthetic-workspace',
+    sessionId: 'synthetic-session',
+    query: {
+      kind: 'watchChanges',
+      checkpoint: 'synthetic-checkpoint',
+      waitMs: 15_000,
+      includeBodiesFrom: 0,
+    },
+  };
+  expect(safeParseLocalSessionControlRequest(JSON.stringify(request)).success).toBe(true);
+  for (const waitMs of [-1, 15_001, 1.5])
+    expect(
+      safeParseLocalSessionControlRequest(
+        JSON.stringify({ ...request, query: { ...request.query, waitMs } })
+      ).success
+    ).toBe(false);
+});
 
 it('requires independently negotiated owner input dispatch, including mixed daemon versions', () => {
   expect(machineSupportsSessionInputDispatch(undefined)).toBe(false);
@@ -246,4 +282,21 @@ describe('realtime voice protocol capability', () => {
       MachineVoiceRequestSchema.safeParse({ ...start, context: 'x'.repeat(16_001) }).success
     ).toBe(false);
   });
+});
+
+it('negotiates incremental history recovery independently of legacy paging', () => {
+  expect(machineSupportsSessionHistoryIncremental(undefined)).toBe(false);
+  expect(
+    machineSupportsSessionHistoryIncremental({ protocolCapabilities: { sessionHistory: 2 } })
+  ).toBe(false);
+  expect(
+    machineSupportsSessionHistoryIncremental({
+      protocolCapabilities: { sessionHistoryIncremental: 0 },
+    })
+  ).toBe(false);
+  expect(
+    machineSupportsSessionHistoryIncremental({
+      protocolCapabilities: CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
+    })
+  ).toBe(true);
 });

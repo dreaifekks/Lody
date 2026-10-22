@@ -6,7 +6,7 @@ import {
   ScheduleProposalTargetSchema,
   ScheduleDefinitionSchema,
   scheduleProposalRuleToTrigger,
-  type CatalogAgentRole,
+  type AgentRole,
   type ProposalConversation,
   type ProposalTargetAgent,
   type ProposalTargetProblem,
@@ -68,12 +68,14 @@ export type ScheduleDraftContext = {
   now: number;
   conversation: ProposalConversation;
   agents: readonly ProposalTargetAgent[];
-  roles: readonly CatalogAgentRole[];
+  roles: readonly AgentRole[];
   /** The clock of the machine a schedule runs on; a rule without a zone uses it. */
   machineTimeZone: (machineId: string) => string | undefined;
 };
 
 const PROBLEMS: Record<ProposalTargetProblem, string> = {
+  role_machine_required: 'Specify a machine for this Role.',
+  role_target_required: 'Specify a target id on this machine.',
   role_not_found: 'No Agent Role with that id is readable here.',
   agent_not_found: 'No Agent config with that id is readable here.',
   machine_mismatch: 'The named machine is not the one that Agent runs on.',

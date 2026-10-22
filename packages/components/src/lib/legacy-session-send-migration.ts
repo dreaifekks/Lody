@@ -14,11 +14,7 @@ import {
 } from '@lody/shared';
 import type { SessionAttachmentDraft } from './session-attachment-draft';
 import { finalizePreparedSend } from './session-attachment-preparation';
-import {
-  dispatchUserTurn,
-  writeUserTurn,
-  type SessionSendRuntime,
-} from './session-send-delivery';
+import { dispatchUserTurn, writeUserTurn, type SessionSendRuntime } from './session-send-delivery';
 
 export const LEGACY_SESSION_SEND_DATABASE = 'lody-session-send-v1';
 const STORE = 'submissions';
@@ -94,7 +90,9 @@ async function readScope(db: IDBDatabase, accountId: string, workspaceId: string
 
 async function removeRow(db: IDBDatabase, record: LegacySessionSendRecord) {
   const transaction = db.transaction(STORE, 'readwrite');
-  await request(transaction.objectStore(STORE).delete([record.accountId, record.workspaceId, record.id]));
+  await request(
+    transaction.objectStore(STORE).delete([record.accountId, record.workspaceId, record.id])
+  );
 }
 
 async function isPresent(runtime: SessionSendRuntime, record: LegacySessionSendRecord) {
@@ -210,7 +208,6 @@ export async function migrateLegacySessionSends(args: {
       });
   };
   // Windows keep separate replicas; one migrator at a time sees deleted rows.
-  if (typeof navigator !== 'undefined' && navigator.locks)
-    await navigator.locks.request(LOCK, run);
+  if (typeof navigator !== 'undefined' && navigator.locks) await navigator.locks.request(LOCK, run);
   else await run();
 }

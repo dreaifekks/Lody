@@ -14,7 +14,7 @@ import {
   getAgentRoleEmoji,
   type AgentConfigMeta,
   type AgentRole,
-  type AgentRoleInstance,
+  type AgentRoleTarget,
   type AgentRoleId,
   type MachineViewMeta,
 } from '@lody/shared';
@@ -39,7 +39,7 @@ import { cn } from '@/lib/utils';
 export type AgentRoleDetailSubject = {
   role: AgentRole;
   /** The instance the pane describes: its agent, model and options. */
-  instance: AgentRoleInstance;
+  instance: AgentRoleTarget;
   agentConfig?: Pick<
     AgentConfigMeta,
     'name' | 'cliType' | 'agentType' | 'brandId' | 'env' | 'runtimeOverrides'

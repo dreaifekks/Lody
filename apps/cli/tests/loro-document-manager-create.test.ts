@@ -35,6 +35,8 @@ import {
   WorkspacePresenceLegacyFailure,
   createCliPresenceRuntimeLegacy,
 } from '../src/lib/loro/presence-legacy';
+// Fails exactly one presence close, as a timed-out SDK release would.
+let failNextPresenceClose: Error | undefined;
 const testPresenceLayer = WorkspacePresenceOwnersLive.pipe(
   Layer.provide(
     Layer.merge(
@@ -59,7 +61,11 @@ const testPresenceLayer = WorkspacePresenceOwnersLive.pipe(
                 onStatusChange('joined');
                 return { syncBarrier: () => Effect.void };
               }),
-            close: Effect.void,
+            close: Effect.suspend(() => {
+              const failure = failNextPresenceClose;
+              failNextPresenceClose = undefined;
+              return failure ? Effect.die(failure) : Effect.void;
+            }),
             rejoin: Effect.void,
             retryRelease: Effect.void,
           }),
@@ -413,8 +419,8 @@ describe('LoroDocumentManager.create degraded startup behavior', () => {
     }
   });
 
-  it.each(['transport', 'repo'] as const)(
-    'allows the next command after %s cleanup fails but presence releases',
+  it.each(['transport', 'repo', 'presence', 'data-plane'] as const)(
+    'allows the next command after %s cleanup fails',
     async (failedPhase) => {
       const failure = new Error(`Synthetic ${failedPhase} cleanup failure`);
       const managers: LoroDocumentManager[] = [];
@@ -462,7 +468,16 @@ describe('LoroDocumentManager.create degraded startup behavior', () => {
       };
       const run = () =>
         withWorkspaceManager(auth, workspace, 'synthetic-cleanup', async (manager) => {
-          expect(manager.isPresenceReleased()).toBe(false);
+          if (failedPhase === 'presence' && managers.length === 0) failNextPresenceClose = failure;
+          if (failedPhase === 'data-plane' && managers.length === 0) {
+            // Fails before presence would stop; the owner must not be left live.
+            const server = Reflect.get(manager, 'localLoroDataPlaneServer') as {
+              disposeLegacy: () => Promise<void>;
+            };
+            server.disposeLegacy = async () => {
+              throw failure;
+            };
+          }
           managers.push(manager);
           manager.publishSessionPresence(
             'synthetic-next-session' as SessionId,
@@ -478,12 +493,12 @@ describe('LoroDocumentManager.create degraded startup behavior', () => {
         });
       try {
         expect(await run()).toBe('accepted');
-        expect(managers[0]?.isPresenceReleased()).toBe(true);
+        // A failed presence release used to retain the owner and refuse this command.
         expect(await run()).toBe('accepted');
         expect(managers[1]).not.toBe(managers[0]);
-        expect(managers[1]?.isPresenceReleased()).toBe(true);
         expect(repos[1]?.destroyed).toBe(true);
       } finally {
+        failNextPresenceClose = undefined;
         monitorAttach.mockRestore();
         mocks.repoCreate.mockReset();
         mocks.cliHttpFetch.mockReset();
@@ -1108,6 +1123,15 @@ describe('LoroDocumentManager.create degraded startup behavior', () => {
           outcome: 'no-route',
           transports: [],
         });
+        await expect(manager.syncMetaOrThrow()).resolves.toBeUndefined();
+        const metaConfirmation = manager.syncMetaOrThrow({ requireRemoteConfirmation: true });
+        if (cloudEnabled) {
+          await expect(metaConfirmation).rejects.toMatchObject({
+            cause: { message: 'No remote Streams route confirmed metadata synchronization' },
+          });
+        } else {
+          await expect(metaConfirmation).resolves.toBeUndefined();
+        }
         await expect(manager.syncFlockDocOrThrow(docId)).resolves.toBeUndefined();
         const confirmation = manager.syncFlockDocOrThrow(docId, {
           requireRemoteConfirmation: true,

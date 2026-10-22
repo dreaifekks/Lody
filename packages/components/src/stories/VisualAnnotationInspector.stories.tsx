@@ -542,12 +542,10 @@ function VisualAnnotationInspectorHarness() {
       const existingIds = new Set(current.map((reference) => reference.commentId));
       const nextReferences = stagedReferences
         .filter((reference) => !existingIds.has(reference.commentId))
-        .map(
-          (reference): VisualAnnotationReferenceInputBlock => ({
-            ...reference,
-            status: 'submitted',
-          })
-        );
+        .map((reference): VisualAnnotationReferenceInputBlock => ({
+          ...reference,
+          status: 'submitted',
+        }));
       return nextReferences.length > 0 ? [...nextReferences, ...current] : current;
     });
     setComments((current) =>
