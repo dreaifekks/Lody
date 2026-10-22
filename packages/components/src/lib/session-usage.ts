@@ -240,3 +240,25 @@ export function resolveAgentRateLimitForModel({
   // match it (for example, Spark quota beside a standard Codex model).
   return normalizedModelId ? null : (entries[0] ?? null);
 }
+
+/**
+ * The model's own quota first. Antigravity follows it with its other Gemini
+ * family group (Gemini or the Pro plan's separate Argon), as Settings shows both.
+ */
+export function resolveAgentRateLimitsForModel(
+  options: Parameters<typeof resolveAgentRateLimitForModel>[0]
+): AgentRateLimitEntry[] {
+  const primary = resolveAgentRateLimitForModel(options);
+  if (!primary) return [];
+  if (options.agentType !== ANTIGRAVITY_AGENT_TYPE) return [primary];
+  const companions = getAgentRateLimitEntries(
+    options.rateLimits,
+    options.agentType,
+    options.agentConfigId
+  ).filter(
+    (entry) =>
+      entry.key !== primary.key &&
+      (entry.limitId === 'gemini' || entry.limitId === ANTIGRAVITY_ARGON_LIMIT_ID)
+  );
+  return [primary, ...companions];
+}

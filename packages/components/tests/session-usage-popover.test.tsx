@@ -2,7 +2,12 @@
 
 import { act, createElement, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { getRateLimitEntryKey } from '@lody/shared';
+import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_ARGON_LIMIT_ID,
+  getRateLimitEntryKey,
+  type AgentConfigId,
+} from '@lody/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SessionUsagePopover } from '../src/components/sessions/session-usage-popover';
@@ -180,6 +185,77 @@ describe('SessionUsagePopover', () => {
         meter.getAttribute('aria-label')
       )
     ).toEqual(['Weekly: 30% used', 'Weekly · Fable: 67% used', '5 hours: 12% used']);
+  });
+
+  it('shows Antigravity Argon beside Gemini, the session model first', async () => {
+    const agentConfigId = 'antigravity-devnuc' as AgentConfigId;
+    const scope = { providerId: ANTIGRAVITY_AGENT_TYPE };
+    const antigravityLimits: MachineRateLimits = {
+      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, 'gemini', agentConfigId)]: {
+        limitId: 'gemini',
+        limitName: 'Gemini',
+        scope,
+        windows: [
+          {
+            label: 'Gemini',
+            usedPercent: 4,
+            windowDurationSeconds: 18_000,
+            resetsAtEpochSeconds: null,
+          },
+          {
+            label: 'Gemini',
+            usedPercent: 9,
+            windowDurationSeconds: 604_800,
+            resetsAtEpochSeconds: null,
+          },
+        ],
+      },
+      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, ANTIGRAVITY_ARGON_LIMIT_ID, agentConfigId)]: {
+        limitId: ANTIGRAVITY_ARGON_LIMIT_ID,
+        limitName: 'Argon',
+        scope,
+        windows: [
+          {
+            label: 'Argon',
+            usedPercent: 60,
+            windowDurationSeconds: 604_800,
+            resetsAtEpochSeconds: null,
+          },
+        ],
+      },
+    };
+    const meterLabels = async (modelId: string) => {
+      await renderUsage({
+        agentType: ANTIGRAVITY_AGENT_TYPE,
+        agentConfigId,
+        modelId,
+        rateLimits: antigravityLimits,
+        showRateLimitWithoutContext: true,
+      });
+      const trigger = container.querySelector('button');
+      await act(async () => {
+        trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      const meters = document.body
+        .querySelector('[aria-label="Usage"]')
+        ?.querySelectorAll('[role="progressbar"]');
+      return {
+        trigger: trigger?.textContent,
+        meters: Array.from(meters ?? []).map((meter) => meter.getAttribute('aria-label')),
+      };
+    };
+
+    expect(await meterLabels('gemini-4-argon')).toEqual({
+      trigger: '60%',
+      meters: ['Weekly · Argon: 60% used', 'Weekly · Gemini: 9% used', '5 hours · Gemini: 4% used'],
+    });
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(await meterLabels('gemini-3.8-flash')).toEqual({
+      trigger: '4%',
+      meters: ['Weekly · Gemini: 9% used', '5 hours · Gemini: 4% used', 'Weekly · Argon: 60% used'],
+    });
   });
 
   it('shows a truthful unavailable state when the provider omits utilization', async () => {

@@ -15,6 +15,7 @@ import {
   getContextWindowUsageData,
   getRateLimitRemainingPercent,
   resolveAgentRateLimitForModel,
+  resolveAgentRateLimitsForModel,
   type MachineRateLimits,
 } from '../src/lib/session-usage';
 
@@ -218,9 +219,21 @@ describe('session usage', () => {
     // Google never counts ACP use against the Claude/GPT group, so it is not shown.
     expect(limitFor('claude-opus-5-5-high')).toBeUndefined();
     expect(limitFor('gpt-oss-120b-medium')).toBeUndefined();
+    const groupsFor = (modelId: string) =>
+      resolveAgentRateLimitsForModel({
+        rateLimits,
+        agentType: ANTIGRAVITY_AGENT_TYPE,
+        agentConfigId: configId,
+        modelId,
+      }).map((entry) => entry.limitId);
+    // The composer shows both Gemini family groups, the session model's first.
+    expect(groupsFor('gemini-4-argon')).toEqual([ANTIGRAVITY_ARGON_LIMIT_ID, 'gemini']);
+    expect(groupsFor('gemini-3.8-flash-high')).toEqual(['gemini', ANTIGRAVITY_ARGON_LIMIT_ID]);
+    expect(groupsFor('claude-opus-5-5-high')).toEqual([]);
     delete rateLimits[argonKey];
     expect(limitFor('gemini-4-argon-high')).toBe('gemini');
     expect(limitFor('gemini-3.8-flash-high')).toBe('gemini');
+    expect(groupsFor('gemini-4-argon-high')).toEqual(['gemini']);
   });
 
   it('keeps quota snapshots isolated between Codex provider configs', () => {
@@ -288,19 +301,32 @@ describe('session usage', () => {
         HTTPS_PROXY: 'http://localhost:7890',
         NODE_OPTIONS: '--max-old-space-size=4096',
       };
-      expect(canShowSubscriptionRateLimits({ capability: { version: 1 }, cliType: 'builtin', agentType })).toBe(true);
       expect(
-        canShowSubscriptionRateLimits({ capability: { version: 1 },
+        canShowSubscriptionRateLimits({ capability: { version: 1 }, cliType: 'builtin', agentType })
+      ).toBe(true);
+      expect(
+        canShowSubscriptionRateLimits({
+          capability: { version: 1 },
           cliType: 'builtin',
           agentType,
           config: { env: { NMEM_AGENT_ID: 'lody' } },
         })
       ).toBe(true);
       expect(
-        canShowSubscriptionRateLimits({ capability: { version: 1 }, cliType: 'builtin', agentType, config: { env: {} } })
+        canShowSubscriptionRateLimits({
+          capability: { version: 1 },
+          cliType: 'builtin',
+          agentType,
+          config: { env: {} },
+        })
       ).toBe(true);
       expect(
-        canShowSubscriptionRateLimits({ capability: { version: 1 }, cliType: 'builtin', agentType, config: { env } })
+        canShowSubscriptionRateLimits({
+          capability: { version: 1 },
+          cliType: 'builtin',
+          agentType,
+          config: { env },
+        })
       ).toBe(true);
     }
   );
@@ -317,26 +343,42 @@ describe('session usage', () => {
   ])('hides %s subscription limits only when %s is nonblank', (agentType, key) => {
     const input = { cliType: 'builtin' as const, agentType };
     expect(
-      canShowSubscriptionRateLimits({ capability: { version: 1 }, ...input, config: { env: { [key]: 'override' } } })
+      canShowSubscriptionRateLimits({
+        capability: { version: 1 },
+        ...input,
+        config: { env: { [key]: 'override' } },
+      })
     ).toBe(false);
-    expect(canShowSubscriptionRateLimits({ capability: { version: 1 }, ...input, config: { env: { [key]: ' \t\n' } } })).toBe(
-      true
-    );
-    expect(canShowSubscriptionRateLimits({ capability: { version: 1 }, ...input, config: { env: { [key]: '' } } })).toBe(true);
+    expect(
+      canShowSubscriptionRateLimits({
+        capability: { version: 1 },
+        ...input,
+        config: { env: { [key]: ' \t\n' } },
+      })
+    ).toBe(true);
+    expect(
+      canShowSubscriptionRateLimits({
+        capability: { version: 1 },
+        ...input,
+        config: { env: { [key]: '' } },
+      })
+    ).toBe(true);
   });
 
   it.each(['claude', 'codex', 'grok', 'kimi'])(
     'still hides persisted or inferred %s brands',
     (agentType) => {
       expect(
-        canShowSubscriptionRateLimits({ capability: { version: 1 },
+        canShowSubscriptionRateLimits({
+          capability: { version: 1 },
           cliType: 'builtin',
           agentType,
           config: { brandId: 'deepseek', env: { NMEM_AGENT_ID: 'lody' } },
         })
       ).toBe(false);
       expect(
-        canShowSubscriptionRateLimits({ capability: { version: 1 },
+        canShowSubscriptionRateLimits({
+          capability: { version: 1 },
           cliType: 'builtin',
           agentType,
           config: { env: { ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic' } },
@@ -347,7 +389,8 @@ describe('session usage', () => {
 
   it('keeps Antigravity eligibility independent of env and brand', () => {
     expect(
-      canShowSubscriptionRateLimits({ capability: { version: 1 },
+      canShowSubscriptionRateLimits({
+        capability: { version: 1 },
         cliType: 'registry',
         agentType: ANTIGRAVITY_AGENT_TYPE,
         config: { brandId: 'deepseek', env: { OPENAI_API_KEY: 'override' } },
@@ -366,7 +409,6 @@ describe('session usage', () => {
     expect(canShowSubscriptionRateLimits({ cliType: 'builtin', agentType: 'pi' })).toBe(false);
   });
 });
-
 
 it('requires quota declarations for builtin and third-party providers', () => {
   for (const target of [

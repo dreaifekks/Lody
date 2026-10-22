@@ -17,6 +17,8 @@ Successful polls replace the provider's quota snapshot so a switch to Ultra remo
 stale Argon rows; failed or signed-out fetches retain the last snapshot. A follow-up
 correction moved the request to the host and User-Agent the agy CLI uses: the old
 request never received the Argon group or real usage.
+A later change made the composer usage popover list Argon beside Gemini too, the
+session model's group first; the trigger percentage still reads only that group.
 
 ## Decision and evidence
 
