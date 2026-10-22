@@ -13,6 +13,7 @@ Daemon 现在把 `gemini-argon-wtu` 映射为共享的 `argon` 额度 ID 和 Arg
 Provider 行同时显示 Gemini 和 Argon；紧凑视图已有独立分行及窗口标签，无需修改。
 成功轮询会替换该 Provider 的额度快照，切换到 Ultra 时删除残留 Argon；失败或未登录时保留旧快照。
 后续更正把请求改成 agy CLI 用的主机和 User-Agent：原请求拿不到 Argon 组，也拿不到真实用量。
+之后输入框的用量弹窗也在 Gemini 旁列出 Argon，会话模型所属的组排在前面；触发按钮的百分比仍只取该组。
 
 ## 决定与证据
 

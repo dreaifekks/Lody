@@ -1,5 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { getRateLimitEntryKey, getServerNow } from '@lody/shared';
+import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_ARGON_LIMIT_ID,
+  getRateLimitEntryKey,
+  getServerNow,
+  type AgentConfigId,
+} from '@lody/shared';
 
 import { SessionUsagePopover } from '@/components/sessions/session-usage-popover';
 
@@ -144,5 +150,60 @@ export const ClaudeFableWeekly: Story = {
         ],
       },
     },
+  },
+};
+
+const antigravityConfigId = 'antigravity' as AgentConfigId;
+const antigravityLimits = {
+  [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, 'gemini', antigravityConfigId)]: {
+    limitId: 'gemini',
+    limitName: 'Gemini',
+    scope: { providerId: ANTIGRAVITY_AGENT_TYPE },
+    windows: [
+      {
+        label: 'Gemini',
+        usedPercent: 0,
+        windowDurationSeconds: 18_000,
+        resetsAtEpochSeconds: resetIn(5 * 60 * 60),
+      },
+      {
+        label: 'Gemini',
+        usedPercent: 0.1,
+        windowDurationSeconds: 604_800,
+        resetsAtEpochSeconds: resetIn(42 * 60 * 60),
+      },
+    ],
+  },
+  [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, ANTIGRAVITY_ARGON_LIMIT_ID, antigravityConfigId)]: {
+    limitId: ANTIGRAVITY_ARGON_LIMIT_ID,
+    limitName: 'Argon',
+    scope: { providerId: ANTIGRAVITY_AGENT_TYPE },
+    windows: [
+      {
+        label: 'Argon',
+        usedPercent: 60.1,
+        windowDurationSeconds: 604_800,
+        resetsAtEpochSeconds: resetIn(42 * 60 * 60),
+      },
+    ],
+  },
+};
+
+export const AntigravityArgonModel: Story = {
+  args: {
+    agentType: ANTIGRAVITY_AGENT_TYPE,
+    agentConfigId: antigravityConfigId,
+    modelId: 'gemini-4-argon',
+    modelLabel: 'Gemini 4 Argon',
+    showRateLimitWithoutContext: true,
+    rateLimits: antigravityLimits,
+  },
+};
+
+export const AntigravityFlashModel: Story = {
+  args: {
+    ...AntigravityArgonModel.args,
+    modelId: 'gemini-3.8-flash',
+    modelLabel: 'Gemini 3.8 Flash',
   },
 };

@@ -24,7 +24,7 @@ import {
   formatRateLimitWindowShortLabel,
   getAgentRateLimitWindows,
   getContextWindowUsageData,
-  resolveAgentRateLimitForModel,
+  resolveAgentRateLimitsForModel,
   type MachineRateLimits,
 } from '@/lib/session-usage';
 
@@ -66,23 +66,28 @@ export const SessionUsagePopover = memo(function SessionUsagePopover({
   const locale: Locale = i18n.language?.startsWith('zh') ? zhCN : enUS;
   const intlLocale = toIntlLocaleOrEn(i18n.resolvedLanguage ?? i18n.language);
   const context = getContextWindowUsageData(contextWindowUsage);
-  const rateLimit = resolveAgentRateLimitForModel({
+  const rateLimitEntries = resolveAgentRateLimitsForModel({
     rateLimits,
     agentType,
     agentConfigId,
     modelId,
   });
-  const rateLimitWindows = rateLimit
-    ? getAgentRateLimitWindows(rateLimit.limits).sort(
-        (left, right) => (right.windowDurationSeconds ?? 0) - (left.windowDurationSeconds ?? 0)
-      )
-    : [];
+  const rateLimit = rateLimitEntries[0] ?? null;
+  // Each quota group stays together, the model's own first; the trigger reads only that one.
+  const rateLimitGroupWindows = rateLimitEntries.map((entry) =>
+    getAgentRateLimitWindows(entry.limits).sort(
+      (left, right) => (right.windowDurationSeconds ?? 0) - (left.windowDurationSeconds ?? 0)
+    )
+  );
+  const modelRateLimitWindows = rateLimitGroupWindows[0] ?? [];
+  const rateLimitWindows = rateLimitGroupWindows.flat();
   const hasRateLimit = rateLimitWindows.length > 0;
   const wallet = rateLimit?.limits.wallet ?? null;
   const hasRateLimitDetails = rateLimit !== null;
   const triggerRateLimitWindow =
-    rateLimitWindows.find((window) => window.windowDurationSeconds === FIVE_HOUR_WINDOW_SECONDS) ??
-    rateLimitWindows[0];
+    modelRateLimitWindows.find(
+      (window) => window.windowDurationSeconds === FIVE_HOUR_WINDOW_SECONDS
+    ) ?? modelRateLimitWindows[0];
   const triggerValue =
     context?.usedPercentage ??
     (showRateLimitWithoutContext ? triggerRateLimitWindow?.usedPercent : undefined);
