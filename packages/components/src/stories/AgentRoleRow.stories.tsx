@@ -61,7 +61,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="mx-auto w-[640px] p-4">
+      <div className="mx-auto w-full max-w-[640px] p-4">
         {/* The row is a line of the list's card; the list draws the card. */}
         <div {...stylex.props(settingsSurface.card)}>
           <Story />

@@ -187,7 +187,7 @@ const meta = {
     // form's own scroll body and sticky footer size themselves against. The
     // panel pads its content; the form has no padding of its own.
     (Story) => (
-      <div className="mx-auto flex h-[900px] w-[620px] flex-col gap-4 overflow-hidden rounded-lg border bg-background p-4">
+      <div className="mx-auto flex h-[900px] w-full max-w-[620px] flex-col gap-4 overflow-hidden rounded-lg border bg-background p-4">
         <Story />
       </div>
     ),

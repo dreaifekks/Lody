@@ -291,15 +291,15 @@ const roleMentionItems = (
     })
   );
 
-/** A Role's mention candidates as listed without a machine in the term. */
+/** Every target is a pinned mention candidate, including an unfiltered query. */
 const roleCandidates = (
   role: AgentRole,
   availability: RoleAvailability = { kind: 'available' },
   availabilityText?: string
 ): MentionCandidate[] =>
-  roleMentionItems([role], availability)
-    .filter((item) => !item.pinned)
-    .map((item) => toAgentRoleCandidate(item, availabilityText));
+  roleMentionItems([role], availability).map((item) =>
+    toAgentRoleCandidate(item, availabilityText)
+  );
 
 /** A Role with one entry. */
 const roleCandidate = (
@@ -334,7 +334,7 @@ const AGENT_ROLES: MentionCandidate[] = [
 ];
 
 /**
- * Two groups on the Studio (Claude, Gemini): one entry each, named by group.
+ * Two targets on the Studio (Claude, Gemini): one entry each, named by agent.
  * Claude runs on the build box too, which `@ui@build` lists on its own.
  */
 const uiStyleRole = agentRole({
