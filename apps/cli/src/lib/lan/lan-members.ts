@@ -9,6 +9,7 @@ import {
   normalizeLanMachineColor,
   parseLanAgentRuntimes,
   sameLanAgentRuntimes,
+  type IosSimulatorResponse,
   type LanAgentRuntime,
   type LanGitHubState,
   type LanMachine,
@@ -407,9 +408,17 @@ export async function answerLanMemberControl(options: {
   usage?: LanUsageSource;
   /** The GitHub credentials of this machine for the workspace's LAN. */
   github?: () => Promise<LanGitHubState>;
+  /** Carries out a simulator command as one from this machine's own desktop. */
+  iosSimulator?: (
+    request: Extract<LanMemberControlRequest, { type: 'lan/ios-simulator' }>
+  ) => Promise<IosSimulatorResponse>;
 }): Promise<LanMemberControlResponse> {
   const { request, workspace, control } = options;
   try {
+    if (request.type === 'lan/ios-simulator') {
+      if (!options.iosSimulator) throw new Error('This machine shows no simulators to members');
+      return { ok: true, type: request.type, result: await options.iosSimulator(request) };
+    }
     if (request.type === 'lan/github') {
       if (!options.github) throw new Error('This machine says nothing about GitHub');
       return { ok: true, type: request.type, result: await options.github() };

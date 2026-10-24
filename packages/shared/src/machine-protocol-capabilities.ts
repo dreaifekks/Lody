@@ -40,6 +40,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   lanBoardFiles: 'lanBoardFiles',
   lanShell: 'lanShell',
   lanTunnel: 'lanTunnel',
+  lanIosSimulator: 'lanIosSimulator',
   realtimeVoice: 'realtimeVoice',
   sessionCancelActiveTurn: 'sessionCancelActiveTurn',
   scheduleAgentRoles: 'scheduleAgentRoles',
@@ -81,6 +82,7 @@ export const LAN_FILE_RANGES_PROTOCOL_VERSION = 1;
 export const LAN_BOARD_FILES_PROTOCOL_VERSION = 1;
 export const LAN_SHELL_PROTOCOL_VERSION = 1;
 export const LAN_TUNNEL_PROTOCOL_VERSION = 1;
+export const LAN_IOS_SIMULATOR_PROTOCOL_VERSION = 1;
 export const SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION = 1;
 export const SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION = 1;
 export const SESSION_HISTORY_PROTOCOL_VERSION = 2;
@@ -593,6 +595,23 @@ export function machineSupportsLanTunnel(
     machine,
     MACHINE_PROTOCOL_CAPABILITIES.lanTunnel,
     LAN_TUNNEL_PROTOCOL_VERSION
+  );
+}
+
+/**
+ * Whether the target daemon carries out the simulator commands another member
+ * forwards for a session it runs (`lan/ios-simulator`), so that member's
+ * desktop can show its simulators over the LAN.
+ *
+ * Like `lanControl` it is said only by a daemon that was assembled to accept.
+ */
+export function machineSupportsLanIosSimulator(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.lanIosSimulator,
+    LAN_IOS_SIMULATOR_PROTOCOL_VERSION
   );
 }
 

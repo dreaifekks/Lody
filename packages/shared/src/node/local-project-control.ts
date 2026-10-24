@@ -24,7 +24,9 @@ import {
   LanShareSettingsResultSchema,
   LanShareSourceSchema,
 } from '../lan-share';
+import { IosSimulatorResponseSchema } from '../ios-simulator';
 import type { LocalProjectControlRequest, LocalProjectControlResponse } from '../message';
+import { LanIosSimulatorRequestSchema } from '../message-schemas';
 
 export const LOCAL_PROJECT_CONTROL_PATH = '/project-control';
 
@@ -532,6 +534,10 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
     return typeof value.workspaceId === 'string';
   }
 
+  if (value.type === 'lan/ios-simulator') {
+    return LanIosSimulatorRequestSchema.safeParse(value).success;
+  }
+
   if (value.type === 'lan/github-token') {
     return (
       typeof value.workspaceId === 'string' &&
@@ -787,6 +793,10 @@ export function isLocalProjectControlResponse(
 
   if (value.type === 'lan/github') {
     return LanGitHubStateSchema.safeParse(value.result).success;
+  }
+
+  if (value.type === 'lan/ios-simulator') {
+    return IosSimulatorResponseSchema.safeParse(value.result).success;
   }
 
   if (value.type === 'lan/github-token') {

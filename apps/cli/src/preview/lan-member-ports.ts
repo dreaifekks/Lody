@@ -36,7 +36,13 @@ export const connectMemberPortThroughLocalTunnel: MemberPortConnector = async (
 export const MEMBER_PORT_RANGE = { first: 10_000, last: 19_999 } as const;
 const MEMBER_PORT_ATTEMPTS = 20;
 
-type Forward = { server: net.Server; port: number; sessions: Set<SessionId> };
+type Forward = {
+  server: net.Server;
+  port: number;
+  sessions: Set<SessionId>;
+  /** The connections it carries, which end with it. */
+  sockets: Set<net.Socket>;
+};
 
 /**
  * Loopback ports of this machine that carry every connection to the dev
@@ -84,14 +90,17 @@ export class LanMemberPorts {
       const forward = await pending.catch(() => null);
       if (!forward?.sessions.delete(sessionId) || forward.sessions.size > 0) continue;
       this.forwards.delete(key);
-      forward.server.close();
+      close(forward);
     }
   }
 
   async closeAll(): Promise<void> {
     const forwards = [...this.forwards.values()];
     this.forwards.clear();
-    for (const pending of forwards) (await pending.catch(() => null))?.server.close();
+    for (const pending of forwards) {
+      const forward = await pending.catch(() => null);
+      if (forward) close(forward);
+    }
   }
 
   private async listen(
@@ -99,9 +108,20 @@ export class LanMemberPorts {
     target: { host: string; port: number }
   ): Promise<Forward> {
     const connect = this.options.connect ?? connectMemberPortThroughLocalTunnel;
+    const sockets = new Set<net.Socket>();
+    const track = (socket: net.Socket) => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+    };
     const server = net.createServer({ pauseOnConnect: true }, (client) => {
+      track(client);
       connect(machineId, target.port, target.host).then(
-        (upstream) => joinSockets(client, upstream),
+        (upstream) => {
+          track(upstream);
+          // The forward closed while the member was being reached.
+          if (client.destroyed) upstream.destroy();
+          else joinSockets(client, upstream);
+        },
         (error: unknown) => {
           this.options.logger.debug(
             `[preview] ${machineId} did not carry port ${target.port}: ${formatErrorMessage(error)}`
@@ -123,7 +143,7 @@ export class LanMemberPorts {
             resolve();
           });
         });
-        return { server, port, sessions: new Set() };
+        return { server, port, sessions: new Set(), sockets };
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         // A port below 1024 is refused to an ordinary user rather than taken.
@@ -135,4 +155,10 @@ export class LanMemberPorts {
       }
     }
   }
+}
+
+/** Stops taking connections and ends the ones it carries. */
+function close(forward: Forward): void {
+  forward.server.close();
+  for (const socket of forward.sockets) socket.destroy();
 }

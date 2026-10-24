@@ -5,6 +5,7 @@ import {
   type CliRuntimeConnectivity,
   type CliRuntimeWorkspace,
   CliType,
+  IosSimulatorResponseSchema,
   MachineId,
   WorkspaceId,
   getMachineRoomId,
@@ -368,6 +369,18 @@ export class LodyFleet {
             await this.startInFlight.get(workspaceId)?.catch(() => undefined);
             const runtime = this.runtimes.get(workspaceId);
             return runtime ? this.toLanMemberWorkspace(runtime) : null;
+          },
+          iosSimulator: async ({ workspaceId, sessionId, requestedByUserId, command }) => {
+            const runtime = this.runtimes.get(workspaceId);
+            if (!runtime) throw new Error('This machine does not run that workspace');
+            const response = await runtime.lody.dispatchLocalMachineRpc({
+              method: 'ios-simulator/control',
+              machineId: this.machineId,
+              workspaceId,
+              params: { sessionId, requestedByUserId, command },
+            });
+            if (!response.ok) throw new Error(response.error);
+            return IosSimulatorResponseSchema.parse(response.result);
           },
         })
       : null;
@@ -1107,6 +1120,8 @@ export class LodyFleet {
             ? {
                 answerLanMemberControl: async (request) =>
                   await (this.lanFleetControl as LanFleetControl).answer(request),
+                askLanMemberDirectly: async (request) =>
+                  await (this.lanFleetControl as LanFleetControl).askDirectly(request),
               }
             : {}),
           acceptsLanMemberFiles: this.lanTerminalHost !== null && this.isLanWorkspace(workspace.id),

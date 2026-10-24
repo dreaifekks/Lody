@@ -112,8 +112,37 @@ it.
 Nothing else in the panel asks for the hosted preview service there, which
 authorizes every preview control on another machine and creates the shared
 tunnels. The panel reads no preview status, and Share, Restore preview and
-Stop sharing are hidden (`remotePreview` capability). The iOS Simulator of
-another member is not offered either, for the same reason.
+Stop sharing are hidden (`remotePreview` capability).
+
+## Simulators of other members
+
+The iOS Simulator panel of a session another member runs on a Mac works the
+same way, without the hosted preview service and its signed controls. The
+desktop sends every simulator command to the agent service of its own machine
+(`session-ios-simulator-panel.tsx`), which puts it to the member as
+`lan/ios-simulator` (`apps/cli/src/lib/lan/lan-ios-simulator.ts`). The member
+carries it out as a command from its own desktop: its viewer listens on its
+own loopback and the answer holds that address with its token. That answer
+crosses only the direct connection, never the hub
+(`LanFleetControl.askDirectly`): a viewer address stays out of the
+workspace's streams.
+
+```text
+ desktop ─▶ agent service ─ TLS-PSK ─▶ agent service of the Mac ─▶ simctl, Baguette
+ panel      of this machine             starts a local preview,    gateway on its
+            port N carries ◀─ tunnel ─  viewer at 127.0.0.1:N      loopback
+            the viewer
+```
+
+A port of this machine with the member's number carries the viewer, through
+the tunnel socket as for the Browser panel. The viewer checks that its page
+comes from the address it serves, so the number cannot change on the way: when
+this machine already uses it, the command fails and the user starts the
+preview again, which picks another. The stream keeps the budgets of a viewer
+on the Mac itself (native resolution, H.264 at 4 Mbps), which a home network
+carries; there is no WebRTC. A Mac says it takes the command with the
+`lanIosSimulator` protocol capability; the panel is offered for a member that
+says so.
 
 ## The command in a session
 

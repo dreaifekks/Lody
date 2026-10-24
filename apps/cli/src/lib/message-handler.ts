@@ -201,6 +201,9 @@ import {
   LAN_FILES_PROTOCOL_VERSION,
   LAN_SHELL_PROTOCOL_VERSION,
   LAN_TUNNEL_PROTOCOL_VERSION,
+  LAN_IOS_SIMULATOR_PROTOCOL_VERSION,
+  type IosSimulatorRequest,
+  type IosSimulatorResponse,
   REALTIME_VOICE_PROTOCOL_VERSION,
   MACHINE_PROTOCOL_CAPABILITIES,
   type LanMemberControlRequest,
@@ -435,6 +438,7 @@ import { resolveSessionLiveStatus } from './session-live-status';
 import type { MemoryPressureEvictionResult } from './session-gc-manager';
 import { PreviewService } from '@/preview/preview-service';
 import { LanMemberPorts } from '@/preview/lan-member-ports';
+import { forwardIosSimulatorControl } from '@/lib/lan/lan-ios-simulator';
 import { LocalProjectHistorySyncService } from '@/lib/local-project-history-sync-service';
 import { precheckLocalProjectHistoryRequest } from '@/lib/local-project-history-precheck';
 import {
@@ -674,6 +678,11 @@ export interface MessageHandlerConfig {
    */
   answerLanMemberControl?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
   /**
+   * Puts a request to another member of this workspace's LAN over a direct
+   * connection only. Absent where the agent service makes no such requests.
+   */
+  askLanMemberDirectly?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
+  /**
    * The agent service takes the files of a message from the other members of
    * this workspace's LAN, at the endpoint it publishes for them.
    */
@@ -785,6 +794,9 @@ export class MessageHandler {
   private onFatalAuthFailure?: (error: Error) => void;
   private onProcessLifecycleAction?: (action: MachineProcessLifecycleAction) => void;
   private readonly answerLanMemberControl?: MessageHandlerConfig['answerLanMemberControl'];
+  private readonly askLanMemberDirectly?: MessageHandlerConfig['askLanMemberDirectly'];
+  /** Ports of this machine that carry the simulator viewers of sessions other members run. */
+  private readonly iosSimulatorMemberPorts: LanMemberPorts;
   private readonly acceptsLanMemberFiles: boolean;
   private readonly lanWorkspace: boolean;
   private readonly boardFiles: BoardFilesPort | undefined;
@@ -2939,6 +2951,7 @@ export class MessageHandler {
     this.localWorkspaceCatalog = config.localWorkspaceCatalog ?? makeLocalWorkspaceCatalog();
     this.onProcessLifecycleAction = config.onProcessLifecycleAction;
     this.answerLanMemberControl = config.answerLanMemberControl;
+    this.askLanMemberDirectly = config.askLanMemberDirectly;
     this.acceptsLanMemberFiles = config.acceptsLanMemberFiles === true;
     this.lanWorkspace = config.lanWorkspace === true;
     this.boardFiles = config.boardFiles;
@@ -3260,6 +3273,7 @@ export class MessageHandler {
       remotePreview: this.cloudPort.remotePreview,
       ...(this.lanWorkspace ? { memberPorts: new LanMemberPorts({ logger: this.logger }) } : {}),
     });
+    this.iosSimulatorMemberPorts = new LanMemberPorts({ logger: this.logger });
     this.iosSimulatorService = new IosSimulatorService({
       iceServers: this.cloudPort.remotePreview?.simulatorIceServers
         ? async (sessionId) => {
@@ -6223,6 +6237,10 @@ export class MessageHandler {
       // The same listener opens the shells and ports of this machine to the members.
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanShell] = LAN_SHELL_PROTOCOL_VERSION;
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanTunnel] = LAN_TUNNEL_PROTOCOL_VERSION;
+      if (this.answerLanMemberControl) {
+        capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanIosSimulator] =
+          LAN_IOS_SIMULATOR_PROTOCOL_VERSION;
+      }
     }
     return capabilities;
   }
@@ -6929,6 +6947,29 @@ export class MessageHandler {
   }
 
   /** Which machine runs a session, and the turn it was last asked for. */
+  /**
+   * A simulator command from this machine's desktop; for a session another
+   * member of the LAN runs, that member carries it out.
+   */
+  private async controlIosSimulator(params: IosSimulatorRequest): Promise<IosSimulatorResponse> {
+    const ask = this.askLanMemberDirectly;
+    const owner = ask ? await this.readSessionOwner(params.sessionId as SessionId) : null;
+    if (!ask || !owner?.machineId || owner.machineId === this.machineId) {
+      return await this.iosSimulatorService.control(params, false);
+    }
+    const memberId = owner.machineId as MachineId;
+    return await forwardIosSimulatorControl({
+      params,
+      workspaceId: this.workspaceId as WorkspaceId,
+      memberId,
+      member: (await this.workspaceDocument.repo.getDocMeta(getMachineRoomId(memberId)))?.meta as
+        | MachineMeta
+        | undefined,
+      ask,
+      ports: this.iosSimulatorMemberPorts,
+    });
+  }
+
   private async readSessionOwner(
     sessionId: SessionId
   ): Promise<{ machineId?: string; latestUserMsgId?: string }> {
@@ -7227,7 +7268,7 @@ export class MessageHandler {
         });
       }
       case 'ios-simulator/control':
-        return this.iosSimulatorService.control(request.params, false);
+        return await this.controlIosSimulator(request.params);
       case 'session/preview-endpoint-acquire':
         return await this.previewService.acquireEndpoint({
           machineId: request.machineId as MachineId,
@@ -10541,6 +10582,14 @@ export class MessageHandler {
 
     if (isLanMemberControlType(message.type)) {
       const request = message as LanMemberControlRequest;
+      // Its answer holds a viewer address, which must not be written to a stream.
+      if (request.type === 'lan/ios-simulator') {
+        return this.toLocalProjectControlError(
+          requestType,
+          'access_denied',
+          'A simulator command of a member crosses only its direct connection'
+        );
+      }
       if (request.workspaceId !== this.workspaceId) {
         return this.toLocalProjectControlError(
           requestType,
@@ -10686,6 +10735,7 @@ export class MessageHandler {
     this.cancelPendingHistoryWatches();
     this.historyOwnerAbort.abort();
     await this.iosSimulatorService.closeAll();
+    await this.iosSimulatorMemberPorts.closeAll();
     await this.voiceHostInstance?.dispose();
     for (const timer of this.alertGraceTimers) clearTimeout(timer);
     this.alertGraceTimers.clear();

@@ -162,6 +162,7 @@ export const LAN_MEMBER_CONTROL_TYPES = [
   'lan/usage-by-agent',
   'lan/restart-machine',
   'lan/github',
+  'lan/ios-simulator',
 ] as const;
 export type LanMemberControlType = (typeof LAN_MEMBER_CONTROL_TYPES)[number];
 
