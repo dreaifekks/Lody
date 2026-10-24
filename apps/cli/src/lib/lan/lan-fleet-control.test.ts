@@ -12,6 +12,7 @@ import {
   type LocalProjectControlResponse,
   type MachineId,
   type MachineMeta,
+  type SessionId,
   type WorkspaceId,
 } from '@lody/shared';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
@@ -263,6 +264,63 @@ describe('what an agent service does for the members of its LANs', () => {
         result: { response: { ok: false, message: expect.stringContaining('closed') } },
       });
       expect(sent.map((entry) => entry.via)).toEqual(['direct']);
+    });
+  });
+
+  describe('a simulator command, whose answer holds the address of a viewer', () => {
+    const request: LanMemberControlRequest = {
+      type: 'lan/ios-simulator',
+      machineId: SERVER,
+      workspaceId: HOME,
+      sessionId: '0f6f6a43-2f7e-4c55-9d1b-0a3a8b1f2c11' as SessionId,
+      requestedByUserId: 'local:home',
+      command: { action: 'list' },
+    };
+    const listed: LocalProjectControlResponse = {
+      ok: true,
+      type: 'lan/ios-simulator',
+      result: {
+        type: 'ios-simulator/control_response',
+        sessionId: '0f6f6a43-2f7e-4c55-9d1b-0a3a8b1f2c11',
+        success: true,
+        devices: [],
+      },
+    };
+
+    it('reaches a member directly or not at all, never through the hub', async () => {
+      answer = listed;
+      // No endpoint: the hub would carry it, but must not.
+      expect(await createFleetControl().askDirectly(request)).toMatchObject({
+        ok: false,
+        message: expect.stringContaining('accepts no connection'),
+      });
+      expect(sent).toEqual([]);
+
+      await register(SERVER, { lanTerminal: { version: 1, host: '10.0.0.2', port: 8789 } });
+      direct = async () => {
+        throw new LanMemberUnreachableError('connect ECONNREFUSED 10.0.0.2:8789');
+      };
+      expect(await createFleetControl().askDirectly(request)).toMatchObject({ ok: false });
+      expect(sent.map((entry) => entry.via)).toEqual(['direct']);
+
+      direct = async () => listed;
+      expect(await createFleetControl().askDirectly(request)).toEqual(listed);
+    });
+
+    it('is carried out on this machine as one from its own desktop', async () => {
+      const fleet = createFleetControl({
+        iosSimulator: async ({ sessionId, command }) => ({
+          type: 'ios-simulator/control_response',
+          sessionId,
+          success: command.action === 'list',
+          devices: [],
+        }),
+      });
+      expect(await fleet.answer({ ...request, machineId: THIS })).toEqual(listed);
+      expect(await createFleetControl().answer({ ...request, machineId: THIS })).toMatchObject({
+        ok: false,
+        message: expect.stringContaining('no simulators'),
+      });
     });
   });
 

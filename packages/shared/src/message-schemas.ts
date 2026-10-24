@@ -53,6 +53,7 @@ import { SESSION_GOAL_ACTIONS } from './goal';
 import type { AgentRoleId, SessionId } from './ids';
 import type { ProjectRef } from './project';
 import { MAX_MESSAGE_TEXT_SPAN_MARK_LENGTH, MESSAGE_TEXT_SPAN_KINDS } from './message-text-spans';
+import { IosSimulatorCommandSchema, IosSimulatorResponseSchema } from './ios-simulator';
 import { RpcSecretPublicKeySchema } from './rpc-secret';
 import { LodyOperationIdSchema, LodyOperationCompletionSchema } from './session-orchestration';
 import { isSensitiveAcpConfigOptionId } from './acp-config-option-sensitivity';
@@ -2745,6 +2746,22 @@ export const LanGitHubRequestSchema = z
   })
   .strict();
 
+/**
+ * A simulator command for a session the member runs, from the agent service
+ * of another member whose desktop shows the session. The member carries it
+ * out as one from its own desktop.
+ */
+export const LanIosSimulatorRequestSchema = z
+  .object({
+    type: z.literal('lan/ios-simulator'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    sessionId: SessionIdSchema,
+    requestedByUserId: z.string().trim().min(1),
+    command: IosSimulatorCommandSchema,
+  })
+  .strict();
+
 /** What the members of a LAN ask of each other's machines. */
 export const LanMemberControlRequestSchema = z.discriminatedUnion('type', [
   LanUpdateMachineRequestSchema,
@@ -2755,6 +2772,7 @@ export const LanMemberControlRequestSchema = z.discriminatedUnion('type', [
   LanUsageByAgentRequestSchema,
   LanRestartMachineRequestSchema,
   LanGitHubRequestSchema,
+  LanIosSimulatorRequestSchema,
 ]);
 
 export const LanMachinesRequestSchema = z
@@ -2902,6 +2920,7 @@ export const LocalProjectControlRequestSchema = z.discriminatedUnion('type', [
   LanUsageByAgentRequestSchema,
   LanRestartMachineRequestSchema,
   LanGitHubRequestSchema,
+  LanIosSimulatorRequestSchema,
   LanMachinesRequestSchema,
   LanAliasMachineRequestSchema,
   LanForwardRequestSchema,
@@ -3175,6 +3194,7 @@ const LocalProjectControlErrorResponseSchema = z
       'lan/usage',
       'lan/restart-machine',
       'lan/github',
+      'lan/ios-simulator',
       'lan/machines',
       'lan/alias-machine',
       'lan/forward',
@@ -3255,6 +3275,14 @@ const LanGitHubResponseSchema = z
   })
   .strict();
 
+const LanIosSimulatorResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    type: z.literal('lan/ios-simulator'),
+    result: IosSimulatorResponseSchema,
+  })
+  .strict();
+
 /** What a member answers, which is also what a forwarded request brings back. */
 export const LanMemberControlResponseSchema = z.union([
   HostedConfigPreviewResponseSchema,
@@ -3265,6 +3293,7 @@ export const LanMemberControlResponseSchema = z.union([
   LanUsageByAgentResponseSchema,
   LanRestartMachineResponseSchema,
   LanGitHubResponseSchema,
+  LanIosSimulatorResponseSchema,
   LocalProjectControlErrorResponseSchema,
 ]);
 
@@ -3486,6 +3515,7 @@ export const LocalProjectControlResponseSchema = z.union([
   LanUsageByAgentResponseSchema,
   LanRestartMachineResponseSchema,
   LanGitHubResponseSchema,
+  LanIosSimulatorResponseSchema,
   z
     .object({
       ok: z.literal(true),

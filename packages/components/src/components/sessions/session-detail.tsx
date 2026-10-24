@@ -64,12 +64,14 @@ import {
   getSessionPullRequestLegacyFields,
   getSessionRoomId,
   getAcpCapabilityCacheEntryAuthority,
+  machineSupportsLanIosSimulator,
   resolveProjectGitHubRepo,
   SessionForkOperationSchema,
   type CommentReferencePayload,
   type LocalProjectHistoryProvider,
   type LocalProjectId,
   type LocalProjectMeta,
+  type MachineId,
   type PrStatus,
   type ProjectRef,
   type SessionId,
@@ -216,7 +218,7 @@ import {
 } from '@/components/agent-surfaces/agent-surface-context';
 import { getIosSimulatorPanelAvailability } from '@/lib/ios-simulator/ios-simulator-model';
 import { usePlatformCapability } from '@lody/platform/react';
-import { getMachineMetaByIdAtomFamily } from '@/atoms/machines';
+import { getMachineMetaByIdAtomFamily, getMachineMetaMapAtom } from '@/atoms/machines';
 import { deletePrCacheEntriesForSession } from '@/lib/github-pr-cache';
 import { FileTreeView } from './components/file-tree-view';
 import { useSessionFileActions } from '@/hooks/use-session-file-actions';
@@ -2044,10 +2046,18 @@ const SessionDetail = ({
     getMachineMetaByIdAtomFamily(simulatorOwnerSession?.machineId)
   );
   const remotePreviewAvailable = usePlatformCapability('remotePreview');
+  const machineMetaMap = useAtomValue(getMachineMetaMapAtom);
   // Another machine's simulator is controlled through the hosted preview
-  // service. Until this desktop knows its machine, keep a restored tab open.
+  // service, or, on a LAN, through this machine's agent service, which asks
+  // the member and carries its viewer. Until this desktop knows its machine,
+  // keep a restored tab open.
   const iosSimulatorReachable = (machineId: string | undefined) =>
-    remotePreviewAvailable || localMachineId === null || machineId === localMachineId;
+    remotePreviewAvailable ||
+    localMachineId === null ||
+    machineId === localMachineId ||
+    machineSupportsLanIosSimulator(
+      machineId ? machineMetaMap.get(machineId as MachineId) : undefined
+    );
   const activeIosSimulatorSession =
     simulatorOwnerSession &&
     getIosSimulatorPanelAvailability(iosSimulatorMachine, {

@@ -12,6 +12,7 @@ import {
   LORO_STREAMS_BUCKET_ID,
   getServerNow,
   isLanMemberControlType,
+  type IosSimulatorResponse,
   type LanMemberControlRequest,
   type LanMemberControlResponse,
   type LocalProjectControlRequest,
@@ -88,6 +89,7 @@ const ANSWER_TIMEOUT_MS: Record<LanMemberControlRequest['type'], number> = {
   'lan/usage-by-agent': 20_000,
   'lan/restart-machine': 15_000,
   'lan/github': 30_000,
+  'lan/ios-simulator': 50_000,
 };
 
 export function isLanControlRequest(
@@ -145,6 +147,10 @@ export type LanFleetControlOptions = {
   usage?: LanUsageSource;
   /** The GitHub credentials of this machine, and the hubs' token; absent where none is told. */
   github?: LanGitHubSource;
+  /** Carries out a simulator command a member forwards, as one from this machine's desktop. */
+  iosSimulator?: (
+    request: Extract<LanMemberControlRequest, { type: 'lan/ios-simulator' }>
+  ) => Promise<IosSimulatorResponse>;
   now?: () => number;
 };
 
@@ -417,6 +423,7 @@ export class LanFleetControl {
       control: this.options.control,
       usage: this.options.usage,
       ...(github ? { github: () => github.describe(this.hubOf(request.workspaceId)) } : {}),
+      ...(this.options.iosSimulator ? { iosSimulator: this.options.iosSimulator } : {}),
     });
     // What was imported or installed is something the members should see.
     if (
@@ -425,11 +432,32 @@ export class LanFleetControl {
       request.type !== 'lan/usage' &&
       request.type !== 'lan/usage-by-agent' &&
       request.type !== 'lan/restart-machine' &&
-      request.type !== 'lan/github'
+      request.type !== 'lan/github' &&
+      request.type !== 'lan/ios-simulator'
     ) {
       void this.publish();
     }
     return response;
+  }
+
+  /**
+   * Puts a request to a member only over a direct connection, never through
+   * the hub: its answer carries what must stay out of the workspace's streams,
+   * such as the address of a simulator's viewer.
+   */
+  async askDirectly(request: LanMemberControlRequest): Promise<LanMemberControlResponse> {
+    return await forwardLanMemberControl({
+      request,
+      workspace: await this.options.workspace(request.workspaceId),
+      machineId: this.options.machineId,
+      send: async (forwarded, machine) => {
+        const hub = this.hubOf(forwarded.workspaceId);
+        if (!hub) throw new Error('no LAN of this machine carries the workspace');
+        const endpoint = parseLanTerminalEndpoint(machine.lanTerminal);
+        if (!endpoint) throw new Error('it accepts no connection from members');
+        return await (this.options.sendDirect ?? sendDirectly)(hub, endpoint, forwarded);
+      },
+    });
   }
 
   /**

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
+import { usePlatformCapability } from '@lody/platform/react';
 import {
   machineSupportsIosSimulatorControls,
   machineSupportsIosSimulatorExterior,
@@ -164,18 +165,23 @@ function SessionIosSimulatorPanelController({
   const catalogEpoch = useRef(0);
 
   const requesterUserId = user?.id ?? null;
+  // Without the hosted preview service, this machine's agent service asks the
+  // LAN member that runs the session and carries its viewer here.
+  const remotePreviewAvailable = usePlatformCapability('remotePreview');
+  const controlMachineId =
+    remotePreviewAvailable || !localMachineId ? session.machineId : localMachineId;
   const request = useCallback(
     async (command: IosSimulatorCommand): Promise<IosSimulatorResponse | null> => {
       if (!runtime || !requesterUserId) return null;
       return runtime.requestIosSimulatorControl({
-        machineId: session.machineId,
+        machineId: controlMachineId,
         sessionId: session.id,
         requestedByUserId: requesterUserId,
         command,
         timeoutMs: command.action === 'exterior' ? 45000 : undefined,
       });
     },
-    [requesterUserId, runtime, session.id, session.machineId]
+    [controlMachineId, requesterUserId, runtime, session.id]
   );
 
   const refreshCatalog = useCallback(async () => {

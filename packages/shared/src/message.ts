@@ -55,6 +55,7 @@ import type {
   SessionPreviewStatusResponse,
 } from './preview';
 import type { ProjectSkillsResult } from './acp/skills';
+import type { IosSimulatorCommand, IosSimulatorResponse } from './ios-simulator';
 import type { RpcSecretPublicKey } from './rpc-secret';
 import type { BugReportClientLog } from './bug-report';
 import type { RequestPermissionRequest, RequestPermissionResponse } from '@agentclientprotocol/sdk';
@@ -1203,6 +1204,15 @@ export type LanMemberControlRequest =
       type: 'lan/github';
       machineId: MachineId;
       workspaceId: WorkspaceId;
+    }
+  | {
+      /** A simulator command for a session the member runs, as from its own desktop. */
+      type: 'lan/ios-simulator';
+      machineId: MachineId;
+      workspaceId: WorkspaceId;
+      sessionId: SessionId;
+      requestedByUserId: string;
+      command: IosSimulatorCommand;
     };
 
 export type LocalProjectControlRequest =
@@ -1489,7 +1499,8 @@ type LanMemberControlOkResponse =
   | LocalProjectControlOkResponse<'lan/usage', LanUsageReport>
   | LocalProjectControlOkResponse<'lan/usage-by-agent', LanUsageAgentReport>
   | LocalProjectControlOkResponse<'lan/restart-machine', LanMachineRestartResult>
-  | LocalProjectControlOkResponse<'lan/github', LanGitHubState>;
+  | LocalProjectControlOkResponse<'lan/github', LanGitHubState>
+  | LocalProjectControlOkResponse<'lan/ios-simulator', IosSimulatorResponse>;
 
 /** What a member answers, which is also what a forwarded request brings back. */
 export type LanMemberControlResponse =

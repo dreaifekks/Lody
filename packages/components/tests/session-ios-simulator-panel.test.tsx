@@ -28,6 +28,9 @@ import {
   writeIosSimulatorSelectedDevice,
 } from '../src/lib/ios-simulator/ios-simulator-model';
 import { SessionIosSimulatorPanel } from '../src/components/sessions/ios-simulator/session-ios-simulator-panel';
+import { LOCAL_PLATFORM_CAPABILITIES, type PlatformProvider } from '@lody/platform';
+import { PlatformContext } from '@lody/platform/react';
+import { TEST_CLOUD_PLATFORM } from './test-platform';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -102,13 +105,22 @@ function createFakeMachine(initial: {
   list?: IosSimulatorResponse;
 }) {
   const commands: IosSimulatorCommand[] = [];
+  /** The machine each command was sent to. */
+  const targets: string[] = [];
   const state = {
     preview: initial.preview,
     list: initial.list,
   };
   const pending: Array<(response: IosSimulatorResponse) => void> = [];
-  const requestIosSimulatorControl = async ({ command }: { command: IosSimulatorCommand }) => {
+  const requestIosSimulatorControl = async ({
+    machineId,
+    command,
+  }: {
+    machineId: string;
+    command: IosSimulatorCommand;
+  }) => {
     commands.push(command);
+    targets.push(machineId);
     switch (command.action) {
       case 'list':
         return state.list ?? answer({ devices: initial.devices });
@@ -125,6 +137,7 @@ function createFakeMachine(initial: {
   };
   return {
     commands,
+    targets,
     requestIosSimulatorControl,
     setPreview: (next: IosSimulatorPreview | undefined) => {
       state.preview = next;
@@ -166,6 +179,9 @@ async function renderPanel(options: {
   meta?: MachineMeta;
   presence?: 'synced' | 'idle';
   localMachine?: boolean;
+  /** This desktop's machine, when it is not the session's. */
+  localMachineId?: MachineId;
+  platform?: PlatformProvider;
   onAttachScreenshot?: (file: File) => boolean;
   controlsLayout?: 'toolbar' | 'menu';
 }) {
@@ -180,7 +196,8 @@ async function renderPanel(options: {
     [getMachineRoomId(MACHINE)]: options.meta ?? macMeta({ iosSimulator: 1 }),
   });
   store.set(lodyPresenceSyncStateAtom, options.presence ?? 'idle');
-  if (options.localMachine) store.set(localProbeResultAtom, { machineId: MACHINE } as never);
+  if (options.localMachine || options.localMachineId)
+    store.set(localProbeResultAtom, { machineId: options.localMachineId ?? MACHINE } as never);
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -188,14 +205,18 @@ async function renderPanel(options: {
     await act(async () => {
       root?.render(
         createElement(
-          Provider,
-          { store },
-          createElement(SessionIosSimulatorPanel, {
-            session: SESSION,
-            active,
-            onAttachScreenshot: options.onAttachScreenshot,
-            controlsLayout: options.controlsLayout,
-          })
+          PlatformContext.Provider,
+          { value: options.platform ?? TEST_CLOUD_PLATFORM },
+          createElement(
+            Provider,
+            { store },
+            createElement(SessionIosSimulatorPanel, {
+              session: SESSION,
+              active,
+              onAttachScreenshot: options.onAttachScreenshot,
+              controlsLayout: options.controlsLayout,
+            })
+          )
         )
       );
     });
@@ -303,6 +324,21 @@ describe('SessionIosSimulatorPanel', () => {
     expect(text()).not.toContain('offline');
     expect(text()).toContain('iPhone 16');
     expect(local.commands).toContainEqual({ action: 'list' });
+  });
+
+  it('asks this machine for a LAN member’s simulators where no hosted preview exists', async () => {
+    const machine = createFakeMachine({
+      devices: [device({ udid: 'phone', name: 'iPhone 16', state: 'Booted' })],
+    });
+    await renderPanel({
+      machine,
+      meta: macMeta({ iosSimulator: 1, lanIosSimulator: 1 }),
+      localMachineId: 'desk' as MachineId,
+      platform: { ...TEST_CLOUD_PLATFORM, capabilities: LOCAL_PLATFORM_CAPABILITIES },
+    });
+    expect(text()).toContain('iPhone 16');
+    expect(machine.targets.length).toBeGreaterThan(0);
+    expect(new Set(machine.targets)).toEqual(new Set(['desk']));
   });
 
   it('starts a shut-down device and polls the operation until the viewer is ready', async () => {
