@@ -1,5 +1,6 @@
 import {
   machineSupportsLanIosSimulator,
+  type IosSimulatorCommand,
   type IosSimulatorRequest,
   type IosSimulatorResponse,
   type LanMemberControlRequest,
@@ -46,14 +47,16 @@ export async function forwardIosSimulatorControl(options: {
       `Update Lody on ${member?.name ?? 'that machine'} to preview its simulators.`
     );
   }
-  const answer = await options.ask({
-    type: 'lan/ios-simulator',
-    machineId: memberId,
-    workspaceId: options.workspaceId,
-    sessionId,
-    requestedByUserId: params.requestedByUserId,
-    command: params.command,
-  });
+  const ask = async (command: IosSimulatorCommand) =>
+    await options.ask({
+      type: 'lan/ios-simulator',
+      machineId: memberId,
+      workspaceId: options.workspaceId,
+      sessionId,
+      requestedByUserId: params.requestedByUserId,
+      command,
+    });
+  const answer = await ask(params.command);
   if (!answer.ok) return failure('failed', answer.message);
   if (answer.type !== 'lan/ios-simulator') {
     return failure('failed', 'The machine answered something else.');
@@ -75,10 +78,10 @@ export async function forwardIosSimulatorControl(options: {
     const carried = await ports.open(sessionId, memberId, { host: '127.0.0.1', port });
     if (carried !== port) {
       await ports.release(sessionId);
-      return failure(
-        'failed',
-        `Port ${port} is in use on this machine. Stop the preview and start it again.`
-      );
+      // The operation keeps its viewer port; only a new one gets another.
+      if (response.preview)
+        await ask({ action: 'stop', operationId: response.preview.operationId });
+      return failure('failed', `Port ${port} is in use on this machine. Start the preview again.`);
     }
   } catch (error) {
     return failure('failed', formatErrorMessage(error));

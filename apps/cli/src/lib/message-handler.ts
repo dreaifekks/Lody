@@ -10582,6 +10582,14 @@ export class MessageHandler {
 
     if (isLanMemberControlType(message.type)) {
       const request = message as LanMemberControlRequest;
+      // Its answer holds a viewer address, which must not be written to a stream.
+      if (request.type === 'lan/ios-simulator') {
+        return this.toLocalProjectControlError(
+          requestType,
+          'access_denied',
+          'A simulator command of a member crosses only its direct connection'
+        );
+      }
       if (request.workspaceId !== this.workspaceId) {
         return this.toLocalProjectControlError(
           requestType,

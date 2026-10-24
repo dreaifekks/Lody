@@ -153,18 +153,28 @@ describe('simulator commands for a session another member runs', () => {
     closing.push(async () => await new Promise<void>((resolve) => taken.close(() => resolve())));
     const port = (taken.address() as net.AddressInfo).port;
 
+    // The member's operation, which keeps its viewer port until it stops.
+    let running = true;
     const response = await forward(
       ports,
-      { action: 'status' },
-      member(() => ({
-        type: 'ios-simulator/control_response',
-        sessionId: SESSION,
-        success: true,
-        preview: preview('ready', `http://127.0.0.1:${port}/`),
-      }))
+      { action: 'start', udid: UDID },
+      member((command) => {
+        if (command.action === 'stop') running = false;
+        return {
+          type: 'ios-simulator/control_response',
+          sessionId: SESSION,
+          success: true,
+          preview: preview(
+            running ? 'ready' : 'closed',
+            running ? `http://127.0.0.1:${port}/` : undefined
+          ),
+        };
+      })
     );
     expect(response).toMatchObject({ success: false, error: 'failed' });
     expect(response.message).toContain(String(port));
+    // Starting again makes a new operation, with a new port.
+    expect(running).toBe(false);
   });
 
   it('asks no member that cannot carry it out', async () => {

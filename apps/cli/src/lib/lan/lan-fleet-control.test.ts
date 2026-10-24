@@ -307,6 +307,14 @@ describe('what an agent service does for the members of its LANs', () => {
       expect(await createFleetControl().askDirectly(request)).toEqual(listed);
     });
 
+    it('is forwarded only directly as well', async () => {
+      answer = listed;
+      expect(
+        await createFleetControl().dispatch({ type: 'lan/forward', machineId: THIS, request })
+      ).toMatchObject({ ok: true, result: { response: { ok: false } } });
+      expect(sent).toEqual([]);
+    });
+
     it('is carried out on this machine as one from its own desktop', async () => {
       const fleet = createFleetControl({
         iosSimulator: async ({ sessionId, command }) => ({

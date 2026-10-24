@@ -317,6 +317,13 @@ export class LanFleetControl {
     }
     if (message.type === 'lan/forward') {
       const { request } = message;
+      if (request.type === 'lan/ios-simulator') {
+        return {
+          ok: true,
+          type: message.type,
+          result: { response: await this.askDirectly(request) },
+        };
+      }
       return {
         ok: true,
         type: message.type,

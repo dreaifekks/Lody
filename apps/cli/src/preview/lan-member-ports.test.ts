@@ -74,6 +74,30 @@ describe('ports of this machine that carry a member’s dev server', () => {
     expect(await listens(port)).toBe(false);
   });
 
+  it('ends the connections it carries when the last session lets it go', async () => {
+    const member = await memberServer();
+    closing.push(async () => await new Promise<void>((resolve) => member.close(() => resolve())));
+    const connect: MemberPortConnector = async () =>
+      net.connect((member.address() as net.AddressInfo).port, '127.0.0.1');
+    const ports = new LanMemberPorts({ logger: silent, connect });
+    closing.push(async () => await ports.closeAll());
+    const port = await ports.open('s-1' as SessionId, 'server' as MachineId, {
+      host: '127.0.0.1',
+      port: await freePort(),
+    });
+
+    const socket = net.connect(port, '127.0.0.1');
+    const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+    socket.on('error', () => {});
+    await new Promise<void>((resolve) => socket.once('connect', resolve));
+    socket.write('hello');
+    await new Promise<void>((resolve) => socket.once('data', () => resolve()));
+
+    await ports.release('s-1' as SessionId);
+    await closed;
+    expect(socket.destroyed).toBe(true);
+  });
+
   it('picks another port when this machine already uses the member’s number', async () => {
     const span = MEMBER_PORT_RANGE.last - MEMBER_PORT_RANGE.first + 1;
     const taken = net.createServer();
