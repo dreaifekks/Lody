@@ -249,6 +249,42 @@ export const shouldTerminateOnACPError = (
   return error.code === ACP_ERROR_CODES.INTERNAL_ERROR;
 };
 
+/**
+ * Claude Code processes that share one `~/.claude` login refresh its OAuth token
+ * under a lock. A process that loses that race fails the request at once with
+ * this text, which the ACP adapter wraps as `-32603`; the model never ran. The
+ * disk-full refresh failure shares the `Failed to refresh OAuth token:` prefix
+ * but does not clear on its own, so match the contention clause itself.
+ */
+export const isClaudeOAuthRefreshContentionError = (error: unknown): boolean => {
+  const parsed = parseACPError(error);
+  return (
+    parsed?.code === ACP_ERROR_CODES.INTERNAL_ERROR &&
+    /Failed to refresh OAuth token: another Claude Code process is refreshing it/.test(
+      getACPDiagnosticText(error, parsed)
+    )
+  );
+};
+
+/** Waits before each repeat of a prompt that lost the OAuth refresh race. */
+export const OAUTH_REFRESH_CONTENTION_RETRY_DELAYS_MS = [30_000, 60_000, 120_000] as const;
+
+/** The same ACP error, with the number of repeats Lody made in its message. */
+export const withOAuthRefreshRetryCount = (error: unknown, retries: number): unknown => {
+  const parsed = parseACPError(error);
+  if (!parsed || retries === 0) {
+    return error;
+  }
+  return Object.assign(
+    new Error(
+      `${parsed.message} (Claude OAuth refresh contention: Lody retried the prompt ${retries} ${
+        retries === 1 ? 'time' : 'times'
+      })`
+    ),
+    { code: parsed.code, data: parsed.data, cause: error }
+  );
+};
+
 export const shouldRecoverStaleACPConnectionPrompt = (args: {
   error: unknown;
   alreadyAttempted: boolean;

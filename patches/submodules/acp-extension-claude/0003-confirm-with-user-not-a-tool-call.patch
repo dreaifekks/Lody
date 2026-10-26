@@ -1,0 +1,90 @@
+diff --git a/src/acp-agent.ts b/src/acp-agent.ts
+index a4e655e..3a1a39a 100644
+--- a/src/acp-agent.ts
++++ b/src/acp-agent.ts
+@@ -8848,11 +8848,15 @@ export class ClaudeAcpAgent {
+     }
+     session.emittedToolCalls.add(toolCallId);
+     // SandboxNetworkAccess is a permission-only callback, not an executing
+-    // tool: the SDK does not send a tool_result for its synthetic id.
++    // tool: the SDK does not send a tool_result for its synthetic id. The same
++    // holds for a question Claude Code asks through AskUserQuestion with a
++    // `confirm_<uuid>` id (its confirmWithUser, e.g. after a safeguards flag):
++    // nothing ran, so the turn must not end as "without returning results".
+     if (
+       !parentToolUseId &&
+       notificationSessionId === sessionId &&
+-      toolName !== "SandboxNetworkAccess"
++      toolName !== "SandboxNetworkAccess" &&
++      !toolCallId.startsWith(CONFIRM_WITH_USER_TOOL_USE_PREFIX)
+     ) {
+       recordForegroundToolCall(session, toolCallId);
+     }
+@@ -11443,6 +11447,9 @@ function shouldEmitToolCall(toolName: string): boolean {
+ 
+ const MAX_DISPATCHED_TOOL_CALLS = 1000;
+ 
++/** Claude Code's prefix for the synthetic tool use id of a confirmWithUser question. */
++const CONFIRM_WITH_USER_TOOL_USE_PREFIX = "confirm_";
++
+ /** Records a tool call that Claude Code sent to the tool runner. */
+ function recordDispatchedToolCall(session: Session, toolCallId: string): void {
+   const calls = (session.dispatchedToolCalls ??= new Set());
+diff --git a/src/tests/incomplete-tools.test.ts b/src/tests/incomplete-tools.test.ts
+index a480dc1..6251211 100644
+--- a/src/tests/incomplete-tools.test.ts
++++ b/src/tests/incomplete-tools.test.ts
+@@ -90,6 +90,16 @@ describe("incomplete foreground tools", () => {
+     expect(updates).toContainEqual(expect.objectContaining({ toolCallId, status: "failed" }));
+   });
+ 
++  it("does not wait for a result of a question Claude Code asked with a confirm_ id", async () => {
++    const { agent, prompt, logError } = createTestSession(confirmWithUserMessages);
++    agent.clientCapabilities = { elicitation: { form: {} } } as any;
++    // Nobody answered: Lody's permission timeout cancels the question.
++    agent.client.createElicitation = async () => ({ action: "cancel" }) as any;
++
++    await expect(prompt()).resolves.toMatchObject({ stopReason: "end_turn" });
++    expect(logError).not.toHaveBeenCalledWith(expect.stringContaining("without returning results"));
++  });
++
+   it("allows a completed tool with a late PostToolUse hook", async () => {
+     const { prompt, logError } = createTestSession(completedToolMessages);
+ 
+@@ -309,6 +319,36 @@ async function* permissionOnlyToolMessages(input: Pushable<any>, agent: ClaudeAc
+   yield successfulResultMessage();
+ }
+ 
++// Claude Code's confirmWithUser (2.1.305) asks through canUseTool with a
++// synthetic AskUserQuestion id and never streams a tool_use or tool_result.
++async function* confirmWithUserMessages(input: Pushable<any>, agent: ClaudeAcpAgent) {
++  yield* echoNextPrompt(input);
++  await agent
++    .canUseTool(sessionId)(
++      "AskUserQuestion",
++      {
++        questions: [
++          {
++            question: "Continue with a different model?",
++            header: "Safeguards",
++            options: [
++              { label: "Continue", description: "" },
++              { label: "Stop", description: "" },
++            ],
++            multiSelect: false,
++          },
++        ],
++      },
++      {
++        toolUseID: "confirm_11188ff8-059f-4ce5-bc4c-0fcd08595c9f",
++        signal: new AbortController().signal,
++        suggestions: [],
++      } as any,
++    )
++    .catch(() => undefined);
++  yield successfulResultMessage();
++}
++
+ async function* completedToolMessages(input: Pushable<any>) {
+   yield* echoNextPrompt(input);
+   yield toolStart();

@@ -166,10 +166,13 @@ import {
   getACPErrorUserMessage,
   isAgentDisconnectedError,
   isAuthenticationRequiredACPError,
+  isClaudeOAuthRefreshContentionError,
   mapACPErrorToFailureReason,
+  OAUTH_REFRESH_CONTENTION_RETRY_DELAYS_MS,
   parseACPError,
   shouldRecoverStaleACPConnectionPrompt,
   shouldTerminateOnACPError,
+  withOAuthRefreshRetryCount,
 } from './acp-error-classification';
 import { createSessionBackend, getSteerOperationId, type SessionBackend } from './session-backend';
 import { buildPrompt, withBoardCoordinatorAgentEnv } from './session-execution-helpers';
@@ -709,6 +712,12 @@ export type SessionExecutionServiceDeps = {
    * visible agent output, because the adapter may already have acted on it.
    */
   hasPromptOutputForTurn?: (sessionId: SessionId, turnId: string) => boolean;
+  /**
+   * Whether the turn has seen a tool call. Text alone does not count: Claude
+   * Code reports a failed request as a synthetic assistant message, so a prompt
+   * that failed before the model ran still shows output.
+   */
+  hasToolCallInTurn?: (sessionId: SessionId, turnId: string) => boolean;
   /**
    * Same observation, but `undefined` when the session's transient state is gone
    * and the answer is unknowable. The no-output guard needs that distinction:
@@ -4906,7 +4915,7 @@ export class SessionExecutionService {
               runtime.terminateSessionOnCancel = false;
               self.deps.activateConversationTurnForACPUpdates(sessionId, runtime.turnId);
 
-              yield* Effect.acquireUseRelease(
+              const submitPrompt = Effect.acquireUseRelease(
                 Effect.sync(() => {
                   runtime.promptInFlight = true;
                   return activeSession;
@@ -4982,6 +4991,44 @@ export class SessionExecutionService {
                     runtime.activePromptRun = undefined;
                   })
               );
+              // A Claude Code process that lost the shared OAuth refresh race
+              // failed before the model ran, so the same prompt is sent again
+              // to the same agent once the other process has finished. A turn
+              // that already ran a tool, was steered or is an Inbox input is
+              // not repeated.
+              const submitPromptWithOAuthRetry = (
+                retries: number
+              ): Effect.Effect<void, unknown, never> => {
+                const attemptTurnId = runtime.turnId;
+                return submitPrompt.pipe(
+                  Effect.catch((error) => {
+                    if (!isClaudeOAuthRefreshContentionError(error)) {
+                      return Effect.fail(error);
+                    }
+                    const delayMs = OAUTH_REFRESH_CONTENTION_RETRY_DELAYS_MS[retries];
+                    if (
+                      delayMs === undefined ||
+                      inboxInput ||
+                      runtime.turnId !== attemptTurnId ||
+                      runtime.cancelRequested ||
+                      self.deps.isShuttingDown?.() === true ||
+                      (self.deps.hasToolCallInTurn?.(sessionId, attemptTurnId) ?? true)
+                    ) {
+                      return Effect.fail(withOAuthRefreshRetryCount(error, retries));
+                    }
+                    return Effect.gen(function* () {
+                      self.deps.logger.warn(
+                        `[${sessionId}] Claude lost the OAuth refresh race to another Claude Code process; sending the prompt again in ${delayMs}ms (retry ${retries + 1} of ${OAUTH_REFRESH_CONTENTION_RETRY_DELAYS_MS.length})`
+                      );
+                      yield* Effect.sleep(delayMs);
+                      yield* abortIfCancelled();
+                      runtime.promptFailed = false;
+                      return yield* submitPromptWithOAuthRetry(retries + 1);
+                    });
+                  })
+                );
+              };
+              yield* submitPromptWithOAuthRetry(0);
               self.deps.clearActiveTurnId(sessionId, runtime.turnId);
               return undefined;
             });

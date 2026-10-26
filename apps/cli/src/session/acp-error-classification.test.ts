@@ -7,11 +7,13 @@ import {
   isAuthenticationRequiredACPError,
   isAgentDisconnectedError,
   isAcpSessionNotFoundError,
+  isClaudeOAuthRefreshContentionError,
   isProviderOverloadedACPError,
   mapACPErrorToFailureReason,
   parseACPError,
   shouldRecoverStaleACPConnectionPrompt,
   shouldTerminateOnACPError,
+  withOAuthRefreshRetryCount,
 } from './acp-error-classification';
 
 describe('ACP error classification', () => {
@@ -331,5 +333,45 @@ describe('ACP error classification', () => {
         hasPromptOutput: true,
       })
     ).toBe(false);
+  });
+
+  describe('Claude OAuth refresh contention', () => {
+    // Claude Code 2.1.305 text, as the adapter forwards it to clients without
+    // the AIR session-failure capability.
+    const contention = RequestError.internalError(
+      undefined,
+      'Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again'
+    );
+
+    it('is a transient internal error, not a sign-in request', () => {
+      expect(isClaudeOAuthRefreshContentionError(contention)).toBe(true);
+      expect(isAuthenticationRequiredACPError(contention)).toBe(false);
+    });
+
+    it('leaves refresh failures that do not clear on their own to the ordinary path', () => {
+      const diskFull = RequestError.internalError(
+        undefined,
+        'Failed to refresh OAuth token: the disk that holds the Claude Code config directory (~/.claude by default), or your disk quota on it, is full. Delete files you no longer need on that disk and retry'
+      );
+      const signedOut = RequestError.internalError(
+        undefined,
+        'Authentication required · Sign in again to continue'
+      );
+      expect(isClaudeOAuthRefreshContentionError(diskFull)).toBe(false);
+      expect(isClaudeOAuthRefreshContentionError(signedOut)).toBe(false);
+      expect(isClaudeOAuthRefreshContentionError(RequestError.authRequired())).toBe(false);
+    });
+
+    it('names the repeats in the message the turn failure records', () => {
+      const parsed = parseACPError(withOAuthRefreshRetryCount(contention, 3));
+      if (!parsed) {
+        throw new Error('expected ACP error to parse');
+      }
+      expect(parsed.code).toBe(ACP_ERROR_CODES.INTERNAL_ERROR);
+      expect(getACPErrorUserMessage(parsed)).toMatch(
+        /another Claude Code process is refreshing it[\s\S]*Lody retried the prompt 3 times\)$/
+      );
+      expect(mapACPErrorToFailureReason(parsed)).toBe('acp_internal_error');
+    });
   });
 });

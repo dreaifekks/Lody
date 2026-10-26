@@ -3096,6 +3096,8 @@ export class MessageHandler {
       notePromptReturned: (sessionId, userTurnId) =>
         this.promptSuggestionSourceTurns.set(sessionId, userTurnId),
       hasPromptOutputForTurn: (sessionId, turnId) => this.hasPromptOutputForTurn(sessionId, turnId),
+      hasToolCallInTurn: (sessionId, turnId) =>
+        this.store.has(sessionId) && this.store.get(sessionId).acpToolCallTurnId === turnId,
       observePromptOutputForTurn: (sessionId, turnId) =>
         this.observePromptOutputForTurn(sessionId, turnId),
       buildAcpPromptBlocks: async (args) => await this.buildAcpPromptBlocks(args),
@@ -4762,11 +4764,18 @@ export class MessageHandler {
         }
       );
     }
-    this.store.get(sessionId).acpUpdateBuffer.push({
+    const state = this.store.get(sessionId);
+    state.acpUpdateBuffer.push({
       operationId: uuidV4(),
       notification: update,
       target,
     });
+    if (
+      update.update.sessionUpdate === 'tool_call' ||
+      update.update.sessionUpdate === 'tool_call_update'
+    ) {
+      state.acpToolCallTurnId = target.turnId;
+    }
     this.scheduleFlushACPUpdates(sessionId);
     if (target.source !== 'finalized_turn') this.liveActivityDetail?.observe(sessionId, update);
   }

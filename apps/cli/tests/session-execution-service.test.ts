@@ -2669,6 +2669,10 @@ describe('SessionExecutionService', () => {
     isShuttingDown?: boolean;
     dispatchSource?: 'rpc' | 'crdt' | 'queue' | 'goal';
     promptFailure?: unknown;
+    /** Failures of the first prompt attempts, in order; later attempts succeed. */
+    promptAttemptFailures?: unknown[];
+    onPromptAttempt?: () => void;
+    hasToolCallInTurn?: boolean;
     notificationAudience?: TurnResultAudience;
     onTurnOutcome?: (fact: TurnOutcomeFact) => Promise<void>;
     onTurnClaimed?: () => Promise<boolean>;
@@ -2693,10 +2697,14 @@ describe('SessionExecutionService', () => {
         read: false,
       },
     ];
+    const promptAttemptFailures = [...(options.promptAttemptFailures ?? [])];
     const agentClient = {
       isCreated: vi.fn(() => true),
       cancel: vi.fn(async () => {}),
       prompt: vi.fn(async () => {
+        options.onPromptAttempt?.();
+        const attemptFailure = promptAttemptFailures.shift();
+        if (attemptFailure) throw attemptFailure;
         if (options.promptError) throw options.promptError;
         if (options.promptFailure) throw options.promptFailure;
         return { stopReason: 'end_turn' };
@@ -2780,6 +2788,7 @@ describe('SessionExecutionService', () => {
         ? { isShuttingDown: () => options.isShuttingDown === true }
         : {}),
       hasPromptOutputForTurn: vi.fn(() => options.hasPromptOutputForTurn),
+      hasToolCallInTurn: vi.fn(() => options.hasToolCallInTurn === true),
     });
 
     const service = new SessionExecutionService(deps);
@@ -2884,6 +2893,134 @@ describe('SessionExecutionService', () => {
       },
     ]);
     expect(getHistory()[0]?.status).toBe('failed');
+  });
+
+  describe('Claude OAuth refresh contention', () => {
+    // Claude Code shows the failed request as a synthetic assistant message, so
+    // these turns have output but no tool call.
+    const contention = () =>
+      RequestError.internalError(
+        undefined,
+        'Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again'
+      );
+    const runWithClock = async (
+      options: Parameters<typeof runSilentPromptTurn>[0],
+      elapseMs: number
+    ) => {
+      vi.useFakeTimers();
+      try {
+        const run = runSilentPromptTurn(options);
+        await vi.advanceTimersByTimeAsync(elapseMs);
+        return await run;
+      } finally {
+        vi.useRealTimers();
+      }
+    };
+    const failureNotices = (getHistory: () => Array<Record<string, unknown>>) =>
+      getHistory()
+        .flatMap((entry) => (entry.items as Array<Record<string, unknown>> | undefined) ?? [])
+        .filter((item) => item.name === 'chat_failed');
+
+    it('sends the same prompt again after the backoff and completes the turn', async () => {
+      const { deps, agentClient, getHistory, notificationFacts } = await runWithClock(
+        {
+          sessionId: 'oauth-contention-recovered',
+          hasPromptOutputForTurn: true,
+          promptAttemptFailures: [contention()],
+        },
+        30_000
+      );
+
+      expect(agentClient.prompt).toHaveBeenCalledTimes(2);
+      // Same ACP session and prompt blocks; only the abort signal is new.
+      const [first, second] = agentClient.prompt.mock.calls as unknown as unknown[][];
+      expect(second?.slice(0, 2)).toEqual(first?.slice(0, 2));
+      expect(deps.recordChatFailure).not.toHaveBeenCalled();
+      expect(deps.sessionManager.terminateSession).not.toHaveBeenCalled();
+      expect(getHistory()[0]?.status).toBe('handled');
+      expect(failureNotices(getHistory)).toHaveLength(0);
+      expect(notificationFacts.map((fact) => fact.outcome)).toEqual([{ kind: 'succeeded' }]);
+    });
+
+    it('waits 30s, 60s and 120s, then fails the turn naming the retries', async () => {
+      vi.useFakeTimers();
+      try {
+        let attempts = 0;
+        const promptCount = () => attempts;
+        const run = runSilentPromptTurn({
+          sessionId: 'oauth-contention-exhausted',
+          onPromptAttempt: () => {
+            attempts += 1;
+          },
+          hasPromptOutputForTurn: true,
+          promptAttemptFailures: [contention(), contention(), contention(), contention()],
+        });
+        const promptCalls: number[] = [];
+        for (const delayMs of [30_000, 60_000, 120_000]) {
+          await vi.advanceTimersByTimeAsync(delayMs - 1);
+          promptCalls.push(promptCount());
+          await vi.advanceTimersByTimeAsync(1);
+          promptCalls.push(promptCount());
+        }
+        const { deps, sessionDoc, agentClient, getHistory } = await run;
+
+        expect(promptCalls).toEqual([1, 2, 2, 3, 3, 4]);
+        expect(agentClient.prompt).toHaveBeenCalledTimes(4);
+        expect(deps.recordChatFailure).toHaveBeenCalledWith(
+          sessionDoc,
+          'acp_internal_error',
+          expect.stringMatching(
+            /another Claude Code process is refreshing it[\s\S]*Lody retried the prompt 3 times/
+          )
+        );
+        expect(getHistory()[0]?.status).toBe('failed');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      {
+        name: 'a turn that already ran a tool',
+        failure: contention,
+        hasToolCallInTurn: true,
+        reason: 'acp_internal_error',
+      },
+      {
+        name: 'an expired sign-in',
+        failure: () => RequestError.authRequired(),
+        hasToolCallInTurn: false,
+        reason: 'acp_auth_required',
+      },
+      {
+        name: 'a refresh that failed on a full disk',
+        failure: () =>
+          RequestError.internalError(
+            undefined,
+            'Failed to refresh OAuth token: the disk that holds the Claude Code config directory (~/.claude by default), or your disk quota on it, is full'
+          ),
+        hasToolCallInTurn: false,
+        reason: 'acp_internal_error',
+      },
+    ])('does not repeat $name', async ({ failure, hasToolCallInTurn, reason }) => {
+      const { deps, sessionDoc, agentClient } = await runWithClock(
+        {
+          sessionId: 'oauth-contention-not-retried',
+          hasPromptOutputForTurn: true,
+          hasToolCallInTurn,
+          promptAttemptFailures: [failure()],
+        },
+        300_000
+      );
+
+      expect(agentClient.prompt).toHaveBeenCalledOnce();
+      expect(deps.recordChatFailure).toHaveBeenCalledWith(sessionDoc, reason, expect.any(String));
+      expect(deps.recordChatFailure).not.toHaveBeenCalledWith(
+        sessionDoc,
+        expect.anything(),
+        expect.stringContaining('Lody retried')
+      );
+    });
   });
 
   it('retains disconnected execution as unknown instead of claiming success', async () => {
