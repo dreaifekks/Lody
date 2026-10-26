@@ -77,7 +77,7 @@ export const NamedElsewhereInTheDocument: Story = {
     documentText: namedElsewhere,
     provider: {
       openFile: async (path): Promise<FileWorkspaceOpenResult> =>
-        path.startsWith('files/shots/')
+        ['files/shots/light.png', 'files/shots/dark.png'].includes(path)
           ? boardChart
           : { status: 'unavailable', reason: 'deleted', message: 'File not found' },
     },

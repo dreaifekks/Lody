@@ -108,7 +108,7 @@ the reasoning behind those rules.
   A relative image the machine reports missing is then read where the document's
   own text names a folder (`buildDocumentImageFallbackPaths`): lines naming the image
   first, each relative folder from the document's folder, two folders above it and
-  the workspace root; 16 reads at most, the first found wins. The machine still
+  the workspace root; at most 16 reads after the first, the first found wins. The machine still
   authorizes every read. A Board file (`BoardFilePreview`) reads its images as
   files of that Board (`boardDocumentFilePath`): relative to the document, or an
   absolute path into the same Board's `files/`/`memory/`; any other path is refused
