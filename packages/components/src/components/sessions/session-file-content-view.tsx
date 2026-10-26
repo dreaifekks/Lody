@@ -1711,10 +1711,10 @@ function SessionFileContentViewImpl({
           automatic={Boolean(sessionFileActions.localHost)}
           active={isActiveSurface && showMarkdownRendered}
         >
-          <MarkdownRenderer text={markdownPreviewText} size={conversationFontSize} />
+          <MarkdownRenderer text={markdownPreviewText} size={conversationFontSize} allowHtml />
         </MarkdownFileResources>
       ) : (
-        <MarkdownRenderer text={markdownPreviewText} size={conversationFontSize} />
+        <MarkdownRenderer text={markdownPreviewText} size={conversationFontSize} allowHtml />
       )}
       {annotationThreadId && showMarkdownRendered ? (
         <ArticleAnnotationMarkers

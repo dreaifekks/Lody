@@ -409,7 +409,7 @@ export function BoardFilePreview({
     body = (
       <>
         {/\.(md|markdown)$/i.test(entry.path) ? (
-          <MarkdownRenderer text={preview.text} headingAnchors />
+          <MarkdownRenderer text={preview.text} headingAnchors allowHtml />
         ) : (
           <pre {...stylex.props(styles.text)}>{preview.text}</pre>
         )}

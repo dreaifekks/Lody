@@ -34,9 +34,10 @@ import Markdown, {
   type ExtraProps,
   type UrlTransform,
 } from 'react-markdown';
-import rehypeKatex from 'rehype-katex';
+import 'katex/contrib/mhchem';
+import rehypeKatex, { type Options as RehypeKatexOptions } from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
-import rehypeSanitize from 'rehype-sanitize';
+import rehypeSanitize, { defaultSchema, type Options as SanitizeSchema } from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly';
 import remarkMath from 'remark-math';
@@ -53,6 +54,7 @@ import { matchWholeFilePath, splitTextIntoFilePathSegments } from '@/lib/linkify
 import {
   normalizeTexMathDelimiters,
   remarkSingleDollarTextMath,
+  remarkStandaloneDisplayMath,
 } from '@/lib/markdown-single-dollar-math';
 import { cn } from '@/lib/utils';
 import { usePrLinkInterceptor } from './pr-link-context';
@@ -321,6 +323,10 @@ const MARKDOWN_BASE_CLASSNAME =
   // Color marks a link; the underline appears on hover only (a standing one
   // made dense CJK prose read as crowded).
   '[&_a]:no-underline [&_a]:underline-offset-2 [&_a]:decoration-current/60 [&_a:hover]:underline ' +
+  // Raw HTML in Markdown documents: README layout attributes and inline tags.
+  '[&_[align=center]_img]:mx-auto [&_[align=right]_img]:ml-auto [&_summary]:cursor-pointer ' +
+  '[&_kbd]:rounded-[0.3em] [&_kbd]:border [&_kbd]:border-foreground/20 [&_kbd]:bg-foreground/[0.04] [&_kbd]:px-[0.35em] [&_kbd]:font-mono [&_kbd]:text-[0.85em] ' +
+  '[&_mark:not([data-session-search-mark])]:rounded-[0.2em] [&_mark:not([data-session-search-mark])]:bg-yellow-300/45 [&_mark:not([data-session-search-mark])]:text-inherit ' +
   '[&_.katex-display]:!my-5 [&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden [&_.katex-display]:py-1 ' +
   '[&_[data-streamdown="mermaid-block"]]:!my-5 ' +
   '[&_[data-streamdown="mermaid"]]:overflow-hidden ' +
@@ -902,18 +908,88 @@ const MARKDOWN_REMARK_PLUGINS = [
   remarkLinkifyFilePaths,
   remarkMarkUnclosedFences,
   [remarkMath, { singleDollarTextMath: false }],
+  remarkStandaloneDisplayMath,
 ] satisfies StreamdownProps['remarkPlugins'];
 const INLINE_MATH_REMARK_PLUGINS = [
   ...MARKDOWN_REMARK_PLUGINS,
   remarkSingleDollarTextMath,
 ] satisfies StreamdownProps['remarkPlugins'];
 
+type KatexToken = { text: string };
+type KatexMacroContext = {
+  future(): KatexToken;
+  popToken(): KatexToken;
+  pushTokens(tokens: KatexToken[]): void;
+  consumeArg(delimiters?: string[]): { tokens: KatexToken[] };
+  isDefined(name: string): boolean;
+};
+
+// LaTeX's `\usepackage[options]{name}` and MathJax's `\require{name}` load
+// packages. KaTeX has the ones it supports (amsmath, mhchem) built in, so the
+// statement renders nothing instead of an undefined-command error.
+const ignoreTexPackageImport = (expander: object) => {
+  const context = expander as KatexMacroContext;
+  if (context.future().text === '[') {
+    context.popToken();
+    context.consumeArg([']']);
+  }
+  context.consumeArg();
+  return '';
+};
+
+// KaTeX predefines commands LaTeX does not have, such as `\R` and `\N`, and
+// its `\newcommand` refuses to redefine them. Documents written for LaTeX
+// define exactly those, so a new definition replaces the predefined one.
+const newTexCommand = (expander: object) => {
+  const context = expander as KatexMacroContext;
+  const { tokens } = context.consumeArg();
+  context.pushTokens(tokens);
+  return tokens.length === 1 && context.isDefined(tokens[0]!.text)
+    ? '\\renewcommand'
+    : '\\providecommand';
+};
+
+// Each document gets its own macro table. KaTeX's global group keeps a
+// `\newcommand` or `\def` from one formula for the formulas after it.
+const rehypeDocumentKatex = (options: RehypeKatexOptions) =>
+  rehypeKatex({
+    ...options,
+    globalGroup: true,
+    macros: {
+      '\\newcommand': newTexCommand,
+      '\\usepackage': ignoreTexPackageImport,
+      '\\require': ignoreTexPackageImport,
+    },
+  });
+
 const KATEX_REHYPE_PLUGIN = [
-  rehypeKatex,
+  rehypeDocumentKatex,
   { errorColor: 'var(--color-muted-foreground)' },
 ] satisfies NonNullable<StreamdownProps['rehypePlugins']>[number];
+
+// GitHub's schema (details/summary, kbd, sup/sub, br, `align`; no script,
+// style, iframe, event handlers or unsafe URL schemes) plus <mark>, the
+// properties Lody's remark plugins add, and Lody's own link schemes.
+const MARKDOWN_SANITIZE_SCHEMA = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), 'mark'],
+  attributes: {
+    ...defaultSchema.attributes,
+    a: [...(defaultSchema.attributes?.a ?? []), 'data-codex-file-citation'],
+    code: [['className', /^language-./, 'math-inline', 'math-display'], 'dataIncomplete'],
+  },
+  protocols: {
+    ...defaultSchema.protocols,
+    href: [...(defaultSchema.protocols?.href ?? []), ...SESSION_LINK_SCHEMES, 'session', 'tg'],
+  },
+} satisfies SanitizeSchema;
+
 const MARKDOWN_REHYPE_PLUGINS = [KATEX_REHYPE_PLUGIN];
-const HTML_MARKDOWN_REHYPE_PLUGINS = [rehypeRaw, rehypeSanitize, KATEX_REHYPE_PLUGIN];
+const HTML_MARKDOWN_REHYPE_PLUGINS = [
+  rehypeRaw,
+  [rehypeSanitize, MARKDOWN_SANITIZE_SCHEMA],
+  KATEX_REHYPE_PLUGIN,
+] satisfies NonNullable<StreamdownProps['rehypePlugins']>;
 const ANCHORED_MARKDOWN_REHYPE_PLUGINS = [...MARKDOWN_REHYPE_PLUGINS, rehypeHeadingAnchors];
 const ANCHORED_HTML_MARKDOWN_REHYPE_PLUGINS = [
   ...HTML_MARKDOWN_REHYPE_PLUGINS,
@@ -1417,7 +1493,14 @@ function ConversationMarkdownImage(props: MarkdownImageProps) {
     typeof props.src === 'string' &&
     resolveMarkdownImagePath(resources.documentPath, props.src) !== null
   ) {
-    return <MarkdownFileImage src={props.src} alt={props.alt} />;
+    return (
+      <MarkdownFileImage
+        src={props.src}
+        alt={props.alt}
+        width={props.width}
+        height={props.height}
+      />
+    );
   }
   return <SizedMarkdownImage {...props} />;
 }
@@ -1465,9 +1548,10 @@ function SizedMarkdownImage(props: MarkdownImageProps) {
       {...rest}
       src={src}
       alt={alt ?? ''}
-      // With `height: auto`, these reserve the image's aspect ratio before it loads.
-      width={outcome?.width ?? rest.width}
-      height={outcome?.height ?? rest.height}
+      // With `height: auto`, these reserve the image's aspect ratio before it
+      // loads. A width the document gives (`<img width>`) wins.
+      width={rest.width ?? outcome?.width}
+      height={rest.width == null ? (outcome?.height ?? rest.height) : rest.height}
       className={cn('my-2 max-h-[32rem] max-w-full rounded-md object-contain', rest.className)}
       onLoad={(event) => {
         const image = event.currentTarget;
@@ -1519,7 +1603,10 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   text: string;
   size?: MarkdownRendererSize;
   className?: string;
-  /** Enable raw HTML rendering (sanitized). Use for GitHub comment bodies. */
+  /**
+   * Enable sanitized raw HTML. Use for Markdown documents and GitHub comment
+   * bodies, not agent replies, whose prose often names tags like `<div>` bare.
+   */
   allowHtml?: boolean;
   /** Renders through the smoothing, fading stream engine while a turn is still streaming. */
   isStreaming?: boolean;
