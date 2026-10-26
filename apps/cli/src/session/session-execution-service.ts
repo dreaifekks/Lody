@@ -713,7 +713,7 @@ export type SessionExecutionServiceDeps = {
    */
   hasPromptOutputForTurn?: (sessionId: SessionId, turnId: string) => boolean;
   /**
-   * Whether the turn has seen a tool call. Text alone does not count: Claude
+   * Whether the turn has seen a tool call or subagent activity. Text alone does not count: Claude
    * Code reports a failed request as a synthetic assistant message, so a prompt
    * that failed before the model ran still shows output.
    */
@@ -5023,6 +5023,9 @@ export class SessionExecutionService {
                       yield* Effect.sleep(delayMs);
                       yield* abortIfCancelled();
                       runtime.promptFailed = false;
+                      // The failed prompt left a settled drain; Stop during the
+                      // repeat must cancel the new prompt, not reuse it.
+                      runtime.cancellationDrain = undefined;
                       return yield* submitPromptWithOAuthRetry(retries + 1);
                     });
                   })

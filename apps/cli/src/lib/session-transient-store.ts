@@ -126,7 +126,7 @@ export interface SessionState {
   acpFlushTimer: NodeJS.Timeout | null;
   acpFlushCountInTurn: number;
   acpFlushConsecutiveFailures: number;
-  /** The last turn that received a tool call update, whether or not it was flushed yet. */
+  /** The last turn that received a tool call or subagent update, flushed or not. */
   acpToolCallTurnId: string | undefined;
 
   // ── Context window usage (throttled) ────────────────────────────────────

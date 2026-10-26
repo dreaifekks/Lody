@@ -4770,9 +4770,11 @@ export class MessageHandler {
       notification: update,
       target,
     });
+    // A subagent's tools reach Lody only inside `subagent_event`.
     if (
       update.update.sessionUpdate === 'tool_call' ||
-      update.update.sessionUpdate === 'tool_call_update'
+      update.update.sessionUpdate === 'tool_call_update' ||
+      update.update.sessionUpdate === 'subagent_event'
     ) {
       state.acpToolCallTurnId = target.turnId;
     }

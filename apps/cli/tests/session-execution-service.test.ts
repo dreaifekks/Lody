@@ -2671,7 +2671,11 @@ describe('SessionExecutionService', () => {
     promptFailure?: unknown;
     /** Failures of the first prompt attempts, in order; later attempts succeed. */
     promptAttemptFailures?: unknown[];
-    onPromptAttempt?: () => void;
+    onPromptAttempt?: (agentClient: {
+      cancel: ReturnType<typeof vi.fn>;
+      pendingPromptCompletion?: Promise<unknown>;
+    }) => void | Promise<void>;
+    onServiceCreated?: (service: SessionExecutionService) => void;
     hasToolCallInTurn?: boolean;
     notificationAudience?: TurnResultAudience;
     onTurnOutcome?: (fact: TurnOutcomeFact) => Promise<void>;
@@ -2702,7 +2706,7 @@ describe('SessionExecutionService', () => {
       isCreated: vi.fn(() => true),
       cancel: vi.fn(async () => {}),
       prompt: vi.fn(async () => {
-        options.onPromptAttempt?.();
+        await options.onPromptAttempt?.(agentClient);
         const attemptFailure = promptAttemptFailures.shift();
         if (attemptFailure) throw attemptFailure;
         if (options.promptError) throw options.promptError;
@@ -2710,6 +2714,7 @@ describe('SessionExecutionService', () => {
         return { stopReason: 'end_turn' };
       }),
       currentModel: undefined,
+      pendingPromptCompletion: undefined as Promise<unknown> | undefined,
     };
     const activeSession = {
       sessionId: options.sessionId as SessionId,
@@ -2792,6 +2797,7 @@ describe('SessionExecutionService', () => {
     });
 
     const service = new SessionExecutionService(deps);
+    options.onServiceCreated?.(service);
     for (let attempt = 0; attempt < (options.attempts ?? 1); attempt += 1) {
       await service.continueSession(
         {
@@ -2974,6 +2980,58 @@ describe('SessionExecutionService', () => {
           )
         );
         expect(getHistory()[0]?.status).toBe('failed');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('cancels a repeated prompt when Stop arrives while it runs', async () => {
+      vi.useFakeTimers();
+      try {
+        let attempts = 0;
+        let service!: SessionExecutionService;
+        let repeatStarted!: () => void;
+        const repeatRunning = new Promise<void>((resolve) => {
+          repeatStarted = resolve;
+        });
+        let cancelSent = false;
+        const run = runSilentPromptTurn({
+          sessionId: 'oauth-contention-stop',
+          hasPromptOutputForTurn: true,
+          promptAttemptFailures: [contention()],
+          onServiceCreated: (created) => {
+            service = created;
+          },
+          onPromptAttempt: async (agentClient) => {
+            attempts += 1;
+            if (attempts !== 2) return;
+            const cancelled = new Promise<void>((resolve) => {
+              agentClient.cancel.mockImplementation(async () => {
+                cancelSent = true;
+                resolve();
+              });
+            });
+            agentClient.pendingPromptCompletion = cancelled;
+            repeatStarted();
+            await cancelled;
+          },
+        });
+        await vi.advanceTimersByTimeAsync(30_000);
+        await repeatRunning;
+        await expect(
+          service.cancelSession({
+            type: 'session/cancel',
+            sessionId: 'oauth-contention-stop' as SessionId,
+            machineId: 'machine-1',
+            workspaceId: 'workspace-1' as WorkspaceId,
+            turnId: 'assistant:turn-user-1',
+          })
+        ).resolves.toEqual({ success: true });
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(cancelSent).toBe(true);
+        await vi.advanceTimersByTimeAsync(60_000);
+        await run;
       } finally {
         vi.useRealTimers();
       }

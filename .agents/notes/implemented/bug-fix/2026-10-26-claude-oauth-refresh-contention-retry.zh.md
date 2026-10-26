@@ -15,7 +15,7 @@ Translation: current
 - 识别：`isClaudeOAuthRefreshContentionError` 要求 `-32603` 加竞争那句原文。Claude Code 2.1.305 还有一个磁盘满的刷新失败，前缀同样是 `Failed to refresh OAuth token:`，但不会自己好，所以只看前缀不够。登录过期仍是 `acp_auth_required`，不重试；LAN 现有的失败推送已经会通知手机。
 - 位置：重试放在可见轮次共用的 `prompt` 步骤里，`startSession`（所有定时 `new_session`）和 `continueSession` 都覆盖，等待期间 Stop 照常中断 owner fiber。没选在定时层重跑：派发之后 Schedule 账本从不换 Session 或 Turn 重试，再开一轮还会重复用户消息。
 - 同一个 agent，不重建：错误来自一条 result 消息，Claude Code 进程仍在流式模式，下一次请求会重新读赢家写好的令牌。退役再恢复只多一次 `loadSession`，解决不了任何问题。
-- 输出判断：Claude Code 把失败的请求显示成一条合成的助手消息，适配器会转给 Lody（Lody 没声明 AIR session-failure 能力），所以「没有输出」在这里从不成立。判断改为「这一轮没有工具调用」（`hasToolCallInTurn`，缓冲到 `tool_call` 或 `tool_call_update` 时记下）：没有工具调用说明失败的是这一轮第一次模型请求，什么都没执行。steer 会换轮次 id，重试随之停止；Inbox 输入保持原有的永不重试规则。
+- 输出判断：Claude Code 把失败的请求显示成一条合成的助手消息，适配器会转给 Lody（Lody 没声明 AIR session-failure 能力），所以「没有输出」在这里从不成立。判断改为「这一轮没有工具调用」（`hasToolCallInTurn`，缓冲到 `tool_call`、`tool_call_update` 或 `subagent_event` 时记下；子代理的工具只通过 `subagent_event` 到达 Lody）：没有这些说明失败的是这一轮第一次模型请求，什么都没执行。steer 会换轮次 id，重试随之停止；Inbox 输入保持原有的永不重试规则。重发前清掉失败那次留下的 `cancellationDrain`，否则重发期间按 Stop 会回成功却不取消新的 prompt。
 
 ## confirm_ 工具调用（10-22 两次失败）
 
@@ -28,7 +28,7 @@ Claude Code 的 `confirmWithUser`（比如 "safeguards flagged this session" 之
 
 ## 验证
 
-- `apps/cli/tests/session-execution-service.test.ts`（Claude OAuth refresh contention）：第二次成功时轮次正常完成；假时钟下间隔正好 30/60/120 秒，最终失败写明重试 3 次；有工具调用的轮次、auth-required 错误、磁盘满文本都不重试。
+- `apps/cli/tests/session-execution-service.test.ts`（Claude OAuth refresh contention）：第二次成功时轮次正常完成；假时钟下间隔正好 30/60/120 秒，最终失败写明重试 3 次；重发期间 Stop 会发出 ACP cancel（去掉 drain 重置会失败）；有工具调用的轮次、auth-required 错误、磁盘满文本都不重试。
 - `acp-error-classification.test.ts`：竞争不算 auth；磁盘满和登录文本不匹配。
 - 适配器 `incomplete-tools.test.ts`：没人回答的 `confirm_` 问题不再让轮次失败（去掉补丁会失败）。
 - 没有在真机上验证；homenucserver 下次撞上竞争时，daemon 日志会出现 "lost the OAuth refresh race" 警告。

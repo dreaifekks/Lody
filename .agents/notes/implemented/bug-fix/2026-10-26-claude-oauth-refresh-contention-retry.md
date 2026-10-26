@@ -46,10 +46,13 @@ answered from turning a finished turn into "ended without returning results".
 - Output guard: Claude Code shows the failed request as a synthetic assistant
   message, which the adapter forwards to Lody (no AIR session-failure
   capability), so "no output" never holds here. The guard is "no tool call in
-  this turn" (`hasToolCallInTurn`, tracked when a `tool_call` or
-  `tool_call_update` is buffered): without a tool call the request that failed
-  was the turn's first model call, and nothing ran. A steer changes the turn id
-  and ends the repeats; Inbox inputs keep the existing never-repeat rule.
+  this turn" (`hasToolCallInTurn`, tracked when a `tool_call`,
+  `tool_call_update` or `subagent_event` is buffered; a subagent's tools reach
+  Lody only inside `subagent_event`): without one the request that failed was
+  the turn's first model call, and nothing ran. A steer changes the turn id and
+  ends the repeats; Inbox inputs keep the existing never-repeat rule. A repeat
+  clears the failed prompt's settled `cancellationDrain`, otherwise Stop during
+  the repeat would answer success without cancelling the new prompt.
 
 ## confirm_ tool calls (10-22 failures)
 
@@ -78,7 +81,8 @@ material can still trigger it.
 
 - `apps/cli/tests/session-execution-service.test.ts` (Claude OAuth refresh
   contention): a second attempt completes the turn; delays are exactly 30/60/120
-  seconds under fake timers and the final failure names three repeats; a turn
+  seconds under fake timers and the final failure names three repeats; Stop
+  during a repeat sends the ACP cancel (fails without the drain reset); a turn
   with a tool call, an auth-required error and the disk-full text are not
   repeated.
 - `acp-error-classification.test.ts`: contention is not auth; disk-full and
