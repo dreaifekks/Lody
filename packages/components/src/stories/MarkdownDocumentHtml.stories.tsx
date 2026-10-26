@@ -60,7 +60,7 @@ $$`;
 function DocumentPreview({ width }: { width: number }) {
   return (
     <div className="scrollbar-pro h-full overflow-y-auto p-6">
-      <div style={{ width }}>
+      <div style={{ maxWidth: width }}>
         <MarkdownFileResources provider={provider} documentPath="docs/README.md" automatic active>
           <MarkdownRenderer text={README} allowHtml />
         </MarkdownFileResources>

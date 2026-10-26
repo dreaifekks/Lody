@@ -324,9 +324,12 @@ const MARKDOWN_BASE_CLASSNAME =
   // made dense CJK prose read as crowded).
   '[&_a]:no-underline [&_a]:underline-offset-2 [&_a]:decoration-current/60 [&_a:hover]:underline ' +
   // Raw HTML in Markdown documents: README layout attributes and inline tags.
-  '[&_[align=center]_img]:mx-auto [&_[align=right]_img]:ml-auto [&_summary]:cursor-pointer ' +
+  '[&_[align=center]_img]:mx-auto [&_[align=right]_img]:ml-auto ' +
+  '[&_summary]:cursor-pointer [&_summary]:rounded-sm [&_summary:focus-visible]:outline-none [&_summary:focus-visible]:ring-2 [&_summary:focus-visible]:ring-ring ' +
   '[&_kbd]:rounded-[0.3em] [&_kbd]:border [&_kbd]:border-foreground/20 [&_kbd]:bg-foreground/[0.04] [&_kbd]:px-[0.35em] [&_kbd]:font-mono [&_kbd]:text-[0.85em] ' +
   '[&_mark:not([data-session-search-mark])]:rounded-[0.2em] [&_mark:not([data-session-search-mark])]:bg-yellow-300/45 [&_mark:not([data-session-search-mark])]:text-inherit ' +
+  // A display block that only defines macros draws nothing and takes no room.
+  '[&_.katex-display:has(.katex-html:empty)]:hidden ' +
   '[&_.katex-display]:!my-5 [&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden [&_.katex-display]:py-1 ' +
   '[&_[data-streamdown="mermaid-block"]]:!my-5 ' +
   '[&_[data-streamdown="mermaid"]]:overflow-hidden ' +
@@ -949,18 +952,21 @@ const newTexCommand = (expander: object) => {
     : '\\providecommand';
 };
 
-// Each document gets its own macro table. KaTeX's global group keeps a
-// `\newcommand` or `\def` from one formula for the formulas after it.
-const rehypeDocumentKatex = (options: RehypeKatexOptions) =>
-  rehypeKatex({
-    ...options,
-    globalGroup: true,
-    macros: {
-      '\\newcommand': newTexCommand,
-      '\\usepackage': ignoreTexPackageImport,
-      '\\require': ignoreTexPackageImport,
-    },
-  });
+// Each parse starts a fresh macro table, so a cached processor (the stream
+// engine keeps one per block) never carries an old definition. KaTeX's global
+// group keeps a `\newcommand` or `\def` for the later formulas of that parse.
+const rehypeDocumentKatex =
+  (options: RehypeKatexOptions) =>
+  (...transform: Parameters<ReturnType<typeof rehypeKatex>>) =>
+    rehypeKatex({
+      ...options,
+      globalGroup: true,
+      macros: {
+        '\\newcommand': newTexCommand,
+        '\\usepackage': ignoreTexPackageImport,
+        '\\require': ignoreTexPackageImport,
+      },
+    })(...transform);
 
 const KATEX_REHYPE_PLUGIN = [
   rehypeDocumentKatex,

@@ -648,6 +648,19 @@ End of synthetic document.`,
     expect(container?.querySelector('[style*="--color-muted-foreground"]')).not.toBeNull();
   });
 
+  it('starts each streamed parse without earlier TeX macros', async () => {
+    await act(async () => {
+      await import('@lobehub/streamdown');
+    });
+    await renderMarkdown(String.raw`$$\newcommand{\leak}{\mathbb{L}}\leak$$`, {
+      isStreaming: true,
+    });
+    expect((await waitForElement('.mathbb')).textContent).toBe('L');
+
+    await renderMarkdown(String.raw`$$\leak$$`, { isStreaming: true });
+    expect(container?.querySelector('.mathbb')).toBeNull();
+  });
+
   it('keeps inline LaTeX literal while rendering Mermaid blocks', async () => {
     await renderMarkdown(
       [

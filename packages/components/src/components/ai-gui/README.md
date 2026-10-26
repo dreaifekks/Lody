@@ -52,8 +52,9 @@ the reasoning behind those rules.
   schema plus `<mark>`, Lody's link schemes and its own plugin properties). File
   previews and GitHub bodies turn it on; agent replies, notes and changelogs keep
   it off, because agent prose often names tags such as `<div>` or `Vec<T>` bare
-  and the parser would swallow them. KaTeX gets one macro table per document in
-  the global group, so `\newcommand`/`\def` carry to later formulas; mhchem is
+  and the parser would swallow them. KaTeX gets a fresh macro table per parse in
+  the global group, so `\newcommand`/`\def` carry to later formulas of the
+  document (of the block while a turn streams, as the engine parses per block); mhchem is
   loaded, `\usepackage`/`\require` render nothing, `\newcommand` may replace a
   KaTeX predefined name (`\R`), and a paragraph of one `$$...$$` is display math.
   `markdown-code-block.tsx` owns fenced
