@@ -534,6 +534,133 @@ End of synthetic document.`,
     expect(container?.querySelector('strong')?.textContent).toBe('raw');
   });
 
+  it('renders README-style HTML in Markdown documents', async () => {
+    await renderMarkdown(
+      [
+        '<details>',
+        '<summary>More</summary>',
+        '',
+        'Hidden **body**',
+        '',
+        '</details>',
+        '',
+        '<p align="center"><img src="https://example.com/logo.png" width="120" alt="logo"></p>',
+        '',
+        'Press <kbd>Ctrl</kbd>+<kbd>C</kbd>, H<sub>2</sub>O, x<sup>2</sup>, <mark>hot</mark><br>next',
+      ].join('\n'),
+      { allowHtml: true }
+    );
+
+    const details = container?.querySelector('details');
+    expect(details?.querySelector('summary')?.textContent).toBe('More');
+    expect(details?.querySelector('strong')?.textContent).toBe('body');
+    expect(details?.open).toBe(false);
+    expect(container?.querySelector('p[align="center"] img')?.getAttribute('width')).toBe('120');
+    expect(container?.querySelectorAll('kbd')).toHaveLength(2);
+    expect(container?.querySelector('sub')?.textContent).toBe('2');
+    expect(container?.querySelector('sup')?.textContent).toBe('2');
+    expect(container?.querySelector('mark')?.textContent).toBe('hot');
+    expect(container?.querySelector('br')).not.toBeNull();
+  });
+
+  it('strips scripts, handlers, frames, styles and unsafe URLs from raw HTML', async () => {
+    await renderMarkdown(
+      [
+        '<script>window.__pwned = 1</script>',
+        '<iframe src="https://example.com"></iframe>',
+        '<style>body { display: none }</style>',
+        '<img src="x" onerror="window.__pwned = 1" style="position:fixed">',
+        '<a href="javascript:alert(1)">js</a> <a href="data:text/html,x">data</a>',
+        '<details open ontoggle="window.__pwned = 1"><summary onclick="x()">s</summary></details>',
+        '<form action="https://example.com"><input name="q"></form>',
+        '',
+        '[session](lody://session/abc123)',
+      ].join('\n'),
+      { allowHtml: true }
+    );
+
+    const html = container?.innerHTML ?? '';
+    expect(container?.querySelector('script, iframe, style, form')).toBeNull();
+    // GitHub's schema keeps only task-list checkboxes, always disabled.
+    expect(container?.querySelector('input:not([disabled][type="checkbox"])')).toBeNull();
+    expect(html).not.toMatch(/\son[a-z]+=/iu);
+    expect(html).not.toContain('javascript:');
+    expect(html).not.toContain('data:text/html');
+    expect(container?.querySelector('img')?.getAttribute('style')).toBeNull();
+    expect(container?.querySelector('details')?.hasAttribute('open')).toBe(true);
+    expect((window as Window & { __pwned?: number }).__pwned).toBeUndefined();
+    expect(container?.textContent).toContain('session');
+  });
+
+  it('keeps raw HTML literal unless the surface allows it', async () => {
+    await renderMarkdown('<details><summary>More</summary>body</details>');
+
+    expect(container?.querySelector('details')).toBeNull();
+  });
+
+  it('shares TeX macros across a document and renders mhchem and environments', async () => {
+    await renderMarkdown(
+      [
+        '$$',
+        String.raw`\usepackage[version=4]{mhchem}\require{physics}`,
+        String.raw`\newcommand{\R}{\mathbb{R}}\def\half{\frac12}`,
+        '$$',
+        '',
+        String.raw`$$f: \R \to \R,\ \half$$ inline, then:`,
+        '',
+        '$$',
+        String.raw`\ce{2H2 + O2 -> 2H2O}`,
+        '$$',
+        '',
+        '$$',
+        String.raw`\begin{align} a &= b \\ c &= d \end{align}`,
+        '$$',
+        '',
+        '$$',
+        String.raw`x = \begin{cases} 1 & y > 0 \\ 0 & \text{otherwise} \end{cases}`,
+        '$$',
+        '',
+        String.raw`\[ \begin{aligned} p &= q \end{aligned} \]`,
+      ].join('\n')
+    );
+
+    const formulas = [...(container?.querySelectorAll('.katex') ?? [])];
+    expect(container?.querySelectorAll('.katex-display')).toHaveLength(5);
+    expect(formulas).toHaveLength(6);
+    // An unknown command renders in the muted error color instead of failing.
+    expect(container?.querySelector('[style*="--color-muted-foreground"]')).toBeNull();
+    expect(formulas[0]?.querySelector('.katex-html')?.textContent).toBe('');
+    expect(formulas[1]?.querySelectorAll('.mathbb')).toHaveLength(2);
+    expect(formulas[1]?.querySelector('.mfrac')).not.toBeNull();
+    expect(formulas[2]?.querySelector('annotation')?.textContent).toContain(String.raw`\ce{`);
+    expect(formulas[2]?.querySelector('.msupsub')).not.toBeNull();
+    expect(formulas[3]?.querySelector('.mtable')).not.toBeNull();
+    expect(formulas[4]?.querySelector('.mtable')).not.toBeNull();
+    expect(formulas[5]?.querySelector('.mtable')).not.toBeNull();
+  });
+
+  it('keeps TeX macros of one document out of the next', async () => {
+    await renderMarkdown(String.raw`$$\newcommand{\leak}{\mathbb{L}}\leak$$`);
+    expect(container?.querySelector('.mathbb')).not.toBeNull();
+
+    await renderMarkdown(String.raw`$$\leak$$`);
+    expect(container?.querySelector('.mathbb')).toBeNull();
+    expect(container?.querySelector('[style*="--color-muted-foreground"]')).not.toBeNull();
+  });
+
+  it('starts each streamed parse without earlier TeX macros', async () => {
+    await act(async () => {
+      await import('@lobehub/streamdown');
+    });
+    await renderMarkdown(String.raw`$$\newcommand{\leak}{\mathbb{L}}\leak$$`, {
+      isStreaming: true,
+    });
+    expect((await waitForElement('.mathbb')).textContent).toBe('L');
+
+    await renderMarkdown(String.raw`$$\leak$$`, { isStreaming: true });
+    expect(container?.querySelector('.mathbb')).toBeNull();
+  });
+
   it('keeps inline LaTeX literal while rendering Mermaid blocks', async () => {
     await renderMarkdown(
       [

@@ -48,6 +48,15 @@ the reasoning behind those rules.
   selections expand to the complete formula. The native selection guard stops
   incomplete copy events before the extension can write clipboard data; see the
   [integration note](../../../../../.agents/notes/implemented/feature/2026-10-16-math-selection-copy.md).
+  `allowHtml` parses raw HTML through `MARKDOWN_SANITIZE_SCHEMA` (GitHub's
+  schema plus `<mark>`, Lody's link schemes and its own plugin properties). File
+  previews and GitHub bodies turn it on; agent replies, notes and changelogs keep
+  it off, because agent prose often names tags such as `<div>` or `Vec<T>` bare
+  and the parser would swallow them. KaTeX gets a fresh macro table per parse in
+  the global group, so `\newcommand`/`\def` carry to later formulas of the
+  document (of the block while a turn streams, as the engine parses per block); mhchem is
+  loaded, `\usepackage`/`\require` render nothing, `\newcommand` may replace a
+  KaTeX predefined name (`\R`), and a paragraph of one `$$...$$` is display math.
   `markdown-code-block.tsx` owns fenced
   blocks, wrap, and Markdown-fence preview (`markdown-code-highlight.ts` the Shiki
   tokens); `markdown-diff-block.tsx` is the inline diff; `markdown-mermaid-block.tsx`

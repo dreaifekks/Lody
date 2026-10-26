@@ -495,6 +495,7 @@ type MdastNode = {
   value?: string;
   data?: Record<string, unknown>;
   children?: MdastNode[];
+  position?: { start?: { offset?: number } };
 };
 
 type InlineMathNode = MdastNode & {
@@ -602,6 +603,34 @@ export const remarkSingleDollarTextMath = () => {
   return (tree: unknown) => {
     if (typeof tree === 'object' && tree !== null && 'type' in tree) {
       walk(tree as MdastNode);
+    }
+  };
+};
+
+/**
+ * A paragraph holding nothing but one `$$...$$` formula is display math, as on
+ * GitHub and in LaTeX; remark-math reads a single-line pair as text math. A
+ * single-line `\\[...\\]` arrives here in the same form.
+ */
+export const remarkStandaloneDisplayMath = () => {
+  const walk = (node: MdastNode, source: string) => {
+    if (node.type !== 'paragraph') {
+      node.children?.forEach((child) => walk(child, source));
+      return;
+    }
+    const content = node.children?.filter(
+      (child) => child.type !== 'text' || child.value?.trim() !== ''
+    );
+    const math = content?.length === 1 ? content[0] : undefined;
+    const offset = math?.position?.start?.offset;
+    if (math?.type === 'inlineMath' && offset !== undefined && source.startsWith('$$', offset)) {
+      math.data = { ...math.data, hProperties: { className: ['language-math', 'math-display'] } };
+    }
+  };
+
+  return (tree: unknown, file: { value?: unknown }) => {
+    if (typeof tree === 'object' && tree !== null && 'type' in tree) {
+      walk(tree as MdastNode, String(file.value ?? ''));
     }
   };
 };

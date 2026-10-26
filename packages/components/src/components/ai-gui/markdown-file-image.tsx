@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentPropsWithoutRef,
   type ReactNode,
 } from 'react';
 import * as stylex from '@stylexjs/stylex';
@@ -95,7 +96,14 @@ export function MarkdownFileResources({
   );
 }
 
-export function MarkdownFileImage({ src, alt }: { src: string; alt?: string }) {
+type ImageSize = Pick<ComponentPropsWithoutRef<'img'>, 'width' | 'height'>;
+
+export function MarkdownFileImage({
+  src,
+  alt,
+  width,
+  height,
+}: { src: string; alt?: string } & ImageSize) {
   const resources = useContext(MarkdownFileResourcesContext)!;
   const path = resolveMarkdownImagePath(resources.documentPath, src);
   if (path === null) return null;
@@ -105,6 +113,8 @@ export function MarkdownFileImage({ src, alt }: { src: string; alt?: string }) {
       resources={resources}
       path={path}
       alt={alt}
+      width={width}
+      height={height}
     />
   );
 }
@@ -114,7 +124,13 @@ type ImageState =
   | { status: 'ready'; url: string; provider: Resources['provider']; path: string }
   | { status: 'error'; message?: string };
 
-function FileImage({ resources, path, alt }: { resources: Resources; path: string; alt?: string }) {
+function FileImage({
+  resources,
+  path,
+  alt,
+  width,
+  height,
+}: { resources: Resources; path: string; alt?: string } & ImageSize) {
   const { t } = useTranslation();
   const tRef = useRef(t);
   tRef.current = t;
@@ -192,6 +208,8 @@ function FileImage({ resources, path, alt }: { resources: Resources; path: strin
         <img
           src={state.url}
           alt={alt ?? ''}
+          width={width}
+          height={height}
           {...stylex.props(styles.image, !decoded && styles.pendingImage)}
           onLoad={() => setDecoded(true)}
           onError={() => setState({ status: 'error' })}

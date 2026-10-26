@@ -208,7 +208,7 @@ export function SessionFilePreviewPanel({
           </div>
         ) : renderMarkdown ? (
           <div className="px-0.5 pb-1">
-            <MarkdownRenderer text={status.text} size="default" />
+            <MarkdownRenderer text={status.text} size="default" allowHtml />
           </div>
         ) : (
           <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-muted/40 p-3 font-mono text-[13px] leading-relaxed text-foreground">

@@ -858,7 +858,7 @@ function MobileTextPreview({
         onScroll={(event) => onScrollActivity?.(event.currentTarget.scrollTop)}
       >
         <div className="mx-auto w-full max-w-3xl px-3 py-3 sm:px-4 sm:py-4">
-          <MarkdownRenderer text={text} size={conversationFontSize} />
+          <MarkdownRenderer text={text} size={conversationFontSize} allowHtml />
         </div>
       </div>
     );
