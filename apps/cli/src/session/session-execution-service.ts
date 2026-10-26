@@ -4994,8 +4994,8 @@ export class SessionExecutionService {
               // A Claude Code process that lost the shared OAuth refresh race
               // failed before the model ran, so the same prompt is sent again
               // to the same agent once the other process has finished. A turn
-              // that already ran a tool, was steered or is an Inbox input is
-              // not repeated.
+              // that already ran a tool, was steered or carries Inbox results is
+              // not repeated: a submitted batch is never sent twice.
               const submitPromptWithOAuthRetry = (
                 retries: number
               ): Effect.Effect<void, unknown, never> => {
@@ -5008,7 +5008,9 @@ export class SessionExecutionService {
                     const delayMs = OAUTH_REFRESH_CONTENTION_RETRY_DELAYS_MS[retries];
                     if (
                       delayMs === undefined ||
-                      inboxInput ||
+                      options.dispatchSource === 'inbox' ||
+                      Boolean(inboxBatch) ||
+                      Boolean(runtime.inboxOwner?.batch) ||
                       runtime.turnId !== attemptTurnId ||
                       runtime.cancelRequested ||
                       self.deps.isShuttingDown?.() === true ||

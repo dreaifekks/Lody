@@ -11929,6 +11929,58 @@ describe('Operation Inbox execution boundary', () => {
     }
   });
 
+  describe('Claude OAuth refresh contention with the Operation Inbox installed', () => {
+    const contention = () =>
+      RequestError.internalError(
+        undefined,
+        'Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again'
+      );
+    const runHumanTurn = async (withWaitingResult: boolean) => {
+      vi.useFakeTimers();
+      const prompts: ContentBlock[][] = [];
+      const f = inboxExecutionFixture(async (blocks) => {
+        prompts.push(blocks);
+        if (prompts.length === 1) throw contention();
+        return { stopReason: 'end_turn' };
+      });
+      f.deps.hasPromptOutputForTurn = () => true;
+      f.deps.hasToolCallInTurn = () => false;
+      try {
+        if (withWaitingResult) f.add('finished-child');
+        await f.accept();
+        const turn = f.service.continueSession(f.message, {
+          notificationAudience: { kind: 'user' },
+        });
+        await vi.advanceTimersByTimeAsync(30_000);
+        await turn;
+        return { prompts, recordChatFailure: f.deps.recordChatFailure };
+      } finally {
+        vi.useRealTimers();
+        await f.close();
+      }
+    };
+
+    // In the daemon every human or task turn runs as an Inbox input.
+    it('repeats an ordinary human turn', async () => {
+      const { prompts, recordChatFailure } = await runHumanTurn(false);
+
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]).toEqual(prompts[0]);
+      expect(recordChatFailure).not.toHaveBeenCalled();
+    });
+
+    it('does not send a claimed batch of results twice', async () => {
+      const { prompts, recordChatFailure } = await runHumanTurn(true);
+
+      expect(prompts).toHaveLength(1);
+      expect(recordChatFailure).toHaveBeenCalledWith(
+        expect.anything(),
+        'acp_internal_error',
+        expect.not.stringContaining('Lody retried')
+      );
+    });
+  });
+
   it('notifies once after five children, partial summaries and a follow-up delegation finish', async () => {
     const summaries = [createDeferred<void>(), createDeferred<void>(), createDeferred<void>()];
     let summaryCount = 0;

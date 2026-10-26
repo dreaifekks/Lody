@@ -14,7 +14,7 @@ is refreshing it…", which the adapter reports as ACP `-32603`. Lody treated th
 as a fatal internal error, killed the agent and failed the turn, so a scheduled
 run on a machine with many idle Claude sessions was simply lost. The prompt is
 now sent again to the same agent after 30, 60 and 120 seconds while the turn has
-seen no tool call, no steer and is not an Inbox input; if every repeat loses, the
+seen no tool call, no steer and carries no Inbox results; if every repeat loses, the
 turn fails as before with the number of repeats in its message. A related
 adapter fix stops a confirmWithUser question (`confirm_<uuid>`) that nobody
 answered from turning a finished turn into "ended without returning results".
@@ -47,10 +47,15 @@ answered from turning a finished turn into "ended without returning results".
   message, which the adapter forwards to Lody (no AIR session-failure
   capability), so "no output" never holds here. The guard is "no tool call in
   this turn" (`hasToolCallInTurn`, tracked when a `tool_call`,
-  `tool_call_update` or `subagent_event` is buffered; a subagent's tools reach
-  Lody only inside `subagent_event`): without one the request that failed was
-  the turn's first model call, and nothing ran. A steer changes the turn id and
-  ends the repeats; Inbox inputs keep the existing never-repeat rule. A repeat
+  `tool_call_update`, `subagent_event` or plan update is buffered; a subagent's
+  tools reach Lody only inside `subagent_event`, Claude's TodoWrite/Task tools
+  only as plan updates): without one the request that failed was the turn's
+  first model call, and nothing ran. A steer changes the turn id and ends the
+  repeats.
+- Inbox: with the Operation Inbox installed (every daemon) each human or task
+  turn runs as an Inbox input whose submit can repeat, so the guard is the same
+  as stale-ACP recovery: no repeat for `dispatchSource: 'inbox'` or a turn that
+  claimed a batch of Operation results, whose fence never submits twice. A repeat
   clears the failed prompt's settled `cancellationDrain`, otherwise Stop during
   the repeat would answer success without cancelling the new prompt.
 
@@ -68,6 +73,16 @@ treats these ids like `SandboxNetworkAccess`, another permission-only callback.
 The flag itself comes from the provider; scheduled prompts that read security
 material can still trigger it.
 
+## Known limits
+
+- The synthetic error text of the failed attempt stays at the start of the
+  reply when a repeat succeeds; it also counts as output, so a repeat that ends
+  silently is not reported as `agent_no_output`.
+- A steer sent during the wait finds no prompt in flight and is queued as the
+  next turn; the repeat still sends the original prompt first.
+- A `confirm_` tool call stays unclosed in the client, as `SandboxNetworkAccess`
+  already does, and counts as tool activity, so that turn is not repeated.
+
 ## Not done
 
 - Startup jitter for schedules: the workspace evaluates due schedules every 15
@@ -82,7 +97,9 @@ material can still trigger it.
 - `apps/cli/tests/session-execution-service.test.ts` (Claude OAuth refresh
   contention): a second attempt completes the turn; delays are exactly 30/60/120
   seconds under fake timers and the final failure names three repeats; Stop
-  during a repeat sends the ACP cancel (fails without the drain reset); a turn
+  during a repeat sends the ACP cancel (fails without the drain reset); with a
+  real SQLite Operation Inbox, an ordinary human turn is repeated and a turn
+  that claimed waiting results is not (each fails with the wrong guard); a turn
   with a tool call, an auth-required error and the disk-full text are not
   repeated.
 - `acp-error-classification.test.ts`: contention is not auth; disk-full and

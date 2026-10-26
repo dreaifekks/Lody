@@ -4770,11 +4770,15 @@ export class MessageHandler {
       notification: update,
       target,
     });
-    // A subagent's tools reach Lody only inside `subagent_event`.
+    // A subagent's tools reach Lody only inside `subagent_event`, and Claude's
+    // TodoWrite/Task tools only as plan updates.
     if (
       update.update.sessionUpdate === 'tool_call' ||
       update.update.sessionUpdate === 'tool_call_update' ||
-      update.update.sessionUpdate === 'subagent_event'
+      update.update.sessionUpdate === 'subagent_event' ||
+      update.update.sessionUpdate === 'plan' ||
+      update.update.sessionUpdate === 'plan_update' ||
+      update.update.sessionUpdate === 'plan_removed'
     ) {
       state.acpToolCallTurnId = target.turnId;
     }
