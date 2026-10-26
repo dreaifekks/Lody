@@ -60,3 +60,27 @@ const linkedImages = (
 );
 export const LinkedImageRemote: Story = { args: { children: linkedImages } };
 export const LinkedImageLocal: Story = { args: { automatic: true, children: linkedImages } };
+// A Board memory note that names its screenshots from the Board root, as the
+// note this was reported on did: `light.png` is not beside the note.
+const boardChart = provider.openFile('images/chart.svg');
+const namedElsewhere = `# Markdown preview
+
+- Screens are in \`files/shots/\`; the final ones are \`light.png\` and \`dark.png\`.
+- \`gone.png\` is named nowhere else.
+
+<img src="../files/shots/light.png" width="160" alt="HTML image">
+`;
+export const NamedElsewhereInTheDocument: Story = {
+  args: {
+    automatic: true,
+    documentPath: 'memory/md-preview.md',
+    documentText: namedElsewhere,
+    provider: {
+      openFile: async (path): Promise<FileWorkspaceOpenResult> =>
+        ['files/shots/light.png', 'files/shots/dark.png'].includes(path)
+          ? boardChart
+          : { status: 'unavailable', reason: 'deleted', message: 'File not found' },
+    },
+    children: <MarkdownRenderer text={namedElsewhere} allowHtml />,
+  },
+};

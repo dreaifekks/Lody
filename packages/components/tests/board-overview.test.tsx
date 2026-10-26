@@ -15,8 +15,11 @@ import {
   createFakeSessionFileProvider,
   type SessionFileProvider,
 } from '../src/lib/session-file-provider';
-import { BoardFileLinkPreview } from '../src/components/boards/board-directory';
-import { resolveBoardFileLink } from '../src/lib/board-directory-file-provider';
+import { BoardFileLinkPreview, BoardFilePreview } from '../src/components/boards/board-directory';
+import {
+  boardDocumentFilePath,
+  resolveBoardFileLink,
+} from '../src/lib/board-directory-file-provider';
 import {
   MarkdownRenderer,
   AgentFileLinkOpenContext,
@@ -424,7 +427,10 @@ function installIpc(answers: Record<string, unknown>) {
         const body = answers[`file:${String(message.path)}`];
         return typeof body === 'string'
           ? { ok: true, url: `data:text/plain,${encodeURIComponent(body)}`, sizeBytes: body.length }
-          : { ok: false, error: 'file_not_found' };
+          : {
+              ok: false,
+              error: `ENOENT: no such file or directory, open '/data/boards/ws/bd_test/${String(message.path)}'`,
+            };
       }
       if (channel === 'machineRpc.saveMemberFile') {
         requests.push({ method: 'saveMemberFile', params: message });
@@ -2600,13 +2606,82 @@ it.each(['files', 'memory'] as const)(
       );
       expect(view.host.querySelector('[aria-label="File tab"]')).toBeNull();
       await act(async () => button('Missing').click());
-      expect(view.host.textContent).toContain('file_not_found');
+      expect(view.host.textContent).toContain('ENOENT');
     } finally {
       await view.unmount();
       ipc.remove();
     }
   }
 );
+
+it('shows a Board document\'s images from the Board directory, not the renderer origin', async () => {
+  const board = testBoard();
+  const store = createStore();
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(localProbeResultAtom, { ok: true, machineId: 'devnuc' });
+  const coordinator = makeSession('coordinator', { boardRole: 'coordinator', machineId: 'devnuc' });
+  store.set(sessionMetaCacheAtom, { [getSessionRoomId(coordinator.id)]: coordinator });
+  const ipc = installIpc({
+    'file:memory/report.md': [
+      'Screens are in `files/shots/`; the final one is `plot.png`.',
+      '',
+      '![Beside](beside.png) ![Up](../files/shots/up.png) <img src="/data/boards/ws/bd_test/files/shots/abs.png" alt="Absolute">',
+      '',
+      '![Elsewhere](/home/me/elsewhere.png)',
+    ].join('\n'),
+    'file:memory/beside.png': 'png',
+    'file:files/shots/plot.png': 'png',
+    'file:files/shots/up.png': 'png',
+    'file:files/shots/abs.png': 'png',
+  });
+  const view = await mount(
+    <Provider store={store}>
+      <BoardFilePreview
+        board={board}
+        area="memory"
+        entry={{ path: 'report.md' }}
+        onBack={() => {}}
+        backLabel="Back"
+      />
+    </Provider>
+  );
+  try {
+    await vi.waitFor(() => expect(view.host.querySelectorAll('img')).toHaveLength(4));
+    const reads = ipc.requests
+      .filter((request) => request.method === 'openMemberFile')
+      .map((request) => (request.params as { path: string }).path);
+    expect(reads).toEqual(
+      expect.arrayContaining([
+        'memory/beside.png',
+        'files/shots/up.png',
+        'files/shots/abs.png',
+        'memory/plot.png',
+        'files/shots/plot.png',
+      ])
+    );
+    expect(reads.some((path) => path.includes('elsewhere'))).toBe(false);
+    expect(view.host.textContent).toContain('Image could not be loaded');
+  } finally {
+    await view.unmount();
+    ipc.remove();
+  }
+});
+
+it('maps a Board document\'s image paths into that Board only', () => {
+  expect(boardDocumentFilePath('files/shots/a.png', 'ws', 'bd_test')).toBe('files/shots/a.png');
+  expect(boardDocumentFilePath('/data/boards/ws/bd_test/memory/a.png', 'ws', 'bd_test')).toBe(
+    'memory/a.png'
+  );
+  for (const path of [
+    '../outside.png',
+    'shots/a.png',
+    'files/../memory/a.png',
+    '/data/boards/ws/bd_other/files/a.png',
+    '/data/boards/other/bd_test/files/a.png',
+    '/home/me/a.png',
+  ])
+    expect(boardDocumentFilePath(path, 'ws', 'bd_test')).toBeNull();
+});
 
 it('anchors Board files to the current workspace while preserving canonical filenames', () => {
   const board = testBoard();

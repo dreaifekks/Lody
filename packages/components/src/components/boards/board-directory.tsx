@@ -18,12 +18,16 @@ import {
 import { currentWorkspaceIdAtom } from '@/atoms';
 import { sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { localMachineIdAtom } from '@/atoms/local-probe';
+import { MarkdownFileResources } from '@/components/ai-gui/markdown-file-image';
 import { MarkdownRenderer } from '@/components/ai-gui/markdown-renderer';
 import { useStableNow } from '@/hooks/use-stable-now';
 import {
   BoardDirectoryFileProvider,
+  boardDocumentFilePath,
   type BoardFileLinkTarget,
 } from '@/lib/board-directory-file-provider';
+import type { FileWorkspaceOpenResult } from '@/lib/file-workspace-provider';
+import { toFileEntry } from '@/lib/lazy-directory-file-provider';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { toast } from '@/lib/toast';
@@ -354,9 +358,40 @@ export function BoardFilePreview({
 }) {
   const { t } = useTranslation();
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
+  const localMachineId = useAtomValue(localMachineIdAtom);
   const metas = useAtomValue(sessionMetaCacheAtom);
   const host = boardFilesMachineId(board, metas[getSessionRoomId(board.coordinatorSessionId)]);
   const [preview, setPreview] = useState<Preview>({ status: 'loading' });
+  const boardId = board.id;
+  // A document's images are read like the document: as files of this Board.
+  const imageProvider = useMemo(() => {
+    const ipc = getIpcServices();
+    if (!ipc || !workspaceId || !host) return null;
+    return {
+      openFile: async (path: string): Promise<FileWorkspaceOpenResult> => {
+        const scoped = boardDocumentFilePath(path, workspaceId, boardId);
+        if (!scoped) return { status: 'unavailable', reason: 'permission-denied' };
+        const resource = await ipc.machineRpc.openMemberFile({
+          workspaceId,
+          machineId: host,
+          sessionId: memberSessionId,
+          boardId,
+          path: scoped,
+        });
+        if (!resource.ok)
+          return {
+            status: 'unavailable',
+            reason: /ENOENT/.test(resource.error) ? 'deleted' : 'transient-io',
+            message: resource.error,
+          };
+        return {
+          status: 'ready',
+          entry: toFileEntry(scoped, resource.sizeBytes),
+          snapshot: { kind: 'binary', url: resource.url },
+        };
+      },
+    };
+  }, [boardId, host, memberSessionId, workspaceId]);
   useEffect(() => {
     const ipc = getIpcServices();
     const kind = IMAGE.test(entry.path) ? 'image' : TEXT.test(entry.path) ? 'text' : null;
@@ -409,7 +444,19 @@ export function BoardFilePreview({
     body = (
       <>
         {/\.(md|markdown)$/i.test(entry.path) ? (
-          <MarkdownRenderer text={preview.text} headingAnchors allowHtml />
+          imageProvider ? (
+            <MarkdownFileResources
+              provider={imageProvider}
+              documentPath={`${area}/${entry.path}`}
+              documentText={preview.text}
+              automatic={host === localMachineId}
+              active
+            >
+              <MarkdownRenderer text={preview.text} headingAnchors allowHtml />
+            </MarkdownFileResources>
+          ) : (
+            <MarkdownRenderer text={preview.text} headingAnchors allowHtml />
+          )
         ) : (
           <pre {...stylex.props(styles.text)}>{preview.text}</pre>
         )}

@@ -196,10 +196,11 @@ describe('file Markdown images', () => {
         <MarkdownFileResources
           provider={source}
           documentPath={documentPath}
+          documentText={text}
           automatic={automatic}
           active
         >
-          <MarkdownRenderer text={text} />
+          <MarkdownRenderer text={text} allowHtml />
         </MarkdownFileResources>
       )
     );
@@ -329,6 +330,57 @@ describe('file Markdown images', () => {
     expect(
       [...container.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'))
     ).toEqual(['Copy agent file path: ../notes.md', 'Copy agent file path: ../images/plot.png#L3']);
+  });
+
+  it('reads HTML and relative images against the document, and a missing one where the document names it', async () => {
+    const files = ['docs/plot.png', 'images/up.png', '/data/boards/ws/bd/files/shots/light.png'];
+    const source = createFakeFileWorkspaceProvider({
+      files: files.map((path) => ({ path, kind: 'binary' as const, sourceState: 'live-readonly' as const })),
+      snapshots: Object.fromEntries(
+        files.map((path) => [path, { kind: 'binary' as const, url: `lody-file://synthetic/${path}` }])
+      ),
+    });
+    const paths: string[] = [];
+    await render(
+      {
+        openFile: async (path) => {
+          paths.push(path);
+          return files.includes(path)
+            ? source.openFile(path)
+            : { status: 'unavailable', reason: 'deleted' };
+        },
+      },
+      true,
+      '/data/boards/ws/bd/memory/report.md',
+      [
+        '<img src="/data/boards/ws/bd/files/shots/light.png" width="80">',
+        '',
+        'Screens are in `files/shots/`; the final one is `light.png`.',
+      ].join('\n')
+    );
+    expect([...container.querySelectorAll('img')].map((img) => img.getAttribute('src'))).toEqual([
+      'lody-file://synthetic//data/boards/ws/bd/files/shots/light.png',
+      'lody-file://synthetic//data/boards/ws/bd/files/shots/light.png',
+    ]);
+    expect(container.querySelector('img')?.getAttribute('width')).toBe('80');
+    expect(paths).toContain('/data/boards/ws/bd/memory/light.png');
+
+    await render(source, true, 'docs/guide.md', '<img src="plot.png"> ![Up](../images/up.png)');
+    expect([...container.querySelectorAll('img')].map((img) => img.getAttribute('src'))).toEqual([
+      'lody-file://synthetic/docs/plot.png',
+      'lody-file://synthetic/images/up.png',
+    ]);
+  });
+
+  it('shows the read failure when the document names no other place', async () => {
+    await render(
+      { openFile: async () => ({ status: 'unavailable', reason: 'deleted', message: 'Not found' }) },
+      true,
+      'docs/guide.md',
+      'See `missing.png`.'
+    );
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.textContent).toContain('Image could not be loaded: Not found');
   });
 
   it('cannot grant filesystem access to an anonymous share', async () => {

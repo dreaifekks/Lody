@@ -79,3 +79,30 @@ export function resolveBoardFileLink(
   const area = segments[index + 3] as BoardFileArea;
   return { board, area, path: segments.slice(index + 4).join('/'), filePath };
 }
+
+/**
+ * The `<area>/<path>` of a Board that a path one of its documents names reads:
+ * one resolved against the document (`files/a.md` + `shot.png`), or an
+ * absolute path into that Board's directory. Anything else is not the Board's.
+ */
+export function boardDocumentFilePath(
+  path: string,
+  workspaceId: string,
+  boardId: string
+): string | null {
+  let parts = path.split('/');
+  if (/^(?:\/|[a-z]:\/)/i.test(path)) {
+    const index = parts.findIndex(
+      (part, position) =>
+        part === 'boards' &&
+        parts[position + 1] === workspaceId &&
+        parts[position + 2] === boardId
+    );
+    if (index < 0) return null;
+    parts = parts.slice(index + 3);
+  }
+  const [area, ...rest] = parts;
+  return (area === 'files' || area === 'memory') && rest.length && !rest.includes('..')
+    ? parts.join('/')
+    : null;
+}
