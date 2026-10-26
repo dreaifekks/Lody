@@ -2672,7 +2672,7 @@ describe('SessionExecutionService', () => {
     /** Failures of the first prompt attempts, in order; later attempts succeed. */
     promptAttemptFailures?: unknown[];
     onPromptAttempt?: (agentClient: {
-      cancel: ReturnType<typeof vi.fn>;
+      cancel: ReturnType<typeof vi.fn<() => Promise<void>>>;
       pendingPromptCompletion?: Promise<unknown>;
     }) => void | Promise<void>;
     onServiceCreated?: (service: SessionExecutionService) => void;
