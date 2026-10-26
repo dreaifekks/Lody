@@ -17,6 +17,7 @@ import { colors, shadow } from '@lody/ui/tokens/colors.stylex';
 import { corner, duration, ease, radius, space } from '@lody/ui/tokens/scales.stylex';
 import type { FileWorkspaceProvider } from '@/lib/file-workspace-provider';
 import { getImageMimeTypeForPath } from '@/lib/image-file-preview';
+import { buildDocumentImageFallbackPaths } from '@/lib/session-file-link-fallback';
 import { resolveMarkdownImagePath } from '@/lib/session-file-open-target';
 
 const fadeIn = stylex.keyframes({ from: { opacity: 0 }, to: { opacity: 1 } });
@@ -73,6 +74,8 @@ const styles = stylex.create({
 type Resources = {
   provider: Pick<FileWorkspaceProvider, 'openFile'>;
   documentPath: string;
+  /** The document's own text: an image missing beside it is looked for where the text says. */
+  documentText?: string;
   automatic: boolean;
   active: boolean;
 };
@@ -84,10 +87,10 @@ export function MarkdownFileResources({
   children,
   ...resources
 }: Resources & { children: ReactNode }) {
-  const { provider, documentPath, automatic, active } = resources;
+  const { provider, documentPath, documentText, automatic, active } = resources;
   const value = useMemo(
-    () => ({ provider, documentPath, automatic, active }),
-    [provider, documentPath, automatic, active]
+    () => ({ provider, documentPath, documentText, automatic, active }),
+    [provider, documentPath, documentText, automatic, active]
   );
   return (
     <MarkdownFileResourcesContext.Provider value={value}>
@@ -111,6 +114,7 @@ export function MarkdownFileImage({
     <FileImage
       key={`${resources.documentPath}\0${src}`}
       resources={resources}
+      src={src}
       path={path}
       alt={alt}
       width={width}
@@ -126,14 +130,18 @@ type ImageState =
 
 function FileImage({
   resources,
+  src,
   path,
   alt,
   width,
   height,
-}: { resources: Resources; path: string; alt?: string } & ImageSize) {
+}: { resources: Resources; src: string; path: string; alt?: string } & ImageSize) {
   const { t } = useTranslation();
   const tRef = useRef(t);
   tRef.current = t;
+  // Read when a load starts: a refreshed document must not restart a finished one.
+  const documentRef = useRef(resources);
+  documentRef.current = resources;
   const { provider, automatic, active } = resources;
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<ImageState>({ status: 'idle' });
@@ -154,7 +162,18 @@ function FileImage({
     setState({ status: 'loading' });
     void (async () => {
       try {
-        const result = await provider.openFile(path);
+        let result = await provider.openFile(path);
+        if (result.status === 'unavailable' && result.reason === 'deleted') {
+          const { documentPath, documentText = '' } = documentRef.current;
+          for (const candidate of buildDocumentImageFallbackPaths(documentPath, src, documentText)) {
+            if (cancelled) return;
+            const found = await provider.openFile(candidate);
+            if (found.status === 'ready') {
+              result = found;
+              break;
+            }
+          }
+        }
         if (cancelled) return;
         if (result.status === 'unavailable') throw new Error(result.message ?? result.reason);
         const { snapshot } = result;
@@ -194,7 +213,7 @@ function FileImage({
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [provider, path, automatic, active, attempt]);
+  }, [provider, src, path, automatic, active, attempt]);
 
   const ready = state.status === 'ready' && state.provider === provider && state.path === path;
   const loading = state.status === 'loading' || (ready && !decoded);

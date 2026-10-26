@@ -1,4 +1,5 @@
 import type { MessageContent } from '@lody/shared';
+import { resolveMarkdownImagePath } from './session-file-open-target';
 
 // A second look for a relative file link the session's machine could not find.
 //
@@ -253,4 +254,49 @@ export async function resolveMissingFileLink(args: {
     if (result.state === 'found') return result.path ?? candidates[index]!;
   }
   return args.path;
+}
+
+/**
+ * Where else an image of a Markdown document may be when it is not beside the
+ * document: the places the document itself names, read first on the lines that
+ * name the image. A note often names folders from its project or Board root
+ * (`files/shots/` in `memory/report.md`), so a relative folder is tried from the
+ * document's folder, the two folders above it and, for a workspace-relative
+ * document, the workspace root.
+ */
+export function buildDocumentImageFallbackPaths(
+  documentPath: string,
+  src: string,
+  documentText: string,
+  limit = FILE_LINK_FALLBACK_PROBE_LIMIT
+): string[] {
+  const primary = resolveMarkdownImagePath(documentPath, src);
+  if (primary === null || !isRelativeFileLinkPath(src)) return [];
+  const link = normalizeLinkPath(src);
+  const nearby = documentText.split('\n').filter((line) => line.includes(link));
+  const base = documentPath.replace(/\\/g, '/');
+  const folders: string[] = [];
+  for (let end = base.lastIndexOf('/'); end > 0 && folders.length < 3; ) {
+    folders.push(base.slice(0, end + 1));
+    end = base.lastIndexOf('/', end - 1);
+  }
+  if (isRelativeFileLinkPath(base)) folders.push('');
+  const seen = new Set([primary]);
+  const paths: string[] = [];
+  for (const candidate of buildFileLinkFallbackPaths(
+    link,
+    { mentions: [...nearby, documentText], outputs: [] },
+    Number.POSITIVE_INFINITY
+  )) {
+    const resolved = isRelativeFileLinkPath(candidate)
+      ? folders.map((folder) => resolveMarkdownImagePath(`${folder}_`, candidate))
+      : [candidate];
+    for (const path of resolved) {
+      if (path === null || seen.has(path)) continue;
+      seen.add(path);
+      paths.push(path);
+      if (paths.length === limit) return paths;
+    }
+  }
+  return paths;
 }

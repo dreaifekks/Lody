@@ -1708,6 +1708,7 @@ function SessionFileContentViewImpl({
           key={`${session.machineId}:${sessionId}`}
           provider={fileProvider}
           documentPath={providerEntry?.path ?? normalizedPath}
+          documentText={markdownPreviewText}
           automatic={Boolean(sessionFileActions.localHost)}
           active={isActiveSurface && showMarkdownRendered}
         >

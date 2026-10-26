@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MessageContent } from '@lody/shared';
 import {
+  buildDocumentImageFallbackPaths,
   buildFileLinkFallbackPaths,
   classifyFileLinkProbe,
   collectFileLinkContext,
@@ -260,4 +261,43 @@ describe('resolveMissingFileLink', () => {
     ).resolves.toBe('/tmp/a.md');
     expect(machine.asked).toEqual([]);
   });
+});
+
+describe('images a Markdown document names away from itself', () => {
+  const board = '/data/boards/ws/bd_1';
+  const memo = 'Storybook `Conversation/Markdown`（Light/Dark）。截图在 `files/shots/`，最终是 `light.png`。';
+
+  it('tries a folder the document names from its own folder and the folders above it', () => {
+    const paths = buildDocumentImageFallbackPaths(
+      `${board}/memory/report.md`,
+      'light.png',
+      `# Notes\n\nSee \`packages/ui/src/a.tsx\`.\n\n${memo}`
+    );
+    expect(paths).toContain(`${board}/files/shots/light.png`);
+    expect(paths).not.toContain(`${board}/memory/light.png`);
+    expect(paths.length).toBeLessThanOrEqual(16);
+    // The line that names the image is read first, so distant paths cannot crowd it out.
+    expect(paths.indexOf(`${board}/files/shots/light.png`)).toBeLessThan(
+      paths.indexOf(`${board}/memory/packages/ui/src/light.png`) >>> 0
+    );
+  });
+
+  it('reaches the workspace root from a workspace-relative document', () => {
+    expect(
+      buildDocumentImageFallbackPaths('docs/a/b/c/guide.md', 'x.png', 'Shots: `assets/img/`')
+    ).toContain('assets/img/x.png');
+  });
+
+  it('uses an absolute folder as written', () => {
+    expect(
+      buildDocumentImageFallbackPaths('docs/guide.md', 'x.png', 'Saved to /tmp/out/ as `x.png`')[0]
+    ).toBe('/tmp/out/x.png');
+  });
+
+  it.each(['/abs/x.png', 'https://example.org/x.png', '~/x.png'])(
+    'looks nowhere else for %s',
+    (src) => {
+      expect(buildDocumentImageFallbackPaths('docs/guide.md', src, 'in `assets/`')).toEqual([]);
+    }
+  );
 });

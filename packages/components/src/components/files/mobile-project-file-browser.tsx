@@ -763,7 +763,13 @@ function MobileFilePreview({
     />
   );
   return provider ? (
-    <MarkdownFileResources provider={provider} documentPath={content.path} automatic={false} active>
+    <MarkdownFileResources
+      provider={provider}
+      documentPath={content.path}
+      documentText={snapshot.text}
+      automatic={false}
+      active
+    >
       {textPreview}
     </MarkdownFileResources>
   ) : (

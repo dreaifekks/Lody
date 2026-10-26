@@ -105,6 +105,14 @@ the reasoning behind those rules.
   resources load automatically; remote file images show a one-line recessed slot
   (alt, file name, Load image) and load on click. Relative paths use the opened document; Blob URLs last only for the mounted
   image. Uploaded attachments without a file provider keep their existing behavior.
+  A relative image the machine reports missing is then read where the document's
+  own text names a folder (`buildDocumentImageFallbackPaths`): lines naming the image
+  first, each relative folder from the document's folder, two folders above it and
+  the workspace root; 16 reads at most, the first found wins. The machine still
+  authorizes every read. A Board file (`BoardFilePreview`) reads its images as
+  files of that Board (`boardDocumentFilePath`): relative to the document, or an
+  absolute path into the same Board's `files/`/`memory/`; any other path is refused
+  without a read.
 - `chat-failed-error-report.ts` owns raw error extraction; `view.tsx`'s
   `AgentNoticeBanner` renders warnings and failures, and
   `build-chat-stream-items.ts` folds them onto the emitting turn. Invariants live
