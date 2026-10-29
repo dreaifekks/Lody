@@ -662,6 +662,26 @@ describe('article review', () => {
     // Comments read the summary without it.
     expect(articleBlockText(summary)).toBe('Notes');
 
+    // Clicking elsewhere while it is folded leaves the change inside unseen,
+    // though a closed details still lays its content out on screen.
+    const saved = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      return this.dataset['testid'] === 'viewport'
+        ? new DOMRect(0, 0, 600, 400)
+        : new DOMRect(0, 40, 50, 20);
+    };
+    try {
+      await act(async () => {
+        container
+          .querySelector('[data-testid="viewport"]')!
+          .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = saved;
+    }
+    expect(marks('ins')).toEqual(['20']);
+    expect(container.querySelector('[data-lody-diff="hint"]')).not.toBeNull();
+
     const details = container.querySelector('details')!;
     expect(details.open).toBe(false);
     Element.prototype.scrollIntoView = () => undefined;

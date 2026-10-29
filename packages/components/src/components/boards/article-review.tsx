@@ -64,6 +64,17 @@ export interface ArticleChanges {
   readonly seeInView: (viewport: Element) => void;
 }
 
+/** Whether a closed `<details>` hides this element (anything but its summary). */
+const insideFoldedDetails = (element: Element): boolean => {
+  for (
+    let details = element.closest('details');
+    details;
+    details = details.parentElement?.closest('details') ?? null
+  )
+    if (!details.open && !details.querySelector(':scope > summary')?.contains(element)) return true;
+  return false;
+};
+
 /** The first element of each change still marked, in document order. */
 const changeElements = (root: HTMLElement): HTMLElement[] => {
   const first = new Map<string, HTMLElement>();
@@ -137,6 +148,8 @@ export function useArticleChanges(
       const view = viewport.getBoundingClientRect();
       const seen = new Set<number>();
       for (const element of root.querySelectorAll<HTMLElement>(`[${DIFF_ID_ATTRIBUTE}]`)) {
+        // Folded away: a closed details still lays its content out on screen.
+        if (insideFoldedDetails(element)) continue;
         const box = element.getBoundingClientRect();
         if (box.bottom > view.top && box.top < view.bottom)
           seen.add(Number(element.getAttribute(DIFF_ID_ATTRIBUTE)));
