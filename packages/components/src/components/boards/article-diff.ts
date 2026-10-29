@@ -365,6 +365,13 @@ export function diffArticle(
   const pairGap = (bi: number, cj: number) => {
     const olds = base.slice(i, bi);
     const news = current.slice(j, cj);
+    // A gap this large is a rewrite: its containers count as deleted and added,
+    // without comparing them pair by pair.
+    if (olds.length * news.length > MAX_PAIRED_GAP) {
+      while (i < bi) alignment.push({ type: 'deleted', base: i++, hunk: hunks++ });
+      while (j < cj) alignment.push({ type: 'inserted', current: j++, hunk: hunks++ });
+      return;
+    }
     const width = news.length + 1;
     const score = new Float64Array((olds.length + 1) * width);
     // How alike two containers are: the share of words they have in common,
@@ -387,11 +394,7 @@ export function diffArticle(
         shared += Math.min(count, newWords[y].get(word) ?? 0);
       return shared / Math.max(total(oldWords[x]), total(newWords[y]), 1);
     };
-    // A gap this large is a rewrite: its containers count as deleted and added.
-    const like =
-      olds.length * news.length > MAX_PAIRED_GAP
-        ? olds.map(() => news.map(() => 0))
-        : olds.map((_, x) => news.map((__, y) => likeness(x, y)));
+    const like = olds.map((_, x) => news.map((__, y) => likeness(x, y)));
     for (let x = olds.length - 1; x >= 0; x -= 1)
       for (let y = news.length - 1; y >= 0; y -= 1)
         score[x * width + y] = Math.max(

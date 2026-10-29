@@ -590,6 +590,17 @@ describe('article review', () => {
     await render([`${long}二`]);
     expect(marks('del')).toEqual(['一']);
     expect(marks('ins')).toEqual(['二']);
+
+    // A rewrite of 150 paragraphs into 150 others (22,500 pairs, past the
+    // limit) is deleted and added as a whole, without comparing every pair.
+    await act(async () => button('Clear change marks')!.click());
+    await render(Array.from({ length: 150 }, (_, index) => `Old paragraph ${index}.`));
+    await act(async () => button('Clear change marks')!.click());
+    await render(Array.from({ length: 150 }, (_, index) => `New paragraph ${index}.`));
+    expect(marks('del')).toHaveLength(150);
+    expect(marks('ins')).toEqual(
+      Array.from({ length: 150 }, (_, index) => `New paragraph ${index}.`)
+    );
   });
 
   it('counts only the on-screen part of a change that spans plain and bold text as seen', async () => {
