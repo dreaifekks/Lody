@@ -1707,7 +1707,9 @@ function SessionFileContentViewImpl({
     <div
       ref={setMarkdownRoot}
       // A click in the article: the changes marked on screen count as seen.
-      onPointerDown={
+      // On click, after the clicked control's own handler: a code diff's copy
+      // button must still be there when its click lands.
+      onClick={
         annotationThreadId
           ? () => contentBodyRef.current && articleChanges.seeInView(contentBodyRef.current)
           : undefined

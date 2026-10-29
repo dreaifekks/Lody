@@ -457,8 +457,7 @@ describe('article review', () => {
         {
           ref: setElement,
           'data-testid': 'viewport',
-          onPointerDown: (event: { currentTarget: Element }) =>
-            changes.seeInView(event.currentTarget),
+          onClick: (event: { currentTarget: Element }) => changes.seeInView(event.currentTarget),
         },
         createElement(MarkdownRenderer, {
           text: markdown,
@@ -564,7 +563,7 @@ describe('article review', () => {
       await act(async () => {
         container
           .querySelector('[data-testid="viewport"]')!
-          .dispatchEvent(new Event('pointerdown', { bubbles: true }));
+          .dispatchEvent(new MouseEvent('click', { bubbles: true }));
       });
     } finally {
       HTMLElement.prototype.getBoundingClientRect = saved;
@@ -625,7 +624,7 @@ describe('article review', () => {
       await act(async () => {
         container
           .querySelector('[data-testid="viewport"]')!
-          .dispatchEvent(new Event('pointerdown', { bubbles: true }));
+          .dispatchEvent(new MouseEvent('click', { bubbles: true }));
       });
     } finally {
       HTMLElement.prototype.getBoundingClientRect = saved;

@@ -333,8 +333,9 @@ tool, CLI or protocol change.
   instead. A deleted paragraph shows as a struck paragraph where it was. A
   `<details>` with changes inside gets a "Changed inside" hint in its summary
   (no change id, so a click never counts the folded changes as seen), and
-  stepping to such a change unfolds it. Pressing anywhere
-  in the article counts the changes on screen as seen: they are folded into what
+  stepping to such a change unfolds it. Clicking anywhere
+  in the article (on click, after the clicked control's own handler, so a code
+  diff's copy button still works) counts the changes on screen as seen: they are folded into what
   the reader has seen and their marks go; the others stay. The header counts the
   changes left, steps through them and clears them all. Comments read a block's
   text without its deleted words (`articleBlockText`). Nothing is remembered once
