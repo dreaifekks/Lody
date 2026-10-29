@@ -144,6 +144,9 @@ const styles = stylex.create({
   spinner16: { width: '16px', height: '16px', flexShrink: 0 },
   spinner14: { width: '14px', height: '14px', flexShrink: 0 },
   articleMarkdown: { position: 'relative' },
+  // Clears the outline rail (8px in, up to 15px wide) when the article is too
+  // narrow for its centred margin to.
+  articleOutlineGutter: { paddingInlineStart: '32px' },
   markdownPreview: {
     width: '100%',
     maxWidth: '48rem',
@@ -1707,7 +1710,11 @@ function SessionFileContentViewImpl({
   const previewSurface: ReactNode = isMarkdownTextFile ? (
     <div
       ref={setMarkdownRoot}
-      {...stylex.props(styles.markdownPreview, annotationThreadId && styles.articleMarkdown)}
+      {...stylex.props(
+        styles.markdownPreview,
+        isArticle && styles.articleOutlineGutter,
+        annotationThreadId && styles.articleMarkdown
+      )}
       data-native-selection-allow
     >
       {fileProvider ? (

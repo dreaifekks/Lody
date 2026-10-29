@@ -279,6 +279,8 @@ tool, CLI or protocol change.
   text that repeats or cannot be placed carries no lines. In a file tab the comment
   joins the session's composer as a chip and is sent as plain text. In the window,
   headings show as a rail on the left (`article-outline.tsx`); hovering lists them.
+  The article's Markdown keeps a 32px left gutter so a narrow window never puts the
+  rail over its text.
 - Comments in the window stay in the article instead
   (`components/boards/article-annotations.ts`, a Jotai atom kept in this device's
   localStorage, `lody-board-article-annotations`; other devices do not see them).
