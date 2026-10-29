@@ -29,9 +29,21 @@ export interface ArticleAnnotation {
   readonly sent?: { readonly number: number; readonly atMs: number };
 }
 
-/** Rendered Markdown blocks a comment can sit at the end of. */
+/**
+ * Rendered Markdown blocks a comment can sit at the end of; not a paragraph
+ * that only shows deleted text (`article-diff.ts`).
+ */
 export const ARTICLE_BLOCK_SELECTOR =
-  'p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, dt, dd';
+  'p:not([data-lody-diff]), li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, dt, dd';
+
+/** A block's text as the article has it now: without words marked deleted. */
+export function articleBlockText(block: Element): string {
+  let text = '';
+  const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode())
+    if (!node.parentElement?.closest('[data-lody-diff="del"]')) text += node.textContent ?? '';
+  return text;
+}
 
 /** Sent comments nobody resolved leave after this long. */
 const SENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -156,7 +168,7 @@ export function articleBlockOf(root: HTMLElement, range: Range): ArticleAnnotati
   const block = element.closest<HTMLElement>(ARTICLE_BLOCK_SELECTOR) ?? element;
   return {
     index: Array.from(root.querySelectorAll(ARTICLE_BLOCK_SELECTOR)).indexOf(block),
-    text: block.textContent ?? '',
+    text: articleBlockText(block),
   };
 }
 
@@ -171,11 +183,11 @@ export function resolveArticleBlock(
   annotation: ArticleAnnotation
 ): HTMLElement | undefined {
   const { index, text } = annotation.block;
-  if (blocks[index]?.textContent === text) return blocks[index];
+  if (blocks[index] && articleBlockText(blocks[index]) === text) return blocks[index];
   const quoteStart = annotation.quote.split('\n')[0].trim();
   return (
-    blocks.find((block) => block.textContent === text) ??
-    blocks.find((block) => block.textContent?.includes(quoteStart)) ??
+    blocks.find((block) => articleBlockText(block) === text) ??
+    blocks.find((block) => articleBlockText(block).includes(quoteStart)) ??
     blocks[Math.min(Math.max(index, 0), blocks.length - 1)]
   );
 }
@@ -187,7 +199,7 @@ export function resolveArticleBlock(
 export const articleBlockChanged = (
   blocks: readonly HTMLElement[],
   annotation: ArticleAnnotation
-): boolean => !blocks.some((block) => block.textContent === annotation.block.text);
+): boolean => !blocks.some((block) => articleBlockText(block) === annotation.block.text);
 
 const indent = (text: string, prefix: string) =>
   text

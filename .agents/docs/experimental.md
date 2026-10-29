@@ -313,12 +313,23 @@ tool, CLI or protocol change.
   unsent comment that carries the earlier one ("Asked before: …"). Sent comments
   nobody resolved leave after 30 days. Escape leaves an edit, then the popover,
   then the window.
-- Changes (`components/boards/article-review.tsx`): the first revision of a
-  Markdown article the window shows is the baseline; each later revision marks the
-  blocks whose text the one before did not hold with a bar in the left margin. The
-  marks add up over revisions (an agent writes in bursts) and go when their text
-  leaves the article or the reader clears them; the header counts them and steps
-  through them. Nothing is remembered once the window closes.
+- Changes (`components/boards/article-diff.ts`, `article-review.tsx`): the first
+  revision of a Markdown article the window shows is what the reader has seen.
+  Each later revision is compared with it and the changes are marked in the text
+  itself, by a rehype step that runs after sanitizing (`extraRehypePlugins` on
+  `MarkdownRenderer`): deleted words struck through, then the words that replaced
+  them highlighted, nothing else of the paragraph. The article is cut into
+  containers (paragraphs, headings, cells, list item text; code blocks, display
+  math and rules as whole blocks); equal containers are aligned first, and between
+  them containers of the same kind that share at least 30% of their words are
+  paired and diffed word by word (one CJK character per word; a lone space between
+  two changes joins them). A changed code block is outlined, without its old code;
+  a deleted paragraph shows as a struck paragraph where it was. Pressing anywhere
+  in the article counts the changes on screen as seen: they are folded into what
+  the reader has seen and their marks go; the others stay. The header counts the
+  changes left, steps through them and clears them all. Comments read a block's
+  text without its deleted words (`articleBlockText`). Nothing is remembered once
+  the window closes.
 - HTML: in the window it always runs in the widget page (`article-html-frame.tsx`),
   the desktop's loopback page that hosts widgets, with the same `allow-scripts`
   sandbox (plus `credentialless`) and the widget policy: scripts, styles, fonts,

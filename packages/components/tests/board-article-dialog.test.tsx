@@ -9,13 +9,11 @@ import { getDefaultStore } from 'jotai';
 import { ArticleAnnotationMarkers } from '../src/components/boards/article-annotation-markers';
 import {
   articleAnnotationsAtom,
+  articleBlockText,
   type ArticleAnnotation,
 } from '../src/components/boards/article-annotations';
-import {
-  ArticleChangeBars,
-  ArticleReviewControls,
-  useArticleChanges,
-} from '../src/components/boards/article-review';
+import { ArticleReviewControls, useArticleChanges } from '../src/components/boards/article-review';
+import { MarkdownRenderer } from '../src/components/ai-gui/markdown-renderer';
 import { ArticleHtmlFrame } from '../src/components/sessions/article-html-frame';
 import {
   createRelocatableHost,
@@ -434,16 +432,18 @@ describe('article review', () => {
   });
 
   /** A rendered article of paragraphs, with its review marks and header controls. */
+  /** A rendered Markdown article with its change marks, comment marks and header controls. */
   function ReviewedArticle({
     paragraphs,
+    markdown = paragraphs?.join('\n\n') ?? '',
     annotations = [],
   }: {
-    paragraphs: readonly string[];
+    paragraphs?: readonly string[];
+    markdown?: string;
     annotations?: readonly ArticleAnnotation[];
   }) {
     const [element, setElement] = useState<HTMLElement | null>(null);
-    const revision = paragraphs.join('\n');
-    const changes = useArticleChanges(element, revision, true);
+    const changes = useArticleChanges(element, markdown, true);
     return createElement(
       'div',
       null,
@@ -454,10 +454,18 @@ describe('article review', () => {
       ),
       createElement(
         'article',
-        { ref: setElement },
-        ...paragraphs.map((text, index) => createElement('p', { key: index }, text)),
-        createElement(ArticleChangeBars, { root: element, revision, changes }),
-        createElement(ArticleAnnotationMarkers, { root: element, revision, annotations })
+        {
+          ref: setElement,
+          'data-testid': 'viewport',
+          onPointerDown: (event: { currentTarget: Element }) =>
+            changes.seeInView(event.currentTarget),
+        },
+        createElement(MarkdownRenderer, {
+          text: markdown,
+          allowHtml: true,
+          extraRehypePlugins: changes.rehypePlugins,
+        }),
+        createElement(ArticleAnnotationMarkers, { root: element, revision: markdown, annotations })
       )
     );
   }
@@ -467,31 +475,104 @@ describe('article review', () => {
       (item) => item.getAttribute('aria-label') === label || item.textContent === label
     );
 
-  it('marks the passages that changed since the reader looked, adding up until cleared', async () => {
-    const render = (paragraphs: readonly string[]) =>
-      act(async () => root.render(createElement(ReviewedArticle, { paragraphs })));
-    await render(['Intro.', 'Revenue grew.', 'Outlook.']);
-    // The first revision shown is the baseline: nothing is new to the reader.
-    expect(container.querySelectorAll('[data-article-change-bar]')).toHaveLength(0);
+  const marks = (kind: 'ins' | 'del' | 'block') =>
+    Array.from(
+      container.querySelectorAll(`[data-lody-diff="${kind}"]`),
+      (mark) => mark.textContent
+    );
+
+  it('marks only the changed words: deleted struck through, then the new ones highlighted', async () => {
+    const render = (markdown: string) =>
+      act(async () => root.render(createElement(ReviewedArticle, { markdown })));
+    await render(
+      [
+        '# Weekly report',
+        '',
+        'Revenue grew **8%** this quarter.',
+        '',
+        '- Hiring paused',
+        '- Office moved',
+        '',
+        '新的分支已经合并。',
+        '',
+        '```ts',
+        'const rate = 8;',
+        '```',
+      ].join('\n')
+    );
+    // The first revision shown is what the reader has seen: nothing is marked.
+    expect(container.querySelectorAll('[data-lody-diff]')).toHaveLength(0);
     expect(container.querySelector('header')!.textContent).toBe('');
 
-    await render(['Intro.', 'Revenue grew 12% in Q3.', 'Outlook.']);
-    expect(container.querySelectorAll('[data-article-change-bar]')).toHaveLength(1);
-    expect(container.querySelector('header')!.textContent).toBe('1');
-
-    // A later burst adds to the marks; a marked passage rewritten again stays one mark.
-    await render(['Intro.', 'Revenue grew 12% in Q3.', 'Outlook: steady.', 'Risks.']);
-    expect(container.querySelector('header')!.textContent).toBe('3');
-    await render(['Intro.', 'Revenue grew 12% in Q3.', 'Outlook: steady.']);
-    expect(container.querySelector('header')!.textContent).toBe('2');
+    await render(
+      [
+        '# Weekly report',
+        '',
+        'Revenue grew **12%** in Q3.',
+        '',
+        '- Hiring paused',
+        '',
+        '新的分支已经发布。',
+        '',
+        '```ts',
+        'const rate = 12;',
+        '```',
+      ].join('\n')
+    );
+    // Words, not paragraphs: the unchanged ones stay plain, even inside bold.
+    expect(marks('del')).toEqual(['8', 'this quarter', 'Office moved', '合并']);
+    expect(marks('ins')).toEqual(['12', 'in Q3', '发布']);
+    expect(container.querySelector('strong')!.textContent).toBe('812%');
+    // A rewritten code block is outlined as a whole, without its old code.
+    expect(marks('block')).toEqual([expect.stringContaining('const rate = 12;')]);
+    // Deleted text is not the article's: comments read blocks without it.
+    expect(articleBlockText(container.querySelector('p')!)).toBe('Revenue grew 12% in Q3.');
+    expect(container.querySelector('header')!.textContent).toBe('5');
 
     Element.prototype.scrollIntoView = () => undefined;
     await act(async () => button('Next change')!.click());
-    expect(container.querySelector('header')!.textContent).toBe('1/2');
+    expect(container.querySelector('header')!.textContent).toBe('1/5');
 
     await act(async () => button('Clear change marks')!.click());
-    expect(container.querySelectorAll('[data-article-change-bar]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-lody-diff]')).toHaveLength(0);
     expect(container.querySelector('header')!.textContent).toBe('');
+  });
+
+  it('counts the changes on screen as seen when the reader clicks, and keeps the others', async () => {
+    const render = (paragraphs: readonly string[]) =>
+      act(async () => root.render(createElement(ReviewedArticle, { paragraphs })));
+    await render(['Revenue grew 8%.', 'Hiring paused.', 'Outlook steady.']);
+    await render(['Revenue grew 12%.', 'Hiring paused.', 'Outlook improving.']);
+    expect(marks('ins')).toEqual(['12', 'improving']);
+
+    // jsdom lays nothing out: the first paragraph is on screen, the last below it.
+    const saved = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      if (this.dataset['testid'] === 'viewport') return new DOMRect(0, 0, 600, 400);
+      return new DOMRect(
+        0,
+        this.closest('p')?.textContent?.startsWith('Outlook') ? 900 : 40,
+        50,
+        20
+      );
+    };
+    try {
+      await act(async () => {
+        container
+          .querySelector('[data-testid="viewport"]')!
+          .dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      });
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = saved;
+    }
+    expect(marks('ins')).toEqual(['improving']);
+    expect(marks('del')).toEqual(['steady']);
+    expect(container.querySelector('header')!.textContent).toBe('1');
+
+    // A later revision is compared with what the reader has seen since.
+    await render(['Revenue grew 12%.', 'Hiring resumed.', 'Outlook improving.']);
+    expect(marks('del')).toEqual(['paused', 'steady']);
+    expect(marks('ins')).toEqual(['resumed', 'improving']);
   });
 
   it('keeps a sent comment at its passage, says when the agent changed it, and resolves it', async () => {

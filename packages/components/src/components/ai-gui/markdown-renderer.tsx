@@ -1605,6 +1605,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   searchBlockId,
   headingAnchors = false,
   compact = false,
+  extraRehypePlugins,
 }: {
   text: string;
   size?: MarkdownRendererSize;
@@ -1622,6 +1623,8 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   headingAnchors?: boolean;
   /** Tool prose shares the control role without scaling nested code a second time. */
   compact?: boolean;
+  /** Run after the renderer's own rehype plugins (sanitizing included), e.g. to mark changes. */
+  extraRehypePlugins?: NonNullable<StreamdownProps['rehypePlugins']>;
 }) {
   ({ text, size, allowHtml, isStreaming, searchBlockId } = useSelectionStableValue({
     text,
@@ -1694,13 +1697,17 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 
   const components = useSelectionStableValue(currentComponents);
   const remarkPlugins = inlineMathEnabled ? INLINE_MATH_REMARK_PLUGINS : MARKDOWN_REMARK_PLUGINS;
-  const rehypePlugins = headingAnchors
+  const ownRehypePlugins = headingAnchors
     ? allowHtml
       ? ANCHORED_HTML_MARKDOWN_REHYPE_PLUGINS
       : ANCHORED_MARKDOWN_REHYPE_PLUGINS
     : allowHtml
       ? HTML_MARKDOWN_REHYPE_PLUGINS
       : MARKDOWN_REHYPE_PLUGINS;
+  const rehypePlugins = useMemo(
+    () => (extraRehypePlugins ? [...ownRehypePlugins, ...extraRehypePlugins] : ownRehypePlugins),
+    [extraRehypePlugins, ownRehypePlugins]
+  );
   const normalizedSize = normalizeMarkdownRendererSize(size);
   // The engine keeps revealing its buffered tail after the stream ends. Staying
   // mounted briefly lets that reveal finish instead of jumping to the full text.

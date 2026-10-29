@@ -123,11 +123,14 @@ Translation: pending
 - 普通文件 tab 里的 Markdown 选区批注照旧作为 chip 进输入框。浮窗里的 HTML 暂时没有元素
   批注。
 
-### 改动标记
+### 改动标记：只标改动的字，点过就算看过
 
-- 浮窗打开后看到的第一个版本是基准；之后每个新版本里，前一版没有的块（按渲染后的文字比）
-  在左边距画一条竖条。竖条跨版本累加（agent 是分几次写的），文字不在了或用户点「清除」才
-  消失；标头显示「N 处改动」，可以上下跳。关掉浮窗就不记了，这代替 ryugi 的完整版本历史。
+- 浮窗打开后看到的第一个版本算「已看过」。之后的新版本跟它比，改动直接标在正文里：删掉的字
+  加删除线，紧跟着是替换它的新字加背景高亮；不标整段，只标改了的那几个字（2026-10-29 用户
+  定，替代原先的段落竖条）。代码块、公式这类整块内容改了就整块描边，不显示旧代码；整段删掉的
+  在原位置显示一段删除线文字。
+- 用户在 article 里点一下，当前屏幕范围内的改动就算看过，标记消失；屏幕外的保留。之后的新
+  版本跟「看过的」比。标头显示剩余改动数，可以上下跳、一键清除。关掉浮窗就不记了。
 
 ### HTML 测试台：控件值保留，报错可见
 
@@ -155,7 +158,7 @@ Translation: pending
 
 - 实现：`packages/components/src/components/boards/board-article-dialog.tsx`、
   `boards/relocatable-host.tsx`、`boards/article-annotations.ts`（批注存储和发送格式）、
-  `boards/article-annotation-markers.tsx`（图标和 popover）、`boards/article-review.tsx`（改动标记和标头控件）、`sessions/article-html-frame.tsx`、
+  `boards/article-annotation-markers.tsx`（图标和 popover）、`boards/article-diff.ts`（改动比对和标记）、`boards/article-review.tsx`（标头控件）、`sessions/article-html-frame.tsx`、
   `sessions/article-outline.tsx`、`hooks/use-session-file-digest-watch.ts`，
   `sessions/session-detail.tsx`（打开/关闭和状态）、`sessions/session-chat-input-area.tsx`（发送时拼接）。
 - 测试：`packages/components/tests/board-article-dialog.test.tsx`、`document-selection.test.tsx`、

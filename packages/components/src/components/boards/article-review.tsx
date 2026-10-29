@@ -1,26 +1,29 @@
 import * as stylex from '@stylexjs/stylex';
-import { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronUp, Send, X } from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import type { SessionId } from '@lody/shared';
+import type { MarkdownRenderer } from '../ai-gui/markdown-renderer';
+import { useArticleAnnotationActions, useThreadArticleAnnotations } from './article-annotations';
 import {
-  ARTICLE_BLOCK_SELECTOR,
-  useArticleAnnotationActions,
-  useThreadArticleAnnotations,
-} from './article-annotations';
+  DIFF_ID_ATTRIBUTE,
+  markArticleChanges,
+  markArticleChangesSeen,
+  type ArticleContainer,
+  type ArticleDiff,
+  type DiffRoot,
+} from './article-diff';
 
 const styles = stylex.create({
-  bar: {
-    position: 'absolute',
-    width: '3px',
-    borderRadius: '2px',
-    backgroundColor: colors.accent,
-    opacity: 0.55,
-    pointerEvents: 'none',
-  },
-  current: { opacity: 1 },
   group: { display: 'flex', alignItems: 'center', gap: '2px' },
   count: {
     paddingInline: '4px',
@@ -30,138 +33,104 @@ const styles = stylex.create({
   },
 });
 
-/** How many times each text occurs among blocks. */
-const countTexts = (texts: readonly string[]): Map<string, number> => {
-  const counts = new Map<string, number>();
-  for (const text of texts) counts.set(text, (counts.get(text) ?? 0) + 1);
-  return counts;
-};
+type Rendered = { readonly containers: ArticleContainer[]; readonly diff: ArticleDiff | null };
+
+/** The rehype step that marks an article's changes and reports what it rendered. */
+const rehypeArticleChanges =
+  (options: { base: readonly ArticleContainer[] | null; report: (rendered: Rendered) => void }) =>
+  (tree: DiffRoot) => {
+    options.report(markArticleChanges(tree, options.base));
+  };
 
 export interface ArticleChanges {
-  /**
-   * Blocks the reader has not seen yet, in document order: their text was in
-   * none of the revisions shown before, since the reader last cleared the marks.
-   */
-  readonly changed: readonly HTMLElement[];
+  /** Changes not seen yet; each may mark several places (deleted and inserted words). */
+  readonly count: number;
   /** The one the reader last moved to, or -1. */
   readonly current: number;
   readonly move: (step: 1 | -1) => void;
+  /** Everything shown counts as seen. */
   readonly clear: () => void;
+  /** For the article's Markdown renderer: marks the changes in place. */
+  readonly rehypePlugins: NonNullable<
+    ComponentProps<typeof MarkdownRenderer>['extraRehypePlugins']
+  >;
+  /** The reader clicked the article: the changes on screen count as seen. */
+  readonly seeInView: (viewport: Element) => void;
 }
 
-/** A nested block (a list item's paragraph) counts once, as its outermost block. */
-const outermost = (blocks: readonly HTMLElement[]): HTMLElement[] =>
-  blocks.filter((block) => !blocks.some((other) => other !== block && other.contains(block)));
+/** The first element of each change still marked, in document order. */
+const changeElements = (root: HTMLElement): HTMLElement[] => {
+  const first = new Map<string, HTMLElement>();
+  for (const element of root.querySelectorAll<HTMLElement>(`[${DIFF_ID_ATTRIBUTE}]`)) {
+    const id = element.getAttribute(DIFF_ID_ATTRIBUTE)!;
+    if (!first.has(id)) first.set(id, element);
+  }
+  return [...first.values()];
+};
 
 /**
- * What changed in a rendered Markdown article while the reader had it open:
- * blocks whose text the revision shown before did not hold. The first
- * revision shown is the baseline; marks add up over later revisions (an agent
- * writes in bursts) until the reader clears them, and a mark goes when its
- * text leaves the article.
+ * What changed in a Markdown article since the reader last looked, marked in
+ * the text itself (`article-diff.ts`). The first revision shown is what the
+ * reader has seen; later revisions are compared with it. A click in the
+ * article counts the changes on screen as seen, folding them into it; the
+ * header can step through the rest or clear them all. Nothing is remembered
+ * once the article closes.
  */
 export function useArticleChanges(
   root: HTMLElement | null,
   revision: string,
   enabled: boolean
 ): ArticleChanges {
-  const seen = useRef<Map<string, number> | null>(null);
-  const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
-  const [changed, setChanged] = useState<readonly HTMLElement[]>([]);
+  const [base, setBase] = useState<readonly ArticleContainer[] | null>(null);
+  const rendered = useRef<Rendered | null>(null);
+  const [count, setCount] = useState(0);
   const [current, setCurrent] = useState(-1);
+  const rehypePlugins = useMemo((): ArticleChanges['rehypePlugins'] => {
+    if (!enabled) return [];
+    const report = (next: Rendered) => {
+      rendered.current = next;
+    };
+    return [[rehypeArticleChanges, { base, report }]];
+  }, [base, enabled]);
   useLayoutEffect(() => {
-    if (!enabled || !root) return;
-    const blocks = Array.from(root.querySelectorAll<HTMLElement>(ARTICLE_BLOCK_SELECTOR));
-    if (blocks.length === 0) return;
-    const texts = blocks.map((block) => block.textContent ?? '');
-    const before = seen.current;
-    seen.current = countTexts(texts);
-    if (!before) return;
-    const remaining = new Map(before);
-    const fresh = texts.filter((text) => {
-      const left = remaining.get(text) ?? 0;
-      if (left > 0) {
-        remaining.set(text, left - 1);
-        return false;
-      }
-      return text.trim().length > 0;
-    });
-    const present = new Set(texts);
-    setMarked((shown) => {
-      const next = new Set([...shown].filter((text) => present.has(text)));
-      for (const text of fresh) next.add(text);
-      return next.size === shown.size && [...next].every((text) => shown.has(text)) ? shown : next;
-    });
-  }, [enabled, revision, root]);
-  // The marked texts as the blocks now on screen, after every revision.
-  useLayoutEffect(() => {
-    if (!root) return;
-    const blocks = Array.from(root.querySelectorAll<HTMLElement>(ARTICLE_BLOCK_SELECTOR));
-    setChanged(outermost(blocks.filter((block) => marked.has(block.textContent ?? ''))));
+    if (!enabled || !root || !rendered.current) return;
+    // The first revision rendered is what the reader has seen.
+    if (!base) {
+      setBase(rendered.current.containers);
+      return;
+    }
+    setCount(changeElements(root).length);
     setCurrent(-1);
-  }, [marked, revision, root]);
+  }, [base, enabled, revision, root]);
   const move = useCallback(
     (step: 1 | -1) => {
-      if (changed.length === 0) return;
-      const next = (current + step + changed.length) % changed.length;
+      const elements = root ? changeElements(root) : [];
+      if (elements.length === 0) return;
+      const next = (current + step + elements.length) % elements.length;
       setCurrent(next);
-      changed[next].scrollIntoView({ block: 'center', behavior: 'smooth' });
+      elements[next].scrollIntoView({ block: 'center', behavior: 'smooth' });
     },
-    [changed, current]
+    [current, root]
   );
   const clear = useCallback(() => {
-    setMarked(new Set());
-    setCurrent(-1);
+    if (rendered.current) setBase(rendered.current.containers);
   }, []);
-  return { changed, current, move, clear };
-}
-
-interface BarBox {
-  readonly top: number;
-  readonly height: number;
-}
-
-/** A bar in the article's left margin beside each changed block. */
-export function ArticleChangeBars({
-  root,
-  revision,
-  changes,
-}: {
-  /** The rendered Markdown; positioned, so the bars scroll with it. */
-  root: HTMLElement | null;
-  revision: string;
-  changes: ArticleChanges;
-}) {
-  const [boxes, setBoxes] = useState<readonly BarBox[]>([]);
-  useLayoutEffect(() => {
-    const element = root;
-    if (!element) return undefined;
-    const measure = () => {
-      const origin = element.getBoundingClientRect();
-      setBoxes(
-        changes.changed
-          .filter((block) => element.contains(block))
-          .map((block) => {
-            const box = block.getBoundingClientRect();
-            return { top: box.top - origin.top, height: box.height };
-          })
-      );
-    };
-    measure();
-    if (typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [changes.changed, revision, root]);
-  return boxes.map((box, index) => (
-    <span
-      key={index}
-      aria-hidden
-      data-article-change-bar
-      {...stylex.props(styles.bar, index === changes.current && styles.current)}
-      style={{ left: 2, top: box.top, height: box.height }}
-    />
-  ));
+  const seeInView = useCallback(
+    (viewport: Element) => {
+      const shown = rendered.current;
+      if (!root || !base || !shown?.diff) return;
+      const view = viewport.getBoundingClientRect();
+      const seen = new Set<number>();
+      for (const element of root.querySelectorAll<HTMLElement>(`[${DIFF_ID_ATTRIBUTE}]`)) {
+        const box = element.getBoundingClientRect();
+        if (box.bottom > view.top && box.top < view.bottom)
+          seen.add(Number(element.getAttribute(DIFF_ID_ATTRIBUTE)));
+      }
+      if (seen.size > 0) setBase(markArticleChangesSeen(base, shown.containers, shown.diff, seen));
+    },
+    [base, root]
+  );
+  return { count, current, move, clear, rehypePlugins, seeInView };
 }
 
 /**
@@ -180,7 +149,7 @@ export function ArticleReviewControls({
   const { t } = useTranslation();
   const waiting = useThreadArticleAnnotations(threadId);
   const { requestSend } = useArticleAnnotationActions();
-  const count = changes?.changed.length ?? 0;
+  const count = changes?.count ?? 0;
   return (
     <>
       {changes && count > 0 ? (

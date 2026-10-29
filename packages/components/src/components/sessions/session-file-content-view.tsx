@@ -80,11 +80,7 @@ import {
   useArticleAnnotationActions,
   useArticleFileAnnotations,
 } from '../boards/article-annotations';
-import {
-  ArticleChangeBars,
-  ArticleReviewControls,
-  useArticleChanges,
-} from '../boards/article-review';
+import { ArticleReviewControls, useArticleChanges } from '../boards/article-review';
 import { SessionFileImagePreview } from './session-file-image-preview';
 import { MarkdownRenderer } from '../ai-gui/markdown-renderer';
 import { MarkdownFileResources } from '../ai-gui/markdown-file-image';
@@ -1710,6 +1706,12 @@ function SessionFileContentViewImpl({
   const previewSurface: ReactNode = isMarkdownTextFile ? (
     <div
       ref={setMarkdownRoot}
+      // A click in the article: the changes marked on screen count as seen.
+      onPointerDown={
+        annotationThreadId
+          ? () => contentBodyRef.current && articleChanges.seeInView(contentBodyRef.current)
+          : undefined
+      }
       {...stylex.props(
         styles.markdownPreview,
         isArticle && styles.articleOutlineGutter,
@@ -1726,24 +1728,27 @@ function SessionFileContentViewImpl({
           automatic={Boolean(sessionFileActions.localHost)}
           active={isActiveSurface && showMarkdownRendered}
         >
-          <MarkdownRenderer text={markdownPreviewText} size={conversationFontSize} allowHtml />
+          <MarkdownRenderer
+            text={markdownPreviewText}
+            size={conversationFontSize}
+            allowHtml
+            extraRehypePlugins={articleChanges.rehypePlugins}
+          />
         </MarkdownFileResources>
       ) : (
-        <MarkdownRenderer text={markdownPreviewText} size={conversationFontSize} allowHtml />
+        <MarkdownRenderer
+          text={markdownPreviewText}
+          size={conversationFontSize}
+          allowHtml
+          extraRehypePlugins={articleChanges.rehypePlugins}
+        />
       )}
       {annotationThreadId && showMarkdownRendered ? (
-        <>
-          <ArticleChangeBars
-            root={markdownRoot}
-            revision={markdownPreviewText}
-            changes={articleChanges}
-          />
-          <ArticleAnnotationMarkers
-            root={markdownRoot}
-            revision={markdownPreviewText}
-            annotations={articleAnnotations}
-          />
-        </>
+        <ArticleAnnotationMarkers
+          root={markdownRoot}
+          revision={markdownPreviewText}
+          annotations={articleAnnotations}
+        />
       ) : null}
     </div>
   ) : isSvgTextFile && data.status === 'ready' && data.snapshot.kind === 'text' ? (
