@@ -464,10 +464,12 @@ export const DIFF_ID_ATTRIBUTE = 'data-lody-diff-id';
 /** On marks: `ins`, `del`, or `block` (a whole block outlined). */
 export const DIFF_KIND_ATTRIBUTE = 'data-lody-diff';
 
+// Marked words take the full text colour (a quote's muted grey on a tint
+// falls under 4.5:1); the tint and the strike line say what changed.
 const INSERT_STYLE =
-  'background-color:hsl(var(--status-success) / 0.2);text-decoration:none;border-radius:2px;box-decoration-break:clone;-webkit-box-decoration-break:clone';
+  'background-color:hsl(var(--status-success) / 0.16);color:hsl(var(--foreground));text-decoration:none;border-radius:2px;box-decoration-break:clone;-webkit-box-decoration-break:clone';
 const DELETE_STYLE =
-  'background-color:hsl(var(--destructive) / 0.1);color:hsl(var(--muted-foreground));text-decoration:line-through;border-radius:2px';
+  'background-color:hsl(var(--destructive) / 0.08);color:hsl(var(--foreground));text-decoration:line-through;text-decoration-color:hsl(var(--destructive));border-radius:2px';
 const BLOCK_STYLE = 'box-shadow:0 0 0 2px hsl(var(--status-success) / 0.35);border-radius:6px';
 
 const mark = (tagName: 'ins' | 'del', hunk: number, children: DiffNode[]): DiffElement => ({
