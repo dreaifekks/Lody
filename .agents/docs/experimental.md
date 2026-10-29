@@ -323,7 +323,11 @@ tool, CLI or protocol change.
   math and rules as whole blocks); equal containers are aligned first, and between
   them containers of the same kind that share at least 30% of their words are
   paired and diffed word by word (one CJK character per word; a lone space between
-  two changes joins them). A changed code block is outlined, without its old code;
+  two changes joins them). Comparisons match the common start and end first; a
+  differing middle past 4M table cells, or a gap of more than 10,000 container
+  pairs, counts as replaced as a whole, so the page never stalls on a long
+  rewrite. A change that spans several text runs (plain, then bold) is marked once
+  per run, each part seen on its own. A changed code block is outlined, without its old code;
   a deleted paragraph shows as a struck paragraph where it was. Pressing anywhere
   in the article counts the changes on screen as seen: they are folded into what
   the reader has seen and their marks go; the others stay. The header counts the

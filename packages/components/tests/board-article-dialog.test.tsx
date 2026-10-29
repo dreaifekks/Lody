@@ -575,6 +575,51 @@ describe('article review', () => {
     expect(marks('ins')).toEqual(['resumed', 'improving']);
   });
 
+  it('keeps deleted paragraphs in their order and marks a long paragraph without a full table', async () => {
+    const render = (paragraphs: readonly string[]) =>
+      act(async () => root.render(createElement(ReviewedArticle, { paragraphs })));
+    await render(['Keep.', 'First removed.', 'Second removed.']);
+    await render(['Keep.']);
+    expect(marks('del')).toEqual(['First removed.', 'Second removed.']);
+
+    // 15,000 characters with the last one changed: only the common start and
+    // end are matched, so the comparison never builds a 15,000² table.
+    const long = '长'.repeat(15_000);
+    await render([`${long}一`]);
+    await act(async () => button('Clear change marks')!.click());
+    await render([`${long}二`]);
+    expect(marks('del')).toEqual(['一']);
+    expect(marks('ins')).toEqual(['二']);
+  });
+
+  it('counts only the on-screen part of a change that spans plain and bold text as seen', async () => {
+    const render = (markdown: string) =>
+      act(async () => root.render(createElement(ReviewedArticle, { markdown })));
+    await render('Alpha beta **gamma** delta.');
+    await render('Alpha one **two** delta.');
+    expect(marks('del')).toEqual(['beta gamma']);
+    expect(marks('ins')).toEqual(['one ', 'two']);
+
+    // The bold part is below the screen; the rest is on it.
+    const saved = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      if (this.dataset['testid'] === 'viewport') return new DOMRect(0, 0, 600, 400);
+      return new DOMRect(0, this.closest('strong') ? 900 : 40, 50, 20);
+    };
+    try {
+      await act(async () => {
+        container
+          .querySelector('[data-testid="viewport"]')!
+          .dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      });
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = saved;
+    }
+    // The deleted words sat on screen with the first part: they went with it.
+    expect(marks('ins')).toEqual(['two']);
+    expect(marks('del')).toEqual([]);
+  });
+
   it('keeps a sent comment at its passage, says when the agent changed it, and resolves it', async () => {
     const sent: ArticleAnnotation = { ...COMMENT, sent: { number: 2, atMs: 1 } };
     getDefaultStore().set(articleAnnotationsAtom, [sent]);

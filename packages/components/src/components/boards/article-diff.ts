@@ -228,7 +228,20 @@ function collectContainers(parent: DiffParent, found: FoundContainer[]): void {
 const containerKey = (container: ArticleContainer): string =>
   `${container.kind}\u0001${container.tokens.join('')}`;
 
-/** Longest common subsequence of two lists by key: the pairs of equal indices, in order. */
+/**
+ * The middle of two lists the full comparison table may cover: past this many
+ * cells (about 16 MB) the differing middle counts as replaced as a whole, so a
+ * long paragraph rewritten throughout never stalls the page.
+ */
+const MAX_TABLE_CELLS = 4_000_000;
+/** Container pairs compared between two equal containers, at most. */
+const MAX_PAIRED_GAP = 10_000;
+
+/**
+ * Longest common subsequence of two lists by key: the pairs of equal indices,
+ * in order. The common start and end are matched first; only the middle that
+ * differs goes through the table.
+ */
 function commonPairs<T>(
   a: readonly T[],
   b: readonly T[],
@@ -236,25 +249,39 @@ function commonPairs<T>(
 ): [number, number][] {
   const ak = a.map(key);
   const bk = b.map(key);
-  const width = b.length + 1;
-  const table = new Uint32Array((a.length + 1) * width);
-  for (let i = a.length - 1; i >= 0; i -= 1)
-    for (let j = b.length - 1; j >= 0; j -= 1)
-      table[i * width + j] =
-        ak[i] === bk[j]
-          ? table[(i + 1) * width + j + 1] + 1
-          : Math.max(table[(i + 1) * width + j], table[i * width + j + 1]);
-  const pairs: [number, number][] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    if (ak[i] === bk[j]) {
-      pairs.push([i, j]);
-      i += 1;
-      j += 1;
-    } else if (table[(i + 1) * width + j] >= table[i * width + j + 1]) i += 1;
-    else j += 1;
+  let start = 0;
+  while (start < ak.length && start < bk.length && ak[start] === bk[start]) start += 1;
+  let endA = ak.length;
+  let endB = bk.length;
+  while (endA > start && endB > start && ak[endA - 1] === bk[endB - 1]) {
+    endA -= 1;
+    endB -= 1;
   }
+  const pairs: [number, number][] = [];
+  for (let index = 0; index < start; index += 1) pairs.push([index, index]);
+  const rows = endA - start;
+  const width = endB - start + 1;
+  if (rows > 0 && width > 1 && (rows + 1) * width <= MAX_TABLE_CELLS) {
+    const table = new Uint32Array((rows + 1) * width);
+    for (let i = rows - 1; i >= 0; i -= 1)
+      for (let j = width - 2; j >= 0; j -= 1)
+        table[i * width + j] =
+          ak[start + i] === bk[start + j]
+            ? table[(i + 1) * width + j + 1] + 1
+            : Math.max(table[(i + 1) * width + j], table[i * width + j + 1]);
+    let i = 0;
+    let j = 0;
+    while (i < rows && j < width - 1) {
+      if (ak[start + i] === bk[start + j]) {
+        pairs.push([start + i, start + j]);
+        i += 1;
+        j += 1;
+      } else if (table[(i + 1) * width + j] >= table[i * width + j + 1]) i += 1;
+      else j += 1;
+    }
+  }
+  for (let offset = 0; endA + offset < ak.length; offset += 1)
+    pairs.push([endA + offset, endB + offset]);
   return pairs;
 }
 
@@ -340,18 +367,31 @@ export function diffArticle(
     const news = current.slice(j, cj);
     const width = news.length + 1;
     const score = new Float64Array((olds.length + 1) * width);
-    const likeness = (a: ArticleContainer, b: ArticleContainer): number => {
-      if (a.kind !== b.kind) return 0;
-      const [ta, tb] =
-        a.kind === 'block'
-          ? [tokenizeText(a.tokens[0]), tokenizeText(b.tokens[0])]
-          : [a.tokens, b.tokens];
-      const words = (tokens: readonly string[]) => tokens.filter((token) => token.trim());
-      const [wa, wb] = [words(ta), words(tb)];
-      const shared = commonPairs(wa, wb, (token) => token).length;
-      return shared / Math.max(wa.length, wb.length, 1);
+    // How alike two containers are: the share of words they have in common,
+    // counted as multisets (cheap; order is left to the word diff).
+    const wordCounts = (container: ArticleContainer): Map<string, number> => {
+      const counts = new Map<string, number>();
+      const tokens =
+        container.kind === 'block' ? tokenizeText(container.tokens[0]) : container.tokens;
+      for (const token of tokens) if (token.trim()) counts.set(token, (counts.get(token) ?? 0) + 1);
+      return counts;
     };
-    const like = olds.map((a) => news.map((b) => likeness(a, b)));
+    const total = (counts: Map<string, number>) =>
+      [...counts.values()].reduce((sum, n) => sum + n, 0);
+    const oldWords = olds.map(wordCounts);
+    const newWords = news.map(wordCounts);
+    const likeness = (x: number, y: number): number => {
+      if (olds[x].kind !== news[y].kind) return 0;
+      let shared = 0;
+      for (const [word, count] of oldWords[x])
+        shared += Math.min(count, newWords[y].get(word) ?? 0);
+      return shared / Math.max(total(oldWords[x]), total(newWords[y]), 1);
+    };
+    // A gap this large is a rewrite: its containers count as deleted and added.
+    const like =
+      olds.length * news.length > MAX_PAIRED_GAP
+        ? olds.map(() => news.map(() => 0))
+        : olds.map((_, x) => news.map((__, y) => likeness(x, y)));
     for (let x = olds.length - 1; x >= 0; x -= 1)
       for (let y = news.length - 1; y >= 0; y -= 1)
         score[x * width + y] = Math.max(
@@ -443,26 +483,52 @@ const mark = (tagName: 'ins' | 'del', hunk: number, children: DiffNode[]): DiffE
 const text = (value: string): DiffText => ({ type: 'text', value });
 
 /** Puts a modified container's token ops back into its leaves. */
-function markInline(found: FoundContainer, ops: readonly (Op & { hunk: number })[]): void {
+/**
+ * Puts a modified container's token ops back into its leaves, and returns
+ * the ops with the hunk of each as marked: a change that spans several leaves
+ * (plain text, then bold) is marked once per leaf, each part with its own
+ * hunk, so a part on screen counts as seen without the parts off screen.
+ */
+function markInline(
+  found: FoundContainer,
+  ops: readonly (Op & { hunk: number })[],
+  newHunk: () => number
+): (Op & { hunk: number })[] {
   // Each leaf's replacement children, and deleted runs waiting for the next place to go.
   const replaced = new Map<DiffNode, DiffNode[]>();
+  const marked = ops.map((op) => ({ ...op }));
+  const parts = new Map<string, number>();
+  const firstLeaf = new Map<number, number>();
+  let leafIndex = 0;
+  const partOf = (hunk: number): number => {
+    const first = firstLeaf.get(hunk);
+    if (first === undefined) firstLeaf.set(hunk, leafIndex);
+    if (first === undefined || first === leafIndex) return hunk;
+    const key = `${hunk}:${leafIndex}`;
+    let part = parts.get(key);
+    if (part === undefined) parts.set(key, (part = newHunk()));
+    return part;
+  };
   let pending: { hunk: number; text: string } | null = null;
   let opIndex = 0;
   const takeDeleted = (): DiffNode[] => {
     const run: DiffNode[] = [];
     while (opIndex < ops.length && ops[opIndex].type === 'delete') {
-      const op = ops[opIndex++];
-      if (pending && pending.hunk === op.hunk) pending.text += tokenText(op.token);
+      const hunk = partOf(ops[opIndex].hunk);
+      marked[opIndex].hunk = hunk;
+      const token = tokenText(ops[opIndex++].token);
+      if (pending && pending.hunk === hunk) pending.text += token;
       else {
         if (pending) run.push(mark('del', pending.hunk, [text(pending.text)]));
-        pending = { hunk: op.hunk, text: tokenText(op.token) };
+        pending = { hunk, text: token };
       }
     }
     if (pending) run.push(mark('del', pending.hunk, [text(pending.text)]));
     pending = null;
     return run;
   };
-  for (const leaf of found.leaves) {
+  for (const [index, leaf] of found.leaves.entries()) {
+    leafIndex = index;
     const out: DiffNode[] = [];
     const tokens = leaf.kind === 'text' ? leaf.tokens : [leaf.token];
     let plain = '';
@@ -482,12 +548,14 @@ function markInline(found: FoundContainer, ops: readonly (Op & { hunk: number })
         flushInserted();
         out.push(...deleted);
       }
-      const op = ops[opIndex++];
+      const op = ops[opIndex];
+      const hunk = op.type === 'insert' ? partOf(op.hunk) : -1;
+      marked[opIndex++].hunk = hunk;
       const piece: DiffNode = leaf.kind === 'atomic' ? leaf.node : text(token);
       if (op.type === 'insert') {
         flushPlain();
-        if (inserted && inserted.hunk !== op.hunk) flushInserted();
-        inserted ??= { hunk: op.hunk, nodes: [] };
+        if (inserted && inserted.hunk !== hunk) flushInserted();
+        inserted ??= { hunk, nodes: [] };
         const last = inserted.nodes.at(-1);
         if (piece.type === 'text' && last?.type === 'text') last.value += piece.value;
         else inserted.nodes.push(piece);
@@ -501,6 +569,7 @@ function markInline(found: FoundContainer, ops: readonly (Op & { hunk: number })
     flushInserted();
     replaced.set(leaf.node, out);
   }
+  leafIndex = found.leaves.length;
   const trailing = takeDeleted();
   if (trailing.length) found.element.children.push(...trailing);
   const rebuild = (element: DiffElement) => {
@@ -512,6 +581,7 @@ function markInline(found: FoundContainer, ops: readonly (Op & { hunk: number })
     });
   };
   rebuild(found.element);
+  return marked;
 }
 
 /** A deleted container shown where it was: struck text in its own paragraph, or inline in a cell. */
@@ -535,7 +605,15 @@ function insertDeleted(
       properties: { [DIFF_KIND_ATTRIBUTE]: 'removed' },
       children: [struck],
     };
-    siblings.splice(before ? index : index + 1, 0, paragraph);
+    // After the anchor, past deletions already put there, so they keep their order.
+    let at = before ? index : index + 1;
+    if (!before)
+      while (
+        siblings[at]?.type === 'element' &&
+        (siblings[at] as DiffElement).properties[DIFF_KIND_ATTRIBUTE] === 'removed'
+      )
+        at += 1;
+    siblings.splice(at, 0, paragraph);
   } else if (anchor) {
     anchor.element.children.unshift(struck);
   } else {
@@ -582,20 +660,29 @@ export function markArticleChanges(
   collectContainers(root, found);
   const containers = found.map((item) => item.container);
   if (!base) return { containers, diff: null };
-  const diff = diffArticle(base, containers);
+  const compared = diffArticle(base, containers);
+  let hunks = compared.hunks;
+  const newHunk = () => hunks++;
   // Inline marks first, then deleted containers beside their neighbours, then
   // outlines last: an outline replaces its block, which deletions anchor to.
   const outlines: [FoundContainer, number][] = [];
   const deletions: (() => void)[] = [];
-  for (const [index, item] of diff.alignment.entries()) {
-    if (item.type === 'modified') markInline(found[item.current], item.ops);
+  const alignment = compared.alignment.map((item) =>
+    item.type === 'modified'
+      ? { ...item, ops: markInline(found[item.current], item.ops, newHunk) }
+      : item
+  );
+  for (const [index, item] of alignment.entries()) {
+    if (item.type === 'modified') continue;
     else if (item.type === 'replaced' || item.type === 'inserted') {
       const target = found[item.current];
       if (target.container.kind === 'block') outlines.push([target, item.hunk]);
       else
         markInline(
           target,
-          target.container.tokens.map((token) => ({ type: 'insert', token, hunk: item.hunk }))
+          target.container.tokens.map((token) => ({ type: 'insert', token, hunk: item.hunk })),
+          // A container added whole is one change, however many leaves it spans.
+          () => item.hunk
         );
       // A rewritten code block is outlined; its old text would only be noise.
       if (
@@ -604,8 +691,8 @@ export function markArticleChanges(
       )
         deletions.push(() => insertDeleted(base[item.base], item.hunk, target, undefined, root));
     } else if (item.type === 'deleted') {
-      const next = diff.alignment.slice(index + 1).find((later) => 'current' in later);
-      const previous = diff.alignment
+      const next = alignment.slice(index + 1).find((later) => 'current' in later);
+      const previous = alignment
         .slice(0, index)
         .reverse()
         .find((earlier) => 'current' in earlier);
@@ -622,5 +709,5 @@ export function markArticleChanges(
   }
   for (const insert of deletions) insert();
   for (const [target, hunk] of outlines) outlineBlock(target, hunk);
-  return { containers, diff };
+  return { containers, diff: { alignment, hunks } };
 }
