@@ -32,6 +32,13 @@ export const ARTICLE_REPORT_MD = [
   '',
   '> 这份数据可能过时了：上游 0.107.0 还没打 tag。',
   '',
+  '<details>',
+  '<summary>轮询参数的来历</summary>',
+  '',
+  '5 秒和 15 秒是 2026-10-19 在 Mac 测试版上试出来的，再短会让 LAN 上的请求翻倍。',
+  '',
+  '</details>',
+  '',
 ].join('\n');
 
 export const ARTICLE_DEMO_HTML = `<!doctype html>
@@ -82,6 +89,55 @@ export const ARTICLE_DEMO_HTML = `<!doctype html>
     document.getElementById('idle').addEventListener('click', () => pick(15, 'idle'));
     pick(5, 'busy');
   }
+</script>
+</body>
+</html>
+`;
+
+/**
+ * The report after the thread answered the comments: one list item, the code,
+ * the quote and the folded note rewritten.
+ */
+export const ARTICLE_REPORT_MD_REVISED = ARTICLE_REPORT_MD.replace(
+  'useSessionFileDigestWatch({ enabled, busy, check });',
+  'useSessionFileDigestWatch({ enabled, busy, check, settleMs: 1_000 });'
+)
+  .replace(
+    '5 秒和 15 秒是 2026-10-19 在 Mac 测试版上试出来的，再短会让 LAN 上的请求翻倍。',
+    '5 秒和 15 秒是 2026-10-19 在 Mac 测试版上试出来的，再短会让 LAN 上的请求多出一半。'
+  )
+  .replace(
+    '- HTML 在 widget 页面里运行，只能从几个 CDN 加载脚本和样式。',
+    '- HTML 在 widget 页面里运行，只能从 cdnjs、jsdelivr、unpkg、esm.sh 和 Google Fonts 加载脚本和样式。'
+  )
+  .replace(
+    '> 这份数据可能过时了：上游 0.107.0 还没打 tag。',
+    '> 上游 0.107.2 已发布，数据按 0.107.2 更新。'
+  );
+
+/** A test bench with a control to keep across revisions, a script error and a file that will not load. */
+export const ARTICLE_BROKEN_HTML = `<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>弹簧参数台</title>
+<script src="https://cdn.jsdelivr.net/npm/no-such-package-lody@0.0.0/missing.js"></script>
+<style>
+  body { margin: 0; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); background: var(--surface-0); }
+  label { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+  output { font-family: var(--font-mono); color: var(--text-secondary); }
+</style>
+</head>
+<body>
+<h1>弹簧参数台</h1>
+<label>刚度 <input id="stiffness" type="range" min="50" max="500" value="170"> <output id="stiffness-value">170</output></label>
+<details><summary>说明</summary><p>拖动滑块后让线程改页面，刷新后滑块应停在原处。</p></details>
+<script>
+  const input = document.getElementById('stiffness');
+  const show = () => { document.getElementById('stiffness-value').textContent = input.value; };
+  input.addEventListener('input', show);
+  show();
+  drawCurve(input.value);
 </script>
 </body>
 </html>

@@ -114,6 +114,7 @@ import { validateSessionImageFile } from '@/lib/session-image-upload';
 import { formatDocumentSelection, type DocumentSelection } from '@/lib/document-selection';
 import { PendingImageMarkupDialog } from './pending-image-markup-dialog';
 import {
+  articleAnnotationSendRequestAtom,
   formatArticleAnnotations,
   useArticleAnnotationActions,
   useThreadArticleAnnotations,
@@ -715,7 +716,10 @@ export const SessionChatInputArea = memo(
     const visualAnnotationRefIdCounter = useRef(0);
     // Comments on a Board article wait beside it; the next message carries them at its end.
     const articleAnnotations = useThreadArticleAnnotations(session.id);
-    const { remove: removeArticleAnnotations } = useArticleAnnotationActions();
+    const { markSent: markArticleAnnotationsSent } = useArticleAnnotationActions();
+    // The article's "Send comments" asks this composer to send as it is.
+    const articleSendRequest = useAtomValue(articleAnnotationSendRequestAtom);
+    const handledArticleSendRequest = useRef(articleSendRequest);
 
     const publishCommentReferences = useCallback(
       (items: CommentReferenceChipItem[]) => {
@@ -1750,20 +1754,22 @@ export const SessionChatInputArea = memo(
           expandedPrompt.spans
         );
         const submittedAnnotations = articleAnnotations;
-        const messageText =
+        const formattedAnnotations =
           submittedAnnotations.length === 0
-            ? trimmedPrompt
-            : [
-                trimmedPrompt,
-                formatArticleAnnotations(
-                  submittedAnnotations,
-                  t('sessions.article.annotation.count', 'Comments ({{count}})', {
-                    count: submittedAnnotations.length,
-                  })
+            ? null
+            : formatArticleAnnotations(submittedAnnotations, {
+                heading: t('sessions.article.annotation.count', 'Comments ({{count}})', {
+                  count: submittedAnnotations.length,
+                }),
+                hint: t(
+                  'sessions.article.annotation.replyHint',
+                  'Answer each comment by its number.'
                 ),
-              ]
-                .filter(Boolean)
-                .join('\n\n');
+                earlier: t('sessions.article.annotation.earlier', 'Asked before:'),
+              });
+        const messageText = formattedAnnotations
+          ? [trimmedPrompt, formattedAnnotations.text].filter(Boolean).join('\n\n')
+          : trimmedPrompt;
         const textBlocks: SessionInputBlock[] = messageText
           ? [
               {
@@ -1873,8 +1879,8 @@ export const SessionChatInputArea = memo(
             if (submittedVisualAnnotationReferences.length > 0) {
               void onVisualAnnotationReferencesSubmitted?.(submittedVisualAnnotationReferences);
             }
-            if (submittedAnnotations.length > 0)
-              removeArticleAnnotations(new Set(submittedAnnotations));
+            if (formattedAnnotations)
+              markArticleAnnotationsSent(formattedAnnotations.carried, Date.now());
           }
         } finally {
           submission.finish();
@@ -1900,7 +1906,7 @@ export const SessionChatInputArea = memo(
         publishCommentReferences,
         publishVisualAnnotationReferences,
         postHog,
-        removeArticleAnnotations,
+        markArticleAnnotationsSent,
         session.id,
         session.machineId,
         sessionProjectKind,
@@ -1938,6 +1944,12 @@ export const SessionChatInputArea = memo(
       },
       [mobileKeyboardAction, sendMessage, usesMobileKeyboardAction]
     );
+
+    useEffect(() => {
+      if (articleSendRequest === handledArticleSendRequest.current) return;
+      handledArticleSendRequest.current = articleSendRequest;
+      if (articleSendRequest?.threadId === session.id) void sendMessage();
+    }, [articleSendRequest, sendMessage, session.id]);
 
     const hasDraft =
       userInput.trim().length > 0 ||

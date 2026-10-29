@@ -79,7 +79,7 @@ Translation: pending
 - 多文件的完整应用不放进 article，仍由 agent 起服务，经 `lody_report_preview_candidate` 在
   Browser tab 里看。
 
-### 批注：停在段落末尾，随下一条消息发出，不持久化
+### 批注：停在段落末尾，随下一条消息发出，发出后留着等 agent 改
 
 2026-10-21 用户改了批注的去处：写完不再往输入框插 chip，而是留在 article 里，发送时自动
 带上。
@@ -104,16 +104,43 @@ Translation: pending
   按文件分组，文件内按文档顺序；批注内容为空就只有引用。不写行号：浮窗关着时文件也可能
   被改，行号会过时、指错地方，而引用的原文本身就能让 agent 搜到位置。没有批注时发送内容
   完全不变。
-- 只在发送真的被接受后清掉这次带上的批注，图标随之消失（不留淡色图标：消息里已经有全文）；
-  发送失败时批注留着，下次发送再带。等待接受期间改过的批注不算已发送，留到下次。
+- 消息末尾在「批注（N 条）」下面多一行「请按编号逐条回应」，让 agent 按编号回复。
+- 浮窗标头有「发送 N 条批注」按钮：让右栏线程的输入框按原样发送，输入框里已经打的字一起
+  发出。
+- 2026-10-29 用户参考 ryugi（Innei/ryugi，只借思路，不搬代码）改了发出之后的去处：发送真的被
+  接受后，这次带上的批注不删，标成已发送，记下它在消息里的编号；图标变淡，popover 写
+  「#2 · 已发送，等 agent 修改」。agent 改了那一段之后（渲染后找不到写批注时那一块的原文），
+  图标变成强调色，popover 写「agent 改过这段」。已发送的批注可以「解决」（删掉）或「追问」：
+  追问写一条新的未发送批注替换它，发出时带上「之前问过：…」。没人处理的已发送批注 30 天后
+  删掉。发送失败时批注保持未发送，下次再带；等待接受期间改过的批注不算已发送，留到下次。
 - 输入框里有未发送批注时，输入框内显示一行小号 muted 的「将附带 N 条批注」，0 条不显示。
   对话只有一个实例，所以关掉浮窗、在侧边面板里发送也照样带上、照样提示。
-- 批注归属：发送它的线程（写批注时浮窗右栏的线程）+ article（文件所在线程 + 路径），只在
-  内存里，应用重启就没了。关闭再打开浮窗、换文件，没发的批注都还在。右栏切到别的成员时，
-  article 上只显示要随这个成员的消息发出的批注。
+- 批注归属：发送它的线程（写批注时浮窗右栏的线程）+ article（文件所在线程 + 路径），存在
+  本机 localStorage，重启还在，换一台设备看不到（用户 2026-10-29 选的「只存本机」；写到
+  文章旁边的文件需要后端加写入通道，没做）。右栏切到别的成员时，article 上只显示要随这个
+  成员的消息发出的批注。
 - Esc 依次关编辑框或 popover（popover 里正在编辑时先退出编辑），最后关浮窗。
 - 普通文件 tab 里的 Markdown 选区批注照旧作为 chip 进输入框。浮窗里的 HTML 暂时没有元素
   批注。
+
+### 改动标记：只标改动的字，点过就算看过
+
+- 浮窗打开后看到的第一个版本算「已看过」。之后的新版本跟它比，改动直接标在正文里：删掉的字
+  加删除线，紧跟着是替换它的新字加背景高亮；不标整段，只标改了的那几个字（2026-10-29 用户
+  定，替代原先的段落竖条）。代码块改了显示成逐行 diff（删掉的行红、加的行绿、其余照常），
+  公式、Mermaid 图这类整块内容改了就整块描边；整段删掉的在原位置显示一段删除线文字。
+  `<details>` 折着时，里面有没看过的改动就在标题后显示「有改动」，跳到那处改动时自动展开。
+- 用户在 article 里点一下，当前屏幕范围内的改动就算看过，标记消失；屏幕外的保留。之后的新
+  版本跟「看过的」比。标头显示剩余改动数，可以上下跳、一键清除。关掉浮窗就不记了。
+
+### HTML 测试台：控件值保留，报错可见
+
+- agent 改写页面后，新版本恢复用户调过的输入框、选择框、勾选框的值（按 id，其次 name，再
+  其次位置），以及展开的 `<details>` 和滚动位置，并对每个控件触发 `input`、`change`，页面
+  从这些事件重新渲染。值只在内存里，按线程 + 路径存，应用开着时有效。
+- 页面里未捕获的错误、未处理的 rejection、加载失败的文件列在页面下方（最多 20 条，下个
+  版本清空）；「附到下条消息」把它们变成一条没有段落的批注，随线程下一条消息发出，发出后
+  就删掉。
 
 ### 刷新：digest 轮询
 
@@ -132,7 +159,7 @@ Translation: pending
 
 - 实现：`packages/components/src/components/boards/board-article-dialog.tsx`、
   `boards/relocatable-host.tsx`、`boards/article-annotations.ts`（批注存储和发送格式）、
-  `boards/article-annotation-markers.tsx`（图标和 popover）、`sessions/article-html-frame.tsx`、
+  `boards/article-annotation-markers.tsx`（图标和 popover）、`boards/article-diff.ts`（改动比对和标记）、`boards/article-review.tsx`（标头控件）、`sessions/article-html-frame.tsx`、
   `sessions/article-outline.tsx`、`hooks/use-session-file-digest-watch.ts`，
   `sessions/session-detail.tsx`（打开/关闭和状态）、`sessions/session-chat-input-area.tsx`（发送时拼接）。
 - 测试：`packages/components/tests/board-article-dialog.test.tsx`、`document-selection.test.tsx`、

@@ -78,8 +78,9 @@ import { ArticleAnnotationMarkers } from '../boards/article-annotation-markers';
 import {
   articleBlockOf,
   useArticleAnnotationActions,
-  useThreadArticleAnnotations,
+  useArticleFileAnnotations,
 } from '../boards/article-annotations';
+import { ArticleReviewControls, useArticleChanges } from '../boards/article-review';
 import { SessionFileImagePreview } from './session-file-image-preview';
 import { MarkdownRenderer } from '../ai-gui/markdown-renderer';
 import { MarkdownFileResources } from '../ai-gui/markdown-file-image';
@@ -139,6 +140,9 @@ const styles = stylex.create({
   spinner16: { width: '16px', height: '16px', flexShrink: 0 },
   spinner14: { width: '14px', height: '14px', flexShrink: 0 },
   articleMarkdown: { position: 'relative' },
+  // Clears the outline rail (8px in, up to 15px wide) when the article is too
+  // narrow for its centred margin to.
+  articleOutlineGutter: { paddingInlineStart: '32px' },
   markdownPreview: {
     width: '100%',
     maxWidth: '48rem',
@@ -1685,13 +1689,15 @@ function SessionFileContentViewImpl({
   const annotationThreadId = isArticle && isMarkdownTextFile ? article.annotationThreadId : null;
   const [markdownRoot, setMarkdownRoot] = useState<HTMLDivElement | null>(null);
   const annotationActions = useArticleAnnotationActions();
-  const threadAnnotations = useThreadArticleAnnotations(annotationThreadId);
-  const articleAnnotations = useMemo(
-    () =>
-      threadAnnotations.filter(
-        (annotation) => annotation.ownerThreadId === sessionId && annotation.path === normalizedPath
-      ),
-    [normalizedPath, sessionId, threadAnnotations]
+  const articleAnnotations = useArticleFileAnnotations(
+    annotationThreadId,
+    sessionId,
+    normalizedPath
+  );
+  const articleChanges = useArticleChanges(
+    markdownRoot,
+    markdownPreviewText,
+    annotationThreadId !== null && showMarkdownRendered
   );
   // The rendered surface for a previewable text file (Markdown doc / SVG image).
   // Only shown after the user clicks the preview toggle — hover never mounts it.
@@ -1700,7 +1706,19 @@ function SessionFileContentViewImpl({
   const previewSurface: ReactNode = isMarkdownTextFile ? (
     <div
       ref={setMarkdownRoot}
-      {...stylex.props(styles.markdownPreview, annotationThreadId && styles.articleMarkdown)}
+      // A click in the article: the changes marked on screen count as seen.
+      // On click, after the clicked control's own handler: a code diff's copy
+      // button must still be there when its click lands.
+      onClick={
+        annotationThreadId
+          ? () => contentBodyRef.current && articleChanges.seeInView(contentBodyRef.current)
+          : undefined
+      }
+      {...stylex.props(
+        styles.markdownPreview,
+        isArticle && styles.articleOutlineGutter,
+        annotationThreadId && styles.articleMarkdown
+      )}
       data-native-selection-allow
     >
       {fileProvider ? (
@@ -1712,10 +1730,20 @@ function SessionFileContentViewImpl({
           automatic={Boolean(sessionFileActions.localHost)}
           active={isActiveSurface && showMarkdownRendered}
         >
-          <MarkdownRenderer text={markdownPreviewText} size={conversationFontSize} allowHtml />
+          <MarkdownRenderer
+            text={markdownPreviewText}
+            size={conversationFontSize}
+            allowHtml
+            extraRehypePlugins={articleChanges.rehypePlugins}
+          />
         </MarkdownFileResources>
       ) : (
-        <MarkdownRenderer text={markdownPreviewText} size={conversationFontSize} allowHtml />
+        <MarkdownRenderer
+          text={markdownPreviewText}
+          size={conversationFontSize}
+          allowHtml
+          extraRehypePlugins={articleChanges.rehypePlugins}
+        />
       )}
       {annotationThreadId && showMarkdownRendered ? (
         <ArticleAnnotationMarkers
@@ -1860,6 +1888,16 @@ function SessionFileContentViewImpl({
           key={`${articleHtmlKey}:${articleReloadSeq}`}
           html={htmlPreviewSource}
           title={normalizedPath}
+          stateKey={`${sessionId}:${normalizedPath}`}
+          comments={
+            article.annotationThreadId
+              ? {
+                  threadId: article.annotationThreadId,
+                  ownerThreadId: sessionId,
+                  path: normalizedPath,
+                }
+              : null
+          }
         />
       </div>
     );
@@ -2138,6 +2176,10 @@ function SessionFileContentViewImpl({
         </span>
       ) : null}
       <div {...stylex.props(styles.toolbarActions)}>
+        <ArticleReviewControls
+          threadId={article.annotationThreadId}
+          changes={annotationThreadId ? articleChanges : null}
+        />
         {articleUpdateHeld && articleUpdate ? (
           <Button size="mini" variant="ghost" onClick={applyArticleUpdate}>
             {t('sessions.article.updated', 'Updated')} · {t('sessions.article.reload', 'Reload')}
