@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, createElement, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { JSDOM } from 'jsdom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoardArticleDialog } from '../src/components/boards/board-article-dialog';
@@ -590,6 +591,39 @@ describe('article review', () => {
       );
       // The page's own code runs between the state script and the restore.
       expect(next.indexOf('<p>v2</p>')).toBeLessThan(next.indexOf('__lodyArticleRestore()'));
+    });
+
+    it('puts the settings back after the page has set itself up, async ready handlers included', async () => {
+      await showRevision('<input id="stiffness" value="170">');
+      await fromPage({
+        type: 'lody-article:state',
+        state: { controls: { '#stiffness': { value: '320' } }, details: [], scroll: [0, 0] },
+      });
+      const code = await showRevision(
+        '<input id="stiffness" value="170"><output id="shown"></output><script>' +
+          "document.addEventListener('DOMContentLoaded', async () => {" +
+          'await Promise.resolve();' +
+          "const input = document.getElementById('stiffness');" +
+          "input.value = '100';" +
+          "input.addEventListener('input', () => { document.getElementById('shown').textContent = input.value; });" +
+          '});</script>'
+      );
+      // Run the posted page as the widget page does: its markup, then each script in order.
+      const page = new JSDOM('<!doctype html><body><div id="root"></div></body>', {
+        runScripts: 'outside-only',
+      });
+      const pageDocument = page.window.document;
+      const template = pageDocument.createElement('template');
+      template.innerHTML = code;
+      const pageRoot = pageDocument.getElementById('root')!;
+      pageRoot.appendChild(template.content);
+      for (const script of Array.from(pageRoot.querySelectorAll('script')))
+        page.window.eval(script.textContent ?? '');
+      // The handler and the restore chain are microtasks only.
+      for (let step = 0; step < 10; step += 1) await Promise.resolve();
+      expect(pageDocument.querySelector<HTMLInputElement>('#stiffness')!.value).toBe('320');
+      expect(pageDocument.querySelector('#shown')!.textContent).toBe('320');
+      page.window.close();
     });
 
     it('shows errors the page reports and sends them with the next message on request', async () => {

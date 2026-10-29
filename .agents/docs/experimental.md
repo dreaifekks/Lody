@@ -300,8 +300,11 @@ tool, CLI or protocol change.
   asks that thread's composer to send as it is (`articleAnnotationSendRequestAtom`),
   so whatever is typed there goes too.
   An accepted send marks the comments it carried as sent, with the number each had
-  in the message, and only in the version it carried, so a failed send keeps them
-  unsent and an edit made while it waited stays for the next. A sent comment stays
+  in the message. It matches them by id and the words it carried, not by object:
+  another window's write makes this one reread the whole list from storage, and
+  those copies still count, while an edit made while the send waited stays unsent
+  for the next. A failed send keeps them unsent. Two windows writing within the
+  same instant can still overwrite each other's change (the list is one key). A sent comment stays
   at its passage, its mark dimmed, until the reader resolves it; once no rendered
   block holds the text it was written against, its mark turns accent-coloured and
   the popover says the agent changed the passage. "Ask again" replaces it with an
@@ -329,8 +332,9 @@ tool, CLI or protocol change.
   A script before the article reports the reader's controls (`input`, `select`,
   `textarea` values and checks, matched by `id`, then `name`, then position), open
   `<details>` and scroll as they change; when the agent's next revision replaces
-  the page, a script after the article's own code puts them back and fires `input`
-  and `change` on each control, so the page renders from them. They live in memory,
+  the page, a script after the article's own code puts them back, once its
+  `DOMContentLoaded`/`load` handlers have settled (async ones included), and fires
+  `input` and `change` on each control, so the page renders from them. They live in memory,
   per thread and path, while the app runs. The same script reports uncaught errors,
   unhandled rejections and files that fail to load; they list under the page (up to
   20, cleared by the next revision), and "Add to the next message" turns them into

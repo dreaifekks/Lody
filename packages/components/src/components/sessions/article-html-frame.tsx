@@ -93,23 +93,26 @@ const articleStateScript = (saved: unknown): string =>
  * page's 15px; whatever size the article sets for itself still wins, since it
  * comes after this. The page runs the article's scripts one by one, waiting for each CDN
  * script, so its `DOMContentLoaded`/`load` handlers are held until the last
- * script has run, then called in that order (`onload` too).
+ * script has run, then called in that order (`onload` too); it returns their
+ * settling, so the reader's settings come back after async handlers finish.
  */
 const ARTICLE_PRELUDE =
   '<style>html,body{height:100%;overflow:auto!important}' +
   'body{font-size:var(--lody-article-font-size)}</style>' +
   '<script>(function(){var ready={DOMContentLoaded:[],load:[]},done=false;' +
-  "function call(t,type,fn){var e=new Event(type);typeof fn==='function'?fn.call(t,e):fn&&fn.handleEvent&&fn.handleEvent(e);}" +
+  "function call(t,type,fn){var e=new Event(type);return typeof fn==='function'?fn.call(t,e):fn&&fn.handleEvent&&fn.handleEvent(e);}" +
   '[window,document].forEach(function(t){var add=t.addEventListener;' +
   't.addEventListener=function(type,fn,o){if(ready[type]){' +
   'if(done)setTimeout(function(){call(t,type,fn);});else ready[type].push([t,fn]);return;}' +
   'return add.call(this,type,fn,o);};});' +
-  'window.__lodyArticleReady=function(){if(done)return;done=true;' +
-  "['DOMContentLoaded','load'].forEach(function(type){ready[type].forEach(function(e){call(e[0],type,e[1]);});});" +
-  "if(typeof window.onload==='function')call(window,'load',window.onload);};})();</script>";
+  'window.__lodyArticleReady=function(){if(done)return;done=true;var pending=[];' +
+  "['DOMContentLoaded','load'].forEach(function(type){ready[type].forEach(function(e){pending.push(call(e[0],type,e[1]));});});" +
+  "if(typeof window.onload==='function')pending.push(call(window,'load',window.onload));" +
+  'return Promise.all(pending);};})();</script>';
+// Restores once the ready handlers have settled, async ones included.
 const ARTICLE_EPILOGUE =
-  '<script>window.__lodyArticleReady&&window.__lodyArticleReady();' +
-  'window.__lodyArticleRestore&&window.__lodyArticleRestore();</script>';
+  '<script>Promise.resolve(window.__lodyArticleReady&&window.__lodyArticleReady())' +
+  '.then(function(){window.__lodyArticleRestore&&window.__lodyArticleRestore();});</script>';
 
 /**
  * A thread's HTML article beside its conversation. It runs in the widget page

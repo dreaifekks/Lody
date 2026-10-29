@@ -1880,7 +1880,7 @@ export const SessionChatInputArea = memo(
               void onVisualAnnotationReferencesSubmitted?.(submittedVisualAnnotationReferences);
             }
             if (formattedAnnotations)
-              markArticleAnnotationsSent(formattedAnnotations.numbers, Date.now());
+              markArticleAnnotationsSent(formattedAnnotations.carried, Date.now());
           }
         } finally {
           submission.finish();

@@ -725,15 +725,18 @@ describe('SessionChatInputArea submission feedback', () => {
         .filter((item) => item.sent)
     ).toEqual([]);
 
-    // While the retry waits for acceptance, one comment is edited: the
-    // accepted message carried the old words, so the edit stays for the next.
+    // While the retry waits for acceptance, another window edits one comment
+    // and this one rereads the whole list from storage (equal copies, not the
+    // objects the send carried): the accepted message carried the old words,
+    // so only the edit stays for the next.
     acceptance = deferredBoolean();
     await submit('keyboard');
     expect(submissions[1]).toEqual(submissions[0]);
-    const edited = { ...getDefaultStore().get(articleAnnotationsAtom)[1], comment: 'Or June?' };
     await act(async () => {
       getDefaultStore().set(articleAnnotationsAtom, (items) => [
-        ...items.map((item) => (item.id === 'plan' ? edited : item)),
+        ...(JSON.parse(JSON.stringify(items)) as ArticleAnnotation[]).map((item) =>
+          item.id === 'plan' ? { ...item, comment: 'Or June?' } : item
+        ),
         pageError,
       ]);
     });

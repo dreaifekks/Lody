@@ -90,21 +90,29 @@ export const articleAnnotationSendRequestAtom = atom<{
   readonly seq: number;
 } | null>(null);
 
+/** What a message carried of each comment, by id: its number there and its words. */
+export type CarriedArticleAnnotations = ReadonlyMap<
+  string,
+  { readonly number: number; readonly comment: string }
+>;
+
 /**
- * Marks these exact versions sent with their numbers in the message: a comment
- * edited since (a new object) stays unsent for the next one. A page error has
- * no passage to come back to, so sending it is the end of it; sent comments
- * older than a month go.
+ * Marks the comments a message carried as sent, with their numbers there. A
+ * comment is matched by id and by the words it carried, never by object: a
+ * window that reread the list from storage meanwhile holds equal copies, while
+ * a comment edited during the send stays unsent for the next message. A page
+ * error has no passage to come back to, so sending it is the end of it; sent
+ * comments older than a month go.
  */
 export const markArticleAnnotationsSent = (
   items: readonly ArticleAnnotation[],
-  numbers: ReadonlyMap<ArticleAnnotation, number>,
+  carried: CarriedArticleAnnotations,
   atMs: number
 ): readonly ArticleAnnotation[] =>
   items.flatMap((item) => {
-    const number = numbers.get(item);
-    if (number !== undefined)
-      return item.block.index < 0 ? [] : [{ ...item, sent: { number, atMs } }];
+    const sent = carried.get(item.id);
+    if (sent && sent.comment === item.comment)
+      return item.block.index < 0 ? [] : [{ ...item, sent: { number: sent.number, atMs } }];
     return item.sent && atMs - item.sent.atMs > SENT_RETENTION_MS ? [] : [item];
   });
 
@@ -130,8 +138,8 @@ export function useArticleAnnotationActions() {
       update: (id: string, comment: string) =>
         set((items) => items.map((item) => (item.id === id ? { ...item, comment } : item))),
       remove: (id: string) => set((items) => items.filter((item) => item.id !== id)),
-      markSent: (numbers: ReadonlyMap<ArticleAnnotation, number>, atMs: number) =>
-        set((items) => markArticleAnnotationsSent(items, numbers, atMs)),
+      markSent: (carried: CarriedArticleAnnotations, atMs: number) =>
+        set((items) => markArticleAnnotationsSent(items, carried, atMs)),
       followUp: (id: string, comment: string) =>
         set((items) => followUpArticleAnnotation(items, id, comment)),
       requestSend: (threadId: SessionId) =>
@@ -189,7 +197,7 @@ const indent = (text: string, prefix: string) =>
 
 /**
  * The comments as the end of a message, grouped by file and in document
- * order within each file, with the number each one gets. No line numbers: the
+ * order within each file, with what it carried of each (its number and words). No line numbers: the
  * file may have changed since, and the quote finds the passage anyway.
  *
  *     ---
@@ -204,7 +212,7 @@ const indent = (text: string, prefix: string) =>
 export function formatArticleAnnotations(
   annotations: readonly ArticleAnnotation[],
   labels: { readonly heading: string; readonly hint: string; readonly earlier: string }
-): { readonly text: string; readonly numbers: ReadonlyMap<ArticleAnnotation, number> } {
+): { readonly text: string; readonly carried: CarriedArticleAnnotations } {
   const files = new Map<string, ArticleAnnotation[]>();
   for (const annotation of annotations) {
     const key = `${annotation.ownerThreadId}\n${annotation.path}`;
@@ -224,6 +232,11 @@ export function formatArticleAnnotations(
   });
   return {
     text: ['---', labels.heading, labels.hint, '', entries.join('\n\n')].join('\n'),
-    numbers: new Map(ordered.map((annotation, index) => [annotation, index + 1])),
+    carried: new Map(
+      ordered.map((annotation, index) => [
+        annotation.id,
+        { number: index + 1, comment: annotation.comment },
+      ])
+    ),
   };
 }
