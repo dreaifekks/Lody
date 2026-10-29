@@ -189,10 +189,11 @@ export function ArticleReviewControls({
           role="group"
           aria-label={t('sessions.article.changes.label', 'Changes since you last looked')}
         >
-          <span {...stylex.props(styles.count)}>
-            {changes.current >= 0
-              ? `${changes.current + 1}/${count}`
-              : t('sessions.article.changes.count', '{{count}} changed', { count })}
+          <span
+            {...stylex.props(styles.count)}
+            title={t('sessions.article.changes.count', '{{count}} changed', { count })}
+          >
+            {changes.current >= 0 ? `${changes.current + 1}/${count}` : count}
           </span>
           <Button
             size="mini"

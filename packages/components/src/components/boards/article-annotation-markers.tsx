@@ -5,6 +5,7 @@ import {
   Check,
   MessageSquare,
   MessageSquareDot,
+  MessageSquareMore,
   MessageSquareReply,
   Pencil,
   Trash2,
@@ -28,7 +29,6 @@ const MARKER_SIZE = 24;
 const styles = stylex.create({
   marker: { position: 'absolute', zIndex: 1, userSelect: 'none' },
   icon: { color: colors.tertiaryLabel },
-  sentIcon: { color: colors.tertiaryLabel, opacity: 0.6 },
   changedIcon: { color: colors.accent },
   status: { margin: 0, fontSize: '0.6875rem', color: colors.secondaryLabel },
   statusChanged: { color: colors.accent },
@@ -217,7 +217,7 @@ export function ArticleAnnotationMarkers({
             ) : group.items.some((item) => item.changed) ? (
               <MessageSquareDot size={14} aria-hidden {...stylex.props(styles.changedIcon)} />
             ) : (
-              <MessageSquare size={14} aria-hidden {...stylex.props(styles.sentIcon)} />
+              <MessageSquareMore size={14} aria-hidden {...stylex.props(styles.icon)} />
             )}
             {group.items.length > 1 ? (
               <span {...stylex.props(styles.badge)} aria-hidden>

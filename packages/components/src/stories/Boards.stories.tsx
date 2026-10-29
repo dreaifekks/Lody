@@ -1198,7 +1198,8 @@ const reportComment = (
   id: string,
   quote: string,
   comment: string,
-  blockText = quote
+  blockText = quote,
+  index = -1
 ): ArticleAnnotation => ({
   id,
   threadId: THREAD,
@@ -1206,7 +1207,7 @@ const reportComment = (
   path: 'articles/report.md',
   quote,
   comment,
-  block: { index: -1, text: blockText },
+  block: { index, text: blockText },
 });
 
 /** Unsent comments on the report: two on one list item, one each on a quote and code. */
@@ -1256,17 +1257,28 @@ export const ArticleReviewed: Story = {
         path="articles/report.md"
         provider={revisingArticleProvider()}
         annotations={[
+          // Block indices as the report renders: the list item 4, the code 27, the header cell 9.
           sent(
             reportComment(
               'cdn',
               '只能从几个 CDN 加载脚本和样式',
               '列出是哪几个 CDN。',
-              'HTML 在 widget 页面里运行，只能从几个 CDN 加载脚本和样式。'
+              'HTML 在 widget 页面里运行，只能从几个 CDN 加载脚本和样式。',
+              4
             ),
             1
           ),
-          sent(reportComment('code', 'useSessionFileDigestWatch', '这个 hook 在哪个文件？'), 2),
-          reportComment('table', '需要发 dev 包', '聚焦布局这行为什么不用发？'),
+          sent(
+            reportComment(
+              'code',
+              'useSessionFileDigestWatch',
+              '这个 hook 在哪个文件？',
+              'useSessionFileDigestWatch({ enabled, busy, check });',
+              27
+            ),
+            2
+          ),
+          reportComment('table', '需要发 dev 包', '聚焦布局这行为什么不用发？', '需要发 dev 包', 9),
         ]}
       />
     );

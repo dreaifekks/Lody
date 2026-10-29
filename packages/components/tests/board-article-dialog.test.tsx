@@ -477,17 +477,17 @@ describe('article review', () => {
 
     await render(['Intro.', 'Revenue grew 12% in Q3.', 'Outlook.']);
     expect(container.querySelectorAll('[data-article-change-bar]')).toHaveLength(1);
-    expect(container.querySelector('header')!.textContent).toContain('1 changed');
+    expect(container.querySelector('header')!.textContent).toBe('1');
 
     // A later burst adds to the marks; a marked passage rewritten again stays one mark.
     await render(['Intro.', 'Revenue grew 12% in Q3.', 'Outlook: steady.', 'Risks.']);
-    expect(container.querySelector('header')!.textContent).toContain('3 changed');
+    expect(container.querySelector('header')!.textContent).toBe('3');
     await render(['Intro.', 'Revenue grew 12% in Q3.', 'Outlook: steady.']);
-    expect(container.querySelector('header')!.textContent).toContain('2 changed');
+    expect(container.querySelector('header')!.textContent).toBe('2');
 
     Element.prototype.scrollIntoView = () => undefined;
     await act(async () => button('Next change')!.click());
-    expect(container.querySelector('header')!.textContent).toContain('1/2');
+    expect(container.querySelector('header')!.textContent).toBe('1/2');
 
     await act(async () => button('Clear change marks')!.click());
     expect(container.querySelectorAll('[data-article-change-bar]')).toHaveLength(0);
