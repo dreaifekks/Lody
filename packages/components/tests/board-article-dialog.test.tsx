@@ -4,8 +4,18 @@ import { createPortal } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoardArticleDialog } from '../src/components/boards/board-article-dialog';
+import { getDefaultStore } from 'jotai';
 import { ArticleAnnotationMarkers } from '../src/components/boards/article-annotation-markers';
-import type { ArticleAnnotation } from '../src/components/boards/article-annotations';
+import {
+  articleAnnotationsAtom,
+  type ArticleAnnotation,
+} from '../src/components/boards/article-annotations';
+import {
+  ArticleChangeBars,
+  ArticleReviewControls,
+  useArticleChanges,
+} from '../src/components/boards/article-review';
+import { ArticleHtmlFrame } from '../src/components/sessions/article-html-frame';
 import {
   createRelocatableHost,
   RelocatableSlot,
@@ -13,7 +23,10 @@ import {
 } from '../src/components/boards/relocatable-host';
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (_key: string, fallback: string) => fallback }),
+  useTranslation: () => ({
+    t: (_key: string, fallback: string, values?: Record<string, unknown>) =>
+      fallback.replace(/\{\{(\w+)\}\}/g, (_match, name: string) => String(values?.[name])),
+  }),
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -395,5 +408,233 @@ describe('ArticleAnnotationMarkers', () => {
       Object.defineProperty(Element.prototype, 'clientWidth', saved.clientWidth);
       delete (Range.prototype as Partial<Range>).getClientRects;
     }
+  });
+});
+
+describe('article review', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    // jsdom lays nothing out; the marks only need a box to stand at.
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [new DOMRect(0, 0, 100, 16)],
+    });
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    document.body.replaceChildren();
+    getDefaultStore().set(articleAnnotationsAtom, []);
+    delete (Range.prototype as Partial<Range>).getClientRects;
+  });
+
+  /** A rendered article of paragraphs, with its review marks and header controls. */
+  function ReviewedArticle({
+    paragraphs,
+    annotations = [],
+  }: {
+    paragraphs: readonly string[];
+    annotations?: readonly ArticleAnnotation[];
+  }) {
+    const [element, setElement] = useState<HTMLElement | null>(null);
+    const revision = paragraphs.join('\n');
+    const changes = useArticleChanges(element, revision, true);
+    return createElement(
+      'div',
+      null,
+      createElement(
+        'header',
+        null,
+        createElement(ArticleReviewControls, { threadId: 'thread' as never, changes })
+      ),
+      createElement(
+        'article',
+        { ref: setElement },
+        ...paragraphs.map((text, index) => createElement('p', { key: index }, text)),
+        createElement(ArticleChangeBars, { root: element, revision, changes }),
+        createElement(ArticleAnnotationMarkers, { root: element, revision, annotations })
+      )
+    );
+  }
+
+  const button = (label: string) =>
+    Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
+      (item) => item.getAttribute('aria-label') === label || item.textContent === label
+    );
+
+  it('marks the passages that changed since the reader looked, adding up until cleared', async () => {
+    const render = (paragraphs: readonly string[]) =>
+      act(async () => root.render(createElement(ReviewedArticle, { paragraphs })));
+    await render(['Intro.', 'Revenue grew.', 'Outlook.']);
+    // The first revision shown is the baseline: nothing is new to the reader.
+    expect(container.querySelectorAll('[data-article-change-bar]')).toHaveLength(0);
+    expect(container.querySelector('header')!.textContent).toBe('');
+
+    await render(['Intro.', 'Revenue grew 12% in Q3.', 'Outlook.']);
+    expect(container.querySelectorAll('[data-article-change-bar]')).toHaveLength(1);
+    expect(container.querySelector('header')!.textContent).toContain('1 changed');
+
+    // A later burst adds to the marks; a marked passage rewritten again stays one mark.
+    await render(['Intro.', 'Revenue grew 12% in Q3.', 'Outlook: steady.', 'Risks.']);
+    expect(container.querySelector('header')!.textContent).toContain('3 changed');
+    await render(['Intro.', 'Revenue grew 12% in Q3.', 'Outlook: steady.']);
+    expect(container.querySelector('header')!.textContent).toContain('2 changed');
+
+    Element.prototype.scrollIntoView = () => undefined;
+    await act(async () => button('Next change')!.click());
+    expect(container.querySelector('header')!.textContent).toContain('1/2');
+
+    await act(async () => button('Clear change marks')!.click());
+    expect(container.querySelectorAll('[data-article-change-bar]')).toHaveLength(0);
+    expect(container.querySelector('header')!.textContent).toBe('');
+  });
+
+  it('keeps a sent comment at its passage, says when the agent changed it, and resolves it', async () => {
+    const sent: ArticleAnnotation = { ...COMMENT, sent: { number: 2, atMs: 1 } };
+    getDefaultStore().set(articleAnnotationsAtom, [sent]);
+    const render = (paragraphs: readonly string[]) =>
+      act(async () =>
+        root.render(
+          createElement(ReviewedArticle, {
+            paragraphs,
+            annotations: getDefaultStore().get(articleAnnotationsAtom),
+          })
+        )
+      );
+    await render(['Revenue grew.']);
+    // Sent comments are not waiting to go: no send control.
+    expect(button('Send 1 comments')).toBeUndefined();
+    await act(async () => button('Comments (1)')!.click());
+    expect(document.body.textContent).toContain('#2 · Sent, waiting for the agent');
+
+    await render(['Revenue grew 12% in Q3.']);
+    expect(document.body.textContent).toContain('#2 · The agent changed this passage');
+
+    await act(async () => button('Resolve')!.click());
+    expect(getDefaultStore().get(articleAnnotationsAtom)).toEqual([]);
+  });
+
+  it('asks again about a sent comment as a new comment waiting to be sent', async () => {
+    getDefaultStore().set(articleAnnotationsAtom, [{ ...COMMENT, sent: { number: 1, atMs: 1 } }]);
+    await act(async () =>
+      root.render(
+        createElement(ReviewedArticle, {
+          paragraphs: ['Revenue grew.'],
+          annotations: getDefaultStore().get(articleAnnotationsAtom),
+        })
+      )
+    );
+    await act(async () => button('Comments (1)')!.click());
+    await act(async () => button('Ask again')!.click());
+    const textarea = document.querySelector<HTMLTextAreaElement>('textarea')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        textarea,
+        'Which region?'
+      );
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => button('Save')!.click());
+    expect(getDefaultStore().get(articleAnnotationsAtom)).toMatchObject([
+      { quote: 'Revenue grew', comment: 'Which region?', previous: 'Which quarter?' },
+    ]);
+    expect(getDefaultStore().get(articleAnnotationsAtom)[0].sent).toBeUndefined();
+    expect(button('Send 1 comments')).toBeDefined();
+  });
+
+  describe('HTML article', () => {
+    const frame = () => container.querySelector('iframe')!;
+    const fromPage = (data: unknown) =>
+      act(async () => {
+        window.dispatchEvent(new MessageEvent('message', { data, source: frame().contentWindow }));
+      });
+    /** Mounts a revision of the page and returns what the frame was asked to render. */
+    const showRevision = async (html: string) => {
+      await act(async () =>
+        root.render(
+          createElement(ArticleHtmlFrame, {
+            key: html,
+            html,
+            title: 'bench.html',
+            stateKey: 'thread:bench.html',
+            comments: {
+              threadId: 'beside' as never,
+              ownerThreadId: 'thread' as never,
+              path: 'bench.html',
+            },
+          })
+        )
+      );
+      const posted: unknown[] = [];
+      frame().contentWindow!.postMessage = (message: unknown) => {
+        posted.push(message);
+      };
+      await fromPage({ type: 'lody-widget:ready' });
+      return (posted[0] as { code: string }).code;
+    };
+
+    it("carries the reader's settings over to the agent's next revision", async () => {
+      const first = await showRevision('<input id="stiffness" type="range">');
+      expect(first).toContain('var saved=null;');
+      await fromPage({
+        type: 'lody-article:state',
+        state: { controls: { '#stiffness': { value: '320' } }, details: [], scroll: [0, 40] },
+      });
+      const next = await showRevision('<input id="stiffness" type="range"><p>v2</p>');
+      expect(next).toContain(
+        'var saved={"controls":{"#stiffness":{"value":"320"}},"details":[],"scroll":[0,40]};'
+      );
+      // The page's own code runs between the state script and the restore.
+      expect(next.indexOf('<p>v2</p>')).toBeLessThan(next.indexOf('__lodyArticleRestore()'));
+    });
+
+    it('shows errors the page reports and sends them with the next message on request', async () => {
+      await showRevision('<script>tune()</script>');
+      expect(container.querySelector('[data-article-page-errors]')).toBeNull();
+      await fromPage({
+        type: 'lody-article:error',
+        message: 'ReferenceError: tune is not defined (line 1)',
+      });
+      await fromPage({
+        type: 'lody-article:error',
+        message: 'ReferenceError: tune is not defined (line 1)',
+      });
+      await fromPage({
+        type: 'lody-article:error',
+        message: 'Failed to load https://cdn.example/x.js',
+      });
+      // Messages from anything but this frame are not the page's.
+      await act(async () => {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { type: 'lody-article:error', message: 'forged' },
+            source: window,
+          })
+        );
+      });
+      const strip = container.querySelector('[data-article-page-errors]')!;
+      expect(strip.textContent).toContain('The page reported 2 errors');
+      expect(Array.from(strip.querySelectorAll('li'), (item) => item.textContent)).toEqual([
+        'ReferenceError: tune is not defined (line 1)',
+        'Failed to load https://cdn.example/x.js',
+      ]);
+
+      await act(async () => button('Add to the next message')!.click());
+      expect(getDefaultStore().get(articleAnnotationsAtom)).toMatchObject([
+        {
+          threadId: 'beside',
+          ownerThreadId: 'thread',
+          path: 'bench.html',
+          quote:
+            'ReferenceError: tune is not defined (line 1)\nFailed to load https://cdn.example/x.js',
+          block: { index: -1 },
+        },
+      ]);
+      expect(button('Goes with the next message')!.disabled).toBe(true);
+    });
   });
 });

@@ -34,7 +34,9 @@ import type {
 } from '@lody/shared';
 import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
 import {
+  articleAnnotationSendRequestAtom,
   articleAnnotationsAtom,
+  followUpArticleAnnotation,
   type ArticleAnnotation,
 } from '../src/components/boards/article-annotations';
 
@@ -637,7 +639,7 @@ describe('SessionChatInputArea submission feedback', () => {
     expect(submissions[1]).toEqual(submissions[0]);
   });
 
-  it("carries a thread article's comments at the end of its next message and retires them once accepted", async () => {
+  it("carries a thread article's comments at the end of its next message and keeps them, numbered, once accepted", async () => {
     const sessionId = 'thread-with-comments';
     const comment = (
       id: string,
@@ -654,6 +656,12 @@ describe('SessionChatInputArea submission feedback', () => {
       threadId: 'another-thread' as never,
       quote: 'Unrelated',
       comment: 'Not for this thread',
+    });
+    const pageError = comment('page-error', {
+      path: 'bench.html',
+      quote: 'ReferenceError: tune is not defined (line 3)',
+      comment: 'The page reported these errors.',
+      block: { index: -1, text: '' },
     });
     getDefaultStore().set(articleAnnotationsAtom, [
       comment('late', {
@@ -694,6 +702,7 @@ describe('SessionChatInputArea submission feedback', () => {
       '',
       '---',
       'Comments (3)',
+      'Answer each comment by its number.',
       '',
       '1. `notes/report.md`',
       '   > Revenue grew',
@@ -709,8 +718,12 @@ describe('SessionChatInputArea submission feedback', () => {
       '   > Ship in May',
     ].join('\n');
     expect(submissions[0]).toEqual([{ type: 'text', text: expected }]);
-    // A send that did not go out keeps them for the retry.
-    expect(getDefaultStore().get(articleAnnotationsAtom)).toHaveLength(4);
+    // A send that did not go out keeps them unsent for the retry.
+    expect(
+      getDefaultStore()
+        .get(articleAnnotationsAtom)
+        .filter((item) => item.sent)
+    ).toEqual([]);
 
     // While the retry waits for acceptance, one comment is edited: the
     // accepted message carried the old words, so the edit stays for the next.
@@ -719,23 +732,54 @@ describe('SessionChatInputArea submission feedback', () => {
     expect(submissions[1]).toEqual(submissions[0]);
     const edited = { ...getDefaultStore().get(articleAnnotationsAtom)[1], comment: 'Or June?' };
     await act(async () => {
-      getDefaultStore().set(articleAnnotationsAtom, (items) =>
-        items.map((item) => (item.id === 'plan' ? edited : item))
-      );
+      getDefaultStore().set(articleAnnotationsAtom, (items) => [
+        ...items.map((item) => (item.id === 'plan' ? edited : item)),
+        pageError,
+      ]);
     });
     await act(async () => acceptance!.resolve(true));
-    expect(getDefaultStore().get(articleAnnotationsAtom)).toEqual([edited, elsewhere]);
-    expect(container!.querySelector('[role="status"]')?.textContent).toBe('Includes 1 comment');
+    // The carried comments stay beside the article with their numbers there.
+    const sentNumbers = () =>
+      Object.fromEntries(
+        getDefaultStore()
+          .get(articleAnnotationsAtom)
+          .map((item) => [item.id, item.sent?.number ?? null])
+      );
+    expect(sentNumbers()).toEqual({
+      late: 2,
+      plan: null,
+      early: 1,
+      elsewhere: null,
+      'page-error': null,
+    });
+    expect(container!.querySelector('[role="status"]')?.textContent).toBe('Includes 2 comments');
 
-    const type = (value: string) =>
-      act(async () => {
-        textarea.value = value;
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-      });
+    // Asking again about a sent comment replaces it with an unsent one that
+    // says what was asked before; the article's "Send comments" sends as typed.
+    const early = getDefaultStore()
+      .get(articleAnnotationsAtom)
+      .find((item) => item.id === 'early')!;
+    await act(async () => {
+      getDefaultStore().set(articleAnnotationsAtom, (items) =>
+        followUpArticleAnnotation(items, early.id, 'Still unclear.')
+      );
+    });
     acceptance = deferredBoolean();
     acceptance.resolve(true);
-    await type('Thanks');
-    await submit('keyboard');
+    // Typed as React sees typing: through the native setter, so it is state, not just DOM.
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        textarea,
+        'Thanks'
+      );
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      getDefaultStore().set(articleAnnotationSendRequestAtom, {
+        threadId: sessionId as never,
+        seq: 1,
+      });
+    });
     expect(submissions[2]).toEqual([
       {
         type: 'text',
@@ -743,21 +787,42 @@ describe('SessionChatInputArea submission feedback', () => {
           'Thanks',
           '',
           '---',
-          'Comments (1)',
+          'Comments (3)',
+          'Answer each comment by its number.',
           '',
           '1. `plan.md`',
           '   > Ship in May',
           '   Or June?',
+          '',
+          '2. `notes/report.md`',
+          '   > Revenue grew',
+          '   > by 12%',
+          '   (Asked before: Which quarter?',
+          '   And which region?)',
+          '   Still unclear.',
+          '',
+          '3. `bench.html`',
+          '   > ReferenceError: tune is not defined (line 3)',
+          '   The page reported these errors.',
         ].join('\n'),
       },
     ]);
-    expect(getDefaultStore().get(articleAnnotationsAtom)).toEqual([elsewhere]);
+    // A page error has no passage to come back to: once sent, it goes.
+    expect(
+      getDefaultStore()
+        .get(articleAnnotationsAtom)
+        .map((item) => item.id)
+    ).not.toContain('page-error');
     expect(container!.querySelector('[role="status"]')).toBeNull();
 
-    // Without comments a message is exactly what was typed.
-    await type('Done');
-    await submit('keyboard');
-    expect(submissions[3]).toEqual([{ type: 'text', text: 'Done' }]);
+    // A request for another thread leaves this composer alone.
+    await act(async () => {
+      getDefaultStore().set(articleAnnotationSendRequestAtom, {
+        threadId: 'another-thread' as never,
+        seq: 2,
+      });
+    });
+    expect(submissions).toHaveLength(3);
     getDefaultStore().set(articleAnnotationsAtom, []);
   });
 

@@ -49,8 +49,16 @@ import {
   type RelocatableHost,
 } from '@/components/boards/relocatable-host';
 import { SessionFileContentView } from '@/components/sessions/session-file-content-view';
-import { createFakeSessionFileProvider } from '@/lib/session-file-provider';
-import { ARTICLE_DEMO_HTML, ARTICLE_REPORT_MD } from './board-article-demo';
+import {
+  createFakeSessionFileProvider,
+  type SessionFileProvider,
+} from '@/lib/session-file-provider';
+import {
+  ARTICLE_BROKEN_HTML,
+  ARTICLE_DEMO_HTML,
+  ARTICLE_REPORT_MD,
+  ARTICLE_REPORT_MD_REVISED,
+} from './board-article-demo';
 import {
   articleAnnotationsAtom,
   useThreadArticleAnnotations,
@@ -955,6 +963,43 @@ const articleProvider = createFakeSessionFileProvider({
   },
 });
 
+const ARTICLE_FILES = [
+  { fileId: 'articles/report.md', path: 'articles/report.md' },
+  { fileId: 'articles/demo.html', path: 'articles/demo.html' },
+  { fileId: 'articles/bench.html', path: 'articles/bench.html' },
+].map((file) => ({ ...file, kind: 'text' as const, sourceState: 'live-readonly' as const }));
+
+/**
+ * The thread rewrites the report while the reader has it open: the article's
+ * first read gets the report as written, every later check the revision.
+ */
+const revisingArticleProvider = (): SessionFileProvider => {
+  const before = createFakeSessionFileProvider({
+    sourceState: 'live-collaborative',
+    files: ARTICLE_FILES,
+    snapshots: {
+      'articles/report.md': { kind: 'text', text: ARTICLE_REPORT_MD },
+      'articles/bench.html': { kind: 'text', text: ARTICLE_BROKEN_HTML },
+    },
+  });
+  const after = createFakeSessionFileProvider({
+    sourceState: 'live-collaborative',
+    files: ARTICLE_FILES,
+    snapshots: {
+      'articles/report.md': { kind: 'text', text: ARTICLE_REPORT_MD_REVISED },
+      'articles/bench.html': { kind: 'text', text: ARTICLE_BROKEN_HTML },
+    },
+  });
+  let reads = 0;
+  return new Proxy(before, {
+    get(target, key) {
+      if (key === 'openFile') return (id: string) => (reads++ === 0 ? before : after).openFile(id);
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+};
+
 /**
  * A thread's article over the coordinator page, as the page opens it from a
  * link in the thread: each thread's one conversation is portalled into a
@@ -966,11 +1011,13 @@ function ArticleDialogPage({
   initialThread = THREAD,
   annotations,
   archived = false,
+  provider = articleProvider,
 }: {
   path: string | null;
   initialThread?: SessionId;
   annotations?: readonly ArticleAnnotation[];
   archived?: boolean;
+  provider?: SessionFileProvider;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(path);
@@ -1128,7 +1175,7 @@ function ArticleDialogPage({
                 session={owner}
                 filePath={open}
                 fileId={open}
-                fileProvider={articleProvider}
+                fileProvider={provider}
                 fileProviderRole="read"
                 article={{ onOpenInTab: close, annotationThreadId: inArticle ? threadId : null }}
                 className="h-full"
@@ -1189,6 +1236,50 @@ export const ArticleAnnotated: Story = {
         ),
       ]}
     />
+  ),
+};
+
+/**
+ * The review loop: two comments went with the thread's last message (#1 on a
+ * passage the thread has since rewritten, #2 still waiting) and one is ready
+ * to send. The thread's rewrite lands at the article's next check (15 s): the
+ * rewritten passages get a bar in the margin and the header counts them.
+ */
+export const ArticleReviewed: Story = {
+  render: () => {
+    const sent = (annotation: ArticleAnnotation, number: number): ArticleAnnotation => ({
+      ...annotation,
+      sent: { number, atMs: Date.now() - 60_000 },
+    });
+    return (
+      <ArticleDialogPage
+        path="articles/report.md"
+        provider={revisingArticleProvider()}
+        annotations={[
+          sent(
+            reportComment(
+              'cdn',
+              '只能从几个 CDN 加载脚本和样式',
+              '列出是哪几个 CDN。',
+              'HTML 在 widget 页面里运行，只能从几个 CDN 加载脚本和样式。'
+            ),
+            1
+          ),
+          sent(reportComment('code', 'useSessionFileDigestWatch', '这个 hook 在哪个文件？'), 2),
+          reportComment('table', '需要发 dev 包', '聚焦布局这行为什么不用发？'),
+        ]}
+      />
+    );
+  },
+};
+
+/**
+ * A test bench whose script throws and whose CDN file is missing: the errors
+ * show under the page, ready to go with the thread's next message.
+ */
+export const ArticleHtmlErrors: Story = {
+  render: () => (
+    <ArticleDialogPage path="articles/bench.html" provider={revisingArticleProvider()} />
   ),
 };
 

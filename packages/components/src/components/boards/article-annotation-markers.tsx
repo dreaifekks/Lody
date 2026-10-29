@@ -1,7 +1,14 @@
 import * as stylex from '@stylexjs/stylex';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MessageSquare, Pencil, Trash2 } from 'lucide-react';
+import {
+  Check,
+  MessageSquare,
+  MessageSquareDot,
+  MessageSquareReply,
+  Pencil,
+  Trash2,
+} from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import { Popover } from '@lody/ui/popover';
 import { Textarea } from '@lody/ui/textarea';
@@ -9,6 +16,7 @@ import { colors } from '@lody/ui/tokens/colors.stylex';
 import { space } from '@lody/ui/tokens/scales.stylex';
 import {
   ARTICLE_BLOCK_SELECTOR,
+  articleBlockChanged,
   resolveArticleBlock,
   useArticleAnnotationActions,
   type ArticleAnnotation,
@@ -20,6 +28,10 @@ const MARKER_SIZE = 24;
 const styles = stylex.create({
   marker: { position: 'absolute', zIndex: 1, userSelect: 'none' },
   icon: { color: colors.tertiaryLabel },
+  sentIcon: { color: colors.tertiaryLabel, opacity: 0.6 },
+  changedIcon: { color: colors.accent },
+  status: { margin: 0, fontSize: '0.6875rem', color: colors.secondaryLabel },
+  statusChanged: { color: colors.accent },
   badge: {
     position: 'absolute',
     insetBlockStart: '-2px',
@@ -100,7 +112,13 @@ interface MarkerGroup {
   readonly key: number;
   readonly left: number;
   readonly top: number;
-  readonly items: readonly ArticleAnnotation[];
+  readonly items: readonly MarkedAnnotation[];
+}
+
+interface MarkedAnnotation {
+  readonly annotation: ArticleAnnotation;
+  /** Sent, and its passage rewritten since. */
+  readonly changed: boolean;
 }
 
 /**
@@ -131,10 +149,14 @@ export function ArticleAnnotationMarkers({
     if (!element) return undefined;
     const measure = () => {
       const blocks = Array.from(element.querySelectorAll<HTMLElement>(ARTICLE_BLOCK_SELECTOR));
-      const byBlock = new Map<HTMLElement, ArticleAnnotation[]>();
+      const byBlock = new Map<HTMLElement, MarkedAnnotation[]>();
       for (const annotation of annotations) {
         const block = resolveArticleBlock(blocks, annotation);
-        if (block) byBlock.set(block, [...(byBlock.get(block) ?? []), annotation]);
+        const item = {
+          annotation,
+          changed: annotation.sent !== undefined && articleBlockChanged(blocks, annotation),
+        };
+        if (block) byBlock.set(block, [...(byBlock.get(block) ?? []), item]);
       }
       const box = element.getBoundingClientRect();
       // Into the room beside the article when there is some, never past it.
@@ -190,7 +212,13 @@ export function ArticleAnnotationMarkers({
           <Popover.Trigger
             render={<Button type="button" size="mini" variant="ghost" icon aria-label={label} />}
           >
-            <MessageSquare size={14} aria-hidden {...stylex.props(styles.icon)} />
+            {group.items.some((item) => item.annotation.sent === undefined) ? (
+              <MessageSquare size={14} aria-hidden {...stylex.props(styles.icon)} />
+            ) : group.items.some((item) => item.changed) ? (
+              <MessageSquareDot size={14} aria-hidden {...stylex.props(styles.changedIcon)} />
+            ) : (
+              <MessageSquare size={14} aria-hidden {...stylex.props(styles.sentIcon)} />
+            )}
             {group.items.length > 1 ? (
               <span {...stylex.props(styles.badge)} aria-hidden>
                 {group.items.length}
@@ -199,8 +227,12 @@ export function ArticleAnnotationMarkers({
           </Popover.Trigger>
           <Popover.Content side="bottom" align="end">
             <div {...stylex.props(styles.list)} aria-label={label} role="list">
-              {group.items.map((annotation) => (
-                <AnnotationItem key={annotation.id} annotation={annotation} />
+              {group.items.map((item) => (
+                <AnnotationItem
+                  key={item.annotation.id}
+                  annotation={item.annotation}
+                  changed={item.changed}
+                />
               ))}
             </div>
           </Popover.Content>
@@ -210,7 +242,18 @@ export function ArticleAnnotationMarkers({
   });
 }
 
-function AnnotationItem({ annotation }: { annotation: ArticleAnnotation }) {
+/**
+ * One comment in its block's list. Unsent, it can be edited or deleted; sent,
+ * it says whether the agent has rewritten its passage since, and can be
+ * resolved or asked about again (the new comment replaces it, unsent).
+ */
+function AnnotationItem({
+  annotation,
+  changed,
+}: {
+  annotation: ArticleAnnotation;
+  changed: boolean;
+}) {
   const { t } = useTranslation();
   const actions = useArticleAnnotationActions();
   const [draft, setDraft] = useState<string | null>(null);
@@ -229,15 +272,59 @@ function AnnotationItem({ annotation }: { annotation: ArticleAnnotation }) {
   }, [draft]);
   const save = () => {
     if (draft === null) return;
-    actions.update(annotation.id, draft);
+    if (annotation.sent) actions.followUp(annotation.id, draft.trim());
+    else actions.update(annotation.id, draft);
     leaveEdit();
   };
+  const { sent } = annotation;
   return (
     <div {...stylex.props(styles.item)} role="listitem">
       <blockquote {...stylex.props(styles.quote)} title={annotation.quote}>
         {annotation.quote}
       </blockquote>
-      {draft === null ? (
+      {sent ? (
+        <p {...stylex.props(styles.status, changed && styles.statusChanged)}>
+          {changed
+            ? t(
+                'sessions.article.annotation.changed',
+                '#{{number}} · The agent changed this passage',
+                {
+                  number: sent.number,
+                }
+              )
+            : t('sessions.article.annotation.sent', '#{{number}} · Sent, waiting for the agent', {
+                number: sent.number,
+              })}
+        </p>
+      ) : null}
+      {draft === null && sent ? (
+        <div {...stylex.props(styles.row)}>
+          <p {...stylex.props(styles.comment)}>{annotation.comment}</p>
+          <Button
+            ref={editButton}
+            type="button"
+            size="mini"
+            variant="ghost"
+            icon
+            aria-label={t('sessions.article.annotation.followUp', 'Ask again')}
+            title={t('sessions.article.annotation.followUp', 'Ask again')}
+            onClick={() => setDraft('')}
+          >
+            <MessageSquareReply size={14} aria-hidden />
+          </Button>
+          <Button
+            type="button"
+            size="mini"
+            variant="ghost"
+            icon
+            aria-label={t('sessions.article.annotation.resolve', 'Resolve')}
+            title={t('sessions.article.annotation.resolve', 'Resolve')}
+            onClick={() => actions.remove(annotation.id)}
+          >
+            <Check size={14} aria-hidden />
+          </Button>
+        </div>
+      ) : draft === null ? (
         <div {...stylex.props(styles.row)}>
           <p {...stylex.props(styles.comment)}>{annotation.comment}</p>
           <Button
@@ -257,7 +344,7 @@ function AnnotationItem({ annotation }: { annotation: ArticleAnnotation }) {
             variant="ghost"
             icon
             aria-label={t('common.delete', 'Delete')}
-            onClick={() => actions.remove(new Set([annotation]))}
+            onClick={() => actions.remove(annotation.id)}
           >
             <Trash2 size={14} aria-hidden />
           </Button>

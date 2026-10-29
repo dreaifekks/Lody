@@ -280,25 +280,40 @@ tool, CLI or protocol change.
   joins the session's composer as a chip and is sent as plain text. In the window,
   headings show as a rail on the left (`article-outline.tsx`); hovering lists them.
 - Comments in the window stay in the article instead
-  (`components/boards/article-annotations.ts`, an in-memory Jotai atom, lost on
-  restart). Each records the thread beside the article when it was written (it
-  rides with that thread's next message), the article (owner thread and path), the
-  quote and the rendered block the selection starts in (index
-  among blocks and its text; after the agent rewrites the file the block is found
-  again by that text, then by the quote, then by the nearest index). A small mark
-  floats at the end of the block's last line (`article-annotation-markers.tsx`,
-  positioned over the Markdown, never inserted into it; a code block scrolled
-  sideways has it in its toolbar row, left of the wrap and copy buttons), numbered
-  when the block holds more than one; pressing it opens a popover listing them to edit or delete.
+  (`components/boards/article-annotations.ts`, a Jotai atom kept in this device's
+  localStorage, `lody-board-article-annotations`; other devices do not see them).
+  Each records the thread beside the article when it was written (it rides with
+  that thread's next message), the article (owner thread and path), the quote and
+  the rendered block the selection starts in (index among blocks and its text;
+  after the agent rewrites the file the block is found again by that text, then by
+  the quote, then by the nearest index). A small mark floats at the end of the
+  block's last line (`article-annotation-markers.tsx`, positioned over the
+  Markdown, never inserted into it; a code block scrolled sideways has it in its
+  toolbar row, left of the wrap and copy buttons), numbered when the block holds
+  more than one; pressing it opens a popover listing them.
   The composer reads the same atom: it shows "Includes N comments" as its status
-  line, and `sendMessage` appends them to the text as a Markdown block (`---`, the
-  count, then numbered `` `path` ``, quoted lines and the comment), grouped by
-  file in document order. It gives no line numbers: the file may change while the
-  window is closed, and the quote finds the passage. Only an accepted send removes
-  the comments it carried, and only in the version it carried, so a failed send
-  keeps them and an edit made while it waited stays; the conversation being single, a send
-  from the side panel after the window closed carries them too. Escape leaves an
-  edit, then the popover, then the window.
+  line, and `sendMessage` appends the unsent ones to the text as a Markdown block
+  (`---`, the count, a line asking the agent to answer each by its number, then
+  numbered `` `path` ``, quoted lines and the comment), grouped by file in
+  document order. It gives no line numbers: the file may change while the window
+  is closed, and the quote finds the passage. The header's "Send N comments"
+  asks that thread's composer to send as it is (`articleAnnotationSendRequestAtom`),
+  so whatever is typed there goes too.
+  An accepted send marks the comments it carried as sent, with the number each had
+  in the message, and only in the version it carried, so a failed send keeps them
+  unsent and an edit made while it waited stays for the next. A sent comment stays
+  at its passage, its mark dimmed, until the reader resolves it; once no rendered
+  block holds the text it was written against, its mark turns accent-coloured and
+  the popover says the agent changed the passage. "Ask again" replaces it with an
+  unsent comment that carries the earlier one ("Asked before: …"). Sent comments
+  nobody resolved leave after 30 days. Escape leaves an edit, then the popover,
+  then the window.
+- Changes (`components/boards/article-review.tsx`): the first revision of a
+  Markdown article the window shows is the baseline; each later revision marks the
+  blocks whose text the one before did not hold with a bar in the left margin. The
+  marks add up over revisions (an agent writes in bursts) and go when their text
+  leaves the article or the reader clears them; the header counts them and steps
+  through them. Nothing is remembered once the window closes.
 - HTML: in the window it always runs in the widget page (`article-html-frame.tsx`),
   the desktop's loopback page that hosts widgets, with the same `allow-scripts`
   sandbox (plus `credentialless`) and the widget policy: scripts, styles, fonts,
@@ -311,6 +326,16 @@ tool, CLI or protocol change.
   last script. The page cannot send prompts; links ask first. File tabs keep the
   ordinary no-network HTML preview. Element comments (visual annotation) are not
   available in the window.
+  A script before the article reports the reader's controls (`input`, `select`,
+  `textarea` values and checks, matched by `id`, then `name`, then position), open
+  `<details>` and scroll as they change; when the agent's next revision replaces
+  the page, a script after the article's own code puts them back and fires `input`
+  and `change` on each control, so the page renders from them. They live in memory,
+  per thread and path, while the app runs. The same script reports uncaught errors,
+  unhandled rejections and files that fail to load; they list under the page (up to
+  20, cleared by the next revision), and "Add to the next message" turns them into
+  one comment without a passage, which goes with the thread's next message and is
+  then dropped.
 - Refresh: while the window is open the file is revalidated with its digest every
   5 s while the thread works, 15 s while idle, and once when a turn ends
   (`hooks/use-session-file-digest-watch.ts`). Markdown re-renders in place and the

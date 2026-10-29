@@ -78,8 +78,13 @@ import { ArticleAnnotationMarkers } from '../boards/article-annotation-markers';
 import {
   articleBlockOf,
   useArticleAnnotationActions,
-  useThreadArticleAnnotations,
+  useArticleFileAnnotations,
 } from '../boards/article-annotations';
+import {
+  ArticleChangeBars,
+  ArticleReviewControls,
+  useArticleChanges,
+} from '../boards/article-review';
 import { SessionFileImagePreview } from './session-file-image-preview';
 import { MarkdownRenderer } from '../ai-gui/markdown-renderer';
 import { MarkdownFileResources } from '../ai-gui/markdown-file-image';
@@ -1685,13 +1690,15 @@ function SessionFileContentViewImpl({
   const annotationThreadId = isArticle && isMarkdownTextFile ? article.annotationThreadId : null;
   const [markdownRoot, setMarkdownRoot] = useState<HTMLDivElement | null>(null);
   const annotationActions = useArticleAnnotationActions();
-  const threadAnnotations = useThreadArticleAnnotations(annotationThreadId);
-  const articleAnnotations = useMemo(
-    () =>
-      threadAnnotations.filter(
-        (annotation) => annotation.ownerThreadId === sessionId && annotation.path === normalizedPath
-      ),
-    [normalizedPath, sessionId, threadAnnotations]
+  const articleAnnotations = useArticleFileAnnotations(
+    annotationThreadId,
+    sessionId,
+    normalizedPath
+  );
+  const articleChanges = useArticleChanges(
+    markdownRoot,
+    markdownPreviewText,
+    annotationThreadId !== null && showMarkdownRendered
   );
   // The rendered surface for a previewable text file (Markdown doc / SVG image).
   // Only shown after the user clicks the preview toggle — hover never mounts it.
@@ -1718,11 +1725,18 @@ function SessionFileContentViewImpl({
         <MarkdownRenderer text={markdownPreviewText} size={conversationFontSize} allowHtml />
       )}
       {annotationThreadId && showMarkdownRendered ? (
-        <ArticleAnnotationMarkers
-          root={markdownRoot}
-          revision={markdownPreviewText}
-          annotations={articleAnnotations}
-        />
+        <>
+          <ArticleChangeBars
+            root={markdownRoot}
+            revision={markdownPreviewText}
+            changes={articleChanges}
+          />
+          <ArticleAnnotationMarkers
+            root={markdownRoot}
+            revision={markdownPreviewText}
+            annotations={articleAnnotations}
+          />
+        </>
       ) : null}
     </div>
   ) : isSvgTextFile && data.status === 'ready' && data.snapshot.kind === 'text' ? (
@@ -1860,6 +1874,16 @@ function SessionFileContentViewImpl({
           key={`${articleHtmlKey}:${articleReloadSeq}`}
           html={htmlPreviewSource}
           title={normalizedPath}
+          stateKey={`${sessionId}:${normalizedPath}`}
+          comments={
+            article.annotationThreadId
+              ? {
+                  threadId: article.annotationThreadId,
+                  ownerThreadId: sessionId,
+                  path: normalizedPath,
+                }
+              : null
+          }
         />
       </div>
     );
@@ -2138,6 +2162,10 @@ function SessionFileContentViewImpl({
         </span>
       ) : null}
       <div {...stylex.props(styles.toolbarActions)}>
+        <ArticleReviewControls
+          threadId={article.annotationThreadId}
+          changes={annotationThreadId ? articleChanges : null}
+        />
         {articleUpdateHeld && articleUpdate ? (
           <Button size="mini" variant="ghost" onClick={applyArticleUpdate}>
             {t('sessions.article.updated', 'Updated')} · {t('sessions.article.reload', 'Reload')}
