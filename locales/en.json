@@ -4465,6 +4465,7 @@
   "sessions.article.changes.count": "{{count}} changed",
   "sessions.article.changes.count_one": "{{count}} changed",
   "sessions.article.changes.count_other": "{{count}} changed",
+  "sessions.article.changes.hidden": "Changed inside",
   "sessions.article.changes.label": "Changes since you last looked",
   "sessions.article.changes.next": "Next change",
   "sessions.article.changes.previous": "Previous change",

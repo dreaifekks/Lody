@@ -32,6 +32,13 @@ export const ARTICLE_REPORT_MD = [
   '',
   '> 这份数据可能过时了：上游 0.107.0 还没打 tag。',
   '',
+  '<details>',
+  '<summary>轮询参数的来历</summary>',
+  '',
+  '5 秒和 15 秒是 2026-10-19 在 Mac 测试版上试出来的，再短会让 LAN 上的请求翻倍。',
+  '',
+  '</details>',
+  '',
 ].join('\n');
 
 export const ARTICLE_DEMO_HTML = `<!doctype html>
@@ -87,14 +94,26 @@ export const ARTICLE_DEMO_HTML = `<!doctype html>
 </html>
 `;
 
-/** The report after the thread answered two comments: one list item and the quote rewritten. */
+/**
+ * The report after the thread answered the comments: one list item, the code,
+ * the quote and the folded note rewritten.
+ */
 export const ARTICLE_REPORT_MD_REVISED = ARTICLE_REPORT_MD.replace(
-  '- HTML 在 widget 页面里运行，只能从几个 CDN 加载脚本和样式。',
-  '- HTML 在 widget 页面里运行，只能从 cdnjs、jsdelivr、unpkg、esm.sh 和 Google Fonts 加载脚本和样式。'
-).replace(
-  '> 这份数据可能过时了：上游 0.107.0 还没打 tag。',
-  '> 上游 0.107.2 已发布，数据按 0.107.2 更新。'
-);
+  'useSessionFileDigestWatch({ enabled, busy, check });',
+  'useSessionFileDigestWatch({ enabled, busy, check, settleMs: 1_000 });'
+)
+  .replace(
+    '5 秒和 15 秒是 2026-10-19 在 Mac 测试版上试出来的，再短会让 LAN 上的请求翻倍。',
+    '5 秒和 15 秒是 2026-10-19 在 Mac 测试版上试出来的，再短会让 LAN 上的请求多出一半。'
+  )
+  .replace(
+    '- HTML 在 widget 页面里运行，只能从几个 CDN 加载脚本和样式。',
+    '- HTML 在 widget 页面里运行，只能从 cdnjs、jsdelivr、unpkg、esm.sh 和 Google Fonts 加载脚本和样式。'
+  )
+  .replace(
+    '> 这份数据可能过时了：上游 0.107.0 还没打 tag。',
+    '> 上游 0.107.2 已发布，数据按 0.107.2 更新。'
+  );
 
 /** A test bench with a control to keep across revisions, a script error and a file that will not load. */
 export const ARTICLE_BROKEN_HTML = `<!doctype html>

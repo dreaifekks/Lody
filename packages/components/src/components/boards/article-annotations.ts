@@ -36,12 +36,13 @@ export interface ArticleAnnotation {
 export const ARTICLE_BLOCK_SELECTOR =
   'p:not([data-lody-diff]), li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, dt, dd';
 
-/** A block's text as the article has it now: without words marked deleted. */
+/** A block's text as the article has it now: without words marked deleted or change hints. */
 export function articleBlockText(block: Element): string {
   let text = '';
   const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode())
-    if (!node.parentElement?.closest('[data-lody-diff="del"]')) text += node.textContent ?? '';
+    if (!node.parentElement?.closest('[data-lody-diff="del"], [data-lody-diff="hint"]'))
+      text += node.textContent ?? '';
   return text;
 }
 

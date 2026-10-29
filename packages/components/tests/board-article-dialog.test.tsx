@@ -523,8 +523,12 @@ describe('article review', () => {
     expect(marks('del')).toEqual(['8', 'this quarter', 'Office moved', '合并']);
     expect(marks('ins')).toEqual(['12', 'in Q3', '发布']);
     expect(container.querySelector('strong')!.textContent).toBe('812%');
-    // A rewritten code block is outlined as a whole, without its old code.
-    expect(marks('block')).toEqual([expect.stringContaining('const rate = 12;')]);
+    // A rewritten code block shows as a line diff: the old line removed, the new one added.
+    const codeDiff = container.querySelector(
+      '[data-lody-diff="block"] [data-markdown-diff-block]'
+    )!;
+    expect(codeDiff.textContent).toContain('-const rate = 8;');
+    expect(codeDiff.textContent).toContain('+const rate = 12;');
     // Deleted text is not the article's: comments read blocks without it.
     expect(articleBlockText(container.querySelector('p')!)).toBe('Revenue grew 12% in Q3.');
     expect(container.querySelector('header')!.textContent).toBe('5');
@@ -629,6 +633,41 @@ describe('article review', () => {
     // The deleted words sat on screen with the first part: they went with it.
     expect(marks('ins')).toEqual(['two']);
     expect(marks('del')).toEqual([]);
+  });
+
+  it('says a folded details block has changes inside, and unfolds it to show one', async () => {
+    const render = (body: string) =>
+      act(async () =>
+        root.render(
+          createElement(ReviewedArticle, {
+            markdown: [
+              'Intro.',
+              '',
+              '<details>',
+              '<summary>Notes</summary>',
+              '',
+              body,
+              '',
+              '</details>',
+            ].join('\n'),
+          })
+        )
+      );
+    await render('The limit is 10.');
+    expect(container.querySelector('[data-lody-diff="hint"]')).toBeNull();
+    await render('The limit is 20.');
+    const summary = container.querySelector('summary')!;
+    expect(summary.querySelector('[data-lody-diff="hint"]')!.textContent).toBe('Changed inside');
+    // The hint is not a change: it never counts as seen in place of the hidden ones.
+    expect(summary.querySelector('[data-lody-diff-id]')).toBeNull();
+    // Comments read the summary without it.
+    expect(articleBlockText(summary)).toBe('Notes');
+
+    const details = container.querySelector('details')!;
+    expect(details.open).toBe(false);
+    Element.prototype.scrollIntoView = () => undefined;
+    await act(async () => button('Next change')!.click());
+    expect(details.open).toBe(true);
   });
 
   it('keeps a sent comment at its passage, says when the agent changed it, and resolves it', async () => {

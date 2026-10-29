@@ -37,9 +37,15 @@ type Rendered = { readonly containers: ArticleContainer[]; readonly diff: Articl
 
 /** The rehype step that marks an article's changes and reports what it rendered. */
 const rehypeArticleChanges =
-  (options: { base: readonly ArticleContainer[] | null; report: (rendered: Rendered) => void }) =>
+  (options: {
+    base: readonly ArticleContainer[] | null;
+    hiddenChangesLabel: string;
+    report: (rendered: Rendered) => void;
+  }) =>
   (tree: DiffRoot) => {
-    options.report(markArticleChanges(tree, options.base));
+    options.report(
+      markArticleChanges(tree, options.base, { hiddenChangesLabel: options.hiddenChangesLabel })
+    );
   };
 
 export interface ArticleChanges {
@@ -81,6 +87,8 @@ export function useArticleChanges(
   revision: string,
   enabled: boolean
 ): ArticleChanges {
+  const { t } = useTranslation();
+  const hiddenChangesLabel = t('sessions.article.changes.hidden', 'Changed inside');
   const [base, setBase] = useState<readonly ArticleContainer[] | null>(null);
   const rendered = useRef<Rendered | null>(null);
   const [count, setCount] = useState(0);
@@ -90,8 +98,8 @@ export function useArticleChanges(
     const report = (next: Rendered) => {
       rendered.current = next;
     };
-    return [[rehypeArticleChanges, { base, report }]];
-  }, [base, enabled]);
+    return [[rehypeArticleChanges, { base, hiddenChangesLabel, report }]];
+  }, [base, enabled, hiddenChangesLabel]);
   useLayoutEffect(() => {
     if (!enabled || !root || !rendered.current) return;
     // The first revision rendered is what the reader has seen.
@@ -108,6 +116,13 @@ export function useArticleChanges(
       if (elements.length === 0) return;
       const next = (current + step + elements.length) % elements.length;
       setCurrent(next);
+      // A change inside folded details: unfold them to show it.
+      for (
+        let details = elements[next].closest('details');
+        details;
+        details = details.parentElement!.closest('details')
+      )
+        details.open = true;
       elements[next].scrollIntoView({ block: 'center', behavior: 'smooth' });
     },
     [current, root]

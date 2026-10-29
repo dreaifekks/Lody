@@ -4465,6 +4465,7 @@
   "sessions.article.changes.count": "{{count}} 处改动",
   "sessions.article.changes.count_one": "{{count}} 处改动",
   "sessions.article.changes.count_other": "{{count}} 处改动",
+  "sessions.article.changes.hidden": "有改动",
   "sessions.article.changes.label": "上次看过之后的改动",
   "sessions.article.changes.next": "下一处改动",
   "sessions.article.changes.previous": "上一处改动",

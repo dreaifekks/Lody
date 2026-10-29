@@ -631,8 +631,8 @@ function insertDeleted(
   }
 }
 
-/** Outlines a block that changed as a whole. */
-function outlineBlock(found: FoundContainer, hunk: number): void {
+/** Wraps a changed block so it counts as one change: outlined, or bare around a code diff. */
+function wrapBlock(found: FoundContainer, hunk: number, style?: string): void {
   const siblings = found.parent.children;
   siblings[siblings.indexOf(found.element)] = {
     type: 'element',
@@ -640,10 +640,78 @@ function outlineBlock(found: FoundContainer, hunk: number): void {
     properties: {
       [DIFF_ID_ATTRIBUTE]: String(hunk),
       [DIFF_KIND_ATTRIBUTE]: 'block',
-      style: BLOCK_STYLE,
+      ...(style ? { style } : {}),
     },
     children: [found.element],
   };
+}
+
+/** Outlines a block that changed as a whole. */
+const outlineBlock = (found: FoundContainer, hunk: number): void =>
+  wrapBlock(found, hunk, BLOCK_STYLE);
+
+const codeLines = (code: string): string[] => code.replace(/\n$/u, '').split('\n');
+
+/**
+ * Turns a rewritten code block into a line diff of it (the renderer's `diff`
+ * block: removed lines red, added green, the rest as context). A diagram
+ * (Mermaid) or a block that is not code stays outlined: its source is not
+ * what the reader looks at. False when it stays outlined.
+ */
+function showCodeDiff(found: FoundContainer, before: string): boolean {
+  const code = found.element.tagName === 'pre' ? found.element.children[0] : undefined;
+  if (code?.type !== 'element' || code.tagName !== 'code') return false;
+  if (classNames(code).includes('language-mermaid')) return false;
+  const oldLines = codeLines(before);
+  const newLines = codeLines(textOf(code));
+  const lines: string[] = [];
+  let i = 0;
+  let j = 0;
+  for (const [oi, nj] of [
+    ...commonPairs(oldLines, newLines, (line) => line),
+    [oldLines.length, newLines.length],
+  ]) {
+    while (i < oi) lines.push(`-${oldLines[i++]}`);
+    while (j < nj) lines.push(`+${newLines[j++]}`);
+    if (oi < oldLines.length) {
+      lines.push(` ${oldLines[i]}`);
+      i += 1;
+      j += 1;
+    }
+  }
+  code.properties = { ...code.properties, className: ['language-diff'] };
+  code.children = [text(`${lines.join('\n')}\n`)];
+  return true;
+}
+
+const HINT_STYLE =
+  'margin-inline-start:6px;padding:0 6px;border-radius:9px;font-size:0.75em;font-weight:normal;background-color:hsl(var(--status-success) / 0.16);color:hsl(var(--foreground))';
+
+/**
+ * A folded `<details>` hides its changes: its summary says some are inside
+ * until they are seen. The hint carries no change id, so a click never
+ * counts the hidden changes as seen.
+ */
+function hintCollapsedChanges(root: DiffParent, label: string): boolean {
+  let marked = false;
+  for (const child of root.children) {
+    if (child.type !== 'element') continue;
+    if (child.properties[DIFF_ID_ATTRIBUTE] !== undefined) marked = true;
+    const inside = hintCollapsedChanges(child, label);
+    marked ||= inside;
+    if (inside && child.tagName === 'details') {
+      const summary = child.children.find(
+        (node): node is DiffElement => node.type === 'element' && node.tagName === 'summary'
+      );
+      summary?.children.push({
+        type: 'element',
+        tagName: 'span',
+        properties: { [DIFF_KIND_ATTRIBUTE]: 'hint', style: HINT_STYLE },
+        children: [text(label)],
+      });
+    }
+  }
+  return marked;
 }
 
 /** The containers of a rendered article, in document order. */
@@ -659,7 +727,11 @@ export function readArticleContainers(root: DiffRoot): ArticleContainer[] {
  */
 export function markArticleChanges(
   root: DiffRoot,
-  base: readonly ArticleContainer[] | null
+  base: readonly ArticleContainer[] | null,
+  options: {
+    /** Said in a folded `<details>`' summary when changes are inside it. */
+    readonly hiddenChangesLabel?: string;
+  } = {}
 ): { readonly containers: ArticleContainer[]; readonly diff: ArticleDiff | null } {
   const found: FoundContainer[] = [];
   collectContainers(root, found);
@@ -670,7 +742,7 @@ export function markArticleChanges(
   const newHunk = () => hunks++;
   // Inline marks first, then deleted containers beside their neighbours, then
   // outlines last: an outline replaces its block, which deletions anchor to.
-  const outlines: [FoundContainer, number][] = [];
+  const outlines: [FoundContainer, number, string | null][] = [];
   const deletions: (() => void)[] = [];
   const alignment = compared.alignment.map((item) =>
     item.type === 'modified'
@@ -681,7 +753,14 @@ export function markArticleChanges(
     if (item.type === 'modified') continue;
     else if (item.type === 'replaced' || item.type === 'inserted') {
       const target = found[item.current];
-      if (target.container.kind === 'block') outlines.push([target, item.hunk]);
+      if (target.container.kind === 'block')
+        outlines.push([
+          target,
+          item.hunk,
+          item.type === 'replaced' && base[item.base].kind === 'block'
+            ? base[item.base].tokens[0]
+            : null,
+        ]);
       else
         markInline(
           target,
@@ -689,7 +768,7 @@ export function markArticleChanges(
           // A container added whole is one change, however many leaves it spans.
           () => item.hunk
         );
-      // A rewritten code block is outlined; its old text would only be noise.
+      // A rewritten code block shows its own line diff instead of its old text.
       if (
         item.type === 'replaced' &&
         !(target.container.kind === 'block' && base[item.base].kind === 'block')
@@ -713,6 +792,9 @@ export function markArticleChanges(
     }
   }
   for (const insert of deletions) insert();
-  for (const [target, hunk] of outlines) outlineBlock(target, hunk);
+  for (const [target, hunk, before] of outlines)
+    if (before === null || !showCodeDiff(target, before)) outlineBlock(target, hunk);
+    else wrapBlock(target, hunk);
+  if (options.hiddenChangesLabel) hintCollapsedChanges(root, options.hiddenChangesLabel);
   return { containers, diff: { alignment, hunks } };
 }

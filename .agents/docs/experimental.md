@@ -327,8 +327,13 @@ tool, CLI or protocol change.
   differing middle past 4M table cells, or a gap of more than 10,000 container
   pairs, counts as replaced as a whole, so the page never stalls on a long
   rewrite. A change that spans several text runs (plain, then bold) is marked once
-  per run, each part seen on its own. A changed code block is outlined, without its old code;
-  a deleted paragraph shows as a struck paragraph where it was. Pressing anywhere
+  per run, each part seen on its own. A rewritten code block paired with its old
+  version turns into the renderer's `diff` block (removed lines red, added green,
+  the rest as context); a new one, a Mermaid diagram or display math is outlined
+  instead. A deleted paragraph shows as a struck paragraph where it was. A
+  `<details>` with changes inside gets a "Changed inside" hint in its summary
+  (no change id, so a click never counts the folded changes as seen), and
+  stepping to such a change unfolds it. Pressing anywhere
   in the article counts the changes on screen as seen: they are folded into what
   the reader has seen and their marks go; the others stay. The header counts the
   changes left, steps through them and clears them all. Comments read a block's
