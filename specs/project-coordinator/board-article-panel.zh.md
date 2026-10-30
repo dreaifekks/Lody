@@ -142,6 +142,23 @@ Translation: pending
   版本清空）；「附到下条消息」把它们变成一条没有段落的批注，随线程下一条消息发出，发出后
   就删掉。
 
+### UI 方案对比：一份 `.compare.md` 清单
+
+- agent 想让用户比较几个 UI 方案时，每个方案写成一个独立的 html（或一张图），再写一份
+  `<名字>.compare.md`：列表里每个以 html/图片链接开头的项是一个方案，按顺序叫 A、B、C；
+  链接文字是标题，后面的字是一句说明，末尾可写 `390x844` 这样的设计尺寸，frontmatter 的
+  `viewport` 给默认尺寸（1280x800）；其余正文显示在方案上方。不认识这个格式的地方，它就是
+  一篇带链接的普通 md。约定由 Lody 随 Board 提示一起注入：daemon 给每个非主会话的 Board 成员（线程和线程开的会话）的
+  首条消息附上一段简短说明，用户不用手贴；主会话不做 UI，不注入。不加工具。
+- 点清单链接，浮窗左边换成对比视图（默认占 75%，可收起对话）：每个方案按设计尺寸排版，
+  再按同一比例缩放，公平比较；并排、网格（多于 3 个时默认）或逐个翻看（数字键、←→）。
+  滚动一个方案的页面，其他方案跟到同一位置。宽度预设统一改所有方案的宽度，主题可单独设亮/暗。
+- 选定和批注都是 article 批注，走同一条发送路径：「选这个方案作为基础」是单选；可以批注整个
+  方案，也可以打开「指出位置」点方案里的某处（点击不交给页面，记下元素的简短描述和坐标，
+  显示为图钉）。发出去的引用是 `A · 标题 · 元素`，「A 的头部 + C 的配色」就是选一个基础，
+  再在 A、C 上各写一条。agent 改写了方案文件，方案头出现「已更新」，已发批注标为改过。
+- Board Files 里点 `.compare.md` 也打开对比视图，只看不批注（旁边没有线程）。
+
 ### 刷新：digest 轮询
 
 - 浮窗打开时，每 5 秒用 `requestFilePreview({ knownDigest })` 查一次，线程空闲时 15 秒一次，
@@ -152,7 +169,8 @@ Translation: pending
 
 1. 完整页线程模式：对话是页面主区，不在 Board 面板里，同样的挂法不成立，现在照旧开 tab。
 2. 要不要加 `lody_open_article` 卡片工具（要发 dev）。
-3. 浮窗里 HTML 的元素批注。
+3. 浮窗里 HTML 文章的元素批注（对比视图里的方案已经可以按位置批注）。
+5. 对比视图要不要支持 agent 声明的可调参数（ryugi 的 tweaks），以及画布式平移缩放：目前判断不需要。
 4. 普通（非看板）会话要不要也弹浮窗。
 
 ## 证据
@@ -161,7 +179,10 @@ Translation: pending
   `boards/relocatable-host.tsx`、`boards/article-annotations.ts`（批注存储和发送格式）、
   `boards/article-annotation-markers.tsx`（图标和 popover）、`boards/article-diff.ts`（改动比对和标记）、`boards/article-review.tsx`（标头控件）、`sessions/article-html-frame.tsx`、
   `sessions/article-outline.tsx`、`hooks/use-session-file-digest-watch.ts`，
-  `sessions/session-detail.tsx`（打开/关闭和状态）、`sessions/session-chat-input-area.tsx`（发送时拼接）。
+  `sessions/session-detail.tsx`（打开/关闭和状态）、`sessions/session-chat-input-area.tsx`（发送时拼接）；
+  对比视图：`boards/compare-manifest.ts`（清单解析）、`boards/board-compare-view.tsx`、
+  `boards/compare-board-frame.tsx`，Board Files 入口在 `boards/board-directory.tsx`；注入的约定是
+  `apps/cli/src/session/session-execution-helpers.ts` 的 `BOARD_UI_COMPARISON_GUIDE`。
 - 测试：`packages/components/tests/board-article-dialog.test.tsx`、`document-selection.test.tsx`、
   `use-session-file-digest-watch.test.tsx`、`session-file-content-view.test.tsx`、
   `session-chat-input-submission.test.tsx`。

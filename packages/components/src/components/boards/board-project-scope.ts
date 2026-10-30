@@ -47,25 +47,19 @@ export function buildBoardScopeOptions(input: {
   return [
     ...[...byName.entries()]
       .toSorted(([a], [b]) => collator.compare(a, b))
-      .map(
-        ([name, group]): BoardScopeOption => ({
-          kind: 'local',
-          key: `local:${name}`,
-          name,
-          projects: [...group.values()].toSorted((a, b) =>
-            collator.compare(a.machineName, b.machineName)
-          ),
-        })
-      ),
-    ...[...repositories]
-      .toSorted(collator.compare)
-      .map(
-        (repoFullName): BoardScopeOption => ({
-          kind: 'github',
-          key: `github:${repoFullName}`,
-          repoFullName,
-        })
-      ),
+      .map(([name, group]): BoardScopeOption => ({
+        kind: 'local',
+        key: `local:${name}`,
+        name,
+        projects: [...group.values()].toSorted((a, b) =>
+          collator.compare(a.machineName, b.machineName)
+        ),
+      })),
+    ...[...repositories].toSorted(collator.compare).map((repoFullName): BoardScopeOption => ({
+      kind: 'github',
+      key: `github:${repoFullName}`,
+      repoFullName,
+    })),
   ];
 }
 
@@ -109,7 +103,5 @@ export function toggleBoardScopeOption(
 
 /** The names the trigger lists, each once, in scope order. */
 export function boardScopeNames(scope: readonly BoardProjectRef[]): string[] {
-  return [
-    ...new Set(scope.map((ref) => (ref.kind === 'local' ? ref.name : ref.repoFullName))),
-  ];
+  return [...new Set(scope.map((ref) => (ref.kind === 'local' ? ref.name : ref.repoFullName)))];
 }

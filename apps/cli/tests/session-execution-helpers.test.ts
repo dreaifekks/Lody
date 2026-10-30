@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalProjectId } from '@lody/shared';
 
 import { setLanSessionCommand } from '../src/lib/lan/lan-session-command';
-import { buildPrompt } from '../src/session/session-execution-helpers';
+import { BOARD_UI_COMPARISON_GUIDE, buildPrompt } from '../src/session/session-execution-helpers';
 
 const SESSION_REMINDERS =
   '\n\nUse the available Lody MCP tools when relevant; rely on their tool descriptions for complete, current capabilities and usage guidance.' +
@@ -115,7 +115,7 @@ it('adds role-specific Board instructions while retaining the task and existing 
   // The main session assigns work and is not woken by thread events.
   expect(coordinator).toContain('you do not implement it and you do not summarize results');
   expect(coordinator).toContain('You are not woken when a thread finishes, fails or waits');
-  expect(coordinator).toContain('arrive with the user\'s next message');
+  expect(coordinator).toContain("arrive with the user's next message");
   expect(coordinator).toContain('lody_board_overview');
   expect(coordinator).toContain('end your turn');
   expect(coordinator).toContain(
@@ -141,6 +141,9 @@ it('adds role-specific Board instructions while retaining the task and existing 
   // The Board directory is reached by tools from another machine.
   expect(thread).toContain('lody_board_files_list');
   expect(thread).toContain('The main session maintains MEMORY.md.');
+  // Threads and the sessions they open learn how to hand over UI options; the main session does not build UI.
+  expect(thread).toContain(BOARD_UI_COMPARISON_GUIDE);
+  expect(coordinator).not.toContain('.compare.md');
   const local = buildPrompt('Implement', undefined, undefined, undefined, {
     boardContext: { board, directory: '/data/boards/ws/bd_prompt' },
   });
@@ -205,7 +208,9 @@ it('lists a narrowed project scope for every member and says nothing for all pro
     expect(prompt).toContain(
       '- Lody on machine devnuc: workContext {"kind":"local","projectId":"local-project-a"} with machineId "devnuc"'
     );
-    expect(prompt).toContain('- owner/app on GitHub: workContext {"kind":"github","repo":"owner/app"}');
+    expect(prompt).toContain(
+      '- owner/app on GitHub: workContext {"kind":"github","repo":"owner/app"}'
+    );
     expect(prompt).toContain('BOARD_PROJECT_OUT_OF_SCOPE');
     expect(prompt).toContain('Chat sessions (workContext {"kind":"chat"})');
   }

@@ -1,5 +1,5 @@
 import * as stylex from '@stylexjs/stylex';
-import { useRef, useState, type ReactNode } from 'react';
+import { createContext, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Dialog } from '@lody/ui/dialog';
 import { colors } from '@lody/ui/tokens/colors.stylex';
@@ -10,6 +10,8 @@ export const isBoardArticlePath = (path: string): boolean =>
   /\.(?:md|markdown|html?)$/iu.test(path);
 
 const DEFAULT_RATIO = 60;
+/** A comparison of UI options wants the room more than the conversation does. */
+const WIDE_RATIO = 75;
 const MIN_RATIO = 30;
 const MAX_RATIO = 75;
 
@@ -55,6 +57,15 @@ const styles = stylex.create({
 });
 
 /**
+ * Lets the article fold the conversation beside it away, and bring it back.
+ * The conversation stays mounted, only out of sight.
+ */
+export const ArticleDialogThreadContext = createContext<{
+  readonly hidden: boolean;
+  readonly setHidden: (hidden: boolean) => void;
+} | null>(null);
+
+/**
  * A thread's article over the page, with the thread's own conversation beside
  * it (experimental). The conversation is not a second one: the page portals
  * the thread's single conversation into `threadHost`, and this dialog's right
@@ -67,11 +78,14 @@ export function BoardArticleDialog({
   article,
   threadHost,
   holdsThread = true,
+  wide = false,
   onPanelChange,
   onClose,
 }: {
   title: string;
   article: ReactNode;
+  /** Starts with more room for the article. */
+  wide?: boolean;
   threadHost: RelocatableHost;
   /**
    * False for the one commit before the dialog unmounts, so the conversation
@@ -83,7 +97,12 @@ export function BoardArticleDialog({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const [ratio, setRatio] = useState(DEFAULT_RATIO);
+  const [ratio, setRatio] = useState(wide ? WIDE_RATIO : DEFAULT_RATIO);
+  const [threadHidden, setThreadHidden] = useState(false);
+  const thread = useMemo(
+    () => ({ hidden: threadHidden, setHidden: setThreadHidden }),
+    [threadHidden]
+  );
   const bodyRef = useRef<HTMLDivElement>(null);
   const clamp = (value: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, value));
   const fromPointer = (clientX: number) => {
@@ -111,11 +130,17 @@ export function BoardArticleDialog({
           ref={bodyRef}
           {...stylex.props(styles.body)}
           style={{
-            gridTemplateColumns: `minmax(0, ${ratio}fr) 1px minmax(0, ${100 - ratio}fr)`,
+            gridTemplateColumns: threadHidden
+              ? 'minmax(0, 1fr) 0 0'
+              : `minmax(0, ${ratio}fr) 1px minmax(0, ${100 - ratio}fr)`,
           }}
         >
-          <div {...stylex.props(styles.pane)}>{article}</div>
-          <div {...stylex.props(styles.divider)}>
+          <div {...stylex.props(styles.pane)}>
+            <ArticleDialogThreadContext.Provider value={thread}>
+              {article}
+            </ArticleDialogThreadContext.Provider>
+          </div>
+          <div {...stylex.props(styles.divider)} hidden={threadHidden}>
             <div
               role="separator"
               aria-orientation="vertical"
@@ -146,7 +171,7 @@ export function BoardArticleDialog({
               }}
             />
           </div>
-          <div {...stylex.props(styles.pane)}>
+          <div {...stylex.props(styles.pane)} inert={threadHidden}>
             {/* Held over the Board panel's slot, even one that remounts meanwhile. */}
             <RelocatableSlot
               host={threadHost}

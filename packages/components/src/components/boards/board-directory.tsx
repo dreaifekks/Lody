@@ -31,6 +31,9 @@ import { toFileEntry } from '@/lib/lazy-directory-file-provider';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { toast } from '@/lib/toast';
+import { getImageMimeTypeForPath } from '@/lib/image-file-preview';
+import { BoardCompareView, type CompareFile } from './board-compare-view';
+import { isCompareManifestPath } from './compare-manifest';
 
 export type BoardDirectoryState =
   | { status: 'loading' }
@@ -216,6 +219,7 @@ const styles = stylex.create({
     color: colors.secondaryLabel,
   },
   preview: { display: 'flex', flexDirection: 'column', gap: space[2], minWidth: 0 },
+  compare: { height: '75vh', minHeight: '360px' },
   noPreview: {
     display: 'flex',
     flexDirection: 'column',
@@ -392,6 +396,26 @@ export function BoardFilePreview({
       },
     };
   }, [boardId, host, memberSessionId, workspaceId]);
+  // A comparison's options are files of the same area, beside its list.
+  const compareReader = useMemo(() => {
+    const ipc = getIpcServices();
+    if (!ipc || !workspaceId || !host || !isCompareManifestPath(entry.path)) return null;
+    return async (path: string): Promise<CompareFile> => {
+      const resource = await ipc.machineRpc.openMemberFile({
+        workspaceId,
+        machineId: host,
+        sessionId: memberSessionId,
+        boardId,
+        path: `${area}/${path}`,
+      });
+      if (!resource.ok) return { kind: 'missing', message: resource.error };
+      const bytes = new Uint8Array(await (await fetch(resource.url)).arrayBuffer());
+      const mimeType = getImageMimeTypeForPath(path);
+      return mimeType
+        ? { kind: 'bytes', bytes, mimeType }
+        : { kind: 'text', text: new TextDecoder().decode(bytes) };
+    };
+  }, [area, boardId, entry.path, host, memberSessionId, workspaceId]);
   useEffect(() => {
     const ipc = getIpcServices();
     const kind = IMAGE.test(entry.path) ? 'image' : TEXT.test(entry.path) ? 'text' : null;
@@ -436,7 +460,18 @@ export function BoardFilePreview({
   const download = useBoardFileDownload(board, area, memberSessionId);
 
   let body: ReactNode;
-  if (preview.status === 'loading')
+  if (compareReader)
+    body = (
+      <div {...stylex.props(styles.compare)}>
+        <BoardCompareView
+          scope={`board:${boardId}:${area}`}
+          manifestPath={entry.path}
+          read={compareReader}
+          comments={null}
+        />
+      </div>
+    );
+  else if (preview.status === 'loading')
     body = <p {...stylex.props(styles.note)}>{t('boards.loading', 'Loading…')}</p>;
   else if (preview.status === 'image')
     body = <img src={preview.url} alt={entry.path} {...stylex.props(styles.image)} />;

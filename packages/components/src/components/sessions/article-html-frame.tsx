@@ -44,15 +44,15 @@ const styles = stylex.create({
 });
 
 /** A page that keeps failing reports this many at most. */
-const MAX_PAGE_ERRORS = 20;
-const MAX_PAGE_ERROR_CHARS = 300;
+export const MAX_PAGE_ERRORS = 20;
+export const MAX_PAGE_ERROR_CHARS = 300;
 
 /**
  * The reader's settings in each HTML article, by article: the frame reports
  * them as they change and gets them back when the agent's next revision
  * replaces the page. Kept while the app runs.
  */
-const savedPageStates = new Map<string, unknown>();
+export const savedPageStates = new Map<string, unknown>();
 
 /*
  * Around the page's own code, after the ready handlers: carries the reader's
@@ -61,7 +61,7 @@ const savedPageStates = new Map<string, unknown>();
  * `id`, then `name` (a radio by its value too), then position; each restored
  * control fires `input` and `change`, so the page renders from them.
  */
-const articleStateScript = (saved: unknown): string =>
+export const articleStateScript = (saved: unknown): string =>
   '<script>(function(){var saved=' +
   JSON.stringify(saved ?? null).replace(/</g, '\\u003c') +
   ';function all(s){return Array.prototype.slice.call(document.querySelectorAll(s));}' +
@@ -96,7 +96,7 @@ const articleStateScript = (saved: unknown): string =>
  * script has run, then called in that order (`onload` too); it returns their
  * settling, so the reader's settings come back after async handlers finish.
  */
-const ARTICLE_PRELUDE =
+export const ARTICLE_PRELUDE =
   '<style>html,body{height:100%;overflow:auto!important}' +
   'body{font-size:var(--lody-article-font-size)}</style>' +
   '<script>(function(){var ready={DOMContentLoaded:[],load:[]},done=false;' +
@@ -110,7 +110,7 @@ const ARTICLE_PRELUDE =
   "if(typeof window.onload==='function')pending.push(call(window,'load',window.onload));" +
   'return Promise.all(pending);};})();</script>';
 // Restores once the ready handlers have settled, async ones included.
-const ARTICLE_EPILOGUE =
+export const ARTICLE_EPILOGUE =
   '<script>Promise.resolve(window.__lodyArticleReady&&window.__lodyArticleReady())' +
   '.then(function(){window.__lodyArticleRestore&&window.__lodyArticleRestore();});</script>';
 

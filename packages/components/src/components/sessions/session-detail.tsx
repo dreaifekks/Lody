@@ -240,6 +240,8 @@ import {
 import { createPortal } from 'react-dom';
 import { PopupContainerProvider, usePopupContainer } from '@lody/ui/popup-container';
 import { BoardArticleDialog, isBoardArticlePath } from '../boards/board-article-dialog';
+import { SessionBoardCompareView } from '../boards/board-compare-view';
+import { isCompareManifestPath } from '../boards/compare-manifest';
 import {
   createRelocatableHost,
   RelocatableSlot,
@@ -8112,34 +8114,57 @@ const SessionDetail = ({
           holdsThread={articleDialogThreadId !== null}
           onPanelChange={setArticlePanel}
           onClose={closeArticleDialog}
+          wide={isCompareManifestPath(articleDialog.filePath)}
           article={
             <SessionFileScope sessionId={articleDialog.ownerThreadId}>
-              {(scope) => (
-                <SessionFileContentView
-                  key={`${scope.session.id}:${articleDialog.filePath}`}
-                  sessionId={scope.session.id}
-                  session={scope.session}
-                  filePath={articleDialog.filePath}
-                  {...(articleDialog.fileId === undefined ? {} : { fileId: articleDialog.fileId })}
-                  fileProvider={scope.fileProvider}
-                  fileProviderPending={scope.fileProviderPending}
-                  fileProviderMessage={scope.fileProviderMessage}
-                  {...(scope.role === undefined ? {} : { fileProviderRole: scope.role })}
-                  active
-                  article={{
-                    onOpenInTab: () => {
+              {(scope) =>
+                isCompareManifestPath(articleDialog.filePath) ? (
+                  <SessionBoardCompareView
+                    scope={`session:${scope.session.id}`}
+                    key={`${scope.session.id}:${articleDialog.filePath}`}
+                    fileProvider={scope.fileProvider}
+                    manifestPath={articleDialog.filePath}
+                    comments={
+                      articleDialogThreadId
+                        ? { threadId: articleDialogThreadId, ownerThreadId: scope.session.id }
+                        : null
+                    }
+                    onOpenInTab={() => {
                       closeArticleDialog();
                       handleOpenFileForSession(scope, articleDialog.filePath, {
                         pathKind: 'canonical',
                       });
-                    },
-                    // Comments ride with the next message of the thread beside
-                    // the article, which may be another member the reader moved to.
-                    annotationThreadId: articleDialogThreadId,
-                  }}
-                  className={stylex.props(detailStyles.rootFill).className}
-                />
-              )}
+                    }}
+                  />
+                ) : (
+                  <SessionFileContentView
+                    key={`${scope.session.id}:${articleDialog.filePath}`}
+                    sessionId={scope.session.id}
+                    session={scope.session}
+                    filePath={articleDialog.filePath}
+                    {...(articleDialog.fileId === undefined
+                      ? {}
+                      : { fileId: articleDialog.fileId })}
+                    fileProvider={scope.fileProvider}
+                    fileProviderPending={scope.fileProviderPending}
+                    fileProviderMessage={scope.fileProviderMessage}
+                    {...(scope.role === undefined ? {} : { fileProviderRole: scope.role })}
+                    active
+                    article={{
+                      onOpenInTab: () => {
+                        closeArticleDialog();
+                        handleOpenFileForSession(scope, articleDialog.filePath, {
+                          pathKind: 'canonical',
+                        });
+                      },
+                      // Comments ride with the next message of the thread beside
+                      // the article, which may be another member the reader moved to.
+                      annotationThreadId: articleDialogThreadId,
+                    }}
+                    className={stylex.props(detailStyles.rootFill).className}
+                  />
+                )
+              }
             </SessionFileScope>
           }
         />
