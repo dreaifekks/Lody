@@ -1218,6 +1218,10 @@ function OptionWidth({
             <NumberField.Group>
               <NumberField.Input
                 aria-label={t('boards.compare.widthCustom', 'Custom width (px)')}
+                // The field commits on blur; Enter is how a typed width is meant to land.
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') event.currentTarget.blur();
+                }}
               />
             </NumberField.Group>
           </NumberField.Root>

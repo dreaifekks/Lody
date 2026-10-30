@@ -1149,6 +1149,22 @@ describe('UI comparison', () => {
       expect(widthOf('C')).toBe('390px');
       expect(widthOf('A')).toBe('1280px');
       expect(inOption('C', 'Page width: 390px')).not.toBeNull();
+      // A typed width lands on Enter (the popover is still open).
+      const input = document.querySelector<HTMLInputElement>(
+        'input[aria-label="Custom width (px)"]'
+      )!;
+      await act(async () => {
+        input.focus();
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+          input,
+          '600'
+        );
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      });
+      expect(widthOf('C')).toBe('600px');
     });
 
     it('shows a missing option in its place, and no comment controls without a thread beside it', async () => {
