@@ -141,7 +141,10 @@ export const markArticleAnnotationsSent = (
     return item.sent && atMs - item.sent.atMs > SENT_RETENTION_MS ? [] : [item];
   });
 
-/** Asks again about a sent comment's passage: a new, unsent comment replaces it. */
+/**
+ * Asks again about a sent comment's passage: a new, unsent comment replaces it.
+ * Asking again about a pick is a question about that option, not a second pick.
+ */
 export const followUpArticleAnnotation = (
   items: readonly ArticleAnnotation[],
   id: string,
@@ -150,7 +153,10 @@ export const followUpArticleAnnotation = (
   items.map((item) => {
     if (item.id !== id) return item;
     const { sent: _sent, ...rest } = item;
-    return { ...rest, id: crypto.randomUUID(), comment, previous: item.comment };
+    const next = { ...rest, id: crypto.randomUUID(), comment, previous: item.comment };
+    if (!item.compare?.pick) return next;
+    const { pick: _pick, ...question } = item.compare;
+    return { ...next, compare: question };
   });
 
 export function useArticleAnnotationActions() {

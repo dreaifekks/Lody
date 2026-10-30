@@ -57,7 +57,9 @@ interface BoardProps {
 
 /*
  * Runs in each option's page beside the article state script: reports its
- * scroll and follows another option's without echoing it; while the reader is
+ * scroll and follows another option's without echoing it (a follow that moved
+ * the page keeps the next report quiet, even when a later one cannot move it
+ * further); while the reader is
  * pointing, outlines the element under the pointer and reports a click as a
  * spot instead of letting the page act on it.
  */
@@ -81,7 +83,7 @@ const COMPARE_SCRIPT =
   "if(!picking)return;e.preventDefault();e.stopImmediatePropagation();if(t!=='click')return;var el=e.target;" +
   "send({type:'lody-compare:pick',x:e.clientX+left(),y:e.clientY+top(),label:el&&el.tagName?describe(el):''});},true);});" +
   "window.addEventListener('message',function(e){if(e.source!==parent)return;var d=e.data;if(!d||typeof d!=='object')return;" +
-  "if(d.type==='lody-compare:scroll-to'){var before=top();H.scrollTop=d.top;B.scrollTop=d.top;quiet=top()!==before;}" +
+  "if(d.type==='lody-compare:scroll-to'){var before=top();H.scrollTop=d.top;B.scrollTop=d.top;if(top()!==before)quiet=true;}" +
   "if(d.type==='lody-compare:picking'){picking=!!d.on;if(!picking)mark(null);}});" +
   '})();</script>';
 
@@ -240,7 +242,7 @@ export function CompareImageBoard({ url, ...board }: BoardProps & { readonly url
         const box = boxRef.current!;
         const before = box.scrollTop;
         box.scrollTop = top * latest.current.scale;
-        quiet.current = box.scrollTop !== before;
+        if (box.scrollTop !== before) quiet.current = true;
       },
       setPicking: () => undefined,
     });

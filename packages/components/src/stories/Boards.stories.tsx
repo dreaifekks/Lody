@@ -1182,6 +1182,7 @@ function ArticleDialogPage({
             article={
               isCompareManifestPath(open) ? (
                 <SessionBoardCompareView
+                  scope={`session:${owner.id}`}
                   fileProvider={provider}
                   manifestPath={open}
                   comments={inArticle ? { threadId, ownerThreadId: owner.id } : null}

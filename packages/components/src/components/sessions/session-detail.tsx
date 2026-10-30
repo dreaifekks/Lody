@@ -8120,6 +8120,7 @@ const SessionDetail = ({
               {(scope) =>
                 isCompareManifestPath(articleDialog.filePath) ? (
                   <SessionBoardCompareView
+                    scope={`session:${scope.session.id}`}
                     key={`${scope.session.id}:${articleDialog.filePath}`}
                     fileProvider={scope.fileProvider}
                     manifestPath={articleDialog.filePath}

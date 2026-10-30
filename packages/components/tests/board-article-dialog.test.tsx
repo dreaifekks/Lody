@@ -10,6 +10,7 @@ import { ArticleAnnotationMarkers } from '../src/components/boards/article-annot
 import {
   articleAnnotationsAtom,
   articleBlockText,
+  followUpArticleAnnotation,
   formatArticleAnnotations,
   type ArticleAnnotation,
 } from '../src/components/boards/article-annotations';
@@ -964,10 +965,11 @@ describe('UI comparison', () => {
       vi.useRealTimers();
     });
 
-    const show = async (comments = true) => {
+    const show = async (comments = true, scope = 'session:thread') => {
       await act(async () =>
         root.render(
           createElement(BoardCompareView, {
+            scope,
             manifestPath: 'nav.compare.md',
             read,
             comments: comments
@@ -1040,6 +1042,69 @@ describe('UI comparison', () => {
       expect(option('B').textContent).not.toContain('Updated');
     });
 
+    it('keeps a pick and comments with their file when the agent reorders the list', async () => {
+      await show();
+      await act(async () => inOption('A', 'Build on this option').click());
+      files['nav.compare.md'] = '# Nav\n\n- [Tabs](b.html)\n- [Sidebar](a.html)\n- [Rail](c.html)';
+      await act(async () => vi.advanceTimersByTimeAsync(5_000));
+      await settle();
+      expect(inOption('A', 'Build on this option').getAttribute('aria-pressed')).toBe('false');
+      expect(inOption('B', 'Build on this option').getAttribute('aria-pressed')).toBe('true');
+      expect(getDefaultStore().get(articleAnnotationsAtom)).toMatchObject([{ path: 'a.html' }]);
+    });
+
+    it('asks again about a sent pick as a question, leaving the new pick the only one', async () => {
+      await show();
+      await act(async () => inOption('B', 'Build on this option').click());
+      const [pick] = getDefaultStore().get(articleAnnotationsAtom);
+      getDefaultStore().set(articleAnnotationsAtom, [{ ...pick, sent: { number: 1, atMs: 0 } }]);
+      await act(async () => inOption('C', 'Build on this option').click());
+      getDefaultStore().set(
+        articleAnnotationsAtom,
+        followUpArticleAnnotation(getDefaultStore().get(articleAnnotationsAtom), pick.id, 'Why B?')
+      );
+      const unsentPicks = getDefaultStore()
+        .get(articleAnnotationsAtom)
+        .filter((item) => item.compare?.pick && !item.sent);
+      expect(unsentPicks.map((item) => item.path)).toEqual(['c.html']);
+    });
+
+    it("gives an option's controls back only to the same file of the same place", async () => {
+      const posted = async () => {
+        const frame = option('A').querySelector('iframe')!;
+        const messages: unknown[] = [];
+        frame.contentWindow!.postMessage = (message: unknown) => {
+          messages.push(message);
+        };
+        await act(async () => {
+          window.dispatchEvent(
+            new MessageEvent('message', {
+              data: { type: 'lody-widget:ready' },
+              source: frame.contentWindow,
+            })
+          );
+        });
+        return { frame, code: (messages[0] as { code: string }).code };
+      };
+      await show(true, 'session:one');
+      const first = await posted();
+      await act(async () => {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: {
+              type: 'lody-article:state',
+              state: { controls: { '#q': { value: 'secret' } }, details: [], scroll: [0, 0] },
+            },
+            source: first.frame.contentWindow,
+          })
+        );
+      });
+      act(() => root.unmount());
+      root = createRoot(container);
+      await show(true, 'session:two');
+      expect((await posted()).code).toContain('var saved=null;');
+    });
+
     it('shows a missing option in its place, and no comment controls without a thread beside it', async () => {
       delete files['c.html'];
       await show(false);
@@ -1087,16 +1152,14 @@ describe('UI comparison', () => {
           source: page.window,
         })
       );
-      page.window.document
-        .getElementById('save')!
-        .dispatchEvent(
-          new page.window.MouseEvent('click', {
-            bubbles: true,
-            cancelable: true,
-            clientX: 30,
-            clientY: 12,
-          })
-        );
+      page.window.document.getElementById('save')!.dispatchEvent(
+        new page.window.MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 30,
+          clientY: 12,
+        })
+      );
       await vi.advanceTimersByTimeAsync(0);
       expect((page.window as unknown as { saved: boolean }).saved).toBe(false);
       expect(received).toContainEqual({

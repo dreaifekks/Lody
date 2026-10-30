@@ -463,7 +463,12 @@ export function BoardFilePreview({
   if (compareReader)
     body = (
       <div {...stylex.props(styles.compare)}>
-        <BoardCompareView manifestPath={entry.path} read={compareReader} comments={null} />
+        <BoardCompareView
+          scope={`board:${boardId}:${area}`}
+          manifestPath={entry.path}
+          read={compareReader}
+          comments={null}
+        />
       </div>
     );
   else if (preview.status === 'loading')

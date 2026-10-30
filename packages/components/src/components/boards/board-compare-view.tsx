@@ -366,11 +366,17 @@ const quoteOf = (variant: CompareVariant, spot?: ComparePick): string =>
  * comments and goes with the thread's next message (`comments`).
  */
 export function BoardCompareView({
+  scope,
   manifestPath,
   read,
   comments,
   onOpenInTab,
 }: {
+  /**
+   * Where the files come from (a thread, or a Board's area): two places can
+   * hold the same path, and an option's controls come back only to its own.
+   */
+  scope: string;
   manifestPath: string;
   read: CompareFileReader;
   /** The thread whose next message carries the comments; null where there is none. */
@@ -428,7 +434,10 @@ export function BoardCompareView({
     () =>
       comments
         ? allAnnotations.filter(
-            (item) => item.threadId === comments.threadId && item.compare?.manifest === manifestPath
+            (item) =>
+              item.threadId === comments.threadId &&
+              item.ownerThreadId === comments.ownerThreadId &&
+              item.compare?.manifest === manifestPath
           )
         : [],
     [allAnnotations, comments, manifestPath]
@@ -466,9 +475,7 @@ export function BoardCompareView({
     if (!comments) return;
     const mine = annotations.find(
       (annotation) =>
-        annotation.compare?.pick &&
-        !annotation.sent &&
-        annotation.compare.letter === item.variant.letter
+        annotation.compare?.pick && !annotation.sent && annotation.path === item.variant.path
     );
     for (const annotation of annotations)
       if (annotation.compare?.pick && !annotation.sent) actions.remove(annotation.id);
@@ -745,9 +752,7 @@ export function BoardCompareView({
               const visible = shown.includes(item);
               // Errors belong to the revision that reported them.
               const revision = `${variant.path}:${item.hash}`;
-              const mine = annotations.filter(
-                (annotation) => annotation.compare?.letter === variant.letter
-              );
+              const mine = annotations.filter((annotation) => annotation.path === variant.path);
               return (
                 <div
                   key={variant.letter}
@@ -786,6 +791,7 @@ export function BoardCompareView({
                   <div {...stylex.props(styles.frame)}>
                     <OptionBoard
                       key={revision}
+                      scope={scope}
                       item={item}
                       size={size}
                       scale={scale}
@@ -845,10 +851,12 @@ export function BoardCompareView({
 }
 
 function OptionBoard({
+  scope,
   item,
   onError,
   ...board
 }: {
+  scope: string;
   item: LoadedVariant;
   size: CompareSize;
   scale: number;
@@ -867,7 +875,7 @@ function OptionBoard({
         {...board}
         title={item.variant.label}
         html={item.html}
-        stateKey={`compare:${item.variant.path}`}
+        stateKey={`compare:${scope}:${item.variant.path}`}
         onError={onError}
       />
     );
