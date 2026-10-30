@@ -1167,6 +1167,37 @@ describe('UI comparison', () => {
       expect(widthOf('C')).toBe('600px');
     });
 
+    it('scrolls the other options along with one, until the reader turns that off', async () => {
+      await show();
+      const frameOf = (letter: string) => option(letter).querySelector('iframe')!;
+      const toB: unknown[] = [];
+      frameOf('B').contentWindow!.postMessage = (message: unknown) => {
+        toB.push(message);
+      };
+      const scrollA = () =>
+        act(async () => {
+          window.dispatchEvent(
+            new MessageEvent('message', {
+              data: { type: 'lody-compare:scroll', top: 320, own: true },
+              source: frameOf('A').contentWindow,
+            })
+          );
+        });
+      await scrollA();
+      expect(toB).toContainEqual({ type: 'lody-compare:scroll-to', top: 320 });
+      toB.length = 0;
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>('button[aria-label="Display"]')!.click()
+      );
+      const together = Array.from(
+        document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')
+      ).find((item) => item.textContent?.includes('Scroll together'))!;
+      expect(together.getAttribute('aria-checked')).toBe('true');
+      await act(async () => together.click());
+      await scrollA();
+      expect(toB).toEqual([]);
+    });
+
     it('shows a missing option in its place, and no comment controls without a thread beside it', async () => {
       delete files['c.html'];
       await show(false);

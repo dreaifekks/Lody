@@ -369,7 +369,7 @@ const quoteOf = (variant: CompareVariant, spot?: ComparePick): string =>
  * (experimental): each laid out at its design size and drawn at one shared
  * scale, so they compare fairly. Side by side and in a grid they share one
  * scroll; one at a time, they flip in place. Scrolling one option's page
- * scrolls the others' to the same place. The reader can comment on an option
+ * scrolls the others' to the same place, unless the reader turns that off. The reader can comment on an option
  * or a spot in it and pick the one to build on: all of it waits as article
  * comments and goes with the thread's next message (`comments`).
  */
@@ -403,6 +403,7 @@ export function BoardCompareView({
   const [modeChoice, setModeChoice] = useState<Mode>('app');
   const [current, setCurrent] = useState('A');
   const [picking, setPicking] = useState(false);
+  const [syncScroll, setSyncScroll] = useState(true);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [draftText, setDraftText] = useState('');
   const [seen, setSeen] = useState<ReadonlyMap<string, string>>(new Map());
@@ -474,6 +475,7 @@ export function BoardCompareView({
   const scale = zoom ?? fit;
 
   const follow = (from: string, top: number) => {
+    if (!syncScroll) return;
     for (const [path, control] of controls.current) if (path !== from) control.scrollTo(top);
   };
   const choose = (letter: string) => {
@@ -624,6 +626,10 @@ export function BoardCompareView({
                 </Menu.RadioItem>
               </Menu.RadioGroup>
             </Menu.Group>
+            <Menu.Separator />
+            <Menu.CheckboxItem checked={syncScroll} onCheckedChange={setSyncScroll}>
+              {t('boards.compare.syncScroll', 'Scroll together')}
+            </Menu.CheckboxItem>
           </Menu.Content>
         </Menu.Root>
         {comments ? (

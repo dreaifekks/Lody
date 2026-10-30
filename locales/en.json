@@ -5668,5 +5668,6 @@
   "boards.compare.empty": "No options in this list. Each option is a list item starting with a link to an .html file or a picture.",
   "boards.compare.optionWidth": "Page width: {{width}}px",
   "boards.compare.widthOwnValue": "Own width · {{width}}px",
-  "boards.compare.widthCustom": "Custom width (px)"
+  "boards.compare.widthCustom": "Custom width (px)",
+  "boards.compare.syncScroll": "Scroll together"
 }

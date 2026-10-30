@@ -5668,5 +5668,6 @@
   "boards.compare.empty": "清单里没有方案。每个方案是一个以 .html 或图片链接开头的列表项。",
   "boards.compare.optionWidth": "页面宽度：{{width}}px",
   "boards.compare.widthOwnValue": "方案自带 · {{width}}px",
-  "boards.compare.widthCustom": "自定义宽度（px）"
+  "boards.compare.widthCustom": "自定义宽度（px）",
+  "boards.compare.syncScroll": "同步滚动"
 }
