@@ -219,8 +219,9 @@ const expandHome = (target: string, homeDir: string): string => {
   return match ? homeDir + target.slice(match[1]!.length) : target;
 };
 
+/** Paths and filesystem lookups always use the literal characters, never the quoting marks. */
 const resolvePath = (target: string, cwd: string, homeDir: string): string =>
-  resolveReal(cwd, expandHome(target, homeDir));
+  resolveReal(cwd, expandHome(unprotect(target), homeDir));
 
 const isInside = (target: string, root: string): boolean => {
   const relative = path.relative(root, target);
@@ -305,7 +306,7 @@ const globToRegExp = (glob: string): RegExp => {
         source += `[${body}]`;
         index = end;
       }
-    } else source += char.replace(/[.+^${}()|\\\]\\]/g, '\\$&');
+    } else source += unprotect(char).replace(/[.+^${}()|\\\]\\]/g, '\\$&');
   }
   return new RegExp(`^${source}$`);
 };
@@ -363,7 +364,7 @@ const expandGlob = (
       for (const directory of current) {
         if (!spend(1)) break;
         const candidate =
-          segment === '..' ? path.dirname(directory) : path.join(directory, segment);
+          segment === '..' ? path.dirname(directory) : path.join(directory, unprotect(segment));
         if (fs.existsSync(candidate)) next.push(candidate);
       }
     }
@@ -391,13 +392,13 @@ const namesSecret = (word: string, cwd: string, homeDir: string, budget: GlobBud
     // And what it could match among the known secret places.
     const segments = absolute.split('/');
     const first = segments.findIndex((segment) => GLOB_CHARACTERS.test(segment));
-    const directory = realPath(segments.slice(0, first).join('/') || '/');
+    const directory = realPath(unprotect(segments.slice(0, first).join('/')) || '/');
     const pattern = globToRegExp(path.join(directory, ...segments.slice(first)));
     return secretLocations(homeDir).some((probe) => pattern.test(probe));
   });
 
 const isSensitivePath = (target: string): boolean =>
-  SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(target));
+  SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(unprotect(target)));
 
 const isSystemConfigPath = (target: string): boolean =>
   SYSTEM_CONFIG_PATTERNS.some((pattern) => pattern.test(target));
@@ -491,8 +492,13 @@ export function splitShellCommand(commandLine: string): {
     if (quote === '"') {
       if (char === '"') quote = null;
       else if (char === '\\' && next !== undefined) {
-        word += protect(next);
-        index += 1;
+        // In double quotes a backslash escapes only $ ` " \ and a newline (a
+        // continuation, removed with it); before anything else it stays.
+        if (next === '\n') index += 1;
+        else if ('$`"\\'.includes(next)) {
+          word += next;
+          index += 1;
+        } else word += '\\';
       } else {
         if ((char === '$' && next === '(') || char === '`') substitution = true;
         word += protect(char);

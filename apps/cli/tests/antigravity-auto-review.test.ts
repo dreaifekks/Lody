@@ -827,6 +827,10 @@ describe('Antigravity Auto Review rules', () => {
       ['git', 'log', '--oneline', '>', '/dev/null'],
     ]);
     expect(splitShellCommand('echo $(cat x)').substitution).toBe(true);
+    // Double quotes: a continuation disappears, other backslashes stay.
+    expect(splitShellCommand('cat "/a/credentia\\\nls" "x\\y" "\\$HOME"').subcommands).toEqual([
+      ['cat', '/a/credentials', 'x\\y', '$HOME'],
+    ]);
   });
 
   it.each([
@@ -931,6 +935,7 @@ describe('Antigravity Auto Review rules', () => {
     ['find . -name {victim,-delete}', 'review'],
     ['find . -name {x,-fprint,/tmp/victim}', 'review'],
     ['rm -rf {/opt/x,y}', 'ask'],
+    ['cat "/home/me/.aws/credentia\\\nls"', 'ask'],
     ['cd . > .git', 'ask'],
     ['cd . > .git/config', 'ask'],
     ['git stash show --output=/tmp/victim', 'ask'],
@@ -1016,6 +1021,12 @@ describe('Antigravity Auto Review rules', () => {
       )
     ).toEqual({ kind: 'ask', reason: "changes an agent's own configuration" });
     expect(runInRepo('echo x > dangling-link')).toBe('ask');
+
+    // Quoted or escaped glob characters are literal names, checked as such.
+    fs.symlinkSync(path.join(home, '.aws/credentials'), path.join(repo, 'credentials[prod]'));
+    expect(runInRepo("cat 'credentials[prod]'")).toBe('ask');
+    expect(runInRepo('cat credentials\\[prod\\]')).toBe('ask');
+    expect(runInRepo('cat "credentials[prod]"')).toBe('ask');
 
     // Globs are checked against what they match on disk.
     fs.mkdirSync(path.join(repo, 'src/app'), { recursive: true });
