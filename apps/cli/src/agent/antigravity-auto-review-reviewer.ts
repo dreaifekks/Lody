@@ -1,6 +1,6 @@
 import * as acp from '@agentclientprotocol/sdk';
 import type { ChildProcess } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
@@ -157,11 +157,29 @@ export function parseAutoReviewVerdict(text: string): AutoReviewVerdict {
 type ReviewerProcess = {
   child: ChildProcess;
   connection: acp.ClientSideConnection;
+  /** Settles when `initialize` answers; the process is owned (and stoppable) before that. */
+  ready: Promise<void>;
   replies: Map<string, string>;
   closed: boolean;
 };
 
-type PoolEntry = { refs: number; started: Promise<ReviewerProcess> | null };
+type PoolEntry = { refs: number; process: ReviewerProcess | null };
+
+/**
+ * `promise`, or the signal's reason once it aborts: a reviewer that never
+ * answers (initialize, session setup, a prompt ignoring cancel) cannot hold a
+ * request past its deadline.
+ */
+export const untilAborted = <T>(promise: Promise<T>, signal: AbortSignal): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 
 const pool = new Map<string, PoolEntry>();
 const usage = { reviews: 0, totalMs: 0 };
@@ -175,11 +193,8 @@ const REVIEWER_DIRECTORY = path.join(os.tmpdir(), 'lody-auto-review');
 
 const launchKey = (launch: AutoReviewLaunch) => JSON.stringify([launch.command, ...launch.args]);
 
-async function startReviewerProcess(
-  launch: AutoReviewLaunch,
-  logger: Logger
-): Promise<ReviewerProcess> {
-  await mkdir(REVIEWER_DIRECTORY, { recursive: true });
+function startReviewerProcess(launch: AutoReviewLaunch, logger: Logger): ReviewerProcess {
+  mkdirSync(REVIEWER_DIRECTORY, { recursive: true });
   const child = startProcessLegacy(
     {
       command: launch.command,
@@ -221,31 +236,32 @@ async function startReviewerProcess(
       createStdoutReadableStream(child.stdout)
     )
   );
-  const reviewer: ReviewerProcess = { child, connection, replies, closed: false };
+  const ready = connection
+    .initialize({
+      protocolVersion: acp.PROTOCOL_VERSION,
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientInfo: { name: 'lody', version },
+    })
+    .then(() => {
+      logger.debug(`[auto-review] reviewer process started (pid=${child.pid ?? 'unknown'})`);
+    });
+  const reviewer: ReviewerProcess = { child, connection, ready, replies, closed: false };
+  ready.catch(() => {});
   child.once('exit', () => {
     reviewer.closed = true;
   });
-  await connection.initialize({
-    protocolVersion: acp.PROTOCOL_VERSION,
-    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-    clientInfo: { name: 'lody', version },
-  });
-  logger.debug(`[auto-review] reviewer process started (pid=${child.pid ?? 'unknown'})`);
   return reviewer;
 }
 
-const stopReviewerProcess = (started: Promise<ReviewerProcess>, logger: Logger) => {
-  void started
-    .then((reviewer) =>
-      terminateChildTreeLegacy(
-        reviewer.child,
-        { graceMs: 2000, killWaitMs: 2000, processGroup: true },
-        toShared({ logger })
-      )
-    )
-    .catch((error: unknown) =>
-      logger.debug(`[auto-review] reviewer stop: ${formatErrorMessage(error)}`)
-    );
+const stopReviewerProcess = (reviewer: ReviewerProcess, logger: Logger) => {
+  reviewer.closed = true;
+  void terminateChildTreeLegacy(
+    reviewer.child,
+    { graceMs: 2000, killWaitMs: 2000, processGroup: true },
+    toShared({ logger })
+  ).catch((error: unknown) =>
+    logger.debug(`[auto-review] reviewer stop: ${formatErrorMessage(error)}`)
+  );
 };
 
 /** A reviewer for one Lody session: its own hidden session in the shared process. */
@@ -256,7 +272,7 @@ export function createAntigravityReviewer(options: {
 }): AutoReviewer {
   const { launch, logger, label } = options;
   const key = launchKey(launch);
-  const entry = pool.get(key) ?? { refs: 0, started: null };
+  const entry = pool.get(key) ?? { refs: 0, process: null };
   entry.refs += 1;
   pool.set(key, entry);
   let closed = false;
@@ -265,25 +281,21 @@ export function createAntigravityReviewer(options: {
   /** One prompt at a time: an ACP session runs one turn at a time. */
   let queue: Promise<unknown> = Promise.resolve();
 
-  const reviewerProcess = (): Promise<ReviewerProcess> => {
-    const current = entry.started;
-    if (current) {
-      return current.then((reviewer) => {
-        if (!reviewer.closed) return reviewer;
-        if (entry.started === current) entry.started = null;
-        return reviewerProcess();
-      });
-    }
-    const started = startReviewerProcess(launch, logger);
-    entry.started = started;
-    started.catch(() => {
-      if (entry.started === started) entry.started = null;
-    });
-    return started;
+  const reviewerProcess = (): ReviewerProcess => {
+    if (entry.process && !entry.process.closed) return entry.process;
+    entry.process = startReviewerProcess(launch, logger);
+    return entry.process;
   };
 
-  const createSession = async (): Promise<ReviewerSession> => {
-    const reviewer = await reviewerProcess();
+  /** A process that did not answer in time is replaced for everyone sharing it. */
+  const discardProcess = (reviewer: ReviewerProcess) => {
+    if (entry.process === reviewer) entry.process = null;
+    session = null;
+    stopReviewerProcess(reviewer, logger);
+  };
+
+  const createSession = async (reviewer: ReviewerProcess): Promise<ReviewerSession> => {
+    await reviewer.ready;
     const created = await reviewer.connection.newSession({
       cwd: REVIEWER_DIRECTORY,
       mcpServers: [],
@@ -313,18 +325,31 @@ export function createAntigravityReviewer(options: {
     return { process: reviewer, id: created.sessionId, reviews: 0 };
   };
 
-  const reviewerSession = async (): Promise<ReviewerSession> => {
+  const reviewerSession = async (signal?: AbortSignal): Promise<ReviewerSession> => {
     const pending = session;
     if (pending) {
-      const current = await pending.catch(() => null);
+      const current = await (signal ? untilAborted(pending, signal) : pending).catch(
+        (error: unknown) => {
+          if (signal?.aborted) throw error;
+          return null;
+        }
+      );
       if (current && !current.process.closed && current.reviews < REVIEWS_PER_SESSION)
         return current;
       if (session === pending) session = null;
-      return reviewerSession();
+      return reviewerSession(signal);
     }
-    const created = createSession();
+    const reviewer = reviewerProcess();
+    const created = createSession(reviewer);
     session = created;
-    return created;
+    if (!signal) return created;
+    try {
+      return await untilAborted(created, signal);
+    } catch (error) {
+      // Not even a session in time: the process is wedged or still starting slowly.
+      if (signal.aborted && session === created) discardProcess(reviewer);
+      throw error;
+    }
   };
 
   const runReview = async (
@@ -339,19 +364,24 @@ export function createAntigravityReviewer(options: {
     const ordinal = usage.reviews;
     let outcome = 'failed';
     try {
-      const current = await reviewerSession();
-      signal.throwIfAborted();
+      const current = await reviewerSession(signal);
       current.reviews += 1;
       const { connection, replies } = current.process;
       replies.set(current.id, '');
-      const cancel = () => void connection.cancel({ sessionId: current.id }).catch(() => {});
+      const cancel = () => {
+        void connection.cancel({ sessionId: current.id }).catch(() => {});
+        // The session may still be busy with this prompt; the next review starts a new one.
+        if (session !== null) session = null;
+      };
       signal.addEventListener('abort', cancel, { once: true });
       try {
-        await connection.prompt({
-          sessionId: current.id,
-          prompt: [{ type: 'text', text: buildAutoReviewPrompt(input) }],
-        });
-        signal.throwIfAborted();
+        await untilAborted(
+          connection.prompt({
+            sessionId: current.id,
+            prompt: [{ type: 'text', text: buildAutoReviewPrompt(input) }],
+          }),
+          signal
+        );
         const verdict = parseAutoReviewVerdict(replies.get(current.id) ?? '');
         outcome = verdict.decision;
         return verdict;
@@ -391,7 +421,7 @@ export function createAntigravityReviewer(options: {
       entry.refs -= 1;
       if (entry.refs > 0) return;
       pool.delete(key);
-      if (entry.started) stopReviewerProcess(entry.started, logger);
+      if (entry.process) stopReviewerProcess(entry.process, logger);
     },
   };
 }

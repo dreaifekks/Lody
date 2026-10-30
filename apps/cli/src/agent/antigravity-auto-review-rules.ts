@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -166,15 +167,35 @@ const stringField = (record: unknown, ...keys: string[]): string | undefined => 
   return undefined;
 };
 
-const resolvePath = (target: string, cwd: string, homeDir: string): string => {
-  const expanded =
-    target === '~'
-      ? homeDir
-      : target.startsWith('~/')
-        ? path.join(homeDir, target.slice(2))
-        : target;
-  return path.resolve(cwd, expanded);
+/**
+ * The real location of `target`: symlinks in its deepest existing ancestor are
+ * resolved, so a link inside the workspace pointing at ~/.gemini is judged as
+ * ~/.gemini. A path that cannot be resolved (a link loop) is kept as written.
+ */
+const realPath = (target: string): string => {
+  let existing = target;
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(existing), ...rest);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return target;
+      const parent = path.dirname(existing);
+      if (parent === existing) return target;
+      rest.unshift(path.basename(existing));
+      existing = parent;
+    }
+  }
 };
+
+/** `~`, `$HOME` and `${HOME}` at the start of a word, expanded. */
+const expandHome = (target: string, homeDir: string): string => {
+  const match = /^(~|\$HOME|\$\{HOME\})(\/|$)/.exec(target);
+  return match ? homeDir + target.slice(match[1]!.length) : target;
+};
+
+const resolvePath = (target: string, cwd: string, homeDir: string): string =>
+  realPath(path.resolve(cwd, expandHome(target, homeDir)));
 
 const isInside = (target: string, root: string): boolean => {
   const relative = path.relative(root, target);
@@ -182,7 +203,110 @@ const isInside = (target: string, root: string): boolean => {
 };
 
 const isInsideWorkspace = (target: string, workspace: AutoReviewWorkspace): boolean =>
-  workspace.roots.some((root) => isInside(target, path.resolve(root)));
+  workspace.roots.some((root) => isInside(target, realPath(path.resolve(root))));
+
+/** Places that hold secrets, relative to the home directory; probed by globs and recursive reads. */
+const SECRET_LOCATIONS = [
+  '.ssh/id_rsa',
+  '.ssh/id_ed25519',
+  '.ssh/config',
+  '.aws/credentials',
+  '.gnupg/private-keys-v1.d',
+  '.netrc',
+  '.npmrc',
+  '.pypirc',
+  '.git-credentials',
+  '.docker/config.json',
+  '.kube/config',
+  '.config/gh/hosts.yml',
+  '.config/gcloud/credentials.db',
+  '.codex/auth.json',
+  '.claude/.credentials.json',
+  '.lody/credentials.json',
+  '.lody-oss/credentials.json',
+  '.gemini/oauth_creds.json',
+  '.gemini/antigravity-acp/acp_token.json',
+];
+
+const secretLocations = (homeDir: string): string[] => {
+  const files = SECRET_LOCATIONS.map((location) => path.join(homeDir, location));
+  // The directories on the way, so `~/.a*` and `grep -r x ~/.aws` count too.
+  const directories = files.flatMap((file) => {
+    const result: string[] = [];
+    for (
+      let dir = path.dirname(file);
+      isInside(dir, homeDir) && dir !== homeDir;
+      dir = path.dirname(dir)
+    )
+      result.push(dir);
+    return result;
+  });
+  return [...new Set([...files, ...directories])];
+};
+
+/** `{a,b}` alternatives of a word (not nested; capped). */
+const expandBraces = (word: string): string[] => {
+  const match = /\{([^{}]*,[^{}]*)\}/.exec(word);
+  if (!match) return [word];
+  const head = word.slice(0, match.index);
+  const tail = word.slice(match.index + match[0].length);
+  return match[1]!
+    .split(',')
+    .flatMap((part) => expandBraces(head + part + tail))
+    .slice(0, 64);
+};
+
+const GLOB_CHARACTERS = /[*?[]/;
+
+/** A regular expression for an absolute glob path (`**` crosses directories). */
+const globToRegExp = (glob: string): RegExp => {
+  let source = '';
+  for (let index = 0; index < glob.length; index += 1) {
+    const char = glob[index]!;
+    if (char === '*') {
+      if (glob[index + 1] === '*') {
+        source += '.*';
+        index += 1;
+      } else source += '[^/]*';
+    } else if (char === '?') source += '[^/]';
+    else if (char === '[') {
+      const end = glob.indexOf(']', index + 2);
+      if (end < 0) source += '\\[';
+      else {
+        const body = glob
+          .slice(index + 1, end)
+          .replace(/^!/, '^')
+          .replace(/\\/g, '\\\\');
+        source += `[${body}]`;
+        index = end;
+      }
+    } else source += char.replace(/[.+^${}()|\\\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${source}$`);
+};
+
+/**
+ * Whether a word, read as a path from `cwd`, can name a secret: literally, or
+ * through braces or a glob that matches a known secret location or a `.env`
+ * file next to it. A glob's fixed directory part is resolved like any path.
+ */
+const namesSecret = (word: string, cwd: string, homeDir: string): boolean =>
+  expandBraces(expandHome(word, homeDir)).some((candidate) => {
+    if (isSensitivePath(candidate)) return true;
+    if (!GLOB_CHARACTERS.test(candidate))
+      return isSensitivePath(resolvePath(candidate, cwd, homeDir));
+    const segments = path.resolve(cwd, candidate).split('/');
+    const first = segments.findIndex((segment) => GLOB_CHARACTERS.test(segment));
+    const directory = realPath(segments.slice(0, first).join('/') || '/');
+    const pattern = globToRegExp(path.join(directory, ...segments.slice(first)));
+    const probes = [
+      ...secretLocations(homeDir),
+      path.join(directory, '.env'),
+      path.join(directory, '.env.local'),
+      path.join(directory, '.env.production'),
+    ];
+    return probes.some((probe) => pattern.test(probe));
+  });
 
 const isSensitivePath = (target: string): boolean =>
   SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(target));
@@ -196,14 +320,15 @@ const agentConfigDirectory = (
   workspace: AutoReviewWorkspace,
   homeDir: string
 ): string | undefined => {
-  const relative = path.relative(homeDir, target);
+  const home = realPath(homeDir);
+  const relative = path.relative(home, target);
   if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return undefined;
   const first = relative.split(path.sep)[0]!;
   if (!AGENT_CONFIG_DIRECTORY.test(first)) return undefined;
-  const directory = path.join(homeDir, first);
+  const directory = path.join(home, first);
   // Lody worktrees live under ~/.lody-oss: their own files are ordinary workspace files.
   const kept = workspace.roots.some((root) => {
-    const resolved = path.resolve(root);
+    const resolved = realPath(path.resolve(root));
     return isInside(resolved, directory) && resolved !== directory && isInside(target, resolved);
   });
   return kept ? undefined : directory;
@@ -211,7 +336,7 @@ const agentConfigDirectory = (
 
 const isGitInternalPath = (target: string, workspace: AutoReviewWorkspace): boolean =>
   workspace.roots.some((root) => {
-    const relative = path.relative(path.resolve(root), target);
+    const relative = path.relative(realPath(path.resolve(root)), target);
     return relative === '.git' || relative.startsWith(`.git${path.sep}`);
   });
 
@@ -318,7 +443,7 @@ export function splitShellCommand(commandLine: string): {
       const fd = /^\d$|^&$/.test(word) ? word : '';
       if (!fd) endWord();
       let operator = fd + char;
-      if (next === '>' || next === '&') {
+      if (next === '>' || next === '&' || (char === '>' && next === '|')) {
         operator += next;
         index += 1;
       }
@@ -334,9 +459,38 @@ export function splitShellCommand(commandLine: string): {
   return { subcommands: pipelines.flat(), pipelines, substitution };
 }
 
-const isRedirect = (word: string) => /^(\d|&)?(>>?|<)&?$/.test(word);
+const isRedirect = (word: string) => /^(\d|&)?(>>?|<)[&|]?$/.test(word);
 
 const isAssignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+
+/** Index of the wrapped command after flags whose value is the next word. */
+const afterOptions =
+  (valued: RegExp, positional = 0) =>
+  (words: readonly string[]): number => {
+    let index = 1;
+    while (index < words.length) {
+      const word = words[index]!;
+      if (word === '--') return index + 1 + positional;
+      if (isAssignment(word)) index += 1;
+      else if (word.startsWith('-')) index += valued.test(word) ? 2 : 1;
+      else break;
+    }
+    return index + positional;
+  };
+
+const WRAPPERS = new Map<string, (words: readonly string[]) => number>([
+  ['env', afterOptions(/^-[uCS]$|^--(unset|chdir|split-string)$/)],
+  ['exec', afterOptions(/^-a$/)],
+  ['nohup', afterOptions(/^$/)],
+  ['timeout', afterOptions(/^-[sk]$|^--(signal|kill-after)$/, 1)],
+  ['stdbuf', afterOptions(/^-[ioe]$/)],
+  [
+    'xargs',
+    afterOptions(
+      /^-[IiLlnPsdEa]$|^--(replace|max-lines|max-args|max-procs|max-chars|delimiter|eof|arg-file)$/
+    ),
+  ],
+]);
 
 /**
  * The command with leading `VAR=value` assignments and harmless wrappers
@@ -348,9 +502,17 @@ const commandWords = (words: readonly string[]): { words: string[]; assigns: boo
   let start = 0;
   while (start < words.length && isAssignment(words[start]!)) start += 1;
   const rest = words.slice(start);
-  if (rest[0] === 'command' || rest[0] === 'time' || rest[0] === 'nice') {
+  const name = rest[0];
+  if (name === 'command' || name === 'time' || name === 'nice') {
     const inner = commandWords(rest.slice(1));
     return { words: inner.words, assigns: start > 0 || inner.assigns };
+  }
+  // Wrappers that run the command after them; what they run is judged, and
+  // the wrapped command never counts as read-only.
+  const skip = WRAPPERS.get(name ?? '');
+  if (skip) {
+    const inner = commandWords(rest.slice(skip(rest)));
+    return { words: inner.words, assigns: true };
   }
   return { words: rest, assigns: start > 0 };
 };
@@ -376,7 +538,8 @@ const redirectTargets = (words: readonly string[]): string[] => {
     const word = words[index]!;
     if (!isRedirect(word) || word.includes('<')) continue;
     const target = words[index + 1];
-    if (word.endsWith('&') || !target) {
+    // `>&2` duplicates a descriptor; `>& FILE` writes FILE (stdout and stderr).
+    if (!target || (word.endsWith('&') && /^(\d+-?|-)$/.test(target))) {
       index += 1;
       continue;
     }
@@ -394,9 +557,8 @@ const optionOutputs = (words: readonly string[]): string[] => {
   const outputs: string[] = [];
   for (let index = 1; index < words.length; index += 1) {
     const word = words[index]!;
-    const long = /^--output(=(.*))?$/.exec(word);
-    if (long) {
-      const value = long[2] ?? words[(index += 1)];
+    if (isLongOption(word, '--output')) {
+      const value = word.includes('=') ? word.slice(word.indexOf('=') + 1) : words[(index += 1)];
       if (value) outputs.push(value);
       continue;
     }
@@ -409,11 +571,21 @@ const optionOutputs = (words: readonly string[]): string[] => {
   return outputs;
 };
 
+/**
+ * Whether `arg` names the long option `option`, abbreviations included: GNU
+ * getopt and git accept any unambiguous prefix (`sort --out` is `--output`).
+ */
+const isLongOption = (arg: string, option: string): boolean => {
+  if (!arg.startsWith('--')) return false;
+  const name = arg.split('=')[0]!;
+  return name.length > 2 && option.startsWith(name);
+};
+
 const hasFlag = (words: readonly string[], ...flags: string[]): boolean =>
   words.some((word) =>
     flags.some((flag) =>
       flag.startsWith('--')
-        ? word === flag || word.startsWith(`${flag}=`)
+        ? isLongOption(word, flag)
         : word === flag || (/^-[A-Za-z]+$/.test(word) && word.includes(flag.slice(1)))
     )
   );
@@ -496,7 +668,10 @@ const isReadOnlyGit = (words: readonly string[]): boolean => {
   }
   const [subcommand, ...rest] = gitArguments(words);
   if (!subcommand) return false;
-  if (subcommand === 'grep' && rest.some((arg) => /^(-[A-Za-z]*O|--open-files-in-pager)/.test(arg)))
+  if (
+    subcommand === 'grep' &&
+    (rest.some((arg) => /^-[A-Za-z]*O/.test(arg)) || hasFlag(rest, '--open-files-in-pager'))
+  )
     return false;
   if (READ_ONLY_GIT.has(subcommand))
     return !hasFlag(rest, '--output', '--ext-diff', '--textconv', '--filters');
@@ -529,28 +704,36 @@ const isReadOnlyCommand = (words: readonly string[]): boolean => {
       return isReadOnlyGit(words);
     case 'sort':
       // -o/--output writes, --compress-program runs a program, -T writes temp files.
-      return !args.some((arg) =>
-        /^(-[A-Za-z]*[oT]|--output|--compress-program|--temporary-directory)/.test(arg)
+      return !(
+        args.some((arg) => /^-[A-Za-z]*[oT]/.test(arg)) ||
+        hasFlag(args, '--output', '--compress-program', '--temporary-directory')
       );
     case 'uniq':
       // `uniq IN OUT` writes OUT.
       return plain.length <= 1;
     case 'tree':
       // -o writes the listing; -R with -H writes an index into every directory.
-      return !args.some((arg) => /^(-[A-Za-z]*[oR]|--output)/.test(arg));
+      return !args.some((arg) => /^-[A-Za-z]*[oR]/.test(arg)) && !hasFlag(args, '--output');
     case 'rg':
       // --pre runs a program per file; -z runs decompressors.
-      return !args.some((arg) => /^(--pre|--search-zip|-[A-Za-z]*z)/.test(arg));
+      return (
+        !args.some((arg) => /^-[A-Za-z]*z/.test(arg)) &&
+        !hasFlag(args, '--pre', '--pre-glob', '--search-zip')
+      );
     case 'ag':
-      return !args.some((arg) => /^(--search-zip|-[A-Za-z]*z)/.test(arg));
+      return !args.some((arg) => /^-[A-Za-z]*z/.test(arg)) && !hasFlag(args, '--search-zip');
     case 'file':
       // -C compiles a magic file into the current directory.
-      return !args.some((arg) => /^(-[A-Za-z]*C|--compile)/.test(arg));
+      return !args.some((arg) => /^-[A-Za-z]*C/.test(arg)) && !hasFlag(args, '--compile');
     case 'date':
-      return !args.some((arg) => /^(-[A-Za-z]*s|--set)/.test(arg));
+      return !args.some((arg) => /^-[A-Za-z]*s/.test(arg)) && !hasFlag(args, '--set');
     case 'hostname':
       // An operand sets the hostname.
-      return plain.length === 0 && !args.some((arg) => /^(-[A-Za-z]*[bF]|--boot|--file)/.test(arg));
+      return (
+        plain.length === 0 &&
+        !args.some((arg) => /^-[A-Za-z]*[bF]/.test(arg)) &&
+        !hasFlag(args, '--boot', '--file')
+      );
   }
   if (name === 'find')
     return !words.some((word) =>
@@ -687,9 +870,10 @@ const classifyCommand = (
     const name = words[0];
     if (name === 'cd' || name === 'pushd') {
       const target = operands(words)[0] ?? '~';
+      const expanded = expandHome(target, homeDir);
       cwd =
-        cwd && target !== '-' && !target.includes('$')
-          ? resolvePath(target, cwd, homeDir)
+        cwd && target !== '-' && !expanded.includes('$') && !GLOB_CHARACTERS.test(expanded)
+          ? resolvePath(expanded, cwd, homeDir)
           : undefined;
     } else if (name === 'popd') {
       cwd = undefined;
@@ -697,11 +881,34 @@ const classifyCommand = (
     return step;
   });
   const sensitive = (word: string, at: string | undefined) =>
-    isSensitivePath(word) ||
-    isSensitivePath(resolvePath(word, startCwd, homeDir)) ||
-    (at !== undefined && isSensitivePath(resolvePath(word, at, homeDir)));
+    namesSecret(word, startCwd, homeDir) || (at !== undefined && namesSecret(word, at, homeDir));
   if (steps.some((step) => step.words.some((word) => sensitive(word, step.cwd))))
     return { kind: 'ask', reason: 'touches credentials or secrets' };
+  // A recursive search over the home directory or a secret directory reads secrets.
+  const secrets = secretLocations(homeDir);
+  for (const step of steps) {
+    const name = step.words[0] ?? '';
+    const recursive =
+      name === 'rg' ||
+      name === 'ag' ||
+      (/^[ef]?grep$/.test(name) &&
+        (hasFlag(step.words.slice(1), '-r', '-R', '--recursive', '--dereference-recursive') ||
+          step.words.includes('recurse')));
+    if (!recursive) continue;
+    const at = step.cwd ?? startCwd;
+    const roots = [at, ...operands(step.words).map((operand) => resolvePath(operand, at, homeDir))];
+    if (roots.some((root) => secrets.some((secret) => isInside(secret, root))))
+      return { kind: 'ask', reason: 'searches through credentials or secrets' };
+  }
+  // `sh -c '…'`: the inner command line gets the same ask rules.
+  for (const step of steps) {
+    const inline = step.words.indexOf('-c');
+    if (!/^(sh|bash|zsh|dash|ksh)$/.test(step.words[0] ?? '') || inline < 0) continue;
+    const inner = step.words[inline + 1];
+    if (!inner) continue;
+    const verdict = classifyCommand(inner, step.cwd ?? startCwd, workspace, homeDir);
+    if (verdict.kind === 'ask') return verdict;
+  }
   for (const pipeline of pipelines) {
     const names = pipeline.map((command) => commandWords(command).words[0] ?? '');
     const downloads = names.findIndex((name) => name === 'curl' || name === 'wget');
@@ -720,6 +927,7 @@ const classifyCommand = (
     if (name === 'cd' || name === 'pushd' || name === 'popd') return true;
     return (
       !step.assigns &&
+      !step.words.some((word) => expandHome(word, homeDir).includes('$')) &&
       step.cwd !== undefined &&
       isInsideWorkspace(step.cwd, workspace) &&
       isReadOnlyCommand(step.words) &&

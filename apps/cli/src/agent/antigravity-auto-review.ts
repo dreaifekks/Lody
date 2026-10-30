@@ -12,6 +12,7 @@ import {
 } from './antigravity-auto-review-rules';
 import {
   createAntigravityReviewer,
+  untilAborted,
   type AutoReviewer,
   type AutoReviewLaunch,
 } from './antigravity-auto-review-reviewer';
@@ -194,6 +195,9 @@ export function withAntigravityAutoReview(
 
   const setActive = (state: SessionState, active: boolean) => {
     if (active && !state.active) getReviewer()?.prewarm();
+    // Leaving Auto Review voids the reviews under way: their requests go to the user.
+    if (!active && state.active)
+      for (const controller of state.inFlight.values()) controller.abort(new Error('mode changed'));
     state.active = active;
   };
 
@@ -461,7 +465,9 @@ export function withAntigravityAutoReview(
       return toUser();
     }
 
-    const isGitRepository = await (options.isGitRepository ?? findGitRepository)(roots[0]!);
+    // Registered before the first wait, so a Stop or a mode change from here on reaches it.
+    const controller = new AbortController();
+    state.inFlight.set(request.id, controller);
     const toolCallId = auditId();
     emitUpdate(params.sessionId, {
       sessionUpdate: 'tool_call',
@@ -476,8 +482,6 @@ export function withAntigravityAutoReview(
         'Waiting for the reviewer.'
       ),
     });
-    const controller = new AbortController();
-    state.inFlight.set(request.id, controller);
     // Started when the review leaves the reviewer's queue: an earlier review of
     // this session must not use up this one's time.
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -501,7 +505,11 @@ export function withAntigravityAutoReview(
         content: auditLines(heading, action, 'Gemini Flash reviewer', reason),
       });
     try {
-      const result = await activeReviewer.review(
+      const isGitRepository = await untilAborted(
+        (options.isGitRepository ?? findGitRepository)(roots[0]!),
+        controller.signal
+      );
+      const review = activeReviewer.review(
         {
           toolTitle: String(toolCall.title ?? ''),
           toolKind: String(toolCall.kind ?? 'other'),
@@ -522,7 +530,9 @@ export function withAntigravityAutoReview(
         controller.signal,
         startTimer
       );
-      if (controller.signal.aborted) throw controller.signal.reason;
+      // The deadline holds even if a reviewer ignores the abort.
+      const result = await untilAborted(review, controller.signal);
+      if (!state.active) throw new Error('mode changed');
       if (result.decision === 'allow') {
         state.refusals = 0;
         state.approved.set(actionKey, result.reason);
@@ -537,6 +547,10 @@ export function withAntigravityAutoReview(
       if (reason instanceof Error && reason.message === 'cancelled') {
         finish('failed', 'Cancelled', 'The turn was stopped.');
         return answerAgent(request.id, { outcome: 'cancelled' });
+      }
+      if (reason instanceof Error && reason.message === 'mode changed') {
+        finish('failed', 'Mode changed', 'Auto Review was turned off; asking you instead.');
+        return toUser();
       }
       state.refusals += 1;
       const timedOut = reason instanceof Error && reason.message === 'timed out';

@@ -8,8 +8,10 @@
 // `_meta.fixtureSteps`; the agent reports each outcome as message text
 // ("<title>: <optionId|cancelled>"). Without steps, "report-mode" answers
 // "mode=<current>" and anything else is echoed back. A reviewer prompt ("You are Lody Auto Review...") answers a
-// verdict chosen by markers in the action: "broken-review" answers prose, "refuse" answers ask, anything
+// verdict chosen by markers in the action: "stuck-review" never answers (nor
+// honors a cancel), "broken-review" answers prose, "refuse" answers ask, anything
 // else allow. Its reason echoes the context it was given.
+import { existsSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
 const MODES = [
@@ -98,6 +100,9 @@ const runPrompt = async (sessionId, text, steps) => {
   const session = sessions.get(sessionId);
   session.cancelled = false;
   if (text.startsWith('You are Lody Auto Review')) {
+    // Never answers, not even a cancel.
+    if (text.slice(text.lastIndexOf('\n<action>\n')).includes('stuck-review'))
+      return new Promise(() => {});
     update(sessionId, {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: reviewerVerdict(text, session) },
@@ -184,8 +189,15 @@ const handle = async (message) => {
   }
 };
 
+// FAKE_AGY_HANG_ONCE=<file>: the first process to find <file> missing creates
+// it and never answers `initialize`, like a wedged server.
+const hangOnce = process.env.FAKE_AGY_HANG_ONCE;
+const hang = hangOnce !== undefined && !existsSync(hangOnce);
+if (hang) writeFileSync(hangOnce, 'hung');
+
 createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line);
+  if (hang) return;
   if (message.method === undefined) {
     waiting.get(message.id)?.(message.result);
     waiting.delete(message.id);

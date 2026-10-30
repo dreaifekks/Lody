@@ -48,6 +48,7 @@ import {
 } from '../src/agent/antigravity-auto-review-rules';
 import {
   buildAutoReviewPrompt,
+  createAntigravityReviewer,
   type AutoReviewer,
 } from '../src/agent/antigravity-auto-review-reviewer';
 import { applyAcpSessionRunConfig } from '../src/session/acp-session-config-applier';
@@ -367,7 +368,10 @@ describe('Antigravity Auto Review through the session start chain', () => {
 
 describe('Antigravity Auto Review stream', () => {
   /** The wrapper between a scripted client and agent, with an injected reviewer and clock. */
-  const wire = (reviewer: AutoReviewer) => {
+  const wire = (
+    reviewer: AutoReviewer,
+    isGitRepository: () => Promise<boolean> = async () => true
+  ) => {
     const toClient: AnyMessage[] = [];
     const toAgent: AnyMessage[] = [];
     const agentOut = new TransformStream<AnyMessage, AnyMessage>();
@@ -384,7 +388,7 @@ describe('Antigravity Auto Review stream', () => {
         logger: createSilentLogger(),
         label: 'test',
         createReviewer: () => reviewer,
-        isGitRepository: async () => true,
+        isGitRepository,
       }
     );
     const clientWriter = wrapped.writable.getWriter();
@@ -455,6 +459,31 @@ describe('Antigravity Auto Review stream', () => {
           method: 'session/cancel',
           params: { sessionId: 's' },
         }),
+      async switchMode(id: number, value: string) {
+        await clientWriter.write({
+          jsonrpc: '2.0',
+          id,
+          method: 'session/set_config_option',
+          params: { sessionId: 's', configId: 'mode', value },
+        });
+        await agentWriter.write({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            configOptions: [
+              {
+                id: 'mode',
+                name: 'Mode',
+                category: 'mode',
+                type: 'select',
+                currentValue: value,
+                options: [{ value: 'default', name: 'Default' }],
+              },
+            ],
+          },
+        });
+        await settle();
+      },
     };
   };
 
@@ -538,6 +567,70 @@ describe('Antigravity Auto Review stream', () => {
     expect(forwarded(wired.toClient)).toEqual([20, 21]);
   });
 
+  it('hands the request over at the deadline even if the reviewer ignores the abort', async () => {
+    const deaf: AutoReviewer = {
+      prewarm: () => {},
+      close: () => {},
+      review: (_input, _signal, onStart) => {
+        onStart?.();
+        return new Promise(() => {});
+      },
+    };
+    const wired = wire(deaf);
+    await wired.start();
+    await wired.requestPermission(30, 'make build');
+    await vi.advanceTimersByTimeAsync(AUTO_REVIEW_TIMEOUT_MS);
+    expect(forwarded(wired.toClient)).toEqual([30]);
+  });
+
+  it('gives the user a request whose review was under way when Auto Review was turned off', async () => {
+    const approvesLater: AutoReviewer = {
+      prewarm: () => {},
+      close: () => {},
+      review: (_input, _signal, onStart) => {
+        onStart?.();
+        return new Promise((resolve) =>
+          setTimeout(() => resolve({ decision: 'allow', reason: 'fine' }), 5_000)
+        );
+      },
+    };
+    const wired = wire(approvesLater);
+    await wired.start();
+    await wired.requestPermission(31, 'make build');
+    await wired.switchMode(3, 'default');
+    expect(forwarded(wired.toClient)).toEqual([31]);
+    expect(JSON.stringify(wired.toClient)).toContain('Status: Mode changed');
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(wired.toAgent.some((message) => 'id' in message && message.id === 31)).toBe(false);
+  });
+
+  it('honors a Stop that arrives while the repository is still being checked', async () => {
+    let gitChecked: (value: boolean) => void = () => {};
+    const reviewed: string[] = [];
+    const wired = wire(
+      {
+        prewarm: () => {},
+        close: () => {},
+        review: async (input) => {
+          reviewed.push(input.toolTitle);
+          return { decision: 'allow', reason: 'fine' };
+        },
+      },
+      () => new Promise((resolve) => (gitChecked = resolve))
+    );
+    await wired.start();
+    await wired.requestPermission(32, 'make build');
+    await wired.cancel();
+    gitChecked(true);
+    await wired.settle();
+    expect(wired.toAgent.at(-1)).toEqual({
+      jsonrpc: '2.0',
+      id: 32,
+      result: { outcome: { outcome: 'cancelled' } },
+    });
+    expect(reviewed).toEqual([]);
+  });
+
   it('answers cancelled when the turn is stopped during a review', async () => {
     const wired = wire(neverAnswers());
     await wired.start();
@@ -554,6 +647,55 @@ describe('Antigravity Auto Review stream', () => {
         (message) => 'method' in message && message.method === 'session/request_permission'
       )
     ).toBe(false);
+  });
+});
+
+describe('Antigravity Auto Review reviewer process', () => {
+  const input = (commandLine: string) => ({
+    toolTitle: commandLine,
+    toolKind: 'execute',
+    command: commandLine,
+    subcommands: [commandLine],
+    paths: [],
+    rawInput: { CommandLine: commandLine },
+    actionCwd: '/work/repo',
+    workspaceRoots: ['/work/repo'],
+    isGitRepository: true,
+    userMessage: 'build it',
+  });
+
+  it('replaces a process that never initializes and a session whose prompt never ends', async () => {
+    const marker = path.join(makeWorkdir(), 'hung-once');
+    const reviewer = createAntigravityReviewer({
+      launch: {
+        command: process.execPath,
+        args: [fixture],
+        env: { ...process.env, FAKE_AGY_HANG_ONCE: marker },
+      },
+      logger: createSilentLogger(),
+      label: 'test',
+    });
+    try {
+      const wedged = new AbortController();
+      const first = reviewer.review(input('make build'), wedged.signal);
+      await vi.waitFor(() => expect(fs.existsSync(marker)).toBe(true));
+      wedged.abort(new Error('timed out'));
+      await expect(first).rejects.toThrow('timed out');
+
+      const stuck = new AbortController();
+      const second = reviewer.review(input('make stuck-review'), stuck.signal, () =>
+        queueMicrotask(() => stuck.abort(new Error('timed out')))
+      );
+      await expect(second).rejects.toThrow('timed out');
+
+      await expect(
+        reviewer.review(input('make build'), new AbortController().signal)
+      ).resolves.toMatchObject({
+        decision: 'allow',
+      });
+    } finally {
+      reviewer.close();
+    }
   });
 });
 
@@ -677,6 +819,39 @@ describe('Antigravity Auto Review rules', () => {
     ['cat ~/.config/gcloud/credentials.db', 'ask'],
     ['cat ~/.npmrc', 'ask'],
     ['cat ~/.pypirc', 'ask'],
+    // Review round 2: descriptors vs files, globs, recursive reads, abbreviations, wrappers.
+    ['echo changed >& /tmp/out.txt', 'ask'],
+    ['echo changed >| /tmp/out.txt', 'ask'],
+    ['make 2>&1 >& build.log', 'review'],
+    ['ls -la 2>&1', 'allow'],
+    ['cat ~/.aws/cred*', 'ask'],
+    ['cat ~/.codex/auth.jso?', 'ask'],
+    ['cat ~/.aws/{config,credentials}', 'ask'],
+    ['cat ~/.a*/credentials', 'ask'],
+    ['cat ~/**/credentials', 'ask'],
+    ['cat .e*', 'ask'],
+    ['cat src/*.ts', 'allow'],
+    ['grep -R . ~/.aws', 'ask'],
+    ['grep -r token ~', 'ask'],
+    ['rg TODO ~', 'ask'],
+    ['rg TODO src', 'allow'],
+    ['cat $HOME/.aws/credentials', 'ask'],
+    ['cat ${HOME}/.ssh/id_rsa', 'ask'],
+    ['cat $SOMEWHERE/notes.txt', 'review'],
+    ['sort --out /tmp/out.txt README.md', 'ask'],
+    ['sort --out=sorted.txt README.md', 'review'],
+    ['sort --compress=x README.md', 'review'],
+    ['git diff --ext', 'review'],
+    ['git log --out=log.txt', 'review'],
+    ['git push --forc origin main', 'ask'],
+    ['env rm -rf ~/projects/other', 'ask'],
+    ['env -i PATH=/usr/bin rm -rf /opt/x', 'ask'],
+    ['timeout 5 rm -rf /opt/x', 'ask'],
+    ['nohup git reset --hard', 'ask'],
+    ['exec git push -f origin main', 'ask'],
+    ['nohup cat README.md', 'review'],
+    ["bash -c 'rm -rf ~/projects/other'", 'ask'],
+    ['sh -c "git push --force origin main"', 'ask'],
   ])('%s → %s', (commandLine, expected) => {
     expect(run(commandLine).kind).toBe(expected);
   });
@@ -693,6 +868,31 @@ describe('Antigravity Auto Review rules', () => {
     expect(edit('/home/me/.zshrc')).toBe('ask');
     expect(edit('/home/me/.ssh/config')).toBe('ask');
     expect(edit('/work/repo/.env.local')).toBe('ask');
+  });
+
+  it('judges a symlink by where it points', () => {
+    const home = makeWorkdir();
+    const repo = makeWorkdir();
+    fs.mkdirSync(path.join(home, '.gemini'));
+    fs.mkdirSync(path.join(home, '.aws'));
+    fs.symlinkSync(path.join(home, '.gemini'), path.join(repo, 'config-link'));
+    fs.symlinkSync(path.join(home, '.aws'), path.join(repo, 'aws-link'));
+    const at = { roots: [repo], homeDir: home };
+    const target = path.join(repo, 'config-link/settings.json');
+    expect(
+      classifyAntigravityPermission(
+        { kind: 'edit', rawInput: { TargetFile: target }, locations: [{ path: target }] },
+        at
+      )
+    ).toEqual({ kind: 'ask', reason: "changes an agent's own configuration" });
+    const runInRepo = (commandLine: string) =>
+      classifyAntigravityPermission(
+        { kind: 'execute', rawInput: { CommandLine: commandLine, Cwd: repo } },
+        at
+      ).kind;
+    expect(runInRepo('cat aws-link/credentials')).toBe('ask');
+    expect(runInRepo('cat aws-link/cred*')).toBe('ask');
+    expect(runInRepo('echo x > config-link/hooks.json')).toBe('ask');
   });
 
   it("asks before any change to an agent's own configuration, even with the home directory as workspace", () => {
@@ -730,6 +930,8 @@ describe('Antigravity Auto Review rules', () => {
       reason: "changes an agent's own configuration",
     });
     expect(runAtHome('cp hooks.json ~/.claude/settings.json').kind).toBe('ask');
+    expect(runAtHome('echo changed >& ~/.gemini/settings.json').kind).toBe('ask');
+    expect(runAtHome('sort --out ~/.gemini/settings.json README.md').kind).toBe('ask');
     expect(
       classifyAntigravityPermission({ kind: 'search', rawInput: { query: 'acp' } }, workspace).kind
     ).toBe('review');
