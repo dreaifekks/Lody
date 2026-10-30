@@ -936,6 +936,21 @@ describe('Antigravity Auto Review rules', () => {
     ['find . -name {x,-fprint,/tmp/victim}', 'review'],
     ['rm -rf {/opt/x,y}', 'ask'],
     ['cat "/home/me/.aws/credentia\\\nls"', 'ask'],
+    // Which cd ran depends on control flow; comments hide the rest of a line.
+    ['cd ~/.aws || cd /work/repo; cat credentials', 'ask'],
+    ['cd ~/.aws # && cd /work/repo\ncat credentials', 'ask'],
+    ['cd ~/.aws | cd /work/repo; cat credentials', 'ask'],
+    ['cd src; ls', 'review'],
+    ['cat README.md # a comment', 'allow'],
+    // git reading by address or outside the repository.
+    ['git -C ~/.aws grep --no-index . credentials', 'ask'],
+    ['git show HEAD:.env', 'ask'],
+    ['git show :.env.production', 'ask'],
+    ['git show HEAD:README.md', 'allow'],
+    ['git diff --no-index a.txt b.txt', 'review'],
+    ['git -C /elsewhere status', 'review'],
+    // jq can print the environment.
+    ["jq -n 'env.AWS_SECRET_ACCESS_KEY'", 'review'],
     ['cat "$HOME/.aws/credentials"', 'ask'],
     ["cat '$HOME/notes.txt'", 'allow'],
     ['cd . > .git', 'ask'],

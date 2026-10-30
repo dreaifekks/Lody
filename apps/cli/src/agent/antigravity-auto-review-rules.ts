@@ -67,7 +67,6 @@ const READ_ONLY_COMMANDS = new Set([
   'diff',
   'cmp',
   'comm',
-  'jq',
   'true',
   'false',
   'test',
@@ -466,8 +465,11 @@ export function splitShellCommand(commandLine: string): {
   subcommands: string[][];
   pipelines: string[][][];
   substitution: boolean;
+  /** How the simple commands are joined, in order: `&&`, `||`, `;`, `&`, `|`, newline. */
+  separators: string[];
 } {
   const pipelines: string[][][] = [];
+  const separators: string[] = [];
   let pipeline: string[][] = [];
   let words: string[] = [];
   let word = '';
@@ -538,26 +540,36 @@ export function splitShellCommand(commandLine: string): {
       endWord();
       continue;
     }
+    // A comment runs to the end of the line.
+    if (char === '#' && !hasWord) {
+      while (index + 1 < commandLine.length && commandLine[index + 1] !== '\n') index += 1;
+      continue;
+    }
     if (char === '\n' || char === ';') {
       endPipeline();
+      separators.push(char);
       continue;
     }
     if (char === '&' && next === '&') {
       endPipeline();
+      separators.push('&&');
       index += 1;
       continue;
     }
     if (char === '|' && next === '|') {
       endPipeline();
+      separators.push('||');
       index += 1;
       continue;
     }
     if (char === '|') {
       endCommand();
+      separators.push('|');
       continue;
     }
     if (char === '&' && next !== '>' && commandLine[index - 1] !== '>') {
       endPipeline();
+      separators.push('&');
       continue;
     }
     if (char === '>' || char === '<') {
@@ -578,7 +590,7 @@ export function splitShellCommand(commandLine: string): {
     hasWord = true;
   }
   endPipeline();
-  return { subcommands: pipelines.flat(), pipelines, substitution };
+  return { subcommands: pipelines.flat(), pipelines, substitution, separators };
 }
 
 const isRedirect = (word: string) => /^(\d|&)?(>>?|<)[&|]?$/.test(word);
@@ -792,7 +804,18 @@ const isReadOnlyGit = (words: readonly string[]): boolean => {
   if (!subcommand) return false;
   // Output files and external programs, for every subcommand below (`stash
   // show` and `stash list` take diff and log options too).
-  if (hasFlag(rest, '--output', '--ext-diff', '--textconv', '--filters', '--open-files-in-pager'))
+  if (
+    hasFlag(
+      rest,
+      '--output',
+      '--ext-diff',
+      '--textconv',
+      '--filters',
+      '--open-files-in-pager',
+      // Reads files anywhere, not only the repository.
+      '--no-index'
+    )
+  )
     return false;
   if (subcommand === 'grep' && rest.some((arg) => /^-[A-Za-z]*O/.test(arg))) return false;
   if (READ_ONLY_GIT.has(subcommand)) return true;
@@ -995,7 +1018,7 @@ const classifyCommand = (
   workspace: AutoReviewWorkspace,
   homeDir: string
 ): AutoReviewRuleVerdict => {
-  const { subcommands, pipelines, substitution } = splitShellCommand(commandLine);
+  const { subcommands, pipelines, substitution, separators } = splitShellCommand(commandLine);
   const display = subcommands.map((command) => unprotect(command.join(' ')));
   // Follow `cd`/`pushd` in order, so `cd ~/.aws && cat credentials` reads
   // ~/.aws/credentials. A target that cannot be known (`cd -`, `$VAR`, `popd`)
@@ -1017,11 +1040,36 @@ const classifyCommand = (
     }
     return step;
   });
+  // Which `cd` ran depends on control flow (`||`, `;`, pipes, background), so a
+  // path is checked against every directory any of them, or `git -C`, could
+  // leave the shell in.
+  const changesDirectory = steps.some((step) => /^(cd|pushd|popd)$/.test(step.words[0] ?? ''));
+  const directories = new Set<string>([startCwd]);
+  for (const step of steps) {
+    if (step.cwd) directories.add(step.cwd);
+    const name = step.words[0];
+    const target =
+      name === 'cd' || name === 'pushd'
+        ? (operands(step.words)[0] ?? '~')
+        : name === 'git'
+          ? step.words[step.words.indexOf('-C') + 1]
+          : undefined;
+    if (
+      target &&
+      (name !== 'git' || step.words.includes('-C')) &&
+      !expandHome(target, homeDir).includes('$')
+    )
+      directories.add(resolvePath(target, step.cwd ?? startCwd, homeDir));
+  }
   const budget: GlobBudget = { left: GLOB_ENTRY_LIMIT };
-  const sensitive = (word: string, at: string | undefined) =>
-    namesSecret(word, startCwd, homeDir, budget) ||
-    (at !== undefined && at !== startCwd && namesSecret(word, at, homeDir, budget));
-  if (steps.some((step) => step.words.some((word) => sensitive(word, step.cwd))))
+  const sensitive = (word: string) => {
+    // `rev:path` (git show HEAD:.env) names a path too.
+    const candidates = [word, ...(/^[^:/]*:(.+)$/.exec(word)?.slice(1) ?? [])];
+    return candidates.some((candidate) =>
+      [...directories].some((directory) => namesSecret(candidate, directory, homeDir, budget))
+    );
+  };
+  if (steps.some((step) => step.words.some(sensitive)))
     return { kind: 'ask', reason: 'touches credentials or secrets' };
   // A recursive search over the home directory or a secret directory reads secrets.
   const secrets = secretLocations(homeDir);
@@ -1083,6 +1131,9 @@ const classifyCommand = (
   };
   if (
     !substitution &&
+    // Only a chain of `&&` makes every `cd` before a command certain to have run.
+    (!changesDirectory || separators.every((separator) => separator === '&&')) &&
+    [...directories].every((directory) => isInsideWorkspace(directory, workspace)) &&
     steps.length > 0 &&
     (cwd === undefined || isInsideWorkspace(cwd, workspace)) &&
     steps.every(readOnly)
