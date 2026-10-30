@@ -148,7 +148,8 @@ Translation: pending
   `<名字>.compare.md`：列表里每个以 html/图片链接开头的项是一个方案，按顺序叫 A、B、C；
   链接文字是标题，后面的字是一句说明，末尾可写 `390x844` 这样的设计尺寸，frontmatter 的
   `viewport` 给默认尺寸（1280x800）；其余正文显示在方案上方。不认识这个格式的地方，它就是
-  一篇带链接的普通 md。约定写在线程说明里，不加工具，不改 CLI。
+  一篇带链接的普通 md。约定由 Lody 随 Board 提示一起注入：daemon 给每个非主会话的 Board 成员（线程和线程开的会话）的
+  首条消息附上一段简短说明，用户不用手贴；主会话不做 UI，不注入。不加工具。
 - 点清单链接，浮窗左边换成对比视图（默认占 75%，可收起对话）：每个方案按设计尺寸排版，
   再按同一比例缩放，公平比较；并排、网格（多于 3 个时默认）或逐个翻看（数字键、←→）。
   滚动一个方案的页面，其他方案跟到同一位置。宽度预设统一改所有方案的宽度，主题可单独设亮/暗。
@@ -180,7 +181,8 @@ Translation: pending
   `sessions/article-outline.tsx`、`hooks/use-session-file-digest-watch.ts`，
   `sessions/session-detail.tsx`（打开/关闭和状态）、`sessions/session-chat-input-area.tsx`（发送时拼接）；
   对比视图：`boards/compare-manifest.ts`（清单解析）、`boards/board-compare-view.tsx`、
-  `boards/compare-board-frame.tsx`，Board Files 入口在 `boards/board-directory.tsx`。
+  `boards/compare-board-frame.tsx`，Board Files 入口在 `boards/board-directory.tsx`；注入的约定是
+  `apps/cli/src/session/session-execution-helpers.ts` 的 `BOARD_UI_COMPARISON_GUIDE`。
 - 测试：`packages/components/tests/board-article-dialog.test.tsx`、`document-selection.test.tsx`、
   `use-session-file-digest-watch.test.tsx`、`session-file-content-view.test.tsx`、
   `session-chat-input-submission.test.tsx`。

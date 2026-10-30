@@ -331,6 +331,10 @@ tool, CLI or protocol change.
   comments carrying `compare` (the list, the letter, the spot); `block.text` is a
   hash of the option's revision, so a sent comment shows as changed once the file
   differs. In Board Files the list opens the same view, without comments.
+  Agents learn the list format from the Board prompt: every Board member except
+  the main session gets `BOARD_UI_COMPARISON_GUIDE`
+  (`apps/cli/src/session/session-execution-helpers.ts`) with its first message, so a
+  change to it ships with the CLI, not the renderer.
   The window starts at 75% for a comparison and can fold the conversation away
   (`ArticleDialogThreadContext`).
 - Changes (`components/boards/article-diff.ts`, `article-review.tsx`): the first

@@ -130,6 +130,15 @@ export const buildPrompt = (
   return `${promptWithReferences}${feedbackInstruction}${systemCommands}${LODY_MCP_TOOLS_REMINDER}${FILE_PATH_REMINDER}${getLanSessionCommandReminder()}${boardContext ? buildBoardInstructions(boardContext.board, boardContext.role, boardContext.directory) : ''}`;
 };
 
+/**
+ * How a Board member hands the user UI options to compare: the desktop opens a
+ * `.compare.md` list beside the thread (`compare-manifest.ts` in components
+ * parses it) and sends picks and comments back numbered. Threads and the
+ * sessions they open get it; the main session does not build UI.
+ */
+export const BOARD_UI_COMPARISON_GUIDE = `
+UI options for the user to compare: write each option as one complete HTML file (inline CSS, CDN scripts allowed, laid out at its design width; dark mode through prefers-color-scheme or [data-mode=dark]) or a screenshot, and beside them one \`<name>.compare.md\`; link only that list in your reply. Each list item that starts with a link to an option is one option, lettered A, B, C… in list order: \`- [Title](a.html) one-line note\`. Frontmatter \`viewport: 1280x800\` sets the default design size; a trailing \`390x844\` sets one option's. Options differ only in what is being compared. Revise an option by rewriting its file in place; a new round is a new list. The user's pick and comments come back numbered at the end of a message, quoting the option as "B · Title" (plus the element, for a spot): answer each by its number.`;
+
 function buildBoardScopeInstructions(board: BoardMeta): string {
   const scope = boardProjectScope(board);
   if (!scope) return '';
@@ -167,5 +176,5 @@ The Board's main session ${board.coordinatorSessionId} assigned this task. Lody 
       : ' The main session maintains MEMORY.md.';
   return `\n\n${identity}
 Shared notes: use lody_board_notes_get and lody_board_notes_append to record conclusions and decisions.${role === 'coordinator' ? ' You may reorganize notes with lody_board_notes_replace.' : ' Only the main session can replace the notes.'}
-${files}${memoryOwner}${buildBoardScopeInstructions(board)}${rules}${instructions}`;
+${files}${memoryOwner}${buildBoardScopeInstructions(board)}${role === 'coordinator' ? '' : BOARD_UI_COMPARISON_GUIDE}${rules}${instructions}`;
 }
