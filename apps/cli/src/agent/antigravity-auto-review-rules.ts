@@ -168,25 +168,36 @@ const stringField = (record: unknown, ...keys: string[]): string | undefined => 
 };
 
 /**
- * The real location of `target`: symlinks in its deepest existing ancestor are
- * resolved, so a link inside the workspace pointing at ~/.gemini is judged as
- * ~/.gemini. A path that cannot be resolved (a link loop) is kept as written.
+ * Where `target` (relative to `base`) really is, resolved one segment at a time
+ * the way the kernel does: a symlink is followed before a later `..` applies,
+ * so `link/../config.toml` with `link → ~/.codex/log` is ~/.codex/config.toml.
+ * Past the first missing segment nothing can be a link, so the rest is lexical.
  */
-const realPath = (target: string): string => {
-  let existing = target;
-  const rest: string[] = [];
-  for (;;) {
+const resolveReal = (base: string, target: string): string => {
+  const absolute = path.isAbsolute(target) ? target : `${base}${path.sep}${target}`;
+  const segments = absolute.split(/[\\/]+/).filter((segment) => segment !== '' && segment !== '.');
+  let current = path.parse(path.resolve(absolute)).root;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    if (segment === '..') {
+      current = path.dirname(current);
+      continue;
+    }
+    const next = path.join(current, segment);
     try {
-      return path.join(fs.realpathSync.native(existing), ...rest);
+      current = fs.realpathSync.native(next);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return target;
-      const parent = path.dirname(existing);
-      if (parent === existing) return target;
-      rest.unshift(path.basename(existing));
-      existing = parent;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR')
+        return path.resolve(next, ...segments.slice(index + 1));
+      // A link loop or an unreadable directory: keep the path as written.
+      return path.resolve(absolute);
     }
   }
+  return current;
 };
+
+const realPath = (target: string): string => resolveReal(path.sep, target);
 
 /** `~`, `$HOME` and `${HOME}` at the start of a word, expanded. */
 const expandHome = (target: string, homeDir: string): string => {
@@ -195,7 +206,7 @@ const expandHome = (target: string, homeDir: string): string => {
 };
 
 const resolvePath = (target: string, cwd: string, homeDir: string): string =>
-  realPath(path.resolve(cwd, expandHome(target, homeDir)));
+  resolveReal(cwd, expandHome(target, homeDir));
 
 const isInside = (target: string, root: string): boolean => {
   const relative = path.relative(root, target);
@@ -285,27 +296,81 @@ const globToRegExp = (glob: string): RegExp => {
   return new RegExp(`^${source}$`);
 };
 
+const GLOB_ENTRY_LIMIT = 5000;
+
+/**
+ * The existing files a glob matches, as the shell would expand it (dotfiles
+ * included, to be safe). `complete` is false when the walk hit its limit.
+ */
+const expandGlob = (pattern: string): { matches: string[]; complete: boolean } => {
+  const segments = pattern.split('/').filter((segment) => segment !== '' && segment !== '.');
+  let current = [path.parse(pattern).root || '/'];
+  let visited = 0;
+  const list = (directory: string): string[] => {
+    try {
+      const entries = fs.readdirSync(directory);
+      visited += entries.length;
+      return entries;
+    } catch {
+      return [];
+    }
+  };
+  for (const segment of segments) {
+    if (visited > GLOB_ENTRY_LIMIT) return { matches: [], complete: false };
+    if (segment === '**') {
+      const all: string[] = [];
+      const walk = (directory: string) => {
+        if (visited > GLOB_ENTRY_LIMIT) return;
+        all.push(directory);
+        for (const entry of list(directory)) {
+          const child = path.join(directory, entry);
+          try {
+            if (fs.statSync(child).isDirectory()) walk(child);
+          } catch {
+            // vanished or unreadable
+          }
+        }
+      };
+      current.forEach(walk);
+      current = all;
+    } else if (GLOB_CHARACTERS.test(segment)) {
+      const matcher = globToRegExp(segment);
+      current = current.flatMap((directory) =>
+        list(directory)
+          .filter((entry) => matcher.test(entry))
+          .map((entry) => path.join(directory, entry))
+      );
+    } else {
+      current = current
+        .map((directory) =>
+          segment === '..' ? path.dirname(directory) : path.join(directory, segment)
+        )
+        .filter((candidate) => fs.existsSync(candidate));
+    }
+  }
+  return { matches: current.map(realPath), complete: visited <= GLOB_ENTRY_LIMIT };
+};
+
 /**
  * Whether a word, read as a path from `cwd`, can name a secret: literally, or
- * through braces or a glob that matches a known secret location or a `.env`
- * file next to it. A glob's fixed directory part is resolved like any path.
+ * through braces or a glob, by the files it matches now or the known secret
+ * locations it could match.
  */
 const namesSecret = (word: string, cwd: string, homeDir: string): boolean =>
   expandBraces(expandHome(word, homeDir)).some((candidate) => {
     if (isSensitivePath(candidate)) return true;
     if (!GLOB_CHARACTERS.test(candidate))
       return isSensitivePath(resolvePath(candidate, cwd, homeDir));
-    const segments = path.resolve(cwd, candidate).split('/');
+    const absolute = path.isAbsolute(candidate) ? candidate : `${cwd}/${candidate}`;
+    // What it matches now, file by file, through links.
+    const expanded = expandGlob(absolute);
+    if (expanded.matches.some(isSensitivePath)) return true;
+    // And what it could match among the known secret places.
+    const segments = absolute.split('/');
     const first = segments.findIndex((segment) => GLOB_CHARACTERS.test(segment));
     const directory = realPath(segments.slice(0, first).join('/') || '/');
     const pattern = globToRegExp(path.join(directory, ...segments.slice(first)));
-    const probes = [
-      ...secretLocations(homeDir),
-      path.join(directory, '.env'),
-      path.join(directory, '.env.local'),
-      path.join(directory, '.env.production'),
-    ];
-    return probes.some((probe) => pattern.test(probe));
+    return secretLocations(homeDir).some((probe) => pattern.test(probe));
   });
 
 const isSensitivePath = (target: string): boolean =>
@@ -553,7 +618,7 @@ const redirectTargets = (words: readonly string[]): string[] => {
 const optionOutputs = (words: readonly string[]): string[] => {
   const name = words[0];
   if (name === 'uniq') return operands(words).slice(1, 2);
-  if (name !== 'sort' && name !== 'tree') return [];
+  if (name !== 'sort' && name !== 'tree' && name !== 'git') return [];
   const outputs: string[] = [];
   for (let index = 1; index < words.length; index += 1) {
     const word = words[index]!;
@@ -562,7 +627,7 @@ const optionOutputs = (words: readonly string[]): string[] => {
       if (value) outputs.push(value);
       continue;
     }
-    const short = /^-[A-Za-z]*o(.*)$/.exec(word);
+    const short = name === 'git' ? null : /^-[A-Za-z]*o(.*)$/.exec(word);
     if (short) {
       const value = short[1] || words[(index += 1)];
       if (value) outputs.push(value);
@@ -668,13 +733,12 @@ const isReadOnlyGit = (words: readonly string[]): boolean => {
   }
   const [subcommand, ...rest] = gitArguments(words);
   if (!subcommand) return false;
-  if (
-    subcommand === 'grep' &&
-    (rest.some((arg) => /^-[A-Za-z]*O/.test(arg)) || hasFlag(rest, '--open-files-in-pager'))
-  )
+  // Output files and external programs, for every subcommand below (`stash
+  // show` and `stash list` take diff and log options too).
+  if (hasFlag(rest, '--output', '--ext-diff', '--textconv', '--filters', '--open-files-in-pager'))
     return false;
-  if (READ_ONLY_GIT.has(subcommand))
-    return !hasFlag(rest, '--output', '--ext-diff', '--textconv', '--filters');
+  if (subcommand === 'grep' && rest.some((arg) => /^-[A-Za-z]*O/.test(arg))) return false;
+  if (READ_ONLY_GIT.has(subcommand)) return true;
   if (subcommand === 'branch')
     return rest.every((arg) =>
       /^(-a|-r|-v|-vv|--all|--list|--show-current|--remotes|--verbose|--merged|--no-merged|--contains)$/.test(
@@ -774,6 +838,8 @@ const askReason = (
   ];
   if (written.some((target) => agentConfigDirectory(target, workspace, homeDir) !== undefined))
     return "changes an agent's own configuration";
+  if (written.some((target) => isGitInternalPath(target, workspace)))
+    return 'changes git internals (.git)';
   if (/^(rm|rmdir|shred|unlink|srm|trash)$/.test(name) && outside(targets))
     return 'deletes files outside the workspace';
   if (
@@ -786,7 +852,10 @@ const askReason = (
     if (outside(roots.slice(0, 1).map((root) => resolvePath(root, cwd, homeDir))))
       return 'deletes or runs commands on files outside the workspace';
   }
-  if (name === 'git') return destructiveGitReason(words);
+  if (name === 'git') {
+    const reason = destructiveGitReason(words);
+    if (reason) return reason;
+  }
   if (/^(chmod|chown|chgrp)$/.test(name) && outside(targets.slice(1)))
     return 'changes permissions outside the workspace';
   if (/^(mkfs.*|fdisk|parted|wipefs|diskutil|shutdown|reboot|halt|poweroff)$/.test(name))
@@ -852,6 +921,22 @@ const askReason = (
   return undefined;
 };
 
+/** `find`'s own patterns (`-name '*.ts'`), which find matches itself rather than the shell. */
+const isFindPattern = (words: readonly string[], index: number): boolean =>
+  words[0] === 'find' &&
+  /^-(i?name|i?path|i?wholename|i?regex|i?lname)$/.test(words[index - 1] ?? '');
+
+const isRecursiveSearch = (words: readonly string[]): boolean => {
+  const name = words[0] ?? '';
+  return (
+    name === 'rg' ||
+    name === 'ag' ||
+    (/^[ef]?grep$/.test(name) &&
+      (hasFlag(words.slice(1), '-r', '-R', '--recursive', '--dereference-recursive') ||
+        words.includes('recurse')))
+  );
+};
+
 const classifyCommand = (
   commandLine: string,
   startCwd: string,
@@ -887,14 +972,7 @@ const classifyCommand = (
   // A recursive search over the home directory or a secret directory reads secrets.
   const secrets = secretLocations(homeDir);
   for (const step of steps) {
-    const name = step.words[0] ?? '';
-    const recursive =
-      name === 'rg' ||
-      name === 'ag' ||
-      (/^[ef]?grep$/.test(name) &&
-        (hasFlag(step.words.slice(1), '-r', '-R', '--recursive', '--dereference-recursive') ||
-          step.words.includes('recurse')));
-    if (!recursive) continue;
+    if (!isRecursiveSearch(step.words)) continue;
     const at = step.cwd ?? startCwd;
     const roots = [at, ...operands(step.words).map((operand) => resolvePath(operand, at, homeDir))];
     if (roots.some((root) => secrets.some((secret) => isInside(secret, root))))
@@ -923,15 +1001,23 @@ const classifyCommand = (
     if (reason) return { kind: 'ask', reason };
   }
   const readOnly = (step: (typeof steps)[number]) => {
-    const name = step.words[0];
-    if (name === 'cd' || name === 'pushd' || name === 'popd') return true;
+    const name = step.words[0] ?? '';
+    const cleanRedirects = redirectTargets(step.words).every((target) => target === '/dev/null');
+    if (name === 'cd' || name === 'pushd' || name === 'popd') return cleanRedirects;
+    // What a glob, a brace or a recursive search reads is for the reviewer to judge.
+    if (isRecursiveSearch(step.words)) return false;
     return (
       !step.assigns &&
-      !step.words.some((word) => expandHome(word, homeDir).includes('$')) &&
+      !step.words.some(
+        (word, index) =>
+          expandHome(word, homeDir).includes('$') ||
+          ((GLOB_CHARACTERS.test(word) || expandBraces(word).length > 1) &&
+            !isFindPattern(step.words, index))
+      ) &&
       step.cwd !== undefined &&
       isInsideWorkspace(step.cwd, workspace) &&
       isReadOnlyCommand(step.words) &&
-      redirectTargets(step.words).every((target) => target === '/dev/null')
+      cleanRedirects
     );
   };
   if (

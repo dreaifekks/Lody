@@ -11,6 +11,7 @@ import {
   type AutoReviewToolCall,
 } from './antigravity-auto-review-rules';
 import {
+  AutoReviewTimeout,
   createAntigravityReviewer,
   untilAborted,
   type AutoReviewer,
@@ -486,7 +487,7 @@ export function withAntigravityAutoReview(
     // this session must not use up this one's time.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const startTimer = () => {
-      timer = setTimer(() => controller.abort(new Error('timed out')), reviewTimeoutMs);
+      timer = setTimer(() => controller.abort(new AutoReviewTimeout()), reviewTimeoutMs);
     };
     const { cwd: actionCwd } = readAntigravityCommand(toolCall);
     const diff = (toolCall.content ?? [])
@@ -553,7 +554,7 @@ export function withAntigravityAutoReview(
         return toUser();
       }
       state.refusals += 1;
-      const timedOut = reason instanceof Error && reason.message === 'timed out';
+      const timedOut = reason instanceof AutoReviewTimeout;
       logger.debug(`[${label}] Auto Review reviewer failed: ${formatErrorMessage(reason)}`);
       finish(
         'failed',

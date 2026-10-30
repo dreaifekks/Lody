@@ -47,6 +47,7 @@ import {
   splitShellCommand,
 } from '../src/agent/antigravity-auto-review-rules';
 import {
+  AutoReviewTimeout,
   buildAutoReviewPrompt,
   createAntigravityReviewer,
   type AutoReviewer,
@@ -679,12 +680,12 @@ describe('Antigravity Auto Review reviewer process', () => {
       const wedged = new AbortController();
       const first = reviewer.review(input('make build'), wedged.signal);
       await vi.waitFor(() => expect(fs.existsSync(marker)).toBe(true));
-      wedged.abort(new Error('timed out'));
+      wedged.abort(new AutoReviewTimeout());
       await expect(first).rejects.toThrow('timed out');
 
       const stuck = new AbortController();
       const second = reviewer.review(input('make stuck-review'), stuck.signal, () =>
-        queueMicrotask(() => stuck.abort(new Error('timed out')))
+        queueMicrotask(() => stuck.abort(new AutoReviewTimeout()))
       );
       await expect(second).rejects.toThrow('timed out');
 
@@ -695,6 +696,51 @@ describe('Antigravity Auto Review reviewer process', () => {
       });
     } finally {
       reviewer.close();
+    }
+  });
+
+  it('replaces a process that hangs in initialize after a prewarm', async () => {
+    const marker = path.join(makeWorkdir(), 'hung-once');
+    const reviewer = createAntigravityReviewer({
+      launch: {
+        command: process.execPath,
+        args: [fixture, 'prewarm'],
+        env: { ...process.env, FAKE_AGY_HANG_ONCE: marker },
+      },
+      logger: createSilentLogger(),
+      label: 'test',
+    });
+    try {
+      reviewer.prewarm();
+      await vi.waitFor(() => expect(fs.existsSync(marker)).toBe(true));
+      const deadline = new AbortController();
+      const first = reviewer.review(input('make build'), deadline.signal, () =>
+        queueMicrotask(() => deadline.abort(new AutoReviewTimeout()))
+      );
+      await expect(first).rejects.toBeInstanceOf(AutoReviewTimeout);
+      await expect(
+        reviewer.review(input('make build'), new AbortController().signal)
+      ).resolves.toMatchObject({ decision: 'allow' });
+    } finally {
+      reviewer.close();
+    }
+  });
+
+  it("does not stop the shared process when one session's review is stopped", async () => {
+    const launch = { command: process.execPath, args: [fixture, 'shared'], env: process.env };
+    const first = createAntigravityReviewer({ launch, logger: createSilentLogger(), label: 'a' });
+    const second = createAntigravityReviewer({ launch, logger: createSilentLogger(), label: 'b' });
+    try {
+      const running = second.review(input('make build'), new AbortController().signal);
+      const stopped = new AbortController();
+      const cancelled = first.review(input('make build'), stopped.signal, () =>
+        queueMicrotask(() => stopped.abort(new Error('cancelled')))
+      );
+      await expect(cancelled).rejects.toThrow('cancelled');
+      await expect(running).resolves.toMatchObject({ decision: 'allow' });
+    } finally {
+      first.close();
+      second.close();
     }
   });
 });
@@ -782,7 +828,7 @@ describe('Antigravity Auto Review rules', () => {
     ['rg --pre ./run.sh TODO', 'review'],
     ['rg --pre=./run.sh TODO', 'review'],
     ['rg -z TODO', 'review'],
-    ['rg -n TODO src', 'allow'],
+    ['rg -n TODO src', 'review'],
     ['file -C -m magic', 'review'],
     ['date -s 2020-01-01', 'review'],
     ['hostname new-name', 'review'],
@@ -829,12 +875,19 @@ describe('Antigravity Auto Review rules', () => {
     ['cat ~/.aws/{config,credentials}', 'ask'],
     ['cat ~/.a*/credentials', 'ask'],
     ['cat ~/**/credentials', 'ask'],
-    ['cat .e*', 'ask'],
-    ['cat src/*.ts', 'allow'],
+    ['cat .e*', 'review'],
+    ['git log > /tmp/out.txt', 'ask'],
+    ['cat src/*.ts', 'review'],
     ['grep -R . ~/.aws', 'ask'],
     ['grep -r token ~', 'ask'],
     ['rg TODO ~', 'ask'],
-    ['rg TODO src', 'allow'],
+    ['rg TODO src', 'review'],
+    ['grep -R . .', 'review'],
+    ['cd . > .git', 'ask'],
+    ['cd . > .git/config', 'ask'],
+    ['git stash show --output=/tmp/victim', 'ask'],
+    ['git stash show --output=stash.diff', 'review'],
+    ['git stash list --out=log.txt', 'review'],
     ['cat $HOME/.aws/credentials', 'ask'],
     ['cat ${HOME}/.ssh/id_rsa', 'ask'],
     ['cat $SOMEWHERE/notes.txt', 'review'],
@@ -893,6 +946,25 @@ describe('Antigravity Auto Review rules', () => {
     expect(runInRepo('cat aws-link/credentials')).toBe('ask');
     expect(runInRepo('cat aws-link/cred*')).toBe('ask');
     expect(runInRepo('echo x > config-link/hooks.json')).toBe('ask');
+
+    // A link followed by `..` lands next to the link's target, not in the repo.
+    fs.mkdirSync(path.join(home, '.codex/log'), { recursive: true });
+    fs.symlinkSync(path.join(home, '.codex/log'), path.join(repo, 'log-link'));
+    const sideways = `${repo}/log-link/../config.toml`;
+    expect(
+      classifyAntigravityPermission(
+        { kind: 'edit', rawInput: { TargetFile: sideways }, locations: [{ path: sideways }] },
+        at
+      )
+    ).toEqual({ kind: 'ask', reason: "changes an agent's own configuration" });
+
+    // Globs are checked against what they match on disk.
+    fs.mkdirSync(path.join(repo, 'src/app'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.env.staging'), 'TOKEN=x');
+    fs.writeFileSync(path.join(repo, 'src/app/.env'), 'TOKEN=x');
+    expect(runInRepo('cat .en[v].staging')).toBe('ask');
+    expect(runInRepo('cat src/*/.en[v]')).toBe('ask');
+    expect(runInRepo('cat src/*/README.md')).toBe('review');
   });
 
   it("asks before any change to an agent's own configuration, even with the home directory as workspace", () => {
