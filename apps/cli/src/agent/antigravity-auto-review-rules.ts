@@ -173,7 +173,7 @@ const stringField = (record: unknown, ...keys: string[]): string | undefined => 
  * so `link/../config.toml` with `link → ~/.codex/log` is ~/.codex/config.toml.
  * Past the first missing segment nothing can be a link, so the rest is lexical.
  */
-const resolveReal = (base: string, target: string): string => {
+const resolveReal = (base: string, target: string, depth = 0): string => {
   const absolute = path.isAbsolute(target) ? target : `${base}${path.sep}${target}`;
   const segments = absolute.split(/[\\/]+/).filter((segment) => segment !== '' && segment !== '.');
   let current = path.parse(path.resolve(absolute)).root;
@@ -188,8 +188,22 @@ const resolveReal = (base: string, target: string): string => {
       current = fs.realpathSync.native(next);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'ENOTDIR')
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        // A dangling link still leads somewhere: writing through it creates its target.
+        let link: string | undefined;
+        try {
+          link = fs.lstatSync(next).isSymbolicLink() ? fs.readlinkSync(next) : undefined;
+        } catch {
+          link = undefined;
+        }
+        if (link !== undefined && depth < 40)
+          return resolveReal(
+            current,
+            [link, ...segments.slice(index + 1)].join(path.sep),
+            depth + 1
+          );
         return path.resolve(next, ...segments.slice(index + 1));
+      }
       // A link loop or an unreadable directory: keep the path as written.
       return path.resolve(absolute);
     }
@@ -302,27 +316,35 @@ const GLOB_ENTRY_LIMIT = 5000;
  * The existing files a glob matches, as the shell would expand it (dotfiles
  * included, to be safe). `complete` is false when the walk hit its limit.
  */
-const expandGlob = (pattern: string): { matches: string[]; complete: boolean } => {
+/** What one classification may spend expanding globs, shared by all its words. */
+type GlobBudget = { left: number };
+
+const expandGlob = (
+  pattern: string,
+  budget: GlobBudget
+): { matches: string[]; complete: boolean } => {
   const segments = pattern.split('/').filter((segment) => segment !== '' && segment !== '.');
   let current = [path.parse(pattern).root || '/'];
-  let visited = 0;
+  // Every directory entry read and every path resolved spends one unit; the
+  // walk stops the moment the budget is gone (this runs on the daemon thread).
+  const spend = (units: number) => (budget.left -= units) >= 0;
   const list = (directory: string): string[] => {
+    if (budget.left < 0) return [];
     try {
       const entries = fs.readdirSync(directory);
-      visited += entries.length;
-      return entries;
+      return spend(entries.length) ? entries : [];
     } catch {
       return [];
     }
   };
   for (const segment of segments) {
-    if (visited > GLOB_ENTRY_LIMIT) return { matches: [], complete: false };
+    const next: string[] = [];
     if (segment === '**') {
-      const all: string[] = [];
       const walk = (directory: string) => {
-        if (visited > GLOB_ENTRY_LIMIT) return;
-        all.push(directory);
+        if (budget.left < 0) return;
+        next.push(directory);
         for (const entry of list(directory)) {
+          if (!spend(1)) return;
           const child = path.join(directory, entry);
           try {
             if (fs.statSync(child).isDirectory()) walk(child);
@@ -331,24 +353,25 @@ const expandGlob = (pattern: string): { matches: string[]; complete: boolean } =
           }
         }
       };
-      current.forEach(walk);
-      current = all;
+      for (const directory of current) walk(directory);
     } else if (GLOB_CHARACTERS.test(segment)) {
       const matcher = globToRegExp(segment);
-      current = current.flatMap((directory) =>
-        list(directory)
-          .filter((entry) => matcher.test(entry))
-          .map((entry) => path.join(directory, entry))
-      );
+      for (const directory of current)
+        for (const entry of list(directory))
+          if (matcher.test(entry)) next.push(path.join(directory, entry));
     } else {
-      current = current
-        .map((directory) =>
-          segment === '..' ? path.dirname(directory) : path.join(directory, segment)
-        )
-        .filter((candidate) => fs.existsSync(candidate));
+      for (const directory of current) {
+        if (!spend(1)) break;
+        const candidate =
+          segment === '..' ? path.dirname(directory) : path.join(directory, segment);
+        if (fs.existsSync(candidate)) next.push(candidate);
+      }
     }
+    if (budget.left < 0) return { matches: [], complete: false };
+    current = next;
   }
-  return { matches: current.map(realPath), complete: visited <= GLOB_ENTRY_LIMIT };
+  if (!spend(current.length)) return { matches: [], complete: false };
+  return { matches: current.map(realPath), complete: true };
 };
 
 /**
@@ -356,14 +379,14 @@ const expandGlob = (pattern: string): { matches: string[]; complete: boolean } =
  * through braces or a glob, by the files it matches now or the known secret
  * locations it could match.
  */
-const namesSecret = (word: string, cwd: string, homeDir: string): boolean =>
+const namesSecret = (word: string, cwd: string, homeDir: string, budget: GlobBudget): boolean =>
   expandBraces(expandHome(word, homeDir)).some((candidate) => {
     if (isSensitivePath(candidate)) return true;
     if (!GLOB_CHARACTERS.test(candidate))
       return isSensitivePath(resolvePath(candidate, cwd, homeDir));
     const absolute = path.isAbsolute(candidate) ? candidate : `${cwd}/${candidate}`;
     // What it matches now, file by file, through links.
-    const expanded = expandGlob(absolute);
+    const expanded = expandGlob(absolute, budget);
     if (expanded.matches.some(isSensitivePath)) return true;
     // And what it could match among the known secret places.
     const segments = absolute.split('/');
@@ -406,6 +429,25 @@ const isGitInternalPath = (target: string, workspace: AutoReviewWorkspace): bool
   });
 
 /**
+ * Glob and brace characters that were quoted or escaped stand in for
+ * themselves; the splitter swaps them for private-use characters so nothing
+ * later mistakes `find -name '*.ts'` for a glob, or `-name {a,-delete}` (which
+ * the shell does expand) for a plain pattern.
+ */
+const PROTECTED: Record<string, string> = {
+  '*': '\uE000',
+  '?': '\uE001',
+  '[': '\uE002',
+  '{': '\uE003',
+};
+const UNPROTECTED = Object.fromEntries(
+  Object.entries(PROTECTED).map(([key, value]) => [value, key])
+);
+const protect = (char: string) => PROTECTED[char] ?? char;
+const unprotect = (word: string) =>
+  word.replace(/[\uE000-\uE003]/g, (char) => UNPROTECTED[char] ?? char);
+
+/**
  * Splits a shell command line into its simple commands at `|`, `||`, `&&`,
  * `;`, `&` and newlines, honoring quotes. `substitution` is set when any part
  * uses `$(...)`, backticks or process substitution, whose contents a split
@@ -443,17 +485,17 @@ export function splitShellCommand(commandLine: string): {
     const next = commandLine[index + 1];
     if (quote === "'") {
       if (char === "'") quote = null;
-      else word += char;
+      else word += protect(char);
       continue;
     }
     if (quote === '"') {
       if (char === '"') quote = null;
       else if (char === '\\' && next !== undefined) {
-        word += next;
+        word += protect(next);
         index += 1;
       } else {
         if ((char === '$' && next === '(') || char === '`') substitution = true;
-        word += char;
+        word += protect(char);
       }
       continue;
     }
@@ -464,7 +506,7 @@ export function splitShellCommand(commandLine: string): {
     }
     if (char === '\\' && next !== undefined) {
       if (next !== '\n') {
-        word += next;
+        word += protect(next);
         hasWord = true;
       }
       index += 1;
@@ -921,11 +963,6 @@ const askReason = (
   return undefined;
 };
 
-/** `find`'s own patterns (`-name '*.ts'`), which find matches itself rather than the shell. */
-const isFindPattern = (words: readonly string[], index: number): boolean =>
-  words[0] === 'find' &&
-  /^-(i?name|i?path|i?wholename|i?regex|i?lname)$/.test(words[index - 1] ?? '');
-
 const isRecursiveSearch = (words: readonly string[]): boolean => {
   const name = words[0] ?? '';
   return (
@@ -944,7 +981,7 @@ const classifyCommand = (
   homeDir: string
 ): AutoReviewRuleVerdict => {
   const { subcommands, pipelines, substitution } = splitShellCommand(commandLine);
-  const display = subcommands.map((command) => command.join(' '));
+  const display = subcommands.map((command) => unprotect(command.join(' ')));
   // Follow `cd`/`pushd` in order, so `cd ~/.aws && cat credentials` reads
   // ~/.aws/credentials. A target that cannot be known (`cd -`, `$VAR`, `popd`)
   // leaves later paths unknown, which keeps the command off the fast path.
@@ -965,8 +1002,10 @@ const classifyCommand = (
     }
     return step;
   });
+  const budget: GlobBudget = { left: GLOB_ENTRY_LIMIT };
   const sensitive = (word: string, at: string | undefined) =>
-    namesSecret(word, startCwd, homeDir) || (at !== undefined && namesSecret(word, at, homeDir));
+    namesSecret(word, startCwd, homeDir, budget) ||
+    (at !== undefined && at !== startCwd && namesSecret(word, at, homeDir, budget));
   if (steps.some((step) => step.words.some((word) => sensitive(word, step.cwd))))
     return { kind: 'ask', reason: 'touches credentials or secrets' };
   // A recursive search over the home directory or a secret directory reads secrets.
@@ -997,7 +1036,13 @@ const classifyCommand = (
       return { kind: 'ask', reason: 'runs code downloaded from the network' };
   }
   for (const step of steps) {
-    const reason = askReason(step.words, step.cwd ?? startCwd, workspace, homeDir);
+    // The ask rules see arguments as the shell passes them: `rm -rf {/opt/x,y}` is two.
+    const reason = askReason(
+      step.words.flatMap((word) => expandBraces(word)),
+      step.cwd ?? startCwd,
+      workspace,
+      homeDir
+    );
     if (reason) return { kind: 'ask', reason };
   }
   const readOnly = (step: (typeof steps)[number]) => {
@@ -1009,10 +1054,10 @@ const classifyCommand = (
     return (
       !step.assigns &&
       !step.words.some(
-        (word, index) =>
+        (word) =>
           expandHome(word, homeDir).includes('$') ||
-          ((GLOB_CHARACTERS.test(word) || expandBraces(word).length > 1) &&
-            !isFindPattern(step.words, index))
+          GLOB_CHARACTERS.test(word) ||
+          expandBraces(word).length > 1
       ) &&
       step.cwd !== undefined &&
       isInsideWorkspace(step.cwd, workspace) &&

@@ -726,6 +726,26 @@ describe('Antigravity Auto Review reviewer process', () => {
     }
   });
 
+  it('starts a new hidden session after a stopped review, since the old one may still be busy', async () => {
+    const reviewer = createAntigravityReviewer({
+      launch: { command: process.execPath, args: [fixture, 'stop-reuse'], env: process.env },
+      logger: createSilentLogger(),
+      label: 'test',
+    });
+    try {
+      const stopped = new AbortController();
+      const first = reviewer.review(input('make stuck-review'), stopped.signal, () =>
+        setTimeout(() => stopped.abort(new Error('cancelled')), 0)
+      );
+      await expect(first).rejects.toThrow('cancelled');
+      await expect(
+        reviewer.review(input('make build'), new AbortController().signal)
+      ).resolves.toMatchObject({ decision: 'allow' });
+    } finally {
+      reviewer.close();
+    }
+  });
+
   it("does not stop the shared process when one session's review is stopped", async () => {
     const launch = { command: process.execPath, args: [fixture, 'shared'], env: process.env };
     const first = createAntigravityReviewer({ launch, logger: createSilentLogger(), label: 'a' });
@@ -775,6 +795,27 @@ describe('Antigravity Auto Review rules', () => {
       { kind: 'execute', rawInput: { CommandLine: commandLine, Cwd: '/work/repo' } },
       workspace
     );
+
+  it('stops expanding a glob once its entry budget is spent', () => {
+    const root = makeWorkdir();
+    for (let dir = 0; dir < 200; dir += 1) {
+      fs.mkdirSync(path.join(root, `d${dir}`));
+      for (let file = 0; file < 50; file += 1)
+        fs.writeFileSync(path.join(root, `d${dir}`, `f${file}.txt`), '');
+    }
+    const readdir = vi.spyOn(fs, 'readdirSync');
+    try {
+      const verdict = classifyAntigravityPermission(
+        { kind: 'execute', rawInput: { CommandLine: 'cat */*.txt', Cwd: root } },
+        { roots: [root], homeDir: makeWorkdir() }
+      );
+      expect(verdict.kind).toBe('review');
+      // 10 000 entries exist; the 5 000-entry budget stops the walk about halfway.
+      expect(readdir.mock.calls.length).toBeLessThan(120);
+    } finally {
+      readdir.mockRestore();
+    }
+  });
 
   it('splits command lines into sub-commands', () => {
     expect(
@@ -883,6 +924,13 @@ describe('Antigravity Auto Review rules', () => {
     ['rg TODO ~', 'ask'],
     ['rg TODO src', 'review'],
     ['grep -R . .', 'review'],
+    // Quoting decides what the shell expands.
+    ["find . -name '*.ts'", 'allow'],
+    ['find . -name \\*.ts', 'allow'],
+    ['find . -name *.ts', 'review'],
+    ['find . -name {victim,-delete}', 'review'],
+    ['find . -name {x,-fprint,/tmp/victim}', 'review'],
+    ['rm -rf {/opt/x,y}', 'ask'],
     ['cd . > .git', 'ask'],
     ['cd . > .git/config', 'ask'],
     ['git stash show --output=/tmp/victim', 'ask'],
@@ -957,6 +1005,17 @@ describe('Antigravity Auto Review rules', () => {
         at
       )
     ).toEqual({ kind: 'ask', reason: "changes an agent's own configuration" });
+
+    // A dangling link is judged by where writing through it would land.
+    fs.symlinkSync(path.join(home, '.gemini/new-settings.json'), path.join(repo, 'dangling-link'));
+    const dangling = path.join(repo, 'dangling-link');
+    expect(
+      classifyAntigravityPermission(
+        { kind: 'edit', rawInput: { TargetFile: dangling }, locations: [{ path: dangling }] },
+        at
+      )
+    ).toEqual({ kind: 'ask', reason: "changes an agent's own configuration" });
+    expect(runInRepo('echo x > dangling-link')).toBe('ask');
 
     // Globs are checked against what they match on disk.
     fs.mkdirSync(path.join(repo, 'src/app'), { recursive: true });

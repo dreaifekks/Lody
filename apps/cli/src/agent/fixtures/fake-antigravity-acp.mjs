@@ -98,6 +98,17 @@ const reviewerVerdict = (text, session) => {
 
 const runPrompt = async (sessionId, text, steps) => {
   const session = sessions.get(sessionId);
+  // Like agy: one prompt at a time per session.
+  if (session.busy) throw new Error('Session is already processing a prompt');
+  session.busy = true;
+  try {
+    return await runPromptBody(session, sessionId, text, steps);
+  } finally {
+    session.busy = false;
+  }
+};
+
+const runPromptBody = async (session, sessionId, text, steps) => {
   session.cancelled = false;
   if (text.startsWith('You are Lody Auto Review')) {
     // Never answers, not even a cancel.

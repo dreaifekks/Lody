@@ -304,7 +304,11 @@ export function createAntigravityReviewer(options: {
   pool.set(key, entry);
   let closed = false;
   type ReviewerSession = { process: ReviewerProcess; id: string; reviews: number };
-  type PendingSession = { process: ReviewerProcess; promise: Promise<ReviewerSession> };
+  type PendingSession = {
+    process: ReviewerProcess;
+    promise: Promise<ReviewerSession>;
+    value?: ReviewerSession;
+  };
   let session: PendingSession | null = null;
   /** One prompt at a time: an ACP session runs one turn at a time. */
   let queue: Promise<unknown> = Promise.resolve();
@@ -373,9 +377,14 @@ export function createAntigravityReviewer(options: {
     if (!pending) {
       const reviewer = reviewerProcess();
       const created: PendingSession = { process: reviewer, promise: createSession(reviewer) };
-      created.promise.catch(() => {
-        if (session === created) session = null;
-      });
+      created.promise.then(
+        (value) => {
+          created.value = value;
+        },
+        () => {
+          if (session === created) session = null;
+        }
+      );
       pending = session = created;
     }
     if (!signal) return pending.promise;
@@ -412,6 +421,9 @@ export function createAntigravityReviewer(options: {
       const cancel = () => {
         void connection.cancel({ sessionId: current.id }).catch(() => {});
         if (signal.reason instanceof AutoReviewTimeout) recordTimeout(current.process);
+        // Whatever stopped it, the session may still be busy with this prompt:
+        // the next review takes a new one (the shared process stays).
+        if (session?.value === current) session = null;
       };
       signal.addEventListener('abort', cancel, { once: true });
       try {
