@@ -52,7 +52,14 @@ export interface AutoReviewer {
   close(): void;
 }
 
-/** Fresh hidden session after this many reviews, so its context stays small. */
+/**
+ * Fresh hidden session after this many reviews. Measured on agy 1.4.5: a review
+ * costs about 13.6k input tokens, nearly all agy's own system prompt, and a
+ * reused session gets no cache hits (cachedReadTokens 0) while each earlier
+ * review adds about 300 tokens. Reuse saves no tokens; it keeps agy from
+ * storing one conversation per review. Reviews spend the Gemini quota group,
+ * not Argon's: about 0.02% of the weekly Gemini quota each on Google AI Pro.
+ */
 const REVIEWS_PER_SESSION = 20;
 const REVIEWER_MODEL_PATTERN = /flash/i;
 

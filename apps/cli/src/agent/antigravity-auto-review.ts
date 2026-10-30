@@ -83,6 +83,12 @@ type SessionState = {
   previousAgentMessage: string;
   agentText: string;
   refusals: number;
+  /**
+   * Actions the reviewer approved in this turn, by their exact input. A repeat
+   * (the agent's build/test loop) runs without another review; the user's next
+   * message clears it, since an approval answers that message only.
+   */
+  approved: Map<string, string>;
   breakerNoticed: boolean;
   inFlight: Map<string | number, AbortController>;
   auditSeq: number;
@@ -174,6 +180,7 @@ export function withAntigravityAutoReview(
         previousAgentMessage: '',
         agentText: '',
         refusals: 0,
+        approved: new Map(),
         breakerNoticed: false,
         inFlight: new Map(),
         auditSeq: 0,
@@ -325,6 +332,7 @@ export function withAntigravityAutoReview(
         state.userMessage = textOf(params.prompt);
         state.refusals = 0;
         state.breakerNoticed = false;
+        state.approved.clear();
         return message;
       }
       case 'session/cancel': {
@@ -408,6 +416,29 @@ export function withAntigravityAutoReview(
       });
       return toUser();
     }
+    const actionKey = JSON.stringify([
+      toolCall.kind ?? null,
+      toolCall.rawInput ?? null,
+      (toolCall.locations ?? []).map((location) => location.path),
+    ]);
+    const approvedReason = state.approved.get(actionKey);
+    if (approvedReason !== undefined) {
+      logger.debug(`[${label}] Auto Review reused this turn's approval: ${action}`);
+      emitUpdate(params.sessionId, {
+        sessionUpdate: 'tool_call',
+        toolCallId: auditId(),
+        kind: 'think',
+        title: 'Auto Review',
+        status: 'completed',
+        content: auditLines(
+          'Approved earlier this turn',
+          action,
+          'Gemini Flash reviewer',
+          approvedReason
+        ),
+      });
+      return answerAgent(request.id, { outcome: 'selected', optionId: allowOnce.optionId });
+    }
     const activeReviewer = getReviewer();
     if (!activeReviewer) return toUser();
     if (state.refusals >= AUTO_REVIEW_CIRCUIT_BREAKER_LIMIT) {
@@ -488,6 +519,7 @@ export function withAntigravityAutoReview(
       if (controller.signal.aborted) throw controller.signal.reason;
       if (result.decision === 'allow') {
         state.refusals = 0;
+        state.approved.set(actionKey, result.reason);
         finish('completed', 'Approved', result.reason);
         return answerAgent(request.id, { outcome: 'selected', optionId: allowOnce.optionId });
       }

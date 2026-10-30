@@ -263,6 +263,7 @@ describe('Antigravity Auto Review through the session start chain', () => {
       command('rm -rf /tmp/somewhere-else'),
       command('git push --force origin main'),
       command('make refuse'),
+      command('pnpm install && pnpm run build'),
     ]);
 
     expect(report.trim().split('\n')).toEqual([
@@ -272,6 +273,7 @@ describe('Antigravity Auto Review through the session start chain', () => {
       'rm -rf /tmp/somewhere-else: deny',
       'git push --force origin main: deny',
       'make refuse: allow',
+      'pnpm install && pnpm run build: allow',
     ]);
     expect(harness.asked).toEqual([
       'rm -rf /tmp/somewhere-else',
@@ -285,6 +287,7 @@ describe('Antigravity Auto Review through the session start chain', () => {
       'failed',
       'failed',
       'failed',
+      'completed',
     ]);
     expect(records[0]!.text).toContain('Status: Approved');
     expect(records[0]!.text).toContain('Action: pnpm install && pnpm run build');
@@ -296,6 +299,14 @@ describe('Antigravity Auto Review through the session start chain', () => {
     expect(records[1]!.text).toContain('deletes files outside the workspace');
     expect(records[2]!.text).toContain('force-pushes or deletes a remote branch');
     expect(records[3]!.text).toContain('Status: Needs your approval');
+    // The repeated build reuses the approval instead of asking the reviewer again.
+    expect(records[4]!.text).toContain('Status: Approved earlier this turn');
+    expect(records[4]!.text).toContain('replying-to=Should I build and then clean up?');
+
+    // The next message clears it: the same build is reviewed again, with the new context.
+    await harness.prompt('build once more please', [command('pnpm install && pnpm run build')]);
+    expect(harness.auditRecords().at(-1)!.text).toContain('Status: Approved\n');
+    expect(harness.auditRecords().at(-1)!.text).toContain('user=build once more please');
   });
 
   it('asks the user when the reviewer fails, and stops reviewing after repeated refusals until the next message', async () => {
