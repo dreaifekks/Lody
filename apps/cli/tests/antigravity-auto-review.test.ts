@@ -827,8 +827,8 @@ describe('Antigravity Auto Review rules', () => {
       ['git', 'log', '--oneline', '>', '/dev/null'],
     ]);
     expect(splitShellCommand('echo $(cat x)').substitution).toBe(true);
-    // Double quotes: a continuation disappears, other backslashes stay.
-    expect(splitShellCommand('cat "/a/credentia\\\nls" "x\\y" "\\$HOME"').subcommands).toEqual([
+    // Double quotes: a continuation disappears, other backslashes stay; `$` still expands there.
+    expect(splitShellCommand('cat "/a/credentia\\\nls" "x\\y" "$HOME"').subcommands).toEqual([
       ['cat', '/a/credentials', 'x\\y', '$HOME'],
     ]);
   });
@@ -936,6 +936,8 @@ describe('Antigravity Auto Review rules', () => {
     ['find . -name {x,-fprint,/tmp/victim}', 'review'],
     ['rm -rf {/opt/x,y}', 'ask'],
     ['cat "/home/me/.aws/credentia\\\nls"', 'ask'],
+    ['cat "$HOME/.aws/credentials"', 'ask'],
+    ["cat '$HOME/notes.txt'", 'allow'],
     ['cd . > .git', 'ask'],
     ['cd . > .git/config', 'ask'],
     ['git stash show --output=/tmp/victim', 'ask'],
@@ -1027,6 +1029,18 @@ describe('Antigravity Auto Review rules', () => {
     expect(runInRepo("cat 'credentials[prod]'")).toBe('ask');
     expect(runInRepo('cat credentials\\[prod\\]')).toBe('ask');
     expect(runInRepo('cat "credentials[prod]"')).toBe('ask');
+    // A backslash is part of a POSIX name, not a separator.
+    fs.symlinkSync(path.join(home, '.aws/credentials'), path.join(repo, 'credentials\\prod'));
+    expect(runInRepo('cat "credentials\\prod"')).toBe('ask');
+    // Quoted `~` and single-quoted `$HOME` name paths inside the repository.
+    fs.mkdirSync(path.join(repo, '~'));
+    fs.symlinkSync(path.join(home, '.aws/credentials'), path.join(repo, '~/credentials-link'));
+    expect(runInRepo("cat '~/credentials-link'")).toBe('ask');
+    expect(runInRepo('cat "~/credentials-link"')).toBe('ask');
+    expect(runInRepo('cat \\~/credentials-link')).toBe('ask');
+    fs.mkdirSync(path.join(repo, '$HOME'));
+    fs.symlinkSync(path.join(home, '.aws/credentials'), path.join(repo, '$HOME/credentials-link'));
+    expect(runInRepo("cat '$HOME/credentials-link'")).toBe('ask');
 
     // Globs are checked against what they match on disk.
     fs.mkdirSync(path.join(repo, 'src/app'), { recursive: true });

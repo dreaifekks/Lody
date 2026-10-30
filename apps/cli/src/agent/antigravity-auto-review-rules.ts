@@ -175,7 +175,11 @@ const stringField = (record: unknown, ...keys: string[]): string | undefined => 
  */
 const resolveReal = (base: string, target: string, depth = 0): string => {
   const absolute = path.isAbsolute(target) ? target : `${base}${path.sep}${target}`;
-  const segments = absolute.split(/[\\/]+/).filter((segment) => segment !== '' && segment !== '.');
+  // A backslash is a separator only on Windows; on POSIX it is part of a name.
+  const separators = process.platform === 'win32' ? /[\\/]+/ : /\/+/;
+  const segments = absolute
+    .split(separators)
+    .filter((segment) => segment !== '' && segment !== '.');
   let current = path.parse(path.resolve(absolute)).root;
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index]!;
@@ -221,7 +225,8 @@ const expandHome = (target: string, homeDir: string): string => {
 
 /** Paths and filesystem lookups always use the literal characters, never the quoting marks. */
 const resolvePath = (target: string, cwd: string, homeDir: string): string =>
-  resolveReal(cwd, expandHome(unprotect(target), homeDir));
+  // Home first, on the marked word, so a quoted `~` or `$HOME` stays literal.
+  resolveReal(cwd, unprotect(expandHome(target, homeDir)));
 
 const isInside = (target: string, root: string): boolean => {
   const relative = path.relative(root, target);
@@ -436,6 +441,9 @@ const isGitInternalPath = (target: string, workspace: AutoReviewWorkspace): bool
  * the shell does expand) for a plain pattern.
  */
 const PROTECTED: Record<string, string> = {
+  // `~` is literal in any quotes; `$` in single quotes (double quotes expand it).
+  '~': '\uE004',
+  $: '\uE005',
   '*': '\uE000',
   '?': '\uE001',
   '[': '\uE002',
@@ -446,7 +454,7 @@ const UNPROTECTED = Object.fromEntries(
 );
 const protect = (char: string) => PROTECTED[char] ?? char;
 const unprotect = (word: string) =>
-  word.replace(/[\uE000-\uE003]/g, (char) => UNPROTECTED[char] ?? char);
+  word.replace(/[\uE000-\uE005]/g, (char) => UNPROTECTED[char] ?? char);
 
 /**
  * Splits a shell command line into its simple commands at `|`, `||`, `&&`,
@@ -496,12 +504,13 @@ export function splitShellCommand(commandLine: string): {
         // continuation, removed with it); before anything else it stays.
         if (next === '\n') index += 1;
         else if ('$`"\\'.includes(next)) {
-          word += next;
+          word += next === '$' ? protect(next) : next;
           index += 1;
         } else word += '\\';
       } else {
         if ((char === '$' && next === '(') || char === '`') substitution = true;
-        word += protect(char);
+        // `$` still expands inside double quotes.
+        word += char === '$' ? char : protect(char);
       }
       continue;
     }
@@ -1029,7 +1038,8 @@ const classifyCommand = (
     if (!/^(sh|bash|zsh|dash|ksh)$/.test(step.words[0] ?? '') || inline < 0) continue;
     const inner = step.words[inline + 1];
     if (!inner) continue;
-    const verdict = classifyCommand(inner, step.cwd ?? startCwd, workspace, homeDir);
+    // The inner shell parses the literal text again, expanding it itself.
+    const verdict = classifyCommand(unprotect(inner), step.cwd ?? startCwd, workspace, homeDir);
     if (verdict.kind === 'ask') return verdict;
   }
   for (const pipeline of pipelines) {
