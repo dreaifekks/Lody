@@ -2,6 +2,7 @@ import { hasBuiltinEnvAuthRouting } from '@lody/shared';
 import { type AcpLauncher, resolveAcpLauncher } from '@/agent/acp-analytics';
 import type { LodyRateLimitsCapability } from 'acp-extension-core';
 import { queryLocalAcpRateLimits, AcpQuotaCleanupError } from '@/agent/acp-runner';
+import { defaultAcpWorkdir } from '@/agent/acp-default-workdir';
 import type { MachineProviderRateLimitsRefreshResponse } from '@lody/shared';
 import { ProviderQuotaRefreshCache } from './provider-quota-refresh-cache';
 import type { TurnOutcome, TurnOutcomeFact, TurnResultAudience } from '@lody/shared/notifications';
@@ -1152,7 +1153,7 @@ export class SessionExecutionService {
         magpieGatewayUrl: config.magpieGatewayUrl,
         codexProfile: codexProfile ? { profile: codexProfile } : undefined,
         env: { ...process.env, ...config.env },
-        workdir: process.cwd(),
+        workdir: defaultAcpWorkdir(),
         signal,
         logger: this.deps.logger,
         terminalEnabled: false,

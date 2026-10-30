@@ -18,6 +18,7 @@ vi.mock('./acp-authentication', () => ({
 }));
 
 import { fetchAcpCapabilities } from './acp-capabilities';
+import { defaultAcpWorkdir } from './acp-default-workdir';
 import { AcpAuthenticationRequiredError } from './agent-client';
 
 const createSilentLogger = (): Logger => ({
@@ -408,5 +409,13 @@ describe('fetchAcpCapabilities', () => {
     const result = await fetchAcpCapabilities('registry', 'filter-agent', createSilentLogger());
 
     expect(result.configOptions).toBeUndefined();
+  });
+});
+
+describe('defaultAcpWorkdir', () => {
+  it('keeps the daemon cwd unless it is the filesystem root', () => {
+    expect(defaultAcpWorkdir('/home/me/project', '/home/me')).toBe('/home/me/project');
+    // A macOS app started from Finder runs in the read-only `/`.
+    expect(defaultAcpWorkdir('/', '/Users/me')).toBe('/Users/me');
   });
 });

@@ -2,6 +2,7 @@ import { toShared } from '@/platform/process-options';
 import type { ChildProcess } from 'child_process';
 import os from 'os';
 import { randomUUID } from 'node:crypto';
+import { defaultAcpWorkdir } from '@/agent/acp-default-workdir';
 import * as acp from '@agentclientprotocol/sdk';
 import type { AuthMethod } from '@agentclientprotocol/sdk';
 import { z } from 'zod';
@@ -983,7 +984,7 @@ export class AcpAuthenticationManager {
               customAcp: options.customAcp,
               runtimeOverrides: options.runtimeOverrides,
               magpieGatewayUrl: options.magpieGatewayUrl,
-              workdir: process.cwd(),
+              workdir: defaultAcpWorkdir(),
               env,
               command: launch.command,
               args: [...args],

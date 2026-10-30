@@ -56,6 +56,8 @@ context/message-flow.md "Upstream".
   registry launches.
 - `acp-capabilities.ts` / `acp-startup-monitor.ts` / `acp-analytics.ts` — capability cache,
   startup health, analytics.
+- `acp-default-workdir.ts` — cwd for ACP starts without a session directory (probe, login,
+  quota); a filesystem-root daemon cwd (macOS app from Finder) falls back to home.
 - `login-shell-env.ts` — explicit Legacy cache over the shared native
   LoginShellEnvironment probe; the three-second pending wait is distinct from
   retained failure. [Decision](../../../../.agents/notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md).

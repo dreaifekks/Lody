@@ -14,6 +14,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { probeBuiltinAuthentication } from '@/agent/acp-authentication';
+import { defaultAcpWorkdir } from '@/agent/acp-default-workdir';
 import {
   normalizeAcpSessionCapabilities,
   type AcpCapabilitiesResult,
@@ -81,7 +82,7 @@ export async function fetchAcpCapabilities(
   const isolatedWorkdir = options.codexProfile
     ? await mkdtemp(path.join(os.tmpdir(), 'lody-codex-verify-'))
     : undefined;
-  const workdir = isolatedWorkdir ?? process.cwd();
+  const workdir = isolatedWorkdir ?? defaultAcpWorkdir();
   const { agentProcess, client, acpSessionId, sessionResponse, capabilitySourceVersion } =
     await startLocalAcpAgent({
       codexProfile: options.codexProfile,
