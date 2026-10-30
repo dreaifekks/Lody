@@ -1063,8 +1063,16 @@ const classifyCommand = (
   }
   const budget: GlobBudget = { left: GLOB_ENTRY_LIMIT };
   const sensitive = (word: string) => {
-    // `rev:path` (git show HEAD:.env) names a path too.
-    const candidates = [word, ...(/^[^:/]*:(.+)$/.exec(word)?.slice(1) ?? [])];
+    // `rev:path` names a path too, whatever the revision looks like
+    // (`origin/main:.env`, `:0:.env`): every part after a colon is checked.
+    const candidates = [
+      word,
+      ...word
+        .split(':')
+        .slice(1)
+        .map((_, index, parts) => parts.slice(index).join(':'))
+        .filter(Boolean),
+    ];
     return candidates.some((candidate) =>
       [...directories].some((directory) => namesSecret(candidate, directory, homeDir, budget))
     );
