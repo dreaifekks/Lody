@@ -1053,6 +1053,37 @@ describe('UI comparison', () => {
       expect(getDefaultStore().get(articleAnnotationsAtom)).toMatchObject([{ path: 'a.html' }]);
     });
 
+    it('saves a comment being written on a spot to its file even if the list is reordered meanwhile', async () => {
+      await show();
+      const frame = option('A').querySelector('iframe')!;
+      await act(async () => {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { type: 'lody-compare:pick', x: 40, y: 300, label: 'nav' },
+            source: frame.contentWindow,
+          })
+        );
+      });
+      files['nav.compare.md'] = '# Nav\n\n- [Tabs](b.html)\n- [Sidebar](a.html)\n- [Rail](c.html)';
+      await act(async () => vi.advanceTimersByTimeAsync(5_000));
+      await settle();
+      const box = container.querySelector<HTMLTextAreaElement>('[data-compare-draft] textarea')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+          box,
+          'Too tight'
+        );
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      const add = Array.from(
+        container.querySelectorAll<HTMLButtonElement>('[data-compare-draft] button')
+      ).find((item) => item.textContent === 'Add')!;
+      await act(async () => add.click());
+      expect(getDefaultStore().get(articleAnnotationsAtom)).toMatchObject([
+        { path: 'a.html', comment: 'Too tight', compare: { spot: { x: 40, y: 300 } } },
+      ]);
+    });
+
     it('asks again about a sent pick as a question, leaving the new pick the only one', async () => {
       await show();
       await act(async () => inOption('B', 'Build on this option').click());

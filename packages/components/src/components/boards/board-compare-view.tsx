@@ -346,7 +346,8 @@ type Mode = 'app' | 'light' | 'dark';
 
 /** Where a new comment goes: an option, and the spot in it the reader pointed at. */
 interface Draft {
-  readonly letter: string;
+  /** The option's file: its letter may change when the agent reorders the list. */
+  readonly path: string;
   readonly spot?: ComparePick;
 }
 
@@ -464,7 +465,7 @@ export function BoardCompareView({
   const scale = zoom ?? fit;
 
   const follow = (from: string, top: number) => {
-    for (const [letter, control] of controls.current) if (letter !== from) control.scrollTo(top);
+    for (const [path, control] of controls.current) if (path !== from) control.scrollTo(top);
   };
   const choose = (letter: string) => {
     setCurrent(letter);
@@ -506,9 +507,7 @@ export function BoardCompareView({
       },
     });
   };
-  const draftItem = draft
-    ? variants.find((item) => item.variant.letter === draft.letter)
-    : undefined;
+  const draftItem = draft ? variants.find((item) => item.variant.path === draft.path) : undefined;
   const saveDraft = () => {
     if (draft && draftItem) addComment(draftItem, draftText, draft.spot);
     setDraft(null);
@@ -755,7 +754,7 @@ export function BoardCompareView({
               const mine = annotations.filter((annotation) => annotation.path === variant.path);
               return (
                 <div
-                  key={variant.letter}
+                  key={variant.path}
                   {...stylex.props(styles.option)}
                   style={visible ? undefined : { display: 'none' }}
                   data-compare-option={variant.letter}
@@ -798,14 +797,14 @@ export function BoardCompareView({
                       mode={mode}
                       picking={picking && comments !== null && visible}
                       register={(control) => {
-                        if (control) controls.current.set(variant.letter, control);
-                        else controls.current.delete(variant.letter);
+                        if (control) controls.current.set(variant.path, control);
+                        else controls.current.delete(variant.path);
                       }}
                       onScroll={(top, own) => {
-                        if (own) follow(variant.letter, top);
+                        if (own) follow(variant.path, top);
                       }}
                       onPick={(spot) => {
-                        setDraft({ letter: variant.letter, spot });
+                        setDraft({ path: variant.path, spot });
                         setDraftText('');
                       }}
                       onError={(message) =>
@@ -819,7 +818,7 @@ export function BoardCompareView({
                       overlay={(scrollTop) =>
                         [
                           ...mine.filter((annotation) => annotation.compare?.spot),
-                          ...(draft?.letter === variant.letter && draft.spot
+                          ...(draft?.path === variant.path && draft.spot
                             ? [{ id: 'draft', compare: { spot: draft.spot } } as const]
                             : []),
                         ].map((annotation) => {
