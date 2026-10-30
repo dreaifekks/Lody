@@ -168,11 +168,13 @@ const styles = stylex.create({
     whiteSpace: 'nowrap',
   },
   count: { flexShrink: 0, fontSize: '0.75rem', color: colors.secondaryLabel },
-  updated: { color: colors.accent },
+  // Words and the picked star in the label colour: the light accent is too pale for them.
+  updated: { color: colors.label },
+  changedIcon: { color: colors.accent },
   warning: { color: colors.warning },
-  picked: { color: colors.accent },
+  picked: { color: colors.label },
   frame: {
-    alignSelf: 'flex-start',
+    alignSelf: 'center',
     borderRadius: '6px',
     overflow: 'hidden',
     boxShadow: `0 0 0 1px ${colors.separator}`,
@@ -693,10 +695,12 @@ export function BoardCompareView({
                   event.preventDefault();
                   saveDraft();
                 }
+                // Esc stops pointing too, as the hint says.
                 if (event.key === 'Escape') {
                   event.preventDefault();
                   event.stopPropagation();
                   setDraft(null);
+                  setPicking(false);
                 }
               }}
             />
@@ -712,7 +716,11 @@ export function BoardCompareView({
       {layout === 'single' && variants.length > 0 ? (
         <div {...stylex.props(styles.toolbar)}>
           <Tabs.Root value={current} onValueChange={(value) => choose(String(value))}>
-            <Tabs.List size="small" aria-label={t('boards.compare.options', 'Options')}>
+            <Tabs.List
+              size="small"
+              activateOnFocus
+              aria-label={t('boards.compare.options', 'Options')}
+            >
               {variants.map((item) => (
                 <Tabs.Tab
                   key={item.variant.letter}
@@ -756,12 +764,15 @@ export function BoardCompareView({
                 <div
                   key={variant.path}
                   {...stylex.props(styles.option)}
-                  style={visible ? undefined : { display: 'none' }}
+                  // An option smaller than its header sits centred under it.
+                  style={{
+                    width: Math.max(MIN_HEADER, size.width * scale),
+                    ...(visible ? {} : { display: 'none' }),
+                  }}
                   data-compare-option={variant.letter}
                 >
                   <OptionHeader
                     item={item}
-                    width={Math.max(MIN_HEADER, size.width * scale)}
                     annotations={mine}
                     updated={seen.has(variant.path) && seen.get(variant.path) !== item.hash}
                     onSeen={() =>
@@ -902,7 +913,6 @@ function OptionBoard({
  */
 function OptionHeader({
   item,
-  width,
   annotations,
   updated,
   onSeen,
@@ -913,7 +923,6 @@ function OptionHeader({
   onAttachErrors,
 }: {
   item: LoadedVariant;
-  width: number;
   annotations: readonly ArticleAnnotation[];
   updated: boolean;
   onSeen: () => void;
@@ -933,7 +942,7 @@ function OptionHeader({
     count: annotations.length,
   });
   return (
-    <div {...stylex.props(styles.head)} style={{ width }}>
+    <div {...stylex.props(styles.head)}>
       <span {...stylex.props(styles.letter)}>{variant.letter}</span>
       <span
         {...stylex.props(styles.label)}
@@ -1008,7 +1017,7 @@ function OptionHeader({
               }
             >
               {annotations.some(changed) && !annotations.some((annotation) => !annotation.sent) ? (
-                <MessageSquareDot size={14} aria-hidden {...stylex.props(styles.updated)} />
+                <MessageSquareDot size={14} aria-hidden {...stylex.props(styles.changedIcon)} />
               ) : (
                 <MessageSquare size={14} aria-hidden />
               )}

@@ -31,7 +31,8 @@ const styles = stylex.create({
   icon: { color: colors.tertiaryLabel },
   changedIcon: { color: colors.accent },
   status: { margin: 0, fontSize: '0.6875rem', color: colors.secondaryLabel },
-  statusChanged: { color: colors.accent },
+  // The light accent is too pale for 11px words.
+  statusChanged: { color: colors.label },
   badge: {
     position: 'absolute',
     insetBlockStart: '-2px',
