@@ -42,6 +42,12 @@ export type CliType = BuiltinCliType;
 /** Registry provider whose subscription quota the daemon reads itself; no Lody adapter reports it. */
 export const ANTIGRAVITY_AGENT_TYPE = 'antigravity-acp';
 /**
+ * LAN fork: a mode Lody adds to Antigravity's own three. The agent runs in its
+ * `default` mode and the CLI reviews each permission request before asking the
+ * user (apps/cli/src/agent/antigravity-auto-review.ts).
+ */
+export const ANTIGRAVITY_AUTO_REVIEW_MODE_ID = 'auto_review';
+/**
  * Agent-config env key that opts an Antigravity provider into Claude/GPT models.
  * The ACP server lists them only to clients that name themselves Zed, so the
  * daemon sends `clientInfo.name = 'zed'` while this is `'1'`. That is a client
@@ -926,6 +932,7 @@ export function classifyPermissionModeFace(modeId: string | null | undefined): P
     case 'agent':
       return { kind: 'hidden' };
     case 'agent-auto-review':
+    case ANTIGRAVITY_AUTO_REVIEW_MODE_ID:
       return { kind: 'auto', tone: 'neutral', render: 'auto-label' };
     case 'agent-full-access':
     case 'danger-full-access':

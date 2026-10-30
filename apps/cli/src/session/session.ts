@@ -18,6 +18,7 @@ import { JsonLinesParser } from '../utils/json-lines-parser';
 import path from 'path';
 import { Logger } from '@/utils/logger';
 import { ndJsonStream } from '@agentclientprotocol/sdk';
+import { withAntigravityAutoReview } from '@/agent/antigravity-auto-review';
 import * as fs from 'fs';
 import type { AcpStartupTimeoutOptions, AgentClient } from '@/agent/agent-client';
 import { createAcpClient } from '@/agent/acp-runner';
@@ -713,7 +714,13 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
 
       const input = createStdinWritableStream(agentProcess.stdin);
       const output = createStdoutReadableStream(agentProcess.stdout);
-      const stream = ndJsonStream(input, output);
+      // LAN fork: Lody's Auto Review mode for Antigravity (no-op for other agents).
+      const stream = withAntigravityAutoReview(ndJsonStream(input, output), {
+        agentType: callbacks.agentType,
+        logger: this.logger,
+        label: this.sessionId,
+        launch: { command: callbacks.command, args: callbacks.args ?? [], env },
+      });
       this.logger.debug(`[${this.sessionId}] ndJsonStream created, calling createAcpClient`);
       let client: AgentClient;
       let acpSessionId: ACPSessionId;
