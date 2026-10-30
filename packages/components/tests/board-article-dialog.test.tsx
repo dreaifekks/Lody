@@ -883,7 +883,7 @@ describe('UI comparison', () => {
     '',
     '- [Sidebar](nav-a.html) clear hierarchy, narrower content',
     '- [Top tabs](./nav-b.html)',
-    '- [Phone](../phone/nav-c.html) — one column 390x844',
+    '- [Phone](../phone/nav-c.html) 390x844 one column',
     '- [Before](shots/before.png)',
     '- [Docs](https://example.com/guide.html)',
   ].join('\n');
@@ -1134,6 +1134,21 @@ describe('UI comparison', () => {
       root = createRoot(container);
       await show(true, 'session:two');
       expect((await posted()).code).toContain('var saved=null;');
+    });
+
+    it("sets one option's page width without changing the others", async () => {
+      await show();
+      const widthOf = (letter: string) =>
+        option(letter).querySelector<HTMLElement>('[data-compare-board]')!.style.width;
+      expect(widthOf('A')).toBe('1280px');
+      await act(async () => inOption('C', 'Page width: 1280px').click());
+      const phone = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
+        (item) => item.textContent === '390px'
+      )!;
+      await act(async () => phone.click());
+      expect(widthOf('C')).toBe('390px');
+      expect(widthOf('A')).toBe('1280px');
+      expect(inOption('C', 'Page width: 390px')).not.toBeNull();
     });
 
     it('shows a missing option in its place, and no comment controls without a thread beside it', async () => {

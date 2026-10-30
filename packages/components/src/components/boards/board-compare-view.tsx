@@ -24,6 +24,7 @@ import {
 import type { SessionId } from '@lody/shared';
 import { Button } from '@lody/ui/button';
 import { Menu } from '@lody/ui/menu';
+import { NumberField } from '@lody/ui/number-field';
 import { Popover } from '@lody/ui/popover';
 import { Tabs } from '@lody/ui/tabs';
 import { Textarea } from '@lody/ui/textarea';
@@ -67,6 +68,8 @@ export type CompareFileReader = (path: string) => Promise<CompareFile>;
 /** How often an open comparison looks for the agent's new revisions. */
 const RECHECK_MS = 5_000;
 const WIDTHS = [1440, 1280, 1024, 834, 390] as const;
+const MIN_PAGE_WIDTH = 240;
+const MAX_PAGE_WIDTH = 3840;
 const ZOOMS = [0.5, 1] as const;
 const GAP = 24;
 const PADDING = 16;
@@ -168,6 +171,8 @@ const styles = stylex.create({
     whiteSpace: 'nowrap',
   },
   count: { flexShrink: 0, fontSize: '0.75rem', color: colors.secondaryLabel },
+  widths: { display: 'flex', flexDirection: 'column', gap: space[1], width: '168px' },
+  widthChoice: { justifyContent: 'flex-start' },
   // Words and the picked star in the label colour: the light accent is too pale for them.
   updated: { color: colors.label },
   changedIcon: { color: colors.accent },
@@ -392,6 +397,8 @@ export function BoardCompareView({
   const threadPane = useContext(ArticleDialogThreadContext);
   const [layoutChoice, setLayout] = useState<Layout | null>(null);
   const [width, setWidth] = useState<number | null>(null);
+  // One option's own page width, by file; the width menu above sets them all again.
+  const [optionWidths, setOptionWidths] = useState<ReadonlyMap<string, number>>(new Map());
   const [zoom, setZoom] = useState<number | null>(null);
   const [modeChoice, setModeChoice] = useState<Mode>('app');
   const [current, setCurrent] = useState('A');
@@ -446,7 +453,7 @@ export function BoardCompareView({
     [allAnnotations, comments, manifestPath]
   );
   const sizeOf = (variant: CompareVariant): CompareSize => ({
-    width: width ?? variant.size.width,
+    width: optionWidths.get(variant.path) ?? width ?? variant.size.width,
     height: variant.size.height,
   });
   const shown =
@@ -567,7 +574,10 @@ export function BoardCompareView({
               <Menu.GroupLabel>{t('boards.compare.width', 'Width')}</Menu.GroupLabel>
               <Menu.RadioGroup
                 value={width === null ? 'own' : String(width)}
-                onValueChange={(value) => setWidth(value === 'own' ? null : Number(value))}
+                onValueChange={(value) => {
+                  setWidth(value === 'own' ? null : Number(value));
+                  setOptionWidths(new Map());
+                }}
               >
                 <Menu.RadioItem value="own" indicator="check">
                   {t('boards.compare.widthOwn', 'Own width')}
@@ -780,6 +790,11 @@ export function BoardCompareView({
                     }
                     errors={errors.get(revision) ?? []}
                     commentable={comments !== null}
+                    width={size.width}
+                    ownWidth={variant.size.width}
+                    onWidth={(next) =>
+                      setOptionWidths((previous) => new Map(previous).set(variant.path, next))
+                    }
                     onPick={() => togglePick(item)}
                     onComment={(text) => addComment(item, text)}
                     onAttachErrors={(list) => {
@@ -921,7 +936,14 @@ function OptionHeader({
   onPick,
   onComment,
   onAttachErrors,
+  width,
+  ownWidth,
+  onWidth,
 }: {
+  /** The page width it is laid out at now, and the one its list gives it. */
+  width: number;
+  ownWidth: number;
+  onWidth: (width: number) => void;
   item: LoadedVariant;
   annotations: readonly ArticleAnnotation[];
   updated: boolean;
@@ -950,6 +972,7 @@ function OptionHeader({
       >
         {variant.label}
       </span>
+      <OptionWidth width={width} ownWidth={ownWidth} onWidth={onWidth} />
       {updated ? (
         <Button
           type="button"
@@ -1136,5 +1159,70 @@ export function SessionBoardCompareView({
     <BoardCompareView {...view} read={read} />
   ) : (
     <p {...stylex.props(styles.hint)}>{t('boards.loading', 'Loading…')}</p>
+  );
+}
+
+/**
+ * One option's page width: what it is laid out at now, and the choices — the
+ * list's own, the presets, or any width typed in.
+ */
+function OptionWidth({
+  width,
+  ownWidth,
+  onWidth,
+}: {
+  width: number;
+  ownWidth: number;
+  onWidth: (width: number) => void;
+}) {
+  const { t } = useTranslation();
+  const label = t('boards.compare.optionWidth', 'Page width: {{width}}px', { width });
+  const choice = (value: number, text: string) => (
+    <Button
+      key={text}
+      type="button"
+      size="mini"
+      variant={value === width ? 'secondary' : 'ghost'}
+      {...stylex.props(styles.widthChoice)}
+      onClick={() => onWidth(value)}
+    >
+      {text}
+    </Button>
+  );
+  return (
+    <Popover.Root>
+      <Popover.Trigger
+        render={
+          <Button type="button" size="mini" variant="ghost" aria-label={label} title={label} />
+        }
+      >
+        <span {...stylex.props(styles.count)}>{width}</span>
+      </Popover.Trigger>
+      <Popover.Content side="bottom" align="end">
+        <div {...stylex.props(styles.widths)}>
+          {choice(
+            ownWidth,
+            t('boards.compare.widthOwnValue', 'Own width · {{width}}px', { width: ownWidth })
+          )}
+          {WIDTHS.map((option) => choice(option, `${option}px`))}
+          <NumberField.Root
+            key={width}
+            defaultValue={width}
+            min={MIN_PAGE_WIDTH}
+            max={MAX_PAGE_WIDTH}
+            step={10}
+            onValueCommitted={(next) => {
+              if (next !== null) onWidth(next);
+            }}
+          >
+            <NumberField.Group>
+              <NumberField.Input
+                aria-label={t('boards.compare.widthCustom', 'Custom width (px)')}
+              />
+            </NumberField.Group>
+          </NumberField.Root>
+        </div>
+      </Popover.Content>
+    </Popover.Root>
   );
 }

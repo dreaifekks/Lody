@@ -46,7 +46,8 @@ export interface CompareManifest {
 
 export const DEFAULT_COMPARE_SIZE: CompareSize = { width: 1280, height: 800 };
 
-const SIZE = /(?:^|\s)(\d{2,5})\s*[x×]\s*(\d{2,5})\s*$/u;
+/** A `WxH` standing on its own anywhere in an item's words, or the frontmatter value. */
+const SIZE = /(?:^|\s)(\d{2,5})\s*[x×]\s*(\d{2,5})(?=\s|$)/u;
 const VARIANT_ITEM =
   /^\s*(?:[-*+]|\d+[.)])\s+\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)(.*)$/u;
 const KIND: readonly [RegExp, CompareVariant['kind']][] = [
@@ -103,7 +104,10 @@ export function parseCompareManifest(text: string, manifestPath: string): Compar
     variants.push({
       letter: letterOf(variants.length),
       label: item[1].trim() || item[2],
-      note: (size ? rest.replace(SIZE, '') : rest).replace(/^[-–—:：\s]+/u, '').trim(),
+      note: (size ? rest.replace(SIZE, ' ') : rest)
+        .replace(/\s{2,}/gu, ' ')
+        .replace(/^[-–—:：\s]+/u, '')
+        .trim(),
       path: resolveCompareRelativePath(manifestPath, item[2]),
       kind,
       size: size ?? viewport,
