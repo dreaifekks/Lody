@@ -23,6 +23,18 @@ export interface ArticleAnnotation {
    * text. An HTML page's error has no block: index -1.
    */
   readonly block: { readonly index: number; readonly text: string };
+  /**
+   * On an option of a UI comparison (`compare-manifest.ts`): `path` is the
+   * option's file and `block.text` a hash of the revision commented on. A pick
+   * chooses the option to build on; a spot is where in its page, in the
+   * page's CSS pixels.
+   */
+  readonly compare?: {
+    readonly manifest: string;
+    readonly letter: string;
+    readonly pick?: true;
+    readonly spot?: { readonly x: number; readonly y: number };
+  };
   /** What an earlier, sent comment on this passage said; this one asks again. */
   readonly previous?: string;
   /** Set once a message carried it: its number there, and when. */

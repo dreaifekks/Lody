@@ -247,7 +247,7 @@ export function ArticleAnnotationMarkers({
  * it says whether the agent has rewritten its passage since, and can be
  * resolved or asked about again (the new comment replaces it, unsent).
  */
-function AnnotationItem({
+export function AnnotationItem({
   annotation,
   changed,
 }: {

@@ -10,8 +10,11 @@ import { ArticleAnnotationMarkers } from '../src/components/boards/article-annot
 import {
   articleAnnotationsAtom,
   articleBlockText,
+  formatArticleAnnotations,
   type ArticleAnnotation,
 } from '../src/components/boards/article-annotations';
+import { BoardCompareView, type CompareFile } from '../src/components/boards/board-compare-view';
+import { parseCompareManifest } from '../src/components/boards/compare-manifest';
 import { ArticleReviewControls, useArticleChanges } from '../src/components/boards/article-review';
 import { MarkdownRenderer } from '../src/components/ai-gui/markdown-renderer';
 import { ArticleHtmlFrame } from '../src/components/sessions/article-html-frame';
@@ -864,6 +867,245 @@ describe('article review', () => {
         },
       ]);
       expect(button('Goes with the next message')!.disabled).toBe(true);
+    });
+  });
+});
+
+describe('UI comparison', () => {
+  const MANIFEST = [
+    '---',
+    'viewport: 1280x800',
+    '---',
+    '# Settings navigation',
+    '',
+    'Only the navigation differs.',
+    '',
+    '- [Sidebar](nav-a.html) clear hierarchy, narrower content',
+    '- [Top tabs](./nav-b.html)',
+    '- [Phone](../phone/nav-c.html) — one column 390x844',
+    '- [Before](shots/before.png)',
+    '- [Docs](https://example.com/guide.html)',
+  ].join('\n');
+
+  it('names the linked options A, B, C… in order, beside the list', () => {
+    const manifest = parseCompareManifest(MANIFEST, 'designs/nav/nav.compare.md');
+    expect(manifest.title).toBe('Settings navigation');
+    expect(manifest.intro).toBe(
+      'Only the navigation differs.\n\n- [Docs](https://example.com/guide.html)'
+    );
+    expect(manifest.variants).toEqual([
+      {
+        letter: 'A',
+        label: 'Sidebar',
+        note: 'clear hierarchy, narrower content',
+        path: 'designs/nav/nav-a.html',
+        kind: 'html',
+        size: { width: 1280, height: 800 },
+      },
+      {
+        letter: 'B',
+        label: 'Top tabs',
+        note: '',
+        path: 'designs/nav/nav-b.html',
+        kind: 'html',
+        size: { width: 1280, height: 800 },
+      },
+      {
+        letter: 'C',
+        label: 'Phone',
+        note: 'one column',
+        path: 'designs/phone/nav-c.html',
+        kind: 'html',
+        size: { width: 390, height: 844 },
+      },
+      {
+        letter: 'D',
+        label: 'Before',
+        note: '',
+        path: 'designs/nav/shots/before.png',
+        kind: 'image',
+        size: { width: 1280, height: 800 },
+      },
+    ]);
+  });
+
+  describe('view', () => {
+    let container: HTMLDivElement;
+    let root: Root;
+    let files: Record<string, string>;
+    const read = async (path: string): Promise<CompareFile> =>
+      path in files ? { kind: 'text', text: files[path] } : { kind: 'missing', message: 'ENOENT' };
+    const option = (letter: string) =>
+      container.querySelector<HTMLElement>(`[data-compare-option="${letter}"]`)!;
+    const inOption = (letter: string, label: string) =>
+      option(letter).querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+    const settle = () =>
+      act(async () => {
+        for (let step = 0; step < 10; step += 1) await Promise.resolve();
+      });
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      files = {
+        'nav.compare.md': '# Nav\n\n- [Sidebar](a.html)\n- [Tabs](b.html)\n- [Rail](c.html)',
+        'a.html': '<nav>side</nav>',
+        'b.html': '<nav>tabs</nav>',
+        'c.html': '<nav>rail</nav>',
+      };
+      container = document.createElement('div');
+      document.body.appendChild(container);
+      root = createRoot(container);
+    });
+    afterEach(() => {
+      act(() => root.unmount());
+      container.remove();
+      document.body.replaceChildren();
+      getDefaultStore().set(articleAnnotationsAtom, []);
+      vi.useRealTimers();
+    });
+
+    const show = async (comments = true) => {
+      await act(async () =>
+        root.render(
+          createElement(BoardCompareView, {
+            manifestPath: 'nav.compare.md',
+            read,
+            comments: comments
+              ? { threadId: 'beside' as never, ownerThreadId: 'thread' as never }
+              : null,
+          })
+        )
+      );
+      await settle();
+    };
+
+    it('sends one pick and the comments on other options, numbered, with the next message', async () => {
+      await show();
+      expect(
+        Array.from(container.querySelectorAll('[data-compare-option]'), (item) =>
+          item.getAttribute('data-compare-option')
+        )
+      ).toEqual(['A', 'B', 'C']);
+      await act(async () => inOption('B', 'Build on this option').click());
+      // A second pick replaces the first: one option is built on.
+      await act(async () => inOption('C', 'Build on this option').click());
+      await act(async () => inOption('A', 'Comments (0)').click());
+      const box = document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Comment on this option"]'
+      )!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+          box,
+          'Take its header'
+        );
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      const add = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
+        (item) => item.textContent === 'Add'
+      )!;
+      await act(async () => add.click());
+
+      const annotations = getDefaultStore().get(articleAnnotationsAtom);
+      expect(
+        annotations.map((item) => [item.compare?.letter, item.compare?.pick ?? false])
+      ).toEqual([
+        ['C', true],
+        ['A', false],
+      ]);
+      const { text } = formatArticleAnnotations(annotations, {
+        heading: 'Comments',
+        hint: 'Answer each by number.',
+        earlier: 'Earlier:',
+      });
+      expect(text).toContain('1. `c.html`\n   > C · Rail\n   Build on this option');
+      expect(text).toContain('2. `a.html`\n   > A · Sidebar\n   Take its header');
+    });
+
+    it("marks an option the agent rewrote until the reader has seen it, and a sent comment's option as changed", async () => {
+      await show();
+      await act(async () => inOption('B', 'Build on this option').click());
+      const [pick] = getDefaultStore().get(articleAnnotationsAtom);
+      getDefaultStore().set(articleAnnotationsAtom, [{ ...pick, sent: { number: 1, atMs: 0 } }]);
+      files['b.html'] = '<nav>tabs, lighter</nav>';
+      await act(async () => vi.advanceTimersByTimeAsync(5_000));
+      await settle();
+      const updated = Array.from(option('B').querySelectorAll('button')).find(
+        (item) => item.textContent === 'Updated'
+      );
+      expect(updated).toBeDefined();
+      expect(option('A').textContent).not.toContain('Updated');
+      await act(async () => inOption('B', 'Comments (1)').click());
+      expect(document.body.textContent).toContain('#1 · The agent changed this passage');
+      await act(async () => updated!.click());
+      expect(option('B').textContent).not.toContain('Updated');
+    });
+
+    it('shows a missing option in its place, and no comment controls without a thread beside it', async () => {
+      delete files['c.html'];
+      await show(false);
+      expect(option('C').textContent).toContain('Could not read c.html: ENOENT');
+      expect(inOption('A', 'Build on this option')).toBeNull();
+      expect(container.querySelector('button[aria-label="Comment on a spot"]')).toBeNull();
+    });
+
+    it("reports a pointed spot without letting the option's page act on the click", async () => {
+      await show();
+      const frame = option('A').querySelector('iframe')!;
+      const posted: unknown[] = [];
+      frame.contentWindow!.postMessage = (message: unknown) => {
+        posted.push(message);
+      };
+      await act(async () => {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { type: 'lody-widget:ready' },
+            source: frame.contentWindow,
+          })
+        );
+      });
+      const { code } = posted[0] as { code: string };
+      const page = new JSDOM('<!doctype html><head></head><body><div id="root"></div></body>', {
+        runScripts: 'outside-only',
+        pretendToBeVisual: true,
+      });
+      const pageRoot = page.window.document.getElementById('root')!;
+      const template = page.window.document.createElement('template');
+      template.innerHTML =
+        code.replace(
+          '<nav>side</nav>',
+          '<header class="top bar"><button id="save">Save draft</button></header>'
+        ) +
+        "<script>window.saved=false;document.getElementById('save').addEventListener('click',function(){window.saved=true;});</script>";
+      pageRoot.appendChild(template.content);
+      for (const script of Array.from(pageRoot.querySelectorAll('script')))
+        page.window.eval(script.textContent ?? '');
+      const received: unknown[] = [];
+      page.window.addEventListener('message', (event) => received.push(event.data));
+      page.window.dispatchEvent(
+        new page.window.MessageEvent('message', {
+          data: { type: 'lody-compare:picking', on: true },
+          source: page.window,
+        })
+      );
+      page.window.document
+        .getElementById('save')!
+        .dispatchEvent(
+          new page.window.MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 30,
+            clientY: 12,
+          })
+        );
+      await vi.advanceTimersByTimeAsync(0);
+      expect((page.window as unknown as { saved: boolean }).saved).toBe(false);
+      expect(received).toContainEqual({
+        type: 'lody-compare:pick',
+        x: 30,
+        y: 12,
+        label: 'button#save \u201cSave draft\u201d',
+      });
+      page.window.close();
     });
   });
 });

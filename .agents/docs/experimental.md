@@ -313,6 +313,26 @@ tool, CLI or protocol change.
   unsent comment that carries the earlier one ("Asked before: …"). Sent comments
   nobody resolved leave after 30 days. Escape leaves an edit, then the popover,
   then the window.
+- UI comparison: a `<name>.compare.md` link opens a comparison instead of an
+  article (`components/boards/compare-manifest.ts` parses it: each list item that
+  starts with a link to an HTML file or a picture is an option, lettered A, B, C… in
+  order; a trailing `WxH` or the frontmatter `viewport` gives its design size; the
+  rest of the text shows above). `board-compare-view.tsx` rereads the list and its
+  options every 5 seconds while open. Each HTML option runs in the widget page like
+  an HTML article (`compare-board-frame.tsx`, with the same state and error
+  scripts) at its design size, scaled by one factor for all options: the largest
+  that fits, counting an option too small for its header at the header's width.
+  Layouts: side by side, a two-column grid (the default above three options) and
+  one at a time, with every frame kept mounted. Each page reports its scroll and
+  follows the others' without echoing it. While "Comment on a spot" is on, a page
+  outlines the element under the pointer and reports a click as a spot (with a
+  short description of the element) instead of acting on it. A pick ("Build on
+  this option", one per list), option comments and spot comments are article
+  comments carrying `compare` (the list, the letter, the spot); `block.text` is a
+  hash of the option's revision, so a sent comment shows as changed once the file
+  differs. In Board Files the list opens the same view, without comments.
+  The window starts at 75% for a comparison and can fold the conversation away
+  (`ArticleDialogThreadContext`).
 - Changes (`components/boards/article-diff.ts`, `article-review.tsx`): the first
   revision of a Markdown article the window shows is what the reader has seen.
   Each later revision is compared with it and the changes are marked in the text

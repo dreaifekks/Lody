@@ -60,6 +60,16 @@ import {
   ARTICLE_REPORT_MD_REVISED,
 } from './board-article-demo';
 import {
+  COMPARE_BEFORE_SVG,
+  COMPARE_MANIFEST_MD,
+  COMPARE_NAV_A_HTML,
+  COMPARE_NAV_B_HTML,
+  COMPARE_NAV_C_HTML,
+  COMPARE_NAV_PHONE_HTML,
+} from './board-compare-demo';
+import { SessionBoardCompareView } from '@/components/boards/board-compare-view';
+import { isCompareManifestPath } from '@/components/boards/compare-manifest';
+import {
   articleAnnotationsAtom,
   useThreadArticleAnnotations,
   type ArticleAnnotation,
@@ -1166,20 +1176,30 @@ function ArticleDialogPage({
             title={open.split('/').at(-1)!}
             threadHost={host}
             holdsThread={!closing}
+            wide={isCompareManifestPath(open)}
             onPanelChange={setPanel}
             onClose={close}
             article={
-              <SessionFileContentView
-                key={open}
-                sessionId={owner.id}
-                session={owner}
-                filePath={open}
-                fileId={open}
-                fileProvider={provider}
-                fileProviderRole="read"
-                article={{ onOpenInTab: close, annotationThreadId: inArticle ? threadId : null }}
-                className="h-full"
-              />
+              isCompareManifestPath(open) ? (
+                <SessionBoardCompareView
+                  fileProvider={provider}
+                  manifestPath={open}
+                  comments={inArticle ? { threadId, ownerThreadId: owner.id } : null}
+                  onOpenInTab={close}
+                />
+              ) : (
+                <SessionFileContentView
+                  key={open}
+                  sessionId={owner.id}
+                  session={owner}
+                  filePath={open}
+                  fileId={open}
+                  fileProvider={provider}
+                  fileProviderRole="read"
+                  article={{ onOpenInTab: close, annotationThreadId: inArticle ? threadId : null }}
+                  className="h-full"
+                />
+              )
             }
           />
         ) : null}
@@ -1298,6 +1318,88 @@ export const ArticleHtmlErrors: Story = {
 /** An interactive HTML article that loads Chart.js from a CDN inside the widget page. */
 export const ArticleHtml: Story = {
   render: () => <ArticleDialogPage path="articles/demo.html" />,
+};
+
+const COMPARE_FILES: Record<string, string> = {
+  'designs/nav/nav.compare.md': COMPARE_MANIFEST_MD,
+  'designs/nav/nav-a.html': COMPARE_NAV_A_HTML,
+  'designs/nav/nav-b.html': COMPARE_NAV_B_HTML,
+  'designs/nav/nav-c.html': COMPARE_NAV_C_HTML,
+  'designs/nav/nav-phone.html': COMPARE_NAV_PHONE_HTML,
+  'designs/nav/before.svg': COMPARE_BEFORE_SVG,
+};
+
+const compareProvider = createFakeSessionFileProvider({
+  sourceState: 'live-collaborative',
+  files: Object.keys(COMPARE_FILES).map((path) => ({
+    fileId: path,
+    path,
+    kind: 'text' as const,
+    sourceState: 'live-readonly' as const,
+  })),
+  snapshots: Object.fromEntries(
+    Object.entries(COMPARE_FILES).map(([path, text]) => [path, { kind: 'text' as const, text }])
+  ),
+});
+
+/** A comparison's option comment, as the view writes it. */
+const compareComment = (
+  letter: string,
+  file: string,
+  quote: string,
+  comment: string,
+  extra: Partial<ArticleAnnotation> & { spot?: { x: number; y: number }; pick?: true } = {}
+): ArticleAnnotation => {
+  const { spot, pick, ...rest } = extra;
+  return {
+    id: `compare-${letter}-${comment}`,
+    threadId: THREAD,
+    ownerThreadId: THREAD,
+    path: `designs/nav/${file}`,
+    quote,
+    comment,
+    block: { index: spot ? 1 + spot.y : 0, text: 'old' },
+    compare: {
+      manifest: 'designs/nav/nav.compare.md',
+      letter,
+      ...(pick ? { pick } : {}),
+      ...(spot ? { spot } : {}),
+    },
+    ...rest,
+  };
+};
+
+/**
+ * Five options of one settings page, side by side at one shared scale: three
+ * desktop navigations, a phone take at its own size, and the current page as
+ * a picture. The conversation stays beside them.
+ */
+export const ArticleCompare: Story = {
+  render: () => <ArticleDialogPage path="designs/nav/nav.compare.md" provider={compareProvider} />,
+};
+
+/**
+ * The same comparison mid-review: B picked to build on, a comment on A, two
+ * spots pointed at in C (one sent earlier, before C was rewritten).
+ */
+export const ArticleCompareAnnotated: Story = {
+  render: () => (
+    <ArticleDialogPage
+      path="designs/nav/nav.compare.md"
+      provider={compareProvider}
+      annotations={[
+        compareComment('B', 'nav-b.html', 'B · 顶部标签', '选这个方案作为基础', { pick: true }),
+        compareComment('A', 'nav-a.html', 'A · 侧栏导航', '侧栏的分组标题用 A 的写法'),
+        compareComment('C', 'nav-c.html', 'C · 图标栏 · a.on “通”', '选中态的配色用这个', {
+          spot: { x: 28, y: 36 },
+        }),
+        compareComment('C', 'nav-c.html', 'C · 图标栏 · section.card “外观”', '卡片间距再大一点', {
+          spot: { x: 320, y: 120 },
+          sent: { number: 2, atMs: Date.now() - 3_600_000 },
+        }),
+      ]}
+    />
+  ),
 };
 
 /** The report's dialog after its breadcrumb moved to a member the thread opened. */
