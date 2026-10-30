@@ -43,9 +43,6 @@ const READ_ONLY_COMMANDS = new Set([
   'grep',
   'egrep',
   'fgrep',
-  'rg',
-  'ag',
-  'tree',
   'pwd',
   'echo',
   'printf',
@@ -53,20 +50,15 @@ const READ_ONLY_COMMANDS = new Set([
   'whereis',
   'type',
   'stat',
-  'file',
   'du',
   'df',
-  'date',
   'whoami',
   'id',
   'uname',
-  'hostname',
   'basename',
   'dirname',
   'realpath',
   'readlink',
-  'sort',
-  'uniq',
   'cut',
   'tr',
   'column',
@@ -79,7 +71,6 @@ const READ_ONLY_COMMANDS = new Set([
   'false',
   'test',
   '[',
-  'cd',
   'sleep',
   'md5sum',
   'sha1sum',
@@ -136,8 +127,23 @@ const SENSITIVE_PATH_PATTERNS = [
   /(^|\/)\.kube\/config$/,
   /(^|\/)\.config\/gh\/hosts\.yml$/,
   /(^|\/)\.gemini\/.*(token|creds|oauth)[^/]*$/i,
+  /(^|\/)\.lody[^/]*\/credentials\.json$/,
+  /(^|\/)\.codex\/auth\.json$/,
+  /(^|\/)\.claude\/\.credentials\.json$/,
+  /(^|\/)\.config\/(.+\/)?credentials[^/]*$/,
+  /(^|\/)\.npmrc$/,
+  /(^|\/)\.pypirc$/,
+  // `.env` and `.env.*`, except the committed templates.
+  /(^|\/)\.env(\.(?!(example|sample|template|dist|defaults)$)[^/]+)?$/,
   /^\/etc\/(shadow|sudoers)/,
 ];
+
+/**
+ * Home directories holding an agent's own settings, hooks, plugins and tool
+ * permissions (Antigravity's included). A change there lets an agent widen
+ * what it may do, so it always goes to the user.
+ */
+const AGENT_CONFIG_DIRECTORY = /^\.(gemini|claude|codex|lody[^/\\]*)$|^\.claude\.json$/;
 
 /** Files that change how the machine or every shell behaves. */
 const SYSTEM_CONFIG_PATTERNS = [
@@ -183,6 +189,25 @@ const isSensitivePath = (target: string): boolean =>
 
 const isSystemConfigPath = (target: string): boolean =>
   SYSTEM_CONFIG_PATTERNS.some((pattern) => pattern.test(target));
+
+/** The agent configuration directory `target` is in, unless it is in a workspace kept there. */
+const agentConfigDirectory = (
+  target: string,
+  workspace: AutoReviewWorkspace,
+  homeDir: string
+): string | undefined => {
+  const relative = path.relative(homeDir, target);
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return undefined;
+  const first = relative.split(path.sep)[0]!;
+  if (!AGENT_CONFIG_DIRECTORY.test(first)) return undefined;
+  const directory = path.join(homeDir, first);
+  // Lody worktrees live under ~/.lody-oss: their own files are ordinary workspace files.
+  const kept = workspace.roots.some((root) => {
+    const resolved = path.resolve(root);
+    return isInside(resolved, directory) && resolved !== directory && isInside(target, resolved);
+  });
+  return kept ? undefined : directory;
+};
 
 const isGitInternalPath = (target: string, workspace: AutoReviewWorkspace): boolean =>
   workspace.roots.some((root) => {
@@ -311,14 +336,23 @@ export function splitShellCommand(commandLine: string): {
 
 const isRedirect = (word: string) => /^(\d|&)?(>>?|<)&?$/.test(word);
 
-/** Strips leading `VAR=value` assignments and harmless wrappers. */
-const commandWords = (words: readonly string[]): string[] => {
+const isAssignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+
+/**
+ * The command with leading `VAR=value` assignments and harmless wrappers
+ * removed, for the ask rules. An assignment (`GIT_EXTERNAL_DIFF=…`,
+ * `LD_PRELOAD=…`, `PAGER=…`) can make any command run a program, so
+ * `assigns` keeps such a command off the read-only path.
+ */
+const commandWords = (words: readonly string[]): { words: string[]; assigns: boolean } => {
   let start = 0;
-  while (start < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[start]!)) start += 1;
+  while (start < words.length && isAssignment(words[start]!)) start += 1;
   const rest = words.slice(start);
-  if (rest[0] === 'command' || rest[0] === 'time' || rest[0] === 'nice')
-    return commandWords(rest.slice(1));
-  return rest;
+  if (rest[0] === 'command' || rest[0] === 'time' || rest[0] === 'nice') {
+    const inner = commandWords(rest.slice(1));
+    return { words: inner.words, assigns: start > 0 || inner.assigns };
+  }
+  return { words: rest, assigns: start > 0 };
 };
 
 /** Arguments that are not flags and not redirections or their targets. */
@@ -350,6 +384,29 @@ const redirectTargets = (words: readonly string[]): string[] => {
     index += 1;
   }
   return targets;
+};
+
+/** Files a whitelisted command writes through its own options: `sort -o`, `uniq IN OUT`, `tree -o`. */
+const optionOutputs = (words: readonly string[]): string[] => {
+  const name = words[0];
+  if (name === 'uniq') return operands(words).slice(1, 2);
+  if (name !== 'sort' && name !== 'tree') return [];
+  const outputs: string[] = [];
+  for (let index = 1; index < words.length; index += 1) {
+    const word = words[index]!;
+    const long = /^--output(=(.*))?$/.exec(word);
+    if (long) {
+      const value = long[2] ?? words[(index += 1)];
+      if (value) outputs.push(value);
+      continue;
+    }
+    const short = /^-[A-Za-z]*o(.*)$/.exec(word);
+    if (short) {
+      const value = short[1] || words[(index += 1)];
+      if (value) outputs.push(value);
+    }
+  }
+  return outputs;
 };
 
 const hasFlag = (words: readonly string[], ...flags: string[]): boolean =>
@@ -430,9 +487,19 @@ const destructiveGitReason = (words: readonly string[]): string | undefined => {
 };
 
 const isReadOnlyGit = (words: readonly string[]): boolean => {
+  // Any global option but `-C <dir>` can run a program (`-c core.fsmonitor=…`,
+  // `-c diff.external=…`, `-c core.pager=…`, `--exec-path`) or point git at
+  // another repository (`--git-dir`, `--work-tree`).
+  for (let index = 1; index < words.length && words[index]!.startsWith('-'); index += 1) {
+    if (words[index] !== '-C') return false;
+    index += 1;
+  }
   const [subcommand, ...rest] = gitArguments(words);
   if (!subcommand) return false;
-  if (READ_ONLY_GIT.has(subcommand)) return !hasFlag(rest, '--output');
+  if (subcommand === 'grep' && rest.some((arg) => /^(-[A-Za-z]*O|--open-files-in-pager)/.test(arg)))
+    return false;
+  if (READ_ONLY_GIT.has(subcommand))
+    return !hasFlag(rest, '--output', '--ext-diff', '--textconv', '--filters');
   if (subcommand === 'branch')
     return rest.every((arg) =>
       /^(-a|-r|-v|-vv|--all|--list|--show-current|--remotes|--verbose|--merged|--no-merged|--contains)$/.test(
@@ -448,10 +515,43 @@ const isReadOnlyGit = (words: readonly string[]): boolean => {
   return false;
 };
 
+/**
+ * Whitelisted commands whose options or operands write files or run programs,
+ * checked one by one (GNU and BSD spellings).
+ */
 const isReadOnlyCommand = (words: readonly string[]): boolean => {
   const name = words[0];
   if (!name) return true;
-  if (name === 'git') return isReadOnlyGit(words);
+  const args = words.slice(1);
+  const plain = operands(words);
+  switch (name) {
+    case 'git':
+      return isReadOnlyGit(words);
+    case 'sort':
+      // -o/--output writes, --compress-program runs a program, -T writes temp files.
+      return !args.some((arg) =>
+        /^(-[A-Za-z]*[oT]|--output|--compress-program|--temporary-directory)/.test(arg)
+      );
+    case 'uniq':
+      // `uniq IN OUT` writes OUT.
+      return plain.length <= 1;
+    case 'tree':
+      // -o writes the listing; -R with -H writes an index into every directory.
+      return !args.some((arg) => /^(-[A-Za-z]*[oR]|--output)/.test(arg));
+    case 'rg':
+      // --pre runs a program per file; -z runs decompressors.
+      return !args.some((arg) => /^(--pre|--search-zip|-[A-Za-z]*z)/.test(arg));
+    case 'ag':
+      return !args.some((arg) => /^(--search-zip|-[A-Za-z]*z)/.test(arg));
+    case 'file':
+      // -C compiles a magic file into the current directory.
+      return !args.some((arg) => /^(-[A-Za-z]*C|--compile)/.test(arg));
+    case 'date':
+      return !args.some((arg) => /^(-[A-Za-z]*s|--set)/.test(arg));
+    case 'hostname':
+      // An operand sets the hostname.
+      return plain.length === 0 && !args.some((arg) => /^(-[A-Za-z]*[bF]|--boot|--file)/.test(arg));
+  }
   if (name === 'find')
     return !words.some((word) =>
       /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(word)
@@ -483,6 +583,14 @@ const askReason = (
     );
 
   if (/^(sudo|su|doas|pkexec|runas)$/.test(name)) return 'runs as another user';
+  const written = [
+    ...(isReadOnlyCommand(words) ? [] : targets),
+    ...[...redirectTargets(words), ...optionOutputs(words)].map((target) =>
+      resolvePath(target, cwd, homeDir)
+    ),
+  ];
+  if (written.some((target) => agentConfigDirectory(target, workspace, homeDir) !== undefined))
+    return "changes an agent's own configuration";
   if (/^(rm|rmdir|shred|unlink|srm|trash)$/.test(name) && outside(targets))
     return 'deletes files outside the workspace';
   if (
@@ -553,7 +661,7 @@ const askReason = (
     return 'transfers data over the network';
   if (name === 'rsync' && args.some((arg) => /^[^/][^:]*:/.test(arg) && !arg.startsWith('-')))
     return 'transfers data over the network';
-  for (const target of redirectTargets(words)) {
+  for (const target of [...redirectTargets(words), ...optionOutputs(words)]) {
     if (target === '/dev/null' || target === '/dev/stdout' || target === '/dev/stderr') continue;
     const resolved = resolvePath(target, cwd, homeDir);
     if (!isInsideWorkspace(resolved, workspace)) return 'writes a file outside the workspace';
@@ -563,23 +671,39 @@ const askReason = (
 
 const classifyCommand = (
   commandLine: string,
-  cwd: string,
+  startCwd: string,
   workspace: AutoReviewWorkspace,
   homeDir: string
 ): AutoReviewRuleVerdict => {
   const { subcommands, pipelines, substitution } = splitShellCommand(commandLine);
-  const words = subcommands.map(commandWords);
   const display = subcommands.map((command) => command.join(' '));
-  if (
-    words.some((command) =>
-      command.some(
-        (word) => isSensitivePath(resolvePath(word, cwd, homeDir)) || isSensitivePath(word)
-      )
-    )
-  )
+  // Follow `cd`/`pushd` in order, so `cd ~/.aws && cat credentials` reads
+  // ~/.aws/credentials. A target that cannot be known (`cd -`, `$VAR`, `popd`)
+  // leaves later paths unknown, which keeps the command off the fast path.
+  let cwd: string | undefined = startCwd;
+  const steps = subcommands.map((command) => {
+    const { words, assigns } = commandWords(command);
+    const step = { words, assigns, cwd };
+    const name = words[0];
+    if (name === 'cd' || name === 'pushd') {
+      const target = operands(words)[0] ?? '~';
+      cwd =
+        cwd && target !== '-' && !target.includes('$')
+          ? resolvePath(target, cwd, homeDir)
+          : undefined;
+    } else if (name === 'popd') {
+      cwd = undefined;
+    }
+    return step;
+  });
+  const sensitive = (word: string, at: string | undefined) =>
+    isSensitivePath(word) ||
+    isSensitivePath(resolvePath(word, startCwd, homeDir)) ||
+    (at !== undefined && isSensitivePath(resolvePath(word, at, homeDir)));
+  if (steps.some((step) => step.words.some((word) => sensitive(word, step.cwd))))
     return { kind: 'ask', reason: 'touches credentials or secrets' };
   for (const pipeline of pipelines) {
-    const names = pipeline.map((command) => commandWords(command)[0] ?? '');
+    const names = pipeline.map((command) => commandWords(command).words[0] ?? '');
     const downloads = names.findIndex((name) => name === 'curl' || name === 'wget');
     if (
       downloads >= 0 &&
@@ -587,18 +711,26 @@ const classifyCommand = (
     )
       return { kind: 'ask', reason: 'runs code downloaded from the network' };
   }
-  for (const command of words) {
-    const reason = askReason(command, cwd, workspace, homeDir);
+  for (const step of steps) {
+    const reason = askReason(step.words, step.cwd ?? startCwd, workspace, homeDir);
     if (reason) return { kind: 'ask', reason };
   }
+  const readOnly = (step: (typeof steps)[number]) => {
+    const name = step.words[0];
+    if (name === 'cd' || name === 'pushd' || name === 'popd') return true;
+    return (
+      !step.assigns &&
+      step.cwd !== undefined &&
+      isInsideWorkspace(step.cwd, workspace) &&
+      isReadOnlyCommand(step.words) &&
+      redirectTargets(step.words).every((target) => target === '/dev/null')
+    );
+  };
   if (
     !substitution &&
-    words.length > 0 &&
-    words.every(
-      (command) =>
-        isReadOnlyCommand(command) &&
-        redirectTargets(command).every((target) => target === '/dev/null')
-    )
+    steps.length > 0 &&
+    (cwd === undefined || isInsideWorkspace(cwd, workspace)) &&
+    steps.every(readOnly)
   )
     return { kind: 'allow', rule: 'read-only command' };
   return { kind: 'review', command: commandLine, subcommands: display };
@@ -661,6 +793,11 @@ export function classifyAntigravityPermission(
       const paths = editPaths(toolCall).map((target) => resolvePath(target, primaryRoot, homeDir));
       if (paths.some(isSensitivePath))
         return { kind: 'ask', reason: 'touches credentials or secrets' };
+      if (
+        toolCall.kind !== 'read' &&
+        paths.some((target) => agentConfigDirectory(target, workspace, homeDir) !== undefined)
+      )
+        return { kind: 'ask', reason: "changes an agent's own configuration" };
       if (toolCall.kind !== 'read' && paths.some(isSystemConfigPath))
         return { kind: 'ask', reason: 'changes system or shell configuration' };
       if (toolCall.kind !== 'read' && paths.some((target) => isGitInternalPath(target, workspace)))

@@ -478,7 +478,12 @@ export function withAntigravityAutoReview(
     });
     const controller = new AbortController();
     state.inFlight.set(request.id, controller);
-    const timer = setTimer(() => controller.abort(new Error('timed out')), reviewTimeoutMs);
+    // Started when the review leaves the reviewer's queue: an earlier review of
+    // this session must not use up this one's time.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startTimer = () => {
+      timer = setTimer(() => controller.abort(new Error('timed out')), reviewTimeoutMs);
+    };
     const { cwd: actionCwd } = readAntigravityCommand(toolCall);
     const diff = (toolCall.content ?? [])
       .map((block) =>
@@ -514,7 +519,8 @@ export function withAntigravityAutoReview(
             ? { previousAgentMessage: state.previousAgentMessage }
             : {}),
         },
-        controller.signal
+        controller.signal,
+        startTimer
       );
       if (controller.signal.aborted) throw controller.signal.reason;
       if (result.decision === 'allow') {
@@ -544,7 +550,7 @@ export function withAntigravityAutoReview(
       );
       return toUser();
     } finally {
-      clearTimer(timer);
+      if (timer !== undefined) clearTimer(timer);
       state.inFlight.delete(request.id);
     }
   };

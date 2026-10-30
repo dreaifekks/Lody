@@ -48,7 +48,15 @@ export type AutoReviewVerdict = { decision: 'allow' | 'ask'; reason: string };
 export interface AutoReviewer {
   /** Starts the reviewer ahead of the first request so that request is not a cold start. */
   prewarm(): void;
-  review(input: AutoReviewInput, signal: AbortSignal): Promise<AutoReviewVerdict>;
+  /**
+   * Reviews run one at a time per reviewer; `onStart` fires when this one
+   * leaves the queue, so a caller's deadline covers the review, not the wait.
+   */
+  review(
+    input: AutoReviewInput,
+    signal: AbortSignal,
+    onStart?: () => void
+  ): Promise<AutoReviewVerdict>;
   close(): void;
 }
 
@@ -56,9 +64,16 @@ export interface AutoReviewer {
  * Fresh hidden session after this many reviews. Measured on agy 1.4.5: a review
  * costs about 13.6k input tokens, nearly all agy's own system prompt, and a
  * reused session gets no cache hits (cachedReadTokens 0) while each earlier
- * review adds about 300 tokens. Reuse saves no tokens; it keeps agy from
- * storing one conversation per review. Reviews spend the Gemini quota group,
- * not Argon's: about 0.02% of the weekly Gemini quota each on Google AI Pro.
+ * review adds about 300 tokens. Reviews spend the Gemini quota group, not
+ * Argon's: about 0.02% of the weekly Gemini quota each on Google AI Pro.
+ *
+ * Reused for speed, not tokens. On a warm agy 1.4.1 process a fresh session
+ * takes 0.8–1.3 s to set up and its first review 3.9–4.5 s, against 2.3–2.8 s
+ * for a review in a reused session: about 2.5–3 s more per review. Each prompt
+ * therefore tells the reviewer to disregard the earlier reviews it still holds.
+ *
+ * ACP offers no way to delete a session (agy advertises no close), so the
+ * hidden sessions accumulate in agy's own conversation store, one per 20 reviews.
  */
 const REVIEWS_PER_SESSION = 20;
 const REVIEWER_MODEL_PATTERN = /flash/i;
@@ -71,9 +86,19 @@ const VerdictSchema = z.object({
 const truncate = (text: string, limit: number): string =>
   text.length <= limit ? text : `${text.slice(0, limit)}… [${text.length - limit} more characters]`;
 
+/**
+ * Untrusted text placed in the prompt: it cannot open or close the `<action>`
+ * section or end a triple-quoted message early.
+ */
+export const neutralizePromptText = (text: string, limit: number): string =>
+  truncate(text, limit)
+    .replace(/<(\s*\/?\s*action)/gi, '‹$1')
+    .replace(/"{3,}/g, (quotes) => quotes.split('').join(' '));
+
 export function buildAutoReviewPrompt(input: AutoReviewInput): string {
   const lines = [
     "You are Lody Auto Review, the security reviewer for a coding agent (Google Antigravity) that runs on the user's own machine. Decide whether ONE pending action may run without asking the user.",
+    'This is a new, independent review. Disregard every earlier request, action and verdict in this conversation; judge only what follows.',
     '',
     'Rules:',
     '- Do not call any tools. Decide from the information below only.',
@@ -83,27 +108,36 @@ export function buildAutoReviewPrompt(input: AutoReviewInput): string {
     '- "ask": anything destructive or irreversible, anything that changes files, services, accounts or settings outside the workspace, sending data or credentials off the machine, publishing (git push, package publish, deploys) unless the user\'s latest message explicitly asks for it, anything the user did not ask for or that contradicts their request, and anything you are unsure about.',
     'Reply with only a JSON object: {"decision":"allow" or "ask","reason":"<one short sentence>"}',
     '',
-    `Workspace root(s): ${input.workspaceRoots.join(', ')}`,
-    `Working directory of the action: ${input.actionCwd}`,
+    `Workspace root(s): ${neutralizePromptText(input.workspaceRoots.join(', '), 1000)}`,
+    `Working directory of the action: ${neutralizePromptText(input.actionCwd, 500)}`,
     `The workspace is a git repository: ${input.isGitRepository ? 'yes' : 'no'}`,
-    `The user's latest message: """${truncate(input.userMessage, 2000)}"""`,
+    `The user's latest message: """${neutralizePromptText(input.userMessage, 2000)}"""`,
   ];
   if (input.previousAgentMessage) {
     lines.push(
-      `The agent's message the user was replying to: """${truncate(input.previousAgentMessage, 1500)}"""`
+      `The agent's message the user was replying to: """${neutralizePromptText(input.previousAgentMessage, 1500)}"""`
     );
   }
-  lines.push('<action>', `Tool: ${input.toolTitle} (kind: ${input.toolKind})`);
-  if (input.command) lines.push(`Command line: ${truncate(input.command, 2000)}`);
+  lines.push(
+    '<action>',
+    `Tool: ${neutralizePromptText(input.toolTitle, 300)} (kind: ${neutralizePromptText(input.toolKind, 50)})`
+  );
+  if (input.command) lines.push(`Command line: ${neutralizePromptText(input.command, 2000)}`);
   if (input.subcommands && input.subcommands.length > 0) {
     lines.push(
       'Sub-commands:',
-      ...input.subcommands.map((command, index) => `${index + 1}. ${truncate(command, 500)}`)
+      ...input.subcommands.map(
+        (command, index) => `${index + 1}. ${neutralizePromptText(command, 500)}`
+      )
     );
   }
-  if (input.paths.length > 0) lines.push(`Paths: ${input.paths.join(', ')}`);
-  if (input.diff) lines.push('Change:', truncate(input.diff, 3000));
-  lines.push(`Input: ${truncate(JSON.stringify(input.rawInput ?? null), 2000)}`, '</action>');
+  if (input.paths.length > 0)
+    lines.push(`Paths: ${neutralizePromptText(input.paths.join(', '), 1000)}`);
+  if (input.diff) lines.push('Change:', neutralizePromptText(input.diff, 3000));
+  lines.push(
+    `Input: ${neutralizePromptText(JSON.stringify(input.rawInput ?? null), 2000)}`,
+    '</action>'
+  );
   return lines.join('\n');
 }
 
@@ -160,6 +194,11 @@ async function startReviewerProcess(
   const replies = new Map<string, string>();
   const client: acp.Client = {
     requestPermission: (params) => {
+      logger.debug(
+        `[auto-review] reviewer asked to run a tool (${params.toolCall.kind ?? 'unknown'}: ${
+          params.toolCall.title ?? ''
+        }); refused`
+      );
       const reject = params.options.find((option) => option.kind === 'reject_once');
       return reject
         ? { outcome: { outcome: 'selected', optionId: reject.optionId } }
@@ -252,13 +291,18 @@ export function createAntigravityReviewer(options: {
     for (const option of created.configOptions ?? []) {
       if (option.type !== 'select') continue;
       const values = option.options.flatMap((item) => ('group' in item ? item.options : [item]));
+      // `default` explicitly: the user's agy settings may make another mode the
+      // default, and only `default` asks before every tool call, which this
+      // client then refuses.
       const target =
         option.category === 'model'
           ? values.find((value) => REVIEWER_MODEL_PATTERN.test(value.value))?.value
           : option.category === 'thought_level'
             ? values.find((value) => value.value === 'low')?.value
-            : undefined;
-      if (target && target !== option.currentValue) {
+            : option.category === 'mode'
+              ? 'default'
+              : undefined;
+      if (target && (target !== option.currentValue || option.category === 'mode')) {
         await reviewer.connection.setSessionConfigOption({
           sessionId: created.sessionId,
           configId: option.id,
@@ -285,14 +329,16 @@ export function createAntigravityReviewer(options: {
 
   const runReview = async (
     input: AutoReviewInput,
-    signal: AbortSignal
+    signal: AbortSignal,
+    onStart?: () => void
   ): Promise<AutoReviewVerdict> => {
+    signal.throwIfAborted();
+    onStart?.();
     const startedAt = performance.now();
     usage.reviews += 1;
     const ordinal = usage.reviews;
     let outcome = 'failed';
     try {
-      signal.throwIfAborted();
       const current = await reviewerSession();
       signal.throwIfAborted();
       current.reviews += 1;
@@ -334,8 +380,8 @@ export function createAntigravityReviewer(options: {
         logger.debug(`[${label}] Auto Review reviewer did not start: ${formatErrorMessage(error)}`)
       );
     },
-    review(input, signal) {
-      const result = queue.then(() => runReview(input, signal));
+    review(input, signal, onStart) {
+      const result = queue.then(() => runReview(input, signal, onStart));
       queue = result.catch(() => {});
       return result;
     },
