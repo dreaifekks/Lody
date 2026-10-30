@@ -37,7 +37,7 @@ describe('permission tiers', () => {
       },
       deepseek: { 'read-only': 'ask', 'workspace-write': 'edit', 'danger-full-access': 'full' },
       kimi: { default: 'ask', plan: 'ask', auto: 'auto', yolo: 'full' },
-      'antigravity-acp': { default: 'ask', auto_edit: 'edit', yolo: 'full' },
+      'antigravity-acp': { default: 'ask', auto_edit: 'edit', auto_review: 'auto', yolo: 'full' },
     };
     for (const [agentType, modes] of Object.entries(expected))
       for (const [modeId, tier] of Object.entries(modes))

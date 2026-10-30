@@ -78,6 +78,7 @@ import { withoutElectronBootstrapCredentials } from '@/electron-bootstrap-env';
 import { ACP_STARTUP_QUEUE_WAIT_TIMEOUT_MS } from '@lody/shared/acp-startup-budget';
 import { withLoopbackNoProxy } from '@lody/shared/proxy-env';
 import { withAcpSessionStartSlot } from './acp-session-start-gate';
+import { withAntigravityAutoReview } from './antigravity-auto-review';
 
 export type CreateAcpClientOptions = {
   resolveWorktreeProject?: AgentClientOptions['resolveWorktreeProject'];
@@ -632,7 +633,13 @@ async function startLocalAcpProtocol<T>(
 
     const output = createStdoutReadableStream(agentProcess.stdout);
     const input = createStdinWritableStream(agentProcess.stdin);
-    const stream = ndJsonStream(input, output);
+    // LAN fork: Lody's Auto Review mode for Antigravity (no-op for other agents).
+    const stream = withAntigravityAutoReview(ndJsonStream(input, output), {
+      agentType: options.agentType,
+      logger: options.logger,
+      label: 'acp-startup',
+      launch: { command: launch.command, args: attemptArgs, env: envWithAcpStartup },
+    });
 
     let rejectSignalAbort: ((error: DOMException) => void) | undefined;
     const signalAbort = options.signal
