@@ -71,15 +71,15 @@ export const shellCommand = new Command('shell')
       '  lody-lan lan shell mba -- uname -a',
       "  lody-lan lan shell mba --cwd '~/project' -- 'git status && git log -1'",
       "  lody-lan lan shell mba -- 'cat > /tmp/fix.patch' < fix.patch",
-      "  base64 app.bin | lody-lan lan shell mba -- 'base64 -d > /tmp/app.bin'",
       '',
       'The words after -- are joined and run by the shell of that machine, so quote',
       'a command with pipes, redirections or && as one argument. This command ends',
       'with the exit code of that one.',
       '',
       'A command runs in a terminal there, as with ssh -t: its output arrives with',
-      'CRLF line ends and stderr mixed in, and what a pipe gives it is echoed. Text',
-      'passes whole; encode anything else, as base64 does above.',
+      'CRLF line ends and stderr mixed in, and what a pipe gives it is echoed; a',
+      'Windows machine never sees the end of piped input. To move files, use',
+      '`lody-lan lan cp`.',
     ].join('\n')
   )
   .action(async (selector: string | undefined, words: string[], options: ShellOptions) => {

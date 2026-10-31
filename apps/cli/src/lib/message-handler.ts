@@ -201,6 +201,7 @@ import {
   LAN_FILES_PROTOCOL_VERSION,
   LAN_SHELL_PROTOCOL_VERSION,
   LAN_TUNNEL_PROTOCOL_VERSION,
+  LAN_COPY_PROTOCOL_VERSION,
   LAN_IOS_SIMULATOR_PROTOCOL_VERSION,
   type IosSimulatorRequest,
   type IosSimulatorResponse,
@@ -6252,6 +6253,7 @@ export class MessageHandler {
       // The same listener opens the shells and ports of this machine to the members.
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanShell] = LAN_SHELL_PROTOCOL_VERSION;
       capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanTunnel] = LAN_TUNNEL_PROTOCOL_VERSION;
+      capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanCopy] = LAN_COPY_PROTOCOL_VERSION;
       if (this.answerLanMemberControl) {
         capabilities[MACHINE_PROTOCOL_CAPABILITIES.lanIosSimulator] =
           LAN_IOS_SIMULATOR_PROTOCOL_VERSION;

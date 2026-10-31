@@ -2,15 +2,16 @@ import fs from 'node:fs';
 import net from 'node:net';
 import { getLocalTunnelSocketPath } from '@lody/shared/node/local-terminal';
 import { ensureLocalDaemonRunDir } from '@lody/shared/node/local-ipc';
-import type { LanTunnelRequest } from '@/lib/lan/lan-tunnel';
+import type { LanCopyRequest } from '@/lib/lan/lan-copy';
+import type { LanTunnelConnectRequest } from '@/lib/lan/lan-tunnel';
 import { serveTunnelRequest } from '@/lib/lan/lan-tunnel';
 import { removeStaleUnixSocket } from '@/lib/stale-unix-socket';
 import type { Logger } from '@/utils/logger';
 
 /**
  * The local tunnel socket: a program of this machine names a machine and a
- * port, and the agent service connects it there, so the LAN's credential
- * never leaves the agent service.
+ * port, or files to copy to or from it, and the agent service connects it
+ * there, so the LAN's credential never leaves the agent service.
  */
 export class LocalTunnelServer {
   private server: net.Server | null = null;
@@ -20,7 +21,8 @@ export class LocalTunnelServer {
   constructor(
     private readonly options: {
       logger: Logger;
-      connect: (request: LanTunnelRequest) => Promise<net.Socket>;
+      connect: (request: LanTunnelConnectRequest) => Promise<net.Socket>;
+      copyTo: (request: LanCopyRequest) => Promise<net.Socket | null>;
     }
   ) {}
 
@@ -36,6 +38,7 @@ export class LocalTunnelServer {
       void serveTunnelRequest(socket, {
         logger: this.options.logger,
         connect: this.options.connect,
+        copyTo: this.options.copyTo,
       });
     });
     await new Promise<void>((resolve, reject) => {
