@@ -423,13 +423,21 @@ export async function serveLanCopy(
   } catch (error) {
     const message = formatErrorMessage(error);
     options.logger.debug(`[lan-copy] ${request.type} failed: ${message}`);
-    if (progress.inFile || !socket.writable) {
-      socket.destroy();
-      return;
-    }
-    writeLine(socket, { type: 'error', message });
-    socket.end();
+    abandonEntries(socket, message, progress);
   }
+}
+
+/**
+ * Ends a stream of entries that failed on this side: the other side is told
+ * between entries; in the middle of a file the connection is broken off.
+ */
+function abandonEntries(socket: net.Socket, message: string, progress: { inFile: boolean }): void {
+  if (progress.inFile || !socket.writable) {
+    socket.destroy();
+    return;
+  }
+  writeLine(socket, { type: 'error', message });
+  socket.end();
 }
 
 /**
@@ -486,10 +494,20 @@ export async function putCopy(
   const reader = new ConnectionReader(socket);
   const target = await readAnswer(reader);
   const answered = reader.line().then((line) => parse(DoneSchema, line, 'copy answer'));
-  const sending = sendCopyEntries(socket, options.sources);
+  const progress = { inFile: false };
+  let failedHere = false;
+  const sending = sendCopyEntries(socket, options.sources, progress).catch((error: unknown) => {
+    // A source that cannot be read ends the copy here; the receiver waits for no more.
+    if (socket.writable) {
+      failedHere = true;
+      abandonEntries(socket, formatErrorMessage(error), progress);
+    }
+    throw error;
+  });
   // Whichever settles first: the receiver may refuse while entries still go out.
   const done = await Promise.race([sending.then(async () => await answered), answered]).catch(
     async (error: unknown) => {
+      if (failedHere) throw error;
       const answer = await answered.catch(() => null);
       if (answer?.type === 'error') return answer;
       throw error;

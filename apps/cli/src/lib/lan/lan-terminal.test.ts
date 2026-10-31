@@ -979,6 +979,44 @@ describe('terminals between LAN members', () => {
     expect(fs.readdirSync(there)).toEqual([]);
   });
 
+  it('ends a copy whose source cannot be read, on both sides', async () => {
+    let failed!: (message: string) => void;
+    const failure = new Promise<string>((resolve) => {
+      failed = resolve;
+    });
+    const logger = {
+      ...silentLogger(),
+      debug: (message: string) => {
+        if (message.startsWith('[lan-copy] put failed')) failed(message);
+      },
+    };
+    const { published } = await startServer({ tunnels: true, logger });
+    const connect = await startLocalTunnel(published.get(HOME)!, copyCapable);
+    const here = tempDir();
+    const there = tempDir();
+    fs.mkdirSync(path.join(here, 'site'));
+    fs.writeFileSync(path.join(here, 'site', 'a.txt'), 'a');
+    fs.writeFileSync(path.join(here, 'gone.txt'), 'gone');
+    const sources = await statCopySources(
+      [path.join(here, 'site'), path.join(here, 'gone.txt')],
+      true
+    );
+    fs.rmSync(path.join(here, 'gone.txt'));
+
+    await expect(
+      putCopy(await connect(), {
+        target: there,
+        sources,
+        recursive: true,
+        preserveTimes: false,
+        machineId: SERVER,
+      })
+    ).rejects.toThrow(/ENOENT/);
+    expect(await failure).toMatch(/ENOENT/);
+    expect(fs.readdirSync(there)).toEqual(['site']);
+    expect(fs.readdirSync(path.join(there, 'site'))).toEqual(['a.txt']);
+  });
+
   it('copies nothing with a member whose build predates lan cp', async () => {
     const { published } = await startServer({ tunnels: true });
     const connect = await startLocalTunnel(published.get(HOME)!, {
