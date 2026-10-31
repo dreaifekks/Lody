@@ -1,4 +1,7 @@
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createStore, type WorkspaceSummary } from '@lody/platform';
@@ -24,7 +27,8 @@ import { askLanHubPeer, type LanHubPeerHandler } from './lan-hub-peers';
 import { askLanMemberRpc, LanRpcNotSentError } from './lan-rpc-channel';
 import { createDetachFilter, runMachineShell, type ShellIo } from './lan-shell';
 import { connectLanTerminal, createTerminalLink, deriveLanTerminalKey } from './lan-terminal';
-import { joinSockets, openLanTunnel } from './lan-tunnel';
+import { getCopy, openLanCopy, prepareCopyTarget, putCopy, statCopySources } from './lan-copy';
+import { joinSockets, openLanTunnel, serveTunnelRequest } from './lan-tunnel';
 import { LanTerminalHost, resolveLanTerminalPort } from './lan-terminal-host';
 
 const silentLogger = (): Logger => ({
@@ -183,13 +187,14 @@ describe('terminals between LAN members', () => {
       rpc?: (request: unknown) => Promise<unknown[]>;
       tunnels?: boolean;
       pty?: FakePty;
+      logger?: Logger;
     } = {}
   ) {
     const pty = options.pty ?? new FakePty('server');
     const published = new Map<string, LanTerminalEndpoint | undefined>();
     const host = new LanTerminalHost({
       machineId: SERVER,
-      logger: silentLogger(),
+      logger: options.logger ?? silentLogger(),
       lans: {
         hubs: [home],
         workspaces: createStore<readonly WorkspaceSummary[]>([]),
@@ -815,6 +820,183 @@ describe('terminals between LAN members', () => {
         port: 1,
       })
     ).rejects.toThrow(/serves no tunnel/);
+  });
+
+  function tempDir(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-cp-'));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    return dir;
+  }
+
+  /**
+   * The local tunnel socket of the client machine, as the agent service runs
+   * it: a copy that names the server goes there over the LAN.
+   */
+  async function startLocalTunnel(
+    endpoint: LanTerminalEndpoint,
+    server: { name: string; protocolCapabilities: Record<string, number> }
+  ): Promise<() => Promise<net.Socket>> {
+    const local = net.createServer((socket) => {
+      socket.pause();
+      void serveTunnelRequest(socket, {
+        logger: silentLogger(),
+        copyTo: async (request) =>
+          request.machineId === SERVER
+            ? await openLanCopy({
+                endpoint,
+                lanId: home.id,
+                key: deriveLanTerminalKey(home.token),
+                machineId: SERVER,
+                machine: server,
+                request,
+              })
+            : null,
+      });
+    });
+    await new Promise<void>((resolve) => local.listen(0, '127.0.0.1', () => resolve()));
+    cleanups.push(() => new Promise<void>((resolve) => local.close(() => resolve())));
+    const port = (local.address() as net.AddressInfo).port;
+    return async () => {
+      const socket = net.connect(port, '127.0.0.1');
+      await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+      cleanups.push(() => socket.destroy());
+      return socket;
+    };
+  }
+
+  const copyCapable = { name: 'server', protocolCapabilities: { lanTunnel: 1, lanCopy: 1 } };
+
+  it('copies a directory to a member and back over the LAN', async () => {
+    const { published } = await startServer({ tunnels: true });
+    const connect = await startLocalTunnel(published.get(HOME)!, copyCapable);
+    const here = tempDir();
+    const there = tempDir();
+    const back = tempDir();
+    fs.mkdirSync(path.join(here, 'site', 'assets'), { recursive: true });
+    fs.mkdirSync(path.join(here, 'site', 'empty'));
+    const payload = Buffer.alloc(2 * 1024 * 1024 + 3, 7);
+    fs.writeFileSync(path.join(here, 'site', 'assets', 'app.bin'), payload);
+    fs.writeFileSync(path.join(here, 'site', 'index.html'), '<p>hi</p>');
+
+    const put = await putCopy(await connect(), {
+      target: path.join(there, 'copy'),
+      sources: await statCopySources([path.join(here, 'site')], true),
+      recursive: true,
+      preserveTimes: false,
+      machineId: SERVER,
+    });
+    expect(put).toEqual({
+      path: path.join(there, 'copy'),
+      directory: false,
+      files: 2,
+      bytes: payload.length + 9,
+      skipped: 0,
+    });
+    expect(fs.readdirSync(path.join(there, 'copy')).sort()).toEqual([
+      'assets',
+      'empty',
+      'index.html',
+    ]);
+
+    const got = await getCopy(await connect(), {
+      sources: [path.join(there, 'copy'), path.join(there, 'copy', 'index.html')],
+      target: prepareCopyTarget(back, 2),
+      recursive: true,
+      preserveTimes: false,
+      machineId: SERVER,
+    });
+    expect(got).toEqual({ files: 3, bytes: payload.length + 18, skipped: 0 });
+    expect(fs.readFileSync(path.join(back, 'copy', 'assets', 'app.bin')).equals(payload)).toBe(
+      true
+    );
+    expect(fs.readFileSync(path.join(back, 'index.html'), 'utf8')).toBe('<p>hi</p>');
+
+    // What the member cannot copy comes back as its reason.
+    await expect(
+      getCopy(await connect(), {
+        sources: [path.join(there, 'missing')],
+        target: prepareCopyTarget(back, 1),
+        recursive: false,
+        preserveTimes: false,
+        machineId: SERVER,
+      })
+    ).rejects.toThrow(/ENOENT/);
+    await expect(
+      putCopy(await connect(), {
+        target: path.join(there, 'nowhere', 'copy'),
+        sources: await statCopySources([path.join(here, 'site', 'index.html')], false),
+        recursive: false,
+        preserveTimes: false,
+        machineId: SERVER,
+      })
+    ).rejects.toThrow(/is not a directory/);
+
+    // A member that fails while entries still go out is heard, not the broken connection.
+    fs.writeFileSync(path.join(there, 'site'), 'a file where the directory goes');
+    await expect(
+      putCopy(await connect(), {
+        target: there,
+        sources: await statCopySources([path.join(here, 'site')], true),
+        recursive: true,
+        preserveTimes: false,
+        machineId: SERVER,
+      })
+    ).rejects.toThrow(/EEXIST/);
+    expect(fs.readFileSync(path.join(there, 'site'), 'utf8')).toBe(
+      'a file where the directory goes'
+    );
+  });
+
+  it('leaves no partial file on a member when a copy breaks off', async () => {
+    let failed!: (message: string) => void;
+    const failure = new Promise<string>((resolve) => {
+      failed = resolve;
+    });
+    const logger = {
+      ...silentLogger(),
+      debug: (message: string) => {
+        if (message.startsWith('[lan-copy] put failed')) failed(message);
+      },
+    };
+    const { published } = await startServer({ tunnels: true, logger });
+    const connect = await startLocalTunnel(published.get(HOME)!, copyCapable);
+    const there = tempDir();
+
+    const socket = await connect();
+    socket.write(
+      `${JSON.stringify({ type: 'put', path: there, sources: 1, recursive: false, preserveTimes: false, machineId: SERVER })}\n`
+    );
+    const ready = await new Promise<string>((resolve) =>
+      socket.once('data', (chunk: Buffer) => resolve(chunk.toString('utf8')))
+    );
+    expect(JSON.parse(ready)).toEqual({ type: 'ready', path: there, directory: true });
+    socket.write(
+      `${JSON.stringify({ type: 'file', path: 'big.bin', size: 1024 * 1024, mtimeMs: 0 })}\n`
+    );
+    socket.end(Buffer.alloc(64 * 1024));
+
+    expect(await failure).toMatch(/closed before the copy finished/);
+    expect(fs.readdirSync(there)).toEqual([]);
+  });
+
+  it('copies nothing with a member whose build predates lan cp', async () => {
+    const { published } = await startServer({ tunnels: true });
+    const connect = await startLocalTunnel(published.get(HOME)!, {
+      name: 'old-server',
+      protocolCapabilities: { lanTunnel: 1 },
+    });
+    const here = tempDir();
+    fs.writeFileSync(path.join(here, 'a.txt'), 'a');
+
+    await expect(
+      putCopy(await connect(), {
+        target: tempDir(),
+        sources: await statCopySources([path.join(here, 'a.txt')], false),
+        recursive: false,
+        preserveTimes: false,
+        machineId: SERVER,
+      })
+    ).rejects.toThrow('old-server runs a build without lan cp; update it');
   });
 
   it('takes another port when the preferred one is in use', async () => {

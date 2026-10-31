@@ -84,7 +84,9 @@ describe('session execution prompt helpers', () => {
     expect(buildPrompt('ship the patch')).toBe(
       `ship the patch${SESSION_REMINDERS}\n\n` +
         'This machine is a member of a Lody LAN. `lody-lan lan machines` lists the other machines, ' +
-        '`lody-lan lan shell <machine> -- <command>` runs a command on one, and ' +
+        '`lody-lan lan shell <machine> -- <command>` runs a command on one, ' +
+        '`lody-lan lan cp [-r] <src> <machine>:<dst>` copies files either way (use it for files, ' +
+        'not pipes into `lan shell`), and ' +
         '`lody-lan lan forward <machine> <port>` reaches a port there; see `lody-lan lan --help`.'
     );
   });

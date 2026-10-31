@@ -1,12 +1,19 @@
 // A port reached through one machine of a LAN from another: a dev server an
 // agent started there, opened here, or anything that machine reaches, as with
 // `ssh -L`. Each connection asks for one host and port and then carries bytes
-// both ways, over the connection members open to each other.
+// both ways, over the connection members open to each other. A connection may
+// ask for a copy of files instead (`lan-copy.ts`).
 import net from 'node:net';
 import type tls from 'node:tls';
 import { z } from 'zod';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
+import {
+  LanCopyGetRequestSchema,
+  LanCopyPutRequestSchema,
+  serveLanCopy,
+  type LanCopyRequest,
+} from './lan-copy';
 import {
   connectLanMember,
   readFirstLine,
@@ -16,7 +23,7 @@ import {
 
 const CONNECT_TIMEOUT_MS = 10_000;
 
-export const LanTunnelRequestSchema = z.object({
+const LanTunnelConnectRequestSchema = z.object({
   type: z.literal('connect'),
   port: z.number().int().min(1).max(65_535),
   /** What the machine connects to; its own loopback interface when absent. */
@@ -27,6 +34,13 @@ export const LanTunnelRequestSchema = z.object({
    */
   machineId: z.string().min(1).optional(),
 });
+export type LanTunnelConnectRequest = z.infer<typeof LanTunnelConnectRequestSchema>;
+
+export const LanTunnelRequestSchema = z.discriminatedUnion('type', [
+  LanTunnelConnectRequestSchema,
+  LanCopyPutRequestSchema,
+  LanCopyGetRequestSchema,
+]);
 export type LanTunnelRequest = z.infer<typeof LanTunnelRequestSchema>;
 
 const LanTunnelAnswerSchema = z.discriminatedUnion('type', [
@@ -117,7 +131,12 @@ export async function serveTunnelRequest(
     initial?: Buffer;
     logger: Logger;
     /** Where a port is reached; what this machine reaches itself by default. */
-    connect?: (request: LanTunnelRequest) => Promise<net.Socket>;
+    connect?: (request: LanTunnelConnectRequest) => Promise<net.Socket>;
+    /**
+     * The member a copy goes to, which took the request on the connection it
+     * returns; `null`, as without it, for the files of this machine.
+     */
+    copyTo?: (request: LanCopyRequest) => Promise<net.Socket | null>;
   }
 ): Promise<void> {
   let line: string;
@@ -134,6 +153,10 @@ export async function serveTunnelRequest(
   if (!request) {
     writeLine(socket, { type: 'error', message: 'invalid tunnel request' });
     socket.end();
+    return;
+  }
+  if (request.type !== 'connect') {
+    await serveCopyRequest(socket, request, rest, options);
     return;
   }
   let target: net.Socket;
@@ -155,6 +178,36 @@ export async function serveTunnelRequest(
   joinSockets(socket, target);
 }
 
+/** Copies files of this machine, or carries the copy to the member it names. */
+async function serveCopyRequest(
+  socket: net.Socket,
+  request: LanCopyRequest,
+  rest: Buffer,
+  options: {
+    logger: Logger;
+    copyTo?: (request: LanCopyRequest) => Promise<net.Socket | null>;
+  }
+): Promise<void> {
+  let member: net.Socket | null;
+  try {
+    member = (await options.copyTo?.(request)) ?? null;
+  } catch (error) {
+    writeLine(socket, { type: 'error', message: formatErrorMessage(error) });
+    socket.end();
+    return;
+  }
+  if (!member) {
+    await serveLanCopy(socket, request, { initial: rest, logger: options.logger });
+    return;
+  }
+  if (socket.destroyed) {
+    member.destroy();
+    return;
+  }
+  if (rest.length > 0) member.write(rest);
+  joinSockets(socket, member);
+}
+
 /**
  * Asks the other end of a connection for a port and resolves once it is
  * connected; the socket then carries the port's bytes.
@@ -168,7 +221,7 @@ export async function requestTunnel(
     port: target.port,
     ...(target.host ? { host: target.host } : {}),
     ...(target.machineId ? { machineId: target.machineId } : {}),
-  } satisfies LanTunnelRequest);
+  } satisfies LanTunnelConnectRequest);
   const { line, rest } = await readLine(socket);
   const answer = parseJsonLine(LanTunnelAnswerSchema, line);
   if (!answer) throw new Error('the machine gave no tunnel answer');

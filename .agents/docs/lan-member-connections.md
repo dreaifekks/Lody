@@ -95,6 +95,46 @@ directly. `lody-lan lan forward <machine> [<local>:][<host>:]<port>...`
 listens on `127.0.0.1` (`--bind` for another address) and carries every
 connection there until it ends.
 
+### Copies of files
+
+`lody-lan lan cp [-r] [-p] <src>... <dst>` copies files between this machine
+and one member, like scp, on the same tunnel service: `lan shell` runs in a
+terminal, and a Windows terminal never sees the end of piped input. The first
+line asks for `put` (`path`, `sources`) or `get` (`paths`) instead of
+`connect`, with `recursive` and `preserveTimes`
+(`apps/cli/src/lib/lan/lan-copy.ts`). On the local tunnel socket it also names
+the machine; the agent service passes the line on without it, after checking
+the member's `lanCopy` capability, and then only carries bytes. A copy that
+names this machine is carried out by its own agent service. The machine that
+holds a path reads it: `~` and relative paths start at its home, a Windows
+machine takes a Windows path.
+
+The machine answers `ready` with the resolved path and whether it is a
+directory that exists, or `error`. Then the side that sends writes entries,
+each a JSON line, a file's line followed by exactly `size` bytes:
+
+```text
+{"type":"dir","path":"site","mode":493,"mtimeMs":…}
+{"type":"file","path":"site/app.bin","size":123,"mode":420,"mtimeMs":…}  + 123 bytes
+{"type":"end","files":1,"bytes":123,"skipped":0}
+```
+
+Entry paths are relative, `/` between parts; the receiver refuses empty parts,
+`.` and `..` (on Windows also parts with `\` or `:`) and joins them with its
+own `path`. A target that is a directory receives each source under its own
+name; any other target is the copy itself (scp's rule), so its first part is
+replaced by the target. A file is written as `.<name>.lody-part-<random>`
+beside its destination and renamed over it once whole; a broken connection
+removes it. A sender that fails between entries sends `error` in place of the
+next one; in the middle of a file it breaks the connection, since an answer
+cannot be told from the file's bytes. For `put` the member answers `done` or
+`error` after `end`, and the command reads that answer while it still sends,
+so a member that fails is heard at once. Permission bits travel between POSIX
+machines (a Windows sender sends none); `-p` keeps modification times. Links
+to files are copied as files; links to directories, and what is neither file
+nor directory, are left out and counted as `skipped`. Integrity rests on
+TLS and the explicit sizes; nothing is encoded or hashed.
+
 The Browser panel of a desktop previews the dev server of a session another
 member runs the same way. There is no hosted preview on the local platform, so
 the desktop asks the agent service of its own machine for the endpoint, as for
@@ -146,8 +186,8 @@ says so.
 
 ## The command in a session
 
-An agent reaches the other members with `lan machines`, `lan shell` and
-`lan forward`, so every session of a member has them under one name. An agent
+An agent reaches the other members with `lan machines`, `lan shell`, `lan cp`
+and `lan forward`, so every session of a member has them under one name. An agent
 service of the local platform writes `lody-lan` into `session-bin` of its data
 directory when it starts (`apps/cli/src/lib/lan/lan-session-command.ts`). The
 script runs the runtime and the entry of that service, so a machine that has

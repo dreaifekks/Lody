@@ -40,6 +40,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   lanBoardFiles: 'lanBoardFiles',
   lanShell: 'lanShell',
   lanTunnel: 'lanTunnel',
+  lanCopy: 'lanCopy',
   lanIosSimulator: 'lanIosSimulator',
   realtimeVoice: 'realtimeVoice',
   sessionCancelActiveTurn: 'sessionCancelActiveTurn',
@@ -82,6 +83,7 @@ export const LAN_FILE_RANGES_PROTOCOL_VERSION = 1;
 export const LAN_BOARD_FILES_PROTOCOL_VERSION = 1;
 export const LAN_SHELL_PROTOCOL_VERSION = 1;
 export const LAN_TUNNEL_PROTOCOL_VERSION = 1;
+export const LAN_COPY_PROTOCOL_VERSION = 1;
 export const LAN_IOS_SIMULATOR_PROTOCOL_VERSION = 1;
 export const SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION = 1;
 export const SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION = 1;
@@ -595,6 +597,22 @@ export function machineSupportsLanTunnel(
     machine,
     MACHINE_PROTOCOL_CAPABILITIES.lanTunnel,
     LAN_TUNNEL_PROTOCOL_VERSION
+  );
+}
+
+/**
+ * Whether the target daemon copies files to and from the other members of a
+ * LAN (`put` and `get` on its tunnel service, for `lody-lan lan cp`).
+ *
+ * Like `lanControl` it is said only by a daemon that was assembled to accept.
+ */
+export function machineSupportsLanCopy(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.lanCopy,
+    LAN_COPY_PROTOCOL_VERSION
   );
 }
 

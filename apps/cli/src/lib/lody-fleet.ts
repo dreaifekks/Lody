@@ -48,6 +48,7 @@ import { LocalFileServer } from '@/lib/local-file-server';
 import type { LocalUsageLedger } from '@/lib/usage/local-usage-ledger';
 import { readLanCredentialsEnv } from '@lody/shared/node/lan-credentials';
 import type { LanHub } from '@lody/shared/node/lan-hub';
+import { openLanCopy, type LanCopyRequest } from '@/lib/lan/lan-copy';
 import { connectPort, openLanTunnel } from '@/lib/lan/lan-tunnel';
 import {
   startLocalLoroDataPlaneServer,
@@ -460,6 +461,7 @@ export class LodyFleet {
           request.port,
           request.host
         ),
+      copyTo: async (request) => await this.openMachineCopy(request),
     });
     this.prStatusPoller = makePrStatusPoller({
       config: loadPrPollerConfig(),
@@ -1985,7 +1987,12 @@ export class LodyFleet {
     machineId: string,
     supports: (meta: MachineMeta) => boolean,
     refusal: string
-  ): Promise<{ workspaceId: string; hub: LanHub; endpoint: LanTerminalEndpoint }> {
+  ): Promise<{
+    workspaceId: string;
+    hub: LanHub;
+    endpoint: LanTerminalEndpoint;
+    meta: MachineMeta;
+  }> {
     let found: MachineMeta | undefined;
     for (const runtime of this.runtimes.values()) {
       const hub = this.lan?.hubs.find(
@@ -1998,7 +2005,9 @@ export class LodyFleet {
       if (!meta) continue;
       found ??= meta;
       const endpoint = parseLanTerminalEndpoint(meta.lanTerminal);
-      if (endpoint && supports(meta)) return { workspaceId: runtime.workspace.id, hub, endpoint };
+      if (endpoint && supports(meta)) {
+        return { workspaceId: runtime.workspace.id, hub, endpoint, meta };
+      }
     }
     throw new Error(
       found
@@ -2022,6 +2031,21 @@ export class LodyFleet {
       machineId,
       port,
       ...(host ? { host } : {}),
+    });
+  }
+
+  /** The member a copy of files goes to; `null` for the files of this machine. */
+  private async openMachineCopy(request: LanCopyRequest): Promise<net.Socket | null> {
+    const machineId = request.machineId ?? this.machineId;
+    if (machineId === this.machineId) return null;
+    const member = await this.findLanMember(machineId, machineSupportsLanTunnel, 'opens no port');
+    return await openLanCopy({
+      endpoint: member.endpoint,
+      lanId: member.hub.id,
+      key: deriveLanTerminalKey(member.hub.token),
+      machineId,
+      machine: member.meta,
+      request,
     });
   }
 
