@@ -190,6 +190,7 @@ export function ArticleHtmlFrame({
             ARTICLE_EPILOGUE,
           mode: latest.current.resolvedTheme,
           vars: themeVars(latest.current.fontSize),
+          page: true,
         });
       },
       onHeight: () => undefined,

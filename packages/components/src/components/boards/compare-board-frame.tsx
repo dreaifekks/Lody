@@ -146,6 +146,7 @@ export function CompareHtmlBoard({
             ARTICLE_EPILOGUE,
           mode: current.board.mode,
           vars: {},
+          page: true,
         });
         post({ type: 'lody-compare:picking', on: current.board.picking });
       },

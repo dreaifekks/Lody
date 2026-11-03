@@ -275,9 +275,9 @@ describe('WidgetFrame', () => {
 
 describe('widget page', () => {
   /** The real page, given code as the frames post it. */
-  const renderInPage = (code: string, mode: 'light' | 'dark' = 'light') => {
+  const renderInPage = (code: string, page: boolean, mode: 'light' | 'dark' = 'light') => {
     const { window } = new JSDOM(buildLodyWidgetShellHtml(), { runScripts: 'dangerously' });
-    const data = { type: 'lody-widget:render', code, mode, vars: {} };
+    const data = { type: 'lody-widget:render', code, mode, vars: {}, page };
     window.dispatchEvent(new window.MessageEvent('message', { data, source: window }));
     return window;
   };
@@ -293,7 +293,7 @@ describe('widget page', () => {
     'function setKind(k){document.body.dataset.kind=k}</script></body></html>';
 
   it("shows a complete document's first state, from its html and body tags", () => {
-    const window = renderInPage(ARTICLE_PRELUDE + OPTION + ARTICLE_EPILOGUE) as Window & {
+    const window = renderInPage(ARTICLE_PRELUDE + OPTION + ARTICLE_EPILOGUE, true) as Window & {
       seenKind: string;
       setKind: (kind: string) => void;
     };
@@ -312,10 +312,20 @@ describe('widget page', () => {
   });
 
   it("keeps the reader's theme over a document's own", () => {
-    const window = renderInPage('<html data-mode="light" class="x"><body></body></html>', 'dark');
+    const window = renderInPage(
+      '<html data-mode="light" class="x"><body></body></html>',
+      true,
+      'dark'
+    );
 
     expect(window.document.documentElement.getAttribute('data-mode')).toBe('dark');
     expect(window.document.documentElement.className).toBe('x');
+  });
+
+  it('leaves the body of a widget, whose height is measured without it', () => {
+    const window = renderInPage('<body style="padding:24px"><main></main></body>', false);
+
+    expect(window.document.body.hasAttribute('style')).toBe(false);
   });
 });
 
