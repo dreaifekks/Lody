@@ -2,8 +2,9 @@
 
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { JSDOM } from 'jsdom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionId } from '@lody/shared';
+import { buildLodyWidgetShellHtml, type SessionId } from '@lody/shared';
 import {
   AgentSurfaceContext,
   AgentSurfaceTurnContext,
@@ -14,6 +15,7 @@ import {
   type WidgetPromptRequest,
 } from '../src/components/agent-surfaces/agent-surface-context';
 import { WidgetFrame } from '../src/components/agent-surfaces/widget-frame';
+import { ARTICLE_EPILOGUE, ARTICLE_PRELUDE } from '../src/components/sessions/article-html-frame';
 import { createWidgetBridge } from '../src/components/agent-surfaces/widget-bridge';
 import { onHostPointerDown } from '../src/components/agent-surfaces/widget-gesture';
 import {
@@ -268,6 +270,52 @@ describe('WidgetFrame', () => {
       open?.click();
     });
     expect(opened).toEqual(['https://example.com/docs']);
+  });
+});
+
+describe('widget page', () => {
+  /** The real page, given code as the frames post it. */
+  const renderInPage = (code: string, mode: 'light' | 'dark' = 'light') => {
+    const { window } = new JSDOM(buildLodyWidgetShellHtml(), { runScripts: 'dangerously' });
+    const data = { type: 'lody-widget:render', code, mode, vars: {} };
+    window.dispatchEvent(new window.MessageEvent('message', { data, source: window }));
+    return window;
+  };
+  const shown = (window: Window, selector: string) =>
+    window.getComputedStyle(window.document.querySelector(selector)!).display !== 'none';
+
+  // A design option keeps its first state in a body attribute and flips it from a control.
+  const OPTION =
+    '<!doctype html><html lang="zh"><head><style>.kind{display:none}' +
+    'body[data-kind=short] .short,body[data-kind=long] .long{display:block}</style></head>' +
+    '<body data-kind="short"><div class="kind short"></div><div class="kind long"></div>' +
+    '<script>window.seenKind=document.body.dataset.kind;' +
+    'function setKind(k){document.body.dataset.kind=k}</script></body></html>';
+
+  it("shows a complete document's first state, from its html and body tags", () => {
+    const window = renderInPage(ARTICLE_PRELUDE + OPTION + ARTICLE_EPILOGUE) as Window & {
+      seenKind: string;
+      setKind: (kind: string) => void;
+    };
+
+    expect(shown(window, '.short')).toBe(true);
+    expect(shown(window, '.long')).toBe(false);
+    expect(window.seenKind).toBe('short');
+    expect(window.document.documentElement.lang).toBe('zh');
+    // So a `height: 100%` chain and a flex body lay out against the body itself.
+    const wrapper = window.document.getElementById('lody-widget-root')!;
+    expect(window.getComputedStyle(wrapper).display).toBe('contents');
+
+    window.setKind('long');
+    expect(shown(window, '.short')).toBe(false);
+    expect(shown(window, '.long')).toBe(true);
+  });
+
+  it("keeps the reader's theme over a document's own", () => {
+    const window = renderInPage('<html data-mode="light" class="x"><body></body></html>', 'dark');
+
+    expect(window.document.documentElement.getAttribute('data-mode')).toBe('dark');
+    expect(window.document.documentElement.className).toBe('x');
   });
 });
 

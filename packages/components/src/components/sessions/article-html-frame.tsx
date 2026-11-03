@@ -91,13 +91,15 @@ export const articleStateScript = (saved: unknown): string =>
  * already loaded when the article arrives, so the article scrolls in the page
  * itself. Its text starts at the conversation's size rather than the widget
  * page's 15px; whatever size the article sets for itself still wins, since it
- * comes after this. The page runs the article's scripts one by one, waiting for each CDN
+ * comes after this. Its wrapper steps out of layout, so an article's `height: 100%` and a
+ * flex or grid body see the body as they would in their own page. The page runs the
+ * article's scripts one by one, waiting for each CDN
  * script, so its `DOMContentLoaded`/`load` handlers are held until the last
  * script has run, then called in that order (`onload` too); it returns their
  * settling, so the reader's settings come back after async handlers finish.
  */
 export const ARTICLE_PRELUDE =
-  '<style>html,body{height:100%;overflow:auto!important}' +
+  '<style>html,body{height:100%;overflow:auto!important}#lody-widget-root{display:contents}' +
   'body{font-size:var(--lody-article-font-size)}</style>' +
   '<script>(function(){var ready={DOMContentLoaded:[],load:[]},done=false;' +
   "function call(t,type,fn){var e=new Event(type);return typeof fn==='function'?fn.call(t,e):fn&&fn.handleEvent&&fn.handleEvent(e);}" +

@@ -218,9 +218,16 @@ function runScripts(root){
   }
   next();
 }
+function adoptAttributes(from,to){
+  for(var i=0;i<from.attributes.length;i++){var a=from.attributes[i];if(!to.hasAttribute(a.name))to.setAttribute(a.name,a.value);}
+}
 function render(code){
   if(rendered)return;rendered=true;
   var root=document.getElementById('lody-widget-root'),tpl=document.createElement('template');
+  // A fragment drops a complete document's html and body tags, and with them
+  // the state its styles may hang on. The page's own attributes (theme) stay.
+  var doc=new DOMParser().parseFromString(code,'text/html');
+  adoptAttributes(doc.documentElement,document.documentElement);adoptAttributes(doc.body,document.body);
   tpl.innerHTML=code;root.appendChild(tpl.content);runScripts(root);
   if(window.ResizeObserver)new ResizeObserver(measure).observe(root);
   window.addEventListener('load',measure);measure();
